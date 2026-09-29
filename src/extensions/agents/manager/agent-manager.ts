@@ -9,6 +9,8 @@ import { loadWorkspaceFile } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import type { AcpSessionCallbacks } from "../../../sandbox/worker/acp-client.js"
 import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
+import type { RemoteGitWorkflow } from "../../remote-run/git-workflow.js"
+import { captureBaseline, resolveSandboxGitConnection, SandboxGitError } from "../../remote-run/sandbox-git.js"
 import { type ClonePlan, resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import { repoBasename } from "../../teleport/provisioning/paths.js"
@@ -38,6 +40,7 @@ import {
 } from "./agent-runner.js"
 import {
 	attachRemoteAgent,
+	continueRemoteAgent,
 	isRemoteSessionConnected,
 	type RemoteSessionMeta,
 	runRemoteAgent,
@@ -78,6 +81,14 @@ interface SpawnOptions {
 	isBackground?: boolean
 	/** When true, runs on a remote sandbox via ACP instead of locally. */
 	remote?: boolean
+	/** PR-first git intent for remote runs (branch override; presence selects
+	 *  keepAlive + baseline capture). Planted onto the record synchronously at
+	 *  spawn so `_runRemote` never depends on post-spawn mutation timing. */
+	gitWorkflow?: RemoteGitWorkflow
+	/** Steer continuation: attach to a KEPT-ALIVE PR session (session/load on
+	 *  the persisted ACP id) instead of provisioning a new workspace/session.
+	 *  Requires remote: true — `spawn` throws when this invariant is violated. */
+	continuation?: { remoteSession: RemoteSessionMeta; acpSessionId: string }
 	/** Fired when the remote session is established (or re-established after
 	 *  a reattach) — carries the meta + ACP session id needed to persist the
 	 *  run for resume-after-restart. Remote runs only. */
@@ -187,6 +198,10 @@ export class AgentManager {
 
 	spawn(pi: ExtensionAPI, ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions): string {
 		const effectiveOptions = applyLinkedWorkerLimits(options)
+		// Steer prompts assume sandbox context — never default to a local run.
+		if (effectiveOptions.continuation && !effectiveOptions.remote) {
+			throw new Error("SpawnOptions.continuation requires remote: true")
+		}
 		const id = randomUUID().slice(0, 17)
 		const abortController = new AbortController()
 		const record: AgentRecord = {
@@ -207,6 +222,7 @@ export class AgentManager {
 			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			compactionCount: 0,
 			remote: effectiveOptions.remote,
+			gitWorkflow: effectiveOptions.gitWorkflow,
 		}
 		this.agents.set(id, record)
 
@@ -384,133 +400,64 @@ export class AgentManager {
 	 * Remote runs are single-turn (maxTurns: 1) with yolo: true. Multi-turn support,
 	 * budget enforcement, and timeout guards are planned for a follow-up PR.
 	 */
-	private async _runRemote(
-		record: AgentRecord,
-		prompt: string,
-		options: SpawnOptions,
-		ctx: ExtensionContext,
-	): Promise<RemoteRunResult> {
-		const apiKey = loadConfig().apiKey
-		if (!apiKey) throw new Error("No API key configured. Run `kimchi login`.")
-
-		const workspaces = await listWorkspaces(apiKey, {
-			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
-			signal: record.abortController?.signal,
-		})
-		// Match a workspace whose name matches the current repo dir (same convention
-		// as /teleport, which names workspaces by basename(cwd)). If no match is
-		// found, mint a new one rather than reusing an unrelated workspace.
-		const dirName = basename(ctx.cwd) || "kimchi"
-		const byName = workspaces.find((w) => w.name.toLowerCase() === dirName.toLowerCase())
-		const workspaceId = byName?.id ?? randomUUID()
-		// Workspace spec (kimchi_workspace.yaml) rides the upsert PUT only
-		// when minting — a name-matched workspace keeps its existing spec
-		// (spec fields are create-time-only server-side).
-		const workspaceSpec = byName ? undefined : resolveWorkspaceSpec(loadWorkspaceFile(ctx.cwd))
-
-		// Resolve git clone plan from the local repo so the sandbox gets a
-		// shallow clone of the repo (like /teleport --fast) instead of an empty dir.
-		// If cwd isn't a git repo or has no origin, this is a no-op.
-		let gitDetails: { repo: string; branch?: string; targetDirectory: string; noHistory?: boolean } | undefined
-		let gitCredential: { host: string; token: string } | undefined
-		try {
-			const clonePlan = await resolveClonePlan(ctx.cwd, undefined, { signal: record.abortController?.signal })
-			gitDetails = {
-				repo: clonePlan.httpsUrl,
-				branch: clonePlan.branch,
-				targetDirectory: repoBasename(clonePlan.url),
-				noHistory: true,
-			}
-			// Resolve git credential separately — a failure here (bad URL, prompt
-			// rejection) must not wipe the clone plan. The clone proceeds without
-			// creds; private repos fail, public repos still work.
-			try {
-				gitCredential = await resolveGitCredential(ctx, clonePlan)
-			} catch (err) {
-				gitCredential = undefined
-				console.warn(`[agent-manager] git credential resolution failed: ${err instanceof Error ? err.message : err}`)
-			}
-		} catch {
-			// Not a git repo or no origin — proceed without git details.
-			gitDetails = undefined
-			gitCredential = undefined
-		}
-
-		// Create the adapter before calling runRemoteAgent so it's available
-		// on record.session as soon as the prompt starts — enables steer_subagent
-		// and get_subagent_result to work mid-run.
+	/** Creates the RemoteAgentSession adapter for a remote record and wires
+	 *  the activity-tracker hookup + transcript seed (shared by the initial
+	 *  run and steer continuations). */
+	private _prepareRemoteAdapter(record: AgentRecord, prompt: string, options: SpawnOptions): RemoteAgentSession {
 		const remoteSession = new RemoteAgentSession()
 		record.session = remoteSession as unknown as AgentSession
-
 		// Fire onSessionCreated so the activity tracker (in index.ts) can
 		// subscribe to session events — specifically activity_reset which
 		// fires on WS reattach to clear stale tools from the progress line.
 		options.onSessionCreated?.(remoteSession as unknown as AgentSession)
-
 		// Seed the transcript with the user prompt so ConversationViewer shows it
 		// immediately, before any assistant text arrives.
 		remoteSession.setUserPrompt(prompt)
+		return remoteSession
+	}
 
-		const result = await runRemoteAgent(workspaceId, prompt, {
-			apiKey,
-			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
-			signal: record.abortController?.signal,
-			gitDetails,
-			gitCredential,
-			localPath: ctx.cwd,
-			workspaceName: dirName,
-			outputFile: record.outputFile,
-			tags: { [SESSION_TAG_PARENT_SESSION_ID]: ctx.sessionManager.getSessionId() },
-			...(workspaceSpec ? { spec: workspaceSpec } : {}),
-			onReady: (acpClient, meta) => {
-				remoteSession.bindClient(acpClient, meta)
-				// Capture the ACP session id for resume-after-restart persistence
-				// (session/load attaches by id, never by name).
-				const acpSessionId = acpClient.sessionId ?? undefined
-				if (acpSessionId) {
-					record.acpSessionId = acpSessionId
-					record.remoteSession ??= meta
-					options.onRemoteReady?.({ meta, acpSessionId })
+	/** Remote-run event callbacks streaming deltas/tool activity/usage onto
+	 *  the record + adapter (shared by the initial run and steer continuations). */
+	private _remoteCallbacks(record: AgentRecord, remoteSession: RemoteAgentSession, options: SpawnOptions) {
+		return {
+			onTextDelta: (delta: string, fullText: string) => {
+				remoteSession.appendAssistantText(fullText)
+				options.onTextDelta?.(delta, fullText)
+			},
+			onToolActivity: (activity: ToolActivity) => {
+				if (activity.status === "in_progress") {
+					remoteSession.recordToolCallStart(activity.toolName, activity.toolCallId, activity.rawInput)
+				} else {
+					remoteSession.recordToolCallEndFromActivity(activity)
+					record.toolUses++
 				}
+				options.onToolActivity?.(activity)
 			},
-			onReconnecting: (reconnecting) => {
-				remoteSession.setReconnecting(reconnecting)
-				// Never resurrect a record the user already stopped or aborted.
-				if (isActiveStatus(record.status)) {
-					record.status = reconnecting ? "reconnecting" : "running"
-				}
+			onTurnEnd: (turnCount: number) => {
+				record.lastTurnCount = turnCount
+				remoteSession.incrementTurnCount()
+				options.onTurnEnd?.(turnCount)
 			},
-			callbacks: {
-				onTextDelta: (delta, fullText) => {
-					remoteSession.appendAssistantText(fullText)
-					options.onTextDelta?.(delta, fullText)
-				},
-				onToolActivity: (activity) => {
-					if (activity.status === "in_progress") {
-						remoteSession.recordToolCallStart(activity.toolName, activity.toolCallId, activity.rawInput)
-					} else {
-						remoteSession.recordToolCallEndFromActivity(activity)
-						record.toolUses++
-					}
-					options.onToolActivity?.(activity)
-				},
-				onTurnEnd: (turnCount) => {
-					record.lastTurnCount = turnCount
-					remoteSession.incrementTurnCount()
-					options.onTurnEnd?.(turnCount)
-				},
-				onAssistantUsage: (usage) => {
-					remoteSession.addUsage(usage)
-					addUsage(record.lifetimeUsage, usage)
-					options.onAssistantUsage?.(usage)
-				},
-				onContextUsage: (used, size) => remoteSession.setContextUsage(used, size),
-				onRawNotification: (params) => {
-					options.onRawNotification?.(params)
-				},
+			onAssistantUsage: (usage: LifetimeUsage) => {
+				remoteSession.addUsage(usage)
+				addUsage(record.lifetimeUsage, usage)
+				options.onAssistantUsage?.(usage)
 			},
-		})
+			onContextUsage: (used: number, size: number) => remoteSession.setContextUsage(used, size),
+			onRawNotification: (params: SessionNotification) => {
+				options.onRawNotification?.(params)
+			},
+		}
+	}
 
+	/** Shared completion mapping for remote runs: syncs the record with the
+	 *  final meta + recovery note, whitelists stop reasons, and shapes the
+	 *  RunResult the manager machinery consumes. */
+	private _remoteCompletedResult(
+		record: AgentRecord,
+		remoteSession: RemoteAgentSession,
+		result: Awaited<ReturnType<typeof runRemoteAgent>>,
+	): RemoteRunResult {
 		record.remoteSession = result.remoteSession
 		if (result.recoveryNote) {
 			record.recoveryNote = result.recoveryNote
@@ -542,6 +489,194 @@ export class AgentManager {
 			turnsUsed: remoteSession.turnCount,
 			maxTurns: undefined,
 		}
+	}
+
+	/**
+	 * Steer continuation of a kept-alive PR session: attaches via
+	 *  session/load on the persisted ACP id through continueRemoteAgent —
+	 *  never a fresh clone, never session/new. The branch work and the
+	 *  agent's own context live only in that session. No baseline capture and
+	 *  no session deletion here (the baseline from the initial dispatch
+	 *  anchors the review diff; deletion waits for terminal actions).
+	 */
+	private async _runRemoteContinuation(
+		record: AgentRecord,
+		prompt: string,
+		options: SpawnOptions,
+		_ctx: ExtensionContext,
+	): Promise<RemoteRunResult> {
+		const apiKey = loadConfig().apiKey
+		if (!apiKey) throw new Error("No API key configured. Run `kimchi login`.")
+		const continuation = options.continuation
+		if (!continuation) throw new Error("_runRemoteContinuation requires options.continuation")
+
+		const remoteSession = this._prepareRemoteAdapter(record, prompt, options)
+		const result = await continueRemoteAgent({
+			apiKey,
+			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			signal: record.abortController?.signal,
+			remoteSession: continuation.remoteSession,
+			acpSessionId: continuation.acpSessionId,
+			prompt,
+			outputFile: record.outputFile,
+			onReady: async (acpClient, meta) => {
+				remoteSession.bindClient(acpClient, meta)
+				record.acpSessionId = continuation.acpSessionId
+				record.remoteSession ??= meta
+				options.onRemoteReady?.({ meta, acpSessionId: continuation.acpSessionId })
+			},
+			onReconnecting: (reconnecting) => {
+				remoteSession.setReconnecting(reconnecting)
+				if (isActiveStatus(record.status)) {
+					record.status = reconnecting ? "reconnecting" : "running"
+				}
+			},
+			callbacks: this._remoteCallbacks(record, remoteSession, options),
+		})
+		return this._remoteCompletedResult(record, remoteSession, result)
+	}
+
+	private async _runRemote(
+		record: AgentRecord,
+		prompt: string,
+		options: SpawnOptions,
+		ctx: ExtensionContext,
+	): Promise<RemoteRunResult> {
+		// Steer continuation of a kept-alive PR session hands off here — the
+		// remote dispatch is the single entry point for fresh runs and steers.
+		if (options.continuation) return this._runRemoteContinuation(record, prompt, options, ctx)
+
+		const apiKey = loadConfig().apiKey
+		if (!apiKey) throw new Error("No API key configured. Run `kimchi login`.")
+
+		const workspaces = await listWorkspaces(apiKey, {
+			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			signal: record.abortController?.signal,
+		})
+		// Match a workspace whose name matches the current repo dir (same convention
+		// as /teleport, which names workspaces by basename(cwd)). If no match is
+		// found, mint a new one rather than reusing an unrelated workspace.
+		const dirName = basename(ctx.cwd) || "kimchi"
+		const byName = workspaces.find((w) => w.name.toLowerCase() === dirName.toLowerCase())
+		const workspaceId = byName?.id ?? randomUUID()
+		// Workspace spec (kimchi_workspace.yaml) rides the upsert PUT only
+		// when minting — a name-matched workspace keeps its existing spec
+		// (spec fields are create-time-only server-side).
+		const workspaceSpec = byName ? undefined : resolveWorkspaceSpec(loadWorkspaceFile(ctx.cwd))
+
+		// Resolve git clone plan from the local repo so the sandbox gets a
+		// shallow clone of the repo (like /teleport --fast) instead of an empty dir.
+		// If cwd isn't a git repo or has no origin, this is a no-op.
+		let gitDetails: { repo: string; branch?: string; targetDirectory: string; noHistory?: boolean } | undefined
+		let gitCredential: { host: string; token: string } | undefined
+		try {
+			const clonePlan = await resolveClonePlan(ctx.cwd, undefined, { signal: record.abortController?.signal })
+			gitDetails = {
+				repo: clonePlan.httpsUrl,
+				// PR-intent runs override the branch: the worker forks the clone's
+				// default branch into the PR branch (created when missing).
+				branch: record.gitWorkflow?.branch ?? clonePlan.branch,
+				targetDirectory: repoBasename(clonePlan.url),
+				noHistory: true,
+			}
+			// Resolve git credential separately — a failure here (bad URL, prompt
+			// rejection) must not wipe the clone plan. The clone proceeds without
+			// creds; private repos fail, public repos still work.
+			try {
+				gitCredential = await resolveGitCredential(ctx, clonePlan)
+			} catch (err) {
+				gitCredential = undefined
+				console.warn(`[agent-manager] git credential resolution failed: ${err instanceof Error ? err.message : err}`)
+			}
+		} catch {
+			// Not a git repo or no origin — proceed without git details.
+			gitDetails = undefined
+			gitCredential = undefined
+		}
+
+		const remoteSession = this._prepareRemoteAdapter(record, prompt, options)
+
+		let baselineCaptureAttempted = false
+		const result = await runRemoteAgent(workspaceId, prompt, {
+			apiKey,
+			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			signal: record.abortController?.signal,
+			// PR-intent runs keep the remote session after completion — the
+			// review/steer loop attaches to it (deleted at terminal actions).
+			keepAlive: record.gitWorkflow !== undefined,
+			gitDetails,
+			gitCredential,
+			localPath: ctx.cwd,
+			workspaceName: dirName,
+			outputFile: record.outputFile,
+			tags: { [SESSION_TAG_PARENT_SESSION_ID]: ctx.sessionManager.getSessionId() },
+			...(workspaceSpec ? { spec: workspaceSpec } : {}),
+			onReady: async (acpClient, meta) => {
+				remoteSession.bindClient(acpClient, meta)
+				// Capture the ACP session id for resume-after-restart persistence
+				// (session/load attaches by id, never by name).
+				const acpSessionId = acpClient.sessionId ?? undefined
+				if (acpSessionId) {
+					record.acpSessionId = acpSessionId
+					record.remoteSession ??= meta
+				}
+				// Baseline capture (PR-first runs): HEAD at provisioning + the
+				// user's pre-existing dirty files. The runner awaits this before
+				// prompt() so the persisted running-state entry carries it. The
+				// attempted flag guards re-runs on reattach: a FAILED first capture
+				// must degrade to the plain completion menu, not re-capture a
+				// post-commit HEAD as baseSha (silently poisoning the diff range).
+				if (record.gitWorkflow && !record.gitWorkflow.baseSha && !baselineCaptureAttempted) {
+					baselineCaptureAttempted = true
+					// Bounded per ssh round trip (two commands: rev-parse + status);
+					// the run otherwise looks idle for up to ~90s on a cold sandbox —
+					// name what it's doing instead of staring at "analyzing".
+					ctx.ui.notify?.(
+						"Capturing the pre-run git baseline over SSH (one-time snapshot used for the review diff)…",
+						"info",
+					)
+					// One retry for the ssh layer: the proxy enumerates the control
+					// API with its own deadline and transient stalls answer as exit
+					// status 255. Everything else fails once, honestly.
+					for (let attempt = 0; ; attempt++) {
+						try {
+							const connection = await resolveSandboxGitConnection(meta, apiKey, {
+								endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+							})
+							const baseline = await captureBaseline(connection, {
+								signal: record.abortController?.signal,
+								timeoutMs: 45_000,
+							})
+							record.gitWorkflow.baseSha = baseline.baseSha
+							record.gitWorkflow.dirtyFiles = baseline.dirtyFiles
+							break
+						} catch (err) {
+							const isSshLayer = err instanceof SandboxGitError && err.exitCode === 255
+							if (isSshLayer && attempt === 0) continue
+							// Was console.warn — invisible. This degrades the PR review at
+							// completion (no deterministic range), so tell the user now.
+							const message = `Pre-run snapshot failed: ${err instanceof Error ? err.message : err}. This is a one-time HEAD snapshot taken before the agent commits — diff review at completion will recover via merge-base instead.`
+							ctx.ui.notify?.(message, "warning")
+							console.warn(`[agent-manager] baseline capture failed: ${err instanceof Error ? err.message : err}`)
+							break
+						}
+					}
+				}
+				if (acpSessionId) {
+					options.onRemoteReady?.({ meta, acpSessionId })
+				}
+			},
+			onReconnecting: (reconnecting) => {
+				remoteSession.setReconnecting(reconnecting)
+				// Never resurrect a record the user already stopped or aborted.
+				if (isActiveStatus(record.status)) {
+					record.status = reconnecting ? "reconnecting" : "running"
+				}
+			},
+			callbacks: this._remoteCallbacks(record, remoteSession, options),
+		})
+
+		return this._remoteCompletedResult(record, remoteSession, result)
 	}
 
 	private drainQueue() {
@@ -997,6 +1132,7 @@ export class AgentManager {
 			acpSessionId: state.acpSessionId,
 			remoteOrigin: state.remoteOrigin,
 			fermentId: state.fermentId,
+			gitWorkflow: state.gitWorkflow,
 			outputFile: state.outputFile,
 			spawnCtx: ctx,
 			isBackground: true,
@@ -1017,6 +1153,8 @@ export class AgentManager {
 			remoteSession: state.remoteSession,
 			acpSessionId: state.acpSessionId,
 			outputFile: state.outputFile,
+			// A resumed PR-intent run keeps the session for the steer loop.
+			keepAlive: state.gitWorkflow !== undefined,
 			onReconnecting: (reconnecting) => {
 				// Mirror the attach state onto the record (same as the in-run
 				// reconnecting flow).

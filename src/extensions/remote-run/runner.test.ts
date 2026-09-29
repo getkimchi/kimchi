@@ -1,7 +1,7 @@
 import os from "node:os"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { isRemoteRunEnabled, runCloudAgent } from "./runner.js"
+import { continueCloudAgent, isRemoteRunEnabled, runCloudAgent } from "./runner.js"
 
 // Mock the agents module — we only care that spawnRemoteAgent is called
 // with the right args, not the real spawn machinery.
@@ -93,6 +93,62 @@ describe("isRemoteRunEnabled", () => {
 		} finally {
 			osTypeMock.mockRestore()
 		}
+	})
+})
+
+describe("continueCloudAgent", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("dispatches the steer prompt to the same session as a background continuation", async () => {
+		vi.mocked(spawnRemoteAgent).mockResolvedValue({ id: "agent-steer-1", result: "", backgrounded: true })
+		const pi = makePi()
+		const ctx = makeCtx()
+		const remoteSession = {
+			workspaceId: "ws-1",
+			sessionName: "acp-x",
+			wsUrl: "wss://worker.example.com",
+			host: "worker.example.com",
+			cwd: "/home/sandbox/acp-x",
+		}
+		const gitWorkflow = { branch: "kimchi/fix-login", baseBranch: "main", baseSha: "a".repeat(40) }
+
+		const { id } = await continueCloudAgent(pi, ctx, "Rename the button", {
+			remoteSession,
+			acpSessionId: "acp-9",
+			gitWorkflow,
+		})
+
+		const call = vi.mocked(spawnRemoteAgent).mock.calls[0] as unknown as [
+			unknown,
+			unknown,
+			string,
+			string,
+			Record<string, unknown>,
+		]
+		const [, , promptArg, descArg, optsArg] = call
+		expect(promptArg).toContain("Rename the button")
+		expect(promptArg).toContain("kimchi/fix-login")
+		expect(promptArg).toContain("Do NOT push")
+		expect(descArg).toBe("steer: kimchi/fix-login")
+		expect(optsArg).toMatchObject({
+			background: true,
+			gitWorkflow,
+			continuation: { remoteSession, acpSessionId: "acp-9" },
+		})
+		expect(id).toBe("agent-steer-1")
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("kimchi/fix-login"), "info")
+		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "cloud_agent_steered" }), {
+			triggerTurn: true,
+		})
+		// The steered run re-enters the post-completion menu on completion — the
+		// message must forbid polling (it consumes the result and kills the menu).
+		const steeredContent = (
+			(pi.sendMessage as unknown as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as { content: string }
+		).content
+		expect(steeredContent).toContain("Do NOT poll")
+		expect(steeredContent).toContain("get_subagent_result")
 	})
 })
 
@@ -210,6 +266,13 @@ describe("runCloudAgent", () => {
 		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "cloud_agent_started" }), {
 			triggerTurn: true,
 		})
+		// Regression: the started message must forbid get_subagent_result polling —
+		// a poll consumes the result and suppresses the post-completion dropdown.
+		const startedContent = (
+			(pi.sendMessage as unknown as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as { content: string }
+		).content
+		expect(startedContent).toContain("Do NOT poll")
+		expect(startedContent).toContain("get_subagent_result")
 	})
 
 	it("includes the transcript file path in the start notification when the record has an outputFile", async () => {
