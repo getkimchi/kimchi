@@ -33,8 +33,9 @@ Kimchi is licensed under the **Apache License 2.0**. By contributing, you agree 
 1. **Open an issue first.** For anything beyond a typo fix, open an issue and get maintainer acknowledgement before starting work. This avoids duplicated effort and ensures the change aligns with the project direction.
 2. **Fork and branch.** Fork the repo and create a feature branch (`feat/your-feature` or `fix/your-fix`).
 3. **Keep PRs focused.** One issue per PR. Large PRs are hard to review and slow to merge.
-4. **Pass CI.** Run `pnpm run check` and `pnpm run test` locally before opening a PR. PRs that fail CI will not be reviewed.
-5. **Fill in the PR template.** Every field in the template exists for a reason. PRs with blank or placeholder descriptions will be closed.
+4. **Check your diff before committing.** Run `git diff --check` to catch trailing whitespace and conflict markers before they land in history.
+5. **Pass CI.** Run `pnpm run check` and `pnpm run test` locally before opening a PR. PRs that fail CI will not be reviewed.
+6. **Fill in the PR template.** Every field in the template exists for a reason. PRs with blank or placeholder descriptions will be closed.
 
 ## What we will and won't accept
 
