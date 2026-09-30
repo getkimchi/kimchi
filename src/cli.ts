@@ -104,6 +104,7 @@ import { UpstreamMcpProbe } from "./extensions/mcp/probe.js"
 import { MEMORY_RESOURCE_ID } from "./extensions/memory/config.js"
 import memoryExtension from "./extensions/memory/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
+import modelListExtension from "./extensions/model-list.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
@@ -789,6 +790,7 @@ try {
 				{ id: MEMORY_RESOURCE_ID, factory: memoryExtension },
 			] satisfies ManagedExtensionFactory[]),
 			modelSwitchExtension,
+			modelListExtension,
 			modelGuardExtension,
 			orphanToolResultRepairExtension,
 			orphanToolResultSanitizerExtension,
