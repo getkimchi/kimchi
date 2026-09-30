@@ -355,10 +355,10 @@ describe("createCommandsRefresher", () => {
 
 	it("a failed broadcast reverts the palette so the next sweep retries the notification", async () => {
 		// With the reloaded palette committed before broadcast, a transient
-		// failure was never retried: every later sweep short-circuited on the
-		// now-equal palette and the client stayed out of sync. Reverting on
-		// failure makes the next sweep re-broadcast even though the skills
-		// themselves never change.
+		// failure was never retried: every later sweep exited early because
+		// the palettes were equal, and the client never received the update.
+		// Reverting on failure makes the next sweep re-broadcast even though
+		// the skills themselves never change.
 		const skills = [{ name: "deploy", description: "Ship it", filePath: "/s/deploy/SKILL.md" }]
 		const session = new BaseFakeAgentSession("acp-test-session")
 		session.resourceLoader = makeResourceLoader({ skills })

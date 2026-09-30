@@ -129,10 +129,11 @@ export function createCommandsRefresher(opts: {
 				continue
 			}
 			if (cancelled) return
-			// Record the reloaded palette unconditionally — the equality check
-			// gates only the notification. Skipping the assignment on equal
-			// palettes would drop fields outside the advertised-content
-			// comparison (e.g. filePath after a skill move or shadowing).
+			// Record the reloaded palette unconditionally; the equality check
+			// only controls whether to send the notification. Skipping the
+			// assignment on equal palettes would drop fields outside the
+			// advertised-content comparison (e.g. filePath after a skill move
+			// or shadowing).
 			const prev = record.skillCommands
 			record.skillCommands = fresh
 			if (skillCommandsEqual(prev, fresh)) continue
@@ -141,8 +142,8 @@ export function createCommandsRefresher(opts: {
 			} catch (err) {
 				// A broadcast failure reverts the palette so a later sweep
 				// retries the notification — otherwise the committed fresh
-				// palette makes every subsequent sweep short-circuit at the
-				// equality check and the client stays out of sync forever.
+				// palette makes every subsequent sweep exit early at the
+				// equality check and the notification is never retried.
 				record.skillCommands = prev
 				throw err
 			}
