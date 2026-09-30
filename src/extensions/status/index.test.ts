@@ -221,9 +221,15 @@ describe("resolveLoginMethod", () => {
 	})
 	const authPath = () => join(dir, "auth.json")
 
-	it("reports a Kimchi account when both a config key and the env key exist (account takes precedence)", () => {
+	it("reports an env override when KIMCHI_API_KEY differs from the saved config key (env takes precedence)", () => {
 		expect(
 			resolveLoginMethod({ envApiKey: "k", configApiKey: "c", apiKeySource: "environment", authPath: authPath() }),
+		).toBe("Kimchi API key (KIMCHI_API_KEY environment, overrides saved key)")
+	})
+
+	it("reports a Kimchi account when the env key matches the saved config key", () => {
+		expect(
+			resolveLoginMethod({ envApiKey: "k", configApiKey: "k", apiKeySource: "environment", authPath: authPath() }),
 		).toBe("Kimchi account")
 	})
 

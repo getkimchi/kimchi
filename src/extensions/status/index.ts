@@ -114,7 +114,11 @@ function thirdPartyProviders(authPath: string): string[] {
  * config.json, so "Kimchi account" is indistinguishable from a saved key; only
  * an env-only key is recognisably an API-key session.
  *
- * Precedence: Kimchi account (config key present) →
+ * A differing KIMCHI_API_KEY overrides the saved key for actual requests (see
+ * getApiKeyMismatchWarning in config.ts), so it is surfaced first.
+ *
+ * Precedence: env override (KIMCHI_API_KEY set and differs from saved key) →
+ * Kimchi account (config key present) →
  * Kimchi API key (KIMCHI_API_KEY environment, only when no config key) →
  * third-party provider → not logged in.
  */
@@ -124,6 +128,8 @@ export function resolveLoginMethod(deps: {
 	apiKeySource: ApiKeySource
 	authPath: string
 }): string {
+	if (deps.envApiKey && deps.configApiKey && deps.envApiKey !== deps.configApiKey)
+		return "Kimchi API key (KIMCHI_API_KEY environment, overrides saved key)"
 	if (deps.configApiKey) return "Kimchi account"
 	if (deps.apiKeySource === "environment" && deps.envApiKey) return "Kimchi API key (KIMCHI_API_KEY environment)"
 	const others = thirdPartyProviders(deps.authPath)
