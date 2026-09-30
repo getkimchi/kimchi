@@ -7,8 +7,10 @@
  * Kimchi's own extensions, or any dependency — are written straight to the
  * terminal, bypassing the diff renderer and clobbering the prompt editor
  * and surrounding UI. This module patches `console.warn` once per process
- * so that in interactive mode every warning becomes a display-only
- * `Warning:` chat line via `ctx.ui.notify` instead of terminal bytes.
+ * so that in interactive mode every warning is rerouted to the
+ * collapsed-by-default warnings-summary transcript row (see
+ * `warnings-summary.ts`) instead of terminal bytes. The summary module
+ * falls back to `ctx.ui.notify` when it is not installed.
  *
  * Behavior:
  * - Interactive (tracked context with `hasUI`): the formatted message has
@@ -16,19 +18,31 @@
  *   `showWarning` applies its own theme color — foreign escapes must not
  *   nest), then identical messages within a 10s window are deduped so
  *   repeated warnings don't stack identical chat lines. Non-duplicate
- *   messages are forwarded to `ctx.ui.notify(message, "warning")` and the
- *   original sink is left alone.
+ *   messages are forwarded to the warnings-summary store and the original
+ *   sink is left alone.
  * - Headless (no tracked context or `hasUI` false): the original sink
  *   receives the original arguments verbatim — no dedupe, no formatting,
  *   no ANSI stripping.
  *
+ * State lives on globalThis, keyed by a well-known symbol: the bundled
+ * binary duplicates this module into multiple chunks, and a module-local
+ * "already installed" guard lets every duplicate wrap the previous
+ * duplicate's patched console.warn — each layer would then route the same
+ * warn again (observed symptom: one console.warn recorded 5 times in the
+ * warnings row of the real binary while unit tests saw one).
+ *
  * TODO(upstream): remove once pi-mono exposes a logger/warn callback so
- * warnings can be forwarded without patching console.warn.
+ * warnings can be forwarded without patching console.warn. Tracked by
+ * https://github.com/earendil-works/pi/issues/10002 — "Extension console
+ * output writes over the interactive TUI" (includes a pi-mcp-adapter
+ * reproduction). Re-check on every pi dependency upgrade; when upstream
+ * intercepts or reroutes extension console output, drop this relay.
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { recordRelayedWarning } from "./warnings-summary.js"
 
-/** ANSI CSI escape sequences (e.g. `\u001b[33m` colors from `chalk`). */
+/** ANSI CSI escape sequences (e.g. `[33m` colors from `chalk`). */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ESC (0x1b) introduces the CSI sequences being stripped
 const ANSI_CSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g
 
@@ -38,54 +52,106 @@ const DEDUPE_WINDOW_MS = 10_000
 /** Upper bound on tracked messages; exceeded → the map is cleared. */
 const DEDUPE_MAP_MAX = 256
 
+/** Upper bound on pre-track queued warns; overflow drains oldest to the sink. */
+const PENDING_PRE_TRACK_MAX = 20
+
+type RelayState = {
+	installedOriginal: typeof console.warn | undefined
+	latestUiCtx: ExtensionContext | undefined
+	recentWarns: Map<string, number>
+	pendingPreTrack: unknown[][]
+	hasTrackedCtx: boolean
+}
+
+const RELAY_STATE_KEY = Symbol.for("kimchi:console-warn-relay:state")
+const relayGlobals = globalThis as Record<symbol, RelayState>
+relayGlobals[RELAY_STATE_KEY] ??= {
+	installedOriginal: undefined,
+	latestUiCtx: undefined,
+	recentWarns: new Map(),
+	pendingPreTrack: [],
+	hasTrackedCtx: false,
+}
+const state = relayGlobals[RELAY_STATE_KEY]
+
 function formatWarnArgs(args: unknown[]): string {
 	return args.map((arg) => (typeof arg === "string" ? arg : arg instanceof Error ? arg.message : String(arg))).join(" ")
 }
 
-let latestUiCtx: ExtensionContext | undefined
-let installedOriginal: typeof console.warn | undefined
-const recentWarns = new Map<string, number>()
+/** Interactive route: strip ANSI, dedupe identical messages in the window, record. */
+function routeInteractive(args: unknown[]): void {
+	const message = formatWarnArgs(args).replace(ANSI_CSI_PATTERN, "")
+	const now = Date.now()
+	const seenAt = state.recentWarns.get(message)
+	if (seenAt !== undefined && now - seenAt < DEDUPE_WINDOW_MS) return
+	if (state.recentWarns.size >= DEDUPE_MAP_MAX) state.recentWarns.clear()
+	state.recentWarns.set(message, now)
+	recordRelayedWarning(message)
+}
 
 /**
  * Update the UI context used for rerouted warnings. Call on every
  * session_start so resumed/switched sessions keep working. Each new
  * tracked context also clears the dedupe state, treating the session
  * boundary as a fresh start.
+ *
+ * Warnings that fired before the first track (e.g. from another
+ * extension's session_start handler that ran ahead of ours) are drained
+ * here: relayed into the warnings row when the session is interactive,
+ * or passed to the original sink verbatim when headless.
  */
 export function trackConsoleWarnRelayContext(ctx: ExtensionContext): void {
-	latestUiCtx = ctx
-	recentWarns.clear()
+	state.latestUiCtx = ctx
+	state.recentWarns.clear()
+	if (state.pendingPreTrack.length > 0) {
+		const queued = state.pendingPreTrack.splice(0)
+		if (ctx.hasUI) {
+			for (const args of queued) routeInteractive(args)
+		} else {
+			for (const args of queued) state.installedOriginal?.(...args)
+		}
+	}
+	state.hasTrackedCtx = true
 }
 
 /**
  * Install the relay once. Idempotent: repeat calls keep the first
- * installation's original sink so stacking wrappers is impossible.
+ * installation's original sink so stacking wrappers is impossible, even
+ * across duplicated module instances in the bundled binary.
  */
 export function installConsoleWarnRelay(): void {
-	if (installedOriginal) return
-	installedOriginal = console.warn
+	if (state.installedOriginal) return
+	state.installedOriginal = console.warn
 	console.warn = (...args: unknown[]): void => {
-		const ctx = latestUiCtx
-		if (!ctx?.hasUI) {
-			installedOriginal?.(...args)
+		const ctx = state.latestUiCtx
+		if (ctx?.hasUI) {
+			routeInteractive(args)
 			return
 		}
-		const message = formatWarnArgs(args).replace(ANSI_CSI_PATTERN, "")
-		const now = Date.now()
-		const seenAt = recentWarns.get(message)
-		if (seenAt !== undefined && now - seenAt < DEDUPE_WINDOW_MS) return
-		if (recentWarns.size >= DEDUPE_MAP_MAX) recentWarns.clear()
-		recentWarns.set(message, now)
-		ctx.ui.notify(message, "warning")
+		if (!state.hasTrackedCtx) {
+			// Pre-track: no way to know the session mode yet. Queue instead of
+			// writing raw bytes — on a TUI startup these would bypass the diff
+			// renderer before the first context is tracked. Bound the queue so a
+			// headless firehose still reaches stderr in order.
+			state.pendingPreTrack.push(args)
+			if (state.pendingPreTrack.length > PENDING_PRE_TRACK_MAX) {
+				const overflow = state.pendingPreTrack.shift()
+				if (overflow) state.installedOriginal?.(...overflow)
+			}
+			return
+		}
+		state.installedOriginal?.(...args)
 	}
 }
 
 /** Test-only reset: restores the original console.warn and clears all state. */
 export function resetConsoleWarnRelayForTests(): void {
-	if (installedOriginal) {
-		console.warn = installedOriginal
-		installedOriginal = undefined
+	if (state.installedOriginal) {
+		console.warn = state.installedOriginal
+		state.installedOriginal = undefined
 	}
-	latestUiCtx = undefined
-	recentWarns.clear()
+	state.latestUiCtx = undefined
+	state.recentWarns.clear()
+	state.pendingPreTrack.length = 0
+	state.hasTrackedCtx = false
 }

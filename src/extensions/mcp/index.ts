@@ -18,6 +18,7 @@ import {
 import { installConsoleWarnRelay, trackConsoleWarnRelayContext } from "../console-warn-relay.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { installWarningsSummary, trackWarningsSummaryContext } from "../warnings-summary.js"
 import { loadKimchiMcpConfig } from "./config.js"
 import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
 import {
@@ -29,6 +30,11 @@ import {
 import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
 import { MCP_PROJECT_TRUST_WARNING, resolveMcpProjectTrust } from "./project-trust.js"
 import { collectReadOnlyMcpWireNames } from "./read-only.js"
+import {
+	MCP_STARTUP_ISSUES_CUSTOM_TYPE,
+	type McpStartupIssuesDetails,
+	mcpStartupIssuesRenderer,
+} from "./startup-issues.js"
 
 const MCP_PROXY_TOOL = "mcp"
 const MCP_SCRIPT_TOOL = "mcpScript"
@@ -235,6 +241,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	installKeyringRequireBridge()
 	installMcpOAuthCallbackBranding()
 	installConsoleWarnRelay()
+	installWarningsSummary(pi)
+	pi.registerMessageRenderer(MCP_STARTUP_ISSUES_CUSTOM_TYPE, mcpStartupIssuesRenderer)
 	pi.registerFlag("mcp-config", { description: "Path to MCP config file", type: "string" })
 	let policy: McpToolSurfacePolicy | undefined
 	const upstreamHandlers: Record<CapturedUpstreamEvent, UpstreamLifecycleHandler[]> = {
@@ -252,6 +260,9 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	})
 
 	pi.on("session_start", async (event, ctx) => {
+		// Summary context first: tracking the relay drains pre-track queued
+		// warns into recordRelayedWarning, which needs the summary's ctx.
+		trackWarningsSummaryContext(ctx)
 		trackConsoleWarnRelayContext(ctx)
 		if (!policy) {
 			const cliOptions = getParsedCliArgs().options
@@ -305,9 +316,25 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			)
 		}
 
-		for (const warning of warnings) {
-			if (ctx.hasUI) ctx.ui.notify(warning, "warning")
-			else console.warn(warning)
+		if (ctx.hasUI) {
+			// One collapsed-by-default transcript line instead of a warning
+			// notification per issue (mirrors the skill-conflicts startup
+			// summary; ctrl+o or a click expands the full list). Sent only for
+			// fresh sessions: resume, fork, and reload replay the persisted
+			// entry from history rather than stacking duplicate lines.
+			if (warnings.length > 0 && (event.reason === "startup" || event.reason === "new")) {
+				pi.sendMessage<McpStartupIssuesDetails>(
+					{
+						customType: MCP_STARTUP_ISSUES_CUSTOM_TYPE,
+						content: "",
+						display: true,
+						details: { warnings },
+					},
+					{ triggerTurn: false },
+				)
+			}
+		} else {
+			for (const warning of warnings) console.warn(warning)
 		}
 		for (const handler of upstreamHandlers.session_start) await handler(event, ctx)
 	})
