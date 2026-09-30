@@ -51,13 +51,13 @@ flowchart LR
 For a user message naming a saved plan, CLI and Studio follow this check:
 
 ```mermaid
-flowchart TD
-    P["Message names a saved plan path"] --> I{"Do the marked plans name<br/>one workId?"}
-    I -->|No: zero or conflicting IDs| K["Keep current workId"]
-    I -->|Yes| E{"Has this session saved a plan<br/>or commit for its current work?"}
+flowchart LR
+    P["Name a saved plan"] --> I{"One work ID?"}
+    I -->|None or conflicting| K["Keep current ID"]
+    I -->|Yes| E{"Current work has<br/>a plan or commit?"}
     E -->|Yes| K
-    E -->|No| A["Use the plan's workId"]
-    K --> R["Record the next request<br/>with this workId"]
+    E -->|No| A["Use plan's ID"]
+    K --> R["Record next request"]
     A --> R
 ```
 
@@ -79,19 +79,24 @@ Kimchi does not infer task changes or search other worktrees by filename. One wo
 
 There are two routes. A commit made through Bash is linked when the command finishes. A commit made after closing Kimchi can be linked on the next launch in that worktree.
 
+**During a Bash call**
+
 ```mermaid
-flowchart TD
-    subgraph BASH["Commit seen through Kimchi Bash"]
-        B["New commit, revert<br/>or non-fast-forward merge"] --> C["Save commit under the<br/>Bash call's workId"]
-        R["Rebase or cherry-pick copy"] --> O{"Is the original commit<br/>already linked to this work?"}
-        O -->|Yes| W["Save new hash and<br/>rewrittenFrom"]
-        O -->|No| X["No link from this route"]
-    end
-    subgraph LATER["Commit found on the next launch"]
-        F["Check each file against<br/>saved native edit/write changes"] --> M{"Do the saved edits match exactly<br/>and belong to one work?"}
-        M -->|Yes| T["Save that file's contribution<br/>with paths and transitionIds"]
-        M -->|No| U["Leave that file unmatched"]
-    end
+flowchart LR
+    B["Commit created through Bash"] --> R{"Rebase or cherry-pick?"}
+    R -->|No| C["Save under Bash call's workId"]
+    R -->|Yes| O{"Original linked<br/>to this work?"}
+    O -->|Yes| W["Save new hash<br/>and rewrittenFrom"]
+    O -->|No| X["Leave copy unlinked"]
+```
+
+**On the next launch**
+
+```mermaid
+flowchart LR
+    F["Check each file's saved edits"] --> M{"Exact edit chain<br/>from one work?"}
+    M -->|Yes| T["Save paths<br/>and transitionIds"]
+    M -->|No| U["Leave file unmatched"]
 ```
 
 - **Bash route:** covers new commits, reverts and non-fast-forward merges. Rebase and cherry-pick copies keep the original hash in `rewrittenFrom`.
