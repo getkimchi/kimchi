@@ -6,9 +6,10 @@ import {
 	type BashOperations,
 	createBashToolDefinition,
 	createLocalBashOperations,
+	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
 
-import { appendWorkRecord, getWorkId, type WorkContext } from "../work-attribution.js"
+import { appendWorkRecord, getWorkId, pinWorkContext, type WorkContext, workLedgerPath } from "../work-attribution.js"
 
 const MAX_TRACE_BYTES = 8 * 1024 * 1024
 const GIT_LOOKUP_TIMEOUT_MS = 2000
@@ -17,9 +18,19 @@ export interface ObservedCommit {
 	sha: string
 	repository: string
 	worktree: string
+	/** Original commit replayed by a rebase or cherry-pick; the copy is what gets pushed. */
+	rewrittenFrom?: string
 }
+const HEAD_UPDATE = /\b\d+: HEAD [0-9a-f]+ -> ([0-9a-f]{40}|[0-9a-f]{64}) \(/
+// Sequencer state names the commit being replayed just before HEAD moves to its copy.
+const REPLAYED = /\b\d+: (?:CHERRY_PICK_HEAD|REBASE_HEAD) [0-9a-f]+ -> ([0-9a-f]{40}|[0-9a-f]{64}) \(/
+const REWRITE_MESSAGE = /^(?:rebase(?: -i)? \((?:pick|reword|edit|squash|fixup|continue)\)|cherry-pick):/
+/** A rebase stopped on a conflict continues in a later Bash call; remember what it was replaying. */
+const stoppedReplays = new Map<string, string>()
 
 interface GitProcess {
+	/** trace2 session ID; a child Git process's ID is prefixed by its parent's. */
+	sid: string
 	start: number
 	end?: number
 	command?: string
@@ -37,7 +48,7 @@ function processes(trace: string): GitProcess[] {
 		if (!line) continue
 		const event = JSON.parse(line)
 		if (typeof event.sid !== "string" || typeof event.time !== "string") continue
-		if (event.event === "start") byId.set(event.sid, { start: instant(event.time) })
+		if (event.event === "start") byId.set(event.sid, { sid: event.sid, start: instant(event.time) })
 		const process = byId.get(event.sid)
 		if (!process) continue
 		if (event.event === "cmd_name") process.command = event.name
@@ -60,9 +71,28 @@ function localTimeInProcess(time: string, process: GitProcess): number | undefin
 	return process.end !== undefined && timestamp >= process.start && timestamp <= process.end ? timestamp : undefined
 }
 
+function within(process: GitProcess, ancestor: GitProcess): boolean {
+	return process === ancestor || process.sid.startsWith(`${ancestor.sid}/`)
+}
+
+/** Nested Git processes (hooks, sequencer commits) own the moment; unrelated concurrent ones make it ambiguous. */
 function ownerAt(time: string, running: GitProcess[]): GitProcess | undefined {
 	const candidates = running.filter((process) => localTimeInProcess(time, process) !== undefined)
-	return candidates.length === 1 ? candidates[0] : undefined
+	return candidates.find((process) => candidates.every((other) => within(process, other)))
+}
+
+/** HEAD moves made by a traced command that create or replay a commit. */
+function headCommit(line: string, owner: GitProcess | undefined, replayed: string | undefined) {
+	const sha = HEAD_UPDATE.exec(line)?.[1]
+	if (!sha || !owner?.worktree) return
+	const message = /\) "(.*)"$/.exec(line)?.[1] ?? ""
+	// Checked first: the sequencer may hand a replayed pick to a nested `git commit`.
+	if (REWRITE_MESSAGE.test(message)) {
+		if (!["rebase", "cherry-pick", "commit"].includes(owner.command ?? "")) return
+		const rewrittenFrom = replayed ?? stoppedReplays.get(owner.worktree)
+		return rewrittenFrom ? { sha, rewrittenFrom } : undefined
+	}
+	if (owner.command === "commit" || (owner.command === "revert" && message.startsWith("revert:"))) return { sha }
 }
 
 /** Ref transactions are attributable only when exactly one traced Git process owns their interval. */
@@ -70,15 +100,29 @@ function collectCommits(trace: string, refs: string): ObservedCommit[] {
 	const running = processes(trace)
 	const commits: ObservedCommit[] = []
 	const repositories = new Map<string, string>()
-	let pending: { sha: string; owner: GitProcess } | undefined
+	let pending: { sha: string; rewrittenFrom?: string; owner: GitProcess } | undefined
+	let replayed: { sha: string; owner: GitProcess } | undefined
 	for (const line of refs.split("\n")) {
 		const time = /^(\d{2}:\d{2}:\d{2}\.\d{6})\s/.exec(line)?.[1]
 		if (!time) continue
 		if (/\btransaction \{$/.test(line)) pending = undefined
-		const update = /\b\d+: HEAD [0-9a-f]+ -> ([0-9a-f]{40}|[0-9a-f]{64}) \(/.exec(line)
-		if (update) {
+		const replay = REPLAYED.exec(line)
+		if (replay) {
 			const owner = ownerAt(time, running)
-			pending = owner?.command === "commit" && owner.worktree ? { sha: update[1], owner } : undefined
+			replayed = owner && !/^0+$/.test(replay[1]) ? { sha: replay[1], owner } : undefined
+		}
+		if (HEAD_UPDATE.test(line)) {
+			const owner = ownerAt(time, running)
+			const commit = headCommit(
+				line,
+				owner,
+				replayed && owner && within(owner, replayed.owner) ? replayed.sha : undefined,
+			)
+			pending = commit && owner ? { ...commit, owner } : undefined
+			if (commit?.rewrittenFrom) {
+				replayed = undefined
+				if (owner?.worktree) stoppedReplays.delete(owner.worktree)
+			}
 		}
 		if (!/\bfinish: /.test(line)) continue
 		if (pending && /\bfinish: 0$/.test(line) && ownerAt(time, running) === pending.owner) {
@@ -112,11 +156,19 @@ function collectCommits(trace: string, refs: string): ObservedCommit[] {
 					}
 					repositories.set(worktree, repository)
 				}
-				commits.push({ sha: pending.sha, repository, worktree })
+				commits.push({
+					sha: pending.sha,
+					repository,
+					worktree,
+					...(pending.rewrittenFrom && { rewrittenFrom: pending.rewrittenFrom }),
+				})
 			}
 		}
 		pending = undefined
 	}
+	// A replay that never reached HEAD stopped on a conflict; `rebase --continue` finishes it.
+	if (replayed?.owner.command === "rebase" && replayed.owner.worktree)
+		stoppedReplays.set(replayed.owner.worktree, replayed.sha)
 	return commits
 }
 
@@ -172,17 +224,40 @@ export function createCommitTrackingOperations(
 	}
 }
 
+function readText(path: string): string {
+	try {
+		return readFileSync(path, "utf8")
+	} catch {
+		return ""
+	}
+}
+/** Commits already attributed to this work, from this session's ledger and every session's summary. */
+function recordedCommits(ctx: WorkContext, workId: string): Set<string> {
+	const shas = new Set<string>()
+	for (const line of readText(workLedgerPath(ctx)).split("\n")) {
+		try {
+			const row = JSON.parse(line)
+			if (row.type === "commit" && row.workId === workId) shas.add(row.sha)
+		} catch {}
+	}
+	try {
+		for (const row of JSON.parse(readText(join(getAgentDir(), "work", workId, "work.json"))).commits) shas.add(row.sha)
+	} catch {}
+	return shas
+}
+
 /** Pin attribution before execution; background processes may outlive this session or work. */
 export function createWorkCommitTrackingOperations(
 	ctx: WorkContext,
 	toolCallId: string,
 	local: BashOperations = createLocalBashOperations(),
 ): BashOperations {
-	const sessionId = ctx.sessionManager.getSessionId()
-	const pinned = { cwd: ctx.cwd, sessionManager: { getSessionId: () => sessionId } }
+	const pinned = pinWorkContext(ctx)
 	try {
 		const workId = getWorkId(pinned)
 		return createCommitTrackingOperations((commit) => {
+			// Follow only copies of this work's own commits, not unrelated commits a rebase or pick replays.
+			if (commit.rewrittenFrom && !recordedCommits(pinned, workId).has(commit.rewrittenFrom)) return
 			appendWorkRecord(pinned, { type: "commit", ...commit, toolCallId }, workId)
 		}, local)
 	} catch (error) {

@@ -272,6 +272,50 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 		}
 	})
 
+	it("follows this work's commits through rebase and conflict continue, but not unrelated picks", async () => {
+		vi.stubEnv("PI_CODING_AGENT_DIR", join(directory, "agent"))
+		const ctx = createContext({ cwd: repository, sessionManager: { getSessionId: () => "rebasing" } })
+		const tool = createCommitTrackingBashTool(ctx)
+		const bash = (command: string) => tool.execute("rebase-tool", { command }, undefined, undefined, ctx)
+		writeFileSync(join(repository, "shared.txt"), "base\n")
+		git(repository, "add", ".")
+		git(repository, "commit", "-qm", "base")
+		git(repository, "checkout", "-qb", "other")
+		writeFileSync(join(repository, "unrelated.txt"), "someone else\n")
+		git(repository, "add", ".")
+		git(repository, "commit", "-qm", "unrelated")
+		git(repository, "checkout", "-q", "main")
+		await bash(
+			"git checkout -qb feat && echo ours > ours.txt && git add ours.txt && git commit -qm ours && echo mine > shared.txt && git commit -qam conflicting",
+		)
+		const [conflicting, ours] = git(repository, "rev-list", "-2", "HEAD").split("\n")
+		const upstream = join(directory, "upstream")
+		git(repository, "worktree", "add", "-q", upstream, "main")
+		writeFileSync(join(upstream, "shared.txt"), "theirs\n")
+		git(upstream, "commit", "-qam", "upstream moved")
+		git(repository, "worktree", "remove", upstream)
+
+		// The agent sees the conflict, resolves it, and continues in a later call.
+		await bash("git rebase main || true")
+		await bash("echo resolved > shared.txt && git add shared.txt && GIT_EDITOR=true git rebase --continue")
+		const [rebasedConflicting, rebasedOurs] = git(repository, "rev-list", "-2", "HEAD").split("\n")
+		await bash("git cherry-pick other")
+
+		const recorded = fs
+			.readFileSync(join(directory, "agent", "work-attribution", "rebasing.jsonl"), "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line))
+			.filter((row) => row.type === "commit")
+			.map(({ sha, rewrittenFrom }) => ({ sha, rewrittenFrom }))
+		expect(recorded).toEqual([
+			{ sha: ours },
+			{ sha: conflicting },
+			{ sha: rebasedOurs, rewrittenFrom: ours },
+			{ sha: rebasedConflicting, rewrittenFrom: conflicting },
+		])
+	})
+
 	it("pins the session and work while the tool is running", async () => {
 		let sessionId = "original-session"
 		let workId = "original-work"
