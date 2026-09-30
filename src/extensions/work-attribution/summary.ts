@@ -22,7 +22,7 @@ interface WorkRecord extends SummaryEntry {
 	type: "work" | "request" | "plan" | "commit"
 	workId: string
 }
-interface WorkSummary {
+export interface WorkSummary {
 	version: 1
 	workId: string
 	sessions: string[]
@@ -90,6 +90,14 @@ async function readSummary(path: string, workId: string): Promise<WorkSummary | 
 	} catch (error) {
 		if (!(error instanceof SyntaxError) && (!object(error) || error.code !== "ENOENT")) throw error
 	}
+}
+/** Where a work's summary is published, following the refresh/recover path convention. */
+export function workSummaryPath(workId: string): string {
+	return join(getAgentDir(), "work", workId, "work.json")
+}
+/** The validated published summary for a work, or undefined when its file is missing or invalid. */
+export async function readWorkSummary(workId: string): Promise<WorkSummary | undefined> {
+	return readSummary(workSummaryPath(workId), workId)
 }
 function readRecords(agentDir: string, modifiedSince?: number): WorkRecord[] {
 	const directory = join(agentDir, "work-attribution")

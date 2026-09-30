@@ -26,7 +26,15 @@ import {
 	createTrackedWriteTool,
 	reconcileFileTransitions,
 } from "./work-attribution/file-transitions.js"
-import { flushWorkSummaries, markNewWork, recoverWorkSummaries, updateWorkSummary } from "./work-attribution/summary.js"
+import {
+	flushWorkSummaries,
+	markNewWork,
+	readWorkSummary,
+	recoverWorkSummaries,
+	updateWorkSummary,
+	type WorkSummary,
+	workSummaryPath,
+} from "./work-attribution/summary.js"
 
 export interface WorkContext {
 	cwd: string
@@ -172,6 +180,24 @@ export function warnWorkAttribution(ctx: Pick<ExtensionContext, "hasUI" | "ui">,
 	if (ctx.hasUI) ctx.ui.notify(message, "warning")
 	else console.error(message)
 }
+/** The read-only `/work --summary` view over the published local summary. */
+function formatWorkSummary(workId: string, summary: WorkSummary): string {
+	const models = [
+		...new Set(summary.requests.map((row) => row.model).filter((model): model is string => typeof model === "string")),
+	]
+	return [
+		`Work summary — ${workId}`,
+		`File: ${workSummaryPath(workId)}`,
+		`Sessions: ${summary.sessions.length}`,
+		`Requests: ${summary.requests.length}`,
+		`Plan versions: ${summary.plans.length}`,
+		`Commits: ${new Set(summary.commits.map((row) => row.sha)).size} unique`,
+		`Models: ${models.length ? models.join(", ") : "none"}`,
+	].join("\n")
+}
+function noWorkSummaryMessage(workId: string): string {
+	return `No work summary yet for ${workId}\nIt will appear at ${workSummaryPath(workId)} once this work records requests, plans, or commits.`
+}
 export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: ExtensionAPI) => void {
 	return (pi) => {
 		let reconciliation = new AbortController()
@@ -268,12 +294,21 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 			initialized.delete(ctx.sessionManager.getSessionId())
 		})
 		pi.registerCommand("work", {
-			description: "Show work ID, start new work (/work new), or continue a saved plan (/work <path>)",
+			description:
+				"Show work ID, start new work (/work new), continue a saved plan (/work <path>), or show the local summary (/work --summary)",
 			handler: async (args, ctx) => {
 				try {
 					await ctx.waitForIdle()
 					bind(ctx)
 					const value = args.trim()
+					if (value === "--summary") {
+						// Read-only view: resolves the current work exactly like plain /work, then reports it.
+						const workId = getWorkId(ctx)
+						await flushWorkSummaries()
+						const summary = await readWorkSummary(workId)
+						notify(ctx, summary ? formatWorkSummary(workId, summary) : noWorkSummaryMessage(workId))
+						return
+					}
 					if (value === "new") setWorkId(ctx)
 					else if (value) {
 						const workId = readPlanWorkId(readFileSync(resolve(ctx.cwd, value), "utf8"))

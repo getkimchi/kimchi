@@ -18,7 +18,7 @@ import {
 	setWorkId,
 } from "../work-attribution.js"
 
-import { flushWorkSummaries, recoverWorkSummaries } from "./summary.js"
+import { flushWorkSummaries, readWorkSummary, recoverWorkSummaries, workSummaryPath } from "./summary.js"
 
 vi.mock("proper-lockfile", async (importOriginal) => ({ ...(await importOriginal<typeof locks>()) }))
 vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
@@ -508,4 +508,22 @@ console.log("ready"); await flushWorkSummaries();`,
 			for (const { child } of children) child.kill()
 		}
 	}, 15000)
+})
+
+describe("summary reader exports", () => {
+	it("reads the published summary from the work's own path", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		recordProviderRequest(ctx, { provider: "test", id: "model-a" })
+		await flushWorkSummaries()
+		expect(workSummaryPath(workId)).toBe(path(workId))
+		expect((await readWorkSummary(workId))?.requests).toHaveLength(1)
+	})
+	it.each([undefined, "{"])("treats a missing or invalid summary file as absent (%s)", async (corrupt) => {
+		const workId = getWorkId(context())
+		await flushWorkSummaries()
+		if (corrupt === undefined) fs.rmSync(path(workId))
+		else fs.writeFileSync(path(workId), corrupt)
+		await expect(readWorkSummary(workId)).resolves.toBeUndefined()
+	})
 })
