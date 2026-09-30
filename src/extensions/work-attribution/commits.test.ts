@@ -275,6 +275,7 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 		}
 	})
 
+	// The restart case loads the harness in a fresh Node process as well as running real Git commands.
 	it.each([
 		false,
 		true,
@@ -312,7 +313,10 @@ import { flushWorkSummaries } from ${JSON.stringify(new URL("./summary.ts", impo
 const ctx = { cwd: ${JSON.stringify(repository)}, sessionManager: { getSessionId: () => "rebasing" } };
 await createWorkCommitTrackingOperations(ctx, "continued").exec(${JSON.stringify(continueCommand)}, ctx.cwd, { onData() {}, env: process.env });
 await flushWorkSummaries();`
-			execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { env: process.env })
+			execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+				env: process.env,
+				timeout: 10000,
+			})
 		} else await bash(continueCommand)
 		const [rebasedConflicting, rebasedOurs] = git(repository, "rev-list", "-2", "HEAD").split("\n")
 		await bash("git cherry-pick other")
@@ -330,7 +334,7 @@ await flushWorkSummaries();`
 			{ sha: rebasedOurs, rewrittenFrom: ours },
 			{ sha: rebasedConflicting, rewrittenFrom: conflicting },
 		])
-	})
+	}, 15000)
 
 	it("records same-work cherry-picks, reverts and new merge commits", async () => {
 		vi.stubEnv("PI_CODING_AGENT_DIR", join(directory, "agent"))
