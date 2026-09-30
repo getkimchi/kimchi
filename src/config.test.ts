@@ -20,6 +20,7 @@ import {
 	readStudioOnboardingSeenAt,
 	readTelemetryConfig,
 	readTeleportCompactHintEnabled,
+	resetInvalidLlmBaseUrlWarningForTests,
 	resolveEndpoints,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
@@ -42,6 +43,7 @@ describe("loadConfig", () => {
 		configPath = join(tempDir, "config.json")
 		vi.stubEnv("KIMCHI_API_KEY", "")
 		resetProjectScopeTrustForTests()
+		resetInvalidLlmBaseUrlWarningForTests()
 	})
 
 	afterEach(() => {
@@ -234,6 +236,79 @@ describe("loadConfig", () => {
 		const config = loadConfig({ configPath })
 		expect(config.customLlmEndpoint).toBe("https://custom.example")
 		expect(config.llmEndpoint).toBe("https://custom.example")
+	})
+
+	it("KIMCHI_BASE_URL overrides the configured llmEndpoint", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "my-key", llmEndpoint: "https://custom.example" }))
+		vi.stubEnv("KIMCHI_BASE_URL", "https://env.example")
+		const config = loadConfig({ configPath })
+		expect(config.llmEndpoint).toBe("https://env.example/openai/v1")
+		expect(config.customLlmEndpoint).toBe("https://env.example")
+	})
+
+	it("KIMCHI_BASE_URL wins over the project config tier and trims trailing slashes", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ apiKey: "key", llmEndpoint: "https://global.example.com" }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ apiKey: "key", llmEndpoint: "https://project.example.com" }))
+
+		setProjectScopeTrusted(projectDir, true)
+		vi.stubEnv("KIMCHI_BASE_URL", "https://env.example/")
+		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+		expect(config.llmEndpoint).toBe("https://env.example/openai/v1")
+		expect(config.customLlmEndpoint).toBe("https://env.example")
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("treats a blank KIMCHI_BASE_URL as unset", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "my-key", llmEndpoint: "https://custom.example" }))
+		vi.stubEnv("KIMCHI_BASE_URL", "   ")
+		const config = loadConfig({ configPath })
+		expect(config.llmEndpoint).toBe("https://custom.example")
+		expect(config.customLlmEndpoint).toBe("https://custom.example")
+	})
+
+	it("warns once and ignores a malformed KIMCHI_BASE_URL", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "my-key", llmEndpoint: "https://custom.example" }))
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		vi.stubEnv("KIMCHI_BASE_URL", "https://")
+
+		const first = loadConfig({ configPath })
+		expect(first.llmEndpoint).toBe("https://custom.example")
+		expect(first.customLlmEndpoint).toBe("https://custom.example")
+
+		// Repeated resolution must not re-warn. (Other console.warn calls — e.g.
+		// the group/world-readable config warning — are unrelated and filtered out.)
+		const second = loadConfig({ configPath })
+		expect(second.llmEndpoint).toBe("https://custom.example")
+		const endpointWarns = warn.mock.calls
+			.map((args) => String(args[0]))
+			.filter((msg) => msg.includes("KIMCHI_BASE_URL"))
+		expect(endpointWarns).toHaveLength(1)
+		expect(endpointWarns[0]).toContain('"https://"')
+
+		warn.mockRestore()
+	})
+
+	it("rejects a non-http KIMCHI_BASE_URL scheme", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "my-key" }))
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		vi.stubEnv("KIMCHI_BASE_URL", "ftp://env.example")
+		const config = loadConfig({ configPath })
+		expect(config.llmEndpoint).toBe("https://llm.kimchi.dev/openai/v1")
+		expect(config.customLlmEndpoint).toBeUndefined()
+		const endpointWarns = warn.mock.calls
+			.map((args) => String(args[0]))
+			.filter((msg) => msg.includes("KIMCHI_BASE_URL"))
+		expect(endpointWarns).toHaveLength(1)
+		expect(endpointWarns[0]).toContain("ftp://env.example")
+		warn.mockRestore()
 	})
 
 	it("project llmEndpoint overrides global", () => {
