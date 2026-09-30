@@ -39,6 +39,7 @@ import "./fullscreen-adapter.js"
 import {
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
+	ensureFullscreenCopyOnSelectDefault,
 	ensureFullscreenDefault,
 	ensureFullscreenExitOutputDefault,
 	ensureHideThinkingBlockDefault,
@@ -544,6 +545,7 @@ try {
 			let changed = ensureHideThinkingBlockDefault(existing)
 			if (ensureQuietStartupDefault(existing)) changed = true
 			if (ensureFullscreenDefault(existing)) changed = true
+			if (ensureFullscreenCopyOnSelectDefault(existing)) changed = true
 			if (ensureFullscreenExitOutputDefault(existing)) changed = true
 			const upgraded = upgradeLegacyRetrySettings(existing.retry)
 			if (upgraded) {

@@ -183,6 +183,13 @@ export function ensureFullscreenDefault(settings: Record<string, unknown>): bool
 	return true
 }
 
+/** Keep selection separate from copying unless the user explicitly enabled automatic copying. */
+export function ensureFullscreenCopyOnSelectDefault(settings: Record<string, unknown>): boolean {
+	if ("fullscreenCopyOnSelect" in settings) return false
+	settings.fullscreenCopyOnSelect = false
+	return true
+}
+
 /** Restore the shell on exit unless the user explicitly wants the transcript printed. */
 export function ensureFullscreenExitOutputDefault(settings: Record<string, unknown>): boolean {
 	if ("fullscreenExitOutput" in settings) return false

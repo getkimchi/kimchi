@@ -6,6 +6,7 @@ import {
 	buildSkillPathOptions,
 	checkConfigFilePermissions,
 	clearApiKey,
+	ensureFullscreenCopyOnSelectDefault,
 	ensureFullscreenDefault,
 	ensureFullscreenExitOutputDefault,
 	ensureHideThinkingBlockDefault,
@@ -1306,6 +1307,21 @@ describe("ensureFullscreenDefault", () => {
 		const settings = { tuiMode }
 		expect(ensureFullscreenDefault(settings)).toBe(false)
 		expect(settings.tuiMode).toBe(tuiMode)
+	})
+})
+
+describe("ensureFullscreenCopyOnSelectDefault", () => {
+	it("disables automatic copying only when the setting is missing", () => {
+		const settings: Record<string, unknown> = { tuiMode: "fullscreen" }
+		expect(ensureFullscreenCopyOnSelectDefault(settings)).toBe(true)
+		expect(settings).toEqual({ tuiMode: "fullscreen", fullscreenCopyOnSelect: false })
+		expect(ensureFullscreenCopyOnSelectDefault(settings)).toBe(false)
+	})
+
+	it.each([true, false])("preserves an explicit copy-on-select preference of %s", (fullscreenCopyOnSelect) => {
+		const settings = { fullscreenCopyOnSelect }
+		expect(ensureFullscreenCopyOnSelectDefault(settings)).toBe(false)
+		expect(settings.fullscreenCopyOnSelect).toBe(fullscreenCopyOnSelect)
 	})
 })
 
