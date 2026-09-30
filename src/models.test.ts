@@ -1447,10 +1447,55 @@ describe("openai Responses API routing", () => {
 		}
 	})
 
-	it("disables thinking explicitly on gated reasoning models so 'off' is not OpenAI's medium default", () => {
-		const models = openaiProviderModels([openaiModel("gpt-5.6"), openaiModel("o4-mini")])
+	it("maps thinking off per model family — 'none' only where OpenAI accepts it", () => {
+		const models = openaiProviderModels([
+			openaiModel("o1"),
+			openaiModel("o3"),
+			openaiModel("o3-2025-04-16"),
+			openaiModel("o3-mini"),
+			openaiModel("o4-mini"),
+			openaiModel("gpt-5"),
+			openaiModel("gpt-5-2025-08-07"),
+			openaiModel("gpt-5-mini"),
+			openaiModel("gpt-5-nano"),
+			openaiModel("gpt-5.1"),
+			openaiModel("gpt-5.2"),
+			openaiModel("gpt-5.4-mini"),
+			openaiModel("gpt-5.6"),
+			openaiModel("gpt-5.6-terra"),
+			openaiModel("gpt-6-astra"),
+		])
+		expect(models).toHaveLength(15)
 		for (const model of models) {
-			expect(model.thinkingLevelMap?.off).toBe("none")
+			expect(model.api).toBe("openai-responses")
+		}
+		// o-series: reasoning can be neither disabled nor minimized — map to null so
+		// pi omits the `reasoning` block instead of sending an invalid effort.
+		for (const slug of ["o1", "o3", "o3-2025-04-16", "o3-mini", "o4-mini"]) {
+			expect(models.find((m) => m.id === slug)?.thinkingLevelMap).toEqual({ off: null, minimal: null })
+		}
+		// base gpt-5 family: cannot disable reasoning — off maps to null and clamps
+		// to the lowest valid effort (minimal) when selected.
+		for (const slug of ["gpt-5", "gpt-5-2025-08-07", "gpt-5-mini", "gpt-5-nano"]) {
+			expect(models.find((m) => m.id === slug)?.thinkingLevelMap).toEqual({ off: null })
+		}
+		// gpt-5.1+ / gpt-6 accept effort "none" — a real, cheap thinking-off.
+		for (const slug of ["gpt-5.1", "gpt-5.2", "gpt-5.4-mini", "gpt-5.6", "gpt-5.6-terra", "gpt-6-astra"]) {
+			expect(models.find((m) => m.id === slug)?.thinkingLevelMap).toEqual({ off: "none" })
+		}
+	})
+
+	it("keeps gpt-4o non-chat variants (audio/realtime/transcribe/tts) off the Responses route", () => {
+		const models = openaiProviderModels([
+			openaiModel("gpt-4o-audio-preview", { reasoning: false }),
+			openaiModel("gpt-4o-mini-realtime-preview", { reasoning: false }),
+			openaiModel("gpt-4o-transcribe", { reasoning: false }),
+			openaiModel("gpt-4o-mini-tts", { reasoning: false }),
+		])
+		expect(models).toHaveLength(4)
+		for (const model of models) {
+			expect(model.api).toBeUndefined()
+			expect(model.thinkingLevelMap).toBeUndefined()
 		}
 	})
 
@@ -1478,6 +1523,20 @@ describe("openai Responses API routing", () => {
 	it("leaves per-model baseUrl unset so gated models inherit the provider's /openai/v1 base", () => {
 		const models = openaiProviderModels([openaiModel("gpt-5.6")])
 		expect(models[0]?.baseUrl).toBeUndefined()
+	})
+
+	it("warns when an OpenAI slug matches neither routing table (catalog lint)", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const models = openaiProviderModels([
+			openaiModel("o5"),
+			openaiModel("gpt-3.5-turbo", { reasoning: false }),
+			openaiModel("gpt-4o", { reasoning: false }),
+		])
+		expect(models).toHaveLength(3)
+		// Unknown slug still routes via chat completions — the lint only warns.
+		expect(models.find((m) => m.id === "o5")?.api).toBeUndefined()
+		expect(warn).toHaveBeenCalledTimes(1)
+		expect(warn.mock.calls[0]?.[0]).toContain("'o5'")
 	})
 
 	it("does not touch non-openai providers", () => {
