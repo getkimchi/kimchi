@@ -31,7 +31,6 @@ import {
 import "./bash-default-timeout.js"
 import { AGENT_CONTINUATION_TOOL_NAMES } from "./agents/index.js"
 import bashControlExtension from "./bash-background/bash-control-extension.js"
-import { BASH_CONTROL_TOOL_NAME } from "./bash-background/bash-control-tool.js"
 import { createLayer1Tools, createLayer2Tools, type DapToolDeps } from "./dap/tools.js"
 import { LSP_TOOL_NAMES } from "./lsp.js"
 
@@ -183,10 +182,6 @@ async function measureBuiltinTools(out: Map<string, ToolSurfaceEntry>): Promise<
 	bashControlExtension(bashControlApi as never)
 	await fireBashControl("session_start")
 	for (const tool of bashTools.values()) {
-		// bash_control is registered but hidden at session start until the first
-		// background bash handle exists, so it is not part of the canonical
-		// surface.
-		if (tool.name === BASH_CONTROL_TOOL_NAME) continue
 		out.set(tool.name, entry("extension:bash-control", tool))
 	}
 }
@@ -269,10 +264,10 @@ export async function measureCanonicalToolSurface(): Promise<ToolSurfaceResult> 
 	for (const tool of [...createLayer1Tools(dapDeps()), ...createLayer2Tools(dapDeps())]) {
 		tools.delete(tool.name)
 	}
-	// Agent continuation tools and web_fetch are registered but hidden at
-	// session_start (anchor deferrals — reveal on the first Agent / web_search
-	// result), so they are not part of the canonical session-start surface.
-	for (const name of [...AGENT_CONTINUATION_TOOL_NAMES, "web_fetch"]) {
+	// Agent continuation tools are registered but hidden at session_start
+	// (anchor deferral — reveal on the first Agent result), so they are not
+	// part of the canonical session-start surface.
+	for (const name of AGENT_CONTINUATION_TOOL_NAMES) {
 		tools.delete(name)
 	}
 	// The five lsp_* tools are registered but hidden at session_start when no

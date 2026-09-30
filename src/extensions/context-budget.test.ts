@@ -71,18 +71,18 @@ const BUDGET = {
 	/** Total canonical system-prompt + skills surface (~7% headroom over
 	 *  measured 1425). */
 	total: 1530,
-	/** Total canonical tool surface (16 tools after the DAP entry/session,
-	 *  bash_control, Agent-continuation and web_fetch deferrals, the Skill
-	 *  resource gate, the mcp zero-server registration gate, and the lsp
-	 *  no-server detection gate; ~5% headroom over measured 4504). Dev
+	/** Total canonical tool surface (18 tools after the DAP entry/session and
+	 *  Agent-continuation deferrals, the Skill resource gate, the mcp
+	 *  zero-server registration gate, and the lsp no-server detection gate;
+	 *  ~5% headroom over measured). Dev
 	 *  sessions in a repo WITH a detected language server will exceed this by
 	 *  the five gated lsp_* tools — that is by design, see LSP_TOOL_NAMES in
 	 *  lsp.ts. */
-	toolSurface: 4730,
-	/** Print-mode slice (14 tools — the canonical surface minus questionnaire
+	toolSurface: 5470,
+	/** Print-mode slice (16 tools — the canonical surface minus questionnaire
 	 *  and set_phase, which the registration gates drop in headless --print
-	 *  runs; ~5% headroom over measured 3761). */
-	printToolSurface: 3950,
+	 *  runs; ~5% headroom over measured). */
+	printToolSurface: 4690,
 	/** Per-tool cap: any single tool above this many est tokens must be deliberate. */
 	singleTool: 1400,
 }
@@ -251,10 +251,12 @@ describe("context budget", () => {
 				"add_todo",
 				"clear_todos",
 				"web_search",
-				// web_fetch is omitted: deferred until the first web_search result
-				// (backstop covers direct guesses).
+				"web_fetch",
 				"questionnaire",
 				"Agent",
+				// bash_control is part of the static surface: a mid-session reveal
+				// invalidates the prompt cache for everything after the tools block.
+				"bash_control",
 				// The 3 Agent continuation tools are omitted: deferred until the
 				// first Agent result.
 				"set_phase",
@@ -292,11 +294,11 @@ describe("context budget", () => {
 		const { tools } = await withPrintGate({ print: true }, () => measureCanonicalToolSurface())
 
 		const names = new Set(tools.map((tool) => tool.name))
-		// The interactive surface is the canonical 16-tool set above; in print
+		// The interactive surface is the canonical 18-tool set above; in print
 		// mode the registration gates must remove exactly these two.
 		expect(names.has("questionnaire"), "questionnaire must be gated out of --print sessions").toBe(false)
 		expect(names.has("set_phase"), "set_phase must be gated out of --print sessions").toBe(false)
-		expect(tools.length).toBe(14)
+		expect(tools.length).toBe(16)
 
 		const total = tools.reduce((sum, tool) => sum + tool.tokensEstimated, 0)
 		expect(

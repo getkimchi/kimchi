@@ -67,6 +67,26 @@ describe("hidden tool guidance", () => {
 		expect(getActiveToolNames()).toContain("web_fetch")
 	})
 
+	it("stamps the in-band addedToolNames marker when the backstop reveals a tool", async () => {
+		const { api, messageEnd } = createHarness()
+		api.registerTool({ name: "debug_launch" } as never)
+		api.setActiveTools(api.getActiveTools().filter((n) => n !== "debug_launch"))
+
+		const result = await messageEnd({ type: "message_end", message: makeToolResult("debug_launch") }, {} as never)
+		expect(result).toMatchObject({ message: { addedToolNames: ["debug_launch"] } })
+	})
+
+	it("does not stamp addedToolNames for genuinely unknown tool names", async () => {
+		const { messageEnd } = createHarness()
+		const result = (await messageEnd(
+			{ type: "message_end", message: makeToolResult("not_a_real_tool") },
+			{} as never,
+		)) as {
+			message: Record<string, unknown>
+		}
+		expect(result.message).not.toHaveProperty("addedToolNames")
+	})
+
 	it("does not reveal genuinely unknown tool names", async () => {
 		const { messageEnd, getActiveToolNames } = createHarness()
 		await messageEnd({ type: "message_end", message: makeToolResult("not_a_real_tool") }, {} as never)

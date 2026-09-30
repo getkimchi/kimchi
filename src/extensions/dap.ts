@@ -323,14 +323,24 @@ export default function (pi: ExtensionAPI) {
 	const revealEntryTools = createDeferredReveal(pi, visibility, DAP_ENTRY_TOOL_NAMES, { hideOnReset: false })
 	// Skill-load anchor: reading the dap-debugging SKILL.md is the harness's
 	// documented way into debugging, so it reveals the entry tools. Watch
-	// tool_call (pre-execution) — the path is in the call arguments.
+	// tool_call (pre-execution) — the path is in the call arguments. The read
+	// call's own result carries the in-band reveal marker (addedToolNames).
 	pi.on("tool_call", (event) => {
 		if (event.toolName !== "read") return
 		const path = event.input.path
 		// Normalize separators: Windows read calls commonly carry backslashes.
 		if (typeof path === "string" && path.replaceAll("\\", "/").includes(DAP_DEBUGGING_SKILL_PATH_MARKER)) {
-			revealEntryTools.revealOnce()
+			revealEntryTools.revealOnce(event.toolCallId)
 		}
+	})
+
+	// Launch anchor: a successful debug_launch reveals the entry AND session
+	// tools. Hook the result (not the launchSession deps wrapper) so the
+	// call's id is available — its toolResult carries the in-band marker.
+	pi.on("tool_result", (event) => {
+		if (event.isError || event.toolName !== "debug_launch") return
+		revealEntryTools.revealOnce(event.toolCallId)
+		revealSessionTools.revealOnce(event.toolCallId)
 	})
 
 	// On-demand skill injection: language skills are NOT injected until the
@@ -405,16 +415,7 @@ export default function (pi: ExtensionAPI) {
 			removeSession: (id: string) => sessionRegistry.remove(id),
 			launchSession: async (opts: LaunchSessionOptions) => launchSession(opts),
 		}
-		const interactiveDeps = {
-			...deps,
-			launchSession: async (opts: LaunchSessionOptions) => {
-				const session = await launchSession(opts)
-				revealEntryTools.revealOnce()
-				revealSessionTools.revealOnce()
-				return session
-			},
-		}
-		for (const tool of createLayer1Tools(interactiveDeps)) {
+		for (const tool of createLayer1Tools(deps)) {
 			pi.registerTool(tool)
 		}
 		// Register Layer 2 composed tools (debug_state_at, debug_last_error,

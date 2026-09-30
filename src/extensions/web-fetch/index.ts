@@ -9,9 +9,7 @@ import { StringEnum } from "@earendil-works/pi-ai"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Container, Spacer, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
-import { createDeferredReveal } from "../deferred-reveal.js"
 import { formatCount } from "../format.js"
-import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { clearSpinner, type SpinnerState, spinnerFrame, tickSpinner } from "../spinner.js"
 import { shutdownBrowserPool } from "./browser-pool.js"
 import { cacheClear } from "./cache.js"
@@ -33,20 +31,11 @@ function formatDuration(ms: number): string {
 }
 
 export default function webFetchExtension(pi: ExtensionAPI): void {
-	// Defer web_fetch (~600 est tokens of schema + description): it stays
-	// registered but hidden until the model actually starts researching —
-	// web_search is the always-visible anchor (its description names web_fetch
-	// for discovery). Reveal is one-way on the first web_search SUCCESS —
-	// mirrors bash_control. Agent workers keep full visibility (profile-managed).
-	const visibility = createToolVisibility(pi)
-	const reveal = createDeferredReveal(pi, visibility, ["web_fetch"], { anchorToolName: "web_search" })
-
-	pi.on("session_start", () => {
-		// Reset per session (mirrors the DAP deferral lifecycle): a reveal from a
-		// previous session in the same process must not leak forward.
-		reveal.resetForSession()
-	})
-
+	// web_fetch is part of the static session surface (registered and
+	// advertised from session start): a mid-session reveal would invalidate the
+	// prompt cache for the whole history after the tools block — worth far more
+	// than the schema tokens the deferral saved. web_search's description names
+	// web_fetch for discovery.
 	pi.registerTool({
 		name: "web_fetch",
 		label: "Web Fetch",

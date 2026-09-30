@@ -93,6 +93,8 @@ interface CapturedHandlers {
 	session_start: ((event: unknown, ctx: ExtensionContext) => Promise<void>) | null
 	session_shutdown: (() => Promise<void>) | null
 	tool_call: ((event: unknown, ctx: ExtensionContext) => void)[]
+	tool_result: ((event: unknown, ctx: ExtensionContext) => void)[]
+	message_end: ((event: unknown, ctx: ExtensionContext) => unknown)[]
 }
 
 function createMockPi(): {
@@ -102,7 +104,13 @@ function createMockPi(): {
 	setActiveToolsCalls: string[][]
 } {
 	const activeTools = new Set<string>(["bash", "read", "edit"])
-	const handlers: CapturedHandlers = { session_start: null, session_shutdown: null, tool_call: [] }
+	const handlers: CapturedHandlers = {
+		session_start: null,
+		session_shutdown: null,
+		tool_call: [],
+		tool_result: [],
+		message_end: [],
+	}
 	const setActiveToolsCalls: string[][] = []
 
 	const pi = {
@@ -110,6 +118,8 @@ function createMockPi(): {
 			if (event === "session_start") handlers.session_start = handler as never
 			if (event === "session_shutdown") handlers.session_shutdown = handler as never
 			if (event === "tool_call") handlers.tool_call.push(handler as never)
+			if (event === "tool_result") handlers.tool_result.push(handler as never)
+			if (event === "message_end") handlers.message_end.push(handler as never)
 		}),
 		registerTool: vi.fn(
 			(tool: { name: string; description?: string; execute: (...args: unknown[]) => Promise<unknown> }) => {
@@ -248,6 +258,11 @@ describe("DAP session-tool deferral", () => {
 		expect(launchTool).toBeDefined()
 		if (!launchTool) throw new Error("debug_launch not registered")
 		await launchTool.execute("call-1", { program: "app.ts" }, undefined, undefined, createCtx())
+		// The reveal anchors on the debug_launch tool_result so the call id is
+		// known — its result carries the in-band addedToolNames marker.
+		for (const h of mock.handlers.tool_result) {
+			h({ toolName: "debug_launch", toolCallId: "call-1", isError: false }, createCtx())
+		}
 
 		for (const name of DAP_SESSION_TOOL_NAMES) {
 			expect(mock.activeTools.has(name), `${name} should be visible after launch`).toBe(true)
@@ -257,6 +272,9 @@ describe("DAP session-tool deferral", () => {
 
 		// Second launch: guard prevents a second visibility transition.
 		await launchTool.execute("call-2", { program: "app.ts" }, undefined, undefined, createCtx())
+		for (const h of mock.handlers.tool_result) {
+			h({ toolName: "debug_launch", toolCallId: "call-2", isError: false }, createCtx())
+		}
 		expect(mock.setActiveToolsCalls.length).toBe(callsAfterLaunch)
 	})
 

@@ -173,6 +173,7 @@ describe("updateModelsConfig", () => {
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				provider: "ai-enabler",
 				thinkingLevelMap: { off: "none", max: "max" },
+				compat: { deferredToolsMode: "kimi" },
 			},
 		])
 	})
@@ -251,10 +252,26 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev/anthropic"].headers["X-Provider-Type"]).toBe("anthropic")
 	})
 
-	it("does not set compat for non-anthropic ai-enabler models", async () => {
+	it("sets kimi deferred-tools compat for kimi-* ai-enabler models", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		// In-band deferred tool loading: toolResults stamped with
+		// `addedToolNames` keep revealed tools out of the top-level
+		// `params.tools` array, so mid-session reveals never invalidate the
+		// prompt cache (see deferred-reveal.ts).
+		expect(config.providers["kimchi-dev"].models[0].compat).toEqual({ deferredToolsMode: "kimi" })
+	})
+
+	it("does not set compat for non-kimi non-claude ai-enabler models", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [GLM] }),
 		} as Response)
 
 		await updateModelsConfig(modelsJsonPath, "test-key")

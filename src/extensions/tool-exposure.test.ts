@@ -7,9 +7,11 @@
 // verifies WHO is advertised at session start:
 //   - the active-tool set after every extension's session_start must EXACTLY
 //     match a documented exposure spec (no tool silently missing or appearing)
-//   - deferred tools (Chunk 3: 11 session-scoped DAP tools; Chunk 4:
-//     bash_control) are still REGISTERED but hidden — availability preserved,
-//     surface reduced
+//   - deferred tools (DAP entry/session tools, Agent continuations) are still
+//     REGISTERED but hidden — availability preserved, surface reduced.
+//     bash_control and web_fetch are NOT deferred: they are part of the
+//     static session surface so the top-level tools array never changes
+//     mid-session (prompt-cache stability).
 //   - the mcp gateway is config-gated (Chunk 5): not registered at all when
 //     zero MCP servers are configured (a dedicated test asserts the on-state)
 //   - the five lsp_* tools are detection-gated (Chunk 6): registered but
@@ -20,8 +22,8 @@
 //     claude-code-skills/index.test.ts)
 //   - the visibility votes (getDisabledToolNames) equal the declared deferral
 //     spec — the drift guard: a new deferral must declare itself here
-//   - the DAP + bash_control reveal round-trips expose their tools exactly once
-//   - agent workers are carved out (full DAP + bash_control visibility)
+//   - the DAP + Agent continuation reveals expose their tools exactly once
+//   - agent workers are carved out of the tactical deferrals
 //
 // Harness: ONE capture pi shared by all extension factories (mirroring a real
 // session), with a stateful active-tool set — the real visibility layer
@@ -303,10 +305,6 @@ function sessionStartPayload(): ExtensionContext {
 
 const UPSTREAM_BUILTINS = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const
 
-/** bash_control is deferred in main sessions (Chunk 4): registered but
- *  hidden at session start, revealed on the first background bash handle. */
-const BASH_CONTROL_TOOLS = ["bash_control"] as const
-
 /** Every tool that must be advertised at session start. Kept as a literal
  *  spec — deriving it from the same factories would make this test circular.
  *  (The historical "32 tools / ~7,881 est" comment was stale; the real
@@ -319,9 +317,11 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	"mark_todo",
 	"add_todo",
 	"clear_todos",
-	// web-search / questionnaire — web_fetch is hidden until the first
-	// web_search result (anchor-deferral; backstop covers direct guesses)
+	// web-search / web-fetch / questionnaire — web_fetch is part of the
+	// static surface (cache-stable tool surface: a mid-session reveal
+	// invalidates the prompt cache for everything after the tools block).
 	"web_search",
+	"web_fetch",
 	"questionnaire",
 	// agents — `Agent` is the always-visible anchor; the three continuation
 	// tools are deferred until the first subagent exists
@@ -335,6 +335,10 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	// spec; now covered (and print-gated, separately, in Chunk C.6).
 	"set_model",
 	"submit_plan",
+	// bash-control — bash_control is static (cache-stable surface); the bash
+	// tool's gate blocks other tools while a background handle pends, it no
+	// longer hides bash_control.
+	"bash_control",
 	// dap — all 16 DAP tools are deferred (entry set reveals on the
 	// dap-debugging skill read; session set on debug_launch)
 ])
@@ -351,14 +355,11 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
  *  in the same drift-guard bucket. */
 const LSP_TOOL_NAMES = ["lsp_diagnostics", "lsp_hover", "lsp_definition", "lsp_references", "lsp_rename"] as const
 const AGENT_CONTINUATION_TOOLS = ["resume_subagent", "steer_subagent", "get_subagent_result"] as const
-const WEB_FETCH_TOOLS = ["web_fetch"] as const
 const EXPECTED_DEFERRED_BY_DESIGN = new Set<string>([
 	...DAP_ENTRY_TOOL_NAMES,
 	...DAP_SESSION_TOOL_NAMES,
-	...BASH_CONTROL_TOOLS,
 	...LSP_TOOL_NAMES,
 	...AGENT_CONTINUATION_TOOLS,
-	...WEB_FETCH_TOOLS,
 ])
 
 /** Extensions that register tools at session_start, mirroring the budget
@@ -430,13 +431,13 @@ describe("tool exposure at session start", () => {
 		workerState.isWorker = false
 	})
 
-	it("advertises exactly the documented 18-tool surface and hides the 26 deferred tools", async () => {
+	it("advertises exactly the documented 20-tool surface and hides the 24 deferred tools", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
 		const visible = new Set(harness.active)
 		expect(visible).toEqual(EXPECTED_SESSION_START_VISIBLE)
-		expect(visible.size).toBe(18)
+		expect(visible.size).toBe(20)
 
 		// Deferred tools are still REGISTERED (availability preserved)…
 		for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
@@ -467,7 +468,7 @@ describe("tool exposure at session start", () => {
 			)
 			const visible = new Set(harness.active)
 			expect(visible).toEqual(expectedVisible)
-			expect(visible.size).toBe(14)
+			expect(visible.size).toBe(16)
 			for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
 				expect(harness.registered.has(name), `${name} must stay registered in --print`).toBe(true)
 			}
@@ -533,7 +534,7 @@ describe("tool exposure at session start", () => {
 
 		const votes = new Set(getDisabledToolNames(harness.pi))
 		expect(votes).toEqual(EXPECTED_DEFERRED_BY_DESIGN)
-		expect(votes.size).toBe(26)
+		expect(votes.size).toBe(24)
 	})
 
 	it("lsp tools stay advertised when a language server is detected (Chunk 6 gate on)", async () => {
@@ -568,12 +569,18 @@ describe("tool exposure at session start", () => {
 			expect(harness.active.has(name), `${name} hidden before any debug session`).toBe(false)
 		}
 
-		// Execute the registered debug_launch (real tool → real launchSession
-		// in dap.ts → mocked session registry launch succeeds → reveal fires).
+		// Execute the registered debug_launch (real tool → mocked session registry
+		// launch succeeds); the reveal anchors on the tool_result so the call id
+		// is known for the in-band addedToolNames stamp.
 		const launchTool = harness.registered.get("debug_launch")
 		expect(launchTool).toBeDefined()
 		if (!launchTool) throw new Error("debug_launch not registered")
 		await launchTool.execute("call-1", { program: "app.ts" }, undefined, undefined, sessionStartPayload())
+		await harness.fireEvent("tool_result", {
+			toolName: "debug_launch",
+			toolCallId: "call-1",
+			isError: false,
+		})
 
 		for (const name of DAP_SESSION_TOOL_NAMES) {
 			expect(harness.active.has(name), `${name} visible after session start`).toBe(true)
@@ -583,17 +590,23 @@ describe("tool exposure at session start", () => {
 
 		// Second launch: guard prevents a second visibility transition.
 		await launchTool.execute("call-2", { program: "app.ts" }, undefined, undefined, sessionStartPayload())
+		await harness.fireEvent("tool_result", {
+			toolName: "debug_launch",
+			toolCallId: "call-2",
+			isError: false,
+		})
 		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
 	})
 
-	it("bash_control reveal round-trip exposes it exactly once on the first background handle", async () => {
+	it("bash_control is visible at session start and background handles never transition the tool set", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
-		expect(harness.active.has("bash_control"), "bash_control hidden before any background handle").toBe(false)
+		expect(harness.active.has("bash_control"), "bash_control visible from session start").toBe(true)
+		const transitionsAtStart = harness.activeTransitions.length
 
-		// A bash result carrying a background handle reveals bash_control
-		// (the gate handler observes the handle; reveal happens in the same seam).
+		// Background handles close the gate but must not change the advertised
+		// tool set (cache-stable surface).
 		await harness.fireEvent("tool_result", {
 			toolName: "bash",
 			toolCallId: "c1",
@@ -602,20 +615,12 @@ describe("tool exposure at session start", () => {
 			isError: false,
 			details: { handle: "h1", checkin: true, exited: false },
 		})
+		expect(harness.active.has("bash_control")).toBe(true)
+		expect(harness.activeTransitions.length).toBe(transitionsAtStart)
 
-		expect(harness.active.has("bash_control"), "bash_control visible after the first background handle").toBe(true)
-		const transitionsAfterReveal = harness.activeTransitions.length
-
-		// A second handle must not re-transition visibility (one-way reveal).
-		await harness.fireEvent("tool_result", {
-			toolName: "bash",
-			toolCallId: "c2",
-			input: { command: "another long build" },
-			content: [{ type: "text", text: "still running" }],
-			isError: false,
-			details: { handle: "h2", checkin: true, exited: false },
-		})
-		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
+		// Per-session lifecycle: a second session_start keeps it visible.
+		await harness.fire("session_start", sessionStartPayload())
+		expect(harness.active.has("bash_control"), "bash_control stays visible in the next session").toBe(true)
 	})
 
 	it("Agent reveal round-trip exposes the 3 continuation tools exactly once after the first Agent result", async () => {
@@ -672,21 +677,12 @@ describe("tool exposure at session start", () => {
 		}
 	})
 
-	it("web_fetch reveal round-trip exposes it exactly once after the first web_search result", async () => {
+	it("web_fetch is visible at session start and web_search results never transition the tool set", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
-		expect(harness.active.has("web_fetch"), "web_fetch hidden before any search").toBe(false)
-
-		// An errored web_search result must NOT reveal web_fetch.
-		await harness.fireEvent("tool_result", {
-			toolName: "web_search",
-			toolCallId: "w0",
-			input: { query: "test" },
-			content: [{ type: "text", text: "search unavailable" }],
-			isError: true,
-		})
-		expect(harness.active.has("web_fetch"), "web_fetch stays hidden after an errored web_search").toBe(false)
+		expect(harness.active.has("web_fetch"), "web_fetch visible from session start").toBe(true)
+		const transitionsAtStart = harness.activeTransitions.length
 
 		await harness.fireEvent("tool_result", {
 			toolName: "web_search",
@@ -695,40 +691,29 @@ describe("tool exposure at session start", () => {
 			content: [{ type: "text", text: "results" }],
 			isError: false,
 		})
+		expect(harness.activeTransitions.length).toBe(transitionsAtStart)
 
-		expect(harness.active.has("web_fetch"), "web_fetch visible after the first web_search result").toBe(true)
-		const transitionsAfterReveal = harness.activeTransitions.length
-
-		await harness.fireEvent("tool_result", {
-			toolName: "web_search",
-			toolCallId: "w2",
-			input: { query: "test 2" },
-			content: [{ type: "text", text: "results" }],
-			isError: false,
-		})
-		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
-
-		// Per-session lifecycle: a second session_start must re-hide web_fetch.
+		// Per-session lifecycle: a second session_start keeps it visible.
 		await harness.fire("session_start", sessionStartPayload())
-		expect(harness.active.has("web_fetch"), "web_fetch re-hidden in the next session").toBe(false)
+		expect(harness.active.has("web_fetch"), "web_fetch stays visible in the next session").toBe(true)
 	})
 
-	it("agent workers keep full DAP + bash_control + Agent-continuation visibility (carve-out)", async () => {
+	it("agent workers keep full DAP + Agent-continuation visibility (carve-out)", async () => {
 		workerState.isWorker = true
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
-		for (const name of [...DAP_ENTRY_TOOL_NAMES, ...DAP_SESSION_TOOL_NAMES, ...AGENT_CONTINUATION_TOOLS, "web_fetch"]) {
+		for (const name of [...DAP_ENTRY_TOOL_NAMES, ...DAP_SESSION_TOOL_NAMES, ...AGENT_CONTINUATION_TOOLS]) {
 			expect(harness.active.has(name), `${name} must stay visible in workers`).toBe(true)
 		}
-		// The tactical deferrals (DAP session tools + bash_control) are carved
-		// out of workers — they must not hold disable votes here. The LSP gate
-		// (Chunk 6) is environmental, not tactical: in a no-server session the
-		// lsp tools can only ever answer "No LSP server available", so the gate
-		// deliberately applies to workers too. Assert the carve-outs precisely
-		// instead of a blanket zero-vote count.
+		// The tactical deferrals (DAP entry/session tools + Agent continuations)
+		// are carved out of workers — they must not hold disable votes here. The
+		// LSP gate (Chunk 6) is environmental, not tactical: in a no-server
+		// session the lsp tools can only ever answer "No LSP server available",
+		// so the gate deliberately applies to workers too. Assert the carve-outs
+		// precisely instead of a blanket zero-vote count.
 		const disabled = getDisabledToolNames(harness.pi)
-		for (const name of [...DAP_SESSION_TOOL_NAMES, ...BASH_CONTROL_TOOLS, "web_fetch"]) {
+		for (const name of [...DAP_SESSION_TOOL_NAMES, ...AGENT_CONTINUATION_TOOLS]) {
 			expect(disabled.has(name), `${name} must not be hidden in workers`).toBe(false)
 		}
 	})

@@ -7,10 +7,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
  *    otherwise diagnoses a tool outage and retries the same call for dozens
  *    of turns).
  * 2. If the missing tool is REGISTERED — i.e. one of the visibility-deferred
- *    suites (DAP, bash_control, web_fetch, Agent continuations) — reveal it
+ *    suites (DAP entry/session tools, Agent continuations) — reveal it
  *    so the model's retry actually works. Deferred tools have visible
  *    anchors that reveal them in the normal flow, but paths like a resumed
- *    session or a web_fetch-before-web_search call can reach them first.
+ *    session can reach them first.
  *    We re-surface directly via setActiveTools: visibility votes are
  *    per-extension owned (this extension cast no vote, so visibility.enable
  *    is a no-op here). Genuinely unknown names don't match anything
@@ -31,13 +31,19 @@ export default function hiddenToolGuidanceExtension(pi: ExtensionAPI): void {
 			return
 		}
 
-		if (pi.getAllTools().some((t) => t.name === message.toolName) && !pi.getActiveTools().includes(message.toolName)) {
+		const revealed =
+			pi.getAllTools().some((t) => t.name === message.toolName) && !pi.getActiveTools().includes(message.toolName)
+		if (revealed) {
 			pi.setActiveTools([...pi.getActiveTools(), message.toolName])
 		}
 
 		return {
 			message: {
 				...message,
+				// The backstop reveal must also stamp the in-band load marker so
+				// providers with native deferred-tool loading keep the revealed
+				// tool out of the wire `tools` array (cache-stable surface).
+				...(revealed && { addedToolNames: [message.toolName] }),
 				content: [
 					{
 						...block,

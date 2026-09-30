@@ -219,11 +219,18 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// default `openai` thinkingFormat which sends `reasoning_effort`. The map
 	// disables thinking with `none` and advertises max to Pi's selector.
 	const upstream = m.provider === "anthropic" ? ANTHROPIC_MODELS_BY_ID[m.slug] : undefined
+	// Kimi-family models support upstream's in-band deferred-tool loading:
+	// toolResults stamped with `addedToolNames` (see deferred-reveal.ts) keep
+	// revealed tools out of the top-level `params.tools` array and deliver
+	// their schemas in-band after the stamped result, so a mid-session reveal
+	// never invalidates the prompt cache.
 	const compat = upstream
 		? upstream.compat
 		: m.provider !== "anthropic" && m.slug.startsWith("claude-")
 			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
-			: undefined
+			: m.slug.startsWith("kimi-")
+				? ({ deferredToolsMode: "kimi" } satisfies OpenAICompletionsCompat)
+				: undefined
 	const thinkingLevelMap = m.provider === "ai-enabler" ? { off: "none", max: "max" } : upstream?.thinkingLevelMap
 	return {
 		id: m.slug,

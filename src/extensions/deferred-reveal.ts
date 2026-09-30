@@ -15,11 +15,34 @@ import type { ToolVisibilityAPI } from "./prompt-construction/tool-visibility.js
  * - with `anchorToolName`, a `tool_result` handler reveals on the first
  *   successful (non-error) result from the anchor tool.
  * - callers with custom anchors (e.g. DAP's skill-read `tool_call`) call
- *   `revealOnce()` directly from their own handler.
+ *   `revealOnce()` directly from their own handler and pass the triggering
+ *   tool call's id so its result carries the in-band load marker.
+ *
+ * In-band reveal cache stability (`addedToolNames`):
+ *
+ * Besides enabling the tools (the top-level `params.tools` array changes —
+ * fine for providers without native deferred-tool support), every reveal
+ * stamps the triggering toolResult message with `addedToolNames`. Providers
+ * with native deferred-tool loading (upstream `deferredToolsMode === "kimi"`)
+ * use it as the load point: they keep the revealed tools OUT of the wire
+ * `tools` array and instead deliver their schemas in-band right after the
+ * stamped tool result, so the cacheable prefix never changes mid-session.
+ * Providers without native support read no such field and behave exactly as
+ * before. Stamps key on the tool call id of the call whose toolResult should
+ * carry the marker — matched at `message_end`, which fires after execution
+ * and before the next LLM request.
  */
 export interface DeferredReveal {
-	/** Reveal the tool group once; no-op after the first call or in workers. */
-	revealOnce(): void
+	/**
+	 * Reveal the tool group once; no-op after the first call or in workers.
+	 *
+	 * `stampToolCallId`: id of the tool call whose toolResult should carry the
+	 * in-band `addedToolNames` marker. Omit only when no tool result is
+	 * associated with the reveal — the group still becomes active, but the
+	 * cache-stable in-band load point is lost for providers with native
+	 * support.
+	 */
+	revealOnce(stampToolCallId?: string): void
 	/** Re-hide the group for a fresh session (call from session_start). */
 	resetForSession(): void
 }
@@ -41,24 +64,50 @@ export function createDeferredReveal(
 	opts: DeferredRevealOptions = {},
 ): DeferredReveal {
 	let revealed = isAgentWorker()
+	// toolCallId of a tool call whose toolResult must carry the in-band
+	// reveal marker → names to stamp. Consumed at message_end.
+	const pendingStamps = new Map<string, string[]>()
 
 	if (opts.anchorToolName) {
 		pi.on("tool_result", (event) => {
 			if (event.isError || event.toolName !== opts.anchorToolName || revealed) return
-			revealOnce()
+			revealOnce(event.toolCallId)
 		})
 	}
 
-	function revealOnce(): void {
+	// Stamp the triggering tool result with the in-band reveal marker
+	// (upstream `addedToolNames`; same replacement mechanism
+	// hidden-tool-guidance uses). Consumed exactly once — later toolResults
+	// with the same id (retries) carry nothing.
+	pi.on("message_end", (event) => {
+		const message = event.message
+		if (message.role !== "toolResult") return
+		const names = pendingStamps.get(message.toolCallId)
+		if (!names) return
+		pendingStamps.delete(message.toolCallId)
+		return {
+			message: {
+				...message,
+				addedToolNames: [...(message.addedToolNames ?? []), ...names],
+			},
+		}
+	})
+
+	function revealOnce(stampToolCallId?: string): void {
 		if (revealed || isAgentWorker()) return
 		revealed = true
 		visibility.enable(toolNames)
+		if (stampToolCallId !== undefined) {
+			const existing = pendingStamps.get(stampToolCallId) ?? []
+			pendingStamps.set(stampToolCallId, [...new Set([...existing, ...toolNames])])
+		}
 	}
 
 	return {
 		revealOnce,
 		resetForSession() {
 			revealed = isAgentWorker()
+			pendingStamps.clear()
 			if (!revealed && opts.hideOnReset !== false) visibility.disable(toolNames)
 		},
 	}
