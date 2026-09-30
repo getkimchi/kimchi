@@ -19,13 +19,13 @@ import { markHarnessSteer } from "../steer-marker.js"
 export const TODO_STALENESS_CUSTOM_TYPE = "todo-staleness"
 
 /** Thresholds (post-increment count of non-todo tool calls) at which a
- *  staleness steer fires. Mirrors the old per-request indicator ranges. */
-export const TODO_STALENESS_THRESHOLDS = [9, 17, 25] as const
+ *  staleness steer fires. */
+export const TODO_STALENESS_THRESHOLDS = [4, 9, 17, 25] as const
 
 /** Graduated staleness wording — the old `stalenessIndicator` text, moved out
  *  of the rendered block. */
 export function stalenessIndicator(changes: number): string | undefined {
-	if (changes <= 8) return undefined
+	if (changes < 4) return undefined
 	if (changes <= 16) return `${changes} changes since last update — refresh the list at the next natural breakpoint`
 	if (changes <= 24) return `⚠ ${changes} changes since last update — update at the next natural breakpoint`
 	return `⚠ ${changes} changes — list is significantly stale, update at the next natural breakpoint`

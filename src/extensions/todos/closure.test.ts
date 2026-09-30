@@ -62,7 +62,7 @@ async function harness() {
 describe("bounded todo cleanup", () => {
 	beforeEach(__resetTodoStore)
 
-	it("nudges below the staleness threshold after only later items were completed", async () => {
+	it("nudges at wrap-up after only later items were completed", async () => {
 		const h = await harness()
 		h.write([{ id: 1, content: "Verify inputs", status: TODO_STATUS.IN_PROGRESS }])
 		for (let i = 0; i < 5; i++) await h.work()
@@ -156,12 +156,12 @@ describe("bounded todo cleanup", () => {
 			h.sendMessage.mock.calls
 				.filter(([message]) => message.customType === TODO_STALENESS_CUSTOM_TYPE)
 				.map(([message]) => message.details)
-		expect(reminders()).toEqual([9, 17, 25].map((threshold) => ({ reason: "staleness", threshold })))
+		expect(reminders()).toEqual([4, 9, 17, 25].map((threshold) => ({ reason: "staleness", threshold })))
 		expect(h.closure()).toHaveLength(1)
 		h.write([{ content: "Long task", status: TODO_STATUS.IN_PROGRESS, note: "Progress recorded" }])
 		for (let i = 0; i < 9; i++) await h.work("read")
 		await h.end()
-		expect(reminders()).toEqual([9, 17, 25, 9].map((threshold) => ({ reason: "staleness", threshold })))
+		expect(reminders()).toEqual([4, 9, 17, 25, 4, 9].map((threshold) => ({ reason: "staleness", threshold })))
 		expect(h.closure()).toHaveLength(1)
 	})
 
