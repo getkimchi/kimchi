@@ -46,6 +46,17 @@ function summary(workId: string) {
 }
 
 describe("readable work summaries", () => {
+	it("keeps every retained version when the local plan path is reused", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		for (const snapshotPath of ["/work/plans/v1.md", "/work/plans/v2.md", "/work/plans/v2.md"])
+			appendWorkRecord(ctx, { type: "plan", path: "/project/.kimchi/plans/feature.md", snapshotPath })
+		await flushWorkSummaries()
+		expect(summary(workId).plans.map((plan: { snapshotPath: string }) => plan.snapshotPath)).toEqual([
+			"/work/plans/v1.md",
+			"/work/plans/v2.md",
+		])
+	})
 	it("finishes the turn while summary publication is pending, but drains it on shutdown", async () => {
 		const originalRename = asyncFs.rename
 		let release!: () => void
@@ -217,35 +228,18 @@ describe("readable work summaries", () => {
 		const workId = getWorkId(ctx)
 		recordProviderRequest(ctx)
 		await flushWorkSummaries()
-		const script = join(dir, "launch.mts")
-		fs.writeFileSync(
-			script,
-			`import fs from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
-const read = fs.readFileSync;
-let ledgerReads = 0;
-fs.readFileSync = (file, ...rest) => { if (String(file).endsWith(".jsonl")) ledgerReads++; return read(file, ...rest) };
-syncBuiltinESMExports();
-const { flushWorkSummaries, recoverWorkSummaries } = await import(${JSON.stringify(new URL("./summary.ts", import.meta.url).pathname)});
-recoverWorkSummaries();
-await flushWorkSummaries();
-console.log(JSON.stringify({ ledgerReads }));`,
-		)
-		const launch = () =>
-			new Promise<{ ledgerReads: number }>((resolve, reject) => {
-				const child = spawn(process.execPath, ["--import", "tsx", script], {
-					env: { ...process.env, PI_CODING_AGENT_DIR: dir },
-				})
-				let stdout = ""
-				let stderr = ""
-				child.stdout.on("data", (chunk) => {
-					stdout += chunk
-				})
-				child.stderr.on("data", (chunk) => {
-					stderr += chunk
-				})
-				child.once("exit", (code) => (code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(stderr))))
-			})
+		const launch = async () => {
+			vi.resetModules()
+			const read = vi.spyOn(fs, "readFileSync")
+			try {
+				const relaunched = await import("./summary.js")
+				relaunched.recoverWorkSummaries()
+				await relaunched.flushWorkSummaries()
+				return { ledgerReads: read.mock.calls.filter(([file]) => String(file).endsWith(".jsonl")).length }
+			} finally {
+				read.mockRestore()
+			}
+		}
 		const ledger = join(dir, "work-attribution", "parent.jsonl")
 		const past = new Date(Date.now() - 60 * 60 * 1000)
 		fs.utimesSync(path(workId), past, past)
@@ -270,7 +264,7 @@ console.log(JSON.stringify({ ledgerReads }));`,
 			await launch()
 			expect(summary(workId).requests).toHaveLength(2)
 		}
-	}, 30000)
+	})
 	it("does not checkpoint a failed ledger scan and retries it", async () => {
 		const workId = getWorkId(context())
 		recordProviderRequest(context())

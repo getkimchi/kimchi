@@ -13,7 +13,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { SessionStartEvent } from "@earendil-works/pi-coding-agent"
+import type { SessionShutdownEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -27,6 +27,13 @@ vi.mock("node:child_process", { spy: true })
 
 let root: string
 let repo: string
+const shutdowns: (() => unknown)[] = []
+async function startSession(api: ReturnType<typeof createExtensionApi>, ctx = context()) {
+	shutdowns.push(() =>
+		api.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx),
+	)
+	await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+}
 function git(...args: string[]) {
 	return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim()
 }
@@ -75,6 +82,7 @@ beforeEach(() => {
 	git("config", "user.email", "test@example.test")
 })
 afterEach(async () => {
+	for (const shutdown of shutdowns.splice(0)) await shutdown()
 	await flushWorkSummaries()
 	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
@@ -255,7 +263,7 @@ describe("manual commit reconciliation", () => {
 		if (kind === "rendered") toolRenderingExtension(api.api)
 		else {
 			createWorkAttributionExtension()(api.api)
-			await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, context())
+			await startSession(api)
 		}
 		await api
 			.getRegisteredTool("write")
@@ -272,14 +280,12 @@ describe("manual commit reconciliation", () => {
 		const sha = commit()
 		const fresh = createExtensionApi()
 		createWorkAttributionExtension()(fresh.api)
-		await fresh.getHandler<SessionStartEvent>("session_start")(
-			{ type: "session_start", reason: "startup" },
-			context("fresh"),
+		await startSession(fresh, context("fresh"))
+		await vi.waitFor(() =>
+			expect(contributions()).toEqual([
+				expect.objectContaining({ sha, paths: ["file.txt", "new.txt"], sessionId: "original" }),
+			]),
 		)
-		await flushWorkSummaries()
-		expect(contributions()).toEqual([
-			expect.objectContaining({ sha, paths: ["file.txt", "new.txt"], sessionId: "original" }),
-		])
 	})
 
 	it("records native edit evidence without blocking on synchronous Git calls", async () => {
@@ -312,21 +318,24 @@ describe("manual commit reconciliation", () => {
 			return execute(...args)
 		}) as typeof execute)
 		const syncGit = vi.spyOn(childProcess, "execFileSync")
-		const start = { type: "session_start", reason: "startup" } as const
 		const child = createExtensionApi()
 		createWorkAttributionExtension(workId)(child.api)
-		await child.getHandler<SessionStartEvent>("session_start")(start, context("child"))
-		expect(gitCalls).toEqual([])
-		expect(syncGit).not.toHaveBeenCalled()
+		try {
+			await startSession(child, context("child"))
+			expect(gitCalls).toEqual([])
+			expect(syncGit).not.toHaveBeenCalled()
 
-		const parent = createExtensionApi()
-		createWorkAttributionExtension()(parent.api)
-		await parent.getHandler<SessionStartEvent>("session_start")(start, context("fresh"))
-		expect(syncGit).not.toHaveBeenCalled()
-		expect(contributions()).toEqual([])
-		open()
-		await flushWorkSummaries()
-		expect(contributions()).toEqual([expect.objectContaining({ sha, workId, paths: ["new.txt"] })])
+			const parent = createExtensionApi()
+			createWorkAttributionExtension()(parent.api)
+			await startSession(parent, context("fresh"))
+			expect(syncGit).not.toHaveBeenCalled()
+			expect(contributions()).toEqual([])
+		} finally {
+			open()
+		}
+		await vi.waitFor(() =>
+			expect(contributions()).toEqual([expect.objectContaining({ sha, workId, paths: ["new.txt"] })]),
+		)
 	})
 
 	it("joins composed native edits after shutdown to the original work/session and deduplicates launches", async () => {

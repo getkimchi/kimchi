@@ -30,7 +30,7 @@ import {
 	handleStepAction,
 } from "./progress-overlay.js"
 import { promptEditor } from "./prompt-ui.js"
-import { resumeFerment } from "./resume.js"
+import { restoreFermentWork, resumeFerment } from "./resume.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
@@ -799,6 +799,11 @@ export class FermentCommandController {
 				ctx.ui.notify("No active ferment to resume.")
 				return { handled: true }
 			}
+			const wtCheck = checkWorktree(active)
+			if (wtCheck.severity === "block") {
+				ctx.ui.notify(wtCheck.message ?? "Cannot resume from this worktree.", "warning")
+				return { handled: true }
+			}
 			if (active.status !== "paused") {
 				const canContinue = active.status === "running" || active.status === "planned"
 				const message = canContinue
@@ -808,6 +813,7 @@ export class FermentCommandController {
 				ctx.ui.notify(message)
 				applyFermentRuntimeToolProfile(pi, runtime)
 				if (canContinue) {
+					restoreFermentWork(pi, active.id, ctx)
 					clearLifecycleGuard(active.id)
 					scheduleFermentWakeUp(pi, runtime, { fermentId: active.id, tag: "Resume wake-up" })
 				}
@@ -827,6 +833,7 @@ export class FermentCommandController {
 			const message = `Resumed "${outcome.ferment.name}". Continuation policy: ${runtime.getContinuationPolicy()}.`
 			sendBreadcrumb(pi, message, "ack")
 			ctx.ui.notify(message)
+			restoreFermentWork(pi, outcome.ferment.id, ctx)
 			if (await confirmManualPhaseBoundaryForCommand(pi, ctx, runtime, outcome.ferment)) {
 				return { handled: true }
 			}

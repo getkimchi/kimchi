@@ -9,18 +9,20 @@
  * | adhoc plan mode | plan is produced (`submit_plan` tool call) | `<slug-of-plan-title>.md` |
  * | ferment scoping | `propose_ferment_scoping` builds the plan | `ferment-<slug>-<first12(fermentId)>.md` |
  *
- * All files land under `<cwd>/.kimchi/plans/`. Saving is overwrite-in-place:
- * a reworked plan replaces the same file rather than creating a new one.
- * Filenames carry no timestamps — the slug (plus the ferment id suffix for
- * ferments) is the stable identity of the plan.
+ * Editable files live under `<cwd>/.kimchi/plans/` and are overwritten on
+ * rework. Plans with a work ID also retain each content version under the
+ * agent directory's `work/<workId>/plans/`, outside disposable worktrees.
  *
  * This module intentionally has no load/delete surface: consumers read plan
  * files directly when needed, and the harness never deletes plan files —
  * they are user artifacts.
  */
 
+import { createHash } from "node:crypto"
 import { mkdirSync, writeFileSync } from "node:fs"
-import { resolve } from "node:path"
+import { join, resolve } from "node:path"
+import { getAgentDir } from "@earendil-works/pi-coding-agent"
+import { writeFileAtomic } from "../../config/json.js"
 import { isWorkId } from "../work-id.js"
 
 /** Canonical directory (relative to the project cwd) for plan markdown files. */
@@ -124,11 +126,10 @@ export interface SavePlanMarkdownOptions {
 
 /**
  * Write (or overwrite in place) a plan markdown file under
- * `<cwd>/.kimchi/plans/<slug(name)>.md` and return the absolute path.
- * Creates the directory if needed. Filesystem errors propagate to the
- * caller — do not swallow them silently.
+ * `<cwd>/.kimchi/plans/<slug(name)>.md` and retain its version when attributed.
+ * Local save errors propagate; a failed retained copy warns without blocking review.
  */
-export function savePlanMarkdown(opts: SavePlanMarkdownOptions): string {
+export function savePlanMarkdown(opts: SavePlanMarkdownOptions): { path: string; snapshotPath?: string } {
 	const plansDir = resolve(opts.cwd, PLAN_DIR)
 	mkdirSync(plansDir, { recursive: true })
 	const filePath = resolve(plansDir, `${slugifyPlanName(opts.name)}.md`)
@@ -142,5 +143,17 @@ export function savePlanMarkdown(opts: SavePlanMarkdownOptions): string {
 			: `${header}\n${opts.planText}`
 	}
 	writeFileSync(filePath, content, "utf-8")
-	return filePath
+	if (opts.workId) {
+		try {
+			const plans = join(getAgentDir(), "work", opts.workId, "plans")
+			mkdirSync(plans, { recursive: true, mode: 0o700 })
+			const hash = createHash("sha256").update(content).digest("hex")
+			const snapshotPath = join(plans, `${slugifyPlanName(opts.name)}-${hash}.md`)
+			writeFileAtomic(snapshotPath, content)
+			return { path: filePath, snapshotPath }
+		} catch (error) {
+			console.warn("[work-attribution] Could not retain plan version:", error)
+		}
+	}
+	return { path: filePath }
 }

@@ -20,10 +20,11 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache } from "../../ferment/store.js"
-import { createContext } from "../__mocks__/context.js"
+import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { getWorkId, recordProviderRequest, setWorkId } from "../work-attribution.js"
+import { FermentCommandController } from "./commands.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import { maybeInjectScopingStopNudge, resetAllScopingStopNudgeCounts } from "./nudge.js"
 import {
@@ -578,7 +579,7 @@ describe("saved Ferment work attribution", () => {
 		}
 	})
 
-	it.each(["continue", "leave paused"])("restores saved work before %s can schedule inference", (action) => {
+	it("restores saved work before continuing can schedule inference", () => {
 		const ferment = h.eventStorage.create("Saved work")
 		const original = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "original" } })
 		const workId = getWorkId(original)
@@ -589,13 +590,64 @@ describe("saved Ferment work attribution", () => {
 		vi.mocked(h.pi.sendMessage).mockImplementation((_message, options) => {
 			if (options?.triggerTurn) expect(getWorkId(resumed)).toBe(workId)
 		})
-		if (action === "continue") resumeFerment(h.pi, ferment.id, resumed, h.runtime)
-		else loadFermentSilently(h.pi, ferment.id, resumed, h.runtime)
-		if (action === "continue") {
-			expect(vi.mocked(h.pi.sendMessage).mock.calls.some(([, options]) => options?.triggerTurn)).toBe(true)
-		}
+		resumeFerment(h.pi, ferment.id, resumed, h.runtime)
+		expect(vi.mocked(h.pi.sendMessage).mock.calls.some(([, options]) => options?.triggerTurn)).toBe(true)
 		expect(getWorkId(resumed)).toBe(workId)
 		expect(h.pi.appendEntry).toHaveBeenCalledWith("work_identity", { workId })
+	})
+
+	it("keeps unrelated requests on the current work after Leave paused until execution resumes", () => {
+		const ferment = h.eventStorage.create("Saved work")
+		const original = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "original" } })
+		const savedWork = getWorkId(original)
+		saveRuntimeState(ferment.id, { ...emptyState(), workId: savedWork }, { root: h.fermentsDir })
+		clearAllStepStarts()
+		const resumed = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "resumed" } })
+		const currentWork = setWorkId(resumed)
+
+		expect(loadFermentSilently(h.pi, ferment.id, h.runtime)?.id).toBe(ferment.id)
+		expect(recordProviderRequest(resumed).workId).toBe(currentWork)
+		expect(h.pi.appendEntry).not.toHaveBeenCalledWith("work_identity", { workId: savedWork })
+		expect(actionableHidden(h.sentMessages)).toHaveLength(0)
+
+		resumeFerment(h.pi, ferment.id, resumed, h.runtime)
+		expect(recordProviderRequest(resumed).workId).toBe(savedWork)
+	})
+	it.each([
+		"planned",
+		"paused",
+	])("adopts saved work through /ferment resume after Leave paused (%s)", async (status) => {
+		const ferment = h.eventStorage.create("Saved work")
+		const apply = createApplyAndPersist(h.runtime)
+		expect(
+			apply(ferment.id, {
+				type: "scope",
+				title: "Saved work",
+				goal: "g",
+				successCriteria: ["c"],
+				constraints: [],
+				assumptions: "",
+				phases: SAMPLE_PHASES,
+			}).ok,
+		).toBe(true)
+		if (status === "paused") expect(apply(ferment.id, { type: "pause" }).ok).toBe(true)
+		const original = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "original" } })
+		const savedWork = getWorkId(original)
+		saveRuntimeState(ferment.id, { ...emptyState(), workId: savedWork }, { root: h.fermentsDir })
+		clearAllStepStarts()
+		const ctx = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "resumed" } })
+		const currentWork = setWorkId(ctx)
+		loadFermentSilently(h.pi, ferment.id, h.runtime)
+		expect(recordProviderRequest(ctx).workId).toBe(currentWork)
+		vi.mocked(h.pi.sendMessage).mockImplementation((_message, options) => {
+			if (options?.triggerTurn) expect(getWorkId(ctx)).toBe(savedWork)
+		})
+		await new FermentCommandController().execute(
+			{ type: "resume-lifecycle" },
+			{ raw: "resume", pi: h.pi, ctx: { ...createCommandContext(), ...ctx }, runtime: h.runtime },
+		)
+		expect(recordProviderRequest(ctx).workId).toBe(savedWork)
+		expect(vi.mocked(h.pi.sendMessage).mock.calls.some(([, options]) => options?.triggerTurn)).toBe(true)
 	})
 
 	it.each([undefined, "invalid"])("keeps current identity for legacy or malformed metadata %s", (workId) => {

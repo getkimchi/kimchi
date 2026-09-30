@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { expect, Key, test } from "@microsoft/tui-test"
@@ -136,7 +136,7 @@ test("work and request IDs are durable before the first reply, and commits belon
 	}
 })
 
-test("a new session continues a saved plan's work before its first model call", async ({ terminal }) => {
+test("a new worktree continues a retained plan after its original worktree is deleted", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -160,22 +160,57 @@ test("a new session continues a saved plan's work before its first model call", 
 			],
 		},
 		async (fixture, trace) => {
+			terminal.submit("/quit")
+			await waitForText(terminal, "PLANNING_SESSION_EXITED", { full: false })
+			execFileSync(
+				"git",
+				[
+					"-c",
+					"user.name=Attribution Test",
+					"-c",
+					"user.email=attribution@example.invalid",
+					"-c",
+					"commit.gpgSign=false",
+					"commit",
+					"--allow-empty",
+					"-m",
+					"Plan test baseline",
+				],
+				{ cwd: fixture.workDir },
+			)
+			const planningTree = join(fixture.workDir, "planning")
+			const implementingTree = join(fixture.workDir, "implementing")
+			for (const [branch, path] of [
+				["planning", planningTree],
+				["implementing", implementingTree],
+			])
+				execFileSync("git", ["worktree", "add", "-b", branch, path], { cwd: fixture.workDir })
+			launchKimchi(terminal, { ...fixture, workDir: planningTree }, ["--plan=true"], fixture.seedEnv, {
+				exitMarker: "PLAN_WORKTREE_EXITED",
+			})
+			await waitForText(terminal, PROMPT_READY, { full: false })
 			terminal.submit("Plan a greeting feature.")
 			await waitForText(terminal, "Execute the plan")
-			const planPath = join(fixture.workDir, ".kimchi/plans/attribution-plan.md")
+			const planPath = join(realpathSync(planningTree), ".kimchi/plans/attribution-plan.md")
 			const plan = readFileSync(planPath, "utf8")
 			const workId = /<!-- kimchi-work-id: ([0-9a-f-]+) -->/.exec(plan)?.[1]
 			if (!workId) throw new Error("Saved plan has no work ID")
+			const planned = await waitForSummary(fixture.agentDir, workId, { plans: 1 })
+			const snapshotPath = planned.plans[0].snapshotPath
+			expect(typeof snapshotPath).toBe("string")
+			expect(readFileSync(snapshotPath, "utf8")).toBe(plan)
 			trace.step("planning produced a saved plan carrying work identity")
 			terminal.keyPress(Key.Escape)
 			await expect(
 				terminal.getByText("Plan complete. How would you like to proceed?", { full: false }),
 			).not.toBeVisible()
 			terminal.submit("/quit")
-			await waitForText(terminal, "PLANNING_SESSION_EXITED", { full: false })
-			launchKimchi(terminal, fixture, [], fixture.seedEnv)
+			await waitForText(terminal, "PLAN_WORKTREE_EXITED", { full: false })
+			execFileSync("git", ["worktree", "remove", "--force", planningTree], { cwd: fixture.workDir })
+			expect(existsSync(planPath)).toBe(false)
+			launchKimchi(terminal, { ...fixture, workDir: implementingTree }, [], fixture.seedEnv)
 			await waitForText(terminal, PROMPT_READY, { full: false })
-			terminal.submit(`Implement ${planPath}`)
+			terminal.submit(`Implement ${snapshotPath}`)
 			await waitForText(terminal, "Continuing the saved attribution plan.")
 			const ledgerDir = join(fixture.agentDir, "work-attribution")
 			const requests = readLedger(ledgerDir).filter((record) => record.type === "request")
@@ -184,9 +219,7 @@ test("a new session continues a saved plan's work before its first model call", 
 			const summary = await waitForSummary(fixture.agentDir, workId, { sessions: 2, requests: 2, plans: 1 })
 			expect(summary.workId).toBe(workId)
 			expect(new Set(summary.sessions)).toEqual(new Set(requests.map((record) => record.sessionId)))
-			expect(summary.plans.some((plan: { path: string }) => realpathSync(plan.path) === realpathSync(planPath))).toBe(
-				true,
-			)
+			expect(summary.plans).toContainEqual(expect.objectContaining({ path: planPath, snapshotPath }))
 			for (const request of requests)
 				expect(
 					summary.requests.some(
@@ -194,7 +227,7 @@ test("a new session continues a saved plan's work before its first model call", 
 							item.requestId === request.requestId && item.sessionId === request.sessionId,
 					),
 				).toBe(true)
-			trace.step("one readable work summary merges the saved plan and both sessions")
+			trace.step("the retained plan links both sessions after deleting the planning worktree")
 		},
 	)
 })

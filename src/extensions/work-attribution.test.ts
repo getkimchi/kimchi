@@ -13,6 +13,7 @@ import { readPlanWorkId, savePlanMarkdown } from "../shared/planning/plan-markdo
 import { createCommandContext, createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import requestTimingExtension from "./request-timing.js"
+import * as transitions from "./work-attribution/file-transitions.js"
 import { flushWorkSummaries } from "./work-attribution/summary.js"
 import {
 	appendWorkRecord,
@@ -29,6 +30,7 @@ beforeEach(() => {
 })
 afterEach(async () => {
 	await flushWorkSummaries()
+	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
 	rmSync(dir, { recursive: true, force: true })
 })
@@ -41,6 +43,58 @@ function records() {
 	)
 }
 describe("local work attribution", () => {
+	it("lets a child shut down while its parent still reconciles, then drains the parent's own work", async () => {
+		let release!: () => void
+		const blocked = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const reconcile = vi.spyOn(transitions, "reconcileFileTransitions").mockImplementation(() => blocked)
+		const parent = createContext({ cwd: dir })
+		const parentApi = createExtensionApi()
+		createWorkAttributionExtension()(parentApi.api)
+		await parentApi.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, parent)
+		const child = createContext({ cwd: dir, sessionManager: { getSessionId: () => "child-shutdown" } })
+		const childApi = createExtensionApi()
+		createWorkAttributionExtension(getWorkId(parent))(childApi.api)
+		await childApi.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, child)
+		let childStopped = false
+		const childShutdown = Promise.resolve(
+			childApi.getHandler<SessionShutdownEvent>("session_shutdown")(
+				{ type: "session_shutdown", reason: "quit" },
+				child,
+			),
+		).then(() => {
+			childStopped = true
+		})
+		let parentShutdown: Promise<unknown> | undefined
+		try {
+			await vi.waitFor(() => expect(childStopped).toBe(true), { timeout: 1000 })
+			expect(reconcile).toHaveBeenCalledOnce()
+			const signal = reconcile.mock.calls[0][1]
+			expect(signal?.aborted).toBe(false)
+			let parentStopped = false
+			parentShutdown = Promise.resolve(
+				parentApi.getHandler<SessionShutdownEvent>("session_shutdown")(
+					{ type: "session_shutdown", reason: "quit" },
+					parent,
+				),
+			).then(() => {
+				parentStopped = true
+			})
+			expect(signal?.aborted).toBe(true)
+			await Promise.resolve()
+			expect(parentStopped).toBe(false)
+		} finally {
+			release()
+			await childShutdown
+			await (parentShutdown ??
+				parentApi.getHandler<SessionShutdownEvent>("session_shutdown")(
+					{ type: "session_shutdown", reason: "quit" },
+					parent,
+				))
+		}
+	})
+
 	it("writes every request before returning headers, including retry attempts", async () => {
 		const mock = createExtensionApi()
 		const ctx = createContext({ cwd: dir })
@@ -174,7 +228,7 @@ describe("local work attribution", () => {
 	it("persists plan identity and explicitly continues it in another session", async () => {
 		const parent = createContext({ cwd: dir })
 		const workId = getWorkId(parent)
-		const path = savePlanMarkdown({ cwd: dir, name: "test", planText: "# Plan", workId })
+		const { path } = savePlanMarkdown({ cwd: dir, name: "test", planText: "# Plan", workId })
 		expect(readPlanWorkId(readFileSync(path, "utf8"))).toBe(workId)
 		const child = createContext({ cwd: dir, sessionManager: { getSessionId: () => "next-session" } })
 		const mock = createExtensionApi()
@@ -220,6 +274,28 @@ describe("local work attribution", () => {
 		appendWorkRecord(committed, { type: "commit", sha: "a".repeat(40), repository: "/r/.git", worktree: "/r" })
 		await input({ type: "input", text, source: "interactive" }, committed)
 		expect(getWorkId(committed)).toBe(committedWork)
+	})
+	it.each([
+		"interactive",
+		"rpc",
+	] as const)("continues a retained plan after deleting its original worktree (%s)", async (source) => {
+		const original = join(dir, "original-worktree")
+		const planner = createContext({ cwd: original, sessionManager: { getSessionId: () => "planner" } })
+		const planWork = setWorkId(planner, source === "rpc" ? getWorkId(planner).toUpperCase() : undefined)
+		const saved = savePlanMarkdown({ cwd: original, name: "feature", planText: "# Feature", workId: planWork })
+		expect(saved.snapshotPath).toEqual(expect.any(String))
+		rmSync(original, { recursive: true })
+		const cwd = join(dir, "other-worktree")
+		const ctx = createContext({ cwd, sessionManager: { getSessionId: () => "implementer" } })
+		const provisional = getWorkId(ctx)
+		// A same-named local plan belongs to different work; only the explicit retained path selects the original.
+		savePlanMarkdown({ cwd, name: "feature", planText: "# Different feature", workId: provisional })
+		const mock = createExtensionApi()
+		createWorkAttributionExtension()(mock.api)
+		await mock.getHandler<InputEvent>("input")({ type: "input", text: "Implement feature.md", source }, ctx)
+		expect(getWorkId(ctx)).toBe(provisional)
+		await mock.getHandler<InputEvent>("input")({ type: "input", text: `Implement ${saved.snapshotPath}`, source }, ctx)
+		expect(recordProviderRequest(ctx).workId).toBe(planWork)
 	})
 	it("reads only leading plan metadata and leaves example UUIDs unrelated", () => {
 		const workId = "11111111-1111-4111-8111-111111111111"

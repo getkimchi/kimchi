@@ -1174,18 +1174,21 @@ ${renderGateGuidance("scope_ferment")}`,
 			// same file. Failures are non-fatal but warned so the review flow
 			// can continue without a path.
 			let planPath: string | undefined
+			let snapshotPath: string | undefined
 			const workId = tryWorkAttribution(() => getWorkId(ctx))
 			try {
-				planPath = savePlanMarkdown({
+				const saved = savePlanMarkdown({
 					cwd: ctx.cwd,
 					name: fermentPlanFileName(ferment.name, fermentId),
 					planText: planEntry,
 					workId,
 				})
+				planPath = saved.path
+				snapshotPath = saved.snapshotPath
 				if (workId) {
 					tryWorkAttribution(() => {
 						setFermentWorkId(fermentId, workId)
-						appendWorkRecord(ctx, { type: "plan", path: planPath }, workId)
+						appendWorkRecord(ctx, { type: "plan", ...saved }, workId)
 					})
 				}
 			} catch (err) {
@@ -1193,7 +1196,9 @@ ${renderGateGuidance("scope_ferment")}`,
 				if (ctx.hasUI) ctx.ui.notify(`ferment: failed to save plan file: ${detail}`, "warning")
 				else console.error(`ferment: failed to save plan file: ${detail}`)
 			}
-			const savedPlanNote = planPath ? `\n\nPlan file: ${planPath}` : ""
+			const savedPlanNote =
+				(planPath ? `\n\nPlan file: ${planPath}` : "") +
+				(snapshotPath ? `\nContinue from another worktree using: ${snapshotPath}` : "")
 
 			const formatPlanEntry = (suffix?: string): string => (suffix ? `${planEntry}\n\n${suffix}` : planEntry)
 			const planToolOk = (message: string, options: { includePlan?: boolean; suffix?: string } = {}) =>

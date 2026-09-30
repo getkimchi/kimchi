@@ -729,15 +729,19 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// Save plan to disk
 			if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
 			let planPath: string | undefined
+			let snapshotPath: string | undefined
 			const workId = tryWorkAttribution(() => getWorkId(ctx))
 			try {
-				planPath = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText, workId })
-				if (workId) tryWorkAttribution(() => appendWorkRecord(ctx, { type: "plan", path: planPath }, workId))
+				const saved = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText, workId })
+				planPath = saved.path
+				snapshotPath = saved.snapshotPath
+				if (workId) tryWorkAttribution(() => appendWorkRecord(ctx, { type: "plan", ...saved }, workId))
 			} catch (err) {
 				const detail = err instanceof Error ? err.message : String(err)
 				if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
 				else console.error(`permissions: failed to save plan file: ${detail}`)
 			}
+			const retainedPlanNote = snapshotPath ? `\nContinue from another worktree using: ${snapshotPath}` : ""
 
 			// Agent worker: silent submit. Saves the plan and terminates the turn
 			// with no review emit — workers have no review surface, the parent
@@ -749,10 +753,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text",
-							text: planPath ? `Plan submitted and saved to ${planPath}.` : "Plan submitted.",
+							text: (planPath ? `Plan submitted and saved to ${planPath}.` : "Plan submitted.") + retainedPlanNote,
 						},
 					],
-					details: { submitted: true, source: "worker", planPath },
+					details: { submitted: true, source: "worker", planPath, snapshotPath },
 					terminate: true,
 				}
 			}
@@ -787,8 +791,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// (logging, CI reviewers, alternative UIs) can hook in without changes.
 			if (!ctx.hasUI || pi.getFlag?.("ferment-oneshot") === true) {
 				return {
-					content: [{ type: "text", text: "Plan submitted." }],
-					details: { submitted: true },
+					content: [{ type: "text", text: `Plan submitted.${retainedPlanNote}` }],
+					details: { submitted: true, planPath, snapshotPath },
 					terminate: true,
 				}
 			}
@@ -856,8 +860,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				})
 
 			return {
-				content: [{ type: "text", text: "Plan submitted for review. Waiting for user decision." }],
-				details: { submitted: true },
+				content: [{ type: "text", text: `Plan submitted for review. Waiting for user decision.${retainedPlanNote}` }],
+				details: { submitted: true, planPath, snapshotPath },
 				terminate: true,
 			}
 		},

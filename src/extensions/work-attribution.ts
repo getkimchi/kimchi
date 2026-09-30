@@ -26,13 +26,7 @@ import {
 	createTrackedWriteTool,
 	reconcileFileTransitions,
 } from "./work-attribution/file-transitions.js"
-import {
-	flushWorkSummaries,
-	markNewWork,
-	recoverWorkSummaries,
-	trackAttributionTask,
-	updateWorkSummary,
-} from "./work-attribution/summary.js"
+import { flushWorkSummaries, markNewWork, recoverWorkSummaries, updateWorkSummary } from "./work-attribution/summary.js"
 
 export interface WorkContext {
 	cwd: string
@@ -41,7 +35,7 @@ export interface WorkContext {
 const WORK_IDENTITY_ENTRY = "work_identity"
 /** A saved plan path in free text, optionally prefixed by `@` or a directory. */
 const PLAN_REFERENCE = new RegExp(
-	`(?:^|[\\s@'"\`(])((?:[^\\s'"\`()]*/)?${PLAN_DIR.replaceAll(".", "\\.")}/[^\\s'"\`()]+\\.md)`,
+	`(?:^|[\\s@'"\`(])((?:[^\\s'"\`()]*/)?(?:${PLAN_DIR.replaceAll(".", "\\.")}|work/[\\da-fA-F-]{36}/plans)/[^\\s'"\`()]+\\.md)`,
 	"g",
 )
 const identities = new Map<string, string>()
@@ -187,7 +181,6 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 			const { signal } = reconciliation
 			const context = pinWorkContext(ctx)
 			reconciled = reconciled.then(() => reconcileFileTransitions(context, signal))
-			trackAttributionTask(reconciled)
 		}
 		pi.on("session_start", (_event, ctx) => {
 			recoverWorkSummaries()
@@ -268,6 +261,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 			// Reconciliation checkpoints each commit, so the next launch resumes where this one stopped.
 			reconciliation.abort()
 			reconciliation = new AbortController()
+			await reconciled
 			await flushWorkSummaries()
 			activeRequests.delete(workLedgerPath(ctx))
 			identities.delete(workLedgerPath(ctx))

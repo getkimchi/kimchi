@@ -16,6 +16,12 @@ import { createApplyAndPersist } from "./tool-helpers.js"
 import { setActiveFermentAndApplyProfile } from "./tool-scope.js"
 import { checkWorktree } from "./worktree.js"
 
+/** Called after continuation is accepted, before any inference can be scheduled. */
+export function restoreFermentWork(pi: ExtensionAPI, fermentId: string, ctx: ExtensionContext): void {
+	const workId = getFermentWorkId(fermentId)
+	if (workId) tryWorkAttribution(() => setWorkId(ctx, workId, pi))
+}
+
 /**
  * Load a ferment as the active one without engaging the planner.
  * Used by the F27 resume banner when the user chooses "Leave paused":
@@ -25,7 +31,6 @@ import { checkWorktree } from "./worktree.js"
 export function loadFermentSilently(
 	pi: ExtensionAPI,
 	fermentId: string,
-	ctx: ExtensionContext,
 	runtime: FermentRuntime = defaultFermentRuntime,
 ): Ferment | undefined {
 	const storage = runtime.getStorage()
@@ -34,8 +39,6 @@ export function loadFermentSilently(
 		setActiveFermentAndApplyProfile(pi, runtime, undefined)
 		return undefined
 	}
-	const workId = getFermentWorkId(existing.id)
-	if (workId) tryWorkAttribution(() => setWorkId(ctx, workId, pi))
 	setActiveFermentAndApplyProfile(pi, runtime, existing)
 	appendRefEntry(pi, existing.id)
 
@@ -115,8 +118,7 @@ export function resumeFerment(
 		}
 	}
 
-	const workId = getFermentWorkId(existing.id)
-	if (workId) tryWorkAttribution(() => setWorkId(ctx, workId, pi))
+	restoreFermentWork(pi, existing.id, ctx)
 
 	if (existing.status === "draft" && ctx?.hasUI) {
 		runtime.markScopingInteractive(existing.id)

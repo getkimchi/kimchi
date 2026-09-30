@@ -124,7 +124,7 @@ function strings(...values: unknown[]): string[] {
 	]
 }
 function planKey(row: SummaryEntry): string {
-	return JSON.stringify([row.sessionId, row.path])
+	return JSON.stringify([row.sessionId, row.path, row.snapshotPath])
 }
 function commitKey(row: SummaryEntry): string {
 	return JSON.stringify([row.sessionId, row.sha, row.repository, row.worktree])
@@ -310,8 +310,8 @@ async function recover(agentDir: string): Promise<void> {
 		summaries[workId] = summaryFingerprint(join(agentDir, "work", workId, "work.json"))
 	writeFileSync(stamp, JSON.stringify({ startedAt, summaries }), { mode: 0o600 })
 }
-/** Background attribution work (recovery, reconciliation) that shutdown and tests must drain. */
-export function trackAttributionTask(task: Promise<unknown>): void {
+/** Shared summary recovery that shutdown and tests must drain. */
+function trackAttributionTask(task: Promise<unknown>): void {
 	const tracked = task.finally(() => backgroundTasks.delete(tracked))
 	backgroundTasks.add(tracked)
 }

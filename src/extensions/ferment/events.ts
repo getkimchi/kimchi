@@ -403,7 +403,7 @@ export function registerFermentEvents(
 					// User explicitly declined to resume — emit stalled telemetry.
 					pi.events.emit(FERMENT_EVENTS.STALLED, buildStalledPayload(ferment, runtime.now().getTime()))
 					deferExtensionAction(() => {
-						loadFermentSilently(pi, envId, ctx, runtime)
+						loadFermentSilently(pi, envId, runtime)
 					})
 				}
 			} else {

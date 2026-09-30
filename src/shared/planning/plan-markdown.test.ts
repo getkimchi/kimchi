@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { derivePlanTitle, fermentPlanFileName, savePlanMarkdown, slugifyPlanName } from "./plan-markdown.js"
 
 describe("slugifyPlanName", () => {
@@ -54,21 +54,60 @@ describe("savePlanMarkdown", () => {
 
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "plan-markdown-test-"))
+		vi.stubEnv("PI_CODING_AGENT_DIR", join(tmpDir, "agent"))
 	})
 
 	afterEach(() => {
+		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
 		rmSync(tmpDir, { recursive: true, force: true })
 	})
 
+	it("retains distinct plan versions after their worktree is deleted", () => {
+		const workId = "11111111-1111-4111-8111-111111111111"
+		const cwd = join(tmpDir, "worktree")
+		const options = { cwd, name: "My plan", workId }
+		const first = savePlanMarkdown({ ...options, planText: "# Plan v1\n" })
+		expect(first.snapshotPath).toEqual(expect.any(String))
+		if (!first.snapshotPath) throw new Error("Expected retained plan")
+		const original = readFileSync(first.snapshotPath, "utf8")
+		const second = savePlanMarkdown({ ...options, planText: "# Plan v2\n" })
+		expect(second.path).toBe(first.path)
+		expect(second.snapshotPath).not.toBe(first.snapshotPath)
+		expect(savePlanMarkdown({ ...options, planText: "# Plan v2\n" })).toEqual(second)
+		expect(readFileSync(second.path, "utf8")).toContain("# Plan v2")
+		rmSync(cwd, { recursive: true })
+		expect(readFileSync(first.snapshotPath, "utf8")).toBe(original)
+		expect(readdirSync(join(tmpDir, "agent", "work", workId, "plans"))).toHaveLength(2)
+	})
+
+	it("keeps the local plan usable when retaining a version fails", () => {
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		writeFileSync(join(tmpDir, "agent"), "blocked")
+		const saved = savePlanMarkdown({
+			cwd: join(tmpDir, "worktree"),
+			name: "Plan",
+			planText: "# Plan",
+			workId: "11111111-1111-4111-8111-111111111111",
+		})
+		expect(saved.snapshotPath).toBeUndefined()
+		expect(readFileSync(saved.path, "utf8")).toContain("# Plan")
+		expect(warning).toHaveBeenCalled()
+	})
+
 	it("creates .kimchi/plans and writes the file, returning the absolute path", () => {
-		const filePath = savePlanMarkdown({ cwd: tmpDir, name: "Canonical Plan Persistence", planText: "# Plan\n" })
+		const { path: filePath } = savePlanMarkdown({
+			cwd: tmpDir,
+			name: "Canonical Plan Persistence",
+			planText: "# Plan\n",
+		})
 		expect(filePath).toBe(join(tmpDir, ".kimchi", "plans", "canonical-plan-persistence.md"))
 		expect(readFileSync(filePath, "utf-8")).toBe("# Plan\n")
 	})
 
 	it("overwrites the same file on rework instead of creating a new one", () => {
-		const first = savePlanMarkdown({ cwd: tmpDir, name: "My Plan", planText: "v1\n" })
-		const second = savePlanMarkdown({ cwd: tmpDir, name: "My Plan", planText: "v2\n" })
+		const { path: first } = savePlanMarkdown({ cwd: tmpDir, name: "My Plan", planText: "v1\n" })
+		const { path: second } = savePlanMarkdown({ cwd: tmpDir, name: "My Plan", planText: "v2\n" })
 		expect(second).toBe(first)
 		const files = readdirSync(join(tmpDir, ".kimchi", "plans"))
 		expect(files).toEqual(["my-plan.md"])
@@ -88,7 +127,7 @@ describe("savePlanMarkdown", () => {
 			"",
 		].join(newline)
 		const planText = `<!-- kimchi-work-id: ${previous} -->${newline}${body}`
-		const path = savePlanMarkdown({ cwd: tmpDir, name: "Metadata", planText, workId })
+		const { path } = savePlanMarkdown({ cwd: tmpDir, name: "Metadata", planText, workId })
 		const saved = readFileSync(path, "utf8")
 		expect(saved).toBe(`<!-- kimchi-work-id: ${workId} -->${newline}${body}`)
 		savePlanMarkdown({ cwd: tmpDir, name: "Metadata", planText: saved, workId })
@@ -97,7 +136,7 @@ describe("savePlanMarkdown", () => {
 
 	it("rewrites metadata-only plans without adding a newline", () => {
 		const workId = "11111111-1111-4111-8111-111111111111"
-		const path = savePlanMarkdown({
+		const { path } = savePlanMarkdown({
 			cwd: tmpDir,
 			name: "Metadata",
 			planText: "<!-- kimchi-work-id: 22222222-2222-4222-8222-222222222222 -->",
@@ -107,7 +146,7 @@ describe("savePlanMarkdown", () => {
 	})
 
 	it("does not use timestamped filenames", () => {
-		const filePath = savePlanMarkdown({ cwd: tmpDir, name: "Timing Check", planText: "x\n" })
+		const { path: filePath } = savePlanMarkdown({ cwd: tmpDir, name: "Timing Check", planText: "x\n" })
 		expect(filePath).not.toMatch(/plan-\d+\.md$/)
 	})
 
