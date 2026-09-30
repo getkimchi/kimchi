@@ -28,25 +28,48 @@ const TOOL_KINDS: Record<string, ToolKind> = {
 	Agent: "think",
 }
 
+// Title extraction is per-tool, not arg-shape detection. The previous version
+// treated any tool with a `path`/`file_path`/`command`/`pattern` argument as if
+// that argument were the title, so non-file tools (lsp_*, debug_*, daemon, …)
+// showed a raw argument in place of the tool name. Only the tools listed here
+// get an argument-derived title; everything else falls back to the tool name.
+const TITLE_ARGS: Record<string, string[]> = {
+	bash: ["command"],
+	bash_control: ["command"],
+	read: ["file_path", "path"],
+	write: ["file_path", "path"],
+	edit: ["file_path", "path"],
+	ls: ["path"],
+	grep: ["pattern"],
+	find: ["pattern"],
+	web_fetch: ["url"],
+	web_search: ["query"],
+	memory_search: ["query"],
+	Agent: ["description"],
+}
+
+// Only these tools report their target path via ACP `locations` (clients render
+// a file chip from it). It must never leak to tools that merely have a
+// path-shaped argument.
+const LOCATION_TOOLS = new Set(["read", "write", "edit", "ls"])
+
 export function describeToolCall(
 	toolName: string,
 	args: unknown,
 ): { title: string; kind: ToolKind; locations: ToolCallLocation[] } {
 	const a = (args ?? {}) as Record<string, unknown>
-	const path = asString(a.file_path) ?? asString(a.path)
-	const command = asString(a.command)
-	const pattern = asString(a.pattern)
+	const titleArgNames = TITLE_ARGS[toolName] ?? []
+	const targeted = titleArgNames.map((key) => asString(a[key])).find((v) => v !== undefined)
 	// title carries the target/argument only; the ACP `kind` field drives the verb
-	// and icon on the client side. Bash puts its command here; file ops put the
-	// path; search ops put the pattern. Falls back to the tool name when we have
-	// no specific argument to show. Truncate every branch so a long absolute
-	// path or regex doesn't blow up client UIs (locations[].path keeps the full
-	// value for clients that want it).
-	const rawTitle = toolName === "bash" && command ? command : (path ?? pattern ?? toolName)
+	// and icon on the client side. Truncate so a long absolute path or regex
+	// doesn't blow up client UIs (locations[].path keeps the full value for
+	// clients that want it).
+	const rawTitle = targeted ?? toolName
+	const locationPath = LOCATION_TOOLS.has(toolName) ? (asString(a.file_path) ?? asString(a.path)) : undefined
 	return {
 		title: truncate(rawTitle, 80),
 		kind: TOOL_KINDS[toolName] ?? "other",
-		locations: path ? [{ path }] : [],
+		locations: locationPath ? [{ path: locationPath }] : [],
 	}
 }
 

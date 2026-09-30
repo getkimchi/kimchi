@@ -4074,6 +4074,136 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		])
 	})
 
+	// toolcall_end carries the complete arguments — the pending card's rawInput
+	// (and derived title/locations) must reach the client before approval and
+	// tool_execution_start, so e.g. an edit's path is visible while the model
+	// is done generating but the call hasn't executed yet.
+	it("emits tool_call_update with complete rawInput at toolcall_end, before tool_execution_start", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-args-1", name: "edit", arguments: {} }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 0,
+					toolCall: {
+						type: "toolCall",
+						id: "tc-args-1",
+						name: "edit",
+						arguments: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+					},
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-args-1",
+								name: "edit",
+								arguments: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-args-1",
+				toolName: "edit",
+				args: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(toolCalls).toHaveLength(1)
+		const acpId = (toolCalls[0].update as { toolCallId: string }).toolCallId
+
+		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+		expect(toolCallUpdates).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					toolCallId: acpId,
+					status: "pending",
+					title: "/tmp/demo.ts",
+					locations: [{ path: "/tmp/demo.ts" }],
+					rawInput: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+					_meta: { piToolCallId: "tc-args-1" },
+				}),
+			}),
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					toolCallId: acpId,
+					status: "in_progress",
+					_meta: { piToolCallId: "tc-args-1" },
+				}),
+			}),
+		])
+	})
+
+	// Back-compat for providers that never emit toolcall_start: toolcall_end
+	// alone must not produce a stray update for a tool the client never saw.
+	it("ignores toolcall_end for an unannounced tool call", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 0,
+					toolCall: {
+						type: "toolCall",
+						id: "tc-args-2",
+						name: "edit",
+						arguments: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+					},
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-args-2",
+								name: "edit",
+								arguments: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		expect(updates.filter((u) => u.update.sessionUpdate === "tool_call")).toHaveLength(0)
+		expect(updates.filter((u) => u.update.sessionUpdate === "tool_call_update")).toHaveLength(0)
+	})
+
 	// Back-compat: providers that don't emit toolcall_start must still get the
 	// original behavior — tool_execution_start alone emits tool_call (in_progress).
 	it("emits tool_call with status='in_progress' when tool_execution_start fires without a prior toolcall_start", async () => {
@@ -8503,7 +8633,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			result: { text: "html" },
 			expect: {
 				kind: "fetch",
-				title: "web_fetch",
+				title: "https://example.com",
 				status: "completed",
 				locations: [],
 			},
