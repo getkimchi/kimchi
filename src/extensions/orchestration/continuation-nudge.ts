@@ -88,7 +88,7 @@ const AWAITING_USER_PHRASES: RegExp[] = [
 
 /** A text-only turn that asks anything, or explicitly hands control back to
  *  the user, is waiting on the user — nudging it would inject an imperative
- *  that the model may act on instead of waiting (issue_1 entries 2028/2051).
+ *  that the model may act on instead of waiting .
  *  The suppression only ever runs on text-only turns (turns with tool calls
  *  never reach it in `evaluateTurn`), so the blast radius is exactly the
  *  stall-vs-wait ambiguity.
