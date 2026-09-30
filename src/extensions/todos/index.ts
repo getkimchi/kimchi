@@ -128,6 +128,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 		restoreTodoStoreFromSessionEntries(ctx.sessionManager)
 		resetToolCallsSinceTodoWrite(sessionId)
+		stalenessTracker.reset(sessionId)
 		syncTodoWidget(ctx)
 	}
 

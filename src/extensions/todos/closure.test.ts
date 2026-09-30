@@ -2,6 +2,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { runAsAgentWorker } from "../agent-worker-context.js"
 import { FERMENT_V2_CUSTOM_ENTRY_TYPE } from "../ferment-v2/constants.js"
 import { createFermentV2, putFermentV2Entry } from "../ferment-v2/reducer.js"
 import { FERMENT_V2_STATUS, FERMENT_V2_STATUSES } from "../ferment-v2/types.js"
@@ -9,6 +10,7 @@ import { TODO_CLOSURE_CUSTOM_TYPE, TODO_CUSTOM_ENTRY_TYPE } from "./constants.js
 import todosExtension from "./index.js"
 import { TODO_STALENESS_CUSTOM_TYPE } from "./staleness-steers.js"
 import { __resetTodoStore, applyWriteTodos, registerActiveTodoScopeProvider } from "./store.js"
+import { TODO_TOOL_NAMES } from "./tool.js"
 import { TODO_STATUS, type TodoDraft } from "./types.js"
 
 async function harness() {
@@ -86,6 +88,9 @@ describe("bounded todo cleanup", () => {
 		await h.end()
 		await h.fire("session_tree")
 		await h.end()
+		await h.fire("session_shutdown")
+		await h.fire("session_start", { reason: "resume" })
+		await h.end()
 		expect(h.closure()).toHaveLength(1)
 		h.request()
 		await h.work()
@@ -102,12 +107,78 @@ describe("bounded todo cleanup", () => {
 		expect(h.closure()).toHaveLength(0)
 	})
 
-	it("does not treat todo bookkeeping as task work", async () => {
+	it.each([...TODO_TOOL_NAMES, "write_todos"])("ignores %s when deciding whether task work happened", async (name) => {
 		const h = await harness()
 		h.write([{ content: "Future task", status: TODO_STATUS.PENDING }])
-		await h.work("create_todos")
+		await h.work(name)
 		await h.end()
 		expect(h.closure()).toHaveLength(0)
+	})
+
+	it("requires a user request in the active branch", async () => {
+		const h = await harness()
+		h.manager.resetLeaf()
+		h.write([{ content: "Work", status: TODO_STATUS.IN_PROGRESS }])
+		await h.work()
+		await h.end()
+		expect(h.closure()).toHaveLength(0)
+	})
+
+	it("does not register parent reminders in agent workers", async () => {
+		await runAsAgentWorker(async () => {
+			const h = await harness()
+			h.write([{ content: "Worker task", status: TODO_STATUS.IN_PROGRESS }])
+			for (let i = 0; i < 30; i++) await h.work()
+			await h.end()
+			expect(h.closure()).toHaveLength(0)
+			expect(h.sendMessage.mock.calls.filter(([m]) => m.customType === TODO_STALENESS_CUSTOM_TYPE)).toHaveLength(0)
+		})
+	})
+
+	it("does not consume cleanup eligibility while tool results or user input are pending", async () => {
+		const h = await harness()
+		h.write([{ content: "Work", status: TODO_STATUS.IN_PROGRESS }])
+		await h.work()
+		await h.fire("turn_end", {
+			message: { role: "assistant", content: [{ type: "text", text: "Done" }], stopReason: "stop" },
+			toolResults: [{}],
+		})
+		h.ctx.hasPendingMessages = () => true
+		await h.end()
+		expect(h.closure()).toHaveLength(0)
+		h.ctx.hasPendingMessages = () => false
+		await h.end()
+		expect(h.closure()).toHaveLength(1)
+	})
+
+	it("can clean up a failed tool attempt without counting it toward work reminders", async () => {
+		const h = await harness()
+		h.write([{ content: "Blocked attempt", status: TODO_STATUS.IN_PROGRESS }])
+		for (let i = 0; i < 5; i++) await h.work("read", true)
+		await h.end()
+		expect(h.sendMessage.mock.calls.filter(([m]) => m.customType === TODO_STALENESS_CUSTOM_TYPE)).toHaveLength(0)
+		expect(h.closure()).toHaveLength(1)
+	})
+
+	it("resets work reminder thresholds when switching to a branch before the reminder", async () => {
+		const h = await harness()
+		h.write([{ content: "Work", status: TODO_STATUS.IN_PROGRESS }])
+		const fork = h.manager.getLeafId()
+		if (!fork) throw new Error("Expected todo entry")
+		for (let i = 0; i < 4; i++) await h.work()
+		await h.end()
+		h.manager.branch(fork)
+		await h.fire("session_tree")
+		h.request()
+		for (let i = 0; i < 4; i++) await h.work()
+		await h.end()
+		expect(h.closure()).toHaveLength(2)
+		expect(
+			h.sendMessage.mock.calls.filter(([m]) => m.customType === TODO_STALENESS_CUSTOM_TYPE).map(([m]) => m.details),
+		).toEqual([
+			{ reason: "staleness", threshold: 4 },
+			{ reason: "staleness", threshold: 4 },
+		])
 	})
 
 	it("waits for the user when the final answer asks a question after work", async () => {
@@ -169,6 +240,7 @@ describe("bounded todo cleanup", () => {
 		"error",
 		"aborted",
 		"length",
+		"toolUse",
 		"queued input",
 		"no tools",
 		"blocked",
@@ -185,7 +257,7 @@ describe("bounded todo cleanup", () => {
 				? registerActiveTodoScopeProvider(() => ({ kind: "ferment-step", phaseId: "p", stepId: "s" }))
 				: () => {}
 		await h.work()
-		await h.end(["error", "aborted", "length"].includes(reason) ? reason : "stop")
+		await h.end(["error", "aborted", "length", "toolUse"].includes(reason) ? reason : "stop")
 		unregister()
 		expect(h.closure()).toHaveLength(0)
 	})
