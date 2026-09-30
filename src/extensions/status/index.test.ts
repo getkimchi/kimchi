@@ -15,12 +15,14 @@ vi.mock("../../config.js", () => ({
 // Deterministic, empty auth store for the gatherStatusRows path.
 vi.mock("../login/flow.js", () => ({ getKimchiAuthPath: () => "/does/not/exist/auth.json" }))
 vi.mock("../../api/me.js", () => ({ getMe: vi.fn() }))
+vi.mock("../../api/organizations.js", () => ({ getOrganization: vi.fn(), verifyApiKey: vi.fn() }))
 vi.mock("../../utils.js", () => ({ getVersion: () => "9.9.9-test" }))
 
 function baseDeps(overrides: Partial<Parameters<typeof buildStatusRows>[0]> = {}) {
 	return {
 		version: "1.2.3",
 		loginMethod: "Kimchi account",
+		organization: undefined,
 		email: "you@example.com",
 		sessionName: "my-session",
 		sessionId: "b3611b12-9c93-4b2a-92d8-29c866db68b8",
@@ -54,9 +56,21 @@ describe("buildStatusRows", () => {
 		expect(rows[2]).toBe("")
 	})
 
-	it("never renders an Organization row", () => {
-		const rows = buildStatusRows(baseDeps())
-		expect(rows.some((r) => r.toLowerCase().includes("organization"))).toBe(false)
+	it("renders the Organization row between login method and email when present", () => {
+		const rows = buildStatusRows(
+			baseDeps({ organization: { id: "516442fe-054a-49e2-ac2d-9dc9b104c3d2", name: "CAST AI" } }),
+		)
+		expect(rows.slice(0, 4)).toEqual([
+			"Version:        1.2.3",
+			"Login method:   Kimchi account",
+			"Organization:   CAST AI (516442fe-054a-49e2-ac2d-9dc9b104c3d2)",
+			"Email:          you@example.com",
+		])
+	})
+
+	it("omits the Organization row when unknown", () => {
+		const rows = buildStatusRows(baseDeps({ organization: undefined }))
+		expect(rows.some((r) => r.startsWith("Organization:"))).toBe(false)
 	})
 
 	it("shows the /name hint for unnamed sessions", () => {

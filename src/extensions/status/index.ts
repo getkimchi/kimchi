@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { MCP_STATUS_EVENT, type McpStatusSnapshot } from "pi-mcp-adapter"
 import { getMe } from "../../api/me.js"
+import { getOrganization, verifyApiKey } from "../../api/organizations.js"
 import { getApiKeySource, getEnvironmentApiKey, loadConfig } from "../../config.js"
 import { isKimchiProvider } from "../../kimchi-provider.js"
 import { getVersion } from "../../utils.js"
@@ -31,6 +32,7 @@ export interface McpCounts {
 interface StatusRowsDeps {
 	version: string
 	loginMethod: string
+	organization: { id: string; name: string } | undefined
 	email: string | undefined
 	sessionName: string | undefined
 	sessionId: string | undefined
@@ -51,6 +53,9 @@ export function buildStatusRows(deps: StatusRowsDeps): string[] {
 	const row = (label: string, value: string): string => `${label.padEnd(LABEL_WIDTH)}${value}`
 
 	const identityRows = [row("Version:", deps.version), row("Login method:", deps.loginMethod)]
+	if (deps.organization) {
+		identityRows.push(row("Organization:", `${deps.organization.name} (${deps.organization.id})`))
+	}
 	if (deps.email) identityRows.push(row("Email:", deps.email))
 
 	const sessionRows = [
@@ -125,19 +130,26 @@ export function resolveLoginMethod(deps: {
 // --- cached account email, warmed on session_start (never blocks the panel) ---
 
 let cachedEmail: string | undefined
-let emailFetchStarted = false
+let cachedOrganization: { id: string; name: string } | undefined
+let identityFetchStarted = false
 
-async function warmEmailCache(): Promise<void> {
-	if (emailFetchStarted) return
-	emailFetchStarted = true
+async function warmIdentityCache(): Promise<void> {
+	if (identityFetchStarted) return
+	identityFetchStarted = true
 	const apiKey = getEnvironmentApiKey() ?? loadConfig().apiKey
 	if (!apiKey) return
-	try {
-		const me = await getMe(apiKey)
-		cachedEmail = me.email
-	} catch {
-		// best effort — the panel simply omits the row
-	}
+	// Best effort — the panel simply omits rows whose fetch failed.
+	void getMe(apiKey)
+		.then((me) => {
+			cachedEmail = me.email
+		})
+		.catch(() => {})
+	void (async () => {
+		try {
+			const { organizationId } = await verifyApiKey(apiKey)
+			cachedOrganization = await getOrganization(apiKey, organizationId)
+		} catch {}
+	})()
 }
 
 let cachedMcpSnapshot: McpStatusSnapshot | undefined
@@ -157,6 +169,7 @@ export async function gatherStatusRows(ctx: ExtensionContext): Promise<string[]>
 			apiKeySource: getApiKeySource(),
 			authPath: getKimchiAuthPath(),
 		}),
+		organization: cachedOrganization,
 		email: cachedEmail,
 		sessionName: ctx.sessionManager.getSessionName(),
 		sessionId: ctx.sessionManager.getSessionId(),
@@ -169,7 +182,7 @@ export async function gatherStatusRows(ctx: ExtensionContext): Promise<string[]>
 
 export default function statusExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", async () => {
-		void warmEmailCache()
+		void warmIdentityCache()
 	})
 	pi.events.on(MCP_STATUS_EVENT, (snapshot: unknown) => {
 		cachedMcpSnapshot = snapshot as McpStatusSnapshot
