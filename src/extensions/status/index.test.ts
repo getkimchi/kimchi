@@ -49,7 +49,7 @@ function baseDeps(overrides: Partial<Parameters<typeof buildStatusRows>[0]> = {}
 		sessionName: "my-session",
 		sessionId: "b3611b12-9c93-4b2a-92d8-29c866db68b8",
 		cwd: "/tmp/project",
-		modelRef: "anthropic/claude-sonnet-4-5",
+		modelRef: "kimchi-dev/kimi-k3",
 		isAuto: false,
 		mcp: { connected: 3, disabled: 10, failed: 1 },
 		...overrides,
@@ -66,7 +66,7 @@ describe("buildStatusRows", () => {
 			"Session name:   my-session",
 			"Session ID:     b3611b12-9c93-4b2a-92d8-29c866db68b8",
 			"cwd:            /tmp/project",
-			"Model:          anthropic/claude-sonnet-4-5",
+			"Model:          kimchi-dev/kimi-k3",
 			"MCP servers:    3 connected, 10 disabled, 1 failed · /mcp",
 		])
 	})

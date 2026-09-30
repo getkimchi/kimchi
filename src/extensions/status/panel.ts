@@ -4,7 +4,10 @@ import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { truncateLinesToWidth } from "../../truncate-lines.js"
 
 /**
- * Read-only Status panel (see CONTEXT.md "Status panel").
+ * Status panel — the read-only overlay opened by `/status`, showing a
+ * snapshot of version, login identity, session identity, cwd, model, and
+ * MCP servers. Distinct from the persistent status line at the bottom of
+ * the TUI (live phase/tags/diagnostics indicators).
  *
  * Rendered via `ctx.ui.custom`; any key press (including Esc) dismisses it.
  * The rows are computed on open — the panel is a snapshot, not a live view.

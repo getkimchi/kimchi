@@ -15,13 +15,13 @@ describe("createStatusPanelComponent", () => {
 			"Version:        1.2.3",
 			"Login method:   Kimchi account",
 			"",
-			"Model:          anthropic/claude-sonnet-4-5",
+			"Model:          kimchi-dev/kimi-k3",
 		]
 		const panel = createStatusPanelComponent(makeTheme(), rows, () => {})
 		const lines = panel.render(60)
 		expect(lines.join("\n")).toContain("Status")
 		expect(lines.join("\n")).toContain("Version:        1.2.3")
-		expect(lines.join("\n")).toContain("Model:          anthropic/claude-sonnet-4-5")
+		expect(lines.join("\n")).toContain("Model:          kimchi-dev/kimi-k3")
 		expect(lines.join("\n")).toContain("press any key to close")
 		// blank row between blocks survives (wrapped in side borders)
 		expect(lines.some((line) => /^│\s*│$/.test(line))).toBe(true)

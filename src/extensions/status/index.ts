@@ -45,12 +45,12 @@ interface StatusRowsDeps {
 	mcp: McpCounts | undefined
 }
 
-/** Column width for the Claude-Code-style `Label:` gutter. */
+/** Column width for the `Label:` value gutter. */
 const LABEL_WIDTH = 16
 
 /**
- * Layout from the Status panel decision (see CONTEXT.md "Status panel"):
- * version → login → session, Claude-Code-style alignment, `· /mcp` link.
+ * Layout from the Status panel decision:
+ * version → login → session, labels padded to a fixed gutter, `· /mcp` link.
  */
 export function buildStatusRows(deps: StatusRowsDeps): string[] {
 	const row = (label: string, value: string): string => `${label.padEnd(LABEL_WIDTH)}${value}`
