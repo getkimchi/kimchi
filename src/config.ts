@@ -679,12 +679,21 @@ export function getConfiguredLegacyMcpKeys(options?: { configPath?: string; cwd?
 	return [...configured]
 }
 
+/**
+ * Read the API key persisted in config files, ignoring KIMCHI_API_KEY.
+ * Project config (trusted projects only) takes precedence over global — the
+ * same ordering loadConfig applies before the env override is merged in.
+ */
+export function getSavedApiKey(): string | undefined {
+	return (
+		(isProjectScopeAllowed()
+			? readApiKeyFromConfigFile(resolve(process.cwd(), ".kimchi", "config.json"))
+			: undefined) ?? readApiKeyFromConfigFile()
+	)
+}
+
 /** Explain an environment override without exposing either credential. */
-export function getApiKeyMismatchWarning(
-	savedKey = (isProjectScopeAllowed()
-		? readApiKeyFromConfigFile(resolve(process.cwd(), ".kimchi", "config.json"))
-		: undefined) ?? readApiKeyFromConfigFile(),
-): string | undefined {
+export function getApiKeyMismatchWarning(savedKey = getSavedApiKey()): string | undefined {
 	const envKey = getEnvironmentApiKey()
 	if (!envKey || !savedKey || envKey === savedKey) return undefined
 	return "KIMCHI_API_KEY in your environment differs from your saved key in config. Using the environment key."

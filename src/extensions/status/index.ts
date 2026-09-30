@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { MCP_STATUS_EVENT, type McpStatusSnapshot } from "pi-mcp-adapter"
 import { getMe } from "../../api/me.js"
 import { getOrganization, type Organization, verifyApiKey } from "../../api/organizations.js"
-import { type ApiKeySource, getApiKeySource, getEnvironmentApiKey, loadConfig } from "../../config.js"
+import { type ApiKeySource, getApiKeySource, getEnvironmentApiKey, getSavedApiKey, loadConfig } from "../../config.js"
 import { isKimchiProvider } from "../../kimchi-provider.js"
 import { getVersion } from "../../utils.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
@@ -114,8 +114,11 @@ function thirdPartyProviders(authPath: string): string[] {
  * config.json, so "Kimchi account" is indistinguishable from a saved key; only
  * an env-only key is recognisably an API-key session.
  *
- * A differing KIMCHI_API_KEY overrides the saved key for actual requests (see
- * getApiKeyMismatchWarning in config.ts), so it is surfaced first.
+ * configApiKey must be the key persisted in config files only (see
+ * getSavedApiKey) — not loadConfig().apiKey, which already has the env
+ * override merged in and would make every env session look like "Kimchi
+ * account". A differing KIMCHI_API_KEY overrides the saved key for actual
+ * requests (see getApiKeyMismatchWarning in config.ts), so it is surfaced first.
  *
  * Precedence: env override (KIMCHI_API_KEY set and differs from saved key) →
  * Kimchi account (config key present) →
@@ -156,7 +159,6 @@ function isMcpStatusSnapshot(data: unknown): data is McpStatusSnapshot {
 
 export function gatherStatusRows(ctx: ExtensionContext, sources: StatusSources = {}): string[] {
 	const envApiKey = getEnvironmentApiKey()
-	const config = loadConfig()
 
 	const model = ctx.model
 	const modelRef = model ? `${model.provider}/${model.id}` : "(no model selected)"
@@ -172,7 +174,7 @@ export function gatherStatusRows(ctx: ExtensionContext, sources: StatusSources =
 		version: getVersion(),
 		loginMethod: resolveLoginMethod({
 			envApiKey,
-			configApiKey: config.apiKey,
+			configApiKey: getSavedApiKey(),
 			apiKeySource: getApiKeySource(),
 			authPath: getKimchiAuthPath(),
 		}),

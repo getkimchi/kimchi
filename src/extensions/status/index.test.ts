@@ -17,12 +17,17 @@ import statusExtension, {
 	summarizeMcpSnapshot,
 } from "./index.js"
 
-const configState = vi.hoisted(() => ({ apiKey: undefined as string | undefined }))
+const configState = vi.hoisted(() => ({
+	savedKey: undefined as string | undefined,
+	envKey: undefined as string | undefined,
+}))
 
 vi.mock("../../config.js", () => ({
-	loadConfig: () => ({ apiKey: configState.apiKey }),
-	getEnvironmentApiKey: () => undefined,
-	getApiKeySource: () => "config",
+	// loadConfig merges the env override, like the real implementation does.
+	loadConfig: () => ({ apiKey: configState.envKey ?? configState.savedKey }),
+	getEnvironmentApiKey: () => configState.envKey,
+	getSavedApiKey: () => configState.savedKey,
+	getApiKeySource: () => (configState.envKey ? "environment" : "config"),
 }))
 // Deterministic, empty auth store for the gatherStatusRows path.
 vi.mock("../login/flow.js", () => ({ getKimchiAuthPath: () => "/does/not/exist/auth.json" }))
@@ -319,7 +324,8 @@ function mockIdentity() {
 
 describe("status command handler", () => {
 	beforeEach(() => {
-		configState.apiKey = undefined
+		configState.savedKey = undefined
+		configState.envKey = undefined
 		vi.mocked(getMe).mockReset()
 		vi.mocked(verifyApiKey).mockReset()
 		vi.mocked(getOrganization).mockReset()
@@ -346,6 +352,27 @@ describe("status command handler", () => {
 		])
 	})
 
+	it("reports the env key as login method when KIMCHI_API_KEY overrides the saved key", async () => {
+		configState.savedKey = "saved-key"
+		configState.envKey = "env-key"
+		mockIdentity()
+		const { ctx, runStatus } = setup()
+		ctx.mode = "rpc"
+
+		expect(await runStatus()).toContain(
+			"Login method:   Kimchi API key (KIMCHI_API_KEY environment, overrides saved key)",
+		)
+	})
+
+	it("reports the env key as login method when KIMCHI_API_KEY is the only credential", async () => {
+		configState.envKey = "env-key"
+		mockIdentity()
+		const { ctx, runStatus } = setup()
+		ctx.mode = "rpc"
+
+		expect(await runStatus()).toContain("Login method:   Kimchi API key (KIMCHI_API_KEY environment)")
+	})
+
 	it("opens the panel via custom UI in TUI mode", async () => {
 		const { ctx, runStatus } = setup()
 
@@ -367,7 +394,7 @@ describe("status command handler", () => {
 	})
 
 	it("shows email and organization fetched on session start", async () => {
-		configState.apiKey = "key-1"
+		configState.savedKey = "key-1"
 		mockIdentity()
 		const { ctx, startSession, runStatus } = setup()
 		ctx.mode = "rpc"
@@ -393,7 +420,7 @@ describe("status command handler", () => {
 		await startSession()
 		expect(getMe).not.toHaveBeenCalled()
 
-		configState.apiKey = "key-after-login"
+		configState.savedKey = "key-after-login"
 		await runStatus()
 
 		expect(getMe).toHaveBeenCalledWith("key-after-login")
@@ -403,14 +430,14 @@ describe("status command handler", () => {
 	})
 
 	it("refetches identity when the key changes", async () => {
-		configState.apiKey = "key-1"
+		configState.savedKey = "key-1"
 		mockIdentity()
 		const { startSession } = setup()
 		await startSession()
 		await startSession()
 		expect(getMe).toHaveBeenCalledOnce()
 
-		configState.apiKey = "key-2"
+		configState.savedKey = "key-2"
 		await startSession()
 
 		expect(getMe).toHaveBeenCalledTimes(2)
@@ -418,7 +445,7 @@ describe("status command handler", () => {
 	})
 
 	it("starts each extension instance without cached identity", async () => {
-		configState.apiKey = "key-1"
+		configState.savedKey = "key-1"
 		mockIdentity()
 		const first = setup()
 		first.ctx.mode = "rpc"
@@ -456,7 +483,8 @@ describe("status command handler", () => {
 
 describe("status command handler errors", () => {
 	beforeEach(() => {
-		configState.apiKey = "key-1"
+		configState.savedKey = "key-1"
+		configState.envKey = undefined
 		vi.mocked(getMe).mockReset()
 		vi.mocked(verifyApiKey).mockReset()
 		vi.mocked(getOrganization).mockReset()
@@ -478,7 +506,7 @@ describe("status command handler errors", () => {
 	})
 
 	it("ignores malformed MCP status payloads", async () => {
-		configState.apiKey = undefined
+		configState.savedKey = undefined
 		const { ctx, emitEvent, runStatus } = setup()
 		ctx.mode = "rpc"
 
