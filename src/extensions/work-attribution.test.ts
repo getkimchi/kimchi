@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
 	type BeforeProviderHeadersEvent,
+	type InputEvent,
 	SessionManager,
 	type SessionShutdownEvent,
 	type SessionStartEvent,
@@ -13,7 +14,13 @@ import { createCommandContext, createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import requestTimingExtension from "./request-timing.js"
 import { flushWorkSummaries } from "./work-attribution/summary.js"
-import { createWorkAttributionExtension, getWorkId, recordProviderRequest, setWorkId } from "./work-attribution.js"
+import {
+	appendWorkRecord,
+	createWorkAttributionExtension,
+	getWorkId,
+	recordProviderRequest,
+	setWorkId,
+} from "./work-attribution.js"
 
 let dir: string
 beforeEach(() => {
@@ -176,6 +183,43 @@ describe("local work attribution", () => {
 		await mock.getRegisteredCommand("work").handler(path, commandContext)
 		expect(getWorkId(child)).toBe(workId)
 		expect(readPlanWorkId("<!-- kimchi-work-id: ../../escape -->")).toBeUndefined()
+	})
+	it.each([
+		"Implement .kimchi/plans/feature.md",
+		"please implement @.kimchi/plans/feature.md now",
+		"Follow `PLANS/.kimchi/plans/feature.md`",
+	])("continues a saved plan's work when the user names it: %s", async (text) => {
+		const planWork = getWorkId(createContext({ cwd: dir, sessionManager: { getSessionId: () => "planner" } }))
+		savePlanMarkdown({ cwd: dir, name: "feature", planText: "# Feature", workId: planWork })
+		savePlanMarkdown({ cwd: join(dir, "PLANS"), name: "feature", planText: "# Feature", workId: planWork })
+		const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => "implementer" } })
+		const provisional = getWorkId(ctx)
+		recordProviderRequest(ctx)
+		const mock = createExtensionApi()
+		createWorkAttributionExtension()(mock.api)
+		await mock.getHandler<InputEvent>("input")({ type: "input", text, source: "interactive" }, ctx)
+		expect(getWorkId(ctx)).toBe(planWork)
+		expect(provisional).not.toBe(planWork)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining(planWork), "info")
+	})
+	it("keeps its own work when it already committed, or when only an extension names the plan", async () => {
+		const planWork = getWorkId(createContext({ cwd: dir, sessionManager: { getSessionId: () => "planner" } }))
+		savePlanMarkdown({ cwd: dir, name: "feature", planText: "# Feature", workId: planWork })
+		const mock = createExtensionApi()
+		createWorkAttributionExtension()(mock.api)
+		const input = mock.getHandler<InputEvent>("input")
+		const text = "Implement .kimchi/plans/feature.md"
+
+		const nudged = createContext({ cwd: dir, sessionManager: { getSessionId: () => "nudged" } })
+		const own = getWorkId(nudged)
+		await input({ type: "input", text, source: "extension" }, nudged)
+		expect(getWorkId(nudged)).toBe(own)
+
+		const committed = createContext({ cwd: dir, sessionManager: { getSessionId: () => "committed" } })
+		const committedWork = getWorkId(committed)
+		appendWorkRecord(committed, { type: "commit", sha: "a".repeat(40), repository: "/r/.git", worktree: "/r" })
+		await input({ type: "input", text, source: "interactive" }, committed)
+		expect(getWorkId(committed)).toBe(committedWork)
 	})
 	it("reads only leading plan metadata and leaves example UUIDs unrelated", () => {
 		const workId = "11111111-1111-4111-8111-111111111111"

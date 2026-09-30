@@ -18,7 +18,7 @@ import {
 	type ExtensionContext,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
-import { readPlanWorkId } from "../shared/planning/plan-markdown.js"
+import { PLAN_DIR, readPlanWorkId } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
 import {
@@ -39,6 +39,11 @@ export interface WorkContext {
 	sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">
 }
 const WORK_IDENTITY_ENTRY = "work_identity"
+/** A saved plan path in free text, optionally prefixed by `@` or a directory. */
+const PLAN_REFERENCE = new RegExp(
+	`(?:^|[\\s@'"\`(])((?:[^\\s'"\`()]*/)?${PLAN_DIR.replaceAll(".", "\\.")}/[^\\s'"\`()]+\\.md)`,
+	"g",
+)
 const identities = new Map<string, string>()
 
 export function workLedgerPath(ctx: WorkContext): string {
@@ -136,6 +141,37 @@ export function pinWorkContext(ctx: WorkContext): WorkContext {
 	const sessionId = ctx.sessionManager.getSessionId()
 	return { cwd: ctx.cwd, sessionManager: { getSessionId: () => sessionId } }
 }
+/** The single work ID carried by saved plans the text refers to, if they agree on one. */
+function referencedPlanWorkId(cwd: string, text: string): string | undefined {
+	const workIds = new Set<string>()
+	for (const [, path] of text.matchAll(PLAN_REFERENCE)) {
+		const file = resolve(cwd, path)
+		if (existsSync(file)) {
+			const workId = readPlanWorkId(readFileSync(file, "utf8"))
+			if (workId) workIds.add(workId)
+		}
+	}
+	return workIds.size === 1 ? [...workIds][0] : undefined
+}
+/** Whether this session already saved a plan or commit for its current work. */
+function hasWorkOutput(ctx: WorkContext, workId: string): boolean {
+	const path = workLedgerPath(ctx)
+	if (!existsSync(path)) return false
+	return readFileSync(path, "utf8")
+		.split("\n")
+		.some((line) => {
+			try {
+				const row = JSON.parse(line)
+				return row.workId === workId && (row.type === "plan" || row.type === "commit")
+			} catch {
+				return false
+			}
+		})
+}
+function notify(ctx: ExtensionContext, message: string): void {
+	if (ctx.hasUI) ctx.ui.notify(message, "info")
+	else console.error(message)
+}
 function warn(ctx: ExtensionContext, error: unknown): void {
 	const message = `Work attribution unavailable: ${error instanceof Error ? error.message : String(error)}`
 	if (ctx.hasUI) ctx.ui.notify(message, "warning")
@@ -199,6 +235,22 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 			pi.appendEntry(WORK_IDENTITY_ENTRY, { workId: getWorkId(ctx) })
 			initialized.add(sessionId)
 		}
+		// A user message naming a saved plan continues that plan's work, as `/work <path>` would,
+		// unless this session already produced its own plan or commits. Children keep their parent's work.
+		pi.on("input", (event, ctx) => {
+			if (inheritedWorkId || event.source === "extension") return
+			try {
+				const planWorkId = referencedPlanWorkId(ctx.cwd, event.text)
+				if (!planWorkId) return
+				bind(ctx)
+				const current = getWorkId(ctx)
+				if (planWorkId === current || hasWorkOutput(ctx, current)) return
+				setWorkId(ctx, planWorkId, pi)
+				notify(ctx, `Continuing the saved plan's work: ${planWorkId}`)
+			} catch (error) {
+				warn(ctx, error)
+			}
+		})
 		pi.on("before_provider_headers", (event, ctx) => {
 			try {
 				bind(ctx)
@@ -234,9 +286,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 						setWorkId(ctx, workId)
 					}
 					if (value) pi.appendEntry(WORK_IDENTITY_ENTRY, { workId: getWorkId(ctx) })
-					const message = `Work ID: ${getWorkId(ctx)}`
-					if (ctx.hasUI) ctx.ui.notify(message, "info")
-					else console.error(message)
+					notify(ctx, `Work ID: ${getWorkId(ctx)}`)
 				} catch (error) {
 					warn(ctx, error)
 				}
