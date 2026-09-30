@@ -187,6 +187,8 @@ function handler(req: IncomingMessage, res: ServerResponse) {
 
 beforeAll(async () => {
 	server = createServer(handler)
+	// HTML conversion can block the event loop past an idle socket's expiry in CI.
+	server.keepAliveTimeout = 0
 	await new Promise<void>((resolve) => {
 		server.listen(0, "127.0.0.1", () => resolve())
 	})
