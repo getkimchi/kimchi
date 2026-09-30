@@ -1,8 +1,36 @@
-import { loadConfig, readTelemetryConfig, writeTelemetryEnabled } from "../config.js"
+import { loadConfig, readTelemetryConfig, writeTelemetryEnabled, writeTuiWheelScrollLines } from "../config.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { isRegionId, REGION_ENV, REGIONS, selectableRegions } from "../regions.js"
 
 const TELEMETRY_ENV = "KIMCHI_TELEMETRY_ENABLED"
+const WHEEL_SCROLL_ENV = "KIMCHI_WHEEL_SCROLL_LINES"
+
+/**
+ * Allowlist of config keys writable via `kimchi config set` — deliberately
+ * not arbitrary dotted paths, so `config set` cannot mutate sensitive or
+ * schema-constrained keys (apiKey, region, …). Each entry pairs the CLI
+ * surface validation with its config.js writer. New writable keys go here.
+ */
+interface WritableKeyDef {
+	parse: (raw: string) => number | null
+	write: (value: number) => void
+	describeValue: string
+	envKey?: string
+	defaultDisplay: string
+}
+
+const WRITABLE_KEYS: Record<string, WritableKeyDef> = {
+	"tui.wheelScrollLines": {
+		parse: (raw) => {
+			const n = Number(raw)
+			return Number.isInteger(n) && n >= 1 ? n : null
+		},
+		write: (lines) => writeTuiWheelScrollLines(lines),
+		describeValue: "an integer ≥ 1",
+		envKey: WHEEL_SCROLL_ENV,
+		defaultDisplay: "unset (default 1)",
+	},
+}
 
 /**
  * `kimchi config telemetry [on|off]` — show or set telemetry.enabled in
@@ -26,6 +54,10 @@ export async function runConfig(args: string[]): Promise<number> {
 			return handleTelemetry(rest)
 		case "region":
 			return handleRegion(rest)
+		case "set":
+			return handleSet(rest)
+		case "get":
+			return handleGet(rest)
 		default:
 			console.error(`kimchi config: unknown subcommand "${sub}"`)
 			printUsage()
@@ -95,10 +127,69 @@ function parseSwitch(s: string): boolean | null {
 	}
 }
 
+function handleSet(args: string[]): number {
+	const [key, raw, ...extra] = args
+	if (!key || raw === undefined || extra.length > 0) {
+		console.error("Usage: kimchi config set <key> <value>")
+		printWritableKeys()
+		return 2
+	}
+	const def = WRITABLE_KEYS[key]
+	if (!def) {
+		console.error(`kimchi config set: unknown or read-only key "${key}"`)
+		printWritableKeys()
+		return 2
+	}
+	const value = def.parse(raw)
+	if (value === null) {
+		console.error(`kimchi config set ${key}: invalid value "${raw}" (expected ${def.describeValue})`)
+		return 2
+	}
+	def.write(value)
+	console.log(`${key} = ${value} (written to global config)`)
+	if (def.envKey && process.env[def.envKey]) {
+		console.warn(`Note: ${def.envKey}=${process.env[def.envKey]} is set and overrides this value.`)
+	}
+	return 0
+}
+
+function handleGet(args: string[]): number {
+	const [key, ...extra] = args
+	if (!key || extra.length > 0) {
+		console.error("Usage: kimchi config get <key>")
+		printWritableKeys()
+		return 2
+	}
+	const def = WRITABLE_KEYS[key]
+	if (!def) {
+		console.error(`kimchi config get: unknown or read-only key "${key}"`)
+		printWritableKeys()
+		return 2
+	}
+	if (def.envKey && process.env[def.envKey]) {
+		console.log(`${key}: ${process.env[def.envKey]} (from ${def.envKey}, overrides config)`)
+		return 0
+	}
+	// Dot-walk the merged config — project config (trusted) wins over global.
+	let current: unknown = loadConfig()
+	for (const part of key.split(".")) {
+		current = current !== null && typeof current === "object" ? (current as Record<string, unknown>)[part] : undefined
+	}
+	console.log(`${key}: ${current === undefined ? def.defaultDisplay : String(current)} (from config)`)
+	return 0
+}
+
+function printWritableKeys(): void {
+	console.error(`       writable keys: ${Object.keys(WRITABLE_KEYS).join(", ")}`)
+}
+
 function printUsage(): void {
 	console.error("Usage: kimchi config telemetry [on|off]")
 	console.error("       kimchi config telemetry           # show current status")
 	console.error("       kimchi config region              # show the endpoint region (chosen at login)")
+	console.error("       kimchi config set <key> <value>   # write a config key")
+	console.error("       kimchi config get <key>           # show a config key's effective value")
+	printWritableKeys()
 }
 
 /**

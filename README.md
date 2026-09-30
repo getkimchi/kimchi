@@ -445,6 +445,12 @@ Kimchi stores its configuration (settings, sessions, models) under:
 
 In fullscreen mode (`tuiMode: "fullscreen"` in Kimchi's settings), one mouse-wheel notch scrolls **1 line** by default. To make wheel scrolling faster (e.g., in iTerm2), configure the step:
 
+```bash
+kimchi config set tui.wheelScrollLines 3   # shows effective value: kimchi config get tui.wheelScrollLines
+```
+
+or edit the config file directly:
+
 ```jsonc
 // ~/.config/kimchi/config.json — or <project>/.kimchi/config.json (trusted projects win)
 { "tui": { "wheelScrollLines": 3 } }

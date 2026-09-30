@@ -1056,6 +1056,15 @@ export function writeTelemetryEnabled(enabled: boolean, configPath?: string): vo
 	})
 }
 
+export function writeTuiWheelScrollLines(lines: number, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateConfigFile(path, (raw) => {
+		const tui = raw.tui && typeof raw.tui === "object" && !Array.isArray(raw.tui) ? { ...raw.tui } : {}
+		;(tui as Record<string, unknown>).wheelScrollLines = lines
+		raw.tui = tui
+	})
+}
+
 export function clearApiKey(configPath?: string): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateConfigFile(

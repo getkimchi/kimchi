@@ -32,6 +32,7 @@ import {
 	writeSessionModeWizardSeenAt,
 	writeStudioOnboardingSeenAt,
 	writeTeleportCompactHintEnabled,
+	writeTuiWheelScrollLines,
 } from "./config.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "./project-scope-trust.js"
 
@@ -581,6 +582,43 @@ describe("loadConfig", () => {
 
 		rmSync(globalDir, { recursive: true, force: true })
 		rmSync(projectDir, { recursive: true, force: true })
+	})
+})
+
+describe("writeTuiWheelScrollLines", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("writes into an existing tui block, preserving sibling keys", () => {
+		writeFileSync(configPath, JSON.stringify({ tui: { futureKnob: true } }))
+		writeTuiWheelScrollLines(3, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.tui).toEqual({ futureKnob: true, wheelScrollLines: 3 })
+	})
+
+	it("creates the tui block when absent, preserving top-level keys", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }))
+		writeTuiWheelScrollLines(2, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("k")
+		expect(raw.tui).toEqual({ wheelScrollLines: 2 })
+		expect(loadConfig({ configPath }).tui?.wheelScrollLines).toBe(2)
+	})
+
+	it("replaces a non-object tui value rather than spreading into it", () => {
+		writeFileSync(configPath, JSON.stringify({ tui: 5 }))
+		writeTuiWheelScrollLines(4, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.tui).toEqual({ wheelScrollLines: 4 })
 	})
 })
 
