@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
+import type { Skill } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	formatPreview,
@@ -429,6 +430,19 @@ describe("SkillManager", () => {
 		})
 	})
 
+	/** Full typed Skill fixture for the discovered tier — pi's Skill requires
+	 *  baseDir/sourceInfo, and the tier consumes baseDir as the directory anchor
+	 *  plus filePath's basename as the entry file. Mirrors system-prompt.test.ts's
+	 *  createSkill. */
+	function discoveredSkill(overrides: Partial<Skill> & Pick<Skill, "name" | "description" | "filePath">): Skill {
+		return {
+			baseDir: dirname(overrides.filePath),
+			sourceInfo: { path: overrides.filePath, source: "local", scope: "project", origin: "top-level" },
+			disableModelInvocation: false,
+			...overrides,
+		}
+	}
+
 	describe("discovered skills (session inventory tier)", () => {
 		it("views a skill resolved through the discovered provider", async () => {
 			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
@@ -437,11 +451,11 @@ describe("SkillManager", () => {
 				mkdirSync(skillDir)
 				writeFileSync(join(skillDir, "SKILL.md"), "---\ndescription: from project\n---\nProject body.")
 				mgr.setDiscoveredSkillsProvider(() => [
-					{
+					discoveredSkill({
 						name: "project-skill",
 						description: "from project",
 						filePath: join(skillDir, "SKILL.md"),
-					} as never,
+					}),
 				])
 				const result = await mgr.view("project-skill")
 				expect(result.success).toBe(true)
@@ -468,11 +482,11 @@ describe("SkillManager", () => {
 				mkdirSync(discoveredSkillDir)
 				writeFileSync(join(discoveredSkillDir, "SKILL.md"), "---\ndescription: discovered loses\n---\nDiscovered body.")
 				mgr.setDiscoveredSkillsProvider(() => [
-					{
+					discoveredSkill({
 						name: "shadowed-skill",
 						description: "discovered loses",
 						filePath: join(discoveredSkillDir, "SKILL.md"),
-					} as never,
+					}),
 				])
 				const result = await mgr.view("shadowed-skill")
 				expect(result.success).toBe(true)
@@ -489,11 +503,11 @@ describe("SkillManager", () => {
 				mkdirSync(skillDir)
 				writeFileSync(join(skillDir, "SKILL.md"), "---\ndescription: ro\n---\nRO body.")
 				mgr.setDiscoveredSkillsProvider(() => [
-					{
+					discoveredSkill({
 						name: "ro-skill",
 						description: "ro",
 						filePath: join(skillDir, "SKILL.md"),
-					} as never,
+					}),
 				])
 				const edit = await mgr.edit("ro-skill", "---\ndescription: ro\n---\nNew body.")
 				expect(edit.success).toBe(false)
@@ -501,6 +515,41 @@ describe("SkillManager", () => {
 			} finally {
 				rmSync(discoveredDir, { recursive: true, force: true })
 			}
+		})
+
+		it("views a loose .md skill advertised with a plain .md filePath", async () => {
+			// pi advertises single-file skills (root .md children of a skills root,
+			// single-.md skillPaths entries) with filePath pointing at the .md
+			// itself; view() must read that entry file, not a hardcoded SKILL.md.
+			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
+			try {
+				const loosePath = join(discoveredDir, "loose-skill.md")
+				writeFileSync(loosePath, "---\nname: loose-skill\ndescription: single file\n---\nLoose body.")
+				mgr.setDiscoveredSkillsProvider(() => [
+					discoveredSkill({ name: "loose-skill", description: "single file", filePath: loosePath }),
+				])
+				const result = await mgr.view("loose-skill")
+				expect(result.success).toBe(true)
+				expect(result.content).toContain("Loose body.")
+			} finally {
+				rmSync(discoveredDir, { recursive: true, force: true })
+			}
+		})
+
+		it("mutations are refused for a discovered loose .md directly under the harness skills dir", async () => {
+			// A root-level loose .md resolves with the harness root itself as the
+			// skill dir; the discovered tier is unconditionally read-only so edit()
+			// can never drop a stray SKILL.md there (pi's loader would treat the
+			// root as a single-skill root and hide every directory-based skill).
+			const loosePath = join(tmpDir, "root-loose.md")
+			writeFileSync(loosePath, "---\nname: root-loose\ndescription: ro\n---\nLoose body.")
+			mgr.setDiscoveredSkillsProvider(() => [
+				discoveredSkill({ name: "root-loose", description: "ro", filePath: loosePath }),
+			])
+			const edit = await mgr.edit("root-loose", "---\ndescription: hacked\n---\nNew body.")
+			expect(edit.success).toBe(false)
+			expect(edit.error).toMatch(/read-only/i)
+			expect(existsSync(join(tmpDir, "SKILL.md"))).toBe(false)
 		})
 	})
 })

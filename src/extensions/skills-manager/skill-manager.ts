@@ -1,5 +1,5 @@
 import { mkdir, readdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises"
-import { dirname, join, resolve, sep } from "node:path"
+import { basename, dirname, join, resolve, sep } from "node:path"
 import type { Skill } from "@earendil-works/pi-coding-agent"
 import { parse as parseYaml } from "yaml"
 
@@ -153,6 +153,10 @@ export type SkillOrigin = "harness" | "bundled" | "discovered"
 
 interface SkillLocation {
 	skillDir: string
+	/** Entry file inside skillDir carrying the skill's frontmatter/body.
+	 *  "SKILL.md" for harness/bundled skills; a discovered skill's advertised
+	 *  entry file, which for loose single-.md skills is the .md itself. */
+	entryFile: string
 	category: string
 	origin: SkillOrigin
 	readOnly: boolean
@@ -222,7 +226,13 @@ export class SkillManager {
 		const direct = join(this.skillsDir, name, "SKILL.md")
 		if (await this._exists(direct)) {
 			const skillDir = join(this.skillsDir, name)
-			return { skillDir, category: "", origin: "harness", readOnly: !this._isUnderSkillsDir(skillDir) }
+			return {
+				skillDir,
+				entryFile: "SKILL.md",
+				category: "",
+				origin: "harness",
+				readOnly: !this._isUnderSkillsDir(skillDir),
+			}
 		}
 
 		let entries: string[] = []
@@ -236,7 +246,13 @@ export class SkillManager {
 			const candidate = join(this.skillsDir, sub, name, "SKILL.md")
 			if (await this._exists(candidate)) {
 				const skillDir = join(this.skillsDir, sub, name)
-				return { skillDir, category: sub, origin: "harness", readOnly: !this._isUnderSkillsDir(skillDir) }
+				return {
+					skillDir,
+					entryFile: "SKILL.md",
+					category: sub,
+					origin: "harness",
+					readOnly: !this._isUnderSkillsDir(skillDir),
+				}
 			}
 		}
 
@@ -244,15 +260,37 @@ export class SkillManager {
 			const candidate = join(this.bundledRoots[i], name, "SKILL.md")
 			if (await this._exists(candidate)) {
 				const skillDir = join(this.bundledRoots[i], name)
-				return { skillDir, category: "", origin: "bundled", readOnly: !this._isUnderSkillsDir(skillDir) }
+				return {
+					skillDir,
+					entryFile: "SKILL.md",
+					category: "",
+					origin: "bundled",
+					readOnly: !this._isUnderSkillsDir(skillDir),
+				}
 			}
 		}
 
 		const discovered = this.discoveredSkillsProvider?.() ?? []
 		const hit = discovered.find((s) => s.name === name)
 		if (hit) {
-			const skillDir = dirname(hit.filePath)
-			return { skillDir, category: "", origin: "discovered", readOnly: !this._isUnderSkillsDir(skillDir) }
+			// pi's loader points filePath at the skill's entry file — "<dir>/SKILL.md"
+			// for directory-shaped skills, the loose .md itself for single-file ones
+			// (root .md children of a skills root, single-.md skillPaths entries).
+			// Anchor linked-file resolution at baseDir (the skill dir) and default
+			// view() to the actual entry file so loose-.md skills load too.
+			return {
+				skillDir: hit.baseDir,
+				entryFile: basename(hit.filePath),
+				category: "",
+				origin: "discovered",
+				// Discovered skills are strictly read-only: they live outside the
+				// manager's writable roots (anything under them is already covered
+				// by the tiers above), and a loose .md sitting directly on a skills
+				// root must never let edit() write a stray root-level SKILL.md —
+				// per pi's loader that turns the root into a single-skill root and
+				// hides every directory-based skill under it from discovery.
+				readOnly: true,
+			}
 		}
 
 		return null
@@ -541,7 +579,7 @@ export class SkillManager {
 			return { success: false, error: `Skill '${name}' not found.` }
 		}
 
-		const targetPath = filePath ? join(loc.skillDir, filePath) : join(loc.skillDir, "SKILL.md")
+		const targetPath = filePath ? join(loc.skillDir, filePath) : join(loc.skillDir, loc.entryFile)
 
 		// Path traversal guard
 		if (filePath) {
@@ -555,7 +593,7 @@ export class SkillManager {
 		try {
 			content = await readFile(targetPath, "utf-8")
 		} catch {
-			return { success: false, error: `File '${filePath ?? "SKILL.md"}' not found in skill '${name}'.` }
+			return { success: false, error: `File '${filePath ?? loc.entryFile}' not found in skill '${name}'.` }
 		}
 
 		if (filePath) {
