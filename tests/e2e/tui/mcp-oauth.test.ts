@@ -242,6 +242,26 @@ test("returns an OAuth denial to the TUI and keeps the Kimchi session usable", a
 	)
 })
 
+test("reports actionable guidance when the OAuth server has no registration endpoint", async ({ terminal }) => {
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-no-dcr",
+			mcp: { transport: "oauth", scenario: "oauth-no-dcr" },
+			responses: [],
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			await waitForText(terminal, /Failed to authenticate\s+"fixture"/, { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, /cannot\s+register\s+clients\s+dynamically/, { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, /oauth":\s+{\s+"clientId"/, { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(fixture.mcp.hasEvent("oauth_client_registered")).toBe(false)
+			expect(fixture.mcp.hasEvent("oauth_token_issued")).toBe(false)
+			trace.step("no-DCR failure presented as config guidance with no raw SDK error")
+		},
+	)
+})
+
 test("reports a failed OAuth token exchange without persisting partial authentication", async ({ terminal }) => {
 	await runMcpKimchiSession(
 		terminal,

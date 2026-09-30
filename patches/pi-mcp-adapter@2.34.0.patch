@@ -318,6 +318,78 @@ index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547
          }
          if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
              return true;
+diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
+index 0ae900470d923665153cdbc6028dd91f81c180b2..e89466558600aa1b14bb5b904051b8a3ea7f018c 100644
+--- a/mcp-auth-flow.ts
++++ b/mcp-auth-flow.ts
+@@ -52,6 +52,48 @@ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts"
+ /** Auth status for a server */
+ export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
+ 
++// Host-side no-DCR error translation (kimchi patches layer).
++// Tracking: https://github.com/getkimchi/kimchi/pull/1212
++// Removal criterion: pi-mcp-adapter translates the SDK's no-DCR error into actionable
++// guidance itself, in both startAuth branches and the server-manager connect retry.
++
++/**
++ * Detect the MCP SDK error raised when the authorization server has no RFC 7591
++ * registration endpoint and no pre-registered client is configured. Google's
++ * OAuth server is the known case: it never supports dynamic client registration.
++ *
++ * Matches the exact message thrown by @modelcontextprotocol/sdk (client/auth.ts) —
++ * the SDK exposes no structured error code, so this is a substring match. Re-check
++ * when bumping the SDK. dcrUnsupportedMessage deliberately avoids this substring
++ * so a translated error never re-matches.
++ */
++export function isDynamicRegistrationUnsupportedError(error: unknown): boolean {
++  return error instanceof Error && error.message.includes("does not support dynamic client registration")
++}
++
++function dcrUnsupportedMessage(serverName: string): string {
++  return (
++    `Server "${serverName}" requires OAuth, but its authorization server cannot register clients dynamically (no RFC 7591 registration endpoint). ` +
++    `Register an OAuth client with the provider manually, then add "oauth": { "clientId": "..." } ` +
++    `(plus "clientSecret" and "scope" if the provider issued them) ` +
++    `to the "${serverName}" entry in .mcp.json and run /mcp-auth ${serverName}.`
++  )
++}
++
++/**
++ * Without a pre-registered clientId the SDK only has DCR to fall back on, so its
++ * failure is configuration, not an auth-server fault: replace it with guidance.
++ * With a configured clientId the raw error is preserved (other root causes apply).
++ */
++// Exported for server-manager's connect path: the SDK transport retries a 401
++// through its own auth() there, bypassing startAuth, and needs the same rewrite.
++export function translateDcrUnsupportedError(error: unknown, serverName: string, config: McpOAuthConfig): unknown {
++  if (!config.clientId && isDynamicRegistrationUnsupportedError(error)) {
++    return new Error(dcrUnsupportedMessage(serverName), { cause: error })
++  }
++  return error
++}
++
+ export interface McpOAuthRuntime {
+   readonly signal: AbortSignal
+ }
+@@ -493,6 +535,9 @@ export async function startAuth(
+         throw new UnauthorizedError("Failed to authorize")
+       }
+       return { authorizationUrl: "" }
++    } catch (error) {
++      // client_credentials takes the same DCR fallback; translate identically.
++      throw translateDcrUnsupportedError(error, serverName, config)
+     } finally {
+       authProvider.deactivate()
+     }
+@@ -615,7 +660,7 @@ export async function startAuth(
+     } catch (cleanupError) {
+       throw new AggregateError([error, cleanupError], "OAuth startup cleanup failed")
+     }
+-    throw error
++    throw translateDcrUnsupportedError(error, serverName, config)
+   }
+ }
+ 
 diff --git a/metadata-cache.ts b/metadata-cache.ts
 index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef31282e511d4f 100644
 --- a/metadata-cache.ts
@@ -387,17 +459,21 @@ index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef3128
 -  }
 -}
 diff --git a/server-manager.ts b/server-manager.ts
-index 3213c908a86c4baf483af3470bb6d5ea0c32028d..c1af597f0cd0c1d0c1d99f7620e63b5003c04954 100644
+index 3213c908a86c4baf483af3470bb6d5ea0c32028d..e83932ed887d141b7068d8e84684cd1b6b489cd8 100644
 --- a/server-manager.ts
 +++ b/server-manager.ts
-@@ -40,7 +40,6 @@ import {
+@@ -40,10 +40,9 @@ import {
  import { resolveNpxBinary } from "./npx-resolver.ts";
  import { createJsonSchemaValidator } from "./json-schema-validator.ts";
  import { logger } from "./logger.ts";
 -import { RESOURCE_MIME_TYPE } from "./ui-app-bridge-helpers.ts";
  import { isBuiltInAgentPlugin } from "./agent-plugin-provenance.ts";
  import { McpOAuthProvider } from "./mcp-oauth-provider.ts";
- import { extractOAuthConfig, supportsOAuth, type McpOAuthRuntime } from "./mcp-auth-flow.ts";
+-import { extractOAuthConfig, supportsOAuth, type McpOAuthRuntime } from "./mcp-auth-flow.ts";
++import { extractOAuthConfig, supportsOAuth, translateDcrUnsupportedError, type McpOAuthRuntime } from "./mcp-auth-flow.ts";
+ import {
+   captureOAuthAuthority,
+   inspectAuthForUrl,
 @@ -1126,12 +1125,11 @@ export class McpServerManager {
    }
  
@@ -415,6 +491,17 @@ index 3213c908a86c4baf483af3470bb6d5ea0c32028d..c1af597f0cd0c1d0c1d99f7620e63b50
        ...(this.samplingConfig ? { sampling: {} } : {}),
        ...(this.elicitationConfig
          ? {
+@@ -1509,7 +1507,9 @@ export class McpServerManager {
+         kind = "sse";
+         continue;
+       }
+-      throw result.error;
++      // The SDK transport retried the 401 through its own auth() (bypassing
++      // startAuth); translate its no-DCR failure here as well.
++      throw translateDcrUnsupportedError(result.error, serverName, extractOAuthConfig(definition));
+     }
+     } finally {
+       await caFetch?.close();
 diff --git a/tool-metadata.ts b/tool-metadata.ts
 index 47525f34a6c7a8f25a007eee7e91abd0c452b014..7d810820003f4d624224b41548cfafc9d4ce2223 100644
 --- a/tool-metadata.ts

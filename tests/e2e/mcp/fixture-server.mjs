@@ -272,7 +272,8 @@ async function runHttpFixture() {
 					issuer: origin,
 					authorization_endpoint: `${origin}/authorize`,
 					token_endpoint: `${origin}/token`,
-					registration_endpoint: `${origin}/register`,
+					// oauth-no-dcr models providers like Google with no RFC 7591 endpoint.
+					...(scenario === "oauth-no-dcr" ? {} : { registration_endpoint: `${origin}/register` }),
 					response_types_supported: ["code"],
 					grant_types_supported:
 						oauthGrantType === "client_credentials" ? ["client_credentials"] : ["authorization_code", "refresh_token"],

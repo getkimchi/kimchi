@@ -94,6 +94,7 @@ export type McpFixtureScenario =
 	| "oauth-deny"
 	| "oauth-token-failure"
 	| "oauth-expiring"
+	| "oauth-no-dcr"
 	| "ui-app"
 
 export type McpFixtureToolResponse =
