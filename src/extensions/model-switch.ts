@@ -64,7 +64,7 @@ export default function modelSwitchExtension(
 		name: "set_model",
 		label: "Switch Model",
 		description:
-			'Change the active AI model to a different one. Provide the model in provider/id format, e.g. "kimchi-dev/kimi-k2.6". Uses pi.setModel() internally.',
+			'Change the active AI model to a different one. Provide the model in provider/id format, e.g. "kimchi-dev/kimi-k2.6". Uses pi.setModel() internally. Use list_models to get the available models.',
 		parameters: Type.Object({
 			model: Type.String({
 				description:
