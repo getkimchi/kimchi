@@ -37,7 +37,7 @@ interface PendingUpdate {
 	promise: Promise<boolean>
 }
 const pending = new Map<string, PendingUpdate>()
-const recoveries = new Set<Promise<void>>()
+const backgroundTasks = new Set<Promise<unknown>>()
 const recoveredDirectories = new Set<string>()
 /** Work IDs generated in this process: they cannot have older history to scan. */
 const newWork = new Set<string>()
@@ -272,20 +272,25 @@ export function recoverWorkSummaries(): void {
 		}
 		const updates = [...groups].map(([workId, rows]) => refresh(agentDir, workId, rows, true))
 		recoveredDirectories.add(agentDir)
-		const recovery = Promise.all(updates)
-			.then((results) => {
-				if (results.every(Boolean) && existsSync(dirname(stamp)))
-					writeFileSync(stamp, JSON.stringify({ startedAt }), { mode: 0o600 })
-			})
-			.catch(warn)
-			.finally(() => recoveries.delete(recovery))
-		recoveries.add(recovery)
+		trackAttributionTask(
+			Promise.all(updates)
+				.then((results) => {
+					if (results.every(Boolean) && existsSync(dirname(stamp)))
+						writeFileSync(stamp, JSON.stringify({ startedAt }), { mode: 0o600 })
+				})
+				.catch(warn),
+		)
 	} catch (error) {
 		warn(error)
 	}
 }
-/** Shutdown awaits queued contention retries; every retry has a finite deadline. */
+/** Background attribution work (recovery, reconciliation) that shutdown and tests must drain. */
+export function trackAttributionTask(task: Promise<unknown>): void {
+	const tracked = task.finally(() => backgroundTasks.delete(tracked))
+	backgroundTasks.add(tracked)
+}
+/** Shutdown awaits queued contention retries and background tasks; each has a finite deadline. */
 export async function flushWorkSummaries(): Promise<void> {
-	while (pending.size || recoveries.size)
-		await Promise.all([...[...pending.values()].map((update) => update.promise), ...recoveries])
+	while (pending.size || backgroundTasks.size)
+		await Promise.all([...[...pending.values()].map((update) => update.promise), ...backgroundTasks])
 }

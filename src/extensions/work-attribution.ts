@@ -26,7 +26,13 @@ import {
 	createTrackedWriteTool,
 	reconcileFileTransitions,
 } from "./work-attribution/file-transitions.js"
-import { flushWorkSummaries, markNewWork, recoverWorkSummaries, updateWorkSummary } from "./work-attribution/summary.js"
+import {
+	flushWorkSummaries,
+	markNewWork,
+	recoverWorkSummaries,
+	trackAttributionTask,
+	updateWorkSummary,
+} from "./work-attribution/summary.js"
 
 export interface WorkContext {
 	cwd: string
@@ -43,6 +49,14 @@ export function workLedgerPath(ctx: WorkContext): string {
 export function tryWorkAttribution<T>(record: () => T): T | undefined {
 	try {
 		return record()
+	} catch (error) {
+		console.warn("[work-attribution] Attribution unavailable:", error)
+		return undefined
+	}
+}
+export async function tryWorkAttributionAsync<T>(record: () => Promise<T>): Promise<T | undefined> {
+	try {
+		return await record()
 	} catch (error) {
 		console.warn("[work-attribution] Attribution unavailable:", error)
 		return undefined
@@ -117,6 +131,11 @@ export function recordProviderRequest(
 	)
 	return { requestId, workId }
 }
+/** Snapshot the session so later async work stays attributed to it after a session switch. */
+export function pinWorkContext(ctx: WorkContext): WorkContext {
+	const sessionId = ctx.sessionManager.getSessionId()
+	return { cwd: ctx.cwd, sessionManager: { getSessionId: () => sessionId } }
+}
 function warn(ctx: ExtensionContext, error: unknown): void {
 	const message = `Work attribution unavailable: ${error instanceof Error ? error.message : String(error)}`
 	if (ctx.hasUI) ctx.ui.notify(message, "warning")
@@ -124,6 +143,15 @@ function warn(ctx: ExtensionContext, error: unknown): void {
 }
 export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: ExtensionAPI) => void {
 	return (pi) => {
+		let reconciliation = new AbortController()
+		let reconciled = Promise.resolve()
+		/** Serialized so overlapping session starts never evaluate the same journal concurrently. */
+		function reconcileInBackground(ctx: ExtensionContext): void {
+			const { signal } = reconciliation
+			const context = pinWorkContext(ctx)
+			reconciled = reconciled.then(() => reconcileFileTransitions(context, signal))
+			trackAttributionTask(reconciled)
+		}
 		pi.on("session_start", (_event, ctx) => {
 			recoverWorkSummaries()
 			try {
@@ -131,7 +159,8 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 			} catch (error) {
 				warn(ctx, error)
 			}
-			reconcileFileTransitions(ctx)
+			// Children share the parent's worktree, which the parent session already reconciles.
+			if (!inheritedWorkId) reconcileInBackground(ctx)
 			pi.registerTool(createCommitTrackingBashTool(ctx))
 			// Main sessions use tool-rendering's decorated tools; isolated children need these native fallbacks.
 			pi.registerTool({
@@ -183,6 +212,9 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 			}
 		})
 		pi.on("session_shutdown", async (_event, ctx) => {
+			// Reconciliation checkpoints each commit, so the next launch resumes where this one stopped.
+			reconciliation.abort()
+			reconciliation = new AbortController()
 			await flushWorkSummaries()
 			activeRequests.delete(workLedgerPath(ctx))
 			identities.delete(workLedgerPath(ctx))

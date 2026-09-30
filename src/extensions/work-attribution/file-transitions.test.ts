@@ -98,8 +98,8 @@ describe("manual commit reconciliation", () => {
 			second,
 		)
 		const sha = git("rev-parse", "HEAD")
-		reconcileFileTransitions(context("reopened"))
-		reconcileFileTransitions(context("repeated"))
+		await reconcileFileTransitions(context("reopened"))
+		await reconcileFileTransitions(context("repeated"))
 		expect(contributions()).toEqual([
 			expect.objectContaining({ sha, workId, sessionId: "first", paths: ["first.txt"] }),
 		])
@@ -117,8 +117,8 @@ describe("manual commit reconciliation", () => {
 		await edit("one", "first edit", first)
 		await edit("two", "second edit", second)
 		const sha = commit()
-		reconcileFileTransitions(context("reopened"))
-		reconcileFileTransitions(context("repeated"))
+		await reconcileFileTransitions(context("reopened"))
+		await reconcileFileTransitions(context("repeated"))
 		const matched = contributions().sort((a, b) => a.sessionId.localeCompare(b.sessionId))
 		expect(matched).toEqual([
 			expect.objectContaining({ sha, workId, sessionId: "first", paths: ["file.txt"] }),
@@ -144,12 +144,12 @@ describe("manual commit reconciliation", () => {
 		const evidence = readFileSync(journal, "utf8")
 		writeFileSync(journal, `${evidence.split("\n")[0]}\n`)
 		const sha = commit()
-		reconcileFileTransitions(context("first-launch"))
+		await reconcileFileTransitions(context("first-launch"))
 		expect(contributions()).toEqual([expect.objectContaining({ sha, paths: ["first.txt"] })])
 
 		writeFileSync(journal, evidence)
-		reconcileFileTransitions(context("next-launch"))
-		reconcileFileTransitions(context("repeat-launch"))
+		await reconcileFileTransitions(context("next-launch"))
+		await reconcileFileTransitions(context("repeat-launch"))
 		expect(contributions()).toEqual([
 			expect.objectContaining({ sha, paths: ["first.txt"] }),
 			expect.objectContaining({ sha, paths: ["second.txt"] }),
@@ -165,7 +165,7 @@ describe("manual commit reconciliation", () => {
 		await edit("one", "first edit", first)
 		await edit("two", "second edit", second)
 		const sha = commit()
-		reconcileFileTransitions(context("initial"))
+		await reconcileFileTransitions(context("initial"))
 		const directory = join(root, "agent", "work-attribution")
 		for (const file of readdirSync(directory).filter((name) => name.endsWith(".jsonl"))) {
 			const path = join(directory, file)
@@ -183,8 +183,8 @@ describe("manual commit reconciliation", () => {
 		const progress = JSON.parse(readFileSync(progressPath, "utf8"))
 		progress.evidence = progress.evidence.replace(/^sessions-v1:/, "")
 		writeFileSync(progressPath, JSON.stringify(progress))
-		reconcileFileTransitions(context("upgrade"))
-		reconcileFileTransitions(context("repeat"))
+		await reconcileFileTransitions(context("upgrade"))
+		await reconcileFileTransitions(context("repeat"))
 		expect(
 			contributions()
 				.filter((row) => row.sha === sha)
@@ -204,15 +204,15 @@ describe("manual commit reconciliation", () => {
 		}
 		let clock = 0
 		vi.spyOn(Date, "now").mockImplementation(() => clock)
-		const { execFileSync: execute } = await vi.importActual<typeof childProcess>("node:child_process")
-		vi.spyOn(childProcess, "execFileSync").mockImplementation((...args) => {
+		const { execFile: execute } = await vi.importActual<typeof childProcess>("node:child_process")
+		vi.spyOn(childProcess, "execFile").mockImplementation(((...args: Parameters<typeof execute>) => {
 			clock += 250
 			return execute(...args)
-		})
+		}) as typeof execute)
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-		reconcileFileTransitions(context("first-launch"))
+		await reconcileFileTransitions(context("first-launch"))
 		expect(contributions().length).toBeLessThan(expected.length)
-		for (let i = 0; i < 5; i++) reconcileFileTransitions(context(`launch-${i}`))
+		for (let i = 0; i < 5; i++) await reconcileFileTransitions(context(`launch-${i}`))
 		expect(
 			contributions()
 				.map((row) => row.sha)
@@ -228,20 +228,19 @@ describe("manual commit reconciliation", () => {
 		const sha = commit()
 		let clock = 0
 		vi.spyOn(Date, "now").mockImplementation(() => clock)
-		const { execFileSync: execute } = await vi.importActual<typeof childProcess>("node:child_process")
-		vi.spyOn(childProcess, "execFileSync").mockImplementation((...args) => {
-			const result = execute(...args)
+		const { execFile: execute } = await vi.importActual<typeof childProcess>("node:child_process")
+		vi.spyOn(childProcess, "execFile").mockImplementation(((...args: Parameters<typeof execute>) => {
 			const command = args[1]
 			if (Array.isArray(command) && command.includes("ls-tree") && command.includes("second.txt")) clock += 4000
-			return result
-		})
+			return execute(...args)
+		}) as typeof execute)
 		vi.spyOn(console, "warn").mockImplementation(() => {})
-		reconcileFileTransitions(context("interrupted"))
+		await reconcileFileTransitions(context("interrupted"))
 		expect(contributions()).toEqual([])
 
 		vi.restoreAllMocks()
-		reconcileFileTransitions(context("retry"))
-		reconcileFileTransitions(context("repeat"))
+		await reconcileFileTransitions(context("retry"))
+		await reconcileFileTransitions(context("repeat"))
 		expect(contributions()).toEqual([
 			expect.objectContaining({ sha, sessionId: "original", paths: ["first.txt", "second.txt"] }),
 		])
@@ -277,9 +276,57 @@ describe("manual commit reconciliation", () => {
 			{ type: "session_start", reason: "startup" },
 			context("fresh"),
 		)
+		await flushWorkSummaries()
 		expect(contributions()).toEqual([
 			expect.objectContaining({ sha, paths: ["file.txt", "new.txt"], sessionId: "original" }),
 		])
+	})
+
+	it("records native edit evidence without blocking on synchronous Git calls", async () => {
+		baseline()
+		const syncGit = vi.spyOn(childProcess, "execFileSync")
+		await edit("one", "first")
+		expect(syncGit).not.toHaveBeenCalled()
+		expect(rows().filter((row) => row.type === "file_transition")).toEqual([
+			expect.objectContaining({ path: "file.txt", toolCallId: "edit-call" }),
+		])
+	})
+
+	it("reconciles off the session_start path and leaves child sessions to their parent", async () => {
+		baseline()
+		const workId = getWorkId(context())
+		await write("new.txt", "new")
+		const sha = commit()
+		const { execFile: execute } = await vi.importActual<typeof childProcess>("node:child_process")
+		let open!: () => void
+		const gate = new Promise<void>((resolve) => {
+			open = resolve
+		})
+		const gitCalls: string[][] = []
+		vi.spyOn(childProcess, "execFile").mockImplementation(((...args: Parameters<typeof execute>) => {
+			if (Array.isArray(args[1])) gitCalls.push(args[1].map(String))
+			const callback = args.at(-1)
+			if (typeof callback === "function")
+				args[args.length - 1] = (...result: unknown[]) =>
+					void gate.then(() => (callback as (...values: unknown[]) => void)(...result))
+			return execute(...args)
+		}) as typeof execute)
+		const syncGit = vi.spyOn(childProcess, "execFileSync")
+		const start = { type: "session_start", reason: "startup" } as const
+		const child = createExtensionApi()
+		createWorkAttributionExtension(workId)(child.api)
+		await child.getHandler<SessionStartEvent>("session_start")(start, context("child"))
+		expect(gitCalls).toEqual([])
+		expect(syncGit).not.toHaveBeenCalled()
+
+		const parent = createExtensionApi()
+		createWorkAttributionExtension()(parent.api)
+		await parent.getHandler<SessionStartEvent>("session_start")(start, context("fresh"))
+		expect(syncGit).not.toHaveBeenCalled()
+		expect(contributions()).toEqual([])
+		open()
+		await flushWorkSummaries()
+		expect(contributions()).toEqual([expect.objectContaining({ sha, workId, paths: ["new.txt"] })])
 	})
 
 	it("joins composed native edits after shutdown to the original work/session and deduplicates launches", async () => {
@@ -288,8 +335,8 @@ describe("manual commit reconciliation", () => {
 		await edit("one", "first")
 		await edit("two", "second")
 		const sha = commit()
-		reconcileFileTransitions(context("fresh"))
-		reconcileFileTransitions(context("another"))
+		await reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("another"))
 		expect(contributions()).toEqual([
 			expect.objectContaining({
 				sha,
@@ -306,10 +353,10 @@ describe("manual commit reconciliation", () => {
 	it("tracks a new file in a root commit and retains evidence for amend", async () => {
 		await write("new.txt", "new\n")
 		const first = commit()
-		reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("fresh"))
 		git("commit", "--amend", "-qm", "amended")
 		const amended = git("rev-parse", "HEAD")
-		reconcileFileTransitions(context("next"))
+		await reconcileFileTransitions(context("next"))
 		expect(contributions().map((row) => row.sha)).toEqual([first, amended])
 	})
 	it("uses the actual linked worktree and repository identity", async () => {
@@ -319,7 +366,7 @@ describe("manual commit reconciliation", () => {
 		execFileSync("git", ["-C", primary, "worktree", "add", "-qb", "linked", repo])
 		await edit("one", "first")
 		const sha = commit()
-		reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()[0]).toMatchObject({
 			sha,
 			worktree: realpathSync(repo),
@@ -347,7 +394,7 @@ describe("manual commit reconciliation", () => {
 			git("add", "other.txt")
 			git("commit", "-qm", "unrelated")
 		} else if (kind !== "partial") commit()
-		reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()).toEqual([])
 	})
 	it("matches only contributed files in a mixed commit", async () => {
@@ -355,7 +402,7 @@ describe("manual commit reconciliation", () => {
 		await edit("one", "first")
 		writeFileSync(join(repo, "other.txt"), "human")
 		commit()
-		reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()[0].paths).toEqual(["file.txt"])
 	})
 	it("does not match identical history from before the native edit", async () => {
@@ -364,7 +411,7 @@ describe("manual commit reconciliation", () => {
 		commit()
 		git("reset", "--hard", base)
 		await edit("one", "first")
-		reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()).toEqual([])
 	})
 	it("matches a commit before a later edit without retroactively claiming the later change", async () => {
@@ -373,7 +420,7 @@ describe("manual commit reconciliation", () => {
 		const first = commit()
 		await edit("two", "second")
 		const second = commit()
-		reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("fresh"))
 		expect(contributions().map((row) => row.sha)).toEqual([second, first])
 		expect(contributions().every((row) => row.transitionIds.length === 1)).toBe(true)
 	})
@@ -382,7 +429,7 @@ describe("manual commit reconciliation", () => {
 		await edit("one", "first")
 		git("reflog", "expire", "--expire=all", "--all")
 		commit()
-		reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()).toEqual([])
 	})
 	it("normalizes ordinary Git text attributes and preserves effective index mode", async () => {
@@ -392,7 +439,7 @@ describe("manual commit reconciliation", () => {
 		chmodSync(join(repo, "file.txt"), 0o755)
 		await write("file.txt", "first\r\ntwo\r\n")
 		const sha = commit()
-		reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()[0]).toMatchObject({ sha, paths: ["file.txt"] })
 	})
 	it("captures concurrent queued writes with pinned work/session and no raw-hook race", async () => {
@@ -407,7 +454,7 @@ describe("manual commit reconciliation", () => {
 			second.execute("second", { path: "file.txt", content: "first\nsecond\n" }),
 		])
 		const sha = commit()
-		reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()[0]).toMatchObject({ sha, workId, sessionId: "original" })
 		expect(contributions()[0].transitionIds).toHaveLength(2)
 	})
@@ -419,7 +466,7 @@ describe("manual commit reconciliation", () => {
 		git("reset", "--hard", base)
 		writeFileSync(join(repo, "file.txt"), "first\ntwo\n")
 		commit()
-		reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()).toEqual([])
 	})
 
@@ -458,7 +505,7 @@ describe("manual commit reconciliation", () => {
 		setWorkId(context())
 		await edit("one", "first")
 		commit()
-		reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()).toEqual([])
 	})
 
@@ -471,7 +518,7 @@ describe("manual commit reconciliation", () => {
 			for (let i = 0; i < 513; i++) writeFileSync(join(dir, `unrelated-${i}.jsonl`), "")
 		} else writeFileSync(join(dir, "unrelated.jsonl"), " ".repeat(8 * 1024 * 1024 + 1))
 		vi.spyOn(console, "warn").mockImplementation(() => {})
-		reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()[0]).toMatchObject({ sha, paths: ["file.txt"] })
 	})
 
@@ -483,7 +530,7 @@ describe("manual commit reconciliation", () => {
 		await edit("one", "first")
 		const sha = commit()
 		vi.spyOn(console, "warn").mockImplementation(() => {})
-		reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()).toEqual([expect.objectContaining({ sha, workId, paths: ["file.txt"] })])
 	}, 15000)
 
@@ -501,7 +548,7 @@ describe("manual commit reconciliation", () => {
 		if (kind === "amend") git("commit", "--amend", "-qm", "amended")
 		else git("commit", "-qm", "manual")
 		const sha = git("rev-parse", "HEAD")
-		reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("fresh"))
 		const matched = contributions().find((row) => row.sha === sha)
 		expect(matched).toMatchObject({ sha, paths: ["file.txt"] })
 		expect(matched.transitionIds).toHaveLength(2)
@@ -524,7 +571,7 @@ describe("manual commit reconciliation", () => {
 		git("add", "file.txt")
 		git("commit", "--amend", "-qm", "mixed")
 		const sha = git("rev-parse", "HEAD")
-		reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("fresh"))
 		expect(contributions().some((row) => row.sha === sha)).toBe(false)
 	})
 	it("does not claim a file whose native edits cancel each other", async () => {
@@ -533,7 +580,7 @@ describe("manual commit reconciliation", () => {
 		await edit("first", "one")
 		writeFileSync(join(repo, "other.txt"), "human")
 		commit()
-		reconcileFileTransitions(context("fresh"))
+		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()).toEqual([])
 	})
 

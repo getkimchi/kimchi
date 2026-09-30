@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process"
+import { execFile } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { constants, existsSync, lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs"
 import { access, mkdir, readFile, writeFile } from "node:fs/promises"
@@ -15,6 +15,7 @@ import {
 	appendWorkRecord,
 	getWorkId,
 	tryWorkAttribution,
+	tryWorkAttributionAsync,
 	type WorkContext,
 	workLedgerPath,
 } from "../work-attribution.js"
@@ -47,17 +48,21 @@ interface Transition {
 	after: FileState
 	cursor: Cursor
 }
-function git(cwd: string, args: string[], input?: Buffer): string {
+/** Asynchronous so attribution never blocks the event loop that renders the TUI. */
+function git(cwd: string, args: string[], options: { input?: Buffer; signal?: AbortSignal } = {}): Promise<string> {
 	const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1" }
 	for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"]) delete env[key]
-	return execFileSync("git", ["-C", cwd, ...args], {
-		encoding: "utf8",
-		timeout: GIT_TIMEOUT_MS,
-		maxBuffer: MAX_FILE_BYTES,
-		input,
-		env,
-		stdio: ["pipe", "pipe", "pipe"],
-	}).trimEnd()
+	return new Promise((resolve, reject) => {
+		const child = execFile(
+			"git",
+			["-C", cwd, ...args],
+			{ encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: MAX_FILE_BYTES, env, signal: options.signal },
+			(error, stdout) => (error ? reject(error) : resolve(stdout.trimEnd())),
+		)
+		// Git may exit before reading stdin; the command's own result reports any failure.
+		child.stdin?.on("error", () => {})
+		child.stdin?.end(options.input)
+	})
 }
 function digest(data: Buffer): string {
 	return createHash("sha256").update(data).digest("hex")
@@ -65,52 +70,61 @@ function digest(data: Buffer): string {
 function same(a: FileState | null, b: FileState | null): boolean {
 	return a?.blob === b?.blob && a?.mode === b?.mode
 }
-function supportsGitAttributes(path: string): boolean {
+async function supportsGitAttributes(path: string): Promise<boolean> {
 	// Attribute files may themselves have changed during the native write.
-	const attrs = git(dirname(path), ["check-attr", "-z", "filter", "working-tree-encoding", "--", path]).split("\0")
+	const attrs = (await git(dirname(path), ["check-attr", "-z", "filter", "working-tree-encoding", "--", path])).split(
+		"\0",
+	)
 	for (let i = 2; i < attrs.length; i += 3) if (attrs[i] !== "unspecified" && attrs[i] !== "unset") return false
 	return true
 }
-function diskState(path: string): FileState | null | undefined {
+/** `data` is the file content already read by the caller, so the hash matches what it checked. */
+async function diskState(path: string, data?: Buffer): Promise<FileState | null | undefined> {
 	if (!existsSync(path)) return null
 	const stat = lstatSync(path)
 	if (!stat.isFile() || stat.size > MAX_FILE_BYTES) throw new Error("Unsupported file for work attribution")
-	if (!supportsGitAttributes(path)) return undefined
+	if (!(await supportsGitAttributes(path))) return undefined
 	const parent = dirname(path)
 	let mode = stat.mode & 0o111 ? "100755" : "100644"
-	if (git(parent, ["config", "--type=bool", "--default=true", "--get", "core.filemode"]) === "false") {
-		mode = git(parent, ["ls-files", "--stage", "--", path]).split(" ")[0] || "100644"
+	if ((await git(parent, ["config", "--type=bool", "--default=true", "--get", "core.filemode"])) === "false") {
+		mode = (await git(parent, ["ls-files", "--stage", "--", path])).split(" ")[0] || "100644"
 	}
-	return { blob: git(parent, ["hash-object", "--stdin", `--path=${path}`], readFileSync(path)), mode }
+	const input = data ?? readFileSync(path)
+	return { blob: await git(parent, ["hash-object", "--stdin", `--path=${path}`], { input }), mode }
 }
-function treeState(cwd: string, sha: string | null, path: string): FileState | null {
+async function treeState(
+	cwd: string,
+	sha: string | null,
+	path: string,
+	signal?: AbortSignal,
+): Promise<FileState | null> {
 	if (!sha) return null
-	const entry = git(cwd, ["ls-tree", "-z", sha, "--", path])
+	const entry = await git(cwd, ["ls-tree", "-z", sha, "--", path], { signal })
 	if (!entry) return null
 	const [mode, kind, object] = entry.slice(0, entry.indexOf("\t")).split(" ")
 	if (kind !== "blob" || (mode !== "100644" && mode !== "100755")) throw new Error("Unsupported Git file mode")
 	return { blob: object, mode }
 }
-function reflog(worktree: string): Buffer {
-	const path = git(worktree, ["rev-parse", "--path-format=absolute", "--git-path", "logs/HEAD"])
+async function reflog(worktree: string, signal?: AbortSignal): Promise<Buffer> {
+	const path = await git(worktree, ["rev-parse", "--path-format=absolute", "--git-path", "logs/HEAD"], { signal })
 	if (!existsSync(path)) return Buffer.alloc(0)
 	if (statSync(path).size > MAX_FILE_BYTES) throw new Error("Work attribution reflog exceeds limit")
 	return readFileSync(path)
 }
-function repositoryFile(path: string) {
+async function repositoryFile(path: string) {
 	const parent = realpathSync(dirname(path))
 	let worktree: string
 	try {
-		worktree = realpathSync(git(parent, ["rev-parse", "--show-toplevel"]))
+		worktree = realpathSync(await git(parent, ["rev-parse", "--show-toplevel"]))
 	} catch {
 		return
 	}
 	const relativePath = relative(worktree, join(parent, basename(path)))
 	if (relativePath.startsWith("..") || isAbsolute(relativePath)) return
-	const repository = realpathSync(git(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
+	const repository = realpathSync(await git(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
 	let baseline: string | null = null
 	try {
-		baseline = git(worktree, ["rev-parse", "--verify", "HEAD"])
+		baseline = await git(worktree, ["rev-parse", "--verify", "HEAD"])
 	} catch {
 		/* unborn branch */
 	}
@@ -119,7 +133,7 @@ function repositoryFile(path: string) {
 		worktree,
 		path: relativePath,
 		baseline,
-		baselineFile: treeState(worktree, baseline, relativePath),
+		baselineFile: await treeState(worktree, baseline, relativePath),
 	}
 }
 /** Native tools invoke these operations inside their existing file mutation queue. */
@@ -140,10 +154,10 @@ function operations(ctx: WorkContext, toolCallId: string): EditOperations & Writ
 		},
 		async writeFile(path, content) {
 			const evidence = workId
-				? tryWorkAttribution(() => {
-						const repo = repositoryFile(path)
+				? await tryWorkAttributionAsync(async () => {
+						const repo = await repositoryFile(path)
 						if (!repo) return
-						const before = diskState(path)
+						const before = await diskState(path)
 						if (before === undefined) return
 						if (readDigest !== undefined && readDigest !== digest(readFileSync(path))) return
 						return { ...repo, before }
@@ -151,10 +165,12 @@ function operations(ctx: WorkContext, toolCallId: string): EditOperations & Writ
 				: undefined
 			await writeFile(path, content, "utf8")
 			if (evidence && workId)
-				tryWorkAttribution(() => {
-					const after = diskState(path)
-					if (!after || !readFileSync(path).equals(Buffer.from(content)) || same(evidence.before, after)) return
-					const log = reflog(evidence.worktree)
+				await tryWorkAttributionAsync(async () => {
+					const written = existsSync(path) ? readFileSync(path) : undefined
+					if (!written?.equals(Buffer.from(content))) return
+					const after = await diskState(path, written)
+					if (!after || same(evidence.before, after)) return
+					const log = await reflog(evidence.worktree)
 					// A cursor after the successful mutation excludes pre-existing matching history.
 					if (log.length && log[log.length - 1] !== 10) return
 					appendWorkRecord(
@@ -257,13 +273,16 @@ function commitsFromReflog(log: Buffer, start: number): CommitCandidate[] {
 }
 
 /** Match a complete, single-work edit chain to each file's parent and committed states. */
-function matchCommitTransitions(
+async function matchCommitTransitions(
 	worktree: string,
 	commit: CommitCandidate,
 	transitions: Transition[],
-	deadline: number,
-): Transition[] {
-	const parents = git(worktree, ["rev-list", "--parents", "-n", "1", commit.sha]).split(" ").slice(1)
+	checkBudget: () => void,
+	signal?: AbortSignal,
+): Promise<Transition[]> {
+	const parents = (await git(worktree, ["rev-list", "--parents", "-n", "1", commit.sha], { signal }))
+		.split(" ")
+		.slice(1)
 	if (parents.length > 1) return []
 	const parent = parents[0] ?? null
 	const transitionsByPath = new Map<string, Transition[]>()
@@ -276,9 +295,9 @@ function matchCommitTransitions(
 
 	const matched: Transition[] = []
 	for (const [path, fileTransitions] of transitionsByPath) {
-		if (Date.now() > deadline) throw new Error("Work attribution reconciliation time limit exceeded")
-		const parentFile = treeState(worktree, parent, path)
-		if (Date.now() > deadline) throw new Error("Work attribution reconciliation time limit exceeded")
+		checkBudget()
+		const parentFile = await treeState(worktree, parent, path, signal)
+		checkBudget()
 		// Discarded edits still count as competing ownership evidence.
 		const owners = new Set(fileTransitions.filter((row) => same(row.baselineFile, parentFile)).map((row) => row.workId))
 		if (owners.size !== 1) continue
@@ -295,7 +314,7 @@ function matchCommitTransitions(
 		)
 			continue
 		const after = chain[chain.length - 1].after
-		if (same(first.before, after) || !same(treeState(worktree, commit.sha, path), after)) continue
+		if (same(first.before, after) || !same(await treeState(worktree, commit.sha, path, signal), after)) continue
 		matched.push(...chain)
 	}
 	return matched
@@ -340,61 +359,77 @@ function appendCommitContributions(
 	}
 }
 
-/** Only exact, uniquely owned file transitions are evidence of a contribution. */
-export function reconcileFileTransitions(ctx: WorkContext): void {
-	tryWorkAttribution(() => {
-		let worktree: string
+/**
+ * Only exact, uniquely owned file transitions are evidence of a contribution.
+ * Runs in the background; `signal` stops it at the next checkpoint without a warning.
+ */
+export async function reconcileFileTransitions(ctx: WorkContext, signal?: AbortSignal): Promise<void> {
+	await tryWorkAttributionAsync(async () => {
 		try {
-			worktree = realpathSync(git(ctx.cwd, ["rev-parse", "--show-toplevel"]))
-		} catch {
-			return
-		}
-		const repository = realpathSync(git(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
-		const deadline = Date.now() + RECONCILIATION_BUDGET_MS
-		const journal = transitionJournal(repository, worktree)
-		if (!existsSync(journal)) return
-		if (statSync(journal).size > MAX_FILE_BYTES)
-			throw new Error("Work attribution transition journal exceeds reconciliation limit")
-		const journalDigest = digest(readFileSync(journal))
-		const transitions = records(journal)
-			.filter(isTransition)
-			.filter((row) => row.worktree === worktree && row.repository === repository)
-		if (!transitions.length) return
-		const sessionIds = new Set(transitions.map((row) => row.sessionId))
-		const recordedCommits: Record<string, unknown>[] = []
-		for (const sessionId of sessionIds) {
-			if (Date.now() > deadline) throw new Error("Work attribution reconciliation time limit exceeded")
-			recordedCommits.push(
-				...records(workLedgerPath({ cwd: ctx.cwd, sessionManager: { getSessionId: () => sessionId } })).filter(
-					(row) => row.type === "commit",
-				),
-			)
-		}
-		const log = reflog(worktree)
-		const prefixDigests = new Map<number, string>()
-		const validTransitions = transitions.filter((row) => {
-			if (Date.now() > deadline) throw new Error("Work attribution reconciliation time limit exceeded")
-			if (row.cursor.bytes > log.length) return false
-			if (!prefixDigests.has(row.cursor.bytes))
-				prefixDigests.set(row.cursor.bytes, digest(log.subarray(0, row.cursor.bytes)))
-			return prefixDigests.get(row.cursor.bytes) === row.cursor.digest
-		})
-		if (!validTransitions.length) return
-		const start = Math.min(...validTransitions.map((row) => row.cursor.bytes))
-		const candidates = commitsFromReflog(log, start)
-
-		// Resume only completed candidates from the same evidence snapshot, including unresolved ones.
-		const evidence = `sessions-v1:${journalDigest}:${digest(log)}`
-		const progressPath = `${journal}.progress`
-		const progress = records(progressPath).at(-1)
-		const completed =
-			progress?.evidence === evidence ? candidates.findIndex((row) => row.position === progress.position) : -1
-		for (const candidate of candidates.slice(completed + 1)) {
-			if (Date.now() > deadline) throw new Error("Work attribution reconciliation time limit exceeded")
-			const matched = matchCommitTransitions(worktree, candidate, validTransitions, deadline)
-			appendCommitContributions(candidate.sha, matched, recordedCommits)
-			// Checkpoint only after the whole candidate was evaluated and its contributions were saved.
-			writeFileSync(progressPath, JSON.stringify({ evidence, position: candidate.position }))
+			await reconcile(ctx, signal)
+		} catch (error) {
+			if (!signal?.aborted) throw error
 		}
 	})
+}
+async function reconcile(ctx: WorkContext, signal?: AbortSignal): Promise<void> {
+	let worktree: string
+	try {
+		worktree = realpathSync(await git(ctx.cwd, ["rev-parse", "--show-toplevel"], { signal }))
+	} catch {
+		return
+	}
+	const repository = realpathSync(
+		await git(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"], { signal }),
+	)
+	const deadline = Date.now() + RECONCILIATION_BUDGET_MS
+	const checkBudget = () => {
+		signal?.throwIfAborted()
+		if (Date.now() > deadline) throw new Error("Work attribution reconciliation time limit exceeded")
+	}
+	const journal = transitionJournal(repository, worktree)
+	if (!existsSync(journal)) return
+	if (statSync(journal).size > MAX_FILE_BYTES)
+		throw new Error("Work attribution transition journal exceeds reconciliation limit")
+	const journalDigest = digest(readFileSync(journal))
+	const transitions = records(journal)
+		.filter(isTransition)
+		.filter((row) => row.worktree === worktree && row.repository === repository)
+	if (!transitions.length) return
+	const sessionIds = new Set(transitions.map((row) => row.sessionId))
+	const recordedCommits: Record<string, unknown>[] = []
+	for (const sessionId of sessionIds) {
+		checkBudget()
+		recordedCommits.push(
+			...records(workLedgerPath({ cwd: ctx.cwd, sessionManager: { getSessionId: () => sessionId } })).filter(
+				(row) => row.type === "commit",
+			),
+		)
+	}
+	const log = await reflog(worktree, signal)
+	const prefixDigests = new Map<number, string>()
+	const validTransitions = transitions.filter((row) => {
+		checkBudget()
+		if (row.cursor.bytes > log.length) return false
+		if (!prefixDigests.has(row.cursor.bytes))
+			prefixDigests.set(row.cursor.bytes, digest(log.subarray(0, row.cursor.bytes)))
+		return prefixDigests.get(row.cursor.bytes) === row.cursor.digest
+	})
+	if (!validTransitions.length) return
+	const start = Math.min(...validTransitions.map((row) => row.cursor.bytes))
+	const candidates = commitsFromReflog(log, start)
+
+	// Resume only completed candidates from the same evidence snapshot, including unresolved ones.
+	const evidence = `sessions-v1:${journalDigest}:${digest(log)}`
+	const progressPath = `${journal}.progress`
+	const progress = records(progressPath).at(-1)
+	const completed =
+		progress?.evidence === evidence ? candidates.findIndex((row) => row.position === progress.position) : -1
+	for (const candidate of candidates.slice(completed + 1)) {
+		checkBudget()
+		const matched = await matchCommitTransitions(worktree, candidate, validTransitions, checkBudget, signal)
+		appendCommitContributions(candidate.sha, matched, recordedCommits)
+		// Checkpoint only after the whole candidate was evaluated and its contributions were saved.
+		writeFileSync(progressPath, JSON.stringify({ evidence, position: candidate.position }))
+	}
 }
