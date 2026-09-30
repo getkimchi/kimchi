@@ -1,3 +1,33 @@
+# Patch: Kimchi host integrations for pi-mcp-adapter 2.34.0
+#
+# Tracking:
+#   - Project config directory: https://github.com/nicobailon/pi-mcp-adapter/issues/491
+#     (remove when upstream supports a project config directory independent of
+#     the user config directory)
+#   - Tool-name sanitization and selector matching: getkimchi/kimchi#1168
+#     (remove when upstream sanitizes both name parts and caps wire names at
+#     the 128-char provider limit)
+#   - MCP UI standard disable: no upstream option; remove when the harness
+#     supports MCP Apps or upstream adds a disable option
+#   - OAuth loopback capture: getkimchi/kimchi#1284; upstream tracking issue
+#     pending at https://github.com/nicobailon/pi-mcp-adapter (remove when
+#     upstream supports an opportunistic loopback listener for manual
+#     redirect flows)
+# Changes:
+#   - agent-dir/config (+dist mirrors): resolve the MCP project config
+#     directory via piConfig.mcpProjectConfigDir so project MCP config can
+#     live outside the user config directory.
+#   - types (+dist mirrors): sanitize MCP tool names to ^[a-zA-Z0-9_-]{1,128}$
+#     (truncating with a warning), normalize selector patterns on both sides,
+#     and keep pre-sanitization spellings matching for include/excludeTools.
+#   - metadata-cache/server-manager/tool-metadata (+dist mirrors): do not
+#     advertise the io.modelcontextprotocol/ui extension capability and do
+#     not persist or reconstruct UI resource metadata; persist tool
+#     annotations in the metadata cache instead.
+#   - mcp-auth-flow: manual (remote https) OAuth redirect flows also start an
+#     opportunistic loopback listener on the default callback port/path and
+#     race it against the manual paste prompt; graceful fallback to
+#     paste-only when the listener cannot bind.
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
