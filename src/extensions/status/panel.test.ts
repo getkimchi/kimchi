@@ -11,12 +11,7 @@ function makeTheme(): Theme {
 
 describe("createStatusPanelComponent", () => {
 	it("renders the title, all rows, separator preserved, and a close hint", () => {
-		const rows = [
-			"Version:        1.2.3",
-			"Login method:   Kimchi account",
-			"",
-			"Model:          kimchi-dev/kimi-k3",
-		]
+		const rows = ["Version:        1.2.3", "Login method:   Kimchi account", "", "Model:          kimchi-dev/kimi-k3"]
 		const panel = createStatusPanelComponent(makeTheme(), rows, () => {})
 		const lines = panel.render(60)
 		expect(lines.join("\n")).toContain("Status")
