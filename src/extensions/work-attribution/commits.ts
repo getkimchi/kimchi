@@ -27,39 +27,46 @@ const HEAD_UPDATE = /\b\d+: HEAD [0-9a-f]+ -> ([0-9a-f]{40}|[0-9a-f]{64}) \(/
 const REPLAYED = /\b\d+: (?:CHERRY_PICK_HEAD|REBASE_HEAD) [0-9a-f]+ -> ([0-9a-f]{40}|[0-9a-f]{64}) \(/
 const REWRITE_MESSAGE = /^(?:rebase(?: -i)? \((?:pick|reword|edit|squash|fixup|continue)\)|cherry-pick):/
 const execFileAsync = promisify(execFile)
+// Bash recreates its operations for each call. Share paths, never the changing replayed SHA.
+const replayPathsByCwd = new Map<string, { worktree: string; paths: string[] }>()
 
 /** Git's stopped sequencer state survives a harness restart and disappears on abort. */
 async function stoppedReplay(cwd: string): Promise<{ worktree: string; sha: string } | undefined> {
-	const env = { ...process.env }
-	for (const key of [
-		"GIT_DIR",
-		"GIT_WORK_TREE",
-		"GIT_COMMON_DIR",
-		"GIT_INDEX_FILE",
-		"GIT_TRACE2_EVENT",
-		"GIT_TRACE_REFS",
-	])
-		delete env[key]
 	try {
-		const { stdout } = await execFileAsync(
-			"git",
-			[
-				"-C",
-				cwd,
-				"rev-parse",
-				"--path-format=absolute",
-				"--show-toplevel",
-				"--git-path",
-				"REBASE_HEAD",
-				"--git-path",
-				"CHERRY_PICK_HEAD",
-			],
-			{ encoding: "utf8", env, timeout: GIT_LOOKUP_TIMEOUT_MS },
-		)
-		const [worktree, ...paths] = stdout.trim().split("\n")
-		for (const path of paths) {
+		let location = replayPathsByCwd.get(cwd)
+		if (!location) {
+			const env = { ...process.env }
+			for (const key of [
+				"GIT_DIR",
+				"GIT_WORK_TREE",
+				"GIT_COMMON_DIR",
+				"GIT_INDEX_FILE",
+				"GIT_TRACE2_EVENT",
+				"GIT_TRACE_REFS",
+			])
+				delete env[key]
+			const { stdout } = await execFileAsync(
+				"git",
+				[
+					"-C",
+					cwd,
+					"rev-parse",
+					"--path-format=absolute",
+					"--show-toplevel",
+					"--git-path",
+					"REBASE_HEAD",
+					"--git-path",
+					"CHERRY_PICK_HEAD",
+				],
+				{ encoding: "utf8", env, timeout: GIT_LOOKUP_TIMEOUT_MS },
+			)
+			const [worktree, ...paths] = stdout.trim().split("\n")
+			location = { worktree, paths }
+			replayPathsByCwd.set(cwd, location)
+		}
+		for (const path of location.paths) {
 			const sha = readText(path).trim()
-			if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha)) return { worktree, sha }
+			if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha)) return { worktree: location.worktree, sha }
 		}
 	} catch {
 		// A shell command can run outside a repository.

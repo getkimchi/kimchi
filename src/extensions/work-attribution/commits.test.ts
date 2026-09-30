@@ -57,6 +57,32 @@ afterEach(async () => {
 })
 
 describe("Git commit observation", () => {
+	it("discovers replay paths once per cwd across separate Bash calls", async () => {
+		git(repository, "commit", "--allow-empty", "-m", "base")
+		const worktree = join(directory, "linked")
+		git(repository, "worktree", "add", "-b", "linked", worktree)
+		const executable = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim()
+		const bin = join(directory, "bin")
+		const lookups = join(directory, "lookups")
+		fs.mkdirSync(bin)
+		writeFileSync(
+			join(bin, "git"),
+			`#!/bin/sh\nprintf '%s\\n' "$*" >> ${quote(lookups)}\nexec ${quote(executable)} "$@"\n`,
+			{ mode: 0o700 },
+		)
+		vi.stubEnv("PATH", `${bin}:${process.env.PATH}`)
+
+		// Each call creates new tracking operations, as both registered Bash tools do.
+		expect(await run("true")).toBe(0)
+		expect(await run("true")).toBe(0)
+		expect(await run("true", worktree)).toBe(0)
+		expect(await run("true", worktree)).toBe(0)
+		const discovery = fs.readFileSync(lookups, "utf8").trim().split("\n")
+		expect(discovery).toHaveLength(2)
+		expect(discovery[0]).toContain("--show-toplevel --git-path REBASE_HEAD --git-path CHERRY_PICK_HEAD")
+		expect(discovery[1]).toContain(`-C ${worktree} rev-parse`)
+	})
+
 	it("records root commits and amendments even when the shell later fails", async () => {
 		expect(await run("git commit --allow-empty -m first && git commit --allow-empty --amend -m amended; false")).toBe(1)
 		const shas = git(repository, "reflog", "--format=%H").split("\n").reverse()
