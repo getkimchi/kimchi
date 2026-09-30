@@ -7,6 +7,7 @@ import { getApiKeySource, getEnvironmentApiKey, loadConfig } from "../../config.
 import { isKimchiProvider } from "../../kimchi-provider.js"
 import { getVersion } from "../../utils.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
+import { resolveEffectiveModel } from "../auto-model/state.js"
 import { getKimchiAuthPath } from "../login/flow.js"
 import { createStatusPanelComponent } from "./panel.js"
 
@@ -39,6 +40,8 @@ interface StatusRowsDeps {
 	cwd: string
 	modelRef: string
 	isAuto: boolean
+	/** Concrete model id the Auto router last resolved for this session, if any. */
+	resolvedModelId?: string
 	mcp: McpCounts | undefined
 }
 
@@ -62,7 +65,7 @@ export function buildStatusRows(deps: StatusRowsDeps): string[] {
 		row("Session name:", deps.sessionName ?? "(unnamed — use /name to add a name)"),
 		row("Session ID:", deps.sessionId ?? "unknown"),
 		row("cwd:", deps.cwd),
-		row("Model:", `${deps.modelRef}${deps.isAuto ? " (auto)" : ""}`),
+		row("Model:", `${deps.modelRef}${deps.isAuto ? ` (${deps.resolvedModelId ?? "auto"})` : ""}`),
 	]
 	if (deps.mcp) {
 		sessionRows.push(
@@ -160,6 +163,13 @@ export async function gatherStatusRows(ctx: ExtensionContext): Promise<string[]>
 
 	const model = ctx.model
 	const modelRef = model ? `${model.provider}/${model.id}` : "(no model selected)"
+	// Auto is a virtual model: the backend stamps the concrete pick per response
+	// (tracked in auto-model/state.ts). Surface the last resolved pick; the row
+	// falls back to "(auto)" until one lands.
+	const effective = isAutoRoutedModel(model)
+		? resolveEffectiveModel(model, ctx.sessionManager.getSessionId())
+		: undefined
+	const resolvedModelId = effective && model && effective.id !== model.id ? effective.id : undefined
 
 	return buildStatusRows({
 		version: getVersion(),
@@ -176,6 +186,7 @@ export async function gatherStatusRows(ctx: ExtensionContext): Promise<string[]>
 		cwd: ctx.cwd,
 		modelRef,
 		isAuto: isAutoRoutedModel(model),
+		resolvedModelId,
 		mcp: cachedMcpSnapshot ? summarizeMcpSnapshot(cachedMcpSnapshot) : undefined,
 	})
 }

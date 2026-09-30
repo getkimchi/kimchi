@@ -1,11 +1,18 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { Model } from "@earendil-works/pi-ai"
 import type { McpStatusSnapshot } from "pi-mcp-adapter"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { createCommandContext } from "../__mocks__/context.js"
+import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
-import statusExtension, { buildStatusRows, resolveLoginMethod, summarizeMcpSnapshot } from "./index.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "../auto-model/state.js"
+import statusExtension, {
+	buildStatusRows,
+	gatherStatusRows,
+	resolveLoginMethod,
+	summarizeMcpSnapshot,
+} from "./index.js"
 
 vi.mock("../../config.js", () => ({
 	loadConfig: () => ({ apiKey: undefined }),
@@ -17,6 +24,21 @@ vi.mock("../login/flow.js", () => ({ getKimchiAuthPath: () => "/does/not/exist/a
 vi.mock("../../api/me.js", () => ({ getMe: vi.fn() }))
 vi.mock("../../api/organizations.js", () => ({ getOrganization: vi.fn(), verifyApiKey: vi.fn() }))
 vi.mock("../../utils.js", () => ({ getVersion: () => "9.9.9-test" }))
+
+function model(id: string): Model<string> {
+	return {
+		id,
+		name: id,
+		api: "openai-completions",
+		provider: "kimchi-dev",
+		baseUrl: "https://example.test",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 128000,
+		maxTokens: 16000,
+	}
+}
 
 function baseDeps(overrides: Partial<Parameters<typeof buildStatusRows>[0]> = {}) {
 	return {
@@ -84,9 +106,50 @@ describe("buildStatusRows", () => {
 		).toBe("Model:          kimchi-dev/auto (auto)")
 	})
 
+	it("shows the concrete routed model id in place of (auto) once a pick lands", () => {
+		expect(
+			buildStatusRows(baseDeps({ modelRef: "kimchi-dev/auto", isAuto: true, resolvedModelId: "kimi-k3" })).find((r) =>
+				r.startsWith("Model:"),
+			),
+		).toBe("Model:          kimchi-dev/auto (kimi-k3)")
+	})
+
 	it("marks MCP as unavailable when no snapshot has been received", () => {
 		const rows = buildStatusRows(baseDeps({ mcp: undefined }))
 		expect(rows.find((r) => r.startsWith("MCP servers:"))).toBe("MCP servers:    unavailable · /mcp")
+	})
+})
+
+describe("gatherStatusRows", () => {
+	afterEach(() => clearAutoRoutingState("test-session"))
+
+	function autoSessionContext() {
+		return createContext({
+			model: model("auto"),
+			sessionManager: { getSessionName: () => "my-session" },
+		})
+	}
+
+	it("shows the concrete model auto resolved to for this session", async () => {
+		setAutoRoutingState("test-session", { status: "resolved", model: model("kimi-k3"), requestedId: "auto" })
+
+		const rows = await gatherStatusRows(autoSessionContext())
+
+		expect(rows.find((r) => r.startsWith("Model:"))).toBe("Model:          kimchi-dev/auto (kimi-k3)")
+	})
+
+	it("falls back to (auto) while no concrete pick has resolved", async () => {
+		const rows = await gatherStatusRows(autoSessionContext())
+
+		expect(rows.find((r) => r.startsWith("Model:"))).toBe("Model:          kimchi-dev/auto (auto)")
+	})
+
+	it("falls back to (auto) when the resolved pick was for a different virtual model", async () => {
+		setAutoRoutingState("test-session", { status: "resolved", model: model("kimi-k3"), requestedId: "auto-beta" })
+
+		const rows = await gatherStatusRows(autoSessionContext())
+
+		expect(rows.find((r) => r.startsWith("Model:"))).toBe("Model:          kimchi-dev/auto (auto)")
 	})
 })
 
