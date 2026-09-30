@@ -205,6 +205,64 @@ describe("readable work summaries", () => {
 		expect(scan).not.toHaveBeenCalled()
 		expect(summary(workId).requests).toHaveLength(1)
 	})
+	it("does not scan histories when a session starts brand-new work", async () => {
+		const scan = vi.spyOn(fs, "readdirSync")
+		const workId = getWorkId(context("fresh"))
+		await flushWorkSummaries()
+		expect(scan).not.toHaveBeenCalled()
+		expect(summary(workId).sessions).toEqual(["fresh"])
+	})
+	it("relaunches without rereading recovered ledgers or republishing unchanged summaries", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		recordProviderRequest(ctx)
+		await flushWorkSummaries()
+		const script = join(dir, "launch.mts")
+		fs.writeFileSync(
+			script,
+			`import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const read = fs.readFileSync;
+let ledgerReads = 0;
+fs.readFileSync = (file, ...rest) => { if (String(file).endsWith(".jsonl")) ledgerReads++; return read(file, ...rest) };
+syncBuiltinESMExports();
+const { flushWorkSummaries, recoverWorkSummaries } = await import(${JSON.stringify(new URL("./summary.ts", import.meta.url).pathname)});
+recoverWorkSummaries();
+await flushWorkSummaries();
+console.log(JSON.stringify({ ledgerReads }));`,
+		)
+		const launch = () =>
+			new Promise<{ ledgerReads: number }>((resolve, reject) => {
+				const child = spawn(process.execPath, ["--import", "tsx", script], {
+					env: { ...process.env, PI_CODING_AGENT_DIR: dir },
+				})
+				let stdout = ""
+				let stderr = ""
+				child.stdout.on("data", (chunk) => {
+					stdout += chunk
+				})
+				child.stderr.on("data", (chunk) => {
+					stderr += chunk
+				})
+				child.once("exit", (code) => (code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(stderr))))
+			})
+		const ledger = join(dir, "work-attribution", "parent.jsonl")
+		const past = new Date(Date.now() - 60 * 60 * 1000)
+		fs.utimesSync(path(workId), past, past)
+		const published = fs.statSync(path(workId)).mtimeMs
+		expect((await launch()).ledgerReads).toBe(1)
+		expect(fs.statSync(path(workId)).mtimeMs).toBe(published)
+		fs.utimesSync(ledger, past, past)
+		expect((await launch()).ledgerReads).toBe(0)
+		expect(fs.statSync(path(workId)).mtimeMs).toBe(published)
+		// A later append is replayed again, even if its live summary update never ran.
+		fs.appendFileSync(
+			ledger,
+			`${JSON.stringify({ type: "request", requestId: "unpublished", version: 1, sessionId: "parent", workId, cwd: "/project", recordedAt: new Date().toISOString() })}\n`,
+		)
+		expect((await launch()).ledgerReads).toBe(1)
+		expect(summary(workId).requests.map((row: { requestId: string }) => row.requestId)).toContain("unpublished")
+	}, 30000)
 	it("drains an append that arrives while the asynchronous lock is being released", async () => {
 		const ctx = context()
 		const workId = getWorkId(ctx)

@@ -26,7 +26,7 @@ import {
 	createTrackedWriteTool,
 	reconcileFileTransitions,
 } from "./work-attribution/file-transitions.js"
-import { flushWorkSummaries, recoverWorkSummaries, updateWorkSummary } from "./work-attribution/summary.js"
+import { flushWorkSummaries, markNewWork, recoverWorkSummaries, updateWorkSummary } from "./work-attribution/summary.js"
 
 export interface WorkContext {
 	cwd: string
@@ -76,12 +76,10 @@ export function appendWorkRecord(
 	}
 	updateWorkSummary(record)
 }
-export function setWorkId(
-	ctx: WorkContext,
-	workId: string = randomUUID(),
-	pi?: Pick<ExtensionAPI, "appendEntry">,
-): string {
+export function setWorkId(ctx: WorkContext, existingWorkId?: string, pi?: Pick<ExtensionAPI, "appendEntry">): string {
+	const workId = existingWorkId ?? randomUUID()
 	if (!isWorkId(workId)) throw new Error("Invalid work UUID")
+	if (!existingWorkId) markNewWork(workId)
 	appendWorkRecord(ctx, { type: "work" }, workId)
 	identities.set(workLedgerPath(ctx), workId)
 	pi?.appendEntry(WORK_IDENTITY_ENTRY, { workId })

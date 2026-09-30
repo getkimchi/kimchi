@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
-import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { lock } from "proper-lockfile"
@@ -10,6 +10,9 @@ import { isWorkId } from "../../shared/work-id.js"
 const LOCK_STALE_MS = 5000
 const MERGE_BATCH_SIZE = 1000
 const LOCK_RETRIES = { retries: 60, factor: 1.5, minTimeout: 25, maxTimeout: 100 }
+const RECOVERY_STAMP = ".recovered.json"
+// Coarse filesystem timestamps and small clock differences must not hide an append.
+const RECOVERY_MTIME_SLACK_MS = 2000
 interface SummaryEntry {
 	sessionId: string
 	[key: string]: unknown
@@ -30,10 +33,14 @@ interface WorkSummary {
 interface PendingUpdate {
 	records: WorkRecord[]
 	complete: boolean
-	promise: Promise<void>
+	/** Resolves false when the update failed and its records still need recovery. */
+	promise: Promise<boolean>
 }
 const pending = new Map<string, PendingUpdate>()
+const recoveries = new Set<Promise<void>>()
 const recoveredDirectories = new Set<string>()
+/** Work IDs generated in this process: they cannot have older history to scan. */
+const newWork = new Set<string>()
 function warn(error: unknown): void {
 	console.warn("[work-attribution] Work summary unavailable:", error)
 }
@@ -84,7 +91,7 @@ async function readSummary(path: string, workId: string): Promise<WorkSummary | 
 		if (!(error instanceof SyntaxError) && (!object(error) || error.code !== "ENOENT")) throw error
 	}
 }
-function readRecords(agentDir: string): WorkRecord[] {
+function readRecords(agentDir: string, modifiedSince?: number): WorkRecord[] {
 	const directory = join(agentDir, "work-attribution")
 	if (!existsSync(directory)) return []
 	const records: WorkRecord[] = []
@@ -92,7 +99,9 @@ function readRecords(agentDir: string): WorkRecord[] {
 	for (const file of readdirSync(directory, { withFileTypes: true })) {
 		if (!file.isFile() || !file.name.endsWith(".jsonl")) continue
 		try {
-			for (const line of readFileSync(join(directory, file.name), "utf8").split("\n")) {
+			const path = join(directory, file.name)
+			if (modifiedSince !== undefined && statSync(path).mtimeMs < modifiedSince) continue
+			for (const line of readFileSync(path, "utf8").split("\n")) {
 				try {
 					const value = JSON.parse(line)
 					if (record(value)) records.push(value)
@@ -171,21 +180,25 @@ async function update(
 	assertLease()
 	const directory = join(agentDir, "work", workId)
 	const summary = await readSummary(join(directory, "work.json"), workId)
+	const published = summary && JSON.stringify(summary)
 	const value = summary ?? { version: 1, workId, sessions: [], requests: [], plans: [], commits: [] }
 	const history = !summary && !complete ? readRecords(agentDir).filter((row) => row.workId === workId) : []
 	await merge(value, history.concat(records))
+	if (published === JSON.stringify(value)) return
 	assertLease()
 	await publish(directory, value, assertLease)
 }
-function refresh(agentDir: string, workId: string, records: WorkRecord[], complete = false): void {
+function refresh(agentDir: string, workId: string, records: WorkRecord[], complete = false): Promise<boolean> {
 	const directory = join(agentDir, "work", workId)
+	// A work ID generated here has no earlier records, so its first write skips the history scan.
+	if (newWork.delete(workId)) complete = true
 	const queued = pending.get(directory)
 	if (queued) {
 		queued.records = queued.records.concat(records)
 		queued.complete ||= complete
-		return
+		return queued.promise
 	}
-	const queue: PendingUpdate = { records: [...records], complete, promise: Promise.resolve() }
+	const queue: PendingUpdate = { records: [...records], complete, promise: Promise.resolve(true) }
 	queue.promise = (async () => {
 		try {
 			await mkdir(directory, { recursive: true, mode: 0o700 })
@@ -214,31 +227,65 @@ function refresh(agentDir: string, workId: string, records: WorkRecord[], comple
 		} finally {
 			pending.delete(directory)
 		}
-	})().catch(warn)
+	})().then(
+		() => true,
+		(error: unknown) => {
+			warn(error)
+			return false
+		},
+	)
 	pending.set(directory, queue)
+	return queue.promise
+}
+/** Call before the first record of a freshly generated work ID. */
+export function markNewWork(workId: string): void {
+	newWork.add(workId)
 }
 /** Called only after the source record has been durably appended. */
 export function updateWorkSummary(value: unknown): void {
 	if (record(value)) refresh(getAgentDir(), value.workId, [value])
 }
-/** One launch-time pass also heals records left behind by an interrupted summary update. */
+function recoveredSince(stamp: string): number | undefined {
+	try {
+		const value = JSON.parse(readFileSync(stamp, "utf8")).startedAt
+		return Number.isFinite(value) ? value - RECOVERY_MTIME_SLACK_MS : undefined
+	} catch {
+		return undefined
+	}
+}
+/**
+ * One launch-time pass heals records left behind by an interrupted summary update.
+ * Records written before the last fully successful pass started were already published by it,
+ * so only ledgers modified since then are replayed. Delete the stamp to force a full replay.
+ */
 export function recoverWorkSummaries(): void {
 	try {
 		const agentDir = getAgentDir()
 		if (recoveredDirectories.has(agentDir)) return
+		const stamp = join(agentDir, "work-attribution", RECOVERY_STAMP)
+		const startedAt = Date.now()
 		const groups = new Map<string, WorkRecord[]>()
-		for (const row of readRecords(agentDir)) {
+		for (const row of readRecords(agentDir, recoveredSince(stamp))) {
 			const rows = groups.get(row.workId) ?? []
 			rows.push(row)
 			groups.set(row.workId, rows)
 		}
-		for (const [workId, rows] of groups) refresh(agentDir, workId, rows, true)
+		const updates = [...groups].map(([workId, rows]) => refresh(agentDir, workId, rows, true))
 		recoveredDirectories.add(agentDir)
+		const recovery = Promise.all(updates)
+			.then((results) => {
+				if (results.every(Boolean) && existsSync(dirname(stamp)))
+					writeFileSync(stamp, JSON.stringify({ startedAt }), { mode: 0o600 })
+			})
+			.catch(warn)
+			.finally(() => recoveries.delete(recovery))
+		recoveries.add(recovery)
 	} catch (error) {
 		warn(error)
 	}
 }
 /** Shutdown awaits queued contention retries; every retry has a finite deadline. */
 export async function flushWorkSummaries(): Promise<void> {
-	while (pending.size) await Promise.all([...pending.values()].map((update) => update.promise))
+	while (pending.size || recoveries.size)
+		await Promise.all([...[...pending.values()].map((update) => update.promise), ...recoveries])
 }
