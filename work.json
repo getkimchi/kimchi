@@ -1,0 +1,227 @@
+{
+  "version": 1,
+  "workId": "f1eb8355-ab60-4c02-bddb-f19b1a2d7252",
+  "sessions": [
+    "01a0f111-7181-7765-9b99-58cfd83ccb44",
+    "01a0f113-5e59-7718-adf3-29a05a4a2055"
+  ],
+  "requests": [
+    {
+      "requestId": "227b223a-e38b-4005-b913-12e1c692ecf5",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f111-7181-7765-9b99-58cfd83ccb44",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:48:07.777Z"
+    },
+    {
+      "requestId": "84e53deb-432c-482e-a6c4-3415499e50ba",
+      "provider": "kimchi-dev",
+      "model": "deepseek-v4-flash-0731",
+      "modelSource": "context",
+      "sessionId": "01a0f111-7181-7765-9b99-58cfd83ccb44",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:48:10.106Z"
+    },
+    {
+      "requestId": "e519f2b0-1232-49d7-a8d2-8e8a9d06b0a2",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f111-7181-7765-9b99-58cfd83ccb44",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:48:10.109Z"
+    },
+    {
+      "requestId": "788d81e7-f77d-4b52-8a53-d45645ed0387",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f111-7181-7765-9b99-58cfd83ccb44",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:48:11.297Z"
+    },
+    {
+      "requestId": "93a535d6-7d78-4890-9063-6f60f5bd7458",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:50:07.106Z"
+    },
+    {
+      "requestId": "0006a309-139d-4521-8654-787dbbf0fc01",
+      "provider": "kimchi-dev",
+      "model": "deepseek-v4-flash-0731",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:50:08.672Z"
+    },
+    {
+      "requestId": "5ab074fa-6579-41bb-88a1-9a8a74e157d6",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:50:08.675Z"
+    },
+    {
+      "requestId": "e3022c87-ced3-4f07-80f3-2ce65eb485ec",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:50:11.129Z"
+    },
+    {
+      "requestId": "4e16e46a-24b4-483d-83a8-1154bcf292ac",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:50:12.137Z"
+    },
+    {
+      "requestId": "7bb90ebd-79c6-4bb3-9a53-e94650154061",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:55:08.857Z"
+    },
+    {
+      "requestId": "d0305543-d35a-4202-b82f-32f0d08418df",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:55:10.320Z"
+    },
+    {
+      "requestId": "d76f5798-f7b9-46e9-9780-8e0658e706ea",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:55:12.684Z"
+    },
+    {
+      "requestId": "b624aff5-8bfb-4860-901a-781f9d480526",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:55:57.841Z"
+    },
+    {
+      "requestId": "47bf13da-8a90-478e-a5c0-36d35bb3010f",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:56:45.774Z"
+    },
+    {
+      "requestId": "cf57f5ab-33df-4cde-9649-a50600618ca8",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:56:47.679Z"
+    },
+    {
+      "requestId": "faa81913-6212-4737-bfe4-32d0257df440",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:57:13.631Z"
+    },
+    {
+      "requestId": "0a505038-b046-4c6d-ba42-f3e679e4155e",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:57:15.546Z"
+    },
+    {
+      "requestId": "b55b91ef-6b95-4a90-97ca-2a810b86ef2f",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:57:39.056Z"
+    },
+    {
+      "requestId": "2a1284f1-b411-4b15-8a8c-f70a45d3b0a5",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:57:58.863Z"
+    },
+    {
+      "requestId": "fa7e5079-a00a-4b02-94f7-b45b258c1e32",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:58:44.957Z"
+    },
+    {
+      "requestId": "b8ae1a39-f152-4bb7-b898-a1e7b9a4e8ed",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:59:43.786Z"
+    },
+    {
+      "requestId": "f2bed04d-1e57-49ee-b011-a9896720982d",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:59:44.928Z"
+    }
+  ],
+  "plans": [
+    {
+      "path": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan/.kimchi/plans/goal.md",
+      "sessionId": "01a0f111-7181-7765-9b99-58cfd83ccb44",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:48:23.175Z"
+    }
+  ],
+  "commits": [
+    {
+      "sha": "c43d52578f847549424196e10ba4985f31f7a528",
+      "repository": "/Users/tautvydas/Desktop/castai/kimchi-dev/.git",
+      "worktree": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "toolCallId": "call_5506bd2467b345e59edf1179",
+      "sessionId": "01a0f113-5e59-7718-adf3-29a05a4a2055",
+      "cwd": "/Users/tautvydas/Desktop/castai/kimchi-dev-demo-auto-plan",
+      "recordedAt": "2026-09-30T06:55:57.838Z"
+    }
+  ]
+}
