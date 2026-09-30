@@ -175,9 +175,7 @@ test("a new session continues a saved plan's work before its first model call", 
 			await waitForText(terminal, "PLANNING_SESSION_EXITED", { full: false })
 			launchKimchi(terminal, fixture, [], fixture.seedEnv)
 			await waitForText(terminal, PROMPT_READY, { full: false })
-			terminal.submit(`/work ${planPath}`)
-			await waitForText(terminal, `Work ID: ${workId}`)
-			terminal.submit("Implement the saved plan.")
+			terminal.submit(`Implement ${planPath}`)
 			await waitForText(terminal, "Continuing the saved attribution plan.")
 			const ledgerDir = join(fixture.agentDir, "work-attribution")
 			const requests = readLedger(ledgerDir).filter((record) => record.type === "request")
@@ -246,6 +244,7 @@ test("a fresh session links a manual commit to the work that wrote its files", a
 			await waitForText(terminal, PROMPT_READY, { full: false })
 			terminal.submit("Confirm this is a fresh session.")
 			await waitForText(terminal, "This is a fresh session after the manual commit.")
+			const originalSummary = await waitForSummary(fixture.agentDir, original.workId, { commits: 1, requests: 2 })
 			const records = readLedger(ledgerDir)
 			const contribution = records.find((record) => record.type === "commit" && record.sha === sha)
 			expect(contribution).toMatchObject({
@@ -261,7 +260,6 @@ test("a fresh session links a manual commit to the work that wrote its files", a
 			expect(fresh).toBeDefined()
 			expect(fresh.sessionId).not.toBe(original.sessionId)
 			expect(fresh.workId).not.toBe(original.workId)
-			const originalSummary = await waitForSummary(fixture.agentDir, original.workId, { commits: 1, requests: 2 })
 			const freshSummary = await waitForSummary(fixture.agentDir, fresh.workId, { requests: 1 })
 			expect(originalSummary.commits[0]).toMatchObject({ sha, sessionId: original.sessionId, paths: ["manual.txt"] })
 			expect(originalSummary.requests.some((item: { requestId: string }) => item.requestId === fresh.requestId)).toBe(
