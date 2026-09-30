@@ -62,6 +62,24 @@ describe("installConsoleWarnRelay", () => {
 		expect(sink).not.toHaveBeenCalled()
 	})
 
+	it("formats arguments like the terminal would — placeholders resolved, objects inspected", () => {
+		installWithSink(vi.fn())
+		trackConsoleWarnRelayContext(fakeCtx(true))
+
+		console.warn("server %s failed:", "github", { code: 42 })
+
+		expect(mockedRecord).toHaveBeenCalledWith("server github failed: { code: 42 }")
+	})
+
+	it("strips OSC sequences (hyperlinks, window titles) before recording", () => {
+		installWithSink(vi.fn())
+		trackConsoleWarnRelayContext(fakeCtx(true))
+
+		console.warn("see \u001b]8;;https://example.com\u0007docs\u001b]8;;\u0007 \u001b]0;title\u001b\\now")
+
+		expect(mockedRecord).toHaveBeenCalledWith("see docs now")
+	})
+
 	it("dedupes colored and uncolored variants of the same message together", () => {
 		const sink = vi.fn()
 		installWithSink(sink)
@@ -211,5 +229,27 @@ describe("installConsoleWarnRelay", () => {
 
 		expect(mockedRecord).toHaveBeenCalledTimes(1)
 		expect(sink).toHaveBeenCalledWith("transient")
+	})
+})
+
+describe("installConsoleWarnRelay errors", () => {
+	it("falls back to the original sink when recording throws — console.warn never throws", () => {
+		const sink = vi.fn()
+		installWithSink(sink)
+		mockedRecord.mockImplementationOnce(() => {
+			throw new Error("host rejected sendMessage")
+		})
+		console.warn("queued behind the failure")
+		console.warn("first", "queued")
+
+		expect(() => trackConsoleWarnRelayContext(fakeCtx(true))).not.toThrow()
+		expect(sink).toHaveBeenCalledWith("queued behind the failure")
+		expect(mockedRecord).toHaveBeenLastCalledWith("first queued")
+
+		mockedRecord.mockImplementationOnce(() => {
+			throw new Error("host rejected sendMessage")
+		})
+		expect(() => console.warn("live failure")).not.toThrow()
+		expect(sink).toHaveBeenLastCalledWith("live failure")
 	})
 })

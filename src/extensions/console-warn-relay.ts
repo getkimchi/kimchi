@@ -8,18 +8,21 @@
  * terminal, bypassing the diff renderer and clobbering the prompt editor
  * and surrounding UI. This module patches `console.warn` once per process
  * so that in interactive mode every warning is rerouted to the
- * collapsed-by-default warnings-summary transcript row (see
+ * collapsed-by-default warnings-summary notice above the editor (see
  * `warnings-summary.ts`) instead of terminal bytes. The summary module
- * falls back to `ctx.ui.notify` when it is not installed.
+ * falls back to `ctx.ui.notify` when the tracked context has no UI.
  *
  * Behavior:
- * - Interactive (tracked context with `hasUI`): the formatted message has
- *   ANSI escape codes stripped (upstream code warns with `chalk`, and
+ * - Interactive (tracked context with `hasUI`): the arguments are formatted
+ *   with `util.format` (same output the terminal would have shown) and all
+ *   terminal control sequences (CSI colors, OSC hyperlinks/titles) are
+ *   stripped (upstream code warns with `chalk`, and
  *   `showWarning` applies its own theme color — foreign escapes must not
  *   nest), then identical messages within a 10s window are deduped so
- *   repeated warnings don't stack identical chat lines. Non-duplicate
+ *   repeated warnings don't stack identical entries. Non-duplicate
  *   messages are forwarded to the warnings-summary store and the original
- *   sink is left alone.
+ *   sink is left alone. If recording throws, the warn falls back to the
+ *   original sink — a patched `console.warn` must never throw into callers.
  * - Headless (no tracked context or `hasUI` false): the original sink
  *   receives the original arguments verbatim — no dedupe, no formatting,
  *   no ANSI stripping.
@@ -39,12 +42,9 @@
  * intercepts or reroutes extension console output, drop this relay.
  */
 
+import { format, stripVTControlCharacters } from "node:util"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { recordRelayedWarning } from "./warnings-summary.js"
-
-/** ANSI CSI escape sequences (e.g. `[33m` colors from `chalk`). */
-// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC (0x1b) introduces the CSI sequences being stripped
-const ANSI_CSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g
 
 /** Identical messages within this window are swallowed in interactive mode. */
 const DEDUPE_WINDOW_MS = 10_000
@@ -74,19 +74,23 @@ relayGlobals[RELAY_STATE_KEY] ??= {
 }
 const state = relayGlobals[RELAY_STATE_KEY]
 
-function formatWarnArgs(args: unknown[]): string {
-	return args.map((arg) => (typeof arg === "string" ? arg : arg instanceof Error ? arg.message : String(arg))).join(" ")
-}
-
-/** Interactive route: strip ANSI, dedupe identical messages in the window, record. */
+/**
+ * Interactive route: format, strip control sequences, dedupe identical
+ * messages in the window, record. Any failure falls back to the original
+ * sink so callers of `console.warn` never see a throw.
+ */
 function routeInteractive(args: unknown[]): void {
-	const message = formatWarnArgs(args).replace(ANSI_CSI_PATTERN, "")
-	const now = Date.now()
-	const seenAt = state.recentWarns.get(message)
-	if (seenAt !== undefined && now - seenAt < DEDUPE_WINDOW_MS) return
-	if (state.recentWarns.size >= DEDUPE_MAP_MAX) state.recentWarns.clear()
-	state.recentWarns.set(message, now)
-	recordRelayedWarning(message)
+	try {
+		const message = stripVTControlCharacters(format(...args))
+		const now = Date.now()
+		const seenAt = state.recentWarns.get(message)
+		if (seenAt !== undefined && now - seenAt < DEDUPE_WINDOW_MS) return
+		if (state.recentWarns.size >= DEDUPE_MAP_MAX) state.recentWarns.clear()
+		state.recentWarns.set(message, now)
+		recordRelayedWarning(message)
+	} catch {
+		state.installedOriginal?.(...args)
+	}
 }
 
 /**

@@ -7,7 +7,9 @@ import type {
 	ModelRegistry,
 	SessionManager,
 	TerminalInputHandler,
+	Theme,
 } from "@earendil-works/pi-coding-agent"
+import type { Component, TUI } from "@earendil-works/pi-tui"
 import { type Mocked, vi } from "vitest"
 
 export function createCommandContext(): ExtensionCommandContext {
@@ -29,6 +31,23 @@ export function sendTerminalInput(ctx: ExtensionContext, data: string): void {
 	for (const handler of handlers ?? []) {
 		handler(data)
 	}
+}
+
+/**
+ * Instantiate the component factory most recently passed to
+ * `ctx.ui.setWidget(key, factory)`. Returns undefined when the widget was
+ * never set or was last cleared.
+ */
+export function mountWidget(
+	ctx: ExtensionContext,
+	key: string,
+	tui: Partial<TUI> = { requestRender: vi.fn() },
+): Component | undefined {
+	const calls = vi.mocked(ctx.ui.setWidget).mock.calls.filter(([k]) => k === key)
+	const content = calls.at(-1)?.[1]
+	if (typeof content !== "function") return undefined
+	const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as unknown as Theme
+	return content(tui as TUI, theme)
 }
 
 export function createContext(
@@ -71,6 +90,7 @@ export function createContext(
 			custom: vi.fn(),
 			setStatus: vi.fn(),
 			setWidget: vi.fn(),
+			getToolsExpanded: vi.fn(() => false),
 			setWorkingVisible: vi.fn(),
 			setEditorText: vi.fn(),
 			getEditorText: vi.fn(() => ""),
