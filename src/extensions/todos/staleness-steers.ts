@@ -34,8 +34,8 @@ export function stalenessIndicator(changes: number): string | undefined {
 
 /** Send a hidden persistent steer message (lands in session history at the
  *  current chronological position, so it joins the stable cache prefix).
- *  This is the single send path for staleness steers — the E.1 fire event
- *  and the E.4 kill switch live here so every staleness steer is measured
+ *  This is the single send path for staleness steers — the fire event
+ *  and the kill switch live here so every staleness steer is measured
  *  and individually disableable. */
 export function sendHiddenSteer(
 	pi: ExtensionAPI,

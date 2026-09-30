@@ -668,7 +668,7 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 			// short-circuits because inspection should never be enforced,
 			// regardless of what the caller asked for.
 			if (options?.isEnabled && !options.isEnabled()) return false
-			// E.4 kill switch: the env flag wires into this same off-path
+			// Kill switch: the env flag wires into this same off-path
 			// rather than adding a second disable route.
 			if (isSteerDisabled("bash_tool_guard")) return false
 			const sessionId = ctx?.sessionManager.getSessionId()
@@ -691,7 +691,7 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 		}
 	}
 
-	// Outcome tracking (plan E.3): after a block/warn intervenes on a
+	// Outcome tracking: after a block/warn intervenes on a
 	// category, watch the next N bash calls. If the same category recurs
 	// within the window the steer was ignored ("repeated"); if the window
 	// closes without a recurrence it held ("complied"). Windows are keyed

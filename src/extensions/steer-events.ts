@@ -1,5 +1,5 @@
 /**
- * Steer/nudge domain event channels published via pi.events (plan E.1).
+ * Steer/nudge domain event channels published via pi.events.
  *
  * Guard/nudge extensions emit these events; the telemetry extension
  * subscribes (handlers/steers.ts) and forwards them to OTLP. This keeps
@@ -162,7 +162,7 @@ export function emitSteerOutcome(
 }
 
 /**
- * Per-nudge/per-guard kill switches (plan E.4).
+ * Per-nudge/per-guard kill switches.
  *
  * Flag naming: steers use `KIMCHI_DISABLE_NUDGE_<KIND>`, guards use
  * `KIMCHI_DISABLE_GUARD_<KIND>` — mirroring the existing

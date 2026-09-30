@@ -818,7 +818,7 @@ function onLoopGuardSubagentAbort(raw: unknown): void {
 }
 
 // ---------------------------------------------------------------------------
-// Steer/nudge domain event handlers (subscribed via pi.events, plan E)
+// Steer/nudge domain event handlers (subscribed via pi.events)
 // ---------------------------------------------------------------------------
 
 function onSteerFired(raw: unknown): void {
@@ -936,7 +936,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(LOOP_GUARD_EVENTS.WARN, onLoopGuardWarn)
 		pi.events.on(LOOP_GUARD_EVENTS.SUBAGENT_ABORT, onLoopGuardSubagentAbort)
 
-		// Subscribe to steer/nudge domain events (plan E). Guard/nudge
+		// Subscribe to steer/nudge domain events. Guard/nudge
 		// extensions publish fire/outcome facts; telemetry forwards them
 		// through the attribute allowlist in handlers/steers.ts.
 		pi.events.on(STEER_EVENTS.FIRED, onSteerFired)

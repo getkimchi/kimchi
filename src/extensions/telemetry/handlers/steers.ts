@@ -1,6 +1,6 @@
 /**
  * Translates steer/nudge domain events (steer:fired / steer:outcome) into
- * OTLP log records (plan E.2).
+ * OTLP log records.
  *
  * Emitting extensions publish facts on the pi.events channels defined in
  * steer-events.ts; this handler forwards them to OTLP. Attributes are an

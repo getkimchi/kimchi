@@ -292,7 +292,7 @@ export function createBashControlToolDefinition(
 		// Process still running — return tail window + handle.
 		// This is a steer-equivalent nudge ("come back later") delivered on the
 		// blocking tool-result path — emit the fire event here so every check-in
-		// is measurable (plan E.1). The 15s wake-up is not a steer message, so
+		// is measurable. The 15s wake-up is not a steer message, so
 		// emitting in bash-control-extension would miss it.
 		if (pi && !isSteerDisabled("bash_control_checkin")) {
 			emitSteerFired(pi, "bash_control_checkin", "checkin")

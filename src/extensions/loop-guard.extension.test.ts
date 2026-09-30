@@ -138,7 +138,7 @@ describe("loopGuardExtension telemetry", () => {
 		expect(() => getHandler(handlers, "tool_result")(toolResult)).not.toThrow()
 	})
 
-	it("E.3: a repeat warn after a prior warn emits steer:outcome repeated", async () => {
+	it("a repeat warn after a prior warn emits steer:outcome repeated", async () => {
 		const { api, handlers, events } = createMockApi()
 		const emitSpy = events.emit as ReturnType<typeof vi.fn>
 		const { default: loopGuardExtension } = await import("./loop-guard.js")
@@ -162,7 +162,7 @@ describe("loopGuardExtension telemetry", () => {
 		expect(outcomes[0][1]).toMatchObject({ kind: "loop_guard", outcome: "repeated" })
 	})
 
-	it("E.3: clean follow-through of 5 results after a warn closes the window as complied", async () => {
+	it("clean follow-through of 5 results after a warn closes the window as complied", async () => {
 		const { api, handlers, events } = createMockApi()
 		const emitSpy = events.emit as ReturnType<typeof vi.fn>
 		const { default: loopGuardExtension } = await import("./loop-guard.js")
@@ -196,7 +196,7 @@ describe("loopGuardExtension telemetry", () => {
 		expect(outcomes[0][1]).toMatchObject({ kind: "loop_guard", outcome: "complied" })
 	})
 
-	it("E.4: KIMCHI_DISABLE_GUARD_LOOP=1 suppresses the record path — no warns, no events", async () => {
+	it("KIMCHI_DISABLE_GUARD_LOOP=1 suppresses the record path — no warns, no events", async () => {
 		process.env.KIMCHI_DISABLE_GUARD_LOOP = "1"
 		try {
 			const { api, handlers, events } = createMockApi()

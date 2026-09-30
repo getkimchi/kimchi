@@ -37,7 +37,7 @@ export interface LoopGuardWarnPayload {
 	/** True when the warning fired inside an agent worker (subagent). */
 	is_subagent: boolean
 	/** True in interactive sessions (UI present); false in print/protocol/
-	 *  benchmark sessions. Added for steer telemetry (plan E). */
+	 *  benchmark sessions. Added for steer telemetry. */
 	interactive: boolean
 }
 

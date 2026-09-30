@@ -795,7 +795,7 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 		expect(pi.events.emit).not.toHaveBeenCalled()
 	})
 
-	it("E.3: window closes without recurrence → steer:outcome complied", () => {
+	it("window closes without recurrence → steer:outcome complied", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
@@ -812,7 +812,7 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 		expect(outcomes[0]?.[1]).toMatchObject({ kind: "bash_tool_guard", outcome: "complied" })
 	})
 
-	it("E.3: same-category recurrence inside the window → steer:outcome repeated", () => {
+	it("same-category recurrence inside the window → steer:outcome repeated", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
@@ -825,7 +825,7 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 		expect(outcomes.some(([, payload]) => payload.outcome === "repeated")).toBe(true)
 	})
 
-	it("E.4: KIMCHI_DISABLE_GUARD_BASH_TOOL=1 disables the guard via the isEnabled off-path", () => {
+	it("KIMCHI_DISABLE_GUARD_BASH_TOOL=1 disables the guard via the isEnabled off-path", () => {
 		process.env.KIMCHI_DISABLE_GUARD_BASH_TOOL = "1"
 		try {
 			const pi = createMockPI()

@@ -73,7 +73,7 @@ function restoreTodoStoreFromSessionEntries(sessionManager: Pick<SessionManager,
 export const TODO_EARLY_NUDGE_THRESHOLD = 5
 
 /** Compliance window (non-todo tool calls) after the early todo nudge
- *  during which adoption is measured (plan E.3). A todo write within the
+ *  during which adoption is measured. A todo write within the
  *  window = "complied"; window expiry without one = "repeated". */
 export const EARLY_NUDGE_OUTCOME_WINDOW = 3
 
@@ -213,7 +213,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 			}
 		}
 
-		// Nudge outcome tracking (plan E.3): after the early nudge, watch the
+		// Nudge outcome tracking: after the early nudge, watch the
 		// next N non-todo tool calls. A todo write within the window is
 		// "complied"; the window expiring without a todo list is "repeated".
 		const nudgeFiredAt = getEarlyNudgeFiredAt(sessionId)

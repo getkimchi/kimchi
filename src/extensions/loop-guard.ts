@@ -684,7 +684,7 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 	let lastWarnDetector: LoopGuardDetector | undefined
 	let lastWarnCount = 0
 
-	// Outcome tracking (plan E.3). Every warn opens a per-session compliance
+	// Outcome tracking. Every warn opens a per-session compliance
 	// window: LOOP_OUTCOME_WINDOW further non-warn tool results and the steer
 	// held ⇒ "complied"; a superseding warn before the window closes means
 	// the previous steer was ignored ⇒ "repeated", and the new warn opens a
@@ -780,7 +780,7 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 	})
 
 	pi.on("tool_result", (event, toolResultCtx) => {
-		// E.4 kill switch: the loop guard has no pre-existing off switch, so
+		// Kill switch: the loop guard has no pre-existing off switch, so
 		// the env flag short-circuits at the record site (no warnings, no
 		// events, no steer). Default is unset → current behaviour.
 		if (isSteerDisabled("loop_guard")) return
@@ -802,7 +802,7 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 				is_subagent: isAgentWorker(),
 				interactive: ctx?.hasUI ?? true,
 			})
-			// Outcome (plan E.3): this warn supersedes any open compliance
+			// Outcome: this warn supersedes any open compliance
 			// window — the previous steer was ignored ("repeated", emitted
 			// inside tickLoopOutcome) — and opens a fresh window of
 			// LOOP_OUTCOME_WINDOW further tool results, after which a clean

@@ -456,7 +456,7 @@ describe("early todo nudge", () => {
 		expect(steerCallsByReason(harness.sendMessage, "early_nudge")).toHaveLength(0)
 	})
 
-	it("emits steer:fired with kind todo_early_nudge when the nudge fires (plan E.1)", async () => {
+	it("emits steer:fired with kind todo_early_nudge when the nudge fires", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
@@ -470,7 +470,7 @@ describe("early todo nudge", () => {
 		expect(fired[0]?.[1]).toMatchObject({ kind: "todo_early_nudge", reason: "early_nudge" })
 	})
 
-	it("E.4 kill switch: KIMCHI_DISABLE_NUDGE_TODO_EARLY=1 suppresses the steer and the event", async () => {
+	it("kill switch: KIMCHI_DISABLE_NUDGE_TODO_EARLY=1 suppresses the steer and the event", async () => {
 		process.env.KIMCHI_DISABLE_NUDGE_TODO_EARLY = "1"
 		try {
 			const harness = createTodosHarness()
@@ -488,7 +488,7 @@ describe("early todo nudge", () => {
 		}
 	})
 
-	describe("early nudge outcome events (plan E.3)", () => {
+	describe("early nudge outcome events", () => {
 		it("todo write within the outcome window after the nudge → steer:outcome complied", async () => {
 			const harness = createTodosHarness()
 			const ctx = createContext("session", [])

@@ -301,7 +301,7 @@ export function maybeInjectScopingStopNudge(
 		return { kind: "claimed", reason: "exhausted" }
 	}
 
-	// E.4 kill switch: suppress the nudge (and the telemetry) when the
+	// Kill switch: suppress the nudge (and the telemetry) when the
 	// planning-stop surface is disabled via env. Reported as "disabled",
 	// NOT "exhausted" — conflating the two would corrupt the budget-tuning
 	// signal the claim bookkeeping exists for.
