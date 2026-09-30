@@ -34,12 +34,14 @@ Models: model-a, model-b
 
 ## Missing or corrupt summary
 
-If `work.json` is missing, unreadable, or has the wrong shape, the command shows an empty state instead of failing:
+If `work.json` is missing, has invalid JSON, or has the wrong shape, the command shows an empty state instead of failing:
 
 ```
 No work summary yet for 3f9b6c1e-8a2d-4c7e-b1f0-5d6e7a8b9c0d
 It will appear at /home/you/.config/kimchi/harness/work/3f9b6c1e-8a2d-4c7e-b1f0-5d6e7a8b9c0d/work.json once this work records requests, plans, or commits.
 ```
+
+Any other read failure is reported as a warning instead.
 
 A fresh session's first run shows a real (all-zero) summary — `Sessions: 1`, everything else `0` — because binding the session already publishes its initial work record.
 
