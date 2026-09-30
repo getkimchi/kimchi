@@ -23,6 +23,9 @@ const env = {
 	...process.env,
 	KIMCHI_REPO_ROOT: repoRoot,
 	BASH_SILENCE_DEPRECATION_WARNING: "1",
+	// Harness marker for readE2eSeam: tui-test is not vitest, so the fixture
+	// forwards this into the spawned kimchi binary to enable KIMCHI_E2E_* seams.
+	KIMCHI_TEST_HARNESS: "1",
 	...(debugEnabled ? { KIMCHI_TUI_E2E_DEBUG: "1" } : {}),
 }
 

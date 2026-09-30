@@ -64,12 +64,20 @@ vi.mock("../terminal-compat/keyboard-capability.js", () => ({
 	getKittyKeyboardSupport: () => keyboardCapabilityMock.kittySupport,
 }))
 
+// The gate owns Ctrl+R while its dialog is on screen; feedback reads this
+// flag to pass the key through (mirroring the model-switch invitation).
+const visionGateMock = vi.hoisted(() => ({ dialogOpen: false }))
+vi.mock("../vision-gate.js", () => ({
+	isVisionGateDialogOpen: () => visionGateMock.dialogOpen,
+}))
+
 describe("feedbackExtension state machine", () => {
 	beforeEach(async () => {
 		feedbackMock.trackFeedback.mockReset()
 		trackModelSwitchFeedbackMock.mockReset()
 		dialogMock.show.mockReset()
 		modelSwitchDialogMock.show.mockReset()
+		visionGateMock.dialogOpen = false
 		const invitationState = await import("./invitation-state.js")
 		invitationState.clearModelSwitchInvitation()
 	})
@@ -282,6 +290,31 @@ describe("feedbackExtension state machine", () => {
 		expect(modelSwitchDialogMock.show).toHaveBeenCalledTimes(1)
 
 		// A second press after the invitation is gone must not reopen the dialog.
+		await pressCtrlR(ctx)
+		expect(modelSwitchDialogMock.show).toHaveBeenCalledTimes(1)
+	})
+
+	it("yields Ctrl+R to an open vision-gate dialog while a model-switch invitation is active", async () => {
+		const { api, ctx, getHandler } = makeApi()
+		feedbackExtension(api)
+
+		await getHandler("model_select")(
+			{
+				previousModel: { provider: "kimchi-dev", id: "auto", name: "Auto" },
+				model: { provider: "kimchi-dev", id: "concrete-model", name: "Concrete" },
+			},
+			ctx,
+		)
+
+		// The gate's dialog is on screen — its "remove image(s)" binding owns
+		// Ctrl+R, so the model-switch invitation must pass the key through.
+		visionGateMock.dialogOpen = true
+		await pressCtrlR(ctx)
+		expect(modelSwitchDialogMock.show).not.toHaveBeenCalled()
+
+		// Once the gate closes, the invitation's Ctrl+R works again.
+		visionGateMock.dialogOpen = false
+		modelSwitchDialogMock.show.mockResolvedValueOnce({ reason: "faster" })
 		await pressCtrlR(ctx)
 		expect(modelSwitchDialogMock.show).toHaveBeenCalledTimes(1)
 	})
@@ -704,6 +737,7 @@ describe("feedbackExtension legacy-terminal rating picker", () => {
 		dialogMock.show.mockReset()
 		ratingDialogMock.show.mockReset()
 		modelSwitchDialogMock.show.mockReset()
+		visionGateMock.dialogOpen = false
 		const invitationState = await import("./invitation-state.js")
 		invitationState.clearModelSwitchInvitation()
 		keyboardCapabilityMock.kittySupport = false
@@ -825,5 +859,25 @@ describe("feedbackExtension legacy-terminal rating picker", () => {
 
 		expect(ratingDialogMock.show).not.toHaveBeenCalled()
 		expect(modelSwitchDialogMock.show).toHaveBeenCalledWith(ctx, { modelName: "Concrete" })
+	})
+
+	it("yields Ctrl+R to an open vision-gate dialog", async () => {
+		const { api, ctx, getHandler } = makeApi()
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		// The gate's deferred dialog opens right after the run settles — exactly
+		// when the rating invitation is armed. Its "remove image(s)" binding owns
+		// Ctrl+R, so the key must pass through instead of opening the picker.
+		visionGateMock.dialogOpen = true
+		await press(ctx, CTRL_R)
+		expect(ratingDialogMock.show).not.toHaveBeenCalled()
+
+		// The rating invitation survives; once the gate closes, Ctrl+R rates.
+		visionGateMock.dialogOpen = false
+		ratingDialogMock.show.mockResolvedValueOnce("positive")
+		dialogMock.show.mockResolvedValueOnce(undefined)
+		await press(ctx, CTRL_R)
+		expect(ratingDialogMock.show).toHaveBeenCalledTimes(1)
 	})
 })

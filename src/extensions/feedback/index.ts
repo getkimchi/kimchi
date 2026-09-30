@@ -5,6 +5,7 @@ import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { getAutoRoutingState } from "../auto-model/state.js"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
 import { trackFeedback, trackModelSwitchFeedback } from "../telemetry/index.js"
+import { isVisionGateDialogOpen } from "../vision-gate.js"
 import { type FeedbackSentiment, isPredefinedReason, showFeedbackDetailsDialog } from "./dialog.js"
 import { clearModelSwitchInvitation, getModelSwitchInvitation, setModelSwitchInvitation } from "./invitation-state.js"
 import { showModelSwitchDialog } from "./model-switch-dialog.js"
@@ -75,6 +76,9 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		unsubscribeCtrlR = ctx.ui.onTerminalInput((data: string) => {
 			// Returning undefined passes the key through untouched.
 			if (!matchesKey(data, Key.ctrl("r"))) return undefined
+			// An open vision-gate dialog takes precedence — its own Ctrl+R
+			// binding ("remove image(s)") handles the key.
+			if (isVisionGateDialogOpen()) return undefined
 			// Nothing awaits this handler, so a rejection would otherwise be
 			// unhandled — surface it in the UI instead of crashing the process.
 			void handleShortcut(ctx).catch((err: unknown) => {
@@ -113,6 +117,9 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 			// A model-switch invitation takes precedence — its own Ctrl+R
 			// listener (set up on model_select) handles the key.
 			if (getModelSwitchInvitation()) return undefined
+			// An open vision-gate dialog takes precedence — its own Ctrl+R
+			// binding ("remove image(s)") handles the key.
+			if (isVisionGateDialogOpen()) return undefined
 			if (state !== "inviting") return undefined
 			void handleShortcut(ctx).catch((err: unknown) => {
 				ctx.ui.notify(`[feedback] Feedback shortcut failed: ${err}`, "error")

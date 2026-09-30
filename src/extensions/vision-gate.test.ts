@@ -41,6 +41,7 @@ import {
 	getPathSuppression,
 	getRetainedSubmission,
 	getVisionGateSessionGeneration,
+	isVisionGateDialogOpen,
 	mergeRetainedSubmission,
 	type PathAttachment,
 	type RetainedSubmission,
@@ -586,6 +587,42 @@ describe("deferred dialog lifecycle (agent_end)", () => {
 		visionGateOnAgentEnd(pi, ctx)
 		await vi.advanceTimersByTimeAsync(1)
 		expect(dialogCalls.length).toBe(0)
+	})
+})
+
+describe("isVisionGateDialogOpen (cross-extension Ctrl+R pass-through)", () => {
+	it("reports the immediate dialog as open only while it is on screen", async () => {
+		const { ctx } = makeGateContext()
+		const pi = makePi()
+		const record = makeRecord()
+		const outcome = runVisionGate({ pi, ctx, event: { text: record.text }, record })
+		await vi.waitFor(() => expect(dialogCalls.length).toBe(1))
+		expect(isVisionGateDialogOpen()).toBe(true)
+		dialogCalls[0]?.resolve({ kind: "cancel" })
+		await expect(outcome).resolves.toEqual({ kind: "handled" })
+		expect(isVisionGateDialogOpen()).toBe(false)
+	})
+
+	it("reports the deferred dialog as open only while it is on screen", async () => {
+		const { ctx } = makeGateContext()
+		const pi = makePi()
+		const record = makeRecord()
+		const streaming = runVisionGate({
+			pi,
+			ctx,
+			event: { text: record.text, streamingBehavior: "steer" },
+			record,
+		})
+		await expect(streaming).resolves.toEqual({ kind: "handled" })
+		expect(isVisionGateDialogOpen()).toBe(false)
+
+		mockDraft(ctx, record.text)
+		visionGateOnAgentEnd(pi, ctx)
+		await vi.waitFor(() => expect(dialogCalls.length).toBe(1))
+		expect(isVisionGateDialogOpen()).toBe(true)
+		dialogCalls[0]?.resolve({ kind: "remove" })
+		await settle()
+		expect(isVisionGateDialogOpen()).toBe(false)
 	})
 })
 

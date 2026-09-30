@@ -4,6 +4,13 @@
 # Changes:
 #   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
 #     compaction, model selection, extension UI helpers, and compact visuals.
+#   - Startup resource diagnostics: skill conflicts render as a single dim
+#     summary line ("[N skill conflicts] Some skills were found in multiple
+#     directories. <key> to see the full list.") that expands to the full
+#     collision listing via the shared app.tools.expand toggle, instead of a
+#     full warning-colored listing on every session start. Prompt conflicts
+#     keep upstream's rendering (rare, and genuinely actionable when they
+#     happen). (Upstream candidate.)
 #   - Extension setModel accepts { persist } and threads it to AgentSession's
 #     ModelMutationOptions, restoring the persistence channel upstream made
 #     opt-in. setThinkingLevel is deliberately NOT threaded: Kimchi's only
@@ -817,10 +824,77 @@ index 2e0490362d3396995b587f502ff3e69a7cad9a43..0cb75bb6a9fd0c0a9bdb5eba7cf2eeb8
      render(width) {
          const lines = super.render(width);
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f8d7bcb6e 100644
+index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e153475a60948 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -1900,6 +1900,7 @@ export class InteractiveMode {
+@@ -1359,8 +1359,65 @@ export class InteractiveMode {
+         if (showDiagnostics) {
+             const skillDiagnostics = skillsResult.diagnostics;
+             if (skillDiagnostics.length > 0) {
++                // Collapsed by default: a single dim summary line instead of the
++                // full collision listing, so startup stays calm. The detail view
++                // is one keypress away via the shared expand toggle.
+                 const warningLines = this.formatDiagnostics(skillDiagnostics, sourceInfos);
+-                this.loadedResourcesContainer.addChild(new Text(`${theme.fg("warning", "[Skill conflicts]")}\n${warningLines}`, 0, 0));
++                const collisionCount = skillDiagnostics.filter((d) => d.type === "collision" && d.collision).length;
++                const issueCount = skillDiagnostics.length - collisionCount;
++                let summaryText;
++                if (issueCount > 0) {
++                    // Issues first: the skill was not loaded at all and needs
++                    // user attention. Conflicts are informational (a winner is
++                    // selected and still loaded), so they trail as "also".
++                    summaryText = `[${issueCount} skill issue${issueCount === 1 ? "" : "s"}] Some skills were not loaded.` + (collisionCount > 0 ? ` Also: ${collisionCount} skill conflict${collisionCount === 1 ? "" : "s"} in multiple directories (a winner was loaded).` : "");
++                } else {
++                    summaryText = `[${collisionCount} skill conflict${collisionCount === 1 ? "" : "s"}] Some skills were found in multiple directories.`;
++                }
++                // Plain text row (no Box stroke), but with a right-aligned dim
++                // "(ctrl+o to expand|collapse)" hint like a collapsed tool row.
++                // Local expansion state like a single tool row: a click toggles
++                // only this line, while ctrl+o still propagates to it via
++                // setExpanded() from setToolsExpanded().
++                class SkillConflictsLine {
++                    constructor(collapsedLeft, expandedLeft, details, expanded) {
++                        this.collapsedLeft = collapsedLeft;
++                        this.expandedLeft = expandedLeft;
++                        this.details = details;
++                        this.expanded = expanded;
++                    }
++                    headerLine(width) {
++                        const left = this.expanded ? this.expandedLeft : this.collapsedLeft;
++                        // Reserve the hint's width first so it stays visible
++                        // on narrow terminals — the summary text truncates.
++                        const hint = theme.fg("dim", `(${keyText("app.tools.expand")} to ${this.expanded ? "collapse" : "expand"})`);
++                        const hintW = visibleWidth(hint);
++                        const maxLeft = width - hintW - 2;
++                        if (maxLeft < 4)
++                            return TuiLayouts.truncateToWidth(left, width);
++                        const truncated = TuiLayouts.truncateToWidth(left, maxLeft);
++                        const pad = width - visibleWidth(truncated) - hintW;
++                        return truncated + " ".repeat(Math.max(0, pad)) + hint;
++                    }
++                    setExpanded(expanded) {
++                        this.expanded = expanded;
++                    }
++                    handleMouse(event) {
++                        if (event.type !== "click" || event.button !== "left")
++                            return undefined;
++                        this.setExpanded(!this.expanded);
++                        return { handled: true };
++                    }
++                    render(width) {
++                        const lines = [this.headerLine(width)];
++                        if (this.expanded)
++                            lines.push(...this.details.split("\n"));
++                        return lines;
++                    }
++                    invalidate() {
++                    }
++                }
++                this.loadedResourcesContainer.addChild(new SkillConflictsLine(summaryText, "[Skill conflicts]", warningLines, this.getStartupExpansionState()));
+                 this.loadedResourcesContainer.addChild(new Spacer(1));
+             }
+             const promptDiagnostics = promptsResult.diagnostics;
+@@ -1900,6 +1914,7 @@ export class InteractiveMode {
              confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
              input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
              notify: (message, type) => this.showExtensionNotify(message, type),
@@ -828,7 +902,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
              onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
              setStatus: (key, text) => this.setExtensionStatus(key, text),
              setWorkingMessage: (message) => {
-@@ -1945,6 +1946,16 @@ export class InteractiveMode {
+@@ -1945,6 +1960,16 @@ export class InteractiveMode {
              },
              getToolsExpanded: () => this.toolOutputExpanded,
              setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
@@ -845,7 +919,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
          };
      }
      /**
-@@ -3176,7 +3187,7 @@ export class InteractiveMode {
+@@ -3176,7 +3201,7 @@ export class InteractiveMode {
          if (this.chatContainer.children.length > 0) {
              this.chatContainer.addChild(new Spacer(1));
          }
@@ -854,7 +928,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
      }
      async getUserInput() {
          const queuedInput = this.pendingUserInputs.shift();
-@@ -4036,6 +4047,34 @@ export class InteractiveMode {
+@@ -4036,6 +4061,34 @@ export class InteractiveMode {
              this.showModelSelector();
              return;
          }
@@ -889,7 +963,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
-@@ -4168,6 +4207,8 @@ export class InteractiveMode {
+@@ -4168,6 +4221,8 @@ export class InteractiveMode {
      }
      showModelSelector(initialSearchInput) {
          this.showSelector((done) => {
@@ -898,7 +972,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
              const selectModel = async (model, persist) => {
                  try {
                      await this.session.setModel(model, { persist });
-@@ -4186,10 +4227,13 @@ export class InteractiveMode {
+@@ -4186,10 +4241,13 @@ export class InteractiveMode {
              };
              const defaultProvider = this.settingsManager.getDefaultProvider();
              const defaultModel = this.settingsManager.getDefaultModel();
@@ -914,7 +988,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
              return { component: selector, focus: selector, dispose: () => selector.dispose() };
          });
      }
-@@ -5051,7 +5095,12 @@ export class InteractiveMode {
+@@ -5051,7 +5109,12 @@ export class InteractiveMode {
          const outputPath = this.getPathCommandArgument(text, "/export");
          try {
              if (outputPath?.endsWith(".jsonl")) {
