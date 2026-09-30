@@ -1,0 +1,1075 @@
+{
+  "version": 1,
+  "workId": "e21bef5a-ddbb-4e44-8162-2cc7da7ca953",
+  "sessions": [
+    "01a0f1e5-5023-7100-8055-0ca232dd1561",
+    "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+    "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+    "01a0f207-9086-724c-bd2a-c59f96e6585d",
+    "01a0f20c-4d86-76a9-a2ad-a9b94def35dd"
+  ],
+  "requests": [
+    {
+      "requestId": "31e60600-53d6-45c4-bf1d-814283bab3fb",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:39:44.579Z"
+    },
+    {
+      "requestId": "db680439-93b0-4967-bcc9-5dd1f0038f6a",
+      "provider": "kimchi-dev",
+      "model": "deepseek-v4-flash-0731",
+      "modelSource": "context",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:39:51.607Z"
+    },
+    {
+      "requestId": "a7717b94-3fbe-4f5d-bad5-3b9afc29c9c3",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:39:51.610Z"
+    },
+    {
+      "requestId": "6bd26d4c-bf02-4d4c-898c-623e5196d65d",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:39:53.953Z"
+    },
+    {
+      "requestId": "7219e006-977d-4a84-9828-05e6dd0f6af7",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:39:56.513Z"
+    },
+    {
+      "requestId": "69023ce9-8fbb-42b1-943c-18ac87a8fb14",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:40:02.135Z"
+    },
+    {
+      "requestId": "19b5abda-bb8f-4fea-824a-b435f548976d",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:40:13.765Z"
+    },
+    {
+      "requestId": "43c1d798-98b2-420a-a693-b81e238141ff",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:40:19.086Z"
+    },
+    {
+      "requestId": "0e39a5de-69ac-4f3f-8695-c9eb15d587f0",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:40:38.003Z"
+    },
+    {
+      "requestId": "f0a9f4f6-e7c3-4332-a52c-b592a588f89f",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:41:15.416Z"
+    },
+    {
+      "requestId": "7c7e158b-c7b7-4280-b805-ed0ccd72a43b",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:41:20.208Z"
+    },
+    {
+      "requestId": "ff12aea3-002f-4ba0-91cb-a4abb32cb14c",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:41:30.149Z"
+    },
+    {
+      "requestId": "ab7b1412-5d60-4ee2-9ce0-6476330805bd",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:41:33.226Z"
+    },
+    {
+      "requestId": "481acd26-3f72-48e0-a29f-792a320638ec",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:45:08.967Z"
+    },
+    {
+      "requestId": "fc04da43-2b50-4986-9922-508c25e62579",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:46:15.896Z"
+    },
+    {
+      "requestId": "e60ec3a4-2d84-4314-b2ec-d5d36f38c28b",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:47:33.360Z"
+    },
+    {
+      "requestId": "37e038ef-3b36-4b5e-8569-211e50634530",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:49:47.900Z"
+    },
+    {
+      "requestId": "9838b16b-12ef-44bb-9611-085fffd714dd",
+      "provider": "kimchi-dev",
+      "model": "deepseek-v4-flash-0731",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:49:50.508Z"
+    },
+    {
+      "requestId": "105e3b02-4b7a-4a7e-b170-6bdd636931ce",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:49:50.511Z"
+    },
+    {
+      "requestId": "7f96b47b-7b42-4d25-94e2-b258e1a5425a",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:49:55.548Z"
+    },
+    {
+      "requestId": "0d8ac47d-acc1-4dad-b673-35dec6673037",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:49:57.464Z"
+    },
+    {
+      "requestId": "31a53ef5-cfda-4f33-9188-78e0865b3b7b",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:51:54.972Z"
+    },
+    {
+      "requestId": "8d7a14c8-1882-493d-8d7a-b4ce1c0c1397",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:51:57.399Z"
+    },
+    {
+      "requestId": "dd399b2a-23a4-49bb-8096-b4b53ad96fec",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:52:01.737Z"
+    },
+    {
+      "requestId": "f3294c0f-2849-49d7-9f40-ebf29e0ebfdf",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:54:52.226Z"
+    },
+    {
+      "requestId": "05addd52-e219-4e1f-8a7c-c955b5c61208",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:54:55.657Z"
+    },
+    {
+      "requestId": "39dc4e2f-f87c-4924-a8e3-0d00e97339ac",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:55:20.439Z"
+    },
+    {
+      "requestId": "76ae0899-d57f-4d81-a4de-49928ee08932",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:55:25.793Z"
+    },
+    {
+      "requestId": "37fa58df-89c8-45e0-87fe-6738880d042a",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:55:45.740Z"
+    },
+    {
+      "requestId": "9d3d7a56-d794-472b-8feb-355faddba263",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:55:47.436Z"
+    },
+    {
+      "requestId": "9ce93287-caa4-4734-b942-7229d938ae6a",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:57:29.081Z"
+    },
+    {
+      "requestId": "0050221b-ffda-438e-bd2e-fb662a99dad5",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:58:10.910Z"
+    },
+    {
+      "requestId": "be6899b5-1ed1-44c5-a2e5-b1b3b5c90aab",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:58:13.161Z"
+    },
+    {
+      "requestId": "5d64dfea-91f9-4be8-b202-cbe7901760e5",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:59:20.784Z"
+    },
+    {
+      "requestId": "8a607e89-7ef9-4897-b101-0bf39034deca",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:59:32.233Z"
+    },
+    {
+      "requestId": "45e56810-be0f-4b2f-8728-b07ef9bfcbea",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:59:35.930Z"
+    },
+    {
+      "requestId": "4d8240e0-169d-4485-8f55-c532888599c2",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:59:37.908Z"
+    },
+    {
+      "requestId": "2f05b240-2176-49c1-875c-9b2fda10b48f",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T10:59:51.699Z"
+    },
+    {
+      "requestId": "f18aa607-a095-48b4-bf3a-5d8ecfe48ca8",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:00:04.508Z"
+    },
+    {
+      "requestId": "6c0fc603-1d49-4e31-9ee2-b39a26070967",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:00:18.074Z"
+    },
+    {
+      "requestId": "3c2fb511-1fda-4375-9e7f-63c7d0104cc8",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:00:30.719Z"
+    },
+    {
+      "requestId": "05b0728d-af37-449c-964f-602864db8143",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:00:36.326Z"
+    },
+    {
+      "requestId": "ea186997-a618-4a4c-8294-7c0bfc3b6bb7",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:00:41.825Z"
+    },
+    {
+      "requestId": "de264e8b-f4f7-4e8b-80f5-3ed644fe7c34",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:00:44.955Z"
+    },
+    {
+      "requestId": "d1e7c2ed-1eb9-4994-b40d-c31caaefb9e2",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:00:48.000Z"
+    },
+    {
+      "requestId": "137520d8-fb67-41c4-9fa9-2e23ae231ab5",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:00:59.845Z"
+    },
+    {
+      "requestId": "00147bc4-1896-4d1e-b774-bdbabd992788",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:01:03.483Z"
+    },
+    {
+      "requestId": "821d83a4-4448-4f7c-8644-d69a5728a1af",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:01:06.568Z"
+    },
+    {
+      "requestId": "af64ae98-f585-417f-b7ad-7d70776e827e",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:01:16.805Z"
+    },
+    {
+      "requestId": "ec2eaabf-bbec-4340-9380-39dc4b6d5e70",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:01:21.575Z"
+    },
+    {
+      "requestId": "df6e7619-fdb4-48a7-bcb0-a36695f1b895",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:01:23.558Z"
+    },
+    {
+      "requestId": "b23abc9e-28c4-46bf-97f7-ca4992a55e41",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:05:00.348Z"
+    },
+    {
+      "requestId": "f33fa0d2-cf50-4e59-8fdb-98e93251a5ba",
+      "provider": "kimchi-dev",
+      "model": "deepseek-v4-flash-0731",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:05:12.262Z"
+    },
+    {
+      "requestId": "eb4696b3-3c1f-4e31-b7ce-9ba9567e8069",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:05:12.265Z"
+    },
+    {
+      "requestId": "29e1c5da-300a-461f-a255-5714aa1f90e5",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:05:17.480Z"
+    },
+    {
+      "requestId": "afc7fdc4-e0cb-4a87-bafc-5fb87986fac3",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:05:20.940Z"
+    },
+    {
+      "requestId": "ef7e5fe0-cd2f-45c6-a33d-4de1a8faf25d",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:05:37.215Z"
+    },
+    {
+      "requestId": "e208cbe1-8ea0-4698-bbd8-fd8d8dba2ccf",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:05:43.936Z"
+    },
+    {
+      "requestId": "2efedaed-6bf3-463e-bd9f-ddec9c33dc22",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:05:45.356Z"
+    },
+    {
+      "requestId": "5cd2aa25-fa0d-4bc0-9683-0a7979b3c8e2",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:06:55.132Z"
+    },
+    {
+      "requestId": "d1f40f32-06d7-4e95-98f0-6ca4545aa2fb",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:07:05.627Z"
+    },
+    {
+      "requestId": "a1773aef-1438-4134-90e0-b82907c1eaf5",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:07:17.464Z"
+    },
+    {
+      "requestId": "3b0c8ff0-9dc2-4817-8927-294285cdb602",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:08:29.188Z"
+    },
+    {
+      "requestId": "82ea1f84-d04a-4c23-b426-de06b4bee172",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:08:49.422Z"
+    },
+    {
+      "requestId": "130e01e4-dfec-492d-8e43-662a8aa4c596",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:09:54.341Z"
+    },
+    {
+      "requestId": "bb3c4fd7-26a4-4b8e-8a92-e8122d8a0ec8",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:09:57.768Z"
+    },
+    {
+      "requestId": "7aa0c198-f9d7-4f1e-a96e-67ec858335de",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:10:01.410Z"
+    },
+    {
+      "requestId": "c3e09cc0-9637-4cbf-af6a-7eaf0fe0eb0c",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:10:07.698Z"
+    },
+    {
+      "requestId": "4c995fd6-42be-4ccd-bae3-91bb2ce42bb4",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:11:32.939Z"
+    },
+    {
+      "requestId": "32ae3950-3b74-48bc-91a2-7f0b2c0fdb40",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:12:39.425Z"
+    },
+    {
+      "requestId": "859fac98-6db4-4f46-93c2-3bc3cea406f7",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:13:07.459Z"
+    },
+    {
+      "requestId": "5f815c7b-8f1b-4382-b7e5-8f570a48f8c2",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:13:23.837Z"
+    },
+    {
+      "requestId": "82e49b6a-051f-49dc-aa9a-f48eef171112",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:14:02.147Z"
+    },
+    {
+      "requestId": "80257a71-8086-45ab-ae15-f6cc15f208ee",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:14:20.206Z"
+    },
+    {
+      "requestId": "8bd147a1-4227-4f08-94ab-e1353e86a9e3",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:15:34.539Z"
+    },
+    {
+      "requestId": "9794b1b8-86a3-46f8-952d-58eef74313c6",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:15:57.061Z"
+    },
+    {
+      "requestId": "51b988a1-f042-46bd-9cc8-9967efc2e880",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:16:13.515Z"
+    },
+    {
+      "requestId": "bf23c728-0f02-47d1-ad6a-c494f9e3c918",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:16:38.770Z"
+    },
+    {
+      "requestId": "10dc48b4-a807-4698-8507-5ed4537bbeaf",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:17:14.251Z"
+    },
+    {
+      "requestId": "2f9ac8f1-ddf8-45a0-ab0d-8754981e00b1",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:17:18.743Z"
+    },
+    {
+      "requestId": "0cefb91d-7d21-4f6a-a954-30e994984ee6",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:17:36.771Z"
+    },
+    {
+      "requestId": "c4852d79-5666-483e-aea7-9e64c42fc48b",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:19:04.577Z"
+    },
+    {
+      "requestId": "0293ee8e-3357-4027-9bf0-f3f382224285",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:19:38.819Z"
+    },
+    {
+      "requestId": "2ed85605-ac09-4121-876c-989c6fd55273",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:19:55.373Z"
+    },
+    {
+      "requestId": "a677556a-8037-480b-956c-3aec53f06043",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f207-9086-724c-bd2a-c59f96e6585d",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:20:23.598Z"
+    },
+    {
+      "requestId": "42e6bc82-3e23-4a55-87c5-2a1ce51c0fe6",
+      "provider": "kimchi-dev",
+      "model": "deepseek-v4-flash-0731",
+      "modelSource": "context",
+      "sessionId": "01a0f207-9086-724c-bd2a-c59f96e6585d",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:20:26.106Z"
+    },
+    {
+      "requestId": "a3fe4712-080f-4663-aec1-aa9e92c63317",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f207-9086-724c-bd2a-c59f96e6585d",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:20:26.108Z"
+    },
+    {
+      "requestId": "d87496e9-7742-474e-bcda-a96fe91999e7",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f207-9086-724c-bd2a-c59f96e6585d",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:20:30.933Z"
+    },
+    {
+      "requestId": "42a329c3-3676-4dd0-b0d8-e197c32fb9be",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f207-9086-724c-bd2a-c59f96e6585d",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:20:32.660Z"
+    },
+    {
+      "requestId": "db95fddd-5ad5-4bad-b2ad-d6f52f127c97",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:20:32.911Z"
+    },
+    {
+      "requestId": "ce655c45-5a85-4b6e-8e47-f5d28faac064",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f207-9086-724c-bd2a-c59f96e6585d",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:20:45.169Z"
+    },
+    {
+      "requestId": "1e372d43-fc3a-4366-ac68-4b236a6e9ddf",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3-flash",
+      "modelSource": "context",
+      "sessionId": "01a0f207-9086-724c-bd2a-c59f96e6585d",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:20:46.941Z"
+    },
+    {
+      "requestId": "8c8313c3-b11c-4028-8656-11164f07c36f",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:21:06.852Z"
+    },
+    {
+      "requestId": "845e7e1c-597b-4f45-91fa-8b5ff0ef1ae4",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:21:23.642Z"
+    },
+    {
+      "requestId": "72445736-ede4-483a-9ab2-af59648192f1",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:21:40.689Z"
+    },
+    {
+      "requestId": "d837ebc9-40eb-49ae-ae1a-c14ac3ebda9f",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:21:51.911Z"
+    },
+    {
+      "requestId": "faa6be10-8340-4de0-9dbd-8da29ddb9498",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:22:18.267Z"
+    },
+    {
+      "requestId": "d4c73fae-a65e-4784-ac82-df8809a778c7",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f20c-4d86-76a9-a2ad-a9b94def35dd",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:22:24.975Z"
+    },
+    {
+      "requestId": "b624caa6-7dae-4bd5-bd87-873583fe96d6",
+      "provider": "kimchi-dev",
+      "model": "deepseek-v4-flash-0731",
+      "modelSource": "context",
+      "sessionId": "01a0f20c-4d86-76a9-a2ad-a9b94def35dd",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:22:33.927Z"
+    },
+    {
+      "requestId": "7efaf579-cc26-45b3-99af-587be202b450",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f20c-4d86-76a9-a2ad-a9b94def35dd",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:22:33.930Z"
+    },
+    {
+      "requestId": "21bb4857-5683-4aff-9730-b150d000e8c3",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f20c-4d86-76a9-a2ad-a9b94def35dd",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:22:40.045Z"
+    },
+    {
+      "requestId": "70f6b23d-e701-43f6-b799-a4f668bdf2d9",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f20c-4d86-76a9-a2ad-a9b94def35dd",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:23:01.015Z"
+    },
+    {
+      "requestId": "4ebf7e96-fb3a-4477-b8b3-372645d46c09",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f20c-4d86-76a9-a2ad-a9b94def35dd",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:24:06.849Z"
+    },
+    {
+      "requestId": "813c285d-df4f-4a0a-b70c-ce216b8f6df1",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f20c-4d86-76a9-a2ad-a9b94def35dd",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:24:23.308Z"
+    },
+    {
+      "requestId": "7d138d1c-72e9-4031-97e7-b8cef08424d5",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f20c-4d86-76a9-a2ad-a9b94def35dd",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:25:03.252Z"
+    },
+    {
+      "requestId": "fa844658-475d-4e62-b1dd-230022812e7d",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f20c-4d86-76a9-a2ad-a9b94def35dd",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:25:05.717Z"
+    },
+    {
+      "requestId": "b5816fea-de7d-4874-92ed-965ae4f51e98",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f20c-4d86-76a9-a2ad-a9b94def35dd",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:25:25.073Z"
+    },
+    {
+      "requestId": "ac15e621-2251-44f0-8091-f9b463021a41",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f20c-4d86-76a9-a2ad-a9b94def35dd",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:25:31.428Z"
+    },
+    {
+      "requestId": "a67feaa8-e26d-475a-b2cf-b6ae9b9fdf3c",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f20c-4d86-76a9-a2ad-a9b94def35dd",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:25:42.317Z"
+    },
+    {
+      "requestId": "739a384d-10e1-4e34-b18c-51a9848ddff0",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f20c-4d86-76a9-a2ad-a9b94def35dd",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:25:52.452Z"
+    },
+    {
+      "requestId": "b3c9e380-6820-41a6-8cdf-075213350fd1",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f20c-4d86-76a9-a2ad-a9b94def35dd",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:25:56.794Z"
+    },
+    {
+      "requestId": "69e3cef8-5af3-4032-a848-80ba5a7f5db1",
+      "provider": "kimchi-dev",
+      "model": "glm-5.3",
+      "modelSource": "context",
+      "sessionId": "01a0f20c-4d86-76a9-a2ad-a9b94def35dd",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:25:58.026Z"
+    }
+  ],
+  "plans": [
+    {
+      "path": "/private/tmp/kimchi-work-journey-jYnOGO/planning/.kimchi/plans/local-work-summary.md",
+      "snapshotPath": "/private/tmp/kimchi-work-journey-jYnOGO/home/.config/kimchi/harness/work/e21bef5a-ddbb-4e44-8162-2cc7da7ca953/plans/local-work-summary-eebc8a578b18611816f9e2cac09d73ef0f01f6f3a9fee8225b3bcfef7b460594.md",
+      "sessionId": "01a0f1e5-5023-7100-8055-0ca232dd1561",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/planning",
+      "recordedAt": "2026-09-30T10:48:25.055Z"
+    }
+  ],
+  "commits": [
+    {
+      "sha": "523f1cd1eebeaa5011e0c3b531bcd41901629f02",
+      "repository": "/private/tmp/kimchi-work-journey-jYnOGO/repo.git",
+      "worktree": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "toolCallId": "call_cbad20ad9169469194733ba5",
+      "sessionId": "01a0f1e9-5f4e-7715-a746-de1053c5a67f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:01:21.571Z"
+    },
+    {
+      "sha": "637b11899fedb7b53b49dc4dd01393efa89589e8",
+      "repository": "/private/tmp/kimchi-work-journey-jYnOGO/repo.git",
+      "worktree": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "rewrittenFrom": "523f1cd1eebeaa5011e0c3b531bcd41901629f02",
+      "toolCallId": "call_1d99c7029f854e028f6a8130",
+      "sessionId": "01a0f1fb-b75b-733f-bdfb-2cba0e10bf0f",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:14:20.201Z"
+    },
+    {
+      "source": "native-file-transition",
+      "sha": "6e71b2abe927b0c4799b74ef45af976a61e7a7c6",
+      "repository": "/private/tmp/kimchi-work-journey-jYnOGO/repo.git",
+      "worktree": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "paths": [
+        "docs/work-summary.md"
+      ],
+      "transitionIds": [
+        "cd961724-1681-4224-88c2-870bcb0490cb"
+      ],
+      "sessionId": "01a0f207-9086-724c-bd2a-c59f96e6585d",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:21:27.996Z"
+    },
+    {
+      "sha": "1ce0245e6859cf697c257d141981edd1d4ca9b6d",
+      "repository": "/private/tmp/kimchi-work-journey-jYnOGO/repo.git",
+      "worktree": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "toolCallId": "call_5a41f6f602884f6c8e65a272",
+      "sessionId": "01a0f20c-4d86-76a9-a2ad-a9b94def35dd",
+      "cwd": "/private/tmp/kimchi-work-journey-jYnOGO/implementation",
+      "recordedAt": "2026-09-30T11:25:31.424Z"
+    }
+  ]
+}
