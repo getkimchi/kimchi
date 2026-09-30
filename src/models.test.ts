@@ -1469,17 +1469,15 @@ describe("openai Responses API routing", () => {
 		for (const model of models) {
 			expect(model.api).toBe("openai-responses")
 		}
-		// o-series: reasoning can be neither disabled nor minimized — map to null so
-		// pi omits the `reasoning` block instead of sending an invalid effort.
+		// o-series: reasoning can be neither disabled nor minimized.
 		for (const slug of ["o1", "o3", "o3-2025-04-16", "o3-mini", "o4-mini"]) {
 			expect(models.find((m) => m.id === slug)?.thinkingLevelMap).toEqual({ off: null, minimal: null })
 		}
-		// base gpt-5 family: cannot disable reasoning — off maps to null and clamps
-		// to the lowest valid effort (minimal) when selected.
+		// base gpt-5 family: reasoning cannot be disabled.
 		for (const slug of ["gpt-5", "gpt-5-2025-08-07", "gpt-5-mini", "gpt-5-nano"]) {
 			expect(models.find((m) => m.id === slug)?.thinkingLevelMap).toEqual({ off: null })
 		}
-		// gpt-5.1+ / gpt-6 accept effort "none" — a real, cheap thinking-off.
+		// gpt-5.1+ / gpt-6 accept effort "none".
 		for (const slug of ["gpt-5.1", "gpt-5.2", "gpt-5.4-mini", "gpt-5.6", "gpt-5.6-terra", "gpt-6-astra"]) {
 			expect(models.find((m) => m.id === slug)?.thinkingLevelMap).toEqual({ off: "none" })
 		}

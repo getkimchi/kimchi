@@ -50,13 +50,9 @@ export function anthropicMessagesApi(endpoint?: string): string {
 // catalog models don't need a harness release.
 const RESPONSES_API_SLUG_PATTERNS: RegExp[] = [/^gpt-4\.1/, /^gpt-4o/, /^gpt-5(?!-search)/, /^gpt-6/, /^o[134](-|$)/]
 
-// OpenAI models that must stay on Chat Completions: legacy generations predate the
-// Responses API, and audio/embedding models are different endpoints entirely.
-// The gate is conjunctive — a slug matching any pattern here is excluded even if it
-// also matches a Responses pattern above (e.g. gpt-4o-audio-preview matches
-// /^gpt-4o/ but belongs to a different endpoint). gpt-4o/gpt-4.1 themselves do NOT
-// match /^gpt-4(-|$)/ — the next char isn't '-' or end-of-string — so the legacy
-// entry does not exclude them.
+// OpenAI models that must stay on Chat Completions: legacy generations and
+// audio/embedding/non-chat variants. These patterns win over the Responses table
+// above (gpt-4o-audio-preview stays on completions).
 const CHAT_COMPLETIONS_ONLY_SLUG_PATTERNS: RegExp[] = [
 	/^gpt-3\.5/,
 	/^gpt-4(-|$)/,
@@ -73,10 +69,8 @@ function supportsResponsesApi(provider: string, slug: string): boolean {
 	)
 }
 
-// /responses accepts effort "none" only on gpt-5.1+ and gpt-6. o-series can neither
-// disable nor minimize reasoning, and base gpt-5 cannot disable it (upstream pi-ai's
-// catalog pins exactly these semantics). `off: null` makes pi omit the reasoning
-// param, so off/unset falls back to the server default instead of an invalid effort.
+// Effort "none" is only valid on gpt-5.1+/gpt-6; `off: null` makes pi omit the
+// reasoning param rather than send an invalid effort.
 const RESPONSES_NONE_EFFORT_SLUG_PATTERNS: RegExp[] = [/^gpt-5\.[1-9]/, /^gpt-6/]
 
 function responsesThinkingLevelMap(slug: string): ThinkingLevelMap {
@@ -272,9 +266,6 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		: m.provider !== "anthropic" && m.slug.startsWith("claude-")
 			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
 			: undefined
-	// Gated OpenAI reasoning models map "off" per family: "none" is a real effort
-	// value only on gpt-5.1+/gpt-6 — elsewhere it 400s, so those families map to
-	// null (pi omits the reasoning param) instead of an invalid wire value.
 	const responsesApi = supportsResponsesApi(m.provider, m.slug)
 	const thinkingLevelMap =
 		m.provider === "ai-enabler"
@@ -303,9 +294,7 @@ export function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 	const aiEnablerModels = models.filter((m) => m.provider === "ai-enabler")
 	const otherModels = models.filter((m) => m.provider !== "ai-enabler")
 
-	// Catalog lint: surface OpenAI slugs neither routing table knows about, so new
-	// catalog models don't silently fall back to chat completions (which rejects
-	// tools + reasoning for modern models) until the tables are updated.
+	// Surface OpenAI slugs neither routing table knows about.
 	for (const m of otherModels) {
 		if (m.provider !== "openai") continue
 		if (
