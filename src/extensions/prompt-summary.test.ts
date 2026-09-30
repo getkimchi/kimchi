@@ -3,6 +3,7 @@ import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
+import { taggingTheme } from "./__mocks__/theme.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "./auto-model/state.js"
 import promptSummaryExtension, { holdPromptSummary, promptSummaryRenderer } from "./prompt-summary.js"
 
@@ -436,14 +437,14 @@ describe("prompt summary renderer", () => {
 		getFgAnsi: (_color: string) => "",
 	} as unknown as Theme
 
-	function render(details: Record<string, unknown>): string {
+	function render(details: Record<string, unknown>, withTheme: Theme = theme): string {
 		const component = promptSummaryRenderer(
 			{
 				customType: "prompt-summary",
 				details,
 			} as unknown as Parameters<typeof promptSummaryRenderer>[0],
 			{ expanded: false, outputPad: 0 },
-			theme,
+			withTheme,
 		)
 		return (component as Component | undefined)?.render(80).join("\n") ?? ""
 	}
@@ -472,5 +473,18 @@ describe("prompt summary renderer", () => {
 			total: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
 		})
 		expect(text).toContain("- Rate response: ▲▼ (Ctrl+R)")
+	})
+
+	it("accents the actionable part of the invitation while keeping the label dim", () => {
+		const text = render(
+			{
+				elapsed: "3.6s",
+				orchestrator: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
+				subagents: null,
+				total: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
+			},
+			taggingTheme(),
+		)
+		expect(text).toContain("<dim>- Rate response: </dim><accent>⏶ Good (Ctrl+1)  ⏷ Bad (Ctrl+2)</accent>")
 	})
 })

@@ -1,5 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
+import { taggingTheme } from "../__mocks__/theme.js"
 import type { FeedbackSummaryDetails, ModelSwitchSummaryDetails } from "./renderer.js"
 import { feedbackSummaryRenderer } from "./renderer.js"
 
@@ -104,6 +105,16 @@ describe("feedbackSummaryRenderer", () => {
 		expect(text).toContain("Tell us why you switched to Concrete (Ctrl+R)")
 		expect(text).not.toContain("Switched to Concrete")
 		expect(text).not.toContain("Reason:")
+	})
+
+	it("accents the Ctrl+R hint while keeping the invitation text dim", () => {
+		const details: ModelSwitchSummaryDetails = {
+			model: "Concrete",
+			reason: "",
+		}
+		const container = feedbackSummaryRenderer(makeEntry(details), makeOptions(), taggingTheme())
+		const text = container?.render(80).map(stripAnsi).join("\n") ?? ""
+		expect(text).toContain("<dim> Tell us why you switched to Concrete </dim><accent>(Ctrl+R)</accent>")
 	})
 
 	it("renders only the reason when model-switch summary has a reason", () => {

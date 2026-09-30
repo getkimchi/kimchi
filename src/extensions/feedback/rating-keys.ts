@@ -13,9 +13,13 @@ export function usesLegacyRatingPrompt(): boolean {
 }
 
 // Rating hint for the prompt summary — advertise whichever flow works.
-export function getRatingSummaryHint(): string {
-	if (usesLegacyRatingPrompt()) return "- Rate response: ▲▼ (Ctrl+R)"
-	return "- Rate response: ⏶ Good (Ctrl+1)  ⏷ Bad (Ctrl+2)"
+// Exposed as label/action parts so the prompt summary can style the
+// actionable part (accent) separately from the section label (dim), while
+// the advertised strings stay defined in this one place.
+export function getRatingSummaryHintParts(): { label: string; action: string } {
+	const label = "- Rate response: "
+	if (usesLegacyRatingPrompt()) return { label, action: "▲▼ (Ctrl+R)" }
+	return { label, action: "⏶ Good (Ctrl+1)  ⏷ Bad (Ctrl+2)" }
 }
 
 // Rating rows for the /help shortcut list.
