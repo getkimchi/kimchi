@@ -14,6 +14,11 @@
 //     never changes), and the tool schema ships in-band in a system message
 //   - without the compat flag (baseline), an active tool always appears in
 //     params.tools (proves the test actually exercises the exclusion path)
+//
+// NOTE: this documents upstream's kimi-mode wire contract, which the kimchi
+// gateway does NOT yet support (see the note in models.ts metadataToModel):
+// no kimchi model gets the compat flag today. This test stays as the
+// contract for the day a compliant path exists.
 
 import type { Context, Model, ToolResultMessage } from "@earendil-works/pi-ai"
 import { registerBuiltInApiProviders, streamSimple } from "@earendil-works/pi-ai/compat"

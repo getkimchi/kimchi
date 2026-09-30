@@ -173,7 +173,6 @@ describe("updateModelsConfig", () => {
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				provider: "ai-enabler",
 				thinkingLevelMap: { off: "none", max: "max" },
-				compat: { deferredToolsMode: "kimi" },
 			},
 		])
 	})
@@ -252,7 +251,7 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev/anthropic"].headers["X-Provider-Type"]).toBe("anthropic")
 	})
 
-	it("sets kimi deferred-tools compat for kimi-* ai-enabler models", async () => {
+	it("sets no compat for kimi-* ai-enabler models (in-band tools unsupported by the gateway)", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI] }),
@@ -261,11 +260,12 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		// In-band deferred tool loading: toolResults stamped with
-		// `addedToolNames` keep revealed tools out of the top-level
-		// `params.tools` array, so mid-session reveals never invalidate the
-		// prompt cache (see deferred-reveal.ts).
-		expect(config.providers["kimchi-dev"].models[0].compat).toEqual({ deferredToolsMode: "kimi" })
+		// Verified against the live gateway (2026-09-30): the ai-enabler path
+		// rejects upstream's content-less in-band system message with HTTP 400
+		// and silently drops in-band tools even when content is present. Until
+		// the gateway honors them, deferredToolsMode would break every stamped
+		// reveal — see the note in metadataToModel.
+		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
 	})
 
 	it("does not set compat for non-kimi non-claude ai-enabler models", async () => {

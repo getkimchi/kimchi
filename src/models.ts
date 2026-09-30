@@ -219,18 +219,20 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// default `openai` thinkingFormat which sends `reasoning_effort`. The map
 	// disables thinking with `none` and advertises max to Pi's selector.
 	const upstream = m.provider === "anthropic" ? ANTHROPIC_MODELS_BY_ID[m.slug] : undefined
-	// Kimi-family models support upstream's in-band deferred-tool loading:
-	// toolResults stamped with `addedToolNames` (see deferred-reveal.ts) keep
-	// revealed tools out of the top-level `params.tools` array and deliver
-	// their schemas in-band after the stamped result, so a mid-session reveal
-	// never invalidates the prompt cache.
+	// NOTE: kimi slugs deliberately get NO `deferredToolsMode: "kimi"` compat.
+	// Verified against the live gateway (2026-09-30): the ai-enabler path (1)
+	// rejects upstream's in-band system message (`{role:"system",tools:[...]}`
+	// with no content field) with HTTP 400 — its deserializer requires
+	// `content` — and (2) even with `content:""` the in-band tools are not
+	// exposed to the model (probe with a forced call returned no tool_calls,
+	// while the same tool in the top-level `tools` array was called).
+	// Revisit only if the gateway starts honoring in-band tools AND accepting
+	// content-less system messages.
 	const compat = upstream
 		? upstream.compat
 		: m.provider !== "anthropic" && m.slug.startsWith("claude-")
 			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
-			: m.slug.startsWith("kimi-")
-				? ({ deferredToolsMode: "kimi" } satisfies OpenAICompletionsCompat)
-				: undefined
+			: undefined
 	const thinkingLevelMap = m.provider === "ai-enabler" ? { off: "none", max: "max" } : upstream?.thinkingLevelMap
 	return {
 		id: m.slug,
