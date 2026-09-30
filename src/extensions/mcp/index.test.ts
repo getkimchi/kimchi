@@ -93,7 +93,7 @@ vi.mock("../permissions/mode-controller.js", () => ({
 	getPermissionMode: () => (permissionState.mode === undefined ? undefined : { mode: permissionState.mode }),
 }))
 
-import { resetConsoleWarnRelayForTests } from "../console-warn-relay.js"
+import consoleWarnRelayExtension, { resetConsoleWarnRelayForTests } from "../console-warn-relay.js"
 import { resetWarningsSummaryForTests, WARNINGS_WIDGET_KEY } from "../warnings-summary.js"
 
 vi.mock("./oauth-migration.js", () => ({
@@ -592,9 +592,14 @@ describe("upstream MCP adapter facade", () => {
 			)
 			console.warn('[mcp] Tool "get_once" promoted to read-only via name convention (no annotations)')
 		})
+		// The relay is its own extension, registered ahead of MCP in cli.ts.
+		const relayHarness = createExtensionApi()
+		consoleWarnRelayExtension(relayHarness.api)
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
-		const ctx = await start(harness)
+		const ctx = createContext({ isProjectTrusted: () => true })
+		await relayHarness.getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx)
+		await start(harness, ctx)
 
 		expect(sink).not.toHaveBeenCalled()
 		// A UI-only widget: nothing is sent into the session / LLM context.
@@ -605,39 +610,6 @@ describe("upstream MCP adapter facade", () => {
 			expect.stringContaining("MCP: 105 direct tools resolved"),
 			'[mcp] Tool "get_once" promoted to read-only via name convention (no annotations)',
 		])
-		sink.mockRestore()
-	})
-
-	it("reroutes non-MCP console.warn output to the collapsed warnings row as well", async () => {
-		const sink = vi.spyOn(console, "warn").mockImplementation(() => {})
-		upstream.sessionStart.mockImplementation(() => {
-			console.warn("something else entirely")
-		})
-		const harness = createExtensionApi()
-		mcpAdapterExtension(harness.api)
-		const ctx = await start(harness)
-
-		expect(harness.sendMessage).not.toHaveBeenCalled()
-		expect(mountWidget(ctx, WARNINGS_WIDGET_KEY)?.render(120)[0]).toContain(
-			"[1 warning] Latest: something else entirely",
-		)
-		expect(sink).not.toHaveBeenCalled()
-		sink.mockRestore()
-	})
-
-	it("replays warns queued before session tracking into the collapsed warnings row", async () => {
-		const sink = vi.spyOn(console, "warn").mockImplementation(() => {})
-		const harness = createExtensionApi()
-		mcpAdapterExtension(harness.api)
-		// Fired before any session_start — e.g. another extension's handler that
-		// ran ahead of ours. The relay queues these until tracking begins.
-		console.warn("queued before track")
-
-		const ctx = await start(harness)
-
-		expect(harness.sendMessage).not.toHaveBeenCalled()
-		expect(mountWidget(ctx, WARNINGS_WIDGET_KEY)?.render(120)[0]).toContain("[1 warning] Latest: queued before track")
-		expect(sink).not.toHaveBeenCalled()
 		sink.mockRestore()
 	})
 

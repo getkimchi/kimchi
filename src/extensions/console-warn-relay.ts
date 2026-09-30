@@ -27,6 +27,10 @@
  *   receives the original arguments verbatim — no dedupe, no formatting,
  *   no ANSI stripping.
  *
+ * Wiring: the default export is a standalone extension registered first in
+ * `cli.ts`, so the relay covers every extension and dependency regardless of
+ * which optional extensions (e.g. MCP) are enabled.
+ *
  * State lives on globalThis, keyed by a well-known symbol: the bundled
  * binary duplicates this module into multiple chunks, and a module-local
  * "already installed" guard lets every duplicate wrap the previous
@@ -43,8 +47,8 @@
  */
 
 import { format, stripVTControlCharacters } from "node:util"
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { recordRelayedWarning } from "./warnings-summary.js"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { recordRelayedWarning, trackWarningsSummaryContext } from "./warnings-summary.js"
 
 /** Identical messages within this window are swallowed in interactive mode. */
 const DEDUPE_WINDOW_MS = 10_000
@@ -61,6 +65,8 @@ type RelayState = {
 	recentWarns: Map<string, number>
 	pendingPreTrack: unknown[][]
 	hasTrackedCtx: boolean
+	/** Flushes never-drained pre-track warns on exit; kept for test cleanup. */
+	exitListener: (() => void) | undefined
 }
 
 const RELAY_STATE_KEY = Symbol.for("kimchi:console-warn-relay:state")
@@ -71,6 +77,7 @@ relayGlobals[RELAY_STATE_KEY] ??= {
 	recentWarns: new Map(),
 	pendingPreTrack: [],
 	hasTrackedCtx: false,
+	exitListener: undefined,
 }
 const state = relayGlobals[RELAY_STATE_KEY]
 
@@ -126,6 +133,12 @@ export function trackConsoleWarnRelayContext(ctx: ExtensionContext): void {
 export function installConsoleWarnRelay(): void {
 	if (state.installedOriginal) return
 	state.installedOriginal = console.warn
+	// A process that exits before any session_start (auth/setup failure,
+	// early exit) would otherwise drop queued warns silently.
+	state.exitListener = () => {
+		for (const args of state.pendingPreTrack.splice(0)) state.installedOriginal?.(...args)
+	}
+	process.on("exit", state.exitListener)
 	console.warn = (...args: unknown[]): void => {
 		const ctx = state.latestUiCtx
 		if (ctx?.hasUI) {
@@ -154,8 +167,25 @@ export function resetConsoleWarnRelayForTests(): void {
 		console.warn = state.installedOriginal
 		state.installedOriginal = undefined
 	}
+	if (state.exitListener) {
+		process.off("exit", state.exitListener)
+		state.exitListener = undefined
+	}
 	state.latestUiCtx = undefined
 	state.recentWarns.clear()
 	state.pendingPreTrack.length = 0
 	state.hasTrackedCtx = false
+}
+
+/**
+ * Installs the relay at load time and tracks every session's context.
+ * Summary context first: tracking the relay drains pre-track queued warns
+ * into recordRelayedWarning, which needs the summary's ctx.
+ */
+export default function consoleWarnRelayExtension(pi: ExtensionAPI): void {
+	installConsoleWarnRelay()
+	pi.on("session_start", (_event, ctx) => {
+		trackWarningsSummaryContext(ctx)
+		trackConsoleWarnRelayContext(ctx)
+	})
 }

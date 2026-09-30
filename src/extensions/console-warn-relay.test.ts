@@ -216,6 +216,27 @@ describe("installConsoleWarnRelay", () => {
 		expect(mockedRecord).toHaveBeenNthCalledWith(1, "queued 5")
 	})
 
+	it("flushes never-tracked queued warns to the sink on process exit", () => {
+		const sink = vi.fn()
+		installWithSink(sink)
+		console.warn("fired before an early exit", 1)
+
+		process.emit("exit", 1)
+
+		expect(sink).toHaveBeenCalledWith("fired before an early exit", 1)
+		expect(mockedRecord).not.toHaveBeenCalled()
+	})
+
+	it("reset removes the exit flush listener", () => {
+		const listenersBefore = process.listenerCount("exit")
+		installWithSink(vi.fn())
+		expect(process.listenerCount("exit")).toBe(listenersBefore + 1)
+
+		resetConsoleWarnRelayForTests()
+
+		expect(process.listenerCount("exit")).toBe(listenersBefore)
+	})
+
 	it("reset restores the original sink and clears tracked context and dedupe state", () => {
 		const sink = vi.fn()
 		installWithSink(sink)
