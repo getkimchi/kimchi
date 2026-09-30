@@ -64,10 +64,14 @@ const credentialAccount = vi.hoisted(() => ({
 		| { status: "present"; serverUrl?: string }
 		| { status: "absent" }
 		| { status: "unavailable" },
+	error: undefined as Error | undefined,
 }))
 vi.mock("./keyring-require-bridge.js", () => ({
 	installKeyringRequireBridge,
-	inspectMcpCredentialAccount: () => credentialAccount.value,
+	inspectMcpCredentialAccount: () => {
+		if (credentialAccount.error) throw credentialAccount.error
+		return credentialAccount.value
+	},
 }))
 
 vi.mock("./oauth-migration.js", () => ({
@@ -106,6 +110,7 @@ beforeEach(() => {
 	upstream.sessionStart.mockReset()
 	mcpClient.state.tools = []
 	credentialAccount.value = { status: "absent" }
+	credentialAccount.error = undefined
 	upstream.mcpAuth.mockReset()
 	upstream.options = undefined
 	upstream.registerMcpAuthCommand = true
@@ -646,6 +651,20 @@ describe("UpstreamMcpProbe", () => {
 		const [probeName] = configuredServerNames()
 		expect(probeName).toMatch(/^__probe_[0-9a-f-]{36}$/)
 		expect(upstream.logout).toHaveBeenCalledWith(`logout ${probeName}`, expect.anything())
+	})
+
+	it("warns with the keychain error and isolates the probe when credential inspection throws", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		credentialAccount.error = new Error("macOS login keychain is locked or unavailable")
+
+		try {
+			await new UpstreamMcpProbe().probeTools("locked-keychain", { url: "https://example.test/mcp" })
+
+			expect(configuredServerNames()[0]).toMatch(/^__probe_[0-9a-f-]{36}$/)
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining("keychain is locked"))
+		} finally {
+			warn.mockRestore()
+		}
 	})
 
 	it("isolates orphaned credentials when their stored URL is not discoverable from config", async () => {
