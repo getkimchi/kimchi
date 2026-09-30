@@ -1,6 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
-import { wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { truncateLinesToWidth } from "../../truncate-lines.js"
 
 /**
@@ -25,19 +25,27 @@ export function createStatusPanelComponent(theme: Theme, rows: string[], done: (
 
 		render(width: number): string[] {
 			if (cachedLines && cachedWidth === width) return cachedLines
-			const contentWidth = Math.max(1, width - 2)
-			const rule = theme.fg("accent", "─".repeat(contentWidth))
-			const lines: string[] = [rule, ` ${theme.bold("Status")}`, ""]
+			// Bordered box: accent `─` rules capped with corners, `│` side borders
+			// wrapping every row (one space of inner padding on each side).
+			const contentWidth = Math.max(1, width - 4)
+			const border = (s: string): string => theme.fg("accent", s)
+			const topRule = border(`╭${"─".repeat(contentWidth + 2)}╮`)
+			const bottomRule = border(`╰${"─".repeat(contentWidth + 2)}╯`)
+			const boxRow = (styled: string): string => {
+				const pad = " ".repeat(Math.max(0, contentWidth - visibleWidth(styled)))
+				return `${border("│")} ${styled}${pad} ${border("│")}`
+			}
+			const lines: string[] = [topRule, boxRow(theme.bold("Status")), boxRow("")]
 			for (const row of rows) {
 				if (row === "") {
-					lines.push("")
+					lines.push(boxRow(""))
 					continue
 				}
 				for (const line of wrapTextWithAnsi(row, contentWidth)) {
-					lines.push(` ${theme.fg("text", line)}`)
+					lines.push(boxRow(theme.fg("text", line)))
 				}
 			}
-			lines.push("", ` ${theme.fg("muted", "press any key to close")}`, rule)
+			lines.push(boxRow(""), boxRow(theme.fg("muted", "press any key to close")), bottomRule)
 			cachedLines = truncateLinesToWidth(lines, width)
 			cachedWidth = width
 			return cachedLines

@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { MCP_STATUS_EVENT, type McpStatusSnapshot } from "pi-mcp-adapter"
 import { getMe } from "../../api/me.js"
-import { getEnvironmentApiKey, loadConfig } from "../../config.js"
+import { getApiKeySource, getEnvironmentApiKey, loadConfig } from "../../config.js"
 import { isKimchiProvider } from "../../kimchi-provider.js"
 import { getVersion } from "../../utils.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
@@ -14,6 +14,19 @@ export const STATUS_COMMAND_DESCRIPTION = "Show version, login, session, model, 
 /** Connected = tools available; cached counts as usable. */
 const MCP_CONNECTED_STATUSES = new Set(["connected", "cached"])
 const MCP_DISABLED_STATUS = "disabled"
+/**
+ * The failed bucket: "failed" and "needs-auth" are the two error states;
+ * "not-connected" is a server that is present but unusable, so it counts here
+ * too rather than disappearing from the summary.
+ */
+const MCP_FAILED_STATUSES = new Set(["failed", "needs-auth", "not-connected"])
+
+/** Summary counts for the MCP row of the Status panel. */
+export interface McpCounts {
+	connected: number
+	disabled: number
+	failed: number
+}
 
 interface StatusRowsDeps {
 	version: string
@@ -24,46 +37,56 @@ interface StatusRowsDeps {
 	cwd: string
 	modelRef: string
 	isAuto: boolean
-	mcp: { connected: number; disabled: number; failed: number } | undefined
+	mcp: McpCounts | undefined
 }
+
+/** Column width for the Claude-Code-style `Label:` gutter. */
+const LABEL_WIDTH = 16
 
 /**
  * Layout from the Status panel decision (see CONTEXT.md "Status panel"):
  * version → login → session, Claude-Code-style alignment, `· /mcp` link.
  */
 export function buildStatusRows(deps: StatusRowsDeps): string[] {
-	const firstBlock = [`${"Version:".padEnd(16)}${deps.version}`, `${"Login method:".padEnd(16)}${deps.loginMethod}`]
-	if (deps.email) firstBlock.push(`${"Email:".padEnd(16)}${deps.email}`)
+	const row = (label: string, value: string): string => `${label.padEnd(LABEL_WIDTH)}${value}`
 
-	const secondBlock = [
-		`${"Session name:".padEnd(16)}${deps.sessionName ?? "(unnamed — use /name to add a name)"}`,
-		`${"Session ID:".padEnd(16)}${deps.sessionId ?? "unknown"}`,
-		`${"cwd:".padEnd(16)}${deps.cwd}`,
-		`${"Model:".padEnd(16)}${deps.modelRef}${deps.isAuto ? " (auto)" : ""}`,
+	const identityRows = [row("Version:", deps.version), row("Login method:", deps.loginMethod)]
+	if (deps.email) identityRows.push(row("Email:", deps.email))
+
+	const sessionRows = [
+		row("Session name:", deps.sessionName ?? "(unnamed — use /name to add a name)"),
+		row("Session ID:", deps.sessionId ?? "unknown"),
+		row("cwd:", deps.cwd),
+		row("Model:", `${deps.modelRef}${deps.isAuto ? " (auto)" : ""}`),
 	]
 	if (deps.mcp) {
-		secondBlock.push(
-			`${"MCP servers:".padEnd(16)}${deps.mcp.connected} connected, ${deps.mcp.disabled} disabled, ${deps.mcp.failed} failed · /mcp`,
+		sessionRows.push(
+			row(
+				"MCP servers:",
+				`${deps.mcp.connected} connected, ${deps.mcp.disabled} disabled, ${deps.mcp.failed} failed · /mcp`,
+			),
 		)
 	} else {
-		secondBlock.push(`${"MCP servers:".padEnd(16)}unavailable · /mcp`)
+		sessionRows.push(row("MCP servers:", "unavailable · /mcp"))
 	}
-	return [...firstBlock, "", ...secondBlock]
+	return [...identityRows, "", ...sessionRows]
 }
 
-/** Count statuses ourselves so connected+disabled+failed always sum to the server total. */
-export function summarizeMcpSnapshot(snapshot: McpStatusSnapshot): {
-	connected: number
-	disabled: number
-	failed: number
-} {
+/**
+ * Count statuses into the three buckets from the layout mock. The status union
+ * is closed (see McpServerRuntimeStatus), so connected+disabled+failed always
+ * sum to the server total.
+ */
+export function summarizeMcpSnapshot(snapshot: McpStatusSnapshot): McpCounts {
 	let connected = 0
 	let disabled = 0
+	let failed = 0
 	for (const server of snapshot.servers) {
 		if (server.status === MCP_DISABLED_STATUS || server.disabled) disabled++
 		else if (MCP_CONNECTED_STATUSES.has(server.status)) connected++
+		else if (MCP_FAILED_STATUSES.has(server.status)) failed++
 	}
-	return { connected, disabled, failed: snapshot.servers.length - connected - disabled }
+	return { connected, disabled, failed }
 }
 
 /** Third-party providers from pi's auth.json — kimchi providers excluded. */
@@ -80,15 +103,20 @@ function thirdPartyProviders(authPath: string): string[] {
 /**
  * Browser login and the pasted-key flow both persist the same platform key in
  * config.json, so "Kimchi account" is indistinguishable from a saved key; only
- * the environment override is recognisably an API-key session.
+ * an env-only key is recognisably an API-key session.
+ *
+ * Precedence (spec Chunk 1): Kimchi account (config key present) →
+ * Kimchi API key (KIMCHI_API_KEY environment, only when no config key) →
+ * third-party provider → not logged in.
  */
 export function resolveLoginMethod(deps: {
 	envApiKey: string | undefined
 	configApiKey: string | undefined
+	apiKeySource: ReturnType<typeof getApiKeySource>
 	authPath: string
 }): string {
-	if (deps.envApiKey) return "Kimchi API key (KIMCHI_API_KEY environment)"
 	if (deps.configApiKey) return "Kimchi account"
+	if (deps.apiKeySource === "environment" && deps.envApiKey) return "Kimchi API key (KIMCHI_API_KEY environment)"
 	const others = thirdPartyProviders(deps.authPath)
 	if (others.length > 0) return `Third-party provider (${others.join(", ")})`
 	return "Not logged in"
@@ -126,6 +154,7 @@ export async function gatherStatusRows(ctx: ExtensionContext): Promise<string[]>
 		loginMethod: resolveLoginMethod({
 			envApiKey,
 			configApiKey: config.apiKey,
+			apiKeySource: getApiKeySource(),
 			authPath: getKimchiAuthPath(),
 		}),
 		email: cachedEmail,

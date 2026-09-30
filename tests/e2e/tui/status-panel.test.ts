@@ -19,6 +19,7 @@ test("status panel opens and dismisses on a key press", async ({ terminal }) => 
 		await expect(terminal.getByText("Version:")).toBeVisible()
 		await expect(terminal.getByText("Login method:")).toBeVisible()
 		await expect(terminal.getByText("Session ID:")).toBeVisible()
+		await expect(terminal.getByText("cwd:")).toBeVisible()
 		await expect(terminal.getByText("Model:")).toBeVisible()
 		await expect(terminal.getByText("MCP servers:")).toBeVisible()
 		await expect(terminal.getByText("press any key to close")).toBeVisible()

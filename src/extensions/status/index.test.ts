@@ -3,12 +3,17 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { McpStatusSnapshot } from "pi-mcp-adapter"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { buildStatusRows, resolveLoginMethod, summarizeMcpSnapshot } from "./index.js"
+import { createCommandContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import statusExtension, { buildStatusRows, resolveLoginMethod, summarizeMcpSnapshot } from "./index.js"
 
 vi.mock("../../config.js", () => ({
 	loadConfig: () => ({ apiKey: undefined }),
 	getEnvironmentApiKey: () => undefined,
+	getApiKeySource: () => "config",
 }))
+// Deterministic, empty auth store for the gatherStatusRows path.
+vi.mock("../login/flow.js", () => ({ getKimchiAuthPath: () => "/does/not/exist/auth.json" }))
 vi.mock("../../api/me.js", () => ({ getMe: vi.fn() }))
 vi.mock("../../utils.js", () => ({ getVersion: () => "9.9.9-test" }))
 
@@ -72,12 +77,14 @@ describe("buildStatusRows", () => {
 })
 
 describe("summarizeMcpSnapshot", () => {
-	function snapshot(statuses: Array<{ status: string; disabled?: boolean }>): McpStatusSnapshot {
+	type ServerStatus = McpStatusSnapshot["servers"][number]["status"]
+
+	function snapshot(statuses: Array<{ status: ServerStatus; disabled?: boolean }>): McpStatusSnapshot {
 		return {
 			version: 1,
 			servers: statuses.map((s, i) => ({
 				name: `server-${i}`,
-				status: s.status as McpStatusSnapshot["servers"][number]["status"],
+				status: s.status,
 				toolCount: 0,
 				directToolCount: 0,
 				disabled: s.disabled ?? false,
@@ -90,7 +97,7 @@ describe("summarizeMcpSnapshot", () => {
 		}
 	}
 
-	it("counts connected/cached as connected, disabled as disabled, remainder as failed", () => {
+	it("counts connected/cached as connected, disabled as disabled, and the failed set as failed", () => {
 		expect(
 			summarizeMcpSnapshot(
 				snapshot([
@@ -112,6 +119,14 @@ describe("summarizeMcpSnapshot", () => {
 			failed: 0,
 		})
 	})
+
+	it.each([
+		{ status: "failed" as const },
+		{ status: "needs-auth" as const },
+		{ status: "not-connected" as const },
+	])("classifies $status in the failed bucket", ({ status }) => {
+		expect(summarizeMcpSnapshot(snapshot([{ status }]))).toEqual({ connected: 0, disabled: 0, failed: 1 })
+	})
 })
 
 describe("resolveLoginMethod", () => {
@@ -124,14 +139,27 @@ describe("resolveLoginMethod", () => {
 	})
 	const authPath = () => join(dir, "auth.json")
 
-	it("prefers the environment API key", () => {
-		expect(resolveLoginMethod({ envApiKey: "k", configApiKey: "c", authPath: authPath() })).toBe(
-			"Kimchi API key (KIMCHI_API_KEY environment)",
-		)
+	it("reports a Kimchi account when both a config key and the env key exist (account takes precedence)", () => {
+		expect(
+			resolveLoginMethod({ envApiKey: "k", configApiKey: "c", apiKeySource: "environment", authPath: authPath() }),
+		).toBe("Kimchi account")
+	})
+
+	it("reports the environment API key when KIMCHI_API_KEY is the only credential", () => {
+		expect(
+			resolveLoginMethod({
+				envApiKey: "k",
+				configApiKey: undefined,
+				apiKeySource: "environment",
+				authPath: authPath(),
+			}),
+		).toBe("Kimchi API key (KIMCHI_API_KEY environment)")
 	})
 
 	it("reports a Kimchi account when the saved config key exists and no env override", () => {
-		expect(resolveLoginMethod({ envApiKey: undefined, configApiKey: "c", authPath: authPath() })).toBe("Kimchi account")
+		expect(
+			resolveLoginMethod({ envApiKey: undefined, configApiKey: "c", apiKeySource: "config", authPath: authPath() }),
+		).toBe("Kimchi account")
 	})
 
 	it("lists third-party providers when no Kimchi credential exists", () => {
@@ -142,21 +170,67 @@ describe("resolveLoginMethod", () => {
 				anthropic: { type: "oauth", access: "y" },
 			}),
 		)
-		expect(resolveLoginMethod({ envApiKey: undefined, configApiKey: undefined, authPath: authPath() })).toBe(
-			"Third-party provider (anthropic)",
-		)
+		expect(
+			resolveLoginMethod({
+				envApiKey: undefined,
+				configApiKey: undefined,
+				apiKeySource: "config",
+				authPath: authPath(),
+			}),
+		).toBe("Third-party provider (anthropic)")
 	})
 
 	it("reports Not logged in when nothing is configured", () => {
-		expect(resolveLoginMethod({ envApiKey: undefined, configApiKey: undefined, authPath: authPath() })).toBe(
-			"Not logged in",
-		)
+		expect(
+			resolveLoginMethod({
+				envApiKey: undefined,
+				configApiKey: undefined,
+				apiKeySource: "config",
+				authPath: authPath(),
+			}),
+		).toBe("Not logged in")
 	})
 
 	it("falls back gracefully when auth.json is corrupt", () => {
 		writeFileSync(authPath(), "{ not json")
-		expect(resolveLoginMethod({ envApiKey: undefined, configApiKey: undefined, authPath: authPath() })).toBe(
-			"Not logged in",
+		expect(
+			resolveLoginMethod({
+				envApiKey: undefined,
+				configApiKey: undefined,
+				apiKeySource: "config",
+				authPath: authPath(),
+			}),
+		).toBe("Not logged in")
+	})
+})
+
+describe("status command handler", () => {
+	it("notifies the exact layout block in non-TUI mode", async () => {
+		const { api, getRegisteredCommand } = createExtensionApi()
+		statusExtension(api)
+		const command = getRegisteredCommand("status")
+		const ctx = createCommandContext()
+		ctx.mode = "print"
+		ctx.cwd = "/tmp/project"
+		ctx.sessionManager.getSessionName = () => undefined
+
+		await command.handler("", ctx)
+
+		expect(ctx.ui.custom).not.toHaveBeenCalled()
+		// Login method comes from the mocked config (no key) and empty auth store
+		// → "Not logged in"; no session_start fired → no email; no MCP snapshot.
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			[
+				"Version:        9.9.9-test",
+				"Login method:   Not logged in",
+				"",
+				"Session name:   (unnamed — use /name to add a name)",
+				"Session ID:     test-session",
+				"cwd:            /tmp/project",
+				"Model:          (no model selected)",
+				"MCP servers:    unavailable · /mcp",
+			].join("\n"),
+			"info",
 		)
 	})
 })

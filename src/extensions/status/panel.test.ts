@@ -23,8 +23,20 @@ describe("createStatusPanelComponent", () => {
 		expect(lines.join("\n")).toContain("Version:        1.2.3")
 		expect(lines.join("\n")).toContain("Model:          anthropic/claude-sonnet-4-5")
 		expect(lines.join("\n")).toContain("press any key to close")
-		// blank row between blocks survives
-		expect(lines).toContain("")
+		// blank row between blocks survives (wrapped in side borders)
+		expect(lines.some((line) => /^│\s*│$/.test(line))).toBe(true)
+	})
+
+	it("draws a bordered box: corner rules and │ side borders on every row", () => {
+		const panel = createStatusPanelComponent(makeTheme(), ["Version:        1.2.3"], () => {})
+		const lines = panel.render(60)
+		expect(lines[0]).toBe(`╭${"─".repeat(58)}╮`)
+		expect(lines.at(-1)).toBe(`╰${"─".repeat(58)}╯`)
+		for (const line of lines.slice(1, -1)) {
+			expect(line.startsWith("│ ")).toBe(true)
+			expect(line.endsWith(" │")).toBe(true)
+			expect(line).toHaveLength(60)
+		}
 	})
 
 	it("calls done on any key press", () => {
