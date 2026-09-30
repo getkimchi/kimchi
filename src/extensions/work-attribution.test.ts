@@ -1,14 +1,15 @@
-import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
 	type BeforeProviderHeadersEvent,
+	type ExtensionContext,
 	type InputEvent,
 	SessionManager,
 	type SessionShutdownEvent,
 	type SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import { readPlanWorkId, savePlanMarkdown } from "../shared/planning/plan-markdown.js"
 import { createCommandContext, createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
@@ -357,5 +358,109 @@ describe("local work attribution", () => {
 		const next = recordProviderRequest(ctx)
 		const rows = readFileSync(path, "utf8").trim().split("\n")
 		expect(JSON.parse(rows.at(-1) ?? "").requestId).toBe(next.requestId)
+	})
+})
+
+describe("local work summary view", () => {
+	/** The summary view is info-severity; the warning call is persistence's own signal. */
+	function infoNotification(context: ExtensionContext): string {
+		const calls = (context.ui.notify as Mock).mock.calls as [string, string][]
+		const message = calls.find(([, severity]) => severity === "info")?.[0]
+		if (!message) throw new Error(`Expected an info notification but got: ${JSON.stringify(calls)}`)
+		return message
+	}
+
+	it.each([undefined, "{"])("shows the empty state when the summary is missing or invalid (%s)", async (corrupt) => {
+		const ctx = createContext({ cwd: dir })
+		const workId = getWorkId(ctx)
+		await flushWorkSummaries()
+		const summaryPath = join(dir, "work", workId, "work.json")
+		expect(existsSync(summaryPath)).toBe(true)
+		if (corrupt === undefined) rmSync(summaryPath)
+		else writeFileSync(summaryPath, corrupt)
+		const mock = createExtensionApi()
+		createWorkAttributionExtension()(mock.api)
+		await mock.getRegisteredCommand("work").handler("--summary", { ...createCommandContext(), ...ctx })
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("No work summary yet"), "info")
+		const message = infoNotification(ctx)
+		expect(message).toContain(workId)
+		expect(message).toContain(summaryPath)
+	})
+
+	it("shows a fresh session's empty counts on first run", async () => {
+		const mock = createExtensionApi()
+		createWorkAttributionExtension()(mock.api)
+		const ctx = createContext({ cwd: dir })
+		await mock.getRegisteredCommand("work").handler("--summary", { ...createCommandContext(), ...ctx })
+		const workId = getWorkId(ctx)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Sessions: 1"), "info")
+		const message = infoNotification(ctx)
+		expect(message).toContain("Requests: 0")
+		expect(message).toContain("Plan versions: 0")
+		expect(message).toContain("Commits: 0 unique")
+		expect(message).toContain("Models: none")
+		expect(message).toContain(workId)
+		expect(message).toContain(join(dir, "work", workId, "work.json"))
+	})
+
+	it("counts repeated commit hashes once across sessions", async () => {
+		const parent = createContext({ cwd: dir })
+		const workId = getWorkId(parent)
+		const child = createContext({ cwd: dir, sessionManager: { getSessionId: () => "child" } })
+		setWorkId(child, workId)
+		appendWorkRecord(parent, { type: "commit", sha: "a".repeat(40), repository: "/r/.git", worktree: "/r" })
+		appendWorkRecord(child, { type: "commit", sha: "a".repeat(40), repository: "/r/.git", worktree: "/r" })
+		appendWorkRecord(child, { type: "commit", sha: "b".repeat(40), repository: "/r/.git", worktree: "/r" })
+		const mock = createExtensionApi()
+		createWorkAttributionExtension()(mock.api)
+		await mock.getRegisteredCommand("work").handler("--summary", { ...createCommandContext(), ...parent })
+		expect(parent.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Commits: 2 unique"), "info")
+		expect(infoNotification(parent)).toContain("Sessions: 2")
+	})
+
+	it("summarizes multiple sessions, requests, plan versions, and models", async () => {
+		const parent = createContext({ cwd: dir })
+		const workId = getWorkId(parent)
+		const child = createContext({ cwd: dir, sessionManager: { getSessionId: () => "child" } })
+		setWorkId(child, workId)
+		recordProviderRequest(parent, { provider: "test", id: "model-a" })
+		recordProviderRequest(parent, { provider: "test", id: "model-a" })
+		recordProviderRequest(child, { provider: "test", id: "model-b" })
+		appendWorkRecord(parent, {
+			type: "plan",
+			path: "/repo/plans/feature.md",
+			snapshotPath: "/repo/plans/snapshots/v1.md",
+		})
+		appendWorkRecord(child, {
+			type: "plan",
+			path: "/repo/plans/feature.md",
+			snapshotPath: "/repo/plans/snapshots/v2.md",
+		})
+		const mock = createExtensionApi()
+		createWorkAttributionExtension()(mock.api)
+		await mock.getRegisteredCommand("work").handler("--summary", { ...createCommandContext(), ...parent })
+		expect(parent.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Models: model-a, model-b"), "info")
+		const message = infoNotification(parent)
+		expect(message).toContain("Sessions: 2")
+		expect(message).toContain("Requests: 3")
+		expect(message).toContain("Plan versions: 2")
+		expect(message).toContain(join(dir, "work", workId, "work.json"))
+	})
+
+	it("reports the summary without switching identity or fabricating records, preserving /work and /work new", async () => {
+		const ctx = createContext({ cwd: dir })
+		const workId = getWorkId(ctx)
+		const before = records()
+		const mock = createExtensionApi()
+		createWorkAttributionExtension()(mock.api)
+		const commandContext = { ...createCommandContext(), ...ctx }
+		await mock.getRegisteredCommand("work").handler("--summary", commandContext)
+		expect(getWorkId(ctx)).toBe(workId)
+		expect(records()).toEqual(before)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining(workId), "info")
+		await mock.getRegisteredCommand("work").handler("", commandContext)
+		expect(ctx.ui.notify).toHaveBeenLastCalledWith(`Work ID: ${workId}`, "info")
+		await mock.getRegisteredCommand("work").handler("new", commandContext)
+		expect(getWorkId(ctx)).not.toBe(workId)
 	})
 })
