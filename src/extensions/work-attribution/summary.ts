@@ -110,7 +110,8 @@ function readRecords(agentDir: string, modifiedSince?: number): WorkRecord[] {
 				}
 			}
 		} catch (error) {
-			warn(error)
+			// An incomplete scan must not advance recovery past a ledger we could not read.
+			throw new Error(`Could not read work ledger ${file.name}`, { cause: error })
 		}
 	}
 	return records
@@ -245,13 +246,36 @@ export function markNewWork(workId: string): void {
 export function updateWorkSummary(value: unknown): void {
 	if (record(value)) refresh(getAgentDir(), value.workId, [value])
 }
-function recoveredSince(stamp: string): number | undefined {
+function summaryFingerprint(path: string): string {
+	const { size, mtimeMs } = statSync(path)
+	return `${size}:${mtimeMs}`
+}
+async function readRecovery(agentDir: string, stamp: string) {
+	let saved: unknown
 	try {
-		const value = JSON.parse(readFileSync(stamp, "utf8")).startedAt
-		return Number.isFinite(value) ? value - RECOVERY_MTIME_SLACK_MS : undefined
+		saved = JSON.parse(readFileSync(stamp, "utf8"))
 	} catch {
 		return undefined
 	}
+	if (
+		!object(saved) ||
+		typeof saved.startedAt !== "number" ||
+		!Number.isFinite(saved.startedAt) ||
+		saved.startedAt > Date.now() ||
+		!object(saved.summaries)
+	)
+		return undefined
+	const summaries: Record<string, string> = {}
+	for (const [workId, fingerprint] of Object.entries(saved.summaries)) {
+		if (!isWorkId(workId) || typeof fingerprint !== "string") return undefined
+		const path = join(agentDir, "work", workId, "work.json")
+		if (!existsSync(path)) return undefined
+		const current = summaryFingerprint(path)
+		// Missing or damaged output requires all source ledgers, even when none changed.
+		if (current !== fingerprint && !(await readSummary(path, workId))) return undefined
+		summaries[workId] = current
+	}
+	return { startedAt: saved.startedAt, summaries }
 }
 /**
  * One launch-time pass heals records left behind by an interrupted summary update.
@@ -259,30 +283,32 @@ function recoveredSince(stamp: string): number | undefined {
  * so only ledgers modified since then are replayed. Delete the stamp to force a full replay.
  */
 export function recoverWorkSummaries(): void {
-	try {
-		const agentDir = getAgentDir()
-		if (recoveredDirectories.has(agentDir)) return
-		const stamp = join(agentDir, "work-attribution", RECOVERY_STAMP)
-		const startedAt = Date.now()
-		const groups = new Map<string, WorkRecord[]>()
-		for (const row of readRecords(agentDir, recoveredSince(stamp))) {
-			const rows = groups.get(row.workId) ?? []
-			rows.push(row)
-			groups.set(row.workId, rows)
-		}
-		const updates = [...groups].map(([workId, rows]) => refresh(agentDir, workId, rows, true))
-		recoveredDirectories.add(agentDir)
-		trackAttributionTask(
-			Promise.all(updates)
-				.then((results) => {
-					if (results.every(Boolean) && existsSync(dirname(stamp)))
-						writeFileSync(stamp, JSON.stringify({ startedAt }), { mode: 0o600 })
-				})
-				.catch(warn),
-		)
-	} catch (error) {
-		warn(error)
+	const agentDir = getAgentDir()
+	if (recoveredDirectories.has(agentDir)) return
+	recoveredDirectories.add(agentDir)
+	trackAttributionTask(
+		recover(agentDir).catch((error) => {
+			recoveredDirectories.delete(agentDir)
+			warn(error)
+		}),
+	)
+}
+async function recover(agentDir: string): Promise<void> {
+	const stamp = join(agentDir, "work-attribution", RECOVERY_STAMP)
+	const startedAt = Date.now()
+	const previous = await readRecovery(agentDir, stamp)
+	const groups = new Map<string, WorkRecord[]>()
+	for (const row of readRecords(agentDir, previous && previous.startedAt - RECOVERY_MTIME_SLACK_MS)) {
+		const rows = groups.get(row.workId) ?? []
+		rows.push(row)
+		groups.set(row.workId, rows)
 	}
+	const updates = [...groups].map(([workId, rows]) => refresh(agentDir, workId, rows, !previous))
+	if (!(await Promise.all(updates)).every(Boolean) || !existsSync(dirname(stamp))) return
+	const summaries = previous?.summaries ?? {}
+	for (const workId of groups.keys())
+		summaries[workId] = summaryFingerprint(join(agentDir, "work", workId, "work.json"))
+	writeFileSync(stamp, JSON.stringify({ startedAt, summaries }), { mode: 0o600 })
 }
 /** Background attribution work (recovery, reconciliation) that shutdown and tests must drain. */
 export function trackAttributionTask(task: Promise<unknown>): void {

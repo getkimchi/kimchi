@@ -12,6 +12,7 @@ import { createProcessRegistry } from "../bash-background/process-registry.js"
 import { getSessionRegistry, setSessionRegistry } from "../bash-background/session-registry.js"
 import * as attribution from "../work-attribution.js"
 import { createCommitTrackingBashTool, createCommitTrackingOperations, type ObservedCommit } from "./commits.js"
+import { flushWorkSummaries } from "./summary.js"
 
 vi.mock("node:fs", async (importOriginal) => ({
 	...(await importOriginal<typeof import("node:fs")>()),
@@ -48,7 +49,9 @@ beforeEach(() => {
 	commits = []
 })
 
-afterEach(() => {
+afterEach(async () => {
+	await flushWorkSummaries()
+	vi.unstubAllEnvs()
 	vi.restoreAllMocks()
 	rmSync(directory, { recursive: true, force: true })
 })
@@ -272,7 +275,10 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 		}
 	})
 
-	it("follows this work's commits through rebase and conflict continue, but not unrelated picks", async () => {
+	it.each([
+		false,
+		true,
+	])("follows this work's commits through rebase and conflict continue (restart: %s)", async (restart) => {
 		vi.stubEnv("PI_CODING_AGENT_DIR", join(directory, "agent"))
 		const ctx = createContext({ cwd: repository, sessionManager: { getSessionId: () => "rebasing" } })
 		const tool = createCommitTrackingBashTool(ctx)
@@ -297,7 +303,17 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 
 		// The agent sees the conflict, resolves it, and continues in a later call.
 		await bash("git rebase main || true")
-		await bash("echo resolved > shared.txt && git add shared.txt && GIT_EDITOR=true git rebase --continue")
+		const continueCommand = "echo resolved > shared.txt && git add shared.txt && GIT_EDITOR=true git rebase --continue"
+		if (restart) {
+			await flushWorkSummaries()
+			const script = `
+import { createWorkCommitTrackingOperations } from ${JSON.stringify(new URL("./commits.ts", import.meta.url).pathname)};
+import { flushWorkSummaries } from ${JSON.stringify(new URL("./summary.ts", import.meta.url).pathname)};
+const ctx = { cwd: ${JSON.stringify(repository)}, sessionManager: { getSessionId: () => "rebasing" } };
+await createWorkCommitTrackingOperations(ctx, "continued").exec(${JSON.stringify(continueCommand)}, ctx.cwd, { onData() {}, env: process.env });
+await flushWorkSummaries();`
+			execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { env: process.env })
+		} else await bash(continueCommand)
 		const [rebasedConflicting, rebasedOurs] = git(repository, "rev-list", "-2", "HEAD").split("\n")
 		await bash("git cherry-pick other")
 
@@ -313,6 +329,42 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 			{ sha: conflicting },
 			{ sha: rebasedOurs, rewrittenFrom: ours },
 			{ sha: rebasedConflicting, rewrittenFrom: conflicting },
+		])
+	})
+
+	it("records same-work cherry-picks, reverts and new merge commits", async () => {
+		vi.stubEnv("PI_CODING_AGENT_DIR", join(directory, "agent"))
+		const ctx = createContext({ cwd: repository, sessionManager: { getSessionId: () => "sequencer" } })
+		const tool = createCommitTrackingBashTool(ctx)
+		const bash = (command: string) => tool.execute("sequencer-tool", { command }, undefined, undefined, ctx)
+		git(repository, "commit", "--allow-empty", "-qm", "base")
+		await bash("git checkout -qb feature && echo ours > ours.txt && git add ours.txt && git commit -qm ours")
+		const original = git(repository, "rev-parse", "HEAD")
+		git(repository, "checkout", "-q", "main")
+		git(repository, "commit", "--allow-empty", "-qm", "upstream")
+		await bash("git cherry-pick feature")
+		const picked = git(repository, "rev-parse", "HEAD")
+		await bash("git revert --no-edit HEAD")
+		const reverted = git(repository, "rev-parse", "HEAD")
+		git(repository, "checkout", "-qb", "other")
+		writeFileSync(join(repository, "other.txt"), "other")
+		git(repository, "add", ".")
+		git(repository, "commit", "-qm", "other")
+		git(repository, "checkout", "-q", "main")
+		await bash("git merge --no-ff --no-edit other")
+		const merged = git(repository, "rev-parse", "HEAD")
+		const recorded = fs
+			.readFileSync(attribution.workLedgerPath(ctx), "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line))
+			.filter((row) => row.type === "commit")
+			.map(({ sha, rewrittenFrom }) => ({ sha, rewrittenFrom }))
+		expect(recorded).toEqual([
+			{ sha: original },
+			{ sha: picked, rewrittenFrom: original },
+			{ sha: reverted },
+			{ sha: merged },
 		])
 	})
 

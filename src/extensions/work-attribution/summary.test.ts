@@ -262,7 +262,36 @@ console.log(JSON.stringify({ ledgerReads }));`,
 		)
 		expect((await launch()).ledgerReads).toBe(1)
 		expect(summary(workId).requests.map((row: { requestId: string }) => row.requestId)).toContain("unpublished")
+		// Recovered ledgers may be unchanged even when their derived output disappears or is damaged.
+		fs.utimesSync(ledger, past, past)
+		for (const damaged of [undefined, "{"]) {
+			if (damaged === undefined) fs.rmSync(path(workId))
+			else fs.writeFileSync(path(workId), damaged)
+			await launch()
+			expect(summary(workId).requests).toHaveLength(2)
+		}
 	}, 30000)
+	it("does not checkpoint a failed ledger scan and retries it", async () => {
+		const workId = getWorkId(context())
+		recordProviderRequest(context())
+		await flushWorkSummaries()
+		const ledger = join(dir, "work-attribution", "parent.jsonl")
+		fs.rmSync(path(workId))
+		const read = fs.readFileSync
+		const failure = vi.spyOn(fs, "readFileSync").mockImplementation((...args) => {
+			if (args[0] === ledger) throw new Error("injected ledger read failure")
+			return read(...args)
+		})
+		vi.spyOn(console, "warn").mockImplementation(() => {})
+		recoverWorkSummaries()
+		await flushWorkSummaries()
+		expect(fs.existsSync(join(dir, "work-attribution", ".recovered.json"))).toBe(false)
+		failure.mockRestore()
+		recoverWorkSummaries()
+		await flushWorkSummaries()
+		expect(summary(workId).requests).toHaveLength(1)
+	})
+
 	it("drains an append that arrives while the asynchronous lock is being released", async () => {
 		const ctx = context()
 		const workId = getWorkId(ctx)

@@ -1,7 +1,8 @@
-import { execFileSync } from "node:child_process"
+import { execFile, execFileSync } from "node:child_process"
 import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { promisify } from "node:util"
 import {
 	type BashOperations,
 	createBashToolDefinition,
@@ -25,8 +26,45 @@ const HEAD_UPDATE = /\b\d+: HEAD [0-9a-f]+ -> ([0-9a-f]{40}|[0-9a-f]{64}) \(/
 // Sequencer state names the commit being replayed just before HEAD moves to its copy.
 const REPLAYED = /\b\d+: (?:CHERRY_PICK_HEAD|REBASE_HEAD) [0-9a-f]+ -> ([0-9a-f]{40}|[0-9a-f]{64}) \(/
 const REWRITE_MESSAGE = /^(?:rebase(?: -i)? \((?:pick|reword|edit|squash|fixup|continue)\)|cherry-pick):/
-/** A rebase stopped on a conflict continues in a later Bash call; remember what it was replaying. */
-const stoppedReplays = new Map<string, string>()
+const execFileAsync = promisify(execFile)
+
+/** Git's stopped sequencer state survives a harness restart and disappears on abort. */
+async function stoppedReplay(cwd: string): Promise<{ worktree: string; sha: string } | undefined> {
+	const env = { ...process.env }
+	for (const key of [
+		"GIT_DIR",
+		"GIT_WORK_TREE",
+		"GIT_COMMON_DIR",
+		"GIT_INDEX_FILE",
+		"GIT_TRACE2_EVENT",
+		"GIT_TRACE_REFS",
+	])
+		delete env[key]
+	try {
+		const { stdout } = await execFileAsync(
+			"git",
+			[
+				"-C",
+				cwd,
+				"rev-parse",
+				"--path-format=absolute",
+				"--show-toplevel",
+				"--git-path",
+				"REBASE_HEAD",
+				"--git-path",
+				"CHERRY_PICK_HEAD",
+			],
+			{ encoding: "utf8", env, timeout: GIT_LOOKUP_TIMEOUT_MS },
+		)
+		const [worktree, ...paths] = stdout.trim().split("\n")
+		for (const path of paths) {
+			const sha = readText(path).trim()
+			if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha)) return { worktree, sha }
+		}
+	} catch {
+		// A shell command can run outside a repository.
+	}
+}
 
 interface GitProcess {
 	/** trace2 session ID; a child Git process's ID is prefixed by its parent's. */
@@ -89,14 +127,14 @@ function headCommit(line: string, owner: GitProcess | undefined, replayed: strin
 	// Checked first: the sequencer may hand a replayed pick to a nested `git commit`.
 	if (REWRITE_MESSAGE.test(message)) {
 		if (!["rebase", "cherry-pick", "commit"].includes(owner.command ?? "")) return
-		const rewrittenFrom = replayed ?? stoppedReplays.get(owner.worktree)
-		return rewrittenFrom ? { sha, rewrittenFrom } : undefined
+		return replayed ? { sha, rewrittenFrom: replayed } : undefined
 	}
 	if (owner.command === "commit" || (owner.command === "revert" && message.startsWith("revert:"))) return { sha }
+	if (owner.command === "merge" && message.startsWith("merge ") && !message.includes("Fast-forward")) return { sha }
 }
 
 /** Ref transactions are attributable only when exactly one traced Git process owns their interval. */
-function collectCommits(trace: string, refs: string): ObservedCommit[] {
+function collectCommits(trace: string, refs: string, stopped?: { worktree: string; sha: string }): ObservedCommit[] {
 	const running = processes(trace)
 	const commits: ObservedCommit[] = []
 	const repositories = new Map<string, string>()
@@ -116,12 +154,16 @@ function collectCommits(trace: string, refs: string): ObservedCommit[] {
 			const commit = headCommit(
 				line,
 				owner,
-				replayed && owner && within(owner, replayed.owner) ? replayed.sha : undefined,
+				replayed && owner && within(owner, replayed.owner)
+					? replayed.sha
+					: owner?.worktree === stopped?.worktree
+						? stopped?.sha
+						: undefined,
 			)
 			pending = commit && owner ? { ...commit, owner } : undefined
 			if (commit?.rewrittenFrom) {
 				replayed = undefined
-				if (owner?.worktree) stoppedReplays.delete(owner.worktree)
+				stopped = undefined
 			}
 		}
 		if (!/\bfinish: /.test(line)) continue
@@ -166,9 +208,6 @@ function collectCommits(trace: string, refs: string): ObservedCommit[] {
 		}
 		pending = undefined
 	}
-	// A replay that never reached HEAD stopped on a conflict; `rebase --continue` finishes it.
-	if (replayed?.owner.command === "rebase" && replayed.owner.worktree)
-		stoppedReplays.set(replayed.owner.worktree, replayed.sha)
 	return commits
 }
 
@@ -199,6 +238,7 @@ export function createCommitTrackingOperations(
 			}
 			const trace = join(directory, "events")
 			const refs = join(directory, "refs")
+			const stopped = await stoppedReplay(cwd)
 			try {
 				const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
 				// Keep upstream shell-environment construction, including its bundled binary PATH.
@@ -209,7 +249,7 @@ export function createCommitTrackingOperations(
 				)
 			} finally {
 				try {
-					for (const commit of collectCommits(readTrace(trace), readTrace(refs))) record(commit)
+					for (const commit of collectCommits(readTrace(trace), readTrace(refs), stopped)) record(commit)
 				} catch (error) {
 					console.warn("[work-attribution] Could not record Git commits:", error)
 				} finally {
