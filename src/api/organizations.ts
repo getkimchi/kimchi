@@ -3,7 +3,6 @@ import { fetchWithRetry } from "../utils/http.js"
 
 export interface VerifyApiKeyResponse {
 	organizationId: string
-	userId: string
 }
 
 export interface Organization {
@@ -53,7 +52,7 @@ export async function verifyApiKey(
 		throw new Error(`Missing organizationId in api-keys:verify response from ${url}`)
 	}
 
-	return data as VerifyApiKeyResponse
+	return { organizationId: data.organizationId }
 }
 
 /** Fetch organization by id. */
@@ -89,6 +88,9 @@ export async function getOrganization(
 	if (typeof data?.id !== "string" || data.id.length === 0) {
 		throw new Error(`Missing id in organization response from ${url}`)
 	}
+	if (typeof data.name !== "string") {
+		throw new Error(`Missing name in organization response from ${url}`)
+	}
 
-	return data as Organization
+	return { id: data.id, name: data.name }
 }

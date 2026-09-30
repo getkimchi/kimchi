@@ -38,7 +38,9 @@ export function getEnvironmentApiKey(): string | undefined {
 	return startupApiKey || process.env.KIMCHI_API_KEY || undefined
 }
 
-export function getApiKeySource(): "environment" | "config" {
+export type ApiKeySource = "environment" | "config"
+
+export function getApiKeySource(): ApiKeySource {
 	return getEnvironmentApiKey() ? "environment" : "config"
 }
 

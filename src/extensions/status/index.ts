@@ -2,8 +2,8 @@ import { existsSync, readFileSync } from "node:fs"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { MCP_STATUS_EVENT, type McpStatusSnapshot } from "pi-mcp-adapter"
 import { getMe } from "../../api/me.js"
-import { getOrganization, verifyApiKey } from "../../api/organizations.js"
-import { getApiKeySource, getEnvironmentApiKey, loadConfig } from "../../config.js"
+import { getOrganization, type Organization, verifyApiKey } from "../../api/organizations.js"
+import { type ApiKeySource, getApiKeySource, getEnvironmentApiKey, loadConfig } from "../../config.js"
 import { isKimchiProvider } from "../../kimchi-provider.js"
 import { getVersion } from "../../utils.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
@@ -33,7 +33,7 @@ export interface McpCounts {
 interface StatusRowsDeps {
 	version: string
 	loginMethod: string
-	organization: { id: string; name: string } | undefined
+	organization: Organization | undefined
 	email: string | undefined
 	sessionName: string | undefined
 	sessionId: string | undefined
@@ -49,8 +49,9 @@ interface StatusRowsDeps {
 const LABEL_WIDTH = 16
 
 /**
- * Layout from the Status panel decision:
- * version → login → session, labels padded to a fixed gutter, `· /mcp` link.
+ * Two blocks separated by a blank row: identity (version, login, org, email)
+ * then session (name, id, cwd, model, MCP). Labels are padded to a fixed
+ * gutter; the MCP row points at `/mcp` for details.
  */
 export function buildStatusRows(deps: StatusRowsDeps): string[] {
 	const row = (label: string, value: string): string => `${label.padEnd(LABEL_WIDTH)}${value}`
@@ -81,7 +82,7 @@ export function buildStatusRows(deps: StatusRowsDeps): string[] {
 }
 
 /**
- * Count statuses into the three buckets from the layout mock. The status union
+ * Count statuses into the connected/disabled/failed buckets. The status union
  * is closed (see McpServerRuntimeStatus), so connected+disabled+failed always
  * sum to the server total.
  */
@@ -113,14 +114,14 @@ function thirdPartyProviders(authPath: string): string[] {
  * config.json, so "Kimchi account" is indistinguishable from a saved key; only
  * an env-only key is recognisably an API-key session.
  *
- * Precedence (spec Chunk 1): Kimchi account (config key present) →
+ * Precedence: Kimchi account (config key present) →
  * Kimchi API key (KIMCHI_API_KEY environment, only when no config key) →
  * third-party provider → not logged in.
  */
 export function resolveLoginMethod(deps: {
 	envApiKey: string | undefined
 	configApiKey: string | undefined
-	apiKeySource: ReturnType<typeof getApiKeySource>
+	apiKeySource: ApiKeySource
 	authPath: string
 }): string {
 	if (deps.configApiKey) return "Kimchi account"
@@ -130,34 +131,24 @@ export function resolveLoginMethod(deps: {
 	return "Not logged in"
 }
 
-// --- cached account email, warmed on session_start (never blocks the panel) ---
-
-let cachedEmail: string | undefined
-let cachedOrganization: { id: string; name: string } | undefined
-let identityFetchStarted = false
-
-async function warmIdentityCache(): Promise<void> {
-	if (identityFetchStarted) return
-	identityFetchStarted = true
-	const apiKey = getEnvironmentApiKey() ?? loadConfig().apiKey
-	if (!apiKey) return
-	// Best effort — the panel simply omits rows whose fetch failed.
-	void getMe(apiKey)
-		.then((me) => {
-			cachedEmail = me.email
-		})
-		.catch(() => {})
-	void (async () => {
-		try {
-			const { organizationId } = await verifyApiKey(apiKey)
-			cachedOrganization = await getOrganization(apiKey, organizationId)
-		} catch {}
-	})()
+/** Account identity fetched in the background for the key currently in use. */
+interface Identity {
+	apiKey: string
+	email?: string
+	organization?: Organization
 }
 
-let cachedMcpSnapshot: McpStatusSnapshot | undefined
+/** Data the extension collects between `/status` invocations. */
+export interface StatusSources {
+	identity?: Pick<Identity, "email" | "organization">
+	mcp?: McpStatusSnapshot
+}
 
-export async function gatherStatusRows(ctx: ExtensionContext): Promise<string[]> {
+function isMcpStatusSnapshot(data: unknown): data is McpStatusSnapshot {
+	return typeof data === "object" && data !== null && Array.isArray((data as { servers?: unknown }).servers)
+}
+
+export function gatherStatusRows(ctx: ExtensionContext, sources: StatusSources = {}): string[] {
 	const envApiKey = getEnvironmentApiKey()
 	const config = loadConfig()
 
@@ -179,29 +170,67 @@ export async function gatherStatusRows(ctx: ExtensionContext): Promise<string[]>
 			apiKeySource: getApiKeySource(),
 			authPath: getKimchiAuthPath(),
 		}),
-		organization: cachedOrganization,
-		email: cachedEmail,
+		organization: sources.identity?.organization,
+		email: sources.identity?.email,
 		sessionName: ctx.sessionManager.getSessionName(),
 		sessionId: ctx.sessionManager.getSessionId(),
 		cwd: ctx.cwd,
 		modelRef,
 		isAuto: isAutoRoutedModel(model),
 		resolvedModelId,
-		mcp: cachedMcpSnapshot ? summarizeMcpSnapshot(cachedMcpSnapshot) : undefined,
+		mcp: sources.mcp ? summarizeMcpSnapshot(sources.mcp) : undefined,
 	})
 }
 
 export default function statusExtension(pi: ExtensionAPI): void {
-	pi.on("session_start", async () => {
-		void warmIdentityCache()
+	// Per-instance state: pi rebinds extensions on /new, /resume, fork and
+	// /reload, so each session starts from a clean slate.
+	let identity: Identity | undefined
+	let mcpSnapshot: McpStatusSnapshot | undefined
+
+	/**
+	 * Best-effort background fetch of email and organization for the active
+	 * key; never blocks the panel, which omits rows whose fetch has not landed.
+	 * Refetches only when the key changes (e.g. after /login or /logout).
+	 */
+	const refreshIdentity = (): void => {
+		const apiKey = getEnvironmentApiKey() ?? loadConfig().apiKey
+		if (!apiKey) {
+			identity = undefined
+			return
+		}
+		if (identity?.apiKey === apiKey) return
+		// Writes go to this object, so a fetch for a superseded key cannot
+		// overwrite the identity of the current one.
+		const current: Identity = { apiKey }
+		identity = current
+		getMe(apiKey)
+			.then((me) => {
+				current.email = me.email
+			})
+			.catch(() => {})
+		verifyApiKey(apiKey)
+			.then(({ organizationId }) => getOrganization(apiKey, organizationId))
+			.then((organization) => {
+				current.organization = organization
+			})
+			.catch(() => {})
+	}
+
+	pi.on("session_start", () => {
+		refreshIdentity()
 	})
-	pi.events.on(MCP_STATUS_EVENT, (snapshot: unknown) => {
-		cachedMcpSnapshot = snapshot as McpStatusSnapshot
+	pi.events.on(MCP_STATUS_EVENT, (data) => {
+		if (isMcpStatusSnapshot(data)) mcpSnapshot = data
 	})
 	pi.registerCommand("status", {
 		description: STATUS_COMMAND_DESCRIPTION,
 		handler: async (_args, ctx) => {
-			const rows = await gatherStatusRows(ctx)
+			// Print and JSON modes have no UI surface; notify would be a no-op.
+			if (!ctx.hasUI) return
+			// Pick up a key that changed mid-session; rows land on the next open.
+			refreshIdentity()
+			const rows = gatherStatusRows(ctx, { identity, mcp: mcpSnapshot })
 			if (ctx.mode === "tui") {
 				await ctx.ui.custom<void>((_tui, theme, _kb, done) => createStatusPanelComponent(theme, rows, done))
 				return

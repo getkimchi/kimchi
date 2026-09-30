@@ -16,10 +16,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 describe("verifyApiKey", () => {
 	it("returns the org id the key is scoped to", async () => {
 		const fetchImpl = vi.fn(async () => jsonResponse({ organizationId: "org-1", userId: "user-1" }))
-		await expect(verifyApiKey("key", { fetch: fetchImpl })).resolves.toEqual({
-			organizationId: "org-1",
-			userId: "user-1",
-		})
+		await expect(verifyApiKey("key", { fetch: fetchImpl })).resolves.toEqual({ organizationId: "org-1" })
 		expect(fetchImpl).toHaveBeenCalledWith("https://api.test/ai-optimizer/v1beta/api-keys:verify", {
 			method: "POST",
 			headers: { Authorization: "Bearer key", Accept: "application/json" },
@@ -48,6 +45,11 @@ describe("getOrganization", () => {
 			method: "GET",
 			headers: { Authorization: "Bearer key", Accept: "application/json" },
 		})
+	})
+
+	it("throws when the name is missing", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse({ id: "org-1" }))
+		await expect(getOrganization("key", "org-1", { fetch: fetchImpl })).rejects.toThrow("Missing name")
 	})
 
 	it("throws on non-OK responses", async () => {

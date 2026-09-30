@@ -3,7 +3,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Model } from "@earendil-works/pi-ai"
 import type { McpStatusSnapshot } from "pi-mcp-adapter"
+import { MCP_STATUS_EVENT } from "pi-mcp-adapter"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { getMe } from "../../api/me.js"
+import { getOrganization, verifyApiKey } from "../../api/organizations.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "../auto-model/state.js"
@@ -14,8 +17,10 @@ import statusExtension, {
 	summarizeMcpSnapshot,
 } from "./index.js"
 
+const configState = vi.hoisted(() => ({ apiKey: undefined as string | undefined }))
+
 vi.mock("../../config.js", () => ({
-	loadConfig: () => ({ apiKey: undefined }),
+	loadConfig: () => ({ apiKey: configState.apiKey }),
 	getEnvironmentApiKey: () => undefined,
 	getApiKeySource: () => "config",
 }))
@@ -130,24 +135,24 @@ describe("gatherStatusRows", () => {
 		})
 	}
 
-	it("shows the concrete model auto resolved to for this session", async () => {
+	it("shows the concrete model auto resolved to for this session", () => {
 		setAutoRoutingState("test-session", { status: "resolved", model: model("kimi-k3"), requestedId: "auto" })
 
-		const rows = await gatherStatusRows(autoSessionContext())
+		const rows = gatherStatusRows(autoSessionContext())
 
 		expect(rows.find((r) => r.startsWith("Model:"))).toBe("Model:          kimchi-dev/auto (kimi-k3)")
 	})
 
-	it("falls back to (auto) while no concrete pick has resolved", async () => {
-		const rows = await gatherStatusRows(autoSessionContext())
+	it("falls back to (auto) while no concrete pick has resolved", () => {
+		const rows = gatherStatusRows(autoSessionContext())
 
 		expect(rows.find((r) => r.startsWith("Model:"))).toBe("Model:          kimchi-dev/auto (auto)")
 	})
 
-	it("falls back to (auto) when the resolved pick was for a different virtual model", async () => {
+	it("falls back to (auto) when the resolved pick was for a different virtual model", () => {
 		setAutoRoutingState("test-session", { status: "resolved", model: model("kimi-k3"), requestedId: "auto-beta" })
 
-		const rows = await gatherStatusRows(autoSessionContext())
+		const rows = gatherStatusRows(autoSessionContext())
 
 		expect(rows.find((r) => r.startsWith("Model:"))).toBe("Model:          kimchi-dev/auto (auto)")
 	})
@@ -281,33 +286,198 @@ describe("resolveLoginMethod", () => {
 	})
 })
 
-describe("status command handler", () => {
-	it("notifies the exact layout block in non-TUI mode", async () => {
-		const { api, getRegisteredCommand } = createExtensionApi()
-		statusExtension(api)
-		const command = getRegisteredCommand("status")
-		const ctx = createCommandContext()
-		ctx.mode = "print"
-		ctx.cwd = "/tmp/project"
-		ctx.sessionManager.getSessionName = () => undefined
+function setup() {
+	const { api, getRegisteredCommand, getHandler, emitEvent } = createExtensionApi()
+	statusExtension(api)
+	const ctx = createCommandContext()
+	ctx.cwd = "/tmp/project"
+	ctx.sessionManager.getSessionName = () => undefined
+	const command = getRegisteredCommand("status")
+	return {
+		ctx,
+		emitEvent,
+		startSession: () => getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx),
+		runStatus: async () => {
+			await command.handler("", ctx)
+			const lastCall = vi.mocked(ctx.ui.notify).mock.lastCall
+			return lastCall ? lastCall[0].split("\n") : []
+		},
+	}
+}
 
-		await command.handler("", ctx)
+function mockIdentity() {
+	vi.mocked(getMe).mockResolvedValue({ id: "user-1", email: "you@example.com" })
+	vi.mocked(verifyApiKey).mockResolvedValue({ organizationId: "org-1" })
+	vi.mocked(getOrganization).mockResolvedValue({ id: "org-1", name: "CAST AI" })
+}
+
+describe("status command handler", () => {
+	beforeEach(() => {
+		configState.apiKey = undefined
+		vi.mocked(getMe).mockReset()
+		vi.mocked(verifyApiKey).mockReset()
+		vi.mocked(getOrganization).mockReset()
+	})
+
+	it("notifies the exact layout block in RPC mode", async () => {
+		const { ctx, runStatus } = setup()
+		ctx.mode = "rpc"
+
+		const rows = await runStatus()
 
 		expect(ctx.ui.custom).not.toHaveBeenCalled()
-		// Login method comes from the mocked config (no key) and empty auth store
-		// → "Not logged in"; no session_start fired → no email; no MCP snapshot.
-		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			[
+		// No key in config and an empty auth store → "Not logged in"; no
+		// identity fetched; no MCP snapshot received.
+		expect(rows).toEqual([
+			"Version:        9.9.9-test",
+			"Login method:   Not logged in",
+			"",
+			"Session name:   (unnamed — use /name to add a name)",
+			"Session ID:     test-session",
+			"cwd:            /tmp/project",
+			"Model:          (no model selected)",
+			"MCP servers:    unavailable · /mcp",
+		])
+	})
+
+	it("opens the panel via custom UI in TUI mode", async () => {
+		const { ctx, runStatus } = setup()
+
+		await runStatus()
+
+		expect(ctx.ui.custom).toHaveBeenCalledOnce()
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+	})
+
+	it("does nothing when there is no UI", async () => {
+		const { ctx, runStatus } = setup()
+		ctx.mode = "print"
+		ctx.hasUI = false
+
+		await runStatus()
+
+		expect(ctx.ui.custom).not.toHaveBeenCalled()
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+	})
+
+	it("shows email and organization fetched on session start", async () => {
+		configState.apiKey = "key-1"
+		mockIdentity()
+		const { ctx, startSession, runStatus } = setup()
+		ctx.mode = "rpc"
+
+		await startSession()
+
+		await vi.waitFor(async () => {
+			expect((await runStatus()).slice(0, 4)).toEqual([
 				"Version:        9.9.9-test",
-				"Login method:   Not logged in",
-				"",
-				"Session name:   (unnamed — use /name to add a name)",
-				"Session ID:     test-session",
-				"cwd:            /tmp/project",
-				"Model:          (no model selected)",
-				"MCP servers:    unavailable · /mcp",
-			].join("\n"),
-			"info",
-		)
+				"Login method:   Kimchi account",
+				"Organization:   CAST AI (org-1)",
+				"Email:          you@example.com",
+			])
+		})
+		expect(getMe).toHaveBeenCalledOnce()
+		expect(getOrganization).toHaveBeenCalledWith("key-1", "org-1")
+	})
+
+	it("fetches identity for a key that appears after session start", async () => {
+		mockIdentity()
+		const { ctx, startSession, runStatus } = setup()
+		ctx.mode = "rpc"
+		await startSession()
+		expect(getMe).not.toHaveBeenCalled()
+
+		configState.apiKey = "key-after-login"
+		await runStatus()
+
+		expect(getMe).toHaveBeenCalledWith("key-after-login")
+		await vi.waitFor(async () => {
+			expect(await runStatus()).toContain("Email:          you@example.com")
+		})
+	})
+
+	it("refetches identity when the key changes", async () => {
+		configState.apiKey = "key-1"
+		mockIdentity()
+		const { startSession } = setup()
+		await startSession()
+		await startSession()
+		expect(getMe).toHaveBeenCalledOnce()
+
+		configState.apiKey = "key-2"
+		await startSession()
+
+		expect(getMe).toHaveBeenCalledTimes(2)
+		expect(getMe).toHaveBeenLastCalledWith("key-2")
+	})
+
+	it("starts each extension instance without cached identity", async () => {
+		configState.apiKey = "key-1"
+		mockIdentity()
+		const first = setup()
+		first.ctx.mode = "rpc"
+		await first.startSession()
+		await vi.waitFor(async () => {
+			expect(await first.runStatus()).toContain("Email:          you@example.com")
+		})
+
+		vi.mocked(getMe).mockReturnValue(new Promise(() => {}))
+		const second = setup()
+		second.ctx.mode = "rpc"
+
+		const rows = await second.runStatus()
+
+		expect(rows.some((r) => r.startsWith("Email:"))).toBe(false)
+		expect(rows.some((r) => r.startsWith("Organization:"))).toBe(false)
+	})
+
+	it("summarizes the MCP snapshot published on the event bus", async () => {
+		const { ctx, emitEvent, runStatus } = setup()
+		ctx.mode = "rpc"
+
+		emitEvent(MCP_STATUS_EVENT, {
+			version: 1,
+			servers: [{ name: "a", status: "connected", toolCount: 0, directToolCount: 0, disabled: false }],
+			totalTools: 0,
+			totalResources: 0,
+			connectedCount: 1,
+			disabledCount: 0,
+		})
+
+		expect(await runStatus()).toContain("MCP servers:    1 connected, 0 disabled, 0 failed · /mcp")
+	})
+})
+
+describe("status command handler errors", () => {
+	beforeEach(() => {
+		configState.apiKey = "key-1"
+		vi.mocked(getMe).mockReset()
+		vi.mocked(verifyApiKey).mockReset()
+		vi.mocked(getOrganization).mockReset()
+	})
+
+	it("omits email and organization rows when the identity fetches fail", async () => {
+		vi.mocked(getMe).mockRejectedValue(new Error("boom"))
+		vi.mocked(verifyApiKey).mockRejectedValue(new Error("boom"))
+		const { ctx, startSession, runStatus } = setup()
+		ctx.mode = "rpc"
+		await startSession()
+		await vi.waitFor(() => expect(verifyApiKey).toHaveBeenCalled())
+
+		const rows = await runStatus()
+
+		expect(rows.some((r) => r.startsWith("Email:"))).toBe(false)
+		expect(rows.some((r) => r.startsWith("Organization:"))).toBe(false)
+		expect(getOrganization).not.toHaveBeenCalled()
+	})
+
+	it("ignores malformed MCP status payloads", async () => {
+		configState.apiKey = undefined
+		const { ctx, emitEvent, runStatus } = setup()
+		ctx.mode = "rpc"
+
+		emitEvent(MCP_STATUS_EVENT, { version: 1 })
+
+		expect(await runStatus()).toContain("MCP servers:    unavailable · /mcp")
 	})
 })
