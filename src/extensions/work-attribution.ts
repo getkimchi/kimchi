@@ -172,7 +172,8 @@ function notify(ctx: ExtensionContext, message: string): void {
 	if (ctx.hasUI) ctx.ui.notify(message, "info")
 	else console.error(message)
 }
-function warn(ctx: ExtensionContext, error: unknown): void {
+/** Visible, non-fatal warning shared by every attribution caller. */
+export function warnWorkAttribution(ctx: Pick<ExtensionContext, "hasUI" | "ui">, error: unknown): void {
 	const message = `Work attribution unavailable: ${error instanceof Error ? error.message : String(error)}`
 	if (ctx.hasUI) ctx.ui.notify(message, "warning")
 	else console.error(message)
@@ -193,7 +194,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 			try {
 				bind(ctx)
 			} catch (error) {
-				warn(ctx, error)
+				warnWorkAttribution(ctx, error)
 			}
 			// Children share the parent's worktree, which the parent session already reconciles.
 			if (!inheritedWorkId) reconcileInBackground(ctx)
@@ -248,7 +249,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 				setWorkId(ctx, planWorkId, pi)
 				notify(ctx, `Continuing the saved plan's work: ${planWorkId}`)
 			} catch (error) {
-				warn(ctx, error)
+				warnWorkAttribution(ctx, error)
 			}
 		})
 		pi.on("before_provider_headers", (event, ctx) => {
@@ -260,7 +261,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 				activeRequests.set(workLedgerPath(ctx), identity)
 			} catch (error) {
 				activeRequests.delete(workLedgerPath(ctx))
-				warn(ctx, error)
+				warnWorkAttribution(ctx, error)
 			}
 		})
 		pi.on("session_shutdown", async (_event, ctx) => {
@@ -288,7 +289,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 					if (value) pi.appendEntry(WORK_IDENTITY_ENTRY, { workId: getWorkId(ctx) })
 					notify(ctx, `Work ID: ${getWorkId(ctx)}`)
 				} catch (error) {
-					warn(ctx, error)
+					warnWorkAttribution(ctx, error)
 				}
 			},
 		})

@@ -14,6 +14,7 @@ import { isWorkId } from "../../shared/work-id.js"
 import {
 	appendWorkRecord,
 	getWorkId,
+	pinWorkContext,
 	tryWorkAttribution,
 	tryWorkAttributionAsync,
 	type WorkContext,
@@ -138,8 +139,7 @@ async function repositoryFile(path: string) {
 }
 /** Native tools invoke these operations inside their existing file mutation queue. */
 function operations(ctx: WorkContext, toolCallId: string): EditOperations & WriteOperations {
-	const sessionId = ctx.sessionManager.getSessionId()
-	const pinned = { cwd: ctx.cwd, sessionManager: { getSessionId: () => sessionId } }
+	const pinned = pinWorkContext(ctx)
 	const workId = tryWorkAttribution(() => getWorkId(pinned))
 	let readDigest: string | undefined
 	return {

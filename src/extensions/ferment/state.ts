@@ -16,7 +16,7 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
-import type { WorkContext } from "../work-attribution.js"
+import { pinWorkContext, type WorkContext } from "../work-attribution.js"
 import {
 	deleteRuntimeState,
 	emptyState,
@@ -344,10 +344,7 @@ export function captureJudgeContext(
 	multiModelEnabled?: boolean,
 	context?: WorkContext,
 ): void {
-	if (context) {
-		const sessionId = context.sessionManager.getSessionId()
-		judgeWorkContext = { cwd: context.cwd, sessionManager: { getSessionId: () => sessionId } }
-	}
+	if (context) judgeWorkContext = pinWorkContext(context)
 	if (model) judgeModel = model
 	if (registry) judgeModelRegistry = registry
 	if (multiModelEnabled !== undefined) judgeMultiModelEnabled = multiModelEnabled

@@ -15,7 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig, RETRY_DEFAULTS } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
-import { getWorkId, recordProviderRequest } from "./work-attribution.js"
+import { getWorkId, pinWorkContext, recordProviderRequest, warnWorkAttribution } from "./work-attribution.js"
 
 export const SESSION_NAME_MODEL = "deepseek-v4-flash-0731"
 const SESSION_NAME_TIMEOUT_MS = 10_000
@@ -131,18 +131,12 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 
 	if (!apiKey) return fallback
 
-	const sessionId = ctx.sessionManager.getSessionId()
-	const workContext = { cwd: ctx.cwd, sessionManager: { getSessionId: () => sessionId } }
-	const warnAttribution = (error: unknown) => {
-		const message = `Work attribution unavailable: ${error instanceof Error ? error.message : String(error)}`
-		if (ctx.hasUI) ctx.ui.notify(message, "warning")
-		else console.warn(message)
-	}
+	const workContext = pinWorkContext(ctx)
 	let workId: string | undefined
 	try {
 		workId = getWorkId(workContext)
 	} catch (error) {
-		warnAttribution(error)
+		warnWorkAttribution(ctx, error)
 	}
 
 	try {
@@ -182,7 +176,7 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 							)
 							headers.set("X-Request-Id", request.requestId)
 						} catch (error) {
-							warnAttribution(error)
+							warnWorkAttribution(ctx, error)
 						}
 					}
 					return fetch(url, { ...init, headers })

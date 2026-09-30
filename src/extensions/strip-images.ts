@@ -12,7 +12,7 @@ import {
 	storeImageDescription,
 } from "./model-guard.js"
 
-import { getWorkId, recordProviderRequest } from "./work-attribution.js"
+import { getWorkId, pinWorkContext, recordProviderRequest, warnWorkAttribution } from "./work-attribution.js"
 
 const IMAGE_DESCRIPTION_PROMPT = "Describe this image concisely. Include key visual details, text, layout."
 
@@ -89,18 +89,12 @@ export default function stripImagesExtension(pi: ExtensionAPI) {
 				return
 			}
 
-			const sessionId = ctx.sessionManager.getSessionId()
-			const workContext = { cwd: ctx.cwd, sessionManager: { getSessionId: () => sessionId } }
-			const warnAttribution = (error: unknown) =>
-				ctx.ui.notify(
-					`Work attribution unavailable: ${error instanceof Error ? error.message : String(error)}`,
-					"warning",
-				)
+			const workContext = pinWorkContext(ctx)
 			let workId: string | undefined
 			try {
 				workId = getWorkId(workContext)
 			} catch (error) {
-				warnAttribution(error)
+				warnWorkAttribution(ctx, error)
 			}
 			// Get API key and headers
 			const auth = await ctx.modelRegistry?.getApiKeyAndHeaders(visionModel)
@@ -122,7 +116,7 @@ export default function stripImagesExtension(pi: ExtensionAPI) {
 					try {
 						headers["X-Request-Id"] = recordProviderRequest(workContext, visionModel, workId).requestId
 					} catch (error) {
-						warnAttribution(error)
+						warnWorkAttribution(ctx, error)
 					}
 				}
 				try {

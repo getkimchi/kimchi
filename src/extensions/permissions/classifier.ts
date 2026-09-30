@@ -1,7 +1,13 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { complete } from "@earendil-works/pi-ai/compat"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
-import { getWorkId, recordProviderRequest, tryWorkAttribution, type WorkContext } from "../work-attribution.js"
+import {
+	getWorkId,
+	pinWorkContext,
+	recordProviderRequest,
+	tryWorkAttribution,
+	type WorkContext,
+} from "../work-attribution.js"
 import { DEFAULT_CONFIG } from "./constants.js"
 import classifierSystemPrompt from "./prompts/classifier-system-prompt.js"
 import type { ClassifierFailureCode, ClassifierResult, ClassifierVerdict, RiskScore } from "./types.js"
@@ -33,8 +39,7 @@ export async function classifyToolCall(
 	const deadline = performance.now() + (options.maxTotalMs ?? DEFAULT_CONFIG.classifierMaxTotalMs)
 	if (signal?.aborted) return unavailable("classifier aborted", "aborted")
 	if (!candidates.length) return unavailable("no model available for classifier", "no_candidates")
-	const sessionId = options.context.sessionManager.getSessionId()
-	const context = { cwd: options.context.cwd, sessionManager: { getSessionId: () => sessionId } }
+	const context = pinWorkContext(options.context)
 	const workId = tryWorkAttribution(() => getWorkId(context))
 	let lastResult = unavailable("classifier budget exhausted", "budget_exhausted")
 	const skips: string[] = []
