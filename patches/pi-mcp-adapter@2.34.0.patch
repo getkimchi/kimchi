@@ -1,3 +1,33 @@
+# Patch: Kimchi host integrations for pi-mcp-adapter 2.34.0
+#
+# Tracking:
+#   - Project config directory: https://github.com/nicobailon/pi-mcp-adapter/issues/491
+#     (remove when upstream supports a project config directory independent of
+#     the user config directory)
+#   - Tool-name sanitization and selector matching: getkimchi/kimchi#1168
+#     (remove when upstream sanitizes both name parts and caps wire names at
+#     the 128-char provider limit)
+#   - MCP UI standard disable: no upstream option; remove when the harness
+#     supports MCP Apps or upstream adds a disable option
+#   - OAuth loopback capture: getkimchi/kimchi#1284; upstream tracking issue
+#     pending at https://github.com/nicobailon/pi-mcp-adapter (remove when
+#     upstream supports an opportunistic loopback listener for manual
+#     redirect flows)
+# Changes:
+#   - agent-dir/config (+dist mirrors): resolve the MCP project config
+#     directory via piConfig.mcpProjectConfigDir so project MCP config can
+#     live outside the user config directory.
+#   - types (+dist mirrors): sanitize MCP tool names to ^[a-zA-Z0-9_-]{1,128}$
+#     (truncating with a warning), normalize selector patterns on both sides,
+#     and keep pre-sanitization spellings matching for include/excludeTools.
+#   - metadata-cache/server-manager/tool-metadata (+dist mirrors): do not
+#     advertise the io.modelcontextprotocol/ui extension capability and do
+#     not persist or reconstruct UI resource metadata; persist tool
+#     annotations in the metadata cache instead.
+#   - mcp-auth-flow: manual (remote https) OAuth redirect flows also start an
+#     opportunistic loopback listener on the default callback port/path and
+#     race it against the manual paste prompt; graceful fallback to
+#     paste-only when the listener cannot bind.
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -318,6 +348,75 @@ index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547
          }
          if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
              return true;
+diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
+index 0ae900470d923665153cdbc6028dd91f81c180b2..25183b69f3d3506cfc2c5d76716a3c64c16479a6 100644
+--- a/mcp-auth-flow.ts
++++ b/mcp-auth-flow.ts
+@@ -93,6 +93,12 @@ type PendingAuth = {
+   authorizationUrl: string
+   manualRedirect: boolean
+   manualCompletionController?: AbortController
++  /**
++   * True when a manual (remote https) redirect flow also captured a loopback
++   * callback listener, so the flow can complete either by paste or by the
++   * remote endpoint bouncing the browser down to the local callback server.
++   */
++  loopbackCapture?: boolean
+   discovery: AuthDiscovery
+   getHeaders: () => Headers
+   authStorageOptions: AuthStorageOptions
+@@ -508,6 +514,15 @@ export async function startAuth(
+   const manualRedirect = redirectTarget?.mode === "manual"
+   const oauthState = generateState()
+ 
++  // Loopback capture for remote (https) redirect URIs.
++  // Tracking: https://github.com/nicobailon/pi-mcp-adapter/issues (pending) — remove
++  // once upstream supports an opportunistic loopback listener for manual redirect
++  // flows. A pre-registered remote https redirect URI (for example a hosted bounce
++  // page that redirects the browser to the default loopback callback) normally
++  // completes by pasting the final callback URL. When that remote endpoint in fact
++  // bounces to the default loopback port/path, starting the local callback server
++  // lets the flow finish automatically; the paste prompt remains as a fallback.
++  let loopbackCapture = false
+   if (!manualRedirect) {
+     try {
+       await ensureCallbackServer({
+@@ -540,6 +555,18 @@ export async function startAuth(
+       }
+       throw error
+     }
++  } else {
++    try {
++      await ensureCallbackServer({ strictPort: true, oauthState, reserveState: true })
++      authority()
++      throwIfAborted(signal)
++      loopbackCapture = true
++    } catch {
++      // The loopback endpoint is best-effort for remote redirect URIs: keep the
++      // manual paste flow when the default callback port/path is unavailable.
++      releaseCallbackServer(oauthState)
++      await stopCallbackServerIfIdle().catch(() => {})
++    }
+   }
+ 
+   let capturedUrl: URL | undefined
+@@ -601,6 +628,7 @@ export async function startAuth(
+       authorizationUrl: capturedUrl.toString(),
+       manualRedirect,
+       ...(manualRedirect ? { manualCompletionController: new AbortController() } : {}),
++      ...(loopbackCapture ? { loopbackCapture: true } : {}),
+       discovery,
+       getHeaders,
+       authStorageOptions,
+@@ -1042,7 +1070,7 @@ export async function authenticate(
+ 
+       // Register the localhost callback before opening the browser. Remote
+       // pre-registered callbacks are completed by pasting their full URL.
+-      const callbackPromise: Promise<AuthorizationCodeInput> = pendingAuth.manualRedirect
++      const callbackPromise: Promise<AuthorizationCodeInput> = pendingAuth.manualRedirect && !pendingAuth.loopbackCapture
+         ? waitForManualCompletionCancellation(pendingAuth.manualCompletionController!.signal)
+         : waitForCallback(oauthState)
+       void callbackPromise.catch(() => {})
 diff --git a/metadata-cache.ts b/metadata-cache.ts
 index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef31282e511d4f 100644
 --- a/metadata-cache.ts
