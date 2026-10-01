@@ -35,7 +35,6 @@ const TOOL_KINDS: Record<string, ToolKind> = {
 // get an argument-derived title; everything else falls back to the tool name.
 const TITLE_ARGS: Record<string, string[]> = {
 	bash: ["command"],
-	bash_control: ["command"],
 	read: ["file_path", "path"],
 	write: ["file_path", "path"],
 	edit: ["file_path", "path"],

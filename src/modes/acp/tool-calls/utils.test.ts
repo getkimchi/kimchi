@@ -268,10 +268,10 @@ describe("describeToolCall", () => {
 			expect: { title: "auth", kind: "other", locations: [] },
 		},
 		{
-			name: "bash_control uses command as title",
+			name: "bash_control (handle/action args) falls back to tool name",
 			toolName: "bash_control",
-			args: { command: "pnpm dev" },
-			expect: { title: "pnpm dev", kind: "other", locations: [] },
+			args: { handle: "abc123", action: "stop" },
+			expect: { title: "bash_control", kind: "other", locations: [] },
 		},
 		{
 			name: "unknown tool falls back to other kind",
