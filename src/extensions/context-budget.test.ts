@@ -54,15 +54,23 @@ const CHARS_PER_TOKEN = 4
 
 /** Budget slices (estimated tokens). Headroom over the measured baseline below. */
 const BUDGET = {
-	/** buildSystemPrompt with the canonical single-mode options below
-	 *  (tool descriptions live in the API payload, the phase payload is gated
-	 *  on set_phase, Consent/Output/Environment sections dieted; ~7% headroom). */
-	systemPrompt: 2050,
+	/** buildSystemPrompt, interactive variant (hasUserLoop: true — TUI/ACP).
+	 *  Measures the full user-presence prompt (Consent, Harness Notes,
+	 *  orient-the-user). ~7% headroom over measured 1430. */
+	systemPromptInteractive: 1530,
+	/** buildSystemPrompt, headless variant (hasUserLoop: false — --print, json,
+	 *  piped IO; what TB2.1 exercises). ~7% headroom over measured 981. */
+	systemPromptHeadless: 1050,
 	/** Sum of name + description chars across resources/skills frontmatter,
-	 * including the bundled create-skill authoring workflow (~97 tokens). */
-	skillsCatalog: 105,
-	/** Total canonical system-prompt + skills surface. */
-	total: 2150,
+	 * including create-skill (gh/glab guidance lives in behaviour bodies, not
+	 * bundled skills). Rendered as a Codex-style markdown catalog (name +
+	 * description capped at 200 chars + path; no XML); this metric sums the
+	 * authored lengths, capped only at render time. ~13% headroom over
+	 * measured (97). */
+	skillsCatalog: 110,
+	/** Total canonical system-prompt + skills surface (~7% headroom over
+	 *  measured 1425). */
+	total: 1530,
 	/** Total canonical tool surface (26 tools after the DAP session-tool +
 	 *  bash_control deferrals, the mcp zero-server registration gate, and the
 	 *  lsp no-server detection gate; ~5% headroom). Dev sessions in a repo WITH
@@ -117,18 +125,27 @@ function repoRoot(): string {
 }
 
 function canonicalSurfaces() {
-	const systemPrompt = buildSystemPrompt({
+	const systemPromptInteractive = buildSystemPrompt({
 		tools: CANONICAL_TOOLS,
 		env: FIXED_ENV,
 		contextFiles: CANONICAL_CONTEXT_FILES,
 		skills: [],
 		mode: "single",
+		hasUserLoop: true,
+	})
+	const systemPromptHeadless = buildSystemPrompt({
+		tools: CANONICAL_TOOLS,
+		env: FIXED_ENV,
+		contextFiles: CANONICAL_CONTEXT_FILES,
+		skills: [],
+		mode: "single",
+		hasUserLoop: false,
 	})
 	const skillsRoot = join(repoRoot(), "resources", "skills")
 	const skills = readdirSync(skillsRoot, { withFileTypes: true })
 		.filter((entry) => entry.isDirectory())
 		.map((entry) => loadSkillFrontmatter(skillsRoot, entry.name))
-	return { systemPrompt, skills }
+	return { systemPromptInteractive, systemPromptHeadless, skills }
 }
 
 interface SkillFrontmatter {
@@ -149,35 +166,46 @@ function loadSkillFrontmatter(skillDir: string, file: string): SkillFrontmatter 
 
 describe("context budget", () => {
 	it("canonical prompt + skills surfaces stay within committed token budgets", () => {
-		const { systemPrompt, skills } = canonicalSurfaces()
+		const { systemPromptInteractive, systemPromptHeadless, skills } = canonicalSurfaces()
 
-		const systemPromptTokens = estimateTokens(systemPrompt.length)
+		// Both hasUserLoop variants are tracked separately: TB2.1 only exercises
+		// the headless variant, so the interactive prompt (Consent, Harness
+		// Notes, orient-the-user) needs its own cap to stay measured in CI.
+		const interactiveTokens = estimateTokens(systemPromptInteractive.length)
+		const headlessTokens = estimateTokens(systemPromptHeadless.length)
 		const skillsTokens = skills.reduce(
 			(sum, skill) => sum + estimateTokens(skill.name.length + skill.description.length),
 			0,
 		)
-		const total = systemPromptTokens + skillsTokens
+		const total = interactiveTokens + skillsTokens
 
 		// Regression guard: tool descriptions belong in the API payload only. If this
 		// marker reappears, a section builder is re-embedding them in the prompt.
-		expect(
-			systemPrompt,
-			"canonical prompt must not embed <tool name=...> description blocks (tool-description regression guard)",
-		).not.toContain('<tool name="')
+		for (const systemPrompt of [systemPromptInteractive, systemPromptHeadless]) {
+			expect(
+				systemPrompt,
+				"canonical prompt must not embed <tool name=...> description blocks (tool-description regression guard)",
+			).not.toContain('<tool name="')
+		}
 
 		const breakdown = [
-			`system prompt: ${systemPromptTokens} est tokens (budget ${BUDGET.systemPrompt})`,
+			`system prompt (interactive): ${interactiveTokens} est tokens (budget ${BUDGET.systemPromptInteractive})`,
+			`system prompt (headless):    ${headlessTokens} est tokens (budget ${BUDGET.systemPromptHeadless})`,
 			`skills catalog: ${skillsTokens} est tokens (budget ${BUDGET.skillsCatalog}) across ${skills.length} skills`,
 			...skills.map(
 				(skill) => `    ${skill.file}: ~${estimateTokens(skill.name.length + skill.description.length)} est`,
 			),
-			`total:          ${total} est tokens (budget ${BUDGET.total})`,
+			`total (interactive prompt + skills): ${total} est tokens (budget ${BUDGET.total})`,
 		].join("\n")
 
 		expect(
-			systemPromptTokens,
-			`system prompt grew beyond budget\n${breakdown}\nTo fix: shrink the prompt, or raise BUDGET.systemPrompt deliberately in this PR.`,
-		).toBeLessThanOrEqual(BUDGET.systemPrompt)
+			interactiveTokens,
+			`interactive system prompt grew beyond budget\n${breakdown}\nTo fix: shrink the prompt, or raise BUDGET.systemPromptInteractive deliberately in this PR.`,
+		).toBeLessThanOrEqual(BUDGET.systemPromptInteractive)
+		expect(
+			headlessTokens,
+			`headless system prompt grew beyond budget\n${breakdown}\nTo fix: shrink the prompt, or raise BUDGET.systemPromptHeadless deliberately in this PR.`,
+		).toBeLessThanOrEqual(BUDGET.systemPromptHeadless)
 		expect(
 			skillsTokens,
 			`skills catalog grew beyond budget\n${breakdown}\nTo fix: shorten skill names/descriptions, or raise BUDGET.skillsCatalog deliberately in this PR.`,

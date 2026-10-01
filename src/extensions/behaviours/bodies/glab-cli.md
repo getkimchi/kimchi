@@ -1,19 +1,19 @@
 ---
 name: glab-cli
-description: Use the GitLab CLI (`glab`) for merge request review (as reviewer or author), pipeline/job troubleshooting, and general GitLab operations. Use when interacting with MRs, reviews, comments, approvals, CI pipelines, jobs, issues, or releases on GitLab — including reading discussions, posting notes, fetching pipeline logs, or triaging job failures.
+description: Use the GitLab CLI (`glab`) for MRs, reviews, approvals, issues, releases, and CI pipelines — reading discussions, posting notes, fetching job traces, triaging failures. Prefer `glab` over web URLs.
 ---
 
 # glab CLI
 
 `glab` is the canonical CLI for GitLab. Prefer it over scraping web URLs or guessing API paths. Discover flags with `glab <cmd> --help` rather than enumerating here.
 
-See `## Output & Truncation` and `## Consent & Irreversible Actions` for general rules.
-
-Auth: `glab auth status`. If logged out, ask the user to run `glab auth login`.
-
-Project: inferred from cwd. Pass `-R OWNER/REPO` (or `GROUP/SUBGROUP/REPO`) when outside.
-
 Terminology: **MR** = merge request, **note** = comment, **discussion** = thread, **pipeline** = CI run, **job** = CI step.
+
+Consent: posting notes, approving, merging, releasing, and any `glab api` write are external actions — explicit approval first (the user's; in an Autonomous Session, the task prompt's); read-only commands are fine.
+
+Output: job traces and `--paginate` on large result sets are huge — cap with `| tail -N` and `--jq` filters. For big MR diffs, list changed paths first (diffs endpoint, `--jq '.[].new_path'`), then read targeted files.
+
+Auth: `glab auth status`. If logged out, ask the user to run `glab auth login`. Project: inferred from cwd; pass `-R OWNER/REPO` (or `GROUP/SUBGROUP/REPO`) when outside.
 
 ## MR review — non-obvious bits
 
@@ -30,7 +30,7 @@ Resolve a discussion (need note ID from the discussions API):
 glab mr note resolve 123 3107030349
 ```
 
-Inline (line-anchored) review comments — `glab` has no flag yet; use the API:
+Inline (line-anchored) comments — `glab` has no flag; use the API:
 ```bash
 glab api projects/:fullpath/merge_requests/123/discussions \
   -X POST \
@@ -42,7 +42,7 @@ glab api projects/:fullpath/merge_requests/123/discussions \
   -f position[new_path]=src/foo.py \
   -f position[new_line]=42
 ```
-SHAs come from `glab api projects/:fullpath/merge_requests/123 --jq '.diff_refs'`.
+SHAs: `glab api projects/:fullpath/merge_requests/123 --jq '.diff_refs'`.
 
 Reply to a specific thread:
 ```bash
