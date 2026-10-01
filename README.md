@@ -441,6 +441,10 @@ Kimchi stores its configuration (settings, sessions, models) under:
 ~/.config/kimchi/harness/
 ```
 
+### TUI wheel-scroll speed
+
+Mouse-wheel scroll speed in fullscreen mode is configurable via `tui.wheelScrollLines` or the `KIMCHI_WHEEL_SCROLL_LINES` env var — see [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md).
+
 ### Context files
 
 You can provide custom instructions that are injected into the system prompt on every session. Kimchi discovers two kinds of context files:

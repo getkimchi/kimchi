@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
+	applyTuiEnvOverrides,
 	buildSkillPathOptions,
 	checkConfigFilePermissions,
 	clearApiKey,
@@ -31,6 +32,7 @@ import {
 	writeSessionModeWizardSeenAt,
 	writeStudioOnboardingSeenAt,
 	writeTeleportCompactHintEnabled,
+	writeTuiWheelScrollLines,
 } from "./config.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "./project-scope-trust.js"
 
@@ -191,6 +193,61 @@ describe("loadConfig", () => {
 		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
 		expect(config.mcpSearch.strategy).toBe("bm25")
 		expect(config.mcpSearch.bm25K1).toBe(1.5) // inherited from global
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("reads tui.wheelScrollLines from global config", () => {
+		writeFileSync(configPath, JSON.stringify({ tui: { wheelScrollLines: 3 } }))
+		expect(loadConfig({ configPath }).tui?.wheelScrollLines).toBe(3)
+	})
+
+	it("rejects invalid tui.wheelScrollLines values", () => {
+		for (const value of [0, -2, "3", Number.NaN, Infinity, null, true]) {
+			writeFileSync(configPath, JSON.stringify({ tui: { wheelScrollLines: value } }))
+			expect(loadConfig({ configPath }).tui?.wheelScrollLines).toBeUndefined()
+		}
+		// non-object tui block is ignored entirely
+		writeFileSync(configPath, JSON.stringify({ tui: 3 }))
+		expect(loadConfig({ configPath }).tui).toBeUndefined()
+	})
+
+	it("floors fractional tui.wheelScrollLines in the pi-tui clamp, not at parse time", () => {
+		writeFileSync(configPath, JSON.stringify({ tui: { wheelScrollLines: 2.7 } }))
+		// parse accepts it; flooring is pi-tui's job (Math.max(1, Math.floor(...)))
+		expect(loadConfig({ configPath }).tui?.wheelScrollLines).toBe(2.7)
+	})
+
+	it("project tui.wheelScrollLines overrides global", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ tui: { wheelScrollLines: 3 } }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ tui: { wheelScrollLines: 5 } }))
+
+		setProjectScopeTrusted(projectDir, true)
+		expect(loadConfig({ configPath: globalPath, cwd: projectDir }).tui?.wheelScrollLines).toBe(5)
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("untrusted project cannot set tui.wheelScrollLines", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ tui: { wheelScrollLines: 3 } }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ tui: { wheelScrollLines: 99 } }))
+
+		// no setProjectScopeTrusted call — project stays untrusted
+		expect(loadConfig({ configPath: globalPath, cwd: projectDir }).tui?.wheelScrollLines).toBe(3)
 
 		rmSync(globalDir, { recursive: true, force: true })
 		rmSync(projectDir, { recursive: true, force: true })
@@ -525,6 +582,78 @@ describe("loadConfig", () => {
 
 		rmSync(globalDir, { recursive: true, force: true })
 		rmSync(projectDir, { recursive: true, force: true })
+	})
+})
+
+describe("writeTuiWheelScrollLines", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("writes into an existing tui block, preserving sibling keys", () => {
+		writeFileSync(configPath, JSON.stringify({ tui: { futureKnob: true } }))
+		writeTuiWheelScrollLines(3, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.tui).toEqual({ futureKnob: true, wheelScrollLines: 3 })
+	})
+
+	it("creates the tui block when absent, preserving top-level keys", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }))
+		writeTuiWheelScrollLines(2, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("k")
+		expect(raw.tui).toEqual({ wheelScrollLines: 2 })
+		expect(loadConfig({ configPath }).tui?.wheelScrollLines).toBe(2)
+	})
+
+	it("replaces a non-object tui value rather than spreading into it", () => {
+		writeFileSync(configPath, JSON.stringify({ tui: 5 }))
+		writeTuiWheelScrollLines(4, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.tui).toEqual({ wheelScrollLines: 4 })
+	})
+})
+
+describe("applyTuiEnvOverrides", () => {
+	const ENV_KEY = "KIMCHI_WHEEL_SCROLL_LINES"
+
+	beforeEach(() => {
+		// stubEnv with a fresh baseline so leaked values from other tests
+		// (or the developer's real shell env) can't skew expectations.
+		vi.stubEnv(ENV_KEY, "")
+		delete process.env[ENV_KEY]
+	})
+
+	afterEach(() => {
+		vi.unstubAllEnvs()
+		delete process.env[ENV_KEY]
+	})
+
+	it("maps tui.wheelScrollLines onto the env var when unset", () => {
+		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
+		applyTuiEnvOverrides({ ...config, tui: { wheelScrollLines: 3 } })
+		expect(process.env[ENV_KEY]).toBe("3")
+	})
+
+	it("does not overwrite a pre-set env var (env > config)", () => {
+		process.env[ENV_KEY] = "5"
+		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
+		applyTuiEnvOverrides({ ...config, tui: { wheelScrollLines: 3 } })
+		expect(process.env[ENV_KEY]).toBe("5")
+	})
+
+	it("does nothing when tui.wheelScrollLines is unconfigured", () => {
+		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
+		applyTuiEnvOverrides({ ...config, tui: undefined })
+		expect(process.env[ENV_KEY]).toBeUndefined()
 	})
 })
 

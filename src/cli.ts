@@ -35,6 +35,7 @@ import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import "./session-selector-adapter.js"
 import {
+	applyTuiEnvOverrides,
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
 	ensureHideThinkingBlockDefault,
@@ -370,6 +371,12 @@ try {
 		// is unnecessary (idempotent) but loadConfig below depends on it.
 
 		let config = loadConfig()
+
+		// Map tui.wheelScrollLines onto KIMCHI_WHEEL_SCROLL_LINES before any
+		// interactive bootstrap: the patched pi-tui TuiAltScreen constructor
+		// reads the env var once at construction (later in startup), so this
+		// ordering is load-bearing.
+		applyTuiEnvOverrides(config)
 
 		const envKey = captureApiKeyFromEnvironment()
 
