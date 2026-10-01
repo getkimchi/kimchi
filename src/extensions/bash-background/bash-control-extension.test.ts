@@ -226,58 +226,36 @@ async function startGatedSession(pi: ExtensionAPI, registry: FakeRegistry, handl
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-describe("bashControlExtension — bash_control deferral (token-optimization Chunk 4)", () => {
-	it("registers bash_control but keeps it hidden at session_start in main sessions", async () => {
+describe("bashControlExtension — bash_control static surface (cache-stable tool surface)", () => {
+	it("registers and advertises bash_control at session_start in main sessions", async () => {
 		workerState.isWorker = false
 		const pi = makeFakePi()
 		bashControlExtension(pi)
 		await fireSessionStart(pi)
 
-		// Registered (availability preserved) but not advertised (surface reduced).
+		// Static surface: registered AND advertised from session start — a
+		// mid-session reveal would invalidate the prompt cache for the whole
+		// history after the tools block.
 		const state = pi as unknown as FakePi
 		expect(state.registeredTools).toContain("bash_control")
-		expect(state.activeTools.has("bash_control")).toBe(false)
-	})
-
-	it("reveals bash_control on the first bash result with a background handle", async () => {
-		workerState.isWorker = false
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		bashControlExtension(pi, { getRegistry: () => registry as unknown as ProcessRegistry })
-		await fireSessionStart(pi)
-		const state = pi as unknown as FakePi
-		expect(state.activeTools.has("bash_control")).toBe(false)
-
-		// A short-task bash result (no handle) must NOT reveal.
-		await fireToolResult(pi, {
-			type: "tool_result",
-			toolName: "bash",
-			toolCallId: "c0",
-			input: { command: "echo hi" },
-			content: [{ type: "text", text: "hi" }],
-			isError: false,
-			details: { checkin: false },
-		})
-		expect(state.activeTools.has("bash_control")).toBe(false)
-
-		await fireToolResult(pi, checkinResult("h1"))
 		expect(state.activeTools.has("bash_control")).toBe(true)
 	})
 
-	it("reveal is one-way: a second handle does not re-transition visibility", async () => {
+	it("background handles never change the advertised tool set", async () => {
 		workerState.isWorker = false
 		const registry = makeFakeRegistry()
 		const pi = makeFakePi()
 		bashControlExtension(pi, { getRegistry: () => registry as unknown as ProcessRegistry })
 		await fireSessionStart(pi)
 		const state = pi as unknown as FakePi
+		expect(state.activeTools.has("bash_control")).toBe(true)
+		expect(state.activeTransitions).toHaveLength(0)
 
+		// Results that open/close the gate must not transition visibility.
 		await fireToolResult(pi, checkinResult("h1"))
-		const transitionsAfterReveal = state.activeTransitions.length
-		expect(transitionsAfterReveal).toBeGreaterThan(0)
-
 		await fireToolResult(pi, checkinResult("h2"))
-		expect(state.activeTransitions.length).toBe(transitionsAfterReveal)
+		expect(state.activeTools.has("bash_control")).toBe(true)
+		expect(state.activeTransitions).toHaveLength(0)
 	})
 
 	it("keeps bash_control visible in agent workers (carve-out)", async () => {
@@ -293,7 +271,7 @@ describe("bashControlExtension — bash_control deferral (token-optimization Chu
 		workerState.isWorker = false
 	})
 
-	it("a re-entered session_start after reveal does not re-hide bash_control", async () => {
+	it("a re-entered session_start keeps bash_control visible", async () => {
 		workerState.isWorker = false
 		const pi = makeFakePi()
 		bashControlExtension(pi)
@@ -302,7 +280,7 @@ describe("bashControlExtension — bash_control deferral (token-optimization Chu
 		const state = pi as unknown as FakePi
 		expect(state.activeTools.has("bash_control")).toBe(true)
 
-		// Resume/fork re-enters session_start; reveal is one-way per factory lifetime.
+		// Resume/fork re-enters session_start; the static surface must not change.
 		const transitions = state.activeTransitions.length
 		await fireSessionStart(pi)
 		expect(state.activeTools.has("bash_control")).toBe(true)

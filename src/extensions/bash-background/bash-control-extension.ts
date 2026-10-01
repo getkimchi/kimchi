@@ -57,8 +57,6 @@
  * the agent out when a human takes over.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { isAgentWorker } from "../agent-worker-context.js"
-import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { BASH_CONTROL_TOOL_NAME, createBashControlToolDefinition } from "./bash-control-tool.js"
 import type { ProcessRegistry } from "./process-registry.js"
@@ -107,23 +105,10 @@ export function formatGateBlockReason(toolName: string, handles: readonly string
 
 export default function bashControlExtension(pi: ExtensionAPI, options?: BashControlExtensionOptions): void {
 	const getRegistry = options?.getRegistry ?? getSessionRegistry
-	// bash_control (~476 est) stays deferred
-	// — registered but not advertised — until a background bash handle exists.
-	// The visible `bash` description already names bash_control, so discovery
-	// needs no extra text. Reveal is one-way: once a handle has existed, the
-	// tool stays visible for the rest of the session.
-	const visibility = createToolVisibility(pi)
-	// Agent workers keep full bash_control visibility (subagent sessions run
-	// long background tasks; deferral buys nothing there).
-	const defer = !isAgentWorker()
-	let bashControlRevealed = !defer
-
-	/** Reveal bash_control when the first background handle appears — one-way. */
-	function revealBashControl(): void {
-		if (bashControlRevealed) return
-		bashControlRevealed = true
-		visibility.enable([BASH_CONTROL_TOOL_NAME])
-	}
+	// bash_control is part of the static session surface: registered and
+	// advertised from session start (cache-stable tool surface — a mid-session
+	// reveal would invalidate the prompt cache for the whole history after the
+	// tools block, costing more than the schema's ~476 est tokens ever saved).
 
 	// Handles awaiting a continue/stop decision. The gate is closed while this
 	// set is non-empty. Per-session: rebuilt on session_start (this factory
@@ -148,10 +133,6 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		claimedExits = new Map()
 		disposed = false
 		pi.registerTool(createBashControlToolDefinition())
-		// Deferral vote AFTER registration: the tool exists, it's just hidden.
-		// A resumed session that already revealed bash_control stays revealed
-		// (only votes again when still deferred).
-		if (!bashControlRevealed) visibility.disable([BASH_CONTROL_TOOL_NAME])
 	})
 
 	/** toolCallId of the in-flight bash_control call for `handle`, if any. */
@@ -233,10 +214,6 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		const restored = event.isError && saved ? { details: saved } : undefined
 		const details = readDetails(restored?.details ?? event.details)
 		if (!details.handle) return restored
-		// A background handle exists: the model needs bash_control from this turn
-		// on. Reveal in the same handler that closes the gate, so the tool is
-		// visible before any gate block reason can name it.
-		revealBashControl()
 		if (details.checkin && !details.exited) {
 			// Mid-run checkin (from bash's first result, or a bash_control
 			// continue that found the process still running): handle awaits
