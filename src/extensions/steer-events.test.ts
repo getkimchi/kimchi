@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	emitSteerFired,
@@ -9,6 +9,7 @@ import {
 	type SteerFiredPayload,
 	type SteerKind,
 	type SteerOutcomePayload,
+	sendSteer,
 	steerAbortTrackerExtension,
 	steerDisableFlagName,
 } from "./steer-events.js"
@@ -197,5 +198,94 @@ describe("steer-events", () => {
 
 			expect(emitted.filter((e) => e.channel === STEER_EVENTS.ABORTED)).toHaveLength(0)
 		})
+	})
+})
+
+describe("sendSteer", () => {
+	function makePiWithSend(): {
+		pi: ExtensionAPI
+		emitted: { channel: string; payload: unknown }[]
+		sent: { message: unknown; options: unknown }[]
+	} {
+		const emitted: { channel: string; payload: unknown }[] = []
+		const sent: { message: unknown; options: unknown }[] = []
+		const pi = {
+			sendMessage: (message: unknown, options: unknown) => {
+				sent.push({ message, options })
+			},
+			events: {
+				emit: (channel: string, payload: unknown) => {
+					emitted.push({ channel, payload })
+				},
+			},
+		} as unknown as ExtensionAPI
+		return { pi, emitted, sent }
+	}
+
+	function makeCtx(hasUI = true): ExtensionContext {
+		return {
+			hasUI,
+			sessionManager: { getSessionId: () => "test-session" },
+		} as unknown as ExtensionContext
+	}
+
+	beforeEach(() => {
+		resetSteerAbortTracker()
+	})
+
+	it("sends a marked hidden message and emits the fired event", () => {
+		const { pi, emitted, sent } = makePiWithSend()
+		const ok = sendSteer(pi, makeCtx(), {
+			kind: "review_write_guard",
+			reason: "steer",
+			customType: "review-write-guard-steer",
+			text: "stop editing",
+		})
+
+		expect(ok).toBe(true)
+		expect(sent).toHaveLength(1)
+		const message = sent[0].message as {
+			customType: string
+			content: { type: string; text: string }[]
+			display: boolean
+		}
+		expect(message.customType).toBe("review-write-guard-steer")
+		expect(message.display).toBe(false)
+		// Raw text is wrapped in the harness marker.
+		expect(message.content[0].text).toContain("<system-reminder>")
+		expect(message.content[0].text).toContain("stop editing")
+		expect(sent[0].options).toEqual({ deliverAs: "steer" })
+
+		expect(emitted).toHaveLength(1)
+		expect(emitted[0].channel).toBe(STEER_EVENTS.FIRED)
+		expect(emitted[0].payload).toMatchObject({ kind: "review_write_guard", reason: "steer" })
+	})
+
+	it("kill switch: returns false, sends nothing, emits nothing", () => {
+		const { pi, emitted, sent } = makePiWithSend()
+		process.env[steerDisableFlagName("exploration_guard")] = "1"
+		const ok = sendSteer(pi, makeCtx(), {
+			kind: "exploration_guard",
+			reason: "turn_end",
+			customType: "exploration-guard-steer",
+			text: "stop exploring",
+		})
+
+		expect(ok).toBe(false)
+		expect(sent).toHaveLength(0)
+		expect(emitted).toHaveLength(0)
+	})
+
+	it("derives session shape from ctx (interactive flag + sessionId for abort attribution)", () => {
+		const { pi, emitted } = makePiWithSend()
+		sendSteer(pi, makeCtx(false), {
+			kind: "bash_timeout_guidance",
+			reason: "timeout",
+			customType: "bash-timeout-guidance",
+			text: "guidance",
+		})
+
+		const payload = emitted[0].payload as SteerFiredPayload
+		expect(payload.interactive).toBe(false)
 	})
 })

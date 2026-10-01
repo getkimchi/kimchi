@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { emitSteerFired, isSteerDisabled, type SteerKind } from "../steer-events.js"
+import { emitSteerFired, isSteerDisabled, type SteerKind, type SteerReason } from "../steer-events.js"
 import { markHarnessSteer } from "../steer-marker.js"
 
 /**
@@ -42,7 +42,7 @@ export function sendHiddenSteer(
 	customType: string,
 	text: string,
 	details: Record<string, unknown>,
-	opts: { steerKind?: SteerKind; steerReason?: string; interactive?: boolean; sessionId?: string } = {},
+	opts: { steerKind?: SteerKind; steerReason?: SteerReason; interactive?: boolean; sessionId?: string } = {},
 ): void {
 	if (opts.steerKind && isSteerDisabled(opts.steerKind)) return
 	pi.sendMessage(

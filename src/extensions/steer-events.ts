@@ -19,9 +19,10 @@
  * carries their *outcome* events, plus fire events for every other site.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs } from "../cli-args.js"
 import { isAgentWorker } from "./agent-worker-context.js"
+import { markHarnessSteer } from "./steer-marker.js"
 
 export const STEER_EVENTS = {
 	FIRED: "steer:fired",
@@ -88,6 +89,23 @@ export interface SteerAbortedPayload {
 	interactive: boolean
 }
 
+/** Short stable reason code carried by every steer event. A closed union,
+ *  not a free string, so telemetry aggregation stays reliable across
+ *  harness versions. Extension-specific reasons extend this union rather
+ *  than widening it to `string`. */
+export type SteerReason =
+	| "early_nudge"
+	| "staleness"
+	| "empty_turn"
+	| "continuation"
+	| "scoping_stop"
+	| "step_stall"
+	| "timeout"
+	| "checkin"
+	| "warn"
+	| "steer"
+	| "turn_end"
+
 /** Session-shape flags shared by every payload. Sites that have a ctx
  *  pass `interactive: ctx.hasUI`; the default is derived from the session's
  *  parsed CLI args so ctx-less emit sites still classify correctly. */
@@ -120,7 +138,7 @@ function defaultInteractive(): boolean {
 export function emitSteerFired(
 	pi: ExtensionAPI,
 	kind: SteerKind,
-	reason: string,
+	reason: SteerReason,
 	shape: { interactive?: boolean; sessionId?: string } = {},
 ): void {
 	if (isSteerDisabled(kind)) return
@@ -159,6 +177,47 @@ export function emitSteerOutcome(
 		// pi.events may be unavailable on older hosts or lightweight test
 		// mocks. The steer still functions without telemetry.
 	}
+}
+
+/**
+ * Send a hidden steer/nudge message and record its fire event in one call.
+ *
+ * This is the shared path for the simple guard-reason steer family — sites
+ * whose shape is exactly: kill-switch gate → `pi.sendMessage` with a
+ * marked text block (`deliverAs: "steer"`, no details) → `emitSteerFired`.
+ * Sites with different delivery mechanics keep their own helpers:
+ * `todos/staleness-steers.ts` (`sendHiddenSteer`, needs `details` + custom
+ * customType), the continuation nudges (`followUp` + pre-marked constants),
+ * and the two domain-channel guards (`bash_tool_guard`, `loop_guard`).
+ *
+ * Returns false (sending nothing) when the steer is disabled by its kill
+ * switch; the caller can treat the return as "a steer was sent".
+ */
+export function sendSteer(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext | undefined,
+	opts: {
+		kind: SteerKind
+		reason: SteerReason
+		customType: string
+		text: string
+		deliverAs?: "steer" | "followUp"
+	},
+): boolean {
+	if (isSteerDisabled(opts.kind)) return false
+	pi.sendMessage(
+		{
+			customType: opts.customType,
+			content: [{ type: "text", text: markHarnessSteer(opts.text) }],
+			display: false,
+		},
+		{ deliverAs: opts.deliverAs ?? "steer" },
+	)
+	emitSteerFired(pi, opts.kind, opts.reason, {
+		interactive: ctx?.hasUI,
+		sessionId: ctx?.sessionManager.getSessionId(),
+	})
+	return true
 }
 
 /**
