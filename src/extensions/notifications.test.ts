@@ -35,8 +35,8 @@ describe("native notification delivery", () => {
 		const title = 'Kimchi — "quotes" \\ $HOME'
 		expect(await sendNativeNotification(title, "Ready for input")).toBe(true)
 		const [file, args, options] = vi.mocked(execFile).mock.calls[0]
-		expect(file).toBe(join("/kimchi/share", "bin/kimchi-notifier.app/Contents/MacOS/terminal-notifier"))
-		expect(args).toEqual(["-title", title, "-message", "Ready for input", "-activate", "dev.warp.Warp-Stable"])
+		expect(file).toBe(join("/kimchi/share", "bin/kimchi-notifier.app/Contents/MacOS/kimchi-notifier"))
+		expect(args).toEqual(["notify", title, "Ready for input", "dev.warp.Warp-Stable"])
 		expect(options).toMatchObject({ timeout: 60_000, windowsHide: true })
 	})
 
@@ -106,7 +106,7 @@ describe("notification workflow", () => {
 		expect(execFile).not.toHaveBeenCalled()
 		await h.fire("agent_settled")
 		expect(execFile).toHaveBeenCalledWith(
-			expect.stringContaining(join("kimchi-notifier.app", "Contents", "MacOS", "terminal-notifier")),
+			expect.stringContaining(join("kimchi-notifier.app", "Contents", "MacOS", "kimchi-notifier")),
 			expect.arrayContaining(["Kimchi", "Ready for input"]),
 			expect.any(Object),
 			expect.any(Function),

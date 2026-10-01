@@ -34,9 +34,9 @@ export async function sendNativeNotification(title: string, body: string): Promi
 			if (!app) return false
 			command = join(
 				resolveAuxiliaryFilesDir(process.env, homedir(), process.execPath),
-				"bin/kimchi-notifier.app/Contents/MacOS/terminal-notifier",
+				"bin/kimchi-notifier.app/Contents/MacOS/kimchi-notifier",
 			)
-			args = ["-title", title, "-message", body, "-activate", app]
+			args = ["notify", title, body, app]
 			break
 		}
 		case "linux":
