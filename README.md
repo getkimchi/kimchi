@@ -441,6 +441,16 @@ Kimchi stores its configuration (settings, sessions, models) under:
 ~/.config/kimchi/harness/
 ```
 
+### Terminal layout
+
+Kimchi defaults to fullscreen, with the input and footer fixed at the bottom. This also applies after upgrading if you have not saved a TUI mode preference. Existing explicit preferences are preserved.
+
+On exit, fullscreen restores your previous shell output. If the conversation was saved, Kimchi prints a themed `kimchi --resume <id>` command. Empty sessions leave no resume hint.
+
+Use `/settings` → **TUI mode** → **regular** to keep the scrolling layout, or compare one session with `kimchi --tui-mode regular` and `kimchi --tui-mode fullscreen`. To print the conversation into the terminal on exit, choose `/settings` → **Fullscreen exit output** → **transcript**. These choices are saved in `settings.json` as `tuiMode` and `fullscreenExitOutput`.
+
+Selecting text in fullscreen does not copy it automatically by default. Press `Ctrl+X` to copy the selection, or enable `/settings` → **Fullscreen copy on select**. An explicit `fullscreenCopyOnSelect` preference in `settings.json` is preserved.
+
 ### Context files
 
 You can provide custom instructions that are injected into the system prompt on every session. Kimchi discovers two kinds of context files:

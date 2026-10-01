@@ -5,7 +5,19 @@ import {
 	type KeybindingsManager,
 	type Theme,
 } from "@earendil-works/pi-coding-agent"
-import { type Component, Container, Key, Markdown, matchesKey, Spacer, Text, type TUI } from "@earendil-works/pi-tui"
+import {
+	type Component,
+	Container,
+	isViewportTUI,
+	Key,
+	Markdown,
+	matchesKey,
+	ScrollView,
+	Spacer,
+	Text,
+	type TUI,
+	VStack,
+} from "@earendil-works/pi-tui"
 import { isRemoteRunEnabled } from "../remote-run/runner.js"
 import { withWorkingHidden } from "./prompt-ui.js"
 
@@ -82,10 +94,10 @@ export async function promptPlanReview(
 	)
 }
 
-class PlanReviewComponent extends Container {
+class PlanReviewComponent extends VStack {
 	private static readonly rail = " ▍ "
 
-	private readonly markdown: Markdown
+	private readonly planScroll: ScrollView
 	private readonly done: (result: PlanReviewOutcome) => void
 	private readonly theme: Theme
 	private readonly tui: TUI
@@ -111,7 +123,10 @@ class PlanReviewComponent extends Container {
 		this.keybindings = keybindings
 		this.done = done
 		this.options = getDecisionOptions()
-		this.markdown = new Markdown(planMarkdown, 1, 0, getMarkdownTheme())
+		this.planScroll = new ScrollView(new Markdown(planMarkdown, 1, 0, getMarkdownTheme()), {
+			scrollbar: "auto",
+			primary: true,
+		})
 		this.showDecision()
 
 		// Register an external dismiss function so the caller can close
@@ -165,9 +180,11 @@ class PlanReviewComponent extends Container {
 	private showDecision(): void {
 		this.clear()
 		this.addStaticContent()
-		this.addChild(new Text(this.theme.fg("toolTitle", this.theme.bold("Proceed with this plan?")), 0, 0))
-		this.addChild(this.decisionOptions)
-		this.addChild(new Spacer(1))
+		this.addChild(new Text(this.theme.fg("toolTitle", this.theme.bold("Proceed with this plan?")), 0, 0), { shrink: 0 })
+		this.addChild(this.decisionOptions, { shrink: 0 })
+		if (isViewportTUI(this.tui)) {
+			this.addChild(new Text(this.theme.fg("dim", "PageUp/PageDown scroll plan"), 0, 0), { shrink: 0 })
+		}
 		this.updateDecisionOptions()
 	}
 
@@ -177,15 +194,15 @@ class PlanReviewComponent extends Container {
 		this.ensureEditor()
 		if (this.editor) {
 			this.editor.focused = true
-			this.addChild(this.editor)
-			this.addChild(new Spacer(1))
+			this.addChild(this.editor, { shrink: 0 })
+			this.addChild(new Spacer(1), { shrink: 0 })
 		}
 	}
 
 	private addStaticContent(): void {
-		this.addChild(new Text(this.theme.fg("toolTitle", this.theme.bold("Plan review")), 0, 0))
-		this.addChild(this.markdown)
-		this.addChild(new Spacer(1))
+		this.addChild(new Text(this.theme.fg("toolTitle", this.theme.bold("Plan review")), 0, 0), { shrink: 0 })
+		this.addChild(this.planScroll, { shrink: 1, minSize: 1 })
+		this.addChild(new Spacer(1), { shrink: 0 })
 	}
 
 	private updateDecisionOptions(): void {

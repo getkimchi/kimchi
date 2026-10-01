@@ -34,9 +34,14 @@ import "./login-command-patch.js"
 import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import "./session-selector-adapter.js"
+import "./resume-hint-adapter.js"
+import "./fullscreen-adapter.js"
 import {
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
+	ensureFullscreenCopyOnSelectDefault,
+	ensureFullscreenDefault,
+	ensureFullscreenExitOutputDefault,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
 	getApiKeyMismatchWarning,
@@ -533,6 +538,9 @@ try {
 			const existing = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
 			let changed = ensureHideThinkingBlockDefault(existing)
 			if (ensureQuietStartupDefault(existing)) changed = true
+			if (ensureFullscreenDefault(existing)) changed = true
+			if (ensureFullscreenCopyOnSelectDefault(existing)) changed = true
+			if (ensureFullscreenExitOutputDefault(existing)) changed = true
 			const upgraded = upgradeLegacyRetrySettings(existing.retry)
 			if (upgraded) {
 				existing.retry = upgraded
@@ -630,11 +638,6 @@ try {
 				// dest missing — fall through and write
 			}
 			if (destContent !== srcContent) writeFileSync(dest, srcContent)
-		}
-
-		// Clear the visible viewport and home the cursor so kimchi renders at the top.
-		if (terminalStartupOutputAllowed) {
-			process.stdout.write("\x1b[2J\x1b[H")
 		}
 
 		// Suppress Node.js warnings (same as pi-mono's own cli.js)

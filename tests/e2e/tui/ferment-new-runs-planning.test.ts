@@ -18,10 +18,10 @@
 import { readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
-test.use(TUI_TEST_CONFIG)
+test.use({ ...TUI_TEST_CONFIG, columns: 80, rows: 24 })
 
 const PROPOSE_SCOPING_PAYLOAD = JSON.stringify({
 	ferment_id: "__FERMENT_ID__",
@@ -141,6 +141,14 @@ test("/ferment new runs planning and produces a scoped ferment artifact", async 
 				timeoutMs: INPUT_TIMEOUT_MS,
 			})
 			trace.step("plan-review dialog visible — 'Proceed with this plan?' / 'Start execution'")
+			await waitForText(terminal, "PageUp/PageDown scroll plan", { full: false })
+			expect(viewText(terminal)).toContain("Proceed with this plan?")
+			terminal.write("\x1b[F")
+			await waitForText(terminal, "Replace direct lookup in the read path with cache.get + fallback.", { full: false })
+			expect(viewText(terminal)).toContain("Execute the plan locally")
+			terminal.write("\x1b[H")
+			await waitForText(terminal, "Plan: Add Cache Layer", { full: false })
+			trace.step("the entire plan scrolls while decision controls remain visible at 80 by 24")
 
 			// Stage 6: confirm by pressing Enter (default first option
 			// "Start execution"). confirmPendingScope runs and persists the

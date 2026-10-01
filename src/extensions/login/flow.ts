@@ -387,6 +387,7 @@ export async function performKimchiBrowserLogin(
 
 		const { token } = await authenticateViaBrowser({
 			webAppUrl: endpointsForRegion(options.region).webAppUrl,
+			onMessage: host.showStatus,
 			onBrowserUrl: (url) => {
 				browserUrl = url
 				host.onBrowserUrl?.(url)

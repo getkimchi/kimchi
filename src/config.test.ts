@@ -6,6 +6,9 @@ import {
 	buildSkillPathOptions,
 	checkConfigFilePermissions,
 	clearApiKey,
+	ensureFullscreenCopyOnSelectDefault,
+	ensureFullscreenDefault,
+	ensureFullscreenExitOutputDefault,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
 	getApiKeyMismatchWarning,
@@ -1364,6 +1367,51 @@ describe("ensureQuietStartupDefault", () => {
 		const verbose = { quietStartup: false }
 		expect(ensureQuietStartupDefault(verbose)).toBe(false)
 		expect(verbose.quietStartup).toBe(false)
+	})
+})
+
+describe("ensureFullscreenDefault", () => {
+	it("seeds fullscreen for existing settings without a renderer preference", () => {
+		const settings: Record<string, unknown> = { quietStartup: true }
+		expect(ensureFullscreenDefault(settings)).toBe(true)
+		expect(settings).toEqual({ quietStartup: true, tuiMode: "fullscreen" })
+		expect(ensureFullscreenDefault(settings)).toBe(false)
+	})
+
+	it.each(["regular", "fullscreen"])("preserves explicit %s mode", (tuiMode) => {
+		const settings = { tuiMode }
+		expect(ensureFullscreenDefault(settings)).toBe(false)
+		expect(settings.tuiMode).toBe(tuiMode)
+	})
+})
+
+describe("ensureFullscreenCopyOnSelectDefault", () => {
+	it("disables automatic copying only when the setting is missing", () => {
+		const settings: Record<string, unknown> = { tuiMode: "fullscreen" }
+		expect(ensureFullscreenCopyOnSelectDefault(settings)).toBe(true)
+		expect(settings).toEqual({ tuiMode: "fullscreen", fullscreenCopyOnSelect: false })
+		expect(ensureFullscreenCopyOnSelectDefault(settings)).toBe(false)
+	})
+
+	it.each([true, false])("preserves an explicit copy-on-select preference of %s", (fullscreenCopyOnSelect) => {
+		const settings = { fullscreenCopyOnSelect }
+		expect(ensureFullscreenCopyOnSelectDefault(settings)).toBe(false)
+		expect(settings.fullscreenCopyOnSelect).toBe(fullscreenCopyOnSelect)
+	})
+})
+
+describe("ensureFullscreenExitOutputDefault", () => {
+	it("defaults fullscreen exit to a resume hint without replacing other settings", () => {
+		const settings: Record<string, unknown> = { tuiMode: "fullscreen" }
+		expect(ensureFullscreenExitOutputDefault(settings)).toBe(true)
+		expect(settings).toEqual({ tuiMode: "fullscreen", fullscreenExitOutput: "resume-hint" })
+		expect(ensureFullscreenExitOutputDefault(settings)).toBe(false)
+	})
+
+	it.each(["transcript", "resume-hint"])("preserves explicit %s exit output", (fullscreenExitOutput) => {
+		const settings = { fullscreenExitOutput }
+		expect(ensureFullscreenExitOutputDefault(settings)).toBe(false)
+		expect(settings.fullscreenExitOutput).toBe(fullscreenExitOutput)
 	})
 })
 
