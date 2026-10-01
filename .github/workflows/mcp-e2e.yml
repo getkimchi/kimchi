@@ -3,10 +3,12 @@ name: MCP E2E
 on:
   pull_request:
     # Only root/.github markdown: *.md under src/ and resources/ ships in the binary.
+    # TUI/ACP top-level test files are ignored, but not their support/ dirs:
+    # tests/e2e/mcp/conformance-client.ts imports from both.
     paths-ignore:
       - 'docs/**'
       - '*.md'
-      - '.github/**.md'
+      - '.github/**/*.md'
       - '.github/ISSUE_TEMPLATE/**'
       - 'LICENSE'
       - 'NOTICE'
@@ -17,13 +19,15 @@ on:
       - 'src/**/*.test.ts'
       - 'tests/unit/**'
       - 'tests/smoke/**'
+      - 'tests/e2e/tui/*.test.ts'
+      - 'tests/e2e/acp/*.test.ts'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: mcp-e2e-${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
+  group: mcp-e2e-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

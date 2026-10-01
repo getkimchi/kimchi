@@ -7,7 +7,7 @@ on:
     paths-ignore:
       - 'docs/**'
       - '*.md'
-      - '.github/**.md'
+      - '.github/**/*.md'
       - '.github/ISSUE_TEMPLATE/**'
       - 'LICENSE'
       - 'NOTICE'
@@ -26,7 +26,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: acp-e2e-${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
+  group: acp-e2e-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
