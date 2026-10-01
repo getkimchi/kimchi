@@ -19,10 +19,6 @@ export type ApprovalOutcome =
 	| { kind: "deny" }
 	| { kind: "aborted" }
 
-export interface CompoundSubcommand {
-	command: string
-}
-
 export type CompoundApprovalOutcome =
 	| { kind: "allow-all-once" }
 	| { kind: "allow-all-remember"; rules: Rule[] }
@@ -229,33 +225,30 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
  */
 export async function promptForCompoundApproval(opts: {
 	toolName: string
-	commands: CompoundSubcommand[]
+	command: string
 	ctx: ExtensionContext
 	subtitle?: string
 	signal?: AbortSignal
 }): Promise<CompoundApprovalOutcome> {
-	const { ctx, commands } = opts
+	const { ctx } = opts
 	if (!ctx.hasUI) return { kind: "deny" }
 
 	const termWidth = process.stdout.columns || 80
-	const descriptions = await Promise.all(
-		commands.map(async (cmd) => {
-			const highlighted = await describeCallHighlighted(opts.toolName, { command: cmd.command })
-			return wrapTextWithAnsi(highlighted, Math.max(1, termWidth)).join("\n")
-		}),
-	)
+	const { scopes, scopeable } = suggestBashCommandScopes(opts.command)
+	const highlighted = await describeCallHighlighted(opts.toolName, { command: opts.command })
 	const lines = [
-		`The assistant wants to run a compound command with ${commands.length} subcommand(s):`,
-		...descriptions,
+		"The assistant wants to run this compound command:",
+		wrapTextWithAnsi(highlighted, Math.max(1, termWidth)).join("\n"),
 	]
+	if (!scopeable) lines.push("This script needs approval each time; its permissions cannot be remembered safely.")
 	if (opts.subtitle) lines.push(opts.subtitle)
 	lines.push("")
 	lines.push(ctx.ui.theme.fg("accent", ctx.ui.theme.bold("Allow the assistant to run this?")))
 
 	const compoundChoices = [
 		"Run all (once)",
-		"Allow all from now on",
-		"Pick permissions per subcommand",
+		...(scopeable && scopes.length > 0 ? ["Allow all for this session"] : []),
+		...(scopeable ? ["Pick permissions per subcommand"] : []),
 		"No — tell the assistant what to do differently",
 	]
 	const choices = numberedChoices(compoundChoices)
@@ -266,31 +259,20 @@ export async function promptForCompoundApproval(opts: {
 
 	const selected = choice ? stripChoiceNumber(choice) : undefined
 
-	if (selected === compoundChoices[0]) return { kind: "allow-all-once" }
-	if (selected === compoundChoices[1]) {
-		// Narrow per-segment scopes (NOT wildcardContent) — "Allow all from now
-		// on" must not grant more than the subcommands shown on the card.
-		const rules: Rule[] = []
-		const unrememberable: string[] = []
-		for (const cmd of commands) {
-			if (isReadOnlyBashCommand(cmd.command)) continue
-			const scope = bashSegmentScope(cmd.command)
-			if (scope) {
-				rules.push({ toolName: scope.toolName, content: scope.content, behavior: "allow", source: "session" })
-			} else {
-				unrememberable.push(cmd.command)
-			}
+	if (selected === "Run all (once)") return { kind: "allow-all-once" }
+	if (selected === "Allow all for this session" && scopeable && scopes.length > 0) {
+		return {
+			kind: "allow-all-remember",
+			rules: scopes.map((scope) => ({
+				toolName: scope.toolName,
+				content: scope.content,
+				behavior: "allow",
+				source: "session",
+			})),
 		}
-		if (unrememberable.length > 0) {
-			ctx.ui.notify(
-				`Can't remember some subcommands this session (${unrememberable.join("; ")}); this compound will ask again next time`,
-				"warning",
-			)
-		}
-		return { kind: "allow-all-remember", rules }
 	}
-	if (selected === compoundChoices[2]) return { kind: "pick-per-subcommand" }
-	if (selected === compoundChoices[3]) {
+	if (selected === "Pick permissions per subcommand" && scopeable) return { kind: "pick-per-subcommand" }
+	if (selected === "No — tell the assistant what to do differently") {
 		const feedback = await withWorkingHidden(ctx, () => ctx.ui.input("Tell the assistant what to do differently:"))
 		const text = feedback?.trim()
 		if (text) return { kind: "deny-with-feedback", feedback: text }

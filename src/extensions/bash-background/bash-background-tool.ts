@@ -15,14 +15,19 @@
  *    comes first) with a tail-window of output plus a `handle` in details.
  *    The agent then drives the process via the `bash_control` tool.
  *
- * `renderCall`/`renderResult` are delegated to the wrapped upstream
- * definition so the TUI rendering is unchanged.
+ * Shared Bash renderers display identity, elapsed time and bounded live output.
  */
 import type { BashOperations, BashToolDetails, BashToolOptions, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { createBashToolDefinition, createLocalBashOperations } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
+import { renderBashCall, renderBashResult } from "./bash-display.js"
 import { awaitCheckin } from "./checkin.js"
-import { createProcessRegistry, type ProcessRegistry, type TailSnapshot } from "./process-registry.js"
+import {
+	createProcessRegistry,
+	type ProcessDisplaySnapshot,
+	type ProcessRegistry,
+	type TailSnapshot,
+} from "./process-registry.js"
 import { throwIfTerminal } from "./terminal-status.js"
 
 /** Short-task threshold: timeouts at or below this run synchronously. */
@@ -36,6 +41,7 @@ export const DEFAULT_TIMEOUT_SECONDS = 120
 
 /** Details returned in background-mode results (adds the handle). */
 export interface BackgroundBashToolDetails extends BashToolDetails {
+	display?: ProcessDisplaySnapshot
 	/** Handle for the background process; pass to `bash_control`. Omitted on the short-task path. */
 	handle?: string
 	/** Whether the process has exited. */
@@ -51,6 +57,9 @@ export interface BackgroundBashToolDetails extends BashToolDetails {
 /** Extended schema: upstream {command, timeout?} + checkin_interval? */
 const backgroundBashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
+	description: Type.Optional(
+		Type.String({ maxLength: 120, description: "Short purpose shown beside the command (optional)." }),
+	),
 	timeout: Type.Optional(
 		Type.Number({
 			description: "Timeout in seconds. Set this to the realistic maximum the command could need.",
@@ -81,7 +90,7 @@ export function createBackgroundBashToolDefinition(
 	options?: CreateBackgroundBashToolOptions,
 ): ToolDefinition<typeof backgroundBashSchema, BackgroundBashToolDetails | undefined> {
 	// Wrap the upstream definition once — we reuse its description, parameters
-	// (as a base), and renderCall/renderResult. Only `execute` is replaced.
+	// (as a base), execution mode and shell presentation.
 	const wrapped = createBashToolDefinition(cwd, options)
 	const registry = options?.registry ?? createProcessRegistry()
 
@@ -99,7 +108,7 @@ export function createBackgroundBashToolDefinition(
 		content: { type: "text"; text: string }[]
 		details: BackgroundBashToolDetails | undefined
 	}> {
-		const { command, timeout, checkin_interval } = params
+		const { command, timeout, checkin_interval, description } = params
 		const resolvedTimeout = timeout ?? DEFAULT_TIMEOUT_SECONDS
 
 		// ── Short-task path: timeout <= 5 → synchronous run-to-completion. ──
@@ -134,7 +143,7 @@ export function createBackgroundBashToolDefinition(
 			command,
 			cwd,
 			undefined,
-			{ intervalSeconds, deadlineMs },
+			{ intervalSeconds, deadlineMs, toolCallId, description },
 		)
 
 		// Turn abort (ESC) must kill the process tree, same as the sync path.
@@ -142,30 +151,56 @@ export function createBackgroundBashToolDefinition(
 		if (signal?.aborted) onAbort()
 		else signal?.addEventListener("abort", onAbort, { once: true })
 
-		// Emit an initial partial (empty) so the TUI shows the call as running.
-		onUpdate?.({
-			content: [{ type: "text", text: "" }],
-			details: { handle, exited: false, exitCode: null, checkin: true },
-		})
-
 		// Resolve at the first checkin OR process exit, whichever is first.
 		let snapshot: TailSnapshot
 		try {
-			snapshot = await awaitCheckin(registry, handle, intervalSeconds)
+			snapshot = await awaitCheckin(
+				registry,
+				handle,
+				intervalSeconds,
+				onUpdate
+					? (display) =>
+							onUpdate({
+								content: [{ type: "text", text: display.output }],
+								details: {
+									handle,
+									exited: display.state !== "running",
+									exitCode: display.exitCode,
+									checkin: display.state === "running",
+									reason: display.reason,
+									display,
+								},
+							})
+					: undefined,
+			)
 		} finally {
 			signal?.removeEventListener("abort", onAbort)
 		}
 		const exited = snapshot.state !== "running"
+		const display = registry.displaySnapshot(handle)
 
 		// If the process exited between spawn and the checkin, clean up the entry.
 		if (exited) {
 			const final = registry.finalSnapshot(handle)
-			await registry.remove(handle).catch(() => {})
 
 			// Mirror upstream's error behavior: throw on non-zero exit or deadline.
 			// The wording matters — bash-timeout-guidance.ts matches on
 			// /Command timed out after (\d+) seconds/.
 			const fullOutput = final?.content ?? snapshot.text
+			onUpdate?.({
+				content: [{ type: "text", text: fullOutput }],
+				details: {
+					handle,
+					exited: true,
+					exitCode: snapshot.exitCode,
+					reason: snapshot.reason,
+					display,
+					...(final?.truncation?.truncated
+						? { truncation: final.truncation, fullOutputPath: final.fullOutputPath }
+						: {}),
+				},
+			})
+			await registry.remove(handle).catch(() => {})
 			throwIfTerminal(snapshot, fullOutput, deadlineSeconds)
 
 			// Success exit — return plain output with truncation details if present.
@@ -180,7 +215,13 @@ export function createBackgroundBashToolDefinition(
 								: fullOutput,
 					},
 				],
-				details: truncated ? { truncation: final?.truncation, fullOutputPath: final?.fullOutputPath } : undefined,
+				details: {
+					exited: true,
+					exitCode: snapshot.exitCode,
+					reason: snapshot.reason,
+					display,
+					...(truncated ? { truncation: final?.truncation, fullOutputPath: final?.fullOutputPath } : {}),
+				},
 			}
 		}
 
@@ -195,6 +236,7 @@ export function createBackgroundBashToolDefinition(
 				exitCode: null,
 				checkin: true,
 				reason: null,
+				display,
 			},
 		}
 	}
@@ -211,12 +253,8 @@ export function createBackgroundBashToolDefinition(
 			| undefined,
 		executionMode: wrapped.executionMode,
 		execute: execute as ToolDefinition<typeof backgroundBashSchema, BackgroundBashToolDetails | undefined>["execute"],
-		renderCall: wrapped.renderCall as
-			| ToolDefinition<typeof backgroundBashSchema, BackgroundBashToolDetails | undefined>["renderCall"]
-			| undefined,
-		renderResult: wrapped.renderResult as
-			| ToolDefinition<typeof backgroundBashSchema, BackgroundBashToolDetails | undefined>["renderResult"]
-			| undefined,
+		renderCall: renderBashCall,
+		renderResult: renderBashResult,
 	}
 }
 
