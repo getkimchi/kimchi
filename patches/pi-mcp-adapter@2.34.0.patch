@@ -33,6 +33,10 @@
 #   - proxy-modes: auth-start registers the background auth watcher for
 #     remote https redirects when the loopback capture is armed, and the
 #     auth-start instructions reflect automatic completion.
+#   - mcp-callback-server: unknown-state callbacks (already consumed,
+#     superseded, or expired flows, e.g. the losing side of the
+#     paste/callback race) return a neutral "Authorization No Longer Active"
+#     page instead of the CSRF error page; HTTP 400 rejection is unchanged.
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -456,6 +460,56 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..81f526d31b4094a46696842080b0a2a2
          ? waitForManualCompletionCancellation(pendingAuth.manualCompletionController!.signal)
          : waitForCallback(oauthState)
        void callbackPromise.catch(() => {})
+diff --git a/mcp-callback-server.ts b/mcp-callback-server.ts
+index 91b73cf0ebffa07cb7ea9a3fcd08e7c0fb3ec5c6..99e5e7bb0d8d16224de501d242048ceb085547ec 100644
+--- a/mcp-callback-server.ts
++++ b/mcp-callback-server.ts
+@@ -162,6 +162,23 @@ function htmlError(error: string): string {
+   })
+ }
+ 
++// Stale-callback page; part of the loopback-capture patch (getkimchi/kimchi#1284).
++// With an always-on loopback listener, late bounces land here routinely: the
++// flow already completed (losing side of the paste/callback race), was
++// superseded by a newer attempt, or expired. Rejecting the code with HTTP 400
++// stays; only the page copy changes, since the CSRF framing alarms users for a
++// benign, expected landing. Fold into the same upstream proposal.
++function htmlStaleAuth(): string {
++  const app = escapeHtml(getAppName())
++  return page({
++    title: `${app} — Authorization No Longer Active`,
++    heading: "Authorization No Longer Active",
++    body: `This authorization flow already completed or was superseded by a newer attempt. If <span class="app">${app}</span> shows the server as authenticated, you can close this tab; otherwise start authorization again from <span class="app">${app}</span>.`,
++    icon: CHECK_ICON,
++    tone: "ok",
++  })
++}
++
+ /** Result of a successful OAuth callback */
+ export interface OAuthCallbackResult {
+   code: string
+@@ -233,9 +250,8 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+   // Handle OAuth errors only for a state that belongs to an active flow.
+   if (error) {
+     if (!pending && !isReserved) {
+-      const errorMsg = "Invalid or expired state parameter - potential CSRF attack"
+       res.writeHead(400, { "Content-Type": "text/html" })
+-      res.end(htmlError(errorMsg))
++      res.end(htmlStaleAuth())
+       return
+     }
+ 
+@@ -255,9 +271,8 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+ 
+   // Validate state parameter
+   if (!pending && !isReserved) {
+-    const errorMsg = "Invalid or expired state parameter - potential CSRF attack"
+     res.writeHead(400, { "Content-Type": "text/html" })
+-    res.end(htmlError(errorMsg))
++    res.end(htmlStaleAuth())
+     return
+   }
+ 
 diff --git a/metadata-cache.ts b/metadata-cache.ts
 index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef31282e511d4f 100644
 --- a/metadata-cache.ts
