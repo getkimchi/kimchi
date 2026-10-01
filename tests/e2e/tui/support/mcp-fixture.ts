@@ -41,7 +41,7 @@ interface McpFixtureEventDetails {
 	oauth_authorized: { redirectUri: string; state: string; codeChallengeMethod: string }
 	oauth_token_issued: { grantType: string; expiresIn: number; pkceVerified?: boolean }
 	oauth_token_rejected: { grantType?: string }
-	oauth_browser_opened: Record<string, never>
+	oauth_browser_opened: { target: string }
 	oauth_browser_completed: {
 		status: number
 		hasKimchiBranding: boolean
@@ -582,7 +582,7 @@ import { appendFileSync } from "node:fs"
 const eventPath = ${JSON.stringify(eventPath)}
 const target = process.argv.find((argument) => argument.startsWith("http://") || argument.startsWith("https://"))
 if (!target) throw new Error("OAuth browser driver did not receive an HTTP URL")
-appendFileSync(eventPath, JSON.stringify({ type: "oauth_browser_opened", at: new Date().toISOString(), pid: process.pid, scenario: "oauth" }) + "\\n")
+appendFileSync(eventPath, JSON.stringify({ type: "oauth_browser_opened", at: new Date().toISOString(), pid: process.pid, scenario: "oauth", target }) + "\\n")
 const response = await fetch(target, { redirect: "follow" })
 const body = await Promise.race([
   response.text().catch(() => ""),

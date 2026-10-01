@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
@@ -374,6 +374,117 @@ test("refreshes an expired MCP OAuth token after a real Kimchi process restart",
 				where: { name: "echo", arguments: { message: "after-oauth-refresh" } },
 			})
 			expect(toolResultText(fixture.fake.requests, afterRestart)).toContain("fixture echo: after-oauth-refresh")
+		},
+	)
+})
+
+test("replays the success page for a completed OAuth state and serves an error page for unknown states", async ({
+	terminal,
+}) => {
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-completed-state-replay",
+			mcp: { transport: "oauth" },
+			responses: [],
+			seedHome(homeDir) {
+				const agentDir = join(homeDir, ".config", "kimchi", "harness")
+
+				// Replace the auto-completing browser driver with a record-only
+				// variant: it logs each opened authorize URL and never fetches it,
+				// so the second flow stays pending and keeps the loopback listener
+				// alive.
+				const browserPath = join(agentDir, "mcp-oauth-browser", "open")
+				const eventPath = join(agentDir, "mcp-fixture-fixture.jsonl")
+				writeFileSync(
+					browserPath,
+					`#!/usr/bin/env node
+import { appendFileSync } from "node:fs"
+const eventPath = ${JSON.stringify(eventPath)}
+const target = process.argv.find((argument) => argument.startsWith("http://") || argument.startsWith("https://"))
+if (!target) throw new Error("OAuth browser driver did not receive an HTTP URL")
+appendFileSync(eventPath, JSON.stringify({ type: "oauth_browser_opened", at: new Date().toISOString(), pid: process.pid, scenario: "oauth", target }) + "\\n")
+`,
+					"utf8",
+				)
+				chmodSync(browserPath, 0o755)
+			},
+		},
+		async (fixture, trace) => {
+			// The TUI serializes auth flows: while flow A is pending, a second
+			// /mcp-auth never opens a browser. So record flow A's authorize URL,
+			// complete flow A first, and only then start flow B.
+			terminal.submit("/mcp-auth fixture")
+			const openedA = await fixture.mcp.waitForEvent("oauth_browser_opened", {
+				description: "recorded browser open for the first OAuth flow",
+			})
+
+			// Complete flow A the way the real driver would: follow the authorize
+			// redirect chain until it lands on the loopback callback.
+			const completed = await fetch(openedA.target, { redirect: "follow" })
+			const completedHtml = await completed.text()
+			expect(completed.status).toBe(200)
+			expect(completedHtml).toContain("<title>MCP Authorization Successful</title>")
+			expect(completedHtml).toContain("You can close this window and return to Kimchi.")
+			await fixture.mcp.waitForEvent("oauth_token_issued", {
+				where: { grantType: "authorization_code", pkceVerified: true },
+				description: "token exchange for the manually completed flow",
+			})
+			const callbackUrl = completed.url
+			trace.step("manually completed the first flow through its loopback callback")
+
+			// Clear flow A's stored credentials: with credentials present, the next
+			// /mcp-auth takes the refresh-token path and never opens a browser.
+			// Logging out forces flow B into a fresh authorization-code flow.
+			terminal.submit("/mcp logout fixture")
+			await waitForText(terminal, 'OAuth credentials cleared for "fixture"', {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+			trace.step("logged out of the fixture so flow B starts a fresh authorization-code flow")
+
+			// Start flow B now that flow A is done and logged out. Both flows run
+			// in the TUI process, so flow B's pending state restarts the loopback
+			// listener in the same module instance that holds flow A's completion
+			// tombstone.
+			terminal.submit("/mcp-auth fixture")
+			const openedB = await fixture.mcp.waitForEvent("oauth_browser_opened", {
+				predicate: (event) => event.target !== openedA.target,
+				description: "recorded browser open for the second OAuth flow",
+			})
+			trace.step("second OAuth flow recorded its authorize URL without auto-completing")
+
+			// The listener binds an ephemeral port per flow: after flow A completed
+			// and its listener closed, flow B's start bound a NEW port, so A's
+			// recorded callback URL points at a dead port. Tombstones are
+			// process-global though — any live listener serves them — so replay
+			// A's state against the CURRENTLY live listener (flow B's, whose
+			// authorize URL embeds its redirect_uri).
+			const stateA = new URL(callbackUrl).searchParams.get("state")
+			if (!stateA) throw new Error("completed callback URL is missing its state parameter")
+			const bRedirectUri = new URL(openedB.target).searchParams.get("redirect_uri")
+			if (!bRedirectUri) throw new Error("second authorize URL is missing its redirect_uri parameter")
+			const listenerOrigin = new URL(bRedirectUri).origin
+
+			// Replaying a completed state must replay the success page:
+			// the state carries a completion tombstone, and flow B still being
+			// pending keeps the loopback listener alive.
+			const replay = await fetch(`${listenerOrigin}/callback?code=replayed&state=${encodeURIComponent(stateA)}`)
+			const replayHtml = await replay.text()
+			expect(replay.status).toBe(200)
+			expect(replayHtml).toContain("<title>MCP Authorization Successful</title>")
+			expect(replayHtml).toContain("You can close this window and return to Kimchi.")
+			trace.step("replayed callback URL returned the success page for the completed state")
+
+			// A state belonging to no flow and carrying no tombstone gets the
+			// neutral branded error page with its 400 status preserved.
+			const unknown = await fetch(`${listenerOrigin}/callback?code=x&state=bogus-unknown`)
+			const unknownHtml = await unknown.text()
+			expect(unknown.status).toBe(400)
+			expect(unknownHtml).toContain("MCP Authorization No Longer Active")
+			expect(unknownHtml).toContain("This authorization link is no longer valid.")
+			expect(unknownHtml).not.toContain("CSRF")
+			expect(unknownHtml).not.toContain("MCP Authorization Successful")
+			trace.step("unknown OAuth state received the branded inactive error page")
 		},
 	)
 })
