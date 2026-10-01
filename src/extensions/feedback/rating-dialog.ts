@@ -1,7 +1,7 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
 import { Container, Key, matchesKey } from "@earendil-works/pi-tui"
+import { createModalChrome } from "../../components/modal-chrome.js"
 import type { FeedbackSentiment } from "./dialog.js"
-import { createDialogChrome } from "./dialog-chrome.js"
 
 /**
  * Sentiment picker shown on Ctrl+R in terminals without the Kitty keyboard
@@ -42,7 +42,7 @@ export class RatingSelectorComponent extends Container {
 	}
 
 	override render(width: number): string[] {
-		const { emptyRow, contentRow, topBorder, bottomBorder } = createDialogChrome(this.theme, width)
+		const { emptyRow, contentRow, topBorder, bottomBorder } = createModalChrome(this.theme, width)
 
 		const promptPlain = "How would you rate this response?"
 		const hintPlain = `[Enter] Continue  [↑↓] Select  [Esc] Cancel`
