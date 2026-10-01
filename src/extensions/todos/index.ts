@@ -1,8 +1,12 @@
 import type { ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { FERMENT_V2_CUSTOM_ENTRY_TYPE } from "../ferment-v2/constants.js"
+import { restoreFermentV2 } from "../ferment-v2/reducer.js"
+import { FERMENT_V2_STATUS } from "../ferment-v2/types.js"
+import { isAwaitingUserAnswer } from "../orchestration/continuation-nudge.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { registerTodosCommand } from "./command.js"
-import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
+import { TODO_CLOSURE_CUSTOM_TYPE, TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import { registerTodoStatePersistence } from "./context-state.js"
 import { registerFermentTodoPromptBlock } from "./ferment-prompt-block.js"
 import { registerTodoPromptBlock } from "./prompt-block.js"
@@ -29,6 +33,7 @@ import {
 	subscribeTodoStore,
 } from "./store.js"
 import { registerTodosTool } from "./tool.js"
+import { TODO_STATUS } from "./types.js"
 import {
 	disposeTodoWidget,
 	ensureTodoWidget,
@@ -123,6 +128,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 		restoreTodoStoreFromSessionEntries(ctx.sessionManager)
 		resetToolCallsSinceTodoWrite(sessionId)
+		stalenessTracker.reset(sessionId)
 		syncTodoWidget(ctx)
 	}
 
@@ -170,7 +176,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 		// Only track staleness when there are existing todos to keep in sync.
 		const scope = resolveTodoScope()
-		if (getTodosForScope(scope, sessionId).length === 0) return
+		if (!getTodosForScope(scope, sessionId).some((todo) => todo.status !== TODO_STATUS.COMPLETED)) return
 
 		bumpToolCallsSinceTodoWrite(sessionId)
 
@@ -190,14 +196,51 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.on("turn_end", (event, ctx) => {
-		// Sync the widget on terminal turns but do NOT force reconciliation.
-		// The model updates todos on its own schedule guided by the system
-		// prompt and the one-shot staleness steers.
 		const message = event.message
 		if (!isRecord(message) || message.role !== "assistant") return
 		if ((event.toolResults as readonly unknown[]).length > 0 || ctx.hasPendingMessages?.()) return
 		if (message.stopReason === "aborted" || message.stopReason === "error") return
 		syncTodoWidget(ctx)
+		if (message.stopReason !== "stop" || isAwaitingUserAnswer(message)) return
+		const scope = resolveTodoScope()
+		if (scope.kind !== "global") return
+		const todos = getTodosForScope(scope, ctx.sessionManager.getSessionId()).filter(
+			(todo) => todo.status === TODO_STATUS.PENDING || todo.status === TODO_STATUS.IN_PROGRESS,
+		)
+		if (todos.length === 0 || !pi.getActiveTools().some(isTodoWriteToolName)) return
+		const branch = ctx.sessionManager.getBranch()
+		const request = branch.findLastIndex((entry) => entry.type === "message" && entry.message.role === "user")
+		// Persisted history bounds cleanup per user request, even after todo writes or replay.
+		if (
+			request < 0 ||
+			branch
+				.slice(request + 1)
+				.some((entry) => entry.type === "custom_message" && entry.customType === TODO_CLOSURE_CUSTOM_TYPE)
+		)
+			return
+		if (
+			!branch
+				.slice(request + 1)
+				.some(
+					(entry) =>
+						entry.type === "message" &&
+						entry.message.role === "toolResult" &&
+						!isTodoWriteToolName(entry.message.toolName),
+				)
+		)
+			return
+		const ferment = restoreFermentV2(
+			branch.flatMap((entry) =>
+				entry.type === "custom" && entry.customType === FERMENT_V2_CUSTOM_ENTRY_TYPE ? [entry.data] : [],
+			),
+		)
+		if (ferment && ferment.status !== FERMENT_V2_STATUS.COMPLETE) return
+		sendHiddenSteer(
+			pi,
+			TODO_CLOSURE_CUSTOM_TYPE,
+			`The turn ended with unfinished todos. Check bookkeeping against the work already done in this conversation. Use only todo tools if corrections are needed: mark fully finished work completed and remove obsolete items with update_todos. Preserve deferred, blocked, uncertain, and awaiting-approval work; do not claim an abandoned approach succeeded. Do not perform task work, request approval, or repeat the final answer. If nothing needs correcting, stop.\n\n${JSON.stringify(todos)}`,
+			{ reason: "terminal-turn-closure" },
+		)
 	})
 
 	pi.on("session_shutdown", (_event, ctx) => {
