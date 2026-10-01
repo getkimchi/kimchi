@@ -29,15 +29,11 @@ const TOOL_KINDS: Record<string, ToolKind> = {
 	Agent: "think",
 }
 
-// Title extraction is per-tool, not arg-shape detection. The previous version
-// treated any tool with a `path`/`file_path`/`command`/`pattern` argument as if
-// that argument were the title, so non-file tools (lsp_*, debug_*, daemon, …)
-// showed a raw argument in place of the tool name. Argument-derived titles are
-// reserved for tools with a meaningful ACP kind — kind "other" tools always
-// carry the tool name as title so the call stays identifiable.
-// Legacy alias first: providers historically emit `file_path` (the original
-// pre-refactor precedence), schema-conformant `path` as fallback.
-const TITLE_ARGS: Record<string, string[]> = {
+// Which argument becomes the title, per kind-mapped tool. Keyed on
+// TOOL_KINDS so a kind "other" tool can never get an argument-derived
+// title — those always title with the tool name. `file_path` first is
+// historical precedence; `path` is the schema-conformant alias.
+const TITLE_ARGS: Record<keyof typeof TOOL_KINDS, string[]> = {
 	bash: ["command"],
 	powershell: ["command"],
 	read: ["file_path", "path"],
@@ -63,14 +59,11 @@ export function describeToolCall(
 	// doesn't blow up client UIs (locations[].path keeps the full value for
 	// clients that want it).
 	const rawTitle = targeted ?? toolName
-	// Unlike the title, ACP `locations` stays generic (pre-PR behavior): any
-	// tool carrying a path-shaped argument (lsp_*, debug_*, MCP, …) genuinely
-	// relates to that file, and clients render a file chip from it.
-	const locationPath = asString(a.file_path) || asString(a.path)
+	const path = asString(a.file_path) || asString(a.path)
 	return {
 		title: truncate(rawTitle, 80),
 		kind: TOOL_KINDS[toolName] ?? "other",
-		locations: locationPath ? [{ path: locationPath }] : [],
+		locations: path ? [{ path }] : [],
 	}
 }
 
