@@ -16,6 +16,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync
 import { platform } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { copyMacNotifier } from "./copy-notifier.js"
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 const piAgentDist = join(projectRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist")
@@ -29,6 +30,9 @@ const exportHtmlSkipSuffixes = [".d.ts", ".d.ts.map", ".js.map"]
 const exportHtmlSrc = join(piAgentDist, "core", "export-html")
 
 const isDev = process.argv.includes("--dev")
+if ((process.env.KIMCHI_BUILD_TARGET_OS || platform()) === "darwin") {
+	await copyMacNotifier(projectRoot, isDev ? projectRoot : join(projectRoot, "dist/share/kimchi"))
+}
 const themeDest = isDev
 	? join(projectRoot, "src", "modes", "interactive", "theme")
 	: join(projectRoot, "dist", "share", "kimchi", "theme")

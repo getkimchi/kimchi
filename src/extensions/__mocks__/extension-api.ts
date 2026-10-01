@@ -85,6 +85,7 @@ export function createExtensionApi(): {
 			registerShortcut,
 			registerMessageRenderer,
 			getCommands,
+			getSessionName: vi.fn<ExtensionAPI["getSessionName"]>(() => undefined),
 			events,
 		} as unknown as ExtensionAPI,
 		getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R> {

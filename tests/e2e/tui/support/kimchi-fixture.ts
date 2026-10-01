@@ -195,7 +195,7 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 		// (context, agents, phase, usage) and change the terminal layout for every test.
 		writeFileSync(
 			join(agentDir, "settings.json"),
-			JSON.stringify({ statusLine: { pinned: [] }, hideThinkingBlock: true }, null, "\t"),
+			JSON.stringify({ statusLine: { pinned: [] }, hideThinkingBlock: true, nativeNotifications: false }, null, "\t"),
 			"utf-8",
 		)
 
