@@ -628,5 +628,55 @@ describe("SkillManager", () => {
 			expect(edit.error).toMatch(/read-only/i)
 			expect(existsSync(join(tmpDir, "SKILL.md"))).toBe(false)
 		})
+
+		it("refuses file_path on a loose single-file skill so sibling skills stay unreachable", async () => {
+			// A loose .md advertised with a shared skills root as baseDir anchors
+			// skillDir at that root; make the sibling one that is hidden from the
+			// model (disableModelInvocation) to prove the file_path escape cannot
+			// bypass the name-based visibility exclusion either.
+			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
+			try {
+				const siblingDir = join(discoveredDir, "hidden-sibling")
+				mkdirSync(siblingDir)
+				writeFileSync(join(siblingDir, "SKILL.md"), "---\ndescription: hidden\n---\nUser-only instructions.")
+				const loosePath = join(discoveredDir, "loose-skill.md")
+				writeFileSync(loosePath, "---\nname: loose-skill\ndescription: single file\n---\nLoose body.")
+				mgr.setDiscoveredSkillsProvider(() => [
+					discoveredSkill({ name: "loose-skill", description: "single file", filePath: loosePath }),
+					discoveredSkill({
+						name: "hidden-sibling",
+						description: "hidden",
+						filePath: join(siblingDir, "SKILL.md"),
+						disableModelInvocation: true,
+					}),
+				])
+				const result = await mgr.view("loose-skill", "hidden-sibling/SKILL.md")
+				expect(result.success).toBe(false)
+				expect(result.error).toMatch(/single-file skill/)
+				expect(result.content).toBeUndefined()
+			} finally {
+				rmSync(discoveredDir, { recursive: true, force: true })
+			}
+		})
+
+		it("does not enumerate linked files under a loose skill's shared root", async () => {
+			// skillDir resolves to the shared root, so scanning the conventional
+			// subdirs would leak sibling content paths into linked_files.
+			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
+			try {
+				mkdirSync(join(discoveredDir, "references"))
+				writeFileSync(join(discoveredDir, "references", "sibling-notes.md"), "Not part of the loose skill.")
+				const loosePath = join(discoveredDir, "loose-skill.md")
+				writeFileSync(loosePath, "---\nname: loose-skill\ndescription: single file\n---\nLoose body.")
+				mgr.setDiscoveredSkillsProvider(() => [
+					discoveredSkill({ name: "loose-skill", description: "single file", filePath: loosePath }),
+				])
+				const result = await mgr.view("loose-skill")
+				expect(result.success).toBe(true)
+				expect(result.linked_files).toBeUndefined()
+			} finally {
+				rmSync(discoveredDir, { recursive: true, force: true })
+			}
+		})
 	})
 })

@@ -149,6 +149,10 @@ interface SkillLocation {
 	category: string
 	origin: SkillOrigin
 	readOnly: boolean
+	/** True for loose single-.md discovered skills: the entry file IS the
+	 *  whole skill and skillDir may be a shared multi-skill root, so view()
+	 *  must reject file_path and skip linked-file enumeration. */
+	singleFile?: boolean
 }
 
 export interface SkillManagerOptions {
@@ -278,11 +282,17 @@ export class SkillManager {
 			// unrelated, anchor at filePath's own parent so the entry stays reachable.
 			const rel = relative(hit.baseDir, hit.filePath)
 			const escapes = rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)
+			// Loose skills (any entry not named SKILL.md) are a single file:
+			// their anchor dir can be a shared skills root, so a file_path read
+			// anchored there would resolve sibling skills' files — including
+			// ones excluded above via disableModelInvocation.
+			const singleFile = basename(hit.filePath) !== "SKILL.md"
 			return {
 				skillDir: escapes ? dirname(hit.filePath) : hit.baseDir,
 				entryFile: escapes ? basename(hit.filePath) : rel,
 				category: "",
 				origin: "discovered",
+				singleFile,
 				// Discovered skills are strictly read-only: they live outside the
 				// manager's writable roots (anything under them is already covered
 				// by the tiers above), and a loose .md sitting directly on a skills
@@ -579,6 +589,13 @@ export class SkillManager {
 			return { success: false, error: `Skill '${name}' not found.` }
 		}
 
+		// Loose single-.md skills have no linked files, and their skillDir can be
+		// a shared skills root — reject file_path outright so the traversal guard
+		// below can never resolve a sibling skill's files through it.
+		if (filePath && loc.singleFile) {
+			return { success: false, error: `Skill '${name}' is a single-file skill with no linked files; omit file_path.` }
+		}
+
 		const targetPath = filePath ? join(loc.skillDir, filePath) : join(loc.skillDir, loc.entryFile)
 
 		// Path traversal guard
@@ -600,12 +617,16 @@ export class SkillManager {
 			return { success: true, message: `Loaded '${filePath}' from '${name}'.`, content }
 		}
 
-		// Collect linked files by subdirectory
+		// Collect linked files by subdirectory. Skipped for loose single-file
+		// skills: they have no linked files, and scanning the conventional
+		// subdirs under a shared skills root would leak sibling content paths.
 		const linked_files: Record<string, string[]> = {}
-		for (const subdir of ["references", "templates", "scripts", "assets"]) {
-			const files: string[] = []
-			await this._collectFiles(join(loc.skillDir, subdir), subdir, files)
-			if (files.length > 0) linked_files[subdir] = files
+		if (!loc.singleFile) {
+			for (const subdir of ["references", "templates", "scripts", "assets"]) {
+				const files: string[] = []
+				await this._collectFiles(join(loc.skillDir, subdir), subdir, files)
+				if (files.length > 0) linked_files[subdir] = files
+			}
 		}
 
 		return {
