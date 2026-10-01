@@ -42,11 +42,10 @@ const PROPOSE_SCOPING_PAYLOAD = JSON.stringify({
 
 /** Shared boilerplate to drive a ferment from cold-start through the plan-review confirm.
  *
- * Turn sequence (with tool suppression):
- *   Turn 1: propose_ferment_scoping → sets pending plan review
- *   Turn 2: text-only (tools suppressed by hasPendingPlanReview) → agent_end fires
- *           → review dialog appears → user confirms → tools restored
- *   Turn 3: ask_user / confirm_ferment_completion_criteria (the stream we wait for)
+ * Turn sequence (with terminate:true on propose_ferment_scoping):
+ *   Turn 1: propose_ferment_scoping → sets pending plan review + terminate:true
+ *           → review dialog appears via onPlanReviewRequest setTimeout(0)
+ *   Turn 2: ask_user / confirm_ferment_completion_criteria (tools restored after confirm)
  *
  * @param nextStream the post-confirmation stream text to wait for — differs per test
  */
@@ -73,13 +72,9 @@ async function startFerment(
 	await waitForText(terminal, "I'll outline the scope.", { timeoutMs: STREAM_TIMEOUT_MS })
 	trace.step("turn 1 stream received — propose_ferment_scoping completed")
 
-	// Turn 2 is the suppression turn: tools are suppressed (pi.setActiveTools([]))
-	// because a pending plan review exists. The model produces a text-only response,
-	// firing agent_end → the review dialog appears.
-	// We don't wait for the Turn 2 stream text — go straight to the dialog.
-
-	// Wait for the plan-review dialog to appear (triggered by agent_end after
-	// the suppression turn).
+	// The review dialog appears directly after propose_ferment_scoping terminates
+	// the turn (the onPlanReviewRequest listener schedules it via setTimeout(0)).
+	// No suppression turn is needed — the dialog appears without agent_end.
 	await waitForText(terminal, "Proceed with this plan?", { timeoutMs: STREAM_TIMEOUT_MS })
 	await waitForText(terminal, "Start execution", { timeoutMs: INPUT_TIMEOUT_MS })
 	trace.step("plan-review dialog visible")
@@ -88,7 +83,7 @@ async function startFerment(
 	terminal.submit("")
 	trace.step("confirmed 'Start execution' (Enter on default option)")
 
-	// Wait for the model's turn 3 stream — tools are restored after confirmation,
+	// Wait for the model's turn 2 stream — tools are restored after confirmation,
 	// so ask_user / confirm_ferment_completion_criteria is now available.
 	await waitForText(terminal, nextStream, { timeoutMs: STREAM_TIMEOUT_MS })
 	trace.step(`post-confirmation stream received: ${nextStream}`)
@@ -102,7 +97,8 @@ test("ask_user renders a single-choice question and accepts selection", async ({
 			gitInit: true,
 			models: [NO_COMPACTION_MODEL],
 			responses: [
-				// Turn 1: propose scoping so the ferment starts in planning phase.
+				// Turn 1: propose scoping — terminate:true ends the turn and the
+				// review dialog appears via the onPlanReviewRequest listener.
 				{
 					stream: ["I'll outline the scope."],
 					toolCalls: [
@@ -114,11 +110,7 @@ test("ask_user renders a single-choice question and accepts selection", async ({
 						},
 					],
 				},
-				// Turn 2 (suppression): tools are suppressed after propose_ferment_scoping
-				// sets a pending plan review. The model produces a text-only response,
-				// ending the turn so agent_end fires and the review dialog appears.
-				{ stream: ["Plan ready for review."] },
-				// Turn 3: ask the user a single-choice question (tools restored after confirm).
+				// Turn 2: ask the user a single-choice question (tools restored after confirm).
 				{
 					stream: ["Let me ask the user."],
 					toolCalls: [
@@ -142,7 +134,7 @@ test("ask_user renders a single-choice question and accepts selection", async ({
 						},
 					],
 				},
-				// Turn 4: stream a follow-up after the user picks Vanilla.
+				// Turn 3: stream a follow-up after the user picks Vanilla.
 				{ stream: ["Thanks! I'll use vanilla."] },
 			],
 		},
@@ -185,7 +177,8 @@ test("confirm_ferment_completion_criteria shows 'Type your own answer' label", a
 			gitInit: true,
 			models: [NO_COMPACTION_MODEL],
 			responses: [
-				// Turn 1: propose scoping.
+				// Turn 1: propose scoping — terminate:true ends the turn and the
+				// review dialog appears via the onPlanReviewRequest listener.
 				{
 					stream: ["I'll outline the scope."],
 					toolCalls: [
@@ -197,11 +190,7 @@ test("confirm_ferment_completion_criteria shows 'Type your own answer' label", a
 						},
 					],
 				},
-				// Turn 2 (suppression): tools are suppressed after propose_ferment_scoping
-				// sets a pending plan review. The model produces a text-only response,
-				// ending the turn so agent_end fires and the review dialog appears.
-				{ stream: ["Plan ready for review."] },
-				// Turn 3: confirm completion criteria (tools restored after confirm).
+				// Turn 2: confirm completion criteria (tools restored after confirm).
 				{
 					stream: ["Let me confirm the criteria."],
 					toolCalls: [
@@ -216,7 +205,7 @@ test("confirm_ferment_completion_criteria shows 'Type your own answer' label", a
 						},
 					],
 				},
-				// Turn 4: stream after the user confirms.
+				// Turn 3: stream after the user confirms.
 				{ stream: ["Great, criteria confirmed."] },
 			],
 		},
@@ -248,7 +237,8 @@ test("ask_user with a confirm question renders Yes/No options", async ({ termina
 			gitInit: true,
 			models: [NO_COMPACTION_MODEL],
 			responses: [
-				// Turn 1: propose scoping.
+				// Turn 1: propose scoping — terminate:true ends the turn and the
+				// review dialog appears via the onPlanReviewRequest listener.
 				{
 					stream: ["I'll outline the scope."],
 					toolCalls: [
@@ -260,11 +250,7 @@ test("ask_user with a confirm question renders Yes/No options", async ({ termina
 						},
 					],
 				},
-				// Turn 2 (suppression): tools are suppressed after propose_ferment_scoping
-				// sets a pending plan review. The model produces a text-only response,
-				// ending the turn so agent_end fires and the review dialog appears.
-				{ stream: ["Plan ready for review."] },
-				// Turn 3: ask_user with a confirm question (tools restored after confirm).
+				// Turn 2: ask_user with a confirm question (tools restored after confirm).
 				{
 					stream: ["Let me confirm."],
 					toolCalls: [
@@ -276,7 +262,7 @@ test("ask_user with a confirm question renders Yes/No options", async ({ termina
 										{
 											id: "proceed",
 											type: "confirm",
-											prompt: "Should I proceed?",
+											prompt: "Should we proceed?",
 										},
 									],
 								}),
@@ -284,25 +270,25 @@ test("ask_user with a confirm question renders Yes/No options", async ({ termina
 						},
 					],
 				},
-				// Turn 4: stream after the user confirms.
-				{ stream: ["Proceeding."] },
+				// Turn 3: stream after the user confirms.
+				{ stream: ["Proceeding with the plan."] },
 			],
 		},
 		async (_fixture, trace) => {
 			await startFerment(terminal, trace, "Let me confirm.")
 
-			// Stage 2: confirm question text + Yes/No options visible.
-			await waitForText(terminal, "Should I proceed?", { timeoutMs: STREAM_TIMEOUT_MS })
+			// Stage 2: the confirm question renders Yes/No options.
+			await waitForText(terminal, "Should we proceed?", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForText(terminal, "Yes", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "No", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("ask_user confirm prompt visible with Yes/No")
+			trace.step("confirm prompt visible with Yes/No options")
 
 			// Stage 3: press Enter to select "Yes" (first option).
 			terminal.submit("")
-			trace.step("selected Yes")
+			trace.step("selected 'Yes'")
 
 			// Stage 4: model's next stream appears.
-			await waitForText(terminal, "Proceeding", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "Proceeding with the plan", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("model streamed follow-up after confirm")
 		},
 	)

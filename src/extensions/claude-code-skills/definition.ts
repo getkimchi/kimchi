@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os"
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { z } from "zod"
+import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 
 export const CLAUDE_CODE_SKILLS_RESOURCE_ID = "extensions.claude-code-skills"
 
@@ -29,7 +30,9 @@ export function discoverClaudeCodeSkillDirs(cwd = process.cwd()): string[] {
 
 	const homeDir = homedir()
 	const dirs = [join(homeDir, ".claude", "skills")]
-	if (resolve(projectDir) !== resolve(homeDir)) {
+	// The project's .claude/skills is gated on project trust: an untrusted
+	// repo must not contribute skills to the system prompt.
+	if (resolve(projectDir) !== resolve(homeDir) && isProjectScopeAllowed(cwd)) {
 		dirs.push(join(projectDir, ".claude", "skills"))
 	}
 
@@ -140,6 +143,11 @@ function materializeClaudeCodeSkillDir(
 function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
 	const home = resolve(homedir())
 	const projectDir = resolve(cwd)
+	// The cwd expansion of a relative configured path is project-scoped:
+	// while the project is untrusted, a repo must not contribute skills
+	// through the user's configured (relative) skill paths — mirroring the
+	// DEFAULT_CONFIG_PATHS gating in shared/skill-discovery.
+	const projectScopeAllowed = isProjectScopeAllowed(cwd)
 	const expanded: string[] = []
 	for (const path of paths) {
 		if (isAbsolute(path)) {
@@ -150,7 +158,7 @@ function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
 			const fromHome = resolve(home, path)
 			const fromCwd = resolve(projectDir, path)
 			if (isSameOrDescendant(fromHome, home)) expanded.push(fromHome)
-			if (isSameOrDescendant(fromCwd, projectDir)) expanded.push(fromCwd)
+			if (projectScopeAllowed && isSameOrDescendant(fromCwd, projectDir)) expanded.push(fromCwd)
 		}
 	}
 	return expanded

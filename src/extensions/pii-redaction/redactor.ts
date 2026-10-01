@@ -72,6 +72,16 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	// OAuth tokens (Google ya29.*, Azure)
 	// biome-ignore lint/complexity/noUselessEscapeInRegex: -
 	{ name: "OAUTH_TOKEN", regex: /ya29\.[A-Za-z0-9_\-]{16,}/g },
+	// OpenAI-style API keys (sk-, sk-proj-, sk-ant-, sk-conv-) — the bulkhead
+	// secret engine's key guard misses the newer prefixed formats (verified:
+	// sk-proj-… passes through untouched, and exported such a key once).
+	{ name: "OPENAI_API_KEY", regex: /\bsk-[A-Za-z0-9_-]{10,}\b/g },
+	// GitHub tokens outside a KEY=value assignment — bulkhead only catches
+	// them behind "TOKEN=". Covers personal/oauth/user-to-server/
+	// server-to-server/refresh prefixes (ghp_, gho_, ghu_, ghs_, ghr_) and
+	// fine-grained PATs.
+	{ name: "GITHUB_TOKEN", regex: /\bgh[pousr]_[A-Za-z0-9]{10,}\b/g },
+	{ name: "GITHUB_TOKEN", regex: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g },
 	// Local auth/config paths — redact user home directory paths that reveal
 	// the OS user and expose config/credential file locations.
 	{
@@ -158,11 +168,15 @@ function applyCustomPatterns(text: string): string {
  * returned unchanged — redaction must never break the prompt pipeline.
  * The error is logged per the code-review-lessons rule: no empty catch blocks.
  */
+export async function redactTextOrThrow(text: string): Promise<string> {
+	const result = await getEngine().scan(text)
+	const afterEngine = result.redactedText ?? text
+	return applyCustomPatterns(afterEngine)
+}
+
 export async function redactText(text: string): Promise<string> {
 	try {
-		const result = await getEngine().scan(text)
-		const afterEngine = result.redactedText ?? text
-		return applyCustomPatterns(afterEngine)
+		return await redactTextOrThrow(text)
 	} catch (err) {
 		console.error("PII redaction scan failed, returning original text:", err)
 		return text
@@ -194,24 +208,29 @@ export async function redactObjectStrings<T>(obj: T): Promise<T> {
 		return Promise.all(obj.map((item) => redactObjectStrings(item))) as Promise<T>
 	}
 	if (obj !== null && typeof obj === "object") {
-		const entries = Object.entries(obj as Record<string, unknown>)
+		const source = obj as Record<PropertyKey, unknown>
+		const keys: PropertyKey[] = [
+			...Object.keys(source),
+			...Object.getOwnPropertySymbols(source).filter((key) => Object.prototype.propertyIsEnumerable.call(source, key)),
+		]
 		const values = await Promise.all(
-			entries.map(([key, value]) => {
+			keys.map((key) => {
+				const value = source[key]
 				// Trace IDs are diagnostic identifiers, not secrets — pass through
 				// unchanged (handles both `traceId: string` and `traceIds: string[]`).
-				if (isPreservedKey(key)) {
+				if (typeof key === "string" && isPreservedKey(key)) {
 					return Promise.resolve(value)
 				}
 				// Redact any string value stored under a sensitive key name.
-				if (typeof value === "string" && isSensitiveKey(key)) {
+				if (typeof key === "string" && typeof value === "string" && isSensitiveKey(key)) {
 					return Promise.resolve("[REDACTED-SECRET_FIELD]")
 				}
 				return redactObjectStrings(value)
 			}),
 		)
-		const result: Record<string, unknown> = {}
-		for (let i = 0; i < entries.length; i++) {
-			result[entries[i][0]] = values[i]
+		const result: Record<PropertyKey, unknown> = {}
+		for (let i = 0; i < keys.length; i++) {
+			result[keys[i]] = values[i]
 		}
 		return result as T
 	}

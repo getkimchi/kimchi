@@ -14,6 +14,17 @@ export function findModelByRef(modelRegistry: ModelRegistry, ref: string): Model
 }
 
 /**
+ * Sorted canonical refs of every available model — the shared "list what
+ * exists" half of every model-not-found error message.
+ */
+export function availableModelRefs(modelRegistry: ModelRegistry): string[] {
+	return modelRegistry
+		.getAvailable()
+		.map((m) => refFromModel(m))
+		.sort()
+}
+
+/**
  * Extract just the model ID from a "provider/model-id" string.
  * Returns the full string if no slash is present.
  */
@@ -26,6 +37,11 @@ export function modelIdFromRef(ref: string): string {
  * Extract provider and model ID from a "provider/model-id" string.
  * Returns undefined if the string doesn't contain a slash, or if either
  * the provider or the model ID is empty / whitespace-only.
+ *
+ * Splits on the FIRST slash: this parse is ambiguous for sub-providers
+ * (kimchi-dev/anthropic/claude-opus-4-6) and slashed model ids alike —
+ * resolution must go through findModelByRef, which matches the registry's
+ * canonical refs exactly.
  */
 export function splitModelRef(ref: string): { provider: string; modelId: string } | undefined {
 	const slashIdx = ref.indexOf("/")

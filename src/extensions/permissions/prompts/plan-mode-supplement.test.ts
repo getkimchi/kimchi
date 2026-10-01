@@ -30,8 +30,9 @@ describe("plan-mode-supplement", () => {
 			expect(planModeSupplement).toContain("questionnaire")
 		})
 
-		it("contains plan completion marker", () => {
-			expect(planModeSupplement).toContain("PLAN_COMPLETE")
+		it("references the submit_plan tool as the plan completion signal", () => {
+			expect(planModeSupplement).toContain("`submit_plan`")
+			expect(planModeSupplement).not.toContain("PLAN_COMPLETE")
 		})
 
 		it("states that plans are auto-saved (shared location note)", () => {

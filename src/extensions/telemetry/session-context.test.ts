@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
 import * as osMetadata from "../../utils/os-metadata.js"
+import { createContext } from "../__mocks__/context.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { setTelemetryFermentV2Context } from "./ferment-v2-context.js"
 import { _resetSharedAccumulators, TelemetryContext } from "./session-context.js"
 
 vi.mock("../../api/me.js", () => ({
@@ -38,6 +41,10 @@ describe("SessionContext", () => {
 		globalThis.fetch = originalFetch
 		_resetSharedAccumulators()
 		vi.restoreAllMocks()
+		// session.parent_id simulation env — never leak the subagent worker flag
+		// or the parent session id into sibling tests.
+		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
+		Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
 	})
 
 	it("emit appends source and session_type to every event", async () => {
@@ -196,6 +203,81 @@ describe("SessionContext", () => {
 		expect(changeAttrs.previous_session_type).toBe("coding")
 		expect(changeAttrs.ferment_id).toBe("f-1")
 		expect(changeAttrs.source).toBe("cli")
+	})
+
+	it("prefers active Ferment V2 attribution over legacy Ferment on ambient events", async () => {
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue({ id: "f-v1" } as never)
+		setTelemetryFermentV2Context({ id: "fv2-active", revision: 7, status: "paused" })
+
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.emit("test.event", {})
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrs = body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes
+		const attrMap = Object.fromEntries(
+			attrs.map((a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue]),
+		)
+		expect(attrMap.session_type).toBe("ferment")
+		expect(attrMap.ferment_id).toBe("fv2-active")
+		expect(attrMap.ferment_v2_id).toBe("fv2-active")
+		expect(attrMap.ferment_version).toBe("v2")
+		expect(attrMap.ferment_revision).toBe("7")
+		expect(attrMap.status).toBe("paused")
+	})
+
+	it("suppresses raw error message fields only on V2-attributed ambient events", async () => {
+		setTelemetryFermentV2Context({ id: "fv2-active", revision: 7, status: "active" })
+
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.emit("message.error", {
+			error_message: "raw provider error",
+			"error.message": "raw nested provider error",
+			error_type: "provider",
+			"error.type": "provider",
+		})
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrs = body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes
+		const attrMap = Object.fromEntries(
+			attrs.map((a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue]),
+		)
+		expect(attrMap.ferment_version).toBe("v2")
+		expect(attrMap.error_type).toBe("provider")
+		expect(attrMap["error.type"]).toBe("provider")
+		expect(attrMap.error_message).toBeUndefined()
+		expect(attrMap["error.message"]).toBeUndefined()
+	})
+
+	it("keeps legacy error message fields when no V2 context is active", async () => {
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue({ id: "f-v1" } as never)
+
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.emit("message.error", {
+			error_message: "legacy raw error",
+			"error.message": "legacy nested raw error",
+			error_type: "provider",
+		})
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrs = body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes
+		const attrMap = Object.fromEntries(
+			attrs.map((a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue]),
+		)
+		expect(attrMap.ferment_id).toBe("f-v1")
+		expect(attrMap.ferment_version).toBeUndefined()
+		expect(attrMap.error_message).toBe("legacy raw error")
+		expect(attrMap["error.message"]).toBe("legacy nested raw error")
 	})
 
 	it("does not emit session.type_changed when type stays the same", async () => {
@@ -429,5 +511,193 @@ describe("SessionContext", () => {
 			),
 		)
 		expect(attrMap["user.account_uuid"]).toBe("user-uuid-123")
+	})
+
+	it("emit adds session.parent_id when running inside a subagent", async () => {
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue(undefined)
+		process.env.KIMCHI_SUBAGENT = "1"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = "parent-session-1"
+
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.emit("test.event", { custom: "value" })
+		ctx.flushLogBuffer()
+
+		await Promise.allSettled([...ctx.inFlight])
+
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrMap = Object.fromEntries(
+			body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes.map(
+				(a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue],
+			),
+		)
+
+		expect(attrMap["session.parent_id"]).toBe("parent-session-1")
+	})
+
+	it("emit omits session.parent_id for non-subagent events even when the env var is set", async () => {
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue(undefined)
+		// KIMCHI_PARENT_SESSION_ID is process-global and set during a subagent run.
+		// Events emitted OUTSIDE a subagent run must not be tagged with it — the
+		// parent session is not a parent of itself.
+		process.env[PARENT_SESSION_ID_ENV_KEY] = "parent-session-1"
+
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.emit("test.event", { custom: "value" })
+		ctx.flushLogBuffer()
+
+		await Promise.allSettled([...ctx.inFlight])
+
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrMap = Object.fromEntries(
+			body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes.map(
+				(a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue],
+			),
+		)
+
+		expect(attrMap["session.parent_id"]).toBeUndefined()
+	})
+
+	it("emitWithIds adds session.parent_id when running inside a subagent", async () => {
+		process.env.KIMCHI_SUBAGENT = "1"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = "parent-session-2"
+
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.emitWithIds("ferment.started", { ferment_id: "ferment-1" })
+		ctx.flushLogBuffer()
+
+		await Promise.allSettled([...ctx.inFlight])
+
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrMap = Object.fromEntries(
+			body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes.map(
+				(a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue],
+			),
+		)
+
+		expect(attrMap["session.parent_id"]).toBe("parent-session-2")
+	})
+
+	it("getParentSessionId returns the env value only inside a subagent run", () => {
+		const ctx = new TelemetryContext(makeConfig())
+		process.env.KIMCHI_SUBAGENT = "1"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = "parent-session-1"
+		expect(ctx.getParentSessionId()).toBe("parent-session-1")
+
+		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
+		expect(ctx.getParentSessionId()).toBeUndefined()
+	})
+
+	it("resolveSessionId falls back to telemetryId before a pi session id is set", () => {
+		const ctx = new TelemetryContext(makeConfig())
+		expect(ctx.resolveSessionId()).toBe(ctx.telemetryId)
+	})
+
+	it("resolveSessionId returns the pi session id once set", () => {
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.setPiSessionId("019e2af0-153f-77dc-839c-683e23fd301d")
+		expect(ctx.resolveSessionId()).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
+	})
+
+	it("setPiSessionId treats an empty id as unset so resolveSessionId falls back", () => {
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.setPiSessionId("session-aaa")
+		ctx.setPiSessionId("")
+		expect(ctx.piSessionId).toBeUndefined()
+		expect(ctx.resolveSessionId()).toBe(ctx.telemetryId)
+	})
+
+	it("emitted events use the pi session id as session.id once set", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.setPiSessionId("019e2af0-153f-77dc-839c-683e23fd301d")
+		ctx.emit("test.event", { custom: "value" })
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const record = body.resourceLogs[0].scopeLogs[0].logRecords[0]
+		const attrMap = Object.fromEntries(
+			record.attributes.map((a: { key: string; value: { stringValue?: string } }) => [a.key, a.value.stringValue]),
+		)
+		expect(attrMap["session.id"]).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
+	})
+
+	it("flushMetrics stamps the pi session id as session.id on metric data points", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.setPiSessionId("019e2af0-153f-77dc-839c-683e23fd301d")
+		ctx.cumulative.tokensByModel.m1 = { input: 100, output: 200, cacheRead: 0, cacheWrite: 0 }
+
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const metricsCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]: unknown[]) =>
+			String(url).includes("/metrics"),
+		)
+		expect(metricsCalls.length).toBe(1)
+		const body = JSON.parse((metricsCalls[0][1] as { body: string }).body)
+		const metrics = body.resourceMetrics[0].scopeMetrics[0].metrics
+		expect(metrics.length).toBeGreaterThan(0)
+		for (const metric of metrics) {
+			const dataPoint = (metric.sum ?? metric.gauge).dataPoints[0]
+			const sessionAttr = dataPoint.attributes.find((a: { key: string }) => a.key === "session.id")
+			expect(sessionAttr?.value.stringValue).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
+		}
+	})
+
+	it("accumulators stay keyed by telemetryId even when pi session ids differ", () => {
+		const ctx1 = new TelemetryContext(makeConfig())
+		const ctx2 = new TelemetryContext(makeConfig())
+		ctx1.setPiSessionId("session-aaa")
+		ctx2.setPiSessionId("session-bbb")
+		expect(ctx1.cumulative).toBe(ctx2.cumulative)
+	})
+
+	it("reset() keeps telemetryId keying and does not throw before a pi session id exists", () => {
+		const ctx = new TelemetryContext(makeConfig())
+		expect(() => ctx.reset()).not.toThrow()
+		expect(ctx.resolveSessionId()).toBe(ctx.telemetryId)
+	})
+
+	it("handleSessionStart captures the pi session id from ctx", async () => {
+		const { handleSessionStart } = await import("./handlers/session.js")
+		const tm = new TelemetryContext(makeConfig())
+		const ctx = createContext({
+			sessionManager: { getSessionId: () => "019e2af0-153f-77dc-839c-683e23fd301d" },
+			model: { id: "m" },
+		})
+		handleSessionStart(tm, ctx)
+		expect(tm.resolveSessionId()).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
+	})
+
+	it("handleSessionStart ignores an empty session id (keeps telemetryId fallback)", async () => {
+		const { handleSessionStart } = await import("./handlers/session.js")
+		const tm = new TelemetryContext(makeConfig())
+		const ctx = createContext({ sessionManager: { getSessionId: () => "" }, model: { id: "m" } })
+		handleSessionStart(tm, ctx)
+		expect(tm.resolveSessionId()).toBe(tm.telemetryId)
+	})
+
+	it("handleSessionStart re-capture on fork/resume overwrites the previous session id", async () => {
+		const { handleSessionStart } = await import("./handlers/session.js")
+		const tm = new TelemetryContext(makeConfig())
+		const original = createContext({
+			sessionManager: { getSessionId: () => "019e2af0-153f-77dc-839c-683e23fd301d" },
+			model: { id: "m" },
+		})
+		const forked = createContext({
+			sessionManager: { getSessionId: () => "019e2af1-26d4-7f9e-8b0c-1a2b3c4d5e6f" },
+			model: { id: "m" },
+		})
+		handleSessionStart(tm, original)
+		handleSessionStart(tm, forked)
+		expect(tm.resolveSessionId()).toBe("019e2af1-26d4-7f9e-8b0c-1a2b3c4d5e6f")
 	})
 })

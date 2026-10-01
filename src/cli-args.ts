@@ -8,26 +8,35 @@ export { type CliMode, getCliModeArg, hasExportFlag, hasPrintFlag, PROTOCOL_MODE
 
 // Pre-dispatch scanners still need to skip values for Kimchi-local raw scans
 // such as `--mode acp`, which upstream pi does not parse.
-const PRE_DISPATCH_VALUE_FLAGS = new Set([
-	"--provider",
-	"--model",
-	"--api-key",
-	"--system-prompt",
-	"--append-system-prompt",
-	"--session",
-	"--fork",
-	"--session-dir",
-	"--models",
-	"--tools",
-	"-t",
-	"--thinking",
-	"--export",
-	"--extension",
-	"-e",
-	"--skill",
-	"--prompt-template",
-	"--theme",
-])
+//
+// Each entry maps a long value-taking flag to its single-letter alias, if any.
+// Both forms must reach `PARSE_ARGS_OPTIONS` below: a short flag that parseArgs
+// does not know consumes a value would leave the following token (e.g. `-t
+// --model`) to be parsed as an explicit model selection.
+const PRE_DISPATCH_VALUE_FLAG_SHORTS: Record<string, string | undefined> = {
+	provider: undefined,
+	model: undefined,
+	"api-key": undefined,
+	"system-prompt": undefined,
+	"append-system-prompt": undefined,
+	session: undefined,
+	fork: undefined,
+	"session-dir": undefined,
+	models: undefined,
+	tools: "t",
+	thinking: undefined,
+	export: undefined,
+	extension: "e",
+	skill: undefined,
+	"prompt-template": undefined,
+	theme: undefined,
+}
+
+const PRE_DISPATCH_VALUE_FLAGS = new Set(
+	Object.entries(PRE_DISPATCH_VALUE_FLAG_SHORTS).flatMap(([name, short]) =>
+		short ? [`--${name}`, `-${short}`] : [`--${name}`],
+	),
+)
 
 export function isPreDispatchValueFlag(arg: string): boolean {
 	return PRE_DISPATCH_VALUE_FLAGS.has(arg)
@@ -99,9 +108,18 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 			"Model id or pattern, optionally `provider/id` and/or `:<thinking>`. Use `multi-model` for orchestrated multi-model mode.",
 		placeholder: "<pattern>",
 	},
+	models: {
+		type: "string",
+		description: "Comma-separated model ids the auto model picks from",
+		placeholder: "<a,b>",
+	},
 	"multi-model": {
 		type: "boolean",
 		description: "Explicitly select multi-model orchestration (same as `--model multi-model`)",
+	},
+	"enable-experimental-features": {
+		type: "boolean",
+		description: "Enable experimental features, including the kimchi-dev/auto model",
 	},
 	thinking: {
 		type: "string",
@@ -174,6 +192,15 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		type: "boolean",
 		description: "Start in yolo mode (run freely, no classifier - DANGER)",
 	},
+	approve: {
+		type: "boolean",
+		short: "a",
+		description: "Trust project-local files for this run",
+	},
+	"no-approve": {
+		type: "boolean",
+		description: "Ignore project-local files for this run",
+	},
 	"permissions-config": {
 		type: "string",
 		description: "Replace the merged permissions config with this file",
@@ -183,6 +210,11 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		type: "string",
 		description: "Absolute per-process safety limit for background bash commands, in seconds (default 3600)",
 		placeholder: "<seconds>",
+	},
+	"mcp-config": {
+		type: "string",
+		description: "Use a specific MCP configuration file",
+		placeholder: "<path>",
 	},
 	verbose: {
 		type: "boolean",
@@ -210,7 +242,9 @@ export interface SessionCliArgs {
 	options: {
 		provider?: string
 		model?: string
+		models?: string
 		"multi-model"?: boolean
+		memory?: boolean
 		thinking?: string
 		mode?: string
 		print?: boolean
@@ -220,8 +254,11 @@ export interface SessionCliArgs {
 		plan?: boolean
 		auto?: boolean
 		yolo?: boolean
+		approve?: boolean
+		"no-approve"?: boolean
 		"permissions-config"?: string
 		"bash-process-limit"?: string
+		"mcp-config"?: string
 		verbose?: boolean
 	}
 	positionals: string[]
@@ -273,10 +310,18 @@ for (const [name, def] of Object.entries(CLI_OPTIONS)) {
 	}
 }
 
+// Consume upstream option values so text such as --system-prompt "--model"
+// (or its short form, `-t --model`) cannot be mistaken for a model-selection
+// flag by our cached parse.
+for (const [name, short] of Object.entries(PRE_DISPATCH_VALUE_FLAG_SHORTS)) {
+	PARSE_ARGS_OPTIONS[name] ??= { type: "string", ...(short ? { short } : {}) }
+}
+
 /** Option names that affect the running session and are cached in `SessionCliArgs`. */
-const CACHEABLE_OPTION_NAMES = [
+export const CACHEABLE_OPTION_NAMES = [
 	"provider",
 	"model",
+	"models",
 	"multi-model",
 	"thinking",
 	"mode",
@@ -287,8 +332,11 @@ const CACHEABLE_OPTION_NAMES = [
 	"plan",
 	"auto",
 	"yolo",
+	"approve",
+	"no-approve",
 	"permissions-config",
 	"bash-process-limit",
+	"mcp-config",
 	"verbose",
 ] as const satisfies ReadonlyArray<keyof SessionCliArgs["options"]>
 
@@ -302,8 +350,19 @@ export function parseCliArgs(args: string[]): SessionCliArgs {
 	})
 	const options: SessionCliArgs["options"] = {}
 	for (const key of CACHEABLE_OPTION_NAMES) {
-		const value = values[key]
+		let value = values[key]
 		if (value === undefined) continue
+		// node:util parseArgs with strict:false returns the raw string for
+		// `--flag=value` even when the flag is declared boolean. For boolean
+		// flags, accept only the explicit =true/=false forms — anything else
+		// (e.g. --memory=1) would store a string into a boolean-typed option,
+		// making `=== true` and truthiness checks disagree.
+		if (CLI_OPTIONS[key]?.type === "boolean" && typeof value === "string") {
+			if (value !== "true" && value !== "false") {
+				throw new Error(`--${key} expects a boolean (=true or =false); got --${key}=${JSON.stringify(value)}`)
+			}
+			value = value === "true"
+		}
 		;(options as Record<string, unknown>)[key] = value
 	}
 	return { options, positionals }
@@ -374,6 +433,13 @@ export function isTerminalUiMode(args: string[], io: { stdinIsTTY: boolean; stdo
 
 export function isExperimentalFeaturesArg(args: string[]): boolean {
 	return args.includes("--enable-experimental-features")
+}
+
+/** True when argv requests a ferment one-shot `--ferment-oneshot[=true]` or the
+ * bare kwarg form. A headless one-shot planner still needs the ferment suite,
+ * so suppression must compose. */
+export function hasFermentOneshotArg(args: readonly string[]): boolean {
+	return args.some((a) => a === "--ferment-oneshot" || a === "--ferment-oneshot=true" || a === "ferment-oneshot=true")
 }
 
 export function stripExperimentalFeaturesArg(args: string[]): string[] {

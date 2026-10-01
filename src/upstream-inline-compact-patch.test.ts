@@ -2,6 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import { AgentSession, type CompactionResult, ExtensionRunner } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
+	INLINE_COMPACT_IN_PROGRESS_MESSAGE,
 	type InlineCompactOptions,
 	type InlineCompactPatchOptions,
 	installInlineCompactPatch,
@@ -111,6 +112,14 @@ class FakeSession {
 		this._emit({ type: "compaction_start", reason: "manual" })
 		try {
 			if (!this.model) throw new Error("No model selected")
+			// Mirror upstream's routine no-op guards (emitted when prepareCompaction
+			// rejects the branch): pin the wording model-guard's benign-error
+			// classification relies on. Upstream reads pathEntries = getBranch() for
+			// both checks; these never fire with the existing fixtures — the branch
+			// always has ≥1 entry and its last entry is never a compaction.
+			const lastEntry = this.branch[this.branch.length - 1]
+			if ((lastEntry as { type?: string } | undefined)?.type === "compaction") throw new Error("Already compacted")
+			if (this.branch.length === 0) throw new Error("Nothing to compact (session too small)")
 			await this._getCompactionRequestAuth(this.model)
 			this.preparedWithSettings.push(this.settingsManager.getCompactionSettings())
 			this.summarizeCalls.push({ model: this.model, thinkingLevel: this.thinkingLevel, customInstructions })
@@ -226,6 +235,28 @@ describe("installInlineCompactPatch", () => {
 				runnerClass: FakeRunner as unknown as NonNullable<InlineCompactPatchOptions["runnerClass"]>,
 			}),
 		).toThrow("expected manual compaction to abort first and use _compactionAbortController")
+	})
+
+	it("rejects a session class whose compact() reworded the cancellation error", () => {
+		// Mirrors the pinned abort/controller internals but rewords the
+		// cancellation throw — the canary must fire loudly so model-guard's
+		// isCancellationError classification gets updated for the new wording.
+		class RewordedSession {
+			_compactionAbortController?: AbortController
+			async abort(): Promise<void> {}
+			async compact(): Promise<void> {
+				await this.abort()
+				this._compactionAbortController = new AbortController()
+				if (this._compactionAbortController.signal.aborted) throw new Error("Compaction aborted")
+			}
+			_bindExtensionCore(): void {}
+		}
+		expect(() =>
+			installInlineCompactPatch({
+				sessionClass: RewordedSession as unknown as NonNullable<InlineCompactPatchOptions["sessionClass"]>,
+				runnerClass: FakeRunner as unknown as NonNullable<InlineCompactPatchOptions["runnerClass"]>,
+			}),
+		).toThrow("no longer throws expected wording")
 	})
 
 	it("identifies missing AgentSession prototype methods", () => {
@@ -454,12 +485,12 @@ describe("installInlineCompactPatch", () => {
 		const session = new FakeSession()
 		session._compactionAbortController = new AbortController()
 
-		await expect(inlineSession(session).inlineCompact()).rejects.toThrow("Compaction already in progress")
+		await expect(inlineSession(session).inlineCompact()).rejects.toThrow(INLINE_COMPACT_IN_PROGRESS_MESSAGE)
 
 		session._compactionAbortController = undefined
 		session._autoCompactionAbortController = new AbortController()
 
-		await expect(inlineSession(session).inlineCompact()).rejects.toThrow("Compaction already in progress")
+		await expect(inlineSession(session).inlineCompact()).rejects.toThrow(INLINE_COMPACT_IN_PROGRESS_MESSAGE)
 	})
 
 	it("rejects when the branch has an unpaired toolCall", async () => {

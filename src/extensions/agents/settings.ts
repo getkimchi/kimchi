@@ -5,6 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
+import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import type { JoinMode } from "./personas/types.js"
 
 export interface SubagentsSettings {
@@ -92,9 +93,12 @@ function readSettingsFile(path: string): SubagentsSettings {
 	}
 }
 
-/** Load merged settings: global provides defaults, project overrides. */
+/** Load merged settings: global provides defaults, project overrides (gated on project trust). */
 export function loadSettings(cwd: string = process.cwd()): SubagentsSettings {
-	return { ...readSettingsFile(globalPath()), ...readSettingsFile(projectPath(cwd)) }
+	// An untrusted repo's .kimchi/agents.json must not override the user's
+	// global agent settings.
+	const project = isProjectScopeAllowed(cwd) ? readSettingsFile(projectPath(cwd)) : {}
+	return { ...readSettingsFile(globalPath()), ...project }
 }
 
 /**

@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -24,4 +26,8 @@ class Message(BaseMessage):
 
 class SessionEntry(BaseMessage):
     type: str
+    id: str | None = None
+    parent_id: str | None = Field(None, alias="parentId")
+    custom_type: str = Field("", alias="customType")
+    data: dict[str, Any] | None = None
     message: Message = Field(default_factory=Message)

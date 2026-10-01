@@ -29,7 +29,7 @@ it("starts a fresh interactive session before selecting the requested model", as
 	expect(await startNewInteractiveSessionWithModel(sessionManager, model)).toBe(true)
 	expect(setModel).not.toHaveBeenCalled()
 	await vi.runAllTimersAsync()
-	expect(setModel).toHaveBeenCalledWith(model)
+	expect(setModel).toHaveBeenCalledWith(model, { persist: true })
 	expect(showStatus).toHaveBeenCalledWith("Started a new session with kimchi-dev/minimax-m2.7.")
 	vi.useRealTimers()
 })

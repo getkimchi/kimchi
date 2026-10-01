@@ -1,7 +1,8 @@
 import type { spawn } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { Readable } from "node:stream"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
+import * as config from "../../../config.js"
 import {
 	BASE_EXCLUDE_GLOBS,
 	buildExcludeList,
@@ -337,6 +338,37 @@ describe("runRsync filesFrom guard", () => {
 	})
 })
 
+it("passes the effective API key to both SSH mkdir and rsync without restoring the parent environment", async () => {
+	vi.stubEnv("KIMCHI_API_KEY", undefined)
+	vi.spyOn(config, "loadConfig").mockReturnValue({ ...config.loadConfig(), apiKey: "captured-environment-key" })
+	const calls: { binary: string; env: NodeJS.ProcessEnv | undefined }[] = []
+	const fakeSpawn: typeof spawn = ((binary: string, _args: readonly string[], opts: { env?: NodeJS.ProcessEnv }) => {
+		calls.push({ binary, env: opts.env })
+		return makeFakeChild({ stdout: "", exitCode: 0 })
+	}) as typeof spawn
+	try {
+		await runRsync({
+			localPath: "/tmp/no-such-dir",
+			remotePath: "/sandbox",
+			isSourceDirectory: true,
+			remoteHost: "h",
+			remoteUser: "u",
+			authToken: "tok",
+			proxyCommand: "kimchi --ssh-proxy %h",
+			gitignoredPaths: [],
+			_spawn: fakeSpawn,
+		})
+		expect(calls.map(({ binary }) => binary)).toEqual(["ssh", "rsync"])
+		for (const { env } of calls) {
+			expect(env).toMatchObject({ KIMCHI_API_KEY: "captured-environment-key", AUTH_TOKEN: "tok" })
+		}
+		expect(process.env.KIMCHI_API_KEY).toBeUndefined()
+	} finally {
+		vi.unstubAllEnvs()
+		vi.restoreAllMocks()
+	}
+})
+
 describe("buildMkdirArgv", () => {
 	it("builds an ssh argv that pre-creates a directory on the sandbox", () => {
 		const argv = buildMkdirArgv({
@@ -355,6 +387,8 @@ describe("buildMkdirArgv", () => {
 			"UserKnownHostsFile=/k",
 			"-o",
 			"BatchMode=yes",
+			"-o",
+			"ServerAliveInterval=15",
 			"u@h",
 			"mkdir -p /home/sandbox",
 		])

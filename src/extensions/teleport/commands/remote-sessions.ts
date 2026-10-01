@@ -1,6 +1,7 @@
-import { basename } from "node:path"
+import { basename, isAbsolute, join } from "node:path"
 import { authenticateWorkspace, createOrUpdateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { verifyApiKey } from "../../../sandbox/cloud/keys.js"
+import { getQuotaUsage } from "../../../sandbox/cloud/quota.js"
 import type { Workspace } from "../../../sandbox/cloud/types.js"
 import { deleteWorkspace, listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
@@ -9,12 +10,13 @@ import type { Session } from "../../../sandbox/worker/types.js"
 import { isVisibleSession } from "../session-filter.js"
 import { ensureIncludeDirective, syncSshConfig } from "../ssh-config/sync.js"
 import type { TeleportContext } from "../types.js"
-import type { RemoteWorkspaceNode } from "../ui/remote-sessions-panel.js"
+import type { RemoteSessionNode, RemoteWorkspaceNode } from "../ui/remote-sessions-panel.js"
 import { pickRemoteSessions } from "../ui/remote-sessions-panel.js"
 import type { CombinedStatus, SessionRow } from "../ui/sessions-table.js"
 import { assignWorkspaceSlugs } from "../workspace-slugs.js"
 import { runAttachSession } from "./attach.js"
 import { info, refuse, status, warn } from "./errors.js"
+import { runSyncArgs } from "./sync.js"
 import { runTerminal } from "./terminal.js"
 
 export async function runRemoteSessions(_args: string, ctx: TeleportContext): Promise<void> {
@@ -24,7 +26,9 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 
 	const fallbackName = basename(ctx.cwd) || "kimchi"
 
-	// Verify once for orgId; cache for the loop (needed for rename/delete workspace).
+	// Verify once for orgId; cache for the loop (needed for rename/delete
+	// workspace) — also shared with listWorkspaces/getQuotaUsage below so both
+	// skip their own duplicate verifyKey round-trip.
 	let orgId: string
 	try {
 		orgId = await verifyApiKey(ctx.apiKey, { endpoint: ctx.endpoint })
@@ -34,9 +38,18 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 
 	while (true) {
 		status(ctx, "Loading…")
+		// Quota footer fills in asynchronously: fire it alongside the workspace
+		// list and hand the promise to the picker — its footer rows are reserved
+		// either way and populate when the fetch settles. Failures degrade to
+		// "no summary" (pre-caught so the picker never sees a rejection), and a
+		// slow quota endpoint never delays the picker. Reuse the orgId verified
+		// above to skip a duplicate verifyKey round-trip.
+		const quotaPromise = getQuotaUsage(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId }).catch(
+			() => undefined,
+		)
 		let workspaces: Workspace[]
 		try {
-			workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal })
+			workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId })
 		} catch (err) {
 			status(ctx, undefined)
 			refuse(ctx, `Could not list workspaces: ${err instanceof Error ? err.message : String(err)}`)
@@ -48,7 +61,7 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 		const nodes = await buildTree(workspaces, ctx, fallbackName)
 		status(ctx, undefined)
 
-		const result = await pickRemoteSessions(ctx, nodes)
+		const result = await pickRemoteSessions(ctx, nodes, quotaPromise)
 		if (!result) return
 
 		if (result.action === "open-terminal") {
@@ -66,6 +79,26 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 				ctx,
 			)
 			return
+		}
+
+		if (result.action === "sync-workspace") {
+			warn(
+				ctx,
+				`Only sessions can be synced. Select a session under workspace ${result.node.row.name || result.node.row.id} and press s.`,
+			)
+			continue
+		}
+
+		if (result.action === "sync-session") {
+			// runSyncArgs signals failures by throwing (refuse), e.g. a missing
+			// API key or an rsync error. Catch here so the browser loop survives
+			// a failed sync and re-shows the picker.
+			try {
+				await syncSession(result.node, ctx)
+			} catch (err) {
+				warn(ctx, `Could not sync session: ${err instanceof Error ? err.message : String(err)}`)
+			}
+			continue
 		}
 
 		if (result.action === "rename-workspace") {
@@ -165,6 +198,9 @@ export async function buildTree(
 				lastActivityAt: ws.lastActivityAt,
 				host: ws.host,
 				sessionCount: reachable ? sessions.length : "?",
+				cpuMillicores: ws.cpuMillicores,
+				ramBytes: ws.ramBytes,
+				pvcSizeBytes: ws.pvcSizeBytes,
 			},
 			sessions,
 			unreachable: !reachable,
@@ -190,8 +226,70 @@ export function toRow(ws: Workspace, s: Session): SessionRow {
 		workspaceId: ws.id,
 		workspaceName: ws.name,
 		sessionName: s.name,
+		cwd: s.cwd || undefined,
 		status: deriveStatus(s),
 		clientConnected: s.clientConnected,
 		lastActivityAt: s.lastActivityAt ? new Date(s.lastActivityAt) : undefined,
 	}
+}
+
+const SYNC_UP = "Sync Up  (local → remote)"
+const SYNC_DOWN = "Sync Down  (remote → local)"
+
+/**
+ * Questionnaire behind the remote-sessions `s` hotkey: pick a direction,
+ * then source and destination paths. The local field is prefilled with the
+ * current working dir and the remote field with the session's remote cwd —
+ * for `up` the source is local, for `down` it is remote.
+ */
+async function syncSession(session: RemoteSessionNode, ctx: TeleportContext): Promise<void> {
+	const direction = await ctx.ui.select(
+		`Sync ${session.sessionName} (${session.workspaceName || session.workspaceId})`,
+		[SYNC_UP, SYNC_DOWN],
+	)
+	if (!direction) return
+
+	const up = direction === SYNC_UP
+	const localDefault = ctx.cwd
+	// No trailing slash on the remote default: rsync gives a source path with
+	// a trailing slash different semantics (copy contents vs copy the dir
+	// itself), so normalize so the default behaves identically whether or
+	// not the worker reported a cwd.
+	const remoteDefault = (session.cwd || "~").replace(/\/+$/, "")
+
+	const source = await ctx.ui.input(
+		`Source path (${up ? "local" : "remote, on the workspace"}, default: ${up ? localDefault : remoteDefault})`,
+	)
+	if (source === undefined) return
+	const target = await ctx.ui.input(
+		`Destination path (${up ? "remote, on the workspace" : "local"}, default: ${up ? remoteDefault : localDefault})`,
+	)
+	if (target === undefined) return
+
+	// Empty submits fall back to the default shown in the prompt title; relative
+	// paths are resolved against the corresponding default, absolute paths
+	// (and `~`-rooted ones) pass through untouched.
+	const resolve = (raw: string, base: string, local: boolean): string => {
+		const p = raw.trim()
+		if (p === "") return base
+		if (local ? isAbsolute(p) : p.startsWith("/")) return p
+		if (p === "~" || p.startsWith("~/")) return p
+		// Remote targets are always unix — join with a literal `/` (no
+		// platform separator, no `..` normalization).
+		return local ? join(base, p) : `${base.replace(/\/+$/, "")}/${p}`
+	}
+
+	await runSyncArgs(
+		{
+			direction: up ? "up" : "down",
+			workspace: session.workspaceId,
+			source: resolve(source, up ? localDefault : remoteDefault, up),
+			target: resolve(target, up ? remoteDefault : localDefault, !up),
+			exclude: [],
+			includeIgnored: false,
+			delete: false,
+			dryRun: false,
+		},
+		ctx,
+	)
 }

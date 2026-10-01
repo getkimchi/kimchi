@@ -1,5 +1,6 @@
 import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
 import { type Component, Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
+import { truncateLinesToWidth } from "../../../truncate-lines.js"
 import { GitTokenPromptComponent, type GitTokenPromptResult } from "./git-token-prompt.js"
 
 const SPIN_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -183,8 +184,8 @@ class TeleportProgressPanel implements Component {
 		const { theme } = this
 		const b = (s: string) => theme.fg("border", s)
 		const dim = (s: string) => theme.fg("dim", s)
-		const innerW = Math.max(20, width - 2)
-		const contentW = innerW - 2
+		const innerW = Math.max(1, width - 2)
+		const contentW = Math.max(1, innerW - 2)
 
 		const lines: string[] = []
 
@@ -227,7 +228,7 @@ class TeleportProgressPanel implements Component {
 		lines.push(emptyRow())
 		lines.push(b(`╰${"─".repeat(innerW)}╯`))
 
-		return lines
+		return truncateLinesToWidth(lines, width)
 	}
 
 	private renderProgressLines(theme: Theme): string[] {

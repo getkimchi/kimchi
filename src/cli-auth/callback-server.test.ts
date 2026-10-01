@@ -74,6 +74,24 @@ describe("startCallbackServer", () => {
 		}
 	})
 
+	it("serves caller-provided success copy instead of the default CLI message", async () => {
+		const state = generateState()
+		// ACP authenticate() passes copy that doesn't assume the terminal CLI;
+		// the terminal default must stay untouched.
+		const server = await startCallbackServer(state, {
+			successMessage: "You are now connected to Kimchi. You can close this window and start using it.",
+		})
+
+		const res = await request(server.port, `/callback?token=t&state=${state}`)
+		const body = await res.text()
+		expect(body).toContain("You are now connected to Kimchi")
+		// The terminal-initiated copy must not leak into the ACP-initiated page.
+		expect(body).not.toContain("Your CLI is now connected")
+
+		await server.result
+		server.close()
+	})
+
 	it("rejects an invalid state parameter", async () => {
 		const state = generateState()
 		const server = await startCallbackServer(state)

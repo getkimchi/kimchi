@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 vi.mock("../config.js", () => ({
 	readTelemetryConfig: vi.fn(),
 	writeTelemetryEnabled: vi.fn(),
+	loadConfig: vi.fn(),
 }))
 
 // Mock sendPreSessionEvent — we assert the config command invokes it with the
@@ -18,7 +19,8 @@ vi.mock("../extensions/telemetry/pre-session.js", () => ({
 	sendPreSessionEvent: vi.fn(),
 }))
 
-import { readTelemetryConfig, writeTelemetryEnabled } from "../config.js"
+import { loadConfig, readTelemetryConfig, writeTelemetryEnabled } from "../config.js"
+import { withExperimentalFeatures } from "../extensions/experimental.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { runConfig } from "./config.js"
 
@@ -145,5 +147,103 @@ describe("kimchi config telemetry — config_changed event", () => {
 		// biome-ignore lint/style/noNonNullAssertion: length asserted above
 		const configArg = vi.mocked(sendPreSessionEvent).mock.calls[0]![0]
 		expect(configArg).toBe(cfg)
+	})
+})
+
+describe("kimchi config region", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.spyOn(console, "log").mockImplementation(() => {})
+		vi.spyOn(console, "warn").mockImplementation(() => {})
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
+	})
+
+	it("prints the current region and the available regions", async () => {
+		await withExperimentalFeatures(true, async () => {
+			vi.mocked(loadConfig).mockReturnValue({ apiKey: "", region: "us" } as ReturnType<typeof loadConfig>)
+
+			const exit = await runConfig(["region"])
+
+			expect(exit).toBe(0)
+			expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe("Region: us — United States")
+			expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe("Available regions: us (United States), eu (Europe)")
+		})
+	})
+
+	it("lists only the default region when EU is experimental-gated", async () => {
+		vi.mocked(loadConfig).mockReturnValue({ apiKey: "", region: "us" } as ReturnType<typeof loadConfig>)
+
+		const exit = await runConfig(["region"])
+
+		expect(exit).toBe(0)
+		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe("Available regions: us (United States)")
+	})
+
+	it("notes the KIMCHI_REGION env override when it is in effect", async () => {
+		vi.stubEnv("KIMCHI_REGION", "eu")
+		vi.mocked(loadConfig).mockReturnValue({
+			apiKey: "",
+			region: "eu",
+		} as ReturnType<typeof loadConfig>)
+
+		const exit = await runConfig(["region"])
+
+		expect(exit).toBe(0)
+		expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe(
+			"Region: eu — Europe (from KIMCHI_REGION=eu, overrides config)",
+		)
+	})
+
+	it("prints the configured region", async () => {
+		vi.mocked(loadConfig).mockReturnValue({
+			apiKey: "",
+			region: "eu",
+		} as ReturnType<typeof loadConfig>)
+
+		const exit = await runConfig(["region"])
+
+		expect(exit).toBe(0)
+		expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe("Region: eu — Europe")
+	})
+
+	it("does not claim an invalid KIMCHI_REGION as an override", async () => {
+		vi.stubEnv("KIMCHI_REGION", "moon")
+		vi.mocked(loadConfig).mockReturnValue({
+			apiKey: "",
+			region: "eu",
+		} as ReturnType<typeof loadConfig>)
+
+		const exit = await runConfig(["region"])
+
+		expect(exit).toBe(0)
+		expect(vi.mocked(console.warn).mock.calls[0]?.[0]).toBe("Ignoring invalid KIMCHI_REGION=moon (expected us|eu)")
+		expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe("Region: eu — Europe")
+	})
+
+	it("refuses to set a region and directs the user to re-login (exit 2)", async () => {
+		vi.mocked(loadConfig).mockReturnValue({ apiKey: "" } as ReturnType<typeof loadConfig>)
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
+		const exit = await runConfig(["region", "eu"])
+
+		expect(exit).toBe(2)
+		expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Run "kimchi login" again to switch regions'))
+		expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("KIMCHI_REGION=us|eu"))
+		// Nothing was printed except via console.error.
+		expect(console.log).not.toHaveBeenCalled()
+	})
+
+	it("rejects an unknown region id the same way (exit 2, same guidance)", async () => {
+		vi.mocked(loadConfig).mockReturnValue({ apiKey: "" } as ReturnType<typeof loadConfig>)
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
+		const exit = await runConfig(["region", "moon"])
+
+		expect(exit).toBe(2)
+		expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Run "kimchi login" again to switch regions'))
 	})
 })

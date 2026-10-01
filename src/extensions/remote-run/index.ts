@@ -1,39 +1,83 @@
 /**
- * Remote-run extension — registers the `/remote-run` command.
+ * Remote-run extension — everything is gated on `isRemoteRunEnabled()`
+ * (KIMCHI_REMOTE_RUN opt-out). The dispatch tool is additionally
+ * suppressed in every `--print` run (ferment-oneshot included — no lift).
+ * Two reasons: headless sessions have no human to answer the consent
+ * dialog, making the tool dead — and adversarially inviting — prompt
+ * surface; and remote dispatch is a quality-of-life feature for
+ * supervised, user-led sessions — an unsupervised agent should never
+ * spend remote compute on its own initiative. The
+ * `/remote-run` command and shutdown handler register regardless; the
+ * command is simply unreachable without a TUI. All remote-agent spawns go
+ * through the shared `runCloudAgent()` helper, which handles the full
+ * lifecycle: Ctrl+X kill handler, spawn, notification, and cleanup.
  *
- * Only registered when `KIMCHI_REMOTE_RUN` env var is set, preventing
- * accidental invocation. Spawns a foreground remote agent via the agents
- * extension's `spawnRemoteAgent()`, which creates an activity tracker +
- * output file + widget registration — same rendering as local agents
- * (tool count, streaming text, turn count, usage).
- *
- * The agent runs in foreground mode (isBackground: false), so the command
- * blocks until the agent settles and returns its result text. A Ctrl+X
- * handler is registered for the duration of the run to kill the remote
- * agent (the existing Ctrl+X handler in agents/index.ts only covers
- * background agents).
- *
- * The agent id is passed via `onSpawn` as soon as the agent is created
- * (before the promise resolves), so the Ctrl+X handler can cancel the
- * remote agent even during the startup phase (auth, sandbox readiness,
- * session creation).
- *
- * If the user detaches the foreground agent to background via Ctrl+B,
- * the promise resolves and this handler cleans up. The existing background
- * Ctrl+X handler in agents/index.ts then takes over. Each invocation owns
- * its own agent id and kill handler in the closure — no module-level mutable
- * state — so overlapping invocations (e.g. after a Ctrl+B detach) cannot
- * clobber each other.
+ * Registers two surfaces:
+ * - `/remote-run <prompt>` — run a raw prompt on a remote sandbox worker.
+ * - `dispatch_to_cloud_agent` tool — model-callable dispatch of a
+ *   self-contained task briefing to a background remote agent. Consent is
+ *   enforced inside the tool: the user must confirm a dialog (showing the
+ *   briefing) before anything is spawned, so model initiative — including
+ *   indirect prompt injection — can never launch remote compute on its own.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
-import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui"
-import { getActiveManager, spawnRemoteAgent } from "../agents/index.js"
-import { getDisplayName } from "../agents/ui/agent-widget.js"
-import { isRawInputCaptureActive } from "../shared-input.js"
+import { getActiveManager } from "../agents/index.js"
+import { readE2eSeam } from "../e2e-seam.js"
+import { shouldSuppressInteractiveTools } from "../print-mode.js"
+import { registerDispatchToCloudAgentTool } from "./dispatch-tool.js"
+import { handleRemoteCompletion } from "./post-completion.js"
+import { isRemoteRunEnabled, runCloudAgent } from "./runner.js"
+
+/**
+ * TUI-E2E seam (KIMCHI_E2E_FAKE_REMOTE_COMPLETION=1): fires a deterministic
+ * PR-intent completion shortly after session start so the TUI E2E drives the
+ * REAL completion machinery — diff stats, dropdown, consent gates, push
+ * orchestration — without depending on session-resume discovery (unreliable
+ * across hosts) or a fake remote worker (unimplementable in scope). Pairs
+ * with KIMCHI_E2E_FAKE_SANDBOX_GIT for canned git responses. Test-only env
+ * vars; never set in production.
+ */
+function maybeFireFakeCompletion(pi: ExtensionAPI): void {
+	if (readE2eSeam("KIMCHI_E2E_FAKE_REMOTE_COMPLETION") !== "1") return
+	pi.on("session_start", (_event, ctx) => {
+		setTimeout(() => {
+			if (!ctx.hasUI) return
+			void handleRemoteCompletion(pi, ctx, "E2E fake remote result line one", "plan", {
+				transcriptPath: undefined,
+				agentId: "e2e-remote-agent",
+				remoteSession: {
+					workspaceId: "ws-e2e",
+					sessionName: "acp-e2e",
+					wsUrl: "ws://e2e.fake",
+					host: "e2e.fake",
+					cwd: "/home/sandbox/acp-e2e",
+				},
+				acpSessionId: "acp-e2e",
+				gitWorkflow: {
+					branch: "kimchi/e2e-fix-login",
+					baseBranch: "main",
+					baseSha: "a".repeat(40),
+				},
+			}).catch(() => {})
+		}, 1_500)
+	})
+}
 
 export default function remoteRunExtension(pi: ExtensionAPI): void {
-	if (!process.env.KIMCHI_REMOTE_RUN) return
+	if (!isRemoteRunEnabled()) return
+
+	// Headless --print runs have no human for the consent dialog, and
+	// dispatch is a supervised, user-led convenience an unsupervised agent
+	// should never trigger — the tool could only ever fail with no_ui, so
+	// don't register it at all. The execute-time hasUI check inside the tool stays as
+	// defense-in-depth for UI-less sessions under interactive launches
+	// (e.g. subagent workers).
+	if (!shouldSuppressInteractiveTools()) {
+		registerDispatchToCloudAgentTool(pi)
+	}
+
+	maybeFireFakeCompletion(pi)
 
 	pi.registerCommand("remote-run", {
 		description: "Run a prompt on a remote sandbox worker via ACP: /remote-run <prompt>",
@@ -44,40 +88,11 @@ export default function remoteRunExtension(pi: ExtensionAPI): void {
 				return
 			}
 
-			// Per-invocation agent id — set via onSpawn before the promise resolves.
-			// Kept in the closure so concurrent invocations (e.g. after a Ctrl+B
-			// detach) cannot overwrite each other's state.
-			let agentId: string | undefined
-
-			const killUnsub = ctx.ui.onTerminalInput((data) => {
-				if (isRawInputCaptureActive()) return undefined
-				if (!matchesKey(data, Key.ctrl("x")) || isKeyRelease(data)) return undefined
-				if (!agentId) return undefined
-
-				const manager = getActiveManager()
-				const target = manager?.getRecord(agentId)
-				if (!target || !manager) return undefined
-				if (target.status !== "running" && target.status !== "error") return undefined
-
-				manager.abort(agentId)
-				ctx.ui.notify(`Stopped ${getDisplayName(target.type)} agent`, "info")
-				return { consume: true }
-			})
-
 			const description = `remote: ${prompt.slice(0, 60)}${prompt.length > 60 ? "..." : ""}`
 			try {
-				const { result } = await spawnRemoteAgent(pi, ctx, prompt, description, {
-					onSpawn: (id) => {
-						agentId = id
-					},
-				})
-
-				const preview = result.length > 500 ? `${result.slice(0, 500)}...` : result
-				ctx.ui.notify(preview || "Remote agent completed with no output.", "info")
-			} catch (err) {
-				ctx.ui.notify(`Remote run failed: ${err instanceof Error ? err.message : String(err)}`, "error")
-			} finally {
-				killUnsub()
+				await runCloudAgent(pi, ctx, prompt, description, { background: true })
+			} catch {
+				// Error notification already handled inside runCloudAgent.
 			}
 		},
 	})

@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSyn
 import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { v7 as uuidv7 } from "uuid"
-
+import { isProjectScopeAllowed } from "../project-scope-trust.js"
 import { activateSinglePhase, settleAfterPhaseTerminal } from "./lifecycle.js"
 import { normalizeSuccessCriteria, successCriteriaToAnswer } from "./success-criteria.js"
 import type {
@@ -95,7 +95,11 @@ export function resolveFermentsDir(cwd?: string): string {
 	const envDir = process.env.KIMCHI_FERMENTS_DIR
 	if (envDir) return envDir
 	const project = detectProjectRoot(cwd)
-	if (project) return resolve(project, ".kimchi", "ferments")
+	// Project-local ferments (.kimchi/ferments at the git root) are gated on
+	// project trust: an untrusted repo's shipped ferment state must not load
+	// (or be mutated by crash-recovery pausing) — fall back to the user's
+	// global store.
+	if (project && isProjectScopeAllowed(cwd ?? process.cwd())) return resolve(project, ".kimchi", "ferments")
 	return getGlobalFermentsDir()
 }
 
@@ -240,11 +244,12 @@ export class FermentStorage {
 
 	constructor(dir?: string) {
 		this.dir = dir ?? resolveFermentsDir()
-		this.ensureDir()
-	}
-
-	private ensureDir(): void {
-		if (!existsSync(this.dir)) mkdirSync(this.dir, { recursive: true })
+		// Deliberately NOT creating the directory here: eagerly mkdir-ing
+		// `<project>/.kimchi/ferments` on every construction self-arms the
+		// project-trust scan (the dir is a trust-requiring entry) in projects
+		// that never had ferments — flipping later in-session trust resolutions
+		// (e.g. the MCP project-config gate) from "ask" to "trusted". Reads
+		// treat a missing dir as empty; writes create it on demand.
 	}
 
 	private filePath(id: string): string {
@@ -296,7 +301,9 @@ export class FermentStorage {
 
 	/** List all ferments as summary items. */
 	list(): FermentListItem[] {
-		this.ensureDir()
+		// A missing directory is an empty store — do not create it here (see
+		// the constructor comment: eager creation self-arms the trust scan).
+		if (!existsSync(this.dir)) return []
 		let files: string[]
 		try {
 			files = readdirSync(this.dir).filter((f) => f.endsWith(".json"))

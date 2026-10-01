@@ -33,13 +33,10 @@ export function classifyTool(toolName: string, args: Record<string, unknown>): C
 			return "edit"
 		case "bash": {
 			const command = typeof args.command === "string" ? args.command.trim() : ""
-			const words = command.split(/\s+/)
-			const firstWord = words[0] ?? ""
-			// rtk wraps known tools: "rtk grep ...", "rtk read ..." — classify by the wrapped tool
-			const effectiveWord = firstWord === "rtk" ? (words[1] ?? "") : firstWord
-			if (BASH_DIRECTORY_CMDS.has(effectiveWord)) return "directory"
-			if (BASH_PATTERN_CMDS.has(effectiveWord)) return "pattern"
-			if (BASH_FILE_CMDS.has(effectiveWord)) return "file"
+			const firstWord = command.split(/\s+/)[0] ?? ""
+			if (BASH_DIRECTORY_CMDS.has(firstWord)) return "directory"
+			if (BASH_PATTERN_CMDS.has(firstWord)) return "pattern"
+			if (BASH_FILE_CMDS.has(firstWord)) return "file"
 			return "operation"
 		}
 		default:

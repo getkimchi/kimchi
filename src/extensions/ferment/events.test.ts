@@ -1,8 +1,7 @@
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { Api, Model } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { commandToEvents } from "../../ferment/event-mapper.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
@@ -506,14 +505,11 @@ describe("registerFermentEvents", () => {
 		const handler = handlers.get("model_select")
 		if (!handler) throw new Error("model_select handler was not registered")
 
-		const newModel = { id: "new-model" } as unknown as Model<Api>
-		const previousModel = { id: "previous-model" } as unknown as Model<Api>
-		const modelRegistry = {} as ModelRegistry
-		const ctx = createContext({ modelRegistry })
+		const ctx = createContext({ model: { id: "new-model" }, modelRegistry: {} })
 
-		handler({ model: newModel, previousModel }, ctx)
+		handler({ model: ctx.model, previousModel: undefined }, ctx)
 
-		expect(captureJudgeContext).toHaveBeenCalledWith(newModel, modelRegistry)
+		expect(captureJudgeContext).toHaveBeenCalledWith(ctx.model, ctx.modelRegistry)
 	})
 
 	it("transitions profile from planning to implementation when activate_ferment_phase succeeds", async () => {
@@ -1226,7 +1222,7 @@ describe("turn_end error recovery in one-shot mode", () => {
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 		const notify = vi.fn()
-		const ctx = { ui: { notify } }
+		const ctx = createContext({ ui: { notify } })
 
 		await turnEnd(
 			{
@@ -1264,7 +1260,7 @@ describe("turn_end error recovery in one-shot mode", () => {
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 		const notify = vi.fn()
-		const ctx = { ui: { notify } }
+		const ctx = createContext({ ui: { notify } })
 
 		await turnEnd(
 			{
@@ -1310,7 +1306,7 @@ describe("turn_end error recovery in one-shot mode", () => {
 		registerFermentEvents(pi, runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
-		const ctx = { ui: { notify: vi.fn() } }
+		const ctx = createContext({ ui: { notify: vi.fn() } })
 
 		await turnEnd(
 			{
@@ -1357,7 +1353,7 @@ describe("TUI /ferment one-shot without ferment-oneshot flag", () => {
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 		const notify = vi.fn()
-		const ctx = { ui: { notify } }
+		const ctx = createContext({ ui: { notify } })
 
 		await turnEnd(
 			{

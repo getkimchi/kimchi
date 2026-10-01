@@ -15,14 +15,14 @@ import { prepareTool } from "./_helpers.js"
  * having to know Claude's flag set.
  */
 export async function runClaude(args: string[]): Promise<number> {
-	const prepped = await prepareTool("claudecode", "inject")
-	if (!prepped) return 1
-
-	const telemetryEnabled = readTelemetryConfig().enabled
 	try {
+		const prepped = await prepareTool("claudecode", "inject")
+		if (!prepped) return 1
+
+		const telemetryEnabled = readTelemetryConfig().enabled
 		return await runForeground("claude", args, claudeCodeEnv(prepped.apiKey, undefined, { telemetryEnabled }))
 	} catch (err) {
-		console.error(`kimchi claude: ${(err as Error).message}`)
+		console.error("kimchi claude:", err instanceof Error ? err.message : String(err))
 		return 1
 	}
 }

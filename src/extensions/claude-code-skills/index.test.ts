@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { type ExtensionAPI, loadSkillsFromDir, type ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import claudeCodeSkillsExtension from "./index.js"
 
 let dir: string
@@ -13,6 +14,11 @@ describe("Claude Code skills extension", () => {
 		dir = mkdtempSync(join(tmpdir(), "kimchi-claude-code-skill-tool-"))
 		oldHome = process.env.HOME
 		process.env.HOME = join(dir, "home")
+		// Project fixtures live under <dir>/project — trusted for the tests
+		// that exercise project .claude/skills; fail-closed cases have their
+		// own tests in definition.test.ts.
+		resetProjectScopeTrustForTests()
+		setProjectScopeTrusted(join(dir, "project"), true)
 	})
 
 	afterEach(() => {
@@ -156,7 +162,7 @@ describe("Claude Code skills extension", () => {
 	it("skips startup Claude Code resources that duplicate configured native skills", async () => {
 		writeSkill(join(dir, "project", ".agents", "skills", "best-practices", "SKILL.md"), "Native skill.")
 		writeSkill(join(dir, "project", ".claude", "skills", "best-practices", "SKILL.md"), "Claude skill.")
-		const { handlers } = registerExtension([".agents/skills"])
+		const { handlers } = registerExtension(() => [".agents/skills"])
 
 		const result = await handlers.resources_discover?.({
 			type: "resources_discover",
@@ -169,7 +175,7 @@ describe("Claude Code skills extension", () => {
 
 	it("contributes startup temp copies for configured Claude Code skills", async () => {
 		writeRawSkill(join(dir, "project", ".claude", "skills", "best-practices", "SKILL.md"), "Claude skill.\n")
-		const { handlers } = registerExtension([".claude/skills"])
+		const { handlers } = registerExtension(() => [".claude/skills"])
 
 		const result = await handlers.resources_discover?.({
 			type: "resources_discover",
@@ -188,7 +194,7 @@ type RegisteredHandlers = {
 	resources_discover?: (event: { type: "resources_discover"; cwd: string; reason: string }) => unknown
 }
 
-function registerExtension(configuredSkillPaths: string[] = []): {
+function registerExtension(configuredSkillPaths: () => string[] = () => []): {
 	tools: ToolDefinition[]
 	handlers: RegisteredHandlers
 } {

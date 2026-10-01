@@ -1,6 +1,8 @@
+import type { Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "./auto-model/state.js"
 import createModelGuardExtension, {
 	__resetImagesDetectedForTest,
 	__setLatestMessagesForTest,
@@ -234,13 +236,16 @@ describe("modelSwitchExtension", () => {
 			const result = await h.exec("kimchi-dev/kimi-k2.6")
 
 			expect(h.setModel).toHaveBeenCalledTimes(1)
-			expect(h.setModel).toHaveBeenCalledWith({
-				id: "kimi-k2.6",
-				provider: "kimchi-dev",
-				name: "Kimi K2.6",
-				input: ["text", "image"],
-				contextWindow: 200_000,
-			})
+			expect(h.setModel).toHaveBeenCalledWith(
+				{
+					id: "kimi-k2.6",
+					provider: "kimchi-dev",
+					name: "Kimi K2.6",
+					input: ["text", "image"],
+					contextWindow: 200_000,
+				},
+				{ persist: true },
+			)
 			expect(textOf(result)).toBe("Switched to model kimchi-dev/kimi-k2.6 (Kimi K2.6)")
 			expect(result.details).toBeNull()
 		})
@@ -249,13 +254,16 @@ describe("modelSwitchExtension", () => {
 			const h = createHarness()
 			const result = await h.exec("anthropic/claude-sonnet-4-20250514")
 
-			expect(h.setModel).toHaveBeenCalledWith({
-				id: "claude-sonnet-4-20250514",
-				provider: "anthropic",
-				name: "Claude Sonnet 4",
-				input: ["text", "image"],
-				contextWindow: 200_000,
-			})
+			expect(h.setModel).toHaveBeenCalledWith(
+				{
+					id: "claude-sonnet-4-20250514",
+					provider: "anthropic",
+					name: "Claude Sonnet 4",
+					input: ["text", "image"],
+					contextWindow: 200_000,
+				},
+				{ persist: true },
+			)
 			expect(textOf(result)).toBe("Switched to model anthropic/claude-sonnet-4-20250514 (Claude Sonnet 4)")
 		})
 
@@ -263,13 +271,16 @@ describe("modelSwitchExtension", () => {
 			const h = createHarness()
 			const result = await h.exec("kimchi-dev/openai/gpt-5.6-sol")
 
-			expect(h.setModel).toHaveBeenCalledWith({
-				id: "gpt-5.6-sol",
-				provider: "kimchi-dev/openai",
-				name: "GPT 5.6 Sol",
-				input: ["text", "image"],
-				contextWindow: 1_050_000,
-			})
+			expect(h.setModel).toHaveBeenCalledWith(
+				{
+					id: "gpt-5.6-sol",
+					provider: "kimchi-dev/openai",
+					name: "GPT 5.6 Sol",
+					input: ["text", "image"],
+					contextWindow: 1_050_000,
+				},
+				{ persist: true },
+			)
 			expect(textOf(result)).toBe("Switched to model kimchi-dev/openai/gpt-5.6-sol (GPT 5.6 Sol)")
 		})
 	})
@@ -1154,6 +1165,106 @@ describe("modelSwitchExtension", () => {
 				createContext({ tokens: 10_000 }),
 			)
 			expect(setModel).not.toHaveBeenCalled()
+		})
+
+		it("does not revert an Auto switch when the resolved target fits the context", async () => {
+			// Regression (PR #1137 comment): Auto's catalog descriptor reports a 128K
+			// floor, but the routed concrete target is 1M. ~200K of context exceeds the
+			// 128K descriptor yet fits the 1M target, so the guard must validate against
+			// the effective (resolved) window and must NOT revert the Auto switch.
+			const autoDescriptor = {
+				id: "auto",
+				provider: "kimchi-dev",
+				input: ["text", "image"],
+				contextWindow: 128_000,
+			}
+			const resolvedTarget = {
+				id: "nemotron-3-ultra-fp4",
+				provider: "kimchi-dev",
+				input: ["text"],
+				contextWindow: 1_000_000,
+			}
+			clearAutoRoutingState("test-session")
+			setAutoRoutingState("test-session", {
+				status: "resolved",
+				model: { ...resolvedTarget } as Model<string>,
+				requestedId: "auto",
+			})
+			try {
+				const { pi, trigger } = createHarnessWithTrigger()
+				modelSwitchExtension(pi)
+				const setModel = pi.setModel as ReturnType<typeof vi.fn>
+				await trigger(
+					"model_select",
+					{
+						type: "model_select",
+						model: autoDescriptor,
+						previousModel: {
+							id: "kimi-k2.6",
+							provider: "kimchi-dev",
+							input: ["text", "image"],
+							contextWindow: 200_000,
+						},
+						source: "set",
+					},
+					createContext({ tokens: 200_000 }),
+				)
+
+				// 200K fits the 1M effective window: no revert, no setModel call.
+				expect(setModel).not.toHaveBeenCalled()
+			} finally {
+				clearAutoRoutingState("test-session")
+			}
+		})
+
+		it("does not revert a backend-routed virtual model when the resolved target fits the context", async () => {
+			// Backend-routed flow: auto-beta advertises a 1M descriptor; the routed
+			// concrete target is 128K. 200K of context fits the advertised 1M but
+			// not the effective 128K window, so the guard must validate against the
+			// resolved (effective) target via the id-agnostic resolver and revert.
+			const autoBetaDescriptor = {
+				id: "auto-beta",
+				provider: "kimchi-dev",
+				input: ["text", "image"],
+				contextWindow: 1_048_576,
+			}
+			const resolvedTarget = {
+				id: "kimi-k3",
+				provider: "kimchi-dev",
+				input: ["text"],
+				contextWindow: 128_000,
+			}
+			clearAutoRoutingState("test-session")
+			setAutoRoutingState("test-session", {
+				status: "resolved",
+				model: { ...resolvedTarget } as Model<string>,
+				requestedId: "auto-beta",
+			})
+			try {
+				const { pi, trigger } = createHarnessWithTrigger()
+				modelSwitchExtension(pi)
+				const setModel = pi.setModel as ReturnType<typeof vi.fn>
+				await trigger(
+					"model_select",
+					{
+						type: "model_select",
+						model: autoBetaDescriptor,
+						previousModel: {
+							id: "kimi-k2.6",
+							provider: "kimchi-dev",
+							input: ["text", "image"],
+							contextWindow: 200_000,
+						},
+						source: "set",
+					},
+					createContext({ tokens: 200_000 }),
+				)
+
+				// 200K exceeds the 128K actual routed window → must revert.
+				expect(setModel).toHaveBeenCalled()
+			} finally {
+				clearAutoRoutingState("test-session")
+			}
 		})
 
 		it("reverts when session has images and target lacks vision", async () => {

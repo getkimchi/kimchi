@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Hardened runtime is enabled explicitly when signing with Developer ID;
+      these entitlements carve out only what the Bun runtime needs.
+
+      Allow JIT: JavaScriptCore compiles JS to executable memory at runtime;
+      hardened runtime forbids this without the entitlement.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <!--
+      Allow unsigned executable memory: JSC's code-stub allocator maps
+      writable+executable pages that are not covered by the binary's
+      signature. Standard escape hatch for JS engines (same as Electron/V8).
+    -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!--
+      Disable library validation: the compiled binary dlopen()s native addons
+      (e.g. @napi-rs/keyring's .node) that are signed with a different
+      identity. Library validation would reject any dylib not signed by the
+      same team as this binary.
+    -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

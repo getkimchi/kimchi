@@ -33,15 +33,35 @@ export function truncatePath(path: string, maxWidth: number): string {
 	return `${path.slice(0, Math.max(0, maxWidth - 3))}...`
 }
 
+// The pepper mark columns, shared by the full word-art and the compact
+// variant so the two can't drift apart.
+const PEPPER_ROWS = ["     █▀", "    ███", "▄  ▄███", "▀████▀"]
+
+// The "kimchi" word-art columns that follow the pepper in the full logo.
+const WORD_ROWS = [
+	"  █  █ ▀█▀ █▄ ▄█ ▄▀▀ █  █ ▀█▀",
+	"  █▀▄   █  █ ▀ █ █   █▀▀█  █",
+	"  █  █  █  █   █ █▄▄ █  █  █",
+	"   ▀  ▀ ▀▀▀ ▀   ▀  ▀▀ ▀  ▀ ▀▀▀",
+]
+
 export function buildLogoLines(theme: Theme): string[] {
 	const L = theme.getFgAnsi("accent")
 	const G = theme.getFgAnsi("bashMode")
 	return [
-		`${G}     █▀${RST_FG}  ${L}█  █ ▀█▀ █▄ ▄█ ▄▀▀ █  █ ▀█▀${RST_FG}`,
-		`${L}    ███  █▀▄   █  █ ▀ █ █   █▀▀█  █${RST_FG}`,
-		`${L}▄  ▄███  █  █  █  █   █ █▄▄ █  █  █${RST_FG}`,
-		`${L}▀████▀   ▀  ▀ ▀▀▀ ▀   ▀  ▀▀ ▀  ▀ ▀▀▀${RST_FG}`,
+		`${G}${PEPPER_ROWS[0]}${RST_FG}${L}${WORD_ROWS[0]}${RST_FG}`,
+		...PEPPER_ROWS.slice(1).map((pepper, i) => `${L}${pepper}${WORD_ROWS[i + 1]}${RST_FG}`),
 	]
+}
+
+/**
+ * Pepper-only variant of the logo art for narrow terminals where the full
+ * word-art would leave no room for the rest of the header.
+ */
+export function buildCompactLogoLines(theme: Theme): string[] {
+	const L = theme.getFgAnsi("accent")
+	const G = theme.getFgAnsi("bashMode")
+	return [`${G}${PEPPER_ROWS[0]}${RST_FG}`, ...PEPPER_ROWS.slice(1).map((pepper) => `${L}${pepper}${RST_FG}`)]
 }
 
 export function buildInfoLines(

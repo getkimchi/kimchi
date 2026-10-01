@@ -3,6 +3,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "./__mocks__/context.js"
+import { createExtensionApi } from "./__mocks__/extension-api.js"
 import sessionNameExtension, {
 	deterministicFallback,
 	extractFirstUserMessage,
@@ -104,6 +106,13 @@ describe("deterministicFallback", () => {
 })
 
 describe("extractFirstUserMessage", () => {
+	it("skips greetings and keeps the first actual task", () => {
+		const ctx = createMockCtx([
+			{ type: "message", message: { role: "user", content: "Hello!" } },
+			{ type: "message", message: { role: "user", content: "Fix the resume menu jumping" } },
+		])
+		expect(extractFirstUserMessage(ctx as never)).toBe("Fix the resume menu jumping")
+	})
 	it("should return null when no entries", () => {
 		const ctx = createMockCtx([])
 		expect(extractFirstUserMessage(ctx as never)).toBeNull()
@@ -217,7 +226,7 @@ describe("suggestSessionName", () => {
 		expect(init).toBeDefined()
 		const body = JSON.parse(init?.body as string) as { model: string }
 		expect(body.model).toBe(SESSION_NAME_MODEL)
-		expect(body.model).toBe("deepseek-v4-flash")
+		expect(body.model).toBe("deepseek-v4-flash-0731")
 	})
 
 	it("should truncate long user messages", async () => {
@@ -239,16 +248,60 @@ describe("suggestSessionName", () => {
 })
 
 describe("sessionNameExtension turn_end handler", () => {
-	it("should be tested via integration", () => {
-		// The turn_end handler is a thin glue layer:
-		// - skips if already auto-named
-		// - skips if session already has a name
-		// - skips if no hint
-		// - calls suggestSessionName quietly
-		// - calls pi.setSessionName only if still unnamed
-		// All branches are covered by the suggestSessionName tests above
-		// and mocking pi.setSessionName would be trivial but low value
-		expect(true).toBe(true)
+	it("waits past a greeting and names the task on the next turn", async () => {
+		const { api, getHandler } = createExtensionApi()
+		api.setSessionName = vi.fn()
+		const entries = [{ type: "message", message: { role: "user", content: "Hi!" } }]
+		const ctx = createContext({
+			hasUI: false,
+			sessionManager: {
+				getSessionName: vi.fn(() => undefined),
+				getBranch: vi.fn().mockImplementation(() => entries),
+				getEntries: vi.fn().mockImplementation(() => entries),
+			},
+		})
+		sessionNameExtension()(api)
+		await getHandler("turn_end")({}, ctx)
+		expect(api.setSessionName).not.toHaveBeenCalled()
+		entries.push({ type: "message", message: { role: "user", content: "Fix resume menu jumping" } })
+		await getHandler("turn_end")({}, ctx)
+		await getHandler("session_shutdown")({}, ctx)
+		expect(api.setSessionName).toHaveBeenCalledWith("Fix resume menu jumping")
+	})
+
+	it("does not apply a late title after switching sessions or overwrite a manual title", async () => {
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				await gate
+				return new Response(JSON.stringify({ choices: [{ message: { content: "Old task" } }] }))
+			}),
+		)
+		mockLoadConfig.mockReturnValue({ apiKey: "test", llmEndpoint: "https://llm.test/openai/v1" })
+		const { api, getHandler } = createExtensionApi()
+		api.setSessionName = vi.fn()
+		const name = vi.fn<() => string | undefined>(() => undefined)
+		const ctx = createContext({
+			hasUI: false,
+			sessionManager: {
+				getSessionName: name,
+				getBranch: vi.fn().mockReturnValue([{ type: "message", message: { role: "user", content: "Fix a bug" } }]),
+			},
+		})
+		sessionNameExtension()(api)
+		await getHandler("turn_end")({}, ctx)
+		await getHandler("session_start")({}, ctx)
+		release()
+		await getHandler("session_shutdown")({}, ctx)
+		expect(api.setSessionName).not.toHaveBeenCalled()
+		name.mockReturnValue("My title")
+		await getHandler("turn_end")({}, ctx)
+		await getHandler("session_shutdown")({}, ctx)
+		expect(api.setSessionName).not.toHaveBeenCalled()
 	})
 })
 

@@ -2,11 +2,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent"
 import type { MarkdownTheme } from "@earendil-works/pi-tui"
 import { Markdown, visibleWidth } from "@earendil-works/pi-tui"
+import { truncateLinesToWidth } from "../truncate-lines.js"
 
 const PATCH_SYMBOL = Symbol("kimchi:dotted-paragraph")
 
 /** Wraps a Markdown block with a ` ● ` prefix on the first visible line, `   ` on the rest. */
-class DottedParagraph {
+export class DottedParagraph {
 	private md: Markdown
 	private cachedWidth?: number
 	private cachedLines?: string[]
@@ -24,9 +25,11 @@ class DottedParagraph {
 	render(width: number): string[] {
 		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines
 		const PREFIX_W = 3
+		// At width <= PREFIX_W there is no room for prefix + content; emit a
+		// bare dot marker instead (truncated to width by the guard below).
 		if (width <= PREFIX_W) {
 			this.cachedWidth = width
-			this.cachedLines = [" ● "]
+			this.cachedLines = truncateLinesToWidth([" ● "], width)
 			return this.cachedLines
 		}
 		const lines = this.md.render(width - PREFIX_W)
@@ -39,8 +42,10 @@ class DottedParagraph {
 			return `   ${line}`
 		})
 		this.cachedWidth = width
-		this.cachedLines = rendered
-		return rendered
+		// This component renders on the main screen, where pi-tui crashes on
+		// over-wide lines; hard-truncate the final output as a last defense.
+		this.cachedLines = truncateLinesToWidth(rendered, width)
+		return this.cachedLines
 	}
 }
 

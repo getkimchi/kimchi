@@ -1,268 +1,344 @@
-import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import {
-	CLASSIFIER_FALLBACK_MODEL_ID,
-	CLASSIFIER_PRIMARY_MODEL_ID,
-	classifyToolCall,
-	parseClassifierOutput,
-} from "./classifier.js"
+import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
+import { classifyToolCall, parseClassifierOutput } from "./classifier.js"
+import { classifierHealth } from "./classifier-health.js"
+import { resolveClassifierCandidates } from "./classifier-models.js"
 
 const completeMock = vi.fn()
+vi.mock("@earendil-works/pi-ai/compat", () => ({
+	complete: (...args: unknown[]) => completeMock(...args),
+}))
 
-vi.mock("@earendil-works/pi-ai/compat", async () => {
-	const actual = await vi.importActual<typeof import("@earendil-works/pi-ai/compat")>("@earendil-works/pi-ai/compat")
-	return {
-		...actual,
-		complete: (...args: unknown[]) => completeMock(...args),
-	}
-})
-
-function fakeModel(id = "test-model", provider = "openai"): Model<Api> {
-	return { provider, id, api: "openai-completions" } as Model<Api>
+const primary = createModel("deepseek-v4-flash-0731")
+const fallback = createModel("minimax-m3")
+const call = { toolName: "edit", input: { path: "foo.ts" }, cwd: "/tmp" }
+const options = { timeoutMs: 8000 }
+function response(content = '{"verdict":"safe","reason":"fine","riskScore":"low"}', stopReason = "stop") {
+	return { content: [{ type: "text", text: content }], stopReason }
 }
-
-function fakeRegistry(
-	available: Model<Api>[] = [fakeModel(CLASSIFIER_PRIMARY_MODEL_ID)],
-	apiKey = "fake-key",
-): ModelRegistry {
-	return {
-		getAvailable: vi.fn(() => available),
-		getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true, apiKey, headers: {} }),
-	} as unknown as ModelRegistry
-}
-
-function fakeResponse(opts: { stopReason: string; content?: string; errorMessage?: string }) {
-	return {
-		content: opts.content ? [{ type: "text", text: opts.content }] : [],
-		stopReason: opts.stopReason,
-		errorMessage: opts.errorMessage,
-	}
+function deferred<T>() {
+	let resolve!: (value: T) => void
+	let reject!: (error: unknown) => void
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res
+		reject = rej
+	})
+	return { promise, resolve, reject }
 }
 
 describe("classifyToolCall", () => {
+	it.each([
+		"output",
+		"provider",
+		"auth",
+	])("keeps %s diagnostics and tool inputs out of health events", async (source) => {
+		const secret = "SENTINEL_SECRET"
+		const registry = createModelRegistry()
+		if (source === "auth") registry.getApiKeyAndHeaders.mockRejectedValue(new Error(secret))
+		completeMock.mockResolvedValue(
+			source === "provider" ? { ...response("", "error"), errorMessage: secret } : response(secret),
+		)
+		const promise = classifyToolCall([primary], registry, { ...call, input: { command: secret } }, options)
+		await vi.runAllTimersAsync()
+		const result = await promise
+		expect(result.ok).toBe(false)
+		const health = classifierHealth(result, [primary], [])
+		expect(health).toBeDefined()
+		expect(JSON.stringify(health)).not.toContain(secret)
+		expect(health?.payload).not.toHaveProperty("reason")
+	})
+
+	it("caps retries on every candidate", async () => {
+		completeMock.mockResolvedValue(response("invalid"))
+		const promise = classifyToolCall([primary, fallback], createModelRegistry(), call, options)
+		await vi.runAllTimersAsync()
+		expect(await promise).toMatchObject({ ok: false, failureCode: "invalid_output" })
+		expect(completeMock.mock.calls.map(([model]) => model)).toEqual([
+			primary,
+			primary,
+			primary,
+			fallback,
+			fallback,
+			fallback,
+		])
+	})
+
 	beforeEach(() => {
 		completeMock.mockReset()
 		vi.useFakeTimers()
 	})
-
 	afterEach(() => {
+		expect(vi.getTimerCount()).toBe(0)
 		vi.restoreAllMocks()
 		vi.useRealTimers()
 	})
 
-	it("returns safe verdict on first attempt", async () => {
-		completeMock.mockResolvedValue(
-			fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' }),
-		)
+	it("uses fallback when the primary slug is missing", async () => {
+		const registry = createModelRegistry([fallback])
+		const { candidates } = resolveClassifierCandidates(registry)
+		completeMock.mockResolvedValue(response())
+		const result = await classifyToolCall(candidates, registry, call, options)
+		expect(result).toMatchObject({ ok: true, usedModelId: fallback.id })
+		expect(completeMock.mock.calls[0]?.[0]).toBe(fallback)
+	})
 
-		const result = await classifyToolCall(
-			fakeRegistry(),
-			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
-			{ timeoutMs: 5000 },
-		)
-
-		expect(result.verdict).toBe("safe")
-		expect(result.riskScore).toBe("low")
-		expect(result.ok).toBe(true)
+	it.each(["safe", "requires-confirmation"])("stops on a valid %s verdict", async (verdict) => {
+		completeMock.mockResolvedValue(response(JSON.stringify({ verdict, reason: "fine", riskScore: "low" })))
+		const result = await classifyToolCall([primary, fallback], createModelRegistry(), call, options)
+		expect(result).toMatchObject({ verdict, ok: true, riskScore: "low", usedModelId: primary.id })
+		expect(result).not.toHaveProperty("retryable")
+		expect(result.failureCode).toBeUndefined()
 		expect(completeMock).toHaveBeenCalledTimes(1)
 	})
 
-	it("keeps classifier tags while omitting Pi token limits for Kimchi", async () => {
+	it.each(["deepseek-v4-flash-0731", "kimi-k3"])("keeps classifier tags and token limits (%s)", async (modelId) => {
 		let sentPayload: unknown
-		completeMock.mockImplementation((_model: unknown, _context: unknown, options: unknown) => {
-			const { onPayload } = options as { onPayload: (payload: unknown) => unknown }
-			sentPayload = onPayload({ max_completion_tokens: 100, max_tokens: 100, tags: ["existing"] })
-			return fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' })
+		completeMock.mockImplementation((_model, _context, opts) => {
+			sentPayload = opts.onPayload({ max_completion_tokens: 100, max_tokens: 100, tags: ["existing"] })
+			return response()
 		})
-
-		await classifyToolCall(
-			fakeRegistry([fakeModel(CLASSIFIER_PRIMARY_MODEL_ID, "kimchi-dev")]),
-			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
-			{ timeoutMs: 5000 },
-		)
-
-		expect(sentPayload).toEqual({ tags: ["source:classifier", "existing"] })
+		await classifyToolCall([createModel(modelId)], createModelRegistry(), call, options)
+		expect(sentPayload).toEqual({
+			max_completion_tokens: 100,
+			max_tokens: 100,
+			tags: ["source:classifier", "existing"],
+		})
 	})
 
-	it("retries up to 3 times on abort before giving up", async () => {
-		completeMock.mockResolvedValue(fakeResponse({ stopReason: "aborted" }))
+	it.each([
+		["timeout", () => response("", "aborted")],
+		["provider_error", () => ({ ...response("", "error"), errorMessage: "rate limit exceeded" })],
+		[
+			"provider_error",
+			() => {
+				throw new Error("connection failed")
+			},
+		],
+		["invalid_output", () => response("not json")],
+	] as const)("retries %s then advances to fallback", async (_code, failure) => {
+		completeMock.mockImplementation((model) => (model === primary ? failure() : response()))
+		const promise = classifyToolCall([primary, fallback], createModelRegistry(), call, options)
+		await vi.runAllTimersAsync()
+		expect(await promise).toMatchObject({ ok: true, usedModelId: fallback.id })
+		expect(completeMock.mock.calls.map(([model]) => model)).toEqual([primary, primary, primary, fallback])
+	})
 
-		const promise = classifyToolCall(
-			fakeRegistry(),
-			{ toolName: "edit", input: { path: "foo.ts" }, cwd: "/tmp" },
-			{ timeoutMs: 5000 },
+	it.each([2, 3])("can succeed on primary attempt %i", async (successAttempt) => {
+		completeMock.mockImplementation(() =>
+			completeMock.mock.calls.length === successAttempt ? response() : response("", "aborted"),
 		)
+		const promise = classifyToolCall([primary], createModelRegistry(), call, options)
+		await vi.runAllTimersAsync()
+		expect(await promise).toMatchObject({ ok: true, usedModelId: primary.id })
+		expect(completeMock).toHaveBeenCalledTimes(successAttempt)
+	})
 
+	it.each([
+		["timeout", response("", "aborted")],
+		["provider_error", { ...response("", "error"), errorMessage: "rate limit exceeded" }],
+		["invalid_output", response("invalid")],
+	] as const)("fails closed with public %s code after the cap", async (failureCode, failure) => {
+		completeMock.mockResolvedValue(failure)
+		const promise = classifyToolCall([primary], createModelRegistry(), call, options)
 		await vi.runAllTimersAsync()
 		const result = await promise
-
-		expect(result.verdict).toBe("requires-confirmation")
-		expect(result.ok).toBe(false)
-		expect(result.reason).toContain("classifier timeout")
-		expect(result.reason).toContain(CLASSIFIER_PRIMARY_MODEL_ID)
+		expect(result).toMatchObject({ verdict: "requires-confirmation", ok: false, failureCode })
+		expect(result).not.toHaveProperty("retryable")
+		expect(result.usedModelId).toBeUndefined()
 		expect(completeMock).toHaveBeenCalledTimes(3)
 	})
 
-	it("succeeds on 2nd attempt after first abort", async () => {
-		completeMock
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
-			.mockResolvedValueOnce(
-				fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' }),
-			)
-
-		const promise = classifyToolCall(
-			fakeRegistry(),
-			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
-			{ timeoutMs: 5000 },
-		)
-
+	it("reserves a full fallback attempt after actual primary timeouts", async () => {
+		const starts: number[] = []
+		completeMock.mockImplementation((model) => {
+			starts.push(performance.now())
+			if (model === primary) return new Promise(() => {})
+			return new Promise((resolve) => setTimeout(() => resolve(response()), 7999))
+		})
+		const started = performance.now()
+		const promise = classifyToolCall([primary, fallback], createModelRegistry(), call, options)
 		await vi.runAllTimersAsync()
-		const result = await promise
+		expect(await promise).toMatchObject({ ok: true, usedModelId: fallback.id })
+		expect(starts.map((t) => t - started)).toEqual([0, 8500, 16500])
+		expect(performance.now() - started).toBe(24499)
+	})
 
-		expect(result.verdict).toBe("safe")
-		expect(result.riskScore).toBe("low")
-		expect(result.ok).toBe(true)
+	it("bounds a provider that ignores abort by the total budget", async () => {
+		let attemptSignal: AbortSignal | undefined
+		completeMock.mockImplementation((_model, _context, opts) => {
+			attemptSignal = opts.signal
+			return new Promise(() => {})
+		})
+		const promise = classifyToolCall([primary], createModelRegistry(), call, { timeoutMs: 8000, maxTotalMs: 2000 })
+		const started = performance.now()
+		await vi.runAllTimersAsync()
+		expect(await promise).toMatchObject({ ok: false, failureCode: "budget_exhausted" })
+		expect(performance.now() - started).toBe(2000)
+		expect(attemptSignal?.aborted).toBe(true)
+		expect(completeMock).toHaveBeenCalledTimes(1)
+	})
+
+	it("starts no work when the budget cannot fit an attempt", async () => {
+		const registry = createModelRegistry()
+		expect(await classifyToolCall([primary], registry, call, { ...options, maxTotalMs: 999 })).toMatchObject({
+			ok: false,
+			failureCode: "budget_exhausted",
+		})
+		expect(registry.getApiKeyAndHeaders).not.toHaveBeenCalled()
+		expect(completeMock).not.toHaveBeenCalled()
+	})
+
+	it.each(["missing", "throws"] as const)("skips %s auth and uses fallback", async (kind) => {
+		const registry = createModelRegistry()
+		if (kind === "missing") registry.getApiKeyAndHeaders.mockResolvedValueOnce({ ok: false, error: "secret" })
+		else registry.getApiKeyAndHeaders.mockRejectedValueOnce(new Error("secret"))
+		completeMock.mockResolvedValue(response())
+		expect(await classifyToolCall([primary, fallback], registry, call, options)).toMatchObject({
+			ok: true,
+			usedModelId: fallback.id,
+		})
+		expect(completeMock.mock.calls[0]?.[0]).toBe(fallback)
+	})
+
+	it("reports auth lookup failures when auth is configured", async () => {
+		const registry = createModelRegistry()
+		registry.getApiKeyAndHeaders.mockResolvedValue({ ok: false, error: "secret" })
+		const result = await classifyToolCall([primary, fallback], registry, call, options)
+		expect(result.failureCode).toBe("auth_unavailable")
+		expect(result.reason).toContain(`${primary.id} skipped: auth lookup failed`)
+		expect(result.reason).toContain(`${fallback.id} skipped: auth lookup failed`)
+		expect(result).not.toHaveProperty("retryable")
+		expect(result.reason).not.toContain("secret")
+	})
+
+	it("reports no_api_key when no auth is configured", async () => {
+		const registry = createModelRegistry()
+		registry.hasConfiguredAuth.mockReturnValue(false)
+		registry.getApiKeyAndHeaders.mockResolvedValue({ ok: false, error: "secret" })
+		const result = await classifyToolCall([primary, fallback], registry, call, options)
+		expect(result.failureCode).toBe("no_api_key")
+		expect(result.reason).toContain(`${primary.id} skipped: no API key`)
+		expect(result.reason).toContain(`${fallback.id} skipped: no API key`)
+		expect(result).not.toHaveProperty("retryable")
+		expect(result.reason).not.toContain("secret")
+	})
+
+	it("uses the fallback when the primary provider is unconfigured", async () => {
+		const registry = createModelRegistry()
+		registry.hasConfiguredAuth.mockImplementation((model) => model.id !== primary.id)
+		registry.getApiKeyAndHeaders.mockResolvedValueOnce({ ok: false, error: "secret" })
+		completeMock.mockResolvedValue(response())
+		expect(await classifyToolCall([primary, fallback], registry, call, options)).toMatchObject({
+			ok: true,
+			usedModelId: fallback.id,
+		})
+		expect(completeMock.mock.calls[0]?.[0]).toBe(fallback)
+	})
+
+	it("aggregates no_api_key and auth lookup failures across the ladder", async () => {
+		const registry = createModelRegistry()
+		registry.hasConfiguredAuth.mockImplementation((model) => model.id !== primary.id)
+		registry.getApiKeyAndHeaders
+			.mockResolvedValueOnce({ ok: false, error: "secret" })
+			.mockRejectedValueOnce(new Error("secret"))
+		const result = await classifyToolCall([primary, fallback], registry, call, options)
+		expect(result.failureCode).toBe("auth_unavailable")
+		expect(result.reason).toContain(`${primary.id} skipped: no API key`)
+		expect(result.reason).toContain(`${fallback.id} skipped: auth lookup failed`)
+		expect(result.reason).not.toContain("secret")
+	})
+
+	it.each(["resolve", "reject"] as const)("bounds stalled primary auth and ignores late %s", async (settlement) => {
+		const pending = deferred<Awaited<ReturnType<ModelRegistry["getApiKeyAndHeaders"]>>>()
+		const registry = createModelRegistry()
+		registry.getApiKeyAndHeaders.mockReturnValueOnce(pending.promise)
+		completeMock.mockResolvedValue(response())
+		const promise = classifyToolCall([primary, fallback], registry, call, options)
+		await vi.runAllTimersAsync()
+		expect(await promise).toMatchObject({ ok: true, usedModelId: fallback.id })
+		if (settlement === "resolve") pending.resolve({ ok: true, apiKey: "late", headers: {} })
+		else pending.reject(new Error("late auth error"))
+		await vi.runAllTimersAsync()
+		expect(completeMock).toHaveBeenCalledTimes(1)
+		expect(completeMock.mock.calls[0]?.[0]).toBe(fallback)
+	})
+
+	it("bounds a single stalled auth lookup", async () => {
+		const registry = createModelRegistry()
+		registry.getApiKeyAndHeaders.mockReturnValue(new Promise(() => {}))
+		const started = performance.now()
+		const promise = classifyToolCall([primary], registry, call, options)
+		await vi.runAllTimersAsync()
+		expect(await promise).toMatchObject({ failureCode: "budget_exhausted", ok: false })
+		expect(performance.now() - started).toBe(25000)
+		expect(completeMock).not.toHaveBeenCalled()
+	})
+
+	it.each(["resolve", "reject"] as const)("ignores late completion %s after timeout", async (settlement) => {
+		const pending = deferred<ReturnType<typeof response>>()
+		completeMock.mockReturnValueOnce(pending.promise).mockResolvedValue(response())
+		const promise = classifyToolCall([primary], createModelRegistry(), call, options)
+		await vi.runAllTimersAsync()
+		expect(await promise).toMatchObject({ ok: true })
+		if (settlement === "resolve") pending.resolve(response())
+		else pending.reject(new Error("late provider error"))
+		await vi.runAllTimersAsync()
 		expect(completeMock).toHaveBeenCalledTimes(2)
 	})
 
-	it("succeeds on 3rd attempt after two aborts", async () => {
-		completeMock
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
-			.mockResolvedValueOnce(
-				fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' }),
-			)
-
-		const promise = classifyToolCall(
-			fakeRegistry(),
-			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
-			{ timeoutMs: 5000 },
-		)
-
-		await vi.runAllTimersAsync()
-		const result = await promise
-
-		expect(result.verdict).toBe("safe")
-		expect(result.riskScore).toBe("low")
-		expect(result.ok).toBe(true)
-		expect(completeMock).toHaveBeenCalledTimes(3)
-	})
-
-	it("calls fallback model after 3 retryable failures and returns its result", async () => {
-		completeMock
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
-			.mockResolvedValueOnce(
-				fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' }),
-			)
-
-		const promise = classifyToolCall(
-			fakeRegistry([fakeModel(CLASSIFIER_PRIMARY_MODEL_ID), fakeModel(CLASSIFIER_FALLBACK_MODEL_ID)]),
-			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
-			{ timeoutMs: 5000 },
-		)
-
-		await vi.runAllTimersAsync()
-		const result = await promise
-
-		expect(result.verdict).toBe("safe")
-		expect(result.riskScore).toBe("low")
-		expect(result.ok).toBe(true)
-		expect(completeMock).toHaveBeenCalledTimes(4)
-	})
-
-	it("returns last result when no fallback model is provided", async () => {
-		completeMock.mockResolvedValue(fakeResponse({ stopReason: "aborted" }))
-
-		const promise = classifyToolCall(
-			fakeRegistry([fakeModel(CLASSIFIER_PRIMARY_MODEL_ID)]),
-			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
-			{ timeoutMs: 5000 },
-		)
-
-		await vi.runAllTimersAsync()
-		const result = await promise
-
-		expect(result.verdict).toBe("requires-confirmation")
-		expect(result.ok).toBe(false)
-		expect(completeMock).toHaveBeenCalledTimes(3)
-	})
-
-	it("returns 'classifier aborted' when signal aborts during final attempt", async () => {
+	it.each([
+		"empty",
+		"before",
+		"auth",
+		"backoff",
+		"completion",
+		"final",
+	] as const)("returns classifier aborted during %s without advancing", async (stage) => {
 		const controller = new AbortController()
+		const registry = createModelRegistry()
+		completeMock.mockResolvedValue(response("", "aborted"))
+		if (stage === "empty" || stage === "before") controller.abort()
+		if (stage === "auth") registry.getApiKeyAndHeaders.mockReturnValue(new Promise(() => {}))
+		if (stage === "completion") completeMock.mockReturnValue(new Promise(() => {}))
+		if (stage === "final")
+			completeMock
+				.mockImplementation(() => {
+					if (completeMock.mock.calls.length === 3) controller.abort()
+					return response()
+				})
+				.mockResolvedValueOnce(response("", "aborted"))
+				.mockResolvedValueOnce(response("", "aborted"))
+		const promise = classifyToolCall(
+			stage === "empty" ? [] : [primary, fallback],
+			registry,
+			call,
+			options,
+			controller.signal,
+		)
+		if (["auth", "backoff", "completion"].includes(stage)) {
+			await vi.advanceTimersByTimeAsync(100)
+			controller.abort()
+		}
+		await vi.runAllTimersAsync()
+		expect(await promise).toMatchObject({ reason: "classifier aborted", failureCode: "aborted", ok: false })
+		expect(completeMock.mock.calls.every(([model]) => model === primary)).toBe(true)
+		if (stage === "empty" || stage === "before") expect(registry.getApiKeyAndHeaders).not.toHaveBeenCalled()
+	})
 
-		// First two attempts: timeout (retryable). Third attempt: also timeout,
-		// but the outer signal is aborted during this attempt.
-		let callCount = 0
-		completeMock.mockImplementation(() => {
-			callCount++
-			if (callCount === 3) {
-				// Simulate the outer signal aborting during the final classifier call
-				controller.abort()
-			}
-			return fakeResponse({ stopReason: "aborted" })
+	it("fails closed when no candidates exist", async () => {
+		const result = await classifyToolCall([], createModelRegistry(), call, options)
+		expect(result).toEqual({
+			verdict: "requires-confirmation",
+			reason: "no model available for classifier",
+			ok: false,
+			failureCode: "no_candidates",
 		})
-
-		const promise = classifyToolCall(
-			fakeRegistry(),
-			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
-			{ timeoutMs: 5000 },
-			controller.signal,
-		)
-
-		await vi.runAllTimersAsync()
-		const result = await promise
-
-		expect(completeMock).toHaveBeenCalledTimes(3)
-		expect(result.verdict).toBe("requires-confirmation")
-		expect(result.ok).toBe(false)
-		expect(result.reason).toBe("classifier aborted")
-	})
-
-	it("does not retry when signal is aborted before first attempt", async () => {
-		const controller = new AbortController()
-		controller.abort()
-
-		const result = await classifyToolCall(
-			fakeRegistry(),
-			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
-			{ timeoutMs: 5000 },
-			controller.signal,
-		)
-
 		expect(completeMock).not.toHaveBeenCalled()
-		expect(result.reason).toBe("classifier aborted")
 	})
 
-	it("does not retry on error and returns requires-confirmation", async () => {
-		completeMock.mockResolvedValue(fakeResponse({ stopReason: "error", errorMessage: "rate limit exceeded" }))
-
-		const result = await classifyToolCall(
-			fakeRegistry(),
-			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
-			{ timeoutMs: 5000 },
-		)
-
-		expect(completeMock).toHaveBeenCalledTimes(1)
-		expect(result.verdict).toBe("requires-confirmation")
-		expect(result.ok).toBe(false)
-		expect(result.reason).toContain("classifier error: rate limit exceeded")
-	})
-
-	it("still falls back to unparseable when text is garbage", async () => {
-		completeMock.mockResolvedValue(fakeResponse({ stopReason: "stop", content: "not json at all" }))
-
-		const result = await classifyToolCall(
-			fakeRegistry(),
-			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
-			{ timeoutMs: 5000 },
-		)
-
-		expect(result.verdict).toBe("requires-confirmation")
-		expect(result.ok).toBe(false)
-		expect(result.reason).toContain("unparseable")
+	it("does not expose retryable on public parser failures", () => {
+		expect(parseClassifierOutput("invalid")).not.toHaveProperty("retryable")
 	})
 })
 
@@ -368,15 +444,5 @@ describe("parseClassifierOutput", () => {
 		expect(r.ok).toBe(true)
 		expect(r.verdict).toBe("safe")
 		expect(r.riskScore).toBeUndefined()
-	})
-})
-
-describe("classifier model ids", () => {
-	it("primary is deepseek-v4-flash", () => {
-		expect(CLASSIFIER_PRIMARY_MODEL_ID).toBe("deepseek-v4-flash")
-	})
-
-	it("fallback is minimax-m3", () => {
-		expect(CLASSIFIER_FALLBACK_MODEL_ID).toBe("minimax-m3")
 	})
 })

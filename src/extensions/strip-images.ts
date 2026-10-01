@@ -1,6 +1,8 @@
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai"
 import { complete } from "@earendil-works/pi-ai/compat"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { isAutoRoutedModel } from "./auto-model/constants.js"
+import { getEffectiveModel } from "./auto-model/state.js"
 import {
 	getImageDataHash,
 	getLatestMessages,
@@ -44,14 +46,15 @@ function collectImages(messages: ReturnType<typeof getLatestMessages>): Map<stri
  */
 function findVisionModel(ctx: ExtensionContext): Model<Api> | undefined {
 	// Check if current model supports vision
-	if (ctx.model?.input?.includes("image")) {
-		return ctx.model as Model<Api>
+	const currentModel = getEffectiveModel(ctx)
+	if (currentModel?.input.includes("image") && !isAutoRoutedModel(currentModel)) {
+		return currentModel
 	}
 
 	// Find first vision-capable model from available models
 	const available = ctx.modelRegistry?.getAvailable() ?? []
 	for (const model of available) {
-		if (model.input?.includes("image")) {
+		if (model.input?.includes("image") && !isAutoRoutedModel(model)) {
 			return model as Model<Api>
 		}
 	}

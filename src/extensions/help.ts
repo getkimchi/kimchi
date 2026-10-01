@@ -1,27 +1,34 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
+import { truncateLinesToWidth } from "../truncate-lines.js"
+import { getRatingHelpEntries } from "./feedback/rating-keys.js"
 import { SLASH_COMMANDS } from "./slash-commands.js"
 
 type HelpRow = { kind: "heading"; text: string } | { kind: "entry"; key: string; desc: string } | { kind: "spacer" }
 
-const HELP_ROWS: HelpRow[] = [
-	{ kind: "heading", text: "Keyboard Shortcuts" },
-	{ kind: "entry", key: "Enter", desc: "Submit prompt" },
-	{ kind: "entry", key: "Shift+Enter / Ctrl+J", desc: "Newline in input" },
-	{ kind: "entry", key: "Up/Down", desc: "Navigate input history" },
-	{ kind: "entry", key: "Escape", desc: "Close dialog / Abort running agent" },
-	{ kind: "entry", key: "Ctrl+C", desc: "Clear input / Abort running agent" },
-	{ kind: "entry", key: "Ctrl+P", desc: "Cycle to next model" },
-	{ kind: "entry", key: "Shift+Tab", desc: "Change permissions mode" },
+// Built per invocation: the rating keys depend on the terminal keyboard probe.
+function buildHelpRows(): HelpRow[] {
+	const ratingEntries = getRatingHelpEntries()
+	return [
+		{ kind: "heading", text: "Keyboard Shortcuts" },
+		{ kind: "entry", key: "Enter", desc: "Submit prompt" },
+		{ kind: "entry", key: "Shift+Enter / Ctrl+J", desc: "Newline in input" },
+		{ kind: "entry", key: "Up/Down", desc: "Navigate input history" },
+		{ kind: "entry", key: "Escape", desc: "Close dialog / Abort running agent" },
+		{ kind: "entry", key: "Ctrl+C", desc: "Clear input / Abort running agent" },
+		{ kind: "entry", key: "Ctrl+P", desc: "Cycle to next model" },
+		{ kind: "entry", key: "Shift+Tab", desc: "Change permissions mode" },
+		...ratingEntries.map((entry) => ({ kind: "entry" as const, key: entry.key, desc: entry.desc })),
 
-	{ kind: "spacer" },
-	{ kind: "heading", text: "Slash Commands" },
-	...Object.entries(SLASH_COMMANDS).map(([key, { hint }]) => ({
-		kind: "entry" as const,
-		key: `/${key}`,
-		desc: hint,
-	})),
-]
+		{ kind: "spacer" },
+		{ kind: "heading", text: "Slash Commands" },
+		...Object.entries(SLASH_COMMANDS).map(([key, { hint }]) => ({
+			kind: "entry" as const,
+			key: `/${key}`,
+			desc: hint,
+		})),
+	]
+}
 
 // The overlay maxHeight percentage — must match overlayOptions below.
 const MAX_HEIGHT_PCT = 0.9
@@ -34,9 +41,10 @@ export default function helpExtension(pi: ExtensionAPI) {
 	pi.registerCommand("help", {
 		description: "Show keyboard shortcuts and slash commands",
 		handler: async (_args, ctx) => {
+			const helpRows = buildHelpRows()
 			if (ctx.mode !== "tui") {
 				const lines: string[] = []
-				for (const row of HELP_ROWS) {
+				for (const row of helpRows) {
 					if (row.kind === "heading") {
 						lines.push(`\n${row.text}`)
 					} else if (row.kind === "entry") {
@@ -60,7 +68,7 @@ export default function helpExtension(pi: ExtensionAPI) {
 
 					function buildContentLines(keyColW: number): Array<[string, number]> {
 						const lines: Array<[string, number]> = []
-						for (const row of HELP_ROWS) {
+						for (const row of helpRows) {
 							if (row.kind === "spacer") {
 								lines.push(["", 0])
 							} else if (row.kind === "heading") {
@@ -77,7 +85,7 @@ export default function helpExtension(pi: ExtensionAPI) {
 
 					return {
 						render(width: number): string[] {
-							const innerW = Math.max(20, width - 2)
+							const innerW = Math.max(1, width - 2)
 							const contentW = innerW - 2
 							const keyColW = Math.max(16, Math.min(28, Math.floor(contentW * 0.35)))
 
@@ -93,7 +101,7 @@ export default function helpExtension(pi: ExtensionAPI) {
 							const emptyRow = () => `${border("│")}${" ".repeat(innerW)}${border("│")}`
 
 							const titleText = " Help "
-							const borderLen = innerW - titleText.length
+							const borderLen = Math.max(0, innerW - titleText.length)
 							const leftB = Math.floor(borderLen / 2)
 							const rightB = borderLen - leftB
 
@@ -132,7 +140,7 @@ export default function helpExtension(pi: ExtensionAPI) {
 							out.push(wrapRow(theme.fg("dim", `  ${hintText}`), hintText.length + 2))
 							out.push(border(`╰${"─".repeat(innerW)}╯`))
 
-							return out
+							return truncateLinesToWidth(out, width)
 						},
 						invalidate() {},
 						handleInput(data: string): void {
@@ -146,7 +154,7 @@ export default function helpExtension(pi: ExtensionAPI) {
 								done(undefined)
 								return
 							}
-							const contentLen = HELP_ROWS.length
+							const contentLen = helpRows.length
 							const vp = viewportHeight()
 							const maxScroll = Math.max(0, contentLen - vp)
 							if (matchesKey(data, Key.up) || data === "k") {

@@ -3,8 +3,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
+	CACHEABLE_OPTION_NAMES,
+	CLI_OPTIONS,
 	getCliModeArg,
 	getParsedCliArgs,
+	hasFermentOneshotArg,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
@@ -18,6 +21,26 @@ import {
 	stripMultiModelArgs,
 } from "./cli-args.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
+
+describe("value-flag parsing", () => {
+	// Short aliases must consume their value too, or the token after them is
+	// parsed as a model selection and silently suppresses the Auto default.
+	it.each([
+		["-t", "--model"],
+		["-e", "--model"],
+	])("leaves the model unset when %s consumes a flag-shaped value", (...args) => {
+		populateCliArgs(args)
+		expect(getParsedCliArgs().options.model).toBeUndefined()
+		populateCliArgs([])
+	})
+
+	it("caches only an explicitly supplied model scope", () => {
+		populateCliArgs(["--models", "kimchi-dev/auto,kimchi-dev/glm-5.3"])
+		expect(getParsedCliArgs().options.models).toBe("kimchi-dev/auto,kimchi-dev/glm-5.3")
+		populateCliArgs([])
+		expect(getParsedCliArgs().options.models).toBeUndefined()
+	})
+})
 
 describe("getCliModeArg", () => {
 	it("reads --mode value", () => {
@@ -220,6 +243,30 @@ describe("isExperimentalFeaturesArg", () => {
 	})
 })
 
+describe("hasFermentOneshotArg (Chunk 7 gate composition)", () => {
+	it("returns true for the bare flag", () => {
+		expect(hasFermentOneshotArg(["--ferment-oneshot"])).toBe(true)
+	})
+
+	it("returns true for the kwarg form", () => {
+		expect(hasFermentOneshotArg(["ferment-oneshot=true"])).toBe(true)
+		expect(hasFermentOneshotArg(["--print", "ferment-oneshot=true"])).toBe(true)
+	})
+
+	it("returns true when mixed with other args", () => {
+		expect(hasFermentOneshotArg(["--model", "foo", "--print", "--ferment-oneshot"])).toBe(true)
+	})
+
+	it("returns false when absent", () => {
+		expect(hasFermentOneshotArg(["--print"])).toBe(false)
+		expect(hasFermentOneshotArg([])).toBe(false)
+	})
+
+	it("returns false when the suffix appears inside an unrelated flag", () => {
+		expect(hasFermentOneshotArg(["--foo-ferment-oneshot=true"])).toBe(false)
+	})
+})
+
 describe("stripExperimentalFeaturesArg", () => {
 	it("removes the flag from the array", () => {
 		expect(stripExperimentalFeaturesArg(["--enable-experimental-features", "--model", "foo"])).toEqual([
@@ -312,6 +359,14 @@ describe("populateCliArgs / getParsedCliArgs", () => {
 		expect(getParsedCliArgs()).toEqual({ options: { provider: "kimchi-dev" }, positionals: ["fix tests"] })
 	})
 
+	it("caches upstream project-trust overrides for trust-aware extensions", () => {
+		populateCliArgs(["--approve"])
+		expect(getParsedCliArgs()).toEqual({ options: { approve: true }, positionals: [] })
+
+		populateCliArgs(["--no-approve"])
+		expect(getParsedCliArgs()).toEqual({ options: { "no-approve": true }, positionals: [] })
+	})
+
 	it("reuses the cached parse across calls", () => {
 		populateCliArgs(["--multi-model"])
 		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
@@ -337,4 +392,40 @@ describe("resolveBashProcessLimitSeconds", () => {
 			expect(() => populateCliArgs(["--bash-process-limit", bad])).toThrow(/Invalid --bash-process-limit/)
 		})
 	}
+})
+
+describe("boolean =-form normalization", () => {
+	it('enables --yolo=true (previously the string "true" — silently ignored)', () => {
+		populateCliArgs(["--yolo=true", "fix tests"])
+		expect(getParsedCliArgs().options.yolo).toBe(true)
+	})
+
+	it("disables on --yolo=false and keeps the bare flag true", () => {
+		populateCliArgs(["--yolo=false", "fix tests"])
+		expect(getParsedCliArgs().options.yolo).toBe(false)
+		populateCliArgs(["--yolo", "fix tests"])
+		expect(getParsedCliArgs().options.yolo).toBe(true)
+	})
+
+	it("normalizes every boolean flag's =-form", () => {
+		populateCliArgs(["--yolo=true", "--plan=false"])
+		expect(getParsedCliArgs().options.yolo).toBe(true)
+		expect(getParsedCliArgs().options.plan).toBe(false)
+	})
+
+	it("rejects non-boolean =-values for boolean flags", () => {
+		expect(() => populateCliArgs(["--yolo=1", "fix tests"])).toThrow(
+			/--yolo expects a boolean \(=true or =false\); got --yolo="1"/,
+		)
+	})
+})
+
+describe("cacheable option coverage", () => {
+	it("every CACHEABLE_OPTION_NAMES entry is declared in CLI_OPTIONS", () => {
+		// parseCliArgs dereferences CLI_OPTIONS[key].type for each of these;
+		// a name missing from the catalog is a startup crash, not a silent
+		// miss, so the invariant is enforced here.
+		const missing = CACHEABLE_OPTION_NAMES.filter((name) => !CLI_OPTIONS[name])
+		expect(missing).toEqual([])
+	})
 })

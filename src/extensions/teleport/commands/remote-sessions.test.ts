@@ -6,6 +6,7 @@ const {
 	verifyApiKeyMock,
 	listWorkspacesMock,
 	deleteWorkspaceMock,
+	getQuotaUsageMock,
 	createOrUpdateWorkspaceMock,
 	listSessionsMock,
 	deleteSessionMock,
@@ -14,11 +15,13 @@ const {
 	runTerminalMock,
 	ensureIncludeDirectiveMock,
 	syncSshConfigMock,
+	runSyncArgsMock,
 } = vi.hoisted(() => ({
 	authMock: vi.fn(),
 	verifyApiKeyMock: vi.fn(),
 	listWorkspacesMock: vi.fn(),
 	deleteWorkspaceMock: vi.fn(),
+	getQuotaUsageMock: vi.fn(),
 	createOrUpdateWorkspaceMock: vi.fn(),
 	listSessionsMock: vi.fn(),
 	deleteSessionMock: vi.fn(),
@@ -27,6 +30,7 @@ const {
 	runTerminalMock: vi.fn(),
 	ensureIncludeDirectiveMock: vi.fn(),
 	syncSshConfigMock: vi.fn(),
+	runSyncArgsMock: vi.fn(),
 }))
 
 vi.mock("../../../sandbox/cloud/auth.js", () => ({
@@ -34,6 +38,7 @@ vi.mock("../../../sandbox/cloud/auth.js", () => ({
 	createOrUpdateWorkspace: createOrUpdateWorkspaceMock,
 }))
 vi.mock("../../../sandbox/cloud/keys.js", () => ({ verifyApiKey: verifyApiKeyMock }))
+vi.mock("../../../sandbox/cloud/quota.js", () => ({ getQuotaUsage: getQuotaUsageMock }))
 vi.mock("../../../sandbox/cloud/workspaces.js", () => ({
 	listWorkspaces: listWorkspacesMock,
 	deleteWorkspace: deleteWorkspaceMock,
@@ -52,13 +57,14 @@ vi.mock("../../../sandbox/worker/sessions.js", () => ({
 }))
 vi.mock("../ui/remote-sessions-panel.js", () => ({ pickRemoteSessions: pickRemoteSessionsMock }))
 vi.mock("./attach.js", () => ({ runAttachSession: runAttachSessionMock }))
+vi.mock("./sync.js", () => ({ runSyncArgs: runSyncArgsMock }))
 vi.mock("./terminal.js", () => ({ runTerminal: runTerminalMock }))
 vi.mock("../ssh-config/sync.js", () => ({
 	ensureIncludeDirective: ensureIncludeDirectiveMock,
 	syncSshConfig: syncSshConfigMock,
 }))
 
-import type { Workspace } from "../../../sandbox/cloud/types.js"
+import type { QuotaUsage, Workspace } from "../../../sandbox/cloud/types.js"
 import type { Session } from "../../../sandbox/worker/types.js"
 import type { TeleportContext } from "../types.js"
 import type { RemoteWorkspaceNode } from "../ui/remote-sessions-panel.js"
@@ -76,6 +82,7 @@ function makeUi(): ExtensionUIContext & {
 	notify: ReturnType<typeof vi.fn>
 	confirm: ReturnType<typeof vi.fn>
 	input: ReturnType<typeof vi.fn>
+	select: ReturnType<typeof vi.fn>
 	setStatus: ReturnType<typeof vi.fn>
 } {
 	return {
@@ -111,6 +118,7 @@ function makeUi(): ExtensionUIContext & {
 		notify: ReturnType<typeof vi.fn>
 		confirm: ReturnType<typeof vi.fn>
 		input: ReturnType<typeof vi.fn>
+		select: ReturnType<typeof vi.fn>
 		setStatus: ReturnType<typeof vi.fn>
 	}
 }
@@ -172,6 +180,7 @@ beforeEach(() => {
 	verifyApiKeyMock.mockReset().mockResolvedValue("org-1")
 	listWorkspacesMock.mockReset().mockResolvedValue([])
 	deleteWorkspaceMock.mockReset().mockResolvedValue(undefined)
+	getQuotaUsageMock.mockReset().mockResolvedValue(undefined)
 	createOrUpdateWorkspaceMock.mockReset().mockResolvedValue({ uri: "u", description: "d" })
 	listSessionsMock.mockReset().mockResolvedValue([])
 	deleteSessionMock.mockReset().mockResolvedValue(undefined)
@@ -180,6 +189,7 @@ beforeEach(() => {
 	runTerminalMock.mockReset().mockResolvedValue(undefined)
 	ensureIncludeDirectiveMock.mockReset().mockResolvedValue(undefined)
 	syncSshConfigMock.mockReset().mockResolvedValue(undefined)
+	runSyncArgsMock.mockReset().mockResolvedValue(undefined)
 })
 
 describe("deriveStatus", () => {
@@ -198,6 +208,15 @@ describe("deriveStatus", () => {
 })
 
 describe("toRow", () => {
+	it("maps a session cwd onto the row", () => {
+		const row = toRow(ws("w-1", "alpha"), session({ name: "s-1", cwd: "/remote/proj" }))
+		expect(row.cwd).toBe("/remote/proj")
+	})
+
+	it("omits cwd when the session does not report one", () => {
+		const row = toRow(ws("w-1", "alpha"), session({ name: "s-1", cwd: undefined }))
+		expect(row.cwd).toBeUndefined()
+	})
 	it("maps a session onto a SessionRow with workspace foreign keys", () => {
 		const row = toRow(ws("w-1", "alpha"), session({ name: "s-1", clientConnected: true }))
 		expect(row).toMatchObject({
@@ -256,6 +275,28 @@ describe("buildTree", () => {
 		const nodes = await buildTree([ws("w-1", "alpha"), ws("w-2", "beta")], ctx, "proj")
 		expect(nodes[0]?.row.displayName).toBe("alpha")
 		expect(nodes[1]?.row.displayName).toBe("beta")
+	})
+
+	it("attaches resource request fields to workspace rows", async () => {
+		const { ctx } = makeCtx()
+		const nodes = await buildTree(
+			[{ ...ws("w-1", "alpha"), cpuMillicores: 1500, ramBytes: 6442450944, pvcSizeBytes: 21474836480 }],
+			ctx,
+			"proj",
+		)
+		expect(nodes[0]?.row).toMatchObject({
+			cpuMillicores: 1500,
+			ramBytes: 6442450944,
+			pvcSizeBytes: 21474836480,
+		})
+	})
+
+	it("leaves resource fields undefined on workspace rows when the server omits them", async () => {
+		const { ctx } = makeCtx()
+		const nodes = await buildTree([ws("w-1", "alpha")], ctx, "proj")
+		expect(nodes[0]?.row.cpuMillicores).toBeUndefined()
+		expect(nodes[0]?.row.ramBytes).toBeUndefined()
+		expect(nodes[0]?.row.pvcSizeBytes).toBeUndefined()
 	})
 })
 
@@ -348,6 +389,202 @@ describe("runRemoteSessions", () => {
 		expect(deleteWorkspaceMock).not.toHaveBeenCalled()
 	})
 
+	it("warns that only sessions can be synced on action='sync-workspace'", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({ action: "sync-workspace", node: workspaceNode() })
+			.mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		await runRemoteSessions("", ctx)
+		expect(ui.notify).toHaveBeenCalledWith(
+			"Only sessions can be synced. Select a session under workspace alpha and press s.",
+			"warning",
+		)
+		expect(runSyncArgsMock).not.toHaveBeenCalled()
+		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("runs a sync-up from the questionnaire on action='sync-session'", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({
+				action: "sync-session",
+				node: {
+					workspaceId: "w-1",
+					workspaceName: "alpha",
+					sessionName: "s-1",
+					cwd: "/remote/proj",
+					status: "active",
+					clientConnected: true,
+				},
+			})
+			.mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		ui.select.mockResolvedValue("Sync Up  (local → remote)")
+		ui.input.mockResolvedValue("")
+		await runRemoteSessions("", ctx)
+		expect(ui.select).toHaveBeenCalledWith("Sync s-1 (alpha)", [
+			"Sync Up  (local → remote)",
+			"Sync Down  (remote → local)",
+		])
+		// Empty submits fall back to the defaults shown in the prompt titles.
+		expect(ui.input).toHaveBeenNthCalledWith(1, "Source path (local, default: /work/proj)")
+		expect(ui.input).toHaveBeenNthCalledWith(2, "Destination path (remote, on the workspace, default: /remote/proj)")
+		expect(runSyncArgsMock).toHaveBeenCalledWith(
+			{
+				direction: "up",
+				workspace: "w-1",
+				source: "/work/proj",
+				target: "/remote/proj",
+				exclude: [],
+				includeIgnored: false,
+				delete: false,
+				dryRun: false,
+			},
+			ctx,
+		)
+	})
+
+	it("runs a sync-down from the questionnaire and honours edited paths", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({
+				action: "sync-session",
+				node: {
+					workspaceId: "w-1",
+					workspaceName: "alpha",
+					sessionName: "s-1",
+					cwd: "/remote/proj",
+					status: "active",
+					clientConnected: true,
+				},
+			})
+			.mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		ui.select.mockResolvedValue("Sync Down  (remote → local)")
+		ui.input.mockResolvedValueOnce("/remote/src").mockResolvedValueOnce("/local/dst")
+		await runRemoteSessions("", ctx)
+		expect(ui.input).toHaveBeenNthCalledWith(1, "Source path (remote, on the workspace, default: /remote/proj)")
+		expect(ui.input).toHaveBeenNthCalledWith(2, "Destination path (local, default: /work/proj)")
+		expect(runSyncArgsMock).toHaveBeenCalledWith(
+			{
+				direction: "down",
+				workspace: "w-1",
+				source: "/remote/src",
+				target: "/local/dst",
+				exclude: [],
+				includeIgnored: false,
+				delete: false,
+				dryRun: false,
+			},
+			ctx,
+		)
+	})
+
+	it("resolves relative paths against the corresponding defaults", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({
+				action: "sync-session",
+				node: {
+					workspaceId: "w-1",
+					workspaceName: "alpha",
+					sessionName: "s-1",
+					cwd: "/remote/proj",
+					status: "active",
+					clientConnected: true,
+				},
+			})
+			.mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		ui.select.mockResolvedValue("Sync Up  (local → remote)")
+		ui.input.mockResolvedValueOnce("sub/dir").mockResolvedValueOnce("out")
+		await runRemoteSessions("", ctx)
+		expect(runSyncArgsMock).toHaveBeenCalledWith(
+			{
+				direction: "up",
+				workspace: "w-1",
+				source: "/work/proj/sub/dir",
+				target: "/remote/proj/out",
+				exclude: [],
+				includeIgnored: false,
+				delete: false,
+				dryRun: false,
+			},
+			ctx,
+		)
+	})
+
+	it("warns and re-shows the picker when the sync fails", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({
+				action: "sync-session",
+				node: {
+					workspaceId: "w-1",
+					workspaceName: "alpha",
+					sessionName: "s-1",
+					cwd: "/remote/proj",
+					status: "active",
+					clientConnected: true,
+				},
+			})
+			.mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		ui.select.mockResolvedValue("Sync Up  (local → remote)")
+		ui.input.mockResolvedValue("")
+		runSyncArgsMock.mockRejectedValue(new Error("rsync failed"))
+		await expect(runRemoteSessions("", ctx)).resolves.toBeUndefined()
+		expect(ui.notify).toHaveBeenCalledWith("Could not sync session: rsync failed", "warning")
+		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("falls back to ~ without a trailing slash when the session has no cwd", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({
+				action: "sync-session",
+				node: {
+					workspaceId: "w-1",
+					workspaceName: "alpha",
+					sessionName: "s-1",
+					status: "active",
+					clientConnected: true,
+				},
+			})
+			.mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		ui.select.mockResolvedValue("Sync Down  (remote → local)")
+		ui.input.mockResolvedValue("")
+		await runRemoteSessions("", ctx)
+		expect(ui.input).toHaveBeenNthCalledWith(1, "Source path (remote, on the workspace, default: ~)")
+		expect(runSyncArgsMock).toHaveBeenCalledWith(
+			expect.objectContaining({ direction: "down", source: "~", target: "/work/proj" }),
+			ctx,
+		)
+	})
+
+	it("skips the sync when the direction picker is dismissed", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({
+				action: "sync-session",
+				node: {
+					workspaceId: "w-1",
+					workspaceName: "alpha",
+					sessionName: "s-1",
+					status: "active",
+					clientConnected: true,
+				},
+			})
+			.mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		ui.select.mockResolvedValue(undefined)
+		await runRemoteSessions("", ctx)
+		expect(ui.input).not.toHaveBeenCalled()
+		expect(runSyncArgsMock).not.toHaveBeenCalled()
+	})
+
 	it("deletes a session after confirmation then re-shows the picker", async () => {
 		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
 		pickRemoteSessionsMock
@@ -367,5 +604,51 @@ describe("runRemoteSessions", () => {
 		await runRemoteSessions("", ctx)
 		expect(deleteSessionMock).toHaveBeenCalledWith(expect.anything(), "s-1", undefined)
 		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("passes quota usage into the picker alongside the workspace tree", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		const quota: QuotaUsage = {
+			userUsage: {
+				currentSandboxes: 1,
+				maxSandboxes: 5,
+				currentCpuMillicores: 1500,
+				maxCpuMillicores: 16000,
+				currentRamBytes: 6442450944,
+				maxRamBytes: 17179869184,
+			},
+		}
+		getQuotaUsageMock.mockResolvedValue(quota)
+		pickRemoteSessionsMock.mockResolvedValue(undefined)
+		const { ctx } = makeCtx()
+		await runRemoteSessions("", ctx)
+		const quotaArg = pickRemoteSessionsMock.mock.calls[0][2]
+		await expect(quotaArg).resolves.toBe(quota)
+		expect(getQuotaUsageMock).toHaveBeenCalledWith(
+			ctx.apiKey,
+			expect.objectContaining({ endpoint: ctx.endpoint, orgId: "org-1" }),
+		)
+		// The cached orgId is also shared with the refresh loop's list call so
+		// listWorkspaces skips its own duplicate verifyKey round-trip.
+		expect(listWorkspacesMock).toHaveBeenCalledWith(ctx.apiKey, expect.objectContaining({ orgId: "org-1" }))
+	})
+
+	it("still opens the picker when the quota fetch fails (summary omitted)", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		getQuotaUsageMock.mockRejectedValue(new Error("quota down"))
+		pickRemoteSessionsMock.mockResolvedValue(undefined)
+		const { ctx } = makeCtx()
+		await expect(runRemoteSessions("", ctx)).resolves.toBeUndefined()
+		const quotaArg = pickRemoteSessionsMock.mock.calls[0][2]
+		await expect(quotaArg).resolves.toBeUndefined()
+	})
+
+	it("opens the picker without waiting for a slow quota fetch", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		getQuotaUsageMock.mockReturnValue(new Promise(() => {})) // never settles
+		pickRemoteSessionsMock.mockResolvedValue(undefined)
+		const { ctx } = makeCtx()
+		await runRemoteSessions("", ctx)
+		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(1)
 	})
 })

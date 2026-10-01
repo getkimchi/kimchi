@@ -1,5 +1,15 @@
 // Hand-mirrored from .claude/openapi.yaml. Field names match the schema verbatim.
 
+/**
+ * Well-known session tag keys. Tags ride the create-session request, are
+ * persisted in the worker's config.json, and whitelisted keys are promoted
+ * to worker log fields. `SESSION_TAG_PARENT_SESSION_ID` carries the local
+ * (parent) kimchi session id so sandbox logs can be filtered by the session
+ * a user exported (the id in the export filename / session header).
+ * Mirrored as TagParentSessionID in the sandbox worker (Go).
+ */
+export const SESSION_TAG_PARENT_SESSION_ID = "parent_session_id"
+
 export type AgentMode = "RPC" | "ACP" | "PTY"
 
 export interface SessionGitDetails {

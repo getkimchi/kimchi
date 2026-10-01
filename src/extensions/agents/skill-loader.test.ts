@@ -1,8 +1,13 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { preloadSkills } from "./prompt/skill-loader.js"
+
+// The project-scope gate is module-global state; reset it after each test so
+// a trusted decision cannot leak into sibling tests.
+afterEach(resetProjectScopeTrustForTests)
 
 describe("preloadSkills", () => {
 	it("returns empty array when no skill names requested", () => {
@@ -33,6 +38,8 @@ describe("preloadSkills", () => {
 		mkdirSync(skillDir, { recursive: true })
 		writeFileSync(join(skillDir, "SKILL.md"), "---\nname: my-skill\ndescription: test\n---\nThis is the skill content.")
 
+		// The cwd-resolved config root is project-scoped and gated on trust.
+		setProjectScopeTrusted(cwd, true)
 		const results = preloadSkills(["my-skill"], cwd)
 		expect(results).toHaveLength(1)
 		expect(results[0].name).toBe("my-skill")

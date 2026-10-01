@@ -1,6 +1,7 @@
-import { type FSWatcher, statSync, watch } from "node:fs"
+import { type FSWatcher, watch } from "node:fs"
 import { resolve } from "node:path"
 import { CONFIG_DIR_NAME, getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent"
+import { fileSignature } from "./config/json.js"
 
 // Pi-coding-agent doesn't expose a settings/theme_change event for extensions, so
 // we read settings through pi's own SettingsManager and watch its settings files
@@ -138,17 +139,8 @@ function scheduleFire(): void {
 // changed. Spurious events on an unchanged file are dropped before any rebuild.
 const fileSignatures = new Map<string, string>()
 
-function signatureOf(path: string): string | undefined {
-	try {
-		const st = statSync(path)
-		return `${st.mtimeMs}:${st.size}`
-	} catch {
-		return undefined
-	}
-}
-
 function recordSignature(path: string): void {
-	const sig = signatureOf(path)
+	const sig = fileSignature(path)
 	if (sig !== undefined) fileSignatures.set(path, sig)
 	else fileSignatures.delete(path)
 }
@@ -156,7 +148,7 @@ function recordSignature(path: string): void {
 /** Returns true when `path`'s mtime/size differs from the last recorded
  *  signature (or when it has never been recorded). */
 function signatureChanged(path: string): boolean {
-	return signatureOf(path) !== fileSignatures.get(path)
+	return fileSignature(path) !== fileSignatures.get(path)
 }
 
 let globalSettingsPath: string | undefined

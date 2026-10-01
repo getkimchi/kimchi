@@ -10,6 +10,11 @@ export interface FakeModel {
 	input?: ("text" | "image")[]
 	contextWindow?: number
 	maxTokens?: number
+	/** Optional description served by /v1/models/metadata (the /model table's DESCRIPTION column). */
+	description?: string
+	/** Extra fields merged verbatim into this model's /v1/models/metadata entry
+	 * (e.g. deprecation protocol fields: deprecated_at, replacement_model). */
+	metadata?: Record<string, unknown>
 }
 
 export interface FakeToolCall {
@@ -80,6 +85,21 @@ export interface FakeResponseScript {
 	 * Without this, the session has no usage data and compaction gates
 	 * (which read `totalTokens`) see 0 tokens. Defaults to a small value. */
 	usage?: { prompt_tokens: number; completion_tokens: number }
+	/**
+	 * Concrete model id reported in the response `model` field instead of the
+	 * requested id — simulates a backend-routed virtual model (auto-beta) that
+	 * stamps the real pick. When set, the SSE chunk/body `model` differs from
+	 * the request's `model`, so pi-ai populates `AssistantMessage.responseModel`.
+	 */
+	responseModel?: string
+	/** Hold this response open — no headers, no body — until the promise
+	 * resolves. Test-controlled gate for asserting mid-request process state
+	 * (e.g. a CLI must stay alive and unfinished while a compaction
+	 * summarization call is in flight). The request is recorded before the
+	 * hold, so tests can wait on its arrival and then assert liveness.
+	 * This is a deterministic hold, not a stall simulation — see
+	 * `stallAfterThinking` for that. */
+	holdUntil?: Promise<unknown>
 }
 
 export interface RecordedRequest extends FakeResponseRequest {
@@ -93,6 +113,7 @@ export interface FakeOpenAiServer {
 }
 
 interface StartFakeOpenAiServerOptions {
+	rejectedApiKeys?: string[]
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
 	creditsResponses?: unknown[]
@@ -107,6 +128,8 @@ export const DEFAULT_MODEL: Required<FakeModel> = {
 	input: ["text"],
 	contextWindow: 8192,
 	maxTokens: 1024,
+	description: "",
+	metadata: {},
 }
 
 /** Fill every optional field of a partial model spec from DEFAULT_MODEL. */
@@ -119,6 +142,8 @@ export function withModelDefaults(model: FakeModel): Required<FakeModel> {
 		input: model.input ?? DEFAULT_MODEL.input,
 		contextWindow: model.contextWindow ?? DEFAULT_MODEL.contextWindow,
 		maxTokens: model.maxTokens ?? DEFAULT_MODEL.maxTokens,
+		description: model.description ?? "",
+		metadata: model.metadata ?? {},
 	}
 }
 
@@ -160,9 +185,16 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 		req.on("aborted", () => {
 			recorded.aborted = true
 		})
+		res.on("close", () => {
+			if (!res.writableEnded) recorded.aborted = true
+		})
 		requests.push(recorded)
 
 		try {
+			if (options.rejectedApiKeys?.some((key) => req.headers.authorization === `Bearer ${key}`)) {
+				writeJson(res, 401, { error: "Invalid API key" })
+				return
+			}
 			if (req.method === "GET" && req.url?.startsWith("/v1/models/metadata")) {
 				writeJson(res, 200, {
 					models: models.map((model) => ({
@@ -176,7 +208,8 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 							context_window: model.contextWindow,
 							max_output_tokens: model.maxTokens,
 						},
-						status: "active",
+						...(model.description ? { description: model.description } : {}),
+						...model.metadata,
 					})),
 				})
 				return
@@ -201,7 +234,13 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 			}
 
 			if (req.method === "POST" && req.url?.startsWith("/openai/v1/chat/completions")) {
-				const script = pickResponseScript(body, mainQueue, subagentQueue)
+				const script = pickResponseScript(request, mainQueue, subagentQueue)
+				if (script.holdUntil) {
+					await script.holdUntil
+					// The client may disconnect while held (cancellation, process exit).
+					// Writing afterwards would throw; there is nobody left to answer.
+					if (res.destroyed || res.writableEnded) return
+				}
 				await writeChatCompletion(res, script, body)
 				return
 			}
@@ -263,6 +302,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 
 	const request = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
 	const model = typeof request.model === "string" ? request.model : DEFAULT_MODEL.slug
+	const responseModel = script.responseModel ?? model
 	if (request.stream === false) {
 		writeJson(
 			res,
@@ -271,7 +311,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 				id: "chatcmpl_fake",
 				object: "chat.completion",
 				created: unixNow(),
-				model,
+				model: responseModel,
 				choices: [
 					{
 						index: 0,
@@ -294,7 +334,13 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 
 	// Emit one chunk envelope; only `choices` varies between chunks.
 	const chunk = (choices: unknown[]) =>
-		writeSse(res, { id: "chatcmpl_fake", object: "chat.completion.chunk", created: unixNow(), model, choices })
+		writeSse(res, {
+			id: "chatcmpl_fake",
+			object: "chat.completion.chunk",
+			created: unixNow(),
+			model: responseModel,
+			choices,
+		})
 
 	let emitted = 0
 	chunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }])
@@ -335,11 +381,13 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 	const fermentId = extractFermentId(body)
 	const agentId = extractAgentId(body)
 	const bashHandle = extractBashHandle(body)
+	const firstMcpTool = extractFirstMcpTool(body)
 	for (const toolCall of script.toolCalls ?? []) {
 		const fn = { ...toolCall.function }
 		if (fermentId) fn.arguments = fn.arguments.replaceAll("__FERMENT_ID__", fermentId)
 		if (agentId) fn.arguments = fn.arguments.replaceAll("__AGENT_ID__", agentId)
 		if (bashHandle) fn.arguments = fn.arguments.replaceAll("__BASH_HANDLE__", bashHandle)
+		if (firstMcpTool) fn.arguments = fn.arguments.replaceAll("__MCP_FIRST_TOOL__", firstMcpTool)
 		chunk([
 			{
 				index: 0,
@@ -380,7 +428,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 			id: "chatcmpl_fake",
 			object: "chat.completion.chunk",
 			created: unixNow(),
-			model,
+			model: responseModel,
 			choices: [finalChunk],
 			usage: {
 				prompt_tokens: script.usage.prompt_tokens,
@@ -431,6 +479,11 @@ function extractAgentId(body: unknown): string | undefined {
 	return extractAgentIdFromText(JSON.stringify(body ?? ""))
 }
 
+/** Pull the first namespaced MCP tool from a prior gateway connect/list result. */
+function extractFirstMcpTool(body: unknown): string | undefined {
+	return JSON.stringify(body ?? "").match(/-\s*(conformance_[A-Za-z0-9_.-]+)/)?.[1]
+}
+
 function extractAgentIdFromValue(value: unknown): string | undefined {
 	if (Array.isArray(value)) {
 		for (const item of value) {
@@ -472,18 +525,20 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 /**
- * A chat-completion request is treated as a subagent turn when any system
- * message carries the inherited-prompt marker the host injects for spawned
- * subagents. This lets the fake server route scripted responses to the
- * correct queue even when subagent and orchestrator turns interleave.
+ * Route explicit child-session requests and legacy prompt-marked subagents
+ * to the subagent response queue.
  */
-function isSubagentRequest(body: unknown): boolean {
-	const messages = asRecord(body).messages
+const REPLACE_MODE_SUBAGENT_HEADER = "You are a kimchi coding agent sub-agent."
+
+function isSubagentRequest(request: FakeResponseRequest): boolean {
+	if (request.headers["x-parent-session-id"] !== undefined) return true
+	const messages = asRecord(request.body).messages
 	if (!Array.isArray(messages)) return false
 	return messages.some((message) => {
 		const record = asRecord(message)
 		if (record.role !== "system") return false
-		return readMessageContent(record.content).includes("<inherited_system_prompt>")
+		const content = readMessageContent(record.content)
+		return content.includes("<inherited_system_prompt>") || content.includes(REPLACE_MODE_SUBAGENT_HEADER)
 	})
 }
 
@@ -495,17 +550,20 @@ function isSubagentRequest(body: unknown): boolean {
  * single-queue behaviour.
  */
 function pickResponseScript(
-	body: unknown,
+	request: FakeResponseRequest,
 	mainQueue: FakeResponseScript[],
 	subagentQueue: FakeResponseScript[],
 ): FakeResponseScript {
-	const useSubagent = subagentQueue.length > 0 && isSubagentRequest(body)
+	const useSubagent = subagentQueue.length > 0 && isSubagentRequest(request)
 	const primary = useSubagent ? subagentQueue : mainQueue
-	if (primary.length > 0) {
-		return primary.shift() ?? { stream: ["fake response"] }
-	}
 	const fallback = useSubagent ? mainQueue : subagentQueue
-	return fallback.shift() ?? { stream: ["fake response"] }
+	return takeResponseScript(primary, request) ?? takeResponseScript(fallback, request) ?? { stream: ["fake response"] }
+}
+
+function takeResponseScript(queue: FakeResponseScript[], request: FakeResponseRequest): FakeResponseScript | undefined {
+	const matched = queue.findIndex((script) => script.match?.(request))
+	const index = matched >= 0 ? matched : queue.findIndex((script) => !script.match)
+	return index >= 0 ? queue.splice(index, 1)[0] : undefined
 }
 
 function unixNow(): number {

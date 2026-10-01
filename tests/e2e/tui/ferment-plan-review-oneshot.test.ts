@@ -71,10 +71,8 @@ test("plan review dialog appears in one-shot mode after propose_ferment_scoping"
 						},
 					],
 				},
-				// Turn 2: tools suppressed → model produces text-only response.
-				// The test does not assert the exact text here; the important behavior
-				// is that agent_end fires and the review dialog surfaces.
-				{ stream: ["I've submitted the plan for your review."] },
+				// Turn 2: terminate:true ends the turn; the review dialog surfaces
+				// via onPlanReviewRequest. No suppression turn needed.
 			],
 		},
 		async (fixture, trace) => {

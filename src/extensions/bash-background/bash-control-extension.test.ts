@@ -12,7 +12,7 @@
  * by a fake BashOperations.
  */
 import type { ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createFakeOps, type FakeOps } from "./__mocks__/fake-bash-ops.js"
 import bashControlExtension, {
@@ -24,6 +24,12 @@ import bashControlExtension, {
 import { createProcessRegistry, type ProcessRegistry } from "./process-registry.js"
 import { createReviewCoordinator, type ReviewCoordinator } from "./review-coordinator.js"
 import type { BashSessionState } from "./session-registry.js"
+
+// Control isAgentWorker() per test: workers keep bash_control visible.
+const workerState = vi.hoisted(() => ({ isWorker: false }))
+vi.mock("../agent-worker-context.js", () => ({
+	isAgentWorker: () => workerState.isWorker,
+}))
 
 // ─── Shared state ─────────────────────────────────────────────────────────────
 
@@ -188,6 +194,86 @@ describe("session_start", () => {
 		const toolNames = harness.registerTool.mock.calls.map(([tool]) => (tool as { name: string }).name)
 		expect(toolNames).toContain("bash_control")
 		expect(state.deliverReview).toBeDefined()
+	})
+})
+
+describe("bash_control deferral (token optimization)", () => {
+	it("registers bash_control but keeps it hidden at session_start in main sessions", async () => {
+		workerState.isWorker = false
+		const harness = makePiWithState()
+		await fireSessionStart(harness)
+
+		// Registered (availability preserved) but not advertised (surface reduced).
+		expect(harness.getRegisteredTools().map((tool) => tool.name)).toContain("bash_control")
+		expect(harness.getActiveToolNames()).not.toContain("bash_control")
+	})
+
+	it("reveals bash_control on the first tracked background handle", async () => {
+		workerState.isWorker = false
+		const harness = makePiWithState()
+		await fireSessionStart(harness)
+		expect(harness.getActiveToolNames()).not.toContain("bash_control")
+
+		// A short-task bash result (no handle) must NOT reveal.
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "c0",
+			input: { command: "echo hi" },
+			content: [{ type: "text", text: "hi" }],
+			isError: false,
+			details: {},
+		})
+		expect(harness.getActiveToolNames()).not.toContain("bash_control")
+
+		const handle = spawnRunning()
+		await startTrackedSession(harness, handle)
+		expect(harness.getActiveToolNames()).toContain("bash_control")
+	})
+
+	it("reveal is one-way: a second handle does not re-transition visibility", async () => {
+		workerState.isWorker = false
+		const harness = makePiWithState()
+		await fireSessionStart(harness)
+		const a = spawnRunning("first-proc")
+		await startTrackedSession(harness, a)
+		const transitionsAfterReveal = harness.setActiveTools.mock.calls.length
+		expect(transitionsAfterReveal).toBeGreaterThan(0)
+
+		const b = spawnRunning("second-proc")
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "c2",
+			input: { command: "long" },
+			content: [],
+			isError: false,
+			details: { handle: b, handoff: true, exited: false },
+		})
+		expect(harness.setActiveTools.mock.calls.length).toBe(transitionsAfterReveal)
+	})
+
+	it("keeps bash_control visible in agent workers (carve-out)", async () => {
+		workerState.isWorker = true
+		const harness = makePiWithState()
+		await fireSessionStart(harness)
+		expect(harness.getActiveToolNames()).toContain("bash_control")
+		workerState.isWorker = false
+	})
+
+	it("a re-entered session_start after reveal does not re-hide bash_control", async () => {
+		workerState.isWorker = false
+		const harness = makePiWithState()
+		await fireSessionStart(harness)
+		const handle = spawnRunning()
+		await startTrackedSession(harness, handle)
+		expect(harness.getActiveToolNames()).toContain("bash_control")
+
+		// Resume/fork re-enters session_start; reveal is one-way per factory lifetime.
+		const transitions = harness.setActiveTools.mock.calls.length
+		await fireSessionStart(harness)
+		expect(harness.getActiveToolNames()).toContain("bash_control")
+		expect(harness.setActiveTools.mock.calls.length).toBe(transitions)
 	})
 })
 

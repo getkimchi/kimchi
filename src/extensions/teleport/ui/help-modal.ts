@@ -6,7 +6,7 @@ const TIPS: ReadonlyArray<{ keys: string; label: string }> = [
 	{ keys: "Ctrl+D", label: "Leave remote sessions running and return to local kimchi" },
 	{ keys: "/sync", label: "Sync files between your machine and the remote workspace" },
 	{ keys: "/terminal", label: "SSH into the remote workspace" },
-	{ keys: "/remote-sessions", label: "Browse workspaces and their sessions — open, rename, or delete" },
+	{ keys: "/remote-sessions", label: "Browse workspaces and their sessions — open, rename, delete, or sync" },
 ]
 
 class TeleportHelpComponent extends Container {

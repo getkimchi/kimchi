@@ -9,8 +9,11 @@
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { Key, matchesKey, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { deriveDeprecationState } from "../../model-deprecation.js"
 import { getAvailableModels } from "../../startup-context.js"
+import { isAutoRoutedRef } from "../auto-model/constants.js"
 import { setProcessOrchestratorRef } from "../kimchi-process.js"
+import { findModelByRef } from "../model-catalog/ref-utils.js"
 import { withSuppressedModelSelectGuard } from "../model-switch.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createQuestionForm, type Question, type QuestionFormResult, YES_NO_OPTIONS } from "../questionnaire/index.js"
@@ -25,14 +28,33 @@ import {
 	DEFAULT_MODEL_ROLES,
 	getModelRoles,
 	type ModelRoles,
+	modelIdFromRef,
 	normalizeRoleModels,
 	type RoleModelAssignment,
 	saveModelRoles,
-	splitModelRef,
 } from "./model-roles.js"
 
 function syncOrchestratorRef(sessionId: string, roles: ModelRoles): void {
 	setProcessOrchestratorRef(sessionId, roles.orchestrator)
+}
+
+/**
+ * Picker tags for a model ref: "unavailable" when the API no longer serves
+ * it (gone from /v1/models/metadata), "deprecated" during the announced
+ * deprecation window. The auto-model pseudo-ref is exempt.
+ */
+export function modelRefTags(
+	ref: string,
+	apiSlugs: ReadonlySet<string>,
+	deprecatedSlugs: ReadonlySet<string>,
+): string[] {
+	// Routed virtual models (kimchi-dev ids starting with `auto`) are neither
+	// concrete catalog slugs nor deprecated — no tags.
+	if (isAutoRoutedRef(ref)) return []
+	const slug = modelIdFromRef(ref)
+	if (!apiSlugs.has(slug)) return ["unavailable"]
+	if (deprecatedSlugs.has(slug)) return ["deprecated"]
+	return []
 }
 
 const ROLE_LABELS: Record<keyof ModelRoles, { label: string; description: string }> = {
@@ -214,6 +236,7 @@ function createToggleSelect(
 	refs: string[],
 	selected: Set<string>,
 	done: (result: ToggleSelectResult) => void,
+	annotate: (ref: string) => string = (ref) => ref,
 ): Component {
 	let cachedLines: string[] | undefined
 	const cursor: { index: number } = { index: 0 }
@@ -285,7 +308,7 @@ function createToggleSelect(
 			const checked = selected.has(ref)
 			const box = checked ? "[x]" : "[ ]"
 			const color = isCursor ? "accent" : "text"
-			add(`${prefix}${theme.fg(color, `${box} ${ref}`)}`)
+			add(`${prefix}${theme.fg(color, `${box} ${annotate(ref)}`)}`)
 		}
 
 		lines.push("")
@@ -323,7 +346,9 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 			const roles = { ...getModelRoles() }
 
 			const apiModels = getAvailableModels()
-			const availableModelRefs = apiModels.map((m) => `kimchi-dev/${m.slug}`)
+			// Backend-owned visibility: routed virtual models appear here exactly
+			// when the backend catalog advertises them to this account.
+			const availableModelRefs = [...new Set(apiModels.map((m) => `kimchi-dev/${m.slug}`))]
 
 			for (const key of ROLE_KEYS) {
 				for (const ref of normalizeRoleModels(roles[key])) {
@@ -331,6 +356,16 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 						availableModelRefs.push(ref)
 					}
 				}
+			}
+			availableModelRefs.sort()
+
+			const apiSlugSet = new Set(apiModels.map((m) => m.slug))
+			const deprecatedSlugs = new Set(
+				apiModels.filter((m) => deriveDeprecationState(m) === "announced").map((m) => m.slug),
+			)
+			const refSuffix = (ref: string): string => {
+				const tags = modelRefTags(ref, apiSlugSet, deprecatedSlugs)
+				return tags.length > 0 ? ` (${tags.join(", ")})` : ""
 			}
 
 			const showMainMenu = async (): Promise<void> => {
@@ -355,18 +390,17 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					ctx.ui.notify("Model roles reset to defaults.", "info")
 
 					if (getMultiModelEnabled(ctx.sessionManager)) {
-						const parsed = splitModelRef(DEFAULT_MODEL_ROLES.orchestrator)
-						if (parsed) {
-							const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
-							if (target) {
-								try {
-									await withSuppressedModelSelectGuard(() => pi.setModel(target))
-								} catch {
-									ctx.ui.notify(
-										`Could not switch to ${DEFAULT_MODEL_ROLES.orchestrator}. The model will be used next session.`,
-										"warning",
-									)
-								}
+						const target = ctx.modelRegistry
+							? findModelByRef(ctx.modelRegistry, DEFAULT_MODEL_ROLES.orchestrator)
+							: undefined
+						if (target) {
+							try {
+								await withSuppressedModelSelectGuard(() => pi.setModel(target))
+							} catch {
+								ctx.ui.notify(
+									`Could not switch to ${DEFAULT_MODEL_ROLES.orchestrator}. The model will be used next session.`,
+									"warning",
+								)
 							}
 						}
 					}
@@ -403,6 +437,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					const tags: string[] = []
 					if (isCurrent) tags.push("current")
 					if (isDefault) tags.push("default")
+					tags.push(...modelRefTags(ref, apiSlugSet, deprecatedSlugs))
 					const suffix = tags.length > 0 ? ` (${tags.join(", ")})` : ""
 					return `${ref}${suffix}`
 				})
@@ -423,15 +458,12 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				ctx.ui.notify(`${info.label} set to ${newRef}`, "info")
 
 				if (roleKey === "orchestrator" && getMultiModelEnabled(ctx.sessionManager)) {
-					const parsed = splitModelRef(newRef)
-					if (parsed) {
-						const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
-						if (target) {
-							try {
-								await withSuppressedModelSelectGuard(() => pi.setModel(target))
-							} catch {
-								ctx.ui.notify(`Could not switch to ${newRef}. The model will be used next session.`, "warning")
-							}
+					const target = ctx.modelRegistry ? findModelByRef(ctx.modelRegistry, newRef) : undefined
+					if (target) {
+						try {
+							await withSuppressedModelSelectGuard(() => pi.setModel(target))
+						} catch {
+							ctx.ui.notify(`Could not switch to ${newRef}. The model will be used next session.`, "warning")
 						}
 					}
 				}
@@ -442,7 +474,15 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				const selected = new Set(normalizeRoleModels(roles[roleKey]))
 
 				const result = await ctx.ui.custom<ToggleSelectResult>((tui, theme, _kb, done) =>
-					createToggleSelect(tui, theme, info.label, availableModelRefs, selected, done),
+					createToggleSelect(
+						tui,
+						theme,
+						info.label,
+						availableModelRefs,
+						selected,
+						done,
+						(ref) => `${ref}${refSuffix(ref)}`,
+					),
 				)
 
 				if (result.cancelled) return

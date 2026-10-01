@@ -131,6 +131,12 @@ export default function interactiveErrorSurfaceExtension(pi: ExtensionAPI): void
 			// suppressed by interceptShowError if it reaches showError.
 			message.errorMessage = RETRYING_PLACEHOLDER
 		} else {
+			// Preserve the raw error BEFORE sanitizing so upstream's compaction
+			// recovery (`_checkCompaction` → `isContextOverflow`, which matches
+			// provider-specific overflow patterns) can still classify it after
+			// the display text is replaced. Without this the raw `"context window
+			// exceeded"` text is lost and overflow recovery silently never fires.
+			preserveRawErrorMessage(message)
 			// Non-retryable: sanitize in place. No pending state is created —
 			// the error is fully handled here and agent_end must not re-render.
 			message.errorMessage = formatSanitizedErrorMessage(message.errorMessage, "interactive", {

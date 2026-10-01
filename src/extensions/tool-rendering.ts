@@ -23,6 +23,7 @@ import {
 	createLsTool,
 	createReadTool,
 	createWriteTool,
+	getMarkdownTheme,
 	ToolExecutionComponent,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent"
@@ -34,6 +35,7 @@ import {
 	getImageDimensions,
 	type ImageDimensions,
 	imageFallback,
+	Markdown,
 	Text,
 	truncateToWidth,
 	visibleWidth,
@@ -43,7 +45,7 @@ import * as Diff from "diff"
 import type { BundledLanguage, BundledTheme } from "shiki"
 import type { TSchema } from "typebox"
 import { formatDuration } from "../extensions/format.js"
-import { getBashCommandForDisplay } from "./rtk-rewrite.js"
+import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
 import { TODO_TOOL_NAMES } from "./todos/tool.js"
 
 const RESET = "\x1b[0m"
@@ -61,7 +63,7 @@ const TOOL_RENDER_CACHE = Symbol.for("pi-claude-style-tools:tool-render-cache")
 const TOOL_CACHE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-tool-cache-invalidation")
 const TOOL_IMAGE_EXPAND_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-read-image-expansion")
 const USER_MESSAGE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-user-message-render")
-const HIDDEN_TOOL_BLOCK_NAMES = new Set(["write_todos", ...TODO_TOOL_NAMES])
+const HIDDEN_TOOL_BLOCK_NAMES = new Set<string>(["write_todos", ...TODO_TOOL_NAMES, ...FERMENT_V2_TOOL_NAMES])
 const WRAP_MARK = "\uE000"
 const KITTY_IMAGE_PREFIX = "\x1b_G"
 const ITERM2_IMAGE_PREFIX = "\x1b]1337;File="
@@ -396,6 +398,25 @@ const OSC133_ZONE_SUFFIX = OSC133_ZONE_END + OSC133_ZONE_FINAL
 let WORKED_LINE_FG = "\x1b[38;2;140;140;140m"
 let currentAgentWorkStartMs: number | undefined
 let currentAssistantMessageStartMs: number | undefined
+const workedDurationHolds = new Set<symbol>()
+
+export function holdWorkedDuration(): (attachToCurrentMessage?: boolean) => void {
+	const hold = Symbol("worked-duration-hold")
+	workedDurationHolds.add(hold)
+	currentAgentWorkStartMs ??= Date.now()
+	return (attachToCurrentMessage = false) => {
+		if (!workedDurationHolds.delete(hold) || workedDurationHolds.size > 0) return
+		if (attachToCurrentMessage) return
+		currentAgentWorkStartMs = undefined
+		currentAssistantMessageStartMs = undefined
+	}
+}
+
+function resetWorkedDuration(): void {
+	workedDurationHolds.clear()
+	currentAgentWorkStartMs = undefined
+	currentAssistantMessageStartMs = undefined
+}
 
 function formatWorkedDuration(ms: number): string {
 	const safeMs = Math.max(0, Number.isFinite(ms) ? ms : 0)
@@ -430,6 +451,12 @@ function formatWorkedDuration(ms: number): string {
  * framework's `getRenderContext` method aliases them via
  * `state: this.rendererState`.
  */
+/**
+ * Sentinel string that pi's grep tool returns as the sole content line when ripgrep
+ * finds nothing. Used to distinguish a genuine zero-match result from match output.
+ */
+export const GREP_NO_MATCHES_SENTINEL = "No matches found"
+
 export function getToolElapsedMs(ctx: ToolRenderContext): number {
 	const startedAt = ctx?.state?._executionStartedAt
 	if (!startedAt) return 0
@@ -1066,19 +1093,24 @@ function markedContinuationPrefix(prefix: string): string {
 	return " ".repeat(visibleWidth(prefix))
 }
 
-function wrapMarkedLine(line: string, width: number): string[] {
+export function wrapMarkedLine(line: string, width: number): string[] {
 	const markerIndex = line.indexOf(WRAP_MARK)
 	if (markerIndex === -1) return wrapTextWithAnsi(line, width)
 	const prefix = line.slice(0, markerIndex)
 	const body = line.slice(markerIndex + WRAP_MARK.length)
 	const prefixWidth = visibleWidth(prefix)
+	// When the prefix alone fills (or exceeds) the width, marked wrapping
+	// cannot hold the invariant — every line would start with the
+	// already-over-wide prefix. Fall back to plain wrapping, which still
+	// shows the full header text one fragment at a time.
+	if (prefixWidth >= width) return wrapTextWithAnsi(line, width)
 	const bodyWidth = Math.max(1, width - prefixWidth)
 	const wrapped = wrapTextWithAnsi(body, bodyWidth)
 	const continuation = markedContinuationPrefix(prefix)
 	return wrapped.map((part, index) => (index === 0 ? `${prefix}${part}` : `${continuation}${part}`))
 }
 
-class ToolText extends Text {
+export class ToolText extends Text {
 	private value = ""
 	private toolCachedValue?: string
 	private toolCachedWidth?: number
@@ -1113,7 +1145,11 @@ class ToolText extends Text {
 		}
 		const contentWidth = Math.max(1, width)
 		const lines = this.value.replace(/\t/g, "   ").split("\n")
-		const rendered = lines.flatMap((line) => wrapMarkedLine(line, contentWidth)).map((line) => padToWidth(line, width))
+		// ToolText renders on the main screen, where pi-tui hard-crashes on any
+		// line wider than the terminal; hard-truncate before padding.
+		const rendered = lines
+			.flatMap((line) => wrapMarkedLine(line, contentWidth))
+			.map((line) => padToWidth(truncateToWidth(line, width), width))
 		this.toolCachedValue = this.value
 		this.toolCachedWidth = width
 		this.toolCachedLines = rendered
@@ -2108,7 +2144,7 @@ async function renderUnified(
 	const tw = width
 	const nw = Math.max(2, String(Math.max(...vis.map((l) => l.oldNum ?? l.newNum ?? 0), 0)).length)
 	const gw = nw + 5
-	const cw = Math.max(20, tw - gw)
+	const cw = Math.max(1, tw - gw)
 	const canHL = diff.chars <= MAX_HL_CHARS && vis.length <= MAX_RENDER_LINES
 
 	const oldSrc: string[] = []
@@ -2678,7 +2714,7 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 						? (message as PatchedAssistantMessage)[WORKED_START_KEY]
 						: currentAssistantMessageStartMs
 			const isFinalAssistantMessage = message.stopReason !== "toolUse"
-			if (started !== undefined && isFinalAssistantMessage) {
+			if (started !== undefined && isFinalAssistantMessage && workedDurationHolds.size === 0) {
 				const durationMs = Date.now() - started
 				// Store duration as metadata on the message object. The patched
 				// AssistantMessageComponent.render() reads it and appends the widget
@@ -2694,9 +2730,10 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 		patchMessage(event, ctx.ui?.theme)
 	})
 	pi.on("agent_end", async () => {
-		currentAgentWorkStartMs = undefined
-		currentAssistantMessageStartMs = undefined
+		if (workedDurationHolds.size === 0) resetWorkedDuration()
 	})
+	pi.on("session_start", async () => resetWorkedDuration())
+	pi.on("session_shutdown", async () => resetWorkedDuration())
 	pi.on("context", async (event) => {
 		if (!Array.isArray(event.messages)) return
 		for (const msg of event.messages) {
@@ -2799,8 +2836,15 @@ function genericToolLabel(name: string): string {
 	return isMcpToolName(name) ? "MCP" : humanizeToolName(name)
 }
 
-function renderGenericToolCall(name: string, args: unknown, theme: Theme, ctx: ToolRenderContext): Text {
+function renderGenericToolCall(name: string, args: unknown, theme: Theme, ctx: ToolRenderContext): Component {
 	ctx.state._openAiPatchFiles = []
+	if (name === "submit_plan") {
+		// The tool call is persisted and replayed; its plan must remain readable even when tools are collapsed.
+		const transcript = new Container()
+		transcript.addChild(new Text(toolHeader("Submit Plan", "", theme, toolStatusDot(ctx, theme)), 0, 0))
+		transcript.addChild(new Markdown(getStringArg(args, "plan"), 0, 0, getMarkdownTheme()))
+		return transcript
+	}
 	const sp = (path: string) => shortPath(ctx.cwd ?? process.cwd(), path)
 	if (isMcpToolName(name)) {
 		// For MCP calls the summary may already contain ANSI color codes (muted
@@ -4180,7 +4224,7 @@ export default function (pi: ExtensionAPI) {
 			return bashTool.execute(toolCallId, params, signal, onUpdate)
 		},
 		renderCall(args, theme, ctx) {
-			const command = getBashCommandForDisplay(args.command) ?? args.command
+			const command = args.command
 			const timer = formatToolTimer(getToolElapsedMs(ctx))
 			if (ctx.expanded && command) {
 				// Expanded: show the tool name + timer on line 1, then the full
@@ -4260,9 +4304,14 @@ export default function (pi: ExtensionAPI) {
 			}
 			clearBlinkTimer(ctx)
 			const details = result.details as GrepToolDetails | undefined
-			const matches = (result.content[0]?.type === "text" ? result.content[0].text : "")
-				.split("\n")
-				.filter((line) => line.trim().length > 0)
+			const rawText = result.content[0]?.type === "text" ? result.content[0].text : ""
+			// Pi's grep tool emits the GREP_NO_MATCHES_SENTINEL string as the sole content line
+			// when ripgrep finds nothing. Detect it at the content level so it isn't miscounted
+			// as one match — a per-line filter would risk swallowing a genuine match whose text
+			// happens to equal the sentinel.
+			if (rawText.trim() === GREP_NO_MATCHES_SENTINEL)
+				return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no matches"), theme))
+			const matches = rawText.split("\n").filter((line) => line.trim().length > 0)
 			if (matches.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no matches"), theme))
 			let text = theme.fg("muted", `${matches.length} matches`)
 			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)")

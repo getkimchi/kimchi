@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 vi.mock("node:fs", () => ({
 	default: {
 		existsSync: vi.fn(),
+		statSync: vi.fn(),
+		readFileSync: vi.fn(),
 	},
 }))
 
@@ -13,15 +15,25 @@ vi.mock("node:child_process", () => ({
 	spawnSync: vi.fn(),
 }))
 
-import { detectMissingCandidates, detectServers } from "./servers.js"
+import {
+	detectMissingCandidates,
+	detectServers,
+	findMainRepoRoot,
+	resolveTsNativeServerPath,
+	resolveTsserverPath,
+} from "./servers.js"
 
 const mockExistsSync = vi.mocked(fs.existsSync)
 const mockSpawnSync = vi.mocked(spawnSync)
+const mockStatSync = vi.mocked(fs.statSync)
+const mockReadFileSync = vi.mocked(fs.readFileSync)
 
 // Suppress Bun global so exists() uses the spawnSync path
 beforeEach(() => {
 	mockExistsSync.mockReset()
 	mockSpawnSync.mockReset()
+	mockStatSync.mockReset()
+	mockReadFileSync.mockReset()
 	// biome-ignore lint/suspicious/noExplicitAny: suppress Bun global for deterministic Node-path testing
 	;(globalThis as any).Bun = undefined
 })
@@ -126,5 +138,177 @@ describe("detectMissingCandidates", () => {
 		const result = detectMissingCandidates("/project/services/autoscaler")
 		expect(result).toHaveLength(1)
 		expect(result[0].name).toBe("gopls")
+	})
+})
+
+describe("findMainRepoRoot", () => {
+	it("returns main repo path when .git is a file with valid gitdir line", () => {
+		const cwd = "/worktree/foo"
+		const dotGit = `${cwd}/.git`
+		mockExistsSync.mockImplementation((p: unknown) => p === dotGit)
+		mockStatSync.mockReturnValue({ isDirectory: () => false } as unknown as fs.Stats)
+		mockReadFileSync.mockReturnValue("gitdir: /main-repo/.git/worktrees/foo\n")
+		expect(findMainRepoRoot(cwd)).toBe("/main-repo")
+	})
+
+	it("returns undefined when .git is a directory", () => {
+		const cwd = "/normal-repo"
+		const dotGit = `${cwd}/.git`
+		mockExistsSync.mockImplementation((p: unknown) => p === dotGit)
+		mockStatSync.mockReturnValue({ isDirectory: () => true } as unknown as fs.Stats)
+		expect(findMainRepoRoot(cwd)).toBeUndefined()
+	})
+
+	it("returns undefined when .git doesn't exist", () => {
+		mockExistsSync.mockReturnValue(false)
+		expect(findMainRepoRoot("/no-git")).toBeUndefined()
+	})
+
+	it("returns undefined when .git content doesn't match gitdir pattern", () => {
+		const cwd = "/weird"
+		const dotGit = `${cwd}/.git`
+		mockExistsSync.mockImplementation((p: unknown) => p === dotGit)
+		mockStatSync.mockReturnValue({ isDirectory: () => false } as unknown as fs.Stats)
+		mockReadFileSync.mockReturnValue("this is not a gitdir file\n")
+		expect(findMainRepoRoot(cwd)).toBeUndefined()
+	})
+
+	it("returns undefined when gitdir doesn't match worktrees pattern", () => {
+		const cwd = "/submodule"
+		const dotGit = `${cwd}/.git`
+		mockExistsSync.mockImplementation((p: unknown) => p === dotGit)
+		mockStatSync.mockReturnValue({ isDirectory: () => false } as unknown as fs.Stats)
+		mockReadFileSync.mockReturnValue("gitdir: /other-repo/.git/modules/foo\n")
+		expect(findMainRepoRoot(cwd)).toBeUndefined()
+	})
+
+	it("resolves relative gitdir paths against cwd", () => {
+		const cwd = "/worktree/foo"
+		const dotGit = `${cwd}/.git`
+		mockExistsSync.mockImplementation((p: unknown) => p === dotGit)
+		mockStatSync.mockReturnValue({ isDirectory: () => false } as unknown as fs.Stats)
+		mockReadFileSync.mockReturnValue("gitdir: ../main-repo/.git/worktrees/foo\n")
+		expect(findMainRepoRoot(cwd)).toBe("/worktree/main-repo")
+	})
+})
+
+describe("resolveTsserverPath", () => {
+	const localTsserver = "/cwd/node_modules/typescript/lib/tsserver.js"
+	const mainTsserver = "/main-repo/node_modules/typescript/lib/tsserver.js"
+
+	beforeEach(() => {
+		mockStatSync.mockReturnValue({ isDirectory: () => false } as unknown as fs.Stats)
+		mockReadFileSync.mockReturnValue("gitdir: /main-repo/.git/worktrees/cwd\n")
+	})
+
+	it("returns local tsserver.js when node_modules/typescript exists in cwd", () => {
+		mockExistsSync.mockImplementation((p: unknown) => p === localTsserver)
+		expect(resolveTsserverPath("/cwd")).toBe(localTsserver)
+	})
+
+	it("returns main repo tsserver.js when cwd is a worktree without local node_modules", () => {
+		const dotGit = "/cwd/.git"
+		mockExistsSync.mockImplementation((p: unknown) => p === dotGit || p === mainTsserver)
+		expect(resolveTsserverPath("/cwd")).toBe(mainTsserver)
+	})
+
+	it("returns undefined when not in a worktree and no local TypeScript", () => {
+		// .git doesn't exist -> findMainRepoRoot returns undefined early
+		mockExistsSync.mockReturnValue(false)
+		expect(resolveTsserverPath("/cwd")).toBeUndefined()
+	})
+
+	it("returns undefined when .git is a directory and no local TypeScript", () => {
+		const dotGit = "/cwd/.git"
+		mockExistsSync.mockImplementation((p: unknown) => p === dotGit)
+		mockStatSync.mockReturnValue({ isDirectory: () => true } as unknown as fs.Stats)
+		expect(resolveTsserverPath("/cwd")).toBeUndefined()
+	})
+
+	it("prefers local over main repo when both exist", () => {
+		const dotGit = "/cwd/.git"
+		mockExistsSync.mockImplementation((p: unknown) => p === localTsserver || p === dotGit || p === mainTsserver)
+		expect(resolveTsserverPath("/cwd")).toBe(localTsserver)
+	})
+})
+
+describe("resolveTsNativeServerPath", () => {
+	const localNativeBin = "/cwd/node_modules/typescript/bin/tsc"
+	const localTsserverJs = "/cwd/node_modules/typescript/lib/tsserver.js"
+	const mainNativeBin = "/main-repo/node_modules/typescript/bin/tsc"
+
+	beforeEach(() => {
+		mockStatSync.mockReturnValue({ isDirectory: () => false } as unknown as fs.Stats)
+		mockReadFileSync.mockReturnValue("gitdir: /main-repo/.git/worktrees/cwd\n")
+	})
+
+	it("returns own bin/tsc when the package has no tsserver.js (TS7 signature)", () => {
+		mockExistsSync.mockImplementation((p: unknown) => p === localNativeBin)
+		expect(resolveTsNativeServerPath("/cwd")).toBe(localNativeBin)
+	})
+
+	it("returns own bin/tsc even when the main repo has classic TypeScript", () => {
+		const mainTsserverJs = "/main-repo/node_modules/typescript/lib/tsserver.js"
+		mockExistsSync.mockImplementation((p: unknown) => p === localNativeBin || p === mainTsserverJs)
+		expect(resolveTsNativeServerPath("/cwd")).toBe(localNativeBin)
+	})
+
+	it("returns undefined when cwd's own package is classic even if the main repo is native", () => {
+		const dotGit = "/cwd/.git"
+		mockExistsSync.mockImplementation((p: unknown) => p === localTsserverJs || p === dotGit || p === mainNativeBin)
+		expect(resolveTsNativeServerPath("/cwd")).toBeUndefined()
+	})
+
+	it("falls back to the main-repo bin when cwd is a worktree without its own typescript", () => {
+		const dotGit = "/cwd/.git"
+		mockExistsSync.mockImplementation((p: unknown) => p === dotGit || p === mainNativeBin)
+		expect(resolveTsNativeServerPath("/cwd")).toBe(mainNativeBin)
+	})
+
+	it("returns undefined when no resolvable typescript exists anywhere", () => {
+		mockExistsSync.mockReturnValue(false)
+		expect(resolveTsNativeServerPath("/cwd")).toBeUndefined()
+	})
+})
+
+describe("TypeScript 7 native server detection", () => {
+	const nativeBin = "/project/node_modules/typescript/bin/tsc"
+
+	it("activates the native server in a TS7 workspace without typescript-language-server installed", () => {
+		setFiles(["package.json", "node_modules/typescript/bin/tsc"])
+		setBinaries([])
+		const result = detectServers("/project")
+		expect(result).toHaveLength(1)
+		expect(result[0]).toMatchObject({
+			name: "typescript-native",
+			command: nativeBin,
+			args: ["--lsp", "--stdio"],
+			skipProjectLoadWait: true,
+			pullDiagnostics: true,
+		})
+		expect(result[0].extensions).toContain("ts")
+	})
+
+	it("prefers the native server over an installed typescript-language-server in a TS7 workspace", () => {
+		setFiles(["package.json", "node_modules/typescript/bin/tsc"])
+		setBinaries(["typescript-language-server"])
+		const result = detectServers("/project")
+		expect(result).toHaveLength(1)
+		expect(result[0].name).toBe("typescript-native")
+	})
+
+	it("keeps typescript-language-server in a classic TS5 workspace", () => {
+		setFiles(["package.json", "node_modules/typescript/lib/tsserver.js"])
+		setBinaries(["typescript-language-server"])
+		const result = detectServers("/project")
+		expect(result).toHaveLength(1)
+		expect(result[0].name).toBe("typescript-language-server")
+	})
+
+	it("does not report TypeScript as missing when the native server is active", () => {
+		setFiles(["package.json", "node_modules/typescript/bin/tsc"])
+		setBinaries([])
+		const result = detectMissingCandidates("/project")
+		expect(result.find((s) => s.name === "typescript-language-server")).toBeUndefined()
 	})
 })

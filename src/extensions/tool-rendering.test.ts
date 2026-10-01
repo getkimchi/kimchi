@@ -1,11 +1,13 @@
 import { initTheme, type Theme, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent"
-import { Text, visibleWidth } from "@earendil-works/pi-tui"
-import { beforeAll, describe, expect, it } from "vitest"
+import { ProcessTerminal, Text, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui"
+import { beforeAll, describe, expect, it, vi } from "vitest"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createToolRenderContext } from "./__mocks__/tool-render-context.js"
+import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
 import toolRenderingExtension, {
 	createErrorTruncatingResultRenderer,
 	formatToolTimer,
+	GREP_NO_MATCHES_SENTINEL,
 	getToolElapsedMs,
 	isMcpToolName,
 	mcpCallLabelAndSummary,
@@ -16,6 +18,7 @@ import toolRenderingExtension, {
 	summarizeOpenAiToolCall,
 	type ToolRenderContext,
 	toolHeader,
+	wrapMarkedLine,
 } from "./tool-rendering.js"
 
 const OSC133_A = "\x1b]133;A\x07"
@@ -167,6 +170,21 @@ describe("hidden tool block rendering", () => {
 		expect(component.render(80)).toEqual([])
 	})
 
+	it.each(FERMENT_V2_TOOL_NAMES)("hides %s tool calls and results", (toolName) => {
+		const component = new ToolExecutionComponent(
+			toolName,
+			`tc-${toolName}`,
+			{},
+			{},
+			undefined,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+
+		expect(component.render(80)).toEqual([])
+	})
+
 	it("uses Agent's custom call renderer for streamed arguments", () => {
 		const component = new ToolExecutionComponent(
 			"Agent",
@@ -201,6 +219,77 @@ describe("hidden tool block rendering", () => {
 		const rendered = component.render(80).map(stripSgr).join("\n")
 		expect(rendered).toContain("Custom Tool")
 		expect(rendered).not.toContain("custom non-Agent renderer")
+	})
+
+	it("keeps complete submitted plans in the transcript before results and after replay or collapse", () => {
+		const plan = `# Cache migration\n\n${Array.from({ length: 80 }, (_, index) => `- Requirement ${index + 1}`).join("\n")}`
+		const args = { plan }
+		const tui = new TuiMainScreen(new ProcessTerminal())
+		vi.spyOn(tui, "requestRender").mockImplementation(() => {})
+		const create = (input: typeof args) =>
+			new ToolExecutionComponent("submit_plan", "tc-plan", input, {}, undefined, tui, "/tmp")
+		const component = create({ plan: "# Draft" })
+		component.updateArgs(args)
+		component.setArgsComplete()
+		for (const current of [component, create(JSON.parse(JSON.stringify(args)))]) {
+			for (const expanded of [false, true, false]) {
+				current.setExpanded(expanded)
+				const rendered = current.render(80).map(stripSgr).join("\n")
+				expect(rendered).toContain("Cache migration")
+				for (let index = 1; index <= 80; index++) expect(rendered).toContain(`Requirement ${index}`)
+			}
+			current.updateResult(
+				{ content: [{ type: "text", text: "Plan submitted for review. Waiting for user decision." }], isError: false },
+				false,
+			)
+			expect(current.render(80).map(stripSgr).join("\n")).toContain("Requirement 80")
+		}
+	})
+})
+
+describe("grep result rendering", () => {
+	let mockApi: ReturnType<typeof createExtensionApi>
+	beforeAll(() => {
+		mockApi = createExtensionApi()
+		toolRenderingExtension(mockApi.api)
+	})
+
+	function grepRenderResult(result: unknown, options: { expanded?: boolean } = {}) {
+		// biome-ignore lint/suspicious/noExplicitAny: registerTool is a vi mock in the shared double
+		const grepDef = ((mockApi.api as any).registerTool as any).mock.calls
+			.map((call: unknown[]) => call[0])
+			.find((def: { name?: string }) => def?.name === "grep")
+		expect(grepDef, "grep tool definition registered").toBeDefined()
+		const invoke = (expanded: boolean) =>
+			grepDef.renderResult(result, { expanded, isPartial: false }, plainTheme, createToolRenderContext())
+		// renderResult returns a Text component; render it and strip SGR + branch glyphs for a plain string.
+		const rendered = invoke(options.expanded ?? false).render(120)
+		return rendered.map((line: string) => stripSgr(line)).join("\n")
+	}
+
+	it("reports no matches when ripgrep returns the empty sentinel", () => {
+		const text = grepRenderResult({ content: [{ type: "text", text: GREP_NO_MATCHES_SENTINEL }], details: undefined })
+		expect(text).toContain("no matches")
+		expect(text).not.toContain("1 matches")
+	})
+
+	it("still counts real match lines", () => {
+		const text = grepRenderResult({
+			content: [{ type: "text", text: "src/a.ts:12: const x = 1\nsrc/b.ts:3: const y = 2" }],
+			details: undefined,
+		})
+		expect(text).toContain("2 matches")
+	})
+
+	it("counts a real match whose text equals the sentinel string", () => {
+		// A genuine match line always carries a `path:line:` prefix, so even if its text is
+		// "No matches found" it must be counted — not treated as the zero-match sentinel.
+		const text = grepRenderResult({
+			content: [{ type: "text", text: `src/a.ts:7: ${GREP_NO_MATCHES_SENTINEL}` }],
+			details: undefined,
+		})
+		expect(text).toContain("1 matches")
+		expect(text).not.toContain("no matches")
 	})
 })
 
@@ -260,6 +349,36 @@ describe("toolHeader", () => {
 		const headerWithout = toolHeader("Read", "src/foo.ts", plainTheme, "○ ")
 		expect(headerWithout).not.toContain("1.5s")
 		expect(headerWith).toContain("1.5s")
+	})
+})
+
+describe("wrapMarkedLine", () => {
+	// Regression (pi-crash.log, terminal width 2): the collapsed header of an
+	// Edit tool call (` ● Edit <mark>/Users/...`) has a marked prefix wider
+	// than the terminal. wrapMarkedLine emitted `${prefix}${body-chunk}` lines
+	// of width prefixWidth + 1 = 9 regardless of the requested width, and
+	// pi-tui's doRender hard-crashed: "Rendered line N exceeds terminal
+	// width (9 > 2)".
+	const crashHeader = toolHeader("Edit", "/Users/vytautas/reps/some-project/file.ts", plainTheme, " ● ")
+
+	it("never emits a line wider than the requested width at narrow sizes", () => {
+		for (let width = 1; width <= 12; width++) {
+			for (const line of wrapMarkedLine(crashHeader, width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+			}
+		}
+	})
+
+	it("falls back to plain wrapping when the prefix fills the width", () => {
+		const lines = wrapMarkedLine(crashHeader, 2)
+		expect(lines.length).toBeGreaterThan(1)
+		// The full header text still shows, one fragment at a time.
+		expect(stripSgr(lines.join("")).replace(/\s/g, "")).toContain("/Users/vytautas")
+	})
+
+	it("keeps marked-prefix wrapping when the width fits", () => {
+		const lines = wrapMarkedLine(crashHeader, 40)
+		expect(stripSgr(lines[0]).startsWith(" ● Edit /")).toBe(true)
 	})
 })
 

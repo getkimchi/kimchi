@@ -51,6 +51,8 @@
  * duplicating the set logic inline.
  */
 
+import { FERMENT_V2_TOOL_NAMES } from "../../extensions/ferment-v2/constants.js"
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -104,10 +106,11 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	// planning profiles so the step can return its result or questions.
 	{ name: "workflow_submit_result", modes: ["shared"] },
 	{ name: "workflow_submit_questions", modes: ["shared"] },
-	// MCP gateway — discovery + proxy for MCP server tools. Treated as a
-	// shared discovery tool (analogous to read/grep/find): harmless when no
-	// servers are configured, and required during planning so the model can
-	// search/describe/call read-only MCP tools (e.g. Atlassian Jira).
+	// MCP gateway — discovery + proxy for MCP server tools. Available in normal
+	// and implementation modes, but filtered out of both planning profiles
+	// (arbitrary server calls). Read-only-qualified MCP direct tools are
+	// admitted to planning profiles by the profile manager via
+	// registerReadOnlyToolProvider (see src/extensions/mcp/read-only.ts).
 	{ name: "mcp", modes: ["shared"] },
 	// DAP debugger tools — always available in every mode/profile so the agent
 	// can inspect runtime state at any time. Registered by the dap extension.
@@ -138,6 +141,7 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	{ name: "add_todo", modes: ["shared"] },
 	{ name: "mark_todo", modes: ["shared"] },
 	{ name: "clear_todos", modes: ["shared"] },
+	...FERMENT_V2_TOOL_NAMES.map<ToolEntry>((name) => ({ name, modes: ["shared"] })),
 ]
 
 /** Tools gated behind `--plan` (adhoc planning mode). */
@@ -145,6 +149,30 @@ export const ADHOC_MODE_TOOLS: ToolEntry[] = [
 	// interactive — model collects structured input from the user
 	{ name: "questionnaire", modes: ["adhoc"], routing: "interactive" },
 ]
+
+const ADHOC_ONLY_TOOL_NAMES = new Set(ADHOC_MODE_TOOLS.map((t) => t.name))
+
+/**
+ * True when the tool is declared adhoc-only in the catalog (e.g.
+ * `questionnaire`), meaning it must NOT be re-surfaced by ferment profiles
+ * whose base is `getAllTools()`. The ferment interactive-question surface is
+ * `ask_user`; both being visible would give the model two competing ways to
+ * ask the user.
+ */
+export function isAdhocOnlyToolName(name: string): boolean {
+	return ADHOC_ONLY_TOOL_NAMES.has(name)
+}
+
+/**
+ * Plan-submission tool available in both adhoc plan mode and ferment
+ * planning phase. The model calls it when the plan is ready for user
+ * review. Visible only in planning profiles — hidden in idle, worker,
+ * and implementation-ferment. This is the only "write-like" tool visible
+ * during planning (edit, write, bash-write are all suppressed).
+ */
+export const SHARED_PLANNING_TOOLS: ToolEntry[] = [{ name: "submit_plan", modes: ["adhoc"] }]
+
+const PLANNING_CORE_TOOLS = SHARED_CORE_TOOLS.filter((tool) => tool.name !== "mcp")
 
 /**
  * Tools gated behind the ferment lifecycle.
@@ -240,8 +268,8 @@ export const WRITE_TOOLS: ToolEntry[] = [
  * Profile encoding:
  * - `'idle'`                     → SHARED_CORE_TOOLS only (no write; no ferment tools)
  * - `'worker'`                   → [] (managed externally by the agents manager)
- * - `'planning-adhoc'`           → SHARED_CORE_TOOLS + ADHOC_MODE_TOOLS + bash
- * - `'planning-ferment'`         → SHARED_CORE_TOOLS + ferment tools visible in planning
+ * - `'planning-adhoc'`           → SHARED_CORE_TOOLS minus MCP + ADHOC_MODE_TOOLS + bash
+ * - `'planning-ferment'`         → SHARED_CORE_TOOLS minus MCP + ferment tools visible in planning
  * - `'implementation-ferment'`   → SHARED_CORE_TOOLS + all ferment tools + all write tools
  *
  * TODO: Consider accepting a predicate/context (e.g.
@@ -262,15 +290,16 @@ export function getToolsForProfile(profile: ToolProfile): ToolEntry[] {
 
 		case "planning-adhoc":
 			return [
-				...SHARED_CORE_TOOLS,
+				...PLANNING_CORE_TOOLS,
 				...ADHOC_MODE_TOOLS,
+				...SHARED_PLANNING_TOOLS,
 				// bash is the only write tool in adhoc planning mode
 				...WRITE_TOOLS.filter((t) => t.modes.includes("adhoc")),
 			]
 
 		case "planning-ferment": {
 			const ferment = FERMENT_MODE_TOOLS.filter((t) => t.phases === undefined || t.phases.includes("planning"))
-			return [...SHARED_CORE_TOOLS, ...ferment]
+			return [...PLANNING_CORE_TOOLS, ...ferment]
 		}
 
 		case "implementation-ferment":

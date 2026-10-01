@@ -1,15 +1,24 @@
-import type { ExtensionAPI, ExtensionContext, SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { registerTodosCommand } from "./command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
-import { registerTodoContextState } from "./context-state.js"
+import { registerTodoStatePersistence } from "./context-state.js"
 import { registerFermentTodoPromptBlock } from "./ferment-prompt-block.js"
 import { registerTodoPromptBlock } from "./prompt-block.js"
+import { getWriteTodosDetails, isTodoWriteToolName } from "./session.js"
+import {
+	createThresholdSteerTracker,
+	sendHiddenSteer,
+	stalenessIndicator,
+	TODO_STALENESS_CUSTOM_TYPE,
+	TODO_STALENESS_THRESHOLDS,
+} from "./staleness-steers.js"
 import {
 	bumpToolCallsSinceTodoWrite,
 	bumpWorkToolCalls,
 	getTodosForScope,
+	getToolCallsSinceTodoWrite,
 	getWorkToolCalls,
 	hasEverHadTodos,
 	hasTodoNudgeFired,
@@ -19,8 +28,7 @@ import {
 	restoreTodoStoreFromDetails,
 	subscribeTodoStore,
 } from "./store.js"
-import { registerTodosTool, TODO_TOOL_NAMES } from "./tool.js"
-import { TODO_TOOL_RESULT_SCHEMA_VERSION, type WriteTodosDetails } from "./types.js"
+import { registerTodosTool } from "./tool.js"
 import {
 	disposeTodoWidget,
 	ensureTodoWidget,
@@ -34,6 +42,7 @@ export * from "./constants.js"
 export * from "./ferment-prompt-block.js"
 export * from "./prompt-block.js"
 export * from "./reducer.js"
+export * from "./staleness-steers.js"
 export * from "./state-markdown.js"
 export * from "./store.js"
 export * from "./tool.js"
@@ -44,37 +53,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object"
 }
 
-function isWriteTodosDetails(value: unknown): value is WriteTodosDetails {
-	return (
-		isRecord(value) &&
-		value.schemaVersion === TODO_TOOL_RESULT_SCHEMA_VERSION &&
-		value.scope !== undefined &&
-		Array.isArray(value.todos)
-	)
-}
-
-const TODO_REPLAY_TOOL_NAME_SET = new Set<string>([...TODO_TOOL_NAMES, "write_todos"])
-
-function getWriteTodosDetails(entry: SessionEntry): WriteTodosDetails | undefined {
-	if (entry.type === "custom" && entry.customType === TODO_CUSTOM_ENTRY_TYPE) {
-		return isWriteTodosDetails(entry.data) ? entry.data : undefined
-	}
-
-	if (entry.type === "message") {
-		const message = entry.message as unknown
-		if (!isRecord(message)) return undefined
-		if (message.role !== "toolResult" || !TODO_REPLAY_TOOL_NAME_SET.has(String(message.toolName))) return undefined
-		return isWriteTodosDetails(message.details) ? message.details : undefined
-	}
-
-	return undefined
-}
-
 function restoreTodoStoreFromSessionEntries(sessionManager: Pick<SessionManager, "getBranch" | "getSessionId">): void {
 	const sessionId = sessionManager.getSessionId()
-	const entries = sessionManager.getBranch()
 	restoreTodoStoreFromDetails(
-		entries.map(getWriteTodosDetails).filter((details) => details !== undefined),
+		sessionManager
+			.getBranch()
+			.map(getWriteTodosDetails)
+			.filter((details) => details !== undefined),
 		sessionId,
 	)
 }
@@ -99,7 +84,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	registerTodoPromptBlock(pi)
 	registerFermentTodoPromptBlock(pi)
 
-	registerTodoContextState(pi)
+	registerTodoStatePersistence(pi)
 
 	// No `before_agent_start` fallback appending the guidance block is
 	// registered here, on purpose: prompt-enrichment (registered earlier in
@@ -115,6 +100,11 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 	const _activeSessionContexts = new Map<string, ExtensionContext>()
 	let unsubscribeTodoStore: (() => void) | undefined
+
+	// One-shot staleness steers: fires once per threshold per write-epoch,
+	// reset whenever the todo store is written (the subscribeTodoStore
+	// listener below resets both the counter and this tracker).
+	const stalenessTracker = createThresholdSteerTracker()
 
 	function setSessionContext(sessionId: string, ctx: ExtensionContext): void {
 		_activeSessionContexts.set(sessionId, ctx)
@@ -146,6 +136,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		unsubscribeTodoStore?.()
 		unsubscribeTodoStore = subscribeTodoStore((_, emitterSessionId) => {
 			resetToolCallsSinceTodoWrite(emitterSessionId)
+			stalenessTracker.reset(emitterSessionId)
 			const sessionCtx = getSessionContext(emitterSessionId)
 			if (sessionCtx) syncTodoWidget(sessionCtx)
 		})
@@ -158,7 +149,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.on("tool_execution_end", (event, ctx) => {
-		if (event.isError || TODO_REPLAY_TOOL_NAME_SET.has(event.toolName)) return
+		if (event.isError || isTodoWriteToolName(event.toolName)) return
 		const sessionId = ctx.sessionManager.getSessionId()
 
 		// Always count non-todo tool calls for the one-shot early nudge —
@@ -179,15 +170,29 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 		// Only track staleness when there are existing todos to keep in sync.
 		const scope = resolveTodoScope()
-		if (getTodosForScope(scope, sessionId).length > 0) {
-			bumpToolCallsSinceTodoWrite(sessionId)
-		}
+		if (getTodosForScope(scope, sessionId).length === 0) return
+
+		bumpToolCallsSinceTodoWrite(sessionId)
+
+		// Staleness pressure as bounded one-shot steers, not as volatile text
+		// inside the persisted state block (which must stay byte-identical
+		// between real writes for prefix-cache stability).
+		const changes = getToolCallsSinceTodoWrite(sessionId)
+		stalenessTracker.fireCrossed({
+			sessionId,
+			count: changes,
+			thresholds: TODO_STALENESS_THRESHOLDS,
+			send: (threshold) => {
+				const text = stalenessIndicator(changes)
+				if (text) sendHiddenSteer(pi, TODO_STALENESS_CUSTOM_TYPE, text, { reason: "staleness", threshold })
+			},
+		})
 	})
 
 	pi.on("turn_end", (event, ctx) => {
 		// Sync the widget on terminal turns but do NOT force reconciliation.
 		// The model updates todos on its own schedule guided by the system
-		// prompt and the passive staleness indicator in the state block.
+		// prompt and the one-shot staleness steers.
 		const message = event.message
 		if (!isRecord(message) || message.role !== "assistant") return
 		if ((event.toolResults as readonly unknown[]).length > 0 || ctx.hasPendingMessages?.()) return

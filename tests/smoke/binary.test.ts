@@ -54,6 +54,7 @@ describe("binary smoke tests", () => {
 		expect(result.stdout).toContain("--mode")
 		expect(result.stdout).toContain("--continue")
 		expect(result.stdout).toContain("--resume, -r [id]")
+		expect(result.stdout).toContain("--enable-experimental-features")
 		// Kimchi-only env vars
 		expect(result.stdout).toContain("KIMCHI_API_KEY")
 		// Pi-internal extension management commands and provider-specific env

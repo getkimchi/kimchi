@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../../../models.js"
+import { CORE_GUIDELINES } from "../../../prompt-construction/system-prompt.js"
 import { DEFAULT_MODEL_ROLES } from "../../model-roles.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../index.js"
-import { DEFAULT_BUILD_GUIDELINES } from "./default-phase-guidelines.js"
 import {
 	buildOrchestrationGuidelinesSection,
 	buildPhaseGuidelinesSection,
@@ -273,10 +273,10 @@ describe("builtin-model guideline content", () => {
 		expect(result).toContain("During **explore** phase")
 	})
 
-	it("build guideline warns against interactive CLI commands and prescribes non-interactive flags", () => {
-		expect(DEFAULT_BUILD_GUIDELINES).toContain("Never run interactive commands")
-		expect(DEFAULT_BUILD_GUIDELINES).toContain("patch --forward")
-		expect(DEFAULT_BUILD_GUIDELINES).toContain("GIT_EDITOR=true")
-		expect(DEFAULT_BUILD_GUIDELINES).toContain("redirect stdin from `/dev/null`")
+	it("universal core guidelines warn against interactive CLI commands and prescribe non-interactive flags", () => {
+		expect(CORE_GUIDELINES).toContain("Never run interactive commands")
+		expect(CORE_GUIDELINES).toContain("non-interactive flags")
+		expect(CORE_GUIDELINES).toContain("GIT_EDITOR=true")
+		expect(CORE_GUIDELINES).toContain("redirect stdin from `/dev/null`")
 	})
 })

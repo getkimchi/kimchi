@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
@@ -6,7 +5,9 @@ import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earen
 import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
+import { readJsonCached } from "../config/json.js"
 import { readStatusLineConfig } from "../config/status-line-config.js"
+import { parseTag } from "../config/tags.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
 import { getBillingStatusLine } from "../extensions/billing/status.js"
 import { formatBudgetStatusLine, formatCreditsStatusLine } from "../extensions/billing/status-line-format.js"
@@ -15,7 +16,7 @@ import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-lin
 import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
-import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
+import { getCurrentPhase, peekActiveTags } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
 export type SegmentId =
@@ -47,6 +48,7 @@ type SegmentRaw =
 	| { kind: "phase"; phase: string }
 	| { kind: "budget"; percentage: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
+	| { kind: "ferment-v2"; state: string }
 
 /** A single piece of the status line. */
 export interface Segment {
@@ -83,9 +85,12 @@ const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "s
 
 export function readStatusLineCommand(): string | null {
 	try {
-		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
-		const parsed = JSON.parse(raw)
-		const cmd = parsed?.statusLine?.command
+		// Stat-gated read: the footer factory consults this on rebuild, so it
+		// must not re-read and re-parse the settings file every time.
+		const settings = readJsonCached(HARNESS_SETTINGS_PATH)
+		const statusLine = settings.statusLine
+		const cmd =
+			statusLine && typeof statusLine === "object" ? (statusLine as Record<string, unknown>).command : undefined
 		if (typeof cmd !== "string" || cmd.length === 0) return null
 		if (cmd.startsWith("~/")) return resolve(homedir(), cmd.slice(2))
 		return cmd
@@ -304,6 +309,14 @@ const STEPS: CompactionStep[] = [
 		name: "drop-ferment-prefix",
 		apply: (segs) => dropFermentPrefix(segs),
 	},
+	{
+		name: "compact-ferment-v2",
+		apply: (segs, ctx) =>
+			recompactSegment(segs, "ferment", "ferment-v2", (raw) => {
+				const text = ctx.accent(raw.state)
+				return { id: "ferment", text, width: visibleWidth(text) }
+			}),
+	},
 ]
 
 /** Visible width of the line a segment array would render to. */
@@ -426,10 +439,16 @@ function fitWithBudgetStep(segments: Segment[], width: number, theme: Theme): Se
 
 function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
 	const multiModel = getMultiModelEnabled(ctx.sessionManager)
-	const rawModelId = ctx.model?.id ?? "n/a"
-	const label = multiModel ? `multi-model (${rawModelId})` : rawModelId
+	const selectedModelId = ctx.model?.id ?? "n/a"
+	const modelId = selectedModelId
+	const label = multiModel ? `multi-model (${modelId})` : modelId
 	const text = `${accentText(theme, label)} ${dimText(theme, "→ ctrl+p")}`
-	return { id: "model", text, width: visibleWidth(text), raw: { kind: "model", multiModel, modelId: rawModelId } }
+	return {
+		id: "model",
+		text,
+		width: visibleWidth(text),
+		raw: { kind: "model", multiModel, modelId },
+	}
 }
 
 function buildThinkingSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
@@ -594,7 +613,21 @@ function buildAgentsSegment(theme: Theme, pinned: boolean): Segment | null {
 	return { id: "agents", text, width: visibleWidth(text) }
 }
 
-function buildFermentSegment(theme: Theme, pinned: boolean): Segment | null {
+function buildFermentSegment(
+	theme: Theme,
+	pinned: boolean,
+	statusLineData: ReadonlyFooterDataProvider,
+): Segment | null {
+	const runStatus = statusLineData.getExtensionStatuses().get("ferment-v2")
+	if (runStatus) {
+		const text = accentText(theme, runStatus)
+		return {
+			id: "ferment",
+			text,
+			width: visibleWidth(text),
+			raw: { kind: "ferment-v2", state: runStatus.split(" · ")[0] },
+		}
+	}
 	const display = formatFermentStatusLineDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
 		dim: (s) => dimText(theme, s),
 		accent: (s) => accentText(theme, s),
@@ -635,7 +668,7 @@ export function buildStatusLineSegments(
 	{ ctx, theme, statusLineData }: StatusLineBuildContext,
 	pinned: ReadonlySet<SegmentId>,
 ): Segment[] {
-	const tags = getActiveTags(ctx.sessionManager)
+	const tags = peekActiveTags(ctx.sessionManager)
 		.map(parseTag)
 		.filter((t): t is ParsedTag => t !== null)
 
@@ -643,7 +676,7 @@ export function buildStatusLineSegments(
 		buildPermissionsSegment(theme, statusLineData, pinned.has("permissions")),
 		buildModelSegment(ctx, theme),
 		buildThinkingSegment(ctx, theme, pinned.has("thinking")),
-		buildFermentSegment(theme, pinned.has("ferment")),
+		buildFermentSegment(theme, pinned.has("ferment"), statusLineData),
 		buildCreditsSegment(theme, pinned.has("credits")),
 		buildBudgetSegment(theme, pinned.has("budget")),
 		buildAgentsSegment(theme, pinned.has("agents")),

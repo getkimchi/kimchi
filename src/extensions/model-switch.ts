@@ -1,8 +1,9 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { resolveEffectiveModel } from "./auto-model/state.js"
 import { startNewInteractiveSessionWithModel } from "./interactive-model-session.js"
-import { findModelByRef, refFromModel, splitModelRef } from "./model-catalog/ref-utils.js"
+import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "./model-catalog/ref-utils.js"
 import {
 	contextFitsModel,
 	getLatestMessages,
@@ -105,15 +106,11 @@ export default function modelSwitchExtension(
 			}
 
 			if (!splitModelRef(model)) {
-				const available = ctx.modelRegistry
-					.getAvailable()
-					.map((m) => refFromModel(m))
-					.sort()
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `Invalid model format: "${model}". Expected "provider/modelId" or "multi-model".\n\nAvailable models:\nmulti-model\n${available.join("\n")}`,
+							text: `Invalid model format: "${model}". Expected "provider/modelId" or "multi-model".\n\nAvailable models:\nmulti-model\n${availableModelRefs(ctx.modelRegistry).join("\n")}`,
 						},
 					],
 					details: null,
@@ -122,20 +119,21 @@ export default function modelSwitchExtension(
 
 			const target = findModelByRef(ctx.modelRegistry, model)
 			if (!target) {
-				const available = ctx.modelRegistry
-					.getAvailable()
-					.map((m) => refFromModel(m))
-					.sort()
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `Model not found: ${model}\n\nAvailable models:\n${available.join("\n")}`,
+							text: `Model not found: ${model}\n\nAvailable models:\n${availableModelRefs(ctx.modelRegistry).join("\n")}`,
 						},
 					],
 					details: null,
 				}
 			}
+
+			// When switching TO Auto, resolve the effective (routed) concrete model so
+			// the guards validate against the real window/modalities, not Auto's
+			// conservative catalog floor. Keep pi.setModel(target) so Auto stays selected.
+			const effectiveTarget = resolveEffectiveModel(target, sessionId) ?? target
 
 			const usage = ctx.getContextUsage()
 			// getLatestMessages() returns the most recent context from model-guard's
@@ -148,12 +146,12 @@ export default function modelSwitchExtension(
 				console.warn("[model-switch] getLatestMessages() has messages but no timestamp — treating as stale")
 			}
 			const tokens = resolveContextTokens(usage, messages)
-			if (tokens != null && !contextFitsModel(tokens, target.contextWindow)) {
+			if (tokens != null && !contextFitsModel(tokens, effectiveTarget.contextWindow)) {
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `Current context (${tokens} tokens) exceeds the target model "${model}" safe context limit (${getSafeContextWindow(target.contextWindow)} of ${target.contextWindow} tokens). Switch rejected to prevent data loss. Use /compact to reduce context size, then retry.`,
+							text: `Current context (${tokens} tokens) exceeds the target model "${model}" safe context limit (${getSafeContextWindow(effectiveTarget.contextWindow)} of ${effectiveTarget.contextWindow} tokens). Switch rejected to prevent data loss. Use /compact to reduce context size, then retry.`,
 						},
 					],
 					details: null,
@@ -161,7 +159,7 @@ export default function modelSwitchExtension(
 			}
 
 			// Vision compatibility guard
-			if (sessionHasImages() && !target.input.includes("image") && ctx.model?.input.includes("image")) {
+			if (sessionHasImages() && !effectiveTarget.input.includes("image") && ctx.model?.input.includes("image")) {
 				return {
 					content: [
 						{
@@ -177,7 +175,7 @@ export default function modelSwitchExtension(
 			let ok: boolean
 			suppressModelSelectGuard = true
 			try {
-				ok = await pi.setModel(target)
+				ok = await pi.setModel(target, { persist: true })
 			} finally {
 				suppressModelSelectGuard = false
 			}
@@ -216,13 +214,14 @@ export default function modelSwitchExtension(
 		if (!event.previousModel) return
 
 		const sessionId = ctx.sessionManager.getSessionId()
+		const effectiveTarget = resolveEffectiveModel(event.model, sessionId) ?? event.model
 		const usage = ctx.getContextUsage?.()
 
 		// Context window guard — block if current tokens exceed target safe context window.
 		// Falls back to local estimate when upstream tokens are null (post-compaction).
 		const messages = getLatestMessages()
 		const tokens = resolveContextTokens(usage, messages)
-		if (tokens != null && !contextFitsModel(tokens, event.model.contextWindow)) {
+		if (tokens != null && !contextFitsModel(tokens, effectiveTarget.contextWindow)) {
 			isRevertingModel = true
 			try {
 				await pi.setModel(event.previousModel)
@@ -230,11 +229,11 @@ export default function modelSwitchExtension(
 				isRevertingModel = false
 			}
 
-			const limit = getSafeContextWindow(event.model.contextWindow)
+			const limit = getSafeContextWindow(effectiveTarget.contextWindow)
 			const excess = tokens - limit
 			if (!ctx.hasUI) {
 				ctx.ui.notify(
-					`Current context (${tokens.toLocaleString()} tokens) exceeds the ${event.model.id} safe context limit (${limit.toLocaleString()} of ${event.model.contextWindow.toLocaleString()} tokens) by ${excess.toLocaleString()} tokens. Start a new session or compact before switching.`,
+					`Current context (${tokens.toLocaleString()} tokens) exceeds the ${event.model.id} safe context limit (${limit.toLocaleString()} of ${effectiveTarget.contextWindow.toLocaleString()} tokens) by ${excess.toLocaleString()} tokens. Start a new session or compact before switching.`,
 					"error",
 				)
 				return
@@ -272,7 +271,11 @@ export default function modelSwitchExtension(
 		}
 
 		// Vision guard — block if session has images but target lacks vision support
-		if (sessionHasImages() && !event.model.input.includes("image") && event.previousModel?.input.includes("image")) {
+		if (
+			sessionHasImages() &&
+			!effectiveTarget.input.includes("image") &&
+			event.previousModel?.input.includes("image")
+		) {
 			isRevertingModel = true
 			await pi.setModel(event.previousModel)
 			isRevertingModel = false

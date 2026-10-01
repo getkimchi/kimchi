@@ -3,7 +3,7 @@
  *
  * Used by:
  * - Plan mode (permissions extension): the model made tool calls, then ended
- *   with stopReason "stop" without writing PLAN_COMPLETE.
+ *   with stopReason "stop" without calling `submit_plan`.
  * - Ferment scoping (ferment extension): the model made tool calls during
  *   draft scoping, then ended with stopReason "stop" without calling
  *   scope_ferment or propose_ferment_scoping.
@@ -50,13 +50,13 @@ import { markHarnessSteer } from "../../extensions/steer-marker.js"
 
 /**
  * Nudge text for plan mode (interactive, non-worker session).
- * Instructs the model to finish writing the plan and emit PLAN_COMPLETE.
+ * Instructs the model to finish writing the plan and call `submit_plan`.
  */
 export const PLAN_MODE_STOP_NUDGE = markHarnessSteer(
-	"You stopped without completing the plan. Continue now:\n" +
+	"You stopped without submitting the plan. Continue now:\n" +
 		"- If you still have open questions, use the questionnaire tool to resolve them.\n" +
-		"- If the plan is ready, write it out in full using the Goal / Constraints / Chunks / Verification Strategy / Decision Log / Risks structure, then end your response with <!-- PLAN_COMPLETE --> on its own line.\n" +
-		"- Do NOT stop again until you have written <!-- PLAN_COMPLETE -->.",
+		"- If the plan is ready, write it out in full using the Goal / Constraints / Chunks / Verification Strategy / Decision Log / Risks structure, then call the `submit_plan` tool with the full plan text as the `plan` parameter.\n" +
+		"- Do NOT stop again until you have called `submit_plan`.",
 )
 
 /**
@@ -88,10 +88,11 @@ export const FERMENT_SCOPING_STOP_NUDGE_ONESHOT = markHarnessSteer(
 export const FERMENT_SCOPING_STOP_NUDGE = FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE
 
 /**
- * Returns true if the turn text contains a known plan-mode completion signal.
+ * Returns true if the turn's tool calls include `submit_plan` — the adhoc
+ * plan-mode completion signal. Mirrors {@link hasFermentScopingCompletionSignal}.
  */
-export function hasPlanCompletionSignal(text: string): boolean {
-	return text.includes("<!-- PLAN_COMPLETE -->") || text.includes("<done>")
+export function hasPlanSubmitToolCall(toolNames: string[]): boolean {
+	return toolNames.includes("submit_plan")
 }
 
 /**

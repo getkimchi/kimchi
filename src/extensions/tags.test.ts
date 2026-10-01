@@ -15,16 +15,17 @@ vi.mock("node:os", async (importOriginal) => {
 	}
 })
 
-import tagsExtension, {
-	getActiveTags,
-	getCurrentPhase,
-	isValidTag,
-	parseTag,
-	setCurrentPhase,
-	TagManager,
-} from "./tags.js"
+import * as configTags from "../config/tags.js"
+import { isValidTag, parseTag } from "../config/tags.js"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../project-scope-trust.js"
+import tagsExtension, { getCurrentPhase, peekActiveTags, setCurrentPhase, TagManager } from "./tags.js"
 
 const MOCK_HOME = join(tmpdir(), `kimchi-tags-mock-home-${process.pid}`)
+
+// Pin process.cwd() to MOCK_HOME so the project-tier ancestor walk
+// (resolveDefaultTags → findNearestAncestorPath) never picks up the real
+// repo's .kimchi directory while these tests run.
+const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(MOCK_HOME)
 
 type FakeSessionEntry = {
 	type: "custom"
@@ -81,7 +82,6 @@ const testEnv: EnvironmentInfo = {
 	rawPlatform: "linux",
 	cpuArchitecture: "x64",
 	shell: "/bin/bash",
-	osRelease: "6.1.0-test",
 	osVersion: "#1 SMP PREEMPT_DYNAMIC Test",
 	username: "testuser",
 	homeDir: "/home/testuser",
@@ -374,6 +374,123 @@ describe("TagManager persistence", () => {
 	})
 })
 
+describe("TagManager config hierarchy", () => {
+	beforeEach(() => {
+		rmSync(MOCK_HOME, { recursive: true, force: true })
+		mkdirSync(MOCK_HOME, { recursive: true })
+		vi.stubEnv("KIMCHI_TAGS", "")
+		clearSessionEntriesStore()
+		// cwd is pinned to MOCK_HOME (see cwdSpy) and the project tier tests
+		// exercise trusted project tags. The fail-closed case has its own test.
+		resetProjectScopeTrustForTests()
+		setProjectScopeTrusted(MOCK_HOME, true)
+	})
+
+	afterEach(() => {
+		rmSync(MOCK_HOME, { recursive: true, force: true })
+		vi.unstubAllEnvs()
+		resetProjectScopeTrustForTests()
+	})
+
+	function writeGlobalTags(tags: string[]): void {
+		const path = join(MOCK_HOME, ".config", "kimchi", "tags.json")
+		mkdirSync(dirname(path), { recursive: true })
+		writeFileSync(path, JSON.stringify({ tags }))
+	}
+
+	function writeProjectTags(tags: string[]): void {
+		const path = join(MOCK_HOME, ".kimchi", "tags.json")
+		mkdirSync(dirname(path), { recursive: true })
+		writeFileSync(path, JSON.stringify({ tags }))
+	}
+
+	it("loads project tags as defaults for new sessions", () => {
+		writeProjectTags(["repo:api"])
+		const { manager } = makeTagManager()
+		expect(manager.getAllTags()).toEqual(["repo:api"])
+		expect(manager.getTier("repo:api")).toBe("project")
+	})
+
+	it("ignores project tags while the project is untrusted (fail closed)", () => {
+		resetProjectScopeTrustForTests()
+		writeGlobalTags(["team:backend"])
+		writeProjectTags(["spoofed:attacker"])
+		const { manager } = makeTagManager()
+		expect(manager.getAllTags()).toEqual(["team:backend"])
+	})
+
+	it("resolves key collisions with project beating global", () => {
+		writeGlobalTags(["team:backend", "env:prod"])
+		writeProjectTags(["team:frontend"])
+		const { manager } = makeTagManager()
+		expect(manager.getAllTags()).toEqual(["env:prod", "team:frontend"])
+	})
+
+	it("env tags beat project and global tags", () => {
+		writeGlobalTags(["team:backend"])
+		writeProjectTags(["team:frontend"])
+		vi.stubEnv("KIMCHI_TAGS", "team:override")
+		const { manager } = makeTagManager()
+		expect(manager.getAllTags()).toEqual(["team:override"])
+		expect(manager.getTier("team:override")).toBe("env")
+	})
+
+	it("session entries still fully override the hierarchy", () => {
+		writeGlobalTags(["team:backend"])
+		writeProjectTags(["team:frontend"])
+		appendEntryForSession(TEST_SESSION_ID, "kimchi_active_tags", ["team:mine"])
+		const { manager } = makeTagManager()
+		expect(manager.getAllTags()).toEqual(["team:mine"])
+	})
+
+	it("/tags add coexists with project-defined keys (current behaviour)", () => {
+		writeProjectTags(["team:proj"])
+		const { manager } = makeTagManager()
+		const result = manager.add("team:user")
+		expect(result).toEqual({ success: true })
+		expect(manager.getAllTags()).toEqual(["team:proj", "team:user"])
+	})
+
+	it("finds the project config from a nested working directory", () => {
+		writeProjectTags(["repo:api"])
+		const nested = join(MOCK_HOME, "packages", "app")
+		mkdirSync(nested, { recursive: true })
+		cwdSpy.mockReturnValue(nested)
+		try {
+			const { manager } = makeTagManager()
+			expect(manager.getAllTags()).toEqual(["repo:api"])
+		} finally {
+			cwdSpy.mockReturnValue(MOCK_HOME)
+		}
+	})
+
+	it("shows tier markers in the /tags list", async () => {
+		writeProjectTags(["repo:api"])
+		vi.stubEnv("KIMCHI_TAGS", "env:tag")
+		const messages: string[] = []
+		const ctx = createContext({
+			hasUI: false,
+			sessionManager: makeSessionManager("marker-session"),
+			ui: {
+				theme: {
+					fg: (_color: string, text: string) => text,
+					bold: (text: string) => text,
+				} as unknown as ExtensionUIContext["theme"],
+				notify: ((message: string) => {
+					messages.push(message)
+				}) as unknown as ExtensionUIContext["notify"],
+			},
+		})
+		const pi = makePi()
+		tagsExtension(pi)
+		await pi.runCommand("tags", "", ctx)
+
+		const list = messages.join("\n")
+		expect(list).toContain("[project] repo:api")
+		expect(list).toContain("[env] env:tag")
+	})
+})
+
 describe("TagManager.add", () => {
 	beforeEach(() => {
 		rmSync(MOCK_HOME, { recursive: true, force: true })
@@ -478,7 +595,7 @@ describe("setCurrentPhase", () => {
 	})
 })
 
-describe("getActiveTags", () => {
+describe("peekActiveTags", () => {
 	beforeEach(() => {
 		rmSync(MOCK_HOME, { recursive: true, force: true })
 		mkdirSync(MOCK_HOME, { recursive: true })
@@ -491,22 +608,62 @@ describe("getActiveTags", () => {
 		vi.unstubAllEnvs()
 	})
 
+	it("reuses the session's TagManager — repeated peeks do not re-resolve defaults", () => {
+		const resolveSpy = vi.spyOn(configTags, "resolveDefaultTags")
+
+		// Guard: prove the spy actually intercepts TagManager construction —
+		// peeking a never-started session builds a throwaway instance.
+		peekActiveTags(makeSessionManager("peek-spy-guard-session"))
+		expect(resolveSpy).toHaveBeenCalledOnce()
+		resolveSpy.mockClear()
+
+		const pi = makePi()
+		tagsExtension(pi) // fires session_start → populates the shared map
+		resolveSpy.mockClear()
+
+		const sessionManager = makeSessionManager(TEST_SESSION_ID)
+		peekActiveTags(sessionManager)
+		peekActiveTags(sessionManager)
+		peekActiveTags(sessionManager)
+
+		// Every peek hit the shared instance: no new TagManager construction,
+		// no tag-file reads, no ancestor walk.
+		expect(resolveSpy).not.toHaveBeenCalled()
+		resolveSpy.mockRestore()
+	})
+
+	it("returns a defensive copy — mutating the result does not affect subsequent peeks", async () => {
+		const pi = makePi()
+		tagsExtension(pi)
+		await pi.runCommand("tags", "add team:backend", commandContext("peek-mutation-session"))
+		const sessionManager = makeSessionManager("peek-mutation-session")
+
+		// getAllTags() copies the instance's set (Array.from), so a display
+		// path sorting or appending to the array it got must not corrupt the
+		// shared TagManager for other readers (including request tagging).
+		const tags = peekActiveTags(sessionManager)
+		tags.push("injected:key")
+		tags.length = 0
+
+		expect(peekActiveTags(sessionManager)).toEqual(["team:backend"])
+	})
+
 	it("returns an empty array before tags are added", () => {
-		expect(getActiveTags(makeSessionManager("fresh-tags-session"))).toEqual([])
+		expect(peekActiveTags(makeSessionManager("fresh-tags-session"))).toEqual([])
 	})
 
 	it("returns tags added through the extension command", async () => {
 		const pi = makePi()
 		tagsExtension(pi)
 		await pi.runCommand("tags", "add team:backend", commandContext("command-tags-session"))
-		expect(getActiveTags(makeSessionManager("command-tags-session"))).toEqual(["team:backend"])
+		expect(peekActiveTags(makeSessionManager("command-tags-session"))).toEqual(["team:backend"])
 	})
 
 	it("isolates tags between sessions", async () => {
 		const pi = makePi()
 		tagsExtension(pi)
 		await pi.runCommand("tags", "add team:backend", commandContext("tags-session-a"))
-		expect(getActiveTags(makeSessionManager("tags-session-a"))).toEqual(["team:backend"])
-		expect(getActiveTags(makeSessionManager("tags-session-b"))).toEqual([])
+		expect(peekActiveTags(makeSessionManager("tags-session-a"))).toEqual(["team:backend"])
+		expect(peekActiveTags(makeSessionManager("tags-session-b"))).toEqual([])
 	})
 })

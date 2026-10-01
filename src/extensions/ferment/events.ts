@@ -3,6 +3,7 @@ import { clearFermentCache } from "../../ferment/store.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
 import { formatSanitizedErrorMessage, isRetryableErrorStillPending } from "../../sanitized-error-message.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { getEffectiveModel } from "../auto-model/state.js"
 import { deferExtensionAction } from "../deferred-action.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
@@ -520,13 +521,13 @@ export function registerFermentEvents(
 		return {}
 	})
 
-	pi.on("model_select", (event, ctx) => {
-		runtime.captureJudgeContext(event.model, ctx?.modelRegistry)
+	pi.on("model_select", (_event, ctx) => {
+		runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry)
 	})
 
 	pi.on("turn_end", async (event, ctx) => {
 		if (isAgentWorker()) return
-		runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry)
+		runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry)
 		if (event.message.role !== "assistant") return
 		const content = getAssistantContentParts(event.message.content)
 		const activeId = runtime.getActiveId()

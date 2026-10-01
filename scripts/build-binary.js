@@ -49,6 +49,9 @@ const target = TARGETS[targetKey]
 if (!target) {
 	throw new Error(`Unsupported build target: ${targetKey}`)
 }
+if (target.os === "darwin" && platform() !== "darwin") {
+	throw new Error("macOS binaries must be built on macOS so they can be signed and verified.")
+}
 
 const crossTarget = targetArg ? target.bun : undefined
 const isCrossCompile = !!crossTarget
@@ -77,12 +80,77 @@ if (!isCI) {
 }
 
 cleanDist()
-run("typecheck", "pnpm run typecheck")
+// Opt-in skip (KIMCHI_SKIP_TYPECHECK=1 in CI): memory-constrained CI pods
+// can OOM tsc before the compile step. Benchmark artifact builds use it —
+// product CI still typechecks every src change; the benchmarked ref's own
+// CI covers it. Scoped to CI so the env var cannot leak into local or
+// release builds through an exported shell profile.
+const skipTypecheck = process.env.KIMCHI_SKIP_TYPECHECK === "1" && process.env.CI === "true"
+if (process.env.KIMCHI_SKIP_TYPECHECK === "1" && !skipTypecheck) {
+	console.warn("[build] KIMCHI_SKIP_TYPECHECK is ignored outside CI — typechecking anyway")
+}
+if (!skipTypecheck) {
+	run("typecheck", "pnpm run typecheck")
+} else {
+	console.warn(
+		"[build] KIMCHI_SKIP_TYPECHECK=1 set in CI — skipping typecheck (memory-constrained benchmark builds only)",
+	)
+}
 
 // Externalize packages that cannot be bundled into a Bun compiled binary (native addons, browser automation harnesses).
 // If a new dependency causes a build failure, check whether it also needs --external here.
 const targetFlag = crossTarget ? ` --target=${crossTarget}` : ""
-const externals = ["chromium-bidi", "electron"]
+// mem0ai's optional provider SDKs are lazily imported per provider; the memory
+// extension uses only the openai embedder/LLM and the built-in SQLite store, so
+// none of these are ever loaded at runtime — but the bundler still resolves
+// them, so they must be external.
+// `natural` and `compromise` are mem0ai peer deps required lazily inside
+// try/catch guards (keyword stemming / NLP artifact filtering). Measured
+// (2026-09-14): they are NOT bundled — the bundler leaves their requires
+// as runtime lookups that fail into mem0's guards (the BM25 path falls
+// back to its built-in simpleStem), and natural's own deps (mongoose,
+// pg, redis) never enter the graph. The externals entries pin that: a
+// future pnpm layout change that makes the bundler start resolving them
+// must not silently pull their trees into the binary. `pg` IS bundled —
+// it is required EAGERLY at the top of mem0's bundle (pgvector store),
+// so it cannot be externalized without breaking the mem0ai import; its
+// size cost is accepted.
+const externals = [
+	"chromium-bidi",
+	"electron",
+	"@azure/identity",
+	"@azure/search-documents",
+	"@elastic/elasticsearch",
+	"@google-cloud/aiplatform",
+	"@huggingface/transformers",
+	"@langchain/core/documents",
+	"@langchain/core/messages",
+	"@mistralai/mistralai",
+	"@mochow/mochow-sdk-node",
+	"@opensearch-project/opensearch",
+	"@pinecone-database/pinecone",
+	"@qdrant/js-client-rest",
+	"@supabase/supabase-js",
+	"@turbopuffer/turbopuffer",
+	"@upstash/vector",
+	"cassandra-driver",
+	"chromadb",
+	"cloudflare",
+	"cohere-ai",
+	"compromise",
+	"fastembed",
+	"groq-sdk",
+	"iovalkey",
+	"mongodb",
+	"mysql2",
+	"mysql2/promise",
+	"natural",
+	"ollama",
+	"oracledb",
+	"redis",
+	"weaviate-client",
+	"zeroentropy",
+]
 if (isCrossCompile && target.os === "win32" && platform() !== "win32") {
 	// Linux/macOS installs do not include Windows-only optional native packages.
 	// Release builds run on windows-latest and bundle this dependency; cross-builds
@@ -97,18 +165,45 @@ const externalFlags = externals.map((name) => `--external ${name}`).join(" ")
 // Trust the OS certificate store in addition to Bun's bundled roots so users behind
 // TLS-intercepting corporate proxies (Netskope, Zscaler, etc.) can reach the API without
 // extra env vars. Bun ignores the system store by default; --use-system-ca is additive.
-// `--no-compile-autoload-dotenv` and `--no-compile-autoload-bunfig` disable loading `.env` and `bunfig.toml` files.
 run(
 	"compile",
-	`bun build src/entry.ts --compile${targetFlag} --no-compile-autoload-dotenv --no-compile-autoload-bunfig --compile-exec-argv="--use-system-ca" --outfile dist/bin/${target.binaryName} ${externalFlags}`.trim(),
+	`bun scripts/compile-binary.js src/binary-entry.ts${targetFlag} --outfile dist/bin/${target.binaryName} ${externalFlags}`.trim(),
 )
 
-// Bun --compile produces binaries with an invalid code signature on macOS.
-// The kernel kills badly-signed arm64 binaries immediately (SIGKILL, exit 137).
-// Strip the corrupt signature and re-sign ad-hoc. See: https://github.com/oven-sh/bun/issues/7208
-if (!isCrossCompile && platform() === "darwin") {
-	run("codesign (strip)", `codesign --remove-signature dist/bin/${target.binaryName}`)
-	run("codesign (ad-hoc)", `codesign -s - dist/bin/${target.binaryName}`)
+// Bun --compile produces binaries with an invalid code signature on macOS: the
+// app payload is grafted onto a pre-signed runtime ("code or signature have been
+// modified"), and the kernel kills badly-signed arm64 binaries outright
+// (SIGKILL, exit 137). Every darwin binary must therefore be re-signed:
+//   - CSC_NAME set (release/canary CI, prepared by scripts/setup-codesign.sh):
+//     hardened-runtime Developer ID + timestamp + entitlements. The designated
+//     requirement becomes certificate-anchored, so the macOS keychain treats
+//     every version as one identity — an ad-hoc identity is just the cdhash and
+//     re-prompts users on each upgrade.
+//   - CSC_NAME unset (local dev, forks): ad-hoc, enough for the OS to launch it.
+// Key off target.os (CI always passes --target, so isCrossCompile is always
+// true there); all darwin matrix jobs run on macOS runners, where codesign
+// exists. See: https://github.com/oven-sh/bun/issues/7208
+if (target.os === "darwin" && platform() === "darwin") {
+	const signingIdentity = process.env.CSC_NAME?.trim()
+	const binaryPath = `dist/bin/${target.binaryName}`
+	run("codesign (strip)", `codesign --remove-signature ${binaryPath}`)
+	if (signingIdentity) {
+		run(
+			"codesign (developer id)",
+			`codesign --sign "${signingIdentity}" --options runtime --timestamp --entitlements build/entitlements.mac.plist ${binaryPath}`,
+		)
+		run("codesign (verify)", `codesign --verify --strict --verbose=2 ${binaryPath}`)
+		// The keychain credential partition only stays put across versions when
+		// the designated requirement anchors on the Developer ID certificate.
+		// Fail loudly if we ever slip back to a cdhash-only requirement.
+		run(
+			"codesign (certificate-anchored requirement)",
+			`codesign -d -r- ${binaryPath} 2>&1 | grep -q "anchor apple generic"`,
+		)
+	} else {
+		run("codesign (ad-hoc)", `codesign -s - ${binaryPath}`)
+		run("codesign (verify)", `codesign --verify -v ${binaryPath}`)
+	}
 }
 
 run("copy resources", "node scripts/copy-resources.js")

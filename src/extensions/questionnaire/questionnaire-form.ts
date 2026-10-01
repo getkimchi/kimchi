@@ -14,6 +14,7 @@
 import { getSelectListTheme, type Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { Editor, Key, type KeyId, matchesKey, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { truncateLinesToWidth } from "../../truncate-lines.js"
 import {
 	type Answer,
 	allRequiredAnswered,
@@ -235,7 +236,10 @@ export function createQuestionForm(
 			if (opts.length > 0) renderOptions()
 			lines.push("")
 			add(theme.fg("muted", " Your answer:"))
-			for (const line of editor.render(width - 2)) add(` ${line}`)
+			// Upstream Editor crashes on negative widths ("─".repeat(-1)) at
+			// terminal widths <= 2; clamp to a minimum of 1 (same pattern as
+			// src/components/editor.ts).
+			for (const line of editor.render(Math.max(1, width - 2))) add(` ${line}`)
 			lines.push("")
 			add(theme.fg("dim", " Enter to submit • Shift+Enter for newline • Esc to cancel"))
 		} else if (isSubmitTab(state)) {
@@ -298,9 +302,12 @@ export function createQuestionForm(
 		}
 		add(theme.fg("accent", "─".repeat(width)))
 
-		cachedLines = lines
+		// pi-tui crashes if a component emits a line wider than the terminal;
+		// hard-truncate the final output as the last line of defense.
+		const out = truncateLinesToWidth(lines, width)
+		cachedLines = out
 		cachedWidth = width
-		return lines
+		return out
 	}
 
 	return {

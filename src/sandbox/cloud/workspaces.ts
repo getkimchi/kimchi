@@ -1,6 +1,7 @@
 import { HARNESS_CLIENT_TYPE } from "../constants.js"
 import { checkResponse, fetchWithTimeout, resolveEndpoint } from "./http.js"
 import { verifyApiKey } from "./keys.js"
+import { byteQuantityToBytes, cpuQuantityToMillicores } from "./resources.js"
 import type { AuthenticateOptions, ListWorkspacesOptions, Workspace, WorkspaceStatus } from "./types.js"
 import { RemoteAuthError, RemoteNetworkError } from "./types.js"
 import { normalizeWsUri } from "./uri.js"
@@ -14,7 +15,10 @@ export async function listWorkspaces(apiKey: string, options?: ListWorkspacesOpt
 	const signal = options?.signal
 
 	try {
-		const orgId = await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })
+		// Callers that already verified the key (e.g. /remote-sessions, which
+		// caches orgId for its refresh loop) pass it through to skip the
+		// duplicate verifyKey round-trip.
+		const orgId = options?.orgId ?? (await verifyApiKey(apiKey, { ...options, fetch: fetchImpl }))
 
 		const results: Workspace[] = []
 		let cursor = ""
@@ -137,6 +141,21 @@ function mapWorkspace(raw: unknown, endpoint: string): Workspace {
 		}
 	}
 
+	// Resource requests (provisioned sizes) arrive nested under
+	// `spec.resources` as Kubernetes quantity strings ("200m", "512Mi",
+	// "10Gi") — the WorkspaceSpec contract (workspaces_api.proto).
+	// spec is omitted entirely when nothing was provisioned. The deprecated
+	// legacy shapes (flat int64 fields, top-level `resources`) are gone from
+	// the current proto and are not parsed.
+	const spec = typeof r.spec === "object" && r.spec !== null ? (r.spec as Record<string, unknown>) : undefined
+	const res =
+		spec && typeof spec.resources === "object" && spec.resources !== null
+			? (spec.resources as Record<string, unknown>)
+			: undefined
+	const cpuMillicores = cpuQuantityToMillicores(res?.cpu)
+	const ramBytes = byteQuantityToBytes(res?.memory)
+	const pvcSizeBytes = byteQuantityToBytes(res?.pvcSize)
+
 	// Server proto has no last_activity_time field yet — placeholder for v1.
 	return {
 		id,
@@ -145,6 +164,9 @@ function mapWorkspace(raw: unknown, endpoint: string): Workspace {
 		lastActivityAt: createdAt,
 		status,
 		host,
+		cpuMillicores,
+		ramBytes,
+		pvcSizeBytes,
 	}
 }
 

@@ -116,7 +116,8 @@ test("plan review dialog does not re-appear after Esc dismissal", async ({ termi
 			// firing mid-test and consuming scripted responses.
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }],
 			responses: [
-				// Turn 1: model calls propose_ferment_scoping.
+				// Turn 1: model calls propose_ferment_scoping. terminate:true ends
+				// the turn; the review dialog appears via onPlanReviewRequest.
 				{
 					toolCalls: [
 						{
@@ -127,8 +128,6 @@ test("plan review dialog does not re-appear after Esc dismissal", async ({ termi
 						},
 					],
 				},
-				// Turn 1 continuation after the tool result is sent back.
-				{ stream: ["Plan ready for review."] },
 				// Turn 2 (after the new user turn): short text response.
 				{ stream: ["Understood, I'll wait for your direction."] },
 			],
@@ -207,11 +206,17 @@ test("plan review dialog does not re-appear after feedback", async ({ terminal }
 		{
 			artifactName: "plan-review-dismissal-feedback",
 			gitInit: true,
+			// Opt back into the default-on remote run (the fixture pins
+			// KIMCHI_REMOTE_RUN=0): the extra "Execute the plan in a remote
+			// workspace" menu option is what Stage 6's three keyDown presses
+			// navigate past.
+			env: { KIMCHI_REMOTE_RUN: "1" },
 			// Large context window prevents pi-mono's built-in compaction from
 			// firing mid-test and consuming scripted responses.
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }],
 			responses: [
-				// Turn 1: model calls propose_ferment_scoping.
+				// Turn 1: model calls propose_ferment_scoping. terminate:true ends
+				// the turn; the review dialog appears via onPlanReviewRequest.
 				{
 					toolCalls: [
 						{
@@ -222,8 +227,6 @@ test("plan review dialog does not re-appear after feedback", async ({ terminal }
 						},
 					],
 				},
-				// Turn 1 continuation after the tool result is sent back.
-				{ stream: ["Plan ready for review."] },
 				// Turn 2 (after the feedback): short text response.
 				{ stream: ["Got it — I'll revise the plan based on your feedback."] },
 			],
@@ -258,9 +261,12 @@ test("plan review dialog does not re-appear after feedback", async ({ terminal }
 			await waitForText(terminal, "Start execution", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("plan-review dialog visible")
 
-			// Stage 6: navigate to "Let me say something" (index 2). The
-			// cursor starts at index 0 ("Start execution"), so two keyDown
-			// presses land on index 2.
+			// Stage 6: navigate to "Let me say something" (last option, index 3).
+			// The cursor starts at index 0 ("Start execution"). With remote run
+			// enabled by default the menu is [Start execution, Start execution in
+			// auto mode, Start execution in cloud, Let me say something], so three
+			// keyDown presses land on the feedback option.
+			terminal.keyDown()
 			terminal.keyDown()
 			terminal.keyDown()
 			trace.step("navigated to 'Let me say something'")

@@ -26,7 +26,13 @@ curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.
 irm https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1 | iex
 ```
 
-Then configure your API key and launch:
+The one-liner runs the installer in memory, so the PowerShell execution policy does not apply to it. If you instead downloaded `install.ps1` and want to run it as a file (blocked by the default `Restricted` policy), use:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+The bypass applies only to this invocation and does not change your system-wide execution policy. Then configure your API key and launch:
 
 ```bash
 kimchi setup   # one-time interactive setup
@@ -121,10 +127,6 @@ With the metadata above, the orchestrator will use minimax for simple build chun
 
 Metadata can also be managed interactively via `/multi-model` → "Edit model metadata" — this is the only in-app path for configuring or overriding metadata, so model selection stays uninterrupted. Custom overrides can be reset to defaults from the same menu. Metadata for builtin models can be overridden the same way.
 
-#### Completion token limits
-
-Kimchi omits Pi's estimated `max_completion_tokens` and `max_tokens` fields from requests to managed Kimchi providers. The gateway determines how much output fits using the model's actual tokenizer; output-budget enforcement belongs at the gateway rather than in Pi's approximate client-side context calculation.
-
 ### Phase tracking
 
 Kimchi tags every LLM request with a `phase:{name}` label for usage analytics and cost attribution. The orchestrator sets the phase as work progresses and it is displayed in the status line.
@@ -156,13 +158,19 @@ Kimchi supports tagging LLM requests for usage tracking and cost attribution. Ta
 
 Tags use `key:value` format. Key and value must start and end with alphanumeric characters (middle characters may include `-`, `_`, `.`), each 64 characters max, 10 tags total.
 
-### Static tags
+### Tag defaults hierarchy
 
-Set via the `KIMCHI_TAGS` environment variable (comma-separated). Static tags are read-only within the session and shown with a `[static]` marker.
+Default tags are resolved from three sources, strongest first:
+
+1. `KIMCHI_TAGS` environment variable (comma-separated)
+2. Project config — the nearest `.kimchi/tags.json` found walking up from the working directory (so monorepo subdirectories pick up the repo-level file)
+3. Global config — `~/.config/kimchi/tags.json`
 
 ```bash
 export KIMCHI_TAGS="team:backend,project:api"
 ```
+
+Sources are unioned; when two sources define the same tag key, the stronger source's value wins. Default tags are shown with an `[env]`, `[project]`, or `[global]` marker in the `/tags` list; user-added tags show as `[user]`.
 
 ### Auto-tags
 
@@ -173,7 +181,57 @@ Two tags are added automatically to every request and do not count toward the 10
 
 ### Persistence
 
-User-defined tags (added via `/tags add`) are persisted to `~/.config/kimchi/tags.json` and survive across sessions. Static tags from `KIMCHI_TAGS` must be set each session.
+User-defined tags (added via `/tags add`) are persisted with the session: once a session has its own tag set (created by any `/tags add`, `/tags remove`, or `/tags clear`), it fully overrides the defaults above and is restored when the session resumes. `KIMCHI_TAGS` must be set per session; it is the strongest source while present.
+
+## Ferment V2
+
+Ferment V2 is an experimental, branch-scoped objective controller. It keeps one objective active across turns, uses the normal Todo tools for tactical work, and does not create Ferment phases, workers, or worktrees. See the [Ferment V2 runtime guide](docs/ferment-v2.md) for the lifecycle and persistence contract.
+
+Enable **Ferment V2** under `/resources` → **Experimental**, then restart Kimchi. It is disabled by default.
+
+| Command | Description |
+|---------|-------------|
+| `/ferment-v2 <objective>` | Create an objective, or confirm replacement of an unfinished Ferment V2 run |
+| `/ferment-v2 --tokens <n\|k\|m> <objective>` | Create an objective with a token budget, such as `--tokens 50k` |
+| `/ferment-v2` | Show the current objective, status, revision, and latest completion evaluation |
+| `/ferment-v2 edit [objective]` | Edit in place and redirect work to the new revision |
+| `/ferment-v2 pause` | Stop automatic continuation without aborting a running tool |
+| `/ferment-v2 resume` | Reactivate the current run |
+| `/ferment-v2 clear` | Clear the run from the current session branch |
+
+Ferment V2 state is stored in the native session journal, so restart, resume, rewind, and fork follow the selected branch. An old turn cannot update an edited or replaced run because model updates must match both its ID and revision.
+
+At `turn_end`, Ferment V2 checkpoints the current session's assistant usage and active time. Reaching a token budget stops continuation before evaluation and changes the run to `budget_limited`. At the later settled checkpoint, an independent tool-free evaluator returns `met`, `impossible`, or `continue` only while the pending-input, tool-availability, identity, and stop-condition gates permit. The `fermenting time` counter counts active agent turns; cancellation, repeated errors, unchanged continuation, or evaluator unavailability pause the run. Runtime accounting is for the current session; the Terminal-Bench adapter separately aggregates valid usage from all discovered session files, including nested or child files.
+
+Ferment V2 directs the agent to track tactical progress in the normal Todos widget without creating a second feature-specific checklist. `update_ferment_v2 complete` records an optional runtime completion claim and ends the working turn; it never completes the run by itself. The claim response stays hidden while evaluation runs. In interactive mode, a `met` verdict still requires a visible, fully completed Todo list for the current revision; headless mode has no visible widget and may proceed directly from evidenced `met`. Both start one buffered final-answer turn. `update_ferment_v2 blocked` remains immediate. Regular work tools remain available while the list is created or reconciled.
+
+Evaluation details stay out of the visible transcript. `/ferment-v2` shows the evaluation count and latest verdict/reason; the evaluator uses the session model, or the configured `judge` role when multi-model is enabled, and records each check in a child session. Todo observations are valid only for the current session, Ferment V2 ID, and revision. User objective and Todo mutations wait for active work to settle before changing that state.
+
+### Settings
+
+Ferment V2's policy numbers are adjustable. Edit `~/.config/kimchi/harness/settings.json` directly, under a single `fermentV2` key:
+
+```json
+{
+  "fermentV2": {
+    "autoResume": true,
+    "maxUnchangedContinuations": 3,
+    "maxConsecutiveErrors": 3,
+    "defaultTokenBudget": 200000,
+    "evaluationTimeoutMs": 180000
+  }
+}
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `autoResume` | `true` | Whether to automatically queue a continuation turn for a resumed active Ferment V2 run on session start. |
+| `maxUnchangedContinuations` | `3` | Consecutive continuation turns without recorded progress before the Ferment V2 run pauses itself. |
+| `maxConsecutiveErrors` | `3` | Consecutive agent-error turns before the Ferment V2 run pauses itself. |
+| `defaultTokenBudget` | unset | Token budget applied to `/ferment-v2 <objective>` when `--tokens` isn't given. An explicit `--tokens` always overrides this. |
+| `evaluationTimeoutMs` | `180000` | How long the independent completion check is allowed to run before it's treated as unavailable. |
+
+Only non-default values need to be specified; missing or invalid keys fall back to their default rather than failing the extension. There is no separate evaluator-model setting -- it uses the `judge` model role from [Model roles](#model-roles). The full evaluator evidence and failure-handling rules are in the [runtime guide](docs/ferment-v2.md).
 
 ## Ferment -- cross-session project management
 
@@ -330,6 +388,35 @@ Hand off an in-progress session to a cloud sandbox with `/teleport` — the agen
 | `--no-git-token` | Skip git credentials prompt |
 | `--skip-session` | Start remote agent fresh (don't upload current session history) |
 
+### Workspace templates (`kimchi_workspace.yaml`)
+
+Declare how the sandboxes your project creates should be shaped — workspaces minted by `/teleport` and headless cloud agents alike — in a `kimchi_workspace.yaml` at the **root of your project**:
+
+```yaml
+# kimchi_workspace.yaml — safe to commit; no secrets belong here
+resources:
+  cpu: "250m"
+  memory: "1Gi"
+  pvcSize: "20Gi"
+dependencies:
+  - jq
+  - node@22
+egressPolicy:
+  denyByDefault: true
+  allowed:
+    - github.com:443
+    - registry.npmjs.org
+  denied:
+    - 10.0.0.0/8
+```
+
+- **`resources`** — CPU, memory, and disk requests as Kubernetes quantity strings (`500m`, `1Gi`, `20Gi`) — quote them: unquoted plain numbers (`cpu: 2`) are read as numbers by YAML and refused, naming the field. Omit a field to inherit the org default.
+- **`dependencies`** — CLI tools installed in the sandbox at boot, in the form `[registry:]tool[@version]` (e.g. `"jq"`, `"node@22"`, `"prettier@latest"`). Up to 50 unique entries.
+- **`egressPolicy`** — outbound network policy enforced by the in-pod sidekick proxy. `allowed`/`denied` entries are lowercase domains (optionally a leading `*.` wildcard) or IPv4/IPv6 CIDRs, each optionally suffixed with `:<port>`; `denied` always wins. **`denyByDefault` omitted means fail-closed**: only `allowed` destinations pass. Set `denyByDefault: false` explicitly for the default-allow posture (everything passes except `denied`).
+
+Unknown fields inside a section are refused rather than silently ignored, and invalid values stop the command before anything is sent, naming the offending field. When you run kimchi from a subdirectory, the file is looked up walking toward the repository root.
+
+Templates apply **only when a workspace is created** — resources are immutable once provisioned, and dependencies/egress policy are applied at boot of the first pod. Editing the file later won't change an existing workspace: delete it (`/remote-sessions`) and re-teleport to pick up new values.
 
 Once teleported, you're in the **PTY overlay** — a fullscreen tabbed terminal. Use `Ctrl+B c` / `n` / `p` to open and switch tabs. Press `Ctrl+D` to drop back to local kimchi; the sandbox and agent keep running.
 
@@ -402,23 +489,6 @@ kimchi update --canary              # install the latest canary build from maste
 ### HTTP proxy
 
 Kimchi respects `HTTP_PROXY` / `HTTPS_PROXY` environment variables for network requests.
-
-### Token optimization (RTK)
-
-Kimchi installs [RTK](https://github.com/rtk-ai/rtk) during setup and keeps the `rtk` command available on startup. When enabled, kimchi rewrites bash tool calls through `rtk rewrite` before execution. This compresses command output (git, cargo, npm, docker, etc.) by 60-90%, reducing LLM context usage.
-
-Before every bash tool execution, kimchi calls `rtk rewrite "<command>"`. If RTK returns a rewritten command (e.g. `git status` becomes `rtk git status`), the rewritten version is executed instead.
-
-```bash
-brew install rtk    # macOS / Linux
-```
-
-RTK rewrite is managed from resources:
-
-```bash
-kimchi resources disable hooks.rtk-rewrite
-kimchi resources enable hooks.rtk-rewrite
-```
 
 ### Hooks
 

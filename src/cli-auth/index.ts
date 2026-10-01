@@ -8,7 +8,7 @@
 
 import type { ChildProcess } from "node:child_process"
 import open from "open"
-import { envConfig } from "../config.js"
+import { resolveEndpoints } from "../config.js"
 import { generateState, startCallbackServer } from "./callback-server.js"
 
 export interface BrowserAuthOptions {
@@ -22,6 +22,11 @@ export interface BrowserAuthOptions {
 	onMessage?: (message: string) => void
 	/** Optional callback invoked with the browser URL before the browser opens */
 	onBrowserUrl?: (url: string) => void
+	/** Copy shown on the callback success page. Terminal logins keep the default
+	 *  ("Your CLI is now connected…"); flows launched by other clients (ACP
+	 *  authenticate(), e.g. Studio's in-app login) pass copy that doesn't
+	 *  assume the terminal CLI. */
+	successMessage?: string
 	/** Abort the flow (e.g. user pressed Esc): tears down the callback server early. */
 	signal?: AbortSignal
 }
@@ -39,11 +44,12 @@ export interface BrowserAuthResult {
 }
 
 export async function authenticateViaBrowser(options: BrowserAuthOptions = {}): Promise<BrowserAuthResult> {
-	const webAppUrl = options.webAppUrl ?? envConfig.KIMCHI_WEB_APP_URL
+	// Default follows the configured region; KIMCHI_WEB_APP_URL keeps top precedence.
+	const webAppUrl = options.webAppUrl ?? resolveEndpoints().webAppUrl
 	const state = generateState()
 	const log = options.onMessage ?? console.log
 
-	const callbackServer = await startCallbackServer(state)
+	const callbackServer = await startCallbackServer(state, { successMessage: options.successMessage })
 
 	// Let callers cancel the wait (e.g. the login dialog's Esc) instead of leaving
 	// the callback server running until its 5-minute timeout. close() resolves the

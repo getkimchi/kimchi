@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Copy non-TypeScript resources that tsc doesn't handle.
 //
 // --dev   (used by `build`):        theme files from node_modules → src/modes/interactive/theme/
@@ -10,6 +11,7 @@
 //                                   plus package.json → dist/share/kimchi/
 //                                   so the compiled binary resolves assets from the shared data directory
 
+import { execFileSync } from "node:child_process"
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { platform } from "node:os"
 import { dirname, join } from "node:path"
@@ -106,3 +108,25 @@ if (!isDev) {
 	mkdirSync(proxyHelperBinDest, { recursive: true })
 	cpSync(proxyHelperSrc, join(proxyHelperBinDest, proxyHelperName))
 }
+
+// Bundle YAML into the validator: discovered skills are copied to temporary
+// directories, and installed binaries have no node_modules to resolve it from.
+const validatorDest = join(
+	projectRoot,
+	isDev ? "resources" : "dist/share/kimchi",
+	"skills/create-skill/scripts/validate-skill.mjs",
+)
+mkdirSync(dirname(validatorDest), { recursive: true })
+execFileSync(
+	"bun",
+	[
+		"build",
+		join(projectRoot, "src/shared/skill-discovery/validate-skill.ts"),
+		"--target=node",
+		"--format=esm",
+		"--minify",
+		"--outfile",
+		validatorDest,
+	],
+	{ stdio: "inherit" },
+)

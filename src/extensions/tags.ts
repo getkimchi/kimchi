@@ -7,12 +7,12 @@
  * - Status line display of active tags with color coding
  * - Integration with before_provider_request hook
  *
- * Tags are stored per-session and persisted via session entries.
+ * Tags are stored per-session and persisted via session entries. Default tags
+ * for new sessions are resolved from the config hierarchy (env > project >
+ * global) by src/config/tags.ts.
  */
 
-import { homedir } from "node:os"
-import { resolve } from "node:path"
-import type { Api, Model } from "@earendil-works/pi-ai"
+import type { Model } from "@earendil-works/pi-ai"
 import type {
 	CustomEntry,
 	ExtensionAPI,
@@ -24,15 +24,17 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
-import { readJson } from "../config/json.js"
 import { readConfigSetting } from "../config/settings.js"
+import { isValidTag, parseTag, resolveDefaultTags, type TagTier } from "../config/tags.js"
 import type { ThinkingLevel } from "./agents/personas/types.js"
+import { getEffectiveModel } from "./auto-model/state.js"
+import { resolveMultiModelEnabled } from "./multi-model.js"
+import { shouldSuppressFermentModeTools } from "./print-mode.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const STATUS_LINE_TAGS_KEY = "active-tags"
-const TAGS_CONFIG_FILE = resolve(homedir(), ".config", "kimchi", "tags.json")
 const TAGS_SESSION_ENTRY_TYPE = "kimchi_active_tags"
 
 export function readHidePhaseChanges(): boolean {
@@ -49,37 +51,17 @@ export function isValidPhase(phase: string): phase is Phase {
 	return VALID_PHASES.includes(phase as Phase)
 }
 
-// ─── Tag validation ───────────────────────────────────────────────────────────
-
-const TAG_RE = /^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?:[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$/
-
-export function isValidTag(tag: string): boolean {
-	if (!TAG_RE.test(tag)) return false
-	const [key, value] = tag.split(":", 2)
-	return key.length <= 64 && value.length <= 64
-}
-
-export function parseTag(tag: string): { key: string; value: string } | null {
-	if (!isValidTag(tag)) return null
-	const [key, value] = tag.split(":", 2)
-	return { key, value }
-}
-
 // ─── Tag storage ──────────────────────────────────────────────────────────────
-
-interface TagsConfig {
-	tags?: string[]
-}
 
 export type TagAppendEntry = (customType: string, data?: unknown) => void
 
 export class TagManager {
 	private readonly sessionManager: Pick<SessionManager, "getEntries" | "getSessionId">
 	private readonly appendEntry: TagAppendEntry
-	private readonly configFile = TAGS_CONFIG_FILE
 
 	private tags: Set<string> = new Set()
 	private defaultTags: Set<string> = new Set()
+	private tierByTag: Map<string, TagTier> = new Map()
 	private hasSessionTags = false
 
 	constructor(sessionManager: Pick<SessionManager, "getEntries" | "getSessionId">, appendEntry: TagAppendEntry) {
@@ -109,30 +91,13 @@ export class TagManager {
 	}
 
 	private loadDefaultTags(): void {
-		// Load from config file (defaults for new sessions)
-		try {
-			const config = readJson(this.configFile) as TagsConfig
-			if (Array.isArray(config.tags)) {
-				for (const tag of config.tags) {
-					if (isValidTag(tag)) {
-						this.defaultTags.add(tag)
-					}
-				}
-			}
-		} catch {
-			// Config file doesn't exist or is invalid, ignore
+		// Defaults for new sessions, resolved from the config hierarchy
+		// (env > project > global) — see src/config/tags.ts.
+		const resolved = resolveDefaultTags()
+		for (const tag of resolved.tags) {
+			this.defaultTags.add(tag)
 		}
-
-		// Load from environment variable (defaults for new sessions)
-		const envTags = process.env.KIMCHI_TAGS
-		if (envTags) {
-			for (const tag of envTags.split(",")) {
-				const trimmed = tag.trim()
-				if (isValidTag(trimmed)) {
-					this.defaultTags.add(trimmed)
-				}
-			}
-		}
+		this.tierByTag = resolved.tierByTag
 	}
 
 	private loadSessionTags(): string[] | undefined {
@@ -205,6 +170,10 @@ export class TagManager {
 
 	isStatic(tag: string): boolean {
 		return this.defaultTags.has(tag)
+	}
+
+	getTier(tag: string): TagTier | undefined {
+		return this.tierByTag.get(tag)
 	}
 
 	getPhaseTag(phase: Phase | undefined): string | undefined {
@@ -350,7 +319,6 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 		// List all tags
 		const allTags = tagManager.getAllTags()
 		const userTags = tagManager.getUserTags()
-		const staticTags = tagManager.getStaticTags()
 
 		if (allTags.length === 0) {
 			ctx.ui.notify("No tags configured. Use '/tags add key:value' to add tags.", "info")
@@ -361,8 +329,8 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 		lines.push("Active tags:")
 
 		for (const tag of allTags.sort()) {
-			const isDefault = staticTags.includes(tag)
-			const marker = isDefault ? "[default]" : "[user]"
+			const tier = tagManager.getTier(tag)
+			const marker = tier ? `[${tier}]` : "[user]"
 			const colorTag = ctx.ui.theme.fg("accent", tag)
 			const colorMarker = ctx.ui.theme.fg("dim", marker)
 			lines.push(`  ${colorMarker} ${colorTag}`)
@@ -475,7 +443,7 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 		"  /tags remove tag ...       Remove one or more user-defined tags",
 		"  /tags clear                Remove all user-defined tags",
 		"",
-		"Default tags from config/env are applied to new sessions; session changes override them.",
+		"Defaults resolve from the KIMCHI_TAGS env var, the nearest project .kimchi/tags.json, and the global ~/.config/kimchi/tags.json (env > project > global); session changes override them.",
 		`Current default tags: ${tagManager.getStaticTags().length > 0 ? tagManager.getStaticTags().join(", ") : "none"}`,
 	]
 	ctx.ui.notify(helpLines.join("\n"), "info")
@@ -525,10 +493,30 @@ function getTagManager(
 	return tagManager
 }
 
-export function getActiveTags(sessionManager: Pick<SessionManager, "getEntries" | "getSessionId">): string[] {
-	// Read-only lookup: do not cache this instance, otherwise a later
-	// command/tool context that needs to mutate tags would get a no-op
-	// appendEntry from the cached instance.
+/**
+ * Read-only lookup of a session's active tags for display surfaces that
+ * render on every frame (the status line). Reads the shared per-session
+ * TagManager that session_start created, so repeated peeks cost no file I/O.
+ * Before session_start has run (or for a session that never started), falls
+ * back to a throwaway instance that is never cached — mutating callers must
+ * go through getTagManager, which always constructs with the real
+ * appendEntry.
+ *
+ * Session-scoped by design: the shared instance snapshots its tags at
+ * construction, and the map is not invalidated when the session branches or
+ * resets its leaf — after such navigation the display may keep showing a tag
+ * that was added on the abandoned branch. This is deliberate: the
+ * before_provider_request tagging path reads the same cached instance, so
+ * the display stays consistent with the tags actually sent on requests, and
+ * /tags mutations update the shared set directly. Re-reading on branch for
+ * the display alone would reintroduce a display/request divergence.
+ */
+export function peekActiveTags(sessionManager: Pick<SessionManager, "getEntries" | "getSessionId">): string[] {
+	const cached = tagManagerMap.get(sessionManager.getSessionId())
+	if (cached) return cached.getAllTags()
+	// Throwaway reader: constructing it still reads default tags once, but it
+	// is never stored, so a later mutating context can't inherit its no-op
+	// appendEntry.
 	return new TagManager(sessionManager, () => {}).getAllTags()
 }
 
@@ -561,53 +549,63 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		},
 	})
 
-	// Register the set_phase tool
-	pi.registerTool({
-		name: "set_phase",
-		label: "Set Phase",
-		description:
-			"Set the current work phase for usage tracking and analytics. The session starts in explore. Call when transitioning between phases (e.g., exploration to planning, or planning to building). The phase is included as a tag in subsequent LLM requests. When the orchestrator decides to perform a phase itself rather than delegating, pass `thinking` to match the Orchestration Thinking levels table.",
-		parameters: SetPhaseParams,
+	// Register the set_phase tool — unless this is a headless non-ferment run
+	// that is not multi-model. In --print sessions without a ferment one-shot
+	// the tool is dead surface (~217 est) for single-model runs, which never
+	// tag phases. Multi-model sessions run the orchestrator prompt, whose
+	// instructions tell the model to call set_phase — the tool must be
+	// registered whenever the session resolves multi-model so those
+	// instructions are satisfiable even when the print gate suppresses the
+	// ferment suite. Registration-time resolution covers the
+	// session-independent layers (CLI flag, settings default); the per-turn
+	// prompt gate re-checks the full effective value.
+	if (!shouldSuppressFermentModeTools() || resolveMultiModelEnabled(null).value)
+		pi.registerTool({
+			name: "set_phase",
+			label: "Set Phase",
+			description:
+				"Set the current work phase for usage tracking and analytics. The session starts in explore. Call when transitioning between phases (e.g., exploration to planning, or planning to building). The phase is included as a tag in subsequent LLM requests. When the orchestrator decides to perform a phase itself rather than delegating, pass `thinking` to match the Orchestration Thinking levels table.",
+			parameters: SetPhaseParams,
 
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const phase = params.phase as Phase
-			const thinking = params.thinking as ThinkingLevel | undefined
-			const tagManager = getExtensionTagManager(ctx)
-			const sessionId = ctx.sessionManager.getSessionId()
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				const phase = params.phase as Phase
+				const thinking = params.thinking as ThinkingLevel | undefined
+				const tagManager = getExtensionTagManager(ctx)
+				const sessionId = ctx.sessionManager.getSessionId()
 
-			setCurrentPhase(sessionId, phase)
-			if (thinking) {
-				pi.setThinkingLevel(thinking)
-			}
+				setCurrentPhase(sessionId, phase)
+				if (thinking) {
+					pi.setThinkingLevel(thinking)
+				}
 
-			if (ctx.hasUI) {
-				updateStatusLineTags(tagManager, ctx)
-			}
+				if (ctx.hasUI) {
+					updateStatusLineTags(tagManager, ctx)
+				}
 
-			return {
-				content: [{ type: "text", text: `Phase changed to: ${phase}` }],
-				details: { phase, thinking, model: ctx.model?.id },
-			}
-		},
+				return {
+					content: [{ type: "text", text: `Phase changed to: ${phase}` }],
+					details: { phase, thinking, model: ctx.model?.id },
+				}
+			},
 
-		renderCall(_args, _theme) {
-			return new Text("", 0, 0)
-		},
-
-		renderResult(result, _options, theme) {
-			if (readHidePhaseChanges()) {
+			renderCall(_args, _theme) {
 				return new Text("", 0, 0)
-			}
-			const details = result.details as { phase: string; thinking?: ThinkingLevel; model?: string } | undefined
-			const phase = details?.phase ?? "unknown"
-			const model = details?.model
-			const thinkingSuffix = details?.thinking ? theme.fg("dim", ` · thinking ${details.thinking}`) : ""
-			const dash = theme.fg("dim", "- ")
-			const label = theme.bold(theme.fg("toolTitle", `Phase changed: ${phase}`))
-			const modelSuffix = model ? theme.fg("dim", ` [${model}]`) : ""
-			return new Text(dash + label + modelSuffix + thinkingSuffix, 0, 0)
-		},
-	})
+			},
+
+			renderResult(result, _options, theme) {
+				if (readHidePhaseChanges()) {
+					return new Text("", 0, 0)
+				}
+				const details = result.details as { phase: string; thinking?: ThinkingLevel; model?: string } | undefined
+				const phase = details?.phase ?? "unknown"
+				const model = details?.model
+				const thinkingSuffix = details?.thinking ? theme.fg("dim", ` · thinking ${details.thinking}`) : ""
+				const dash = theme.fg("dim", "- ")
+				const label = theme.bold(theme.fg("toolTitle", `Phase changed: ${phase}`))
+				const modelSuffix = model ? theme.fg("dim", ` [${model}]`) : ""
+				return new Text(dash + label + modelSuffix + thinkingSuffix, 0, 0)
+			},
+		})
 
 	// Initialize status line tags status and default phase on session start
 	pi.on("session_start", async (_event, ctx) => {
@@ -623,9 +621,9 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		// Tags are a Cast AI-specific API field; skip for other providers.
 		// If a request from a torn-down session reaches us after `/new` (etc.),
 		// any ctx getter throws via assertActive — bail silently in that case.
-		let model: Model<Api> | undefined
+		let model: Model<string> | undefined
 		try {
-			model = ctx.model ?? undefined
+			model = getEffectiveModel(ctx)
 		} catch (err) {
 			if (isStaleCtxError(err)) return
 			throw err

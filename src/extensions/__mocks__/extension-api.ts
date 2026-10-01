@@ -1,5 +1,6 @@
-import type { ExtensionAPI, ExtensionContext, ExtensionHandler } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, ExtensionHandler, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { vi } from "vitest"
+import { createMiniEventBus } from "./mini-event-bus.js"
 
 type RegisteredHandler = ExtensionHandler<unknown, unknown>
 
@@ -9,10 +10,27 @@ export function createExtensionApi(): {
 	getHandlers<E, R = undefined>(event: string): ExtensionHandler<E, R>[]
 	/** Invoke every handler registered for `event`, awaiting each in turn; returns their results. */
 	emit(event: string, payload: unknown, ctx?: ExtensionContext): Promise<unknown[]>
+	getRegisteredTool(name: string): Parameters<ExtensionAPI["registerTool"]>[0]
+	getRegisteredCommand(name: string): Parameters<ExtensionAPI["registerCommand"]>[1]
 	sendMessage: ReturnType<typeof vi.fn<ExtensionAPI["sendMessage"]>>
-	registerTool: ReturnType<typeof vi.fn<ExtensionAPI["registerTool"]>>
+	appendEntry: ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>
+	getCommands: ReturnType<typeof vi.fn<ExtensionAPI["getCommands"]>>
+	setModel: ReturnType<typeof vi.fn<ExtensionAPI["setModel"]>>
+	registerEntryRenderer: ReturnType<typeof vi.fn<ExtensionAPI["registerEntryRenderer"]>>
+	getEntryRenderer(customType: string): Parameters<ExtensionAPI["registerEntryRenderer"]>[1]
 	registerCommand: ReturnType<typeof vi.fn<ExtensionAPI["registerCommand"]>>
 	emitEvent: ReturnType<typeof vi.fn>
+	registerTool: ReturnType<typeof vi.fn<ExtensionAPI["registerTool"]>>
+	setActiveTools: ReturnType<typeof vi.fn<ExtensionAPI["setActiveTools"]>>
+	getRegisteredTools(): ToolDefinition[]
+	getActiveToolNames(): string[]
+	registerMessageRenderer: ReturnType<typeof vi.fn<ExtensionAPI["registerMessageRenderer"]>>
+	getMessageRenderer(customType: string): (...args: never[]) => unknown
+	getAppendedEntries<T = unknown>(type: string): T[]
+	registerShortcut: ReturnType<typeof vi.fn<ExtensionAPI["registerShortcut"]>>
+	getShortcutHandler(key: string): ((ctx: ExtensionContext) => Promise<void> | void) | undefined
+	getRegisteredShortcutKeys(): string[]
+	getShortcutDescription(key: string): string | undefined
 } {
 	const handlers = new Map<string, RegisteredHandler[]>()
 	const on = vi.fn((event: string, handler: RegisteredHandler) => {
@@ -21,12 +39,57 @@ export function createExtensionApi(): {
 		handlers.set(event, registered)
 	})
 	const sendMessage = vi.fn<ExtensionAPI["sendMessage"]>()
+	const registerEntryRenderer = vi.fn<ExtensionAPI["registerEntryRenderer"]>()
+	const appendedEntries: Array<{ type: string; payload: unknown }> = []
+	const appendEntry = vi.fn((type: string, payload: unknown) => {
+		appendedEntries.push({ type, payload })
+	})
+	const setModel = vi.fn<ExtensionAPI["setModel"]>(async () => true)
+	const getCommands = vi.fn<ExtensionAPI["getCommands"]>(() => [])
 	const registerCommand = vi.fn<ExtensionAPI["registerCommand"]>()
-	const registerTool = vi.fn<ExtensionAPI["registerTool"]>()
-	const emitEvent = vi.fn()
+	const registerFlag = vi.fn<ExtensionAPI["registerFlag"]>()
+	const registeredTools = new Map<string, ToolDefinition>()
+	const activeToolNames = new Set<string>()
+	const registerTool = vi.fn((tool: ToolDefinition) => {
+		registeredTools.set(tool.name, tool)
+		activeToolNames.add(tool.name)
+	}) as ReturnType<typeof vi.fn<ExtensionAPI["registerTool"]>>
+	const setActiveTools = vi.fn((toolNames: string[]) => {
+		activeToolNames.clear()
+		for (const name of toolNames) activeToolNames.add(name)
+	})
+	const getActiveTools = vi.fn(() => [...activeToolNames])
+	const getAllTools = vi.fn(() => [...registeredTools.values()])
+	const { events, emit } = createMiniEventBus()
+	const shortcuts = new Map<
+		string,
+		{ description?: string; handler: (ctx: ExtensionContext) => Promise<void> | void }
+	>()
+	const registerShortcut = vi.fn(
+		(key: string, options: { description?: string; handler: (ctx: ExtensionContext) => Promise<void> | void }) => {
+			shortcuts.set(key, options)
+		},
+	)
+	const registerMessageRenderer = vi.fn()
 
 	return {
-		api: { on, registerCommand, registerTool, sendMessage, events: { emit: emitEvent } } as unknown as ExtensionAPI,
+		api: {
+			on,
+			registerCommand,
+			registerFlag,
+			registerTool,
+			getAllTools,
+			getActiveTools,
+			setActiveTools,
+			sendMessage,
+			appendEntry,
+			setModel,
+			registerEntryRenderer,
+			registerShortcut,
+			registerMessageRenderer,
+			getCommands,
+			events,
+		} as unknown as ExtensionAPI,
 		getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R> {
 			const handler = handlers.get(event)?.[0]
 			if (!handler) throw new Error(`Extension did not register a ${event} handler`)
@@ -42,9 +105,51 @@ export function createExtensionApi(): {
 			}
 			return results
 		},
+		getRegisteredTool(name: string): Parameters<ExtensionAPI["registerTool"]>[0] {
+			const call = registerTool.mock.calls.find(([tool]) => tool.name === name)
+			if (!call) throw new Error(`Tool ${name} was not registered`)
+			return call[0]
+		},
+		getRegisteredCommand(name: string): Parameters<ExtensionAPI["registerCommand"]>[1] {
+			const call = registerCommand.mock.calls.find(([cmd]) => cmd === name)
+			if (!call) throw new Error(`Command ${name} was not registered`)
+			return call[1]
+		},
 		sendMessage,
+		setModel,
+		registerEntryRenderer,
+		getEntryRenderer(customType: string): Parameters<ExtensionAPI["registerEntryRenderer"]>[1] {
+			const call = registerEntryRenderer.mock.calls.find(([type]) => type === customType)
+			if (!call) throw new Error(`No entry renderer registered for ${customType}`)
+			return call[1]
+		},
+		emitEvent: emit,
 		registerTool,
 		registerCommand,
-		emitEvent,
+		setActiveTools,
+		getRegisteredTools: () => [...registeredTools.values()],
+		getActiveToolNames: () => [...activeToolNames],
+		appendEntry: appendEntry as unknown as ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>,
+		getCommands,
+		registerMessageRenderer,
+		/** Return the renderer callback registered for a message or entry type. */
+		getMessageRenderer(customType: string): (...args: never[]) => unknown {
+			const call = registerMessageRenderer.mock.calls.find(([type]) => type === customType)
+			if (!call) throw new Error(`No message renderer registered for ${customType}`)
+			return call[1] as (...args: never[]) => unknown
+		},
+		getAppendedEntries<T = unknown>(type: string): T[] {
+			return appendedEntries.filter((entry) => entry.type === type).map((entry) => entry.payload as T)
+		},
+		registerShortcut: registerShortcut as unknown as ReturnType<typeof vi.fn<ExtensionAPI["registerShortcut"]>>,
+		getShortcutHandler(key: string) {
+			return shortcuts.get(key)?.handler
+		},
+		getRegisteredShortcutKeys(): string[] {
+			return [...shortcuts.keys()]
+		},
+		getShortcutDescription(key: string): string | undefined {
+			return shortcuts.get(key)?.description
+		},
 	}
 }

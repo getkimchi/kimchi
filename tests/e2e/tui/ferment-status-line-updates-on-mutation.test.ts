@@ -61,11 +61,9 @@ test("ferment status-line segment updates after activate_ferment_phase tool call
 						},
 					],
 				},
-				// Turn 2 (after tool result): short text, no trailing "?".
-				{ stream: ["I've outlined the scope for this test."] },
-				// Turn 3 (post-confirmation keepalive): mirrors ferment-new-runs-planning.
+				// Turn 2 (post-confirmation keepalive): mirrors ferment-new-runs-planning.
 				{},
-				// Turn 4 (host nudge): activate the implementation phase.
+				// Turn 3 (host nudge): activate the implementation phase.
 				{
 					stream: ["Starting implementation."],
 					toolCalls: [

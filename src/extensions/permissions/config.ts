@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { z } from "zod"
+import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { DEFAULT_CONFIG, PERMISSION_MODES } from "./constants.js"
 import type { PermissionsConfig } from "./types.js"
 
@@ -13,6 +14,7 @@ const configSchema = z
 		allow: z.array(z.string()).optional(),
 		deny: z.array(z.string()).optional(),
 		classifierTimeoutMs: z.number().int().positive().optional(),
+		classifierMaxTotalMs: z.number().int().positive().optional(),
 	})
 	.strict()
 
@@ -34,7 +36,12 @@ const USER_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "harness", "per
 const PROJECT_CONFIG_SUFFIX = join(".kimchi", "permissions.json")
 const LOCAL_CONFIG_SUFFIX = join(".kimchi", "permissions.local.json")
 
-function readConfigFile(path: string): { data: PermissionsConfig | null; error?: string } {
+function readConfigFile(path: string): {
+	data: PermissionsConfig | null
+	/** Preserve omission so a sparse higher-priority file does not erase an inherited budget. */
+	classifierMaxTotalMs?: number
+	error?: string
+} {
 	if (!existsSync(path)) return { data: null }
 	try {
 		const raw = readFileSync(path, "utf-8")
@@ -44,11 +51,13 @@ function readConfigFile(path: string): { data: PermissionsConfig | null; error?:
 			return { data: null, error: `${path}: ${validated.error.message}` }
 		}
 		return {
+			classifierMaxTotalMs: validated.data.classifierMaxTotalMs,
 			data: {
 				defaultMode: validated.data.defaultMode ?? DEFAULT_CONFIG.defaultMode,
 				allow: validated.data.allow ?? [],
 				deny: validated.data.deny ?? [],
 				classifierTimeoutMs: validated.data.classifierTimeoutMs ?? DEFAULT_CONFIG.classifierTimeoutMs,
+				classifierMaxTotalMs: validated.data.classifierMaxTotalMs ?? DEFAULT_CONFIG.classifierMaxTotalMs,
 			},
 		}
 	} catch (err) {
@@ -62,12 +71,16 @@ export function loadConfig(options: LoadConfigOptions): { loaded: LoadedConfig; 
 	const userRead = readConfigFile(USER_CONFIG_PATH)
 	if (userRead.error) errors.push(userRead.error)
 
+	// Project and local files are gated on project trust: an untrusted repo's
+	// .kimchi/permissions.json must not relax the permission layer (allow
+	// rules, defaultMode) until the folder is trusted.
+	const projectScopeAllowed = isProjectScopeAllowed(options.cwd)
 	const projectPath = resolve(options.cwd, PROJECT_CONFIG_SUFFIX)
-	const projectRead = readConfigFile(projectPath)
+	const projectRead = projectScopeAllowed ? readConfigFile(projectPath) : { data: null }
 	if (projectRead.error) errors.push(projectRead.error)
 
 	const localPath = resolve(options.cwd, LOCAL_CONFIG_SUFFIX)
-	const localRead = readConfigFile(localPath)
+	const localRead = projectScopeAllowed ? readConfigFile(localPath) : { data: null }
 	if (localRead.error) errors.push(localRead.error)
 
 	const cliPath = options.cliConfigPath
@@ -86,6 +99,8 @@ export function loadConfig(options: LoadConfigOptions): { loaded: LoadedConfig; 
 			allow: [...user.allow, ...(project?.allow ?? []), ...(local?.allow ?? [])],
 			deny: [...user.deny, ...(project?.deny ?? []), ...(local?.deny ?? [])],
 			classifierTimeoutMs: local?.classifierTimeoutMs ?? project?.classifierTimeoutMs ?? user.classifierTimeoutMs,
+			classifierMaxTotalMs:
+				localRead.classifierMaxTotalMs ?? projectRead.classifierMaxTotalMs ?? user.classifierMaxTotalMs,
 		}
 	}
 

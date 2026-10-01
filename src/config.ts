@@ -1,22 +1,51 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join, relative, resolve } from "node:path"
+import { join, relative, resolve } from "node:path"
 import type { RetrySettings } from "@earendil-works/pi-coding-agent"
+import { writeJson } from "./config/json.js"
+import { isProjectScopeAllowed } from "./project-scope-trust.js"
+import {
+	DEFAULT_REGION,
+	isRegionId,
+	type KimchiRegion,
+	openAiBaseUrl,
+	REGION_ENV,
+	REGIONS,
+	type RegionEndpoints,
+	type RegionId,
+	regionEndpoints,
+	telemetryLogsUrl,
+	telemetryMetricsUrl,
+} from "./regions.js"
 import { getVersion } from "./utils.js"
 
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
 const AGENT_CONFIG_DIR = resolve(homedir(), ".config", "kimchi", "harness")
-const KIMCHI_LLM_ENDPOINT = "https://llm.kimchi.dev/openai/v1"
-const DEFAULT_TELEMETRY_LOGS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
-const DEFAULT_TELEMETRY_METRICS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest"
+
+let startupApiKey: string | undefined
+
+/**
+ * Retain the launch-time override privately, then strip it from process.env.
+ * Bash tools and MCP servers inherit that environment; leaving the key there
+ * can expose it through tool output. Do not persist it over the saved login.
+ */
+export function captureApiKeyFromEnvironment(): string | undefined {
+	startupApiKey = process.env.KIMCHI_API_KEY || startupApiKey
+	delete process.env.KIMCHI_API_KEY
+	return startupApiKey
+}
+
+export function getEnvironmentApiKey(): string | undefined {
+	return startupApiKey || process.env.KIMCHI_API_KEY || undefined
+}
+
+export function getApiKeySource(): "environment" | "config" {
+	return getEnvironmentApiKey() ? "environment" : "config"
+}
 
 export const ALWAYS_SHOWN_SKILL_PATHS = [join(".config", "kimchi", "harness", "skills")]
 
 export const OPTIONAL_SKILL_PATHS = [join(".pi", "agent", "skills"), join(".claude", "skills")]
-
-export const envConfig = {
-	KIMCHI_WEB_APP_URL: process.env.KIMCHI_WEB_APP_URL ?? "https://app.kimchi.dev",
-}
 
 export const DEFAULT_SKILL_PATHS = [...ALWAYS_SHOWN_SKILL_PATHS, ...OPTIONAL_SKILL_PATHS]
 
@@ -78,6 +107,7 @@ export interface OnboardingConfig {
 	sessionModeWizardSeenAt?: string
 	hideSessionModeDialog?: boolean
 	teleportHelpSeenAt?: string
+	studioOnboardingSeenAt?: string
 }
 
 export interface SurveyConfig {
@@ -161,17 +191,32 @@ export type MigrationState = "done" | "skip-forever"
 export interface KimchiConfig {
 	apiKey: string
 	agentConfigDir: string
+	/** KIMCHI_REGION → global config → DEFAULT_REGION; unknown values count as unset. */
+	region: RegionId
+	/** KIMCHI_BASE_URL env → project config → global config → the region's OpenAI base (this one includes the /openai/v1 path; a config-file custom value is stored as written). */
 	llmEndpoint: string
-	/** The user-configured endpoint, undefined if not explicitly set. Use this when passing to updateModelsConfig. */
+	/**
+	 * The user-configured LLM gateway base, undefined if not explicitly set.
+	 * Always a base WITHOUT a path suffix — KIMCHI_BASE_URL stores it bare
+	 * and the login flow stores `llmBaseUrl` — consumers append the path
+	 * themselves via chatCompletionsApi/anthropicMessagesApi (see
+	 * updateModelsConfig in src/models.ts and the login extension).
+	 */
 	customLlmEndpoint: string | undefined
+	/** @deprecated Parsed only so upgrades can identify obsolete MCP configuration. */
 	maxToolResultChars: number
+	/** @deprecated Parsed only so upgrades can identify obsolete MCP configuration. */
 	mcpSearchLimit: number
+	/** @deprecated Parsed only so upgrades can identify obsolete MCP configuration. */
 	mcpSearch: SearchStrategyConfig
 	skillPaths?: string[]
 	migrationState?: MigrationState
 	onboarding: OnboardingConfig
 	deviceId: string
 	redaction?: { enabled?: boolean }
+	/** Memory embedding overrides — model and vector dimensions (see docs/memory-extension.md). */
+	memoryEmbedding?: { model?: string; dims?: number }
+	memoryExtraction?: { model?: string }
 }
 
 /**
@@ -199,6 +244,7 @@ export function readApiKeyFromConfigFile(configPath: string = KIMCHI_CONFIG_PATH
 function readConfigExtras(configPath: string): {
 	apiKey?: string
 	llmEndpoint?: string
+	region?: RegionId
 	maxToolResultChars?: number
 	mcpSearchLimit?: number
 	mcpSearch?: Partial<SearchStrategyConfig>
@@ -208,6 +254,8 @@ function readConfigExtras(configPath: string): {
 	preferences?: PreferencesConfig
 	deviceId?: string
 	redaction?: { enabled?: boolean }
+	memoryEmbedding?: { model?: string; dims?: number }
+	memoryExtraction?: { model?: string }
 } {
 	try {
 		const raw = readFileSync(configPath, "utf-8")
@@ -267,6 +315,9 @@ function readConfigExtras(configPath: string): {
 		const llmEndpoint =
 			typeof parsed.llmEndpoint === "string" && parsed.llmEndpoint.length > 0 ? parsed.llmEndpoint : undefined
 
+		// Read region — an unknown value is treated as unset, not an error.
+		const region = isRegionId(parsed.region) ? parsed.region : undefined
+
 		// Read deviceId (camelCase, then snake_case for backwards compat)
 		const deviceId =
 			(typeof parsed.deviceId === "string" && parsed.deviceId.length > 0 && parsed.deviceId) ||
@@ -280,9 +331,33 @@ function readConfigExtras(configPath: string): {
 			redaction = { enabled: rd.enabled }
 		}
 
+		// Read memory embedding overrides — model + vector dimensions.
+		// Invalid parts are ignored (fall back to defaults), matching the
+		// redaction/mcpSearch parse conventions.
+		let memoryEmbedding: { model?: string; dims?: number } | undefined
+		const me = parsed.memoryEmbedding
+		if (me && typeof me === "object") {
+			const model = typeof me.model === "string" && me.model.length > 0 ? me.model : undefined
+			const dims = typeof me.dims === "number" && Number.isInteger(me.dims) && me.dims > 0 ? me.dims : undefined
+			if (model !== undefined || dims !== undefined) {
+				memoryEmbedding = {
+					...(model !== undefined ? { model } : {}),
+					...(dims !== undefined ? { dims } : {}),
+				}
+			}
+		}
+
+		// Read memory extraction model override — same parse conventions.
+		let memoryExtraction: { model?: string } | undefined
+		const mx = parsed.memoryExtraction
+		if (mx && typeof mx === "object" && typeof mx.model === "string" && mx.model.length > 0) {
+			memoryExtraction = { model: mx.model }
+		}
+
 		return {
 			apiKey,
 			llmEndpoint,
+			region,
 			maxToolResultChars,
 			mcpSearchLimit,
 			mcpSearch,
@@ -292,6 +367,8 @@ function readConfigExtras(configPath: string): {
 			deviceId,
 			preferences,
 			redaction,
+			memoryEmbedding,
+			memoryExtraction,
 		}
 	} catch {
 		return {}
@@ -304,11 +381,26 @@ function readConfigExtras(configPath: string): {
  * group or world access), or undefined if the file doesn't exist or is
  * owner-only (0600 or stricter). Used by loadConfig and
  * readApiKeyFromConfigFile to warn users when their API key is exposed.
+ *
+ * Skipped on Windows: Node reports POSIX mode bits (typically 0666) that
+ * don't reflect the actual ACLs, and `chmod` isn't a native command, so
+ * the warning would be meaningless noise. Windows files under the user
+ * profile are already protected by directory ACLs.
  */
+// Paths whose permission warning has already been emitted this process.
+// loadConfig() is uncached by design (post-trust config adoption depends on
+// fresh reads), and the lazy configuredSkillPaths getter re-invokes it on every
+// resources_discover event — without warn-once, a chmod-644 config would print
+// the same warning per event. This is process-lifetime log hygiene, not
+// per-session state.
+const configPermissionWarnedPaths = new Set<string>()
+
 export function checkConfigFilePermissions(configPath: string): string | undefined {
+	if (process.platform === "win32") return undefined
 	try {
 		const stat = statSync(configPath)
-		if ((stat.mode & 0o077) !== 0) {
+		if ((stat.mode & 0o077) !== 0 && !configPermissionWarnedPaths.has(configPath)) {
+			configPermissionWarnedPaths.add(configPath)
 			const mode = (stat.mode & 0o777).toString(8)
 			return `Warning: ${configPath} is group/world-readable (mode ${mode}). Run \`chmod 600 ${configPath}\` to restrict access to your API key.`
 		}
@@ -340,11 +432,16 @@ function parseOnboardingConfig(value: unknown): OnboardingConfig | undefined {
 	const hideSessionModeDialog = typeof raw.hideSessionModeDialog === "boolean" ? raw.hideSessionModeDialog : undefined
 	const teleportHelpSeenAt =
 		typeof raw.teleportHelpSeenAt === "string" && raw.teleportHelpSeenAt.length > 0 ? raw.teleportHelpSeenAt : undefined
+	const studioOnboardingSeenAt =
+		typeof raw.studioOnboardingSeenAt === "string" && raw.studioOnboardingSeenAt.length > 0
+			? raw.studioOnboardingSeenAt
+			: undefined
 
 	return {
 		...(sessionModeWizardSeenAt ? { sessionModeWizardSeenAt } : {}),
 		...(hideSessionModeDialog !== undefined ? { hideSessionModeDialog } : {}),
 		...(teleportHelpSeenAt ? { teleportHelpSeenAt } : {}),
+		...(studioOnboardingSeenAt ? { studioOnboardingSeenAt } : {}),
 	}
 }
 
@@ -356,6 +453,12 @@ function parsePreferencesConfig(value: unknown): PreferencesConfig | undefined {
 	return {
 		...(hideTips !== undefined ? { hideTips } : {}),
 	}
+}
+
+function effectiveRegion(fileRegion: unknown): RegionId {
+	const envRegion = process.env[REGION_ENV]
+	if (isRegionId(envRegion)) return envRegion
+	return isRegionId(fileRegion) ? fileRegion : DEFAULT_REGION
 }
 
 /**
@@ -378,10 +481,12 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 	let fileEndpoint: string | undefined
 	let fileMetricsEndpoint: string | undefined
 	let fileHeaders: Record<string, string> | undefined
+	let fileRegion: unknown
 
 	try {
 		const raw = readFileSync(path, "utf-8")
 		const parsed = JSON.parse(raw)
+		fileRegion = parsed.region
 		const t = parsed.telemetry
 		if (t && typeof t === "object") {
 			if (typeof t.enabled === "boolean") fileEnabled = t.enabled
@@ -397,10 +502,7 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 
 	// Resolve auth headers: explicit config override takes priority, then API key
 	let headers: Record<string, string>
-	const apiKey =
-		(typeof process.env.KIMCHI_API_KEY === "string" && process.env.KIMCHI_API_KEY.length > 0
-			? process.env.KIMCHI_API_KEY
-			: undefined) ?? readApiKeyFromConfigFile(path)
+	const apiKey = getEnvironmentApiKey() ?? readApiKeyFromConfigFile(path)
 	if (fileHeaders) {
 		headers = fileHeaders
 	} else {
@@ -412,6 +514,9 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 	const enabled =
 		envEnabled !== undefined ? envEnabled !== "0" && envEnabled !== "false" : (fileEnabled ?? defaultEnabled)
 
+	// Explicit telemetry.* config wins over the region defaults.
+	const region = REGIONS[effectiveRegion(fileRegion)]
+
 	// Always inject a User-Agent so telemetry is traceable on the server side.
 	const hasUserAgent = Object.keys(headers).some((k) => k.toLowerCase() === "user-agent")
 	if (!hasUserAgent) {
@@ -420,11 +525,22 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 
 	return {
 		enabled,
-		endpoint: fileEndpoint ?? DEFAULT_TELEMETRY_LOGS_ENDPOINT,
-		metricsEndpoint: fileMetricsEndpoint ?? DEFAULT_TELEMETRY_METRICS_ENDPOINT,
+		endpoint: fileEndpoint ?? telemetryLogsUrl(region),
+		metricsEndpoint: fileMetricsEndpoint ?? telemetryMetricsUrl(region),
 		headers,
 		apiKey: apiKey ?? "",
 	}
+}
+
+/**
+ * Read the project .kimchi/config.json extras, surfacing its permission
+ * warning the same way the global read does. Only called when the project is
+ * trusted (see loadConfig).
+ */
+function readProjectConfigExtras(projectPath: string): ReturnType<typeof readConfigExtras> {
+	const projectPermWarning = checkConfigFilePermissions(projectPath)
+	if (projectPermWarning) console.warn(projectPermWarning)
+	return readConfigExtras(projectPath)
 }
 
 /**
@@ -432,14 +548,23 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
  *
  * Config precedence (highest to lowest):
  *   1. KIMCHI_API_KEY environment variable (highest precedence)
- *   2. Project .kimchi/config.json (if cwd provided)
+ *   2. Project .kimchi/config.json (if cwd provided — gated on project trust,
+ *      see below)
  *   3. Global ~/.config/kimchi/config.json
+ *
+ * llmEndpoint follows the same shape with one more tier on top:
+ * KIMCHI_BASE_URL environment variable (gateway base) > project config > global config.
+ *
+ * The project tier is gated on project trust (src/project-scope-trust.ts):
+ * while the session cwd is untrusted, .kimchi/config.json is not read at
+ * all, so a cloned repo cannot set the LLM endpoint, API key, skill paths,
+ * or search behavior until the folder is trusted.
  *
  * For mcpSearch, a shallow merge is performed: project config overrides
  * individual keys, but global fills in any missing keys.
  * For all other fields, project config completely replaces global.
  *
- * Returns `apiKey: ""` when no API key is present in either config file.
+ * Returns `apiKey: ""` when no API key is present in the environment or config.
  */
 export function loadConfig(options?: { configPath?: string; cwd?: string }): KimchiConfig {
 	// Read global config
@@ -448,11 +573,12 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 	if (globalPermWarning) console.warn(globalPermWarning)
 	const globalExtras = readConfigExtras(globalConfigPath)
 
-	// Read project-level config
-	const projectPath = resolve(options?.cwd ?? process.cwd(), ".kimchi", "config.json")
-	const projectPermWarning = checkConfigFilePermissions(projectPath)
-	if (projectPermWarning) console.warn(projectPermWarning)
-	const projectExtras = readConfigExtras(projectPath)
+	// Read project-level config — only when the project is trusted. An
+	// untrusted repo must not influence the endpoint, API key, skill paths, or
+	// anything else the harness acts on.
+	const projectCwd = options?.cwd ?? process.cwd()
+	const projectPath = resolve(projectCwd, ".kimchi", "config.json")
+	const projectExtras = isProjectScopeAllowed(projectCwd) ? readProjectConfigExtras(projectPath) : {}
 
 	// Merge: project wins for scalars; shallow merge for mcpSearch.
 	const extras = {
@@ -466,13 +592,25 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		onboarding: globalExtras.onboarding,
 		deviceId: projectExtras.deviceId ?? globalExtras.deviceId,
 		redaction: projectExtras.redaction ?? globalExtras.redaction,
+		memoryEmbedding: projectExtras.memoryEmbedding ?? globalExtras.memoryEmbedding,
+		memoryExtraction: projectExtras.memoryExtraction ?? globalExtras.memoryExtraction,
 	}
 
+	// Region is account-level, so only the global config may set it.
+	const region = effectiveRegion(globalExtras.region)
+
+	// KIMCHI_BASE_URL repoints the whole LLM gateway (chat, router,
+	// search, anthropic base) and outranks any configured llmEndpoint,
+	// matching the KIMCHI_API_KEY env-wins rule.
+	const envLlmBaseUrl = environmentLlmBaseUrl()
+	const gateway = withLlmBaseUrl(REGIONS[region])
+
 	return {
-		apiKey: extras.apiKey ?? "",
+		apiKey: getEnvironmentApiKey() || extras.apiKey || "",
 		agentConfigDir: AGENT_CONFIG_DIR,
-		llmEndpoint: extras.llmEndpoint ?? KIMCHI_LLM_ENDPOINT,
-		customLlmEndpoint: extras.llmEndpoint,
+		region,
+		llmEndpoint: envLlmBaseUrl ? openAiBaseUrl(gateway) : (extras.llmEndpoint ?? openAiBaseUrl(gateway)),
+		customLlmEndpoint: envLlmBaseUrl ?? extras.llmEndpoint,
 		maxToolResultChars: extras.maxToolResultChars ?? 10_000,
 		mcpSearchLimit: extras.mcpSearchLimit ?? 5,
 		mcpSearch: { ...SEARCH_STRATEGY_DEFAULTS, ...extras.mcpSearch },
@@ -481,22 +619,144 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		onboarding: extras.onboarding ?? {},
 		deviceId: extras.deviceId ?? "",
 		redaction: extras.redaction,
+		memoryEmbedding: extras.memoryEmbedding,
+		memoryExtraction: extras.memoryExtraction,
 	}
+}
+
+export interface ResolvedEndpoints extends RegionEndpoints {
+	/** KIMCHI_BASE_URL env → project config → global config → the region's OpenAI base. */
+	llmEndpoint: string
+}
+
+/**
+ * Resolve every external endpoint the CLI talks to from the configured region.
+ * Overrides: KIMCHI_WEB_APP_URL → webAppUrl, KIMCHI_REMOTE_ENDPOINT → platformApiUrl,
+ * KIMCHI_BASE_URL → every llmBaseUrl-derived endpoint (chat, router, search).
+ */
+// The no-options resolution feeds render-time getters (billing links,
+// login URLs) that run on every streaming render — memoize the loadConfig()
+// disk read instead of re-reading and re-parsing the config files each call.
+// Explicit-options callers stay uncached. The cache key covers KIMCHI_REGION
+// and the global config stat, so out-of-process logins are picked up too.
+let resolvedEndpointsConfigCache: { cfg: KimchiConfig; stamp: string } | undefined
+
+function globalConfigStamp(): string {
+	try {
+		const st = statSync(KIMCHI_CONFIG_PATH)
+		return `${process.env[REGION_ENV]}:${environmentLlmBaseUrl() ?? ""}:${st.mtimeMs}:${st.size}`
+	} catch {
+		return `${process.env[REGION_ENV]}:${environmentLlmBaseUrl() ?? ""}:missing`
+	}
+}
+
+/** Drop the memoized config used by the default resolveEndpoints() path. */
+export function invalidateResolvedEndpoints(): void {
+	resolvedEndpointsConfigCache = undefined
+}
+
+/** Test-only: re-arm the one-time invalid KIMCHI_BASE_URL warning (module state that tests must not leak between cases). */
+export function resetInvalidLlmBaseUrlWarningForTests(): void {
+	warnedInvalidLlmBaseUrl = false
+}
+
+export function resolveEndpoints(options?: { configPath?: string; cwd?: string }): ResolvedEndpoints {
+	let cfg: KimchiConfig
+	if (options) {
+		cfg = loadConfig(options)
+	} else {
+		const stamp = globalConfigStamp()
+		if (resolvedEndpointsConfigCache?.stamp !== stamp) {
+			resolvedEndpointsConfigCache = { cfg: loadConfig(), stamp }
+		}
+		cfg = resolvedEndpointsConfigCache.cfg
+	}
+	return { ...endpointsForRegion(cfg.region), llmEndpoint: cfg.llmEndpoint }
+}
+
+let warnedInvalidLlmBaseUrl = false
+
+/** True for parseable absolute http(s) URLs — https:, ftp://host, "not a url" etc. all fail. */
+function isValidHttpUrl(value: string): boolean {
+	try {
+		return /^https?:$/.test(new URL(value).protocol)
+	} catch {
+		return false
+	}
+}
+
+/**
+ * KIMCHI_BASE_URL env override: replaces the region's LLM gateway base.
+ * Blank and trailing slashes are trimmed; a malformed value (e.g. "https://")
+ * counts as unset and warns once, like an invalid KIMCHI_REGION — the harness
+ * keeps running on the configured region instead of failing far away with an
+ * opaque connection error.
+ */
+function environmentLlmBaseUrl(): string | undefined {
+	const raw = process.env.KIMCHI_BASE_URL?.trim()
+	if (!raw) return undefined
+	const trimmed = raw.replace(/\/+$/, "")
+	if (isValidHttpUrl(trimmed)) return trimmed
+	if (!warnedInvalidLlmBaseUrl) {
+		warnedInvalidLlmBaseUrl = true
+		console.warn(
+			`Ignoring invalid KIMCHI_BASE_URL="${raw}" (expected an http(s) URL, e.g. https://llm.example.com). Using the configured region's endpoints instead.`,
+		)
+	}
+	return undefined
+}
+
+/** The region with the env gateway base applied, for deriving every llmBaseUrl-based endpoint. */
+function withLlmBaseUrl(region: KimchiRegion): KimchiRegion {
+	const base = environmentLlmBaseUrl()
+	return base ? { ...region, llmBaseUrl: base } : region
+}
+
+/**
+ * Endpoints of a given region, with the same env overrides as resolveEndpoints().
+ *
+ * This and resolveEndpoints() are the only sanctioned entry points for region
+ * endpoints — the low-level helpers in src/regions.ts bypass the env overrides
+ * (see the note there). loadConfig() applies the same overrides to llmEndpoint.
+ */
+export function endpointsForRegion(region: RegionId): RegionEndpoints {
+	const endpoints = regionEndpoints(withLlmBaseUrl(REGIONS[region]))
+	return {
+		...endpoints,
+		webAppUrl: process.env.KIMCHI_WEB_APP_URL ?? endpoints.webAppUrl,
+		platformApiUrl: process.env.KIMCHI_REMOTE_ENDPOINT ?? endpoints.platformApiUrl,
+	}
+}
+
+export type LegacyMcpConfigKey = "maxToolResultChars" | "mcpSearchLimit" | "mcpSearch"
+
+/** Return only legacy MCP keys the user actually persisted, excluding defaults. */
+export function getConfiguredLegacyMcpKeys(options?: { configPath?: string; cwd?: string }): LegacyMcpConfigKey[] {
+	const globalConfigPath = options?.configPath ?? KIMCHI_CONFIG_PATH
+	const projectConfigPath = resolve(options?.cwd ?? process.cwd(), ".kimchi", "config.json")
+	const sources = [readConfigExtras(globalConfigPath), readConfigExtras(projectConfigPath)]
+	const configured = new Set<LegacyMcpConfigKey>()
+	for (const source of sources) {
+		if (source.maxToolResultChars !== undefined) configured.add("maxToolResultChars")
+		if (source.mcpSearchLimit !== undefined) configured.add("mcpSearchLimit")
+		if (source.mcpSearch !== undefined && Object.keys(source.mcpSearch).length > 0) configured.add("mcpSearch")
+	}
+	return [...configured]
+}
+
+/** Explain an environment override without exposing either credential. */
+export function getApiKeyMismatchWarning(
+	savedKey = (isProjectScopeAllowed()
+		? readApiKeyFromConfigFile(resolve(process.cwd(), ".kimchi", "config.json"))
+		: undefined) ?? readApiKeyFromConfigFile(),
+): string | undefined {
+	const envKey = getEnvironmentApiKey()
+	if (!envKey || !savedKey || envKey === savedKey) return undefined
+	return "KIMCHI_API_KEY in your environment differs from your saved key in config. Using the environment key."
 }
 
 export function getAgentConfigDir(): string {
 	return AGENT_CONFIG_DIR
-}
-
-function writeConfigObject(configPath: string, raw: Record<string, unknown>): void {
-	mkdirSync(dirname(configPath), { recursive: true })
-	const tmp = `${configPath}.${process.pid}.tmp`
-	writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
-	renameSync(tmp, configPath)
-	// Restrict to owner-only (0600) — config.json holds the Cast AI API key and
-	// git tokens in plaintext. The atomic rename may inherit the tmp file's
-	// default umask perms, so chmod explicitly after the rename lands.
-	chmodSync(configPath, 0o600)
 }
 
 function updateConfigFile(
@@ -508,7 +768,7 @@ function updateConfigFile(
 	if (!raw && options?.createIfMissing === false) return
 	const next = raw ?? {}
 	update(next)
-	writeConfigObject(configPath, next)
+	writeJson(configPath, next)
 }
 
 function writeConfigField(key: string, value: unknown, configPath: string): void {
@@ -573,6 +833,17 @@ export function writeSessionModeWizardSeenAt(seenAt: string, configPath?: string
 	})
 }
 
+export function readStudioOnboardingSeenAt(configPath?: string): string | undefined {
+	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.studioOnboardingSeenAt
+}
+
+export function writeStudioOnboardingSeenAt(seenAt: string, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateOnboardingConfig(path, (onboarding) => {
+		onboarding.studioOnboardingSeenAt = seenAt
+	})
+}
+
 export function readTeleportHelpSeenAt(configPath?: string): string | undefined {
 	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.teleportHelpSeenAt
 }
@@ -592,6 +863,50 @@ export function writeSurveySeenAt(surveyId: string, seenAt: string, configPath?:
 	updateSurveyConfig(configPath ?? KIMCHI_CONFIG_PATH, surveyId, (survey) => {
 		survey.seenAt = seenAt
 	})
+}
+
+/**
+ * Whether Auto has already been installed as the default model on this install.
+ *
+ * Lives in settings.json next to `defaultModel`, because that is what it
+ * records having changed: one global settings file, one machine-level default,
+ * one marker. Once set, the default is the user's to change — a switch away is
+ * honoured and never undone.
+ *
+ * Settings writes merge onto the existing file contents, so this key survives
+ * the harness rewriting the file.
+ */
+export function readAutoDefaultApplied(settingsPath?: string): boolean {
+	try {
+		const parsed = JSON.parse(readFileSync(settingsPath ?? resolve(AGENT_CONFIG_DIR, "settings.json"), "utf-8"))
+		return parsed.autoDefaultApplied === true
+	} catch {
+		// A missing or unreadable file reads as "not yet applied": the caller
+		// installs the default rather than silently skipping it.
+		return false
+	}
+}
+
+/**
+ * Install Auto as the saved default and record that it was done.
+ *
+ * The default and the marker are written together on purpose: setting only the
+ * marker would leave the previous `defaultModel` in place, so the session would
+ * come up on Auto once and fall back on the next launch — with the marker now
+ * blocking a retry.
+ */
+export function writeAutoDefaultApplied(provider: string, modelId: string, settingsPath?: string): void {
+	const path = settingsPath ?? resolve(AGENT_CONFIG_DIR, "settings.json")
+	let settings: Record<string, unknown> = {}
+	try {
+		settings = JSON.parse(readFileSync(path, "utf-8"))
+	} catch {
+		// Fall through with an empty object: a first run writes a fresh file.
+	}
+	settings.defaultProvider = provider
+	settings.defaultModel = modelId
+	settings.autoDefaultApplied = true
+	writeJson(path, settings)
 }
 
 export function readHideSessionModeDialog(configPath?: string): boolean {
@@ -630,12 +945,17 @@ export function writeSkillPaths(paths: string[], configPath?: string): void {
 
 export interface WriteApiKeyOptions {
 	llmEndpoint?: string
+	/** Region selected at login. Stored alongside the key; when no custom
+	 *  `llmEndpoint` is given, the region drives every endpoint and any stale
+	 *  custom endpoint is dropped. */
+	region?: RegionId
 }
 
 export function writeApiKey(key: string, configPath?: string, options: WriteApiKeyOptions = {}): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateConfigFile(path, (raw) => {
 		raw.apiKey = key
+		if (options.region) raw.region = options.region
 		const llmEndpoint = options.llmEndpoint?.trim()
 		if (llmEndpoint) {
 			raw.llmEndpoint = llmEndpoint
@@ -647,6 +967,7 @@ export function writeApiKey(key: string, configPath?: string, options: WriteApiK
 		// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
 		delete raw.api_key
 	})
+	invalidateResolvedEndpoints()
 }
 
 export function writeDeviceId(id: string, configPath?: string): void {

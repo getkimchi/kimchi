@@ -36,6 +36,7 @@ import { isHarnessSteer, markHarnessSteer } from "../steer-marker.js"
 export type OrchestratorMessages = ContextEvent["messages"]
 
 export const DONE_SIGNAL = "<done>"
+export const ASSISTANT_OUTPUT_WITHHELD = Symbol.for("kimchi.assistant-output-withheld")
 
 export const CONTINUATION_NUDGE_TEXT = markHarnessSteer(
 	`You ended your turn without calling a tool. If this task is complete, respond with ${DONE_SIGNAL}. If a tool call is still needed, call it now.`,
@@ -257,6 +258,7 @@ export class EmptyTurnNudge {
 	evaluateTurn(message: AssistantMessage): boolean {
 		if (this.nudgeCountThisCycle >= EmptyTurnNudge.MAX_NUDGES) return false
 		if (isNonNudgeStopReason(message)) return false
+		if (ASSISTANT_OUTPUT_WITHHELD in message) return false
 
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall")

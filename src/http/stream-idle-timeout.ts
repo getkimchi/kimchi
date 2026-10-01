@@ -172,7 +172,13 @@ function wrapBodyWithIdleTimeout(
 		cancel(reason) {
 			abort(reason)
 			onSettled()
-			return reader.cancel(reason)
+			// reader.cancel REJECTS with the stream's stored error when the
+			// source is already errored (streams spec) — e.g. the request just
+			// aborted. Returning that rejection leaks it into the stream
+			// machinery: under Bun it surfaces as an unhandled rejection
+			// (a raw AbortError dumped on the terminal when the user skips
+			// the auto-update download with Ctrl+C).
+			return reader.cancel(reason).catch(() => undefined)
 		},
 	})
 }

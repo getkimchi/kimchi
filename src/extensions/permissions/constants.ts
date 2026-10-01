@@ -40,6 +40,7 @@ export const DEFAULT_CONFIG: PermissionsConfig = {
 	allow: [],
 	deny: [],
 	classifierTimeoutMs: 8000,
+	classifierMaxTotalMs: 25_000,
 }
 
 /**

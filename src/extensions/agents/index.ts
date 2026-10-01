@@ -14,6 +14,7 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import {
+	type AgentSession,
 	defineTool,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
@@ -24,6 +25,7 @@ import {
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
+import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -34,9 +36,11 @@ import {
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
+import type { RemoteGitWorkflow } from "../remote-run/git-workflow.js"
+import { handleRemoteCompletion, handleRemoteFailure } from "../remote-run/post-completion.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
-import { trackSubagentSpawned } from "../telemetry/index.js"
+import { type RemoteExecutionStats, trackRemoteExecution, trackSubagentSpawned } from "../telemetry/index.js"
 import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
 import {
 	getAgentConversation,
@@ -53,8 +57,10 @@ import {
 	createBudgetRetryBlockFromCompletion,
 	shouldBlockBudgetRetry,
 } from "./manager/budget-retry-guard.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "./manager/constants.js"
 import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
+import type { RemoteSessionMeta } from "./manager/remote-agent-runner.js"
 import { streamRemoteToOutputFile } from "./manager/remote-output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
 import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./manager/usage.js"
@@ -63,7 +69,6 @@ import {
 	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
 	getAllTypes,
-	getAvailableTypes,
 	getDefaultAgentNames,
 	getUserAgentNames,
 	registerAgents,
@@ -82,6 +87,7 @@ import {
 	type NotificationDetails,
 	type SubagentType,
 } from "./personas/types.js"
+import { findResumableRemoteRuns, persistRemoteRunState } from "./remote-run-persistence.js"
 import { resolveAgentInvocationConfig, resolveJoinMode } from "./resolution/invocation-config.js"
 import { type ModelRegistry, resolveModel } from "./resolution/model-resolver.js"
 import { registerResumeSubagentTool } from "./resume-tool.js"
@@ -141,19 +147,12 @@ export function resolveRoleModelRef(subagentType: string): string | undefined {
 const SUBAGENT_SHUTDOWN_WAIT_MS = 5_000
 
 export const AGENT_TOOL_GUIDELINES = `Guidelines:
-- Follow the **Orchestration** section for workflow, delegation, model selection, budgets, Explore-agent prompt shaping, and artifact handoff.
-- If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
-- For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
-- Keep each Agent call focused on a single outcome. Split large tasks into smaller, independent Agent calls.
-- Agent types: Explore (read-only fact-finding), Plan (spec writing), Researcher (cited web/docs research), Builder (implementation), Reviewer (findings report), Fixer (apply review fixes), General-Purpose (fallback when none of the specialized personas fit).
-- Provide clear, detailed prompts so the agent can work autonomously.
-- Agent results are returned as text — summarize them for the user.
-- Use resume_subagent to continue a previous agent's work; get_subagent_result for background status; steer_subagent for mid-run steering.
-- Use thinking to request an extended thinking level on Agent calls per the Orchestration **Thinking levels** table.
-- Use token_budget, max_duration, and inherit_context per the Orchestration section.`
+- Follow the **Orchestration** section (workflow, delegation, models, budgets, Explore-agent prompt shaping).
+- One call per task, detailed prompt; run_in_background for parallelism.
+- Follow-ups: resume_subagent (continue), get_subagent_result (poll), steer_subagent (redirect).`
 
 export const AGENT_MODEL_PARAMETER_DESCRIPTION =
-	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7"). Partial model IDs such as "kimi" or "nemotron" are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only the models configured in the multi-model roles may be used.'
+	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId". Partial model IDs (e.g. "kimi") are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only role-configured models may be used.'
 
 function textResult<T = AgentDetails>(msg: string, details?: T) {
 	return { content: [{ type: "text" as const, text: msg }], details: details as unknown }
@@ -279,8 +278,8 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 	}
 
 	const callbacks = {
-		onToolActivity: (activity: { type: "start" | "end"; toolName: string }) => {
-			if (activity.type === "start") {
+		onToolActivity: (activity: { toolName: string; status?: "pending" | "in_progress" | "completed" | "failed" }) => {
+			if (activity.status === "in_progress") {
 				state.activeTools.set(`${activity.toolName}_${Date.now()}`, activity.toolName)
 			} else {
 				for (const [key, name] of state.activeTools) {
@@ -520,9 +519,26 @@ export function getActiveManager(): AgentManager | undefined {
 
 /** Options for spawnRemoteAgent. */
 export interface SpawnRemoteAgentOptions {
-	/** Called with the agent id as soon as it is spawned, before the promise resolves.
-	 *  Use this to register abort handlers that need the id during the startup phase. */
-	onSpawn?: (id: string) => void
+	/** When true, spawn as a background agent — returns immediately with the agent ID.
+	 *  The caller will be notified on completion. Default: false (foreground). */
+	background?: boolean
+	/** Origin label for the remote completion steer message (e.g. "plan", "ferment plan"). Default: "plan". */
+	origin?: string
+	/** Ferment ID when the cloud agent is executing a ferment plan. Used to
+	 *  pause the ferment during cloud execution and complete/resume it on
+	 *  completion. */
+	fermentId?: string
+	/**
+	 * Git intent captured at dispatch (PR-first flow): the branch the remote
+	 * agent commits on. Threaded into the agent record + persisted
+	 * remote_run:state so the completion flow (possibly after a restart) can
+	 * review, steer, and push. Absent = plain run.
+	 */
+	gitWorkflow?: RemoteGitWorkflow
+	/** Steer continuation of a kept-alive PR session: the manager attaches
+	 *  via session/load on the persisted ACP id (never session/new) instead
+	 *  of provisioning a fresh workspace/session. */
+	continuation?: { remoteSession: RemoteSessionMeta; acpSessionId: string }
 }
 
 /** Spawn function type — set during agents extension init. */
@@ -533,19 +549,30 @@ let spawnRemoteAgentFn:
 			prompt: string,
 			description: string,
 			opts?: SpawnRemoteAgentOptions,
-	  ) => Promise<{ id: string; result: string }>)
+	  ) => Promise<{ id: string; result: string; backgrounded?: boolean }>)
 	| undefined
+
+/** Build numeric stats for remote_execution.completed/failed telemetry from a finished record. */
+export function buildRemoteExecutionStats(record: AgentRecord): RemoteExecutionStats {
+	return {
+		duration_ms: record.completedAt != null ? record.completedAt - record.startedAt : 0,
+		tool_calls: record.toolUses,
+		turns: record.lastTurnCount,
+		input_tokens: record.lifetimeUsage.input,
+		output_tokens: record.lifetimeUsage.output,
+	}
+}
 
 /** Spawns a foreground remote agent with full UI streaming support.
  *  Returns the agent id (for targeted abort) and the result text.
- *  Pass `onSpawn` to get the agent id before the promise resolves. */
+ */
 export async function spawnRemoteAgent(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	prompt: string,
 	description: string,
 	opts?: SpawnRemoteAgentOptions,
-): Promise<{ id: string; result: string }> {
+): Promise<{ id: string; result: string; backgrounded?: boolean }> {
 	if (!spawnRemoteAgentFn) throw new Error("Agent manager not initialized")
 	return spawnRemoteAgentFn(pi, ctx, prompt, description, opts)
 }
@@ -653,7 +680,7 @@ export async function spawnGraderAgent(
 		const parentSessionDir = ctx.sessionManager.getSessionDir()
 		const parentSessionFile = ctx.sessionManager.getSessionFile()
 		if (parentSessionDir && parentSessionFile) {
-			const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, ctx.cwd)
+			const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, ctx.cwd, AGENT_GRADER_TYPE)
 			sessionFile = prepared?.sessionFile
 			sessionDir = parentSessionDir
 		}
@@ -767,6 +794,15 @@ export default function (pi: ExtensionAPI) {
 
 		const all = [d, ...(d.others ?? [])]
 		return new Text(all.map(renderOne).join("\n"), 0, 0)
+	})
+
+	// Renders the "already watched elsewhere" resume notice in the
+	// conversation flow — error-styled, because another kimchi process owning
+	// the cloud run (and the double-opened session that implies) is a warning,
+	// not info. Custom entries do not participate in LLM context.
+	pi.registerEntryRenderer<{ message: string }>("remote_run:notice", (entry, _options, theme) => {
+		if (!entry.data) return undefined
+		return new Text(`${theme.fg("error", "✗")} ${theme.bold(entry.data.message)}`, 0, 0)
 	})
 
 	const reloadCustomAgents = (cwd: string = process.cwd()) => {
@@ -937,6 +973,18 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	// When the user last aborted a main turn (Escape during a streaming run — the
+	// turn ends with stopReason "aborted"; the same signal the ferment extension
+	// uses to pause ferments on Esc). Background cloud agents check this at
+	// completion: a run the user aborted out of still finishes on its own, but
+	// its completion must not surface the dropdown.
+	let lastUserAbortAt: number | undefined
+	pi.on("turn_end", (event) => {
+		const message = event.message
+		if (message.role !== "assistant" || message.stopReason !== "aborted") return
+		lastUserAbortAt = Date.now()
+	})
+
 	const manager = new AgentManager(
 		(record) => {
 			const retryCandidate = budgetRetryCandidates.get(record.id)
@@ -952,8 +1000,35 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			appendSubagentRecord(record)
+			// Overwrite the persisted running state with the terminal outcome — a
+			// later session resume must not reattach to a finished run.
+			if (record.remote && record.acpSessionId && record.remoteSession) {
+				persistRemoteRunState(pi, {
+					id: record.id,
+					description: record.description,
+					remoteSession: record.remoteSession,
+					acpSessionId: record.acpSessionId,
+					remoteOrigin: record.remoteOrigin,
+					fermentId: record.fermentId,
+					gitWorkflow: record.gitWorkflow,
+					outputFile: record.outputFile,
+					startedAt: record.startedAt,
+					status:
+						record.status === "error"
+							? "error"
+							: record.status === "completed" || record.status === "steered"
+								? "completed"
+								: "stopped",
+				})
+			}
 
-			if (record.resultConsumed) {
+			// A consumed result normally suppresses the completion surface — but
+			// never for remote runs: polling a remote background agent with
+			// get_subagent_result consumes its result, and bailing here would
+			// silently kill the user's post-completion dropdown (sync/review/push),
+			// stranding the changes on the sandbox. The dropdown fires at most once
+			// (the flag is reset in that branch below).
+			if (record.resultConsumed && !record.triggersRemoteCompletion) {
 				agentActivity.delete(record.id)
 				widget.markFinished(record.id)
 				widget.update()
@@ -970,6 +1045,65 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (currentBatchAgents.some((a) => a.id === record.id)) {
+				widget.update()
+				return
+			}
+
+			// Remote agents spawned as background get the post-completion dropdown
+			// (Review / Sync / Done) instead of the normal nudge path.
+			if (record.triggersRemoteCompletion) {
+				record.triggersRemoteCompletion = false
+				trackRemoteExecution(
+					isError ? "failed" : "completed",
+					record.remoteOrigin ?? "plan",
+					buildRemoteExecutionStats(record),
+				)
+				// spawnCtx is captured at spawn time — don't fall back to a stale
+				// global context.
+				const completionCtx = record.spawnCtx
+				// A user abort (Escape) after this agent started means the user opted
+				// out of the cloud run — it finishes on its own, but its completion is
+				// surfaced nowhere.
+				const userAbortedRun = !isError && lastUserAbortAt !== undefined && lastUserAbortAt >= record.startedAt
+				if (isError) {
+					// Errored runs have no result to review/sync — no completion
+					// dropdown. handleRemoteFailure notifies the user (or steers a
+					// headless agent, which would otherwise see nothing) and resumes
+					// the ferment paused for cloud execution.
+					handleRemoteFailure(pi, completionCtx, record.remoteOrigin ?? "plan", {
+						error: record.error,
+						recoveryNote: record.recoveryNote,
+						fermentId: record.fermentId,
+						stoppedByUser: record.status === "stopped",
+					})
+				} else if (!userAbortedRun && completionCtx) {
+					void handleRemoteCompletion(pi, completionCtx, record.result ?? "", record.remoteOrigin ?? "plan", {
+						transcriptPath: record.outputFile,
+						agentId: record.id,
+						remoteSession: record.remoteSession,
+						acpSessionId: record.acpSessionId,
+						fermentId: record.fermentId,
+						gitWorkflow: record.gitWorkflow,
+						recoveryNote: record.recoveryNote,
+					}).catch((err) => {
+						currentUi?.notify(
+							`Remote completion failed: ${err instanceof Error ? err.message : String(err)}`,
+							"warning",
+						)
+					})
+				} else if (!userAbortedRun) {
+					currentUi?.notify("Remote agent completed but result could not be surfaced (no active context).", "warning")
+				} else if (record.fermentId) {
+					// Suppressed by a user abort — no dropdown, no steer, no state change.
+					// Esc is the product's ferment-pause signal (the ferment extension
+					// pauses and says "Run /ferment resume to continue"), so the ferment
+					// stays paused. Only leave a breadcrumb so the finished run isn't
+					// forgotten.
+					const ui = completionCtx?.hasUI ? completionCtx.ui : currentUi
+					ui?.notify("Cloud agent finished after abort; ferment stays paused — /ferment resume to continue.", "info")
+				}
+				agentActivity.delete(record.id)
+				widget.markFinished(record.id)
 				widget.update()
 				return
 			}
@@ -1036,19 +1170,65 @@ export default function (pi: ExtensionAPI) {
 			callbacks: transcriptCallbacks,
 			setOutputPath,
 			flushRemaining,
+			resetForReattach,
 		} = streamRemoteToOutputFile(bgCallbacks, ctx.cwd)
 
 		const spawnOpts = {
 			description: desc,
-			isBackground: false,
+			isBackground: opts?.background ?? false,
 			remote: true,
 			maxTurns: 1,
+			// PR-first git intent — planted onto the record inside spawn (see
+			// SpawnOptions.gitWorkflow), so _runRemote reads it deterministically.
+			gitWorkflow: opts?.gitWorkflow,
+			// PR steer continuation: attach to the kept-alive session instead of
+			// provisioning a fresh workspace (never session/new).
+			...(opts?.continuation ? { continuation: opts.continuation } : {}),
 			...transcriptCallbacks,
+			// The streamer wrapper only forwards AcpSessionCallbacks, so the
+			// activity tracker's onSessionCreated is wired here too. _runRemote
+			// fires this with the RemoteAgentSession; activity_reset fires exactly
+			// on WS reattach — reset the streamer's text-slice offsets so
+			// post-reattach deltas aren't sliced against stale pre-disconnect
+			// lengths (cast: activity_reset is not in the AgentSessionEvent union).
+			onSessionCreated: (session: AgentSession) => {
+				bgCallbacks.onSessionCreated?.(session)
+				const s = session as unknown as {
+					subscribe?: (fn: (e: { type: string }) => void) => () => void
+				}
+				if (typeof s?.subscribe === "function") {
+					s.subscribe((ev) => {
+						if (ev.type === "activity_reset") resetForReattach()
+					})
+				}
+			},
+			// Persist the run for resume-after-restart: the entry rides the session
+			// transcript, so a resumed kimchi (kimchi --session) can find and
+			// reattach (remote-run-persistence.ts). Written once the remote session
+			// is ready — the meta + ACP id only exist then.
+			onRemoteReady: ({ meta, acpSessionId }: { meta: RemoteSessionMeta; acpSessionId: string }) => {
+				const rec = manager.getRecord(id)
+				persistRemoteRunState(pi, {
+					id,
+					description: desc,
+					remoteSession: meta,
+					acpSessionId,
+					remoteOrigin: opts?.origin ?? "plan",
+					fermentId: opts?.fermentId,
+					gitWorkflow: rec?.gitWorkflow,
+					outputFile: rec?.outputFile,
+					startedAt: rec?.startedAt ?? Date.now(),
+					status: "running",
+				})
+			},
 		}
 		const id = manager.spawn(pi, ctx, "Remote-Runner", promptText, spawnOpts)
 
 		const record = manager.getRecord(id)
 		if (record) {
+			record.spawnCtx = ctx
+			record.remoteOrigin = opts?.origin ?? "plan"
+			record.fermentId = opts?.fermentId
 			record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
 			writeInitialEntry(record.outputFile, id, promptText, ctx.cwd)
 			setOutputPath(record.outputFile, id)
@@ -1057,15 +1237,61 @@ export default function (pi: ExtensionAPI) {
 		widget.ensureTimer()
 		widget.update()
 
-		// Notify the caller of the agent id immediately so abort handlers
-		// (e.g. Ctrl+X) can target this agent during the startup phase.
-		opts?.onSpawn?.(id)
+		// Background mode: return immediately — the caller will be notified on completion.
+		if (opts?.background) {
+			if (record) record.triggersRemoteCompletion = true
+			return { id, result: "", backgrounded: true }
+		}
+
+		// Set up detach resolver so Ctrl+B can background the remote agent mid-run.
+		let detachResolve!: () => void
+		const detachPromise = new Promise<void>((r) => {
+			detachResolve = r
+		})
+		if (record) record.detachResolver = detachResolve
 
 		const rec = manager.getRecord(id)
 		if (!rec?.promise) return { id, result: "" }
 		try {
+			const raceResult = await Promise.race([
+				rec.promise.then(() => "completed" as const),
+				detachPromise.then(() => "detached" as const),
+			])
+
+			if (raceResult === "detached") {
+				// Remote agent was backgrounded via Ctrl+B.
+				// _runRemote's promise is still in flight — it will resolve naturally
+				// and the completion path in startAgent handles cleanup + notification.
+				if (record) record.triggersRemoteCompletion = true
+				flushRemaining()
+				widget.ensureTimer()
+				widget.update()
+
+				pi.events.emit("subagents:backgrounded", {
+					id,
+					type: "Remote-Runner",
+					description: desc,
+					visibility: "user",
+				})
+
+				const outputFile = record?.outputFile ?? ""
+				return {
+					id,
+					backgrounded: true,
+					result:
+						`Agent sent to background by the user (Ctrl+B).\n` +
+						`Agent ID: ${id}\n` +
+						`Type: Remote-Runner\n` +
+						`Description: ${desc}\n` +
+						`${outputFile ? `Output file: ${outputFile}\n` : ""}` +
+						`The agent continues running in the background. You will be notified when it completes.`,
+				}
+			}
+
+			// Normal completion path
+			if (record) record.detachResolver = undefined
 			const result = await rec.promise
-			return { id, result }
+			return { id, result, backgrounded: false }
 		} finally {
 			// Flush any buffered transcript entries on completion or error so
 			// nothing is lost if the remote run is aborted or fails mid-stream.
@@ -1081,7 +1307,9 @@ export default function (pi: ExtensionAPI) {
 		unsubKill?.()
 		unsubKill = undefined
 		currentUi = undefined
-		manager.abortAll()
+		// Remote runs survive the process — they are owned by the worker and
+		// resumable via kimchi --session (remote-run-persistence.ts).
+		manager.abortAll({ skipRemote: true })
 		budgetRetryCandidates.clear()
 		if (batchFinalizeTimer) {
 			clearTimeout(batchFinalizeTimer)
@@ -1091,6 +1319,55 @@ export default function (pi: ExtensionAPI) {
 		await waitForSubagentShutdown(manager)
 		widget.dispose()
 		manager.dispose()
+	})
+
+	// Remote runs that outlived the previous kimchi process (shutdown spares
+	// them) are persisted in the session transcript — resume them here so the
+	// user sees the still-running cloud agent (and gets the completion
+	// dropdown once it finishes).
+	pi.on("session_start", async (event, ctx) => {
+		// Subagent sessions don't own remote runs — the dispatch happens in the
+		// main session, whose transcript holds the remote_run:state entries.
+		if (process.env[PARENT_SESSION_ID_ENV_KEY]) return
+		const resumable = findResumableRemoteRuns(ctx.sessionManager)
+		// Explicit continuation intent and no resumable remote runs: name the
+		// outcome instead of a silent boot. reason "resume" covers every resume
+		// mechanism (-c / --resume / --session load an existing session); a fresh
+		// boot fires "startup".
+		if (resumable.length === 0 && ctx.hasUI) {
+			if (event.reason === "resume") {
+				ctx.ui.notify?.("Continued session — no in-progress remote runs to resume")
+			}
+		}
+		if (resumable.length === 0) return
+		// The widget needs a UI context to render at all — normally the remote
+		// dispatch (spawnRemoteAgentFn) or the first local tool_execution_start
+		// provides it; a freshly resumed session has neither yet.
+		widget.setUICtx(ctx.ui as UICtx)
+		for (const run of resumable) {
+			const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(1)
+			const outcome = await manager.resumeRemoteRecord(run, ctx, { callbacks: bgCallbacks })
+			if (outcome === "already-watched") {
+				// Another kimchi process still holds a live connection to this
+				// run — it owns the completion. Not resuming here.
+				const message = `Cloud agent "${run.description}" is already being watched by another kimchi session — not resuming it here`
+				// A toast drowns in the resume transcript flood — append the notice
+				// as the newest conversation entry (error-styled, see the
+				// remote_run:notice renderer) so it is visible at the end of the
+				// conversation after the scroll-down, AND pin it as a persistent
+				// footer status line (same pattern as the startup-update
+				// "Update available!" nag).
+				pi.appendEntry("remote_run:notice", { message })
+				if (ctx.hasUI) {
+					ctx.ui.setStatus("remote-run", message)
+				}
+				continue
+			}
+			agentActivity.set(run.id, bgState)
+			ctx.ui.notify?.(`Resumed remote cloud agent: ${run.description} — still running in the sandbox`)
+		}
+		widget.ensureTimer()
+		widget.update()
 	})
 
 	let defaultJoinMode: JoinMode = "smart"
@@ -1169,12 +1446,9 @@ export default function (pi: ExtensionAPI) {
 		})
 
 		return [
-			"Default agents:",
+			"Agent types:",
 			...defaultDescs,
 			...(customDescs.length > 0 ? ["", "Custom agents:", ...customDescs] : []),
-			"",
-			`Custom agents can be defined in .kimchi/agents/<name>.md (project) or ${getAgentDir()}/agents/<name>.md (global) - they are picked up automatically. Project-level agents override global ones. Creating a .md file with the same name as a default agent overrides it.`,
-			`Global user instructions (applied to every session) can be placed in the global ${getAgentDir()}/AGENTS.md. Project-level AGENTS.md or CLAUDE.md files in the working directory tree are combined with it.`,
 		].join("\n")
 	}
 
@@ -1202,11 +1476,8 @@ export default function (pi: ExtensionAPI) {
 		defineTool({
 			name: "Agent",
 			label: "Agent",
-			description: `Launch a new agent to handle complex, multi-step tasks autonomously.
+			description: `Launch an agent to run a complex multi-step task autonomously.
 
-The Agent tool launches specialized agents that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it.
-
-Available agent types:
 ${typeListText}
 
 ${AGENT_TOOL_GUIDELINES}`,
@@ -1218,7 +1489,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 					description: "A short (3-5 word) description of the task (shown in UI).",
 				}),
 				subagent_type: Type.String({
-					description: `The type of specialized agent to use. Available types: ${getAvailableTypes().join(", ")}. Custom agents from .kimchi/agents/*.md (project) or ${getAgentDir()}/agents/*.md (global) are also available.`,
+					description:
+						"Agent type (see list above); custom agents come from .kimchi/agents/*.md (project) or the global agents dir.",
 				}),
 				model: Type.Optional(
 					Type.String({
@@ -1228,7 +1500,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				thinking: Type.Optional(
 					Type.String({
 						description:
-							"Requested thinking level: off, minimal, low, medium, high, xhigh, max. Orchestrator-provided values override agent profile defaults. Omit only when Orchestration does not require an explicit level.",
+							"Thinking effort: off, minimal, low, medium, high, xhigh, max. Overrides agent profile defaults.",
 					}),
 				),
 				max_turns: Type.Optional(
@@ -1480,18 +1752,12 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 				// Image forwarding: when session has images and subagent model supports vision,
 				// extract image paths from read tool calls and prepend them to the prompt.
-				const effectivePrompt = (() => {
-					const base = params.prompt as string
-					if (!sessionHasImages()) return base
-					const modelInput = (model as { input?: string[] } | undefined)?.input
-					if (!modelInput?.includes("image")) return base
-
-					const imagePaths = extractImagePathsFromSession(ctx)
-					if (imagePaths.length === 0) return base
-
-					const pathList = imagePaths.join(", ")
-					return `Context images from parent session: ${pathList}. Read them if needed for your task.\n\n${base}`
-				})()
+				const modelInput = (model as { input?: string[] } | undefined)?.input
+				const imagePaths = sessionHasImages() && modelInput?.includes("image") ? extractImagePathsFromSession(ctx) : []
+				const effectivePrompt =
+					imagePaths.length > 0
+						? `Context images from parent session: ${imagePaths.join(", ")}. Read them if needed for your task.\n\n${params.prompt as string}`
+						: (params.prompt as string)
 
 				const parentModelId = ctx.model?.id
 				const effectiveModelId = (model as { id?: string } | undefined)?.id
@@ -1524,6 +1790,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 							parentSessionDir,
 							ctx.sessionManager.getSessionFile(),
 							ctx.cwd,
+							subagentType,
 						)?.sessionFile
 					} catch (err) {
 						const detail = err instanceof Error ? err.message : String(err)
@@ -1672,6 +1939,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 						parentSessionDir,
 						ctx.sessionManager.getSessionFile(),
 						ctx.cwd,
+						subagentType,
 					)?.sessionFile
 					fgOutputFile = createOutputFilePath(
 						ctx.cwd,
@@ -2047,14 +2315,13 @@ ${AGENT_TOOL_GUIDELINES}`,
 			name: "steer_subagent",
 			label: "Steer Agent",
 			description:
-				"Send a steering message to a running agent. The message will interrupt the agent after its current tool execution " +
-				"and be injected into its conversation, allowing you to redirect its work mid-run. Only works on running agents.",
+				"Send a steering message to a running agent; it is injected into the agent's conversation after the current tool completes.",
 			parameters: Type.Object({
 				agent_id: Type.String({
-					description: "The agent ID to steer (must be currently running).",
+					description: "The running agent's ID.",
 				}),
 				message: Type.String({
-					description: "The steering message to send. This will appear as a user message in the agent's conversation.",
+					description: "Steering message (appears as a user message in the agent's conversation).",
 				}),
 			}),
 			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
@@ -2100,12 +2367,22 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 	// ---- /agents interactive menu ----
 
-	const projectAgentsDir = () => join(process.cwd(), ".kimchi", "agents")
+	const projectAgentsDir = (cwd = process.cwd()) => join(cwd, ".kimchi", "agents")
 	const personalAgentsDir = () => join(getAgentDir(), "agents")
 
-	function findAgentFile(name: string): { path: string; location: "project" | "personal" } | undefined {
-		const projectPath = join(projectAgentsDir(), `${name}.md`)
-		if (existsSync(projectPath)) return { path: projectPath, location: "project" }
+	function findAgentFile(
+		name: string,
+		cwd = process.cwd(),
+	): { path: string; location: "project" | "personal" } | undefined {
+		// The project location is gated on project trust: an untrusted repo's
+		// shipped agent files are only reachable through explicit user action
+		// (naming the agent), but even that must not read untrusted content.
+		// The cwd parameter lets command handlers pass the session cwd instead
+		// of the server process cwd (ACP sessions can differ).
+		if (isProjectScopeAllowed(cwd)) {
+			const projectPath = join(projectAgentsDir(cwd), `${name}.md`)
+			if (existsSync(projectPath)) return { path: projectPath, location: "project" }
+		}
 		const personalPath = join(personalAgentsDir(), `${name}.md`)
 		if (existsSync(personalPath)) return { path: personalPath, location: "personal" }
 		return undefined
@@ -2286,7 +2563,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 			return
 		}
 
-		const file = findAgentFile(name)
+		const file = findAgentFile(name, ctx.cwd)
 		const isDefault = cfg.isDefault === true
 		const disabled = cfg.enabled === false
 
@@ -2350,7 +2627,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 		])
 		if (!location) return
 
-		const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir()
+		const targetDir = location.startsWith("Project") ? projectAgentsDir(ctx.cwd) : personalAgentsDir()
 		mkdirSync(targetDir, { recursive: true })
 
 		const targetPath = join(targetDir, `${name}.md`)
@@ -2375,7 +2652,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 		if (cfg.inheritContext) fmFields.push("inherit_context: true")
 		if (cfg.runInBackground) fmFields.push("run_in_background: true")
 		if (cfg.isolated) fmFields.push("isolated: true")
-		if (cfg.memory) fmFields.push(`memory: ${cfg.memory}`)
 		if (cfg.isolation) fmFields.push(`isolation: ${cfg.isolation}`)
 
 		const content = `---\n${fmFields.join("\n")}\n---\n\n${cfg.systemPrompt}\n`
@@ -2387,7 +2663,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 	}
 
 	async function disableAgent(ctx: ExtensionCommandContext, name: string) {
-		const file = findAgentFile(name)
+		const file = findAgentFile(name, ctx.cwd)
 		if (file) {
 			const content = readFileSync(file.path, "utf-8")
 			if (content.includes("\nenabled: false\n")) {
@@ -2408,7 +2684,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 		])
 		if (!location) return
 
-		const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir()
+		const targetDir = location.startsWith("Project") ? projectAgentsDir(ctx.cwd) : personalAgentsDir()
 		mkdirSync(targetDir, { recursive: true })
 
 		const targetPath = join(targetDir, `${name}.md`)
@@ -2419,7 +2695,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 	}
 
 	async function enableAgent(ctx: ExtensionCommandContext, name: string) {
-		const file = findAgentFile(name)
+		const file = findAgentFile(name, ctx.cwd)
 		if (!file) return
 
 		const content = readFileSync(file.path, "utf-8")
@@ -2444,7 +2720,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 		])
 		if (!location) return
 
-		const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir()
+		const targetDir = location.startsWith("Project") ? projectAgentsDir(ctx.cwd) : personalAgentsDir()
 
 		const method = await ctx.ui.select("Creation method", ["Generate with AI (recommended)", "Manual configuration"])
 		if (!method) return
@@ -2724,7 +3000,9 @@ async function waitForSubagentShutdown(manager: AgentManager): Promise<void> {
 	let timeout: ReturnType<typeof setTimeout> | undefined
 	try {
 		await Promise.race([
-			manager.waitForAll(),
+			// Remote runs were spared by shutdown — never wait on their
+			// (never-settling) promises; they die with the process.
+			manager.waitForAll({ skipRemote: true }),
 			new Promise<void>((resolve) => {
 				timeout = setTimeout(resolve, SUBAGENT_SHUTDOWN_WAIT_MS)
 				timeout.unref?.()

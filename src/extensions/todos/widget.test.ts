@@ -1,4 +1,5 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
+import { visibleWidth } from "@earendil-works/pi-tui"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { __resetTodoStore, applyWriteTodos, registerActiveTodoScopeProvider } from "./store.js"
@@ -11,6 +12,45 @@ import {
 	resetTodoWidgetState,
 	syncTodoWidget,
 } from "./widget.js"
+
+describe("todo widget — narrow terminals", () => {
+	// Regression: Math.max(20, width - 4) clamped truncation to 20 cols
+	// regardless of terminal width, crashing pi-tui at widths < 24.
+	beforeEach(() => {
+		__resetTodoStore()
+		resetTodoWidgetState(createContext({ sessionManager: { getSessionId: () => TEST_SESSION_ID } }))
+	})
+
+	for (const width of [1, 2, 3, 4, 5, 8, 10, 16, 20, 24, 40]) {
+		it(`rendered widget lines never exceed width ${width}`, () => {
+			const setWidget = vi.fn()
+			const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+			applyWriteTodos(
+				{
+					todos: [
+						{ content: "Chunk 1: Setup", status: "completed" },
+						{ content: "Chunk 2: Implementation", status: "in_progress" },
+						{ content: "Chunk 3: Review and fix", status: "pending" },
+					],
+				},
+				TEST_SESSION_ID,
+			)
+			syncTodoWidget(ctx)
+
+			// Render through the actual component so the suite fails if the
+			// production clamp in widget.ts regresses.
+			const component = setWidget.mock.calls[0][1]
+			const instance = component({ requestRender: vi.fn() }, theme)
+			let lines: string[] = []
+			expect(() => {
+				lines = instance.render(width)
+			}).not.toThrow()
+			for (const line of lines) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(Math.max(1, width - 4))
+			}
+		})
+	}
+})
 
 type TestUiContext = ExtensionContext & {
 	ui: ExtensionContext["ui"] & {

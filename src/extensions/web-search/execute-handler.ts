@@ -6,10 +6,9 @@
  */
 
 import { truncateHead, truncateLine } from "@earendil-works/pi-coding-agent"
-import { readApiKeyFromConfigFile } from "../../config.js"
+import { loadConfig, resolveEndpoints } from "../../config.js"
 import { fetchWithRetry } from "../../utils/http.js"
 
-export const SEARCH_ENDPOINT = "https://llm.kimchi.dev/v1/search"
 export const SEARCH_TIMEOUT_MS = 25_000
 export const DEFAULT_LIMIT = 8
 export const DEFAULT_MAX_CONTENT_CHARS = 2000
@@ -62,7 +61,7 @@ async function fetchSearchResponse(body: object, apiKey: string, signal?: AbortS
 	let response: Response
 	try {
 		response = await fetchWithRetry(
-			SEARCH_ENDPOINT,
+			resolveEndpoints().searchUrl,
 			{
 				method: "POST",
 				headers: {
@@ -98,10 +97,10 @@ async function fetchSearchResponse(body: object, apiKey: string, signal?: AbortS
 }
 
 export async function executeWebSearch(params: WebSearchParams, signal?: AbortSignal): Promise<WebSearchResult> {
-	const apiKey = readApiKeyFromConfigFile()
+	const apiKey = loadConfig().apiKey
 	if (!apiKey) {
 		throw new Error(
-			"Web search requires an API key. Run 'kimchi' and log in, or visit https://app.kimchi.dev to create a key.",
+			`Web search requires an API key. Run 'kimchi' and log in, or visit ${resolveEndpoints().webAppUrl} to create a key.`,
 		)
 	}
 

@@ -16,7 +16,7 @@ name the LLM passes as `subagent_type`.
 | File | Demonstrates |
 |---|---|
 | [`code-reviewer.md`](code-reviewer.md) | Read-only via `disallowed_tools`, multi-model `models[]`, `strengths: review`, high thinking |
-| [`test-writer.md`](test-writer.md) | Edit-capable, project-scoped persistent memory (`memory: project`), focused tools |
-| [`research-assistant.md`](research-assistant.md) | Web tools, `skills:` preload, user-scoped memory, citation discipline |
+| [`test-writer.md`](test-writer.md) | Edit-capable, focused tools |
+| [`research-assistant.md`](research-assistant.md) | Web tools, `skills:` preload, citation discipline |
 
 For the full frontmatter reference, see [`../agents.md`](../agents.md).

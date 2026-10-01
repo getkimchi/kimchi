@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, extname, join, resolve } from "node:path"
+import { isProjectScopeAllowed } from "../project-scope-trust.js"
 import type { ResourceDefinition } from "./types.js"
 
 export type BashHookScope = "global" | "project"
@@ -25,7 +26,9 @@ export function getProjectBashHookDir(cwd = process.cwd()): string {
 export function discoverBashHookResources(cwd = process.cwd()): BashHookResource[] {
 	const hooks = [
 		...discoverBashHooksInDir(getGlobalBashHookDir(), "global"),
-		...discoverBashHooksInDir(getProjectBashHookDir(cwd), "project"),
+		// Project hooks are gated on project trust: an untrusted repo must not
+		// advertise (let alone execute) shell hooks shipped in .kimchi/hooks.
+		...(isProjectScopeAllowed(cwd) ? discoverBashHooksInDir(getProjectBashHookDir(cwd), "project") : []),
 	]
 	return hooks.sort((a, b) => a.id.localeCompare(b.id))
 }

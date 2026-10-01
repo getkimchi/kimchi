@@ -1,25 +1,30 @@
 /**
  * E2E TUI test: plan-to-ferment promotion flow.
  *
- * This file has two test cases:
+ * This file covers:
  *
  * 1. "plan-to-ferment promotion — dropdown UI":
  *    Exercises the START_AS_FERMENT dropdown path end-to-end.
  *    Choosing Start as ferment must trigger the implementation turn without
  *    another user message.
  *
- * 2. "plan-to-ferment promotion — side effects via plan complete handler"
+ * 2. "plan-to-ferment promotion — side effects via submit_plan handler"
  *    (test): Verifies the side effects of the plan-to-ferment flow by
  *    checking that the approved plan file is written to .kimchi/plans/ when
- *    the model emits <!-- PLAN_COMPLETE -->. No dropdown UI assertions.
+ *    the model calls submit_plan. No dropdown UI assertions.
  *    The tool-swap from questionnaire → ask_user is also confirmed via the
  *    recorded request bodies (proxied by the TUI's tool-list rendering).
+ *
+ * 3. Normal Execute routes an approved plan through the neutral automatic run.
+ * 4. Enabling that route does not affect ordinary no-plan work.
+ * 5. Disabled V2 preserves legacy Execute without V2 context or status.
  */
 
-import { readdirSync, readFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, Key, test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import { fullText, INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import type { FakeResponseRequest } from "./support/fake-openai-server.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -43,7 +48,25 @@ test("plan-to-ferment promotion — Start as ferment immediately continues execu
 						"- **Files Changed**: src/parser.ts\n",
 						"- **Accept When**: streaming think blocks parse correctly\n\n",
 						"## Verification Strategy\nRun the parser tests.\n\n",
-						"<!-- PLAN_COMPLETE -->\n",
+					],
+					toolCalls: [
+						{
+							id: "call_submit_plan",
+							type: "function",
+							function: {
+								name: "submit_plan",
+								arguments: JSON.stringify({
+									plan:
+										"## Goal\nImplement a streaming think parser.\n\n" +
+										"## Constraints\n- Preserve the existing parser API\n\n" +
+										"## Chunks\n\n" +
+										"### Chunk 1: Implement streaming parser\n" +
+										"- **Files Changed**: src/parser.ts\n" +
+										"- **Accept When**: streaming think blocks parse correctly\n\n" +
+										"## Verification Strategy\nRun the parser tests.\n",
+								}),
+							},
+						},
 					],
 				},
 				{ stream: ["I'll start implementing the streaming think parser."] },
@@ -57,11 +80,11 @@ test("plan-to-ferment promotion — Start as ferment immediately continues execu
 			await waitForText(terminal, /plan(?: → shift\+tab)? · basic\b/, { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("status line confirms plan mode")
 
-			// Stage 2: submit request → model emits plan with PLAN_COMPLETE marker.
+			// Stage 2: submit request → model streams the plan, then calls
+			// submit_plan. The dropdown appears after the tool call terminates
+			// the turn.
 			terminal.submit("Implement a streaming think parser")
 			trace.step("submitted planning request")
-			await waitForText(terminal, "<!-- PLAN_COMPLETE -->", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("plan complete marker seen")
 
 			// Stage 3: dropdown appears — all three options must be visible in buffer.
 			await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
@@ -107,12 +130,12 @@ test("plan-to-ferment promotion — Start as ferment immediately continues execu
 })
 
 // ---------------------------------------------------------------------------
-// Test 2: Side-effect verification via plan-complete handler (no dropdown UI)
+// Test 2: Side-effect verification via submit_plan handler (no dropdown UI)
 // ---------------------------------------------------------------------------
 
 // Verifies the plan-to-ferment contract by checking the filesystem side effects
-// of the plan-complete handler (permissions/index.ts:506-540). The model emits
-// <!-- PLAN_COMPLETE -->, the handler writes the approved plan to .kimchi/plans/
+// of the submit_plan handler (permissions/index.ts). The model calls submit_plan
+// with the plan text, the handler writes the approved plan to .kimchi/plans/
 // and transitions to auto mode. No dropdown UI assertions are made — this test
 // proves the contract works by examining the artifact files and TUI state.
 test("plan-to-ferment promotion — side effects: plan file written + tool swap at turn boundary", async ({
@@ -130,7 +153,22 @@ test("plan-to-ferment promotion — side effects: plan file written + tool swap 
 						"1. Read the relevant source files\n",
 						"2. Make the targeted change\n",
 						"3. Run tests to verify\n\n",
-						"<!-- PLAN_COMPLETE -->\n",
+					],
+					toolCalls: [
+						{
+							id: "call_submit_plan",
+							type: "function",
+							function: {
+								name: "submit_plan",
+								arguments: JSON.stringify({
+									plan:
+										"Here's a lightweight plan:\n\n" +
+										"1. Read the relevant source files\n" +
+										"2. Make the targeted change\n" +
+										"3. Run tests to verify\n",
+								}),
+							},
+						},
 					],
 				},
 				{ stream: ["Plan executed. Ready for the next task.\n"] },
@@ -144,17 +182,16 @@ test("plan-to-ferment promotion — side effects: plan file written + tool swap 
 			await waitForText(terminal, /plan(?: → shift\+tab)? · basic\b/, { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("status line confirms plan mode")
 
-			// Stage 2: submit request → model emits plan with PLAN_COMPLETE marker.
+			// Stage 2: submit request → model streams the plan, then calls
+			// submit_plan. The dropdown appears after the tool call terminates
+			// the turn.
 			terminal.submit("Plan out how to add a new feature.")
 			trace.step("submitted planning request")
-			await waitForText(terminal, "<!-- PLAN_COMPLETE -->", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("plan complete marker seen — plan-complete handler should have fired")
+			await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("submit_plan tool called — plan-complete handler fired")
 
-			// Stage 3: the dropdown appears. NOTE: in this TUI test harness the dropdown
-			// overlay is not reliably captured by `terminal.getBuffer()` (observed across
-			// multiple runs), so we press Enter directly after seeing PLAN_COMPLETE — the
-			// plan-complete handler is awaited by `ctx.ui.select(...)` which accepts Enter
-			// to default-select "Execute the plan" (first option).
+			// Stage 3: the dropdown appears. Press Enter to default-select
+			// "Execute the plan" (first option).
 			terminal.keyPress(Key.Enter)
 			trace.step("pressed Enter to select default dropdown option ('Execute the plan')")
 
@@ -164,8 +201,8 @@ test("plan-to-ferment promotion — side effects: plan file written + tool swap 
 			await waitForText(terminal, /auto(?: → shift\+tab)? · basic\b/, { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("status line transitioned to auto — handler fired and mode changed")
 
-			// Verify the approved plan file was written (proof that plan-complete
-			// handler executed the write path at permissions/index.ts:527-540).
+			// Verify the approved plan file was written (proof that submit_plan
+			// executed the write path at permissions/index.ts).
 			const plansDir = join(fixture.workDir, ".kimchi", "plans")
 			const planFiles = readdirSync(plansDir)
 			expect(planFiles.length > 0).toBe(true)
@@ -173,12 +210,187 @@ test("plan-to-ferment promotion — side effects: plan file written + tool swap 
 			expect(planFile).toMatch(/\.md$/)
 
 			const planContent = readFileSync(join(plansDir, planFile), "utf-8")
+			// The plan text comes from the submit_plan tool argument.
 			expect(planContent.includes("Read the relevant source files")).toBe(true)
-			// Markers are stripped by savePlanMarkdown before persistence.
-			expect(planContent.includes("<!-- PLAN_COMPLETE -->")).toBe(false)
 			expect(planContent.includes("Make the targeted change")).toBe(true)
 			expect(planContent.includes("Run tests to verify")).toBe(true)
 			trace.step("approved plan file written and content verified")
 		},
 	)
 })
+
+test("approved plan Execute starts a neutral named Ferment V2 run when enabled", async ({ terminal }) => {
+	const planText =
+		"# Streaming parser\n\n## Goal\nImplement a streaming think parser with incremental input and existing API compatibility.\n\n" +
+		"## Constraints\n- Preserve the existing parser API\n\n" +
+		"## Verification Strategy\nRun the parser tests.\n"
+
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "approved-plan-execute-ferment-v2",
+			gitInit: true,
+			seedHome: enableFermentV2Mode,
+			responses: [
+				{
+					stream: [planText],
+					toolCalls: [
+						{
+							id: "call_submit_plan",
+							type: "function",
+							function: {
+								name: "submit_plan",
+								arguments: JSON.stringify({ plan: planText }),
+							},
+						},
+					],
+				},
+				{
+					stream: ["Working from the approved plan."],
+					textDelayMs: 1_000,
+					toolCalls: [
+						{
+							id: "call_block_approved_plan",
+							type: "function",
+							function: {
+								name: "update_ferment_v2",
+								arguments: JSON.stringify({ status: "blocked", reason: "Waiting for user input." }),
+							},
+						},
+					],
+				},
+			],
+			extraArgs: ["--plan=true"],
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, /plan(?: → shift\+tab)? · basic\b/, { timeoutMs: STARTUP_TIMEOUT_MS })
+			trace.step("status line confirms plan mode")
+
+			terminal.submit("Implement a streaming think parser")
+			await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("submit_plan opened the approval menu")
+
+			terminal.keyPress(Key.Enter)
+			await waitForText(terminal, "Plan execution started.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "◈ Plan execution: running · Streaming parser", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+			trace.step("execute selected and neutral approved-plan run started")
+
+			const snapshot = fermentV2Snapshot(await waitForChatRequest(fixture.fake.requests, 2))
+			const planPath = join(realpathSync(fixture.workDir), ".kimchi", "plans", "streaming-parser.md")
+			expect(snapshot).toMatchObject({
+				objective: expect.stringContaining(planText),
+				status: "active",
+			})
+			expect(snapshot.objective).toContain(`Saved plan copy (reference only): ${JSON.stringify(planPath)}`)
+			expect(readFileSync(planPath, "utf-8")).toBe(planText)
+			await waitForText(terminal, "Plan execution blocked.", { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(fullText(terminal)).not.toContain("Ferment V2 created.")
+			trace.step("model request carried the approved Markdown and the terminal stayed neutral")
+		},
+	)
+})
+
+test("disabled Ferment V2 keeps approved-plan Execute on the legacy path", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "approved-plan-execute-v2-disabled",
+			gitInit: true,
+			extraArgs: ["--plan=true"],
+			responses: [
+				{
+					stream: ["The plan is ready for review."],
+					toolCalls: [
+						{
+							id: "submit-disabled",
+							function: {
+								name: "submit_plan",
+								arguments: JSON.stringify({
+									plan: "## Goal\nCreate example.txt.\n\n## Verification Strategy\nRead the file.",
+								}),
+							},
+						},
+					],
+				},
+				{ stream: ["LEGACY_EXECUTION_STARTED"] },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Plan creating example.txt")
+			await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
+			terminal.keyPress(Key.Enter)
+			await waitForText(terminal, "LEGACY_EXECUTION_STARTED", { timeoutMs: STREAM_TIMEOUT_MS })
+			const requests = chatRequests(fixture.fake.requests)
+			expect(requests).toHaveLength(2)
+			expect(JSON.stringify(requests)).not.toContain("kimchi_session_ferment_v2")
+			expect(JSON.stringify(requests)).not.toContain('"name":"update_ferment_v2"')
+			expect(fullText(terminal)).not.toContain("◈")
+			expect(fullText(terminal)).not.toContain("Plan execution started.")
+			trace.step("legacy execution continued with no V2 tools, context, or footer")
+		},
+	)
+})
+
+test("enabling automatic plan execution leaves ordinary no-plan work untouched", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "ferment-v2-no-approved-plan",
+			seedHome: enableFermentV2Mode,
+			responses: [{ stream: ["This small request is complete without a plan."] }],
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
+			terminal.submit("Answer this small request directly")
+			await waitForText(terminal, "This small request is complete without a plan.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+
+			expect(fullText(terminal)).not.toContain("Plan execution started.")
+			expect(existsSync(join(fixture.workDir, ".kimchi", "plans"))).toBe(false)
+			expect(chatRequests(fixture.fake.requests)).toHaveLength(1)
+			expect(JSON.stringify(chatRequests(fixture.fake.requests)[0]?.body)).not.toContain("<kimchi_session_ferment_v2>")
+			trace.step("resource opt-in did not synthesize a plan or automatic run")
+		},
+	)
+})
+
+function enableFermentV2Mode(homeDir: string): void {
+	const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+	const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
+	settings.resources = { "extensions.ferment-v2": true }
+	writeFileSync(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`, "utf-8")
+}
+
+async function waitForChatRequest(requests: FakeResponseRequest[], count: number): Promise<FakeResponseRequest> {
+	const deadline = Date.now() + 5_000
+	while (Date.now() < deadline) {
+		const request = chatRequests(requests)[count - 1]
+		if (request) return request
+		await new Promise((resolve) => setTimeout(resolve, 100))
+	}
+	throw new Error(`Timed out waiting for chat request ${count}.`)
+}
+
+function chatRequests(requests: FakeResponseRequest[]): FakeResponseRequest[] {
+	return requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+}
+
+function fermentV2Snapshot(request: FakeResponseRequest): {
+	objective: string
+	status: string
+} {
+	const context = collectStrings(request.body).find((value) => value.includes("<kimchi_session_ferment_v2>"))
+	const match = context?.match(/<kimchi_session_ferment_v2>\s*(\{[\s\S]*?\})\s*Persistent objective continuation/)
+	if (!match) throw new Error(`No canonical Ferment V2 context found in request: ${JSON.stringify(request.body)}`)
+	return JSON.parse(match[1])
+}
+
+function collectStrings(value: unknown): string[] {
+	if (typeof value === "string") return [value]
+	if (Array.isArray(value)) return value.flatMap(collectStrings)
+	if (value && typeof value === "object") return Object.values(value).flatMap(collectStrings)
+	return []
+}

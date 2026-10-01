@@ -43,10 +43,12 @@ function deriveName(m: ModelMetadata): string {
 	return m.display_name.trim().length > 0 ? m.display_name : modelIdToName(m.slug)
 }
 
+// Deprecation handling (state derivation, retirement warnings) is owned by
+// the orchestration model registry; this catalog only flags models missing
+// curated capability metadata.
 export interface ModelRegistryWarning {
-	kind: "unknown_model" | "deprecated_model"
+	kind: "unknown_model"
 	modelId: string
-	replacement?: string // only for deprecated_model
 }
 
 export class ModelRegistry {
@@ -60,22 +62,11 @@ export class ModelRegistry {
 		const allModels: OrchestrationModelDescriptor[] = []
 
 		for (const m of availableModels) {
-			// Sunset models are excluded entirely, like "ignored"
-			if (m.status === "sunset") continue
-
-			// Deprecated warning is emitted even for ignored models so the
-			// user gets notified even if the model isn't routed to subagents.
-			if (m.status === "deprecated") {
-				warnings.push({ kind: "deprecated_model", modelId: m.slug, replacement: m.replacement })
-			}
-
 			const entry = MODEL_CAPABILITIES.get(m.slug)
 			if (entry === "ignored") continue
 
 			if (entry === undefined) {
-				if (m.status !== "deprecated") {
-					warnings.push({ kind: "unknown_model", modelId: m.slug })
-				}
+				warnings.push({ kind: "unknown_model", modelId: m.slug })
 				allModels.push({
 					id: m.slug,
 					provider: KIMCHI_DEV_PROVIDER,

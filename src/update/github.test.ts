@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest"
+import { rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { describe, expect, it, type MockInstance, vi } from "vitest"
 import { assetName, GitHubClient, type Repo } from "./github.js"
 
 const REPO: Repo = { owner: "castai", name: "kimchi-dev", binary: "kimchi" }
@@ -166,5 +169,63 @@ describe("GitHubClient.fetchChecksum", () => {
 		}) as unknown as typeof fetch
 		const client = new GitHubClient({ fetch: fetchImpl })
 		await expect(client.fetchChecksum(REPO, "v1.0.0")).rejects.toThrow(/checksum not found/)
+	})
+})
+
+describe("GitHubClient abort signal forwarding", () => {
+	it("propagates the constructor signal into fetch calls", async () => {
+		const fetchImpl = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => ({ tag_name: "v1.2.3", html_url: "" }),
+		}) as unknown as typeof fetch
+		const controller = new AbortController()
+		const client = new GitHubClient({ fetch: fetchImpl, signal: controller.signal })
+
+		await client.latestRelease(REPO)
+
+		// fetchWithRetry wraps our signal with its own per-attempt timeout, so
+		// fetch receives a combined signal — the contract we care about is that
+		// aborting the client's signal aborts what fetch actually got.
+		const init = (fetchImpl as unknown as MockInstance).mock.calls[0][1] as RequestInit | undefined
+		expect(init?.signal).toBeInstanceOf(AbortSignal)
+		expect(init?.signal?.aborted).toBe(false)
+		controller.abort()
+		expect(init?.signal?.aborted).toBe(true)
+	})
+})
+
+describe("GitHubClient.downloadArchive abort", () => {
+	it("rejects promptly when the signal aborts mid-download instead of hanging", async () => {
+		// Regression: on Ctrl+C during on-launch auto-update, the pipeline over
+		// the wrapped body never settled under Bun and AbortErrors spammed as
+		// unhandled rejections. Contract: abort always settles the download
+		// with a rejection. (Pre-fix this test dies by vitest timeout.)
+		const body = new ReadableStream<Uint8Array>({
+			async start(controller) {
+				const chunk = new Uint8Array(1024)
+				while (true) {
+					try {
+						controller.enqueue(chunk)
+					} catch {
+						return
+					}
+					await new Promise((r) => setTimeout(r, 5))
+				}
+			},
+		})
+		const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200, body }) as unknown as typeof fetch
+		const controller = new AbortController()
+		const client = new GitHubClient({ fetch: fetchImpl, signal: controller.signal })
+		const dest = join(tmpdir(), `kimchi-dl-abort-${process.pid}.bin`)
+
+		const pending = client.downloadArchive(REPO, "v1.0.0", dest)
+		setTimeout(() => controller.abort(), 25)
+
+		try {
+			await expect(pending).rejects.toThrow()
+		} finally {
+			rmSync(dest, { force: true })
+		}
 	})
 })

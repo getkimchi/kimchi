@@ -31,6 +31,18 @@ export type ClassifierVerdict = "safe" | "requires-confirmation"
 /** Risk score returned by the LLM classifier for display in the permission prompt. */
 export type RiskScore = "low" | "medium" | "high"
 
+export type ClassifierFailureCode =
+	| "no_candidates"
+	/** No credentials configured for the candidate's provider; user-fixable (set the provider API key). */
+	| "no_api_key"
+	| "auth_unavailable"
+	| "auth_timeout"
+	| "timeout"
+	| "provider_error"
+	| "invalid_output"
+	| "budget_exhausted"
+	| "aborted"
+
 export interface ClassifierResult {
 	verdict: ClassifierVerdict
 	reason: string
@@ -38,6 +50,10 @@ export interface ClassifierResult {
 	ok: boolean
 	/** Risk score from the classifier LLM. Undefined when the classifier was not called or failed. */
 	riskScore?: RiskScore
+	/** Bare model ID that produced a valid verdict; absent on classifier failure. */
+	usedModelId?: string
+	/** Bounded diagnostic category suitable for health events; never provider/model text. */
+	failureCode?: ClassifierFailureCode
 }
 
 export interface PermissionsConfig {
@@ -45,6 +61,7 @@ export interface PermissionsConfig {
 	allow: string[]
 	deny: string[]
 	classifierTimeoutMs: number
+	classifierMaxTotalMs: number
 }
 
 /** Controller for session-scoped permission flags with subscription support. */

@@ -44,3 +44,14 @@ export function getRawErrorMessage(message: ErrorMessageHolder): string | undefi
 	const preserved = (message as Record<symbol, unknown>)[RAW_ERROR_SYMBOL]
 	return (typeof preserved === "string" ? preserved : undefined) ?? message.errorMessage
 }
+
+/**
+ * True when a raw error was preserved on the message (in-process symbol),
+ * as opposed to `getRawErrorMessage` falling back to the current display
+ * `errorMessage`. Callers that must distinguish "a preserved raw"
+ * from "fallback" (e.g. compaction recovery, where a fallback must not win
+ * over a stale audit entry) gate on this.
+ */
+export function hasPreservedRawErrorMessage(message: ErrorMessageHolder): boolean {
+	return RAW_ERROR_SYMBOL in message
+}

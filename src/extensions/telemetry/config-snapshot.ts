@@ -1,6 +1,6 @@
 import { resolve } from "node:path"
 import { AGENT_DEFINITIONS, discoverAgent } from "../../agent-discovery/index.js"
-import { readJson } from "../../config/json.js"
+import { readJsonCached } from "../../config/json.js"
 import type { KimchiConfig } from "../../config.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import type { RoleModelAssignment } from "../orchestration/model-roles.js"
@@ -36,6 +36,7 @@ export interface ConfigSnapshot {
 
 /** Default provider for this harness. */
 const DEFAULT_PROVIDER = "cast-ai"
+const MCP_ADAPTER_SEARCH_PROVIDER = "weighted"
 
 /**
  * Parse pi's `settings.json` (under `KIMCHI_CODING_AGENT_DIR`) once.
@@ -46,7 +47,9 @@ function readAgentSettings(): Record<string, unknown> {
 	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
 	if (!agentDir) return {}
 	try {
-		return readJson(resolve(agentDir, "settings.json"))
+		// Spread at this boundary: the cached object is shared between
+		// callers, and the snapshot builder must not be able to mutate it.
+		return { ...readJsonCached(resolve(agentDir, "settings.json")) }
 	} catch {
 		return {}
 	}
@@ -99,7 +102,7 @@ function getDefaultPermissionMode(): string {
 function countMcpServers(): number {
 	let count = 0
 	for (const def of AGENT_DEFINITIONS) {
-		count += Object.keys(discoverAgent(def).mcpServers).length
+		count += Object.keys(discoverAgent(def, { enumerateSkills: false }).mcpServers).length
 	}
 	return count
 }
@@ -144,14 +147,14 @@ function fallbackSnapshot(telemetryEnabled: boolean): ConfigSnapshot {
  * `discoverAgent`) can never crash the CLI launch — returns a minimal safe
  * fallback snapshot on any error.
  */
-export function buildConfigSnapshot(config: KimchiConfig, telemetryEnabled: boolean): ConfigSnapshot {
+export function buildConfigSnapshot(_config: KimchiConfig, telemetryEnabled: boolean): ConfigSnapshot {
 	try {
 		const settings = readAgentSettings()
 		const roles = getModelRoles()
 		return {
 			"config.model": resolveModel(settings),
 			"config.provider": resolveProvider(settings),
-			"config.search_provider": config.mcpSearch.strategy,
+			"config.search_provider": MCP_ADAPTER_SEARCH_PROVIDER,
 			"config.telemetry_enabled": telemetryEnabled,
 			"config.permission_mode": getDefaultPermissionMode(),
 			"config.agents_enabled": getMultiModelEnabled(null),

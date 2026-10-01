@@ -2,6 +2,7 @@ import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { isKeyRelease, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
 import { readStatusLineConfig, STATUS_LINE_ELEMENTS, setStatusLineElementPinned } from "../config/status-line-config.js"
+import { truncateLinesToWidth } from "../truncate-lines.js"
 import { requestSharedStatusLineRender } from "./shared-status-line.js"
 
 /** Component holds only transient UI state (selectedIndex).
@@ -70,7 +71,7 @@ export class CustomizeStatusLineComponent implements Component {
 		const textColor = (s: string) => this.theme.fg("text", s)
 		const mutedColor = (s: string) => this.theme.fg("muted", s)
 
-		const innerW = Math.max(30, width - 2)
+		const innerW = Math.max(1, width - 2)
 		const contentW = innerW - 2
 
 		const wrapRow = (rowContent: string) =>
@@ -80,7 +81,7 @@ export class CustomizeStatusLineComponent implements Component {
 
 		// ── top border with title ────────────────────────────────────────────
 		const titleText = " Customize Status Line "
-		const borderLen = innerW - titleText.length
+		const borderLen = Math.max(0, innerW - titleText.length)
 		const leftB = Math.floor(borderLen / 2)
 		const rightB = borderLen - leftB
 		out.push(`${b(`╭${"─".repeat(leftB)}`)}${dimText(titleText)}${b(`${"─".repeat(rightB)}╮`)}`)
@@ -119,7 +120,7 @@ export class CustomizeStatusLineComponent implements Component {
 		// ── bottom border ───────────────────────────────────────────────────
 		out.push(b(`╰${"─".repeat(innerW)}╯`))
 
-		return out
+		return truncateLinesToWidth(out, width)
 	}
 }
 

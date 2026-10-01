@@ -5,8 +5,11 @@ import type { TelemetryConfig } from "../../config.js"
 import { IS_ACP_MODE } from "../../modes/acp/state.js"
 import { getOsMetadata } from "../../utils/os-metadata.js"
 import { getVersion } from "../../utils.js"
+import { isAgentWorker } from "../agent-worker-context.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { getActiveFerment } from "../ferment/index.js"
 import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
+import { getTelemetryFermentV2Context, resetTelemetryFermentV2Context } from "./ferment-v2-context.js"
 import { getAcpAttributes, getPiSessionAttributes } from "./handlers/utils.js"
 import { toAttrs } from "./helpers.js"
 import { getSessionType } from "./session-type.js"
@@ -22,12 +25,15 @@ export const TELEMETRY_DRAIN_TIMEOUT_MS = 5_000
 export const METRICS_FLUSH_INTERVAL_MS = 30_000
 export const LOG_BATCH_FLUSH_INTERVAL_MS = 5_000
 export const LOG_BATCH_MAX_SIZE = 20
+const V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES = new Set(["error_message", "error.message"])
 
 // ---------------------------------------------------------------------------
 // Process-level ID + shared accumulators
 //
-// All agents (main + sub-agents) in the same process share telemetryId so
-// that telemetry rolls up under one session in the backend.
+// telemetryId is an internal accumulator key (ReplacingMergeTree
+// monotonic-flush grouping), not the emitted session id: the per-event
+// `session.id` is the pi session id via resolveSessionId() (see
+// TelemetryContext.piSessionId).
 //
 // Accumulators are keyed by telemetryId (not per-session) so that every
 // flush sends the monotonically increasing total across ALL agents. This is
@@ -51,6 +57,7 @@ function getOrCreateAccumulator(telemetryId: string): CumulativeState {
 export function _resetSharedAccumulators(): void {
 	if (telemetryId) sharedAccumulators.delete(telemetryId)
 	telemetryId = undefined
+	resetTelemetryFermentV2Context()
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +67,13 @@ export function _resetSharedAccumulators(): void {
 export class TelemetryContext {
 	config: TelemetryConfig
 	telemetryId: string
+	/**
+	 * The pi session id of the session this context is bound to, captured at
+	 * session_start. Emitted as `session.id` (preferred) and `X-Session-Id`.
+	 * Undefined until session_start fires — resolveSessionId() falls back to
+	 * the process telemetryId then.
+	 */
+	piSessionId: string | undefined
 	telemetryStartMs: number
 	/**
 	 * Current model, updated from message events; used for domain events that lack a pi context.
@@ -72,6 +86,22 @@ export class TelemetryContext {
 	 * `0` as "unknown / pre-turn" rather than a valid 1-based turn number.
 	 */
 	turnIndex = 0
+	/**
+	 * Wall-clock ms when the current user prompt began (set by
+	 * handleBeforeAgentStart). Anchor for agent.interrupted's ms_into_turn —
+	 * measuring from prompt start (not pi's per-round turn_start) so the value
+	 * reads as "how long the agent had been working on this prompt".
+	 */
+	promptStartMs = 0
+	/**
+	 * W3C trace context of the most recent provider request, stored by the
+	 * before_provider_headers handler (generated per request, or parsed from an
+	 * externally supplied traceparent). Requested events (api_request, error)
+	 * stamp this so they join to the exact request trace. Provider requests
+	 * within one TelemetryContext are sequential (agent loop; in-process
+	 * subagents have their own context), so a single slot is sufficient.
+	 */
+	lastTraceContext: { traceId: string; spanId: string } | undefined
 	sentMessages = new Set<string>()
 	pendingArgs = new Map<string, { toolName: string; args: unknown }>()
 	messageStartTimes = new Map<string, number>()
@@ -119,6 +149,8 @@ export class TelemetryContext {
 		this.telemetryStartMs = Date.now()
 		this.currentModel = "unknown"
 		this.turnIndex = 0
+		this.promptStartMs = 0
+		this.lastTraceContext = undefined
 		this.sentMessages.clear()
 		this.pendingArgs.clear()
 		this.messageStartTimes.clear()
@@ -132,10 +164,33 @@ export class TelemetryContext {
 		this.stopLogFlushTimer()
 	}
 
+	/** Capture the pi session id for this context. Called from session_start. */
+	setPiSessionId(sessionId: string | undefined): void {
+		this.piSessionId = sessionId || undefined
+	}
+
+	/**
+	 * The canonical telemetry session id: the local pi session id when known,
+	 * else the process telemetryId (pre-session emissions only).
+	 */
+	resolveSessionId(): string {
+		return this.piSessionId ?? this.telemetryId
+	}
+
 	track(p: Promise<void>): void {
 		if (this.shuttingDown) return
 		this.inFlight.add(p)
 		p.finally(() => this.inFlight.delete(p))
+	}
+
+	/**
+	 * Trace-context attributes stamped on request-scoped events (api_request,
+	 * error) so they join to the exact provider request's trace. Empty when no
+	 * provider request has happened yet (or the traceparent was malformed).
+	 */
+	getTraceAttributes(): TelemetryAttributes {
+		if (!this.lastTraceContext) return {}
+		return { "request.trace_id": this.lastTraceContext.traceId, "request.span_id": this.lastTraceContext.spanId }
 	}
 
 	/**
@@ -155,6 +210,7 @@ export class TelemetryContext {
 		ctx?: ExtensionContext,
 	): void {
 		const { session_type, source, ...commonAttrs } = this.getCommonAttributes(ctx)
+		const parentAttr = this.getParentSessionAttribute()
 		const merged: TelemetryAttributes = {
 			source,
 			session_type,
@@ -162,13 +218,25 @@ export class TelemetryContext {
 			...attrs,
 			"user.account_uuid": this.userId ?? "",
 			...commonAttrs,
+			...(parentAttr ?? {}),
 		}
-		this.enqueueLogRecord(buildLogRecord(this.telemetryId, eventName, toAttrs(merged)))
+		this.enqueueLogRecord(buildLogRecord(this.resolveSessionId(), eventName, toAttrs(merged)))
 	}
 
-	emit(eventName: string, attrs?: TelemetryAttributes, ctx?: ExtensionContext): void {
+	emit(
+		eventName: string,
+		attrs?: TelemetryAttributes,
+		ctx?: ExtensionContext,
+		commonOverrides?: TelemetryAttributes,
+	): void {
 		const ferment = getActiveFerment()
+		const fermentV2 = getTelemetryFermentV2Context()
+		const eventAttrs: TelemetryAttributes =
+			fermentV2 && attrs
+				? Object.fromEntries(Object.entries(attrs).filter(([key]) => !V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES.has(key)))
+				: { ...(attrs ?? {}) }
 		const { session_type, source, ...commonAttrs } = this.getCommonAttributes(ctx)
+		const parentAttr = this.getParentSessionAttribute()
 
 		// Detect and emit session.type_changed when the type transitions
 		if (this.lastSessionType !== undefined && session_type !== this.lastSessionType) {
@@ -176,23 +244,49 @@ export class TelemetryContext {
 				session_type,
 				previous_session_type: this.lastSessionType,
 				source,
-				ferment_id: ferment?.id ?? "",
+				...fermentTelemetryAttributes(ferment?.id, fermentV2),
 				"telemetry.cli_version": getVersion(),
+				...(parentAttr ?? {}),
 			})
-			this.logBuffer.push(buildLogRecord(this.telemetryId, "session.type_changed", changeAttrs))
+			this.logBuffer.push(buildLogRecord(this.resolveSessionId(), "session.type_changed", changeAttrs))
 		}
 		this.lastSessionType = session_type
 
 		const merged: TelemetryAttributes = {
-			...attrs,
+			...eventAttrs,
 			...this.osMetadata,
 			source,
 			session_type,
-			ferment_id: ferment?.id ?? "",
+			...fermentTelemetryAttributes(ferment?.id, fermentV2),
 			"user.account_uuid": this.userId ?? "",
 			...commonAttrs,
+			// Caller-supplied overrides for common attributes (e.g. the
+			// tool_decision accept-rate record reports model=auto from the
+			// user's selection instead of the router's concrete pick).
+			...commonOverrides,
+			...(parentAttr ?? {}),
 		}
-		this.enqueueLogRecord(buildLogRecord(this.telemetryId, eventName, toAttrs(merged)))
+		this.enqueueLogRecord(buildLogRecord(this.resolveSessionId(), eventName, toAttrs(merged)))
+	}
+
+	/**
+	 * Returns the spawning (parent) session's pi session id when this process is
+	 * inside an Agent-subagent run, undefined otherwise. The Agent runner sets
+	 * KIMCHI_PARENT_SESSION_ID for the whole subagent run; the Agent-worker async
+	 * context (or KIMCHI_SUBAGENT=1) gates the check so parent-session events are
+	 * never attributed a parent.
+	 *
+	 * Used for both the `session.parent_id` telemetry attribute and the
+	 * X-Parent-Session-Id provider header (chat_completions pipeline).
+	 */
+	getParentSessionId(): string | undefined {
+		if (!isAgentWorker()) return undefined
+		return process.env[PARENT_SESSION_ID_ENV_KEY]
+	}
+
+	private getParentSessionAttribute(): TelemetryAttributes | undefined {
+		const parentSessionId = this.getParentSessionId()
+		return parentSessionId ? { "session.parent_id": parentSessionId } : undefined
 	}
 
 	private getCommonAttributes(
@@ -239,7 +333,7 @@ export class TelemetryContext {
 				this.userEmailReady.then(() =>
 					sendMetrics(
 						this.config,
-						this.telemetryId,
+						this.resolveSessionId(),
 						metrics.map((m) => ({
 							...m,
 							attrs: {
@@ -299,4 +393,20 @@ export class TelemetryContext {
 			])
 		}
 	}
+}
+
+function fermentTelemetryAttributes(
+	fermentId: string | undefined,
+	fermentV2: ReturnType<typeof getTelemetryFermentV2Context>,
+): TelemetryAttributes {
+	if (fermentV2) {
+		return {
+			ferment_id: fermentV2.id,
+			ferment_v2_id: fermentV2.id,
+			ferment_version: "v2",
+			ferment_revision: fermentV2.revision,
+			status: fermentV2.status,
+		}
+	}
+	return { ferment_id: fermentId ?? "" }
 }

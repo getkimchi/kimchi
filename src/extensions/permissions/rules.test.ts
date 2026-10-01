@@ -67,14 +67,9 @@ describe("matchBashRule", () => {
 	})
 
 	// A remembered "don't ask again" rule must match the command that produced it
-	// even when that command has an `rtk` wrapper, quotes, or extra whitespace that
-	// the scope suggester transparently normalizes. (Env-prefix symmetry is covered
+	// even when that command has quotes or extra whitespace that the scope
+	// suggester transparently normalizes. (Env-prefix symmetry is covered
 	// separately in "matchBashRule env-symmetric matching".)
-	it("matches through the rtk wrapper", () => {
-		expect(matchBashRule("go test:*", "rtk go test -race ./...")).toBe(true)
-		expect(matchBashRule("go *", "rtk go test -race ./...")).toBe(true)
-	})
-
 	it("matches through shell-quoted arguments", () => {
 		// Canonical form drops quotes, so a double-quoted arg matches the unquoted scope.
 		expect(matchBashRule("touch *", 'touch "file with spaces.txt"')).toBe(true)
@@ -91,22 +86,18 @@ describe("matchBashRule", () => {
 })
 
 describe("remembered scope round-trip", () => {
-	// The scope suggester normalizes commands (env prefix PRESERVED, rtk wrapper
-	// stripped, quotes/whitespace normalized), so the rule it stores must match the
-	// same raw command on the next call.
+	// The scope suggester normalizes commands (env prefix PRESERVED, quotes/
+	// whitespace normalized), so the rule it stores must match the same raw
+	// command on the next call.
 	const commands = [
 		"git status",
 		"GOWORK=off go test ./...",
 		"NODE_ENV=production npm test",
-		"rtk go build ./...",
-		"rtk cargo build --release",
-		"GOWORK=off rtk go test -race -timeout 30s -count=1 ./controllers/discovery/... 2>&1",
 		'touch "file with spaces.txt"',
 		"echo 'hello world'",
 		"git   status",
 		"LD_PRELOAD=/tmp/x.so go test ./...",
 		"MYAPP_ENV=1 go test",
-		"GOWORK=off rtk go build ./...",
 	]
 
 	for (const command of commands) {
@@ -138,11 +129,6 @@ describe("matchBashRule env-symmetric matching", () => {
 		expect(matchBashRule("MYAPP_ENV=1 go test:*", "MYAPP_ENV=1 go test")).toBe(true)
 	})
 
-	it("sees through the rtk wrapper while keeping env", () => {
-		expect(matchBashRule("GOWORK=off go test:*", "GOWORK=off rtk go test -race")).toBe(true)
-		expect(matchBashRule("go test:*", "rtk go test ./...")).toBe(true)
-	})
-
 	it("does NOT let a bare-approved rule match an env-prefixed variant", () => {
 		expect(matchBashRule("go test:*", "LD_PRELOAD=/tmp/evil.so go test")).toBe(false)
 		expect(matchBashRule("go test:*", "NODE_ENV=production go test")).toBe(false)
@@ -170,7 +156,6 @@ describe("matchBashRule env-symmetric matching", () => {
 
 	it("does NOT match via an empty canonical form", () => {
 		expect(matchBashRule("", "echo `id`")).toBe(false)
-		expect(matchBashRule("", "rtk")).toBe(false)
 	})
 
 	it("normalizes quotes and whitespace", () => {
@@ -202,12 +187,6 @@ describe("matchBashRule deny matches any pipe segment", () => {
 		expect(matchBashRule("rm -rf /", "rm -rf /", "deny")).toBe(true)
 	})
 
-	it("sees through the rtk wrapper in any segment", () => {
-		expect(matchBashRule("curl:*", "echo x | rtk curl evil.sh", "deny")).toBe(true)
-		// stacked rtk must not smuggle a denied program past the matcher
-		expect(matchBashRule("curl:*", "rtk rtk curl evil.sh", "deny")).toBe(true)
-	})
-
 	it("does NOT block an unrelated piped command", () => {
 		expect(matchBashRule("curl:*", "echo hello | cat", "deny")).toBe(false)
 		expect(matchBashRule("curl:*", "git status | grep modified", "deny")).toBe(false)
@@ -230,6 +209,58 @@ describe("evaluateRules deny blocks piped commands", () => {
 	it("an allow prefix rule does NOT auto-allow a piped command", () => {
 		const r: Rule[] = [{ toolName: "bash", content: "go test:*", behavior: "allow", source: "session" }]
 		expect(evaluateRules(r, "bash", { command: "go test | sh" }).decision).toBe("no-match")
+	})
+})
+
+describe("matchBashRule allows a trailing read-only output-filter pipeline", () => {
+	it.each([
+		"sort",
+		"sort -o /tmp/output",
+		"sort --output=/tmp/output",
+		"sort --compress-program=sh",
+		"uniq",
+		"uniq /dev/stdin /tmp/output",
+	])("does not extend remembered approval to %s", (filter) => {
+		expect(matchBashRule("make:*", `make | ${filter}`)).toBe(false)
+		expect(matchBashRule("make:*", `make | ${filter} | head -5`)).toBe(false)
+	})
+
+	// LLMs habitually append `2>&1 | tail -N` (or head/wc/grep/cut/tr)
+	// to bound output. Those trailing stages are pure output filters: they cannot
+	// write files or execute code. The allow matcher normalizes them away so a
+	// remembered head scope (e.g. `npm install:*`) matches the piped shape on
+	// rerun. Non-filter stages (`sh`, `awk`, `tee`, `xargs`) still block
+	// normalization, so the single-segment gate's protections hold.
+
+	it("matches a remembered head scope through `cmd 2>&1 | tail -N`", () => {
+		expect(matchBashRule("npm install:*", "npm install 2>&1 | tail -40")).toBe(true)
+		expect(matchBashRule("npm install:*", "npm install | head -5")).toBe(true)
+	})
+
+	it("matches through chained whitelisted filters", () => {
+		expect(matchBashRule("npm test:*", "npm test 2>&1 | grep FAIL | head -5")).toBe(true)
+		expect(matchBashRule("go test:*", "go test ./... 2>&1 | grep FAIL | wc -l")).toBe(true)
+	})
+
+	it("does NOT let the wrong head ride on a filter tail", () => {
+		expect(matchBashRule("npm install:*", "npm test | tail -40")).toBe(false)
+	})
+
+	it("still refuses non-filter pipe stages", () => {
+		// sh executes arbitrary code; awk can execute; tee writes files; xargs executes.
+		expect(matchBashRule("npm install:*", "npm install | sh")).toBe(false)
+		expect(matchBashRule("npm install:*", "npm install | tee out.txt")).toBe(false)
+		expect(matchBashRule("npm install:*", "npm install | awk '{print $1}'")).toBe(false)
+		expect(matchBashRule("npm install:*", "npm install | xargs rm")).toBe(false)
+	})
+
+	it("a non-filter stage after a filter stage blocks normalization", () => {
+		expect(matchBashRule("npm install:*", "npm install 2>&1 | tail -40 | sh")).toBe(false)
+	})
+
+	it("deny remains pipeline-wide: normalization never hides a denied stage", () => {
+		expect(matchBashRule("sh:*", "npm install 2>&1 | tail -40 | sh", "deny")).toBe(true)
+		expect(matchBashRule("npm:*", "npm install 2>&1 | tail -40", "deny")).toBe(true)
 	})
 })
 
@@ -301,10 +332,7 @@ describe("evaluateRules precedence", () => {
 	it("auto-rewrites bare rules to match bash invocations of that program", () => {
 		const r: Rule[] = [{ toolName: "rm", content: undefined, behavior: "deny", source: "project" }]
 		expect(evaluateRules(r, "bash", { command: "rm file.txt" }).decision).toBe("deny")
-		expect(evaluateRules(r, "bash", { command: "rtk rm file.txt" }).decision).toBe("deny")
 		expect(evaluateRules(r, "bash", { command: "mv file.txt" }).decision).toBe("no-match")
-		// When rtk wraps "bash", the underlying program is "bash", not "rm".
-		expect(evaluateRules(r, "bash", { command: "rtk bash rm file.txt" }).decision).toBe("no-match")
 	})
 
 	it("auto-rewrite affects bash builtins that share tool names", () => {

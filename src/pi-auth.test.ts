@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { syncKimchiAuth } from "./extensions/login/flow.js"
-import { syncPiAuth } from "./pi-auth.js"
+import { clearPiAuth, syncPiAuth } from "./pi-auth.js"
 
 const tempDirs: string[] = []
 
@@ -221,5 +221,36 @@ describe("syncPiAuth", () => {
 			"kimchi-dev": { type: "api_key", key: "new-account-token" },
 		})
 		expect(await registry.getApiKeyForProvider("kimchi-dev")).toBe("stale-runtime-token")
+	})
+})
+
+describe("clearPiAuth", () => {
+	it("removes every Kimchi credential, keeps other providers, and needs no models.json", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-"))
+		tempDirs.push(dir)
+		const authPath = join(dir, "auth.json")
+		writeFileSync(
+			authPath,
+			JSON.stringify({
+				"kimchi-dev": { type: "api_key", key: "old" },
+				"kimchi-dev/anthropic": { type: "api_key", key: "old" },
+				"kimchi-experimental": { type: "api_key", key: "old" },
+				anthropic: { type: "api_key", key: "keep" },
+			}),
+		)
+
+		await clearPiAuth(authPath)
+
+		expect(JSON.parse(readFileSync(authPath, "utf-8"))).toEqual({
+			anthropic: { type: "api_key", key: "keep" },
+		})
+	})
+
+	it("is a no-op when auth.json does not exist", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-"))
+		tempDirs.push(dir)
+		const authPath = join(dir, "auth.json")
+
+		await expect(clearPiAuth(authPath)).resolves.toBeUndefined()
 	})
 })

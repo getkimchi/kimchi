@@ -1,8 +1,10 @@
+import type { Model } from "@earendil-works/pi-ai"
 import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { StatusLineElementId } from "../config/status-line-config.js"
 import * as AGENTS from "../extensions/agents/index.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "../extensions/auto-model/state.js"
 import { setBillingStatusForTest } from "../extensions/billing/status.js"
 import * as FERMENT from "../extensions/ferment/index.js"
 import * as MULTI_MODEL from "../extensions/multi-model.js"
@@ -14,6 +16,7 @@ import {
 	buildModelAbbrev,
 	buildPhaseCompact,
 	buildScriptPayload,
+	buildStatusLineSegments,
 	renderFittedLine,
 	SHORTCUT_TAIL,
 	StatusLine,
@@ -61,6 +64,7 @@ function createMockTheme(): Theme {
 interface MockContextOpts {
 	percent?: number
 	modelId?: string
+	modelProvider?: string
 	thinkingLevel?: ExtensionContext["thinkingLevel"]
 	/** Assistant messages to include in the session, for usage-segment tests. */
 	assistantMessages?: Array<{ input: number; output: number }>
@@ -74,7 +78,7 @@ function createMockContext(opts?: MockContextOpts): ExtensionContext {
 		message: { role: "assistant", usage: { input: u.input, output: u.output } },
 	}))
 	return {
-		model: { id: modelId, name: modelId },
+		model: { id: modelId, name: modelId, provider: opts?.modelProvider ?? "kimchi-dev" },
 		thinkingLevel: opts?.thinkingLevel,
 		cwd: "/test",
 		getContextUsage: vi.fn(() => ({ tokens: 0, percent, contextWindow: 100000 })),
@@ -86,6 +90,21 @@ function createMockContext(opts?: MockContextOpts): ExtensionContext {
 			getSessionFile: vi.fn(() => "/test/session.md"),
 		},
 	} as unknown as ExtensionContext
+}
+
+function concreteModel(id: string): Model<string> {
+	return {
+		id,
+		name: id,
+		api: "openai-completions",
+		provider: "kimchi-dev",
+		baseUrl: "https://example.test",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 128_000,
+		maxTokens: 16_000,
+	}
 }
 
 function createMockStatusLineData(opts?: {
@@ -105,6 +124,26 @@ function createMockStatusLineData(opts?: {
 }
 
 describe("buildScriptPayload", () => {
+	it("shows a V2 run in both the default footer and custom-script controls", () => {
+		const data = createMockStatusLineData()
+		vi.mocked(data.getExtensionStatuses).mockReturnValue(
+			new Map([["ferment-v2", "◈ paused · Cache layer · /ferment-v2 resume"]]),
+		)
+		const context = { ctx: createMockContext(), theme: createMockTheme(), statusLineData: data }
+		const standard = buildStatusLineSegments(context, new Set())
+		expect(stripAnsi(standard.find((segment) => segment.id === "ferment")?.text ?? "")).toBe(
+			"◈ paused · Cache layer · /ferment-v2 resume",
+		)
+		expect(buildControlsLineSegments(context).some((segment) => segment.id === "ferment")).toBe(true)
+		vi.mocked(data.getExtensionStatuses).mockReturnValue(
+			new Map([["ferment-v2", `◈ paused · ${"long objective ".repeat(4)} · /ferment-v2 resume`]]),
+		)
+		for (const segments of [buildStatusLineSegments(context, new Set()), buildControlsLineSegments(context)]) {
+			const line = renderFittedLine(segments, 80, context.theme)
+			expect(stripAnsi(line)).toContain("◈ paused")
+			expect(visibleWidth(line)).toBeLessThanOrEqual(80)
+		}
+	})
 	afterEach(() => setBillingStatusForTest(undefined))
 
 	it("passes credits and budget to custom status-line scripts", () => {
@@ -170,7 +209,7 @@ function setupStatusLineTest(): { theme: Theme; restorePlatform: () => void } {
 	vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 	vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 	vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
-	vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+	vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 	vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
 	const theme = createMockTheme()
 	const restorePlatform = stubPlatform("darwin")
@@ -362,7 +401,7 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
 		// Stub platform-dependent shortcut so tests are stable across CI.
 		restorePlatform = stubPlatform("darwin")
@@ -510,7 +549,7 @@ describe("StatusLine segment coverage", () => {
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
 		restorePlatform = stubPlatform("darwin")
 	})
@@ -577,7 +616,7 @@ describe("StatusLine segment coverage", () => {
 
 	it("tags segment shows non-team, non-phase tags when pinned", () => {
 		withPinned(["tags"], () => {
-			vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod", "region:eu", "team:platform", "phase:explore"])
+			vi.spyOn(TAGS, "peekActiveTags").mockReturnValue(["env:prod", "region:eu", "team:platform", "phase:explore"])
 			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
 			const visible = renderVisible(sl, 200)
 			expect(visible).toContain("tags:")
@@ -595,7 +634,7 @@ describe("StatusLine segment coverage", () => {
 	})
 
 	it("tags segment is always hidden when unpinned", () => {
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod", "team:platform"])
+		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue(["env:prod", "team:platform"])
 		const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
 		const visible = renderVisible(sl, 200)
 		expect(visible).not.toContain("tags:")
@@ -603,7 +642,7 @@ describe("StatusLine segment coverage", () => {
 
 	it("team segment shows team value when pinned", () => {
 		withPinned(["team"], () => {
-			vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["team:platform"])
+			vi.spyOn(TAGS, "peekActiveTags").mockReturnValue(["team:platform"])
 			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
 			const visible = renderVisible(sl, 200)
 			expect(visible).toContain("team:")
@@ -612,7 +651,7 @@ describe("StatusLine segment coverage", () => {
 	})
 
 	it("team segment is hidden when no team tag present", () => {
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod"])
+		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue(["env:prod"])
 		const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
 		const visible = renderVisible(sl, 200)
 		expect(visible).not.toContain("team:")
@@ -683,12 +722,12 @@ describe("StatusLine segment coverage", () => {
 	it("passes the active session id to phase and tag lookups", () => {
 		withPinned(["phase", "tags"], () => {
 			const getCurrentPhaseSpy = vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
-			const getActiveTagsSpy = vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod"])
+			const peekActiveTagsSpy = vi.spyOn(TAGS, "peekActiveTags").mockReturnValue(["env:prod"])
 			const ctx = createMockContext()
 			const sl = new StatusLine(ctx, theme, createMockStatusLineData())
 			renderVisible(sl, 200)
 			expect(getCurrentPhaseSpy).toHaveBeenCalledWith("test-session")
-			expect(getActiveTagsSpy).toHaveBeenCalledWith(ctx.sessionManager)
+			expect(peekActiveTagsSpy).toHaveBeenCalledWith(ctx.sessionManager)
 		})
 	})
 })
@@ -702,7 +741,7 @@ describe("StatusLine info line", () => {
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
 	})
 
@@ -776,7 +815,7 @@ describe("StatusLine regression tests", () => {
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
 		restorePlatform = stubPlatform("darwin")
 	})
@@ -790,7 +829,7 @@ describe("StatusLine regression tests", () => {
 		// Shedding removes whole segments under pressure, but survivors are
 		// re-joined, so we should never see two adjacent separators.
 		// Truncation cuts the tail, not the middle.
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["team:platform", "env:prod"])
+		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue(["team:platform", "env:prod"])
 		const data = createMockStatusLineData({ permissionsMode: "● default" })
 		const sl = new StatusLine(createMockContext(), theme, data)
 
@@ -824,12 +863,13 @@ describe("status line pinning", () => {
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
 		restorePlatform = stubPlatform("darwin")
 	})
 
 	afterEach(() => {
+		clearAutoRoutingState("test-session")
 		vi.restoreAllMocks()
 		restorePlatform()
 		pinnedElements = []
@@ -838,6 +878,30 @@ describe("status line pinning", () => {
 	function makeStatusLine(opts?: MockContextOpts): StatusLine {
 		return new StatusLine(createMockContext(opts), theme, createMockStatusLineData())
 	}
+
+	it("shows only Auto before routing resolves", () => {
+		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
+
+		expect(visible).toContain("auto → ctrl+p")
+	})
+
+	it("keeps the plain Auto label even after routing resolves", () => {
+		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6"), requestedId: "auto" })
+
+		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
+
+		expect(visible).toContain("auto → ctrl+p")
+		expect(visible).not.toContain("kimi-k2.6")
+	})
+
+	it("keeps the multi-model label unchanged when the active model is Auto", () => {
+		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
+		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6"), requestedId: "auto" })
+
+		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
+
+		expect(visible).toContain("multi-model (auto) → ctrl+p")
+	})
 
 	it("pinned usage shows '↑0 ↓0' when no tokens are present", () => {
 		withPinned(["usage"], () => {
@@ -896,7 +960,7 @@ describe("status line pinning", () => {
 
 	it("pinned team shows 'team: —' when no team tag is present", () => {
 		withPinned(["team"], () => {
-			vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod"]) // no team: tag
+			vi.spyOn(TAGS, "peekActiveTags").mockReturnValue(["env:prod"]) // no team: tag
 			const sl = makeStatusLine()
 			const visible = stripAnsi(sl.render(200)[0])
 			expect(visible).toContain("team:")
@@ -906,7 +970,7 @@ describe("status line pinning", () => {
 
 	it("pinned tags shows 'tags: —' when no tags are present", () => {
 		withPinned(["tags"], () => {
-			vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+			vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 			const sl = makeStatusLine()
 			const visible = stripAnsi(sl.render(200)[0])
 			expect(visible).toContain("tags:")
@@ -1214,5 +1278,44 @@ describe("StatusLineScript", () => {
 		const sls = new StatusLineScript(() => null)
 		sls.setLines(["one"])
 		expect(sls.render(80)).toEqual(["one"])
+	})
+})
+
+describe("StatusLine narrow-terminal width invariant", () => {
+	// The status line renders on the main screen, where pi-tui's doRender
+	// hard-crashes on any line wider than the terminal. Sweep widths 1-12
+	// with every segment family active — permissions/model/context, usage,
+	// agents, billing, router — and assert the invariant.
+	afterEach(() => {
+		vi.restoreAllMocks()
+		setBillingStatusForTest(undefined)
+	})
+
+	it("never emits a line wider than the requested width at widths 1-12", () => {
+		const theme = createMockTheme()
+		withPinned(["agents", "credits", "budget"], () => {
+			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(3)
+			setTestBilling()
+			setAutoRoutingState("test-session", {
+				status: "resolved",
+				model: concreteModel("kimi-k2.6"),
+				requestedId: "auto",
+			})
+			const ctx = createMockContext({
+				percent: 87,
+				modelId: "auto",
+				assistantMessages: [
+					{ input: 1200, output: 340 },
+					{ input: 800, output: 200 },
+				],
+			})
+			const sl = new StatusLine(ctx, theme, createMockStatusLineData())
+			for (let width = 1; width <= 12; width++) {
+				const lines = sl.render(width)
+				for (const line of lines) {
+					expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+				}
+			}
+		})
 	})
 })

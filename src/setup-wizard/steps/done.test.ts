@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -38,21 +38,13 @@ import * as modelsModule from "../../models.js"
 import type { WizardState } from "../state.js"
 import { runDoneStep } from "./done.js"
 
-const installRtkMock = vi.hoisted(() => vi.fn())
-
-vi.mock("../../resources/rtk-install.js", () => ({
-	installRtk: installRtkMock,
-}))
-
 describe("runDoneStep", () => {
 	let tmpHome: string
 	let prevHome: string | undefined
 	let prevShell: string | undefined
 
 	beforeEach(() => {
-		// runDoneStep calls exportEnvToShellProfile, which writes to $HOME's
-		// shell profile. Redirect HOME to a scratch dir so we don't append
-		// to the test runner's real .zshrc / .bashrc.
+		// Isolate shell profiles so the test verifies they remain untouched.
 		tmpHome = realpathSync(mkdtempSync(join(tmpdir(), "done-step-test-")))
 		prevHome = process.env.HOME
 		prevShell = process.env.SHELL
@@ -67,13 +59,7 @@ describe("runDoneStep", () => {
 
 		// Mock updateModelsConfig so we don't hit the real network.
 		vi.spyOn(modelsModule, "updateModelsConfig").mockResolvedValue({
-			models: TEST_MODELS as import("../../models.js").ModelMetadata[],
-		})
-		installRtkMock.mockReset()
-		installRtkMock.mockResolvedValue({
-			version: "v1.2.3",
-			binaryPath: "/tmp/kimchi-test/rtk",
-			linkPath: "/tmp/kimchi-test/bin/rtk",
+			models: [...TEST_MODELS],
 		})
 
 		clackMock.spinnerInstance.start.mockClear()
@@ -166,37 +152,6 @@ describe("runDoneStep", () => {
 		writeSpy.mockRestore()
 	})
 
-	it("ensures RTK when setup requests it", async () => {
-		const tool = getClaudeCodeTool()
-		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
-		const state = baseState()
-		state.installRtk = true
-
-		const outcome = await runDoneStep(state)
-
-		expect(installRtkMock).toHaveBeenCalledTimes(1)
-		expect(outcome.rtkInstalled).toBe(true)
-		expect(outcome.failures).toEqual([])
-
-		writeSpy.mockRestore()
-	})
-
-	it("treats RTK install failure as a setup warning", async () => {
-		const tool = getClaudeCodeTool()
-		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
-		installRtkMock.mockRejectedValueOnce(new Error("GitHub rate limited"))
-		const state = baseState()
-		state.installRtk = true
-
-		const outcome = await runDoneStep(state)
-
-		expect(outcome.successes).toEqual(["Claude Code"])
-		expect(outcome.failures).toEqual([])
-		expect(outcome.warnings).toEqual([{ id: "rtk", error: "GitHub rate limited" }])
-
-		writeSpy.mockRestore()
-	})
-
 	it("collects failures rather than aborting on a single broken writer", async () => {
 		const tool = getClaudeCodeTool()
 		const writeSpy = vi.spyOn(tool, "write").mockRejectedValue(new Error("disk full"))
@@ -219,14 +174,17 @@ describe("runDoneStep", () => {
 		expect(outcome.failures[0]?.id).toBe("never-registered")
 	})
 
-	it("exports KIMCHI_API_KEY to the user's shell profile", async () => {
+	it("does not create or change shell profile exports", async () => {
 		const tool = getClaudeCodeTool()
 		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
 
 		await runDoneStep(baseState())
-		const { readFileSync } = await import("node:fs")
-		const zshrc = readFileSync(join(tmpHome, ".zshrc"), "utf-8")
-		expect(zshrc).toContain("export KIMCHI_API_KEY=test-key")
+		const profile = join(tmpHome, ".zshrc")
+		expect(existsSync(profile)).toBe(false)
+		const original = "export KIMCHI_API_KEY=old-key\n"
+		writeFileSync(profile, original)
+		await runDoneStep(baseState())
+		expect(readFileSync(profile, "utf-8")).toBe(original)
 
 		writeSpy.mockRestore()
 	})

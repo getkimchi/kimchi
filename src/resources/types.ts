@@ -6,6 +6,7 @@ export type ResourceId = `${ResourceKind}.${string}`
 export interface ResourceDefinition {
 	id: string
 	kind: ResourceKind
+	experimental?: boolean
 	label: string
 	description: string
 	defaultEnabled: boolean

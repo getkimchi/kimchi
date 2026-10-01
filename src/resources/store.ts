@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
-import { readJson, writeJson } from "../config/json.js"
+import { readJson, readJsonCached, writeJson } from "../config/json.js"
 import { getResourceDefinition } from "./definitions.js"
 import { type ListedResourceSetting, RESOURCE_KINDS, type ResourceId, type ResourceSettings } from "./types.js"
 
@@ -15,7 +15,10 @@ export function getResourceSettingsPath(): string {
 export const settingsPath = getResourceSettingsPath
 
 export function readResourceSettings(path = getResourceSettingsPath()): ResourceSettings {
-	const settings = readJson(path)
+	// Stat-gated cache: isResourceEnabled is consulted on every bash tool_call
+	// and every hook event, so the common case must not re-read and re-parse
+	// the settings file. The parsed object is shared — only read from it.
+	const settings = readJsonCached(path)
 	const raw = asRecord(settings[SETTINGS_KEY])
 	const resources: ResourceSettings["resources"] = {}
 	for (const [id, value] of Object.entries(raw)) {
@@ -31,9 +34,30 @@ export function getResourceOverride(id: string, path = getResourceSettingsPath()
 
 export function isResourceEnabled(id: string, path = getResourceSettingsPath()): boolean {
 	assertResourceId(id)
+	const override = getResourceOverride(id, path)
+	if (override !== undefined) return override
+	if (envEnabledResources().has(id)) return true
 	const definition = getResourceDefinition(id)
 	const fallback = definition?.defaultEnabled ?? true
-	return getResourceOverride(id, path) ?? fallback
+	return fallback
+}
+
+/**
+ * Resource ids from KIMCHI_ENABLE_RESOURCES (comma-separated) — a transient,
+ * per-invocation enablement layer for any resource. Malformed entries are
+ * dropped rather than failing the session (the KIMCHI_TAGS fail-open
+ * precedent); unknown ids are inert. A deliberate `resources disable` still
+ * wins: the persistent override is checked first.
+ */
+function envEnabledResources(): Set<string> {
+	const raw = process.env.KIMCHI_ENABLE_RESOURCES
+	if (!raw) return new Set<string>()
+	const ids = new Set<string>()
+	for (const entry of raw.split(",")) {
+		const trimmed = entry.trim()
+		if (isResourceId(trimmed)) ids.add(trimmed)
+	}
+	return ids
 }
 
 export function listResourceSettings(path = getResourceSettingsPath()): ListedResourceSetting[] {

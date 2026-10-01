@@ -1,4 +1,6 @@
-const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504, 524])
+// Cloudflare 520-522 (origin failures) are transient for the
+// Cloudflare-fronted gateway, alongside 524 (origin timeout).
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504, 520, 521, 522, 524])
 // Default retry budget for kimchi backend calls when the caller passes no retry
 // option. Deliberately independent of config's RETRY_DEFAULTS, which seeds
 // pi's chat retry policy — a different concern with a much smaller budget.

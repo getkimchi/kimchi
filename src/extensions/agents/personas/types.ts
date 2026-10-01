@@ -2,10 +2,12 @@
  * types.ts — Type definitions for the agents extension.
  */
 
-import type { AgentSession } from "@earendil-works/pi-coding-agent"
+import type { AgentSession, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { ModelTier } from "../../orchestration/model-registry/types.js"
 import type { ModelRole } from "../../orchestration/model-roles.js"
+import type { RemoteSessionMeta } from "../manager/remote-agent-runner.js"
 import type { LifetimeUsage } from "../manager/usage.js"
+import type { PersistedGitWorkflow } from "../remote-run-persistence.js"
 import type { FermentWorkerBudgetTier } from "../worker-budget-policy.js"
 
 /** Thinking/reasoning level for models that support it. */
@@ -97,9 +99,6 @@ export const DEFAULT_AGENT_NAMES = [
 	AGENT_DEBUGGER,
 ] as const
 
-/** Memory scope for persistent agent memory. */
-export type MemoryScope = "user" | "project" | "local"
-
 /** Isolation mode for agent execution. */
 export type IsolationMode = "worktree"
 
@@ -142,8 +141,6 @@ export interface AgentConfig {
 	includeContextFiles?: boolean
 	/** Whether to inject shared core guidelines (CORE_GUIDELINES, FACTUAL_ACCURACY, DOCUMENTS_SECTION) into the system prompt in replace mode. Default: false. */
 	includeCoreGuidelines?: boolean
-	/** Persistent memory scope — agents with memory get a persistent directory and MEMORY.md */
-	memory?: MemoryScope
 	/** Isolation mode — "worktree" runs the agent in a temporary git worktree */
 	isolation?: IsolationMode
 	/** true = this is an embedded default agent (informational) */
@@ -168,7 +165,7 @@ export interface AgentRecord {
 	description: string
 	/** user = visible in UI/notifications; system = hidden technical/background work. */
 	visibility: AgentVisibility
-	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error"
+	status: "queued" | "running" | "reconnecting" | "completed" | "steered" | "aborted" | "stopped" | "error"
 	modelId?: string
 	abortReason?: AgentAbortReason
 	taskRef?: AgentTaskRef
@@ -206,6 +203,27 @@ export interface AgentRecord {
 	isBackground?: boolean
 	/** When true, this agent runs on a remote sandbox via ACP instead of locally. */
 	remote?: boolean
+	/** Remote session metadata (workspace, host, cwd) — set by _runRemote, used by post-completion sync. */
+	remoteSession?: RemoteSessionMeta
+	/** ACP session id for the remote run — captured at onReady; needed to
+	 *  persist the run for resume-after-restart (session/load attaches by id). */
+	acpSessionId?: string
+	/** Recovery note when the result was recovered after a network disconnect. */
+	recoveryNote?: string
+	/** ExtensionContext captured at spawn time — used by the completion handler when
+	 *  currentCtx is undefined (background agent completing between turns). */
+	spawnCtx?: ExtensionContext
+	/** Origin label for the remote completion steer message (e.g. "plan", "ferment plan"). */
+	remoteOrigin?: string
+	/** Set when this remote background agent should trigger handleRemoteCompletion on completion. */
+	triggersRemoteCompletion?: boolean
+	/** Ferment ID when the cloud agent is executing a ferment plan. Used to
+	 *  pause the ferment during cloud execution and complete/resume it on completion. */
+	fermentId?: string
+	/** Git intent for PR-first remote runs (branch + captured baseline). Set at
+	 *  spawn from SpawnRemoteAgentOptions; baseSha/dirtyFiles are filled in by
+	 *  _runRemote's onReady baseline capture (sandbox-git.ts). */
+	gitWorkflow?: PersistedGitWorkflow
 	/** Resolver to call when this foreground agent is detached to background via Ctrl+B. */
 	detachResolver?: () => void
 	/** Removes the parent abort signal listener so the agent survives after detach. */
@@ -218,6 +236,12 @@ export interface AgentRecord {
 	lifetimeUsage: LifetimeUsage
 	/** Number of times this agent's session has compacted. Initialized to 0 at spawn. */
 	compactionCount: number
+}
+
+/** Whether a record status counts as active (live work): running, queued, or reconnecting.
+ *  Reconnecting counts as active — a remote transport reattach is live work, not a finished agent. */
+export function isActiveStatus(status: AgentRecord["status"]): boolean {
+	return status === "running" || status === "queued" || status === "reconnecting"
 }
 
 /** Details attached to custom notification messages for visual rendering. */

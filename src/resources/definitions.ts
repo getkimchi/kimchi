@@ -1,7 +1,10 @@
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../extensions/claude-code-skills/definition.js"
+import { FERMENT_V2_RESOURCE_ID } from "../extensions/ferment-v2/constants.js"
+import { MEMORY_RESOURCE_ID } from "../extensions/memory/config.js"
 import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/index.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { discoverClaudeCodeHookResourceDefinitions } from "./claude-code-hook-resources.js"
+import { discoverKimchiHookResourceDefinitions } from "./kimchi-hook-resources.js"
 import { discoverPackageResources } from "./package-resources.js"
 import type { ResourceDefinition, ResourceKind } from "./types.js"
 
@@ -11,13 +14,6 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		kind: "hooks",
 		label: "Bash hooks",
 		description: "Enable Bash hook scripts discovered from hooks/bash directories.",
-		defaultEnabled: true,
-	},
-	{
-		id: "hooks.rtk-rewrite",
-		kind: "hooks",
-		label: "RTK rewrite",
-		description: "Rewrite Bash commands through rtk before execution.",
 		defaultEnabled: true,
 	},
 	{
@@ -85,6 +81,14 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		restartRequired: true,
 	},
 	{
+		id: "extensions.workflows",
+		kind: "extensions",
+		label: "Kimchi Workflows",
+		description: "Enable the /workflow command for authoring and running TypeScript workflows.",
+		defaultEnabled: false,
+		restartRequired: true,
+	},
+	{
 		id: PI_PACKAGE_LOOKUP_RESOURCE_ID,
 		kind: "extensions",
 		label: "Pi package lookup",
@@ -98,6 +102,24 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		label: "MCP apps",
 		description: "Enable MCP/app connector tools.",
 		defaultEnabled: true,
+		restartRequired: true,
+	},
+	{
+		id: FERMENT_V2_RESOURCE_ID,
+		kind: "extensions",
+		experimental: true,
+		label: "Ferment V2",
+		description: "Enable persistent objectives with guarded automatic continuation.",
+		defaultEnabled: false,
+		restartRequired: true,
+	},
+	{
+		id: MEMORY_RESOURCE_ID,
+		kind: "extensions",
+		experimental: true,
+		label: "Memory",
+		description: "Enable persistent personal memory (capture + recall across sessions; facts stored locally).",
+		defaultEnabled: false,
 		restartRequired: true,
 	},
 ]
@@ -118,6 +140,7 @@ function getDynamicResourceDefinitions(): ResourceDefinition[] {
 		dynamicResourceDefinitionsCache = [
 			...discoverBashHookResources(),
 			...discoverClaudeCodeHookResourceDefinitions(),
+			...discoverKimchiHookResourceDefinitions(),
 			...discoverPackageResources(),
 		]
 	}

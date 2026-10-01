@@ -2,16 +2,12 @@ import { existsSync } from "node:fs"
 import { open, readFile, stat } from "node:fs/promises"
 import { platform } from "node:os"
 import { basename, dirname } from "node:path"
-import {
-	readGitToken,
-	readTeleportCompactHintEnabled,
-	readTeleportHelpSeenAt,
-	writeGitToken,
-	writeTeleportHelpSeenAt,
-} from "../../../config.js"
+import { readTeleportCompactHintEnabled, readTeleportHelpSeenAt, writeTeleportHelpSeenAt } from "../../../config.js"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
+import { resolveWorkspaceSpec, WorkspaceSpecError } from "../../../sandbox/cloud/spec.js"
 import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
+import { loadWorkspaceFile, WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
 import { getGitRemoteHost, parseHostFromRemoteUrl, readLocalGitConfig } from "../../../sandbox/git-credentials.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { createSession, listSessions } from "../../../sandbox/worker/sessions.js"
@@ -26,6 +22,7 @@ import { type ClonePlan, ClonePlanError, resolveClonePlan } from "../provisionin
 import { SANDBOX_USER } from "../provisioning/constants.js"
 import { sumIncludeListBytes } from "../provisioning/estimate-bytes.js"
 import { provisionGitCredential, provisionGitIdentity } from "../provisioning/git-provision.js"
+import { resolveGitToken as resolveGitTokenShared } from "../provisioning/git-token.js"
 import { buildHandoffNote, copySessionFileAndAddHandoffNote, removeTempDir } from "../provisioning/handoff-note.js"
 import { provisionHarnessConfig } from "../provisioning/harness-config.js"
 import { buildChangedFilesList, buildIncludeList } from "../provisioning/include-list.js"
@@ -37,11 +34,11 @@ import { formatBytes } from "../ui/format-bytes.js"
 import { promptTeleportHelp } from "../ui/help-modal.js"
 import { createTeleportProgress } from "../ui/progress.js"
 import { parseTeleportArgs } from "./args.js"
-import { refuse, warn } from "./errors.js"
+import { authFailureMessage, refuse, warn } from "./errors.js"
 import { resolveWorkspaceRef } from "./workspace-ref.js"
 
-/** Per-call timeout for createSession: 5min — the 30s WorkerClient default aborts mid-flight on large repos. */
-export const SESSION_CREATE_TIMEOUT_MS = 5 * 60_000
+/** Per-call timeout for createSession: 10min — the 30s WorkerClient default aborts mid-flight on large repos. */
+export const SESSION_CREATE_TIMEOUT_MS = 10 * 60_000
 
 export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promise<void> {
 	if (hasHelpFlag(rawArgs)) {
@@ -85,6 +82,25 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		resolved = await resolveWorkspaceRef(ctx, args.workspace, { onEmpty: { kind: "mint" } })
 	} finally {
 		ctx.ui.setStatus(STATUS_KEY, undefined)
+	}
+
+	// Resolve the workspace spec (kimchi_workspace.yaml) only when this
+	// resolution mints the workspace: spec fields are create-time-only
+	// server-side (resources immutable, dependencies/egress ignored on
+	// upsert) — sending them on re-auth is a 400 landmine or a silent no-op.
+	// Attaching to an existing workspace never reads the file, so a broken
+	// one cannot block a teleport that would ignore it anyway. Invalid
+	// values or a malformed file refuse before the upsert PUT is sent.
+	let workspaceSpec: ReturnType<typeof resolveWorkspaceSpec>
+	if (resolved.isNew) {
+		try {
+			workspaceSpec = resolveWorkspaceSpec(loadWorkspaceFile(ctx.cwd))
+		} catch (err) {
+			if (err instanceof WorkspaceFileError || err instanceof WorkspaceSpecError) {
+				refuse(ctx, err.message)
+			}
+			throw err
+		}
 	}
 	const workspaceId = resolved.id
 	const sessionName = args.name ?? generateSessionName()
@@ -153,10 +169,13 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 	try {
 		progress.step("Authenticating")
 		try {
-			creds = await authenticateWorkspace(workspaceId, ctx.apiKey, description, { endpoint: ctx.endpoint })
+			creds = await authenticateWorkspace(workspaceId, ctx.apiKey, description, {
+				endpoint: ctx.endpoint,
+				...(workspaceSpec ? { spec: workspaceSpec } : {}),
+			})
 		} catch (err) {
 			if (signal.aborted) throw err
-			refuse(ctx, `Authentication failed: ${err instanceof Error ? err.message : String(err)}`)
+			refuse(ctx, authFailureMessage(err))
 		}
 		progress.complete("Authenticated")
 
@@ -504,18 +523,13 @@ async function resolveGitToken(
 	ctx: TeleportContext,
 ): Promise<string | undefined> {
 	if (args.noGitToken || !gitHost) return undefined
-	const cached = readGitToken(gitHost, ctx.configPath)
-	if (cached) return cached
-	const result = await progress.promptGitToken(gitHost)
-	if (result.outcome !== "submitted") return undefined
-	if (result.save) {
-		try {
-			writeGitToken(gitHost, result.token, ctx.configPath)
-		} catch (err) {
+	return resolveGitTokenShared(
+		gitHost,
+		() => progress.promptGitToken(gitHost),
+		(err: unknown) => {
 			warn(ctx, `Could not save git token: ${err instanceof Error ? err.message : String(err)}`)
-		}
-	}
-	return result.token
+		},
+	)
 }
 
 /**

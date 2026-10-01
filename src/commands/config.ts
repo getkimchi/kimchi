@@ -1,5 +1,6 @@
-import { readTelemetryConfig, writeTelemetryEnabled } from "../config.js"
+import { loadConfig, readTelemetryConfig, writeTelemetryEnabled } from "../config.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
+import { isRegionId, REGION_ENV, REGIONS, selectableRegions } from "../regions.js"
 
 const TELEMETRY_ENV = "KIMCHI_TELEMETRY_ENABLED"
 
@@ -23,6 +24,8 @@ export async function runConfig(args: string[]): Promise<number> {
 	switch (sub) {
 		case "telemetry":
 			return handleTelemetry(rest)
+		case "region":
+			return handleRegion(rest)
 		default:
 			console.error(`kimchi config: unknown subcommand "${sub}"`)
 			printUsage()
@@ -95,4 +98,35 @@ function parseSwitch(s: string): boolean | null {
 function printUsage(): void {
 	console.error("Usage: kimchi config telemetry [on|off]")
 	console.error("       kimchi config telemetry           # show current status")
+	console.error("       kimchi config region              # show the endpoint region (chosen at login)")
+}
+
+/**
+ * `kimchi config region` — show the endpoint region. It is chosen at login and
+ * tied to the API key, so there is no set verb (headless setups can set KIMCHI_REGION).
+ */
+function handleRegion(args: string[]): number {
+	if (args.length > 0) {
+		console.error(
+			`kimchi config region: region is chosen at login and tied to your API key. Run "kimchi login" again to switch regions (headless setups can set ${REGION_ENV}=us|eu).`,
+		)
+		return 2
+	}
+
+	const cfg = loadConfig()
+	const current = REGIONS[cfg.region]
+	const envVal = process.env[REGION_ENV]
+	if (isRegionId(envVal)) {
+		console.log(`Region: ${current.id} — ${current.label} (from ${REGION_ENV}=${envVal}, overrides config)`)
+	} else {
+		if (envVal) console.warn(`Ignoring invalid ${REGION_ENV}=${envVal} (expected us|eu)`)
+		console.log(`Region: ${current.id} — ${current.label}`)
+	}
+	console.log(
+		`Available regions: ${selectableRegions()
+			.map((r) => `${r.id} (${r.label})`)
+			.join(", ")}`,
+	)
+	console.log('To switch regions, run "kimchi login" again.')
+	return 0
 }

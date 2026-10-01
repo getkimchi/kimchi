@@ -1,5 +1,5 @@
 import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
-import type { Component } from "@earendil-works/pi-tui"
+import { type Component, visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createTeleportProgress } from "./progress.js"
 
@@ -233,4 +233,41 @@ describe("createTeleportProgress", () => {
 		expect(joined).toContain("Authenticated")
 		expect(joined).toContain("Preparing sandbox")
 	})
+})
+
+describe("teleport progress — narrow terminals", () => {
+	// Regression: at widths ≤ 3 innerW clamped to 1 and contentW went negative,
+	// crashing on "─".repeat(contentW) in the git-token branch.
+	for (const width of [1, 2, 3, 4, 5]) {
+		it(`renders every mode without crashing or overflowing at width ${width}`, async () => {
+			const h = makeUi()
+			const progress = createTeleportProgress(h.ui)
+			progress.step("Authenticating")
+			progress.complete("Authenticated")
+			progress.step("Syncing workspace")
+			const component = h.customCalls[0].component
+			expect(component).toBeDefined()
+
+			const expectFits = () => {
+				let lines: string[] = []
+				expect(() => {
+					lines = component?.render(width) ?? []
+				}).not.toThrow()
+				for (const line of lines) {
+					expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+				}
+			}
+
+			expectFits() // in-progress mode
+
+			const promptPromise = progress.promptGitToken("github.com")
+			expectFits() // git-token mode (the branch that used to crash here)
+
+			progress.stop() // settles the pending git-token promise as skipped
+			await promptPromise
+
+			progress.finish({ id: "ws1", url: "wss://x", description: "test session" })
+			expectFits() // finished mode with session info
+		})
+	}
 })

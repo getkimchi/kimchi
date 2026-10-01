@@ -2,22 +2,24 @@
  * E2E TUI tests for the permission prompt UX — the terminal-facing surface
  * in `src/extensions/permissions/prompts.ts`.
  *
- * Covers three scenarios:
+ * Covers four scenarios:
  *   1. Auto mode: classifier returns "requires-confirmation" with "high" risk
  *      → the risk badge ("● high risk") and classifier reason appear in the prompt.
  *   2. Auto mode: classifier returns "safe" → tool auto-approves, no prompt shown.
  *   3. Auto mode without classifier model: prompt appears without a risk badge
  *      (classifier unavailable → riskScore undefined → no badge rendered).
+ *   4. Auto mode with only the fallback model: safe calls auto-approve and a health warning appears.
  *
  * Key wiring notes:
  *   - The fixture hardcodes `KIMCHI_PERMISSIONS=yolo`, which bypasses all prompts.
  *     All tests override via `--auto` flag, which takes precedence over env in
  *     `resolveMode` (flag > env > config).
- *   - The classifier makes its own LLM call to `deepseek-v4-flash`, so that model
+ *   - The classifier makes its own LLM call to `deepseek-v4-flash-0731`, so that model
  *     slug must be present in the models config for tests 1 and 2. Both the main
  *     model and classifier hit the same fake server endpoint; response ordering in
  *     the queue must match the real request order: main turn → classifier → main
  *     follow-up.
+ *   - Use kimchi-dev with ai-enabler metadata so catalog refresh preserves the exact classifier provider.
  *   - Test 3 omits the classifier model slug. `classifyToolCall` returns
  *     `{ verdict: "requires-confirmation", riskScore: undefined }`, so the prompt
  *     appears (auto mode + promptAvailable) but `formatRiskBadge` is never called.
@@ -29,10 +31,17 @@ import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
-const MAIN_MODEL = { slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }
+const MAIN_MODEL = {
+	slug: "basic",
+	displayName: "Fake Basic",
+	provider: "ai-enabler",
+	contextWindow: 200_000,
+	maxTokens: 8192,
+}
 const CLASSIFIER_MODEL = {
-	slug: "deepseek-v4-flash",
+	slug: "deepseek-v4-flash-0731",
 	displayName: "DeepSeek V4 Flash",
+	provider: "ai-enabler",
 	contextWindow: 200_000,
 	maxTokens: 8192,
 }
@@ -47,6 +56,7 @@ test("auto mode shows risk badge when classifier returns high risk", async ({ te
 		terminal,
 		{
 			artifactName: "permission-prompt-risk-badge",
+			providerId: "kimchi-dev",
 			extraArgs: ["--auto"],
 			models: [MAIN_MODEL, CLASSIFIER_MODEL],
 			responses: [
@@ -103,6 +113,7 @@ test("auto mode auto-approves when classifier returns safe verdict", async ({ te
 		terminal,
 		{
 			artifactName: "permission-prompt-safe-auto-approve",
+			providerId: "kimchi-dev",
 			extraArgs: ["--auto"],
 			models: [MAIN_MODEL, CLASSIFIER_MODEL],
 			responses: [
@@ -144,6 +155,7 @@ test("auto mode without classifier model shows prompt without risk badge", async
 		terminal,
 		{
 			artifactName: "permission-prompt-no-risk-badge",
+			providerId: "kimchi-dev",
 			extraArgs: ["--auto"],
 			// No CLASSIFIER_MODEL in the list — classifyToolCall returns unavailable.
 			models: [MAIN_MODEL],
@@ -165,6 +177,8 @@ test("auto mode without classifier model shows prompt without risk badge", async
 			// the verdict is "requires-confirmation", but riskScore is undefined.
 			await waitForText(terminal, ALLOW_PROMPT, { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("permission prompt visible")
+			await waitForText(terminal, "Permissions classifier unavailable", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("classifier unavailable warning visible")
 
 			// Verify no risk badge text is present (riskScore undefined → no badge).
 			const fullBuffer = terminal
@@ -181,6 +195,36 @@ test("auto mode without classifier model shows prompt without risk badge", async
 			// The model's follow-up should appear.
 			await waitForText(terminal, "File written successfully.", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("follow-up stream after approval")
+		},
+	)
+})
+
+test("auto mode uses fallback when the primary model is absent and warns the user", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "permission-classifier-fallback",
+			providerId: "kimchi-dev",
+			extraArgs: ["--auto"],
+			models: [MAIN_MODEL, { ...CLASSIFIER_MODEL, slug: "minimax-m3", displayName: "MiniMax M3" }],
+			responses: [
+				{ stream: ["I'll create the file."], toolCalls: [{ function: { name: "write", arguments: WRITE_ARGS } }] },
+				{ stream: ['{"verdict":"safe","reason":"Routine file write","riskScore":"low"}'] },
+				{ stream: ["File written with fallback approval."] },
+			],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("Write a file called output.txt")
+			trace.step("submitted write with only fallback classifier available")
+			await waitForText(terminal, "File written with fallback approval.", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("write auto-approved by fallback")
+			await waitForText(terminal, "Permissions classifier is using a fallback model", { timeoutMs: INPUT_TIMEOUT_MS })
+			const buffer = terminal
+				.getBuffer()
+				.map((row: string[]) => row.join(""))
+				.join("\n")
+			expect(buffer).not.toContain(ALLOW_PROMPT)
+			trace.step("fallback warning shown without an approval prompt")
 		},
 	)
 })

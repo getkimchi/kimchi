@@ -210,6 +210,27 @@ describe("wrapFetchWithIdleTimeout", () => {
 			vi.useRealTimers()
 		}
 	})
+
+	it("cancel on an already-errored body resolves instead of leaking the stored error", async () => {
+		// Regression: per the streams spec, reader.cancel() on an already-errored
+		// stream REJECTS with the stored error. Returning that rejection from the
+		// wrapper's cancel() leaked it into the stream machinery — under Bun it
+		// surfaced as an unhandled AbortError when Ctrl+C skipped the on-launch
+		// auto-update download. Pre-fix this test rejects with "stored error".
+		setStreamIdleTimeoutOverride(60_000)
+		const storedError = new Error("stored error")
+		const original = async () =>
+			new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.error(storedError)
+					},
+				}),
+			)
+		const wrapped = wrapFetchWithIdleTimeout(original as never)
+		const res = await wrapped(URL_UNDER_TEST)
+		await expect((res.body as ReadableStream<Uint8Array>).cancel(new Error("user abort"))).resolves.toBeUndefined()
+	})
 })
 
 describe("wrapFetchWithIdleTimeout signal bridging", () => {

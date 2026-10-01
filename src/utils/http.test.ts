@@ -118,7 +118,9 @@ describe("fetchWithRetry", () => {
 	// Retry on transient HTTP status codes
 	// -------------------------------------------------------------------------
 
-	it.each([429, 500, 502, 503, 504, 524])("retries on %i and returns the successful response", async (status) => {
+	it.each([
+		429, 500, 502, 503, 504, 520, 521, 522, 524,
+	])("retries on %i and returns the successful response", async (status) => {
 		const fetchImpl = vi.fn().mockResolvedValueOnce(makeResponse(status)).mockResolvedValueOnce(makeResponse(200))
 
 		const response = await runWithTimers(() =>

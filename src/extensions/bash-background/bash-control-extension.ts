@@ -40,7 +40,9 @@
  * so a forgotten process can invalidate a polished final response.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { isAgentWorker } from "../agent-worker-context.js"
 import { classifyTool } from "../permissions/taxonomy.js"
+import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { BASH_CONTROL_TOOL_NAME, createBashControlToolDefinition } from "./bash-control-tool.js"
 import { elapsedSecondsSince } from "./process-registry.js"
@@ -141,6 +143,23 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	// and immediately when a joiner spawns during an active wait) — never
 	// reactively when an exit lands.
 	let activeControlCalls = new Map<string, ActiveControlCall>()
+	// bash_control (~476 est) stays deferred
+	// — registered but not advertised — until a background bash handle exists.
+	// The visible `bash` description already names bash_control, so discovery
+	// needs no extra text. Reveal is one-way: once a handle has existed, the
+	// tool stays visible for the rest of the session.
+	const visibility = createToolVisibility(pi)
+	// Agent workers keep full bash_control visibility (subagent sessions run
+	// long background tasks; deferral buys nothing there).
+	const defer = !isAgentWorker()
+	let bashControlRevealed = !defer
+
+	/** Reveal bash_control when the first background handle appears — one-way. */
+	function revealBashControl(): void {
+		if (bashControlRevealed) return
+		bashControlRevealed = true
+		visibility.enable([BASH_CONTROL_TOOL_NAME])
+	}
 	// Exits claimed by an in-flight control call: handle -> toolCallId.
 	let claimedExits = new Map<string, string>()
 	// Once-per-turn coalescing flag for concurrency reinforcement steers.
@@ -170,6 +189,10 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 					console.error("bash-background cohort review delivery failed:", err)
 				})
 		}
+		// Deferral vote AFTER registration: the tool exists, it's just hidden.
+		// A resumed session that already revealed bash_control stays revealed
+		// (only votes again when still deferred).
+		if (!bashControlRevealed) visibility.disable([BASH_CONTROL_TOOL_NAME])
 	})
 
 	pi.on("turn_start", () => {
@@ -348,6 +371,10 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	function trackHandle(handle: string): void {
 		if (trackedHandles.has(handle)) return
 		trackedHandles.add(handle)
+		// The first background handle makes bash_control relevant from this
+		// turn on — one-way reveal (deferred until now to save tool-surface
+		// tokens).
+		revealBashControl()
 		// A joiner spawning during an active wait is owned by that wait —
 		// claim it now, before its exit can possibly arrive.
 		for (const [callId, call] of activeControlCalls) {

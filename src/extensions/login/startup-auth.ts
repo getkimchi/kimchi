@@ -4,12 +4,15 @@ import type {
 	ExtensionFactory,
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
-import { loadConfig } from "../../config.js"
+import { getApiKeySource, loadConfig } from "../../config.js"
+import { isKimchiProvider } from "../../kimchi-provider.js"
+import type { RegionId } from "../../regions.js"
 import {
 	createLoginChoiceSelector,
-	isKimchiProvider,
+	createRegionSelector,
 	performKimchiApiKeyLoginViaExtensionUI,
 	performKimchiBrowserLoginWithDialog,
+	regionChoiceRequired,
 	showSubscriptionLoginWithExtensionUI,
 	syncKimchiAuth,
 } from "./flow.js"
@@ -60,7 +63,11 @@ export async function hasUsableAuth(ctx: ExtensionContext): Promise<boolean> {
 	let kimchiAuthSynchronized = configKey.length === 0
 	try {
 		if (configKey) {
-			await syncKimchiAuth(ctx.modelRegistry, configKey)
+			if (getApiKeySource() === "environment") {
+				await ctx.modelRegistry.refresh()
+			} else {
+				await syncKimchiAuth(ctx.modelRegistry, configKey)
+			}
 			kimchiAuthSynchronized = true
 		} else {
 			await ctx.modelRegistry.refresh()
@@ -127,6 +134,25 @@ async function promptAuthChoice(ctx: ExtensionContext): Promise<"kimchi" | "api-
 	})
 }
 
+/**
+ * Region pick preceding Kimchi account/API-key login in the startup gate.
+ * Back (Esc) returns `undefined` so the gate loops back to the auth-method
+ * selector — the selector owns gate cancellation.
+ */
+async function promptRegionChoice(ctx: ExtensionContext): Promise<RegionId | undefined> {
+	const currentRegion = loadConfig().region
+	// Skip the picker when experimental gating leaves no choice.
+	if (!regionChoiceRequired(currentRegion)) return currentRegion
+	return ctx.ui.custom<RegionId | undefined>((_tui, _theme, _keybindings, done) => {
+		const selector = createRegionSelector({
+			currentRegion,
+			onSelect: (region) => done(region),
+			onBack: () => done(undefined),
+		})
+		return selector
+	})
+}
+
 function defaultCancel(ctx: ExtensionContext): Promise<never> {
 	ctx.ui.notify("Login cancelled. Run `kimchi login` or `kimchi setup` to authenticate.", "warning")
 	ctx.shutdown()
@@ -151,18 +177,30 @@ async function runStartupAuthGate(
 			return
 		}
 
-		const result =
-			choice === "kimchi"
-				? await performKimchiBrowserLoginWithDialog(ctx, (model) =>
-						pi.setModel(model as Parameters<typeof pi.setModel>[0]),
-					)
-				: choice === "api-key"
-					? await performKimchiApiKeyLoginViaExtensionUI(ctx, (model) =>
-							pi.setModel(model as Parameters<typeof pi.setModel>[0]),
+		let result: "success" | "failed" | "cancelled"
+		if (choice === "subscription") {
+			result = (await showSubscriptionLoginWithExtensionUI(ctx, (model) => pi.setModel(model, { persist: true })))
+				? "success"
+				: "failed"
+		} else {
+			// Both Kimchi-led paths start with a region pick; it drives the web-app
+			// URL (browser) or the endpoint default (API key) and is persisted with
+			// the token. Back returns to the auth-method selector.
+			const region = await promptRegionChoice(ctx)
+			if (region === undefined) continue
+			result =
+				choice === "kimchi"
+					? await performKimchiBrowserLoginWithDialog(
+							ctx,
+							(model) => pi.setModel(model as Parameters<typeof pi.setModel>[0], { persist: true }),
+							{ region },
 						)
-					: (await showSubscriptionLoginWithExtensionUI(ctx, (model) => pi.setModel(model)))
-						? "success"
-						: "failed"
+					: await performKimchiApiKeyLoginViaExtensionUI(
+							ctx,
+							(model) => pi.setModel(model as Parameters<typeof pi.setModel>[0], { persist: true }),
+							{ region },
+						)
+		}
 
 		if (result === "cancelled") continue
 
