@@ -1,6 +1,6 @@
 # Make running Bash commands inspectable
 
-**Recommendation:** show the command's purpose, command preview and latest output in the conversation; add **`/commands` → select a command → Script / Output** for inspection. Keep `bash_control` as the model-facing tool name, but display **Bash · still running** to the user. Build this over the existing process registry and Pi UI hooks.
+**Recommendation:** show the command's purpose, command preview and latest output in the conversation; add **`/processes` → select a command → Script / Output** for inspection. Keep `bash_control` as the model-facing tool name, but display **Bash · still running** to the user. Build this over the existing process registry and Pi UI hooks.
 
 Research snapshot: 2026-09-25, Kimchi `e7658fac77e3e1623306019e7b288fb68295619a`, pinned `@earendil-works/pi-coding-agent` **0.85.1**. Originally researched on `research/bash-visibility`; implemented on `feat/bash-command-inspector`. The current-behavior analysis below describes the pre-implementation baseline. See [Inspect running Bash commands](../bash-commands.md) for the resulting user interface.
 
@@ -47,7 +47,7 @@ Two existing behaviors are easy to overlook:
 | tmux | Direct terminal observation and interaction; useful when a real interactive terminal is required. Pi's installed README recommends it for background Bash. | Switching to another terminal session adds navigation and does not explain the existing Bash Control row. It is an escape hatch, not the default solution for inspecting managed commands. [Upstream rationale](https://github.com/earendil-works/pi/pull/327). |
 | Inline expansion only | Lowest navigation cost; improve the row the user already sees. | Long scripts/output can dominate scrollback, and finding one command among many remains awkward. Pair it with a focused inspector. |
 
-The distinction from `/ps` should be useful behavior, not an unusual name: show purpose **beside the actual command**, connect repeated waits to one command identity, and provide focused script/output views. `/commands` is a proposed name, available in the inspected Kimchi command registrations; confirm package command collisions at implementation time. `/jobs` is a reasonable alternative. `/tasks` risks confusion with Kimchi's todos and agents.
+The distinction from `/ps` should be useful behavior, not an unusual name: show purpose and the actual command, connect repeated waits to one command identity, and provide focused script/output views. Review selected `/processes` to distinguish running processes from available slash commands. The list shows purpose, status and elapsed time; opening a row reveals the full script. `/tasks` risks confusion with Kimchi's todos and agents.
 
 ### Upstream and package checks
 
@@ -73,19 +73,18 @@ The following examples are wireframes, not screenshots of working features.
 ● Bash · Checking TypeScript · running 42s
   pnpm run typecheck
   src/example.ts(18,3): checking references…
-  Latest output 2s ago · /commands to inspect
+  Latest output 2s ago · /processes to inspect
 ```
 
 Show a short output tail without requiring expansion. Ctrl+O shows the submitted multiline command and a larger output window. Every subsequent wait uses the same title and command identity, with wording such as **Still running** or **Stopping**. Keep separate transcript tool calls initially; merging historical tool calls into one mutable card would require a larger rendering change.
 
 Use **Running, Exited 0, Failed (exit N), Stopped by user, Deadline reached**, and an honest unavailable/unknown state. Do not show success because a check-in returned. “No output yet” and “Last output 35s ago” are useful observations; neither proves a hang or progress. Do not invent percentage complete.
 
-### `/commands`
+### `/processes`
 
 ```text
-Commands · this session                         1 running
-> Checking TypeScript    running 42s    output 2s ago
-  pnpm run typecheck
+Processes · 1 running
+→ Checking TypeScript · Running · 42s
 
 ↑↓ select     Enter inspect     Esc close
 ```
@@ -123,12 +122,12 @@ Use a short optional model-supplied `description` for purpose, such as “Checki
 | Registry metadata | Store command, cwd, tool-call ID, optional description, start/finish times and last-output time. Expose immutable display snapshots through a list method. | The registry already owns lifecycle and output, but cannot currently list or describe commands. Do not expose mutable controllers to the panel. |
 | Streaming | Emit throttled output snapshots while either `bash` or `bash_control` is waiting; detach observers/timers in `finally`. | A user should see output while waiting, independently of model check-in frequency. Reuse the ring buffer; do not create another accumulator. |
 | Rendering | Provide background-aware Bash/control renderers and explicitly route control through them in the existing renderer dispatch. | Label changes and tool-local renderers alone do not bypass current suppression. Persist display metadata in result details for historical rows. |
-| Inspector | Register `/commands` in the background extension. Use non-overlay `ctx.ui.custom` with a list/detail component and the existing session-registry accessor. | The [theme selector](../../src/extensions/theme-selector.ts) uses the native input-area menu mount; closing it restores the editor. |
+| Inspector | Register `/processes` in the background extension. Use non-overlay `ctx.ui.custom` with a list/detail component and the existing session-registry accessor. | The [theme selector](../../src/extensions/theme-selector.ts) uses the native input-area menu mount; closing it restores the editor. |
 | Completion | Retain the currently selected final display snapshot when the live entry is removed; save adequate command/outcome metadata in terminal results, including errors. | A command that exits while being inspected must become a final view, not disappear or show “running” forever. Resumed history must not pretend a process is live. |
 
 Start with a bounded UI refresh timer while the panel or active tool wait is mounted, for example 250 ms. Refresh can read `snapshotTail()` without controlling the process. An output subscription is another option if measurements show polling costs matter; it need not become an event-bus framework. Clear timers on exit, abort, panel close and session replacement. Update only changed content; do not append the entire transcript on each tick.
 
-`AgentSession.prompt()` in pinned Pi executes registered extension commands **before** input events and streaming queues. Therefore a correctly registered `/commands` can open without firing the human-input safety net that clears Kimchi's process gate. This is source-verified feasibility, not a live-TUI guarantee; preserve it in a regression test.
+`AgentSession.prompt()` in pinned Pi executes registered extension commands **before** input events and streaming queues. Therefore a correctly registered `/processes` can open without firing the human-input safety net that clears Kimchi's process gate. This is source-verified feasibility, not a live-TUI guarantee; preserve it in a regression test.
 
 ### Ownership and lifecycle constraints
 
@@ -148,7 +147,7 @@ These are proposed implementation steps, not completed work. Engineering estimat
 
 1. **Capture identity and intent.** Add optional description and immutable process display metadata. Verify multiline commands, missing descriptions, cwd, check-in versus process elapsed time, and unknown handles.
 2. **Make the existing row informative.** Stream output during initial Bash and control waits; route the renderers correctly. A deterministic command printing once per second must update visibly before a 15-second check-in. Check success, non-zero exit, silent commands and deadline/abort outcomes.
-3. **Add `/commands` inspection.** Open while control is waiting; select by stable ID; view full submitted script and live tail; scroll without losing position. Opening/closing must leave deadlines, pending handles and model turns unchanged.
+3. **Add `/processes` inspection.** Open while control is waiting; select by stable ID; view full submitted script and live tail; scroll without losing position. Opening/closing must leave deadlines, pending handles and model turns unchanged.
 4. **Handle completion and bounded data.** Exit while the panel is open, repeated waits, large output, ANSI/control text, split Unicode, long heredocs, narrow terminals, resize, session switch and shutdown. Verify final data remains readable and no timer/listener/process leaks.
 5. **Validate the user workflow.** Co-located module tests plus one deliberate `runKimchiSession` TUI scenario under `tests/e2e/tui`, using deterministic fake responses and isolated HOME/workdir. Build the candidate and use bundled `kimchi-tmux` to inspect live behavior. Run lint/typecheck and relevant tests; preserve existing shutdown/gate tests.
 

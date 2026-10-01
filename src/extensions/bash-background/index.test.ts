@@ -95,7 +95,7 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 				}),
 		)
 		try {
-			const opened = pi.getRegisteredCommand("commands").handler("", ctx)
+			const opened = pi.getRegisteredCommand("processes").handler("", ctx)
 			await Promise.resolve()
 			expect(vi.getTimerCount()).toBe(1)
 			expect(tui.render(80).join("\n")).not.toContain("original input")

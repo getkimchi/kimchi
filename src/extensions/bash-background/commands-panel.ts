@@ -2,8 +2,9 @@ import type { Theme } from "@earendil-works/pi-coding-agent"
 import {
 	CURSOR_MARKER,
 	matchesKey,
-	TuiAltScreen,
 	TuiMainScreen,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
@@ -14,7 +15,6 @@ import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry
 
 export class CommandsPanel {
 	private entries: readonly ProcessDisplaySnapshot[] = []
-	private readonly listRows: number
 	private detailEntry: ProcessDisplaySnapshot | undefined
 	private selected: ProcessDisplaySnapshot | undefined
 	private detail = false
@@ -35,7 +35,7 @@ export class CommandsPanel {
 		private readonly done: () => void,
 		private readonly theme: Theme,
 	) {
-		if (tui instanceof TuiMainScreen || tui instanceof TuiAltScreen) {
+		if (tui instanceof TuiMainScreen) {
 			const render = tui.render
 			const editor = tui.getFocusedComponent()
 			const renderEditor = editor?.render
@@ -48,8 +48,8 @@ export class CommandsPanel {
 				const menu = this.renderContent(width)
 				const editorHeight = editor && renderEditor ? renderEditor.call(editor, width).length : 3
 				lines.splice(marker, menu.length, ...Array<string>(editorHeight).fill(""))
-				const state = tui instanceof TuiMainScreen ? tui.captureRenderState() : undefined
-				const sameSize = state?.previousWidth === width && state.previousHeight === tui.terminal.rows
+				const state = tui.captureRenderState()
+				const sameSize = state.previousWidth === width && state.previousHeight === tui.terminal.rows
 				const viewportTop = Math.max(sameSize ? state.previousViewportTop : 0, lines.length - tui.terminal.rows)
 				const row = Math.max(viewportTop, Math.min(marker, viewportTop + tui.terminal.rows - menu.length - 1))
 				for (let i = 0; i < menu.length; i++) lines[row + i] = menu[i]
@@ -60,7 +60,6 @@ export class CommandsPanel {
 			}
 		}
 		this.refresh()
-		this.listRows = Math.max(6, 4 + this.entries.length * 2)
 		this.timer = setInterval(() => {
 			this.refresh()
 			this.tui.requestRender()
@@ -87,7 +86,7 @@ export class CommandsPanel {
 	private get height(): number {
 		const rows = this.tui.terminal.rows
 		const limit = Math.max(1, Math.min(rows - 4, Math.max(9, Math.floor(rows / 2))))
-		if (!this.detail) return Math.min(limit, this.listRows)
+		if (!this.detail) return Math.min(limit, Math.max(5, 4 + this.entries.length))
 		// Freeze detail sizing on entry; tabs and streaming must not move the viewport.
 		const entry = this.detailEntry
 		const contentRows = Math.max(
@@ -99,6 +98,13 @@ export class CommandsPanel {
 
 	private get pageRows(): number {
 		return Math.max(1, this.height - 7)
+	}
+
+	private get visibleEntries(): readonly ProcessDisplaySnapshot[] {
+		const count = Math.max(1, this.height - 4)
+		const current = this.entries.findIndex((entry) => entry.handle === this.selected?.handle)
+		const start = Math.max(0, current - count + 1)
+		return this.entries.slice(start, start + count)
 	}
 
 	private content(width: number): string[] {
@@ -128,6 +134,41 @@ export class CommandsPanel {
 		this.offset = 0
 		this.follow = true
 		this.pausedOutput = undefined
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (
+			this.disposed ||
+			event.button !== "left" ||
+			(event.type !== "press" && event.type !== "click") ||
+			this.width < 4 ||
+			this.height < (this.detail ? 9 : 5) ||
+			event.x < 1 ||
+			event.x > this.width
+		)
+			return undefined
+		if (!this.detail) {
+			const entry = this.visibleEntries[event.y - 2]
+			if (!entry) return undefined
+			if (event.type === "click") {
+				this.select(entry)
+				this.handleInput("\r")
+			}
+			return { handled: true }
+		}
+		if (event.y !== 3) return undefined
+		const scriptWidth = this.tab === "Script" ? 8 : 6
+		const outputStart = 1 + scriptWidth + 2
+		const outputWidth = this.tab === "Output" ? 8 : 6
+		const tab =
+			event.x <= scriptWidth
+				? "Script"
+				: event.x >= outputStart && event.x < outputStart + outputWidth
+					? "Output"
+					: undefined
+		if (!tab) return undefined
+		if (event.type === "click" && tab !== this.tab) this.handleInput("\t")
+		return { handled: true }
 	}
 
 	handleInput(data: string): void {
@@ -195,7 +236,7 @@ export class CommandsPanel {
 		const innerWidth = Math.max(1, w - 2)
 		this.width = innerWidth
 		const height = this.height
-		if (w < 6 || height < (this.detail ? 9 : 6))
+		if (w < 6 || height < (this.detail ? 9 : 5))
 			return [truncateToWidth(hint("Esc", "back · enlarge terminal to inspect"), w, "…", true)]
 		const fit = (lines: string[], footer: string[]) => [
 			theme.fg("accent", "─".repeat(w)),
@@ -211,19 +252,13 @@ export class CommandsPanel {
 		}
 		if (!this.detail || !this.selected) {
 			const lines = [
-				`${theme.bold(theme.fg("accent", "Commands"))}${separator}${theme.fg("text", "this session")}${separator}${theme.fg("accent", `${this.entries.filter((entry) => entry.state === "running").length} running`)}`,
+				`${theme.bold(theme.fg("accent", "Processes"))}${separator}${theme.fg("accent", `${this.entries.filter((entry) => entry.state === "running").length} running`)}`,
 			]
 			if (!this.entries.length) lines.push(theme.fg("text", "No managed Bash commands running in this session"))
-			const current = this.entries.findIndex((entry) => entry.handle === this.selected?.handle)
-			const count = Math.max(1, Math.floor((height - 4) / 2))
-			const start = Math.max(0, current - count + 1)
-			for (const entry of this.entries.slice(start, start + count)) {
+			for (const entry of this.visibleEntries) {
 				const selected = entry.handle === this.selected?.handle
 				const title = theme.fg(selected ? "accent" : "text", `${selected ? "→" : " "} ${bashTitle(entry)}`)
 				lines.push(withStatus(selected ? theme.bold(title) : title, entry))
-				lines.push(
-					`  ${theme.fg("mdCode", safeBashText(entry.command).replace(/\s+/g, " "))}${separator}${theme.fg("text", bashOutputAge(entry, now))}`,
-				)
 			}
 			return fit(lines, [[hint("Esc", "close"), hint("↑↓", "select"), hint("Enter", "inspect")].join(separator)])
 		}

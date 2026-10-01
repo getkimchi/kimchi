@@ -206,7 +206,7 @@ const renderBashOutput: NonNullable<ToolDefinition["renderResult"]> = (result, o
 			if (display.omittedBytes > 0 || output.length > tail.length)
 				lines.push(theme.fg("warning", "Older output omitted"))
 			lines.push(
-				`${theme.fg("text", bashOutputAge(display))} · ${captured ? theme.fg("warning", "Snapshot at check-in · ") : ""}${theme.bold(theme.fg("accent", "/commands"))}${theme.fg("text", " to inspect")}`,
+				`${theme.fg("text", bashOutputAge(display))} · ${captured ? theme.fg("warning", "Snapshot at check-in · ") : ""}${theme.bold(theme.fg("accent", "/processes"))}${theme.fg("text", " to inspect")}`,
 			)
 			return lines.map((line) => truncateToWidth(line, w, "…"))
 		},

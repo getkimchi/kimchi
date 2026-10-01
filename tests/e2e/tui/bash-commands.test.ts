@@ -1,13 +1,14 @@
-import { existsSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, Key, test } from "@microsoft/tui-test"
+import { poll } from "@microsoft/tui-test/lib/utils/poll.js"
 import { fullText, viewText, waitForText } from "./support/assertions.js"
 import type { FakeToolCall } from "./support/fake-openai-server.js"
 import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
-test("commands preserves the fresh session position and history", async ({ terminal }) => {
+test("processes preserves the fresh session position and history", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -25,7 +26,7 @@ test("commands preserves the fresh session position and history", async ({ termi
 			const aboveInput = baseline.slice(0, input - 1)
 			trace.step("fresh session before any resize or model request")
 			for (let cycle = 0; cycle < 3; cycle++) {
-				terminal.submit("/commands")
+				terminal.submit("/processes")
 				await waitForText(terminal, "No managed Bash commands", { full: false })
 				const menuBottom = viewText(terminal)
 					.split("\n")
@@ -98,7 +99,7 @@ test("commands replaces the input in a tall terminal without leaving a second ed
 			}
 			trace.step("short conversation leaves spare rows below the input")
 			for (let cycle = 0; cycle < 3; cycle++) {
-				terminal.submit("/commands")
+				terminal.submit("/processes")
 				await waitForText(terminal, "Enter inspect", { full: false })
 				expect(inputRow()).toBe(-1)
 				expect(menuTop()).toBe(originalInput - 1)
@@ -234,7 +235,7 @@ test("inspect a running Bash command without interrupting it or asking the model
 			trace.step("same command streams output during the control wait")
 			const inputBeforeInspection = editorRow()
 
-			terminal.submit("/commands")
+			terminal.submit("/processes")
 			await waitForText(terminal, "Enter inspect", { full: false })
 			terminal.keyPress(Key.Enter)
 			await waitForText(terminal, "[Script]", { full: false })
@@ -274,7 +275,7 @@ test("inspect a running Bash command without interrupting it or asking the model
 			expect(existsSync(join(fixture.workDir, "finished"))).toBe(false)
 			trace.step("Ctrl+C closes inspection without aborting or making a model request")
 
-			terminal.submit("/commands")
+			terminal.submit("/processes")
 			await waitForText(terminal, "Enter inspect", { full: false })
 			terminal.keyPress(Key.Enter)
 			await waitForText(terminal, "[Script]", { full: false })
@@ -297,6 +298,103 @@ test("inspect a running Bash command without interrupting it or asking the model
 			expect(fullText(terminal)).not.toContain("unknown handle")
 			expect(requests()).toHaveLength(4)
 			trace.step("an extra poll after completion preserves one final Bash card without an error")
+		},
+	)
+})
+
+test("fullscreen processes grows from empty and supports clicking rows and tabs", async ({ terminal }) => {
+	let startCommands = () => {}
+	let finishResponse = () => {}
+	const start = new Promise<void>((resolve) => {
+		startCommands = resolve
+	})
+	const finish = new Promise<void>((resolve) => {
+		finishResponse = resolve
+	})
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "bash-processes-mouse",
+			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 128_000 }],
+			extraArgs: ["--plan=false"],
+			env: { KIMCHI_PERMISSIONS: "yolo" },
+			seedHome: (homeDir) => {
+				const path = join(homeDir, ".config/kimchi/harness/settings.json")
+				const settings = JSON.parse(readFileSync(path, "utf8"))
+				writeFileSync(path, JSON.stringify({ ...settings, tuiMode: "fullscreen", showHardwareCursor: true }))
+			},
+			responses: [
+				{
+					holdUntil: start,
+					toolCalls: ["A", "B", "C"].map((name, index) => ({
+						id: `mouse_worker_${name}`,
+						index,
+						function: {
+							name: "bash",
+							arguments: JSON.stringify({
+								command: `printf 'worker-${name}-output\\n'; while [ ! -f finish ]; do sleep 0.05; done`,
+								description: `Worker ${name}`,
+								timeout: 120,
+								checkin_interval: 1,
+							}),
+						},
+					})),
+				},
+				{ holdUntil: finish, stream: ["Mouse inspection complete."] },
+			],
+		},
+		async (fixture, trace) => {
+			try {
+				const requests = () => fixture.fake.requests.filter((request) => request.url === "/openai/v1/chat/completions")
+				terminal.submit("Start the three background workers")
+				expect(await poll(() => requests().length === 1, 100, 10_000)).toBe(true)
+				terminal.submit("/processes")
+				await waitForText(terminal, "No managed Bash commands", { full: false })
+				trace.step("open the empty process list while the model response is held")
+				startCommands()
+				await waitForText(terminal, "Processes · 3 running", { full: false })
+				const list = viewText(terminal).split("Processes · 3 running")[1]?.split("Esc close")[0] ?? ""
+				for (const name of ["A", "B", "C"]) expect(list).toContain(`Worker ${name}`)
+				expect(list).not.toContain("printf")
+				expect(await poll(() => requests().length === 2, 100, 10_000)).toBe(true)
+				trace.step("all three compact rows appear without reopening")
+				const workerRow = viewText(terminal)
+					.split("\n")
+					.findLastIndex((line) => line.includes("Worker B"))
+				expect(workerRow).toBeGreaterThanOrEqual(0)
+				terminal.mousePress(4, workerRow)
+				await waitForText(terminal, "[Script]", { full: false })
+				const clickTab = (label: string) => {
+					const lines = viewText(terminal).split("\n")
+					const row = lines.findIndex((line) => line.includes("[Script]") || line.includes("[Output]"))
+					expect(row).toBeGreaterThanOrEqual(0)
+					terminal.mousePress(lines[row].indexOf(label) + 1, row)
+				}
+				clickTab("Output")
+				await waitForText(terminal, "[Output]", { full: false })
+				expect(viewText(terminal).split("[Output]")[1]).toContain("worker-B-output")
+				terminal.resize(45, 16)
+				// The compact footer proves Kimchi redrew; emulator reflow alone leaves stale mouse bounds.
+				await waitForText(terminal, "Esc back · Tab · PgUp/PgDn · End", { full: false })
+				clickTab("Script")
+				await waitForText(terminal, "[Script]", { full: false })
+				expect(viewText(terminal).split("[Script]")[1]).toContain("printf 'worker-B-output")
+				trace.step("mouse opens the selected script and switches both tabs after resize")
+				terminal.keyCtrlC()
+				await waitForText(terminal, PROMPT_READY, { full: false })
+				expect(requests()).toHaveLength(2)
+				terminal.submit("/processes")
+				await waitForText(terminal, "Processes · 3 running", { full: false })
+				terminal.keyEscape()
+				await waitForText(terminal, PROMPT_READY, { full: false })
+				writeFileSync(join(fixture.workDir, "finish"), "")
+				finishResponse()
+				await waitForText(terminal, "Mouse inspection complete.", { full: false })
+				trace.step("inspection leaves all workers running and makes no extra model requests")
+			} finally {
+				startCommands()
+				finishResponse()
+			}
 		},
 	)
 })

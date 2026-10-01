@@ -158,7 +158,7 @@ describe("Bash display", () => {
 		expect(rendered).toContain("terminal line 99")
 		expect(rendered).toContain("Full output: /tmp/managed-output.log")
 		expect(rendered).toContain("Truncated")
-		expect(rendered).not.toContain("/commands to inspect")
+		expect(rendered).not.toContain("/processes to inspect")
 	})
 	it("shows same process age, purpose, actual script and recent output during control waits", () => {
 		const ctx = createToolRenderContext({ args: { handle: "c1" }, isPartial: true })
@@ -168,7 +168,7 @@ describe("Bash display", () => {
 			theme,
 			ctx,
 		).render(100)
-		expect(lines.join("\n")).toContain(theme.fg("accent", "/commands"))
+		expect(lines.join("\n")).toContain(theme.fg("accent", "/processes"))
 		expect(lines.join("\n")).toContain(theme.fg("text", "Last output 1s ago"))
 		const rendered = lines.map(stripTerminalSequences).join("\n")
 		expect(rendered).toContain("Checking output · Running · 42s")

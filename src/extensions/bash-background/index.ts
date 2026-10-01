@@ -38,7 +38,7 @@ export { createProcessRegistry } from "./process-registry.js"
  */
 export function bashBackgroundExtension(pi: ExtensionAPI): void {
 	let panel: CommandsPanel | undefined
-	pi.registerCommand("commands", {
+	pi.registerCommand("processes", {
 		description: "Inspect this session's managed Bash commands and live output",
 		async handler(_args, ctx) {
 			if (ctx.mode !== "tui") {

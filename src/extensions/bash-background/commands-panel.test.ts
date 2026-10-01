@@ -1,12 +1,19 @@
 import type { BashOperations } from "@earendil-works/pi-coding-agent"
-import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui"
+import {
+	CURSOR_MARKER,
+	ProcessTerminal,
+	stripTerminalSequences,
+	TuiAltScreen,
+	type TuiMouseEvent,
+	visibleWidth,
+} from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { testTheme } from "../__mocks__/theme.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { CommandsPanel } from "./commands-panel.js"
 import { createProcessRegistry, type ProcessRegistry } from "./process-registry.js"
 
-function start(registry: ProcessRegistry, command: string) {
+function start(registry: ProcessRegistry, command: string, description?: string) {
 	let output: ((data: Buffer) => void) | undefined
 	let finish: ((result: { exitCode: number | null }) => void) | undefined
 	const operations: BashOperations = {
@@ -18,6 +25,7 @@ function start(registry: ProcessRegistry, command: string) {
 			}),
 	}
 	const handle = registry.spawn(operations, command, "/tmp", undefined, {
+		description,
 		intervalSeconds: 15,
 		deadlineMs: Date.now() + 120000,
 	})
@@ -35,6 +43,19 @@ let registry: ProcessRegistry
 let panel: CommandsPanel
 const tui = { requestRender: vi.fn(), terminal: { rows: 18 } }
 const view = () => panel.render(100).map(stripTerminalSequences).join("\n")
+const mouse = (type: TuiMouseEvent["type"], x: number, y: number): TuiMouseEvent => ({
+	type,
+	button: "left",
+	x,
+	y,
+	screenX: x,
+	screenY: y,
+	width: 100,
+	height: 18,
+	shift: false,
+	alt: false,
+	ctrl: false,
+})
 beforeEach(() => {
 	vi.useFakeTimers()
 	registry = createProcessRegistry()
@@ -65,7 +86,7 @@ describe("CommandsPanel", () => {
 				expect(lines.join("\n")).not.toMatch(/[╭╮╰╯│]/)
 				expect(lines.join("\n")).toContain("Esc")
 				for (const line of lines) expect(visibleWidth(line)).toBe(width)
-				expect(lines.length).toBe(input === "" ? 6 : Math.max(9, Math.floor(rows / 2)))
+				expect(lines.length).toBe(input === "" ? 5 : Math.max(9, Math.floor(rows / 2)))
 			}
 			panel.handleInput("\x1b")
 		}
@@ -74,14 +95,14 @@ describe("CommandsPanel", () => {
 		tui.terminal.rows = 60
 		const process = start(registry, "printf short")
 		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
-		expect(panel.render(100)).toHaveLength(6)
+		expect(panel.render(100)).toHaveLength(5)
 		panel.handleInput("\r")
 		expect(panel.render(100)).toHaveLength(9)
 		process.output("line\n".repeat(12))
 		await vi.advanceTimersByTimeAsync(250)
 		expect(panel.render(100)).toHaveLength(9)
 		panel.handleInput("\x1b")
-		expect(panel.render(100)).toHaveLength(6)
+		expect(panel.render(100)).toHaveLength(5)
 		panel.handleInput("\r")
 		expect(panel.render(100)).toHaveLength(19)
 		process.output("line\n".repeat(100))
@@ -95,7 +116,50 @@ describe("CommandsPanel", () => {
 		tui.terminal.rows = 60
 		for (let i = 0; i < 6; i++) start(registry, `echo ${i}`).output("line\n".repeat(100))
 		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
-		expect(panel.render(100)).toHaveLength(16)
+		expect(panel.render(100)).toHaveLength(10)
+	})
+	it("grows an initially empty list as commands start, up to the viewport cap", async () => {
+		tui.terminal.rows = 20
+		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
+		expect(panel.render(100)).toHaveLength(5)
+		for (let i = 0; i < 3; i++) start(registry, `script-${i}`, `Worker ${i}`)
+		await vi.advanceTimersByTimeAsync(250)
+		expect(panel.render(100)).toHaveLength(7)
+		for (let i = 0; i < 3; i++) expect(view()).toContain(`Worker ${i}`)
+		expect(view()).not.toContain("script-")
+		for (let i = 3; i < 12; i++) start(registry, `script-${i}`, `Worker ${i}`)
+		await vi.advanceTimersByTimeAsync(250)
+		expect(panel.render(100)).toHaveLength(10)
+		for (let i = 0; i < 11; i++) panel.handleInput("\x1b[B")
+		expect(view()).toContain("Worker 11")
+	})
+	it("opens the clicked visible row and switches tabs without changing the process", () => {
+		for (let i = 0; i < 8; i++) start(registry, `script-${i}`, `Worker ${i}`).output(`output-${i}`)
+		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
+		for (let i = 0; i < 7; i++) panel.handleInput("\x1b[B")
+		view()
+		expect(panel.handleMouse(mouse("press", 3, 2))).toEqual({ handled: true })
+		panel.handleMouse(mouse("click", 3, 2))
+		expect(view()).toContain("script-3")
+		expect(view()).toContain("[Script]")
+		panel.handleMouse(mouse("click", 12, 3))
+		expect(view()).toContain("[Output]")
+		expect(view()).toContain("output-3")
+		panel.handleMouse(mouse("click", 2, 3))
+		expect(view()).toContain("[Script]")
+		expect(view()).not.toContain("output-3")
+		expect(registry.listDisplaySnapshots().every((entry) => entry.state === "running")).toBe(true)
+		expect(panel.handleMouse(mouse("click", 1, 0))).toBeUndefined()
+		panel.dispose()
+		expect(panel.handleMouse(mouse("click", 12, 3))).toBeUndefined()
+	})
+	it("does not expose the main-screen positioning marker as a fullscreen cursor", () => {
+		const fullscreen = new TuiAltScreen(new ProcessTerminal(), true)
+		vi.spyOn(fullscreen, "requestRender").mockImplementation(() => {})
+		const render = fullscreen.render
+		panel = new CommandsPanel(registry, fullscreen, vi.fn(), testTheme)
+		expect(panel.render(100).join("\n")).not.toContain(CURSOR_MARKER)
+		expect(fullscreen.render).toBe(render)
 	})
 	it("returns to the list before closing through the host", () => {
 		start(registry, "sleep 60")

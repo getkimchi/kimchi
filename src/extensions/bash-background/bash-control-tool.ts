@@ -22,7 +22,7 @@ import type { BashToolDetails, ToolDefinition } from "@earendil-works/pi-coding-
 import { type Static, Type } from "typebox"
 import { renderBashCall, renderBashResult } from "./bash-display.js"
 import { awaitCheckin } from "./checkin.js"
-import type { ProcessDisplaySnapshot } from "./process-registry.js"
+import type { FinalSnapshot, ProcessDisplaySnapshot, TailSnapshot } from "./process-registry.js"
 import { getSessionRegistry } from "./session-registry.js"
 import { throwIfTerminal } from "./terminal-status.js"
 
@@ -65,6 +65,25 @@ export interface BashControlDetails extends BashToolDetails {
 	checkin?: boolean
 	/** Reason the process stopped, if any ("stop" | "deadline" | "aborted" | …). */
 	reason?: string | null
+}
+
+function terminalDetails(
+	handle: string,
+	action: BashControlInput["action"],
+	snapshot: FinalSnapshot | TailSnapshot,
+	display: ProcessDisplaySnapshot | undefined,
+): BashControlDetails {
+	return {
+		handle,
+		action,
+		exited: true,
+		exitCode: snapshot.exitCode,
+		reason: snapshot.reason,
+		display,
+		...("truncation" in snapshot && snapshot.truncation?.truncated
+			? { truncation: snapshot.truncation, fullOutputPath: snapshot.fullOutputPath }
+			: {}),
+	}
 }
 
 export const BASH_CONTROL_TOOL_NAME = "bash_control"
@@ -141,17 +160,7 @@ export function createBashControlToolDefinition(
 				const { final, display, deadlineSeconds } = completed
 				const result = {
 					content: [{ type: "text" as const, text: final.content }],
-					details: {
-						handle,
-						exited: true,
-						exitCode: final.exitCode,
-						action,
-						reason: final.reason,
-						display,
-						...(final.truncation?.truncated
-							? { truncation: final.truncation, fullOutputPath: final.fullOutputPath }
-							: {}),
-					},
+					details: terminalDetails(handle, action, final, display),
 				}
 				onUpdate?.(result)
 				if (action === "continue") throwIfTerminal(final, final.content, deadlineSeconds)
@@ -189,13 +198,8 @@ export function createBashControlToolDefinition(
 					},
 				],
 				details: {
-					handle,
-					exited: true,
-					exitCode: finalExitCode,
-					action: "stop",
+					...terminalDetails(handle, action, final ?? snapshot, display),
 					reason: snapshot.reason ?? "stop",
-					display,
-					...(truncated ? { truncation: final?.truncation, fullOutputPath: final?.fullOutputPath } : {}),
 				},
 			}
 		}
@@ -209,36 +213,14 @@ export function createBashControlToolDefinition(
 			const snapshot = registry.snapshotTail(handle)
 			const display = registry.displaySnapshot(handle)
 			const fullOutput = final?.content ?? snapshot.text
-			onUpdate?.({
-				content: [{ type: "text", text: fullOutput }],
-				details: {
-					handle,
-					action,
-					exited: true,
-					exitCode: snapshot.exitCode,
-					reason: snapshot.reason,
-					display,
-					...(final?.truncation?.truncated
-						? { truncation: final.truncation, fullOutputPath: final.fullOutputPath }
-						: {}),
-				},
-			})
+			const result = {
+				content: [{ type: "text" as const, text: fullOutput }],
+				details: terminalDetails(handle, action, final ?? snapshot, display),
+			}
+			onUpdate?.(result)
 			await registry.remove(handle).catch(() => {})
 			throwIfTerminal(snapshot, fullOutput, entry.deadlineSeconds)
-			return {
-				content: [{ type: "text", text: fullOutput }],
-				details: {
-					handle,
-					exited: true,
-					exitCode: snapshot.exitCode,
-					action: "continue",
-					reason: snapshot.reason,
-					display,
-					...(final?.truncation?.truncated
-						? { truncation: final.truncation, fullOutputPath: final.fullOutputPath }
-						: {}),
-				},
-			}
+			return result
 		}
 
 		// Optionally extend the deadline BEFORE re-arming, so an imminent
@@ -293,36 +275,14 @@ export function createBashControlToolDefinition(
 		if (exited) {
 			const final = registry.finalSnapshot(handle)
 			const fullOutput = final?.content ?? snapshot.text
-			onUpdate?.({
-				content: [{ type: "text", text: fullOutput }],
-				details: {
-					handle,
-					action,
-					exited: true,
-					exitCode: snapshot.exitCode,
-					reason: snapshot.reason,
-					display,
-					...(final?.truncation?.truncated
-						? { truncation: final.truncation, fullOutputPath: final.fullOutputPath }
-						: {}),
-				},
-			})
+			const result = {
+				content: [{ type: "text" as const, text: fullOutput }],
+				details: terminalDetails(handle, action, final ?? snapshot, display),
+			}
+			onUpdate?.(result)
 			await registry.remove(handle).catch(() => {})
 			throwIfTerminal(snapshot, fullOutput, entry.deadlineSeconds)
-			return {
-				content: [{ type: "text", text: fullOutput }],
-				details: {
-					handle,
-					exited: true,
-					exitCode: snapshot.exitCode,
-					action: "continue",
-					reason: snapshot.reason,
-					display,
-					...(final?.truncation?.truncated
-						? { truncation: final.truncation, fullOutputPath: final.fullOutputPath }
-						: {}),
-				},
-			}
+			return result
 		}
 
 		// Process still running — return tail window + handle.
