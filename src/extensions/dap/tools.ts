@@ -298,10 +298,19 @@ const WatchChangeSchema = Type.Object({
 // Deferral split
 // =============================================================================
 
-/** Visible at session start: the entry point (debug_launch) plus the four
- *  self-contained one-shots. Everything session-scoped is hidden until a
- *  debug session becomes active (see dap.ts installSessionToolDeferral). */
-export const DAP_ALWAYS_VISIBLE_TOOL_NAMES = [
+/** Anchors the entry-tool reveal: a `read` tool_call whose path contains
+ *  this marker loads the dap-debugging skill (the documented discovery
+ *  path), so the DAP entry tools are revealed. Shared with the tests — do
+ *  not inline the literal elsewhere. */
+export const DAP_DEBUGGING_SKILL_PATH_MARKER = "dap-debugging/SKILL.md"
+
+/** Entry point (debug_launch) plus the four self-contained one-shots.
+ *  Hidden at session start (~1.5k est tokens) — revealed one-way when the
+ *  agent loads the dap-debugging skill (the documented discovery path) or
+ *  launches a session; the generic not-found reveal in hidden-tool-guidance
+ *  is the backstop for direct name guesses. Everything session-scoped is
+ *  hidden until a debug session becomes active. */
+export const DAP_ENTRY_TOOL_NAMES = [
 	"debug_launch",
 	"debug_state_at",
 	"debug_last_error",
