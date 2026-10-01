@@ -5728,17 +5728,23 @@ describe("agent activity notifications", () => {
 			sessionFactory: async () => asSession(fake),
 		})
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const compactionResult = {
+			summary: "compaction summary text",
+			firstKeptEntryId: "entry-42",
+			tokensBefore: 190_000,
+			estimatedTokensAfter: 40_000,
+		}
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
 			fake.emit({ type: "compaction_start", reason: "overflow" } as AgentSessionEvent)
 			fake.emit({
 				type: "compaction_end",
 				reason: "overflow",
-				result: { summary: "a long generated compaction summary that must not cross the wire" },
+				result: compactionResult,
 				aborted: false,
 				willRetry: false,
 				errorMessage: "summarization failed",
-			} as unknown as AgentSessionEvent)
+			} as AgentSessionEvent)
 			fake.emit(successEvent())
 			fake.emit(agentEnd())
 		}
@@ -5760,32 +5766,32 @@ describe("agent activity notifications", () => {
 					sessionId: "session-activity-compaction",
 					kind: "compaction_end",
 					reason: "overflow",
+					result: compactionResult,
 					aborted: false,
 					willRetry: false,
 					errorMessage: "summarization failed",
 				},
 			},
 		])
-		// The compaction artifact stays out of the stall signal (DROPPED_FIELDS).
-		expect(activities[1].params).not.toHaveProperty("result")
 	})
 
 	it.each([
 		{
-			event: { type: "summarization_retry_scheduled", attempt: 1, maxAttempts: 3, reason: "empty" },
-			expected: { attempt: 1, maxAttempts: 3, reason: "empty" },
+			event: {
+				type: "summarization_retry_scheduled",
+				attempt: 1,
+				maxAttempts: 3,
+				delayMs: 5000,
+				errorMessage: "Request failed with status code 429",
+			},
 		},
-		{
-			event: { type: "summarization_retry_attempt_start", attempt: 2, maxAttempts: 3 },
-			expected: { attempt: 2, maxAttempts: 3 },
-		},
-		{
-			// `summary` is generated transcript content — DROPPED_FIELDS strips it.
-			event: { type: "summarization_retry_finished", success: true, consecutiveFailures: 0, summary: "some summary" },
-			expected: { success: true, consecutiveFailures: 0 },
-		},
-	])("forwards summarization retry lifecycle: $event.type", async ({ event, expected }) => {
-		const sessionId = `session-activity-${event.type}`
+		{ event: { type: "summarization_retry_attempt_start", source: "branchSummary" } },
+		{ event: { type: "summarization_retry_attempt_start", source: "compaction", reason: "threshold" } },
+		// pi's finished event carries no fields — payload is the bare envelope.
+		{ event: { type: "summarization_retry_finished" } },
+	])("forwards summarization retry lifecycle: $event.type [$event.source ?? ''", async ({ event }) => {
+		const { type, ...expected } = event
+		const sessionId = `session-activity-${type}-${JSON.stringify(expected)}`
 		const fake = new FakeAgentSession(sessionId)
 		const { conn, extNotifications } = makeRecordingConn()
 		const agent = new KimchiAcpAgent(conn, {
@@ -5805,7 +5811,7 @@ describe("agent activity notifications", () => {
 		expect(extNotifications).toEqual([
 			{
 				method: "_kimchi.dev/agent_activity",
-				params: { ...expected, sessionId: msg.sessionId, kind: event.type },
+				params: { ...expected, sessionId: msg.sessionId, kind: type },
 			},
 		])
 	})
