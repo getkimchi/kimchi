@@ -53,7 +53,7 @@ export function describeToolCall(
 ): { title: string; kind: ToolKind; locations: ToolCallLocation[] } {
 	const a = (args ?? {}) as Record<string, unknown>
 	const titleArgNames = TITLE_ARGS[toolName] ?? []
-	const targeted = titleArgNames.map((key) => asString(a[key])).find((v) => !!v)
+	const targeted = asString(a[titleArgNames[0] ?? ""]) ?? asString(a[titleArgNames[1] ?? ""])
 	// title carries the target/argument only; the ACP `kind` field drives the verb
 	// and icon on the client side. Truncate so a long absolute path or regex
 	// doesn't blow up client UIs (locations[].path keeps the full value for

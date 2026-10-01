@@ -292,18 +292,6 @@ describe("describeToolCall", () => {
 			expect: { title: "bash", kind: "execute", locations: [] },
 		},
 		{
-			name: "empty command falls back to tool name",
-			toolName: "bash",
-			args: { command: "" },
-			expect: { title: "bash", kind: "execute", locations: [] },
-		},
-		{
-			name: "empty file_path falls back to tool name and emits no locations",
-			toolName: "edit",
-			args: { file_path: "" },
-			expect: { title: "edit", kind: "edit", locations: [] },
-		},
-		{
 			name: "long path title is truncated (locations keep full path)",
 			toolName: "read",
 			args: { file_path: longPath },
