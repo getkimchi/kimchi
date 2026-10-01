@@ -27,7 +27,12 @@
 #   - mcp-auth-flow: manual (remote https) OAuth redirect flows also start an
 #     opportunistic loopback listener on the default callback port/path and
 #     race it against the manual paste prompt; graceful fallback to
-#     paste-only when the listener cannot bind.
+#     paste-only when the listener cannot bind. startAuth reports whether the
+#     capture is armed, and non-interactive callers (no onAuthorizationInput,
+#     e.g. ACP/Studio) may proceed without a manual paste when it is.
+#   - proxy-modes: auth-start registers the background auth watcher for
+#     remote https redirects when the loopback capture is armed, and the
+#     auth-start instructions reflect automatic completion.
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -349,7 +354,7 @@ index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547
          if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
              return true;
 diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
-index 0ae900470d923665153cdbc6028dd91f81c180b2..25183b69f3d3506cfc2c5d76716a3c64c16479a6 100644
+index 0ae900470d923665153cdbc6028dd91f81c180b2..81f526d31b4094a46696842080b0a2a2f8d31f32 100644
 --- a/mcp-auth-flow.ts
 +++ b/mcp-auth-flow.ts
 @@ -93,6 +93,12 @@ type PendingAuth = {
@@ -365,7 +370,24 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..25183b69f3d3506cfc2c5d76716a3c64
    discovery: AuthDiscovery
    getHeaders: () => Headers
    authStorageOptions: AuthStorageOptions
-@@ -508,6 +514,15 @@ export async function startAuth(
+@@ -453,7 +459,7 @@ export async function startAuth(
+   definition?: ServerEntry,
+   options: AuthenticateOptions = {},
+   operationAuthority?: OAuthAuthority,
+-): Promise<{ authorizationUrl: string }> {
++): Promise<{ authorizationUrl: string; loopbackCapture?: boolean }> {
+   if (isServerDisabled(definition)) throw new Error(`MCP server "${serverName}" is disabled`)
+   const authority = operationAuthority ?? captureOAuthAuthority(serverName)
+   authority()
+@@ -501,13 +507,22 @@ export async function startAuth(
+   const existingPendingAuth = runtimeState.pendingAuths.get(getPendingAuthKey(serverName, authStorageOptions))
+   if (existingPendingAuth?.serverUrl === serverUrl) {
+     existingPendingAuth.authority()
+-    return { authorizationUrl: existingPendingAuth.authorizationUrl }
++    return { authorizationUrl: existingPendingAuth.authorizationUrl, ...(existingPendingAuth.loopbackCapture ? { loopbackCapture: true } : {}) }
+   }
+ 
+   const redirectTarget = config.redirectUri !== undefined ? parseOAuthRedirectUri(config.redirectUri) : undefined
    const manualRedirect = redirectTarget?.mode === "manual"
    const oauthState = generateState()
  
@@ -400,7 +422,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..25183b69f3d3506cfc2c5d76716a3c64
    }
  
    let capturedUrl: URL | undefined
-@@ -601,6 +628,7 @@ export async function startAuth(
+@@ -601,13 +628,14 @@ export async function startAuth(
        authorizationUrl: capturedUrl.toString(),
        manualRedirect,
        ...(manualRedirect ? { manualCompletionController: new AbortController() } : {}),
@@ -408,6 +430,23 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..25183b69f3d3506cfc2c5d76716a3c64
        discovery,
        getHeaders,
        authStorageOptions,
+       authority,
+     }, oauthState, signal, generation)
+     authority()
+-    return { authorizationUrl: capturedUrl.toString() }
++    return { authorizationUrl: capturedUrl.toString(), ...(loopbackCapture ? { loopbackCapture: true } : {}) }
+   } catch (error) {
+     authProvider.deactivate()
+     try {
+@@ -1034,7 +1062,7 @@ export async function authenticate(
+       if (!pendingAuth) {
+         throw new Error(`No pending OAuth flow for server: ${serverName}`)
+       }
+-      if (pendingAuth.manualRedirect && !options.onAuthorizationInput) {
++      if (pendingAuth.manualRedirect && !pendingAuth.loopbackCapture && !options.onAuthorizationInput) {
+         throw new Error(
+           `OAuth for ${serverName} uses a remote redirect URI. Complete it with auth-start/auth-complete or /mcp-auth.`,
+         )
 @@ -1042,7 +1070,7 @@ export async function authenticate(
  
        // Register the localhost callback before opening the browser. Remote
@@ -485,6 +524,77 @@ index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef3128
 -    return undefined;
 -  }
 -}
+diff --git a/proxy-modes.ts b/proxy-modes.ts
+index 49f1b4eccfbee9a14ef6e71db8d8392dcba6ed23..05bf69fcd5d6d84e180def9513228d44c81fa652 100644
+--- a/proxy-modes.ts
++++ b/proxy-modes.ts
+@@ -233,24 +233,27 @@ function getRedirectDetails(authorizationUrl: string): { port?: number; remote:
+   }
+ }
+ 
+-function formatManualAuthInstructions(serverName: string, authorizationUrl: string): string {
++function formatManualAuthInstructions(serverName: string, authorizationUrl: string, loopbackCapture = false): string {
+   const redirect = getRedirectDetails(authorizationUrl);
++  const watchingLocal = !redirect.remote || loopbackCapture;
+   const redirectNote = redirect.remote
+-    ? "The provider uses a pre-registered HTTPS callback. Copy its full URL from the browser address bar, even if the destination page reports an error."
++    ? loopbackCapture
++      ? "The provider uses a pre-registered HTTPS callback that bounces to the loopback listener, so authentication can complete automatically. If the browser instead shows an error page, copy its full URL from the address bar and send it back so the OAuth state can be checked."
++      : "The provider uses a pre-registered HTTPS callback. Copy its full URL from the browser address bar, even if the destination page reports an error."
+     : `The adapter is watching${redirect.port ? ` local port ${redirect.port}` : " the local callback"} and will report when authentication completes.`;
+ 
+   return [
+     `MCP OAuth required for "${serverName}".`,
+     "",
+-    redirect.remote
+-      ? "The adapter is attempting to open this authorization URL in your local browser:"
+-      : "The adapter is attempting to open this authorization URL and watching for its callback:",
++    watchingLocal
++      ? "The adapter is attempting to open this authorization URL and watching for its callback:"
++      : "The adapter is attempting to open this authorization URL in your local browser:",
+     "",
+     authorizationUrl,
+     "",
+-    redirect.remote
+-      ? "After approving, copy the full callback URL from your browser address bar and send it back with:"
+-      : "If the browser does not open or the callback is not detected, open the URL above and complete manually with:",
++    watchingLocal
++      ? "If the browser does not open or the callback is not detected, open the URL above and complete manually with:"
++      : "After approving, copy the full callback URL from your browser address bar and send it back with:",
+     `mcp({ action: "auth-complete", server: "${serverName}", args: { redirectUrl: "PASTE_REDIRECT_URL_HERE" } })`,
+     "",
+     redirect.remote
+@@ -526,7 +529,7 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+       };
+     }
+ 
+-    const { authorizationUrl } = state.authStorageOptions
++    const { authorizationUrl, loopbackCapture } = state.authStorageOptions
+       ? ownedSignal
+         ? await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, signal: ownedSignal, runtime: state.oauthRuntime })
+         : await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, runtime: state.oauthRuntime })
+@@ -541,6 +544,12 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+     }
+ 
+     if (getRedirectDetails(authorizationUrl).remote) {
++      // Remote https redirects with an armed loopback capture complete through
++      // the local callback listener in the background; without it they stay
++      // paste-only via auth-complete.
++      if (loopbackCapture) {
++        ensureBackgroundAuthWatcher(state, serverName, serverUrl, definition);
++      }
+       try {
+         await state.openBrowser(authorizationUrl);
+       } catch (error) {
+@@ -551,7 +560,7 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+     }
+ 
+     return {
+-      content: [{ type: "text" as const, text: formatManualAuthInstructions(serverName, authorizationUrl) }],
++      content: [{ type: "text" as const, text: formatManualAuthInstructions(serverName, authorizationUrl, loopbackCapture === true) }],
+       details: { mode: "auth-start", server: serverName, authorizationUrl },
+     };
+   } catch (error) {
 diff --git a/server-manager.ts b/server-manager.ts
 index 3213c908a86c4baf483af3470bb6d5ea0c32028d..c1af597f0cd0c1d0c1d99f7620e63b5003c04954 100644
 --- a/server-manager.ts
