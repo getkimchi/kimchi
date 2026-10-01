@@ -9,8 +9,9 @@ export const CAPABILITIES_KEY = "kimchi.dev"
 // Direction:
 // - pi_* methods are agent→client (the agent calls conn.extMethod on the client).
 // - probe_mcp_server, set_session_title, steering, auth_status,
-//   import_discover, import_apply, set_onboarding_flag, and set_project_trust
-//   are client→agent inbound (the agent's extMethod() handler receives them).
+//   import_discover, import_apply, set_onboarding_flag, set_project_trust, and
+//   session_status are client→agent inbound (the agent's extMethod() handler
+//   receives them).
 //
 // project_trust_update is an agent→client extNotification (pushed after
 //   session creation and whenever a trust decision changes), following the
@@ -33,6 +34,7 @@ export const AVAILABLE_EXT_METHODS = {
 	set_project_trust: `_${CAPABILITIES_KEY}/set_project_trust`,
 	get_path_trust: `_${CAPABILITIES_KEY}/get_path_trust`,
 	set_path_trust: `_${CAPABILITIES_KEY}/set_path_trust`,
+	session_status: `_${CAPABILITIES_KEY}/session_status`,
 } as const
 
 export const AVAILABLE_EXT_NOTIFICATIONS = {
