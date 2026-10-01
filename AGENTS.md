@@ -42,6 +42,30 @@ Use the bundled `kimchi-tmux` when developing or verifying harness commands, men
 - **Quarantine only for unstable tests.** Use `tests/e2e/tui/skip-list.js` with a specific reason and remove the entry as soon as the instability is fixed.
 - **Don't hand-write common dependency mocks in tests.** Avoid creating `ExtensionContext` (`ctx`) or `ExtensionAPI` (`pi`) mocks inline inside a test file. Use shared mocks (e.g. under `src/extensions/__mocks__/**` for unit tests) when they exist, and add new ones there if several tests need the same dependency. Don't copy-paste partial mocks across tests.
 
+## Dual-surface parity (TUI ↔ ACP)
+
+The harness ships two user-facing surfaces: the interactive TUI (`src/modes/interactive/`) and the ACP server (`src/modes/acp/`, JSON-RPC/IDE integration), each with its own e2e suite (`pnpm run test:e2e:tui` / `pnpm run test:e2e:acp`). Most harness changes must work on both surfaces — forgetting the ACP side is a recurring source of drift and follow-up `fix(acp):` PRs.
+
+**Whenever you change the harness, check whether ACP needs a parallel change — before you consider the task done.** A change is ACP-relevant until proven otherwise if it touches:
+
+- slash commands or the available-commands palette
+- tool-call presentation (titles, `rawInput`, in-progress/complete state)
+- permission/approval prompts or project-trust decisions
+- model selection/routing and advertised model lists
+- session listing, resume, or visibility
+- skills (discovery, reload, advertised skill commands)
+- streamed text the user sees: steering, `<done>`/recovery markers, usage/progress output
+- MCP servers, probing, or OAuth flows
+- image/content forwarding
+
+If the change is ACP-relevant:
+
+- Mirror the behavior for ACP. Prefer putting shared logic in `src/extensions/` / `src/shared/` and keep `src/modes/*` as thin adapters over it — don't duplicate logic per surface.
+- Add or update the matching ACP e2e test alongside the TUI one (see Testing expectations), or explain in the PR why ACP coverage isn't practical.
+- Run `pnpm run test:e2e:acp` when the change crosses the ACP boundary.
+
+If the change is genuinely TUI-only, say so explicitly in the PR summary. A silent skip is the failure mode this rule exists to catch.
+
 ## Code clean-up checklist
 
 AI agents often introduce a few recurring issues (likely picked up from existing code patterns). Before finishing a PR, review the diff for these and clean them up:
