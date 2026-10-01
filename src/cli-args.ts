@@ -1,6 +1,8 @@
+import { existsSync } from "node:fs"
 import { parseArgs } from "node:util"
 import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import { type CliMode, getCliModeArg, PROTOCOL_MODES } from "./cli-modes.js"
+import { resolveUserPath } from "./fs-paths.js"
 
 // Re-export the shared leaf-module helpers so existing callers can keep
 // importing them from cli-args.ts without touching their import paths.
@@ -20,16 +22,33 @@ const PRE_DISPATCH_VALUE_FLAG_SHORTS: Record<string, string | undefined> = {
 	"system-prompt": undefined,
 	"append-system-prompt": undefined,
 	session: undefined,
+	"session-id": undefined,
+	name: "n",
 	fork: undefined,
 	"session-dir": undefined,
 	models: undefined,
 	tools: "t",
+	"exclude-tools": undefined,
 	thinking: undefined,
 	export: undefined,
 	extension: "e",
 	skill: undefined,
 	"prompt-template": undefined,
 	theme: undefined,
+	"use-theme": undefined,
+	"tui-mode": undefined,
+}
+
+// Pi treats these as whole aliases, not POSIX short-option clusters.
+const PI_LITERAL_ALIASES: Record<string, string> = {
+	"-nt": "--no-tools",
+	"-nbt": "--no-builtin-tools",
+	"-ne": "--no-extensions",
+	"-ns": "--no-skills",
+	"-np": "--no-prompt-templates",
+	"-nc": "--no-context-files",
+	"-na": "--no-approve",
+	"-xt": "--exclude-tools",
 }
 
 const PRE_DISPATCH_VALUE_FLAGS = new Set(
@@ -97,6 +116,17 @@ export interface CliOptionDef {
  * parser uses the subset of flags with `type: "string" | "boolean"`.
  */
 export const CLI_OPTIONS: Record<string, CliOptionDef> = {
+	worktree: {
+		type: "string",
+		short: "w",
+		placeholder: "<branch>",
+		description: "Start in a separate Git worktree; create or reuse the branch",
+	},
+	branch: {
+		type: "string",
+		placeholder: "<branch>",
+		description: "Switch or create a Git branch in this checkout before starting",
+	},
 	provider: {
 		type: "string",
 		description: "Provider (default: kimchi-dev)",
@@ -319,7 +349,7 @@ export const CACHEABLE_OPTION_NAMES = [
 /** Parse args without caching. Exported for tests. */
 export function parseCliArgs(args: string[]): SessionCliArgs {
 	const { values, positionals } = parseArgs({
-		args,
+		args: normalizePiAliases(args),
 		options: PARSE_ARGS_OPTIONS,
 		strict: false,
 		allowPositionals: true,
@@ -342,6 +372,94 @@ export function parseCliArgs(args: string[]): SessionCliArgs {
 		;(options as Record<string, unknown>)[key] = value
 	}
 	return { options, positionals }
+}
+
+function normalizePiAliases(args: string[]): string[] {
+	const normalized = args.map((arg) =>
+		arg.startsWith("-r") && arg.length > 2 ? `--session=${arg.slice(2)}` : (PI_LITERAL_ALIASES[arg] ?? arg),
+	)
+	const { tokens } = parseArgs({
+		args: normalized,
+		options: PARSE_ARGS_OPTIONS,
+		strict: false,
+		allowPositionals: true,
+		tokens: true,
+	})
+	// An alias-shaped filename or prompt is a value, not an option.
+	for (const token of tokens) {
+		if (token.kind === "positional") normalized[token.index] = args[token.index]
+		else if (token.kind === "option" && token.value !== undefined && !token.inlineValue) {
+			normalized[token.index + 1] = args[token.index + 1]
+		}
+	}
+	return normalized
+}
+
+/** Consume startup-only options before a fresh process initializes cwd-bound resources. */
+export function takeWorkspaceArgs(
+	args: string[],
+	cwd: string,
+):
+	| {
+			kind: "worktree" | "branch"
+			name: string
+			args: string[]
+	  }
+	| undefined {
+	const { tokens } = parseArgs({
+		args: normalizePiAliases(args),
+		options: PARSE_ARGS_OPTIONS,
+		strict: false,
+		allowPositionals: true,
+		tokens: true,
+	})
+	const options = tokens.filter((token) => token.kind === "option")
+	const selections = options.filter((token) => token.name === "worktree" || token.name === "branch")
+	if (
+		!selections.length ||
+		options.some((token) => ["help", "version", "list-models", "export"].includes(token.name))
+	) {
+		return undefined
+	}
+	if (selections.length !== 1) throw new Error("Choose one --worktree <branch> or --branch <branch>.")
+	const selection = selections[0]
+	if (selection.rawName === "-w" && !args[selection.index].startsWith("-w")) {
+		throw new Error("Pass -w as a separate option, for example: -p -w fix/login.")
+	}
+	if (!selection.value) throw new Error(`--${selection.name} requires a branch name.`)
+	const incompatible = options.find((token) => ["session", "resume", "r", "fork", "session-dir"].includes(token.name))
+	if (incompatible) {
+		throw new Error(
+			`Cannot combine --${selection.name} with ${incompatible.rawName}. Use --continue to resume in the destination.`,
+		)
+	}
+	if (options.some((token) => token.name === "mode" && (token.value === "acp" || token.value === "rpc"))) {
+		throw new Error(
+			"Worktree and branch launch options support terminal and print sessions. Set the working directory in your ACP/RPC client.",
+		)
+	}
+	const forwarded = [...args]
+	// Explicit CLI paths keep their caller-relative meaning after the child changes cwd.
+	for (const token of tokens) {
+		if (token.kind === "positional" && token.value.startsWith("@") && token.value !== "@") {
+			forwarded[token.index] = `@${resolveUserPath(token.value.slice(1), cwd)}`
+		} else if (token.kind === "option" && token.value) {
+			const pathOption = ["extension", "skill", "prompt-template", "permissions-config", "mcp-config"].includes(
+				token.name,
+			)
+			const fileOrText = ["system-prompt", "append-system-prompt", "theme"].includes(token.name)
+			if (
+				(pathOption && !/^(?:npm:|git:|https?:)/.test(token.value)) ||
+				(fileOrText && existsSync(resolveUserPath(token.value, cwd)))
+			) {
+				const path = resolveUserPath(token.value, cwd)
+				if (token.inlineValue) forwarded[token.index] = `${token.rawName}=${path}`
+				else forwarded[token.index + 1] = path
+			}
+		}
+	}
+	forwarded.splice(selection.index, selection.inlineValue ? 1 : 2)
+	return { kind: selection.name === "worktree" ? "worktree" : "branch", name: selection.value, args: forwarded }
 }
 
 /**

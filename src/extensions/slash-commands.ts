@@ -8,6 +8,7 @@ export const SLASH_COMMANDS = {
 	compact: { hint: "Compact context window" },
 	name: { hint: "Rename this session" },
 	new: { hint: "Start a new session" },
+	worktree: { hint: "Create or open a separate Git worktree" },
 	agents: { hint: "Manage background agents" },
 	permissions: { hint: "View or change permission mode and rules" },
 	phase: { hint: "Show or change the current work phase" },
