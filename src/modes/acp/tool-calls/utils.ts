@@ -51,12 +51,6 @@ const TITLE_ARGS: Record<string, string[]> = {
 	Agent: ["description"],
 }
 
-// Only these tools report their target path via ACP `locations` (clients render
-// a file chip from it). grep/find accept an optional search-scope `path`, so
-// they participate too. It must never leak to tools that merely have a
-// path-shaped argument.
-const LOCATION_TOOLS = new Set(["read", "write", "edit", "ls", "grep", "find"])
-
 export function describeToolCall(
 	toolName: string,
 	args: unknown,
@@ -69,7 +63,10 @@ export function describeToolCall(
 	// doesn't blow up client UIs (locations[].path keeps the full value for
 	// clients that want it).
 	const rawTitle = targeted ?? toolName
-	const locationPath = LOCATION_TOOLS.has(toolName) ? asString(a.file_path) || asString(a.path) : undefined
+	// Unlike the title, ACP `locations` stays generic (pre-PR behavior): any
+	// tool carrying a path-shaped argument (lsp_*, debug_*, MCP, …) genuinely
+	// relates to that file, and clients render a file chip from it.
+	const locationPath = asString(a.file_path) || asString(a.path)
 	return {
 		title: truncate(rawTitle, 80),
 		kind: TOOL_KINDS[toolName] ?? "other",
