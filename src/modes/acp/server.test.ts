@@ -3367,6 +3367,25 @@ describe("KimchiAcpAgent message_end text reconciliation", () => {
 		expect(updates.some((u) => u.update.sessionUpdate === "agent_message_chunk")).toBe(false)
 		expect(updates.some((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBe(false)
 	})
+
+	// The continuation-nudge blanking handler in prompt-enrichment.ts hides
+	// the hidden recovery response (including the done token) by zeroing
+	// both the message content and the event delta. ACP reads only the
+	// event delta, so a zeroed delta must produce no agent_message_chunk,
+	// and message_end must not re-emit the blanked block either.
+	it("emits nothing for zeroed deltas and a blanked message_end block", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitTextDelta(0, "")
+			emitTextDelta(0, "")
+			fake.emit(messageEndEvent([{ type: "text", text: "" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		expect(chunks()).toEqual([])
+	})
 })
 
 // Streaming tools (bash in particular) emit tool_execution_update with a

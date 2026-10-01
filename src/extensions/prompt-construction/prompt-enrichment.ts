@@ -500,10 +500,19 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				if (ame.type !== "text_delta") return
 				const message = event.message as AssistantMessage
 				const content = message.content[ame.contentIndex]
-				if (content?.type === "text") {
-					continuationNudge.accumulateResponse(content.text)
-					content.text = ""
-				}
+				if (content?.type !== "text") return
+				continuationNudge.accumulateResponse(content.text)
+				content.text = ""
+				// Also zero the event delta. Consumers that stream raw deltas
+				// (ACP mode forwards text_delta as agent_message_chunk) read
+				// ame.delta instead of the message content, so clearing only
+				// content.text leaks the hidden recovery response (including
+				// the <done> token) to those clients. Extension handlers run
+				// before subscribe listeners for the same event, so this
+				// mutation reaches every consumer. ACP skips empty deltas,
+				// which also keeps its streamed-prefix tracking consistent so
+				// message_end re-emits nothing for the blanked block.
+				ame.delta = ""
 			})
 
 			pi.on("turn_end", async (event, ctx) => {

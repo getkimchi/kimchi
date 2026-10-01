@@ -1651,13 +1651,20 @@ describe("nudge response pending cleanup", () => {
 
 		// The done token streams split across two delta events, as real deltas do.
 		const first = makeAssistant([{ type: "text", text: "<do" }])
-		await fire("message_update", textDeltaEvent(first, "<do"))
+		const firstEvent = textDeltaEvent(first, "<do")
+		await fire("message_update", firstEvent)
 		const second = makeAssistant([{ type: "text", text: "ne>" }])
-		await fire("message_update", textDeltaEvent(second, "ne>"))
+		const secondEvent = textDeltaEvent(second, "ne>")
+		await fire("message_update", secondEvent)
 
 		// The token is a silent acknowledgement — both deltas are blanked.
 		expect((first.content[0] as { text: string }).text).toBe("")
 		expect((second.content[0] as { text: string }).text).toBe("")
+		// The event deltas are zeroed too, so consumers that stream raw
+		// deltas (e.g. ACP agent_message_chunk forwarding) never see the
+		// hidden recovery response.
+		expect(firstEvent.assistantMessageEvent.delta).toBe("")
+		expect(secondEvent.assistantMessageEvent.delta).toBe("")
 
 		// At turn_end the done signal ends recovery: no continuation nudge,
 		// no empty-turn nudge for the blanked response.
