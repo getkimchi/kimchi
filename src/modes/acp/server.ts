@@ -1346,6 +1346,43 @@ export class KimchiAcpAgent implements Agent {
 					return
 				}
 
+				// Argument generation finished — the pending tool_call sent at
+				// toolcall_start carried partial (usually empty) arguments. Push the
+				// complete rawInput now, before approval and tool_execution_start,
+				// so clients can show the target (e.g. the path of an edit) during
+				// the whole approval window instead of only once execution begins.
+				if (ame.type === "toolcall_end") {
+					const toolCall = ame.toolCall
+					if (!toolCall?.id || !toolCall.name) return
+					if (isHiddenToolCall(toolCall.name, toolCall.arguments)) {
+						// Arguments revealed the call as hidden only at stream end (the
+						// start event's partial arguments couldn't see it yet) — retire
+						// the pending card that went out early. retireToolCall only
+						// deletes keyed state (no id allocation, no emission), so this
+						// is also safe for calls that were hidden at toolcall_start
+						// and never announced.
+						turn.hiddenToolCallIds.add(toolCall.id)
+						this.retireToolCall(entry, turn, toolCall.id)
+						return
+					}
+					if (!turn.announcedToolCallIds.has(toolCall.id) || turn.hiddenToolCallIds.has(toolCall.id)) {
+						return
+					}
+					const { title, kind, locations } = describeToolCall(toolCall.name, toolCall.arguments)
+					const update: SessionUpdate = buildToolCallUpdate({
+						toolCallId: this.getOrAllocateAcpToolCallId(entry, toolCall.id, toolCall.name),
+						piToolCallId: toolCall.id,
+						title,
+						kind,
+						locations,
+						rawInput: toolCall.arguments,
+						// Arguments are complete but the call hasn't been approved or
+						// started executing yet, so ACP status stays `pending`.
+						status: "pending",
+					})
+					this.send({ sessionId, update })
+				}
+
 				return
 			}
 			case "message_end": {
