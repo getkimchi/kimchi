@@ -561,58 +561,6 @@ describe("SkillManager", () => {
 			}
 		})
 
-		it("resolves an entry file nested below baseDir without dropping intermediate directories", async () => {
-			// pi's loader currently points filePath at a direct child of baseDir,
-			// but the resolution must not silently break if that ever drifts:
-			// the entry file is derived as the path relative to baseDir.
-			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
-			try {
-				const skillDir = join(discoveredDir, "nested-skill")
-				mkdirSync(join(skillDir, "references"), { recursive: true })
-				writeFileSync(join(skillDir, "SKILL.md"), "---\ndescription: nested\n---\nNested body.")
-				mgr.setDiscoveredSkillsProvider(() => [
-					discoveredSkill({
-						name: "nested-skill",
-						description: "nested",
-						filePath: join(skillDir, "SKILL.md"),
-						baseDir: discoveredDir,
-					}),
-				])
-				const result = await mgr.view("nested-skill")
-				expect(result.success).toBe(true)
-				expect(result.content).toContain("Nested body.")
-			} finally {
-				rmSync(discoveredDir, { recursive: true, force: true })
-			}
-		})
-
-		it("still loads a skill whose filePath is unrelated to baseDir", async () => {
-			// Degenerate inventory entry: filePath escapes baseDir entirely. The
-			// tier anchors at filePath's own parent so the entry stays reachable
-			// instead of joining baseDir with a bogus ".."-prefixed path.
-			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
-			const elsewhereDir = mkdtempSync(join(tmpdir(), "kimchi-skill-elsewhere-"))
-			try {
-				const skillDir = join(elsewhereDir, "stray-skill")
-				mkdirSync(skillDir)
-				writeFileSync(join(skillDir, "SKILL.md"), "---\ndescription: stray\n---\nStray body.")
-				mgr.setDiscoveredSkillsProvider(() => [
-					discoveredSkill({
-						name: "stray-skill",
-						description: "stray",
-						filePath: join(skillDir, "SKILL.md"),
-						baseDir: discoveredDir,
-					}),
-				])
-				const result = await mgr.view("stray-skill")
-				expect(result.success).toBe(true)
-				expect(result.content).toContain("Stray body.")
-			} finally {
-				rmSync(discoveredDir, { recursive: true, force: true })
-				rmSync(elsewhereDir, { recursive: true, force: true })
-			}
-		})
-
 		it("mutations are refused for a discovered loose .md directly under the harness skills dir", async () => {
 			// A root-level loose .md resolves with the harness root itself as the
 			// skill dir; the discovered tier is unconditionally read-only so edit()

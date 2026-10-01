@@ -1,5 +1,5 @@
 import { mkdir, readdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises"
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
+import { basename, dirname, join, resolve, sep } from "node:path"
 import type { Skill } from "@earendil-works/pi-coding-agent"
 import { parse as parseYaml } from "yaml"
 
@@ -272,24 +272,20 @@ export class SkillManager {
 		// skill_view must not load them on the model's behalf.
 		const hit = discovered.find((s) => s.name === name && !s.disableModelInvocation)
 		if (hit) {
-			// pi's loader points filePath at the skill's entry file — "<dir>/SKILL.md"
-			// for directory-shaped skills, the loose .md itself for single-file ones
-			// (root .md children of a skills root, single-.md skillPaths entries).
-			// Anchor linked-file resolution at baseDir (the skill dir) and default
-			// view() to the actual entry file so loose-.md skills load too.
-			// relative() keeps intermediate directories intact if filePath ever sits
-			// deeper than baseDir's direct children; when baseDir and filePath are
-			// unrelated, anchor at filePath's own parent so the entry stays reachable.
-			const rel = relative(hit.baseDir, hit.filePath)
-			const escapes = rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)
+			// pi's loader contract: filePath is the skill's entry file directly
+			// under baseDir — "<dir>/SKILL.md" for directory-shaped skills, the
+			// loose .md itself for single-file ones (root .md children of a skills
+			// root, single-.md skillPaths entries). We trust that contract rather
+			// than defensively re-deriving the anchor; linked-file resolution
+			// stays anchored at baseDir and view() defaults to the entry file.
 			// Loose skills (any entry not named SKILL.md) are a single file:
 			// their anchor dir can be a shared skills root, so a file_path read
 			// anchored there would resolve sibling skills' files — including
 			// ones excluded above via disableModelInvocation.
 			const singleFile = basename(hit.filePath) !== "SKILL.md"
 			return {
-				skillDir: escapes ? dirname(hit.filePath) : hit.baseDir,
-				entryFile: escapes ? basename(hit.filePath) : rel,
+				skillDir: hit.baseDir,
+				entryFile: basename(hit.filePath),
 				category: "",
 				origin: "discovered",
 				singleFile,
