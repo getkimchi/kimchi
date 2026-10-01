@@ -34,6 +34,13 @@ vi.mock("./dap/adapters.js", () => ({
 	adapterForDirectory: vi.fn(() => null),
 	adapterExists: vi.fn(() => true),
 	allAdapters: vi.fn(() => adapterState.active),
+	// Mirrors the old adapterForFile-driven behavior: first active adapter
+	// resolves the program; an explicit name matches by name.
+	resolveAdapterForProgram: vi.fn((opts: { adapterName?: string }) =>
+		opts.adapterName
+			? (adapterState.active.find((a) => a.name === opts.adapterName) ?? null)
+			: (adapterState.active[0] ?? null),
+	),
 }))
 
 // =============================================================================
