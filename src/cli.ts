@@ -104,6 +104,7 @@ import { UpstreamMcpProbe } from "./extensions/mcp/probe.js"
 import { MEMORY_RESOURCE_ID } from "./extensions/memory/config.js"
 import memoryExtension from "./extensions/memory/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
+import modelListExtension from "./extensions/model-list.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
@@ -132,6 +133,7 @@ import shellProfileMigrationExtension from "./extensions/shell-profile-migration
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
+import statusExtension from "./extensions/status/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
@@ -683,6 +685,7 @@ try {
 			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,
+			statusExtension,
 			budgetCommandExtension,
 			branchCommandExtension,
 			...terminalUiExtensionFactories,
@@ -789,6 +792,7 @@ try {
 				{ id: MEMORY_RESOURCE_ID, factory: memoryExtension },
 			] satisfies ManagedExtensionFactory[]),
 			modelSwitchExtension,
+			modelListExtension,
 			modelGuardExtension,
 			orphanToolResultRepairExtension,
 			orphanToolResultSanitizerExtension,

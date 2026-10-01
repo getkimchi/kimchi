@@ -30,8 +30,10 @@ const V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES = new Set(["error_message", "error.mes
 // ---------------------------------------------------------------------------
 // Process-level ID + shared accumulators
 //
-// All agents (main + sub-agents) in the same process share telemetryId so
-// that telemetry rolls up under one session in the backend.
+// telemetryId is an internal accumulator key (ReplacingMergeTree
+// monotonic-flush grouping), not the emitted session id: the per-event
+// `session.id` is the pi session id via resolveSessionId() (see
+// TelemetryContext.piSessionId).
 //
 // Accumulators are keyed by telemetryId (not per-session) so that every
 // flush sends the monotonically increasing total across ALL agents. This is
@@ -65,6 +67,13 @@ export function _resetSharedAccumulators(): void {
 export class TelemetryContext {
 	config: TelemetryConfig
 	telemetryId: string
+	/**
+	 * The pi session id of the session this context is bound to, captured at
+	 * session_start. Emitted as `session.id` (preferred) and `X-Session-Id`.
+	 * Undefined until session_start fires — resolveSessionId() falls back to
+	 * the process telemetryId then.
+	 */
+	piSessionId: string | undefined
 	telemetryStartMs: number
 	/**
 	 * Current model, updated from message events; used for domain events that lack a pi context.
@@ -77,6 +86,13 @@ export class TelemetryContext {
 	 * `0` as "unknown / pre-turn" rather than a valid 1-based turn number.
 	 */
 	turnIndex = 0
+	/**
+	 * Wall-clock ms when the current user prompt began (set by
+	 * handleBeforeAgentStart). Anchor for agent.interrupted's ms_into_turn —
+	 * measuring from prompt start (not pi's per-round turn_start) so the value
+	 * reads as "how long the agent had been working on this prompt".
+	 */
+	promptStartMs = 0
 	/**
 	 * W3C trace context of the most recent provider request, stored by the
 	 * before_provider_headers handler (generated per request, or parsed from an
@@ -133,6 +149,7 @@ export class TelemetryContext {
 		this.telemetryStartMs = Date.now()
 		this.currentModel = "unknown"
 		this.turnIndex = 0
+		this.promptStartMs = 0
 		this.lastTraceContext = undefined
 		this.sentMessages.clear()
 		this.pendingArgs.clear()
@@ -145,6 +162,19 @@ export class TelemetryContext {
 		this.shuttingDown = false
 		this.logBuffer = []
 		this.stopLogFlushTimer()
+	}
+
+	/** Capture the pi session id for this context. Called from session_start. */
+	setPiSessionId(sessionId: string | undefined): void {
+		this.piSessionId = sessionId || undefined
+	}
+
+	/**
+	 * The canonical telemetry session id: the local pi session id when known,
+	 * else the process telemetryId (pre-session emissions only).
+	 */
+	resolveSessionId(): string {
+		return this.piSessionId ?? this.telemetryId
 	}
 
 	track(p: Promise<void>): void {
@@ -190,7 +220,7 @@ export class TelemetryContext {
 			...commonAttrs,
 			...(parentAttr ?? {}),
 		}
-		this.enqueueLogRecord(buildLogRecord(this.telemetryId, eventName, toAttrs(merged)))
+		this.enqueueLogRecord(buildLogRecord(this.resolveSessionId(), eventName, toAttrs(merged)))
 	}
 
 	emit(
@@ -218,7 +248,7 @@ export class TelemetryContext {
 				"telemetry.cli_version": getVersion(),
 				...(parentAttr ?? {}),
 			})
-			this.logBuffer.push(buildLogRecord(this.telemetryId, "session.type_changed", changeAttrs))
+			this.logBuffer.push(buildLogRecord(this.resolveSessionId(), "session.type_changed", changeAttrs))
 		}
 		this.lastSessionType = session_type
 
@@ -236,7 +266,7 @@ export class TelemetryContext {
 			...commonOverrides,
 			...(parentAttr ?? {}),
 		}
-		this.enqueueLogRecord(buildLogRecord(this.telemetryId, eventName, toAttrs(merged)))
+		this.enqueueLogRecord(buildLogRecord(this.resolveSessionId(), eventName, toAttrs(merged)))
 	}
 
 	/**
@@ -303,7 +333,7 @@ export class TelemetryContext {
 				this.userEmailReady.then(() =>
 					sendMetrics(
 						this.config,
-						this.telemetryId,
+						this.resolveSessionId(),
 						metrics.map((m) => ({
 							...m,
 							attrs: {

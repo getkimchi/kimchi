@@ -182,11 +182,15 @@ describe("bounded todo cleanup", () => {
 		])
 	})
 
-	it("waits for the user when the final answer asks a question after work", async () => {
+	it.each([
+		"Verification passed. Should I publish?",
+		"Verification passed. Waiting for your approval.",
+		"Should I publish? Verification passed.",
+	])("waits for the user after work: %s", async (answer) => {
 		const h = await harness()
 		h.write([{ content: "Publish after approval", status: TODO_STATUS.PENDING }])
 		await h.work()
-		await h.end("stop", "Verification passed. Should I publish?")
+		await h.end("stop", answer)
 		expect(h.closure()).toHaveLength(0)
 	})
 

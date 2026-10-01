@@ -450,6 +450,23 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 		})
 	})
 
+	it("shows 'auto' thinking level when the selected model is Auto", () => {
+		withPinned(["thinking"], () => {
+			const { visible } = renderAt(160, { modelId: "auto", modelProvider: "kimchi-dev", thinkingLevel: "max" })
+			expect(visible).toContain("thinking:auto")
+			// The backend enforces Auto's reasoning effort and overrides the
+			// session level, so the widget must not show the stale value.
+			expect(visible).not.toContain("thinking:max")
+		})
+	})
+
+	it("shows 'auto' thinking level for Auto even with no session thinking level", () => {
+		withPinned(["thinking"], () => {
+			const { visible } = renderAt(160, { modelId: "auto", modelProvider: "kimchi-dev" })
+			expect(visible).toContain("thinking:auto")
+		})
+	})
+
 	it("width 100: hint dropped at narrow width when no pinned elements", () => {
 		// model + permissions + hint ≈ 77 visible chars; fits at 100 so hint shows.
 		// Use a really narrow width to reliably force hint to drop.

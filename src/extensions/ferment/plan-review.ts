@@ -29,7 +29,12 @@ const BASE_DECISION_OPTIONS = [
 	"Let me say something",
 ] as const
 
-const CLOUD_DECISION_OPTION = "Execute the plan in a remote workspace"
+// Exported for the ferment decision handler (ferment/index.ts): the
+// plannotator-approval routing dialog must present the same labels rather
+// than duplicating the strings.
+export const EXECUTE_LOCAL_DECISION_OPTION = BASE_DECISION_OPTIONS[0]
+
+export const CLOUD_DECISION_OPTION = "Execute the plan in a remote workspace"
 
 /** Returns the decision options for the plan review dialog, conditionally
  *  including the remote execution option when KIMCHI_REMOTE_RUN is set. */

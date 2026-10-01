@@ -7,6 +7,7 @@ import { isProjectScopeAllowed } from "./project-scope-trust.js"
 import {
 	DEFAULT_REGION,
 	isRegionId,
+	type KimchiRegion,
 	openAiBaseUrl,
 	REGION_ENV,
 	REGIONS,
@@ -38,7 +39,9 @@ export function getEnvironmentApiKey(): string | undefined {
 	return startupApiKey || process.env.KIMCHI_API_KEY || undefined
 }
 
-export function getApiKeySource(): "environment" | "config" {
+export type ApiKeySource = "environment" | "config"
+
+export function getApiKeySource(): ApiKeySource {
 	return getEnvironmentApiKey() ? "environment" : "config"
 }
 
@@ -192,8 +195,15 @@ export interface KimchiConfig {
 	agentConfigDir: string
 	/** KIMCHI_REGION → global config → DEFAULT_REGION; unknown values count as unset. */
 	region: RegionId
+	/** KIMCHI_BASE_URL env → project config → global config → the region's OpenAI base (this one includes the /openai/v1 path; a config-file custom value is stored as written). */
 	llmEndpoint: string
-	/** The user-configured endpoint, undefined if not explicitly set. Use this when passing to updateModelsConfig. */
+	/**
+	 * The user-configured LLM gateway base, undefined if not explicitly set.
+	 * Always a base WITHOUT a path suffix — KIMCHI_BASE_URL stores it bare
+	 * and the login flow stores `llmBaseUrl` — consumers append the path
+	 * themselves via chatCompletionsApi/anthropicMessagesApi (see
+	 * updateModelsConfig in src/models.ts and the login extension).
+	 */
 	customLlmEndpoint: string | undefined
 	/** @deprecated Parsed only so upgrades can identify obsolete MCP configuration. */
 	maxToolResultChars: number
@@ -544,6 +554,9 @@ function readProjectConfigExtras(projectPath: string): ReturnType<typeof readCon
  *      see below)
  *   3. Global ~/.config/kimchi/config.json
  *
+ * llmEndpoint follows the same shape with one more tier on top:
+ * KIMCHI_BASE_URL environment variable (gateway base) > project config > global config.
+ *
  * The project tier is gated on project trust (src/project-scope-trust.ts):
  * while the session cwd is untrusted, .kimchi/config.json is not read at
  * all, so a cloned repo cannot set the LLM endpoint, API key, skill paths,
@@ -588,12 +601,18 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 	// Region is account-level, so only the global config may set it.
 	const region = effectiveRegion(globalExtras.region)
 
+	// KIMCHI_BASE_URL repoints the whole LLM gateway (chat, router,
+	// search, anthropic base) and outranks any configured llmEndpoint,
+	// matching the KIMCHI_API_KEY env-wins rule.
+	const envLlmBaseUrl = environmentLlmBaseUrl()
+	const gateway = withLlmBaseUrl(REGIONS[region])
+
 	return {
 		apiKey: getEnvironmentApiKey() || extras.apiKey || "",
 		agentConfigDir: AGENT_CONFIG_DIR,
 		region,
-		llmEndpoint: extras.llmEndpoint ?? openAiBaseUrl(REGIONS[region]),
-		customLlmEndpoint: extras.llmEndpoint,
+		llmEndpoint: envLlmBaseUrl ? openAiBaseUrl(gateway) : (extras.llmEndpoint ?? openAiBaseUrl(gateway)),
+		customLlmEndpoint: envLlmBaseUrl ?? extras.llmEndpoint,
 		maxToolResultChars: extras.maxToolResultChars ?? 10_000,
 		mcpSearchLimit: extras.mcpSearchLimit ?? 5,
 		mcpSearch: { ...SEARCH_STRATEGY_DEFAULTS, ...extras.mcpSearch },
@@ -608,13 +627,14 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 }
 
 export interface ResolvedEndpoints extends RegionEndpoints {
-	/** Config `llmEndpoint` (project wins over global), else the region's OpenAI base. */
+	/** KIMCHI_BASE_URL env → project config → global config → the region's OpenAI base. */
 	llmEndpoint: string
 }
 
 /**
  * Resolve every external endpoint the CLI talks to from the configured region.
- * Overrides: KIMCHI_WEB_APP_URL → webAppUrl, KIMCHI_REMOTE_ENDPOINT → platformApiUrl.
+ * Overrides: KIMCHI_WEB_APP_URL → webAppUrl, KIMCHI_REMOTE_ENDPOINT → platformApiUrl,
+ * KIMCHI_BASE_URL → every llmBaseUrl-derived endpoint (chat, router, search).
  */
 // The no-options resolution feeds render-time getters (billing links,
 // login URLs) that run on every streaming render — memoize the loadConfig()
@@ -626,15 +646,20 @@ let resolvedEndpointsConfigCache: { cfg: KimchiConfig; stamp: string } | undefin
 function globalConfigStamp(): string {
 	try {
 		const st = statSync(KIMCHI_CONFIG_PATH)
-		return `${process.env[REGION_ENV]}:${st.mtimeMs}:${st.size}`
+		return `${process.env[REGION_ENV]}:${environmentLlmBaseUrl() ?? ""}:${st.mtimeMs}:${st.size}`
 	} catch {
-		return `${process.env[REGION_ENV]}:missing`
+		return `${process.env[REGION_ENV]}:${environmentLlmBaseUrl() ?? ""}:missing`
 	}
 }
 
 /** Drop the memoized config used by the default resolveEndpoints() path. */
 export function invalidateResolvedEndpoints(): void {
 	resolvedEndpointsConfigCache = undefined
+}
+
+/** Test-only: re-arm the one-time invalid KIMCHI_BASE_URL warning (module state that tests must not leak between cases). */
+export function resetInvalidLlmBaseUrlWarningForTests(): void {
+	warnedInvalidLlmBaseUrl = false
 }
 
 export function resolveEndpoints(options?: { configPath?: string; cwd?: string }): ResolvedEndpoints {
@@ -651,9 +676,53 @@ export function resolveEndpoints(options?: { configPath?: string; cwd?: string }
 	return { ...endpointsForRegion(cfg.region), llmEndpoint: cfg.llmEndpoint }
 }
 
-/** Endpoints of a given region, with the same env overrides as resolveEndpoints(). */
+let warnedInvalidLlmBaseUrl = false
+
+/** True for parseable absolute http(s) URLs — https:, ftp://host, "not a url" etc. all fail. */
+function isValidHttpUrl(value: string): boolean {
+	try {
+		return /^https?:$/.test(new URL(value).protocol)
+	} catch {
+		return false
+	}
+}
+
+/**
+ * KIMCHI_BASE_URL env override: replaces the region's LLM gateway base.
+ * Blank and trailing slashes are trimmed; a malformed value (e.g. "https://")
+ * counts as unset and warns once, like an invalid KIMCHI_REGION — the harness
+ * keeps running on the configured region instead of failing far away with an
+ * opaque connection error.
+ */
+function environmentLlmBaseUrl(): string | undefined {
+	const raw = process.env.KIMCHI_BASE_URL?.trim()
+	if (!raw) return undefined
+	const trimmed = raw.replace(/\/+$/, "")
+	if (isValidHttpUrl(trimmed)) return trimmed
+	if (!warnedInvalidLlmBaseUrl) {
+		warnedInvalidLlmBaseUrl = true
+		console.warn(
+			`Ignoring invalid KIMCHI_BASE_URL="${raw}" (expected an http(s) URL, e.g. https://llm.example.com). Using the configured region's endpoints instead.`,
+		)
+	}
+	return undefined
+}
+
+/** The region with the env gateway base applied, for deriving every llmBaseUrl-based endpoint. */
+function withLlmBaseUrl(region: KimchiRegion): KimchiRegion {
+	const base = environmentLlmBaseUrl()
+	return base ? { ...region, llmBaseUrl: base } : region
+}
+
+/**
+ * Endpoints of a given region, with the same env overrides as resolveEndpoints().
+ *
+ * This and resolveEndpoints() are the only sanctioned entry points for region
+ * endpoints — the low-level helpers in src/regions.ts bypass the env overrides
+ * (see the note there). loadConfig() applies the same overrides to llmEndpoint.
+ */
 export function endpointsForRegion(region: RegionId): RegionEndpoints {
-	const endpoints = regionEndpoints(REGIONS[region])
+	const endpoints = regionEndpoints(withLlmBaseUrl(REGIONS[region]))
 	return {
 		...endpoints,
 		webAppUrl: process.env.KIMCHI_WEB_APP_URL ?? endpoints.webAppUrl,
@@ -677,12 +746,21 @@ export function getConfiguredLegacyMcpKeys(options?: { configPath?: string; cwd?
 	return [...configured]
 }
 
+/**
+ * Read the API key persisted in config files, ignoring KIMCHI_API_KEY.
+ * Project config (trusted projects only) takes precedence over global — the
+ * same ordering loadConfig applies before the env override is merged in.
+ */
+export function getSavedApiKey(): string | undefined {
+	return (
+		(isProjectScopeAllowed()
+			? readApiKeyFromConfigFile(resolve(process.cwd(), ".kimchi", "config.json"))
+			: undefined) ?? readApiKeyFromConfigFile()
+	)
+}
+
 /** Explain an environment override without exposing either credential. */
-export function getApiKeyMismatchWarning(
-	savedKey = (isProjectScopeAllowed()
-		? readApiKeyFromConfigFile(resolve(process.cwd(), ".kimchi", "config.json"))
-		: undefined) ?? readApiKeyFromConfigFile(),
-): string | undefined {
+export function getApiKeyMismatchWarning(savedKey = getSavedApiKey()): string | undefined {
 	const envKey = getEnvironmentApiKey()
 	if (!envKey || !savedKey || envKey === savedKey) return undefined
 	return "KIMCHI_API_KEY in your environment differs from your saved key in config. Using the environment key."

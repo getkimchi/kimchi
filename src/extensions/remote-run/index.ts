@@ -23,9 +23,46 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { getActiveManager } from "../agents/index.js"
+import { readE2eSeam } from "../e2e-seam.js"
 import { shouldSuppressInteractiveTools } from "../print-mode.js"
 import { registerDispatchToCloudAgentTool } from "./dispatch-tool.js"
+import { handleRemoteCompletion } from "./post-completion.js"
 import { isRemoteRunEnabled, runCloudAgent } from "./runner.js"
+
+/**
+ * TUI-E2E seam (KIMCHI_E2E_FAKE_REMOTE_COMPLETION=1): fires a deterministic
+ * PR-intent completion shortly after session start so the TUI E2E drives the
+ * REAL completion machinery — diff stats, dropdown, consent gates, push
+ * orchestration — without depending on session-resume discovery (unreliable
+ * across hosts) or a fake remote worker (unimplementable in scope). Pairs
+ * with KIMCHI_E2E_FAKE_SANDBOX_GIT for canned git responses. Test-only env
+ * vars; never set in production.
+ */
+function maybeFireFakeCompletion(pi: ExtensionAPI): void {
+	if (readE2eSeam("KIMCHI_E2E_FAKE_REMOTE_COMPLETION") !== "1") return
+	pi.on("session_start", (_event, ctx) => {
+		setTimeout(() => {
+			if (!ctx.hasUI) return
+			void handleRemoteCompletion(pi, ctx, "E2E fake remote result line one", "plan", {
+				transcriptPath: undefined,
+				agentId: "e2e-remote-agent",
+				remoteSession: {
+					workspaceId: "ws-e2e",
+					sessionName: "acp-e2e",
+					wsUrl: "ws://e2e.fake",
+					host: "e2e.fake",
+					cwd: "/home/sandbox/acp-e2e",
+				},
+				acpSessionId: "acp-e2e",
+				gitWorkflow: {
+					branch: "kimchi/e2e-fix-login",
+					baseBranch: "main",
+					baseSha: "a".repeat(40),
+				},
+			}).catch(() => {})
+		}, 1_500)
+	})
+}
 
 export default function remoteRunExtension(pi: ExtensionAPI): void {
 	if (!isRemoteRunEnabled()) return
@@ -39,6 +76,8 @@ export default function remoteRunExtension(pi: ExtensionAPI): void {
 	if (!shouldSuppressInteractiveTools()) {
 		registerDispatchToCloudAgentTool(pi)
 	}
+
+	maybeFireFakeCompletion(pi)
 
 	pi.registerCommand("remote-run", {
 		description: "Run a prompt on a remote sandbox worker via ACP: /remote-run <prompt>",

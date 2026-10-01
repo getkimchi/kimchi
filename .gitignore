@@ -1,6 +1,10 @@
 # Dependencies
 node_modules/
 
+# pnpm is the only supported package manager (see AGENTS.md) — keep stray npm/yarn locks out
+package-lock.json
+yarn.lock
+
 # Build output
 dist/
 

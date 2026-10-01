@@ -12,6 +12,7 @@ vi.mock("../ferment/prompt-ui.js", () => ({ withWorkingHidden: vi.fn((_ui, fn) =
 
 interface RegisteredTool {
 	name: string
+	description?: string
 	execute: (
 		toolCallId: string,
 		params: Record<string, unknown>,
@@ -55,6 +56,10 @@ describe("registerDispatchToCloudAgentTool", () => {
 	it("registers a tool named dispatch_to_cloud_agent", () => {
 		const { tool } = setup()
 		expect(tool.name).toBe(DISPATCH_TO_CLOUD_AGENT_TOOL)
+		// The standing tool contract must forbid get_subagent_result polling —
+		// it consumes the remote run's result and suppresses the user's
+		// post-completion menu.
+		expect(tool.description).toContain("get_subagent_result")
 	})
 
 	it("shows a pure decision dialog with no briefing content, and dispatches on confirmation", async () => {
@@ -75,6 +80,9 @@ describe("registerDispatchToCloudAgentTool", () => {
 			origin: DISPATCH_TO_CLOUD_AGENT_TOOL,
 		})
 		expect(result.content[0].text).toContain("agent-7")
+		// The post-dispatch result text must also forbid polling.
+		expect(result.content[0].text).toContain("Do NOT poll")
+		expect(result.content[0].text).toContain("get_subagent_result")
 		expect(result.details).toEqual({ agentId: "agent-7" })
 	})
 

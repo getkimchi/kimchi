@@ -94,6 +94,16 @@ export function clearRetained(): void {
 }
 
 /**
+ * Whether a vision-gate dialog is currently open (immediate or deferred).
+ * Read by the feedback extension's raw-input Ctrl+R listeners, which pass the
+ * key through to the focused dialog while the gate owns it — the gate's own
+ * Ctrl+R binding is "remove image(s)".
+ */
+export function isVisionGateDialogOpen(): boolean {
+	return dialogOpen
+}
+
+/**
  * Resets all gate state. Called on session_start/session_shutdown so a
  * replacement session never sees retained attachments, suppressions, latches,
  * or dialogs from its predecessor — and a stale dialog is closed without

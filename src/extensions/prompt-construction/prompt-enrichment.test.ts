@@ -10,6 +10,7 @@ import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../pr
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import * as startupContext from "../../startup-context.js"
 import { createContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
 import * as agentWorkerContext from "../agent-worker-context.js"
 import * as multiModelModule from "../multi-model.js"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
@@ -1589,6 +1590,253 @@ describe("continuation nudge turn_end handler", () => {
 		// runtime's message array untouched.
 		const result = await fire("context", { messages: [branded] })
 		expect(result).toBeUndefined()
+	})
+})
+
+describe("nudge response pending cleanup", () => {
+	beforeEach(() => {
+		vi.restoreAllMocks()
+		vi.spyOn(agentWorkerContext, "isAgentWorker").mockReturnValue(false)
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
+		vi.spyOn(config, "loadConfig").mockReturnValue({
+			apiKey: "",
+			agentConfigDir: "",
+		} as ReturnType<typeof config.loadConfig>)
+	})
+
+	/** Builds the extension on the shared ExtensionAPI mock and returns an
+	 *  event firer bound to one session context plus the recorded sends. */
+	function buildCleanupHandlers() {
+		const shared = createExtensionApi()
+		promptEnrichmentExtension(() => [])(shared.api)
+		const ctx = createContext({ model: { provider: "test", id: "test-model" } })
+		const fire = async (event: string, payload: unknown) => {
+			for (const handler of shared.getHandlers(event)) {
+				await handler(payload, ctx)
+			}
+		}
+		const sentMessages = () => shared.sendMessage.mock.calls.map(([message]) => message)
+		return { fire, sentMessages }
+	}
+
+	const withStop = (
+		content: AssistantMessage["content"],
+		stopReason: AssistantMessage["stopReason"],
+	): AssistantMessage => ({
+		...makeAssistant(content),
+		stopReason,
+	})
+
+	/** A message_update payload carrying a text_delta for content[0]. */
+	function textDeltaEvent(message: AssistantMessage, delta: string) {
+		return {
+			message,
+			assistantMessageEvent: { type: "text_delta" as const, contentIndex: 0, delta, partial: message },
+		}
+	}
+
+	/** Arms a pending nudge: prior tool call (session latch), new user-input
+	 *  cycle, then a text-only drift turn that fires the nudge. */
+	async function armPendingNudge(fire: (event: string, payload: unknown) => Promise<void>) {
+		await fire("tool_execution_start", {})
+		await fire("input", { source: "user" })
+		await fire("turn_end", { message: makeAssistant([{ type: "text", text: "I will delegate this." }]) })
+	}
+
+	it("a streamed token-only acknowledgement stays blanked and ends recovery without further nudges", async () => {
+		const { fire, sentMessages } = buildCleanupHandlers()
+		await armPendingNudge(fire)
+		expect(sentMessages()).toHaveLength(1)
+		expect(sentMessages()[0]?.customType).toBe("nudge")
+
+		// The done token streams split across two delta events, as real deltas do.
+		const first = makeAssistant([{ type: "text", text: "<do" }])
+		await fire("message_update", textDeltaEvent(first, "<do"))
+		const second = makeAssistant([{ type: "text", text: "ne>" }])
+		await fire("message_update", textDeltaEvent(second, "ne>"))
+
+		// The token is a silent acknowledgement — both deltas are blanked.
+		expect((first.content[0] as { text: string }).text).toBe("")
+		expect((second.content[0] as { text: string }).text).toBe("")
+
+		// At turn_end the done signal ends recovery: no continuation nudge,
+		// no empty-turn nudge for the blanked response.
+		await fire("turn_end", { message: second })
+		expect(sentMessages()).toHaveLength(1)
+	})
+
+	it("sentinel recognition alone ends recovery even when evaluation would otherwise re-nudge", async () => {
+		const { fire, sentMessages } = buildCleanupHandlers()
+		await armPendingNudge(fire)
+		expect(sentMessages()).toHaveLength(1)
+
+		// The done token streams split across two delta events; both are
+		// blanked and accumulated.
+		const first = makeAssistant([{ type: "text", text: "<do" }])
+		await fire("message_update", textDeltaEvent(first, "<do"))
+		const second = makeAssistant([{ type: "text", text: "ne>" }])
+		await fire("message_update", textDeltaEvent(second, "ne>"))
+
+		// The turn ends with visible drift-shaped text and a non-stop reason,
+		// so neither the stopReason "stop" escape nor blanked text can
+		// explain recovery ending here (e.g. an extension restored the
+		// response text at message_end): only the accumulated exact <done>
+		// token skips the continuation evaluation. If sentinel recognition
+		// regressed, evaluation would find eligible drift text and fire a
+		// second nudge.
+		const final = withStop([{ type: "text", text: "I will delegate this to a builder agent next." }], "length")
+		await fire("turn_end", { message: final })
+		expect(sentMessages()).toHaveLength(1)
+	})
+
+	it("a prose-plus-token response with stopReason stop stays hidden and ends recovery through the stop escape", async () => {
+		const { fire, sentMessages } = buildCleanupHandlers()
+		await armPendingNudge(fire)
+		expect(sentMessages()).toHaveLength(1)
+
+		const response = makeAssistant([{ type: "text", text: "Stopping. <done>" }])
+		await fire("message_update", textDeltaEvent(response, "Stopping. <done>"))
+		// The prose remains hidden — the existing blanking behavior is unchanged.
+		expect((response.content[0] as { text: string }).text).toBe("")
+
+		// The accumulated text is not the exact done signal, so the existing
+		// stopReason "stop" escape ends recovery instead.
+		await fire("turn_end", { message: response })
+		expect(sentMessages()).toHaveLength(1)
+	})
+
+	it("clears pending after recovery ends so a later response streams unblanked", async () => {
+		const { fire, sentMessages } = buildCleanupHandlers()
+		await armPendingNudge(fire)
+
+		const response = makeAssistant([{ type: "text", text: "I am done with this task." }])
+		await fire("message_update", textDeltaEvent(response, "I am done with this task."))
+		await fire("turn_end", { message: response })
+		expect(sentMessages()).toHaveLength(1)
+
+		// A later unrelated extension-triggered response (no new user input in
+		// between) must retain its text during message_update — stale recovery
+		// state may not blank it.
+		const later = makeAssistant([{ type: "text", text: "Background agent finished." }])
+		await fire("message_update", textDeltaEvent(later, "Background agent finished."))
+		expect((later.content[0] as { text: string }).text).toBe("Background agent finished.")
+	})
+
+	it("an aborted recovery response leaves pending false and sends no further nudge", async () => {
+		const { fire, sentMessages } = buildCleanupHandlers()
+		await armPendingNudge(fire)
+		expect(sentMessages()).toHaveLength(1)
+
+		await fire("turn_end", { message: withStop([], "aborted") })
+		// The abort is respected — no second nudge.
+		expect(sentMessages()).toHaveLength(1)
+
+		const later = makeAssistant([{ type: "text", text: "Ferment wake-up." }])
+		await fire("message_update", textDeltaEvent(later, "Ferment wake-up."))
+		expect((later.content[0] as { text: string }).text).toBe("Ferment wake-up.")
+	})
+
+	it("a provider-error recovery response leaves pending false and sends no further nudge", async () => {
+		const { fire, sentMessages } = buildCleanupHandlers()
+		await armPendingNudge(fire)
+		expect(sentMessages()).toHaveLength(1)
+
+		await fire("turn_end", { message: withStop([], "error") })
+		// The error is terminal — no second nudge re-queued.
+		expect(sentMessages()).toHaveLength(1)
+
+		const later = makeAssistant([{ type: "text", text: "Ferment wake-up." }])
+		await fire("message_update", textDeltaEvent(later, "Ferment wake-up."))
+		expect((later.content[0] as { text: string }).text).toBe("Ferment wake-up.")
+	})
+
+	it("budget exhaustion after two nudges leaves pending false", async () => {
+		const { fire, sentMessages } = buildCleanupHandlers()
+		await armPendingNudge(fire)
+		expect(sentMessages()).toHaveLength(1)
+
+		// First recovery response is truncated (stopReason "length") — a
+		// second nudge is still eligible, and it re-arms pending.
+		await fire("turn_end", { message: withStop([{ type: "text", text: "I was going to say..." }], "length") })
+		expect(sentMessages()).toHaveLength(2)
+
+		// Second recovery response is also truncated — budget exhausted, and
+		// the pending state armed by the second nudge is consumed.
+		await fire("turn_end", { message: withStop([{ type: "text", text: "Still going..." }], "length") })
+		expect(sentMessages()).toHaveLength(2)
+
+		const later = makeAssistant([{ type: "text", text: "Unrelated follow-up." }])
+		await fire("message_update", textDeltaEvent(later, "Unrelated follow-up."))
+		expect((later.content[0] as { text: string }).text).toBe("Unrelated follow-up.")
+	})
+
+	it("a suppressed recovery attempt (question in the response) leaves pending false", async () => {
+		const { fire, sentMessages } = buildCleanupHandlers()
+		await armPendingNudge(fire)
+		expect(sentMessages()).toHaveLength(1)
+
+		// The recovery response asks a blocking question with a non-stop
+		// reason: evaluation suppresses the re-nudge, and the consumed
+		// pending state must not blank later turns.
+		const asking = withStop([{ type: "text", text: "Should I abort the rebase? I will wait for your word." }], "length")
+		await fire("turn_end", { message: asking })
+		expect(sentMessages()).toHaveLength(1)
+
+		const later = makeAssistant([{ type: "text", text: "Unrelated follow-up." }])
+		await fire("message_update", textDeltaEvent(later, "Unrelated follow-up."))
+		expect((later.content[0] as { text: string }).text).toBe("Unrelated follow-up.")
+	})
+
+	it("does not require a second nudge from a fully blanked recovery response", async () => {
+		const { fire, sentMessages } = buildCleanupHandlers()
+		await armPendingNudge(fire)
+		expect(sentMessages()).toHaveLength(1)
+
+		// The streamed response was fully blanked, so no text remains for
+		// evaluateTurn to inspect — recovery ends without a second nudge.
+		const blanked = withStop([{ type: "text", text: "" }], "length")
+		await fire("turn_end", { message: blanked })
+		expect(sentMessages()).toHaveLength(1)
+	})
+
+	it("excludes an empty recovery response from the empty-turn nudge after pending is consumed", async () => {
+		const { fire, sentMessages } = buildCleanupHandlers()
+		await armPendingNudge(fire)
+		expect(sentMessages()).toHaveLength(1)
+
+		// A new agent run resets the run-level tool latch, so only the
+		// consumed pending state can exclude this empty response from
+		// EmptyTurnNudge (mixed instructions during a recovery cycle).
+		await fire("agent_start", {})
+		await fire("turn_end", { message: withStop([], "length") })
+		expect(sentMessages()).toHaveLength(1)
+	})
+
+	it("ordinary empty responses still take the empty-turn branch", async () => {
+		const { fire, sentMessages } = buildCleanupHandlers()
+
+		await fire("agent_start", {})
+		await fire("input", { source: "user" })
+		await fire("turn_end", { message: makeAssistant([]) })
+
+		const messages = sentMessages()
+		expect(messages).toHaveLength(1)
+		expect(messages[0]?.content).toContain("If you have finished")
+	})
+
+	it("agent_end clears abandoned pending and accumulator state", async () => {
+		const { fire, sentMessages } = buildCleanupHandlers()
+		await armPendingNudge(fire)
+		expect(sentMessages()).toHaveLength(1)
+
+		// The recovery run is abandoned before its turn_end fires (e.g. the
+		// response errors out mid-stream). agent_end must clear the state so
+		// later extension-triggered responses are not blanked.
+		await fire("agent_end", { messages: [] })
+
+		const later = makeAssistant([{ type: "text", text: "Ferment wake-up." }])
+		await fire("message_update", textDeltaEvent(later, "Ferment wake-up."))
+		expect((later.content[0] as { text: string }).text).toBe("Ferment wake-up.")
 	})
 })
 

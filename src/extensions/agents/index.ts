@@ -36,6 +36,7 @@ import {
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
+import type { RemoteGitWorkflow } from "../remote-run/git-workflow.js"
 import { handleRemoteCompletion, handleRemoteFailure } from "../remote-run/post-completion.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
@@ -527,6 +528,17 @@ export interface SpawnRemoteAgentOptions {
 	 *  pause the ferment during cloud execution and complete/resume it on
 	 *  completion. */
 	fermentId?: string
+	/**
+	 * Git intent captured at dispatch (PR-first flow): the branch the remote
+	 * agent commits on. Threaded into the agent record + persisted
+	 * remote_run:state so the completion flow (possibly after a restart) can
+	 * review, steer, and push. Absent = plain run.
+	 */
+	gitWorkflow?: RemoteGitWorkflow
+	/** Steer continuation of a kept-alive PR session: the manager attaches
+	 *  via session/load on the persisted ACP id (never session/new) instead
+	 *  of provisioning a fresh workspace/session. */
+	continuation?: { remoteSession: RemoteSessionMeta; acpSessionId: string }
 }
 
 /** Spawn function type — set during agents extension init. */
@@ -998,6 +1010,7 @@ export default function (pi: ExtensionAPI) {
 					acpSessionId: record.acpSessionId,
 					remoteOrigin: record.remoteOrigin,
 					fermentId: record.fermentId,
+					gitWorkflow: record.gitWorkflow,
 					outputFile: record.outputFile,
 					startedAt: record.startedAt,
 					status:
@@ -1009,7 +1022,13 @@ export default function (pi: ExtensionAPI) {
 				})
 			}
 
-			if (record.resultConsumed) {
+			// A consumed result normally suppresses the completion surface — but
+			// never for remote runs: polling a remote background agent with
+			// get_subagent_result consumes its result, and bailing here would
+			// silently kill the user's post-completion dropdown (sync/review/push),
+			// stranding the changes on the sandbox. The dropdown fires at most once
+			// (the flag is reset in that branch below).
+			if (record.resultConsumed && !record.triggersRemoteCompletion) {
 				agentActivity.delete(record.id)
 				widget.markFinished(record.id)
 				widget.update()
@@ -1062,7 +1081,9 @@ export default function (pi: ExtensionAPI) {
 						transcriptPath: record.outputFile,
 						agentId: record.id,
 						remoteSession: record.remoteSession,
+						acpSessionId: record.acpSessionId,
 						fermentId: record.fermentId,
+						gitWorkflow: record.gitWorkflow,
 						recoveryNote: record.recoveryNote,
 					}).catch((err) => {
 						currentUi?.notify(
@@ -1157,6 +1178,12 @@ export default function (pi: ExtensionAPI) {
 			isBackground: opts?.background ?? false,
 			remote: true,
 			maxTurns: 1,
+			// PR-first git intent — planted onto the record inside spawn (see
+			// SpawnOptions.gitWorkflow), so _runRemote reads it deterministically.
+			gitWorkflow: opts?.gitWorkflow,
+			// PR steer continuation: attach to the kept-alive session instead of
+			// provisioning a fresh workspace (never session/new).
+			...(opts?.continuation ? { continuation: opts.continuation } : {}),
 			...transcriptCallbacks,
 			// The streamer wrapper only forwards AcpSessionCallbacks, so the
 			// activity tracker's onSessionCreated is wired here too. _runRemote
@@ -1188,6 +1215,7 @@ export default function (pi: ExtensionAPI) {
 					acpSessionId,
 					remoteOrigin: opts?.origin ?? "plan",
 					fermentId: opts?.fermentId,
+					gitWorkflow: rec?.gitWorkflow,
 					outputFile: rec?.outputFile,
 					startedAt: rec?.startedAt ?? Date.now(),
 					status: "running",
@@ -1297,11 +1325,20 @@ export default function (pi: ExtensionAPI) {
 	// them) are persisted in the session transcript — resume them here so the
 	// user sees the still-running cloud agent (and gets the completion
 	// dropdown once it finishes).
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		// Subagent sessions don't own remote runs — the dispatch happens in the
 		// main session, whose transcript holds the remote_run:state entries.
 		if (process.env[PARENT_SESSION_ID_ENV_KEY]) return
 		const resumable = findResumableRemoteRuns(ctx.sessionManager)
+		// Explicit continuation intent and no resumable remote runs: name the
+		// outcome instead of a silent boot. reason "resume" covers every resume
+		// mechanism (-c / --resume / --session load an existing session); a fresh
+		// boot fires "startup".
+		if (resumable.length === 0 && ctx.hasUI) {
+			if (event.reason === "resume") {
+				ctx.ui.notify?.("Continued session — no in-progress remote runs to resume")
+			}
+		}
 		if (resumable.length === 0) return
 		// The widget needs a UI context to render at all — normally the remote
 		// dispatch (spawnRemoteAgentFn) or the first local tool_execution_start

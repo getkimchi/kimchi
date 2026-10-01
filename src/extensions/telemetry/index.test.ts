@@ -476,8 +476,7 @@ describe("telemetryExtension integration", () => {
 		const { headers } = event
 
 		expect(headers["User-Agent"]).toBe("kimchi/1.0")
-		expect(typeof headers["X-Session-Id"]).toBe("string")
-		expect(headers["X-Session-Id"]).toBeTruthy()
+		expect(headers["X-Session-Id"]).toBe("test-session")
 		expect(headers["X-Turn-Index"]).toBe("4")
 	})
 
@@ -493,6 +492,9 @@ describe("telemetryExtension integration", () => {
 		getHandler(handlers, "before_provider_headers")(event)
 
 		expect(event.headers["X-Parent-Session-Id"]).toBe("parent-session-1")
+		// The request's own session id is the emitting (subagent) session's id,
+		// NOT the parent's — parent linkage lives in X-Parent-Session-Id.
+		expect(event.headers["X-Session-Id"]).toBe("test-session")
 	})
 
 	it("before_provider_headers omits X-Parent-Session-Id for main-session requests", async () => {
