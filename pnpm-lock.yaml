@@ -19,7 +19,7 @@ patchedDependencies:
     hash: 07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815
     path: patches/@earendil-works__pi-tui@0.85.1.patch
   pi-mcp-adapter@2.34.0:
-    hash: 1420b1c4452e4acb67844e104304b089b73eb5a7eb8cab55226d14e0eff88ea7
+    hash: 04ab97d367729c035b6cc4c4d429ebde889a4ba9a4833fbc58ed5de47df416f6
     path: patches/pi-mcp-adapter@2.34.0.patch
   playwright-core@1.59.1:
     hash: 1f27acbc8250451c9eea2efa9b19956afcb881a2b7a69ad4550cf8e59f15e102
@@ -94,7 +94,7 @@ importers:
         version: 10.2.0
       pi-mcp-adapter:
         specifier: 2.34.0
-        version: 2.34.0(patch_hash=1420b1c4452e4acb67844e104304b089b73eb5a7eb8cab55226d14e0eff88ea7)(@earendil-works/pi-ai@0.85.1(patch_hash=99288f84b8edd20e74893fb83ca49de935fc0c93de9a0643de705feaaffac550)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815))(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(typebox@1.3.7)(zod@4.4.3)
+        version: 2.34.0(patch_hash=04ab97d367729c035b6cc4c4d429ebde889a4ba9a4833fbc58ed5de47df416f6)(@earendil-works/pi-ai@0.85.1(patch_hash=99288f84b8edd20e74893fb83ca49de935fc0c93de9a0643de705feaaffac550)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815))(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(typebox@1.3.7)(zod@4.4.3)
       proper-lockfile:
         specifier: ^4.1.2
         version: 4.1.2
@@ -1196,79 +1196,66 @@ packages:
     resolution: {integrity: sha512-DV6fJoxEYWJOvaZIsok7KrYl0tPvga5OZ2yvKHNNYyk/2roMLqQAbGhr78EQ5YhHpnhLKJD3S1WFusAkmUuV5g==}
     cpu: [arm]
     os: [linux]
-    libc: [glibc]
 
   '@rollup/rollup-linux-arm-musleabihf@4.60.3':
     resolution: {integrity: sha512-mQKoJAzvuOs6F+TZybQO4GOTSMUu7v0WdxEk24krQ/uUxXoPTtHjuaUuPmFhtBcM4K0ons8nrE3JyhTuCFtT/w==}
     cpu: [arm]
     os: [linux]
-    libc: [musl]
 
   '@rollup/rollup-linux-arm64-gnu@4.60.3':
     resolution: {integrity: sha512-Whjj2qoiJ6+OOJMGptTYazaJvjOJm+iKHpXQM1P3LzGjt7Ff++Tp7nH4N8J/BUA7R9IHfDyx4DJIflifwnbmIA==}
     cpu: [arm64]
     os: [linux]
-    libc: [glibc]
 
   '@rollup/rollup-linux-arm64-musl@4.60.3':
     resolution: {integrity: sha512-4YTNHKqGng5+yiZt3mg77nmyuCfmNfX4fPmyUapBcIk+BdwSwmCWGXOUxhXbBEkFHtoN5boLj/5NON+u5QC9tg==}
     cpu: [arm64]
     os: [linux]
-    libc: [musl]
 
   '@rollup/rollup-linux-loong64-gnu@4.60.3':
     resolution: {integrity: sha512-SU3kNlhkpI4UqlUc2VXPGK9o886ZsSeGfMAX2ba2b8DKmMXq4AL7KUrkSWVbb7koVqx41Yczx6dx5PNargIrEA==}
     cpu: [loong64]
     os: [linux]
-    libc: [glibc]
 
   '@rollup/rollup-linux-loong64-musl@4.60.3':
     resolution: {integrity: sha512-6lDLl5h4TXpB1mTf2rQWnAk/LcXrx9vBfu/DT5TIPhvMhRWaZ5MxkIc8u4lJAmBo6klTe1ywXIUHFjylW505sg==}
     cpu: [loong64]
     os: [linux]
-    libc: [musl]
 
   '@rollup/rollup-linux-ppc64-gnu@4.60.3':
     resolution: {integrity: sha512-BMo8bOw8evlup/8G+cj5xWtPyp93xPdyoSN16Zy90Q2QZ0ZYRhCt6ZJSwbrRzG9HApFabjwj2p25TUPDWrhzqQ==}
     cpu: [ppc64]
     os: [linux]
-    libc: [glibc]
 
   '@rollup/rollup-linux-ppc64-musl@4.60.3':
     resolution: {integrity: sha512-E0L8X1dZN1/Rph+5VPF6Xj2G7JJvMACVXtamTJIDrVI44Y3K+G8gQaMEAavbqCGTa16InptiVrX6eM6pmJ+7qA==}
     cpu: [ppc64]
     os: [linux]
-    libc: [musl]
 
   '@rollup/rollup-linux-riscv64-gnu@4.60.3':
     resolution: {integrity: sha512-oZJ/WHaVfHUiRAtmTAeo3DcevNsVvH8mbvodjZy7D5QKvCefO371SiKRpxoDcCxB3PTRTLayWBkvmDQKTcX/sw==}
     cpu: [riscv64]
     os: [linux]
-    libc: [glibc]
 
   '@rollup/rollup-linux-riscv64-musl@4.60.3':
     resolution: {integrity: sha512-Dhbyh7j9FybM3YaTgaHmVALwA8AkUwTPccyCQ79TG9AJUsMQqgN1DDEZNr4+QUfwiWvLDumW5vdwzoeUF+TNxQ==}
     cpu: [riscv64]
     os: [linux]
-    libc: [musl]
 
   '@rollup/rollup-linux-s390x-gnu@4.60.3':
     resolution: {integrity: sha512-cJd1X5XhHHlltkaypz1UcWLA8AcoIi1aWhsvaWDskD1oz2eKCypnqvTQ8ykMNI0RSmm7NkTdSqSSD7zM0xa6Ig==}
     cpu: [s390x]
     os: [linux]
-    libc: [glibc]
 
   '@rollup/rollup-linux-x64-gnu@4.60.3':
     resolution: {integrity: sha512-DAZDBHQfG2oQuhY7mc6I3/qB4LU2fQCjRvxbDwd/Jdvb9fypP4IJ4qmtu6lNjes6B531AI8cg1aKC2di97bUxA==}
     cpu: [x64]
     os: [linux]
-    libc: [glibc]
 
   '@rollup/rollup-linux-x64-musl@4.60.3':
     resolution: {integrity: sha512-cRxsE8c13mZOh3vP+wLDxpQBRrOHDIGOWyDL93Sy0Ga8y515fBcC2pjUfFwUe5T7tqvTvWbCpg1URM/AXdWIXA==}
     cpu: [x64]
     os: [linux]
-    libc: [musl]
 
   '@rollup/rollup-openbsd-x64@4.60.3':
     resolution: {integrity: sha512-QaWcIgRxqEdQdhJqW4DJctsH6HCmo5vHxY0krHSX4jMtOqfzC+dqDGuHM87bu4H8JBeibWx7jFz+h6/4C8wA5Q==}
@@ -5957,7 +5944,7 @@ snapshots:
 
   pgpass@1.0.6: {}
 
-  pi-mcp-adapter@2.34.0(patch_hash=1420b1c4452e4acb67844e104304b089b73eb5a7eb8cab55226d14e0eff88ea7)(@earendil-works/pi-ai@0.85.1(patch_hash=99288f84b8edd20e74893fb83ca49de935fc0c93de9a0643de705feaaffac550)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815))(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(typebox@1.3.7)(zod@4.4.3):
+  pi-mcp-adapter@2.34.0(patch_hash=04ab97d367729c035b6cc4c4d429ebde889a4ba9a4833fbc58ed5de47df416f6)(@earendil-works/pi-ai@0.85.1(patch_hash=99288f84b8edd20e74893fb83ca49de935fc0c93de9a0643de705feaaffac550)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815))(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(typebox@1.3.7)(zod@4.4.3):
     dependencies:
       '@modelcontextprotocol/client': 2.0.0
       '@modelcontextprotocol/core': 2.0.0
