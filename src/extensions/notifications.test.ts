@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process"
 import { platform } from "node:os"
+import { join } from "node:path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { readConfigSetting, writeConfigSetting } from "../config/settings.js"
 import { createCommandContext, createContext } from "./__mocks__/context.js"
@@ -34,7 +35,7 @@ describe("native notification delivery", () => {
 		const title = 'Kimchi — "quotes" \\ $HOME'
 		expect(await sendNativeNotification(title, "Ready for input")).toBe(true)
 		const [file, args, options] = vi.mocked(execFile).mock.calls[0]
-		expect(file).toBe("/kimchi/share/bin/kimchi-notifier.app/Contents/MacOS/terminal-notifier")
+		expect(file).toBe(join("/kimchi/share", "bin/kimchi-notifier.app/Contents/MacOS/terminal-notifier"))
 		expect(args).toEqual(["-title", title, "-message", "Ready for input", "-activate", "dev.warp.Warp-Stable"])
 		expect(options).toMatchObject({ timeout: 60_000, windowsHide: true })
 	})
@@ -105,7 +106,7 @@ describe("notification workflow", () => {
 		expect(execFile).not.toHaveBeenCalled()
 		await h.fire("agent_settled")
 		expect(execFile).toHaveBeenCalledWith(
-			expect.stringContaining("kimchi-notifier.app/Contents/MacOS/terminal-notifier"),
+			expect.stringContaining(join("kimchi-notifier.app", "Contents", "MacOS", "terminal-notifier")),
 			expect.arrayContaining(["Kimchi", "Ready for input"]),
 			expect.any(Object),
 			expect.any(Function),
