@@ -66,6 +66,7 @@ import {
 	validateModelRoles,
 } from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
+import { emitSteerFired, isSteerDisabled } from "../steer-events.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
 import {
@@ -528,7 +529,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				// block can detect when the orchestrator hasn't updated step todos.
 				// Scoped to this session so concurrent sessions do not share a counter.
 				bumpStallCounter(sessionId)
-				fireStepStallSteerIfStalled(pi, sessionId)
+				fireStepStallSteerIfStalled(pi, sessionId, { interactive: ctx.hasUI })
 
 				// Mark each delegation tool call so the continuation nudge stays
 				// suppressed until all delegated-agent results have been received.
@@ -576,14 +577,18 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 					!continuationNudge.hasToolBeenCalledThisRun() &&
 					emptyTurnNudge.evaluateTurn(assistantMsg)
 				) {
-					pi.sendMessage(
-						{ customType: NUDGE_CUSTOM_TYPE, content: EMPTY_TURN_NUDGE_TEXT, display: false },
-						{ deliverAs: "followUp" },
-					)
+					if (!isSteerDisabled("continuation_nudge")) {
+						pi.sendMessage(
+							{ customType: NUDGE_CUSTOM_TYPE, content: EMPTY_TURN_NUDGE_TEXT, display: false },
+							{ deliverAs: "followUp" },
+						)
+						emitSteerFired(pi, "continuation_nudge", "empty_turn", { interactive: ctx.hasUI, sessionId })
+					}
 					return
 				}
 
 				if (!continuationNudge.evaluateTurn(assistantMsg)) return
+				if (isSteerDisabled("continuation_nudge")) return
 				pi.sendMessage(
 					{
 						customType: NUDGE_CUSTOM_TYPE,
@@ -592,6 +597,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 					},
 					{ deliverAs: "followUp" },
 				)
+				emitSteerFired(pi, "continuation_nudge", "continuation", { interactive: ctx.hasUI, sessionId })
 			})
 
 			// Fallback cleanup for an abandoned recovery run: if the response to a

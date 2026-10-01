@@ -423,7 +423,11 @@ const stallSteerTracker = createThresholdSteerTracker()
 /** Fire a one-shot hidden steer when the step-todo stall counter has crossed
  *  the threshold for the current epoch. The epoch (and tracker) resets on any
  *  running step-scope todo write or when a new step starts. */
-export function fireStepStallSteerIfStalled(pi: ExtensionAPI, sessionId: string): void {
+export function fireStepStallSteerIfStalled(
+	pi: ExtensionAPI,
+	sessionId: string,
+	opts: { interactive?: boolean } = {},
+): void {
 	const count = getTurnsSinceStepTodoWrite(sessionId)
 	stallSteerTracker.fireCrossed({
 		sessionId,
@@ -435,6 +439,7 @@ export function fireStepStallSteerIfStalled(pi: ExtensionAPI, sessionId: string)
 				FERMENT_STEP_STALL_CUSTOM_TYPE,
 				`⚠ Step todos have not been updated for ${count} turns. If you are iterating without progress, step back and reassess your approach. Update your todo plan with what you have tried and what to try next.`,
 				{ reason: "step_stall", threshold: FERMENT_STEP_STALL_THRESHOLD },
+				{ steerKind: "planning_stop_nudge", steerReason: "step_stall", interactive: opts.interactive },
 			),
 	})
 }

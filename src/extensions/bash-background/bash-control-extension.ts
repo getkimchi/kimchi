@@ -147,7 +147,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		activeControlCalls = new Map()
 		claimedExits = new Map()
 		disposed = false
-		pi.registerTool(createBashControlToolDefinition())
+		pi.registerTool(createBashControlToolDefinition(getSessionRegistry, pi))
 		// Deferral vote AFTER registration: the tool exists, it's just hidden.
 		// A resumed session that already revealed bash_control stays revealed
 		// (only votes again when still deferred).

@@ -135,6 +135,7 @@ import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import statusExtension from "./extensions/status/index.js"
+import { steerAbortTrackerExtension } from "./extensions/steer-events.js"
 import stripImagesExtension from "./extensions/strip-images.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
@@ -731,6 +732,9 @@ try {
 			bashHooksAdapterExtension,
 			bashToolGuardExtension,
 			bashTimeoutGuidanceExtension,
+			// steer:aborted — emits when the user Esc-aborts the turn immediately
+			// following a harness steer (the "user vetoed the nudge" signal).
+			steerAbortTrackerExtension,
 			hiddenToolGuidanceExtension,
 			...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
 			ideAdapterExtension,

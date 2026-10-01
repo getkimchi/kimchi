@@ -22,6 +22,7 @@ function createTodosHarness(activeTools: string[] = [...TODO_TOOL_NAMES]) {
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
 		getActiveTools: vi.fn(() => activeTools),
+		events: { emit: vi.fn(), on: vi.fn() },
 		on: vi.fn((event: string, handler: ExtensionHandler) => {
 			const list = handlers.get(event) ?? []
 			list.push(handler)
@@ -42,6 +43,7 @@ function createTodosHarness(activeTools: string[] = [...TODO_TOOL_NAMES]) {
 		appendEntry: pi.appendEntry,
 		sendMessage: pi.sendMessage,
 		getActiveTools: pi.getActiveTools,
+		events: pi.events,
 	}
 }
 
@@ -452,6 +454,72 @@ describe("early todo nudge", () => {
 		}
 
 		expect(steerCallsByReason(harness.sendMessage, "early_nudge")).toHaveLength(0)
+	})
+
+	it("emits steer:fired with kind todo_early_nudge when the nudge fires", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		for (let i = 0; i < 10; i++) {
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		}
+
+		const fired = vi.mocked(harness.events.emit).mock.calls.filter(([channel]) => channel === "steer:fired")
+		expect(fired).toHaveLength(1)
+		expect(fired[0]?.[1]).toMatchObject({ kind: "todo_early_nudge", reason: "early_nudge" })
+	})
+
+	it("kill switch: KIMCHI_DISABLE_NUDGE_TODO_EARLY=1 suppresses the steer and the event", async () => {
+		process.env.KIMCHI_DISABLE_NUDGE_TODO_EARLY = "1"
+		try {
+			const harness = createTodosHarness()
+			const ctx = createContext("session", [])
+			await harness.fire("session_start", { reason: "new" }, ctx)
+
+			for (let i = 0; i < 10; i++) {
+				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			}
+
+			expect(steerCallsByReason(harness.sendMessage, "early_nudge")).toHaveLength(0)
+			expect(vi.mocked(harness.events.emit).mock.calls.filter(([channel]) => channel === "steer:fired")).toHaveLength(0)
+		} finally {
+			delete process.env.KIMCHI_DISABLE_NUDGE_TODO_EARLY
+		}
+	})
+
+	describe("early nudge outcome events", () => {
+		it("todo write within the outcome window after the nudge → steer:outcome complied", async () => {
+			const harness = createTodosHarness()
+			const ctx = createContext("session", [])
+			await harness.fire("session_start", { reason: "new" }, ctx)
+
+			// Fire the nudge (threshold 5).
+			for (let i = 0; i < 6; i++) {
+				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			}
+			// Adopt within the window (3): a todo write counts as compliance.
+			applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, "session")
+			await harness.fire("tool_execution_end", { toolName: "create_todos", isError: false }, ctx)
+
+			const outcomes = vi.mocked(harness.events.emit).mock.calls.filter(([channel]) => channel === "steer:outcome")
+			expect(outcomes).toHaveLength(1)
+			expect(outcomes[0]?.[1]).toMatchObject({ kind: "todo_early_nudge", outcome: "complied" })
+		})
+
+		it("window expiry with no todo write → steer:outcome repeated (once)", async () => {
+			const harness = createTodosHarness()
+			const ctx = createContext("session", [])
+			await harness.fire("session_start", { reason: "new" }, ctx)
+
+			for (let i = 0; i < 12; i++) {
+				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			}
+
+			const outcomes = vi.mocked(harness.events.emit).mock.calls.filter(([channel]) => channel === "steer:outcome")
+			expect(outcomes).toHaveLength(1)
+			expect(outcomes[0]?.[1]).toMatchObject({ kind: "todo_early_nudge", outcome: "repeated" })
+		})
 	})
 
 	describe("staleness threshold steers", () => {
