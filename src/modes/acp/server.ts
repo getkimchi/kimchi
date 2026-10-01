@@ -113,6 +113,7 @@ import type { PermissionMode, PermissionModeState } from "../../extensions/permi
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
+import { classifyLLMGatewayError, parseRateLimitRetryAt } from "../../llm-gateway-error.js"
 import { updateModelsConfig } from "../../models.js"
 import { clearPiAuth, syncPiAuth } from "../../pi-auth.js"
 import { clearProjectScopeTrust, setProjectScopeTrusted } from "../../project-scope-trust.js"
@@ -126,6 +127,7 @@ import {
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
+import { emitAgentActivityUpdate } from "./activity-updates.js"
 import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { composeAvailableCommands, createCommandsRefresher, discoverSkillCommandsMap } from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
@@ -1225,6 +1227,11 @@ export class KimchiAcpAgent implements Agent {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return
 		const turn = entry.turn
+		// Stall/retry/compaction events have no schema session-update type —
+		// forward them as a kimchi.dev activity notification so the client can
+		// pin a running turn's pause to its cause. No-op for transcript/tool
+		// events, which carry their own schema updates.
+		emitAgentActivityUpdate(this.conn, sessionId, event)
 		switch (event.type) {
 			case "queue_update": {
 				if (!entry.previousQueue) {
@@ -2383,11 +2390,22 @@ function toTurnError(terminal: { stopReason: "error"; errorMessage?: string }): 
 	const detail = terminal.errorMessage ?? "the provider returned an error"
 	if (isAuthRejectedMessage(terminal.errorMessage)) {
 		return RequestError.authRequired(
-			undefined,
+			{ kind: "auth" },
 			`${detail}: auth required. Call session/authenticate to log in again, then retry.`,
 		)
 	}
-	return RequestError.internalError(undefined, detail)
+	// Structured reason data so clients branch on fields, not message text.
+	// JSON-RPC transports carry the data payload untouched; clients that ignore
+	// it lose nothing (message keeps the raw provider text).
+	const classification = classifyLLMGatewayError(detail)
+	const data = classification
+		? {
+				kind: classification.reason,
+				...(classification.httpStatusCode !== undefined ? { httpStatusCode: classification.httpStatusCode } : {}),
+				...(classification.reason === "rate_limit" ? { retryAtMs: parseRateLimitRetryAt(detail) } : {}),
+			}
+		: undefined
+	return RequestError.internalError(data, detail)
 }
 
 const AUTH_REQUIRED_HINT = "Call session/authenticate to log in, then retry."
