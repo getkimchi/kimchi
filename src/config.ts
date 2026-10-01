@@ -8,12 +8,15 @@ import {
 	DEFAULT_REGION,
 	isRegionId,
 	type KimchiRegion,
+	normalizeSelfHostedBaseUrl,
 	openAiBaseUrl,
 	REGION_ENV,
 	REGIONS,
 	type RegionEndpoints,
 	type RegionId,
 	regionEndpoints,
+	SELF_HOSTED_URL_ENV,
+	selfHostedRegion,
 	telemetryLogsUrl,
 	telemetryMetricsUrl,
 } from "./regions.js"
@@ -200,6 +203,14 @@ export interface KimchiConfig {
 	agentConfigDir: string
 	/** KIMCHI_REGION → global config → DEFAULT_REGION; unknown values count as unset. */
 	region: RegionId
+	/**
+	 * Self-hosted base URL (KIMCHI_SELF_HOSTED_URL env → global config
+	 * selfHostedUrl; invalid values count as unset). Account-level like
+	 * `region`, so only the global config may set it. Only consulted when
+	 * `region` is "self-hosted" — kept stored when switching away, so a
+	 * switch back offers it as the login default.
+	 */
+	selfHostedUrl: string | undefined
 	/** KIMCHI_BASE_URL env → project config → global config → the region's OpenAI base (this one includes the /openai/v1 path; a config-file custom value is stored as written). */
 	llmEndpoint: string
 	/**
@@ -253,6 +264,7 @@ function readConfigExtras(configPath: string): {
 	apiKey?: string
 	llmEndpoint?: string
 	region?: RegionId
+	selfHostedUrl?: string
 	maxToolResultChars?: number
 	mcpSearchLimit?: number
 	mcpSearch?: Partial<SearchStrategyConfig>
@@ -327,6 +339,13 @@ function readConfigExtras(configPath: string): {
 		// Read region — an unknown value is treated as unset, not an error.
 		const region = isRegionId(parsed.region) ? parsed.region : undefined
 
+		// Read selfHostedUrl (account-level like region, global config only).
+		// Normalized here so a hand-edited invalid value counts as unset rather
+		// than producing broken derived endpoints.
+		const selfHostedUrl = normalizeSelfHostedBaseUrl(
+			typeof parsed.selfHostedUrl === "string" ? parsed.selfHostedUrl : undefined,
+		)
+
 		// Read deviceId (camelCase, then snake_case for backwards compat)
 		const deviceId =
 			(typeof parsed.deviceId === "string" && parsed.deviceId.length > 0 && parsed.deviceId) ||
@@ -383,6 +402,7 @@ function readConfigExtras(configPath: string): {
 			apiKey,
 			llmEndpoint,
 			region,
+			selfHostedUrl,
 			maxToolResultChars,
 			mcpSearchLimit,
 			mcpSearch,
@@ -508,11 +528,13 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 	let fileMetricsEndpoint: string | undefined
 	let fileHeaders: Record<string, string> | undefined
 	let fileRegion: unknown
+	let selfHostedUrlFromFile: string | undefined
 
 	try {
 		const raw = readFileSync(path, "utf-8")
 		const parsed = JSON.parse(raw)
 		fileRegion = parsed.region
+		if (typeof parsed.selfHostedUrl === "string") selfHostedUrlFromFile = parsed.selfHostedUrl
 		const t = parsed.telemetry
 		if (t && typeof t === "object") {
 			if (typeof t.enabled === "boolean") fileEnabled = t.enabled
@@ -541,7 +563,13 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 		envEnabled !== undefined ? envEnabled !== "0" && envEnabled !== "false" : (fileEnabled ?? defaultEnabled)
 
 	// Explicit telemetry.* config wins over the region defaults.
-	const region = REGIONS[effectiveRegion(fileRegion)]
+	const regionId = effectiveRegion(fileRegion)
+	// Self-hosted telemetry URLs derive from the same base URL as every other
+	// endpoint. Without a configured base the placeholder entry's empty URLs
+	// make telemetry sends fail (best-effort, like an unreachable host);
+	// endpoint resolution fails fast elsewhere with the actionable error.
+	const selfHostedBase = environmentSelfHostedUrl() ?? normalizeSelfHostedBaseUrl(selfHostedUrlFromFile)
+	const region = regionId === "self-hosted" && selfHostedBase ? selfHostedRegion(selfHostedBase) : REGIONS[regionId]
 
 	// Always inject a User-Agent so telemetry is traceable on the server side.
 	const hasUserAgent = Object.keys(headers).some((k) => k.toLowerCase() === "user-agent")
@@ -626,16 +654,22 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 	// Region is account-level, so only the global config may set it.
 	const region = effectiveRegion(globalExtras.region)
 
+	// The self-hosted base URL is region config: account-level (global config
+	// only), with KIMCHI_SELF_HOSTED_URL winning over the stored value — the
+	// same env-over-file shape as effectiveRegion.
+	const selfHostedUrl = environmentSelfHostedUrl() ?? globalExtras.selfHostedUrl
+
 	// KIMCHI_BASE_URL repoints the whole LLM gateway (chat, router,
 	// search, anthropic base) and outranks any configured llmEndpoint,
 	// matching the KIMCHI_API_KEY env-wins rule.
 	const envLlmBaseUrl = environmentLlmBaseUrl()
-	const gateway = withLlmBaseUrl(REGIONS[region])
+	const gateway = withLlmBaseUrl(regionOrPlaceholder(region, selfHostedUrl))
 
 	return {
 		apiKey: getEnvironmentApiKey() || extras.apiKey || "",
 		agentConfigDir: AGENT_CONFIG_DIR,
 		region,
+		selfHostedUrl,
 		llmEndpoint: envLlmBaseUrl ? openAiBaseUrl(gateway) : (extras.llmEndpoint ?? openAiBaseUrl(gateway)),
 		customLlmEndpoint: envLlmBaseUrl ?? extras.llmEndpoint,
 		maxToolResultChars: extras.maxToolResultChars ?? 10_000,
@@ -684,11 +718,12 @@ export interface ResolvedEndpoints extends RegionEndpoints {
 let resolvedEndpointsConfigCache: { cfg: KimchiConfig; stamp: string } | undefined
 
 function globalConfigStamp(): string {
+	const env = `${process.env[REGION_ENV]}:${environmentLlmBaseUrl() ?? ""}:${environmentSelfHostedUrl() ?? ""}`
 	try {
 		const st = statSync(KIMCHI_CONFIG_PATH)
-		return `${process.env[REGION_ENV]}:${environmentLlmBaseUrl() ?? ""}:${st.mtimeMs}:${st.size}`
+		return `${env}:${st.mtimeMs}:${st.size}`
 	} catch {
-		return `${process.env[REGION_ENV]}:${environmentLlmBaseUrl() ?? ""}:missing`
+		return `${env}:missing`
 	}
 }
 
@@ -713,7 +748,10 @@ export function resolveEndpoints(options?: { configPath?: string; cwd?: string }
 		}
 		cfg = resolvedEndpointsConfigCache.cfg
 	}
-	return { ...endpointsForRegion(cfg.region), llmEndpoint: cfg.llmEndpoint }
+	return {
+		...endpointsForRegion(cfg.region, { selfHostedUrl: cfg.selfHostedUrl }),
+		llmEndpoint: cfg.llmEndpoint,
+	}
 }
 
 let warnedInvalidLlmBaseUrl = false
@@ -754,15 +792,89 @@ function withLlmBaseUrl(region: KimchiRegion): KimchiRegion {
 	return base ? { ...region, llmBaseUrl: base } : region
 }
 
+let warnedInvalidSelfHostedUrl = false
+
+/** Test-only: re-arm the one-time invalid KIMCHI_SELF_HOSTED_URL warning (module state that tests must not leak between cases). */
+export function resetInvalidSelfHostedUrlWarningForTests(): void {
+	warnedInvalidSelfHostedUrl = false
+}
+
+/**
+ * KIMCHI_SELF_HOSTED_URL env override for the self-hosted region base URL —
+ * the headless/CI companion to KIMCHI_REGION=self-hosted. Mirrors
+ * environmentLlmBaseUrl: blank counts as unset; a malformed value warns once
+ * and counts as unset too, so the stored selfHostedUrl keeps serving instead
+ * of failing far away with an opaque connection error.
+ */
+function environmentSelfHostedUrl(): string | undefined {
+	const raw = process.env[SELF_HOSTED_URL_ENV]
+	const normalized = normalizeSelfHostedBaseUrl(raw)
+	if (normalized !== undefined || !raw?.trim()) return normalized
+	if (!warnedInvalidSelfHostedUrl) {
+		warnedInvalidSelfHostedUrl = true
+		console.warn(
+			`Ignoring invalid KIMCHI_SELF_HOSTED_URL="${raw}" (expected an http(s) URL, e.g. https://kimchi.example.com). Using the stored self-hosted URL instead.`,
+		)
+	}
+	return undefined
+}
+
+/**
+ * The self-hosted base URL a bare `endpointsForRegion("self-hosted")` call
+ * resolves: KIMCHI_SELF_HOSTED_URL env → the global config's selfHostedUrl.
+ * Exported for callers that persist the base they resolved (ACP
+ * authenticate()), alongside the region it belongs to.
+ */
+export function resolveSelfHostedBaseUrl(): string | undefined {
+	return environmentSelfHostedUrl() ?? readConfigExtras(KIMCHI_CONFIG_PATH).selfHostedUrl
+}
+
+/**
+ * The KimchiRegion for a region id, without the endpoint fail-fast: a
+ * self-hosted region with a resolvable base is built via selfHostedRegion,
+ * anything else falls back to the REGIONS entry (the self-hosted
+ * placeholder when no base is configured). Used by loadConfig/telemetry,
+ * which must keep working in the broken state so `kimchi config region` can
+ * show it and `kimchi login` can fix it.
+ */
+function regionOrPlaceholder(region: RegionId, selfHostedUrl: string | undefined): KimchiRegion {
+	return region === "self-hosted" && selfHostedUrl ? selfHostedRegion(selfHostedUrl) : REGIONS[region]
+}
+
+/**
+ * Clear, actionable error for a self-hosted region without a base URL. Never
+ * silently fall back to another region's endpoints — a wrong-region request
+ * with a valid-looking key is far harder to diagnose than this error.
+ */
+function missingSelfHostedBaseUrlError(): Error {
+	return new Error(
+		`Region "self-hosted" is selected but no base URL is configured. Set ${SELF_HOSTED_URL_ENV}=https://your-kimchi-host (e.g. next to KIMCHI_REGION=self-hosted in CI), or run "kimchi login", choose Self-hosted, and enter the base URL.`,
+	)
+}
+
 /**
  * Endpoints of a given region, with the same env overrides as resolveEndpoints().
  *
  * This and resolveEndpoints() are the only sanctioned entry points for region
  * endpoints — the low-level helpers in src/regions.ts bypass the env overrides
  * (see the note there). loadConfig() applies the same overrides to llmEndpoint.
+ *
+ * Self-hosted regions are built by selfHostedRegion(base) from the base URL in
+ * `options.selfHostedUrl` or — when omitted — from KIMCHI_SELF_HOSTED_URL /
+ * the global config. A self-hosted region with no resolvable base URL throws
+ * (see missingSelfHostedBaseUrlError) instead of silently falling back to
+ * another region's endpoints.
  */
-export function endpointsForRegion(region: RegionId): RegionEndpoints {
-	const endpoints = regionEndpoints(withLlmBaseUrl(REGIONS[region]))
+export function endpointsForRegion(region: RegionId, options?: { selfHostedUrl?: string }): RegionEndpoints {
+	let resolved: KimchiRegion
+	if (region === "self-hosted") {
+		const base = options?.selfHostedUrl ?? resolveSelfHostedBaseUrl()
+		if (!base) throw missingSelfHostedBaseUrlError()
+		resolved = selfHostedRegion(base)
+	} else {
+		resolved = REGIONS[region]
+	}
+	const endpoints = regionEndpoints(withLlmBaseUrl(resolved))
 	return {
 		...endpoints,
 		webAppUrl: process.env.KIMCHI_WEB_APP_URL ?? endpoints.webAppUrl,
@@ -1000,6 +1112,10 @@ export interface WriteApiKeyOptions {
 	 *  `llmEndpoint` is given, the region drives every endpoint and any stale
 	 *  custom endpoint is dropped. */
 	region?: RegionId
+	/** Self-hosted base URL chosen at login, stored alongside `region` so the
+	 *  derivation stays single-sourced. Left untouched when absent, so
+	 *  switching away from self-hosted and back keeps the stored value. */
+	selfHostedUrl?: string
 }
 
 export function writeApiKey(key: string, configPath?: string, options: WriteApiKeyOptions = {}): void {
@@ -1007,6 +1123,10 @@ export function writeApiKey(key: string, configPath?: string, options: WriteApiK
 	updateConfigFile(path, (raw) => {
 		raw.apiKey = key
 		if (options.region) raw.region = options.region
+		// Normalize on write so hand-edited trailing slashes never reach the
+		// derivation; an invalid value counts as unset (never stored).
+		const selfHostedUrl = normalizeSelfHostedBaseUrl(options.selfHostedUrl)
+		if (selfHostedUrl) raw.selfHostedUrl = selfHostedUrl
 		const llmEndpoint = options.llmEndpoint?.trim()
 		if (llmEndpoint) {
 			raw.llmEndpoint = llmEndpoint

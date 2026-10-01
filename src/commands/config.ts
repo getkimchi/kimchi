@@ -1,6 +1,6 @@
 import { loadConfig, readTelemetryConfig, writeTelemetryEnabled, writeTuiWheelScrollLines } from "../config.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
-import { isRegionId, REGION_ENV, REGIONS, selectableRegions } from "../regions.js"
+import { isRegionId, REGION_ENV, REGIONS, SELF_HOSTED_URL_ENV, selectableRegions } from "../regions.js"
 
 const TELEMETRY_ENV = "KIMCHI_TELEMETRY_ENABLED"
 const WHEEL_SCROLL_ENV = "KIMCHI_WHEEL_SCROLL_LINES"
@@ -199,7 +199,7 @@ function printUsage(): void {
 function handleRegion(args: string[]): number {
 	if (args.length > 0) {
 		console.error(
-			`kimchi config region: region is chosen at login and tied to your API key. Run "kimchi login" again to switch regions (headless setups can set ${REGION_ENV}=us|eu).`,
+			`kimchi config region: region is chosen at login and tied to your API key. Run "kimchi login" again to switch regions (headless setups can set ${REGION_ENV}=us|eu|self-hosted).`,
 		)
 		return 2
 	}
@@ -210,8 +210,22 @@ function handleRegion(args: string[]): number {
 	if (isRegionId(envVal)) {
 		console.log(`Region: ${current.id} — ${current.label} (from ${REGION_ENV}=${envVal}, overrides config)`)
 	} else {
-		if (envVal) console.warn(`Ignoring invalid ${REGION_ENV}=${envVal} (expected us|eu)`)
+		if (envVal) console.warn(`Ignoring invalid ${REGION_ENV}=${envVal} (expected us|eu|self-hosted)`)
 		console.log(`Region: ${current.id} — ${current.label}`)
+	}
+	// Self-hosted is only meaningful with its base URL; show what is
+	// configured (env override wins over the stored value, like the region).
+	if (cfg.region === "self-hosted") {
+		const envBase = process.env[SELF_HOSTED_URL_ENV]
+		if (cfg.selfHostedUrl && envBase) {
+			console.log(`Self-hosted base URL: ${cfg.selfHostedUrl} (from ${SELF_HOSTED_URL_ENV}, overrides config)`)
+		} else if (cfg.selfHostedUrl) {
+			console.log(`Self-hosted base URL: ${cfg.selfHostedUrl}`)
+		} else {
+			console.log(
+				`Self-hosted base URL: not configured — set ${SELF_HOSTED_URL_ENV} or run "kimchi login" and choose Self-hosted`,
+			)
+		}
 	}
 	console.log(
 		`Available regions: ${selectableRegions()
