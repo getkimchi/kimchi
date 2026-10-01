@@ -432,8 +432,8 @@ describe("SkillManager", () => {
 
 	/** Full typed Skill fixture for the discovered tier — pi's Skill requires
 	 *  baseDir/sourceInfo, and the tier consumes baseDir as the directory anchor
-	 *  plus filePath's basename as the entry file. Mirrors system-prompt.test.ts's
-	 *  createSkill. */
+	 *  plus the entry file resolved relative to it from filePath. Mirrors
+	 *  system-prompt.test.ts's createSkill. */
 	function discoveredSkill(overrides: Partial<Skill> & Pick<Skill, "name" | "description" | "filePath">): Skill {
 		return {
 			baseDir: dirname(overrides.filePath),
@@ -533,6 +533,83 @@ describe("SkillManager", () => {
 				expect(result.content).toContain("Loose body.")
 			} finally {
 				rmSync(discoveredDir, { recursive: true, force: true })
+			}
+		})
+
+		it("refuses to load a discovered skill hidden with disableModelInvocation", async () => {
+			// Mirror of the prompt catalog's visibility rule: hidden skills are
+			// user-invocation-only (/skill:name), so the model-facing skill_view
+			// must treat them as not found rather than expose their instructions.
+			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
+			try {
+				const skillDir = join(discoveredDir, "hidden-skill")
+				mkdirSync(skillDir)
+				writeFileSync(join(skillDir, "SKILL.md"), "---\ndescription: hidden\n---\nHidden body.")
+				mgr.setDiscoveredSkillsProvider(() => [
+					discoveredSkill({
+						name: "hidden-skill",
+						description: "hidden",
+						filePath: join(skillDir, "SKILL.md"),
+						disableModelInvocation: true,
+					}),
+				])
+				const result = await mgr.view("hidden-skill")
+				expect(result.success).toBe(false)
+				expect(result.error).toContain("not found")
+			} finally {
+				rmSync(discoveredDir, { recursive: true, force: true })
+			}
+		})
+
+		it("resolves an entry file nested below baseDir without dropping intermediate directories", async () => {
+			// pi's loader currently points filePath at a direct child of baseDir,
+			// but the resolution must not silently break if that ever drifts:
+			// the entry file is derived as the path relative to baseDir.
+			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
+			try {
+				const skillDir = join(discoveredDir, "nested-skill")
+				mkdirSync(join(skillDir, "references"), { recursive: true })
+				writeFileSync(join(skillDir, "SKILL.md"), "---\ndescription: nested\n---\nNested body.")
+				mgr.setDiscoveredSkillsProvider(() => [
+					discoveredSkill({
+						name: "nested-skill",
+						description: "nested",
+						filePath: join(skillDir, "SKILL.md"),
+						baseDir: discoveredDir,
+					}),
+				])
+				const result = await mgr.view("nested-skill")
+				expect(result.success).toBe(true)
+				expect(result.content).toContain("Nested body.")
+			} finally {
+				rmSync(discoveredDir, { recursive: true, force: true })
+			}
+		})
+
+		it("still loads a skill whose filePath is unrelated to baseDir", async () => {
+			// Degenerate inventory entry: filePath escapes baseDir entirely. The
+			// tier anchors at filePath's own parent so the entry stays reachable
+			// instead of joining baseDir with a bogus ".."-prefixed path.
+			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
+			const elsewhereDir = mkdtempSync(join(tmpdir(), "kimchi-skill-elsewhere-"))
+			try {
+				const skillDir = join(elsewhereDir, "stray-skill")
+				mkdirSync(skillDir)
+				writeFileSync(join(skillDir, "SKILL.md"), "---\ndescription: stray\n---\nStray body.")
+				mgr.setDiscoveredSkillsProvider(() => [
+					discoveredSkill({
+						name: "stray-skill",
+						description: "stray",
+						filePath: join(skillDir, "SKILL.md"),
+						baseDir: discoveredDir,
+					}),
+				])
+				const result = await mgr.view("stray-skill")
+				expect(result.success).toBe(true)
+				expect(result.content).toContain("Stray body.")
+			} finally {
+				rmSync(discoveredDir, { recursive: true, force: true })
+				rmSync(elsewhereDir, { recursive: true, force: true })
 			}
 		})
 

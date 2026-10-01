@@ -69,12 +69,13 @@ export function createSkillViewTool(manager: SkillManager, tracker: UsageTracker
 		description:
 			"Load the full instructions of an installed skill. Call this with the exact skill name from the available skills list " +
 			"before acting on a task that names or clearly matches that skill, then follow the loaded instructions. " +
-			"First call returns SKILL.md and a linked_files map; call again with file_path to read a linked file.",
+			"First call returns the skill's entry file (usually SKILL.md) and a linked_files map; call again with file_path to read a linked file.",
 		parameters: Type.Object({
 			name: Type.String({ description: "The exact skill name from the available skills list." }),
 			file_path: Type.Optional(
 				Type.String({
-					description: "Path to a linked file within the skill, e.g. 'references/api.md'. Omit for main SKILL.md.",
+					description:
+						"Path to a linked file within the skill, e.g. 'references/api.md'. Omit for the skill's entry file.",
 				}),
 			),
 		}),

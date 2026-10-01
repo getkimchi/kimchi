@@ -1,18 +1,7 @@
 import { mkdir, readdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises"
-import { basename, dirname, join, resolve, sep } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import type { Skill } from "@earendil-works/pi-coding-agent"
 import { parse as parseYaml } from "yaml"
-
-const SKILLS_DIR_CACHE = new Map<string, SkillManager>()
-
-export function getSkillManager(skillsDir: string): SkillManager {
-	let manager = SKILLS_DIR_CACHE.get(skillsDir)
-	if (!manager) {
-		manager = new SkillManager(skillsDir)
-		SKILLS_DIR_CACHE.set(skillsDir, manager)
-	}
-	return manager
-}
 
 /**
  * Check if a skill directory exists.
@@ -221,6 +210,8 @@ export class SkillManager {
 	 * 3. Fall back to bundled roots, strongest (later) root first.
 	 * 4. Fall back to the session's discovered inventory (project skills,
 	 *    npm packages, .cursor/skills, configured skillPaths) — read-only.
+	 *    Skills hidden with disableModelInvocation are excluded here too,
+	 *    mirroring the prompt catalog's visibility rule.
 	 */
 	private async _findSkill(name: string): Promise<SkillLocation | null> {
 		const direct = join(this.skillsDir, name, "SKILL.md")
@@ -271,16 +262,25 @@ export class SkillManager {
 		}
 
 		const discovered = this.discoveredSkillsProvider?.() ?? []
-		const hit = discovered.find((s) => s.name === name)
+		// Mirror the prompt catalog's visibility rule: skills with
+		// disableModelInvocation are user-invocation-only (pi's /skill:name
+		// commands, per upstream's formatSkillsForPrompt contract), so
+		// skill_view must not load them on the model's behalf.
+		const hit = discovered.find((s) => s.name === name && !s.disableModelInvocation)
 		if (hit) {
 			// pi's loader points filePath at the skill's entry file — "<dir>/SKILL.md"
 			// for directory-shaped skills, the loose .md itself for single-file ones
 			// (root .md children of a skills root, single-.md skillPaths entries).
 			// Anchor linked-file resolution at baseDir (the skill dir) and default
 			// view() to the actual entry file so loose-.md skills load too.
+			// relative() keeps intermediate directories intact if filePath ever sits
+			// deeper than baseDir's direct children; when baseDir and filePath are
+			// unrelated, anchor at filePath's own parent so the entry stays reachable.
+			const rel = relative(hit.baseDir, hit.filePath)
+			const escapes = rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)
 			return {
-				skillDir: hit.baseDir,
-				entryFile: basename(hit.filePath),
+				skillDir: escapes ? dirname(hit.filePath) : hit.baseDir,
+				entryFile: escapes ? basename(hit.filePath) : rel,
 				category: "",
 				origin: "discovered",
 				// Discovered skills are strictly read-only: they live outside the

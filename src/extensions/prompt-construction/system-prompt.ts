@@ -7,7 +7,7 @@
  * subagent and single-model content lives in this file.
  */
 
-import type { Skill } from "@earendil-works/pi-coding-agent"
+import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent"
 import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
 import { resolvePhaseGuideline } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
@@ -94,7 +94,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		toolsSection,
 		environmentSection,
 		projectContext,
-		skillsSection: formatSkills(filteredSkills),
+		skillsSection: formatSkillsSection(filteredSkills, effectiveTools),
 		orchestrationSection,
 		systemPromptBlocks: blocks.map((block) => block.content).join("\n\n"),
 		suppressed,
@@ -537,7 +537,19 @@ function truncateDescription(description: string, max: number): string {
 	return `${slice.slice(0, cut).trimEnd()}…`
 }
 
-/** Render the model-visible skill catalog. Built here rather than reusing
+/** Render the model-visible skill catalog. The load path depends on session
+ *  wiring: the tool-routed catalog when skill_view is registered (the cli.ts
+ *  wiring point always pairs this extension with skills-manager), and
+ *  upstream's read-tool catalog otherwise — sessions built without the
+ *  skills-manager extension (tests, SDK entry points) still get a usable
+ *  instruction instead of a pointer to an unregistered tool. */
+function formatSkillsSection(skills: readonly Skill[] | undefined, tools: readonly ToolInfo[]): string {
+	if (!skills || skills.length === 0) return ""
+	if (tools.some((t) => t.name === "skill_view")) return formatSkills(skills)
+	return formatSkillsForPrompt([...skills], "read")
+}
+
+/** Render the tool-routed skill catalog. Built here rather than reusing
  *  pi's upstream block because the load path is the dedicated skill_view
  *  tool: file locations (the upstream block's read-a-path affordance) and
  *  the upstream read-tool instruction are dead weight for the model, and
