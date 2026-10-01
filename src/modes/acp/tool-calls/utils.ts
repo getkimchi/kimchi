@@ -32,8 +32,9 @@ const TOOL_KINDS: Record<string, ToolKind> = {
 // Title extraction is per-tool, not arg-shape detection. The previous version
 // treated any tool with a `path`/`file_path`/`command`/`pattern` argument as if
 // that argument were the title, so non-file tools (lsp_*, debug_*, daemon, …)
-// showed a raw argument in place of the tool name. Only the tools listed here
-// get an argument-derived title; everything else falls back to the tool name.
+// showed a raw argument in place of the tool name. Argument-derived titles are
+// reserved for tools with a meaningful ACP kind — kind "other" tools always
+// carry the tool name as title so the call stays identifiable.
 // Legacy alias first: providers historically emit `file_path` (the original
 // pre-refactor precedence), schema-conformant `path` as fallback.
 const TITLE_ARGS: Record<string, string[]> = {
@@ -47,7 +48,6 @@ const TITLE_ARGS: Record<string, string[]> = {
 	find: ["pattern"],
 	web_fetch: ["url"],
 	web_search: ["query"],
-	memory_search: ["query"],
 	Agent: ["description"],
 }
 

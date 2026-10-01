@@ -262,10 +262,10 @@ describe("describeToolCall", () => {
 			expect: { title: "daemon", kind: "other", locations: [] },
 		},
 		{
-			name: "memory_search uses the query as title",
+			name: "kind-other tool with a query argument (memory_search) keeps the tool name as title",
 			toolName: "memory_search",
 			args: { query: "auth" },
-			expect: { title: "auth", kind: "other", locations: [] },
+			expect: { title: "memory_search", kind: "other", locations: [] },
 		},
 		{
 			name: "unmapped tool with a pattern argument keeps the tool name as title",
@@ -489,7 +489,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				sessionUpdate: "tool_call",
 				toolCallId: "kt.memory_search.0",
 				status: "pending",
-				title: "preferred editor",
+				title: "memory_search",
 				kind: "other",
 				locations: [],
 				rawInput: { query: "preferred editor" },
