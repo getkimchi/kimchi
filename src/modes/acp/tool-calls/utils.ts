@@ -17,6 +17,7 @@ import { asString, truncate } from "../utils.js"
 // still hit the "other" fallback in describeToolCall().
 const TOOL_KINDS: Record<string, ToolKind> = {
 	bash: "execute",
+	powershell: "execute",
 	read: "read",
 	ls: "read",
 	grep: "search",
@@ -35,6 +36,7 @@ const TOOL_KINDS: Record<string, ToolKind> = {
 // get an argument-derived title; everything else falls back to the tool name.
 const TITLE_ARGS: Record<string, string[]> = {
 	bash: ["command"],
+	powershell: ["command"],
 	read: ["file_path", "path"],
 	write: ["file_path", "path"],
 	edit: ["file_path", "path"],
@@ -48,9 +50,10 @@ const TITLE_ARGS: Record<string, string[]> = {
 }
 
 // Only these tools report their target path via ACP `locations` (clients render
-// a file chip from it). It must never leak to tools that merely have a
+// a file chip from it). grep/find accept an optional search-scope `path`, so
+// they participate too. It must never leak to tools that merely have a
 // path-shaped argument.
-const LOCATION_TOOLS = new Set(["read", "write", "edit", "ls"])
+const LOCATION_TOOLS = new Set(["read", "write", "edit", "ls", "grep", "find"])
 
 export function describeToolCall(
 	toolName: string,
