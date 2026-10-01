@@ -455,14 +455,14 @@ describe("early todo nudge", () => {
 	})
 
 	describe("staleness threshold steers", () => {
-		it("fires one-shot steers at 4/9/17/25 post-write tool calls and resets on todo write", async () => {
+		it("fires one-shot steers at 9/17/25 post-write tool calls and resets on todo write", async () => {
 			const harness = createTodosHarness()
 			const ctx = createContext("session", [])
 			await harness.fire("session_start", { reason: "new" }, ctx)
 			applyWriteTodos({ todos: [{ content: "long task", status: "in_progress" }] }, "session")
 
 			const stalenessCalls = () => steerCallsByReason(harness.sendMessage, "staleness")
-			const thresholds = [4, 9, 17, 25]
+			const thresholds = [9, 17, 25]
 			for (let count = 1; count <= 30; count++) {
 				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
 				expect(stalenessCalls()).toHaveLength(thresholds.filter((threshold) => threshold <= count).length)
@@ -473,16 +473,16 @@ describe("early todo nudge", () => {
 				expect(message.content).toMatch(/^<system-reminder>\n/)
 				expect(stalenessCalls()[index]?.[1]).toEqual({ deliverAs: "steer" })
 			}
-			expect((stalenessCalls()[3]?.[0] as { content: string }).content).toContain("significantly stale")
+			expect((stalenessCalls()[2]?.[0] as { content: string }).content).toContain("significantly stale")
 
-			// A todo write resets the counter and allows the four-call reminder again.
+			// A todo write resets the counter and allows the nine-call reminder again.
 			applyWriteTodos(
 				{ todos: [{ id: 1, content: "long task", status: "in_progress", note: "Progress recorded" }] },
 				"session",
 			)
 			for (let count = 1; count <= 9; count++) {
 				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-				expect(stalenessCalls()).toHaveLength(4 + thresholds.filter((threshold) => threshold <= count).length)
+				expect(stalenessCalls()).toHaveLength(3 + thresholds.filter((threshold) => threshold <= count).length)
 			}
 		})
 

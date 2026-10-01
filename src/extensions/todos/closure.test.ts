@@ -68,6 +68,7 @@ describe("bounded todo cleanup", () => {
 		const h = await harness()
 		h.write([{ id: 1, content: "Verify inputs", status: TODO_STATUS.IN_PROGRESS }])
 		for (let i = 0; i < 5; i++) await h.work()
+		expect(h.sendMessage.mock.calls.filter(([m]) => m.customType === TODO_STALENESS_CUSTOM_TYPE)).toHaveLength(0)
 		h.write([
 			{ id: 1, content: "Verify inputs", status: TODO_STATUS.IN_PROGRESS },
 			{ id: 2, content: "Collect results", status: TODO_STATUS.COMPLETED },
@@ -165,19 +166,19 @@ describe("bounded todo cleanup", () => {
 		h.write([{ content: "Work", status: TODO_STATUS.IN_PROGRESS }])
 		const fork = h.manager.getLeafId()
 		if (!fork) throw new Error("Expected todo entry")
-		for (let i = 0; i < 4; i++) await h.work()
+		for (let i = 0; i < 9; i++) await h.work()
 		await h.end()
 		h.manager.branch(fork)
 		await h.fire("session_tree")
 		h.request()
-		for (let i = 0; i < 4; i++) await h.work()
+		for (let i = 0; i < 9; i++) await h.work()
 		await h.end()
 		expect(h.closure()).toHaveLength(2)
 		expect(
 			h.sendMessage.mock.calls.filter(([m]) => m.customType === TODO_STALENESS_CUSTOM_TYPE).map(([m]) => m.details),
 		).toEqual([
-			{ reason: "staleness", threshold: 4 },
-			{ reason: "staleness", threshold: 4 },
+			{ reason: "staleness", threshold: 9 },
+			{ reason: "staleness", threshold: 9 },
 		])
 	})
 
@@ -227,12 +228,12 @@ describe("bounded todo cleanup", () => {
 			h.sendMessage.mock.calls
 				.filter(([message]) => message.customType === TODO_STALENESS_CUSTOM_TYPE)
 				.map(([message]) => message.details)
-		expect(reminders()).toEqual([4, 9, 17, 25].map((threshold) => ({ reason: "staleness", threshold })))
+		expect(reminders()).toEqual([9, 17, 25].map((threshold) => ({ reason: "staleness", threshold })))
 		expect(h.closure()).toHaveLength(1)
 		h.write([{ content: "Long task", status: TODO_STATUS.IN_PROGRESS, note: "Progress recorded" }])
 		for (let i = 0; i < 9; i++) await h.work("read")
 		await h.end()
-		expect(reminders()).toEqual([4, 9, 17, 25, 4, 9].map((threshold) => ({ reason: "staleness", threshold })))
+		expect(reminders()).toEqual([9, 17, 25, 9].map((threshold) => ({ reason: "staleness", threshold })))
 		expect(h.closure()).toHaveLength(1)
 	})
 

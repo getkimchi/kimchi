@@ -28,7 +28,9 @@ for (const scenario of ["completed", "deferred", "ignored"]) {
 							{ content: "Compare results", status: "pending" },
 						],
 					}),
-					tool("bash", { command: "printf 'input verified\\n'" }),
+					...Array.from({ length: 5 }, (_, index) =>
+						tool("bash", { command: `printf 'input ${index + 1} verified\\n'` }),
+					),
 					tool("mark_todo", { id: 2, status: "completed" }),
 					tool("mark_todo", { id: 3, status: "completed" }),
 					{ stream: ["Comparison complete."] },
@@ -64,11 +66,12 @@ for (const scenario of ["completed", "deferred", "ignored"]) {
 					if (deferred) expect(viewText(terminal)).toContain("Publish after approval")
 				}
 				const chat = fixture.fake.requests.filter((request) => request.url === "/openai/v1/chat/completions")
-				expect(chat).toHaveLength(scenario === "ignored" ? 6 : 7)
-				const body = chat[5].body as { messages: { role: string; content: unknown }[] }
+				expect(chat).toHaveLength(scenario === "ignored" ? 10 : 11)
+				expect(JSON.stringify(chat)).not.toContain("changes since last update")
+				const body = chat[9].body as { messages: { role: string; content: unknown }[] }
 				expect(JSON.stringify(body.messages)).toContain("The turn ended with unfinished todos")
 				expect(JSON.stringify(body.messages)).toContain("Preserve deferred")
-				trace.step("one reminder, existing todo tools, no extra evaluator or repeated cleanup")
+				trace.step("five work calls without stale reminders; one bounded cleanup at wrap-up")
 			},
 		)
 	})
