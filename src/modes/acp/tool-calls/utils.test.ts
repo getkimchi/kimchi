@@ -262,10 +262,16 @@ describe("describeToolCall", () => {
 			expect: { title: "daemon", kind: "other", locations: [] },
 		},
 		{
-			name: "non-file tool with a pattern argument keeps the tool name as title",
+			name: "memory_search uses the query as title",
 			toolName: "memory_search",
-			args: { pattern: "*.md", query: "auth" },
+			args: { query: "auth" },
 			expect: { title: "auth", kind: "other", locations: [] },
+		},
+		{
+			name: "unmapped tool with a pattern argument keeps the tool name as title",
+			toolName: "mcp__github__search",
+			args: { pattern: "*.md" },
+			expect: { title: "mcp__github__search", kind: "other", locations: [] },
 		},
 		{
 			name: "bash_control (handle/action args) falls back to tool name",
