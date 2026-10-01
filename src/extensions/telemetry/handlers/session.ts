@@ -1,11 +1,11 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { isAutoModel } from "../../router/constants.js"
 import type { TelemetryContext } from "../session-context.js"
 
 export function handleSessionStart(tm: TelemetryContext, ctx: ExtensionContext): void {
 	tm.reset()
+	const sessionId = ctx.sessionManager.getSessionId()
+	if (sessionId) tm.setPiSessionId(sessionId)
 	if (ctx.model?.id) tm.currentModel = ctx.model.id
-	tm.selectedModelIsAuto = isAutoModel(ctx.model)
 	tm.startFlushTimer()
 }
 

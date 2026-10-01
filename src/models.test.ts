@@ -5,9 +5,11 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "./credential-staleness.js"
+import { AUTO_MODEL_DESCRIPTION } from "./extensions/auto-model/constants.js"
 import { readModelDeprecations } from "./model-deprecation.js"
 import {
-	injectAutoModel,
+	__clearModelDescriptionsForTest,
+	getModelDescription,
 	injectExperimentalProvider,
 	isTransientModelsError,
 	ModelsFetchError,
@@ -820,19 +822,6 @@ describe("updateModelsConfig", () => {
 		expect(fetch).not.toHaveBeenCalled()
 	})
 
-	it("does not advertise the virtual Auto model as cached concrete metadata", async () => {
-		vi.mocked(fetch).mockResolvedValueOnce({
-			ok: true,
-			json: async () => ({ models: [KIMI] }),
-		} as Response)
-		await updateModelsConfig(modelsJsonPath, "test-key")
-		injectAutoModel(modelsJsonPath)
-
-		const result = await updateModelsConfig(modelsJsonPath, "")
-
-		expect(result.models.map((model) => model.slug)).toEqual(["kimi-k2.5"])
-	})
-
 	it("returns empty models without fetching when apiKey is empty and no cache exists", async () => {
 		const result = await updateModelsConfig(modelsJsonPath, "")
 
@@ -992,92 +981,6 @@ describe("updateModelsConfig", () => {
 		const sidecar = readModelDeprecations(modelsJsonPath)
 		expect(sidecar.get("old-model")?.replacement_model).toBe("new-model")
 		expect(sidecar.get("gone-model")?.replacement_model).toBe("new-model")
-	})
-})
-
-describe("injectAutoModel", () => {
-	let tempDir: string
-	let modelsJsonPath: string
-
-	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "kimchi-auto-model-test-"))
-		modelsJsonPath = join(tempDir, "models.json")
-		writeFileSync(
-			modelsJsonPath,
-			JSON.stringify({
-				providers: {
-					"kimchi-dev": {
-						baseUrl: "https://llm.kimchi.dev/openai/v1",
-						api: "openai-completions",
-						models: [
-							{
-								id: "kimi-k2.5",
-								name: "Kimi K2.5",
-								provider: "ai-enabler",
-								reasoning: true,
-								input: ["text", "image"],
-								contextWindow: 262144,
-								maxTokens: 32768,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-							},
-						],
-					},
-				},
-			}),
-		)
-	})
-
-	afterEach(() => rmSync(tempDir, { recursive: true, force: true }))
-
-	it("adds exactly kimchi-dev/auto with a model-level API", () => {
-		const providerIds = Object.keys(JSON.parse(readFileSync(modelsJsonPath, "utf-8")).providers)
-		injectAutoModel(modelsJsonPath)
-		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		const auto = config.providers["kimchi-dev"].models.find((model: { id: string }) => model.id === "auto")
-
-		expect(auto).toMatchObject({
-			id: "auto",
-			name: "Auto — Picks the best model for your tasks automatically.",
-			api: "kimchi-auto",
-			reasoning: true,
-			thinkingLevelMap: { off: "none", max: "max" },
-			input: ["text", "image"],
-		})
-		expect(Object.keys(config.providers)).toEqual(providerIds)
-	})
-
-	it("upserts Auto without duplicates", () => {
-		injectAutoModel(modelsJsonPath)
-		injectAutoModel(modelsJsonPath)
-		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		const autoModels = config.providers["kimchi-dev"].models.filter((model: { id: string }) => model.id === "auto")
-
-		expect(autoModels).toHaveLength(1)
-	})
-
-	it("collision guard: leaves a fetched/backend-owned kimchi-dev/auto entry untouched", () => {
-		// Backend now owns the `auto` name (end state): the normalized catalog
-		// advertises it. The harness injection must NOT shadow it by replacing or
-		// duplicating the entry.
-		const backendAuto = {
-			id: "auto",
-			name: "Auto (backend encoded)",
-			provider: "ai-enabler",
-			reasoning: true,
-			input: ["text"],
-			contextWindow: 1048576,
-			maxTokens: 16384,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		}
-		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		config.providers["kimchi-dev"].models.push(backendAuto)
-		writeFileSync(modelsJsonPath, JSON.stringify(config), "utf-8")
-
-		injectAutoModel(modelsJsonPath)
-
-		const finalConfig = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		const autoModels = finalConfig.providers["kimchi-dev"].models.filter((model: { id: string }) => model.id === "auto")
-		expect(autoModels).toEqual([backendAuto])
 	})
 })
 
@@ -1317,5 +1220,193 @@ describe("readExperimentalModels", () => {
 		const result = readExperimentalModels(modelsJsonPath)
 		expect(result).toHaveLength(1)
 		expect(result[0].slug).toBe("kimi-k2.5")
+	})
+})
+
+describe("model description registry (/model table DESCRIPTION column)", () => {
+	let tempDir: string
+	let modelsJsonPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-model-desc-test-"))
+		modelsJsonPath = join(tempDir, "models.json")
+		__clearModelDescriptionsForTest()
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+		__clearModelDescriptionsForTest()
+	})
+
+	it("replaces fallback and stale descriptions on refresh and removes withdrawn descriptions", async () => {
+		const metadata = (description?: string) => ({
+			slug: "auto",
+			display_name: "Auto",
+			provider: "ai-enabler",
+			reasoning: true,
+			input_modalities: ["text", "image"],
+			is_serverless: true,
+			limits: { context_window: 262144, max_output_tokens: 32768 },
+			description,
+		})
+		const fetchMock = vi.fn()
+		vi.stubGlobal("fetch", fetchMock)
+		for (const description of [undefined, "New backend description.", "Updated backend description.", undefined]) {
+			fetchMock.mockResolvedValueOnce(Response.json({ models: [metadata(description)] }))
+			await updateModelsConfig(modelsJsonPath, "test-key")
+			expect(getModelDescription("kimchi-dev/auto")).toBe(description ?? AUTO_MODEL_DESCRIPTION)
+		}
+	})
+
+	it("persists endpoint descriptions into models.json and registers them for the selector", async () => {
+		vi.stubGlobal("fetch", vi.fn())
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({
+				models: [
+					{ ...(KIMI as Record<string, unknown>), description: "Flagship vision model." },
+					{ ...(GLM as Record<string, unknown>) }, // no description
+				],
+			}),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		vi.restoreAllMocks()
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const kimi = config.providers["kimchi-dev"].models.find((m: { id: string }) => m.id === "kimi-k2.5")
+		const glm = config.providers["kimchi-dev"].models.find((m: { id: string }) => m.id === "glm-5-fp8")
+		expect(kimi.description).toBe("Flagship vision model.")
+		expect(glm.description).toBeUndefined()
+
+		// Registry keyed by provider block + id — what the selector row sees.
+		expect(getModelDescription("kimchi-dev/kimi-k2.5")).toBe("Flagship vision model.")
+		expect(getModelDescription("kimchi-dev/glm-5-fp8")).toBeUndefined()
+	})
+
+	it("restores descriptions from the on-disk cache when offline (no API key)", async () => {
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					"kimchi-dev": {
+						baseUrl: "https://llm.kimchi.dev/openai/v1",
+						apiKey: "$KIMCHI_API_KEY",
+						api: "openai-completions",
+						models: [
+							{
+								id: "kimi-k2.5",
+								name: "Kimi K2.5",
+								provider: "ai-enabler",
+								reasoning: true,
+								input: ["text", "image"],
+								contextWindow: 262144,
+								maxTokens: 32768,
+								description: "Cached description.",
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							},
+						],
+					},
+				},
+			}),
+		)
+
+		const result = await updateModelsConfig(modelsJsonPath, "")
+
+		expect(getModelDescription("kimchi-dev/kimi-k2.5")).toBe("Cached description.")
+		// modelToMetadata round-trips the description for the startup context.
+		const model = (result.models as Array<{ slug: string; description?: string }>).find((m) => m.slug === "kimi-k2.5")
+		expect(model?.description).toBe("Cached description.")
+	})
+
+	it("registers the Auto description as a fallback when serving the on-disk cache", async () => {
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					"kimchi-dev": {
+						baseUrl: "https://llm.kimchi.dev/openai/v1",
+						models: [
+							{
+								id: "kimi-k2.5",
+								name: "Kimi K2.5",
+								provider: "ai-enabler",
+								reasoning: true,
+								input: ["text", "image"],
+								contextWindow: 262144,
+								maxTokens: 32768,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							},
+						],
+					},
+				},
+			}),
+		)
+
+		await updateModelsConfig(modelsJsonPath, "")
+
+		expect(getModelDescription("kimchi-dev/auto")).toBe(AUTO_MODEL_DESCRIPTION)
+		// Backend-owned catalog: the cache is served untouched — no virtual
+		// auto is synthesized into models.json.
+		const cached = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(cached.providers["kimchi-dev"].models.map((m: { id: string }) => m.id)).toEqual(["kimi-k2.5"])
+	})
+
+	it("a backend-owned auto without a description still gets the fallback constant", async () => {
+		vi.stubGlobal("fetch", vi.fn())
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({
+				models: [
+					{
+						slug: "auto",
+						display_name: "Auto (Kimchi Router)",
+						provider: "ai-enabler",
+						reasoning: true,
+						input_modalities: ["text", "image"],
+						is_serverless: true,
+						limits: { context_window: 1_000_000, max_output_tokens: 16_384 },
+					},
+					{
+						slug: "glm-5.3",
+						display_name: "GLM 5.3",
+						provider: "ai-enabler",
+						reasoning: true,
+						input_modalities: ["text"],
+						is_serverless: true,
+						limits: { context_window: 1_000_000, max_output_tokens: 16_384 },
+					},
+				],
+			}),
+		} as Response)
+
+		// The backend owns the catalog: the fetched entry passes through
+		// untouched and the registry fallback fills its missing description.
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		vi.restoreAllMocks()
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const autos = config.providers["kimchi-dev"].models.filter((m: { id: string }) => m.id === "auto")
+		expect(autos).toHaveLength(1)
+		// The selector reads exactly this key.
+		expect(getModelDescription("kimchi-dev/auto")).toBe(AUTO_MODEL_DESCRIPTION)
+	})
+
+	it("an endpoint-provided auto description wins over the fallback constant", async () => {
+		vi.stubGlobal("fetch", vi.fn())
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({
+				models: [
+					{ ...(KIMI as Record<string, unknown>), slug: "auto", description: "Backend router with vision routing." },
+				],
+			}),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		// The registry fallback must not override the endpoint-provided description.
+		vi.restoreAllMocks()
+
+		expect(getModelDescription("kimchi-dev/auto")).toBe("Backend router with vision routing.")
 	})
 })

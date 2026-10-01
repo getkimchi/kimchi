@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
 import * as osMetadata from "../../utils/os-metadata.js"
+import { createContext } from "../__mocks__/context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { setTelemetryFermentV2Context } from "./ferment-v2-context.js"
 import { _resetSharedAccumulators, TelemetryContext } from "./session-context.js"
@@ -592,5 +593,111 @@ describe("SessionContext", () => {
 
 		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 		expect(ctx.getParentSessionId()).toBeUndefined()
+	})
+
+	it("resolveSessionId falls back to telemetryId before a pi session id is set", () => {
+		const ctx = new TelemetryContext(makeConfig())
+		expect(ctx.resolveSessionId()).toBe(ctx.telemetryId)
+	})
+
+	it("resolveSessionId returns the pi session id once set", () => {
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.setPiSessionId("019e2af0-153f-77dc-839c-683e23fd301d")
+		expect(ctx.resolveSessionId()).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
+	})
+
+	it("setPiSessionId treats an empty id as unset so resolveSessionId falls back", () => {
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.setPiSessionId("session-aaa")
+		ctx.setPiSessionId("")
+		expect(ctx.piSessionId).toBeUndefined()
+		expect(ctx.resolveSessionId()).toBe(ctx.telemetryId)
+	})
+
+	it("emitted events use the pi session id as session.id once set", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.setPiSessionId("019e2af0-153f-77dc-839c-683e23fd301d")
+		ctx.emit("test.event", { custom: "value" })
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const record = body.resourceLogs[0].scopeLogs[0].logRecords[0]
+		const attrMap = Object.fromEntries(
+			record.attributes.map((a: { key: string; value: { stringValue?: string } }) => [a.key, a.value.stringValue]),
+		)
+		expect(attrMap["session.id"]).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
+	})
+
+	it("flushMetrics stamps the pi session id as session.id on metric data points", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.setPiSessionId("019e2af0-153f-77dc-839c-683e23fd301d")
+		ctx.cumulative.tokensByModel.m1 = { input: 100, output: 200, cacheRead: 0, cacheWrite: 0 }
+
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const metricsCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]: unknown[]) =>
+			String(url).includes("/metrics"),
+		)
+		expect(metricsCalls.length).toBe(1)
+		const body = JSON.parse((metricsCalls[0][1] as { body: string }).body)
+		const metrics = body.resourceMetrics[0].scopeMetrics[0].metrics
+		expect(metrics.length).toBeGreaterThan(0)
+		for (const metric of metrics) {
+			const dataPoint = (metric.sum ?? metric.gauge).dataPoints[0]
+			const sessionAttr = dataPoint.attributes.find((a: { key: string }) => a.key === "session.id")
+			expect(sessionAttr?.value.stringValue).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
+		}
+	})
+
+	it("accumulators stay keyed by telemetryId even when pi session ids differ", () => {
+		const ctx1 = new TelemetryContext(makeConfig())
+		const ctx2 = new TelemetryContext(makeConfig())
+		ctx1.setPiSessionId("session-aaa")
+		ctx2.setPiSessionId("session-bbb")
+		expect(ctx1.cumulative).toBe(ctx2.cumulative)
+	})
+
+	it("reset() keeps telemetryId keying and does not throw before a pi session id exists", () => {
+		const ctx = new TelemetryContext(makeConfig())
+		expect(() => ctx.reset()).not.toThrow()
+		expect(ctx.resolveSessionId()).toBe(ctx.telemetryId)
+	})
+
+	it("handleSessionStart captures the pi session id from ctx", async () => {
+		const { handleSessionStart } = await import("./handlers/session.js")
+		const tm = new TelemetryContext(makeConfig())
+		const ctx = createContext({
+			sessionManager: { getSessionId: () => "019e2af0-153f-77dc-839c-683e23fd301d" },
+			model: { id: "m" },
+		})
+		handleSessionStart(tm, ctx)
+		expect(tm.resolveSessionId()).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
+	})
+
+	it("handleSessionStart ignores an empty session id (keeps telemetryId fallback)", async () => {
+		const { handleSessionStart } = await import("./handlers/session.js")
+		const tm = new TelemetryContext(makeConfig())
+		const ctx = createContext({ sessionManager: { getSessionId: () => "" }, model: { id: "m" } })
+		handleSessionStart(tm, ctx)
+		expect(tm.resolveSessionId()).toBe(tm.telemetryId)
+	})
+
+	it("handleSessionStart re-capture on fork/resume overwrites the previous session id", async () => {
+		const { handleSessionStart } = await import("./handlers/session.js")
+		const tm = new TelemetryContext(makeConfig())
+		const original = createContext({
+			sessionManager: { getSessionId: () => "019e2af0-153f-77dc-839c-683e23fd301d" },
+			model: { id: "m" },
+		})
+		const forked = createContext({
+			sessionManager: { getSessionId: () => "019e2af1-26d4-7f9e-8b0c-1a2b3c4d5e6f" },
+			model: { id: "m" },
+		})
+		handleSessionStart(tm, original)
+		handleSessionStart(tm, forked)
+		expect(tm.resolveSessionId()).toBe("019e2af1-26d4-7f9e-8b0c-1a2b3c4d5e6f")
 	})
 })

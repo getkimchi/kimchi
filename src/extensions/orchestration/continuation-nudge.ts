@@ -19,6 +19,16 @@
  * already acted on) are stripped from the LLM context by
  * `stripStaleNudges` before each call.
  *
+ * The `DONE_SIGNAL` ("<done>") sent in response to a continuation nudge is
+ * an **end-of-turn** signal, never a claim that the task is complete — it is
+ * a silent acknowledgement of the hidden nudge that also covers waiting on
+ * the user (a blocking question, or the user said stop/wait). The nudge copy
+ * requests the token alone so the normal exit from a recovery turn is the
+ * bare token; it should not produce an unexplained second answer after the
+ * assistant's original response. Detection stays an exact match
+ * (`trim() === DONE_SIGNAL`); responses with extra prose still rely on the
+ * existing `stopReason === "stop"` escape in the turn_end handler.
+ *
  * Both are orchestrator-only concerns — wired in `prompt-enrichment.ts`
  * inside the `if (!subagentMode)` guard.
  */
@@ -39,11 +49,11 @@ export const DONE_SIGNAL = "<done>"
 export const ASSISTANT_OUTPUT_WITHHELD = Symbol.for("kimchi.assistant-output-withheld")
 
 export const CONTINUATION_NUDGE_TEXT = markHarnessSteer(
-	`You ended your turn without calling a tool. If this task is complete, respond with ${DONE_SIGNAL}. If a tool call is still needed, call it now.`,
+	`You ended your turn without calling a tool. If this task is complete, or you are waiting for the user (you asked a question, or they told you to stop or wait), respond with exactly ${DONE_SIGNAL} — it ends your turn and does not claim the task is complete. Do not repeat your previous answer. If a tool call is still needed, call it now.`,
 )
 
 export const SECOND_NUDGE_TEXT = markHarnessSteer(
-	"You MUST call a tool immediately. Stop writing text and execute the required tool call now — or respond with <done> if you are finished.",
+	`If you are finished or waiting for the user, respond with exactly ${DONE_SIGNAL} — it ends your turn and does not claim the task is complete. Do not repeat your previous answer. Otherwise, you MUST call the required tool immediately. Stop writing text and execute it now.`,
 )
 
 export const EMPTY_TURN_NUDGE_TEXT = markHarnessSteer(
@@ -62,17 +72,41 @@ function isNonNudgeStopReason(message: AssistantMessage): boolean {
 	return NON_NUDGE_STOP_REASONS.has(message.stopReason)
 }
 
-/** Returns true when the assistant's text ends with a question, i.e. it is
- *  explicitly waiting on the user. Nudging in that situation would inject an
- *  imperative steer while a human confirmation is still pending — the exact
- *  failure mode that caused unauthorized commits/pushes. */
-function isAwaitingUserAnswer(message: AssistantMessage): boolean {
+/** Unambiguous hand-back-to-user phrasings. Deliberately conservative:
+ *  anything ambiguous (e.g. "go ahead", which "I'll go ahead" uses to mean
+ *  proceeding) must stay out, because a match here suppresses drift
+ *  recovery for the rest of the turn. */
+const AWAITING_USER_PHRASES: RegExp[] = [
+	/\buntil you say\b/i,
+	/\bsay the word\b/i,
+	/\blet me know\b/i,
+	/\byour (?:call|decision|choice)\b/i,
+	/\bwaiting (?:on|for) (?:you|your)\b/i,
+	/\bawait(?:ing)? (?:you|your|the user)\b/i,
+	/\btell me (?:if|whether|which|how|when)\b/i,
+]
+
+/** A text-only turn that asks anything, or explicitly hands control back to
+ *  the user, is waiting on the user — nudging it would inject an imperative
+ *  that the model may act on instead of waiting .
+ *  The suppression only ever runs on text-only turns (turns with tool calls
+ *  never reach it in `evaluateTurn`), so the blast radius is exactly the
+ *  stall-vs-wait ambiguity.
+ *
+ *  Accepted false-positive surface: `includes("?")` also matches `?` inside
+ *  URLs with query strings, ternaries in inline code, and rhetorical
+ *  questions in otherwise-drift text — each suppresses drift recovery for
+ *  that turn and leaves a stalled session the user can prod. The trade is
+ *  deliberately asymmetric: a missed nudge stalls, while a nudge fired while
+ *  the model waited on the user produced unauthorized continued work. If
+ *  unrecovered-drift reports ever surface, strip fenced code blocks, inline
+ *  code spans, and URLs from the joined text before these checks. */
+export function isAwaitingUserAnswer(message: AssistantMessage): boolean {
 	const text = message.content
 		.filter((c) => c.type === "text")
 		.map((c) => c.text)
 		.join("")
-		.trimEnd()
-	return /\?\s*["']?\s*$/.test(text)
+	return text.includes("?") || AWAITING_USER_PHRASES.some((r) => r.test(text))
 }
 
 /** Post-turn state machine for the "text-only drift" nudge.
@@ -176,6 +210,17 @@ export class ContinuationNudge {
 
 	isDoneSignalReceived(): boolean {
 		return this.accumulatedResponseText.trim() === DONE_SIGNAL
+	}
+
+	/** Clears the pending recovery state (flag and accumulated response
+	 *  text). Called when a recovery response is consumed at `turn_end`, and
+	 *  as a fallback at `agent_end` for an abandoned recovery run — a stop
+	 *  that is respected, an abort, a provider error, budget exhaustion, or
+	 *  a suppressed evaluation must not leave stale state that blanks the
+	 *  next unrelated extension-triggered response. */
+	clearNudgeResponsePending(): void {
+		this.nudgeResponsePending = false
+		this.accumulatedResponseText = ""
 	}
 
 	evaluateTurn(message: AssistantMessage): boolean {

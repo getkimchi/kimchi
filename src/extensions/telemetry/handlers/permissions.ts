@@ -9,7 +9,6 @@ import type {
 	PermissionDecisionSourceDetail,
 	PermissionToolDecisionPayload,
 } from "../../permissions/permissions-events.js"
-import { AUTO_MODEL_ID } from "../../router/constants.js"
 import type { TelemetryContext } from "../session-context.js"
 
 export const TOOL_DECISION_EVENT = "claude_code.tool_decision"
@@ -82,12 +81,11 @@ export function handleToolDecision(tm: TelemetryContext, raw: unknown): void {
 }
 
 /**
- * Model reported on the accept-rate record. `currentModel` tracks assistant
- * message models, which in Auto sessions name the router's concrete pick —
- * reporting that would make an Auto pick indistinguishable from a manual
- * selection of the same model. So report the user's selection (`auto`) when
- * the Auto router is active, the concrete model otherwise.
+ * Model reported on the accept-rate record. `currentModel` tracks the
+ * user-facing selection: under backend routing the assistant message keeps the
+ * requested virtual id (`auto`/`auto-beta`) in `message.model` (the concrete
+ * pick lives in `responseModel`), so no separate selection tracking is needed.
  */
 function acceptRateModel(tm: TelemetryContext): string {
-	return tm.selectedModelIsAuto ? AUTO_MODEL_ID : tm.currentModel
+	return tm.currentModel
 }

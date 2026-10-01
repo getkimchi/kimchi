@@ -35,9 +35,11 @@ import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/reso
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { getEffectiveModel } from "../auto-model/state.js"
 import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
 import { bumpStallCounter, fireStepStallSteerIfStalled } from "../ferment/todo-sync.js"
 import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
+import { findModelByRef } from "../model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
 	brandUnmarkedSteers,
@@ -64,7 +66,6 @@ import {
 	validateModelRoles,
 } from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
-import { getEffectiveModel } from "../router/state.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
 import {
@@ -390,8 +391,9 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				// orchestrator model. Force-switch if the user has a different model
 				// selected via /models.
 				if (multiModelEnabled && ctx.model?.id !== orchestratorModelId) {
-					const ref = splitModelRef(orchestratorModelRef)
-					const orchestratorModel = ref ? ctx.modelRegistry?.find(ref.provider, ref.modelId) : undefined
+					const orchestratorModel = ctx.modelRegistry
+						? findModelByRef(ctx.modelRegistry, orchestratorModelRef)
+						: undefined
 					if (orchestratorModel) {
 						try {
 							await pi.setModel(orchestratorModel)
@@ -528,18 +530,34 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 					}
 				}
 
-				if (continuationNudge.isNudgeResponsePending()) {
-					if (continuationNudge.isDoneSignalReceived() || assistantMsg.stopReason === "stop") {
+				// Consume the pending recovery state before any terminal decision:
+				// snapshot whether a nudge response was pending and whether its
+				// accumulated text is exactly the done signal, then clear pending and
+				// the accumulated text. A respected stop, an abort, a provider error,
+				// budget exhaustion, or a suppressed evaluation must not leave stale
+				// recovery state that blanks the next unrelated
+				// extension-triggered response (message_update). Only an eligible
+				// continuation evaluation that queues another nudge below re-arms
+				// pending.
+				const wasNudgeResponsePending = continuationNudge.isNudgeResponsePending()
+				const hadDoneSignal = wasNudgeResponsePending && continuationNudge.isDoneSignalReceived()
+				if (wasNudgeResponsePending) {
+					continuationNudge.clearNudgeResponsePending()
+				}
+
+				if (wasNudgeResponsePending) {
+					if (hadDoneSignal || assistantMsg.stopReason === "stop") {
 						// The model either explicitly sent the <done> signal or ended its
 						// turn with stopReason "stop" (intentional end-of-turn). Either
 						// way, respect the stop — do not send another nudge that would
 						// trigger a new turn and make the model think it received user input.
 						return
 					}
-					// While a continuation nudge response is pending, the model is already
-					// in a recovery cycle. Skip empty-turn nudge here to avoid sending
-					// mixed instructions ("call a tool" vs "summarize or continue").
-					// Fall through to continuationNudge.evaluateTurn below.
+					// The model is already in a recovery cycle. Skip the empty-turn
+					// nudge to avoid sending mixed instructions ("call a tool" vs
+					// "summarize or continue") and fall through to the continuation
+					// evaluation, which can re-arm pending only if another nudge is
+					// eligible and queued.
 				} else if (
 					// Suppress the empty-turn nudge when any tool was called during this
 					// agent run. After a completed tool sequence, an empty response is
@@ -565,6 +583,25 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 					},
 					{ deliverAs: "followUp" },
 				)
+			})
+
+			// Fallback cleanup for an abandoned recovery run: if the response to a
+			// queued nudge errors out before its turn_end fires (or the run is
+			// torn down some other way), the pending/accumulation state would
+			// otherwise survive until the next user input or tool call and blank
+			// any unrelated extension-triggered response in between. The normal
+			// path clears pending at turn_end; this guard covers the case where
+			// that never runs. It cannot race an in-flight nudge: the agent loop's
+			// continue-while-queued check keeps the loop alive while the followUp
+			// queue is non-empty, so agent_end only fires after a queued nudge's
+			// turn has run. That upstream invariant is guarded end-to-end by the
+			// continuation-nudge TUI test: it asserts the streamed <done> token
+			// stays blanked, which fails if agent_end ever cleared pending while
+			// a queued nudge's response was still in flight.
+			pi.on("agent_end", async (_event, ctx) => {
+				const sessionId = ctx.sessionManager.getSessionId()
+				const continuationNudge = getContinuationNudge(sessionId)
+				continuationNudge.clearNudgeResponsePending()
 			})
 
 			pi.on("context", async (event, ctx) => {

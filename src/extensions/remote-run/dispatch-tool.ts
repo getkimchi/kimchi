@@ -45,7 +45,7 @@ export function registerDispatchToCloudAgentTool(pi: ExtensionAPI): void {
 		name: DISPATCH_TO_CLOUD_AGENT_TOOL,
 		label: "Dispatch to remote agent",
 		description:
-			"Dispatch a fully self-contained task to a remote agent running on a remote sandbox. Use this when the user asks to run, delegate, or implement something remotely — e.g. 'continue in remote session', 'using the remote agent', 'do this in the remote session / on a sandbox'. IMPORTANT: before calling this tool, present the complete briefing verbatim in your message text so the user can read it in the chat; then call this tool with exactly that text as `task`. The briefing must be fully self-contained: the remote agent sees ONLY the task text plus the repository, never this conversation. Every call shows the user a confirmation dialog before anything is sent — do not call speculatively, and if the user declines, do not call again unless they explicitly re-ask. The remote agent runs in the background; the user is notified on completion.",
+			"Dispatch a fully self-contained task to a remote agent running on a remote sandbox. Use this when the user asks to run, delegate, or implement something remotely — e.g. 'continue in remote session', 'using the remote agent', 'do this in the remote session / on a sandbox'. IMPORTANT: before calling this tool, present the complete briefing verbatim in your message text so the user can read it in the chat; then call this tool with exactly that text as `task`. The briefing must be fully self-contained: the remote agent sees ONLY the task text plus the repository, never this conversation. Every call shows the user a confirmation dialog before anything is sent — do not call speculatively, and if the user declines, do not call again unless they explicitly re-ask. The remote agent runs in the background; the user is notified on completion. NEVER poll it with get_subagent_result (any form, including wait: true) — polling consumes the completion result and suppresses the user's post-completion menu (sync/review/push options), leaving the remote changes stranded; end your turn and wait for the asynchronous completion notification instead.",
 		promptSnippet: "Dispatch a self-contained task to a remote agent",
 		parameters: DispatchToCloudAgentSchema,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -114,7 +114,7 @@ export function registerDispatchToCloudAgentTool(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text" as const,
-							text: `Remote agent dispatched (agent ${id}). It is running in the background on a remote sandbox; the user will be notified when it completes. Do not redo this work locally.`,
+							text: `Remote agent dispatched (agent ${id}). It is running in the background on a remote sandbox; the user will be notified when it completes. Do not redo this work locally. Do NOT poll it with get_subagent_result (any form) — polling consumes the completion result and suppresses the user's post-completion menu.`,
 						},
 					],
 					details: { agentId: id },

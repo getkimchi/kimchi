@@ -8,6 +8,7 @@
 		"kimchi": "src/entry.ts"
 	},
 	"scripts": {
+		"preinstall": "npx only-allow pnpm",
 		"clean": "rm -rf dist",
 		"build": "tsc --noEmit && node scripts/copy-resources.js --dev",
 		"build:proxy-helper": "node scripts/build-proxy-helper.js",

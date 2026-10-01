@@ -14,7 +14,21 @@
  * the run still in flight.
  */
 
+import type { RemoteGitWorkflow } from "../remote-run/git-workflow.js"
 import type { RemoteSessionMeta } from "./manager/remote-agent-runner.js"
+
+/**
+ * Git intent + captured baseline for PR-first runs, persisted on the run's
+ * remote_run:state entry so the completion flow (possibly after a restart)
+ * can review, steer, and push. Entirely optional — legacy entries and plain
+ * runs omit it and still parse.
+ */
+export interface PersistedGitWorkflow extends RemoteGitWorkflow {
+	/** HEAD at provisioning time — the diff range forks from this SHA. */
+	baseSha?: string
+	/** The user's pre-existing uncommitted files synced to the sandbox. */
+	dirtyFiles?: string[]
+}
 
 /** A remote run's persisted state. */
 export interface RemoteRunState {
@@ -32,6 +46,8 @@ export interface RemoteRunState {
 	remoteOrigin?: string
 	/** Ferment id when the run executes a ferment plan. */
 	fermentId?: string
+	/** Git intent (PR-first runs) + captured baseline. Absent for plain runs. */
+	gitWorkflow?: PersistedGitWorkflow
 	/** The agent's local transcript file. */
 	outputFile?: string
 	/** When the run started (ms epoch). */

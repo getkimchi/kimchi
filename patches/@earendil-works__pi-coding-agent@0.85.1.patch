@@ -1,15 +1,37 @@
 # Patch: Kimchi runtime and UI integrations for pi-coding-agent 0.85.1
 #
-# Tracking: No matching upstream issue exists yet; report remaining generic
-# changes to https://github.com/earendil-works/pi before the next upgrade.
+# Tracking: publication pending; no upstream issue or PR has been filed for this selector change.
 # Changes:
 #   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
 #     compaction, model selection, extension UI helpers, and compact visuals.
+#   - Startup resource diagnostics: skill conflicts render as a single dim
+#     summary line ("[N skill conflicts] Some skills were found in multiple
+#     directories. <key> to see the full list.") that expands to the full
+#     collision listing via the shared app.tools.expand toggle, instead of a
+#     full warning-colored listing on every session start. Prompt conflicts
+#     keep upstream's rendering (rare, and genuinely actionable when they
+#     happen). (Upstream candidate.)
 #   - Extension setModel accepts { persist } and threads it to AgentSession's
 #     ModelMutationOptions, restoring the persistence channel upstream made
 #     opt-in. setThinkingLevel is deliberately NOT threaded: Kimchi's only
 #     caller (src/extensions/tags.ts, set_phase) is tool-driven and must stay
 #     session-only, so the plumbing would have no caller. (Upstream candidate.)
+#   - /model selector renders a capability table: MODEL | PROVIDER | CONTEXT |
+#     VISION | DESCRIPTION columns, all left-aligned (content starts under its
+#     column name; the ✓/✗ VISION cell pads to the 6-wide header so
+#     DESCRIPTION content lines up). The DESCRIPTION column combines the
+#     endpoint-provided model description (registry:
+#     process.__kimchiModelDescriptions, populated by src/models.ts from
+#     /v1/models/metadata, persisted through models.json) with the
+#     "Default for new sessions." annotation, replacing the old `· default`
+#     badge. The virtual multi-model row inherits its orchestrator model's
+#     stats/description. Layout width reads tui.terminal.columns (pi-tui's
+#     Terminal exposes `columns`, not `cols`); the last column is clipped,
+#     never padded, so the header cannot wrap onto a phantom blank line, and
+#     rows total exactly the terminal width. On narrow terminals the
+#     description column truncates first, then the provider column, the model
+#     id last. The shared renderer lives in src/model-selector-table.ts;
+#     removal criteria for this hunk are in the Removal note below.
 #   - exportToJsonl is awaited: src/cli.ts replaces the prototype with an async
 #     wrapper (trace IDs + awaited PII redaction, fail-closed). Upstream's method
 #     is sync, so this hunk looks redundant - it is not. Dropping it prints
@@ -37,14 +59,8 @@
 # (dist/core/project-trust.js, dist/modes/interactive/interactive-mode.js)
 # mention those resources and speak as Kimchi, not pi.
 # Careful: pasteToEditor is NOT patched here - src/paste-to-editor-patch.ts owns
-#   that routing. Do not re-add a dist hunk for it.
-# Removal: delete each hunk once the pinned Pi release exposes equivalent APIs
-# or Kimchi no longer needs the branded behavior. For the trust hunks: remove
-# once Pi ships native trust-scan extensibility or Kimchi adopts the
-# Pi-standard configDir layout. NOTE: the entry list must stay in sync with
-# TRUST_REQUIRING_PROJECT_RESOURCES in src/project-scope-trust.ts — a unit
-# test cross-checks the two.
-# History: see patches/CHANGELOG.md.
+# Removal: remove the selector adapter when the pinned Pi release provides equivalent rendering extensibility or native capability columns. Remove other runtime/UI hunks when upstream provides equivalent APIs or Kimchi no longer needs the branded behavior. Remove trust hunks when Pi provides native trust-scan extensibility or Kimchi adopts Pi's config-directory layout. Keep trust resources synchronized with `TRUST_REQUIRING_PROJECT_RESOURCES` in `src/project-scope-trust.ts` until then.
+# History: patches/CHANGELOG.md.
 #
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index 763b93f75e27d45326e1329b244846c4bb1c62b5..13e0767394303f9c587e491516dbae4e61d276ba 100644
@@ -609,7 +625,7 @@ index 8220e06bc1e2b136c4b84c4af3cd29fd21b98a9f..b213a26c7ac002776850a59d7cafce4c
      dispose() {
          this.countdown?.dispose();
 diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
-index bd8894046f77385541fd9bd7b88268866a34a526..a5666cf0b7063ec4852e6278160e33af21300434 100644
+index bd8894046f77385541fd9bd7b88268866a34a526..23f6a0c0328dbbf3b7226786dded8f0ca228ca5f 100644
 --- a/dist/modes/interactive/components/model-selector.js
 +++ b/dist/modes/interactive/components/model-selector.js
 @@ -34,6 +34,7 @@ export class ModelSelectorComponent extends Container {
@@ -672,27 +688,57 @@ index bd8894046f77385541fd9bd7b88268866a34a526..a5666cf0b7063ec4852e6278160e33af
          this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
          this.filteredModels = this.activeModels;
          const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-@@ -262,12 +281,17 @@ export class ModelSelectorComponent extends Container {
-             if (!item)
-                 continue;
-             const isSelected = i === this.selectedIndex;
+@@ -256,21 +275,34 @@ export class ModelSelectorComponent extends Container {
+         const maxVisible = 10;
+         const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filteredModels.length - maxVisible));
+         const endIndex = Math.min(startIndex + maxVisible, this.filteredModels.length);
+-        // Show visible slice of filtered models
+-        for (let i = startIndex; i < endIndex; i++) {
+-            const item = this.filteredModels[i];
+-            if (!item)
+-                continue;
+-            const isSelected = i === this.selectedIndex;
 -            const isCurrent = modelsAreEqual(this.currentModel, item.model);
-+            // kimchi-dev: multi-model virtual row tracking
-+            const isMultiModelEnabled = process.__kimchiMultiModelEnabled instanceof Map ? !!process.__kimchiMultiModelEnabled.get(this.sessionId) : false;
-+            const isCurrent = item._isMultiModel
-+                ? isMultiModelEnabled
-+                : !isMultiModelEnabled && modelsAreEqual(this.currentModel, item.model);
-             const isDefault = this.isDefaultModel(item.model);
-             const defaultBadge = isDefault ? theme.fg("muted", " · default") : "";
-+            const displayId = item._isMultiModel ? 'multi-model' : item.id;
-             const cursor = isSelected ? theme.fg("accent", "→ ") : "  ";
-             const currentMarker = isCurrent ? theme.fg("accent", "✓ ") : "  ";
+-            const isDefault = this.isDefaultModel(item.model);
+-            const defaultBadge = isDefault ? theme.fg("muted", " · default") : "";
+-            const cursor = isSelected ? theme.fg("accent", "→ ") : "  ";
+-            const currentMarker = isCurrent ? theme.fg("accent", "✓ ") : "  ";
 -            const modelText = isSelected ? theme.fg("accent", item.id) : item.id;
-+            const modelText = isSelected ? theme.fg("accent", displayId) : displayId;
-             const providerBadge = theme.fg("muted", `[${item.provider}]`);
-             const line = `${cursor}${currentMarker}${modelText} ${providerBadge}${defaultBadge}`;
-             this.listContainer.addChild(new Text(line, 0, 0));
-@@ -352,6 +376,11 @@ export class ModelSelectorComponent extends Container {
+-            const providerBadge = theme.fg("muted", `[${item.provider}]`);
+-            const line = `${cursor}${currentMarker}${modelText} ${providerBadge}${defaultBadge}`;
+-            this.listContainer.addChild(new Text(line, 0, 0));
++        // Kimchi owns the shared /model and vision-switch table renderer.
++        // Keep a native list fallback for SDK consumers without that adapter.
++        const enabled = process.__kimchiMultiModelEnabled instanceof Map && !!process.__kimchiMultiModelEnabled.get(this.sessionId);
++        const descriptions = process.__kimchiModelDescriptions instanceof Map ? process.__kimchiModelDescriptions : undefined;
++        const rows = this.filteredModels.map((item, index) => ({
++            model: item.model,
++            id: item._isMultiModel ? "multi-model" : item.id,
++            provider: item.provider,
++            selected: index === this.selectedIndex,
++            current: item._isMultiModel ? enabled : !enabled && modelsAreEqual(this.currentModel, item.model),
++            description: descriptions?.get(`${item.model.provider}/${item.model.id}`) ?? "",
++            annotation: this.isDefaultModel(item.model) ? "Default for new sessions." : "",
++        }));
++        const renderTable = process.__kimchiRenderModelTable;
++        if (typeof renderTable === "function") {
++            const table = renderTable(rows, this.tui.terminal.columns, theme, true);
++            if (table.length > 0) this.listContainer.addChild(new Text(table[0], 0, 0));
++            for (const line of table.slice(startIndex + 1, endIndex + 1)) {
++                this.listContainer.addChild(new Text(line, 0, 0));
++            }
++        } else {
++            for (const row of rows.slice(startIndex, endIndex)) {
++                const cursor = row.selected ? theme.fg("accent", "→ ") : "  ";
++                const current = row.current ? theme.fg("accent", "✓ ") : "  ";
++                const providerBadge = theme.fg("muted", `[${row.provider}]`);
++                const annotation = row.annotation ? theme.fg("muted", ` ${row.annotation}`) : "";
++                this.listContainer.addChild(new Text(`${cursor}${current}${row.id} ${providerBadge}${annotation}`, 0, 0));
++            }
+         }
+         // Add scroll indicator if needed
+         if (startIndex > 0 || endIndex < this.filteredModels.length) {
+@@ -352,6 +384,11 @@ export class ModelSelectorComponent extends Container {
      }
      handleSelect(model) {
          this.dispose();
@@ -778,10 +824,77 @@ index 2e0490362d3396995b587f502ff3e69a7cad9a43..0cb75bb6a9fd0c0a9bdb5eba7cf2eeb8
      render(width) {
          const lines = super.render(width);
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f8d7bcb6e 100644
+index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e153475a60948 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -1900,6 +1900,7 @@ export class InteractiveMode {
+@@ -1359,8 +1359,65 @@ export class InteractiveMode {
+         if (showDiagnostics) {
+             const skillDiagnostics = skillsResult.diagnostics;
+             if (skillDiagnostics.length > 0) {
++                // Collapsed by default: a single dim summary line instead of the
++                // full collision listing, so startup stays calm. The detail view
++                // is one keypress away via the shared expand toggle.
+                 const warningLines = this.formatDiagnostics(skillDiagnostics, sourceInfos);
+-                this.loadedResourcesContainer.addChild(new Text(`${theme.fg("warning", "[Skill conflicts]")}\n${warningLines}`, 0, 0));
++                const collisionCount = skillDiagnostics.filter((d) => d.type === "collision" && d.collision).length;
++                const issueCount = skillDiagnostics.length - collisionCount;
++                let summaryText;
++                if (issueCount > 0) {
++                    // Issues first: the skill was not loaded at all and needs
++                    // user attention. Conflicts are informational (a winner is
++                    // selected and still loaded), so they trail as "also".
++                    summaryText = `[${issueCount} skill issue${issueCount === 1 ? "" : "s"}] Some skills were not loaded.` + (collisionCount > 0 ? ` Also: ${collisionCount} skill conflict${collisionCount === 1 ? "" : "s"} in multiple directories (a winner was loaded).` : "");
++                } else {
++                    summaryText = `[${collisionCount} skill conflict${collisionCount === 1 ? "" : "s"}] Some skills were found in multiple directories.`;
++                }
++                // Plain text row (no Box stroke), but with a right-aligned dim
++                // "(ctrl+o to expand|collapse)" hint like a collapsed tool row.
++                // Local expansion state like a single tool row: a click toggles
++                // only this line, while ctrl+o still propagates to it via
++                // setExpanded() from setToolsExpanded().
++                class SkillConflictsLine {
++                    constructor(collapsedLeft, expandedLeft, details, expanded) {
++                        this.collapsedLeft = collapsedLeft;
++                        this.expandedLeft = expandedLeft;
++                        this.details = details;
++                        this.expanded = expanded;
++                    }
++                    headerLine(width) {
++                        const left = this.expanded ? this.expandedLeft : this.collapsedLeft;
++                        // Reserve the hint's width first so it stays visible
++                        // on narrow terminals — the summary text truncates.
++                        const hint = theme.fg("dim", `(${keyText("app.tools.expand")} to ${this.expanded ? "collapse" : "expand"})`);
++                        const hintW = visibleWidth(hint);
++                        const maxLeft = width - hintW - 2;
++                        if (maxLeft < 4)
++                            return TuiLayouts.truncateToWidth(left, width);
++                        const truncated = TuiLayouts.truncateToWidth(left, maxLeft);
++                        const pad = width - visibleWidth(truncated) - hintW;
++                        return truncated + " ".repeat(Math.max(0, pad)) + hint;
++                    }
++                    setExpanded(expanded) {
++                        this.expanded = expanded;
++                    }
++                    handleMouse(event) {
++                        if (event.type !== "click" || event.button !== "left")
++                            return undefined;
++                        this.setExpanded(!this.expanded);
++                        return { handled: true };
++                    }
++                    render(width) {
++                        const lines = [this.headerLine(width)];
++                        if (this.expanded)
++                            lines.push(...this.details.split("\n"));
++                        return lines;
++                    }
++                    invalidate() {
++                    }
++                }
++                this.loadedResourcesContainer.addChild(new SkillConflictsLine(summaryText, "[Skill conflicts]", warningLines, this.getStartupExpansionState()));
+                 this.loadedResourcesContainer.addChild(new Spacer(1));
+             }
+             const promptDiagnostics = promptsResult.diagnostics;
+@@ -1900,6 +1914,7 @@ export class InteractiveMode {
              confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
              input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
              notify: (message, type) => this.showExtensionNotify(message, type),
@@ -789,7 +902,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
              onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
              setStatus: (key, text) => this.setExtensionStatus(key, text),
              setWorkingMessage: (message) => {
-@@ -1945,6 +1946,16 @@ export class InteractiveMode {
+@@ -1945,6 +1960,16 @@ export class InteractiveMode {
              },
              getToolsExpanded: () => this.toolOutputExpanded,
              setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
@@ -806,7 +919,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
          };
      }
      /**
-@@ -3176,7 +3187,7 @@ export class InteractiveMode {
+@@ -3176,7 +3201,7 @@ export class InteractiveMode {
          if (this.chatContainer.children.length > 0) {
              this.chatContainer.addChild(new Spacer(1));
          }
@@ -815,7 +928,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
      }
      async getUserInput() {
          const queuedInput = this.pendingUserInputs.shift();
-@@ -4036,6 +4047,34 @@ export class InteractiveMode {
+@@ -4036,6 +4061,34 @@ export class InteractiveMode {
              this.showModelSelector();
              return;
          }
@@ -850,7 +963,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
-@@ -4168,6 +4207,8 @@ export class InteractiveMode {
+@@ -4168,6 +4221,8 @@ export class InteractiveMode {
      }
      showModelSelector(initialSearchInput) {
          this.showSelector((done) => {
@@ -859,7 +972,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
              const selectModel = async (model, persist) => {
                  try {
                      await this.session.setModel(model, { persist });
-@@ -4186,10 +4227,13 @@ export class InteractiveMode {
+@@ -4186,10 +4241,13 @@ export class InteractiveMode {
              };
              const defaultProvider = this.settingsManager.getDefaultProvider();
              const defaultModel = this.settingsManager.getDefaultModel();
@@ -875,7 +988,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
              return { component: selector, focus: selector, dispose: () => selector.dispose() };
          });
      }
-@@ -5051,7 +5095,12 @@ export class InteractiveMode {
+@@ -5051,7 +5109,12 @@ export class InteractiveMode {
          const outputPath = this.getPathCommandArgument(text, "/export");
          try {
              if (outputPath?.endsWith(".jsonl")) {

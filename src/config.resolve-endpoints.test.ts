@@ -29,6 +29,7 @@ describe("resolveEndpoints (default config path)", () => {
 		vi.stubEnv("KIMCHI_REGION", undefined)
 		vi.stubEnv("KIMCHI_WEB_APP_URL", undefined)
 		vi.stubEnv("KIMCHI_REMOTE_ENDPOINT", undefined)
+		vi.stubEnv("KIMCHI_BASE_URL", undefined)
 		invalidateResolvedEndpoints()
 	})
 
@@ -57,5 +58,33 @@ describe("resolveEndpoints (default config path)", () => {
 
 		vi.stubEnv("KIMCHI_REGION", "eu")
 		expect(resolveEndpoints().region).toBe("eu")
+	})
+
+	it("KIMCHI_BASE_URL overrides every llmBaseUrl-derived endpoint without a config write", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", region: "us", llmEndpoint: "https://custom.example/v1" }))
+		expect(resolveEndpoints().llmBaseUrl).toBe("https://llm.kimchi.dev")
+		expect(resolveEndpoints().llmEndpoint).toBe("https://custom.example/v1")
+
+		vi.stubEnv("KIMCHI_BASE_URL", "https://env.example")
+		const resolved = resolveEndpoints()
+		expect(resolved.llmBaseUrl).toBe("https://env.example")
+		expect(resolved.openAiBaseUrl).toBe("https://env.example/openai/v1")
+		expect(resolved.anthropicBaseUrl).toBe("https://env.example/anthropic")
+		expect(resolved.searchUrl).toBe("https://env.example/v1/search")
+		expect(resolved.experimentalOpenAiBaseUrl).toBe("https://env.example/experimental/openai/v1")
+		expect(resolved.llmEndpoint).toBe("https://env.example/openai/v1")
+
+		vi.stubEnv("KIMCHI_BASE_URL", undefined)
+		expect(resolveEndpoints().llmBaseUrl).toBe("https://llm.kimchi.dev")
+		expect(resolveEndpoints().llmEndpoint).toBe("https://custom.example/v1")
+	})
+
+	it("KIMCHI_BASE_URL overrides the region default llmBaseUrl", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", region: "eu" }))
+		expect(resolveEndpoints().llmBaseUrl).toBe("https://llm.eu.kimchi.dev")
+
+		vi.stubEnv("KIMCHI_BASE_URL", "https://env.example")
+		expect(resolveEndpoints().llmBaseUrl).toBe("https://env.example")
+		expect(resolveEndpoints().llmEndpoint).toBe("https://env.example/openai/v1")
 	})
 })

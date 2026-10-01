@@ -38,7 +38,6 @@ import {
 	type LoopGuardWarnPayload,
 } from "../loop-guard-events.js"
 import { PERMISSION_EVENTS, type PermissionToolDecisionPayload } from "../permissions/permissions-events.js"
-import { isAutoModel } from "../router/constants.js"
 import { resetTelemetryFermentV2Context, setTelemetryFermentV2Context } from "./ferment-v2-context.js"
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./handlers/messages.js"
 import { handleToolDecision } from "./handlers/permissions.js"
@@ -284,6 +283,14 @@ export type RemoteExecutionStage =
 	| "sync.started"
 	| "sync.completed"
 	| "sync.failed"
+	| "push.started"
+	| "push.completed"
+	| "push.failed"
+	| "steer.started"
+	| "steer.completed"
+	| "steer.failed"
+	| "review.started"
+	| "ide.opened"
 	| "viewed"
 	| "custom_action"
 	| "done"
@@ -695,7 +702,7 @@ function onScopingComplete(raw: unknown): void {
 	scopingTokenSnapshots.delete(payload.fermentId)
 	const attrs: TelemetryAttributes & { ferment_id: string } = {
 		ferment_id: payload.fermentId,
-		session_id: ctx.telemetryId,
+		session_id: ctx.resolveSessionId(),
 		duration_ms: durationMs,
 		steering_count: steeringCount,
 		delta_input_tokens: deltaInput,
@@ -714,7 +721,7 @@ function onUserUnblocked(raw: unknown): void {
 	const payload = raw as UserUnblockedPayload
 	ctx.emitWithIds("user.unblock_time", {
 		ferment_id: payload.fermentId,
-		session_id: ctx.telemetryId,
+		session_id: ctx.resolveSessionId(),
 		duration_ms: payload.durationMs,
 	})
 }
@@ -924,7 +931,6 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		})
 		pi.on("model_select", async (event) => {
 			telemetryCtx.currentModel = event.model.id
-			telemetryCtx.selectedModelIsAuto = isAutoModel(event.model)
 		})
 		pi.on("session_compact", async (_event, ctx) => {
 			handleSessionCompact(telemetryCtx, ctx)
@@ -957,7 +963,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			}
 		})
 		pi.on("before_provider_headers", (event) => {
-			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.sessionId] = telemetryCtx.telemetryId
+			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.sessionId] = telemetryCtx.resolveSessionId()
 			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.conversationId] = conversationId
 			// 0 means "before first turn" (sentinel); backend should treat it accordingly.
 			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.turnIndex] = String(telemetryCtx.turnIndex)

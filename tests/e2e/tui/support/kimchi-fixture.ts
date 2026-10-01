@@ -90,11 +90,6 @@ export interface CreateKimchiFixtureOptions {
 	rejectedApiKeys?: string[]
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
-	routerResponses?: unknown[]
-	/** Email served by the fake `/v1/me`; an @cast.ai address opts into Auto-by-default. Null serves 404. */
-	userEmail?: string | null
-	/** Keep this one-based router request open until cancellation closes the connection. */
-	stallRouterRequestNumber?: number
 	/** Provider id written to models.json and used for the initial CLI selection. */
 	providerId?: string
 	/** Initial CLI model id. Set false to exercise the model saved in settings.json. */
@@ -213,9 +208,8 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 			typeof rawSeed === "object" &&
 			("env" in (rawSeed as SeedHomeResult) || "data" in (rawSeed as SeedHomeResult))
 		const seedEnv = {
-			KIMCHI_ROUTER_ENDPOINT: fake.baseUrl,
-			// Keep the Auto-by-default gate's /v1/me lookup on the fake server;
-			// otherwise it would reach the real app API.
+			// Keep the /v1/me identity lookup (telemetry pre-session) on the fake
+			// server; otherwise it would reach the real app API.
 			KIMCHI_REMOTE_ENDPOINT: fake.baseUrl,
 			...(mcp?.env ?? {}),
 			...(seedIsResult ? ((rawSeed as SeedHomeResult).env ?? {}) : {}),
@@ -328,6 +322,11 @@ export function launchKimchi(
 		// deliberately cover the remote-run menu opt in via
 		// `env: { KIMCHI_REMOTE_RUN: "1" }`.
 		"KIMCHI_REMOTE_RUN=0",
+		// Forward the test-harness marker: KIMCHI_E2E_* seams (readE2eSeam)
+		// fire only under a harness — production binaries must never see them.
+		// (set by scripts/run-tui-e2e.js for the tui-test runner; smoke harness
+		// children get VITEST from their vitest parent)
+		...((process.env.KIMCHI_TEST_HARNESS === "1" ? ["KIMCHI_TEST_HARNESS=1"] : []) as string[]),
 		...((fixture.ollama ? [`OLLAMA_HOST=${sh(fixture.ollama.baseUrl)}`] : []) as string[]),
 		...envEntries,
 		"TERM=xterm-256color",
@@ -561,6 +560,7 @@ function writeModelsConfig(path: string, baseUrl: string, models: FakeModel[] | 
 							maxTokens: model.maxTokens,
 							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 							provider: model.provider,
+							...(model.description ? { description: model.description } : {}),
 						})),
 					},
 				},
