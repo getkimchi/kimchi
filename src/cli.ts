@@ -133,6 +133,7 @@ import shellProfileMigrationExtension from "./extensions/shell-profile-migration
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
+import statusExtension from "./extensions/status/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
@@ -684,6 +685,7 @@ try {
 			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,
+			statusExtension,
 			budgetCommandExtension,
 			branchCommandExtension,
 			...terminalUiExtensionFactories,
