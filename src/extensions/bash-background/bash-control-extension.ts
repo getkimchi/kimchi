@@ -1,43 +1,43 @@
 /**
- * `bash_control` extension — cohort tracking, immediate exits, review delivery.
+ * `bash_control` extension — cohort tracking, immediate exits, completion guard.
  *
  * Registers the `bash_control` companion tool (from `./bash-control-tool.js`)
  * and owns everything model-facing about a background cohort that is NOT a
- * direct tool call: immediate unattended-exit notifications, guaranteed
- * cohort-review delivery, the once-per-turn concurrency steer, and the
- * bounded completion guard. It NEVER hard-blocks other tool calls.
+ * direct tool call: immediate unattended-exit notifications, the
+ * once-per-turn concurrency steer, and the completion continuation guard.
+ * It NEVER hard-blocks other tool calls, and there is NO recurring review
+ * clock — while the agent does independent work, nothing wakes the model;
+ * only exits (and explicit waits) produce messages.
  *
  * Delivery contract (exactly-once per terminal state):
  *
  *  - Every process retains a `whenExited` watcher. An exit is delivered
- *    immediately, never held until a periodic review.
- *  - Exit of a handle owned by an active `bash_control` call (a `wait:
- *    true` cohort wait owns every handle; a stop-list call owns its stop
- *    handles) is claimed silently — that call's consolidated tool result
- *    is the authoritative delivery. If the call ends without delivering
- *    it (its handle entries are still in the registry), the notification
- *    fires from `tool_execution_end` instead.
+ *    immediately, never held for a periodic review. Exits already pending
+ *    in the same scheduling boundary are coalesced into one message
+ *    (microtask flush — no multi-second delay, no batching timer).
+ *  - Exit of a handle owned by an active `bash_control` call (waits own
+ *    every handle including joiners; inspections and stop-lists own the
+ *    handles they may collect) is claimed silently — that call's
+ *    consolidated tool result is the authoritative delivery. If the call
+ *    ends without delivering it (its handle entries are still in the
+ *    registry), the notification fires from `tool_execution_end`.
  *  - An unattended exit snapshots the terminal result, removes the
  *    handle, and calls `pi.sendMessage(..., { triggerTurn: true,
  *    deliverAs: "followUp" })` — `triggerTurn` wakes an idle agent;
  *    `followUp` queues the result at a safe boundary while streaming.
  *
- * Review delivery (guaranteed, opportunistic): the review coordinator
- * fires `deliverReview` when a recurring review is due and no active
- * cohort wait claimed it. The extension then piggybacks on the current
- * turn (followUp, no trigger) or wakes the idle agent (followUp +
- * triggerTurn), so a forgotten process is always surfaced before the
- * safety limit without creating a dedicated inference per clock tick.
- *
  * Concurrency context: while any handle is tracked, write/execute tool
  * calls (shared permission taxonomy) receive at most one advisory steer
  * per turn — reinforcement, never a gate.
  *
- * Completion guard: a normal assistant completion (`stopReason ===
- * "stop"`) with tracked handles emits one hidden branded follow-up per
- * stable handle set, directing the model to a single batch wait or an
- * explicit stop. Managed background bash is killed at session shutdown,
- * so a forgotten process can invalidate a polished final response.
+ * Completion continuation: EVERY normal assistant stop
+ * (`stopReason === "stop"`) with unresolved managed work — running
+ * processes or terminal outcomes awaiting authoritative delivery — queues
+ * one consolidated hidden follow-up directing the model to wait or stop.
+ * The follow-up keeps the agent run unsettled (the agent loop drains
+ * queued follow-ups before stopping), so a task cannot settle
+ * successfully while work lacks a disposition. User cancellation,
+ * provider errors, token exhaustion, and shutdown never trigger it.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -47,16 +47,14 @@ import { markHarnessSteer } from "../steer-marker.js"
 import { BASH_CONTROL_TOOL_NAME, createBashControlToolDefinition } from "./bash-control-tool.js"
 import { elapsedSecondsSince } from "./process-registry.js"
 import { type BashSessionState, getSessionState } from "./session-registry.js"
-import { runningFactsText, terminalResultText } from "./status-text.js"
+import { terminalResultText } from "./status-text.js"
 
 /** Custom message type for an unattended process-exit notification. */
 export const BASH_BACKGROUND_EXIT_MESSAGE_TYPE = "bash-background-exit"
 /** Custom message type for the once-per-turn concurrency reinforcement steer. */
 export const BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE = "bash-background-concurrency"
-/** Custom message type for the completion-guard follow-up. */
+/** Custom message type for the completion-continuation follow-up. */
 export const BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE = "bash-background-completion"
-/** Custom message type for the guaranteed cohort-review delivery. */
-export const BASH_BACKGROUND_REVIEW_MESSAGE_TYPE = "bash-background-review"
 
 export interface BashControlExtensionOptions {
 	/** Override the state accessor (tests inject a controllable fake). */
@@ -89,11 +87,6 @@ function readDetails(raw: unknown): BackgroundResultDetails {
 	}
 }
 
-/** Stable key for the current set of tracked handles (sorted, comma-joined). */
-function handleSetKey(handles: ReadonlySet<string>): string {
-	return [...handles].sort().join(",")
-}
-
 /** Build the concurrency reinforcement steer text for a set of tracked handles. */
 function formatConcurrencySteer(handles: readonly string[]): string {
 	const plural = handles.length !== 1
@@ -107,28 +100,42 @@ function formatConcurrencySteer(handles: readonly string[]): string {
 	)
 }
 
-/** Build the completion-guard follow-up text for a set of tracked handles. */
-function formatCompletionReminder(handles: readonly string[]): string {
-	const plural = handles.length !== 1
-	const list = handles.join(", ")
+/**
+ * Build the completion-continuation follow-up text: every unresolved
+ * process with its current disposition state (running vs
+ * exited-but-undelivered). Only waiting or explicit stopping release the
+ * guard — a prose assertion of irrelevance does not.
+ */
+function formatCompletionContinuation(running: readonly string[], awaitingDelivery: readonly string[]): string {
+	const parts: string[] = []
+	if (running.length > 0) {
+		parts.push(`Still running: ${running.join(", ")}.`)
+	}
+	if (awaitingDelivery.length > 0) {
+		parts.push(`Exited, results not yet delivered: ${awaitingDelivery.join(", ")}.`)
+	}
 	return (
-		`Before finishing, resolve the background bash process${plural ? "es" : ""} still tracked: ${list}. ` +
-		"Managed background bash is killed at session shutdown (unlike `daemon` processes), " +
-		"so unfinished work or uncollected output may be lost. Do ONE of: " +
-		"(1) call bash_control with wait: true to block for the next cohort event in a single batch; " +
-		"(2) call bash_control with stop_handles for every process no longer needed; or " +
-		"(3) briefly explain why the process is intentionally irrelevant to completion. " +
-		"Do not silently end the turn while anything is still running."
+		"Task completion requires a disposition for unresolved background bash processes. " +
+		parts.join(" ") +
+		"Do ONE of: (1) call bash_control with wait: true to block for the next cohort event in a single batch; " +
+		"(2) call bash_control with stop_handles for every process no longer needed, and report accurately what remains unfinished. " +
+		"Managed background bash is killed at session shutdown (unlike `daemon` processes), so unfinished work or uncollected output may be lost. " +
+		"Do not end the task while anything remains unresolved."
 	)
 }
 
 /** Ownership an in-flight bash_control call holds over exits. */
 interface ActiveControlCall {
-	/** wait: true — owns every cohort exit for the call's duration (joiners claimed on spawn). */
+	/**
+	 * wait: true — owns every cohort exit for the call's duration (joiners
+	 * claimed on spawn). Inspections and stop-lists claim only the handles
+	 * they may collect.
+	 */
 	wait: boolean
 	/**
-	 * Handles whose terminal results this call delivers: a wait claims the
-	 * whole tracked cohort up front, a stop-list claims exactly its handles.
+	 * Handles whose terminal results this call may deliver: every bash_control
+	 * call sweeps available terminal results for the whole cohort, so each
+	 * claims every tracked handle up front.
 	 */
 	owned: Set<string>
 }
@@ -164,10 +171,12 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	let claimedExits = new Map<string, string>()
 	// Once-per-turn coalescing flag for concurrency reinforcement steers.
 	let concurrencySteerSentThisTurn = false
-	// Stable handle-set keys that already received a completion reminder.
-	let remindedHandleSetKeys = new Set<string>()
-	// True between turn_start and turn_end — used to piggyback reviews.
-	let turnActive = false
+	// Exits pending delivery in the current scheduling boundary. Flushed as
+	// one coalesced message on the next microtask — prompt notification with
+	// no multi-second delay and no recurring batching timer. Also read by the
+	// completion continuation to suppress redundant reminders.
+	let pendingExitDeliveries: string[] = []
+	let exitDeliveryScheduled = false
 	let disposed = false
 
 	pi.on("session_start", () => {
@@ -175,20 +184,10 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		activeControlCalls = new Map()
 		claimedExits = new Map()
 		concurrencySteerSentThisTurn = false
-		remindedHandleSetKeys = new Set()
-		turnActive = false
+		pendingExitDeliveries = []
+		exitDeliveryScheduled = false
 		disposed = false
 		pi.registerTool(createBashControlToolDefinition(getState))
-		// Wire guaranteed review delivery through the session state so the
-		// review coordinator (created by bashBackgroundExtension) can reach
-		// us regardless of extension registration order.
-		const state = getState()
-		if (state) {
-			state.deliverReview = () =>
-				deliverCohortReview(state).catch((err: unknown) => {
-					console.error("bash-background cohort review delivery failed:", err)
-				})
-		}
 		// Deferral vote AFTER registration: the tool exists, it's just hidden.
 		// A resumed session that already revealed bash_control stays revealed
 		// (only votes again when still deferred).
@@ -197,11 +196,6 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 
 	pi.on("turn_start", () => {
 		concurrencySteerSentThisTurn = false
-		turnActive = true
-	})
-
-	pi.on("turn_end", () => {
-		turnActive = false
 	})
 
 	/** Assign ownership of `handle`'s terminal delivery to `callId`; first claim wins. */
@@ -213,133 +207,128 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	/**
 	 * Snapshot one terminal result for `handle`, remove it from tracking,
 	 * the cohort, and the registry, and return the shared formatted block.
-	 * Idempotent: a handle already removed from the registry cannot be
-	 * delivered twice. Used by unattended exits AND due reviews — every
-	 * terminal path formats through the same contract.
+	 * Idempotent: collection is claimed atomically on the registry (the one
+	 * ownership table shared with the tool) BEFORE any await, so a racing
+	 * exit watcher and a control-call sweep cannot both deliver the same
+	 * terminal result. Used by unattended exits AND the tool_execution_end
+	 * backstop — every terminal path formats through the same contract.
 	 */
 	async function collectTerminalBlock(state: BashSessionState, handle: string): Promise<string | undefined> {
 		const { registry, coordinator } = state
-		// First collector wins: the tracked set is the atomic exactly-once
-		// guard. Run synchronously before any await so a racing exit watcher
-		// and cohort review cannot both deliver the same terminal result.
-		if (!trackedHandles.delete(handle)) return undefined
+		// First collector wins: claim BEFORE awaiting. A handle claimed by an
+		// in-flight bash_control call (or already collected) returns undefined.
+		if (!registry.claimTerminal(handle)) return undefined
+		if (!trackedHandles.delete(handle)) {
+			// Not tracked anymore (its result was already delivered by a tool
+			// result): release the claim and stay silent.
+			registry.releaseTerminal(handle)
+			return undefined
+		}
 		claimedExits.delete(handle)
 		const entry = registry.getEntry(handle)
-		if (!entry) return undefined
+		if (!entry) {
+			registry.releaseTerminal(handle)
+			return undefined
+		}
 		const elapsed = elapsedSecondsSince(entry.spawnedAtMs)
-		const final = registry.finalSnapshot(handle)
-		coordinator.handleRemoved(handle)
-		await registry.remove(handle).catch(() => {})
-		if (!final) return undefined
-		return terminalResultText({
-			handle,
-			commandSummary: entry.commandSummary,
-			elapsedSeconds: elapsed,
-			state: final.state,
-			exitCode: final.exitCode,
-			reason: final.reason,
-			deadlineSeconds: entry.deadlineSeconds,
-			output: final.content,
-			truncated: final.truncation?.truncated === true,
-			fullOutputPath: final.fullOutputPath,
-		})
+		try {
+			const final = registry.finalSnapshot(handle)
+			coordinator.handleRemoved(handle)
+			await registry.remove(handle).catch(() => {})
+			if (!final) return undefined
+			return terminalResultText({
+				handle,
+				commandSummary: entry.commandSummary,
+				elapsedSeconds: elapsed,
+				state: final.state,
+				exitCode: final.exitCode,
+				reason: final.reason,
+				deadlineSeconds: entry.deadlineSeconds,
+				output: final.content,
+				truncated: final.truncation?.truncated === true,
+				fullOutputPath: final.fullOutputPath,
+			})
+		} catch (err) {
+			// A failed collection must not orphan the handle: release the
+			// registry claim AND restore tracking. The exit watcher is
+			// one-shot, so the restored tracking is what keeps the handle
+			// accountable — the completion continuation still sees the
+			// undelivered terminal result and a later bash_control call can
+			// retry the collection (the claim is free).
+			registry.releaseTerminal(handle)
+			trackedHandles.add(handle)
+			throw err
+		}
 	}
 
 	/**
 	 * Deliver an unattended exit immediately (snapshot → remove → notify).
-	 * Never held for a periodic review.
+	 * Exits landing in the same scheduling boundary coalesce into ONE
+	 * message: the flush is a microtask, so no exit waits on a timer and an
+	 * active bash_control wait is never postponed.
 	 */
 	function deliverUnattendedExit(state: BashSessionState, handle: string): void {
+		pendingExitDeliveries.push(handle)
+		if (exitDeliveryScheduled) return
+		exitDeliveryScheduled = true
 		void (async () => {
-			const terminalText = await collectTerminalBlock(state, handle)
-			if (!terminalText) return
-			const { registry, coordinator } = state
-			const blocks = [terminalText]
-			// Opportunistic compact statuses for the rest of the cohort (no
-			// cursor advance, no review-clock reset).
-			const remaining = coordinator.handles()
-			if (remaining.length > 0) {
-				const statuses = remaining
-					.map((h) => {
-						const e = registry.getEntry(h)
-						if (e?.state !== "running") return undefined
-						return `- ${h}: ${e.commandSummary}; running ${elapsedSecondsSince(e.spawnedAtMs)}s`
-					})
-					.filter((line): line is string => line !== undefined)
-				if (statuses.length > 0) {
-					blocks.push(`Still running (${statuses.length}):\n${statuses.join("\n")}`)
+			try {
+				// Same-boundary coalescing: let sibling exit callbacks (already
+				// queued microtasks) join this batch before it is built.
+				await Promise.resolve()
+				exitDeliveryScheduled = false
+				if (disposed) {
+					pendingExitDeliveries = []
+					return
 				}
+				// Stale registry (shutdown/replacement) — never notify a closing session.
+				if (getState() !== state) {
+					pendingExitDeliveries = []
+					return
+				}
+				const batch = pendingExitDeliveries
+				pendingExitDeliveries = []
+				const blocks: string[] = []
+				for (const pending of batch) {
+					try {
+						const terminalText = await collectTerminalBlock(state, pending)
+						if (terminalText) blocks.push(terminalText)
+					} catch (err) {
+						// One handle's failed collection must not drop its coalesced
+						// siblings from this message; the failed handle stays tracked
+						// (restored by the collector) for the completion continuation.
+						console.error("bash-background exit collection failed:", err)
+					}
+				}
+				if (blocks.length === 0) return
+				// Opportunistic compact statuses for the rest of the cohort (no
+				// cursor advance — nothing was collected from them).
+				const { registry, coordinator } = state
+				const remaining = coordinator.handles()
+				if (remaining.length > 0) {
+					const statuses = remaining
+						.map((h) => {
+							const e = registry.getEntry(h)
+							if (e?.state !== "running") return undefined
+							return `- ${h}: ${e.commandSummary}; running ${elapsedSecondsSince(e.spawnedAtMs)}s`
+						})
+						.filter((line): line is string => line !== undefined)
+					if (statuses.length > 0) {
+						blocks.push(`Still running (${statuses.length}):\n${statuses.join("\n")}`)
+					}
+				}
+				pi.sendMessage(
+					{
+						customType: BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
+						content: [{ type: "text", text: markHarnessSteer(blocks.join("\n\n")) }],
+						display: false,
+					},
+					{ triggerTurn: true, deliverAs: "followUp" },
+				)
+			} catch (err: unknown) {
+				console.error("bash-background exit delivery failed:", err)
 			}
-			pi.sendMessage(
-				{
-					customType: BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
-					content: [{ type: "text", text: markHarnessSteer(blocks.join("\n\n")) }],
-					display: false,
-				},
-				{ triggerTurn: true, deliverAs: "followUp" },
-			)
 		})()
-	}
-
-	/**
-	 * Guaranteed cohort-review delivery. Called by the review coordinator
-	 * when a recurring review is due and no active `bash_control(wait:
-	 * true)` claimed it. Piggybacks on an active turn (delivered at the
-	 * next safe boundary) or wakes an idle agent exactly once.
-	 */
-	async function deliverCohortReview(state: BashSessionState): Promise<void> {
-		if (disposed) return
-		if (getState() !== state) return
-		const { registry, coordinator } = state
-		const handleList = coordinator.handles()
-		if (handleList.length === 0) {
-			coordinator.reviewDelivered()
-			return
-		}
-		try {
-			const blocks: string[] = [
-				`Scheduled cohort review of ${handleList.length} background bash process${handleList.length === 1 ? "" : "es"}:`,
-			]
-			const pendingMarks: Array<[string, number]> = []
-			for (const handle of handleList) {
-				const entry = registry.getEntry(handle)
-				if (!entry) continue
-				if (entry.state !== "running") {
-					// Terminal state: fold any undelivered terminal result into this
-					// review. Exits claimed by an in-flight bash_control call belong
-					// to that call's consolidated result and are left alone.
-					if (claimedExits.has(handle)) continue
-					const terminalText = await collectTerminalBlock(state, handle)
-					if (terminalText) blocks.push(terminalText)
-					continue
-				}
-				const incremental = registry.snapshotSince(handle)
-				pendingMarks.push([handle, incremental.nextCursor])
-				blocks.push(`${runningFactsText(entry, incremental, state.cwd)}\n\nNew/retained output follows.`)
-				if (incremental.text.length > 0) blocks.push(incremental.text)
-			}
-			// The delivered cursor advances only after the review text is built.
-			for (const [handle, cursor] of pendingMarks) registry.markDelivered(handle, cursor)
-			blocks.push(
-				"Processes continue by default. Stop unproductive ones with bash_control stop_handles; " +
-					"if you have no other work until something changes, use ONE bash_control(wait: true) call. " +
-					"A silent process is an observation, not proof of stalled work — check its output before concluding it is stuck.",
-			)
-			pi.sendMessage(
-				{
-					customType: BASH_BACKGROUND_REVIEW_MESSAGE_TYPE,
-					content: [{ type: "text", text: markHarnessSteer(blocks.join("\n\n")) }],
-					display: false,
-				},
-				// Piggyback on a natural boundary when a turn is active; wake an
-				// idle agent rather than leave the cohort unattended.
-				turnActive ? { deliverAs: "followUp" } : { triggerTurn: true, deliverAs: "followUp" },
-			)
-		} finally {
-			// Always release the pending-review slot, even on failure — a
-			// stuck slot would silently end all future cohort oversight.
-			coordinator.reviewDelivered()
-		}
 	}
 
 	/** Watch a tracked handle for natural process exit and release it. */
@@ -420,11 +409,12 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		const wait = args.wait === true
 		const call: ActiveControlCall = { wait, owned: new Set() }
 		activeControlCalls.set(event.toolCallId, call)
-		// Ownership is assigned before the call awaits: a wait claims the
-		// whole tracked cohort; a stop-list claims exactly its handles.
-		if (wait) {
-			for (const handle of trackedHandles) claimExit(event.toolCallId, handle, call)
-		}
+		// Ownership is assigned before the call awaits. Every bash_control
+		// call sweeps available terminal results for the whole cohort (waits
+		// on settlement, immediate inspections right away), so each claims
+		// every tracked handle — first claim wins when calls overlap, so a
+		// rejected concurrent wait cannot steal an existing wait's claims.
+		for (const handle of trackedHandles) claimExit(event.toolCallId, handle, call)
 		if (Array.isArray(args.stop_handles)) {
 			for (const h of args.stop_handles) {
 				if (typeof h === "string" && h.length > 0) claimExit(event.toolCallId, h, call)
@@ -447,8 +437,8 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 				continue
 			}
 			if (entry.state === "running") {
-				// The call ended while the process is still alive (e.g. a wait
-				// resolved by a review): release the claim without delivering.
+				// The call ended while the process is still alive (e.g. an
+				// aborted wait): release the claim without delivering.
 				claimedExits.delete(handle)
 				continue
 			}
@@ -486,8 +476,14 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		return { block: false }
 	})
 
-	// Completion guard: a normal assistant completion with tracked handles
-	// emits one hidden branded follow-up per stable handle set.
+	// Completion continuation: EVERY normal assistant stop with unresolved
+	// managed work queues one consolidated follow-up. The queued follow-up
+	// keeps the agent run unsettled (the agent loop drains follow-ups
+	// before stopping), so settled success requires a disposition. A stable
+	// handle set never suppresses the guard — repeated attempts each get a
+	// continuation. Terminal results whose notification is already queued
+	// will resolve the state by themselves, so only genuinely unresolved
+	// work produces a reminder.
 	pi.on("turn_end", (event, _ctx: ExtensionContext) => {
 		if (disposed) return
 		if (trackedHandles.size === 0) return
@@ -495,16 +491,27 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		if (message?.role !== "assistant") return
 		const stopReason = (message as { stopReason?: unknown }).stopReason
 		if (stopReason !== "stop") return
-		const key = handleSetKey(trackedHandles)
-		if (remindedHandleSetKeys.has(key)) return
-		remindedHandleSetKeys.add(key)
+		// Read current lifecycle state at the guard boundary: distinguish
+		// live processes from terminal outcomes awaiting delivery.
+		const state = getState()
+		const running: string[] = []
+		const awaitingDelivery: string[] = []
+		for (const handle of trackedHandles) {
+			const entry = state?.registry.getEntry(handle)
+			if (!state || !entry || entry.state === "running") {
+				running.push(handle)
+			} else if (!pendingExitDeliveries.includes(handle)) {
+				awaitingDelivery.push(handle)
+			}
+		}
+		if (running.length === 0 && awaitingDelivery.length === 0) return
 		pi.sendMessage(
 			{
 				customType: BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE,
 				content: [
 					{
 						type: "text",
-						text: markHarnessSteer(formatCompletionReminder([...trackedHandles])),
+						text: markHarnessSteer(formatCompletionContinuation(running, awaitingDelivery)),
 					},
 				],
 				display: false,
@@ -518,5 +525,6 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		trackedHandles.clear()
 		activeControlCalls.clear()
 		claimedExits.clear()
+		pendingExitDeliveries = []
 	})
 }

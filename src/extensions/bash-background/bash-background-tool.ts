@@ -8,11 +8,11 @@
  *  1. Spawn the command under the session process registry (no model-set
  *     timeout — the registry applies the harness-owned safety limit).
  *  2. Wait for natural exit or the command's ONE-TIME initial handoff
- *     deadline (bounded, ≤ 15s), whichever comes first.
+ *     deadline (bounded, ≤ 2s), whichever comes first.
  *  3. If it exits, return the normal final result with no live handle.
  *  4. If it is still running, resolve with the handle, identity/activity
- *     facts, and unseen output; the process joins the session cohort's
- *     recurring review schedule and its exit is delivered automatically.
+ *     facts, and unseen output; the process stays tracked and its exit is
+ *     delivered automatically.
  *
  * The model-facing schema advertises only `{ command }`. Legacy
  * `timeout`/`checkin_interval` fields from resumed sessions and ACP
@@ -190,7 +190,8 @@ export function createBackgroundBashToolDefinition(
 		}
 
 		// Still running at the handoff — deliver identity, activity facts,
-		// and unseen output; the cohort review clock takes over from here.
+		// and unseen output; the process stays tracked and its exit is
+		// delivered automatically (no recurring clock while the agent works).
 		const incremental = registry.snapshotSince(handle)
 		const entry = registry.getEntry(handle)
 		const elapsed = elapsedSecondsSince(entry?.spawnedAtMs ?? Date.now())

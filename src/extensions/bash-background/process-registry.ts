@@ -5,8 +5,9 @@
  * `createLocalBashOperations` in production) and keeps it running
  * independently of the agent loop. The bash tool's `execute` resolves at
  * the command's one-time initial handoff with an incremental output
- * snapshot plus the handle; the process then joins the session cohort's
- * shared review schedule (see `./review-coordinator.ts`).
+ * snapshot plus the handle; the process stays tracked and its exit is
+ * delivered automatically (see `./review-coordinator.ts` for the bounded
+ * waits of explicit `bash_control` calls).
  *
  * Design notes:
  *  - The registry does NOT resolve on process exit. `ops.exec` is started
@@ -336,6 +337,8 @@ export interface ProcessEntry {
 	readonly buffer: OutputRingBuffer
 	readonly accumulator: OutputAccumulator
 	readonly controller: AbortController
+	/** True while some collector has atomically claimed this entry's terminal result. */
+	terminalClaimed: boolean
 	execPromise: Promise<{ exitCode: number | null }>
 	deadlineTimer: NodeJS.Timeout | undefined
 }
@@ -476,6 +479,18 @@ export interface ProcessRegistry {
 	whenExited(handle: string): Promise<{ exitCode: number | null }>
 	/** Read-only entry state, or undefined if unknown. */
 	getEntry(handle: string): Readonly<ProcessEntry> | undefined
+	/**
+	 * Atomically claim the right to collect `handle`'s terminal result
+	 * (first collector wins). Returns false when the entry is gone or
+	 * another collector already claimed it — every terminal path (control
+	 * call stops/sweeps, unattended-exit notifications, backstops) MUST
+	 * claim BEFORE awaiting anything, so parallel collectors cannot both
+	 * deliver the same result. The claim clears when the entry is removed;
+	 * `releaseTerminal` returns it for a claiming path that backed out.
+	 */
+	claimTerminal(handle: string): boolean
+	/** Release a terminal-collection claim without removing the entry. */
+	releaseTerminal(handle: string): void
 	/** Remove an entry, keeping any reported spill file readable until shutdown. */
 	remove(handle: string): Promise<void>
 	/** Kill every still-running entry and clear the registry. */
@@ -609,6 +624,7 @@ export function createProcessRegistry(): ProcessRegistry {
 			buffer,
 			accumulator,
 			controller,
+			terminalClaimed: false,
 			execPromise,
 			deadlineTimer: undefined,
 		}
@@ -722,6 +738,18 @@ export function createProcessRegistry(): ProcessRegistry {
 		return entry.execPromise
 	}
 
+	function claimTerminal(handle: string): boolean {
+		const entry = entries.get(handle)
+		if (!entry || entry.terminalClaimed) return false
+		entry.terminalClaimed = true
+		return true
+	}
+
+	function releaseTerminal(handle: string): void {
+		const entry = entries.get(handle)
+		if (entry) entry.terminalClaimed = false
+	}
+
 	function getEntry(handle: string): Readonly<ProcessEntry> | undefined {
 		return entries.get(handle)
 	}
@@ -777,6 +805,8 @@ export function createProcessRegistry(): ProcessRegistry {
 		finalSnapshot,
 		kill,
 		whenExited,
+		claimTerminal,
+		releaseTerminal,
 		getEntry,
 		remove,
 		shutdown,

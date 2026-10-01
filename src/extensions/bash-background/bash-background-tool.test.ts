@@ -6,7 +6,7 @@
  * short handoff) so no real shell is spawned and timing is deterministic.
  *
  * Contract under test: commands always go through the registry; the tool
- * resolves at process exit OR at the one-time initial handoff (≤15s),
+ * resolves at process exit OR at the one-time initial handoff (≤ 2s),
  * never on a model-controlled cadence or timeout. Legacy `timeout` /
  * `checkin_interval` input fields are accepted and ignored.
  */
@@ -24,7 +24,7 @@ function makeState(handoffSeconds: number): BashSessionState {
 	const registry = createProcessRegistry()
 	return {
 		registry,
-		coordinator: createReviewCoordinator({ registry, handoffSeconds, reviewIntervalSeconds: 60 }),
+		coordinator: createReviewCoordinator({ registry, handoffSeconds }),
 		limitSeconds: 600,
 	}
 }

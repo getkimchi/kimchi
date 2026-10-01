@@ -11,7 +11,10 @@
 import type { ProcessRegistry } from "./process-registry.js"
 import type { ReviewCoordinator } from "./review-coordinator.js"
 
-/** Everything a session's background-bash cohort needs: processes + clock. */
+/**
+ * Everything a session's background-bash cohort needs: processes +
+ * lifecycle coordination (per-command handoffs and bounded waits).
+ */
 export interface BashSessionState {
 	registry: ProcessRegistry
 	coordinator: ReviewCoordinator
@@ -22,14 +25,6 @@ export interface BashSessionState {
 	 * project-relative when a process runs elsewhere.
 	 */
 	cwd?: string
-	/**
-	 * Delivers a due cohort review to the model. Installed by the
-	 * bash-control extension on session_start; the coordinator invokes it
-	 * when no active `bash_control(wait: true)` claims the review. Always
-	 * resolves (never rejects): delivery failures are logged and the
-	 * pending-review slot is released by the extension itself.
-	 */
-	deliverReview?: (() => Promise<void>) | undefined
 }
 
 let sessionState: BashSessionState | undefined

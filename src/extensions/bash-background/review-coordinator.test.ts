@@ -1,10 +1,11 @@
 /**
- * Unit tests for the session review coordinator.
+ * Unit tests for the cohort lifecycle coordinator.
  *
- * Verifies the single shared review clock: staggered commands produce at
- * most one recurring review per interval, later joiners never create or
- * reset review timers, exits and waits are independent, and an empty
- * cohort resets the cycle.
+ * Verifies the per-command 2s handoffs (each command gets its own deadline),
+ * the absence of any recurring clock (timer-count stability across long
+ * advances), bounded checkpoint waits (300s default, caller-passed
+ * durations, joiners without deadline resets, early exits, last-handle
+ * removal, abort/dispose cleanup), and the checkpoint-streak bookkeeping.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -12,20 +13,16 @@ import { createFakeOps, type FakeOps } from "./__mocks__/fake-bash-ops.js"
 import { createProcessRegistry } from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
 
-const HANDOFF = 15
-const INTERVAL = 60
+const HANDOFF = 2
 
 let ops: FakeOps
 let registry: ReturnType<typeof createProcessRegistry>
-const opts = { limitSeconds: 600 }
+// Long enough that the registry's safety-deadline timer never fires inside
+// a test advance (its presence is constant, not under test).
+const opts = { limitSeconds: 3600 }
 
-function makeCoordinator(onReviewDue?: () => void) {
-	return createReviewCoordinator({
-		registry,
-		onReviewDue,
-		handoffSeconds: HANDOFF,
-		reviewIntervalSeconds: INTERVAL,
-	})
+function makeCoordinator(waitSeconds?: number) {
+	return createReviewCoordinator({ registry, handoffSeconds: HANDOFF, waitSeconds })
 }
 
 function spawnOne(command = "sleep 100"): string {
@@ -44,12 +41,20 @@ afterEach(async () => {
 })
 
 describe("initial handoff", () => {
-	it("resolves 'handoff' at the shared 15s deadline for the first joiner", async () => {
+	it("resolves 'handoff' at the command's own 2s deadline", async () => {
 		const c = makeCoordinator()
 		const h = spawnOne()
 		c.handleSpawned(h)
 		const p = c.awaitInitialHandoff(h)
-		await vi.advanceTimersByTimeAsync(HANDOFF * 1000)
+		await vi.advanceTimersByTimeAsync(HANDOFF * 1000 - 1)
+		// Still pending one tick before the deadline.
+		let settled = false
+		void p.then(() => {
+			settled = true
+		})
+		await vi.advanceTimersByTimeAsync(0)
+		expect(settled).toBe(false)
+		await vi.advanceTimersByTimeAsync(1)
 		await expect(p).resolves.toBe("handoff")
 	})
 
@@ -63,38 +68,26 @@ describe("initial handoff", () => {
 		await assertion
 	})
 
-	it("joiners share the pending first handoff (never a longer wait)", async () => {
+	it("each command gets its own full handoff deadline (no shared clock)", async () => {
 		const c = makeCoordinator()
 		const h1 = spawnOne("a")
 		c.handleSpawned(h1)
 		const p1 = c.awaitInitialHandoff(h1)
-		await vi.advanceTimersByTimeAsync(5_000)
+		await vi.advanceTimersByTimeAsync(1_000) // h1 has 1s left
 		const h2 = spawnOne("b")
 		c.handleSpawned(h2)
 		const p2 = c.awaitInitialHandoff(h2)
-		// 10s later both resolve — h2 did not get a fresh 15s wait.
-		await vi.advanceTimersByTimeAsync(10_000)
+		// h1's deadline fires; h2 still has a full second of its own.
+		await vi.advanceTimersByTimeAsync(1_000)
 		await expect(p1).resolves.toBe("handoff")
+		let h2Settled = false
+		void p2.then(() => {
+			h2Settled = true
+		})
+		await vi.advanceTimersByTimeAsync(0)
+		expect(h2Settled).toBe(false)
+		await vi.advanceTimersByTimeAsync(1_000)
 		await expect(p2).resolves.toBe("handoff")
-	})
-
-	it("a later joiner (during the review phase) gets its own bounded handoff without touching the clock", async () => {
-		const c = makeCoordinator()
-		const h1 = spawnOne("a")
-		c.handleSpawned(h1)
-		const p1 = c.awaitInitialHandoff(h1)
-		await vi.advanceTimersByTimeAsync(HANDOFF * 1000) // first handoff → review phase, next review at +60s
-		await expect(p1).resolves.toBe("handoff")
-		const reviewAt = c.nextReviewAtMs
-		expect(reviewAt).toBeDefined()
-
-		const h2 = spawnOne("b")
-		c.handleSpawned(h2)
-		const p2 = c.awaitInitialHandoff(h2)
-		await vi.advanceTimersByTimeAsync(HANDOFF * 1000)
-		await expect(p2).resolves.toBe("handoff")
-		// The recurring review time was not postponed by the join.
-		expect(c.nextReviewAtMs).toBe(reviewAt)
 	})
 
 	it("resolves 'aborted' when the signal fires before the handoff", async () => {
@@ -106,98 +99,135 @@ describe("initial handoff", () => {
 		controller.abort()
 		await expect(p).resolves.toBe("aborted")
 	})
+
+	it("clears the handoff timer after settlement (no leak)", async () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		const before = vi.getTimerCount()
+		const p = c.awaitInitialHandoff(h) // +1 handoff timer
+		expect(vi.getTimerCount()).toBe(before + 1)
+		await vi.advanceTimersByTimeAsync(HANDOFF * 1000)
+		await p
+		expect(vi.getTimerCount()).toBe(before)
+	})
 })
 
-describe("shared review clock", () => {
-	it("fires the first recurring review 60s after the first handoff, not per process", async () => {
-		const due = vi.fn()
-		const c = makeCoordinator(due)
-		const h1 = spawnOne("a")
-		c.handleSpawned(h1)
-		const p1 = c.awaitInitialHandoff(h1)
-		await vi.advanceTimersByTimeAsync(10_000)
-		const h2 = spawnOne("b")
-		c.handleSpawned(h2)
-		const p2 = c.awaitInitialHandoff(h2)
-		const h3 = spawnOne("c")
-		c.handleSpawned(h3)
-		const p3 = c.awaitInitialHandoff(h3)
-
-		await vi.advanceTimersByTimeAsync(5_000) // t=15s: shared first handoff
-		await Promise.all([p1, p2, p3])
-		expect(due).not.toHaveBeenCalled()
-
-		await vi.advanceTimersByTimeAsync(INTERVAL * 1000) // t=75s: review #1
-		expect(due).toHaveBeenCalledTimes(1)
-		c.reviewDelivered()
-
-		await vi.advanceTimersByTimeAsync(INTERVAL * 1000) // t=135s: review #2
-		expect(due).toHaveBeenCalledTimes(2)
-	})
-
-	it("does not enqueue a second pending review while one is outstanding", async () => {
-		const due = vi.fn()
-		const c = makeCoordinator(due)
+describe("no recurring clock", () => {
+	it("arms no timer after the handoff — time passes with no wait and no callback", async () => {
+		const c = makeCoordinator()
 		const h = spawnOne()
 		c.handleSpawned(h)
 		const p = c.awaitInitialHandoff(h)
 		await vi.advanceTimersByTimeAsync(HANDOFF * 1000)
 		await p
-
-		await vi.advanceTimersByTimeAsync(INTERVAL * 1000)
-		expect(c.hasPendingReview()).toBe(true)
-		expect(due).toHaveBeenCalledTimes(1)
-		// Next tick while pending: no new notification.
-		await vi.advanceTimersByTimeAsync(INTERVAL * 1000)
-		expect(due).toHaveBeenCalledTimes(1)
-		c.reviewDelivered()
-		expect(c.hasPendingReview()).toBe(false)
-		await vi.advanceTimersByTimeAsync(INTERVAL * 1000)
-		expect(due).toHaveBeenCalledTimes(2)
+		const afterHandoff = vi.getTimerCount()
+		// Advance across multiple five-minute windows with no active wait:
+		// no recurring review clock may arm (the only remaining timer is the
+		// registry's safety deadline, which stays armed but is not new).
+		await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+		await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+		expect(vi.getTimerCount()).toBe(afterHandoff)
 	})
 
-	it("resets the clock when the cohort empties; the next process starts a fresh cycle", async () => {
-		const due = vi.fn()
-		const c = makeCoordinator(due)
-		const h1 = spawnOne("a")
-		c.handleSpawned(h1)
-		const p1 = c.awaitInitialHandoff(h1)
-		await vi.advanceTimersByTimeAsync(HANDOFF * 1000)
-		await p1
-
-		c.handleRemoved(h1)
-		expect(c.size).toBe(0)
-		expect(c.nextReviewAtMs).toBeUndefined()
-
-		const h2 = spawnOne("b")
-		c.handleSpawned(h2)
-		const p2 = c.awaitInitialHandoff(h2)
-		await vi.advanceTimersByTimeAsync(HANDOFF * 1000)
-		await expect(p2).resolves.toBe("handoff")
-		await vi.advanceTimersByTimeAsync(INTERVAL * 1000)
-		expect(due).toHaveBeenCalledTimes(1)
-	})
-
-	it("a due review resolves an active cohort wait instead of firing the callback", async () => {
-		const due = vi.fn()
-		const c = makeCoordinator(due)
+	it("creating a cohort with an active wait still adds only the wait's checkpoint timer", async () => {
+		const c = makeCoordinator()
 		const h = spawnOne()
 		c.handleSpawned(h)
 		const p = c.awaitInitialHandoff(h)
 		await vi.advanceTimersByTimeAsync(HANDOFF * 1000)
 		await p
-
+		const afterHandoff = vi.getTimerCount()
 		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
-		const event = c.awaitCohortEvent("call-1")
-		const assertion = expect(event).resolves.toEqual({ kind: "review" })
-		await vi.advanceTimersByTimeAsync(INTERVAL * 1000)
-		await assertion
-		expect(due).not.toHaveBeenCalled()
-		expect(c.hasPendingReview()).toBe(false)
+		const event = c.awaitCohortEvent("call-1", undefined, 10)
+		expect(vi.getTimerCount()).toBe(afterHandoff + 1)
+		await vi.advanceTimersByTimeAsync(10_000)
+		await expect(event).resolves.toEqual({ kind: "checkpoint" })
+		expect(vi.getTimerCount()).toBe(afterHandoff)
+		c.endCohortWait("call-1")
 	})
 })
 
 describe("cohort wait", () => {
+	it("resolves on the first process exit", async () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		const event = c.awaitCohortEvent("call-1", undefined, 300)
+		const assertion = expect(event).resolves.toEqual({ kind: "exit", handle: h })
+		await ops.exit(0)
+		await assertion
+	})
+
+	it("resolves at the 300s default checkpoint when no duration is passed", async () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		const event = c.awaitCohortEvent("call-1")
+		let settled = false
+		void event.then(() => {
+			settled = true
+		})
+		await vi.advanceTimersByTimeAsync(299_000)
+		await vi.advanceTimersByTimeAsync(0)
+		expect(settled).toBe(false)
+		await vi.advanceTimersByTimeAsync(1_000)
+		await expect(event).resolves.toEqual({ kind: "checkpoint" })
+	})
+
+	it("honors a caller-passed duration (600s cap comes from the caller)", async () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		const event = c.awaitCohortEvent("call-1", undefined, 600)
+		let settled = false
+		void event.then(() => {
+			settled = true
+		})
+		await vi.advanceTimersByTimeAsync(599_000)
+		await vi.advanceTimersByTimeAsync(0)
+		expect(settled).toBe(false)
+		await vi.advanceTimersByTimeAsync(1_000)
+		await expect(event).resolves.toEqual({ kind: "checkpoint" })
+	})
+
+	it("schedules fractional durations exactly (no one-second minimum)", async () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		const event = c.awaitCohortEvent("call-1", undefined, 0.05)
+		let settled = false
+		void event.then(() => {
+			settled = true
+		})
+		await vi.advanceTimersByTimeAsync(49)
+		expect(settled).toBe(false)
+		await vi.advanceTimersByTimeAsync(1)
+		await expect(event).resolves.toEqual({ kind: "checkpoint" })
+	})
+
+	it("a joiner spawned DURING the wait resolves it on exit without restarting the checkpoint", async () => {
+		const c = makeCoordinator()
+		const h1 = spawnOne("a")
+		c.handleSpawned(h1)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		const event = c.awaitCohortEvent("call-1", undefined, 300)
+		const timerCountAfterWait = vi.getTimerCount()
+		const h2 = spawnOne("b")
+		c.handleSpawned(h2)
+		// The joiner adds only its own registry deadline timer — the wait's
+		// checkpoint was NOT restarted or postponed.
+		const joinerDeadline = vi.getTimerCount() - timerCountAfterWait
+		expect(joinerDeadline).toBe(1)
+		const assertion = expect(event).resolves.toEqual({ kind: "exit", handle: h2 })
+		await ops.exitMatching("b", 0)
+		await assertion
+	})
+
 	it("rejects a second concurrent wait without stealing ownership", async () => {
 		const c = makeCoordinator()
 		const h = spawnOne()
@@ -214,86 +244,157 @@ describe("cohort wait", () => {
 		expect(c.hasActiveWait()).toBe(false)
 	})
 
-	it("resolves the wait on the first process exit, independent of the review clock", async () => {
+	it("resolves immediately when a handle is already terminal when the wait begins", async () => {
 		const c = makeCoordinator()
 		const h = spawnOne()
 		c.handleSpawned(h)
-		const p = c.awaitInitialHandoff(h)
-		await vi.advanceTimersByTimeAsync(HANDOFF * 1000)
-		await p
-
-		c.beginCohortWait("call-1")
-		const event = c.awaitCohortEvent("call-1")
-		const assertion = expect(event).resolves.toEqual({ kind: "exit", handle: h })
-		await vi.advanceTimersByTimeAsync(10_000) // well before the 60s review
+		// Exit with no active wait: the exit observer fires unobserved.
 		await ops.exit(0)
-		await assertion
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		const event = c.awaitCohortEvent("call-1")
+		await expect(event).resolves.toEqual({ kind: "exit", handle: h })
 	})
 
-	it("a joiner spawned DURING an active wait still resolves it on exit", async () => {
+	it("removing the last handle settles the wait instead of stranding it until the deadline", async () => {
 		const c = makeCoordinator()
-		const h1 = spawnOne("a")
-		c.handleSpawned(h1)
-		const p = c.awaitInitialHandoff(h1)
-		await vi.advanceTimersByTimeAsync(HANDOFF * 1000)
-		await p
+		const h = spawnOne()
+		c.handleSpawned(h)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		const event = c.awaitCohortEvent("call-1", undefined, 300)
+		// Simulate an external collection removing the handle without an
+		// observable exit (e.g. a racing stop already collected it).
+		c.handleRemoved(h)
+		await expect(event).resolves.toEqual({ kind: "empty" })
+	})
 
-		c.beginCohortWait("call-1")
+	it("removing the last handle after its exit already settled the wait is a no-op", async () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
 		const event = c.awaitCohortEvent("call-1")
-		// Spawn + join a second process AFTER the wait began: the wait must
-		// not keep blocking on the original cohort alone.
-		const h2 = spawnOne("b")
-		c.handleSpawned(h2)
-		const assertion = expect(event).resolves.toEqual({ kind: "exit", handle: h2 })
-		await ops.exitMatching("b", 0)
+		const assertion = expect(event).resolves.toEqual({ kind: "exit", handle: h })
+		await ops.exit(0)
 		await assertion
+		// The collection path removes the handle after the wait resolved.
+		c.handleRemoved(h)
+		expect(c.hasActiveWait()).toBe(false)
 	})
 
 	it("a settled wait ignores late exits of handles that outlive it", async () => {
 		const c = makeCoordinator()
 		const h1 = spawnOne("a")
 		c.handleSpawned(h1)
-		const p = c.awaitInitialHandoff(h1)
-		await vi.advanceTimersByTimeAsync(HANDOFF * 1000)
-		await p
-
-		c.beginCohortWait("call-1")
-		const first = c.awaitCohortEvent("call-1")
-		const assertion = expect(first).resolves.toEqual({ kind: "exit", handle: h1 })
-		await ops.exitMatching("a", 0)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		const first = c.awaitCohortEvent("call-1", undefined, 300)
+		const assertion = expect(first).resolves.toEqual({ kind: "checkpoint" })
+		await vi.advanceTimersByTimeAsync(300_000)
 		await assertion
-		// The wait is consumed; a second process spawned while it was active
-		// may exit without throwing or resurrecting a wait.
+		// A process spawned after the wait settled may exit without
+		// throwing or resurrecting a wait.
 		const h2 = spawnOne("b")
 		c.handleSpawned(h2)
 		await ops.exitMatching("b", 0)
 		expect(c.hasActiveWait()).toBe(false)
 	})
 
-	it("abort resolves the wait as 'aborted'", async () => {
+	it("does not accumulate timers across many sequential waits on one long-lived command", async () => {
 		const c = makeCoordinator()
 		const h = spawnOne()
 		c.handleSpawned(h)
-		c.beginCohortWait("call-1")
+		const handoff = c.awaitInitialHandoff(h)
+		await vi.advanceTimersByTimeAsync(HANDOFF * 1000)
+		await handoff
+		for (let i = 0; i < 20; i++) {
+			expect(c.beginCohortWait(`call-${i}`)).toEqual({ ok: true })
+			const event = c.awaitCohortEvent(`call-${i}`, undefined, 10)
+			await vi.advanceTimersByTimeAsync(10_000)
+			await expect(event).resolves.toEqual({ kind: "checkpoint" })
+		}
+		// Only the registry's safety-deadline timer remains armed — each
+		// wait's checkpoint timer was cleared on settlement.
+		const stable = vi.getTimerCount()
+		expect(stable).toBe(1)
+		await vi.advanceTimersByTimeAsync(10_000)
+		expect(vi.getTimerCount()).toBe(stable)
+	})
+
+	it("abort resolves the wait as 'aborted' and clears its timer", async () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
 		const controller = new AbortController()
-		const event = c.awaitCohortEvent("call-1", controller.signal)
+		const before = vi.getTimerCount()
+		const event = c.awaitCohortEvent("call-1", controller.signal, 300)
+		expect(vi.getTimerCount()).toBe(before + 1)
 		const assertion = expect(event).resolves.toEqual({ kind: "aborted" })
 		controller.abort()
 		await assertion
+		expect(vi.getTimerCount()).toBe(before)
 		expect(c.hasActiveWait()).toBe(false)
 	})
 
 	it("dispose resolves pending waits as 'aborted' and clears timers", async () => {
-		const due = vi.fn()
-		const c = makeCoordinator(due)
+		const c = makeCoordinator()
 		const h = spawnOne()
 		c.handleSpawned(h)
-		c.beginCohortWait("call-1")
-		const event = c.awaitCohortEvent("call-1")
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		const event = c.awaitCohortEvent("call-1", undefined, 300)
 		const assertion = expect(event).resolves.toEqual({ kind: "aborted" })
 		c.dispose()
 		await assertion
-		await vi.advanceTimersByTimeAsync(10 * INTERVAL * 1000)
-		expect(due).not.toHaveBeenCalled()
+		await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+		expect(c.hasActiveWait()).toBe(false)
+	})
+})
+
+describe("checkpoint streaks", () => {
+	it("starts at zero for a new process", () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		expect(c.getCheckpointStreak(h)).toBe(0)
+	})
+
+	it("commitWaitTimeout increments only reported handles", () => {
+		const c = makeCoordinator()
+		const a = spawnOne("a")
+		const b = spawnOne("b")
+		c.handleSpawned(a)
+		c.handleSpawned(b)
+		c.commitWaitTimeout([a])
+		expect(c.getCheckpointStreak(a)).toBe(1)
+		expect(c.getCheckpointStreak(b)).toBe(0)
+		c.commitWaitTimeout([a])
+		expect(c.getCheckpointStreak(a)).toBe(2)
+	})
+
+	it("commitObservation resets reported handles", () => {
+		const c = makeCoordinator()
+		const a = spawnOne("a")
+		c.handleSpawned(a)
+		c.commitWaitTimeout([a])
+		c.commitWaitTimeout([a])
+		c.commitObservation([a])
+		expect(c.getCheckpointStreak(a)).toBe(0)
+	})
+
+	it("handleRemoved deletes the history; a re-joined handle starts fresh", () => {
+		const c = makeCoordinator()
+		const a = spawnOne("a")
+		c.handleSpawned(a)
+		c.commitWaitTimeout([a])
+		c.handleRemoved(a)
+		expect(c.getCheckpointStreak(a)).toBe(0)
+	})
+
+	it("commitWaitTimeout ignores handles no longer in the cohort", () => {
+		const c = makeCoordinator()
+		const a = spawnOne("a")
+		c.handleSpawned(a)
+		c.handleRemoved(a)
+		c.commitWaitTimeout([a])
+		expect(c.getCheckpointStreak(a)).toBe(0)
 	})
 })

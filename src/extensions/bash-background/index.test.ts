@@ -81,6 +81,10 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 		expect(first).toBeDefined()
 		expect(first?.limitSeconds).toBe(DEFAULT_BASH_PROCESS_LIMIT_SECONDS)
 		expect(first?.cwd).toBe("/tmp")
+		// The state carries no review-delivery wiring: coordination is
+		// per-command handoffs plus bounded explicit waits, never a
+		// recurring review clock.
+		expect("deliverReview" in (first ?? {})).toBe(false)
 
 		// A resumed/forked session gets a fresh cohort: handles from the old
 		// session are not reusable (the registry is rebuilt).

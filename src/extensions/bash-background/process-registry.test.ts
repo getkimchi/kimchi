@@ -528,4 +528,26 @@ describe("createProcessRegistry — remove & shutdown", () => {
 
 		expect(existsSync(spillPath)).toBe(false)
 	})
+
+	describe("terminal collection claims", () => {
+		it("claims atomically: the second collector loses until released", () => {
+			const ops = createFakeOps(0)
+			const registry = createProcessRegistry()
+			const handle = registry.spawn(ops, "sleep 2", "/tmp", undefined, OPTS)
+			expect(registry.claimTerminal(handle)).toBe(true)
+			expect(registry.claimTerminal(handle)).toBe(false)
+			registry.releaseTerminal(handle)
+			expect(registry.claimTerminal(handle)).toBe(true)
+		})
+
+		it("claiming an unknown handle fails; removal clears the claim", async () => {
+			const ops = createFakeOps(0)
+			const registry = createProcessRegistry()
+			expect(registry.claimTerminal("bogus")).toBe(false)
+			const handle = registry.spawn(ops, "sleep 2", "/tmp", undefined, OPTS)
+			expect(registry.claimTerminal(handle)).toBe(true)
+			await registry.remove(handle)
+			expect(registry.claimTerminal(handle)).toBe(false)
+		})
+	})
 })

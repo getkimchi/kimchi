@@ -3,9 +3,10 @@
  *
  * Design: this text is the interface the model sees right before it
  * chooses its next tool call, so it must make the continuation contract
- * explicit — processes continue by default, reviews and exits arrive
- * automatically, and `bash_control` exists to stop selected processes or
- * to block when the agent has no other work (never to poll per process).
+ * explicit — processes continue by default, exit results arrive
+ * automatically, and `bash_control` exists to stop selected processes,
+ * to inspect the cohort, or to block with a bounded wait when the agent
+ * has no other work (never to poll per process).
  *
  * Facts are reported factually: "no new output observed" is an
  * observation, never a claim like "no progress".
@@ -84,6 +85,67 @@ export function runningResultText(
 	return `${runningFactsText(entry, incremental, sessionCwd)}\n\n${unseenOutputText(incremental)}`
 }
 
+/** Evidence for one running process in a `bash_control` inspection/checkpoint response. */
+export interface ProcessEvidence {
+	handle: string
+	commandSummary: string
+	/** Total runtime so far (seconds). */
+	runtimeSeconds: number
+	/** Age of the most recent output in seconds; undefined when the process never produced output. */
+	lastOutputAgeSeconds: number | undefined
+	/** Consecutive wait checkpoints reported for this process. */
+	consecutiveCheckpoints: number
+	/** Safety budget remaining until the harness runtime limit (seconds, clamped ≥ 0). */
+	safetyRemainingSeconds: number
+	/** Session cwd (renders the process cwd only when it differs). */
+	sessionCwd?: string
+	/** Working directory the process was spawned in. */
+	cwd: string
+}
+
+/**
+ * Flat per-process evidence block for `bash_control` inspection and
+ * checkpoint responses: identity, runtime, output age, checkpoint streak,
+ * and remaining safety budget. Explicit units, concise labels.
+ */
+export function processEvidenceText(e: ProcessEvidence): string {
+	const lines = [`${e.handle}: ${e.commandSummary}`]
+	if (e.sessionCwd) {
+		const rel = relative(e.sessionCwd, e.cwd)
+		if (rel !== "") lines.push(` cwd: ${rel.startsWith("..") ? e.cwd : rel}`)
+	}
+	lines.push(`Running: ${e.runtimeSeconds}s`)
+	lines.push(
+		`Last output: ${e.lastOutputAgeSeconds === undefined ? "no output yet" : `${e.lastOutputAgeSeconds}s ago`}`,
+	)
+	lines.push(`Consecutive wait checkpoints: ${e.consecutiveCheckpoints}`)
+	lines.push(`Safety budget remaining: ${e.safetyRemainingSeconds}s`)
+	return lines.join("\n")
+}
+
+/** Header for a bounded-wait checkpoint response (requested vs actual time). */
+export function waitCheckpointHeaderText(requestedSeconds: number, waitedSeconds: number): string {
+	return `Wait checkpoint: requested ${requestedSeconds}s, waited ${waitedSeconds}s.`
+}
+
+/** Header for an immediate inspection response. */
+export function inspectionHeaderText(processCount: number): string {
+	return `Inspection of ${processCount} background bash process${processCount === 1 ? "" : "es"}:`
+}
+
+/**
+ * Reassessment guidance appended to a checkpoint response. A checkpoint is
+ * an opportunity to reassess, not an instruction to wait again — and
+ * silence alone never establishes a stall.
+ */
+export function checkpointGuidanceText(): string {
+	return (
+		"Reassess the runtime against the expected duration. Wait again if appropriate, " +
+		"inspect logs or process activity if uncertain, or stop work that is no longer needed. " +
+		"Silence alone does not establish that a command is stalled."
+	)
+}
+
 /** Terminal-state label shared by all terminal formatters. */
 export function terminalReasonText(state: ProcessState, exitCode: number | null, reason: string | null): string {
 	if (reason === SAFETY_LIMIT_REASON) return "killed by the harness safety limit"
@@ -155,12 +217,14 @@ export function terminalResultText(input: TerminalResultInput): string {
  */
 export function handoffGuidanceText(): string {
 	return (
-		"[This process now continues by default. You will receive its cohort review " +
-		"and its exit result automatically — do not poll it. Do independent work " +
-		"with the other tools now, avoiding commands or edits that could conflict " +
-		"with it (same files, package managers, ports, generated output). Call " +
-		"bash_control only to stop specific handles, or with wait: true when you " +
-		"genuinely have no other work until something changes. Intentional " +
+		"[This process now continues by default. Its exit result will be delivered " +
+		"automatically — do not poll it. Do independent work with the other " +
+		"tools now, avoiding commands or edits that could conflict with it (same " +
+		"files, package managers, ports, generated output). Call bash_control to " +
+		"inspect the cohort (wait: false), to stop specific handles (stop_handles), " +
+		"or with wait: true when you genuinely have no other work until something " +
+		"changes — an explicit wait returns at the first exit or a bounded " +
+		"checkpoint (five minutes by default, ten at most). Intentional " +
 		"servers/watchers that must outlive the session belong in daemon management.]"
 	)
 }

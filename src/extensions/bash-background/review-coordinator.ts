@@ -1,58 +1,70 @@
 /**
- * Session review coordinator for background bash.
+ * Cohort lifecycle coordinator for background bash.
  *
- * Owns the ONE scheduling clock for the whole background-bash cohort of a
- * session, so the number of running processes never multiplies the number
- * of model review turns. Two distinct timer concepts live here:
+ * Owns per-command handoff deadlines and the bounded checkpoint waits of
+ * explicit `bash_control(wait: true)` calls. There is NO recurring clock:
+ * while the agent does independent work, nothing wakes the model — exits
+ * are delivered by the extension, and time only passes for a wait that
+ * the model explicitly requested.
  *
- *  - Initial handoff (≤ `handoffSeconds`, default 15s): a one-time,
+ *  - Initial handoff (≤ `handoffSeconds`, default 2s): a one-time,
  *    per-command deadline for the `bash` tool call that spawned the
  *    process. When the process is still running at the deadline, `bash`
- *    resolves with the handle and unseen output. Commands spawned while
- *    the cohort's first handoff is still pending share that deadline; a
- *    later joiner gets its own bounded handoff but NEVER creates or
- *    resets a recurring review timer.
- *  - Cohort review (every `reviewIntervalSeconds`, default 60s): one
- *    recurring clock for all tracked handles. The first handoff of a
- *    fresh cohort counts as review #1; the recurring schedule starts 60s
- *    after it. Joins, exits, and `bash_control` calls never postpone a
- *    scheduled review. At most one review can be pending at a time.
+ *    resolves with the handle and unseen output. Every command gets its
+ *    OWN handoff deadline — joiners never share or reset one.
+ *  - Cohort wait (`awaitCohortEvent`): blocks until the first cohort
+ *    exit (including joiners), the wait's bounded checkpoint (the
+ *    effective duration validated by the caller, capped at
+ *    `MAX_WAIT_SECONDS`), abort, or cohort disposal. The checkpoint
+ *    timer starts when the actual wait begins — after any requested
+ *    stops were applied — and joining handles never postpone it.
  *
- * A due review is delivered through, in priority order:
- *   1. an active `bash_control(wait: true)` call (resolves it), or
- *   2. the extension's `onReviewDue` callback, which piggybacks on the
- *      current turn or wakes an idle agent via `pi.sendMessage`.
+ * Exit observation uses ONE permanent `whenExited` continuation per
+ * tracked handle (registered on `handleSpawned`) that dispatches to the
+ * current handoff waiter and the current active wait. Sequential waits
+ * on the same long-lived command therefore never accumulate promise
+ * listeners.
  *
- * This module is intentionally free of any `ExtensionAPI` dependency:
- * message delivery is delegated to the injected `onReviewDue` callback so
- * the coordinator stays unit-testable with fake timers.
+ * The coordinator also owns the model-monitoring history for the cohort:
+ * consecutive-checkpoint streaks per process. A streak counts
+ * wait-timeout responses that reported the process; any inspection or
+ * cohort terminal-event response reported by `bash_control` resets it.
+ * Removing a handle deletes its history.
+ *
+ * This module is intentionally free of any `ExtensionAPI` dependency so
+ * it stays unit-testable with fake timers.
  */
 import type { ProcessRegistry } from "./process-registry.js"
 
 /** One-time per-command handoff deadline (seconds). */
-export const INITIAL_HANDOFF_SECONDS = 15
+export const INITIAL_HANDOFF_SECONDS = 2
 
-/** Recurring cohort review interval (seconds). Harness-owned, never model-set. */
-export const COHORT_REVIEW_INTERVAL_SECONDS = 60
+/** Default bounded wait duration (seconds) when `waitSeconds` is omitted. */
+export const DEFAULT_WAIT_SECONDS = 300
+
+/** Harness-enforced maximum wait duration (seconds) per call. */
+export const MAX_WAIT_SECONDS = 600
 
 export type HandoffResult = "exited" | "handoff" | "aborted"
 
-export type CohortWaitEvent = { kind: "exit"; handle: string } | { kind: "review" } | { kind: "aborted" }
+export type CohortWaitEvent =
+	| { kind: "exit"; handle: string }
+	| { kind: "checkpoint" }
+	| { kind: "aborted" }
+	| { kind: "empty" }
 
 export interface ReviewCoordinatorOptions {
 	registry: ProcessRegistry
-	/** Called when a recurring review is due and no active cohort wait claimed it. */
-	onReviewDue?: () => void
 	/** Test override for the initial handoff deadline (seconds). */
 	handoffSeconds?: number
-	/** Test override for the recurring review interval (seconds). */
-	reviewIntervalSeconds?: number
+	/** Test override for the default bounded wait duration (seconds). */
+	waitSeconds?: number
 }
 
 export interface ReviewCoordinator {
-	/** Join `handle` to the cohort. Starts the clock when the cohort was empty. */
+	/** Join `handle` to the cohort and observe its exit. */
 	handleSpawned(handle: string): void
-	/** Remove `handle` from the cohort. Resets the clock when the cohort empties. */
+	/** Remove `handle` from the cohort and forget its monitoring history. */
 	handleRemoved(handle: string): void
 	/**
 	 * Resolve when the freshly spawned `handle` reaches its one-time
@@ -66,24 +78,34 @@ export interface ReviewCoordinator {
 	 */
 	beginCohortWait(toolCallId: string): { ok: true } | { ok: false; error: string }
 	/**
-	 * Block until the first cohort exit, the next due review, or abort.
-	 * Must be paired with `beginCohortWait`/`endCohortWait`.
+	 * Block until the first cohort exit (joiners included), the bounded
+	 * checkpoint (starting NOW, for `waitSeconds` seconds), abort, or
+	 * cohort disposal. Must be paired with `beginCohortWait`/
+	 * `endCohortWait`.
 	 */
-	awaitCohortEvent(toolCallId: string, signal?: AbortSignal): Promise<CohortWaitEvent>
+	awaitCohortEvent(toolCallId: string, signal?: AbortSignal, waitSeconds?: number): Promise<CohortWaitEvent>
 	/** Release the cohort-wait slot without awaiting further events. */
 	endCohortWait(toolCallId: string): void
 	/** Whether a `bash_control(wait: true)` currently owns the wait slot. */
 	hasActiveWait(): boolean
-	/** Absolute time (ms) of the next recurring review, if scheduled. */
-	readonly nextReviewAtMs: number | undefined
-	/** Whether a due review is awaiting delivery. */
-	hasPendingReview(): boolean
-	/** Mark the pending review delivered (enqueue-to-model counts as delivery). */
-	reviewDelivered(): void
 	/** Number of handles currently in the cohort. */
 	readonly size: number
 	/** Snapshot of the handle ids currently in the cohort. */
 	handles(): string[]
+	/** Current consecutive-checkpoint streak for `handle` (0 when unknown). */
+	getCheckpointStreak(handle: string): number
+	/**
+	 * Commit a wait-timeout outcome: increment the streak of every
+	 * reported running process (only processes a checkpoint response
+	 * actually reported).
+	 */
+	commitWaitTimeout(reportedRunning: readonly string[]): void
+	/**
+	 * Commit an observation response (immediate inspection or a cohort
+	 * terminal-event response): reset the streak of every reported
+	 * running process.
+	 */
+	commitObservation(reportedRunning: readonly string[]): void
 	/** Cancel every timer and listener without resolving waiters. */
 	dispose(): void
 }
@@ -91,16 +113,12 @@ export interface ReviewCoordinator {
 export function createReviewCoordinator(options: ReviewCoordinatorOptions): ReviewCoordinator {
 	const registry = options.registry
 	const handoffSeconds = options.handoffSeconds ?? INITIAL_HANDOFF_SECONDS
-	const reviewIntervalSeconds = options.reviewIntervalSeconds ?? COHORT_REVIEW_INTERVAL_SECONDS
+	const defaultWaitSeconds = options.waitSeconds ?? DEFAULT_WAIT_SECONDS
 
 	const handles = new Set<string>()
-	// Shared first-handoff clock. While it is pending, every joiner shares
-	// it; when it fires, it counts as review #1 and arms the recurring clock.
-	let firstHandoffTimer: NodeJS.Timeout | undefined
-	// Recurring cohort review clock (undefined until the first handoff fires).
-	let reviewTimer: NodeJS.Timeout | undefined
-	let nextReviewAt: number | undefined
-	let pendingReview = false
+	// Consecutive-checkpoint streaks per tracked handle (model-monitoring
+	// history owned by the coordinator, deleted with the handle).
+	const checkpointStreaks = new Map<string, number>()
 
 	interface HandoffWaiter {
 		resolve: (result: HandoffResult) => void
@@ -116,70 +134,27 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 		resolve: (event: CohortWaitEvent) => void
 		cleanup: (() => void) | undefined
 		/**
-		 * Installed by `awaitCohortEvent`: the guarded entry point handle
-		 * exits resolve through. Undefined for a never-awaited slot and
-		 * cleared when the wait settles or is released, so late exit
-		 * callbacks of orphaned waits become no-ops.
+		 * Installed by `awaitCohortEvent`: the guarded entry point through
+		 * which handle exits, the checkpoint timer, and abort resolve the
+		 * wait. Undefined for a never-awaited slot and cleared when the
+		 * wait settles or is released, so late callbacks become no-ops.
 		 */
 		settle?: (event: CohortWaitEvent) => void
-		/** Handles whose exit is already wired to this wait. */
-		wiredHandles?: Set<string>
 	}
 	let activeWait: ActiveWait | undefined
 
-	function clearFirstHandoffTimer(): void {
-		if (firstHandoffTimer) {
-			clearTimeout(firstHandoffTimer)
-			firstHandoffTimer = undefined
-		}
-	}
-
-	function clearReviewTimer(): void {
-		if (reviewTimer) {
-			clearTimeout(reviewTimer)
-			reviewTimer = undefined
-		}
-		nextReviewAt = undefined
-	}
-
-	function armRecurringReview(): void {
-		clearReviewTimer()
-		nextReviewAt = Date.now() + reviewIntervalSeconds * 1000
-		reviewTimer = setTimeout(fireReview, reviewIntervalSeconds * 1000)
-		reviewTimer.unref?.()
-	}
-
-	function fireReview(): void {
-		reviewTimer = undefined
-		if (handles.size === 0) {
-			nextReviewAt = undefined
-			return
-		}
-		// Keep the cadence anchored to fire time: joins/exits/waits never
-		// postpone the next scheduled review.
-		armRecurringReview()
-		// At most one outstanding review: a tick while the previous review
-		// is still pending must not enqueue another one.
-		if (pendingReview) return
-		pendingReview = true
-		if (activeWait) {
-			// An active bash_control(wait:true) claims the review — resolving
-			// the wait IS the delivery, so the pending flag clears here.
-			pendingReview = false
-			resolveActiveWait({ kind: "review" })
-			return
-		}
-		options.onReviewDue?.()
-	}
-
-	function resolveActiveWait(event: CohortWaitEvent): void {
-		const wait = activeWait
-		if (!wait) return
-		activeWait = undefined
-		// wait.resolve is `settle` once awaitCohortEvent installed it; settle
-		// runs the cleanup callbacks itself. Only the never-awaited noop
-		// resolve path needs the explicit cleanup below.
-		wait.resolve(event)
+	/**
+	 * Dispatch one handle's natural exit to its current handoff waiter and
+	 * the current active wait. Registered exactly once per handle (on
+	 * `handleSpawned`) so repeated waits never accumulate `whenExited`
+	 * continuations.
+	 */
+	function notifyExit(handle: string): void {
+		const waiter = handoffWaiters.get(handle)
+		if (waiter) settleHandoffWaiter(handle, waiter, "exited")
+		// Only a handle still IN the cohort resolves the active wait — a
+		// handle removed by a concurrent collection belongs to that call.
+		if (handles.has(handle)) activeWait?.settle?.({ kind: "exit", handle })
 	}
 
 	function settleHandoffWaiter(handle: string, waiter: HandoffWaiter, result: HandoffResult): void {
@@ -191,57 +166,30 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 		waiter.resolve(result)
 	}
 
-	function fireSharedFirstHandoff(): void {
-		firstHandoffTimer = undefined
-		if (handles.size === 0) return
-		// The first handoff counts as the cohort's first review; the
-		// recurring clock starts `reviewIntervalSeconds` after it.
-		armRecurringReview()
-		for (const [handle, waiter] of [...handoffWaiters]) {
-			settleHandoffWaiter(handle, waiter, "handoff")
-		}
-	}
-
-	/**
-	 * Wire one handle's exit to a live cohort wait. Idempotent per wait:
-	 * each handle resolves the current wait at most once, and a settled or
-	 * released wait ignores late firings via its settle guard.
-	 */
-	function wireExitToWait(handle: string, wait: ActiveWait): void {
-		wait.wiredHandles ??= new Set()
-		if (wait.wiredHandles.has(handle)) return
-		wait.wiredHandles.add(handle)
+	function handleSpawned(handle: string): void {
+		const wasTracked = handles.has(handle)
+		handles.add(handle)
+		if (wasTracked) return
+		// One permanent exit observer per handle: dispatches to the current
+		// handoff waiter and the current active wait whenever the process
+		// ends (natural exit, stop, safety limit — any exec settlement).
 		void registry
 			.whenExited(handle)
-			.then(() => wait.settle?.({ kind: "exit", handle }))
-			.catch(() => wait.settle?.({ kind: "exit", handle }))
-	}
-
-	function handleSpawned(handle: string): void {
-		const cohortWasEmpty = handles.size === 0
-		handles.add(handle)
-		// A handle spawned while a cohort wait is blocking joins that wait:
-		// its exit resolves the in-flight wait like any tracked exit.
-		if (activeWait?.settle) wireExitToWait(handle, activeWait)
-		if (!cohortWasEmpty) return
-		// Fresh cohort: the first command's handoff IS review #1. Arm the
-		// shared clock; do not arm a second review timer.
-		clearReviewTimer()
-		pendingReview = false
-		firstHandoffTimer = setTimeout(fireSharedFirstHandoff, handoffSeconds * 1000)
-		firstHandoffTimer.unref?.()
+			.then(() => notifyExit(handle))
+			.catch(() => notifyExit(handle))
 	}
 
 	function handleRemoved(handle: string): void {
 		handles.delete(handle)
+		checkpointStreaks.delete(handle)
 		const waiter = handoffWaiters.get(handle)
 		if (waiter) settleHandoffWaiter(handle, waiter, "exited")
-		if (handles.size > 0) return
-		// Empty cohort: cancel the clock and reset the cycle so the next
-		// long-running process starts a fresh handoff/review cycle.
-		clearFirstHandoffTimer()
-		clearReviewTimer()
-		pendingReview = false
+		// Removing the last handle must not strand a waiter until its
+		// deadline: settle it now. If the wait already resolved on the
+		// handle's exit, the settle guard makes this a no-op.
+		if (handles.size === 0 && activeWait?.settle) {
+			activeWait.settle({ kind: "empty" })
+		}
 	}
 
 	function awaitInitialHandoff(handle: string, signal?: AbortSignal): Promise<HandoffResult> {
@@ -271,20 +219,10 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 			signal.addEventListener("abort", waiter.onAbort, { once: true })
 		}
 
-		// Process exit always wins over the handoff clock.
-		void registry
-			.whenExited(handle)
-			.then(() => settleHandoffWaiter(handle, waiter, "exited"))
-			.catch(() => settleHandoffWaiter(handle, waiter, "exited"))
-
-		// While the cohort's first handoff clock is pending, this command
-		// shares it (fireSharedFirstHandoff settles this waiter). A later
-		// joiner during the recurring-review phase gets its own bounded
-		// one-time handoff timer.
-		if (!firstHandoffTimer) {
-			waiter.timer = setTimeout(() => settleHandoffWaiter(handle, waiter, "handoff"), handoffSeconds * 1000)
-			waiter.timer.unref?.()
-		}
+		// Process exit always wins over the handoff clock (dispatched by the
+		// handle's permanent exit observer via notifyExit).
+		waiter.timer = setTimeout(() => settleHandoffWaiter(handle, waiter, "handoff"), handoffSeconds * 1000)
+		waiter.timer.unref?.()
 
 		return promise
 	}
@@ -300,11 +238,16 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 		return { ok: true }
 	}
 
-	function awaitCohortEvent(toolCallId: string, signal?: AbortSignal): Promise<CohortWaitEvent> {
+	function awaitCohortEvent(toolCallId: string, signal?: AbortSignal, waitSeconds?: number): Promise<CohortWaitEvent> {
 		if (!activeWait || activeWait.toolCallId !== toolCallId) {
 			return Promise.resolve({ kind: "aborted" })
 		}
 		const wait = activeWait
+		// The caller validated the duration (finite, positive, capped at
+		// MAX_WAIT_SECONDS by the tool); schedule it directly so fractional
+		// durations keep their exact timing — no flooring, no one-second
+		// minimum. Only an omitted duration falls back to the default.
+		const effectiveSeconds = waitSeconds ?? defaultWaitSeconds
 		let resolvePromise: (event: CohortWaitEvent) => void = () => {}
 		const promise = new Promise<CohortWaitEvent>((resolve) => {
 			resolvePromise = resolve
@@ -327,33 +270,40 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 			wait.settle = undefined
 			for (const cleanup of cleanups) cleanup()
 		}
-		// Coordinator-level resolution paths (fireReview, dispose) and handle
-		// exits both end at the same settled guard.
 		wait.resolve = (event: CohortWaitEvent) => settle(event)
 		wait.settle = (event: CohortWaitEvent) => settle(event)
 
 		// Wire abort.
-		let onAbort: (() => void) | undefined
 		if (signal) {
 			if (signal.aborted) {
 				settle({ kind: "aborted" })
 				return promise
 			}
-			onAbort = () => settle({ kind: "aborted" })
+			const onAbort = () => settle({ kind: "aborted" })
 			signal.addEventListener("abort", onAbort, { once: true })
-			cleanups.push(() => signal.removeEventListener("abort", onAbort as () => void))
+			cleanups.push(() => signal.removeEventListener("abort", onAbort))
 		}
 
-		// Wire every currently tracked handle's exit; handles spawned DURING
-		// the wait are wired by handleSpawned, so a joiner's exit resolves
-		// this wait too (ownership is coordinated by the bash-control
-		// extension's claim table).
+		// A handle that already reached a terminal state before the wait
+		// began (its exit observer fired with no active wait) resolves the
+		// wait immediately instead of waiting for the checkpoint.
 		for (const handle of handles) {
-			wireExitToWait(handle, wait)
+			const entry = registry.getEntry(handle)
+			if (entry && entry.state !== "running") {
+				settle({ kind: "exit", handle })
+				return promise
+			}
 		}
 
-		// If a review fires while this wait is active, fireReview resolves it
-		// via resolveActiveWait — which calls wait.resolve → settle.
+		// The bounded checkpoint timer starts when the actual wait begins
+		// (the caller applied requested stops before claiming the slot).
+		// Joining handles never restart or postpone it.
+		const checkpointTimer = setTimeout(() => settle({ kind: "checkpoint" }), effectiveSeconds * 1000)
+		checkpointTimer.unref?.()
+		cleanups.push(() => clearTimeout(checkpointTimer))
+
+		// Exits of current handles AND joiners resolve through the handles'
+		// permanent exit observers (notifyExit → wait.settle).
 
 		return promise
 	}
@@ -363,7 +313,8 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 		if (wait?.toolCallId !== toolCallId) return
 		activeWait = undefined
 		// Mark the wait settled so late exit/abort callbacks cannot resolve
-		// the orphaned promise, and remove its signal listener.
+		// the orphaned promise, and run its cleanups (checkpoint timer,
+		// abort listener).
 		wait?.cleanup?.()
 	}
 
@@ -377,30 +328,40 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 		hasActiveWait() {
 			return activeWait !== undefined
 		},
-		get nextReviewAtMs() {
-			return nextReviewAt
-		},
-		hasPendingReview() {
-			return pendingReview
-		},
-		reviewDelivered() {
-			pendingReview = false
-		},
 		get size() {
 			return handles.size
 		},
 		handles() {
 			return [...handles]
 		},
+		getCheckpointStreak(handle: string): number {
+			return checkpointStreaks.get(handle) ?? 0
+		},
+		commitWaitTimeout(reportedRunning: readonly string[]): void {
+			for (const handle of reportedRunning) {
+				if (!handles.has(handle)) continue
+				checkpointStreaks.set(handle, (checkpointStreaks.get(handle) ?? 0) + 1)
+			}
+		},
+		commitObservation(reportedRunning: readonly string[]): void {
+			for (const handle of reportedRunning) {
+				checkpointStreaks.delete(handle)
+			}
+		},
 		dispose() {
-			clearFirstHandoffTimer()
-			clearReviewTimer()
 			for (const [handle, waiter] of [...handoffWaiters]) {
 				settleHandoffWaiter(handle, waiter, "exited")
 			}
-			resolveActiveWait({ kind: "aborted" })
+			if (activeWait) {
+				const wait = activeWait
+				activeWait = undefined
+				// Resolve through the wait's guarded settle entry point: it runs
+				// the cleanups itself. (Calling cleanup first would mark the
+				// wait settled and orphan the promise instead of resolving it.)
+				wait.resolve({ kind: "aborted" })
+			}
 			handles.clear()
-			pendingReview = false
+			checkpointStreaks.clear()
 		},
 	}
 }
