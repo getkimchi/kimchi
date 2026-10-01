@@ -1357,7 +1357,10 @@ export class KimchiAcpAgent implements Agent {
 					if (isHiddenToolCall(toolCall.name, toolCall.arguments)) {
 						// Arguments revealed the call as hidden only at stream end (the
 						// start event's partial arguments couldn't see it yet) — retire
-						// the pending card that went out early.
+						// the pending card that went out early. retireToolCall only
+						// deletes keyed state (no id allocation, no emission), so this
+						// is also safe for calls that were hidden at toolcall_start
+						// and never announced.
 						turn.hiddenToolCallIds.add(toolCall.id)
 						this.retireToolCall(entry, turn, toolCall.id)
 						return

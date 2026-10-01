@@ -4204,6 +4204,114 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		expect(updates.filter((u) => u.update.sessionUpdate === "tool_call_update")).toHaveLength(0)
 	})
 
+	// Hidden at start, still hidden at end: the retirement at toolcall_end is a
+	// no-op for never-announced ids — no stray update for a card the client
+	// never saw.
+	it("emits nothing when a call hidden at toolcall_start stays hidden at toolcall_end", async () => {
+		const hiddenArgs = { description: "internal", visibility: "system" }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-hidden-1", name: "Agent", arguments: hiddenArgs }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 0,
+					toolCall: { type: "toolCall", id: "tc-hidden-1", name: "Agent", arguments: hiddenArgs },
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-hidden-1", name: "Agent", arguments: hiddenArgs }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-hidden-1", toolName: "Agent", args: hiddenArgs })
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-hidden-1",
+				toolName: "Agent",
+				result: { content: [{ type: "text", text: "done" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		expect(updates.filter((u) => u.update.sessionUpdate === "tool_call")).toHaveLength(0)
+		expect(updates.filter((u) => u.update.sessionUpdate === "tool_call_update")).toHaveLength(0)
+	})
+
+	// Announced with empty partial args, revealed as hidden only at toolcall_end:
+	// the pending card goes out (unavoidable — args weren't known), but no
+	// further updates and execution events stay suppressed.
+	it("withdraws an announced call revealed as hidden at toolcall_end", async () => {
+		const fullArgs = { description: "internal", visibility: "system" }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-hidden-2", name: "Agent", arguments: {} }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 0,
+					toolCall: { type: "toolCall", id: "tc-hidden-2", name: "Agent", arguments: fullArgs },
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-hidden-2", name: "Agent", arguments: fullArgs }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-hidden-2", toolName: "Agent", args: fullArgs })
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-hidden-2",
+				toolName: "Agent",
+				result: { content: [{ type: "text", text: "done" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(toolCalls).toHaveLength(1)
+		expect(toolCalls[0].update).toMatchObject({ status: "pending", _meta: { piToolCallId: "tc-hidden-2" } })
+		expect(updates.filter((u) => u.update.sessionUpdate === "tool_call_update")).toHaveLength(0)
+	})
+
 	// Back-compat: providers that don't emit toolcall_start must still get the
 	// original behavior — tool_execution_start alone emits tool_call (in_progress).
 	it("emits tool_call with status='in_progress' when tool_execution_start fires without a prior toolcall_start", async () => {
