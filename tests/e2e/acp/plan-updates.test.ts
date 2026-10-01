@@ -298,6 +298,15 @@ describe("ACP integration — plan updates from todo writes", () => {
 			// would consume the next scripted model response and start the step
 			// early (this was the CI flake: an 8s deadline fired while the kick
 			// was merely slow on a loaded runner).
+			//
+			// The deadline here must be generous: if it fires and we fall through
+			// to the manual "Continue the Ferment" prompt, that prompt consumes a
+			// scripted response and skews the script — the session can race ahead
+			// to the step-start response before the pending phase snapshot is ever
+			// observed, which fails the assertion below. A slow CI runner needs
+			// enough headroom that the kick path wins instead. 20s = 2.5× the
+			// observed-fastest kick; the unbounded kick fallback still covers
+			// anything beyond it.
 			const kickIsStreaming = () =>
 				fixture.client.sessionUpdates.some(
 					(u) =>
@@ -312,7 +321,7 @@ describe("ACP integration — plan updates from todo writes", () => {
 				sessionId,
 				stepIsPending,
 				"Ferment phase Todo snapshot did not arrive",
-				8_000,
+				20_000,
 			)
 				.catch(async () => {
 					if (kickIsStreaming()) {

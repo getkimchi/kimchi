@@ -69,6 +69,7 @@ import { registerModelRolesCommand } from "../orchestration/model-roles-command.
 import { emitSteerFired, isSteerDisabled } from "../steer-events.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
+import { hasUserLoop } from "./session-user-loop.js"
 import {
 	buildSystemPrompt,
 	DELEGATION_TOOL_NAMES,
@@ -737,6 +738,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				roles,
 				customConfigs,
 				sessionId,
+				hasUserLoop: hasUserLoop(),
 			})
 
 			// The rebuilt prompt replaces pi's base prompt entirely, which would
