@@ -2,6 +2,21 @@ name: MCP E2E
 
 on:
   pull_request:
+    # Only root/.github markdown: *.md under src/ and resources/ ships in the binary.
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.github/**.md'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'kimchi.png'
+      - 'benchmark/**'
+      - 'docker/**'
+      - 'test-cases/**'
+      - 'src/**/*.test.ts'
+      - 'tests/unit/**'
+      - 'tests/smoke/**'
   workflow_dispatch:
 
 permissions:
