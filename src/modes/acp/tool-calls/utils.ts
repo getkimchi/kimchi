@@ -34,6 +34,8 @@ const TOOL_KINDS: Record<string, ToolKind> = {
 // that argument were the title, so non-file tools (lsp_*, debug_*, daemon, …)
 // showed a raw argument in place of the tool name. Only the tools listed here
 // get an argument-derived title; everything else falls back to the tool name.
+// Legacy alias first: providers historically emit `file_path` (the original
+// pre-refactor precedence), schema-conformant `path` as fallback.
 const TITLE_ARGS: Record<string, string[]> = {
 	bash: ["command"],
 	powershell: ["command"],
@@ -67,7 +69,7 @@ export function describeToolCall(
 	// doesn't blow up client UIs (locations[].path keeps the full value for
 	// clients that want it).
 	const rawTitle = targeted ?? toolName
-	const locationPath = LOCATION_TOOLS.has(toolName) ? (asString(a.file_path) ?? asString(a.path)) : undefined
+	const locationPath = LOCATION_TOOLS.has(toolName) ? asString(a.file_path) || asString(a.path) : undefined
 	return {
 		title: truncate(rawTitle, 80),
 		kind: TOOL_KINDS[toolName] ?? "other",
