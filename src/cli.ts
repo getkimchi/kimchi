@@ -35,6 +35,7 @@ import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import "./session-selector-adapter.js"
 import {
+	applyTuiEnvOverrides,
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
 	ensureHideThinkingBlockDefault,
@@ -133,6 +134,7 @@ import shellProfileMigrationExtension from "./extensions/shell-profile-migration
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
+import statusExtension from "./extensions/status/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
@@ -369,6 +371,12 @@ try {
 		// is unnecessary (idempotent) but loadConfig below depends on it.
 
 		let config = loadConfig()
+
+		// Map tui.wheelScrollLines onto KIMCHI_WHEEL_SCROLL_LINES before any
+		// interactive bootstrap: the patched pi-tui TuiAltScreen constructor
+		// reads the env var once at construction (later in startup), so this
+		// ordering is load-bearing.
+		applyTuiEnvOverrides(config)
 
 		const envKey = captureApiKeyFromEnvironment()
 
@@ -684,6 +692,7 @@ try {
 			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,
+			statusExtension,
 			budgetCommandExtension,
 			branchCommandExtension,
 			...terminalUiExtensionFactories,

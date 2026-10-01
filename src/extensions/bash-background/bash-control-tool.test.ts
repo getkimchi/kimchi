@@ -20,7 +20,7 @@ interface FakeOps extends BashOperations {
 	emit(data: Buffer | string): void
 }
 
-function createFakeOps(): FakeOps {
+function createFakeOps(settleOnAbort = true): FakeOps {
 	let onData: (data: Buffer) => void = () => {}
 	let settle: (r: { exitCode: number | null }) => void
 	let rejectExec: (err: Error) => void
@@ -42,7 +42,7 @@ function createFakeOps(): FakeOps {
 			ops.lastTimeout = opts.timeout
 			ops.lastSignal = opts.signal
 			onData = opts.onData
-			if (opts.signal) {
+			if (opts.signal && settleOnAbort) {
 				opts.signal.addEventListener("abort", () => rejectExec(new Error("aborted")), { once: true })
 			}
 			return promise
@@ -152,6 +152,24 @@ it("checkin_interval combined with extend_seconds applies both", async () => {
 })
 
 describe("bash_control — action 'continue'", () => {
+	it.each([true, false])("replays completion after removal (already exited: %s)", async (alreadyExited) => {
+		vi.useFakeTimers()
+		const { ops, registry, tool, handle } = setup()
+		ops.emit("hi\n".repeat(6))
+		if (alreadyExited) await ops.exit(0)
+		const execution = callExecute(tool, { handle, action: "continue" })
+		if (!alreadyExited) await ops.exit(0)
+		const final = await execution
+		expect(registry.size).toBe(0)
+		expect(registry.listDisplaySnapshots()).toEqual([])
+		for (let poll = 0; poll < 2; poll++) {
+			const replay = await callExecute(tool, { handle, action: "continue" })
+			expect(replay).toEqual(final)
+		}
+		await registry.shutdown()
+		expect((await callExecute(tool, { handle, action: "continue" })).details.reason).toBe("unknown-handle")
+	})
+
 	it("re-arms the next checkin and returns tail output + handle", async () => {
 		vi.useFakeTimers()
 		const { ops, tool, handle } = setup()
@@ -275,5 +293,132 @@ describe("bash_control — error cases", () => {
 		expect(result.details.exited).toBe(true)
 		expect(result.details.reason).toBe("unknown-handle")
 		expect((result.content[0] as { text: string }).text).toContain("unknown handle")
+	})
+})
+
+describe("control visibility", () => {
+	it("replays truncated output and its saved-output link after removal", async () => {
+		const { ops, registry, tool, handle } = setup()
+		ops.emit("x".repeat(60_000))
+		await ops.exit(0)
+		const final = await callExecute(tool, { handle, action: "continue" })
+		const replay = await callExecute(tool, { handle, action: "continue" })
+		expect(replay.content).toEqual(final.content)
+		expect(replay.details.truncation).toEqual(final.details.truncation)
+		expect(replay.details.truncation?.truncated).toBe(true)
+		expect(replay.details.fullOutputPath).toBe(final.details.fullOutputPath)
+		expect(replay.details.fullOutputPath).toContain("pi-bash-")
+		await registry.shutdown()
+	})
+
+	it.each([
+		["exit", "Command exited with code 9"],
+		["aborted", "Command aborted"],
+		["deadline", "Command timed out after 120 seconds"],
+	])("repeated polling preserves %s failures and display metadata", async (reason, message) => {
+		const { ops, registry, tool, handle } = setup()
+		ops.emit("last output\n")
+		if (reason === "exit") await ops.exit(9)
+		else await registry.kill(handle, reason)
+		await expect(callExecute(tool, { handle, action: "continue" })).rejects.toThrow(message)
+		const onUpdate = vi.fn()
+		await expect(
+			tool.execute("repeat", { handle, action: "continue" }, undefined, onUpdate, undefined as never),
+		).rejects.toThrow(message)
+		expect(onUpdate.mock.lastCall?.[0].details.display).toMatchObject({ handle, output: "last output\n" })
+		expect(registry.size).toBe(0)
+		await registry.shutdown()
+	})
+
+	it("replays a stopped command without restarting it or crossing sessions", async () => {
+		const { ops, registry, tool, handle } = setup()
+		ops.emit("stopped output\n")
+		await callExecute(tool, { handle, action: "stop" })
+		for (const action of ["stop", "continue"] as const) {
+			const result = await callExecute(tool, { handle, action })
+			expect(result.details).toMatchObject({ exited: true, reason: "stop", display: { state: "stopped" } })
+			expect(result.content[0]).toMatchObject({ text: "stopped output\n" })
+		}
+		const otherRegistry = createProcessRegistry()
+		const otherTool = createBashControlToolDefinition(() => otherRegistry)
+		expect((await callExecute(otherTool, { handle, action: "continue" })).details.reason).toBe("unknown-handle")
+		await registry.shutdown()
+		await otherRegistry.shutdown()
+	})
+
+	it.each([true, false])("waits for stop output flush (stop before continue: %s)", async (alreadyStopped) => {
+		vi.useFakeTimers()
+		const ops = createFakeOps(false)
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "slow-stop", "/work", undefined, {
+			intervalSeconds: 1,
+			deadlineMs: Date.now() + 60_000,
+		})
+		const earlyStop = alreadyStopped ? registry.kill(handle) : undefined
+		const tool = createBashControlToolDefinition(() => registry)
+		const execution = callExecute(tool, { handle, action: "continue" })
+		const stopping = earlyStop ?? registry.kill(handle)
+		await vi.advanceTimersByTimeAsync(1_000)
+		ops.emit("flushed during stop")
+		await ops.exit(0)
+		await stopping
+		const result = await execution
+		expect(result.details.display).toMatchObject({
+			output: "flushed during stop",
+			state: "stopped",
+			finishedAt: expect.any(Number),
+		})
+		expect(result.content[0]).toMatchObject({ text: "flushed during stop" })
+	})
+
+	it.each([true, false])("retains metadata for a nonzero exit (already exited: %s)", async (alreadyExited) => {
+		vi.useFakeTimers()
+		const { ops, registry, tool, handle } = setup()
+		if (alreadyExited) {
+			await ops.exit(9)
+			await registry.whenExited(handle)
+		}
+		const onUpdate = vi.fn()
+		const execution = tool.execute("wait", { handle, action: "continue" }, undefined, onUpdate, undefined as never)
+		const failure = expect(execution).rejects.toThrow("Command exited with code 9")
+		if (!alreadyExited) await ops.exit(9)
+		await failure
+		expect(onUpdate.mock.lastCall?.[0].details).toMatchObject({
+			handle,
+			exited: true,
+			display: { handle, state: "exited", exitCode: 9, finishedAt: expect.any(Number) },
+		})
+		expect(registry.size).toBe(0)
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
+	it("captures a settled stop before removing the entry", async () => {
+		const { registry, tool, handle } = setup()
+		const result = await callExecute(tool, { handle, action: "stop" })
+		expect(result.details.display).toMatchObject({
+			handle,
+			state: "stopped",
+			reason: "stop",
+			finishedAt: expect.any(Number),
+		})
+		expect(registry.size).toBe(0)
+	})
+
+	it("streams the original command while waiting and persists its final identity", async () => {
+		vi.useFakeTimers()
+		const { ops, registry, tool, handle } = setup()
+		const onUpdate = vi.fn()
+		const execution = tool.execute("wait", { handle, action: "continue" }, undefined, onUpdate, undefined as never)
+		ops.emit("progress\n")
+		await vi.advanceTimersByTimeAsync(250)
+		expect(onUpdate.mock.lastCall?.[0]).toMatchObject({
+			content: [{ type: "text", text: "progress\n" }],
+			details: { display: { handle, command: "long-running", output: "progress\n", state: "running" } },
+		})
+		await ops.exit(0)
+		const result = await execution
+		expect(result.details).toMatchObject({ display: { handle, command: "long-running", state: "exited", exitCode: 0 } })
+		expect(registry.size).toBe(0)
+		expect(vi.getTimerCount()).toBe(0)
 	})
 })

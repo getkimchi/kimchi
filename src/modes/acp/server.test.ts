@@ -140,6 +140,7 @@ import {
 	getSessionPermissionFlagController,
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
+import { applyWriteTodos, clearTodoStore } from "../../extensions/todos/store.js"
 import { updateModelsConfig } from "../../models.js"
 import { ACP_LIFETIME_USAGE_META_KEY, ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
 import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
@@ -615,6 +616,39 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 		sessionId = res.sessionId
+	})
+
+	it("publishes todos written during extension startup before the plan subscription exists", async () => {
+		const startup = new FakeAgentSession("startup-todos")
+		const updates: SessionNotification[] = []
+		const conn = makeConn()
+		conn.sessionUpdate = async (notification) => {
+			updates.push(notification)
+		}
+		startup.bindExtensionsImpl = async () => {
+			applyWriteTodos({ todos: [{ content: "Write unit tests", status: "pending" }] }, startup.sessionId)
+		}
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(startup),
+		})
+		try {
+			await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+			expect(updates.filter(({ update }) => update.sessionUpdate === "plan")).toEqual([
+				{
+					sessionId: startup.sessionId,
+					update: {
+						sessionUpdate: "plan",
+						entries: [{ content: "Write unit tests", priority: "medium", status: "pending" }],
+						_meta: { "kimchi.dev": { scope: { kind: "global" } } },
+					},
+				},
+			])
+		} finally {
+			await localAgent.unstable_closeSession({ sessionId: startup.sessionId })
+			clearTodoStore(startup.sessionId)
+		}
 	})
 
 	// initialize() should declare image support based on cached models.json
@@ -3333,6 +3367,25 @@ describe("KimchiAcpAgent message_end text reconciliation", () => {
 		expect(updates.some((u) => u.update.sessionUpdate === "agent_message_chunk")).toBe(false)
 		expect(updates.some((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBe(false)
 	})
+
+	// The continuation-nudge blanking handler in prompt-enrichment.ts hides
+	// the hidden recovery response (including the done token) by zeroing
+	// both the message content and the event delta. ACP reads only the
+	// event delta, so a zeroed delta must produce no agent_message_chunk,
+	// and message_end must not re-emit the blanked block either.
+	it("emits nothing for zeroed deltas and a blanked message_end block", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitTextDelta(0, "")
+			emitTextDelta(0, "")
+			fake.emit(messageEndEvent([{ type: "text", text: "" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		expect(chunks()).toEqual([])
+	})
 })
 
 // Streaming tools (bash in particular) emit tool_execution_update with a
@@ -4072,6 +4125,244 @@ describe("KimchiAcpAgent tool execution stream", () => {
 				}),
 			}),
 		])
+	})
+
+	// toolcall_end carries the complete arguments — the pending card's rawInput
+	// (and derived title/locations) must reach the client before approval and
+	// tool_execution_start, so e.g. an edit's path is visible while the model
+	// is done generating but the call hasn't executed yet.
+	it("emits tool_call_update with complete rawInput at toolcall_end, before tool_execution_start", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-args-1", name: "edit", arguments: {} }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 0,
+					toolCall: {
+						type: "toolCall",
+						id: "tc-args-1",
+						name: "edit",
+						arguments: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+					},
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-args-1",
+								name: "edit",
+								arguments: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-args-1",
+				toolName: "edit",
+				args: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(toolCalls).toHaveLength(1)
+		const acpId = (toolCalls[0].update as { toolCallId: string }).toolCallId
+
+		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+		expect(toolCallUpdates).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					toolCallId: acpId,
+					status: "pending",
+					title: "/tmp/demo.ts",
+					locations: [{ path: "/tmp/demo.ts" }],
+					rawInput: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+					_meta: { piToolCallId: "tc-args-1" },
+				}),
+			}),
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					toolCallId: acpId,
+					status: "in_progress",
+					_meta: { piToolCallId: "tc-args-1" },
+				}),
+			}),
+		])
+	})
+
+	// Back-compat for providers that never emit toolcall_start: toolcall_end
+	// alone must not produce a stray update for a tool the client never saw.
+	it("ignores toolcall_end for an unannounced tool call", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 0,
+					toolCall: {
+						type: "toolCall",
+						id: "tc-args-2",
+						name: "edit",
+						arguments: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+					},
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-args-2",
+								name: "edit",
+								arguments: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		expect(updates.filter((u) => u.update.sessionUpdate === "tool_call")).toHaveLength(0)
+		expect(updates.filter((u) => u.update.sessionUpdate === "tool_call_update")).toHaveLength(0)
+	})
+
+	// Hidden at start, still hidden at end: the retirement at toolcall_end is a
+	// no-op for never-announced ids — no stray update for a card the client
+	// never saw.
+	it("emits nothing when a call hidden at toolcall_start stays hidden at toolcall_end", async () => {
+		const hiddenArgs = { description: "internal", visibility: "system" }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-hidden-1", name: "Agent", arguments: hiddenArgs }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 0,
+					toolCall: { type: "toolCall", id: "tc-hidden-1", name: "Agent", arguments: hiddenArgs },
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-hidden-1", name: "Agent", arguments: hiddenArgs }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-hidden-1", toolName: "Agent", args: hiddenArgs })
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-hidden-1",
+				toolName: "Agent",
+				result: { content: [{ type: "text", text: "done" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		expect(updates.filter((u) => u.update.sessionUpdate === "tool_call")).toHaveLength(0)
+		expect(updates.filter((u) => u.update.sessionUpdate === "tool_call_update")).toHaveLength(0)
+	})
+
+	// Announced with empty partial args, revealed as hidden only at toolcall_end:
+	// the pending card goes out (unavoidable — args weren't known), but no
+	// further updates and execution events stay suppressed.
+	it("withdraws an announced call revealed as hidden at toolcall_end", async () => {
+		const fullArgs = { description: "internal", visibility: "system" }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-hidden-2", name: "Agent", arguments: {} }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 0,
+					toolCall: { type: "toolCall", id: "tc-hidden-2", name: "Agent", arguments: fullArgs },
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-hidden-2", name: "Agent", arguments: fullArgs }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-hidden-2", toolName: "Agent", args: fullArgs })
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-hidden-2",
+				toolName: "Agent",
+				result: { content: [{ type: "text", text: "done" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(toolCalls).toHaveLength(1)
+		expect(toolCalls[0].update).toMatchObject({ status: "pending", _meta: { piToolCallId: "tc-hidden-2" } })
+		expect(updates.filter((u) => u.update.sessionUpdate === "tool_call_update")).toHaveLength(0)
 	})
 
 	// Back-compat: providers that don't emit toolcall_start must still get the
@@ -8503,7 +8794,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			result: { text: "html" },
 			expect: {
 				kind: "fetch",
-				title: "web_fetch",
+				title: "https://example.com",
 				status: "completed",
 				locations: [],
 			},

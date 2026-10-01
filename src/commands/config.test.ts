@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 vi.mock("../config.js", () => ({
 	readTelemetryConfig: vi.fn(),
 	writeTelemetryEnabled: vi.fn(),
+	writeTuiWheelScrollLines: vi.fn(),
 	loadConfig: vi.fn(),
 }))
 
@@ -19,7 +20,7 @@ vi.mock("../extensions/telemetry/pre-session.js", () => ({
 	sendPreSessionEvent: vi.fn(),
 }))
 
-import { loadConfig, readTelemetryConfig, writeTelemetryEnabled } from "../config.js"
+import { loadConfig, readTelemetryConfig, writeTelemetryEnabled, writeTuiWheelScrollLines } from "../config.js"
 import { withExperimentalFeatures } from "../extensions/experimental.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { runConfig } from "./config.js"
@@ -245,5 +246,121 @@ describe("kimchi config region", () => {
 
 		expect(exit).toBe(2)
 		expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Run "kimchi login" again to switch regions'))
+	})
+})
+
+describe("kimchi config set tui.wheelScrollLines", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.spyOn(console, "log").mockImplementation(() => {})
+		vi.spyOn(console, "warn").mockImplementation(() => {})
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
+	})
+
+	it("writes the value to global config", async () => {
+		const exit = await runConfig(["set", "tui.wheelScrollLines", "3"])
+
+		expect(exit).toBe(0)
+		expect(writeTuiWheelScrollLines).toHaveBeenCalledWith(3)
+	})
+
+	it.each(["0", "-2", "abc", "2.7", ""])("rejects invalid value %j (exit 2, no write)", async (raw) => {
+		vi.spyOn(console, "error").mockImplementation(() => {})
+
+		const exit = await runConfig(["set", "tui.wheelScrollLines", raw])
+
+		expect(exit).toBe(2)
+		expect(writeTuiWheelScrollLines).not.toHaveBeenCalled()
+	})
+
+	it("refuses unknown keys and lists the writable ones (exit 2)", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {
+			/* silence */
+		})
+
+		const exit = await runConfig(["set", "apiKey", "hunter2"])
+
+		expect(exit).toBe(2)
+		expect(writeTuiWheelScrollLines).not.toHaveBeenCalled()
+		expect(vi.mocked(console.error)).toHaveBeenCalledWith(expect.stringContaining('unknown or read-only key "apiKey"'))
+		expect(vi.mocked(console.error)).toHaveBeenCalledWith(expect.stringContaining("tui.wheelScrollLines"))
+	})
+
+	it("requires both key and value (exit 2)", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {
+			/* silence */
+		})
+
+		expect(await runConfig(["set", "tui.wheelScrollLines"])).toBe(2)
+		expect(await runConfig(["set"])).toBe(2)
+		expect(writeTuiWheelScrollLines).not.toHaveBeenCalled()
+	})
+
+	it("warns when the env override shadows the written value", async () => {
+		vi.stubEnv("KIMCHI_WHEEL_SCROLL_LINES", "5")
+
+		const exit = await runConfig(["set", "tui.wheelScrollLines", "3"])
+
+		expect(exit).toBe(0)
+		expect(writeTuiWheelScrollLines).toHaveBeenCalledWith(3)
+		expect(console.warn).toHaveBeenCalledWith(
+			expect.stringContaining("KIMCHI_WHEEL_SCROLL_LINES=5 is set and overrides this value"),
+		)
+	})
+})
+
+describe("kimchi config get tui.wheelScrollLines", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.spyOn(console, "log").mockImplementation(() => {})
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
+	})
+
+	it("shows the configured value from the merged config", async () => {
+		vi.mocked(loadConfig).mockReturnValue({ tui: { wheelScrollLines: 4 } } as ReturnType<typeof loadConfig>)
+
+		const exit = await runConfig(["get", "tui.wheelScrollLines"])
+
+		expect(exit).toBe(0)
+		expect(console.log).toHaveBeenCalledWith("tui.wheelScrollLines: 4 (from config)")
+	})
+
+	it("shows the default note when unset", async () => {
+		vi.mocked(loadConfig).mockReturnValue({} as ReturnType<typeof loadConfig>)
+
+		const exit = await runConfig(["get", "tui.wheelScrollLines"])
+
+		expect(exit).toBe(0)
+		expect(console.log).toHaveBeenCalledWith("tui.wheelScrollLines: unset (default 1) (from config)")
+	})
+
+	it("notes the env override when it is in effect", async () => {
+		vi.stubEnv("KIMCHI_WHEEL_SCROLL_LINES", "7")
+
+		const exit = await runConfig(["get", "tui.wheelScrollLines"])
+
+		expect(exit).toBe(0)
+		expect(console.log).toHaveBeenCalledWith(
+			"tui.wheelScrollLines: 7 (from KIMCHI_WHEEL_SCROLL_LINES, overrides config)",
+		)
+		expect(loadConfig).not.toHaveBeenCalled()
+	})
+
+	it("refuses unknown keys (exit 2)", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {
+			/* silence */
+		})
+
+		const exit = await runConfig(["get", "nope.nope"])
+
+		expect(exit).toBe(2)
 	})
 })

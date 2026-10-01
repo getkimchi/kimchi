@@ -39,7 +39,9 @@ export function getEnvironmentApiKey(): string | undefined {
 	return startupApiKey || process.env.KIMCHI_API_KEY || undefined
 }
 
-export function getApiKeySource(): "environment" | "config" {
+export type ApiKeySource = "environment" | "config"
+
+export function getApiKeySource(): ApiKeySource {
 	return getEnvironmentApiKey() ? "environment" : "config"
 }
 
@@ -188,6 +190,11 @@ export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {
 
 export type MigrationState = "done" | "skip-forever"
 
+export interface TuiConfig {
+	/** Wheel-scroll step (lines) for fullscreen (alt-screen) mode. Min 1; floored by the pi-tui clamp. */
+	wheelScrollLines?: number
+}
+
 export interface KimchiConfig {
 	apiKey: string
 	agentConfigDir: string
@@ -217,6 +224,7 @@ export interface KimchiConfig {
 	/** Memory embedding overrides — model and vector dimensions (see docs/memory-extension.md). */
 	memoryEmbedding?: { model?: string; dims?: number }
 	memoryExtraction?: { model?: string }
+	tui?: TuiConfig
 }
 
 /**
@@ -256,6 +264,7 @@ function readConfigExtras(configPath: string): {
 	redaction?: { enabled?: boolean }
 	memoryEmbedding?: { model?: string; dims?: number }
 	memoryExtraction?: { model?: string }
+	tui?: TuiConfig
 } {
 	try {
 		const raw = readFileSync(configPath, "utf-8")
@@ -354,6 +363,22 @@ function readConfigExtras(configPath: string): {
 			memoryExtraction = { model: mx.model }
 		}
 
+		// Read TUI config. Invalid values are ignored (fall back to the
+		// pi-tui default of 1), matching the redaction/memoryEmbedding
+		// parse conventions. Fractional values pass through here — the pi-tui
+		// clamp floors them.
+		let tui: TuiConfig | undefined
+		const tc = parsed.tui
+		if (tc && typeof tc === "object") {
+			const wheelScrollLines =
+				typeof tc.wheelScrollLines === "number" && Number.isFinite(tc.wheelScrollLines) && tc.wheelScrollLines >= 1
+					? tc.wheelScrollLines
+					: undefined
+			if (wheelScrollLines !== undefined) {
+				tui = { wheelScrollLines }
+			}
+		}
+
 		return {
 			apiKey,
 			llmEndpoint,
@@ -369,6 +394,7 @@ function readConfigExtras(configPath: string): {
 			redaction,
 			memoryEmbedding,
 			memoryExtraction,
+			tui,
 		}
 	} catch {
 		return {}
@@ -594,6 +620,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		redaction: projectExtras.redaction ?? globalExtras.redaction,
 		memoryEmbedding: projectExtras.memoryEmbedding ?? globalExtras.memoryEmbedding,
 		memoryExtraction: projectExtras.memoryExtraction ?? globalExtras.memoryExtraction,
+		tui: projectExtras.tui ?? globalExtras.tui,
 	}
 
 	// Region is account-level, so only the global config may set it.
@@ -621,6 +648,21 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		redaction: extras.redaction,
 		memoryEmbedding: extras.memoryEmbedding,
 		memoryExtraction: extras.memoryExtraction,
+		tui: extras.tui,
+	}
+}
+
+/**
+ * Map TUI config onto the `KIMCHI_WHEEL_SCROLL_LINES` env var consumed by the
+ * patched pi-tui `TuiAltScreen` constructor. Env var already set wins over
+ * config (env > config > default). Must run before the interactive TUI is
+ * constructed — the patched constructor reads the env var once, so later
+ * changes do not apply without a restart.
+ */
+export function applyTuiEnvOverrides(config: KimchiConfig): void {
+	const lines = config.tui?.wheelScrollLines
+	if (lines !== undefined && process.env.KIMCHI_WHEEL_SCROLL_LINES === undefined) {
+		process.env.KIMCHI_WHEEL_SCROLL_LINES = String(lines)
 	}
 }
 
@@ -744,12 +786,21 @@ export function getConfiguredLegacyMcpKeys(options?: { configPath?: string; cwd?
 	return [...configured]
 }
 
+/**
+ * Read the API key persisted in config files, ignoring KIMCHI_API_KEY.
+ * Project config (trusted projects only) takes precedence over global — the
+ * same ordering loadConfig applies before the env override is merged in.
+ */
+export function getSavedApiKey(): string | undefined {
+	return (
+		(isProjectScopeAllowed()
+			? readApiKeyFromConfigFile(resolve(process.cwd(), ".kimchi", "config.json"))
+			: undefined) ?? readApiKeyFromConfigFile()
+	)
+}
+
 /** Explain an environment override without exposing either credential. */
-export function getApiKeyMismatchWarning(
-	savedKey = (isProjectScopeAllowed()
-		? readApiKeyFromConfigFile(resolve(process.cwd(), ".kimchi", "config.json"))
-		: undefined) ?? readApiKeyFromConfigFile(),
-): string | undefined {
+export function getApiKeyMismatchWarning(savedKey = getSavedApiKey()): string | undefined {
 	const envKey = getEnvironmentApiKey()
 	if (!envKey || !savedKey || envKey === savedKey) return undefined
 	return "KIMCHI_API_KEY in your environment differs from your saved key in config. Using the environment key."
@@ -1013,6 +1064,15 @@ export function writeTelemetryEnabled(enabled: boolean, configPath?: string): vo
 		const t = (raw.telemetry as Record<string, unknown> | undefined) ?? {}
 		t.enabled = enabled
 		raw.telemetry = t
+	})
+}
+
+export function writeTuiWheelScrollLines(lines: number, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateConfigFile(path, (raw) => {
+		const tui = raw.tui && typeof raw.tui === "object" && !Array.isArray(raw.tui) ? { ...raw.tui } : {}
+		;(tui as Record<string, unknown>).wheelScrollLines = lines
+		raw.tui = tui
 	})
 }
 

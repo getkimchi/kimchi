@@ -221,6 +221,28 @@ describe("hidden tool block rendering", () => {
 		expect(rendered).not.toContain("custom non-Agent renderer")
 	})
 
+	it("uses bash_control's custom call and result renderers", () => {
+		initTheme("default")
+		const tui = new TuiMainScreen(new ProcessTerminal())
+		vi.spyOn(tui, "requestRender").mockImplementation(() => {})
+		const component = new ToolExecutionComponent(
+			"bash_control",
+			"tc-control",
+			{ handle: "c1", action: "continue" },
+			{},
+			{
+				renderCall: () => new Text("Bash · Checking TypeScript", 0, 0),
+				renderResult: () => new Text("pnpm run typecheck\nlatest output", 0, 0),
+			} as never,
+			tui,
+			"/tmp",
+		)
+		component.updateResult({ content: [{ type: "text", text: "output" }], isError: false }, true)
+		const rendered = component.render(80).map(stripSgr).join("\n")
+		expect(rendered).toContain("Bash · Checking TypeScript")
+		expect(rendered).toContain("latest output")
+	})
+
 	it("keeps complete submitted plans in the transcript before results and after replay or collapse", () => {
 		const plan = `# Cache migration\n\n${Array.from({ length: 80 }, (_, index) => `- Requirement ${index + 1}`).join("\n")}`
 		const args = { plan }

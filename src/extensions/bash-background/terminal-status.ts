@@ -20,7 +20,11 @@ export function appendStatus(text: string, status: string): string {
  * The wording matters: `bash-timeout-guidance.ts` matches on
  * /Command timed out after (\d+) seconds/ to append actionable guidance.
  */
-export function throwIfTerminal(snapshot: TailSnapshot, output: string, deadlineSeconds: number): void {
+export function throwIfTerminal(
+	snapshot: Pick<TailSnapshot, "reason" | "exitCode">,
+	output: string,
+	deadlineSeconds: number,
+): void {
 	if (snapshot.reason === "aborted") {
 		throw new Error(appendStatus(output, "Command aborted"))
 	}

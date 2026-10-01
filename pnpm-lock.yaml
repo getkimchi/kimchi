@@ -16,7 +16,7 @@ patchedDependencies:
     hash: e3b2fe6fe3549de2865c0699335cd66dbdebbdbe506bc4e26e20537575cdaf7d
     path: patches/@earendil-works__pi-coding-agent@0.85.1.patch
   '@earendil-works/pi-tui@0.85.1':
-    hash: 1bc60a0766129acb8da6087526636e59a9ed127bf278e6adb2247b42b6e38c12
+    hash: 07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815
     path: patches/@earendil-works__pi-tui@0.85.1.patch
   pi-mcp-adapter@2.34.0:
     hash: 1420b1c4452e4acb67844e104304b089b73eb5a7eb8cab55226d14e0eff88ea7
@@ -43,10 +43,10 @@ importers:
         version: 0.85.1(patch_hash=e3b2fe6fe3549de2865c0699335cd66dbdebbdbe506bc4e26e20537575cdaf7d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-tui':
         specifier: 0.85.1
-        version: 0.85.1(patch_hash=1bc60a0766129acb8da6087526636e59a9ed127bf278e6adb2247b42b6e38c12)
+        version: 0.85.1(patch_hash=07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815)
       '@kimchi-dev/kimchi-workflows':
         specifier: 0.0.9
-        version: 0.0.9(@earendil-works/pi-coding-agent@0.85.1(patch_hash=e3b2fe6fe3549de2865c0699335cd66dbdebbdbe506bc4e26e20537575cdaf7d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=1bc60a0766129acb8da6087526636e59a9ed127bf278e6adb2247b42b6e38c12))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))
+        version: 0.0.9(@earendil-works/pi-coding-agent@0.85.1(patch_hash=e3b2fe6fe3549de2865c0699335cd66dbdebbdbe506bc4e26e20537575cdaf7d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))
       '@modelcontextprotocol/client':
         specifier: 2.0.0
         version: 2.0.0
@@ -94,7 +94,7 @@ importers:
         version: 10.2.0
       pi-mcp-adapter:
         specifier: 2.34.0
-        version: 2.34.0(patch_hash=1420b1c4452e4acb67844e104304b089b73eb5a7eb8cab55226d14e0eff88ea7)(@earendil-works/pi-ai@0.85.1(patch_hash=99288f84b8edd20e74893fb83ca49de935fc0c93de9a0643de705feaaffac550)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=1bc60a0766129acb8da6087526636e59a9ed127bf278e6adb2247b42b6e38c12))(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(typebox@1.3.7)(zod@4.4.3)
+        version: 2.34.0(patch_hash=1420b1c4452e4acb67844e104304b089b73eb5a7eb8cab55226d14e0eff88ea7)(@earendil-works/pi-ai@0.85.1(patch_hash=99288f84b8edd20e74893fb83ca49de935fc0c93de9a0643de705feaaffac550)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815))(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(typebox@1.3.7)(zod@4.4.3)
       proper-lockfile:
         specifier: ^4.1.2
         version: 4.1.2
@@ -3894,7 +3894,7 @@ snapshots:
       '@earendil-works/chord': 0.85.1
       '@earendil-works/pi-agent-core': 0.85.1(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-ai': 0.85.1(patch_hash=99288f84b8edd20e74893fb83ca49de935fc0c93de9a0643de705feaaffac550)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
-      '@earendil-works/pi-tui': 0.85.1(patch_hash=1bc60a0766129acb8da6087526636e59a9ed127bf278e6adb2247b42b6e38c12)
+      '@earendil-works/pi-tui': 0.85.1(patch_hash=07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815)
       '@silvia-odwyer/photon-node': 0.3.4
       chalk: 5.6.2
       cross-spawn: 7.0.6
@@ -3922,7 +3922,7 @@ snapshots:
 
   '@earendil-works/pi-telemetry@0.85.1': {}
 
-  '@earendil-works/pi-tui@0.85.1(patch_hash=1bc60a0766129acb8da6087526636e59a9ed127bf278e6adb2247b42b6e38c12)':
+  '@earendil-works/pi-tui@0.85.1(patch_hash=07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815)':
     dependencies:
       get-east-asian-width: 1.6.0
       marked: 18.0.5
@@ -4132,10 +4132,10 @@ snapshots:
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
-  '@kimchi-dev/kimchi-workflows@0.0.9(@earendil-works/pi-coding-agent@0.85.1(patch_hash=e3b2fe6fe3549de2865c0699335cd66dbdebbdbe506bc4e26e20537575cdaf7d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=1bc60a0766129acb8da6087526636e59a9ed127bf278e6adb2247b42b6e38c12))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))':
+  '@kimchi-dev/kimchi-workflows@0.0.9(@earendil-works/pi-coding-agent@0.85.1(patch_hash=e3b2fe6fe3549de2865c0699335cd66dbdebbdbe506bc4e26e20537575cdaf7d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))':
     dependencies:
       '@earendil-works/pi-coding-agent': 0.85.1(patch_hash=e3b2fe6fe3549de2865c0699335cd66dbdebbdbe506bc4e26e20537575cdaf7d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
-      '@earendil-works/pi-tui': 0.85.1(patch_hash=1bc60a0766129acb8da6087526636e59a9ed127bf278e6adb2247b42b6e38c12)
+      '@earendil-works/pi-tui': 0.85.1(patch_hash=07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815)
       '@types/node': 22.19.18
       cross-spawn: 7.0.6
       jiti: 2.7.0
@@ -5957,7 +5957,7 @@ snapshots:
 
   pgpass@1.0.6: {}
 
-  pi-mcp-adapter@2.34.0(patch_hash=1420b1c4452e4acb67844e104304b089b73eb5a7eb8cab55226d14e0eff88ea7)(@earendil-works/pi-ai@0.85.1(patch_hash=99288f84b8edd20e74893fb83ca49de935fc0c93de9a0643de705feaaffac550)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=1bc60a0766129acb8da6087526636e59a9ed127bf278e6adb2247b42b6e38c12))(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(typebox@1.3.7)(zod@4.4.3):
+  pi-mcp-adapter@2.34.0(patch_hash=1420b1c4452e4acb67844e104304b089b73eb5a7eb8cab55226d14e0eff88ea7)(@earendil-works/pi-ai@0.85.1(patch_hash=99288f84b8edd20e74893fb83ca49de935fc0c93de9a0643de705feaaffac550)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815))(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(typebox@1.3.7)(zod@4.4.3):
     dependencies:
       '@modelcontextprotocol/client': 2.0.0
       '@modelcontextprotocol/core': 2.0.0
@@ -5974,7 +5974,7 @@ snapshots:
       zod: 4.4.3
     optionalDependencies:
       '@earendil-works/pi-ai': 0.85.1(patch_hash=99288f84b8edd20e74893fb83ca49de935fc0c93de9a0643de705feaaffac550)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
-      '@earendil-works/pi-tui': 0.85.1(patch_hash=1bc60a0766129acb8da6087526636e59a9ed127bf278e6adb2247b42b6e38c12)
+      '@earendil-works/pi-tui': 0.85.1(patch_hash=07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815)
       typebox: 1.3.7
     transitivePeerDependencies:
       - '@modelcontextprotocol/sdk'

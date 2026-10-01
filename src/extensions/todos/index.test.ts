@@ -462,45 +462,28 @@ describe("early todo nudge", () => {
 			applyWriteTodos({ todos: [{ content: "long task", status: "in_progress" }] }, "session")
 
 			const stalenessCalls = () => steerCallsByReason(harness.sendMessage, "staleness")
-
-			// Below the first threshold: nothing.
-			for (let i = 0; i < 8; i++) {
+			const thresholds = [9, 17, 25]
+			for (let count = 1; count <= 30; count++) {
 				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+				expect(stalenessCalls()).toHaveLength(thresholds.filter((threshold) => threshold <= count).length)
 			}
-			expect(stalenessCalls()).toHaveLength(0)
-
-			// Ninth call crosses 9: exactly one steer, and no refire on later calls.
-			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-			expect(stalenessCalls()).toHaveLength(1)
-			expect((stalenessCalls()[0]?.[0] as { content: string }).content).toContain("9 changes since last update")
-			expect((stalenessCalls()[0]?.[0] as { content: string }).content).toMatch(/^<system-reminder>\n/)
-			expect(stalenessCalls()[0]?.[1]).toEqual({ deliverAs: "steer" })
-
-			for (let i = 0; i < 3; i++) {
-				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			for (const [index, threshold] of thresholds.entries()) {
+				const message = stalenessCalls()[index]?.[0] as { content: string }
+				expect(message.content).toContain(`${threshold} changes`)
+				expect(message.content).toMatch(/^<system-reminder>\n/)
+				expect(stalenessCalls()[index]?.[1]).toEqual({ deliverAs: "steer" })
 			}
-			expect(stalenessCalls()).toHaveLength(1)
-
-			// 17 and 25 crossings each fire once more.
-			for (let i = 0; i < 5; i++) {
-				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-			}
-			expect(stalenessCalls()).toHaveLength(2)
-			expect((stalenessCalls()[1]?.[0] as { content: string }).content).toContain("17 changes since last update")
-
-			for (let i = 0; i < 8; i++) {
-				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-			}
-			expect(stalenessCalls()).toHaveLength(3)
 			expect((stalenessCalls()[2]?.[0] as { content: string }).content).toContain("significantly stale")
 
-			// A todo write resets both the counter and the epoch: crossing 9
-			// again fires a fresh steer.
-			applyWriteTodos({ todos: [{ id: 1, content: "long task", status: "completed" }] }, "session")
-			for (let i = 0; i < 9; i++) {
+			// A todo write resets the counter and allows the nine-call reminder again.
+			applyWriteTodos(
+				{ todos: [{ id: 1, content: "long task", status: "in_progress", note: "Progress recorded" }] },
+				"session",
+			)
+			for (let count = 1; count <= 9; count++) {
 				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+				expect(stalenessCalls()).toHaveLength(3 + thresholds.filter((threshold) => threshold <= count).length)
 			}
-			expect(stalenessCalls()).toHaveLength(4)
 		})
 
 		it("does not fire when the current scope has no todos", async () => {

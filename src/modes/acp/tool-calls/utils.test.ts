@@ -226,22 +226,58 @@ describe("describeToolCall", () => {
 			expect: { title: "*.ts", kind: "search", locations: [] },
 		},
 		{
-			name: "web_fetch maps to fetch kind",
+			name: "web_fetch maps to fetch kind with url title",
 			toolName: "web_fetch",
 			args: { url: "https://example.com" },
-			expect: { title: "web_fetch", kind: "fetch", locations: [] },
+			expect: { title: "https://example.com", kind: "fetch", locations: [] },
 		},
 		{
-			name: "web_search maps to search kind",
+			name: "web_search maps to search kind with query title",
 			toolName: "web_search",
 			args: { query: "kimchi" },
-			expect: { title: "web_search", kind: "search", locations: [] },
+			expect: { title: "kimchi", kind: "search", locations: [] },
 		},
 		{
-			name: "Agent maps to think kind",
+			name: "Agent maps to think kind with description title",
+			toolName: "Agent",
+			args: { description: "scan codebase", prompt: "go", visibility: "user" },
+			expect: { title: "scan codebase", kind: "think", locations: [] },
+		},
+		{
+			name: "Agent without description falls back to tool name",
 			toolName: "Agent",
 			args: { prompt: "go", visibility: "user" },
 			expect: { title: "Agent", kind: "think", locations: [] },
+		},
+		{
+			name: "non-file tool with a path argument keeps the tool name as title but reports locations",
+			toolName: "lsp_definition",
+			args: { file_path: "/src/main.ts", line: 10, character: 5 },
+			expect: { title: "lsp_definition", kind: "other", locations: [{ path: "/src/main.ts" }] },
+		},
+		{
+			name: "non-file tool with a command argument keeps the tool name as title",
+			toolName: "daemon",
+			args: { command: "pnpm dev" },
+			expect: { title: "daemon", kind: "other", locations: [] },
+		},
+		{
+			name: "kind-other tool with a query argument (memory_search) keeps the tool name as title",
+			toolName: "memory_search",
+			args: { query: "auth" },
+			expect: { title: "memory_search", kind: "other", locations: [] },
+		},
+		{
+			name: "unmapped tool with a pattern argument keeps the tool name as title",
+			toolName: "mcp__github__search",
+			args: { pattern: "*.md" },
+			expect: { title: "mcp__github__search", kind: "other", locations: [] },
+		},
+		{
+			name: "bash_control (handle/action args) falls back to tool name",
+			toolName: "bash_control",
+			args: { handle: "abc123", action: "stop" },
+			expect: { title: "bash_control", kind: "other", locations: [] },
 		},
 		{
 			name: "unknown tool falls back to other kind",
@@ -279,10 +315,257 @@ describe("describeToolCall", () => {
 
 	for (const c of cases) {
 		it(c.name, () => {
-			const result = describeToolCall(c.toolName, c.args)
-			expect(result.title).toBe(c.expect.title)
-			expect(result.kind).toBe(c.expect.kind)
-			expect(result.locations).toEqual(c.expect.locations)
+			expect(describeToolCall(c.toolName, c.args)).toEqual(c.expect)
+		})
+	}
+})
+
+// Full ACP SessionUpdate shape per tool — realistic argument payloads as the
+// model actually emits them (see the tool schemas in pi-coding-agent's
+// core/tools and src/extensions/*), asserted with exact equality so a
+// schema change on either side fails loudly.
+describe("buildToolCall per-tool ACP shape", () => {
+	const cases: Array<{
+		toolName: string
+		rawInput: Record<string, unknown>
+		expect: Record<string, unknown>
+	}> = [
+		{
+			toolName: "bash",
+			rawInput: { command: "pnpm run build", timeout: 120 },
+			expect: {
+				sessionUpdate: "tool_call",
+				toolCallId: "kt.bash.0",
+				status: "pending",
+				title: "pnpm run build",
+				kind: "execute",
+				locations: [],
+				rawInput: { command: "pnpm run build", timeout: 120 },
+				_meta: { piToolCallId: "tc-1" },
+			},
+		},
+		{
+			toolName: "powershell",
+			rawInput: { command: "Get-ChildItem" },
+			expect: {
+				sessionUpdate: "tool_call",
+				toolCallId: "kt.powershell.0",
+				status: "pending",
+				title: "Get-ChildItem",
+				kind: "execute",
+				locations: [],
+				rawInput: { command: "Get-ChildItem" },
+				_meta: { piToolCallId: "tc-1" },
+			},
+		},
+		{
+			toolName: "read",
+			rawInput: { path: "/src/main.ts", offset: 10, limit: 40 },
+			expect: {
+				sessionUpdate: "tool_call",
+				toolCallId: "kt.read.0",
+				status: "pending",
+				title: "/src/main.ts",
+				kind: "read",
+				locations: [{ path: "/src/main.ts" }],
+				rawInput: { path: "/src/main.ts", offset: 10, limit: 40 },
+				_meta: { piToolCallId: "tc-1" },
+			},
+		},
+		{
+			toolName: "edit",
+			rawInput: { path: "/src/a.ts", oldText: "a", newText: "b" },
+			expect: {
+				sessionUpdate: "tool_call",
+				toolCallId: "kt.edit.0",
+				status: "pending",
+				title: "/src/a.ts",
+				kind: "edit",
+				locations: [{ path: "/src/a.ts" }],
+				rawInput: { path: "/src/a.ts", oldText: "a", newText: "b" },
+				_meta: { piToolCallId: "tc-1" },
+			},
+		},
+		{
+			toolName: "write",
+			rawInput: { path: "/tmp/new.ts", content: "export {}" },
+			expect: {
+				sessionUpdate: "tool_call",
+				toolCallId: "kt.write.0",
+				status: "pending",
+				title: "/tmp/new.ts",
+				kind: "edit",
+				locations: [{ path: "/tmp/new.ts" }],
+				rawInput: { path: "/tmp/new.ts", content: "export {}" },
+				_meta: { piToolCallId: "tc-1" },
+			},
+		},
+		{
+			toolName: "ls",
+			rawInput: { path: "/src", limit: 100 },
+			expect: {
+				sessionUpdate: "tool_call",
+				toolCallId: "kt.ls.0",
+				status: "pending",
+				title: "/src",
+				kind: "read",
+				locations: [{ path: "/src" }],
+				rawInput: { path: "/src", limit: 100 },
+				_meta: { piToolCallId: "tc-1" },
+			},
+		},
+		{
+			toolName: "grep",
+			rawInput: { pattern: "foo", path: "/src", glob: "*.ts", context: 2 },
+			expect: {
+				sessionUpdate: "tool_call",
+				toolCallId: "kt.grep.0",
+				status: "pending",
+				title: "foo",
+				kind: "search",
+				locations: [{ path: "/src" }],
+				rawInput: { pattern: "foo", path: "/src", glob: "*.ts", context: 2 },
+				_meta: { piToolCallId: "tc-1" },
+			},
+		},
+		{
+			toolName: "find",
+			rawInput: { pattern: "*.spec.ts", path: "/packages" },
+			expect: {
+				sessionUpdate: "tool_call",
+				toolCallId: "kt.find.0",
+				status: "pending",
+				title: "*.spec.ts",
+				kind: "search",
+				locations: [{ path: "/packages" }],
+				rawInput: { pattern: "*.spec.ts", path: "/packages" },
+				_meta: { piToolCallId: "tc-1" },
+			},
+		},
+		{
+			toolName: "web_fetch",
+			rawInput: { url: "https://example.com/docs", format: "markdown", timeout: 30 },
+			expect: {
+				sessionUpdate: "tool_call",
+				toolCallId: "kt.web_fetch.0",
+				status: "pending",
+				title: "https://example.com/docs",
+				kind: "fetch",
+				locations: [],
+				rawInput: { url: "https://example.com/docs", format: "markdown", timeout: 30 },
+				_meta: { piToolCallId: "tc-1" },
+			},
+		},
+		{
+			toolName: "web_search",
+			rawInput: { query: "ACP tool call spec", recency: "month", limit: 5 },
+			expect: {
+				sessionUpdate: "tool_call",
+				toolCallId: "kt.web_search.0",
+				status: "pending",
+				title: "ACP tool call spec",
+				kind: "search",
+				locations: [],
+				rawInput: { query: "ACP tool call spec", recency: "month", limit: 5 },
+				_meta: { piToolCallId: "tc-1" },
+			},
+		},
+		{
+			toolName: "memory_search",
+			rawInput: { query: "preferred editor" },
+			expect: {
+				sessionUpdate: "tool_call",
+				toolCallId: "kt.memory_search.0",
+				status: "pending",
+				title: "memory_search",
+				kind: "other",
+				locations: [],
+				rawInput: { query: "preferred editor" },
+				_meta: { piToolCallId: "tc-1" },
+			},
+		},
+		{
+			toolName: "Agent",
+			rawInput: { description: "scan codebase", prompt: "find TODOs", subagent_type: "Explore" },
+			expect: {
+				sessionUpdate: "tool_call",
+				toolCallId: "kt.Agent.0",
+				status: "pending",
+				title: "scan codebase",
+				kind: "think",
+				locations: [],
+				rawInput: { description: "scan codebase", prompt: "find TODOs", subagent_type: "Explore" },
+				_meta: { piToolCallId: "tc-1" },
+			},
+		},
+		{
+			toolName: "bash_control",
+			rawInput: { handle: "abc123", action: "stop" },
+			expect: {
+				sessionUpdate: "tool_call",
+				toolCallId: "kt.bash_control.0",
+				status: "pending",
+				title: "bash_control",
+				kind: "other",
+				locations: [],
+				rawInput: { handle: "abc123", action: "stop" },
+				_meta: { piToolCallId: "tc-1" },
+			},
+		},
+		{
+			toolName: "daemon",
+			rawInput: { command: "pnpm dev" },
+			expect: {
+				sessionUpdate: "tool_call",
+				toolCallId: "kt.daemon.0",
+				status: "pending",
+				title: "daemon",
+				kind: "other",
+				locations: [],
+				rawInput: { command: "pnpm dev" },
+				_meta: { piToolCallId: "tc-1" },
+			},
+		},
+		{
+			toolName: "lsp_definition",
+			rawInput: { file_path: "/src/main.ts", line: 10, character: 5 },
+			expect: {
+				sessionUpdate: "tool_call",
+				toolCallId: "kt.lsp_definition.0",
+				status: "pending",
+				title: "lsp_definition",
+				kind: "other",
+				locations: [{ path: "/src/main.ts" }],
+				rawInput: { file_path: "/src/main.ts", line: 10, character: 5 },
+				_meta: { piToolCallId: "tc-1" },
+			},
+		},
+		{
+			toolName: "mcp__github__create_issue",
+			rawInput: { path: "README.md", title: "bug" },
+			expect: {
+				sessionUpdate: "tool_call",
+				toolCallId: "kt.mcp__github__create_issue.0",
+				status: "pending",
+				title: "mcp__github__create_issue",
+				kind: "other",
+				locations: [{ path: "README.md" }],
+				rawInput: { path: "README.md", title: "bug" },
+				_meta: { piToolCallId: "tc-1" },
+			},
+		},
+	]
+
+	for (const c of cases) {
+		it(`maps ${c.toolName} to the full ACP tool_call shape`, () => {
+			const result = buildToolCall({
+				toolName: c.toolName,
+				toolCallId: `kt.${c.toolName}.0`,
+				piToolCallId: "tc-1",
+				status: "pending",
+				rawInput: c.rawInput,
+			})
+			expect(result).toEqual(c.expect)
 		})
 	}
 })
