@@ -24,14 +24,22 @@ const FORWARDED_KINDS: ReadonlySet<string> = new Set([
 	"summarization_retry_finished",
 ])
 
+/** Event fields dropped from the payload: generated content (compaction
+ * artifacts, summaries) belongs to the transcript, not a stall signal — it
+ * can be arbitrarily large and has no consumer in "agent is busy" UIs. */
+const DROPPED_FIELDS: ReadonlySet<string> = new Set(["result", "summary"])
+
 /**
  * Fire-and-forget, like notifyDroppedQueue: a failed or unsupported ext
- * notification must never disturb the turn. Fields are forwarded verbatim so
- * future pi-mono event-shape additions (e.g. a stated rate-limit reopening
- * time) reach clients without a forwarding update here.
+ * notification must never disturb the turn. Fields are forwarded verbatim
+ * (minus DROPPED_FIELDS) so future pi-mono event-shape additions (e.g. a
+ * stated rate-limit reopening time) reach clients without a forwarding
+ * update here. The envelope keys are set LAST so a future pi field named
+ * `sessionId` or `kind` can never clobber the routing values.
  */
 export function emitAgentActivityUpdate(conn: AgentSideConnection, sessionId: string, event: AgentSessionEvent): void {
 	if (!FORWARDED_KINDS.has(event.type)) return
 	const { type, ...fields } = event as { type: string } & Record<string, unknown>
-	conn.extNotification(AVAILABLE_EXT_NOTIFICATIONS.agent_activity, { sessionId, kind: type, ...fields }).catch(() => {})
+	for (const key of DROPPED_FIELDS) delete fields[key]
+	conn.extNotification(AVAILABLE_EXT_NOTIFICATIONS.agent_activity, { ...fields, sessionId, kind: type }).catch(() => {})
 }

@@ -2398,11 +2398,14 @@ function toTurnError(terminal: { stopReason: "error"; errorMessage?: string }): 
 	// JSON-RPC transports carry the data payload untouched; clients that ignore
 	// it lose nothing (message keeps the raw provider text).
 	const classification = classifyLLMGatewayError(detail)
+	const retryAtMs = classification?.reason === "rate_limit" ? parseRateLimitRetryAt(detail) : undefined
+	// Keys appear only when they carry a value, so the wire shape of `data`
+	// stays predictable per kind (clients see no key, never `undefined`/`null`).
 	const data = classification
 		? {
 				kind: classification.reason,
 				...(classification.httpStatusCode !== undefined ? { httpStatusCode: classification.httpStatusCode } : {}),
-				...(classification.reason === "rate_limit" ? { retryAtMs: parseRateLimitRetryAt(detail) } : {}),
+				...(typeof retryAtMs === "number" && !Number.isNaN(retryAtMs) ? { retryAtMs } : {}),
 			}
 		: undefined
 	return RequestError.internalError(data, detail)

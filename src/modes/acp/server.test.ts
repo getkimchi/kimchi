@@ -5490,6 +5490,8 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		expect((err as Error).message).toMatch(/auth required/)
 		// Provider text stays in the message: debugging can tell stale from missing.
 		expect((err as Error).message).toMatch(/401/)
+		// Structured branch signal: clients route to login UI off `data`, not text.
+		expect((err as { data?: unknown }).data).toEqual({ kind: "auth" })
 	})
 
 	// Chain second half: the turn-time 401 is the first proof this key is
@@ -5732,11 +5734,11 @@ describe("agent activity notifications", () => {
 			fake.emit({
 				type: "compaction_end",
 				reason: "overflow",
-				result: undefined,
+				result: { summary: "a long generated compaction summary that must not cross the wire" },
 				aborted: false,
 				willRetry: false,
 				errorMessage: "summarization failed",
-			} as AgentSessionEvent)
+			} as unknown as AgentSessionEvent)
 			fake.emit(successEvent())
 			fake.emit(agentEnd())
 		}
@@ -5758,11 +5760,52 @@ describe("agent activity notifications", () => {
 					sessionId: "session-activity-compaction",
 					kind: "compaction_end",
 					reason: "overflow",
-					result: undefined,
 					aborted: false,
 					willRetry: false,
 					errorMessage: "summarization failed",
 				},
+			},
+		])
+		// The compaction artifact stays out of the stall signal (DROPPED_FIELDS).
+		expect(activities[1].params).not.toHaveProperty("result")
+	})
+
+	it.each([
+		{
+			event: { type: "summarization_retry_scheduled", attempt: 1, maxAttempts: 3, reason: "empty" },
+			expected: { attempt: 1, maxAttempts: 3, reason: "empty" },
+		},
+		{
+			event: { type: "summarization_retry_attempt_start", attempt: 2, maxAttempts: 3 },
+			expected: { attempt: 2, maxAttempts: 3 },
+		},
+		{
+			// `summary` is generated transcript content — DROPPED_FIELDS strips it.
+			event: { type: "summarization_retry_finished", success: true, consecutiveFailures: 0, summary: "some summary" },
+			expected: { success: true, consecutiveFailures: 0 },
+		},
+	])("forwards summarization retry lifecycle: $event.type", async ({ event, expected }) => {
+		const sessionId = `session-activity-${event.type}`
+		const fake = new FakeAgentSession(sessionId)
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const msg = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(event as AgentSessionEvent)
+			fake.emit(successEvent())
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId: msg.sessionId, prompt: [{ type: "text", text: "hello" }] })
+		expect(extNotifications).toEqual([
+			{
+				method: "_kimchi.dev/agent_activity",
+				params: { ...expected, sessionId: msg.sessionId, kind: event.type },
 			},
 		])
 	})
