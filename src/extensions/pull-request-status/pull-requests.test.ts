@@ -594,6 +594,13 @@ describe("work pull request discovery", () => {
 
 	it.each([
 		[{ code: "ENOENT" }, "GitHub CLI is not installed."],
+		[
+			{
+				stderr:
+					"none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use `gh auth login`",
+			},
+			"This repository has no configured GitHub remote.",
+		],
 		[{ stderr: "HTTP 429 rate limit token=secret" }, "GitHub rate limit reached. Kimchi will retry."],
 		[{ stderr: "HTTP 403" }, "GitHub denied access. Check gh authentication and repository permissions."],
 		[{ killed: true }, "GitHub lookup timed out. Kimchi will retry."],

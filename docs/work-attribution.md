@@ -178,7 +178,9 @@ Work tracking and PR discovery load as separate extensions. Work tracking saves 
 
 The PR entrypoint, GitHub queries and their tests live in `src/extensions/pull-request-status/`.
 
-GitHub's commit-to-PR endpoint may omit a PR that was closed before Kimchi ever found it. Known closed PRs are rechecked so reopening is detected. This lookup currently supports GitHub repositories accessible through `gh`.
+GitHub's commit-to-PR endpoint may omit a PR that was closed before Kimchi ever found it. Known closed PRs are rechecked so reopening is detected.
+
+This lookup requires `gh` and a GitHub repository it can access. If `gh` is missing, Kimchi shows a warning and retries later; local work recording and coding continue. GitLab merge requests are not supported yet. A repository with no GitHub remote cannot supply PR status. There is no direct API fallback or automatic CLI installation.
 
 ### 5. Build the local summary
 

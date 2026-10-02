@@ -202,14 +202,14 @@ function readCommits(agentDir: string, state: DiscoveryState): void {
 /** Keep raw CLI stderr out of journals and the UI: it can contain credentials. */
 function cliError(error: ExecFileException, stderr: string): LookupError {
 	if (error.code === "ENOENT") return new LookupError("GitHub CLI is not installed.")
+	if (/no git remotes|none of the git remotes|not a git repository/i.test(stderr))
+		return new LookupError("This repository has no configured GitHub remote.")
 	if (error.code === 4 || /HTTP 401|gh auth login|not logged|authentication required/i.test(stderr))
 		return new LookupError("GitHub CLI is not signed in. Run gh auth login.")
 	if (/rate limit|HTTP 429/i.test(stderr)) return new LookupError("GitHub rate limit reached. Kimchi will retry.")
 	if (/HTTP 403/i.test(stderr))
 		return new LookupError("GitHub denied access. Check gh authentication and repository permissions.")
 	if (/HTTP 404/i.test(stderr)) return new LookupError("GitHub could not find this commit or pull request yet.", true)
-	if (/no git remotes|none of the git remotes|not a git repository/i.test(stderr))
-		return new LookupError("This repository has no configured GitHub remote.")
 	if (error.killed) return new LookupError("GitHub lookup timed out. Kimchi will retry.")
 	if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER")
 		return new LookupError("GitHub response exceeded the lookup limit.")
