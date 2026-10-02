@@ -37,6 +37,48 @@ export function anthropicMessagesApi(endpoint?: string): string {
 	return `${normalizeKimchiEndpoint(endpoint)}/anthropic`
 }
 
+// OpenAI models that support the Responses API: everything from gpt-4o onward, the
+// o-series, and GPT-5.x/6. Routed through the native `/openai/v1/responses` instead of
+// chat-completions so litellm's chat→Responses bridge (and its failure modes, e.g.
+// "Missing required parameter: 'tools[N].name'" for custom tools) never sees this traffic.
+// GPT-5.4+ rejects function tools + reasoning_effort on Chat Completions outright, and
+// GPT-6 Astra requires Responses for tool calling, so Responses is the only path that
+// serves tools + reasoning for the modern family.
+//
+// Kept as explicit tables so the gate is auditable. Follow-up: expose
+// `supports_responses_api` in /v1/models/metadata and consume that instead, so new
+// catalog models don't need a harness release.
+const RESPONSES_API_SLUG_PATTERNS: RegExp[] = [/^gpt-4\.1/, /^gpt-4o/, /^gpt-5(?!-search)/, /^gpt-6/, /^o[134](-|$)/]
+
+// OpenAI models that must stay on Chat Completions: legacy generations and
+// audio/embedding/non-chat variants. These patterns win over the Responses table
+// above (gpt-4o-audio-preview stays on completions).
+const CHAT_COMPLETIONS_ONLY_SLUG_PATTERNS: RegExp[] = [
+	/^gpt-3\.5/,
+	/^gpt-4(-|$)/,
+	/^gpt-audio/,
+	/^text-embedding/,
+	/^gpt-4o(-mini)?-(audio|realtime|transcribe|tts)/,
+]
+
+function supportsResponsesApi(provider: string, slug: string): boolean {
+	if (provider !== "openai") return false
+	return (
+		RESPONSES_API_SLUG_PATTERNS.some((pattern) => pattern.test(slug)) &&
+		!CHAT_COMPLETIONS_ONLY_SLUG_PATTERNS.some((pattern) => pattern.test(slug))
+	)
+}
+
+// Effort "none" is only valid on gpt-5.1+/gpt-6; `off: null` makes pi omit the
+// reasoning param rather than send an invalid effort.
+const RESPONSES_NONE_EFFORT_SLUG_PATTERNS: RegExp[] = [/^gpt-5\.[1-9]/, /^gpt-6/]
+
+function responsesThinkingLevelMap(slug: string): ThinkingLevelMap {
+	if (/^o[134](-|$)/.test(slug)) return { off: null, minimal: null }
+	if (/^gpt-5(-|$)/.test(slug)) return { off: null }
+	return RESPONSES_NONE_EFFORT_SLUG_PATTERNS.some((pattern) => pattern.test(slug)) ? { off: "none" } : { off: null }
+}
+
 // HTTP statuses worth retrying: rate limiting and transient gateway/server errors.
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
 const MAX_FETCH_ATTEMPTS = 3
@@ -224,7 +266,13 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		: m.provider !== "anthropic" && m.slug.startsWith("claude-")
 			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
 			: undefined
-	const thinkingLevelMap = m.provider === "ai-enabler" ? { off: "none", max: "max" } : upstream?.thinkingLevelMap
+	const responsesApi = supportsResponsesApi(m.provider, m.slug)
+	const thinkingLevelMap =
+		m.provider === "ai-enabler"
+			? { off: "none", max: "max" }
+			: responsesApi && m.reasoning
+				? responsesThinkingLevelMap(m.slug)
+				: upstream?.thinkingLevelMap
 	return {
 		id: m.slug,
 		name: m.display_name.trim().length > 0 ? m.display_name : m.slug,
@@ -235,6 +283,7 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		// Store upstream provider for telemetry round-trip via models.json
 		provider: m.provider,
+		...(responsesApi && { api: "openai-responses" as const }),
 		...(m.description?.trim() ? { description: m.description.trim() } : {}),
 		...(compat && { compat }),
 		...(thinkingLevelMap && { thinkingLevelMap }),
@@ -244,6 +293,19 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 export function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 	const aiEnablerModels = models.filter((m) => m.provider === "ai-enabler")
 	const otherModels = models.filter((m) => m.provider !== "ai-enabler")
+
+	// Surface OpenAI slugs neither routing table knows about.
+	for (const m of otherModels) {
+		if (m.provider !== "openai") continue
+		if (
+			!RESPONSES_API_SLUG_PATTERNS.some((pattern) => pattern.test(m.slug)) &&
+			!CHAT_COMPLETIONS_ONLY_SLUG_PATTERNS.some((pattern) => pattern.test(m.slug))
+		) {
+			console.warn(
+				`[models] OpenAI model '${m.slug}' matches no Responses/chat-completions routing pattern; defaulting to chat completions — update the routing tables`,
+			)
+		}
+	}
 
 	// Group non-ai-enabler models by upstream provider
 	const byProvider = new Map<string, ModelMetadata[]>()
