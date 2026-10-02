@@ -13,6 +13,7 @@ import {
 	getTodoAutoCollapseThreshold,
 	openTodoWidget,
 	resetTodoWidgetState,
+	SPINNER_INTERVAL_MS,
 	setTodoCrowding,
 	syncTodoWidget,
 	toggleTodoWidget,
@@ -595,6 +596,37 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		expect(buildTodoHeaderLine(theme, counts, false, { scopeLabel: "Global" })).toBe(
 			"▼ Todos · Global · 1/4 · 3 active · ⠋ 1 running (F7)",
 		)
+	})
+
+	it("ticks the running spinner and stops the timer on dispose", () => {
+		vi.useFakeTimers()
+		const previousCi = process.env.CI
+		delete process.env.CI
+		try {
+			const requestRender = vi.fn()
+			const setWidget = vi.fn()
+			const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+			applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, TEST_SESSION_ID)
+			syncTodoWidget(ctx)
+
+			const component = setWidget.mock.calls[0][1]
+			const instance = component({ requestRender }, theme)
+			expect(instance.render(80)[0]).toContain("⠋ 1 running")
+
+			requestRender.mockClear()
+			vi.advanceTimersByTime(SPINNER_INTERVAL_MS)
+			expect(requestRender).toHaveBeenCalledWith(true)
+			expect(instance.render(80)[0]).toContain("⠙ 1 running")
+
+			instance.dispose()
+			requestRender.mockClear()
+			vi.advanceTimersByTime(SPINNER_INTERVAL_MS * 2)
+			expect(requestRender).not.toHaveBeenCalled()
+		} finally {
+			vi.useRealTimers()
+			if (previousCi === undefined) delete process.env.CI
+			else process.env.CI = previousCi
+		}
 	})
 
 	it("appends the blocked count to the header when present", () => {

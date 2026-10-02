@@ -27,7 +27,7 @@ const TODO_HEIGHT_COLLAPSE_FRACTION = 0.25
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 /** Keep this well above tool/status spinners' cadence — each tick force-renders
  *  the whole TUI, and an 80ms loop pushed tui-e2e past the 25m job budget. */
-const SPINNER_INTERVAL_MS = 200
+export const SPINNER_INTERVAL_MS = 200
 
 /** Default auto-collapse threshold: lists with more items than this render
  *  ambiently as a single status line until the user expands them. Mirrors the
@@ -566,6 +566,8 @@ function syncSpinner(state: TodoWidgetState, sessionId: string): void {
 		state.spinnerFrame = (state.spinnerFrame + 1) % SPINNER.length
 		state.tui?.requestRender?.(true)
 	}, SPINNER_INTERVAL_MS)
+	// Do not keep the process alive solely for the animation.
+	state.spinnerTimer.unref?.()
 }
 
 export function resetTodoWidgetState(ctx: ExtensionContext): void {
