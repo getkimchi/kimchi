@@ -13,11 +13,13 @@ import { readPlanWorkId, savePlanMarkdown } from "../shared/planning/plan-markdo
 import { createCommandContext, createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import requestTimingExtension from "./request-timing.js"
-import * as transitions from "./work-attribution/file-transitions.js"
+import * as continuation from "./work-attribution/continuation.js"
+import * as supervisor from "./work-attribution/reconcile-supervisor.js"
 import { flushWorkSummaries } from "./work-attribution/summary.js"
 import {
 	appendWorkRecord,
 	createWorkAttributionExtension,
+	getToolRequest,
 	getWorkId,
 	recordProviderRequest,
 	setWorkId,
@@ -27,6 +29,7 @@ let dir: string
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "kimchi-work-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
+	vi.spyOn(supervisor, "subscribeFileReconciliation").mockReturnValue(async () => {})
 })
 afterEach(async () => {
 	await flushWorkSummaries()
@@ -43,19 +46,249 @@ function records() {
 	)
 }
 describe("local work attribution", () => {
-	it("lets a child shut down while its parent still reconciles, then drains the parent's own work", async () => {
+	it("adopts a named artifact before dispatch and records why the sessions were joined", async () => {
+		const ctx = createContext({ cwd: dir })
+		const workId = getWorkId(createContext({ cwd: dir, sessionManager: { getSessionId: () => "planning" } }))
+		const selected = {
+			workId,
+			source: "named-artifact" as const,
+			evidence: { path: "/project/ADR.md", transitionId: "planning-write" },
+		}
+		vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue(selected)
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		await api.getHandler<InputEvent>("input")({ type: "input", text: "Implement ADR.md", source: "rpc" }, ctx)
+		const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(event, ctx)
+		expect(records().find((row) => row.requestId === event.headers["X-Request-Id"]).workId).toBe(workId)
+		expect(records()).toContainEqual(
+			expect.objectContaining({
+				type: "work",
+				workId,
+				continuation: { source: selected.source, evidence: selected.evidence },
+			}),
+		)
+		expect(api.getAppendedEntries("work_identity")).toContainEqual({
+			workId,
+			continuation: { source: selected.source, evidence: selected.evidence },
+		})
+	})
+	it("allows the branch fallback only on a fresh session's first external input", async () => {
+		const find = vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue(undefined)
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const input = api.getHandler<InputEvent>("input")
+		const ctx = createContext({ cwd: dir })
+		await input({ type: "input", text: "Implement", source: "extension" }, ctx)
+		expect(find).not.toHaveBeenCalled()
+		await input({ type: "input", text: "Implement", source: "interactive" }, ctx)
+		expect(find).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: dir }), "Implement", {
+			allowBranchFallback: true,
+		})
+		await input({ type: "input", text: "Continue", source: "interactive" }, ctx)
+		expect(find).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: dir }), "Continue", {
+			allowBranchFallback: false,
+		})
+		const started = createContext({ cwd: dir, sessionManager: { getSessionId: () => "requested" } })
+		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(
+			{ type: "before_provider_headers", headers: {} },
+			started,
+		)
+		await input({ type: "input", text: "Later", source: "interactive" }, started)
+		expect(find).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: dir }), "Later", {
+			allowBranchFallback: false,
+		})
+	})
+	it("allows fresh continuation after an earlier startup hook allocated the ledger", async () => {
+		const ctx = createContext({ cwd: dir })
+		getWorkId(ctx)
+		const find = vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue(undefined)
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		await api.getHandler<InputEvent>("input")({ type: "input", text: "Implement", source: "rpc" }, ctx)
+		expect(find).toHaveBeenCalledWith(expect.objectContaining({ cwd: dir }), "Implement", { allowBranchFallback: true })
+	})
+	it("preserves restored identity even when a crash left no native tool result", async () => {
+		const ctx = createContext({ cwd: dir })
+		const original = getWorkId(ctx)
+		const old = createExtensionApi()
+		createWorkAttributionExtension()(old.api)
+		await old.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
+		// An earlier startup hook may restore the ledger before attribution binds.
+		expect(getWorkId(ctx)).toBe(original)
+		const selected = "11111111-1111-4111-8111-111111111111"
+		const find = vi
+			.spyOn(continuation, "findWorkContinuation")
+			.mockResolvedValue({ workId: selected, source: "named-artifact", evidence: { path: "/project/ADR.md" } })
+		const resumed = createExtensionApi()
+		createWorkAttributionExtension()(resumed.api)
+		await resumed.getHandler<InputEvent>("input")({ type: "input", text: "Implement ADR.md", source: "rpc" }, ctx)
+		expect(getWorkId(ctx)).toBe(original)
+		expect(find).not.toHaveBeenCalled()
+		const plan = savePlanMarkdown({ cwd: dir, name: "explicit", planText: "# Plan", workId: selected })
+		await resumed.getRegisteredCommand("work").handler(plan.path, { ...createCommandContext(), ...ctx })
+		expect(getWorkId(ctx)).toBe(selected)
+	})
+	it("preserves explicit work selection and historical native output without a summary", async () => {
+		const selected = "11111111-1111-4111-8111-111111111111"
+		const find = vi
+			.spyOn(continuation, "findWorkContinuation")
+			.mockResolvedValue({ workId: selected, source: "saved-plan", evidence: { path: "/plan.md" } })
+		const manager = SessionManager.inMemory(dir)
+		const ctx = { ...createContext({ cwd: dir }), sessionManager: manager }
+		const api = createExtensionApi()
+		api.appendEntry.mockImplementation((type, data) => {
+			manager.appendCustomEntry(type, data)
+		})
+		createWorkAttributionExtension()(api.api)
+		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+		const own = getWorkId(ctx)
+		manager.appendMessage({
+			role: "toolResult",
+			toolCallId: "native-write",
+			toolName: "write",
+			isError: false,
+			content: [{ type: "text", text: "Written" }],
+			timestamp: Date.now(),
+		})
+		await api.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
+		rmSync(join(dir, "work", own, "work.json"))
+		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "resume" }, ctx)
+		await api.getHandler<InputEvent>("input")({ type: "input", text: "Implement /plan.md", source: "interactive" }, ctx)
+		expect(getWorkId(ctx)).toBe(own)
+		expect(find).not.toHaveBeenCalled()
+		const empty = createContext({ cwd: dir, sessionManager: { getSessionId: () => "explicit" } })
+		await api.getRegisteredCommand("work").handler("new", { ...createCommandContext(), ...empty })
+		const explicit = getWorkId(empty)
+		await api.getHandler<InputEvent>("input")({ type: "input", text: "Implement /plan.md", source: "rpc" }, empty)
+		expect(getWorkId(empty)).toBe(explicit)
+		expect(find).not.toHaveBeenCalled()
+		await api.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
+	})
+	it("does not switch work after an asynchronous continuation lookup became stale", async () => {
+		const ctx = createContext({ cwd: dir })
+		let release!: (value: continuation.WorkContinuation) => void
+		vi.spyOn(continuation, "findWorkContinuation").mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					release = resolve
+				}),
+		)
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const input = Promise.resolve(
+			api.getHandler<InputEvent>("input")({ type: "input", text: "Implement plan.md", source: "interactive" }, ctx),
+		)
+		await api.getRegisteredCommand("work").handler("new", { ...createCommandContext(), ...ctx })
+		const chosen = getWorkId(ctx)
+		release({
+			workId: "11111111-1111-4111-8111-111111111111",
+			source: "named-artifact",
+			evidence: { path: "/plan.md" },
+		})
+		await input
+		expect(getWorkId(ctx)).toBe(chosen)
+	})
+	it("pins tool calls to their successful response across auxiliary requests and work switches", async () => {
+		const api = createExtensionApi()
+		const ctx = createContext({ cwd: dir })
+		createWorkAttributionExtension()(api.api)
+		const headers = api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")
+		const failed: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await headers(failed, ctx)
+		const success: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await headers(success, ctx)
+		const workId = getWorkId(ctx)
+		await api.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [
+						{ type: "toolCall", id: "edit-one", name: "edit" },
+						{ type: "toolCall", id: "write-two", name: "write" },
+					],
+				},
+			},
+			ctx,
+		)
+		const auxiliary = recordProviderRequest(ctx, { provider: "test", id: "classifier" })
+		setWorkId(ctx)
+		for (const tool of ["edit-one", "write-two"])
+			expect(getToolRequest(ctx, tool)).toEqual({ requestId: success.headers["X-Request-Id"], workId })
+		expect(getToolRequest(ctx, "edit-one")?.requestId).not.toBe(auxiliary.requestId)
+		expect(getToolRequest(ctx, "unknown")).toBeUndefined()
+		await api.getHandler("tool_execution_end")({ toolCallId: "edit-one" }, ctx)
+		expect(getToolRequest(ctx, "edit-one")).toBeUndefined()
+		expect(getToolRequest(ctx, "write-two")).toBeDefined()
+		await api.getHandler("turn_end")({}, ctx)
+		expect(getToolRequest(ctx, "write-two")).toBeUndefined()
+	})
+	it("keeps parent and child tool identities separate and drops missing or aborted provenance", async () => {
+		const parent = createContext({ cwd: dir })
+		const child = createContext({ cwd: dir, sessionManager: { getSessionId: () => "child-tools" } })
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const response = (stopReason = "toolUse") => ({
+			message: { role: "assistant", stopReason, content: [{ type: "toolCall", id: "same-id", name: "write" }] },
+		})
+		for (const ctx of [parent, child]) {
+			const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+			await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(event, ctx)
+			await api.getHandler("message_end")(response(), ctx)
+			expect(getToolRequest(ctx, "same-id")?.requestId).toBe(event.headers["X-Request-Id"])
+		}
+		expect(getToolRequest(parent, "same-id")).not.toEqual(getToolRequest(child, "same-id"))
+		for (const stopReason of ["error", "aborted"]) {
+			await api.getHandler("message_end")(response(stopReason), child)
+			expect(getToolRequest(child, "same-id")).toBeUndefined()
+		}
+		await api.getHandler("turn_start")({}, parent)
+		await api.getHandler("message_end")(response(), parent)
+		expect(getToolRequest(parent, "same-id")).toBeUndefined()
+		await api.getHandler("session_shutdown")({ type: "session_shutdown", reason: "quit" }, child)
+		expect(getToolRequest(child, "same-id")).toBeUndefined()
+	})
+	it("does not reuse tool provenance after a request persistence failure", async () => {
+		const api = createExtensionApi()
+		const ctx = createContext({ cwd: dir })
+		createWorkAttributionExtension()(api.api)
+		const headers = api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")
+		await headers({ type: "before_provider_headers", headers: {} }, ctx)
+		await flushWorkSummaries()
+		rmSync(join(dir, "work-attribution"), { recursive: true })
+		writeFileSync(join(dir, "work-attribution"), "blocked")
+		await headers({ type: "before_provider_headers", headers: {} }, ctx)
+		await api.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "write", name: "write" }],
+				},
+			},
+			ctx,
+		)
+		expect(getToolRequest(ctx, "write")).toBeUndefined()
+	})
+	it.each([
+		"known",
+		"missing",
+	])("lets a child with a %s work ID shut down while its parent reconciles", async (identity) => {
 		let release!: () => void
 		const blocked = new Promise<void>((resolve) => {
 			release = resolve
 		})
-		const reconcile = vi.spyOn(transitions, "reconcileFileTransitions").mockImplementation(() => blocked)
+		const stop = vi.fn(() => blocked)
+		const reconcile = vi.spyOn(supervisor, "subscribeFileReconciliation").mockReturnValue(stop)
 		const parent = createContext({ cwd: dir })
 		const parentApi = createExtensionApi()
 		createWorkAttributionExtension()(parentApi.api)
 		await parentApi.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, parent)
+		await parentApi.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "resume" }, parent)
 		const child = createContext({ cwd: dir, sessionManager: { getSessionId: () => "child-shutdown" } })
 		const childApi = createExtensionApi()
-		createWorkAttributionExtension(getWorkId(parent))(childApi.api)
+		createWorkAttributionExtension(identity === "known" ? getWorkId(parent) : null)(childApi.api)
 		await childApi.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, child)
 		let childStopped = false
 		const childShutdown = Promise.resolve(
@@ -70,8 +303,7 @@ describe("local work attribution", () => {
 		try {
 			await vi.waitFor(() => expect(childStopped).toBe(true), { timeout: 1000 })
 			expect(reconcile).toHaveBeenCalledOnce()
-			const signal = reconcile.mock.calls[0][1]
-			expect(signal?.aborted).toBe(false)
+			expect(stop).not.toHaveBeenCalled()
 			let parentStopped = false
 			parentShutdown = Promise.resolve(
 				parentApi.getHandler<SessionShutdownEvent>("session_shutdown")(
@@ -81,7 +313,7 @@ describe("local work attribution", () => {
 			).then(() => {
 				parentStopped = true
 			})
-			expect(signal?.aborted).toBe(true)
+			expect(stop).toHaveBeenCalledOnce()
 			await Promise.resolve()
 			expect(parentStopped).toBe(false)
 		} finally {
@@ -93,6 +325,20 @@ describe("local work attribution", () => {
 					parent,
 				))
 		}
+	})
+	it("never adopts a plan automatically in a child whose inherited identity was unavailable", async () => {
+		const selected = "11111111-1111-4111-8111-111111111111"
+		const find = vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue({
+			workId: selected,
+			source: "saved-plan",
+			evidence: { path: "/plan.md" },
+		})
+		const api = createExtensionApi()
+		createWorkAttributionExtension(null)(api.api)
+		const ctx = createContext({ cwd: dir })
+		await api.getHandler<InputEvent>("input")({ type: "input", text: "Implement /plan.md", source: "rpc" }, ctx)
+		expect(find).not.toHaveBeenCalled()
+		expect(getWorkId(ctx)).not.toBe(selected)
 	})
 
 	it("writes every request before returning headers, including retry attempts", async () => {
@@ -333,7 +579,7 @@ describe("local work attribution", () => {
 			await handler(event, ctx)
 		await mock.getHandler("after_provider_response")({ type: "after_provider_response", status: 200, headers: {} }, ctx)
 		// turn_start also flushes a response without an assistant message (e.g. compaction).
-		await mock.getHandler("turn_start")({}, ctx)
+		for (const handler of mock.getHandlers("turn_start")) await handler({}, ctx)
 		const request = records().find((row) => row.type === "request")
 		expect(mock.getAppendedEntries("request_diagnostics")).toEqual([
 			expect.objectContaining({ requestId: request.requestId, workId: request.workId }),

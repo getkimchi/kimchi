@@ -306,3 +306,108 @@ test("a fresh session links a manual commit to the work that wrote its files", a
 		},
 	)
 })
+
+test("a skill-written ADR continues in a fresh session, and starting new work opts out", async ({ terminal }) => {
+	let releaseImplementation = () => {}
+	const held = new Promise<void>((release) => {
+		releaseImplementation = release
+	})
+	try {
+		await runKimchiSession(
+			terminal,
+			{
+				artifactName: "work-attribution-skill-plan",
+				gitInit: true,
+				models,
+				exitMarker: "ADR_PLANNER_EXITED",
+				seedHome(_home, cwd) {
+					const git = (...args: string[]) => execFileSync("git", args, { cwd })
+					git("config", "user.name", "Attribution Test")
+					git("config", "user.email", "attribution@example.invalid")
+					git("config", "commit.gpgSign", "false")
+					git("branch", "-M", "trunk")
+					git("commit", "--allow-empty", "-m", "ADR baseline")
+					git("update-ref", "refs/remotes/origin/trunk", "HEAD")
+					git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+					git("checkout", "-b", "feature")
+				},
+				responses: [
+					{
+						toolCalls: [
+							{
+								function: {
+									name: "write",
+									arguments: JSON.stringify({ path: "docs/adr/greeting.md", content: "# Add a greeting\n" }),
+								},
+							},
+						],
+					},
+					{ stream: ["The design is saved as an ADR."] },
+					{ holdUntil: held, stream: ["Implementing the saved design."] },
+					{ stream: ["This request belongs to separate work."] },
+				],
+			},
+			async (fixture, trace) => {
+				terminal.submit("Save the design to docs/adr/greeting.md using the write tool.")
+				await waitForText(terminal, "The design is saved as an ADR.")
+				const ledgerDir = join(fixture.agentDir, "work-attribution")
+				const original = readLedger(ledgerDir).find((record) => record.type === "request")
+				expect(readFileSync(join(fixture.workDir, "docs/adr/greeting.md"), "utf8")).toBe("# Add a greeting\n")
+				expect(readLedger(ledgerDir).filter((record) => record.type === "plan")).toEqual([])
+				terminal.submit("/quit")
+				await waitForText(terminal, "ADR_PLANNER_EXITED")
+				launchKimchi(terminal, fixture, [], fixture.seedEnv, { exitMarker: "ADR_IMPLEMENTER_EXITED" })
+				await waitForText(terminal, PROMPT_READY, { full: false })
+				const before = fixture.fake.requests.filter((request) =>
+					request.url.startsWith("/openai/v1/chat/completions"),
+				).length
+				terminal.submit("Implement the saved design.")
+				const deadline = Date.now() + 15_000
+				while (
+					fixture.fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")).length ===
+						before &&
+					Date.now() < deadline
+				)
+					await sleep(50)
+				const sent = fixture.fake.requests
+					.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+					.at(-1)
+				const implementing = readLedger(ledgerDir).find((record) => record.requestId === sent?.headers["x-request-id"])
+				expect(implementing).toBeDefined()
+				expect(implementing.workId).toBe(original.workId)
+				expect(implementing.sessionId).not.toBe(original.sessionId)
+				trace.step("fresh session without a plan path adopts the ADR work before its held first response")
+				releaseImplementation()
+				await waitForText(terminal, "Implementing the saved design.")
+				terminal.submit("/quit")
+				await waitForText(terminal, "ADR_IMPLEMENTER_EXITED")
+				launchKimchi(terminal, fixture, [], fixture.seedEnv)
+				await waitForText(terminal, PROMPT_READY, { full: false })
+				terminal.submit("/work new")
+				await waitForText(terminal, "Work ID:", { full: false })
+				terminal.submit("Do unrelated work in this same branch.")
+				await waitForText(terminal, "This request belongs to separate work.")
+				const separateId = fixture.fake.requests
+					.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+					.at(-1)?.headers["x-request-id"]
+				const separate = readLedger(ledgerDir).find((record) => record.requestId === separateId)
+				expect(separate.workId).not.toBe(original.workId)
+				const summary = await waitForSummary(fixture.agentDir, original.workId, { sessions: 2, requests: 3 })
+				expect(summary.requests.some((request: { requestId: string }) => request.requestId === separateId)).toBe(false)
+				expect(summary.fileTransitions).toContainEqual(
+					expect.objectContaining({ path: "docs/adr/greeting.md", requestId: original.requestId }),
+				)
+				expect(summary.continuations).toContainEqual(
+					expect.objectContaining({
+						sessionId: implementing.sessionId,
+						source: "recent-branch",
+						evidence: expect.objectContaining({ branch: "feature" }),
+					}),
+				)
+				trace.step("explicit new work remains separate despite the recent ADR on this branch")
+			},
+		)
+	} finally {
+		releaseImplementation()
+	}
+})

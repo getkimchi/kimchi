@@ -46,6 +46,30 @@ function summary(workId: string) {
 }
 
 describe("readable work summaries", () => {
+	it("shows why a session continued another work without changing request timestamps", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const request = recordProviderRequest(ctx)
+		await flushWorkSummaries()
+		const original = summary(workId).requests[0]
+		const continuation = {
+			source: "recent-branch",
+			evidence: { path: "/project/ADR.md", transitionId: "plan-edit", branch: "feature" },
+		}
+		appendWorkRecord(context("implementer"), { type: "work", continuation }, workId)
+		appendWorkRecord(context("implementer"), { type: "work", continuation }, workId)
+		await flushWorkSummaries()
+		expect(summary(workId).requests[0]).toEqual(original)
+		expect(summary(workId).requests[0].requestId).toBe(request.requestId)
+		expect(summary(workId).continuations).toEqual([
+			expect.objectContaining({
+				sessionId: "implementer",
+				cwd: "/project",
+				recordedAt: expect.any(String),
+				...continuation,
+			}),
+		])
+	})
 	it("keeps every retained version when the local plan path is reused", async () => {
 		const ctx = context()
 		const workId = getWorkId(ctx)
@@ -137,7 +161,7 @@ describe("readable work summaries", () => {
 		expect(summary(next).requests).toHaveLength(1)
 		expect(fs.readFileSync(path(workId), "utf8")).toContain('\n  "workId":')
 	})
-	it("retains different originating sessions for the same commit and ignores native transition journals", async () => {
+	it("retains request-to-file links and different originating sessions for the same commit", async () => {
 		const workId = getWorkId(context())
 		for (const session of ["parent", "child"])
 			appendWorkRecord(
@@ -147,7 +171,17 @@ describe("readable work summaries", () => {
 			)
 		appendWorkRecord(
 			context(),
-			{ type: "file_transition", transitionId: "transition" },
+			{
+				type: "file_transition",
+				transitionId: "transition",
+				requestId: "request",
+				toolCallId: "write",
+				repository: "/other/.git",
+				worktree: "/other",
+				path: "file.ts",
+				before: null,
+				after: { blob: "blob", mode: "100644" },
+			},
 			workId,
 			join(dir, "work-attribution", "transitions", "journal.jsonl"),
 		)
@@ -157,7 +191,76 @@ describe("readable work summaries", () => {
 				.commits.map((entry: { sessionId: string }) => entry.sessionId)
 				.sort(),
 		).toEqual(["child", "parent"])
-		expect(summary(workId)).not.toHaveProperty("file_transition")
+		expect(summary(workId).fileTransitions).toEqual([
+			expect.objectContaining({
+				transitionId: "transition",
+				requestId: "request",
+				toolCallId: "write",
+				repository: "/other/.git",
+				worktree: "/other",
+				path: "file.ts",
+			}),
+		])
+	})
+	it("merges commit file evidence without replacing stronger matches or losing transitions", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const commit = { type: "commit", sha: "sha", repository: "/repo", worktree: "/target" }
+		for (const [method, transitionId] of [
+			["path-blob", "weak"],
+			["file-chain", "exact"],
+			["path-blob", "later"],
+			["file-chain", "exact"],
+			["file-chain", "exact-two"],
+		])
+			appendWorkRecord(ctx, {
+				...commit,
+				fileMatches: [{ path: "file.ts", method, transitionIds: [transitionId], worktree: "/origin" }],
+			})
+		appendWorkRecord(ctx, {
+			...commit,
+			fileMatches: [{ path: "other.ts", method: "file-chain", transitionIds: ["other"], worktree: "/origin" }],
+		})
+		await flushWorkSummaries()
+		expect(summary(workId).commits[0].fileMatches).toEqual([
+			{ path: "file.ts", method: "file-chain", transitionIds: ["exact", "exact-two"], worktree: "/origin" },
+			{ path: "other.ts", method: "file-chain", transitionIds: ["other"], worktree: "/origin" },
+		])
+	})
+	it("upgrades old summaries and recovery stamps with unchanged transition journals", async () => {
+		const ctx = context()
+		const request = recordProviderRequest(ctx)
+		await flushWorkSummaries()
+		const existing = summary(request.workId)
+		existing.fileTransitions = undefined
+		fs.writeFileSync(path(request.workId), JSON.stringify(existing))
+		const journal = join(dir, "work-attribution", "transitions", "old.jsonl")
+		fs.mkdirSync(dirname(journal), { recursive: true })
+		fs.writeFileSync(
+			journal,
+			`${JSON.stringify({ type: "file_transition", version: 1, workId: request.workId, sessionId: "parent", transitionId: "old-transition", toolCallId: "old-tool", repository: "/repo", worktree: "/tree", path: "file.ts", before: null, after: { blob: "blob", mode: "100644" } })}\n`,
+		)
+		const past = new Date(Date.now() - 60 * 60 * 1000)
+		fs.utimesSync(journal, past, past)
+		fs.writeFileSync(
+			join(dir, "work-attribution", ".recovered.json"),
+			JSON.stringify({ startedAt: Date.now(), summaries: { [request.workId]: "old" } }),
+		)
+		recoverWorkSummaries()
+		await flushWorkSummaries()
+		expect(summary(request.workId).requests[0]).toEqual(existing.requests[0])
+		expect(summary(request.workId).fileTransitions).toEqual([
+			expect.objectContaining({ transitionId: "old-transition", toolCallId: "old-tool" }),
+		])
+		expect(summary(request.workId).fileTransitions[0]).not.toHaveProperty("requestId")
+		expect(JSON.parse(fs.readFileSync(join(dir, "work-attribution", ".recovered.json"), "utf8")).version).toBe(2)
+		fs.rmSync(path(request.workId))
+		vi.resetModules()
+		const relaunched = await import("./summary.js")
+		relaunched.recoverWorkSummaries()
+		await relaunched.flushWorkSummaries()
+		expect(summary(request.workId).fileTransitions).toHaveLength(1)
+		expect(summary(request.workId).requests[0]).toEqual(existing.requests[0])
 	})
 	it.each([
 		undefined,
@@ -265,11 +368,25 @@ describe("readable work summaries", () => {
 			expect(summary(workId).requests).toHaveLength(2)
 		}
 	})
-	it("does not checkpoint a failed ledger scan and retries it", async () => {
+	it.each(["session", "transition"])("does not checkpoint a failed %s ledger scan and retries it", async (kind) => {
 		const workId = getWorkId(context())
 		recordProviderRequest(context())
+		const transitionLedger = join(dir, "work-attribution", "transitions", "unreadable.jsonl")
+		appendWorkRecord(
+			context(),
+			{
+				type: "file_transition",
+				transitionId: "edit",
+				toolCallId: "tool",
+				repository: "/repo",
+				worktree: "/tree",
+				path: "file.ts",
+			},
+			workId,
+			transitionLedger,
+		)
 		await flushWorkSummaries()
-		const ledger = join(dir, "work-attribution", "parent.jsonl")
+		const ledger = kind === "session" ? join(dir, "work-attribution", "parent.jsonl") : transitionLedger
 		fs.rmSync(path(workId))
 		const read = fs.readFileSync
 		const failure = vi.spyOn(fs, "readFileSync").mockImplementation((...args) => {
@@ -284,6 +401,7 @@ describe("readable work summaries", () => {
 		recoverWorkSummaries()
 		await flushWorkSummaries()
 		expect(summary(workId).requests).toHaveLength(1)
+		expect(summary(workId).fileTransitions).toHaveLength(1)
 	})
 
 	it("drains an append that arrives while the asynchronous lock is being released", async () => {

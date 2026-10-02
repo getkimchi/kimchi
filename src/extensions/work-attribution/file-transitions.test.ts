@@ -11,19 +11,31 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs"
+import * as asyncFs from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { SessionShutdownEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
+import type {
+	BeforeProviderHeadersEvent,
+	SessionShutdownEvent,
+	SessionStartEvent,
+} from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import toolRenderingExtension from "../tool-rendering.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { createCommitTrackingBashTool } from "./commits.js"
-import { createTrackedEditTool, createTrackedWriteTool, reconcileFileTransitions } from "./file-transitions.js"
+import {
+	createTrackedEditTool,
+	createTrackedWriteTool,
+	knownTransitionRepositories,
+	reconcileFileTransitions,
+	reconcileRepositoryTransitions,
+} from "./file-transitions.js"
 import { flushWorkSummaries } from "./summary.js"
 
 vi.mock("node:child_process", { spy: true })
+vi.mock("node:fs/promises", async (original) => ({ ...(await original<typeof asyncFs>()) }))
 
 let root: string
 let repo: string
@@ -90,6 +102,280 @@ afterEach(async () => {
 })
 
 describe("manual commit reconciliation", () => {
+	it("retains discovery progress when reading journal headers exhausts a pass", async () => {
+		for (let index = 0; index < 5; index++) {
+			repo = join(root, `repository-${index}`)
+			mkdirSync(repo)
+			git("init", "-q")
+			await write("file.txt", "new")
+		}
+		await flushWorkSummaries()
+		let clock = 0
+		let deadline = 3000
+		const original = asyncFs.open
+		const headers = vi.spyOn(asyncFs, "open").mockImplementation((...args) => {
+			if (String(args[0]).endsWith(".jsonl") && args[1] === "r") clock += 1100
+			return original(...args)
+		})
+		const checkBudget = () => {
+			if (clock > deadline) throw new Error("budget")
+		}
+		await expect(knownTransitionRepositories(checkBudget)).rejects.toThrow("budget")
+		deadline = clock + 3000
+		expect(await knownTransitionRepositories(checkBudget)).toHaveLength(5)
+		expect(headers).toHaveBeenCalledTimes(5)
+	})
+
+	it("discovers another known repository even when a large journal cannot be read", async () => {
+		baseline()
+		await edit("one", "first")
+		const directory = join(root, "agent", "work-attribution", "transitions")
+		const large = join(directory, readdirSync(directory)[0])
+		writeFileSync(large, `${readFileSync(large, "utf8")}${" ".repeat(8 * 1024 * 1024)}`)
+		repo = join(root, "other")
+		mkdirSync(repo)
+		git("init", "-q")
+		git("config", "user.name", "Test")
+		git("config", "user.email", "test@example.test")
+		await write("other.txt", "other")
+		const sha = commit()
+		vi.spyOn(console, "warn").mockImplementation(() => {})
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		await startSession(api, context("survivor"))
+		await vi.waitFor(() => expect(contributions()).toEqual([expect.objectContaining({ sha, paths: ["other.txt"] })]))
+	})
+
+	it("checks its lease before publishing a discovered contribution and retries it later", async () => {
+		baseline()
+		await edit("one", "first")
+		const sha = commit()
+		const repository = realpathSync(join(repo, ".git"))
+		await expect(
+			reconcileRepositoryTransitions(
+				repository,
+				undefined,
+				() => {},
+				() => {
+					throw new Error("lost lease")
+				},
+			),
+		).rejects.toThrow("lost lease")
+		expect(contributions()).toEqual([])
+		await reconcileFileTransitions(context("retry"))
+		expect(contributions()).toEqual([expect.objectContaining({ sha })])
+	})
+
+	it("advances through a rewrite backlog across bounded scans", async () => {
+		baseline()
+		const branch = git("branch", "--show-current")
+		git("checkout", "-qb", "upstream")
+		writeFileSync(join(repo, "upstream.txt"), "upstream")
+		const upstream = commit()
+		git("checkout", "-q", branch)
+		for (let index = 0; index < 4; index++) {
+			await write(`native-${index}.txt`, `native-${index}`)
+			commit()
+		}
+		git("rebase", "upstream")
+		const rewritten = git("rev-list", `${upstream}..HEAD`).split("\n")
+		let clock = 0
+		vi.spyOn(Date, "now").mockImplementation(() => clock)
+		const { execFile: execute } = await vi.importActual<typeof childProcess>("node:child_process")
+		vi.spyOn(childProcess, "execFile").mockImplementation(((...args: Parameters<typeof execute>) => {
+			clock += 250
+			return execute(...args)
+		}) as typeof execute)
+		vi.spyOn(console, "warn").mockImplementation(() => {})
+		await reconcileFileTransitions(context("first"))
+		expect(contributions().filter((row) => rewritten.includes(row.sha))).toHaveLength(0)
+		for (let index = 0; index < 16; index++) await reconcileFileTransitions(context(`retry-${index}`))
+		expect(
+			contributions()
+				.filter((row) => rewritten.includes(row.sha))
+				.map((row) => row.sha)
+				.sort(),
+		).toEqual(rewritten.sort())
+	}, 15000)
+
+	it("reuses a compact history boundary with many refs and ignores refs to non-commits", async () => {
+		const base = baseline()
+		const tree = git("rev-parse", "HEAD^{tree}")
+		const refs = Array.from(
+			{ length: 130 },
+			(_, index) =>
+				`update refs/attribution/history-${index} ${git("commit-tree", tree, "-p", base, "-m", `history-${index}`)}`,
+		)
+		refs.push(`update refs/attribution/tree ${tree}`)
+		execFileSync("git", ["-C", repo, "update-ref", "--stdin"], { input: `${refs.join("\n")}\n` })
+		await edit("one", "first")
+		await write("second.txt", "second")
+		await write("third.txt", "third")
+		const mutations = rows().filter((row) => row.type === "file_transition")
+		expect(new Set(mutations.map((row) => row.historyBoundaryId)).size).toBe(1)
+		expect(mutations[0].historyBoundaryId).toMatch(/^[a-f0-9]{64}$/)
+		expect(mutations.every((row) => row.refTips === undefined)).toBe(true)
+		const snapshots = join(root, "agent", "work-attribution", "ref-tips")
+		expect(readdirSync(snapshots)).toEqual([`${mutations[0].historyBoundaryId}.json`])
+		const snapshot = JSON.parse(readFileSync(join(snapshots, readdirSync(snapshots)[0]), "utf8"))
+		expect(snapshot.refTips).toHaveLength(131)
+		expect(snapshot.refTips).not.toContain(tree)
+		expect(JSON.stringify(mutations).length).toBeLessThan(5000)
+		git("stash", "push", "-qu")
+		git("stash", "pop", "-q")
+		const sha = commit()
+		await reconcileFileTransitions(context("fresh"))
+		expect(contributions()).toEqual([expect.objectContaining({ sha, paths: ["file.txt", "second.txt", "third.txt"] })])
+	})
+
+	it.each(["missing", "truncated"])("retries weak matching after a %s history snapshot is repaired", async (damage) => {
+		baseline()
+		await edit("one", "first")
+		const mutation = rows().find((row) => row.type === "file_transition")
+		const path = join(root, "agent", "work-attribution", "ref-tips", `${mutation.historyBoundaryId}.json`)
+		const saved = readFileSync(path)
+		if (damage === "missing") rmSync(path)
+		else writeFileSync(path, '{"version":1,"refTips":[')
+		git("stash", "push", "-q")
+		git("stash", "pop", "-q")
+		const sha = commit()
+		vi.spyOn(console, "warn").mockImplementation(() => {})
+		await reconcileFileTransitions(context("damaged"))
+		expect(contributions()).toEqual([])
+		writeFileSync(path, saved)
+		await reconcileFileTransitions(context("repaired"))
+		expect(contributions()).toEqual([expect.objectContaining({ sha })])
+	})
+
+	it("publishes one complete snapshot before concurrent transitions and repairs a damaged copy", async () => {
+		baseline()
+		const rename = asyncFs.rename
+		let unblock!: () => void
+		const gate = new Promise<void>((resolve) => {
+			unblock = resolve
+		})
+		let waiting = 0
+		vi.spyOn(asyncFs, "rename").mockImplementation(async (from, to) => {
+			if (String(to).includes("/ref-tips/")) {
+				waiting++
+				await gate
+			}
+			return rename(from, to)
+		})
+		const writes = Promise.all([write("first.txt", "first"), write("second.txt", "second")])
+		try {
+			await vi.waitFor(() => expect(waiting).toBeGreaterThan(0))
+			expect(rows().filter((row) => row.type === "file_transition")).toEqual([])
+		} finally {
+			unblock()
+			await writes
+		}
+		const mutations = rows().filter((row) => row.type === "file_transition")
+		const directory = join(root, "agent", "work-attribution", "ref-tips")
+		const file = `${mutations[0].historyBoundaryId}.json`
+		expect(readdirSync(directory)).toEqual([file])
+		expect(mutations[1].historyBoundaryId).toBe(mutations[0].historyBoundaryId)
+		writeFileSync(join(directory, file), "partial")
+		await write("third.txt", "third")
+		expect(JSON.parse(readFileSync(join(directory, file), "utf8")).refTips).toEqual([git("rev-parse", "HEAD")])
+		expect(readdirSync(directory)).toEqual([file])
+	})
+
+	it("preserves exact matching when its optional history snapshot is missing", async () => {
+		baseline()
+		await edit("one", "first")
+		const mutation = rows().find((row) => row.type === "file_transition")
+		rmSync(join(root, "agent", "work-attribution", "ref-tips", `${mutation.historyBoundaryId}.json`))
+		const sha = commit()
+		vi.spyOn(console, "warn").mockImplementation(() => {})
+		await reconcileFileTransitions(context("fresh"))
+		expect(contributions()).toEqual([
+			expect.objectContaining({ sha, fileMatches: [expect.objectContaining({ method: "file-chain" })] }),
+		])
+	})
+
+	it.each([
+		"inline",
+		"legacy",
+	])("reads %s transition boundaries without changing their source format", async (format) => {
+		baseline()
+		await edit("one", "first")
+		const directory = join(root, "agent", "work-attribution", "transitions")
+		const journal = join(directory, readdirSync(directory)[0])
+		const mutation = JSON.parse(readFileSync(journal, "utf8"))
+		if (format === "inline") mutation.refTips = [git("rev-parse", "HEAD")]
+		mutation.historyBoundaryId = undefined
+		const saved = `${JSON.stringify(mutation)}\n`
+		writeFileSync(journal, saved)
+		git("stash", "push", "-q")
+		git("stash", "pop", "-q")
+		const sha = commit()
+		await reconcileFileTransitions(context("fresh"))
+		expect(contributions()).toEqual([expect.objectContaining({ sha })])
+		expect(readFileSync(journal, "utf8")).toBe(saved)
+	})
+
+	it("finds a rewritten native contribution and labels its path/blob evidence", async () => {
+		baseline()
+		const originalBranch = git("branch", "--show-current")
+		git("checkout", "-qb", "upstream")
+		writeFileSync(join(repo, "upstream.txt"), "upstream")
+		commit()
+		git("checkout", "-q", originalBranch)
+		await edit("one", "first")
+		const original = commit()
+		git("rebase", "upstream")
+		const rewritten = git("rev-parse", "HEAD")
+		expect(rewritten).not.toBe(original)
+		await reconcileFileTransitions(context("reopened"))
+		expect(contributions()).toContainEqual(
+			expect.objectContaining({
+				sha: rewritten,
+				fileMatches: [expect.objectContaining({ path: "file.txt", method: "path-blob" })],
+			}),
+		)
+	})
+
+	it("recovers a squash in another checkout after the original worktree is deleted", async () => {
+		baseline()
+		const primary = repo
+		const linked = join(root, "deleted-worktree")
+		git("worktree", "add", "-qb", "feature", linked)
+		const canonicalLinked = realpathSync(linked)
+		repo = linked
+		await edit("one", "first")
+		const workId = getWorkId(context())
+		commit()
+		repo = primary
+		git("merge", "--squash", "feature")
+		const squashed = commit()
+		git("worktree", "remove", linked)
+		await reconcileFileTransitions(context("another-checkout"))
+		expect(contributions()).toContainEqual(
+			expect.objectContaining({
+				sha: squashed,
+				workId,
+				worktree: canonicalLinked,
+				fileMatches: [expect.objectContaining({ path: "file.txt", method: "path-blob", worktree: canonicalLinked })],
+			}),
+		)
+	})
+
+	it("recovers native content after stash and keeps its match separate from exact chains", async () => {
+		baseline()
+		await edit("one", "first")
+		git("stash", "push", "-q")
+		git("stash", "pop", "-q")
+		const sha = commit()
+		await reconcileFileTransitions(context("reopened"))
+		expect(contributions()).toEqual([
+			expect.objectContaining({
+				sha,
+				fileMatches: [expect.objectContaining({ path: "file.txt", method: "path-blob" })],
+			}),
+		])
+	})
+
 	it("keeps another session's contribution after a tracked Bash commit", async () => {
 		baseline()
 		const first = context("first")
@@ -110,6 +396,13 @@ describe("manual commit reconciliation", () => {
 		await reconcileFileTransitions(context("repeated"))
 		expect(contributions()).toEqual([
 			expect.objectContaining({ sha, workId, sessionId: "first", paths: ["first.txt"] }),
+			expect.objectContaining({
+				sha,
+				workId,
+				sessionId: "second",
+				paths: ["second.txt"],
+				fileMatches: [expect.objectContaining({ method: "file-chain" })],
+			}),
 		])
 		await flushWorkSummaries()
 		const summary = JSON.parse(readFileSync(join(root, "agent", "work", workId, "work.json"), "utf8"))
@@ -454,6 +747,23 @@ describe("manual commit reconciliation", () => {
 	it("captures concurrent queued writes with pinned work/session and no raw-hook race", async () => {
 		baseline()
 		const ctx = context()
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(event, ctx)
+		await api.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [
+						{ type: "toolCall", id: "first", name: "write" },
+						{ type: "toolCall", id: "second", name: "write" },
+					],
+				},
+			},
+			ctx,
+		)
 		const workId = getWorkId(ctx)
 		const first = createTrackedWriteTool(ctx, "first")
 		const second = createTrackedWriteTool(ctx, "second")
@@ -466,6 +776,11 @@ describe("manual commit reconciliation", () => {
 		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()[0]).toMatchObject({ sha, workId, sessionId: "original" })
 		expect(contributions()[0].transitionIds).toHaveLength(2)
+		expect(
+			rows()
+				.filter((row) => row.type === "file_transition")
+				.map((row) => row.requestId),
+		).toEqual([event.headers["X-Request-Id"], event.headers["X-Request-Id"]])
 	})
 	it("does not attribute a matching transition from a different branch's later baseline", async () => {
 		const base = baseline()
@@ -534,13 +849,28 @@ describe("manual commit reconciliation", () => {
 	it("reconciles fresh work after more than 512 unrelated reflog entries", async () => {
 		baseline()
 		await write("old.txt", "old")
+		const oldWorkId = getWorkId(context())
 		for (let i = 0; i < 513; i++) git("reset", "--soft", "HEAD")
 		const workId = setWorkId(context())
 		await edit("one", "first")
 		const sha = commit()
 		vi.spyOn(console, "warn").mockImplementation(() => {})
 		await reconcileFileTransitions(context("fresh"))
-		expect(contributions()).toEqual([expect.objectContaining({ sha, workId, paths: ["file.txt"] })])
+		expect(contributions()).toEqual([
+			expect.objectContaining({
+				sha,
+				workId,
+				paths: ["file.txt"],
+				fileMatches: [expect.objectContaining({ method: "file-chain" })],
+			}),
+			// Soft resets preserved this file; the new history fallback recovers it with weaker evidence.
+			expect.objectContaining({
+				sha,
+				workId: oldWorkId,
+				paths: ["old.txt"],
+				fileMatches: [expect.objectContaining({ method: "path-blob" })],
+			}),
+		])
 	}, 15000)
 
 	it.each(["amend", "unrelated commit"])("composes same-work edits across an intervening %s", async (kind) => {

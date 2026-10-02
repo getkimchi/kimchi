@@ -68,7 +68,8 @@ describe("requestTimingExtension", () => {
 				await mock.getHandler("before_provider_request")({}, ctx)
 				now.mockReturnValue(end)
 				await mock.getHandler("after_provider_response")({ status: 200, headers: {} }, ctx)
-				await mock.getHandler("message_end")({ message: { role: "assistant" } }, ctx)
+				for (const handler of mock.getHandlers("message_end"))
+					await handler({ message: { role: "assistant", content: [] } }, ctx)
 			}
 			expect(mock.getAppendedEntries("request_diagnostics")).toEqual([
 				expect.objectContaining({ requestStartedAt: new Date(1000).toISOString(), durationMs: 30 }),
@@ -101,7 +102,8 @@ describe("requestTimingExtension", () => {
 				workIds.push(getWorkId(ctx))
 				setWorkId(ctx)
 				await mock.getHandler("after_provider_response")({ status, headers: {} }, ctx)
-				await mock.getHandler("message_end")({ message: { role: "assistant" } }, ctx)
+				for (const handler of mock.getHandlers("message_end"))
+					await handler({ message: { role: "assistant", content: [] } }, ctx)
 			}
 			expect(ids[0]).not.toBe(ids[1])
 			expect(mock.getAppendedEntries("request_diagnostics")).toEqual([
@@ -110,7 +112,8 @@ describe("requestTimingExtension", () => {
 			])
 			await mock.getHandler("before_provider_request")({}, ctx)
 			await mock.getHandler("after_provider_response")({ status: 200, headers: {} }, ctx)
-			await mock.getHandler("message_end")({ message: { role: "assistant" } }, ctx)
+			for (const handler of mock.getHandlers("message_end"))
+				await handler({ message: { role: "assistant", content: [] } }, ctx)
 			const fallback = mock.getAppendedEntries("request_diagnostics").at(-1)
 			expect(fallback).not.toHaveProperty("requestId")
 			expect(fallback).not.toHaveProperty("workId")

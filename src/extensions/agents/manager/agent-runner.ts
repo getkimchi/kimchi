@@ -490,7 +490,7 @@ ${skillLines}`
 		: []
 	const extensionFactories: InlineExtension[] = [
 		telemetryExtension(readTelemetryConfig()),
-		createWorkAttributionExtension(inheritedWorkId),
+		createWorkAttributionExtension(inheritedWorkId ?? null),
 		requestTimingExtension,
 		...autoExtensionFactories,
 		bashExtension,
