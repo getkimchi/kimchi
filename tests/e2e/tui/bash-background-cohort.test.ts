@@ -13,6 +13,9 @@ test.use(TUI_TEST_CONFIG)
 //      silent command is then stopped
 //   4. cancelling a wait (Escape) leaves the command alive — an inspection
 //      confirms it, then it is stopped
+//   5. an unattended exit during continued independent tool work reaches the
+//      NEXT request without a tool-free stop — the model acts on it and
+//      settles
 // Abort-vs-shutdown semantics are covered at unit level in
 // src/extensions/bash-background/bash-control-tool.test.ts and
 // process-registry.test.ts, where abort signals and registry shutdown are
@@ -388,6 +391,131 @@ test("background bash cohort: a checkpoint leaves the command alive; queued inpu
 			expect(contains("Task completion requires a disposition")).toBe(false)
 			// 5 LLM requests: spawn, wait, inspection, stop, final.
 			expect(fixture.fake.requests.length).toBeGreaterThanOrEqual(5)
+		},
+	)
+})
+
+// The starvation regression as a user workflow: a command exits unattended
+// after its handoff while the model keeps doing independent read work. The
+// terminal marker is emitted AT exit (well after the handoff window), so the
+// initial handoff result cannot already contain it. With steering delivery
+// the notification reaches the NEXT request — the model acts on the marker
+// and settles WITHOUT a tool-free stop in between. (With the old followUp
+// delivery the marker stayed invisible through every tool-bearing request;
+// it surfaced only after a tool-free stop, so this workflow could not pass.)
+test("background bash cohort: unattended exit during continued tool work reaches the next request and settles", async ({
+	terminal,
+}) => {
+	// The marker is emitted at process exit (~6s), past the ~2s handoff. The
+	// wider fake context keeps this multi-turn workflow from tripping the
+	// tiny default window's auto-compaction (same pattern as
+	// ask-user-form.test.ts).
+	const EXIT_MARKER = "COHORT-EXIT-MARKER-4d71"
+	const NO_COMPACTION_MODEL = { slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }
+	await runKimchiSession(
+		terminal,
+		{
+			models: [NO_COMPACTION_MODEL],
+			artifactName: "bash-background-cohort-exit-during-tool-work",
+			responses: [
+				// Turn 1: start a command that exits unattended at ~6s, emitting
+				// its unique terminal marker at exit.
+				{
+					stream: ["Starting the marker command."],
+					toolCalls: [
+						{
+							id: "call_bash_marker",
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({ command: `sleep 6 && echo ${EXIT_MARKER}` }),
+							},
+						},
+					],
+				},
+				// Turn 2: independent read work while the command runs (~3s of
+				// streamed text keeps this turn alive past the handoff).
+				{
+					stream: Array.from({ length: 6 }, (_, i) => `independent segment ${i + 1} of 6. `),
+					textDelayMs: 500,
+					toolCalls: [
+						{
+							id: "call_read_1",
+							function: {
+								name: "read",
+								arguments: JSON.stringify({ path: "README.md" }),
+							},
+						},
+					],
+				},
+				// Turn 3: more independent work (~5s) — the command exits unattended
+				// during this turn, so its notification queues as steering for the
+				// NEXT boundary (no tool-free stop is required).
+				{
+					stream: Array.from({ length: 8 }, (_, i) => `continued work segment ${i + 1} of 8. `),
+					textDelayMs: 600,
+					toolCalls: [
+						{
+							id: "call_read_2",
+							function: {
+								name: "read",
+								arguments: JSON.stringify({ path: "README.md" }),
+							},
+						},
+					],
+				},
+				// Turn 4: the model has seen the exit notification at the turn
+				// boundary and acts on the terminal marker — no further tools.
+				{ stream: [`The command finished with ${EXIT_MARKER}; all work is resolved.`] },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Run the marker command and keep reading files until it finishes")
+
+			// The initial handoff arrives (~2s).
+			await waitForText(terminal, /Took 2\.\d+s/, { timeoutMs: STREAM_TIMEOUT_MS * 2 })
+			trace.step("initial background handoff visible")
+
+			// Independent work continues across the exit. The terminal wraps long
+			// streamed paragraphs at arbitrary columns, so the segment waits use
+			// newline-tolerant regexes (a wrap point can split any fixed phrase).
+			await waitForText(terminal, /independent\s+segment\s+1\s+of\s+6/, { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("independent read work started")
+			await waitForText(terminal, /continued\s+work\s+segment\s+8\s+of\s+8/, { timeoutMs: STREAM_TIMEOUT_MS * 3 })
+			trace.step("independent work continued across the exit")
+
+			// The model acts on the terminal marker and settles.
+			await waitForText(terminal, "all work is resolved", { timeoutMs: STREAM_TIMEOUT_MS * 2 })
+			trace.step("model acted on the terminal marker and settled")
+
+			// First-request visibility: the marker first appears in the request
+			// AFTER the turn during which the exit landed — never in the
+			// requests before the exit — and no extra tool-free stop was needed.
+			// Only the main conversation's requests count: the fixture also
+			// records side-channel completions (e.g. title generation on a
+			// different model slug), which would skew request indices.
+			await waitForTurnToSettle(fixture.fake.requests)
+			const mainRequests = fixture.fake.requests.filter(
+				(r) => (r.body as { model?: string } | undefined)?.model === "basic",
+			)
+			const requests = mainRequests.map((r) =>
+				JSON.stringify((r.body as { messages?: unknown[] } | undefined)?.messages ?? []),
+			)
+			expect(requests.length).toBeGreaterThanOrEqual(4)
+			const firstVisible = requests.findIndex((body) => body.includes(EXIT_MARKER))
+			// The spawn and the two read turns precede the exit (~6s lands during
+			// turn 3): the marker is first visible in the request that follows.
+			expect(firstVisible).toBeGreaterThanOrEqual(1)
+			expect(firstVisible).toBeLessThanOrEqual(3)
+			for (let i = 0; i < firstVisible; i++) {
+				expect(requests[i]).not.toContain(EXIT_MARKER)
+			}
+			// Once-per-history payload presence: in the FINAL request's history
+			// the exit notification appears exactly once, and no completion
+			// continuation fired (the exit resolved the state by itself).
+			const finalHistory = requests[requests.length - 1] ?? ""
+			expect(finalHistory.split("[Background bash process ended").length - 1).toBe(1)
+			expect(finalHistory).not.toContain("Task completion requires a disposition")
+			trace.step("first-request visibility and exactly-once delivery confirmed")
 		},
 	)
 })

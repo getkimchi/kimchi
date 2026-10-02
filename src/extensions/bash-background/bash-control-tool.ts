@@ -44,7 +44,9 @@ import { DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS } from "./review-coordinator.js"
 import { type BashSessionState, getSessionState } from "./session-registry.js"
 import {
 	checkpointGuidanceText,
+	emptyWaitText,
 	inspectionHeaderText,
+	pendingDeliveryText,
 	processEvidenceText,
 	terminalResultText,
 	unseenOutputText,
@@ -90,6 +92,8 @@ export interface BashControlDetails {
 	reason?: string
 	/** What kind of response this is (inspection) or what ended the wait (exit/checkpoint/aborted/empty). */
 	event?: BashControlEvent
+	/** Handles whose terminal results are queued for automatic delivery and NOT included in this result. */
+	pendingHandles?: string[]
 	/** Effective bounded wait duration (seconds) used by a wait: true call. */
 	effectiveWaitSeconds?: number
 	/** Actual time spent waiting (seconds), measured — never the requested duration. */
@@ -100,10 +104,10 @@ export const BASH_CONTROL_TOOL_NAME = "bash_control"
 
 export const BASH_CONTROL_TOOL_DESCRIPTION = `Control background bash processes started by the \`bash\` tool.
 
-Background processes continue by default: each process's final exit result is delivered to you automatically. You do NOT need to call this tool to keep a process alive or to collect its output.
+Background processes continue by default: each process's final exit result is delivered to you automatically — it reaches the conversation at the next turn boundary while you keep working, or immediately when the agent is idle. You do NOT need to call this tool to keep a process alive or to collect its output.
 
-- \`wait: false\`: inspect every tracked process now — running runtime, output age, and new output — without stopping anything. Use it before dependent work when you need current status.
-- \`wait: true\`: block until the first cohort exit or a bounded checkpoint (${DEFAULT_WAIT_SECONDS}s by default, at most ${MAX_WAIT_SECONDS}s; set an earlier one with \`waitSeconds\`), then receive one consolidated snapshot with evidence. Use this ONLY when you have no independent work to do — never to poll a single process. Only one wait can be active at a time.
+- \`wait: false\`: inspect every tracked process now — running runtime, output age, and new output — without stopping anything. Use it before dependent work when you need current status. Terminal results that already ended are delivered in the response; results already queued for automatic delivery are reported as pending.
+- \`wait: true\`: block until the first cohort exit or a bounded checkpoint (${DEFAULT_WAIT_SECONDS}s by default, at most ${MAX_WAIT_SECONDS}s; set an earlier one with \`waitSeconds\`), then receive one consolidated snapshot with evidence. Use this ONLY when you have no independent work to do — never to poll a single process. Only one wait can be active at a time. When every process has already ended, the wait returns immediately with the outcomes — pending or delivered — instead of starting a timer; a genuinely empty session answers at once with no wait at all.
 - \`stop_handles\`: stop the named processes now and get their final results in one response. Every unlisted handle keeps running.
 
 At a checkpoint, compare each process's runtime with its expected duration and decide: wait again, investigate, or stop. A checkpoint does not prove a hang — silence alone does not establish a stall.`
@@ -145,17 +149,59 @@ function errorResult(
 	return { content: [{ type: "text", text: `Error: ${message}` }], details: { reason } }
 }
 
-/** Format one terminal result block for `handle` and remove it everywhere. */
+/**
+ * Format one terminal result block for `handle` and retire it everywhere.
+ *
+ * Delivery-state-aware: an outcome already recorded in the shared
+ * terminal-delivery state (its registry entry was removed by the
+ * automatic collector) is resolved from that state — an `available`
+ * outcome is claimed for THIS call and delivered through its result; a
+ * `queued` outcome belongs irreversibly to the automatic notification,
+ * so only its pending status is reported (the payload is never
+ * duplicated). Only a handle with a live registry entry takes the
+ * collect-and-remove path below.
+ */
 async function collectTerminalResult(
 	state: BashSessionState,
 	handle: string,
 	prefix?: string,
-): Promise<{ text: string; resolved: boolean }> {
-	const { registry, coordinator } = state
+	toolCallId?: string,
+): Promise<{ text: string; resolved: boolean; pending?: boolean }> {
+	const { registry, coordinator, delivery } = state
+	// Recorded outcome: the process ended and was collected already.
+	const pending = delivery.getPending(handle)
+	if (pending) {
+		if (pending.phase === "available") {
+			// Already claimed by THIS call (e.g. re-listed after a stop): the
+			// recorded payload is this result's content.
+			const ownClaim =
+				pending.owner !== "automatic" && toolCallId !== undefined && pending.owner.controlCallId === toolCallId
+			const claimed = ownClaim || (toolCallId !== undefined && delivery.claimControl(handle, toolCallId))
+			if (claimed) {
+				return { text: prefix ? `${prefix}\n${pending.payload}` : pending.payload, resolved: true }
+			}
+			if (pending.owner !== "automatic") {
+				return {
+					text: `${prefix ?? ""}Handle '${handle}' is already being resolved by another call; its result is being delivered there.`,
+					resolved: false,
+				}
+			}
+			// The automatic channel enqueued between the check and the claim:
+			// fall through to the pending report.
+		}
+		return {
+			text: `${prefix ?? ""}${pendingDeliveryText(handle)}`,
+			resolved: false,
+			pending: true,
+		}
+	}
 	const entry = registry.getEntry(handle)
 	if (!entry) {
 		return {
-			text: `${prefix ?? ""}Unknown handle '${handle}'. The process already exited and was removed (its result was delivered when it exited).`,
+			text:
+				`${prefix ?? ""}Unknown handle '${handle}' in this session. ` +
+				"No live process, pending exit result, or queued delivery is associated with it — it may never have existed here, " +
+				"or its outcome was already delivered earlier in this conversation.",
 			resolved: false,
 		}
 	}
@@ -173,23 +219,31 @@ async function collectTerminalResult(
 	try {
 		await registry.kill(handle).catch(() => {})
 		const final = registry.finalSnapshot(handle)
+		const text = final
+			? terminalResultText({
+					handle,
+					commandSummary: entry.commandSummary,
+					elapsedSeconds: elapsed,
+					state: final.state,
+					exitCode: final.exitCode,
+					reason: final.reason,
+					deadlineSeconds: entry.deadlineSeconds,
+					output: final.content,
+					truncated: final.truncation?.truncated === true,
+					fullOutputPath: final.fullOutputPath,
+				})
+			: `${prefix ?? ""}Process ${handle} ended before its result could be captured.`
+		// Record the outcome in the shared delivery state (control-owned:
+		// this result is the authoritative carrier) BEFORE removing the
+		// execution resources, so it stays recoverable until acknowledged.
 		coordinator.handleRemoved(handle)
+		if (final) {
+			delivery.record(handle, text, toolCallId ? { controlCallId: toolCallId } : "automatic")
+		}
 		await registry.remove(handle).catch(() => {})
 		if (!final) {
-			return { text: `${prefix ?? ""}Process ${handle} ended before its result could be captured.`, resolved: false }
+			return { text, resolved: false }
 		}
-		const text = terminalResultText({
-			handle,
-			commandSummary: entry.commandSummary,
-			elapsedSeconds: elapsed,
-			state: final.state,
-			exitCode: final.exitCode,
-			reason: final.reason,
-			deadlineSeconds: entry.deadlineSeconds,
-			output: final.content,
-			truncated: final.truncation?.truncated === true,
-			fullOutputPath: final.fullOutputPath,
-		})
 		return { text: prefix ? `${prefix}\n${text}` : text, resolved: true }
 	} catch (err) {
 		// A failed collection must not leave the terminal claim locked:
@@ -211,26 +265,58 @@ interface CohortSnapshot {
 	terminalBlocks: string[]
 	/** Running-evidence blocks (identity, runtime, output, streaks). */
 	runningBlocks: string[]
+	/** Pending-delivery status lines (outcomes owned by the automatic channel). */
+	pendingBlocks: string[]
 	exitedHandles: string[]
+	/** Handles whose terminal results are queued for automatic delivery. */
+	pendingHandles: string[]
 	runningHandles: string[]
 }
 
 /**
  * Shared collection routine for inspection, checkpoint, and exit
- * responses: sweeps terminal entries (delivering their results exactly
+ * responses: sweeps terminal outcomes (delivering their results exactly
  * once through this response), captures running snapshots with evidence,
  * and advances delivered cursors only for output actually included here.
+ * Terminal outcomes already recorded in the shared delivery state are
+ * swept FIRST: an available outcome is claimed for this call and
+ * delivered; a queued outcome is reported as pending (the automatic
+ * notification owns the payload).
  */
 async function collectCohortSnapshot(
 	state: BashSessionState,
-	opts: { settlementCheckpoint?: boolean } = {},
+	opts: { settlementCheckpoint?: boolean; toolCallId?: string } = {},
 ): Promise<CohortSnapshot> {
-	const { registry, coordinator } = state
+	const { registry, coordinator, delivery } = state
 	const snapshot: CohortSnapshot = {
 		terminalBlocks: [],
 		runningBlocks: [],
+		pendingBlocks: [],
 		exitedHandles: [],
+		pendingHandles: [],
 		runningHandles: [],
+	}
+
+	// Pending-delivery sweep: every recorded terminal outcome whose
+	// registry entry was already removed (collected by the automatic
+	// channel, or released after a cancelled run). A handle delivered
+	// earlier in this same call (stop list) is not repeated.
+	for (const handle of delivery.pendingHandles()) {
+		if (snapshot.exitedHandles.includes(handle)) continue
+		const recorded = delivery.getPending(handle)
+		// A pending claimed by THIS call (stop list) was already delivered
+		// through this result; re-listing it would duplicate the payload.
+		if (recorded && recorded.owner !== "automatic" && recorded.owner.controlCallId === opts.toolCallId) {
+			continue
+		}
+		const result = await collectTerminalResult(state, handle, undefined, opts.toolCallId)
+		if (result.resolved) {
+			snapshot.terminalBlocks.push(result.text)
+			snapshot.exitedHandles.push(handle)
+		} else if (result.pending) {
+			snapshot.pendingBlocks.push(result.text)
+			snapshot.pendingHandles.push(handle)
+		}
 	}
 
 	// Terminal sweep: every cohort handle that reached a terminal state —
@@ -240,9 +326,13 @@ async function collectCohortSnapshot(
 	for (const handle of [...coordinator.handles()]) {
 		const entry = registry.getEntry(handle)
 		if (!entry || entry.state === "running") continue
-		const result = await collectTerminalResult(state, handle)
+		const result = await collectTerminalResult(state, handle, undefined, opts.toolCallId)
 		snapshot.terminalBlocks.push(result.text)
 		if (result.resolved) snapshot.exitedHandles.push(handle)
+		else if (result.pending) {
+			snapshot.pendingBlocks.push(result.text)
+			snapshot.pendingHandles.push(handle)
+		}
 	}
 
 	// Running evidence: identity, runtime, output age, checkpoint streak,
@@ -289,6 +379,9 @@ function snapshotBlocks(mode: SnapshotMode, snapshot: CohortSnapshot): string[] 
 		blocks.push(`Cohort event: process exited (${mode.handle}).`)
 	}
 	blocks.push(...snapshot.terminalBlocks)
+	if (snapshot.pendingBlocks.length > 0) {
+		blocks.push(`Awaiting automatic delivery (${snapshot.pendingHandles.length}):`, ...snapshot.pendingBlocks)
+	}
 	if (snapshot.runningHandles.length > 0) {
 		if (mode.kind === "inspection") blocks.push(inspectionHeaderText(snapshot.runningHandles.length))
 		else if (mode.kind === "exit") blocks.push(`Still running (${snapshot.runningHandles.length}):`)
@@ -297,8 +390,12 @@ function snapshotBlocks(mode: SnapshotMode, snapshot: CohortSnapshot): string[] 
 	if (mode.kind === "checkpoint" && snapshot.runningHandles.length > 0) {
 		blocks.push(checkpointGuidanceText())
 	}
-	if (snapshot.exitedHandles.length === 0 && snapshot.runningHandles.length === 0) {
-		blocks.push("No background processes remain running.")
+	if (
+		snapshot.exitedHandles.length === 0 &&
+		snapshot.runningHandles.length === 0 &&
+		snapshot.pendingHandles.length === 0
+	) {
+		blocks.push("No background processes or pending results remain.")
 	}
 	return blocks
 }
@@ -359,14 +456,14 @@ export function createBashControlToolDefinition(
 
 		// ── Apply explicit stops (continuation is the default for the rest). ──
 		for (const handle of stopHandles) {
-			const result = await collectTerminalResult(state, handle)
+			const result = await collectTerminalResult(state, handle, undefined, toolCallId)
 			blocks.push(result.text)
 			if (result.resolved) exitedHandles.push(handle)
 		}
 
 		// ── wait: false → immediate inspection (stops applied above). ──
 		if (!wait) {
-			const snapshot = await collectCohortSnapshot(state)
+			const snapshot = await collectCohortSnapshot(state, { toolCallId })
 			blocks.push(...snapshotBlocks({ kind: "inspection" }, snapshot))
 			exitedHandles.push(...snapshot.exitedHandles)
 			// An inspection response reports fresh evidence: reset the
@@ -377,19 +474,41 @@ export function createBashControlToolDefinition(
 				details: {
 					exitedHandles,
 					runningHandles: snapshot.runningHandles,
+					pendingHandles: snapshot.pendingHandles,
 					event: "inspection",
 				},
 			}
 		}
 
 		// ── Cohort wait. ──
+		// Terminal outcomes awaiting delivery surface IMMEDIATELY: pending
+		// results are checked BEFORE deciding the cohort is empty or starting
+		// the wait timer, so a wait never sleeps on a session whose only work
+		// has already ended.
 		if (coordinator.size === 0) {
-			blocks.push("No background processes remain running; nothing to wait for.")
+			const snapshot = await collectCohortSnapshot(state, { toolCallId })
+			exitedHandles.push(...snapshot.exitedHandles)
+			if (snapshot.exitedHandles.length > 0 || snapshot.pendingHandles.length > 0) {
+				// Fresh terminal outcomes (or recovered post-abort outcomes)
+				// surfaced by the sweep — queued-only outcomes report an
+				// inspection; anything delivered makes it an exit response.
+				const mode: SnapshotMode =
+					snapshot.exitedHandles.length === 0
+						? { kind: "inspection" }
+						: { kind: "exit", handle: snapshot.exitedHandles[0] ?? "" }
+				blocks.push(...snapshotBlocks(mode, snapshot))
+			} else if (exitedHandles.length > 0) {
+				// Only stop outcomes — already delivered in this result above.
+				blocks.push("No background processes or pending results remain.")
+			} else {
+				blocks.push(emptyWaitText())
+			}
 			return {
 				content: [{ type: "text", text: blocks.join("\n\n") }],
 				details: {
 					exitedHandles,
-					event: exitedHandles.length > 0 ? "exit" : "empty",
+					pendingHandles: snapshot.pendingHandles,
+					event: exitedHandles.length > 0 ? "exit" : snapshot.pendingHandles.length > 0 ? "inspection" : "empty",
 				},
 			}
 		}
@@ -442,6 +561,7 @@ export function createBashControlToolDefinition(
 					: { kind: "inspection" }
 		const snapshot = await collectCohortSnapshot(state, {
 			settlementCheckpoint: event.kind === "checkpoint",
+			toolCallId,
 		})
 		blocks.push(...snapshotBlocks(mode, snapshot))
 		exitedHandles.push(...snapshot.exitedHandles)
@@ -451,9 +571,15 @@ export function createBashControlToolDefinition(
 		// also delivered terminal results in this response: a stop-plus-wait
 		// that times out is still a checkpoint for the survivors (their
 		// consecutive-checkpoint count increments), while a wait resolved by
-		// an exit is a terminal-event response (their streaks reset).
+		// an exit is a terminal-event response (their streaks reset). A wait
+		// that settled because the cohort drained reports the exits its
+		// outcomes represent, never a genuinely empty session.
 		const responseEvent: BashControlEvent =
-			event.kind === "checkpoint" ? "checkpoint" : event.kind === "exit" ? "exit" : "empty"
+			event.kind === "checkpoint"
+				? "checkpoint"
+				: event.kind === "exit" || snapshot.exitedHandles.length > 0 || snapshot.pendingHandles.length > 0
+					? "exit"
+					: "empty"
 		if (responseEvent === "checkpoint") coordinator.commitWaitTimeout(snapshot.runningHandles)
 		else coordinator.commitObservation(snapshot.runningHandles)
 
@@ -462,6 +588,7 @@ export function createBashControlToolDefinition(
 			details: {
 				exitedHandles,
 				runningHandles: snapshot.runningHandles,
+				pendingHandles: snapshot.pendingHandles,
 				event: responseEvent,
 				effectiveWaitSeconds,
 				waitedSeconds,

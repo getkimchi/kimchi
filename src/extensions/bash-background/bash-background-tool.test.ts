@@ -17,6 +17,7 @@ import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
 import { createProcessRegistry } from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
 import type { BashSessionState } from "./session-registry.js"
+import { createTerminalDelivery } from "./terminal-delivery.js"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -25,6 +26,7 @@ function makeState(handoffSeconds: number): BashSessionState {
 	return {
 		registry,
 		coordinator: createReviewCoordinator({ registry, handoffSeconds }),
+		delivery: createTerminalDelivery(),
 		limitSeconds: 600,
 	}
 }

@@ -27,6 +27,7 @@ import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
 import { createProcessRegistry, DEFAULT_BASH_PROCESS_LIMIT_SECONDS } from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
 import { getSessionState, setSessionState } from "./session-registry.js"
+import { createTerminalDelivery } from "./terminal-delivery.js"
 
 /**
  * Create a background-bash extension. Registers the background `bash` tool
@@ -42,7 +43,8 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 		const registry = createProcessRegistry()
 		const limitSeconds = resolveBashProcessLimitSeconds() ?? DEFAULT_BASH_PROCESS_LIMIT_SECONDS
 		const coordinator = createReviewCoordinator({ registry })
-		setSessionState({ registry, coordinator, limitSeconds, cwd: sessionCtx.cwd })
+		const delivery = createTerminalDelivery()
+		setSessionState({ registry, coordinator, delivery, limitSeconds, cwd: sessionCtx.cwd })
 
 		// Re-register `bash` with the background execution definition.
 		// The description is the bash-tool-guard steering text so the

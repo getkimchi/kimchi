@@ -758,9 +758,9 @@ export function createProcessRegistry(): ProcessRegistry {
 		const entry = entries.get(handle)
 		if (!entry) return undefined
 		const snap = entry.accumulator.snapshot({ persistIfTruncated: true })
-		// De-duplicate output the model already received at reviews: the
-		// retained tail window may overlap the delivered stream range, so
-		// drop the already-delivered prefix instead of re-sending it.
+		// De-duplicate output the model already received in earlier
+		// results: the retained tail window may overlap the delivered stream
+		// range, so drop the already-delivered prefix instead of re-sending it.
 		const retainedStart = snap.truncation.totalBytes - byteLength(snap.content)
 		const deliveredOverlap = entry.deliveredCursor - retainedStart
 		const content = deliveredOverlap > 0 ? sliceBufferText(snap.content, deliveredOverlap) : snap.content
