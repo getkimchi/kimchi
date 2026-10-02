@@ -188,7 +188,7 @@ describe("todo widget helpers", () => {
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
 		const lines = instance.render(120)
-		expect(lines[0]).toBe("▼ Todos · Global · 9/16 · 7 active (F7)")
+		expect(lines[0]).toBe("▼ Todos · Global · 9/16 · 7 active · ⠋ 1 running (F7)")
 		expect(lines).toContain("↑ 7 more")
 		expect(lines).toContain("  8.  ✓ task 8")
 		expect(lines).toContain("  9.  ✓ task 9")
@@ -587,13 +587,23 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		)
 	})
 
+	it("shows a live spinner count when work is in progress", () => {
+		const counts = { total: 4, completed: 1, pending: 2, blocked: 0, inProgress: 1 }
+		expect(buildTodoHeaderLine(theme, counts, true, { scopeLabel: "Global" })).toBe(
+			"▶ Todos · Global · 1/4 · 3 active · ⠋ 1 running (F7)",
+		)
+		expect(buildTodoHeaderLine(theme, counts, false, { scopeLabel: "Global" })).toBe(
+			"▼ Todos · Global · 1/4 · 3 active · ⠋ 1 running (F7)",
+		)
+	})
+
 	it("appends the blocked count to the header when present", () => {
 		const counts = { total: 4, completed: 1, pending: 1, blocked: 1, inProgress: 1 }
 		expect(buildTodoHeaderLine(theme, counts, false, { scopeLabel: "Global" })).toBe(
-			"▼ Todos · Global · 1/4 · 3 active · 1 blocked (F7)",
+			"▼ Todos · Global · 1/4 · 3 active · ⠋ 1 running · 1 blocked (F7)",
 		)
 		expect(buildTodoHeaderLine(theme, counts, true, { scopeLabel: "Global" })).toBe(
-			"▶ Todos · Global · 1/4 · 3 active · 1 blocked (F7)",
+			"▶ Todos · Global · 1/4 · 3 active · ⠋ 1 running · 1 blocked (F7)",
 		)
 	})
 
@@ -635,6 +645,31 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		syncTodoWidget(ctx)
 
 		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/6 · 6 active (F7)"])
+	})
+
+	it("auto-collapses when the expanded height would exceed ~25% of terminal rows", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		// Raise the item-count threshold so only the height rule applies.
+		process.env.KIMCHI_TODOS_COLLAPSE_THRESHOLD = "10"
+		try {
+			applyWriteTodos(
+				{
+					todos: Array.from({ length: 6 }, (_, index) => ({
+						content: `task ${index + 1}`,
+						status: "pending",
+					})),
+				},
+				TEST_SESSION_ID,
+			)
+			syncTodoWidget(ctx)
+			const component = setWidget.mock.calls[0][1]
+			// 24-row terminal → 25% = 6; header+6 body = 7 > 6 → collapse
+			const instance = component({ requestRender: vi.fn(), terminal: { rows: 24 } }, theme)
+			expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/6 · 6 active (F7)"])
+		} finally {
+			delete process.env.KIMCHI_TODOS_COLLAPSE_THRESHOLD
+		}
 	})
 
 	it("honours KIMCHI_TODOS_COLLAPSE_THRESHOLD", () => {
@@ -684,7 +719,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		syncTodoWidget(ctx)
 
 		const lines = renderWidget(setWidget)
-		expect(lines).toContain("▼ Todos · Global · 0/6 · 6 active (F7)")
+		expect(lines).toContain("▼ Todos · Global · 0/6 · 6 active · ⠋ 1 running (F7)")
 		expect(lines).toContain("  6.  ▶ task 6")
 	})
 
@@ -773,7 +808,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 
 		const lines = renderWidget(setWidget)
 		// Aggregate header counts both scopes (no single scope name)
-		expect(lines).toContain("▼ Todos · 0/2 · 2 active (F7)")
+		expect(lines).toContain("▼ Todos · 0/2 · 2 active · ⠋ 1 running (F7)")
 		expect(lines).toContain("Todos · Step (phase-1/step-1)")
 		expect(lines).toContain("Todos · Global")
 		expect(lines).toContain("  1.  ▶ step task")
@@ -948,7 +983,7 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 		applyWriteTodos({ todos: [{ id: 1, content: "task 1", status: "in_progress" }] }, TEST_SESSION_ID)
 		syncTodoWidget(ctx)
 
-		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/1 · 1 active (F7)"])
+		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/1 · 1 active · ⠋ 1 running (F7)"])
 	})
 
 	it("lets wheel fall through on the collapsed one-liner, and ignores right-click", () => {
