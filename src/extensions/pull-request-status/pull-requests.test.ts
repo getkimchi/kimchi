@@ -578,6 +578,69 @@ describe("bounded and safe HTTP lookup", () => {
 		expect(http).toHaveBeenCalledTimes(4)
 		expect(saved().at(-1).prLookup.error).toContain("redirect")
 	})
+	it("waits for an unpublished GitHub commit and links it after push", async () => {
+		seed()
+		replies(() => Response.json({ message: `No commit found for SHA: ${sha}` }, { status: 422 }))
+		await lookup()
+		expect(saved().at(-1)).toMatchObject({ prLookup: { status: "pending" }, pullRequests: [] })
+		expect(saved().at(-1).prLookup).not.toHaveProperty("error")
+		replies(() => [pull()])
+		await lookup()
+		expect(saved().at(-1)).toMatchObject({
+			prLookup: { status: "linked" },
+			pullRequests: [{ number: 7 }],
+		})
+	})
+	it.each([
+		["github", "validation error", JSON.stringify({ message: "Validation Failed: secret" })],
+		["github", "different commit", JSON.stringify({ message: `No commit found for SHA: ${"b".repeat(40)}` })],
+		["github", "malformed JSON", "secret invalid json"],
+		["gitlab", "GitHub-shaped error", JSON.stringify({ message: `No commit found for SHA: ${sha}` })],
+	] as const)("keeps %s HTTP 422 %s as an error", async (provider, _description, body) => {
+		seed()
+		useProvider(provider)
+		replies(() => new Response(body, { status: 422 }))
+		await lookup()
+		expect(saved().at(-1).prLookup).toMatchObject({ status: "error" })
+		expect(JSON.stringify(saved())).not.toContain("secret")
+	})
+	it("does not treat a missing-commit message from the repository endpoint as pending", async () => {
+		seed()
+		http.mockImplementation(async () => Response.json({ message: `No commit found for SHA: ${sha}` }, { status: 422 }))
+		await lookup()
+		expect(saved().at(-1).prLookup).toMatchObject({ status: "error", error: expect.stringContaining("HTTP 422") })
+	})
+	it("bounds the GitHub missing-commit error body", async () => {
+		seed()
+		const cancel = vi.fn()
+		replies(
+			() =>
+				new Response(
+					new ReadableStream({
+						start(controller) {
+							controller.enqueue(new Uint8Array(4 * 1024 * 1024 + 1))
+						},
+						cancel,
+					}),
+					{ status: 422 },
+				),
+		)
+		await lookup()
+		expect(cancel).toHaveBeenCalledOnce()
+		expect(saved().at(-1).prLookup.error).toContain("lookup limit")
+	})
+	it("times out a stalled GitHub missing-commit error body", async () => {
+		seed()
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+		const cancel = vi.fn()
+		replies(() => new Response(new ReadableStream({ cancel }), { status: 422 }))
+		const pending = lookup()
+		await vi.waitFor(() => expect(http).toHaveBeenCalledTimes(2))
+		await vi.advanceTimersByTimeAsync(5000)
+		await pending
+		expect(cancel).toHaveBeenCalledOnce()
+		expect(saved().at(-1).prLookup.error).toContain("timed out")
+	})
 	it.each([
 		[401, "authentication failed"],
 		[403, "denied access"],
@@ -831,13 +894,19 @@ describe("durable work pull request discovery", () => {
 			closedAt: null,
 		})
 	})
-	it.each(
-		providers,
-	)("replays %s links after restart when the old SHA disappears and a closed request reopens", async (provider) => {
+	it.each([
+		["github", 404],
+		["gitlab", 404],
+		["github", 422],
+	] as const)("replays %s links after restart when the old SHA returns HTTP %i and a closed request reopens", async (provider, status) => {
 		seed({ pullRequests: [stored(provider, { state: "closed", closedAt: "2026-10-01T12:00:00Z" })] })
 		useProvider(provider)
 		replies((url) =>
-			url.pathname.includes("/commits/") ? new Response(null, { status: 404 }) : provider === "github" ? pull() : mr(),
+			url.pathname.includes("/commits/")
+				? Response.json({ message: `No commit found for SHA: ${sha}` }, { status })
+				: provider === "github"
+					? pull()
+					: mr(),
 		)
 		vi.resetModules()
 		const relaunched = await import("./pull-requests.js")

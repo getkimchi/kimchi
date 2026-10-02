@@ -465,7 +465,13 @@ async function requestJSON(
 					throw new LookupError(`${label(repository)} rate limit reached. Kimchi will retry after the limit resets.`)
 				continue
 			}
-			if (!response.ok) {
+			// GitHub returns 422 while a locally recorded commit has not been pushed.
+			// Inspect only that endpoint's bounded body; other validation errors stay errors.
+			const missingCommitSha =
+				repository.provider === "github" && response.status === 422
+					? /^\/(?:api\/v3\/)?repos\/[^/]+\/[^/]+\/commits\/([a-f\d]{40}|[a-f\d]{64})\/pulls$/i.exec(url.pathname)?.[1]
+					: undefined
+			if (!response.ok && (!missingCommitSha || limitedUntil)) {
 				await response.body?.cancel()
 				if (limitedUntil)
 					throw new LookupError(`${label(repository)} rate limit reached. Kimchi will retry after the limit resets.`)
@@ -501,11 +507,18 @@ async function requestJSON(
 				chunks.push(chunk.value)
 			}
 			requestSignal.throwIfAborted()
+			let value: unknown
 			try {
-				return { value: JSON.parse(Buffer.concat(chunks).toString("utf8")), headers: response.headers, url, bytes }
+				value = JSON.parse(Buffer.concat(chunks).toString("utf8"))
 			} catch {
 				throw new LookupError(`${label(repository)} returned invalid JSON.`, false, true)
 			}
+			if (missingCommitSha) {
+				if (!object(value) || value.message !== `No commit found for SHA: ${missingCommitSha}`)
+					throw new LookupError("GitHub lookup failed (HTTP 422). Kimchi will retry.")
+				value = []
+			}
+			return { value, headers: response.headers, url, bytes }
 		}
 		throw new LookupError(`${label(repository)} returned too many redirects.`)
 	} catch (error) {
