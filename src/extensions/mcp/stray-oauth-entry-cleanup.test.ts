@@ -34,6 +34,16 @@ describe("parseDumpedAccounts", () => {
 		expect(parseDumpedAccounts(output, SERVICE)).toEqual(["some account with spaces"])
 	})
 
+	it("skips entries whose acct renders as a hex blob instead of a string", () => {
+		const output = `class: "genp"
+attributes:
+    0x00000007 <blob>="${SERVICE}"
+    "acct"<blob>=0x31323334  "1234"\u0000
+    "svce"<blob>="${SERVICE}"
+`
+		expect(parseDumpedAccounts(output, SERVICE)).toEqual([])
+	})
+
 	it("returns nothing for empty output", () => {
 		expect(parseDumpedAccounts("", SERVICE)).toEqual([])
 	})
@@ -56,7 +66,7 @@ describe("cleanupStrayMcpOAuthEntries", () => {
 		const deleted: string[] = []
 		const result = cleanupStrayMcpOAuthEntries(runnerWith(dump, deleted))
 		expect(deleted).toEqual(["Bearer"])
-		expect(result).toEqual({ scanned: 3, removed: ["Bearer"], failed: false })
+		expect(result).toEqual({ scanned: 3, removed: ["Bearer"], failedDeletes: [], failed: false })
 	})
 
 	it("leaves a healthy keychain untouched", () => {
@@ -67,8 +77,17 @@ describe("cleanupStrayMcpOAuthEntries", () => {
 		expect(result.removed).toEqual([])
 	})
 
+	it("reports delete failures instead of silently skipping them", () => {
+		const dump = entry(SERVICE, "Bearer")
+		const result = cleanupStrayMcpOAuthEntries((args) => {
+			if (args[0] === "dump-keychain") return { stdout: dump, stderr: "", status: 0, error: undefined }
+			return { stdout: "", stderr: "denied", status: 51, error: undefined }
+		})
+		expect(result).toEqual({ scanned: 1, removed: [], failedDeletes: ["Bearer"], failed: false })
+	})
+
 	it("reports failure when dump-keychain fails", () => {
 		const result = cleanupStrayMcpOAuthEntries(() => ({ stdout: "", stderr: "err", status: 1, error: undefined }))
-		expect(result).toEqual({ scanned: 0, removed: [], failed: true })
+		expect(result).toEqual({ scanned: 0, removed: [], failedDeletes: [], failed: true })
 	})
 })

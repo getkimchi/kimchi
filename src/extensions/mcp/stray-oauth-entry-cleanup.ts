@@ -1,3 +1,5 @@
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { defaultSecurityRunner, MCP_OAUTH_SERVICE, type SecurityToolRunner } from "./keyring-require-bridge.js"
 
 /**
@@ -43,18 +45,22 @@ export function parseDumpedAccounts(output: string, service: string): string[] {
 export function cleanupStrayMcpOAuthEntries(
 	runner: SecurityToolRunner = defaultSecurityRunner,
 	service: string = MCP_OAUTH_SERVICE,
-): { scanned: number; removed: string[]; failed: boolean } {
-	const dump = runner(["dump-keychain"])
-	if (dump.status !== 0) return { scanned: 0, removed: [], failed: true }
+): { scanned: number; removed: string[]; failedDeletes: string[]; failed: boolean } {
+	// Scope the dump to the login keychain (where kimchi's writes land) so the
+	// scan does not walk other keychains in the search list.
+	const dump = runner(["dump-keychain", join(homedir(), "Library", "Keychains", "login.keychain-db")])
+	if (dump.status !== 0) return { scanned: 0, removed: [], failedDeletes: [], failed: true }
 
 	const accounts = parseDumpedAccounts(dump.stdout, service)
 	const removed: string[] = []
+	const failedDeletes: string[] = []
 	for (const account of accounts) {
 		if (VALID_ACCOUNT.test(account)) continue
 		const del = runner(["delete-generic-password", "-s", service, "-a", account])
 		if (del.status === 0) removed.push(account)
+		else failedDeletes.push(account)
 	}
-	return { scanned: accounts.length, removed, failed: false }
+	return { scanned: accounts.length, removed, failedDeletes, failed: false }
 }
 
 /** Entry point for extension install: run cleanup once per process, macOS only, quietly. */
@@ -63,10 +69,15 @@ export function cleanupStrayMcpOAuthEntriesBestEffort(): void {
 	if (cleanupRan) return
 	cleanupRan = true
 	try {
-		const { removed } = cleanupStrayMcpOAuthEntries()
+		const { removed, failedDeletes } = cleanupStrayMcpOAuthEntries()
 		if (removed.length > 0) {
 			console.warn(
 				`[mcp] removed ${removed.length} stray OAuth keychain entr${removed.length === 1 ? "y" : "ies"} under ${MCP_OAUTH_SERVICE} (unrecognized account names); re-run \`kimchi mcp auth\` if a server now fails to authenticate`,
+			)
+		}
+		if (failedDeletes.length > 0) {
+			console.warn(
+				`[mcp] could not remove ${failedDeletes.length} stray OAuth keychain entr${failedDeletes.length === 1 ? "y" : "ies"} under ${MCP_OAUTH_SERVICE} (${failedDeletes.join(", ")}); remove ${failedDeletes.length === 1 ? "it" : "them"} via Keychain Access if OAuth misbehaves`,
 			)
 		}
 	} catch (error) {

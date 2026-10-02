@@ -19,6 +19,13 @@
 #     sends "Accept: application/json, text/event-stream")
 #   - DCR clientInfo version: hardcoded "2.11.0" in mcp-auth-flow; remove
 #     when upstream derives it from the package version
+# REBASER TRAP: src/extensions/mcp/stray-oauth-entry-cleanup.ts deletes any
+#   dev.kimchi.mcp.oauth keychain entry whose account is NOT sha256-<64hex>
+#   (or a .chunk.<16hex>.<n> piece) — the shapes this adapter version
+#   writes. On every adapter pin bump, re-verify the account shapes in the
+#   new mcp-auth.ts (getAuthEntryAccount / chunk accounts) and extend
+#   VALID_ACCOUNT before release, or the cleanup will delete valid
+#   credentials for new shapes.
 # Changes:
 #   - agent-dir/config (+dist mirrors): resolve the MCP project config
 #     directory via piConfig.mcpProjectConfigDir so project MCP config can
