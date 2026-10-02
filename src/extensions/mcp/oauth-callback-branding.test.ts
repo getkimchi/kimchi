@@ -51,6 +51,16 @@ describe("MCP OAuth callback branding", () => {
 		expect(html).not.toContain('<script>alert("x")</script>')
 	})
 
+	it("brands the stale-callback page as completed rather than as a CSRF failure", () => {
+		const html = brandMcpOAuthCallbackHtml(adapterPage("Authorization No Longer Active"))
+
+		expect(html).toContain('fill="#FF521D"')
+		expect(html).toContain("<title>MCP Authorization No Longer Active</title>")
+		expect(html).toContain("already completed or was superseded")
+		expect(html).not.toContain("MCP Authorization Failed")
+		expect(html).not.toContain("CSRF")
+	})
+
 	it("brands the adapter manual-completion page without losing its instructions", () => {
 		const html = brandMcpOAuthCallbackHtml(adapterPage("Authorization Received"))
 
