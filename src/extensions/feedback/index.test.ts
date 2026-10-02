@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext, sendTerminalInput } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "../auto-model/state.js"
+import { STALE_CTX_MESSAGE_PREFIX } from "../stale-ctx.js"
 import feedbackExtension from "./index.js"
 
 /**
@@ -728,7 +729,8 @@ describe("feedbackExtension stale ctx handling", () => {
 	// Print mode's SIGTERM/SIGHUP handler disposes the runtime, which aborts an
 	// in-flight prompt and invalidates the extension runner — but upstream still
 	// emits agent_settled afterwards, delivering a stale ctx to the handler.
-	const STALE_MESSAGE = "This extension ctx is stale after session replacement or reload"
+	// Built from the shared prefix so fixtures track the guard's match string.
+	const STALE_MESSAGE = STALE_CTX_MESSAGE_PREFIX
 
 	function staleCtx(): ExtensionContext {
 		const ctx = createContext()

@@ -147,15 +147,19 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		// stale ctx here. The rating bookkeeping below is best-effort, so bail
 		// on stale-ctx instead of surfacing the error.
 		try {
-			state = "inviting"
+			// All stale-prone ctx reads happen before any module-state mutation,
+			// so a torn-down session leaves the extension state fully untouched.
 			const sessionId = ctx.sessionManager.getSessionId()
-			autoModelUsed = isAutoRoutedModel(ctx.model)
+			const usedAutoModel = isAutoRoutedModel(ctx.model)
 			// Capture the concrete pick the router served, so `routing_model` reports
 			// the resolved model (e.g. `glm-5.3`) rather than the requested virtual id
 			// (`auto-beta`). Undefined when auto wasn't used or hasn't resolved yet.
 			const routingState = getAutoRoutingState(sessionId)
-			routedUsedId = routingState.status === "resolved" ? routingState.model.id : undefined
+			const resolvedModelId = routingState.status === "resolved" ? routingState.model.id : undefined
 			listenForLegacyRatingKey(ctx)
+			state = "inviting"
+			autoModelUsed = usedAutoModel
+			routedUsedId = resolvedModelId
 		} catch (err) {
 			if (!isStaleCtxError(err)) throw err
 		}
@@ -194,7 +198,10 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 			// The timer lives outside upstream's emit error boundary: if the
 			// runtime was disposed in the meantime, pi is stale and appendEntry
 			// throws — swallow that specific case instead of crashing the
-			// process with an uncaught timer exception.
+			// process with an uncaught timer exception. Non-stale errors are
+			// re-thrown on purpose: timers have no error boundary, so an
+			// unexpected appendEntry failure crashes loudly by design (this
+			// fail-fast path is intentionally untested).
 			try {
 				pi.appendEntry(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, payload)
 			} catch (err) {
