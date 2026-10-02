@@ -983,9 +983,18 @@ describe("updateModelsConfig", () => {
 			sunset_at: "2099-01-01T00:00:00Z",
 		}
 		const sunsetModel = { ...announcedModel, slug: "gone-model", sunset_at: "2020-01-01T00:00:00Z" }
+		// Sunset-only record (vendor retirement, no announced deprecation):
+		// joins the de-emphasized tail with the deprecated entries.
+		const retiringModel = {
+			...announcedModel,
+			slug: "aaa-retiring-model",
+			deprecated_at: undefined,
+			replacement_model: undefined,
+			sunset_at: "2099-01-01T00:00:00Z",
+		}
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
-			json: async () => ({ models: [announcedModel, pastDeprecatedModel, sunsetModel, freshModel] }),
+			json: async () => ({ models: [announcedModel, pastDeprecatedModel, sunsetModel, freshModel, retiringModel] }),
 		} as Response)
 
 		const result = await updateModelsConfig(modelsJsonPath, "test-key")
@@ -997,10 +1006,10 @@ describe("updateModelsConfig", () => {
 		// Past-deprecated-but-not-sunset models stay listed (served until sunset).
 		const inWindow = result.models.find((m) => m.slug === "in-window-model")
 		expect(inWindow?.sunset_at).toBe("2099-01-01T00:00:00Z")
-		// Deprecated entries (both announced and past) sort after
-		// non-deprecated ones, alphabetically within the group.
+		// Entries with any deprecation signal (announced, past, or
+		// sunset-only) sort after active ones, alphabetically within the group.
 		const slugs = result.models.map((m) => m.slug)
-		expect(slugs).toEqual(["fresh-model", "in-window-model", "old-model"])
+		expect(slugs).toEqual(["fresh-model", "aaa-retiring-model", "in-window-model", "old-model"])
 		// Past-sunset models are excluded from the active list.
 		expect(result.models.some((m) => m.slug === "gone-model")).toBe(false)
 

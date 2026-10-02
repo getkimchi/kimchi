@@ -111,7 +111,7 @@ export interface ModelMetadata {
 	/** The proxy's routing decision for this slug: "translate" when requests
 	 *  are rewritten to replacement_model, absent when served as-is. Only set
 	 *  on listed entries; models the proxy would reject are never listed. */
-	serving_action?: "translate" | string
+	serving_action?: "translate" | (string & {})
 }
 
 interface ModelsMetadataResponse {
@@ -120,16 +120,18 @@ interface ModelsMetadataResponse {
 
 /**
  * Selector ordering: serverless first, then the rest; within each group,
- * non-deprecated models first — deprecated-but-still-servable entries keep
- * working but are visually de-emphasized so new selection flows onto the
- * non-deprecated catalog. Within each of the four groups models are sorted
- * alphabetically by slug: the raw catalog order interleaves families
- * arbitrarily, which made /scoped-models' unticked section unreadable.
+ * active models first — entries with any deprecation signal (announced or
+ * past deprecated, or a vendor retirement / sunset-only record) keep working
+ * but are visually de-emphasized so new selection flows onto the active
+ * catalog. Within each of the four groups models are sorted alphabetically
+ * by slug: the raw catalog order interleaves families arbitrarily, which
+ * made /scoped-models' unticked section unreadable.
  */
 function sortModels(models: ModelMetadata[]): ModelMetadata[] {
 	const bySlug = (list: ModelMetadata[]) => [...list].sort((a, b) => a.slug.localeCompare(b.slug))
-	const nonDeprecated = (list: ModelMetadata[]) => bySlug(list.filter((m) => !m.deprecated_at))
-	const deprecated = (list: ModelMetadata[]) => bySlug(list.filter((m) => m.deprecated_at))
+	const isActive = (m: ModelMetadata) => deriveDeprecationState(m, Date.now(), m.slug) === "none"
+	const nonDeprecated = (list: ModelMetadata[]) => bySlug(list.filter(isActive))
+	const deprecated = (list: ModelMetadata[]) => bySlug(list.filter((m) => !isActive(m)))
 	const serverless = models.filter((m) => m.is_serverless)
 	const rest = models.filter((m) => !m.is_serverless)
 	return [...nonDeprecated(serverless), ...deprecated(serverless), ...nonDeprecated(rest), ...deprecated(rest)]

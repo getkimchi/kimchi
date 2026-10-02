@@ -51,6 +51,7 @@ export function modelRefTags(
 	apiSlugs: ReadonlySet<string>,
 	deprecatedSlugs: ReadonlySet<string>,
 	servesVia?: ReadonlyMap<string, string>,
+	retiringDates?: ReadonlyMap<string, string>,
 ): string[] {
 	// Routed virtual models (kimchi-dev ids starting with `auto`) are neither
 	// concrete catalog slugs nor deprecated — no tags.
@@ -59,7 +60,11 @@ export function modelRefTags(
 	if (!apiSlugs.has(slug)) return ["unavailable"]
 	if (deprecatedSlugs.has(slug)) {
 		const via = servesVia?.get(slug)
-		return [via ? `deprecated: serves via ${via}` : "deprecated"]
+		if (via) return [`deprecated: serves via ${via}`]
+		// Sunset-only record (vendor retirement, no announced deprecation):
+		// cite the date instead of claiming an invented deprecation.
+		const retiring = retiringDates?.get(slug)
+		return [retiring ? `retiring ${retiring}` : "deprecated"]
 	}
 	return []
 }
@@ -381,8 +386,18 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					.filter((m) => deriveDeprecationState(m) === "past" && m.replacement_model)
 					.map((m) => [m.slug, m.replacement_model as string]),
 			)
+			// sunset-only records (vendor retirement date, no announced
+			// deprecation) → tag cites the retirement date.
+			const retiringDates = new Map(
+				apiModels
+					.filter(
+						(m) =>
+							m.deprecated_at === undefined && m.sunset_at !== undefined && deriveDeprecationState(m) === "announced",
+					)
+					.map((m) => [m.slug, (m.sunset_at as string).slice(0, 10)]),
+			)
 			const refSuffix = (ref: string): string => {
-				const tags = modelRefTags(ref, apiSlugSet, deprecatedSlugs, servesVia)
+				const tags = modelRefTags(ref, apiSlugSet, deprecatedSlugs, servesVia, retiringDates)
 				return tags.length > 0 ? ` (${tags.join(", ")})` : ""
 			}
 
@@ -455,7 +470,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					const tags: string[] = []
 					if (isCurrent) tags.push("current")
 					if (isDefault) tags.push("default")
-					tags.push(...modelRefTags(ref, apiSlugSet, deprecatedSlugs, servesVia))
+					tags.push(...modelRefTags(ref, apiSlugSet, deprecatedSlugs, servesVia, retiringDates))
 					const suffix = tags.length > 0 ? ` (${tags.join(", ")})` : ""
 					return `${ref}${suffix}`
 				})

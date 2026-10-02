@@ -391,6 +391,21 @@ describe("modelRefTags", () => {
 		])
 	})
 
+	it("cites the retirement date for sunset-only records instead of claiming a deprecation", () => {
+		const retiringDates = new Map([["kimi-k2.7", "2026-10-23"]])
+		expect(modelRefTags("kimchi-dev/kimi-k2.7", apiSlugs, deprecatedSlugs, undefined, retiringDates)).toEqual([
+			"retiring 2026-10-23",
+		])
+	})
+
+	it("serves-via takes precedence over the retirement date when the proxy translates", () => {
+		const servesVia = new Map([["kimi-k2.7", "kimi-k2.8"]])
+		const retiringDates = new Map([["kimi-k2.7", "2026-10-23"]])
+		expect(modelRefTags("kimchi-dev/kimi-k2.7", apiSlugs, deprecatedSlugs, servesVia, retiringDates)).toEqual([
+			"deprecated: serves via kimi-k2.8",
+		])
+	})
+
 	it("prefers unavailable over deprecated when the model is gone", () => {
 		const goneAndMarked = new Set(["old-model"])
 		expect(modelRefTags("kimchi-dev/old-model", apiSlugs, goneAndMarked)).toEqual(["unavailable"])
