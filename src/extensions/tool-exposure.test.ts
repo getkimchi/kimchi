@@ -335,9 +335,12 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	// spec; now covered (and print-gated, separately, in Chunk C.6).
 	"set_model",
 	"submit_plan",
+	// bash-control — bash_control is static (cache-stable surface); the bash
+	// tool's gate blocks other tools while a background handle pends, it no
+	// longer hides bash_control.
+	"bash_control",
 	// dap — all 16 DAP tools are deferred (entry set reveals on the
-	// dap-debugging skill read; session set on debug_launch). bash_control
-	// keeps master's deferral until split 3/3 (see EXPECTED_DEFERRED_BY_DESIGN).
+	// dap-debugging skill read; session set on debug_launch)
 ])
 
 /** Deferral spec: tools REGISTERED but hidden at session start. A future
@@ -357,9 +360,6 @@ const EXPECTED_DEFERRED_BY_DESIGN = new Set<string>([
 	...DAP_SESSION_TOOL_NAMES,
 	...LSP_TOOL_NAMES,
 	...AGENT_CONTINUATION_TOOLS,
-	// Interim (split 2/3): bash_control keeps master's deferral until split
-	// 3/3 makes it part of the static surface.
-	"bash_control",
 ])
 
 /** Extensions that register tools at session_start, mirroring the budget
@@ -437,7 +437,7 @@ describe("tool exposure at session start", () => {
 
 		const visible = new Set(harness.active)
 		expect(visible).toEqual(EXPECTED_SESSION_START_VISIBLE)
-		expect(visible.size).toBe(19)
+		expect(visible.size).toBe(20)
 
 		// Deferred tools are still REGISTERED (availability preserved)…
 		for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
@@ -468,7 +468,7 @@ describe("tool exposure at session start", () => {
 			)
 			const visible = new Set(harness.active)
 			expect(visible).toEqual(expectedVisible)
-			expect(visible.size).toBe(15)
+			expect(visible.size).toBe(16)
 			for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
 				expect(harness.registered.has(name), `${name} must stay registered in --print`).toBe(true)
 			}
@@ -534,7 +534,7 @@ describe("tool exposure at session start", () => {
 
 		const votes = new Set(getDisabledToolNames(harness.pi))
 		expect(votes).toEqual(EXPECTED_DEFERRED_BY_DESIGN)
-		expect(votes.size).toBe(25)
+		expect(votes.size).toBe(24)
 	})
 
 	it("lsp tools stay advertised when a language server is detected (Chunk 6 gate on)", async () => {
@@ -598,14 +598,15 @@ describe("tool exposure at session start", () => {
 		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
 	})
 
-	it("bash_control reveal round-trip exposes it exactly once on the first background handle (restored to static surface in split 3)", async () => {
+	it("bash_control is visible at session start and background handles never transition the tool set", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
-		expect(harness.registered.has("bash_control"), "bash_control must be registered").toBe(true)
-		expect(harness.active.has("bash_control"), "bash_control deferred until first handle").toBe(false)
+		expect(harness.active.has("bash_control"), "bash_control visible from session start").toBe(true)
+		const transitionsAtStart = harness.activeTransitions.length
 
-		// Reveal on the first background bash result carrying a live handle.
+		// Background handles close the gate but must not change the advertised
+		// tool set (cache-stable surface).
 		await harness.fireEvent("tool_result", {
 			toolName: "bash",
 			toolCallId: "c1",
@@ -614,19 +615,12 @@ describe("tool exposure at session start", () => {
 			isError: false,
 			details: { handle: "h1", checkin: true, exited: false },
 		})
-		expect(harness.active.has("bash_control"), "bash_control revealed on first handle").toBe(true)
+		expect(harness.active.has("bash_control")).toBe(true)
+		expect(harness.activeTransitions.length).toBe(transitionsAtStart)
 
-		// Second handle: the reveal guard prevents a second visibility transition.
-		const transitionsAfterReveal = harness.activeTransitions.length
-		await harness.fireEvent("tool_result", {
-			toolName: "bash",
-			toolCallId: "c2",
-			input: { command: "another build" },
-			content: [{ type: "text", text: "still running" }],
-			isError: false,
-			details: { handle: "h2", checkin: true, exited: false },
-		})
-		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
+		// Per-session lifecycle: a second session_start keeps it visible.
+		await harness.fire("session_start", sessionStartPayload())
+		expect(harness.active.has("bash_control"), "bash_control stays visible in the next session").toBe(true)
 	})
 
 	it("Agent reveal round-trip exposes the 3 continuation tools exactly once after the first Agent result", async () => {
