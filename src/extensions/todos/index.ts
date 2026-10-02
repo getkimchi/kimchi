@@ -80,6 +80,7 @@ import {
 	ensureTodoWidget,
 	registerTodoShortcut,
 	resetTodoWidgetState,
+	setTodoAgentActive,
 	syncTodoWidget,
 } from "./widget.js"
 
@@ -314,6 +315,17 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 	registerTodosCommand(pi)
 	registerTodoShortcut(pi)
+
+	// Drive the strip's activity indicator: the in-progress spinner and the
+	// "N running" header segment are only honest while the agent loop is
+	// executing. Once the run ends (agent_end), open items render with the
+	// static ▶ marker and an "in progress" segment instead. This covers the
+	// legitimate hand-off case — the model marks an item in_progress and
+	// ends its turn waiting on the user (edit + approval), where the prior
+	// bail-out paths (abort demotion, terminal-turn closure steer) are
+	// deliberately inactive.
+	pi.on("agent_start", (_event, ctx) => setTodoAgentActive(ctx, true))
+	pi.on("agent_end", (_event, ctx) => setTodoAgentActive(ctx, false))
 
 	const _activeSessionContexts = new Map<string, ExtensionContext>()
 	let unsubscribeTodoStore: (() => void) | undefined

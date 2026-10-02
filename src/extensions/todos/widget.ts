@@ -1,5 +1,12 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
-import { isKeyRelease, Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
+import {
+	isKeyRelease,
+	Key,
+	matchesKey,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+	truncateToWidth,
+} from "@earendil-works/pi-tui"
 import { hasEffectivePendingCheckin } from "./checkin-gate.js"
 import { parseTodoScopeKey } from "./scope.js"
 import { GLOBAL_TODO_SCOPE, getTodoCountsForScope, getTodoState, resolveTodoScope } from "./store.js"
@@ -11,12 +18,42 @@ export const TODO_SHORTCUT_HINT = "F7"
 const TODO_WIDGET_KEY = "kimchi-todos"
 const TODO_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
 const TODO_STATUS_KEY = "todos"
-const TODO_LIST_HINT_TEXT = "F7 or enter '/todos' to collapse"
-const MAX_TODO_WIDGET_LINES = 14
-const TODO_WIDGET_BODY_LINES = 10
-const TODO_WIDGET_ROLL_THRESHOLD = TODO_WIDGET_BODY_LINES - 1
-const MAX_ROLLED_TODO_ROWS = 5
+/** Terminal-height breakpoints (like CSS xs/md/xl tiers), judged by rows only
+ *  — vertical space is the scarce resource for the strip; width matters are
+ *  already handled by truncation.
+ *  - xs (< 24 rows): ambient strip collapses to the one-liner; an explicit
+ *    expand shows a single todo row at a time.
+ *  - md (24–69): 3-row viewport.
+ *  - xl (70+): 5-row viewport.
+ *  Undefined row counts (headless/unit contexts) fall back to md. */
+const TODO_XS_TERMINAL_ROWS = 24
+const TODO_TALL_TERMINAL_ROWS = 70
 const MAX_ROLLED_CONTEXT_ROWS = 2
+/** Fraction of terminal rows the expanded strip may occupy before ambient auto-collapse. */
+const TODO_HEIGHT_COLLAPSE_FRACTION = 0.25
+/** Match Agents strip spinner frames (avoid importing agent-widget — circular). */
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+/** Keep this well above tool/status spinners' cadence — each tick force-renders
+ *  the whole TUI, and an 80ms loop pushed tui-e2e past the 25m job budget. */
+export const SPINNER_INTERVAL_MS = 200
+
+/** Default auto-collapse threshold: lists with more items than this render
+ *  ambiently as a single status line until the user expands them. */
+const DEFAULT_TODO_AUTO_COLLAPSE_THRESHOLD = 5
+
+/** Item count past which the ambient todo strip auto-collapses to a single
+ *  status line. Configurable via KIMCHI_TODOS_COLLAPSE_THRESHOLD; values < 1
+ *  fall back to the default, and a very large value effectively disables
+ *  count-based auto-collapse. Height-based collapse (~25% of terminal rows)
+ *  still applies. Explicit expansion (F7 / `/todos expand`) always overrides. */
+export function getTodoAutoCollapseThreshold(env: NodeJS.ProcessEnv = process.env): number {
+	const raw = env.KIMCHI_TODOS_COLLAPSE_THRESHOLD
+	if (raw === undefined) return DEFAULT_TODO_AUTO_COLLAPSE_THRESHOLD
+	const parsed = Number.parseInt(raw, 10)
+	if (!Number.isInteger(parsed) || parsed < 1) return DEFAULT_TODO_AUTO_COLLAPSE_THRESHOLD
+	return parsed
+}
+
 const TODO_SYMBOL: Record<TodoStatus, string> = {
 	pending: "○",
 	in_progress: "▶",
@@ -26,18 +63,95 @@ const TODO_SYMBOL: Record<TodoStatus, string> = {
 
 interface TodoWidgetState {
 	visible: boolean
+	/** Uncapped view: show every row (`/todos expand all`). */
 	expanded: boolean
+	/** User override: show the list body even past the auto-collapse threshold. */
+	listExpanded: boolean
+	/** User override (mouse click): keep only the one-line header, even at or
+	 *  below the auto-collapse threshold. Cleared by any explicit expand. */
+	listCollapsed: boolean
+	/** Index into the full body row list for the scrollable viewport. */
+	scrollOffset: number
+	/** True once the user scrolls; disables auto-follow of the active todo. */
+	userScrolled: boolean
 	collapsed: boolean
 	registered: boolean
 	registrationId: number
+	/** True while the agent loop is executing (agent_start → agent_end).
+	 *  The in-progress spinner and the "N running" header segment are only
+	 *  shown literally while this holds; an idle agent with an in_progress
+	 *  todo (e.g. work handed back to the user) renders the static ▶ marker
+	 *  and an "N in progress" segment instead of a spinner that implies
+	 *  execution is ongoing. */
+	agentActive: boolean
+	spinnerFrame: number
+	spinnerTimer?: ReturnType<typeof setInterval>
 	ctx?: ExtensionContext
-	tui?: { requestRender?: (force?: boolean) => void }
+	tui?: {
+		requestRender?: (force?: boolean) => void
+		terminal?: { rows?: number }
+	}
 }
 
 const todoWidgetStates = new Map<string, TodoWidgetState>()
 
+/** Reasons the above-editor strip should stay collapsed (agents, questionnaire,
+ *  etc.). Counted as a set so overlapping UIs don't release early. */
+const todoCrowdingReasons = new Set<string>()
+
+export function isTodoCrowdingActive(): boolean {
+	return todoCrowdingReasons.size > 0
+}
+
+/** Force the todo list body closed while competing above-editor UI is visible.
+ *  Clears any prior expand override so the strip shrinks immediately; the user
+ *  can still F7/`/todos` expand while crowded. Call with `active: false` when
+ *  the competing UI dismisses. */
+export function setTodoCrowding(reason: string, active: boolean): void {
+	if (!reason) return
+	const wasCrowded = todoCrowdingReasons.size > 0
+	if (active) todoCrowdingReasons.add(reason)
+	else todoCrowdingReasons.delete(reason)
+	const isCrowded = todoCrowdingReasons.size > 0
+	if (wasCrowded === isCrowded) return
+
+	for (const state of todoWidgetStates.values()) {
+		if (isCrowded) {
+			state.listExpanded = false
+			state.expanded = false
+		}
+		state.tui?.requestRender?.(true)
+	}
+}
+
+export async function withTodoCrowding<T>(reason: string, fn: () => Promise<T>): Promise<T> {
+	setTodoCrowding(reason, true)
+	try {
+		return await fn()
+	} finally {
+		setTodoCrowding(reason, false)
+	}
+}
+
+/** Test-only: clear crowding reasons between cases. */
+export function __resetTodoCrowding(): void {
+	todoCrowdingReasons.clear()
+}
+
 function createTodoWidgetState(): TodoWidgetState {
-	return { visible: false, expanded: false, collapsed: false, registered: false, registrationId: 0 }
+	return {
+		visible: false,
+		expanded: false,
+		listExpanded: false,
+		listCollapsed: false,
+		scrollOffset: 0,
+		userScrolled: false,
+		collapsed: false,
+		registered: false,
+		registrationId: 0,
+		agentActive: false,
+		spinnerFrame: 0,
+	}
 }
 
 function getTodoWidgetState(ctx: ExtensionContext): TodoWidgetState {
@@ -52,9 +166,81 @@ function getTodoWidgetState(ctx: ExtensionContext): TodoWidgetState {
 
 export function summarizeTodoCounts(counts: TodoCounts): string {
 	if (counts.total === 0) return "No todos"
-	const active = counts.pending + counts.inProgress + counts.blocked
 	const blocked = counts.blocked > 0 ? ` · ${counts.blocked} blocked` : ""
-	return `${counts.completed}/${counts.total} done · ${active} active${blocked}`
+	return `${counts.completed}/${counts.total} done${blocked}`
+}
+
+/** Single-line strip header:
+ *  `<marker> Todos[ · <scope>] · <done>/<total>[ ✓][ · ⠋ N running | · ▶ N in progress][ · N blocked] (F7)`
+ *  Marker mirrors the agents widget: `●` collapsed (live or not), `▼` expanded.
+ *  While the agent loop is executing (`agentActive`), in-progress rows animate
+ *  with the same braille spinner as the header's "N running" segment; once the
+ *  run ends, open items render statically (`▶`, "N in progress") so the strip
+ *  no longer implies work is executing on an idle session. */
+export function buildTodoHeaderLine(
+	theme: Theme,
+	counts: TodoCounts,
+	collapsed: boolean,
+	options: {
+		scopeLabel?: string
+		spinnerFrame?: number
+		agentActive?: boolean
+	} = {},
+): string {
+	const chevron = collapsed ? "●" : "▼"
+	const live = counts.inProgress > 0
+	const agentActive = options.agentActive ?? false
+	const running = live && agentActive
+	const title = `${chevron} Todos`
+	const parts = [theme.fg(running ? "accent" : "dim", title)]
+	if (options.scopeLabel) parts.push(theme.fg("dim", options.scopeLabel))
+	const countsText = `${counts.completed}/${counts.total}`
+	const allDone = counts.total > 0 && counts.completed === counts.total
+	parts.push(theme.fg("dim", countsText) + (allDone ? ` ${theme.fg("success", "✓")}` : ""))
+	let line = parts.join(" · ")
+	if (live) {
+		if (running) {
+			const frame = SPINNER[(options.spinnerFrame ?? 0) % SPINNER.length]
+			line += theme.fg("accent", ` · ${frame} ${counts.inProgress} running`)
+		} else {
+			line += theme.fg("dim", ` · ${TODO_SYMBOL.in_progress} ${counts.inProgress} in progress`)
+		}
+	}
+	if (counts.blocked > 0) {
+		line += theme.fg("warning", ` · ${counts.blocked} blocked`)
+	}
+	const verb = collapsed ? "expand" : "collapse"
+	line += ` ${theme.fg("dim", `(${TODO_SHORTCUT_HINT} to ${verb})`)}`
+	return line
+}
+
+interface CollapseInput {
+	expanded: boolean
+	listExpanded: boolean
+	listCollapsed: boolean
+	total: number
+	/** Estimated expanded strip height in rows (header + body). */
+	expandedHeight: number
+	terminalRows?: number
+}
+
+/** True when the strip should render only the collapsed one-line header:
+ *  competing UI is crowding the strip, the user clicked it shut, the list
+ *  exceeds the item-count threshold, or the expanded height would exceed ~25%
+ *  of the terminal. Explicit expand overrides ambient collapse. */
+function isTodoBodyCollapsed(input: CollapseInput): boolean {
+	if (input.expanded || input.listExpanded) return false
+	if (isTodoCrowdingActive() || input.listCollapsed) return true
+	const rows = input.terminalRows
+	// xs tier: ambient expansion would fight the conversation for space — stay
+	// a one-liner until the user explicitly expands (F7 / click).
+	if (rows && rows > 0 && rows < TODO_XS_TERMINAL_ROWS) return true
+	if (input.total > getTodoAutoCollapseThreshold()) return true
+	if (rows && rows > 0) {
+		const maxHeight = Math.max(1, Math.floor(rows * TODO_HEIGHT_COLLAPSE_FRACTION))
+		if (input.expandedHeight > maxHeight) return true
+	}
+	return false
 }
 
 function hasActiveTodos(counts: TodoCounts): boolean {
@@ -65,21 +251,29 @@ export function summarizeTodos(sessionId: string): string {
 	return summarizeTodoCounts(getTodoCountsForScope(GLOBAL_TODO_SCOPE, sessionId))
 }
 
-/** Render a single todo line. Uses a per-scope sequential position (not the
- *  stored todo id) so numbers restart at 1 within each scope group. Styling is
- *  determined by `scope.kind` (not content prefixes) so a model-written global
- *  item that starts with "[Phase " gets normal global styling. */
-function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: TodoScope): string {
-	const index = `${displayIndex + 1}`.padStart(2)
-	const symbol = TODO_SYMBOL[todo.status]
+/** Render a single todo line in the widget strip. A single-space indent
+ *  keeps each row tight against the header — row numbers were dropped in
+ *  favor of `/todos done <n>` references, so there's no per-row prefix
+ *  the indent needs to align with. */
+function todoLine(
+	todo: TodoItem,
+	_displayIndex: number,
+	theme: Theme,
+	scope: TodoScope,
+	spinnerFrame: number,
+	spinning = true,
+): string {
+	const symbol =
+		todo.status === "in_progress" && spinning ? SPINNER[spinnerFrame % SPINNER.length] : TODO_SYMBOL[todo.status]
 	const isFerment = scope.kind === "ferment"
+	const prefix = " "
 
 	// Phase header — bold accent (bridge-written: "[Phase N] Name")
 	if (isFerment && todo.content.startsWith("[Phase ")) {
 		if (todo.status === "completed") {
-			return ` ${index}.  ${theme.fg("success", symbol)} ${theme.fg("dim", todo.content)}`
+			return `${prefix} ${theme.fg("success", symbol)} ${theme.fg("dim", todo.content)}`
 		}
-		return ` ${index}.  ${theme.fg("accent", symbol)} ${theme.fg("accent", theme.bold(todo.activeForm ?? todo.content))}`
+		return `${prefix} ${theme.fg("accent", symbol)} ${theme.fg("accent", theme.bold(todo.activeForm ?? todo.content))}`
 	}
 
 	// Ferment step item — dim the prefix arrow (bridge-written: "↳ description")
@@ -87,69 +281,99 @@ function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: Tod
 		const arrow = "↳ "
 		const text = todo.content.slice(arrow.length)
 		if (todo.status === "completed") {
-			return ` ${index}.  ${theme.fg("success", symbol)} ${theme.fg("dim", arrow)}${theme.fg("dim", text)}`
+			return `${prefix} ${theme.fg("success", symbol)} ${theme.fg("dim", arrow)}${theme.fg("dim", text)}`
 		}
 		if (todo.status === "blocked") {
-			return ` ${index}.  ${theme.fg("warning", symbol)} ${theme.fg("dim", arrow)}${theme.fg("warning", text)}`
+			return `${prefix} ${theme.fg("warning", symbol)} ${theme.fg("dim", arrow)}${theme.fg("warning", text)}`
 		}
 		if (todo.status === "in_progress") {
-			return ` ${index}.  ${theme.fg("accent", symbol)} ${theme.fg("dim", arrow)}${theme.fg("accent", todo.activeForm ?? text)}`
+			return `${prefix} ${theme.fg("accent", symbol)} ${theme.fg("dim", arrow)}${theme.fg("accent", todo.activeForm ?? text)}`
 		}
-		return ` ${index}.  ${theme.fg("dim", symbol)} ${theme.fg("dim", arrow)}${text}`
+		return `${prefix} ${theme.fg("dim", symbol)} ${theme.fg("dim", arrow)}${text}`
 	}
 
 	// All other todos (global, ferment-step sub-tasks) — standard rendering
-	if (todo.status === "completed") return ` ${index}.  ${theme.fg("success", symbol)} ${theme.fg("dim", todo.content)}`
-	if (todo.status === "blocked")
-		return ` ${index}.  ${theme.fg("warning", symbol)} ${theme.fg("warning", todo.content)}`
+	if (todo.status === "completed") return `${prefix} ${theme.fg("success", symbol)} ${theme.fg("dim", todo.content)}`
+	if (todo.status === "blocked") return `${prefix} ${theme.fg("warning", symbol)} ${theme.fg("warning", todo.content)}`
 	if (todo.status === "in_progress") {
-		return ` ${index}.  ${theme.fg("accent", symbol)} ${theme.fg("accent", todo.activeForm ?? todo.content)}`
+		return `${prefix} ${theme.fg("accent", symbol)} ${theme.fg("accent", todo.activeForm ?? todo.content)}`
 	}
-	return ` ${index}.  ${theme.fg("dim", symbol)} ${todo.content}`
+	return `${prefix} ${theme.fg("dim", symbol)} ${todo.content}`
 }
 
-function formatScopeHeader(scope: TodoScope): string {
+/** Numbered row for `/todos` notify output. Applies a `N. ` prefix in place
+ *  of the strip's blank indent so the `/todos done <n>` index lines stay
+ *  intelligible; the positions restart per scope group. */
+function numberedTodoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: TodoScope): string {
+	const index = `${displayIndex + 1}`.padStart(2)
+	// Notify text is static — use the first spinner frame so in_progress rows
+	// stay distinguishable without the tick. Strip the leading indent (one
+	// space in the strip) and re-prefix with the row number.
+	return todoLine(todo, displayIndex, theme, scope, 0).replace(/^ /, ` ${index}. `)
+}
+
+/** Short scope name for the one-line widget header (no "Todos · " prefix). */
+function formatScopeLabel(scope: TodoScope): string {
 	if (scope.kind === "ferment") {
-		return `Todos · Ferment (${scope.phaseId})`
+		return `Ferment (${scope.phaseId})`
 	}
 	if (scope.kind === "ferment-step") {
-		return `Todos · Step (${scope.phaseId}/${scope.stepId})`
+		return `Step (${scope.phaseId}/${scope.stepId})`
 	}
-	return "Todos · Global"
+	return "Global"
 }
 
-function selectTodoWindow(todos: TodoItem[]): {
-	todos: TodoItem[]
-	startIndex: number
-	hiddenBefore: number
-	hiddenAfter: number
-} {
-	const firstActiveIndex = todos.findIndex((todo) => todo.status !== "completed")
-	const startIndex =
-		firstActiveIndex === -1
-			? Math.max(0, todos.length - TODO_WIDGET_ROLL_THRESHOLD)
-			: firstActiveIndex >= TODO_WIDGET_ROLL_THRESHOLD
-				? firstActiveIndex - MAX_ROLLED_CONTEXT_ROWS
-				: 0
-	const baseVisibleCount =
-		startIndex > 0 && firstActiveIndex !== -1 ? MAX_ROLLED_CONTEXT_ROWS + MAX_ROLLED_TODO_ROWS : TODO_WIDGET_BODY_LINES
-	const markerCount = (startIndex > 0 ? 1 : 0) + (todos.length > startIndex + baseVisibleCount ? 1 : 0)
-	const visibleCount = Math.min(baseVisibleCount, TODO_WIDGET_BODY_LINES - markerCount)
-	const visibleTodos = todos.slice(startIndex, startIndex + visibleCount)
-	return {
-		todos: visibleTodos,
-		startIndex,
-		hiddenBefore: startIndex,
-		hiddenAfter: Math.max(0, todos.length - startIndex - visibleTodos.length),
+/** Muted group label for multi-scope expanded body. */
+function formatGroupLabel(scope: TodoScope): string {
+	return `Todos · ${formatScopeLabel(scope)}`
+}
+
+interface TodoBodyRow {
+	kind: "scope" | "todo"
+	text: string
+	status?: TodoStatus
+}
+
+function buildFullTodoBodyRows(
+	theme: Theme,
+	groups: WidgetScopeGroup[],
+	spinnerFrame = 0,
+	spinning = true,
+): TodoBodyRow[] {
+	const showScopeLabels = groups.length > 1 || groups[0].scope.kind !== "global"
+	const rows: TodoBodyRow[] = []
+	for (const group of groups) {
+		if (showScopeLabels) {
+			rows.push({ kind: "scope", text: theme.fg("dim", formatGroupLabel(group.scope)) })
+		}
+		let groupIndex = 0
+		for (const todo of group.todos) {
+			rows.push({
+				kind: "todo",
+				text: todoLine(todo, groupIndex, theme, group.scope, spinnerFrame, spinning),
+				status: todo.status,
+			})
+			groupIndex++
+		}
 	}
+	return rows
 }
 
-function todoWindowBeforeText(hiddenBefore: number): string | undefined {
-	return hiddenBefore > 0 ? `… ${hiddenBefore} completed` : undefined
+/** Prefer starting near the first in-progress (else first non-completed) todo,
+ *  with a couple of completed rows of context above it — scaled to the row
+ *  budget so a 1-row viewport pins exactly on the active row. All-completed
+ *  lists pin to the end (caller clamps against the real viewport size). */
+function autoScrollOffset(rows: TodoBodyRow[], budget: number): number {
+	const context = Math.min(MAX_ROLLED_CONTEXT_ROWS, Math.max(0, budget - 1))
+	const firstRunning = rows.findIndex((row) => row.kind === "todo" && row.status === "in_progress")
+	if (firstRunning !== -1) return Math.max(0, firstRunning - context)
+	const firstActive = rows.findIndex((row) => row.kind === "todo" && row.status !== "completed")
+	if (firstActive === -1) return rows.length
+	return Math.max(0, firstActive - context)
 }
 
-function todoWindowAfterText(hiddenAfter: number): string | undefined {
-	return hiddenAfter > 0 ? `… ${hiddenAfter} more` : undefined
+function clampScrollOffset(offset: number, rowCount: number, viewport: number): number {
+	return Math.max(0, Math.min(offset, Math.max(0, rowCount - viewport)))
 }
 
 /** Collect all non-empty scopes from the store, grouped by kind.
@@ -213,119 +437,225 @@ function collectWidgetScopes(sessionId: string): WidgetScopeGroup[] {
 	return [...fermentScopes, ...stepScopes, ...(globalGroup ? [globalGroup] : [])]
 }
 
-/** Count active todos across all scopes for the status bar. */
-function countAllActiveTodos(sessionId: string): TodoCounts {
-	const groups = collectWidgetScopes(sessionId)
+/** Count todos across scope groups. */
+function countTodosInGroups(groups: WidgetScopeGroup[]): TodoCounts {
 	const allTodos = groups.flatMap((g) => g.todos)
 	return {
 		total: allTodos.length,
 		completed: allTodos.filter((t) => t.status === "completed").length,
 		pending: allTodos.filter((t) => t.status === "pending").length,
-		blocked: allTodos.filter((t) => t.status === "blocked").length,
 		inProgress: allTodos.filter((t) => t.status === "in_progress").length,
+		blocked: allTodos.filter((t) => t.status === "blocked").length,
 	}
 }
 
+function countAllActiveTodos(sessionId: string): TodoCounts {
+	return countTodosInGroups(collectWidgetScopes(sessionId))
+}
+
+/** Build the notification/list text for `/todos` (not the strip). */
 export function buildTodoLines(theme: Theme, sessionId: string): string[] {
 	const groups = collectWidgetScopes(sessionId)
-
 	if (groups.length === 0) {
 		const scope = resolveTodoScope(sessionId)
 		return [
-			theme.fg("accent", formatScopeHeader(scope)),
+			theme.fg("accent", formatGroupLabel(scope)),
 			"",
 			theme.fg("dim", "No todos yet. Add one with `/todos add <text>`."),
 		]
 	}
 
 	const lines: string[] = []
-
 	for (const group of groups) {
-		const summary = summarizeTodoCounts(getTodoCountsForScope(group.scope, sessionId))
-		lines.push(theme.fg("accent", formatScopeHeader(group.scope)))
+		const counts = {
+			total: group.todos.length,
+			completed: group.todos.filter((t) => t.status === "completed").length,
+			pending: group.todos.filter((t) => t.status === "pending").length,
+			inProgress: group.todos.filter((t) => t.status === "in_progress").length,
+			blocked: group.todos.filter((t) => t.status === "blocked").length,
+		}
+		lines.push(theme.fg("accent", `Todos · ${formatScopeLabel(group.scope)}`))
 		lines.push("")
-		lines.push(theme.fg("dim", summary))
+		lines.push(theme.fg("dim", summarizeTodoCounts(counts)))
 		lines.push("")
 		let groupIndex = 0
 		for (const todo of group.todos) {
-			lines.push(todoLine(todo, groupIndex, theme, group.scope))
+			lines.push(numberedTodoLine(todo, groupIndex, theme, group.scope))
 			groupIndex++
 		}
 		lines.push("")
 	}
 
-	// Trim trailing blank line
 	while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop()
 	return lines
 }
 
-function buildTodoWidgetLines(theme: Theme, expanded: boolean, sessionId: string): string[] {
+/** Todo rows the expanded strip may show at once for the terminal-height
+ *  tier: 1 on xs, 3 on md, 5 on xl. Marker rows (`↑/↓ N more`) render on top
+ *  of this budget — the budget counts todo rows only. */
+export function todoViewportRowBudget(terminalRows: number | undefined): number {
+	if (terminalRows === undefined) return 3
+	if (terminalRows < TODO_XS_TERMINAL_ROWS) return 1
+	if (terminalRows >= TODO_TALL_TERMINAL_ROWS) return 5
+	return 3
+}
+
+/** Body rows for the expanded strip. Long lists render as a small scrollable
+ *  viewport around the active todo with `↑ N more` / `↓ N more` marker rows
+ *  (mouse wheel in fullscreen); `/todos expand all` still dumps every row.
+ *
+ *  Writes `state.scrollOffset` when the viewport is capped so a later wheel
+ *  event can continue from the window that was just painted. */
+function buildTodoBodyLines(
+	theme: Theme,
+	groups: WidgetScopeGroup[],
+	state: Pick<TodoWidgetState, "expanded" | "scrollOffset" | "userScrolled" | "spinnerFrame" | "agentActive">,
+	terminalRows: number | undefined,
+): string[] {
+	const rows = buildFullTodoBodyRows(theme, groups, state.spinnerFrame, state.agentActive)
+
+	if (state.expanded) return rows.map((row) => row.text)
+
+	// The whole list fits the viewport budget.
+	const budget = todoViewportRowBudget(terminalRows)
+	if (rows.length <= budget) {
+		return rows.map((row) => row.text)
+	}
+
+	let offset = state.userScrolled ? state.scrollOffset : autoScrollOffset(rows, budget)
+	offset = clampScrollOffset(offset, rows.length, budget)
+	state.scrollOffset = offset
+
+	const visible = rows.slice(offset, offset + budget)
+	const remainingAfter = Math.max(0, rows.length - offset - visible.length)
+	const lines: string[] = []
+	if (offset > 0) lines.push(theme.fg("dim", `↑ ${offset} more`))
+	for (const row of visible) lines.push(row.text)
+	if (remainingAfter > 0) lines.push(theme.fg("dim", `↓ ${remainingAfter} more`))
+	return lines
+}
+
+/** Cheap body-row count for height-based collapse (no theme / string work). */
+function countTodoBodyRows(groups: WidgetScopeGroup[]): number {
+	if (groups.length === 0) return 0
+	const showScopeLabels = groups.length > 1 || groups[0].scope.kind !== "global"
+	let rows = 0
+	for (const group of groups) {
+		if (showScopeLabels) rows++
+		rows += group.todos.length
+	}
+	return rows
+}
+
+function estimateExpandedHeight(
+	groups: WidgetScopeGroup[],
+	expanded: boolean,
+	terminalRows: number | undefined,
+): number {
+	const rowCount = countTodoBodyRows(groups)
+	if (expanded || rowCount <= todoViewportRowBudget(terminalRows)) {
+		return 1 + rowCount // header + body
+	}
+	// Worst case: budget rows plus both scroll markers.
+	return 1 + todoViewportRowBudget(terminalRows) + 2
+}
+
+function headerScopeLabel(groups: WidgetScopeGroup[]): string | undefined {
+	// Single-scope lists put the scope name (including Global) in the header;
+	// multi-scope keeps per-group labels in the body only.
+	if (groups.length !== 1) return undefined
+	return formatScopeLabel(groups[0].scope)
+}
+
+function buildTodoWidgetLines(theme: Theme, state: TodoWidgetState, sessionId: string): string[] {
 	const groups = collectWidgetScopes(sessionId)
 
-	// For the capped (non-expanded) view, collect all todos across scopes
-	// and apply the rolling window to the combined list.
-	const allTodos = groups.flatMap((g) => g.todos)
-	const lines = buildTodoLines(theme, sessionId)
-	const withHint = [...lines, "", theme.fg("dim", TODO_LIST_HINT_TEXT)]
-	if (expanded) return withHint
-	if (withHint.length <= MAX_TODO_WIDGET_LINES) return withHint
-	if (allTodos.length <= TODO_WIDGET_ROLL_THRESHOLD) return lines
-
-	const window = selectTodoWindow(allTodos)
-	const beforeText = todoWindowBeforeText(window.hiddenBefore)
-	const afterText = todoWindowAfterText(window.hiddenAfter)
-
-	// Single pass: for each group, if it contributes ≥1 windowed row, emit
-	// header + summary immediately followed by that group's windowed rows.
-	// Groups with zero windowed rows are skipped entirely (no orphan headers).
-	const result: string[] = []
-	let displayIndex = 0
-	let beforeInserted = false
-
-	for (const group of groups) {
-		const groupTodos = group.todos
-		const groupStartIndex = displayIndex
-		const groupEndIndex = displayIndex + groupTodos.length
-
-		// Skip groups entirely outside the window
-		if (groupEndIndex <= window.hiddenBefore || groupStartIndex >= window.hiddenBefore + window.todos.length) {
-			displayIndex = groupEndIndex
-			continue
-		}
-
-		// Emit header + summary for this group
-		result.push(theme.fg("accent", formatScopeHeader(group.scope)))
-		result.push("")
-		result.push(theme.fg("dim", summarizeTodoCounts(getTodoCountsForScope(group.scope, sessionId))))
-		result.push("")
-
-		// Emit windowed rows for this group, inserting before-marker before the first visible row
-		let groupDisplayIndex = 0
-		for (const todo of groupTodos) {
-			if (displayIndex >= window.hiddenBefore && displayIndex < window.hiddenBefore + window.todos.length) {
-				if (beforeText && !beforeInserted) {
-					result.push(theme.fg("dim", beforeText))
-					beforeInserted = true
-				}
-				result.push(todoLine(todo, groupDisplayIndex, theme, group.scope))
-			}
-			displayIndex++
-			groupDisplayIndex++
-		}
-		result.push("")
+	if (groups.length === 0) {
+		return [theme.fg("dim", "No todos yet. Add one with `/todos add <text>`.")]
 	}
 
-	// Emit after-marker after the last visible row
-	if (afterText) {
-		while (result.length > 0 && result[result.length - 1] === "") result.pop()
-		result.push(theme.fg("dim", afterText))
+	const counts = countTodosInGroups(groups)
+	const scopeLabel = headerScopeLabel(groups)
+	const terminalRows = state.tui?.terminal?.rows
+	const expandedHeight = estimateExpandedHeight(groups, state.expanded, terminalRows)
+
+	if (
+		isTodoBodyCollapsed({
+			expanded: state.expanded,
+			listExpanded: state.listExpanded,
+			listCollapsed: state.listCollapsed,
+			total: counts.total,
+			expandedHeight,
+			terminalRows,
+		})
+	) {
+		return [
+			buildTodoHeaderLine(theme, counts, true, {
+				scopeLabel,
+				spinnerFrame: state.spinnerFrame,
+				agentActive: state.agentActive,
+			}),
+		]
 	}
 
-	return result
+	const body = buildTodoBodyLines(theme, groups, state, terminalRows)
+	return [
+		buildTodoHeaderLine(theme, counts, false, {
+			scopeLabel,
+			spinnerFrame: state.spinnerFrame,
+			agentActive: state.agentActive,
+		}),
+		...body,
+	]
+}
+
+function stopSpinner(state: TodoWidgetState): void {
+	if (state.spinnerTimer) {
+		clearInterval(state.spinnerTimer)
+		state.spinnerTimer = undefined
+	}
+}
+
+function syncSpinner(state: TodoWidgetState, sessionId: string): void {
+	const inProgress = countAllActiveTodos(sessionId).inProgress
+	const shouldSpin = state.visible && inProgress > 0 && state.agentActive
+	if (!shouldSpin) {
+		stopSpinner(state)
+		return
+	}
+	// Keep the running glyph in CI, but skip the interval — each tick
+	// force-renders the whole TUI and blew the 25m tui-e2e budget.
+	if (process.env.CI === "true") {
+		stopSpinner(state)
+		return
+	}
+	if (state.spinnerTimer) return
+	state.spinnerTimer = setInterval(() => {
+		state.spinnerFrame = (state.spinnerFrame + 1) % SPINNER.length
+		state.tui?.requestRender?.(true)
+	}, SPINNER_INTERVAL_MS)
+	// Do not keep the process alive solely for the animation.
+	state.spinnerTimer.unref?.()
+}
+
+/** Track whether the agent loop is executing. Driven by the agent_start /
+ *  agent_end pair in the extension entry point; while inactive the strip
+ *  stops the spinner timer and renders open items with the static ▶ marker
+ *  (an idle session must not imply ongoing execution). */
+export function setTodoAgentActive(ctx: ExtensionContext, active: boolean): void {
+	if (!ctx.hasUI) return
+	const sessionId = ctx.sessionManager.getSessionId()
+	const state = getTodoWidgetState(ctx)
+	if (state.agentActive === active) return
+	state.agentActive = active
+	syncSpinner(state, sessionId)
+	state.tui?.requestRender?.(true)
 }
 
 export function resetTodoWidgetState(ctx: ExtensionContext): void {
 	const sessionId = ctx.sessionManager.getSessionId()
+	const state = todoWidgetStates.get(sessionId)
+	if (state) stopSpinner(state)
 	todoWidgetStates.delete(sessionId)
 }
 
@@ -334,6 +664,7 @@ function requestTodoRender(ctx: ExtensionContext): void {
 	const sessionId = ctx.sessionManager.getSessionId()
 	const state = todoWidgetStates.get(sessionId)
 	if (!state?.registered) return
+	syncSpinner(state, sessionId)
 	state.tui?.requestRender?.(true)
 }
 
@@ -357,8 +688,39 @@ export function setTodosStatus(ctx: ExtensionContext): void {
 
 export function ensureTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	const sessionId = ctx.sessionManager.getSessionId()
 	const state = getTodoWidgetState(ctx)
+	mountTodoWidget(ctx, state)
+}
+
+/** Re-insert the todos widget at the tail of the aboveEditor map so it renders
+ *  directly above the editor (below agents, tips, etc.). Mirrors the agents ›
+ *  `remountTipWidget` bump: framework renders aboveEditor widgets in Map
+ *  insertion order, and agent widgets race the strip. `setWidget` re-sets an
+ *  existing key in place, so a real re-insert requires removing the key first
+ *  (which runs the component's dispose/unregister, clearing `registered` so
+ *  the follow-up mount is not skipped by mountTodoWidget's guard). */
+export function remountTodosWidget(): void {
+	for (const [sessionId, state] of todoWidgetStates) {
+		if (!state.registered || !state.ctx) continue
+		const ctx = state.ctx
+		ctx.ui.setWidget(TODO_WIDGET_KEY, undefined, TODO_WIDGET_OPTIONS)
+		// Removing the key runs the component's dispose hook (unregister) on
+		// surfaces that invoke it; a surface that doesn't would leave the
+		// guard in place and the re-mount below would be skipped — clear the
+		// registration explicitly so remounting never silently no-ops again.
+		if (state.registered) {
+			state.registered = false
+			stopSpinner(state)
+		}
+		mountTodoWidget(ctx, state, sessionId)
+	}
+}
+
+function mountTodoWidget(
+	ctx: ExtensionContext,
+	state: TodoWidgetState,
+	sessionId = state.ctx?.sessionManager.getSessionId() ?? ctx.sessionManager.getSessionId(),
+): void {
 	if (state.registered && state.ctx === ctx) return
 
 	const registrationId = state.registrationId + 1
@@ -366,15 +728,17 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 	const unregister = () => {
 		if (state.registrationId !== registrationId) return
 		state.registered = false
+		stopSpinner(state)
 		state.tui = undefined
 		state.ctx = undefined
 	}
 	const component = (tui: unknown, theme: Theme) => {
-		state.tui = tui as { requestRender?: (force?: boolean) => void }
+		state.tui = tui as TodoWidgetState["tui"]
+		syncSpinner(state, sessionId)
 		return {
 			render(width: number): string[] {
 				if (!state.visible) return []
-				return buildTodoWidgetLines(theme, state.expanded, sessionId).map((line) =>
+				return buildTodoWidgetLines(theme, state, sessionId).map((line) =>
 					truncateToWidth(line, Math.max(1, width - 4)),
 				)
 			},
@@ -382,11 +746,54 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 			dispose: unregister,
 			handleInput(data: string): void {
 				if (isKeyRelease(data)) return
-				if (matchesKey(data, Key.escape) || matchesKey(data, Key.enter) || matchesKey(data, "return") || data === "q") {
+				// Esc hides the strip when the widget has focus. Do not bind `q` —
+				// it fires while the prompt editor has focus and would steal input.
+				if (matchesKey(data, Key.escape)) {
 					collapseTodoWidget(ctx)
 					return
 				}
-				if (matchesKey(data, TODO_SHORTCUT)) collapseTodoWidget(ctx)
+				// Enter/F7 collapse ↔ expand the list body; Esc hides the strip.
+				if (matchesKey(data, Key.enter) || matchesKey(data, "return") || matchesKey(data, TODO_SHORTCUT)) {
+					toggleTodoWidget(ctx)
+				}
+			},
+			// Mouse only reaches widgets in fullscreen mode (`--tui-mode fullscreen`),
+			// where the alt-screen renderer captures it. Left click mirrors
+			// F7/`/todos` (collapse ↔ expand). Wheel scrolls the list body when
+			// expanded; right-click falls through for paste.
+			handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+				if (event.type === "wheel") {
+					const counts = countAllActiveTodos(sessionId)
+					const groups = collectWidgetScopes(sessionId)
+					const terminalRows = state.tui?.terminal?.rows
+					const expandedHeight = estimateExpandedHeight(groups, state.expanded, terminalRows)
+					if (
+						isTodoBodyCollapsed({
+							expanded: state.expanded,
+							listExpanded: state.listExpanded,
+							listCollapsed: state.listCollapsed,
+							total: counts.total,
+							expandedHeight,
+							terminalRows,
+						})
+					) {
+						return undefined
+					}
+					const rows = buildFullTodoBodyRows(theme, groups)
+					const budget = todoViewportRowBudget(terminalRows)
+					if (rows.length <= budget) return undefined
+					const delta = event.wheelDelta ?? 0
+					if (delta === 0) return undefined
+					state.userScrolled = true
+					state.scrollOffset = clampScrollOffset(state.scrollOffset + delta, rows.length, budget)
+					requestTodoRender(ctx)
+					return { handled: true }
+				}
+				if (event.type !== "click" || event.button !== "left") return undefined
+				// Swallow the trailing clicks of a double-click so it toggles once.
+				if (event.clickCount !== undefined && event.clickCount > 1) return { handled: true }
+				toggleTodoWidget(ctx)
+				return { handled: true }
 			},
 		}
 	}
@@ -395,7 +802,10 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 	state.ctx = ctx
 }
 
-export function openTodoWidget(ctx: ExtensionContext): void {
+/** Ambient show: make the strip visible without changing the user's
+ *  expand/collapse overrides, so auto-collapse still applies. Used by the
+ *  store-sync path, which must not count as an explicit expansion. */
+function showTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 	const state = getTodoWidgetState(ctx)
 	state.collapsed = false
@@ -405,11 +815,26 @@ export function openTodoWidget(ctx: ExtensionContext): void {
 	setTodosStatus(ctx)
 }
 
+export function openTodoWidget(ctx: ExtensionContext): void {
+	if (!ctx.hasUI) return
+	// Explicit open (`/todos expand`) shows the list body even when the list is
+	// past the auto-collapse threshold.
+	const state = getTodoWidgetState(ctx)
+	state.listExpanded = true
+	state.listCollapsed = false
+	state.userScrolled = false
+	showTodoWidget(ctx)
+}
+
 export function expandTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 	const state = getTodoWidgetState(ctx)
 	state.expanded = true
-	openTodoWidget(ctx)
+	state.listExpanded = true
+	state.listCollapsed = false
+	state.userScrolled = false
+	state.scrollOffset = 0
+	showTodoWidget(ctx)
 }
 
 export function clearTodoWidget(ctx: ExtensionContext): void {
@@ -417,6 +842,11 @@ export function clearTodoWidget(ctx: ExtensionContext): void {
 	const state = getTodoWidgetState(ctx)
 	state.visible = false
 	state.expanded = false
+	state.listExpanded = false
+	state.listCollapsed = false
+	state.userScrolled = false
+	state.scrollOffset = 0
+	stopSpinner(state)
 	requestTodoRender(ctx)
 }
 
@@ -426,9 +856,37 @@ export function collapseTodoWidget(ctx: ExtensionContext): void {
 	setTodosStatus(ctx)
 }
 
+/** Collapse ↔ expand the list body in place. Used by F7, bare `/todos`, Enter,
+ *  and click. Never hides the strip — Esc and `/todos collapse` do that. */
 export function toggleTodoWidget(ctx: ExtensionContext): void {
-	if (getTodoWidgetState(ctx).visible) collapseTodoWidget(ctx)
-	else openTodoWidget(ctx)
+	if (!ctx.hasUI) return
+	const sessionId = ctx.sessionManager.getSessionId()
+	const state = getTodoWidgetState(ctx)
+	if (!state.visible) {
+		showTodoWidget(ctx)
+		return
+	}
+	const groups = collectWidgetScopes(sessionId)
+	const counts = countTodosInGroups(groups)
+	const terminalRows = state.tui?.terminal?.rows
+	const expandedHeight = estimateExpandedHeight(groups, state.expanded, terminalRows)
+	if (
+		isTodoBodyCollapsed({
+			expanded: state.expanded,
+			listExpanded: state.listExpanded,
+			listCollapsed: state.listCollapsed,
+			total: counts.total,
+			expandedHeight,
+			terminalRows,
+		})
+	) {
+		openTodoWidget(ctx)
+		return
+	}
+	state.listCollapsed = true
+	state.listExpanded = false
+	state.expanded = false
+	requestTodoRender(ctx)
 }
 
 export function syncTodoWidget(ctx: ExtensionContext): void {
@@ -436,7 +894,7 @@ export function syncTodoWidget(ctx: ExtensionContext): void {
 	const sessionId = ctx.sessionManager.getSessionId()
 	const counts = countAllActiveTodos(sessionId)
 	const state = getTodoWidgetState(ctx)
-	if (!state.collapsed && hasActiveTodos(counts)) openTodoWidget(ctx)
+	if (!state.collapsed && hasActiveTodos(counts)) showTodoWidget(ctx)
 	else clearTodoWidget(ctx)
 	setTodosStatus(ctx)
 }
@@ -449,6 +907,7 @@ export function disposeTodoWidget(ctx: ExtensionContext): void {
 	if (state) {
 		state.visible = false
 		state.registered = false
+		stopSpinner(state)
 		state.tui = undefined
 		state.ctx = undefined
 	}
@@ -457,7 +916,7 @@ export function disposeTodoWidget(ctx: ExtensionContext): void {
 
 export function registerTodoShortcut(pi: ExtensionAPI): void {
 	pi.registerShortcut(TODO_SHORTCUT, {
-		description: "Toggle todos overlay",
+		description: "Collapse/expand todos list",
 		handler: (ctx) => toggleTodoWidget(ctx),
 	})
 }

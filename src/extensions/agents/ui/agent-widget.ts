@@ -4,6 +4,7 @@
 
 import { truncateToWidth } from "@earendil-works/pi-tui"
 import { remountTipWidget } from "../../tips/index.js"
+import { remountTodosWidget, setTodoCrowding } from "../../todos/widget.js"
 import type { AgentManager } from "../manager/agent-manager.js"
 import { getLifetimeTotal, getSessionContextPercent, type LifetimeUsage, type SessionLike } from "../manager/usage.js"
 import { getConfig } from "../personas/agent-types.js"
@@ -430,6 +431,7 @@ export class AgentWidget {
 				this.uiCtx.setWidget("agents", undefined)
 				this.widgetRegistered = false
 				this.tui = undefined
+				setTodoCrowding("agents", false)
 			}
 			if (this.lastStatusText !== undefined) {
 				this.uiCtx.setStatus("subagents", undefined)
@@ -470,15 +472,19 @@ export class AgentWidget {
 						invalidate: () => {
 							this.widgetRegistered = false
 							this.tui = undefined
+							setTodoCrowding("agents", false)
 						},
 					}
 				},
 				{ placement: "aboveEditor" },
 			)
 			this.widgetRegistered = true
-			// Re-insert tip widget after agents so it renders directly above the editor
-			// (framework renders aboveEditor widgets in Map insertion order).
+			setTodoCrowding("agents", true)
+			// Re-insert tip/todos widgets after agents so they render above agents,
+			// directly above the editor (framework renders aboveEditor widgets in
+			// Map insertion order).
 			remountTipWidget()
+			remountTodosWidget()
 		} else {
 			;(this.tui as { requestRender?(): void } | undefined)?.requestRender?.()
 		}
@@ -492,6 +498,7 @@ export class AgentWidget {
 		if (this.uiCtx) {
 			this.uiCtx.setWidget("agents", undefined)
 			this.uiCtx.setStatus("subagents", undefined)
+			setTodoCrowding("agents", false)
 		}
 		this.widgetRegistered = false
 		this.tui = undefined

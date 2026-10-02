@@ -6,6 +6,7 @@ import { type AgentActivity, AgentWidget, type Theme, type UICtx } from "./agent
 // The widget remounts the tips widget when it registers — the tips module
 // pulls in config/billing/ferment chains a unit test doesn't need.
 vi.mock("../../tips/index.js", () => ({ remountTipWidget: vi.fn() }))
+vi.mock("../../todos/widget.js", () => ({ remountTodosWidget: vi.fn(), setTodoCrowding: vi.fn() }))
 
 const theme: Theme = { fg: (_color, text) => text, bold: (text) => text }
 
