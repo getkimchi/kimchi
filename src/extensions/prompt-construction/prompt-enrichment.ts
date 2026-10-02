@@ -258,9 +258,14 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			if (w.kind !== "deprecated_model") continue
 			// Gate on whichever date exists: curated deprecations carry
 			// deprecated_at, vendor retirement-only records carry sunset_at.
-			const deprecatedAtMs = w.deprecatedAt ? Date.parse(w.deprecatedAt) : undefined
-			const sunsetAtMs = w.sunsetAt ? Date.parse(w.sunsetAt) : undefined
-			const effectiveMs = deprecatedAtMs ?? sunsetAtMs
+			// Unparseable dates count as absent — ?? would keep a NaN from
+			// Date.parse and fire the warning immediately.
+			const parseMs = (value: string | undefined): number | undefined => {
+				if (!value) return undefined
+				const ms = Date.parse(value)
+				return Number.isNaN(ms) ? undefined : ms
+			}
+			const effectiveMs = parseMs(w.deprecatedAt) ?? parseMs(w.sunsetAt)
 			if (effectiveMs !== undefined && effectiveMs > notifyCutoff) continue
 			deprecatedWarnings.set(w.modelId, {
 				replacement: w.replacement,

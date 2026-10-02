@@ -1124,6 +1124,35 @@ describe("deprecated model notification", () => {
 		)
 	})
 
+	it("gates on the valid sunset date when deprecated_at is malformed", async () => {
+		const modelProps: Omit<ModelMetadata, "slug" | "display_name" | "status" | "replacement"> = {
+			provider: "kimchi-dev/openai",
+			reasoning: false,
+			input_modalities: ["text"],
+			is_serverless: false,
+			limits: { context_window: 128000, max_output_tokens: 8192 },
+		}
+		const models: ModelMetadata[] = [
+			// A malformed deprecated_at must not fire the warning immediately;
+			// the far-future sunset should gate it like any other record.
+			{
+				slug: "gpt-4",
+				display_name: "GPT-4",
+				deprecated_at: "not-a-date",
+				sunset_at: isoWithinDays(200),
+				...modelProps,
+			},
+		]
+		setupAvailableModels(models)
+
+		const { sessionStart } = buildExtensionWithHandlers()
+		if (!sessionStart) throw new Error("session_start handler not registered")
+		const ctx = createContext({ model: { provider: "kimchi-dev/openai", id: "gpt-4" } })
+		await sessionStart({}, ctx)
+
+		expect((ctx.ui.notify as Mock).mock.calls.length).toBe(0)
+	})
+
 	it("stays silent for a sunset-only record beyond the notice window", async () => {
 		const modelProps: Omit<ModelMetadata, "slug" | "display_name" | "status" | "replacement"> = {
 			provider: "kimchi-dev/openai",
