@@ -794,6 +794,48 @@ describe("bash_control — pending terminal delivery state", () => {
 		expect(result.details.pendingHandles).toEqual([handle])
 	})
 
+	it("wait with a live survivor and a recoverable pending outcome returns it immediately (no timer)", async () => {
+		const { tool } = setup()
+		const survivor = spawnRunning("survivor")
+		// A recoverable (available) outcome exists alongside the live
+		// survivor — e.g. released after an aborted run dropped its
+		// notification. The wait must NOT defer this deliverable output to the
+		// 300s checkpoint behind the survivor.
+		const handle = "recovered-mixed"
+		state.delivery.record(handle, "[TERMINAL PAYLOAD mixed-recovered]", "automatic")
+		const timersBefore = vi.getTimerCount()
+
+		const result = await callExecute(tool, { wait: true })
+		expect(result.details.event).toBe("exit")
+		expect(result.details.exitedHandles).toEqual([handle])
+		expect(result.details.runningHandles).toEqual([survivor])
+		expect(textOf(result)).toContain("mixed-recovered")
+		expect(textOf(result)).toContain("survivor")
+		// No wait timer was armed for deliverable output.
+		expect(vi.getTimerCount()).toBe(timersBefore)
+	})
+
+	it("wait with only queued pending outcomes keeps waiting for live work (mixed queued + live)", async () => {
+		const { tool } = setup()
+		const survivor = spawnRunning("survivor")
+		const handle = "queued-mixed"
+		state.delivery.record(handle, "[TERMINAL PAYLOAD never-duplicated]", "automatic")
+		state.delivery.markQueued(handle, "delivery-qm")
+
+		const execPromise = callExecute(tool, { wait: true, waitSeconds: 5 })
+		await Promise.resolve()
+		await vi.advanceTimersByTimeAsync(5_000)
+		const result = await execPromise
+		// The survivor is still running; the queued outcome is owned by its
+		// notification — reported as pending, not duplicated, and the wait
+		// still checkpoints normally.
+		expect(result.details.event).toBe("checkpoint")
+		expect(result.details.runningHandles).toEqual([survivor])
+		expect(result.details.pendingHandles).toEqual([handle])
+		expect(textOf(result)).toContain("queued for automatic delivery")
+		expect(textOf(result)).not.toContain("never-duplicated")
+	})
+
 	it("an unknown handle makes no delivered assertion", async () => {
 		const { tool } = setup()
 		const result = await callExecute(tool, { stop_handles: ["ghost"], wait: false })

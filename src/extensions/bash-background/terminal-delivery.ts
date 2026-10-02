@@ -129,6 +129,12 @@ export interface TerminalDelivery {
 	 * released handles.
 	 */
 	releaseAutomatic(): string[]
+	/**
+	 * Roll back one batch enqueue attempt after a synchronous send failure:
+	 * only the outcomes of `deliveryId` return to `available` so they stay
+	 * recoverable by inspection (no retry loop, no duplicate enqueue).
+	 */
+	releaseQueued(deliveryId: string): string[]
 	/** Release a control call's claim without delivering (failed call). Returns released handles. */
 	releaseControl(controlCallId: string): string[]
 	/** The pending outcome for `handle`, or undefined. */
@@ -203,6 +209,17 @@ export function createTerminalDelivery(): TerminalDelivery {
 		return released
 	}
 
+	function releaseQueued(deliveryId: string): string[] {
+		const released: string[] = []
+		for (const pending of pendings.values()) {
+			if (pending.phase === "queued" && pending.owner === "automatic" && pending.deliveryId === deliveryId) {
+				pending.phase = "available"
+				released.push(pending.handle)
+			}
+		}
+		return released
+	}
+
 	function releaseControl(controlCallId: string): string[] {
 		const released: string[] = []
 		for (const pending of pendings.values()) {
@@ -226,6 +243,7 @@ export function createTerminalDelivery(): TerminalDelivery {
 		acknowledgeAutomatic,
 		acknowledgeControl,
 		releaseAutomatic,
+		releaseQueued,
 		releaseControl,
 		getPending: (handle) => pendings.get(handle),
 		pendingHandles: () => [...pendings.keys()],

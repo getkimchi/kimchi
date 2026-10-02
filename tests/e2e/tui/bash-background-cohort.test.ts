@@ -406,10 +406,11 @@ test("background bash cohort: a checkpoint leaves the command alive; queued inpu
 test("background bash cohort: unattended exit during continued tool work reaches the next request and settles", async ({
 	terminal,
 }) => {
-	// The marker is emitted at process exit (~6s), past the ~2s handoff. The
-	// wider fake context keeps this multi-turn workflow from tripping the
-	// tiny default window's auto-compaction (same pattern as
-	// ask-user-form.test.ts).
+	// The marker is emitted at process exit (~6s), past the ~2s handoff — and
+	// assembled by the shell at runtime, so no request history can contain
+	// it before the exit output is delivered. The wider fake context keeps
+	// this multi-turn workflow from tripping the tiny default window's
+	// auto-compaction (same pattern as ask-user-form.test.ts).
 	const EXIT_MARKER = "COHORT-EXIT-MARKER-4d71"
 	const NO_COMPACTION_MODEL = { slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }
 	await runKimchiSession(
@@ -419,7 +420,10 @@ test("background bash cohort: unattended exit during continued tool work reaches
 			artifactName: "bash-background-cohort-exit-during-tool-work",
 			responses: [
 				// Turn 1: start a command that exits unattended at ~6s, emitting
-				// its unique terminal marker at exit.
+				// its unique terminal marker at exit. The echo argument is
+				// quote-split so the command text itself NEVER contains the
+				// assembled marker — searching request histories for the marker then
+				// proves the DELIVERED OUTPUT arrived, not the echoed command.
 				{
 					stream: ["Starting the marker command."],
 					toolCalls: [
@@ -427,7 +431,7 @@ test("background bash cohort: unattended exit during continued tool work reaches
 							id: "call_bash_marker",
 							function: {
 								name: "bash",
-								arguments: JSON.stringify({ command: `sleep 6 && echo ${EXIT_MARKER}` }),
+								arguments: JSON.stringify({ command: `sleep 6 && echo "COHORT-EXIT-"MARKER-4d71` }),
 							},
 						},
 					],
@@ -509,6 +513,10 @@ test("background bash cohort: unattended exit during continued tool work reaches
 			for (let i = 0; i < firstVisible; i++) {
 				expect(requests[i]).not.toContain(EXIT_MARKER)
 			}
+			// The run settled at the scripted final turn: no extra main-model
+			// request followed the stop (a completion continuation or a leaked
+			// steer would have produced one during the settle window).
+			expect(requests.length).toBe(4)
 			// Once-per-history payload presence: in the FINAL request's history
 			// the exit notification appears exactly once, and no completion
 			// continuation fired (the exit resolved the state by itself).

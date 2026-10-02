@@ -103,6 +103,21 @@ describe("createTerminalDelivery", () => {
 		expect(() => delivery.acknowledgeControl(["h1"])).not.toThrow()
 	})
 
+	it("releaseQueued rolls back exactly one batch to available", () => {
+		const delivery = createTerminalDelivery()
+		delivery.record("h1", "p1", "automatic")
+		delivery.record("h2", "p2", "automatic")
+		delivery.markQueued("h1", "batch-1")
+		delivery.markQueued("h2", "batch-1")
+		delivery.record("h3", "p3", "automatic")
+		delivery.markQueued("h3", "batch-2")
+		expect(delivery.releaseQueued("batch-1").sort()).toEqual(["h1", "h2"])
+		expect(delivery.getPending("h1")?.phase).toBe("available")
+		expect(delivery.getPending("h2")?.phase).toBe("available")
+		// A different batch stays queued.
+		expect(delivery.getPending("h3")?.phase).toBe("queued")
+	})
+
 	it("distinct sessions have distinct session identities", () => {
 		expect(createTerminalDelivery().sessionId).not.toBe(createTerminalDelivery().sessionId)
 	})

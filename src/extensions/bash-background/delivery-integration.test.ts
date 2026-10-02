@@ -32,6 +32,7 @@
  */
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createFakeOps, type FakeOps } from "./__mocks__/fake-bash-ops.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
@@ -68,7 +69,7 @@ async function loadAgent(): Promise<AgentConstructor> {
 	return mod.Agent
 }
 
-const ctx = {} as ExtensionContext
+const ctx = createContext()
 const CWD = "/tmp/bash-background-integration"
 
 /** One scripted provider request: what the fake model returns + what it saw. */
@@ -340,10 +341,12 @@ async function setupIntegration(script: ScriptedResponse[]): Promise<Integration
 				// paths never send a streaming no-trigger message.
 				throw new Error("unexpected streaming append in test harness")
 			} else {
+				// _appendCustomMessage (installed SDK): commits the message to
+				// agent state + session persistence and notifies session
+				// LISTENERS — but does NOT dispatch extension message_end handlers
+				// (verified: it uses the listener emit directly, not
+				// _emitExtensionEvent). The harness mirrors that exactly.
 				agent.state.messages.push(appMessage)
-				void pi
-					.emit("message_start", { type: "message_start", message: appMessage }, ctx)
-					.then(() => pi.emit("message_end", { type: "message_end", message: appMessage }, ctx))
 			}
 		},
 	)
@@ -529,7 +532,7 @@ describe("background bash exit delivery (real installed agent loop)", () => {
 				const second = harness.ops.exitMatching("side-file", 0)
 				await Promise.all([first, second])
 			}
-			return origEmit(event, payload, context as ExtensionContext)
+			return origEmit(event, payload, context as never)
 		}
 
 		await harness.agent.prompt([
@@ -546,5 +549,58 @@ describe("background bash exit delivery (real installed agent loop)", () => {
 		// Delivered exactly once, acknowledged, retired.
 		expect(harness.state.delivery.hasPending()).toBe(false)
 		expect(harness.agent.state.messages.filter((m) => JSON.stringify(m).includes(MARKER))).toHaveLength(1)
+	})
+
+	it("a post-abort exit appends without restarting inference and retires without message_end", async () => {
+		// The user aborts while the process is still RUNNING (the TUI/ACP also
+		// drop queued steering, but nothing is queued here). The process then
+		// exits unattended while the session is idle and terminated: the
+		// payload must be appended to the conversation WITHOUT waking
+		// inference, and — because the installed session's append path
+		// (`_appendCustomMessage`) does NOT dispatch extension message_end
+		// handlers (it uses the listener emit, not _emitExtensionEvent) — the
+		// extension retires the batch itself right after the synchronous
+		// append, so the outcome cannot masquerade as pending forever or be
+		// recovered into a duplicate later.
+		const harness = await setupIntegration([
+			{ stopReason: "toolUse", toolCalls: [{ id: "c1", name: "bash", arguments: { command: "post-abort" } }] },
+			{ stopReason: "toolUse", toolCalls: [{ id: "c2", name: "read", arguments: {} }] },
+			// Consumed by the aborted round-3 request (signal overrides script).
+			{ stopReason: "stop" },
+		])
+		registry = harness.state.registry
+		const origEmit = harness.pi.emit.bind(harness.pi)
+		let aborted = false
+		harness.pi.emit = async (event: string, payload: unknown, context?: unknown) => {
+			const p = payload as { toolName?: string }
+			if (event === "tool_execution_start" && p?.toolName === "read" && !aborted) {
+				aborted = true
+				// The user aborts mid-execution; the process keeps running.
+				await new Promise((resolve) => setTimeout(resolve, 20))
+				harness.agent.abort()
+			}
+			return origEmit(event, payload, context as ExtensionContext)
+		}
+
+		await harness.agent.prompt([{ role: "user", content: [{ type: "text", text: "train" }], timestamp: Date.now() }])
+		expect(harness.agent.state.isStreaming).toBe(false)
+		expect(harness.requests.length).toBe(3)
+
+		// The unattended exit lands while the session is idle and terminated.
+		harness.ops.emitMatching("post-abort", `${MARKER}\n`)
+		await harness.ops.exitMatching("post-abort", 0)
+		await new Promise((resolve) => setTimeout(resolve, 50))
+
+		// No inference restart: no new provider request was made.
+		expect(harness.requests.length).toBe(3)
+		// The payload was appended to the conversation exactly once…
+		const appended = harness.agent.state.messages.filter(
+			(m) => (m as { role?: string }).role === "custom" && JSON.stringify(m).includes(MARKER),
+		)
+		expect(appended).toHaveLength(1)
+		// …and NO message_end ever fired for it (the append path does not
+		// dispatch extension handlers) — the batch retired on the append.
+		expect(harness.exitMessageEnds).toHaveLength(0)
+		expect(harness.state.delivery.hasPending()).toBe(false)
 	})
 })

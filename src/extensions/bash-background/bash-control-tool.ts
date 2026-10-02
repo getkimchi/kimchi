@@ -483,20 +483,33 @@ export function createBashControlToolDefinition(
 		// ── Cohort wait. ──
 		// Terminal outcomes awaiting delivery surface IMMEDIATELY: pending
 		// results are checked BEFORE deciding the cohort is empty or starting
-		// the wait timer, so a wait never sleeps on a session whose only work
-		// has already ended.
-		if (coordinator.size === 0) {
+		// the wait timer. This covers BOTH cases where blocking would only
+		// delay output that can be collected right now: a cohort with no live
+		// processes at all, and a mixed cohort where a recoverable outcome
+		// (available AND automatic-owned — e.g. released after an aborted run
+		// dropped its notification) exists alongside a live survivor — the
+		// wait never defers deliverable output to the 300s checkpoint.
+		// Control-owned available outcomes are excluded: they belong to a
+		// bash_control result already in progress, and queued-automatic
+		// outcomes do NOT end the wait (their notification is the carrier).
+		const hasRecoverableOutcome = state.delivery.pendingHandles().some((handle) => {
+			const pending = state.delivery.getPending(handle)
+			return pending?.phase === "available" && pending.owner === "automatic"
+		})
+		if (coordinator.size === 0 || hasRecoverableOutcome) {
 			const snapshot = await collectCohortSnapshot(state, { toolCallId })
 			exitedHandles.push(...snapshot.exitedHandles)
 			if (snapshot.exitedHandles.length > 0 || snapshot.pendingHandles.length > 0) {
 				// Fresh terminal outcomes (or recovered post-abort outcomes)
 				// surfaced by the sweep — queued-only outcomes report an
-				// inspection; anything delivered makes it an exit response.
+				// inspection; anything delivered makes it an exit response. Live
+				// survivors keep running and are reported as running evidence.
 				const mode: SnapshotMode =
 					snapshot.exitedHandles.length === 0
 						? { kind: "inspection" }
 						: { kind: "exit", handle: snapshot.exitedHandles[0] ?? "" }
 				blocks.push(...snapshotBlocks(mode, snapshot))
+				coordinator.commitObservation(snapshot.runningHandles)
 			} else if (exitedHandles.length > 0) {
 				// Only stop outcomes — already delivered in this result above.
 				blocks.push("No background processes or pending results remain.")
@@ -507,6 +520,7 @@ export function createBashControlToolDefinition(
 				content: [{ type: "text", text: blocks.join("\n\n") }],
 				details: {
 					exitedHandles,
+					runningHandles: snapshot.runningHandles,
 					pendingHandles: snapshot.pendingHandles,
 					event: exitedHandles.length > 0 ? "exit" : snapshot.pendingHandles.length > 0 ? "inspection" : "empty",
 				},

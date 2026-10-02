@@ -371,6 +371,11 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 						console.error("bash-background exit collection failed:", err)
 					}
 				}
+				// Collection awaited registry cleanup: re-check the session
+				// identity immediately before enqueueing — replacement or
+				// shutdown during the async gap must never deliver a stale
+				// result into the new session.
+				if (disposed || getState() !== state) return
 				// Atomic claim + enqueue: no awaits between markQueued and
 				// sendMessage, and the pending identity is set BEFORE the call
 				// because an idle-triggered send can start processing (and emit
@@ -402,23 +407,46 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 					}
 				}
 				// A cancelled/errored run must not be restarted: keep the
-				// payload in the conversation (appended, acknowledged, no
-				// inference wake) instead of triggering a turn.
+				// payload in the conversation (appended, no inference wake)
+				// instead of triggering a turn.
 				const triggerTurn = runTerminated === undefined
 				const details: BashExitMessageDetails = {
 					deliveryId,
 					sessionId: state.delivery.sessionId,
 					handles: included,
 				}
-				pi.sendMessage(
-					{
-						customType: BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
-						content: [{ type: "text", text: markHarnessSteer(blocks.join("\n\n")) }],
-						display: false,
-						details,
-					},
-					{ triggerTurn, deliverAs: "steer" },
-				)
+				try {
+					pi.sendMessage(
+						{
+							customType: BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
+							content: [{ type: "text", text: markHarnessSteer(blocks.join("\n\n")) }],
+							display: false,
+							details,
+						},
+						{ triggerTurn, deliverAs: "steer" },
+					)
+				} catch (err) {
+					// A synchronous enqueue failure must not strand the outcomes
+					// in `queued` (unrecoverable by inspection, wrongly suppressing
+					// completion reminders): roll the batch back to `available` so
+					// an explicit inspection can deliver them. No retry here — the
+					// completion continuation keeps the handles accountable.
+					state.delivery.releaseQueued(deliveryId)
+					throw err
+				}
+				if (!triggerTurn) {
+					// The installed session's no-trigger idle path
+					// (`_appendCustomMessage`) commits the message to history
+					// synchronously (agent state + session persistence) but does NOT
+					// dispatch extension message_end handlers — it uses the listener
+					// emit, not _emitExtensionEvent (verified against the installed
+					// SDK). The append IS the authoritative commit for a session that
+					// must not be woken, so the outcomes retire here rather than
+					// waiting for an acknowledgement that will never fire. Leaving
+					// them queued would report false pending status and could
+					// duplicate the payload through a later abort-release recovery.
+					state.delivery.acknowledgeAutomatic(deliveryId)
+				}
 			} catch (err: unknown) {
 				console.error("bash-background exit delivery failed:", err)
 			}
@@ -565,17 +593,22 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		activeControlCalls.delete(event.toolCallId)
 		const state = getState()
 		if (!state) return
+		// Outcomes recorded by THIS call that its result never delivered
+		// (it errored before carrying exitedHandles). Collected first so
+		// the single ownership release covers every handle — releasing
+		// inside the loop would flip later siblings' owner to `automatic`
+		// before their own check, silently dropping them from recovery.
+		const failedDeliveries: string[] = []
 		for (const handle of call.owned) {
 			if (claimedExits.get(handle) !== event.toolCallId) continue
 			// A pending outcome recorded by THIS call was never delivered
-			// (its result errored before carrying exitedHandles): release
-			// the failed claim and requeue the recorded payload for the
+			// (its result errored before carrying exitedHandlers): release
+			// the failed claim below and requeue the recorded payload for the
 			// automatic channel — no re-collection, no retry loop.
 			const pending = state.delivery.getPending(handle)
 			if (pending && pending.owner !== "automatic" && pending.owner.controlCallId === event.toolCallId) {
-				state.delivery.releaseControl(event.toolCallId)
+				failedDeliveries.push(handle)
 				claimedExits.delete(handle)
-				deliverUnattendedExit(state, handle)
 				continue
 			}
 			if (pending) {
@@ -599,6 +632,13 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 			// still holds the handle, so the tool result did not carry it —
 			// fire the notification path now so the exit is not silently dropped.
 			deliverUnattendedExit(state, handle)
+		}
+		// Release the failed call's ownership once for ALL its recorded
+		// outcomes, then requeue every one of them — they coalesce into one
+		// identified notification.
+		if (failedDeliveries.length > 0) {
+			state.delivery.releaseControl(event.toolCallId)
+			for (const handle of failedDeliveries) deliverUnattendedExit(state, handle)
 		}
 	})
 

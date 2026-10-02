@@ -71,6 +71,17 @@ available → claimed for one channel → queued/response prepared
   `agent.afterToolCall` before the result message is appended to the run
   context; a consolidated `bash_control` result carrying `exitedHandles`
   is authoritative by construction.
+- **The append path does NOT dispatch extension handlers:** the installed
+  session's `_appendCustomMessage` (the no-trigger idle delivery used
+  after a cancelled run) commits the message to agent state and session
+  persistence synchronously and notifies session *listeners*, but it
+  calls the listener emit directly — not `_emitExtensionEvent` — so
+  extension `message_end` handlers never fire on that path. Because the
+  append is itself the authoritative commit, the extension retires the
+  batch right after the synchronous `triggerTurn:false` send instead of
+  waiting for an acknowledgement that will never arrive; leaving such
+  outcomes `queued` would report false pending status and could duplicate
+  the payload through a later abort-release recovery.
 
 ### Ownership decision (smallest tested strategy)
 
@@ -99,18 +110,29 @@ available → claimed for one channel → queued/response prepared
 - **Failed collection/call:** a synchronous collection failure releases
   the registry claim and restores tracking (retry possible); a control
   call that recorded an outcome but never delivered it (e.g. an error
-  result) releases its claim from the `tool_execution_end` backstop and
-  requeues the *recorded* payload — no re-collection, no retry loop.
+  result) releases ALL its recorded claims in one ownership release from
+  the `tool_execution_end` backstop and requeues EVERY recorded payload
+  (they coalesce into one identified notification) — no re-collection,
+  no retry loop.
+- **Failure safety:** a synchronous enqueue failure rolls its batch back
+  to `available` (`releaseQueued`) so an inspection can still deliver it
+  instead of stranding it in `queued`; the session identity is re-checked
+  immediately before enqueueing, so a replacement/shutdown during the
+  async collection window can never deliver a stale result into the new
+  session.
 
 ### Truthful status and guidance
 
 - `bash_control` checks pending terminal outcomes **before** deciding a
   cohort is empty or starting a wait: a wait with only pending results
   returns them immediately (collected outcomes as an exit response,
-  queued ones as pending status) and starts no timer; a genuinely empty
-  session answers `No background processes or pending results remain. No
-  wait timer was started; this call does not sleep.` Details gained an
-  optional `pendingHandles` field (existing consumers unaffected).
+  queued ones as pending status) and starts no timer; a mixed cohort — a
+  recoverable outcome next to a live survivor — also returns the
+  deliverable outcome immediately instead of deferring it to the 300s
+  checkpoint; a genuinely empty session answers `No background processes
+  or pending results remain. No wait timer was started; this call does
+  not sleep.` Details gained an optional `pendingHandles` field (existing
+  consumers unaffected).
 - Unknown-handle wording no longer asserts delivery: it states that no
   live process, pending exit result, or queued delivery is associated
   with the handle.
@@ -135,24 +157,33 @@ available → claimed for one channel → queued/response prepared
     verified by temporarily reverting the channel),
   - abort + queue-drop + explicit inspection recovery with exactly-once
     payload,
-  - steering queue order behind an earlier steer.
+  - steering queue order behind an earlier steer,
+  - post-abort append: no inference restart, and no `message_end` (the
+    append path does not dispatch extension handlers) — the outcome
+    retires on the synchronous append.
 - `terminal-delivery.test.ts` — phase/claim/acknowledge/release state
-  machine, including supersession and session identity.
+  machine, including supersession, session identity, and batch rollback.
 - `bash-control-extension.test.ts` — steering + typed details, message_end
   acknowledgement (batch handles, foreign-session guard), suppression
   replacement, abort release + no-`triggerTurn` restart, `agent_start`
-  re-arm, failed-call requeue.
+  re-arm, failed-call requeue (multi-handle coalesced), synchronous
+  enqueue rollback, mid-collection session replacement.
 - `bash-control-tool.test.ts` — pending sweep (queued status vs
-  available claim), pending-only wait (no timer), unknown-handle wording,
-  stop dedup against the sweep.
+  available claim), pending-only wait (no timer), mixed
+  live/recoverable wait (immediate, no timer) and mixed live/queued wait
+  (still checkpoints, no duplicate), unknown-handle wording, stop dedup
+  against the sweep.
 - TUI e2e (`tests/e2e/tui/bash-background-cohort.test.ts`) — new
   user-visible workflow: a command emits its unique terminal marker at
-  exit (past the handoff), the model keeps doing independent read work,
-  and the marker reaches the request after the turn in which the exit
-  landed; first-request visibility + once-per-history presence asserted.
+  exit (assembled by the shell at runtime, so no request history can
+  contain it before delivery), the model keeps doing independent read
+  work, and the marker reaches the request after the turn in which the
+  exit landed; first-request visibility, exactly-four-request settlement
+  (no extra turns after the stop), and once-per-history presence are
+  asserted.
 
 Verification run on this branch: `pnpm run check` clean; unit suite
-12,104 passed; TUI e2e `bash-background-cohort` 5/5 and `bash-background`
+12,111 passed; TUI e2e `bash-background-cohort` 5/5 and `bash-background`
 2/2; ACP e2e 56/56; smoke 36 passed / 12 env-conditional skips.
 
 ## Known limitations
