@@ -23,6 +23,7 @@ import {
 	performKimchiApiKeyLogin,
 	performKimchiBrowserLogin,
 	prePopulateSubscriptionModels,
+	promptSelfHostedBaseUrl,
 	regionChoiceRequired,
 	syncKimchiAuth,
 } from "./extensions/login/flow.js"
@@ -148,8 +149,22 @@ async function patchedGetLogoutProviderOptions(this: InteractiveMode): Promise<A
 	return visibleAuthProviders(await originalGetLogoutProviderOptions.call(this))
 }
 
+/** Prompt for the self-hosted base URL through InteractiveMode's extension
+ * input, mirroring the API-key endpoint prompt. Returns undefined on Esc,
+ * re-prompting on invalid input (see promptSelfHostedBaseUrl). */
+async function promptSelfHostedBaseViaIm(im: InteractiveMode): Promise<string | undefined> {
+	const modeLike = im as unknown as LoginModeLike
+	const input = modeLike.showExtensionInput?.bind(modeLike)
+	if (!input) return undefined
+	return promptSelfHostedBaseUrl({
+		prompt: (title, placeholder) => input(title, placeholder),
+		notifyError: (message) => im.showError(message),
+		storedUrl: loadConfig().selfHostedUrl,
+	})
+}
+
 async function startKimchiBrowserLogin(im: InteractiveMode, region: RegionId): Promise<void> {
-	const modeLike = im as unknown as { showStatus?: (msg: string) => void; session: SessionLike }
+	const modeLike = im as unknown as LoginModeLike
 	const showStatus = modeLike.showStatus?.bind(modeLike)
 	const showError = im.showError.bind(im)
 	const session = modeLike.session
@@ -157,6 +172,22 @@ async function startKimchiBrowserLogin(im: InteractiveMode, region: RegionId): P
 	if (!runtime) {
 		showError("Kimchi login failed: model registry is unavailable")
 		return
+	}
+
+	// Self-hosted needs its base URL before the browser flow can target the
+	// right web app; Esc returns to the auth-method selector, like the API-key
+	// prompts.
+	let selfHostedUrl: string | undefined
+	if (region === "self-hosted") {
+		if (!modeLike.showExtensionInput) {
+			showError("Kimchi login failed: text input is unavailable")
+			return
+		}
+		selfHostedUrl = await promptSelfHostedBaseViaIm(im)
+		if (selfHostedUrl === undefined) {
+			if (modeLike.showSelector) showLoginChoiceSelector(im)
+			return
+		}
 	}
 
 	await performKimchiBrowserLogin(
@@ -172,7 +203,7 @@ async function startKimchiBrowserLogin(im: InteractiveMode, region: RegionId): P
 			// needs the URL to copy into the right one. console.log is swallowed under the TUI.
 			onBrowserUrl: (url) => addLoginFeedback(im, formatBrowserLoginMessage(url)),
 		},
-		{ region },
+		{ region, selfHostedUrl },
 	)
 }
 
@@ -249,19 +280,37 @@ async function runKimchiApiKeyLogin(im: InteractiveMode, region: RegionId): Prom
 	}
 	const registry = asLoginRegistry(runtime)
 
+	// Self-hosted needs its base URL before the endpoint default can be
+	// derived; Esc returns to the auth-method selector, like the key prompt.
+	let selfHostedUrl: string | undefined
+	if (region === "self-hosted") {
+		selfHostedUrl = await promptSelfHostedBaseViaIm(im)
+		if (selfHostedUrl === undefined) {
+			if (modeLike.showSelector) showLoginChoiceSelector(im)
+			return
+		}
+	}
+
 	const apiKey = await modeLike.showExtensionInput("Kimchi API Key:", "Enter your Kimchi API key")
 	if (apiKey === undefined) {
 		if (modeLike.showSelector) showLoginChoiceSelector(im)
 		return
 	}
-	const defaultEndpoint = endpointsForRegion(region).llmBaseUrl
-	const endpointInput = await modeLike.showExtensionInput(
-		`Kimchi endpoint (press Enter to use ${defaultEndpoint}):`,
-		"",
-	)
-	if (endpointInput === undefined) {
-		if (modeLike.showSelector) showLoginChoiceSelector(im)
-		return
+	let endpoint = ""
+	if (region !== "self-hosted") {
+		// Self-hosted derives the gateway from the base URL; a separate endpoint
+		// prompt would invite a divergence that is never persisted (see
+		// performKimchiApiKeyLogin in the login flow).
+		const defaultEndpoint = endpointsForRegion(region).llmBaseUrl
+		const endpointInput = await modeLike.showExtensionInput(
+			`Kimchi endpoint (press Enter to use ${defaultEndpoint}):`,
+			"",
+		)
+		if (endpointInput === undefined) {
+			if (modeLike.showSelector) showLoginChoiceSelector(im)
+			return
+		}
+		endpoint = endpointInput.trim()
 	}
 
 	await performKimchiApiKeyLogin(
@@ -274,8 +323,9 @@ async function runKimchiApiKeyLogin(im: InteractiveMode, region: RegionId): Prom
 		},
 		{
 			apiKey,
-			endpoint: endpointInput.trim() || defaultEndpoint,
+			endpoint,
 			region,
+			selfHostedUrl,
 		},
 	)
 }

@@ -70,6 +70,8 @@ import {
 	endpointsForRegion,
 	loadConfig as loadKimchiConfig,
 	resolveEndpoints,
+	resolveSelfHostedBaseUrl,
+	type WriteApiKeyOptions,
 	writeApiKey,
 } from "../../config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "../../credential-staleness.js"
@@ -502,10 +504,16 @@ export class KimchiAcpAgent implements Agent {
 		// user's browser to the Kimchi web app, and awaits the resulting token.
 		// The success page copy names no client: this flow may be launched by any
 		// ACP client, so it stays neutral instead of the terminal CLI wording.
+		//
+		// Self-hosted resolves its web-app URL from the configured base URL
+		// (KIMCHI_SELF_HOSTED_URL env or the stored selfHostedUrl) — ACP clients
+		// have no interactive prompt surface, so a missing base fails fast here
+		// with the actionable configuration error instead of being prompted for.
+		const selfHostedUrl = region === "self-hosted" ? resolveSelfHostedBaseUrl() : undefined
 		let token: string
 		try {
 			;({ token } = await authenticateViaBrowser({
-				webAppUrl: endpointsForRegion(region).webAppUrl,
+				webAppUrl: endpointsForRegion(region, { selfHostedUrl }).webAppUrl,
 				successMessage: ACP_SUCCESS_MESSAGE,
 			}))
 		} catch (error) {
@@ -517,8 +525,11 @@ export class KimchiAcpAgent implements Agent {
 		}
 
 		// Persist the key so new sessions pick it up via the login extension's
-		// session_start handler (which reads loadConfig().apiKey), with its region.
-		writeApiKey(token, undefined, { region })
+		// session_start handler (which reads loadConfig().apiKey), with its region
+		// and — for self-hosted — the base URL it was authenticated against.
+		const persist: WriteApiKeyOptions = { region }
+		if (selfHostedUrl) persist.selfHostedUrl = selfHostedUrl
+		writeApiKey(token, undefined, persist)
 		// Fresh login invalidates earlier 401 marks — auth_status flips back now.
 		clearCredentialStale(KIMCHI_PROVIDER_ID)
 
