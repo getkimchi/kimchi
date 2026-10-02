@@ -5606,6 +5606,34 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		})
 	})
 
+	it.each([
+		{ message: "budget exhausted for this account", kind: "budget_exhausted", httpStatusCode: undefined },
+		{ message: "Request failed with status code 503: Service Unavailable", kind: "provider_5xx", httpStatusCode: 503 },
+		{ message: "Request failed: prompt too long", kind: "context_window_exceeded", httpStatusCode: undefined },
+	])("rejection data carries kind=$kind for classifiable provider errors", async ({
+		message,
+		kind,
+		httpStatusCode,
+	}) => {
+		const fake = new FakeAgentSession(`session-error-kind-${kind}`)
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantErrorEvent(message))
+			fake.emit(agentEnd())
+		}
+
+		const err = await agent
+			.prompt({ sessionId: `session-error-kind-${kind}`, prompt: [{ type: "text", text: "hello" }] })
+			.catch((e) => e)
+		expect((err as { code?: number }).code).toBe(-32603)
+		expect((err as { data?: unknown }).data).toEqual({
+			kind,
+			...(httpStatusCode !== undefined ? { httpStatusCode } : {}),
+		})
+	})
+
 	it("unclassifiable provider errors reject without a data payload", async () => {
 		const fake = new FakeAgentSession("session-error-nodata")
 		const agent = makeAgent(fake)

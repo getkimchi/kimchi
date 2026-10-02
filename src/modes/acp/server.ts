@@ -2397,6 +2397,12 @@ function toTurnError(terminal: { stopReason: "error"; errorMessage?: string }): 
 	// Structured reason data so clients branch on fields, not message text.
 	// JSON-RPC transports carry the data payload untouched; clients that ignore
 	// it lose nothing (message keeps the raw provider text).
+	// CAVEAT for clients discovering this wire shape: classification is
+	// heuristic — classifyLLMGatewayError matches known English provider
+	// phrasings, so a novel/garbled provider error yields no `data` at all
+	// (bare -32603 with the raw text). A present `kind` is contract; an ABSENT
+	// one means "unknown", never "no error of that kind". Clients must keep a
+	// message-text fallback path for that case.
 	const classification = classifyLLMGatewayError(detail)
 	const retryAtMs = classification?.reason === "rate_limit" ? parseRateLimitRetryAt(detail) : undefined
 	// Keys appear only when they carry a value, so the wire shape of `data`
