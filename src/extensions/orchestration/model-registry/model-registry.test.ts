@@ -192,11 +192,37 @@ describe("ModelRegistry — deprecated models", () => {
 		expect(registry.getModelsWithCapabilities()).toHaveLength(0)
 	})
 
+	it("warns for past-deprecated models: still served (translated) until sunset", () => {
+		const registry = new ModelRegistry([
+			metadata("gone-model", {
+				deprecated_at: "2020-01-01T00:00:00Z",
+				sunset_at: "2099-01-01T00:00:00Z",
+				replacement_model: "new-model",
+			}),
+		])
+		const warning = registry.warnings.find((w) => w.modelId === "gone-model")
+		expect(warning?.kind).toBe("deprecated_model")
+		expect(warning?.isPast).toBe(true)
+		expect(warning?.sunsetAt).toBe("2099-01-01T00:00:00Z")
+		expect(warning?.replacement).toBe("new-model")
+	})
+
 	it("emits a deprecated_model warning with modelId", () => {
 		const registry = new ModelRegistry([metadata("some-model", { deprecated_at: "2099-01-01T00:00:00Z" })])
 		const warning = registry.warnings.find((w) => w.modelId === "some-model")
 		expect(warning).toBeDefined()
 		expect(warning?.kind).toBe("deprecated_model")
+	})
+
+	it("warns for sunset-only records (vendor retirement, no announced deprecation), keeps routing", () => {
+		const registry = new ModelRegistry([metadata("some-model", { sunset_at: "2099-01-01T00:00:00Z" })])
+		const warning = registry.warnings.find((w) => w.modelId === "some-model")
+		expect(warning?.kind).toBe("deprecated_model")
+		expect(warning?.sunsetAt).toBe("2099-01-01T00:00:00Z")
+		expect(warning?.deprecatedAt).toBeUndefined()
+		expect(warning?.isPast).toBe(false)
+		// Still served as-is until sunset: stays routable.
+		expect(registry.getAll().map((m) => m.id)).toContain("some-model")
 	})
 
 	it("emits deprecated_model warning with replacement when provided", () => {

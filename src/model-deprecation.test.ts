@@ -68,6 +68,14 @@ describe("deriveDeprecationState", () => {
 		expect(deriveDeprecationState(info, NOW)).toBe("announced")
 	})
 
+	it("returns announced for a sunset-only record: a dated vendor retirement is the signal itself", () => {
+		expect(deriveDeprecationState({ sunset_at: "2026-10-23T00:00:00Z" }, NOW)).toBe("announced")
+	})
+
+	it("returns sunset for a sunset-only record once the date has passed", () => {
+		expect(deriveDeprecationState({ sunset_at: "2026-08-01T00:00:00Z" }, NOW)).toBe("sunset")
+	})
+
 	it("invalid dates fail open to none", () => {
 		expect(deriveDeprecationState({ deprecated_at: "not-a-date" }, NOW)).toBe("none")
 		expect(deriveDeprecationState({ deprecated_at: "2026-09-29T00:00:00Z", sunset_at: "junk" }, NOW)).toBe("announced")

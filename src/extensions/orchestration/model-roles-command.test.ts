@@ -384,6 +384,13 @@ describe("modelRefTags", () => {
 		expect(modelRefTags("kimchi-dev/glm-5.3", apiSlugs, deprecatedSlugs)).toEqual([])
 	})
 
+	it("names the replacement when the proxy translates the slug", () => {
+		const servesVia = new Map([["kimi-k2.7", "kimi-k2.8"]])
+		expect(modelRefTags("kimchi-dev/kimi-k2.7", apiSlugs, deprecatedSlugs, servesVia)).toEqual([
+			"deprecated: serves via kimi-k2.8",
+		])
+	})
+
 	it("prefers unavailable over deprecated when the model is gone", () => {
 		const goneAndMarked = new Set(["old-model"])
 		expect(modelRefTags("kimchi-dev/old-model", apiSlugs, goneAndMarked)).toEqual(["unavailable"])

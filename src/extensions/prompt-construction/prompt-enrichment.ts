@@ -103,9 +103,10 @@ const deprecatedNotificationFired = new Set<string>()
 
 /**
  * How close a model's retirement must be (in days) before session-start
- * warnings fire. Anthropic lifecycle dates run 1–2 years out; curated Kimchi
- * deprecations run on a 30-day deprecation window. 30 days keeps urgent
- * notices loud and far-future lifespan announcements silent.
+ * warnings fire. Far-future lifespan signals (vendor retirement dates years
+ * out, with or without an announced deprecation) stay silent until they get
+ * close; curated Kimchi deprecations run on a 30-day deprecation window.
+ * 30 days keeps urgent notices loud and distant dates quiet.
  */
 const DEPRECATION_NOTIFY_WINDOW_DAYS = 30
 
@@ -249,14 +250,23 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 		// Evaluated once per process: the notice window, like the rest of the
 		// catalog snapshot, is startup-bound.
 		const notifyCutoff = Date.now() + DEPRECATION_NOTIFY_WINDOW_DAYS * 86_400_000
-		const deprecatedWarnings = new Map<string, { replacement?: string; deprecatedAt?: string; note?: string }>()
+		const deprecatedWarnings = new Map<
+			string,
+			{ replacement?: string; deprecatedAt?: string; sunsetAt?: string; isPast?: boolean; note?: string }
+		>()
 		for (const w of registry.warnings) {
 			if (w.kind !== "deprecated_model") continue
+			// Gate on whichever date exists: curated deprecations carry
+			// deprecated_at, vendor retirement-only records carry sunset_at.
 			const deprecatedAtMs = w.deprecatedAt ? Date.parse(w.deprecatedAt) : undefined
-			if (deprecatedAtMs !== undefined && deprecatedAtMs > notifyCutoff) continue
+			const sunsetAtMs = w.sunsetAt ? Date.parse(w.sunsetAt) : undefined
+			const effectiveMs = deprecatedAtMs ?? sunsetAtMs
+			if (effectiveMs !== undefined && effectiveMs > notifyCutoff) continue
 			deprecatedWarnings.set(w.modelId, {
 				replacement: w.replacement,
 				deprecatedAt: w.deprecatedAt,
+				sunsetAt: w.sunsetAt,
+				isPast: w.isPast,
 				note: w.note,
 			})
 		}
@@ -285,12 +295,29 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				const info = deprecatedWarnings.get(modelId)
 				if (!info) return undefined
 				const { replacement } = info
-				const datePart = info.deprecatedAt ? ` and will be retired on ${info.deprecatedAt.slice(0, 10)}` : ""
 				const notePart = info.note ? ` Docs: ${info.note}` : ""
-				if (replacement && registry.getAll().some((m) => m.id === replacement)) {
-					return `Model "${modelId}" is deprecated${datePart}. Switch to "${replacement}" via /model.${notePart}`
+				const switchPart =
+					replacement && registry.getAll().some((m) => m.id === replacement)
+						? `Switch to "${replacement}" via /model.`
+						: "Pick a replacement via /model."
+				// Retirement-only record (no announced deprecation, e.g. a vendor
+				// sunset the catalog carries without a curation pass): state the
+				// date plainly rather than claiming an announced deprecation.
+				if (info.deprecatedAt === undefined && info.sunsetAt) {
+					return `Model "${modelId}" stops being served on ${info.sunsetAt.slice(0, 10)} (vendor retirement). ${switchPart}${notePart}`
 				}
-				return `Model "${modelId}" is deprecated${datePart}. Pick a replacement via /model.${notePart}`
+				// Sunset is the serving boundary: cite it when known. Before
+				// deprecated_at the model is "deprecated, serves until sunset";
+				// after, it's "still served (translated when a replacement exists)
+				// until sunset". Fall back to deprecated_at only when no sunset
+				// date is announced.
+				const sunsetPart = info.sunsetAt ? ` and stops being served on ${info.sunsetAt.slice(0, 10)}` : ""
+				const datePart =
+					info.sunsetAt === undefined && info.deprecatedAt
+						? ` and will be retired on ${info.deprecatedAt.slice(0, 10)}`
+						: ""
+				const pastPart = info.isPast ? ". Still served until then" : ""
+				return `Model "${modelId}" is deprecated${sunsetPart}${datePart}${pastPart}. ${switchPart}${notePart}`
 			}
 
 			/**

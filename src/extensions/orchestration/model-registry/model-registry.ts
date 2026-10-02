@@ -53,6 +53,12 @@ export interface ModelRegistryWarning {
 	replacement?: string
 	/** ISO date the deprecation takes effect, only for deprecated_model. */
 	deprecatedAt?: string
+	/** ISO date the model stops being served, only for deprecated_model. */
+	sunsetAt?: string
+	/** Whether the deprecation date has already passed (slug still served
+	 * until sunset, transparently translated when a replacement exists).
+	 * Only set for deprecated_model. */
+	isPast?: boolean
 	/** URL with deprecation details, only for deprecated_model. */
 	note?: string
 }
@@ -68,22 +74,29 @@ export class ModelRegistry {
 		const allModels: OrchestrationModelDescriptor[] = []
 
 		for (const m of availableModels) {
-			// Models past their deprecation date (or sunset) are excluded
-			// entirely, like "ignored" — the backend stops serving them.
 			const state = deriveDeprecationState(m, Date.now(), m.slug)
-			if (state === "past" || state === "sunset") continue
 
 			// Deprecated warning is emitted even for ignored models so the
 			// user gets notified even if the model isn't routed to subagents.
-			if (state === "announced") {
+			// Emitted both for announced and past deprecation: the proxy keeps
+			// serving past models (translated to a replacement when configured)
+			// until sunset_at, so the user still needs the notice.
+			if (state === "announced" || state === "past") {
 				warnings.push({
 					kind: "deprecated_model",
 					modelId: m.slug,
 					replacement: pickReplacementSlug(m),
 					deprecatedAt: m.deprecated_at,
+					sunsetAt: m.sunset_at,
+					isPast: state === "past",
 					note: m.deprecation_note,
 				})
 			}
+
+			// Models past their deprecation date (or sunset) are excluded from
+			// orchestration routing — subagents shouldn't be steered onto a
+			// deprecated slug; post-sunset models are never listed anyway.
+			if (state === "past" || state === "sunset") continue
 
 			const entry = MODEL_CAPABILITIES.get(m.slug)
 			if (entry === "ignored") continue
