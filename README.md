@@ -41,6 +41,10 @@ kimchi         # launch the coding agent
 
 Run `kimchi --help` to see all available subcommands and flags.
 
+## Worktrees
+
+Run `kimchi -w fix/login` to start a fresh session on a separate branch and checkout while other sessions keep working. Use `/worktree` inside Kimchi to create or open a checkout, or `kimchi --branch fix/login` to switch branches in the current checkout. See [worktrees](docs/worktrees.md) for resuming sessions and cleaning up finished work.
+
 ## Models
 
 ### Model selection

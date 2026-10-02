@@ -31,13 +31,13 @@ function resolveTsx(): string | undefined {
 
 export function getAgentInvocation(args: string[]): { command: string; args: string[] } {
 	if (isBunBinary) return { command: process.execPath, args }
-	if (isRunningUnderBun) return { command: process.execPath, args: [process.argv[1], ...args] }
+	if (isRunningUnderBun) return { command: process.execPath, args: [resolve(process.argv[1]), ...args] }
 	if (process.argv[1].endsWith(".ts")) {
 		const tsx = resolveTsx()
-		if (tsx) return { command: tsx, args: [process.argv[1], ...args] }
+		if (tsx) return { command: resolve(tsx), args: [resolve(process.argv[1]), ...args] }
 		throw new Error("Dev mode requires tsx to spawn kimchi subprocesses, but node_modules/.bin/tsx was not found.")
 	}
-	return { command: process.execPath, args: [process.argv[1], ...args] }
+	return { command: process.execPath, args: [resolve(process.argv[1]), ...args] }
 }
 
 export interface SpawnKimchiOptions {

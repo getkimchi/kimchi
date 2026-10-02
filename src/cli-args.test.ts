@@ -18,10 +18,99 @@ import {
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
 	stripMultiModelArgs,
+	takeWorkspaceArgs,
 } from "./cli-args.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 
+describe("workspace launch arguments", () => {
+	it.each(["--worktree", "-w"])("removes %s and preserves the child prompt/options", (flag) => {
+		expect(takeWorkspaceArgs([flag, "fix/login", "--model", "fake/test", "fix it"], "/repo")).toEqual({
+			kind: "worktree",
+			name: "fix/login",
+			args: ["--model", "fake/test", "fix it"],
+		})
+	})
+	it("supports equals and an explicit branch-only launch", () => {
+		expect(takeWorkspaceArgs(["--branch=fix/login", "-p", "hello"], "/repo")).toEqual({
+			kind: "branch",
+			name: "fix/login",
+			args: ["-p", "hello"],
+		})
+	})
+	it("does not interpret flag-shaped values or text after -- as launch flags", () => {
+		expect(takeWorkspaceArgs(["--system-prompt", "--worktree", "hello"], "/repo")).toBeUndefined()
+		expect(takeWorkspaceArgs(["--", "--worktree", "hello"], "/repo")).toBeUndefined()
+	})
+	it.each([
+		"-nt",
+		"-ne",
+		"-nbt",
+		"-ns",
+		"-np",
+		"-nc",
+		"-na",
+	])("preserves Pi's literal %s alias without hiding the worktree flag", (alias) => {
+		expect(takeWorkspaceArgs([alias, "--worktree", "fix/login"], "/repo")).toEqual({
+			kind: "worktree",
+			name: "fix/login",
+			args: [alias],
+		})
+	})
+	it("rejects a combined short flag rather than dropping print mode", () => {
+		expect(() => takeWorkspaceArgs(["-pw", "fix/login", "hello"], "/repo")).toThrow(/separate/i)
+	})
+	it("does not treat a session name as a worktree flag", () => {
+		expect(takeWorkspaceArgs(["--name", "--worktree", "hello"], "/repo")).toBeUndefined()
+	})
+	it("preserves an attached resume path without interpreting its letters as flags", () => {
+		expect(takeWorkspaceArgs(["-r./work/session.jsonl"], "/repo")).toBeUndefined()
+		expect(() => takeWorkspaceArgs(["-r./work/session.jsonl", "-w", "fix/login"], "/repo")).toThrow(/cannot combine/i)
+		expect(takeWorkspaceArgs(["-w", "fix/login", "--extension", "-rwork.ts"], "/repo")?.args).toEqual([
+			"--extension",
+			"/repo/-rwork.ts",
+		])
+	})
+	it("preserves a Pi alias used as a resource filename", () => {
+		expect(takeWorkspaceArgs(["-w", "fix/login", "--extension", "-ne"], "/repo")?.args).toEqual([
+			"--extension",
+			"/repo/-ne",
+		])
+	})
+	it.each([
+		["--worktree"],
+		["--worktree="],
+		["--worktree", "one", "--branch", "two"],
+		["-w", "one", "-w", "two"],
+	])("rejects missing or conflicting selection: %j", (...args) => {
+		expect(() => takeWorkspaceArgs(args, "/repo")).toThrow()
+	})
+	it.each(["--session", "--resume", "-r", "--fork", "--session-dir"])("rejects %s before any Git mutation", (flag) => {
+		expect(() => takeWorkspaceArgs(["-w", "fix/login", flag, "old-session"], "/repo")).toThrow(/cannot combine/i)
+	})
+	it("allows continuing only the destination's latest session", () => {
+		expect(takeWorkspaceArgs(["-w", "fix/login", "-c"], "/repo")?.args).toEqual(["-c"])
+	})
+	it.each(["--help", "--version", "--list-models", "--export"])("does not create a worktree for %s", (flag) => {
+		expect(takeWorkspaceArgs(["-w", "fix/login", flag], "/repo")).toBeUndefined()
+	})
+	it.each(["acp", "rpc"])("rejects %s clients that choose their own session cwd", (mode) => {
+		expect(() => takeWorkspaceArgs(["-w", "fix/login", "--mode", mode], "/repo")).toThrow(/terminal|print/i)
+	})
+	it("preserves caller-relative attachment and explicit resource paths", () => {
+		expect(
+			takeWorkspaceArgs(["-w", "fix/login", "@notes.md", "-e", "./tools.ts", "--mcp-config=./mcp.json"], "/repo")?.args,
+		).toEqual(["@/repo/notes.md", "-e", "/repo/tools.ts", "--mcp-config=/repo/mcp.json"])
+	})
+})
+
 describe("value-flag parsing", () => {
+	it("treats -na as no-approve while preserving alias-shaped prompt values", () => {
+		populateCliArgs(["-na", "--system-prompt", "-ne", "--", "-nt"])
+		expect(getParsedCliArgs().options["no-approve"]).toBe(true)
+		expect(getParsedCliArgs().options.approve).toBeUndefined()
+		expect(getParsedCliArgs().positionals).toEqual(["-nt"])
+		populateCliArgs([])
+	})
 	// Short aliases must consume their value too, or the token after them is
 	// parsed as a model selection and silently suppresses the Auto default.
 	it.each([

@@ -693,7 +693,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			// through resources_discover above.
 			const skills = event.systemPromptOptions?.skills ?? []
 
-			const isGitRepo = existsSync(join(ctx.cwd, ".git", "HEAD"))
+			const isGitRepo = existsSync(join(ctx.cwd, ".git"))
 			if (isGitRepo && cachedGitRemote === null) {
 				cachedGitRemote = readGitRemote(ctx.cwd)
 			}

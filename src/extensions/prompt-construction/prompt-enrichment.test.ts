@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -649,6 +650,28 @@ function buildPromptExtensionWithHandlers(skillPaths: string[] = []) {
 		beforeAgentStart: handlers.get("before_agent_start"),
 	}
 }
+
+it("includes the branch and Git context when a session runs in a linked worktree", async () => {
+	const root = mkdtempSync(join(tmpdir(), "kimchi-worktree-context-"))
+	const repo = join(root, "repo")
+	const tree = join(root, "tree")
+	try {
+		execFileSync("git", ["init", "-q", repo])
+		execFileSync(
+			"git",
+			["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "initial"],
+			{ cwd: repo },
+		)
+		execFileSync("git", ["worktree", "add", "-qb", "fix/worktree-context", tree], { cwd: repo })
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start not registered")
+		const result = (await beforeAgentStart({}, createContext({ cwd: tree, hasUI: false }))) as { systemPrompt: string }
+		expect(result.systemPrompt).toContain("Git repository: yes")
+		expect(result.systemPrompt).toContain("Git branch: fix/worktree-context")
+	} finally {
+		rmSync(root, { recursive: true, force: true })
+	}
+})
 
 function writeSkill(path: string, frontmatter: { description: string }): void {
 	mkdirSync(join(path, ".."), { recursive: true })

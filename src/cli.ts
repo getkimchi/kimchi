@@ -19,6 +19,7 @@ import {
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
 	stripMultiModelArgs,
+	takeWorkspaceArgs,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
@@ -26,6 +27,8 @@ import { isKnownCommand } from "./commands/registry.js"
 import { installModelTableRenderer } from "./model-selector-table.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
 import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
+import { runInWorkspace } from "./worktree-launch.js"
+import { prepareBranch, prepareWorktree } from "./worktrees.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
@@ -156,6 +159,7 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
+import worktreeCommandExtension from "./extensions/worktree-command.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import { installGlobalFetchInstrumentation } from "./http/instrument-fetch.js"
 import {
@@ -244,6 +248,29 @@ if (originalArgs[0] === "memory-capture") {
 if (originalArgs[0] === "memory-import") {
 	const { runImportMain } = await import("./extensions/memory/import.js")
 	process.exit(await runImportMain(originalArgs.slice(1)))
+}
+
+// Re-enter from the selected checkout before trust, configuration or sessions
+// bind themselves to the caller's directory. The child no longer has these flags.
+if (!isKnownCommand(originalArgs[0])) {
+	try {
+		const workspace = takeWorkspaceArgs(originalArgs, process.cwd())
+		if (workspace) {
+			const target =
+				workspace.kind === "worktree"
+					? prepareWorktree(process.cwd(), workspace.name)
+					: prepareBranch(process.cwd(), workspace.name)
+			if (
+				isTerminalUiMode(workspace.args, { stdinIsTTY: !!process.stdin.isTTY, stdoutIsTTY: !!process.stdout.isTTY })
+			) {
+				console.error(`Starting Kimchi on ${target.branch}\n${target.path}`)
+			}
+			process.exit(await runInWorkspace(target.path, workspace.args))
+		}
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : String(error))
+		process.exit(1)
+	}
 }
 
 // Observes provider transport failures in-process (via message_end) so the
@@ -696,6 +723,7 @@ try {
 			statusExtension,
 			budgetCommandExtension,
 			branchCommandExtension,
+			worktreeCommandExtension,
 			...terminalUiExtensionFactories,
 			loginExtension,
 			startupAuthGate,

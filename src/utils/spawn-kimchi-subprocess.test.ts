@@ -24,6 +24,19 @@ afterEach(() => {
 	rmSync(homeDir, { recursive: true, force: true })
 })
 
+it("resolves a relative development entrypoint before launching from another checkout", async () => {
+	vi.doMock("../env.js", () => ({ isBunBinary: false, isRunningUnderBun: true }))
+	const originalEntry = process.argv[1]
+	try {
+		process.argv[1] = "src/entry.ts"
+		const { getAgentInvocation } = await import("./spawn-kimchi-subprocess.js")
+		expect(getAgentInvocation(["--print", "hello"]).args).toEqual([join(homeDir, "src/entry.ts"), "--print", "hello"])
+	} finally {
+		process.argv[1] = originalEntry
+		vi.doMock("../env.js", () => ({ isBunBinary: true, isRunningUnderBun: false }))
+	}
+})
+
 it.each([
 	{ scenario: "environment-only login", environmentKey: "environment-key", savedKey: undefined },
 	{ scenario: "environment overriding a saved login", environmentKey: "environment-key", savedKey: "saved-key" },
