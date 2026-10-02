@@ -16,7 +16,7 @@ describe("GENERAL_TIPS", () => {
 		expect(messages).toContain("Use `ctrl+p` or `/model` to select multi-model for auto routing.")
 		expect(messages).toContain("Use `/model` to select single model for entire session")
 		expect(messages).toContain("Use `/agents` to manage agents or display running agents sessions")
-		expect(messages).toContain("Use `/processes` to inspect running Bash scripts and output.")
+		expect(messages).toContain("Press `F7` to show or hide todos.")
 		expect(messages).toContain("Tag requests in Analytics: `/tags add key:value` (e.g. project:myapp).")
 		expect(messages).toContain("Resume the latest session with `kimchi --continue`.")
 		expect(messages).toContain("Name a branch with `/branch <name>`; resume it with `-r <id>`.")
