@@ -350,12 +350,9 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	// spec; now covered (and print-gated, separately, in Chunk C.6).
 	"set_model",
 	"submit_plan",
-	// Interim (split 1/3): Skill registers unconditionally — the resource
-	// gate arrives in split 2/3 — and bash_control stays deferred until
-	// split 3/3 restores the static surface (see EXPECTED_DEFERRED_BY_DESIGN).
-	"Skill",
 	// dap — all 16 DAP tools are deferred (entry set reveals on the
-	// dap-debugging skill read; session set on debug_launch)
+	// dap-debugging skill read; session set on debug_launch). bash_control
+	// keeps master's deferral until split 3/3 (see EXPECTED_DEFERRED_BY_DESIGN).
 ])
 
 /** Deferral spec: tools REGISTERED but hidden at session start. A future
@@ -375,7 +372,7 @@ const EXPECTED_DEFERRED_BY_DESIGN = new Set<string>([
 	...DAP_SESSION_TOOL_NAMES,
 	...LSP_TOOL_NAMES,
 	...AGENT_CONTINUATION_TOOLS,
-	// Interim (split 1/3): bash_control keeps master's deferral until split
+	// Interim (split 2/3): bash_control keeps master's deferral until split
 	// 3/3 makes it part of the static surface.
 	"bash_control",
 ])
@@ -455,7 +452,7 @@ describe("tool exposure at session start", () => {
 
 		const visible = new Set(harness.active)
 		expect(visible).toEqual(EXPECTED_SESSION_START_VISIBLE)
-		expect(visible.size).toBe(20)
+		expect(visible.size).toBe(19)
 
 		// Deferred tools are still REGISTERED (availability preserved)…
 		for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
@@ -466,25 +463,27 @@ describe("tool exposure at session start", () => {
 		expect(deferredInActive).toEqual([])
 	})
 
-	it("print mode drops questionnaire + set_phase at registration (set_model/submit_plan gates arrive in split 2)", async () => {
+	it("print mode drops questionnaire + set_phase + set_model + submit_plan at registration", async () => {
 		await withPrintGate({ print: true }, async () => {
 			const harness = createExposureHarness()
 			await instantiateAllExtensions(harness)
 
 			// Registration gates: unlike deferred tools, these are NOT registered
 			// in --print mode — not merely hidden.
-			for (const name of ["questionnaire", "set_phase"]) {
+			for (const name of ["questionnaire", "set_phase", "set_model", "submit_plan"]) {
 				expect(harness.registered.has(name), `${name} must not register in --print`).toBe(false)
 			}
 
-			// The remaining visible surface is the interactive spec minus the two
+			// The remaining visible surface is the interactive spec minus the four
 			// gate-outs; deferred spec is unchanged.
 			const expectedVisible = new Set(
-				[...EXPECTED_SESSION_START_VISIBLE].filter((n) => n !== "questionnaire" && n !== "set_phase"),
+				[...EXPECTED_SESSION_START_VISIBLE].filter(
+					(n) => n !== "questionnaire" && n !== "set_phase" && n !== "set_model" && n !== "submit_plan",
+				),
 			)
 			const visible = new Set(harness.active)
 			expect(visible).toEqual(expectedVisible)
-			expect(visible.size).toBe(18)
+			expect(visible.size).toBe(15)
 			for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
 				expect(harness.registered.has(name), `${name} must stay registered in --print`).toBe(true)
 			}
@@ -503,10 +502,9 @@ describe("tool exposure at session start", () => {
 				expect(harness.registered.has("set_phase"), "set_phase must register in multi-model --print").toBe(true)
 				expect(harness.registered.has("questionnaire"), "questionnaire stays print-gated").toBe(false)
 				// Multi-model print keeps set_model — the orchestrator may switch
-				// roles mid-run. submit_plan registers too: its print gate arrives
-				// in split 2/3.
+				// roles mid-run.
 				expect(harness.registered.has("set_model"), "set_model must register in multi-model --print").toBe(true)
-				expect(harness.registered.has("submit_plan"), "submit_plan registers until split 2's print gate").toBe(true)
+				expect(harness.registered.has("submit_plan"), "submit_plan stays print-gated in multi-model").toBe(false)
 			})
 		} finally {
 			vi.mocked(resolveMultiModelEnabled).mockReturnValue({ value: false, source: "cli" })
