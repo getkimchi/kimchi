@@ -326,11 +326,6 @@ export const DAP_ENTRY_TOOL_NAMES = [
 	"debug_watch_change",
 ] as const
 
-/** @deprecated Compatibility alias: until split 3/3 lands, files that still
- *  reference the pre-split name (context-budget-tools, tool-exposure test)
- *  keep compiling. Removed in split 3/3. */
-export const DAP_ALWAYS_VISIBLE_TOOL_NAMES = DAP_ENTRY_TOOL_NAMES
-
 /** Session-scoped tools — useless until a session exists. Hidden by default
  *  (~1.2k est tokens); revealed one-way on first active debug session. Name
  *  order matches createLayer1Tools. */
