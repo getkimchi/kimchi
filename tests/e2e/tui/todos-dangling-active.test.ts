@@ -56,13 +56,14 @@ for (const scenario of ["completed", "deferred", "ignored"]) {
 				await waitForText(terminal, "Cleanup check finished.", { timeoutMs: STREAM_TIMEOUT_MS })
 				if (scenario === "completed") {
 					const deadline = Date.now() + STREAM_TIMEOUT_MS
-					while (/\d+\/\d+ done/.test(viewText(terminal)) && Date.now() < deadline)
+					// Ambient strip auto-hides when nothing is active; header ends with (F7).
+					while (viewText(terminal).includes("(F7)") && Date.now() < deadline)
 						await new Promise((resolve) => setTimeout(resolve, 100))
-					expect(viewText(terminal)).not.toMatch(/\d+\/\d+ done/)
+					expect(viewText(terminal)).not.toContain("(F7)")
 					terminal.submit("/todos")
-					await waitForText(terminal, "3/3 done · 0 active", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+					await waitForText(terminal, "3/3 ✓ · 0 active", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 				} else {
-					await waitForText(terminal, "2/3 done · 1 active", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+					await waitForText(terminal, "2/3 · 1 active", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 					if (deferred) expect(viewText(terminal)).toContain("Publish after approval")
 				}
 				const chat = fixture.fake.requests.filter((request) => request.url === "/openai/v1/chat/completions")
@@ -113,7 +114,7 @@ test("deferred todos do not trigger cleanup during planning or while waiting for
 			expect(chat()).toHaveLength(6)
 			expect(JSON.stringify(chat())).not.toContain("The turn ended with unfinished todos")
 			expect(viewText(terminal)).toContain("Publish after approval")
-			expect(viewText(terminal)).toContain("0/1 done · 1 active")
+			expect(viewText(terminal)).toContain("0/1 · 1 active")
 			trace.step("conversational follow-up preserves deferred work without todo cleanup")
 		},
 	)
