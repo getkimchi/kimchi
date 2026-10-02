@@ -4,6 +4,7 @@ import { MULTI_MODEL_ID } from "../../cli-args.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { getAutoRoutingState } from "../auto-model/state.js"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
+import { isStaleCtxError } from "../stale-ctx.js"
 import { trackFeedback, trackModelSwitchFeedback } from "../telemetry/index.js"
 import { isVisionGateDialogOpen } from "../vision-gate.js"
 import { type FeedbackSentiment, isPredefinedReason, showFeedbackDetailsDialog } from "./dialog.js"
@@ -140,15 +141,24 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 	// auto-compact and retry, or run queued follow-up messages, so rating there
 	// can prompt on a response that is about to be superseded.
 	pi.on("agent_settled", (_event, ctx: ExtensionContext) => {
-		state = "inviting"
-		const sessionId = ctx.sessionManager.getSessionId()
-		autoModelUsed = isAutoRoutedModel(ctx.model)
-		// Capture the concrete pick the router served, so `routing_model` reports
-		// the resolved model (e.g. `glm-5.3`) rather than the requested virtual id
-		// (`auto-beta`). Undefined when auto wasn't used or hasn't resolved yet.
-		const routingState = getAutoRoutingState(sessionId)
-		routedUsedId = routingState.status === "resolved" ? routingState.model.id : undefined
-		listenForLegacyRatingKey(ctx)
+		// Print mode disposes the runtime from its SIGTERM/SIGHUP handler: that
+		// aborts an in-flight prompt and invalidates the extension runner, but
+		// upstream still emits agent_settled for the torn-down run, delivering a
+		// stale ctx here. The rating bookkeeping below is best-effort, so bail
+		// on stale-ctx instead of surfacing the error.
+		try {
+			state = "inviting"
+			const sessionId = ctx.sessionManager.getSessionId()
+			autoModelUsed = isAutoRoutedModel(ctx.model)
+			// Capture the concrete pick the router served, so `routing_model` reports
+			// the resolved model (e.g. `glm-5.3`) rather than the requested virtual id
+			// (`auto-beta`). Undefined when auto wasn't used or hasn't resolved yet.
+			const routingState = getAutoRoutingState(sessionId)
+			routedUsedId = routingState.status === "resolved" ? routingState.model.id : undefined
+			listenForLegacyRatingKey(ctx)
+		} catch (err) {
+			if (!isStaleCtxError(err)) throw err
+		}
 	})
 
 	pi.on("model_select", (event, ctx: ExtensionContext) => {
@@ -181,7 +191,15 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 			// timer was queued — don't render a stale hint for it.
 			if (getModelSwitchInvitation()?.modelId !== modelId) return
 			const payload: ModelSwitchSummaryDetails = { model: modelName, reason: "" }
-			pi.appendEntry(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, payload)
+			// The timer lives outside upstream's emit error boundary: if the
+			// runtime was disposed in the meantime, pi is stale and appendEntry
+			// throws — swallow that specific case instead of crashing the
+			// process with an uncaught timer exception.
+			try {
+				pi.appendEntry(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, payload)
+			} catch (err) {
+				if (!isStaleCtxError(err)) throw err
+			}
 		}, 0)
 	})
 

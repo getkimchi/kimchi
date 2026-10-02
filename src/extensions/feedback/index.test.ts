@@ -724,6 +724,73 @@ describe("feedbackExtension failure handling", () => {
 	})
 })
 
+describe("feedbackExtension stale ctx handling", () => {
+	// Print mode's SIGTERM/SIGHUP handler disposes the runtime, which aborts an
+	// in-flight prompt and invalidates the extension runner — but upstream still
+	// emits agent_settled afterwards, delivering a stale ctx to the handler.
+	const STALE_MESSAGE = "This extension ctx is stale after session replacement or reload"
+
+	function staleCtx(): ExtensionContext {
+		const ctx = createContext()
+		Object.defineProperty(ctx, "sessionManager", {
+			get: () => {
+				throw new Error(STALE_MESSAGE)
+			},
+		})
+		return ctx
+	}
+
+	beforeEach(async () => {
+		const invitationState = await import("./invitation-state.js")
+		invitationState.clearModelSwitchInvitation()
+	})
+
+	afterEach(async () => {
+		const invitationState = await import("./invitation-state.js")
+		invitationState.clearModelSwitchInvitation()
+	})
+
+	it("swallows a stale-ctx error from agent_settled instead of surfacing it", () => {
+		const { api, getHandler } = makeApi()
+		feedbackExtension(api)
+		expect(() => getHandler("agent_settled")({}, staleCtx())).not.toThrow()
+	})
+
+	it("rethrows non-stale errors from agent_settled", () => {
+		const { api, getHandler } = makeApi()
+		feedbackExtension(api)
+		const ctx = createContext({
+			sessionManager: {
+				getSessionId: () => {
+					throw new Error("boom")
+				},
+			},
+		})
+		expect(() => getHandler("agent_settled")({}, ctx)).toThrow("boom")
+	})
+
+	it("swallows a stale pi in the deferred model-switch invitation entry", async () => {
+		const { api, ctx, getHandler, appendEntry, getAppendedEntries } = makeApi()
+		feedbackExtension(api)
+		await getHandler("model_select")(
+			{
+				previousModel: { provider: "kimchi-dev", id: "auto", name: "Auto" },
+				model: { provider: "kimchi-dev", id: "concrete-model", name: "Concrete" },
+			},
+			ctx,
+		)
+
+		// The timer fires after the runtime was disposed: appendEntry must not
+		// escape the timer callback as an uncaught exception (which would fail
+		// this test via vitest's unhandled-error detection).
+		appendEntry.mockImplementationOnce(() => {
+			throw new Error(STALE_MESSAGE)
+		})
+		await flushInvitationEntry()
+		expect(getAppendedEntries("model-switch-feedback")).toHaveLength(0)
+	})
+})
+
 describe("feedbackExtension legacy-terminal rating picker", () => {
 	const CTRL_R = "\x12"
 
