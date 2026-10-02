@@ -263,30 +263,26 @@ test("a new session installs the catalog's Auto as the default for an entitled a
 	)
 })
 
-test("an already-applied default leaves a switched-away install on its own model", async ({ terminal }) => {
+test("a switched-away install rolls back to Auto on the next new session", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
-			artifactName: "auto-model-default-already-applied",
+			artifactName: "auto-model-default-rollback",
 			providerId: "kimchi-dev",
 			initialModel: false,
 			models: MODELS,
-			responses: [{ stream: ["Saved concrete default reply."] }],
+			responses: [{ stream: ["Rolled-back Auto reply."], responseModel: "routed" }],
 			seedHome: (homeDir) => {
+				// Auto was installed, then the user deliberately switched to a
+				// concrete model and that switch persisted as the saved default.
+				// The retired `autoDefaultApplied` marker is seeded on purpose:
+				// existing installs still carry it, and the session must scrub it.
 				const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
 				const settings = JSON.parse(readFileSync(settingsPath, "utf-8"))
 				writeFileSync(
 					settingsPath,
 					JSON.stringify(
-						{
-							...settings,
-							defaultProvider: "kimchi-dev",
-							defaultModel: "routed",
-							// Auto was already installed as the default here, so the
-							// concrete model is a deliberate switch away from it and
-							// must survive restarts.
-							autoDefaultApplied: true,
-						},
+						{ ...settings, defaultProvider: "kimchi-dev", defaultModel: "routed", autoDefaultApplied: true },
 						null,
 						"\t",
 					),
@@ -294,16 +290,18 @@ test("an already-applied default leaves a switched-away install on its own model
 			},
 		},
 		async (fixture, trace) => {
-			await waitForText(terminal, "routed → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			expect(viewText(terminal)).not.toContain("Auto is now the default model.")
-			trace.step("new session kept the model chosen after the switch")
-			terminal.submit("Use my saved model")
-			await waitForText(terminal, "Saved concrete default reply.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "Auto is now the default model.", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("new session rolled the switched-away default back to Auto")
+			const settingsPath = join(fixture.homeDir, ".config", "kimchi", "harness", "settings.json")
+			expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).not.toHaveProperty("autoDefaultApplied")
+			terminal.submit("Use the rolled-back default")
+			await waitForText(terminal, "Rolled-back Auto reply.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 			const chatRequests = requestsTo(fixture, "/openai/v1/chat/completions")
 			expect(chatRequests).toHaveLength(1)
-			expect(requestModel(chatRequests[0]?.body)).toBe("routed")
-			trace.step("saved concrete default answered directly")
+			expect(requestModel(chatRequests[0]?.body)).toBe("auto")
+			trace.step("rolled-back Auto routed the prompt server-side")
 		},
 	)
 })
@@ -397,11 +395,7 @@ test("a saved Auto default keeps working across restarts", async ({ terminal }) 
 				// The default is already installed — restoring it must not re-notify.
 				writeFileSync(
 					settingsPath,
-					JSON.stringify(
-						{ ...settings, defaultProvider: "kimchi-dev", defaultModel: "auto", autoDefaultApplied: true },
-						null,
-						"\t",
-					),
+					JSON.stringify({ ...settings, defaultProvider: "kimchi-dev", defaultModel: "auto" }, null, "\t"),
 				)
 			},
 		},

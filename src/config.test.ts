@@ -15,7 +15,6 @@ import {
 	loadConfig,
 	RETRY_DEFAULTS,
 	readApiKeyFromConfigFile,
-	readAutoDefaultApplied,
 	readGitToken,
 	readHideTips,
 	readStudioOnboardingSeenAt,
@@ -25,7 +24,6 @@ import {
 	resolveEndpoints,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
-	writeAutoDefaultApplied,
 	writeDeviceId,
 	writeGitToken,
 	writeHideTips,
@@ -1493,95 +1491,6 @@ describe("ensureQuietStartupDefault", () => {
 		const verbose = { quietStartup: false }
 		expect(ensureQuietStartupDefault(verbose)).toBe(false)
 		expect(verbose.quietStartup).toBe(false)
-	})
-})
-
-describe("readAutoDefaultApplied / writeAutoDefaultApplied", () => {
-	let tempDir: string
-	let settingsPath: string
-
-	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
-		settingsPath = join(tempDir, "settings.json")
-	})
-
-	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true })
-	})
-
-	it("round-trips the marker", () => {
-		expect(readAutoDefaultApplied(settingsPath)).toBe(false)
-
-		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
-		expect(readAutoDefaultApplied(settingsPath)).toBe(true)
-	})
-
-	// Regression: writing only the marker left the previous defaultModel in
-	// place, so the session came up on Auto once and fell back on the next
-	// launch — with the marker now blocking a retry.
-	it("installs the default alongside the marker", () => {
-		writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "kimchi-dev", defaultModel: "kimi-k3" }))
-
-		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
-
-		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toMatchObject({
-			defaultProvider: "kimchi-dev",
-			defaultModel: "auto",
-			autoDefaultApplied: true,
-		})
-	})
-
-	it("preserves the surrounding settings", () => {
-		writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "kimchi-dev", defaultModel: "kimi-k3", theme: "x" }))
-
-		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
-
-		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({
-			defaultProvider: "kimchi-dev",
-			defaultModel: "auto",
-			theme: "x",
-			autoDefaultApplied: true,
-		})
-	})
-
-	it("writes a fresh file when settings do not exist yet", () => {
-		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
-
-		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({
-			defaultProvider: "kimchi-dev",
-			defaultModel: "auto",
-			autoDefaultApplied: true,
-		})
-	})
-})
-
-describe("readAutoDefaultApplied error handling", () => {
-	let tempDir: string
-
-	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
-	})
-
-	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true })
-	})
-
-	it("reads a missing file as not applied", () => {
-		expect(readAutoDefaultApplied(join(tempDir, "absent.json"))).toBe(false)
-	})
-
-	it("reads malformed JSON as not applied", () => {
-		const path = join(tempDir, "settings.json")
-		writeFileSync(path, "{ not json")
-
-		expect(readAutoDefaultApplied(path)).toBe(false)
-	})
-
-	it("ignores a non-boolean marker", () => {
-		const path = join(tempDir, "settings.json")
-		writeFileSync(path, JSON.stringify({ autoDefaultApplied: "yes" }))
-
-		expect(readAutoDefaultApplied(path)).toBe(false)
 	})
 })
 

@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type {
 	ExtensionFactory,
@@ -11,15 +14,13 @@ import { populateCliArgs } from "../../cli-args.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 
-// The marker lives in settings.json; keep it in memory so each test starts
-// with "not yet applied" and can assert whether it was written.
-const autoDefaultStubs = vi.hoisted(() => ({ applied: false }))
+// The retired-marker cleanup reads settings.json under the real agent config
+// dir; point it at a per-test temp dir so tests never touch the developer's
+// own settings.json.
+const configStubs = vi.hoisted(() => ({ agentConfigDir: "" }))
 vi.mock(import("../../config.js"), async (importOriginal) => ({
 	...(await importOriginal()),
-	readAutoDefaultApplied: () => autoDefaultStubs.applied,
-	writeAutoDefaultApplied: () => {
-		autoDefaultStubs.applied = true
-	},
+	getAgentConfigDir: () => configStubs.agentConfigDir,
 }))
 
 // The fresh-session default gate reads the persisted default model through the
@@ -97,7 +98,15 @@ function ctx(overrides: Parameters<typeof createContext>[0] = {}) {
 	})
 }
 
+let tempDir: string
+
+beforeEach(() => {
+	tempDir = mkdtempSync(join(tmpdir(), "kimchi-auto-model-test-"))
+	configStubs.agentConfigDir = tempDir
+})
+
 afterEach(() => {
+	rmSync(tempDir, { recursive: true, force: true })
 	clearAutoRoutingState(SESSION_ID)
 	_resetAutoModelNoticeCache()
 })
@@ -334,7 +343,6 @@ describe("createAutoModelRoutingExtension", () => {
 
 describe("catalog-driven Auto default (main session)", () => {
 	beforeEach(() => {
-		autoDefaultStubs.applied = false
 		settingsStubs.getDefaultModel.mockReturnValue(undefined)
 	})
 
@@ -364,7 +372,26 @@ describe("catalog-driven Auto default (main session)", () => {
 		await start()
 
 		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
-		expect(autoDefaultStubs.applied).toBe(true)
+	})
+
+	it("does not notify when the fresh session already comes up on Auto", async () => {
+		// Auto is always the default now, so a fresh session starting on Auto
+		// must be silent — the notice is only for switching away from another
+		// model at startup.
+		settingsStubs.getDefaultModel.mockReturnValue("auto")
+		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const c = createContext({
+			model: auto(),
+			modelRegistry: { find: () => auto() },
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
+
+		expect(extension.setModel).not.toHaveBeenCalled()
+		expect(c.ui.notify).not.toHaveBeenCalledWith("Auto is now the default model.", "info")
 	})
 
 	it("notifies on the install", async () => {
@@ -382,23 +409,44 @@ describe("catalog-driven Auto default (main session)", () => {
 		expect(c.ui.notify).toHaveBeenCalledWith("Auto is now the default model.", "info")
 	})
 
-	it("leaves a switched-away install alone once the default has been applied", async () => {
-		autoDefaultStubs.applied = true
+	it("rolls a switched-away model back to Auto on the next fresh session", async () => {
+		// Auto was installed, the user deliberately switched to a concrete model,
+		// and that switch persisted as the saved default. The next fresh session
+		// still comes up on Auto — for entitled accounts Auto is the default,
+		// not a one-time install.
 		settingsStubs.getDefaultModel.mockReturnValue("kimi-k2.6")
 		const { setModel, start } = runSessionStart(autoModelExtension)
 
 		await start()
 
-		expect(setModel).not.toHaveBeenCalled()
+		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
 	})
 
-	it("treats a persisted Auto default as restorable, not a fresh install", async () => {
+	it("restores Auto when the current model drifted from the saved Auto default", async () => {
 		settingsStubs.getDefaultModel.mockReturnValue("auto")
 		const { setModel, start } = runSessionStart(autoModelExtension)
 
 		await start()
 
 		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
+	})
+
+	it("drops the retired autoDefaultApplied marker from settings.json", async () => {
+		writeFileSync(join(tempDir, "settings.json"), JSON.stringify({ theme: "x", autoDefaultApplied: true }))
+		const { start } = runSessionStart(autoModelExtension)
+
+		await start()
+
+		expect(JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf-8"))).toEqual({ theme: "x" })
+	})
+
+	it("leaves settings.json untouched when the retired marker is absent", async () => {
+		writeFileSync(join(tempDir, "settings.json"), JSON.stringify({ theme: "x" }))
+		const { start } = runSessionStart(autoModelExtension)
+
+		await start()
+
+		expect(JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf-8"))).toEqual({ theme: "x" })
 	})
 
 	it("does not install when the catalog does not advertise auto", async () => {
@@ -409,7 +457,6 @@ describe("catalog-driven Auto default (main session)", () => {
 		await start()
 
 		expect(setModel).not.toHaveBeenCalled()
-		expect(autoDefaultStubs.applied).toBe(false)
 	})
 
 	it("leaves the model alone when the launch choice is explicit", async () => {
@@ -423,10 +470,6 @@ describe("catalog-driven Auto default (main session)", () => {
 })
 
 describe("main-session CLI model selection", () => {
-	beforeEach(() => {
-		autoDefaultStubs.applied = false
-	})
-
 	it("records an explicit Auto CLI selection once through Pi's normal model path", async () => {
 		populateCliArgs(["--model", "kimchi-dev/auto"])
 		const extension = createExtensionApi()

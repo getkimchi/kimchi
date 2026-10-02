@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
+import { resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type {
 	ExtensionAPI,
@@ -10,7 +11,8 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
 import { getParsedCliArgs, MULTI_MODEL_ID } from "../../cli-args.js"
-import { readAutoDefaultApplied, writeAutoDefaultApplied } from "../../config.js"
+import { writeJson } from "../../config/json.js"
+import { getAgentConfigDir } from "../../config.js"
 import { getSettingsManager } from "../../settings-watcher.js"
 import { setMultiModelEnabled } from "../multi-model.js"
 import { syncAutoCapabilities } from "./capabilities.js"
@@ -92,6 +94,30 @@ function isRoutableProvider(model: { provider: string } | undefined): boolean {
  * actually advertises it. The rest of the extension stays id-agnostic.
  */
 const DEFAULT_VIRTUAL_MODEL_ID = "auto"
+
+/**
+ * Drop the retired `autoDefaultApplied` marker from settings.json. Existing
+ * installs still carry it, and harness settings writes merge onto the file,
+ * so nothing else ever removes a key it no longer knows. Idempotent: a file
+ * without the key is left untouched.
+ */
+function dropRetiredAutoDefaultMarker(): void {
+	const path = resolve(getAgentConfigDir(), "settings.json")
+	try {
+		const settings: unknown = JSON.parse(readFileSync(path, "utf-8"))
+		if (
+			settings !== null &&
+			typeof settings === "object" &&
+			!Array.isArray(settings) &&
+			"autoDefaultApplied" in settings
+		) {
+			const { autoDefaultApplied: _dropped, ...rest } = settings as Record<string, unknown>
+			writeJson(path, rest)
+		}
+	} catch {
+		// A missing or unreadable settings file needs no cleanup.
+	}
+}
 
 /**
  * Whether a default model is saved in settings.json, concrete or virtual.
@@ -252,6 +278,8 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 				(cliOptions?.model || cliOptions?.provider || cliOptions?.["multi-model"] || cliOptions?.models)
 			const mainFreshLaunch = !!options.handleCliModelSelection && freshSession && !explicitLaunchChoice
 
+			if (options.handleCliModelSelection) dropRetiredAutoDefaultMarker()
+
 			if (!ctx.model || !isRoutableProvider(ctx.model)) {
 				resetLastNotified(sessionId)
 				// A saved default outranks the global multi-model default, whether it
@@ -266,28 +294,23 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			// multi-model.
 			setMultiModelEnabled(sessionId, false)
 
-			// Catalog-driven Auto default: install once per install when the backend
-			// actually advertises `auto` — the backend catalog decides who sees it,
-			// so there is no client-side entitlement check. Commit the marker only
-			// once the model is genuinely in hand, so a failed lookup can retry on
-			// the next launch. Every later launch keeps the saved default and merely
-			// stops multi-model from wrapping it.
+			// Catalog-driven Auto default: every fresh main session comes up on
+			// `auto` when the backend actually advertises it — the backend catalog
+			// decides who sees it, so there is no client-side entitlement check.
+			// A manual switch away is honoured for the session it happens in, but
+			// the next fresh session rolls back to Auto: for entitled accounts Auto
+			// IS the default, not a one-time install. Say so when the rollback
+			// happens — a silent switch away from a deliberately chosen model
+			// reads as a bug.
 			if (mainFreshLaunch && !isAutoRoutedModel(ctx.model)) {
-				const installed = !readAutoDefaultApplied()
-					? ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
-					: undefined
+				const installed = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
 				if (installed) {
 					// Persist: upstream 0.85.1 made setModel session-only by default, and
-					// the marker + notice below claim a permanent change. Without persist
-					// the saved default is never updated and the next launch reverts to
-					// the previous model with the install permanently suppressed.
+					// the notice below claims a default-level change. Persisting also
+					// means a resumed new session restores Auto rather than the
+					// model that was switched to.
 					await pi.setModel(installed, { persist: true })
-					writeAutoDefaultApplied(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
 					setMultiModelEnabled(sessionId, false)
-					// This replaces a model the user may have been using for a while.
-					// Say so: a silent switch reads as a bug, and the marker can be
-					// lost (settings reset, new machine), so the notice is what keeps
-					// a repeat install merely mildly annoying.
 					ctx.ui.notify("Auto is now the default model.", "info")
 				} else if (hasPersistedDefault()) {
 					setMultiModelEnabled(sessionId, false)
