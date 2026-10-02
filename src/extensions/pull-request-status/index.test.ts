@@ -3,20 +3,20 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { createCommandContext, createContext } from "./__mocks__/context.js"
-import { createExtensionApi } from "./__mocks__/extension-api.js"
-import pullRequestStatusExtension from "./pull-request-status.js"
-import * as discovery from "./work-attribution/pull-requests.js"
-import * as supervisor from "./work-attribution/reconcile-supervisor.js"
-import { flushWorkSummaries } from "./work-attribution/summary.js"
-import { createWorkAttributionExtension, getWorkId, setWorkId } from "./work-attribution.js"
+import { createCommandContext, createContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import * as supervisor from "../work-attribution/reconcile-supervisor.js"
+import { flushWorkSummaries } from "../work-attribution/summary.js"
+import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
+import pullRequestStatusExtension from "./index.js"
+import * as discovery from "./pull-requests.js"
 
-vi.mock("./work-attribution/reconcile-supervisor.js", () => ({
+vi.mock("../work-attribution/reconcile-supervisor.js", () => ({
 	subscribeFileReconciliation: vi.fn(),
 	subscribePullRequestReconciliation: vi.fn(),
 	RECONCILIATION_INTERVAL_MS: 30_000,
 }))
-vi.mock("./work-attribution/pull-requests.js", async (original) => ({
+vi.mock("./pull-requests.js", async (original) => ({
 	...(await original<typeof discovery>()),
 	lookupBranchPullRequest: vi.fn(),
 }))

@@ -2,8 +2,12 @@ import { mkdir } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { lock } from "proper-lockfile"
+import {
+	readWorkPullRequestUpdates,
+	reconcileWorkPullRequests,
+	type WorkPullRequestUpdate,
+} from "../pull-request-status/pull-requests.js"
 import { knownTransitionRepositories, reconcileRepositoryTransitions } from "./file-transitions.js"
-import { readWorkPullRequestUpdates, reconcileWorkPullRequests, type WorkPullRequestUpdate } from "./pull-requests.js"
 
 export const RECONCILIATION_INTERVAL_MS = 30_000
 const PASS_BUDGET_MS = 3000

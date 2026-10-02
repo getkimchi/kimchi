@@ -1,8 +1,8 @@
 import { type ExecFileException, execFile } from "node:child_process"
 import { existsSync } from "node:fs"
 import { join, resolve } from "node:path"
+import { readWorkRecords } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
-import { readWorkRecords } from "./summary.js"
 
 const PASS_BUDGET_MS = 10_000
 const COMMAND_TIMEOUT_MS = 5000

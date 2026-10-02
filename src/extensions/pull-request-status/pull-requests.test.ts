@@ -3,13 +3,13 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as summaries from "../work-attribution/summary.js"
 import {
 	lookupBranchPullRequest,
 	readWorkPullRequestUpdates,
 	reconcileWorkPullRequests,
 	type WorkPullRequestUpdate,
 } from "./pull-requests.js"
-import * as summaries from "./summary.js"
 
 const cli = vi.hoisted(() => ({
 	run: vi.fn<(args: string[], options: ExecFileOptions) => Promise<unknown>>(),
@@ -519,7 +519,7 @@ describe("work pull request discovery", () => {
 				pullRequests: [{ state: "open", closedAt: null }],
 			})
 		} finally {
-			await (await import("./summary.js")).flushWorkSummaries()
+			await (await import("../work-attribution/summary.js")).flushWorkSummaries()
 		}
 	})
 

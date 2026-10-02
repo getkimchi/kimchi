@@ -3,8 +3,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as locks from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as pullRequests from "../pull-request-status/pull-requests.js"
 import * as transitions from "./file-transitions.js"
-import * as pullRequests from "./pull-requests.js"
 import {
 	RECONCILIATION_INTERVAL_MS,
 	subscribeFileReconciliation,
@@ -16,7 +16,7 @@ vi.mock("./file-transitions.js", () => ({
 	knownTransitionRepositories: vi.fn(),
 	reconcileRepositoryTransitions: vi.fn(),
 }))
-vi.mock("./pull-requests.js", () => ({
+vi.mock("../pull-request-status/pull-requests.js", () => ({
 	reconcileWorkPullRequests: vi.fn(),
 	readWorkPullRequestUpdates: vi.fn(),
 }))

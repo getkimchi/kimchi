@@ -176,6 +176,8 @@ Lookup uses no model calls. With work tracking present, commit discovery runs un
 
 Work tracking and PR discovery load as separate extensions. Work tracking saves the commits; PR discovery adds their GitHub links. Without the PR extension, local work recording and Git matching still run. Without the work-tracking extension, PR discovery shows the current branch's PR. That branch lookup runs its own read-only check; it does not create work records or link costs. Both load by default; this change adds no setting to disable tracking. Removing the work-tracking extension alone would still leave direct tracking calls in other parts of Kimchi.
 
+The PR entrypoint, GitHub queries and their tests live in `src/extensions/pull-request-status/`.
+
 GitHub's commit-to-PR endpoint may omit a PR that was closed before Kimchi ever found it. Known closed PRs are rechecked so reopening is detected. This lookup currently supports GitHub repositories accessible through `gh`.
 
 ### 5. Build the local summary

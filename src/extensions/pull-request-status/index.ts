@@ -1,16 +1,16 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { lookupBranchPullRequest, type WorkPullRequestUpdate } from "./work-attribution/pull-requests.js"
 import {
 	RECONCILIATION_INTERVAL_MS,
 	subscribePullRequestReconciliation,
-} from "./work-attribution/reconcile-supervisor.js"
+} from "../work-attribution/reconcile-supervisor.js"
 import {
 	WORK_CHANGED_EVENT,
 	WORK_DETAILS_REQUEST_EVENT,
 	WORK_STATE_REQUEST_EVENT,
 	type WorkDetailsRequest,
 	type WorkStateRequest,
-} from "./work-attribution.js"
+} from "../work-attribution.js"
+import { lookupBranchPullRequest, type WorkPullRequestUpdate } from "./pull-requests.js"
 
 export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	let context: ExtensionContext | undefined
