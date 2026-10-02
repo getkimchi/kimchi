@@ -602,7 +602,7 @@ function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProv
 	const status = statuses.get("work-pr")
 	if (!status) return null
 	const url = statuses.get("work-pr-url")
-	const text = accentText(theme, url ? status.replace(/#\d+/, (number) => hyperlink(number, url)) : status)
+	const text = accentText(theme, url ? status.replace(/[#!]\d+/, (number) => hyperlink(number, url)) : status)
 	return { id: "work-pr", text, width: visibleWidth(text) }
 }
 

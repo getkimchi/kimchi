@@ -2,7 +2,7 @@
 
 Kimchi keeps a local record of the model requests, file edits, plans and commits that belong to the same work. A `workId` connects them, even when planning and implementation happen in different sessions or repositories.
 
-The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's home directory. Kimchi uses the GitHub CLI to find PRs for recorded commits and saves those links in the same file. Calculating costs and uploading these records come later.
+The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's home directory. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits and saves those links in the same file. Calculating costs and uploading these records come later.
 
 ## Where the files live
 
@@ -136,51 +136,67 @@ flowchart LR
 
 New edit records reference a snapshot of the visible Git references and worktree heads to exclude commits that already existed before the edit. Edits share a saved snapshot while those references stay the same. Matching can survive removal of the original linked worktree while the repository and new commit remain available. It cannot recover a repository that was deleted entirely.
 
-### 4. Find PRs for recorded commits
+### 4. Find pull requests and merge requests
 
-Create the PR through Kimchi, a browser or another tool. Kimchi checks for it at startup and every 30 seconds while open. Install `gh` and sign in with `gh auth login` if you have not already done so.
+Create the PR or MR through Kimchi, a browser or another tool. Kimchi checks for it at startup and every 30 seconds while open. GitHub and GitLab CLIs are optional: Kimchi reads the provider's API directly and can use their existing credentials.
 
-The match starts with a **repository and commit hash** already saved by work tracking. For example, if work A contains commit `abc123` and GitHub returns PR #7 for that commit, Kimchi saves PR #7 under work A. One commit can belong to several PRs; Kimchi keeps every association GitHub returns.
+With work tracking loaded, the match starts with a **repository and commit hash** already saved under a work ID. If work A contains commit `abc123` and the provider returns PR #7 for that commit, Kimchi saves the link under work A. GitLab uses the same flow with merge requests.
 
 ```mermaid
 flowchart TD
-    C["Work A contains commit abc123"] --> G["Ask GitHub: which PRs contain abc123?"]
-    G -->|PR #7 found| L["Save PR #7 and its state under work A"]
-    G -->|No PR found| P["Keep the commit waiting"]
-    G -->|Check failed| E["Keep saved links and show the reason"]
+    T{"Work tracking loaded?"} -->|Yes| C["Use each recorded repository and commit"]
+    T -->|No| B["Use the current repository and branch"]
+    C --> G["Find its PRs on GitHub or MRs on GitLab"]
+    B --> H["Find the branch's PR or MR"]
+    G -->|Found| L["Save links under the work ID and show status"]
+    G -->|None yet| P["Keep the commit waiting"]
+    H -->|Found| F["Show a footer link; create no work records"]
+    H -->|None| Q["Hide the footer link"]
+    G -->|Failed| E["Keep saved links; show the reason; retry later"]
+    H -->|Failed| E
 ```
 
-Later checks retry waiting commits and failures. Once a PR is known, Kimchi also checks it by PR number to update its state.
+Once a link is known, Kimchi also checks that PR or MR by number to refresh its state. Rate-limit responses delay further calls to that host until the retry time.
 
 | Case | How Kimchi finds or keeps the link |
 | --- | --- |
-| A PR is opened in a browser or another tool | GitHub returns it for the recorded commit on a later check. |
-| A PR merges while Kimchi is closed | The next launch catches up, including regular and squash merges. |
-| A commit is rewritten or removed | Kimchi still checks a saved PR by number. An empty commit lookup does not erase the link. |
-| Several PRs contain the commit | All returned PRs are saved, across every result page. |
+| A PR or MR is opened in a browser or another tool | The provider returns it for the recorded commit on a later check. |
+| A known PR or MR merges while Kimchi is closed | The next launch refreshes its saved link, including after a squash merge. |
+| A commit is rewritten or removed | Kimchi still checks a saved link by number. An empty commit lookup does not erase it. |
+| The provider returns several associations | All returned links are saved, across every result page. |
 | Another Kimchi process does the lookup | This session reads the saved result and updates its footer too. |
 
-The footer shows `PR: waiting`, a linked PR such as `PR: #7 open`, or `PR: check /work` when lookup fails. The PR number is a terminal hyperlink to GitHub; use your terminal's link gesture, usually Cmd-click or Ctrl-click. `/work` lists the current work's PR URLs, states, pending commits and errors. ACP clients receive the same status and notifications; how they display them depends on the client.
+The footer shows `PR/MR: waiting`, a link such as `PR: #7 open` or `MR: !7 merged`, or `PR/MR: check /work` when lookup fails. The number is a terminal hyperlink; use your terminal's link gesture, usually Cmd-click or Ctrl-click. `/work` lists the current work's links, states, waiting commits and errors. ACP clients receive plain status text and the URL separately; how they display them depends on the client.
 
 Each commit keeps two extra fields:
 
 | Field | Meaning |
 | --- | --- |
-| `prLookup.status` | `pending` when no PR was found, `linked` after a successful lookup with links, or `error` when the lookup failed. A new commit has no lookup result yet. |
+| `prLookup.status` | `pending` when no PR or MR was found, `linked` after a successful lookup with links, or `error` when the lookup failed. A new commit has no lookup result yet. |
 | `prLookup.checkedAt` / `error` | Time of the last lookup and its error, when present. |
-| `pullRequests[]` | Confirmed links, with repository, host, PR number, URL and current state. Links are kept even if a later lookup fails. |
-| `headSha` / `mergeCommitSha` | The PR's head commit and GitHub's merge hash. Before a PR is merged, the latter may be a test-merge hash. Use `state` and `mergedAt` to identify an actual merge. |
-| `mergedAt` / `closedAt` / `checkedAt` | GitHub's merge/close times and when Kimchi last checked that PR. |
+| `pullRequests[]` | Confirmed GitHub or GitLab links. The existing field name stays the same for compatibility; later errors do not erase links. |
+| `provider` / `number` | `github` uses the PR number; `gitlab` uses the project's MR number (`iid`), not its global ID. Older links without `provider` mean GitHub. |
+| `headSha` / `mergeCommitSha` | The head commit and the provider's merge hash. GitHub may return a test-merge hash before merging; use `state` to establish an actual merge. |
+| `mergedAt` / `closedAt` / `checkedAt` | Provider event times, or `null` when unavailable, and when Kimchi checked the link. GitLab's state can be `merged` even when its response omits `mergedAt`. |
 
 Lookup uses no model calls. With work tracking present, commit discovery runs under the existing background worker's lease, with a separate time budget from local Git matching. Deleting the original worktree is supported while the repository's shared Git directory remains available.
 
-Work tracking and PR discovery load as separate extensions. Work tracking saves the commits; PR discovery adds their GitHub links. Without the PR extension, local work recording and Git matching still run. Without the work-tracking extension, PR discovery shows the current branch's PR. That branch lookup runs its own read-only check; it does not create work records or link costs. Both load by default; this change adds no setting to disable tracking. Removing the work-tracking extension alone would still leave direct tracking calls in other parts of Kimchi.
+Work tracking and PR discovery load as separate extensions. Work tracking saves the commits; PR discovery adds their provider links. Without the PR extension, local work recording and Git matching still run. Without the work-tracking extension, PR discovery shows the current branch's PR or MR. That branch lookup runs its own read-only check; it does not create work records or link costs. Both load by default; this change adds no setting to disable tracking. Removing the work-tracking extension alone would still leave direct tracking calls in other parts of Kimchi.
 
-The PR entrypoint, GitHub queries and their tests live in `src/extensions/pull-request-status/`.
+The PR entrypoint, provider queries and their tests live in `src/extensions/pull-request-status/`.
 
 GitHub's commit-to-PR endpoint may omit a PR that was closed before Kimchi ever found it. Known closed PRs are rechecked so reopening is detected.
 
-This lookup requires `gh` and a GitHub repository it can access. If `gh` is missing, Kimchi shows a warning and retries later; local work recording and coding continue. GitLab merge requests are not supported yet. A repository with no GitHub remote cannot supply PR status. There is no direct API fallback or automatic CLI installation.
+Kimchi tries credentials in this order: an environment token for the selected host, a saved Kimchi Git token for that host, then the matching CLI's saved token. It does not prompt, install a CLI, or change your login. A rejected token produces an error instead of silently trying another identity. A `glab` token saved without a host is ignored.
+
+| Available access | Result |
+| --- | --- |
+| Signed-in `gh` or `glab` | Uses that host's saved token for API reads. |
+| Token but no CLI | Uses the token directly. |
+| No token and no CLI | Tries public repository access. Private repositories require credentials. |
+| No access, network failure or rate limit | Shows the reason and retries later; local request, edit and commit recording continue. |
+
+`GH_TOKEN` or `GITHUB_TOKEN` apply to github.com. GitLab uses `GITLAB_TOKEN` or `GITLAB_ACCESS_TOKEN` for `GITLAB_HOST` (gitlab.com by default). Enterprise GitHub tokens require the matching `GH_HOST`. Saved Kimchi tokens are read by exact host. Credentials never follow a redirect to another host. Anonymous requests have lower rate limits.
 
 ### 5. Build the local summary
 
@@ -188,7 +204,7 @@ Before sending a covered model request, Kimchi saves and flushes its request ID,
 
 Records with the same work ID go into the same `work.json`. Requests are deduplicated by request ID; commit records keep the contributing sessions. `fileTransitions` keeps the recorded edits, and `continuations` explains why another session adopted the work. IDs identify records; array positions have no meaning.
 
-A request record describes an attempt. It does not prove a successful response or give its cost. The work records and retained plan text stay local; `work.json` contains paths, request metadata and PR links, with no prompts, file contents or prices. PR lookup sends repository and commit identifiers to GitHub through your existing CLI access.
+A request record describes an attempt. It does not prove a successful response or give its cost. The work records and retained plan text stay local; `work.json` contains paths, request metadata and PR links, with no prompts, file contents or prices. PR lookup sends repository and commit identifiers to the repository's GitHub or GitLab API.
 
 <details>
 <summary>Local files and recovery</summary>

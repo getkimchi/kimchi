@@ -71,69 +71,48 @@ test("pending work survives a GitHub login error and finds a PR while coding con
 						.map((entry) => JSON.stringify(entry))
 						.join("\n")}\n`,
 				)
-				const bin = join(home, "gh-fixture")
-				mkdirSync(bin)
-				mkdirSync(join(bin, "config"))
-				statePath = join(bin, "state.json")
-				callsPath = join(bin, "calls.jsonl")
+				const fixtureDir = join(home, "pr-api-fixture")
+				mkdirSync(fixtureDir)
+				statePath = join(fixtureDir, "state.json")
+				callsPath = join(fixtureDir, "calls.jsonl")
 				setGitHub("hold")
 				writeFileSync(callsPath, "")
+				const extensionsDir = join(agentDir, "extensions")
+				mkdirSync(extensionsDir, { recursive: true })
 				writeFileSync(
-					join(bin, "gh"),
-					`#!${process.execPath}\n` +
-						String.raw`
-const { appendFileSync, readFileSync } = require("node:fs")
-const args = process.argv.slice(2)
-const repoQuery = JSON.stringify(args) === JSON.stringify(["repo", "view", "--json", "nameWithOwner,url"])
-const commitQuery = args.length === 8 && JSON.stringify(args.slice(0, 5)) === JSON.stringify(["api", "--method", "GET", "--hostname", "github.com"]) && /^repos\/example\/kimchi-lab\/commits\/[a-f0-9]{40}\/pulls$/.test(args[5]) && args[6] === "--paginate" && args[7] === "--slurp"
-const credentialFree = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"].every((name) => !process.env[name])
-if (!(repoQuery || commitQuery) || !credentialFree) throw new Error("Unexpected command or inherited GitHub credentials")
-if (repoQuery) {
-  console.log(JSON.stringify({ nameWithOwner: "example/kimchi-lab", url: "https://github.com/example/kimchi-lab" }))
-} else {
-  let state
-  const deadline = Date.now() + 8000
-  do {
-    state = JSON.parse(readFileSync(process.env.KIMCHI_TEST_GH_STATE, "utf8"))
-    if (state.mode !== "hold") break
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
-  } while (Date.now() < deadline)
-  appendFileSync(process.env.KIMCHI_TEST_GH_CALLS, JSON.stringify({ mode: state.mode, args, credentialFree }) + "\n")
-  if (state.mode === "auth") {
-    console.error("To get started with GitHub CLI, please run: gh auth login")
-    process.exitCode = 4
-  } else if (state.mode === "open") {
-    console.log(JSON.stringify([[{ html_url: "https://github.com/example/kimchi-lab/pull/731", number: 731, state: "open", head: { sha: state.headSha }, merge_commit_sha: null, merged_at: null, closed_at: null }]]))
-  } else throw new Error("The test did not release the initial GitHub lookup")
-}
-`,
-					{ mode: 0o700 },
+					join(extensionsDir, "pr-api.js"),
+					readFileSync(new URL("./support/fixtures/pr-api.js", import.meta.url), "utf8"),
 				)
 				return {
 					env: {
-						PATH: `${bin}:${process.env.PATH ?? ""}`,
-						GH_CONFIG_DIR: join(bin, "config"),
-						GH_TOKEN: "",
+						GH_TOKEN: "pr-api-test-token",
 						GITHUB_TOKEN: "",
 						GH_ENTERPRISE_TOKEN: "",
 						GITHUB_ENTERPRISE_TOKEN: "",
 						GH_HOST: "",
+						GITLAB_HOST: "",
+						GL_HOST: "",
+						GITLAB_TOKEN: "",
+						GITLAB_ACCESS_TOKEN: "",
+						GL_TOKEN: "",
 						GH_REPO: "",
 						GH_DEBUG: "",
-						KIMCHI_TEST_GH_STATE: statePath,
-						KIMCHI_TEST_GH_CALLS: callsPath,
+						KIMCHI_TEST_PR_PROVIDER: "github",
+						KIMCHI_TEST_PR_TOKEN: "pr-api-test-token",
+						KIMCHI_TEST_PR_STATE: statePath,
+						KIMCHI_TEST_PR_CALLS: callsPath,
 					},
 				}
 			},
 		},
 		async (fixture, trace) => {
-			await waitForText(terminal, "PR: waiting", { full: false, timeoutMs: 5_000 })
+			await waitForText(terminal, "PR/MR: waiting", { full: false, timeoutMs: 5_000 })
 			trace.step("resumed work is waiting for its pull request")
 			setGitHub("auth")
-			await waitForText(terminal, "PR: check /work", { full: false, timeoutMs: 10_000 })
+			await waitForText(terminal, "PR/MR: check /work", { full: false, timeoutMs: 10_000 })
 			terminal.submit("/work")
-			await waitForText(terminal, "gh auth login")
-			trace.step("GitHub login error is visible with the recovery command")
+			await waitForText(terminal, "GitHub authentication failed. Check the token for github.com.")
+			trace.step("GitHub token rejection is visible while coding stays available")
 			terminal.submit("Can I keep coding while GitHub is unavailable?")
 			await waitForText(terminal, "You can keep coding while GitHub is unavailable.")
 			setGitHub("open")
@@ -152,8 +131,8 @@ if (repoQuery) {
 				.trim()
 				.split("\n")
 				.map((line) => JSON.parse(line))
-			expect(calls.map((call) => call.mode)).toEqual(["auth", "open"])
-			expect(calls.every((call) => call.credentialFree)).toBe(true)
+			expect(calls.filter((call) => call.kind === "commit").map((call) => call.mode)).toEqual(["auth", "open"])
+			expect(calls.every((call) => call.tokenMatched)).toBe(true)
 		},
 	)
 })

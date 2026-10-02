@@ -35,6 +35,13 @@ const pr = {
 	closedAt: null,
 	checkedAt: "2026-10-02T10:00:00Z",
 }
+const mr = {
+	...pr,
+	provider: "gitlab" as const,
+	url: "https://gitlab.com/example/team/repo/-/merge_requests/7",
+	repository: "example/team/repo",
+	host: "gitlab.com",
+}
 const shutdowns: (() => Promise<unknown>)[] = []
 async function start(api: ReturnType<typeof createExtensionApi>) {
 	for (const handler of api.getHandlers<SessionStartEvent>("session_start"))
@@ -93,7 +100,7 @@ describe("PR status extension", () => {
 			pullRequests: [],
 		}
 		update?.(commit)
-		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: waiting")
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR/MR: waiting")
 		const failed = {
 			...commit,
 			prLookup: { status: "error" as const, checkedAt: new Date().toISOString(), error: "Run gh auth login" },
@@ -101,7 +108,7 @@ describe("PR status extension", () => {
 		update?.(failed)
 		update?.(failed)
 		await Promise.resolve()
-		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: check /work")
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR/MR: check /work")
 		expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("gh auth login"), "warning")
 		const linked = {
@@ -169,6 +176,31 @@ describe("PR status extension", () => {
 		expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(2)
 	})
 
+	it("shows GitLab merge requests without work tracking and keeps their URL separate from text", async () => {
+		vi.mocked(discovery.lookupBranchPullRequest).mockResolvedValue({ branch: "feature", pullRequest: mr })
+		const api = createExtensionApi()
+		pullRequestStatusExtension(api.api)
+		await start(api)
+		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-pr", "MR: !7 open"))
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-pr-url", mr.url)
+		expect(existsSync(join(directory, "work-attribution"))).toBe(false)
+		expect(supervisor.subscribePullRequestReconciliation).not.toHaveBeenCalled()
+	})
+
+	it("names tracked GitLab links in the footer and work details", async () => {
+		const work = createExtensionApi()
+		const status = createExtensionApi()
+		createWorkAttributionExtension()(work.api)
+		pullRequestStatusExtension({ ...status.api, events: work.api.events })
+		await start(work)
+		await start(status)
+		const update = vi.mocked(supervisor.subscribePullRequestReconciliation).mock.calls[0][0].onPullRequest
+		update({ ...contribution(getWorkId(ctx)), pullRequests: [mr] })
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "MR: !7 open")
+		await work.getRegisteredCommand("work").handler("", { ...createCommandContext(), ...ctx })
+		expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining(`MR !7 open: ${mr.url}`), "info")
+	})
+
 	it("keeps a branch without a PR quiet and reports auth errors without suggesting an absent command", async () => {
 		vi.mocked(discovery.lookupBranchPullRequest).mockResolvedValue({ branch: "feature" })
 		const api = createExtensionApi()
@@ -178,7 +210,7 @@ describe("PR status extension", () => {
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
 		vi.mocked(discovery.lookupBranchPullRequest).mockRejectedValue(new Error("Run gh auth login"))
 		await vi.advanceTimersByTimeAsync(30_000)
-		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: unavailable"))
+		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR/MR: unavailable"))
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("gh auth login"), "warning")
 		expect(JSON.stringify(vi.mocked(ctx.ui.setStatus).mock.calls)).not.toContain("/work")
 		expect(existsSync(join(directory, "work-attribution"))).toBe(false)

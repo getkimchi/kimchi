@@ -128,17 +128,19 @@ function createMockStatusLineData(opts?: {
 }
 
 describe("buildScriptPayload", () => {
-	it("links only the PR number to its saved URL without adding terminal columns", () => {
-		const url = "https://github.com/example/repo/pull/7"
+	it.each([
+		["PR: #7 open", "#7", "https://github.com/example/repo/pull/7"],
+		["MR: !7 open", "!7", "https://gitlab.com/example/team/repo/-/merge_requests/7"],
+	])("links the number in %s without adding terminal columns", (status, number, url) => {
 		const context = {
 			ctx: createMockContext(),
 			theme: createMockTheme(),
-			statusLineData: createMockStatusLineData({ workPr: "PR: #7 open", workPrUrl: url }),
+			statusLineData: createMockStatusLineData({ workPr: status, workPrUrl: url }),
 		}
 		for (const segments of [buildStatusLineSegments(context, new Set()), buildControlsLineSegments(context)]) {
 			const segment = segments.find((item) => item.id === "work-pr")
-			expect(segment?.text).toContain(hyperlink("#7", url))
-			expect(segment?.width).toBe(visibleWidth("PR: #7 open"))
+			expect(segment?.text).toContain(hyperlink(number, url))
+			expect(segment?.width).toBe(visibleWidth(status))
 			expect(visibleWidth(renderFittedLine(segments, 40, context.theme))).toBeLessThanOrEqual(40)
 		}
 	})

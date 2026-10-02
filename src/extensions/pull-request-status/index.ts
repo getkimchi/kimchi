@@ -10,7 +10,11 @@ import {
 	type WorkDetailsRequest,
 	type WorkStateRequest,
 } from "../work-attribution.js"
-import { lookupBranchPullRequest, type WorkPullRequestUpdate } from "./pull-requests.js"
+import { lookupBranchPullRequest, type WorkPullRequest, type WorkPullRequestUpdate } from "./pull-requests.js"
+
+function requestStatus(pr: WorkPullRequest): string {
+	return `${pr.provider === "gitlab" ? "MR: !" : "PR: #"}${pr.number} ${pr.state}`
+}
 
 export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	let context: ExtensionContext | undefined
@@ -38,7 +42,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		const message = error instanceof Error ? error.message : String(error)
 		if (!started || !context || warnings.has(message)) return
 		warnings.add(message)
-		const text = `PR lookup unavailable: ${message}`
+		const text = `PR/MR lookup unavailable: ${message}`
 		if (context.hasUI) context.ui.notify(text, "warning")
 		else console.error(text)
 	}
@@ -70,10 +74,10 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	}
 	function renderWork(): void {
 		const { rows, links, pending, errors } = details()
-		if (errors.length) footer("PR: check /work")
-		else if (links.length === 1 && !pending) footer(`PR: #${links[0].number} ${links[0].state}`, links[0].url)
-		else if (links.length) footer(`PRs: ${links.length} linked${pending ? `, ${pending} waiting` : ""}`)
-		else footer(rows.length ? "PR: waiting" : undefined)
+		if (errors.length) footer("PR/MR: check /work")
+		else if (links.length === 1 && !pending) footer(requestStatus(links[0]), links[0].url)
+		else if (links.length) footer(`PRs/MRs: ${links.length} linked${pending ? `, ${pending} waiting` : ""}`)
+		else footer(rows.length ? "PR/MR: waiting" : undefined)
 	}
 	function receive(update: WorkPullRequestUpdate): void {
 		const rows = updates.get(update.workId) ?? new Map<string, WorkPullRequestUpdate>()
@@ -111,11 +115,11 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 			.then((result) => {
 				if (!current()) return
 				const pr = result?.pullRequest
-				footer(pr ? `PR: #${pr.number} ${pr.state}` : undefined, pr?.url)
+				footer(pr ? requestStatus(pr) : undefined, pr?.url)
 			})
 			.catch((error) => {
 				if (!current()) return
-				footer("PR: unavailable")
+				footer("PR/MR: unavailable")
 				warnOnce(error)
 			})
 			.finally(() => {
@@ -164,9 +168,9 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		if (typeof request.workId !== "string" || !Array.isArray(request.lines)) return
 		const { links, pending, errors } = details(request.workId)
 		request.lines.push(
-			...links.map((pr) => `PR #${pr.number} ${pr.state}: ${pr.url}`),
-			...(pending ? [`PR lookup: ${pending} commit${pending === 1 ? "" : "s"} waiting`] : []),
-			...errors.map((error) => `PR lookup: ${error}`),
+			...links.map((pr) => `${pr.provider === "gitlab" ? "MR !" : "PR #"}${pr.number} ${pr.state}: ${pr.url}`),
+			...(pending ? [`PR/MR lookup: ${pending} commit${pending === 1 ? "" : "s"} waiting`] : []),
+			...errors.map((error) => `PR/MR lookup: ${error}`),
 		)
 	})
 	pi.on("session_start", (_event, ctx) => {
