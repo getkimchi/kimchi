@@ -916,50 +916,6 @@ export function writeSurveySeenAt(surveyId: string, seenAt: string, configPath?:
 	})
 }
 
-/**
- * Whether Auto has already been installed as the default model on this install.
- *
- * Lives in settings.json next to `defaultModel`, because that is what it
- * records having changed: one global settings file, one machine-level default,
- * one marker. Once set, the default is the user's to change — a switch away is
- * honoured and never undone.
- *
- * Settings writes merge onto the existing file contents, so this key survives
- * the harness rewriting the file.
- */
-export function readAutoDefaultApplied(settingsPath?: string): boolean {
-	try {
-		const parsed = JSON.parse(readFileSync(settingsPath ?? resolve(AGENT_CONFIG_DIR, "settings.json"), "utf-8"))
-		return parsed.autoDefaultApplied === true
-	} catch {
-		// A missing or unreadable file reads as "not yet applied": the caller
-		// installs the default rather than silently skipping it.
-		return false
-	}
-}
-
-/**
- * Install Auto as the saved default and record that it was done.
- *
- * The default and the marker are written together on purpose: setting only the
- * marker would leave the previous `defaultModel` in place, so the session would
- * come up on Auto once and fall back on the next launch — with the marker now
- * blocking a retry.
- */
-export function writeAutoDefaultApplied(provider: string, modelId: string, settingsPath?: string): void {
-	const path = settingsPath ?? resolve(AGENT_CONFIG_DIR, "settings.json")
-	let settings: Record<string, unknown> = {}
-	try {
-		settings = JSON.parse(readFileSync(path, "utf-8"))
-	} catch {
-		// Fall through with an empty object: a first run writes a fresh file.
-	}
-	settings.defaultProvider = provider
-	settings.defaultModel = modelId
-	settings.autoDefaultApplied = true
-	writeJson(path, settings)
-}
-
 export function readHideSessionModeDialog(configPath?: string): boolean {
 	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.hideSessionModeDialog === true
 }

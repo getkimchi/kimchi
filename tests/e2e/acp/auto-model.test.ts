@@ -114,7 +114,7 @@ describe("ACP Auto model", () => {
 		expect(configUpdates).toHaveLength(0)
 	})
 
-	it("keeps a model chosen after the rollout instead of returning to Auto", async () => {
+	it("rolls a model chosen after the default install back to Auto on the next session", async () => {
 		fixture = await startAcpFixture({
 			artifactName: "acp-auto-default",
 			providerId: "kimchi-dev",
@@ -127,12 +127,18 @@ describe("ACP Auto model", () => {
 		expect(session.models?.currentModelId).toBe("kimchi-dev/auto")
 		expect(session.models?.availableModels.map((model) => model.modelId)).toContain("kimchi-dev/auto")
 
-		// The default install applies once per account: a model picked after it
-		// must not be undone by the next session, which is what makes widening
-		// the default to a larger cohort safe for accounts already reached by an
-		// earlier wave.
+		// For entitled accounts Auto is the default, not a one-time install: a
+		// model picked mid-session is honoured for that session (setSessionModel
+		// persists), but the next fresh session rolls back to Auto — and the
+		// client is told via pi_notify, so the re-applied default never reads
+		// as a silent switch.
 		await fixture.conn.unstable_setSessionModel({ sessionId: session.sessionId, modelId: "kimchi-dev/routed" })
 		const nextSession = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
-		expect(nextSession.models?.currentModelId).toBe("kimchi-dev/routed")
+		expect(nextSession.models?.currentModelId).toBe("kimchi-dev/auto")
+		expect(
+			fixture.client.extNotifications.some(
+				(n) => n.method === "_kimchi.dev/pi_notify" && JSON.stringify(n.params).includes("New sessions start on Auto"),
+			),
+		).toBe(true)
 	})
 })
