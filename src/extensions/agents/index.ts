@@ -185,8 +185,7 @@ function waitForAgentCompletion(agentPromise: Promise<unknown>, signal?: AbortSi
 
 export const AGENT_TOOL_GUIDELINES = `Guidelines:
 - Follow the **Orchestration** section (workflow, delegation, models, budgets, Explore-agent prompt shaping).
-- Launch agents in the background by default in interactive sessions (run_in_background defaults to true; headless runs default to foreground).
-- Choose the mode by dependency: run_in_background: false only when the agent blocks your very next action (immediate dependency). If the result is needed for a LATER step, keep it backgrounded and join it with get_subagent_result wait: true when you need it — do not wait right after spawning; do independent work or end your turn first. For fire-and-forget or parallel work, background it and rely on the completion notification; the notification contains the results.
+- Choose the mode by dependency: agents run in the background by default, so set run_in_background: false only when the agent blocks your very next action (immediate dependency). If the result is needed for a LATER step, keep it backgrounded and join it with get_subagent_result wait: true when you need it — do not wait right after spawning; do independent work or end your turn first. For fire-and-forget or parallel work, background it and rely on the completion notification; the notification contains the results.
 - One call per task, detailed prompt.
 - Follow-ups: resume_subagent (continue), get_subagent_result (status check or bounded join), steer_subagent (redirect).`
 
