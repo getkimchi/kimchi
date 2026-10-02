@@ -58,13 +58,14 @@ for (const scenario of ["completed", "deferred", "ignored"] as const) {
 				await waitForText(terminal, "Cleanup check finished.", { timeoutMs: STREAM_TIMEOUT_MS })
 				if (scenario === "completed") {
 					const deadline = Date.now() + STREAM_TIMEOUT_MS
-					while (/\d+\/\d+ done/.test(viewText(terminal)) && Date.now() < deadline)
+					// Ambient strip auto-hides when nothing is active; header ends with (F7).
+					while (viewText(terminal).includes("(F7)") && Date.now() < deadline)
 						await new Promise((resolve) => setTimeout(resolve, 100))
-					expect(viewText(terminal)).not.toMatch(/\d+\/\d+ done/)
+					expect(viewText(terminal)).not.toContain("(F7)")
 					terminal.submit("/todos")
-					await waitForText(terminal, "3/3 done · 0 active", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+					await waitForText(terminal, "3/3 ✓ · 0 active", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 				} else {
-					await waitForText(terminal, deferred ? "2/3 done · 1 active" : "0/3 done · 3 active", {
+					await waitForText(terminal, deferred ? "2/3 · 1 active" : "0/3 · 3 active", {
 						timeoutMs: STREAM_TIMEOUT_MS,
 						full: false,
 					})
@@ -140,7 +141,7 @@ test("check-in gate: changed-direction input reconciles the list before work res
 			expect(JSON.stringify(closureTurn.messages)).toContain("The turn ended with unfinished todos")
 			expect(JSON.stringify(closureTurn.messages)).toContain("Preserve deferred")
 			expect(viewText(terminal)).toContain("Publish after approval")
-			expect(viewText(terminal)).toContain("0/1 done · 1 active")
+			expect(viewText(terminal)).toContain("0/1 · 1 active")
 			trace.step("conversational follow-up gets one bounded cleanup; deferred work preserved")
 		},
 	)
@@ -184,7 +185,7 @@ test("check-in gate: unchanged plan confirms without a write, then work proceeds
 			const closureTurn = chat()[5].body as { messages: { role: string; content: unknown }[] }
 			expect(JSON.stringify(closureTurn.messages)).toContain("The turn ended with unfinished todos")
 			expect(viewText(terminal)).toContain("Publish after approval")
-			expect(viewText(terminal)).toContain("0/1 done · 1 active")
+			expect(viewText(terminal)).toContain("0/1 · 1 active")
 			trace.step("unchanged-plan input: confirm → work; bounded closure after work")
 		},
 	)
@@ -229,7 +230,7 @@ test("check-in gate: ignoring staleness reminders escalates, a wrong confirm is 
 			expect(history).toContain("[in_progress] #1 Long task")
 			// …and work resumed after the matching confirmation.
 			expect(viewText(terminal)).toContain("All checked in and verified.")
-			expect(viewText(terminal)).toContain("0/1 done · 1 active")
+			expect(viewText(terminal)).toContain("0/1 · 1 active")
 			trace.step("ignored reminders → gate → mismatch → confirm → work")
 		},
 	)
@@ -295,7 +296,7 @@ test("plan submission: stale final list arms the check-in gate for the approval 
 			expect(bodies.some((body) => body.includes("The user approved the plan"))).toBe(true)
 			// The reconciliation the gate forced is visible in the final state.
 			terminal.submit("/todos")
-			await waitForText(terminal, "1/1 done · 0 active", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "1/1 ✓ · 0 active", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 			trace.step("stale submission → armed gate → blocked work → reconcile → execute")
 		},
 	)
