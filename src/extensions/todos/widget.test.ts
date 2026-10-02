@@ -170,7 +170,6 @@ describe("todo widget helpers", () => {
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", undefined)
 	})
 
-
 	it("can expand the widget to show all todo rows", () => {
 		const setWidget = vi.fn()
 		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
@@ -194,10 +193,6 @@ describe("todo widget helpers", () => {
 		expect(lines).toContain(" 11.  ○ task 11")
 		expect(lines).not.toContain("↑ 9 more")
 	})
-
-
-
-
 
 	it("re-registers the widget for a new context and ignores stale invalidations", () => {
 		const firstSetWidget = vi.fn()
@@ -422,7 +417,6 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		)
 	})
 
-
 	it("appends the blocked count to the header when present", () => {
 		const counts = { total: 4, completed: 1, pending: 1, blocked: 1, inProgress: 1 }
 		expect(buildTodoHeaderLine(theme, counts, false, { scopeLabel: "Global" })).toBe(
@@ -472,7 +466,6 @@ describe("todo widget — single-line header and auto-collapse", () => {
 
 		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/6 · 6 active (F7)"])
 	})
-
 
 	it("honours KIMCHI_TODOS_COLLAPSE_THRESHOLD", () => {
 		process.env.KIMCHI_TODOS_COLLAPSE_THRESHOLD = "2"
@@ -787,7 +780,6 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 
 		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/1 · 1 active (F7)"])
 	})
-
 
 	it("toggles only once on a double-click", () => {
 		const { instance } = setupCollapsedStrip()
