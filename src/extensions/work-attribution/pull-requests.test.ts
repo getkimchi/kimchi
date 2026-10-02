@@ -1,17 +1,30 @@
 import type { ExecFileOptions } from "node:child_process"
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { readWorkPullRequestUpdates, reconcileWorkPullRequests, type WorkPullRequestUpdate } from "./pull-requests.js"
+import {
+	lookupBranchPullRequest,
+	readWorkPullRequestUpdates,
+	reconcileWorkPullRequests,
+	type WorkPullRequestUpdate,
+} from "./pull-requests.js"
 import * as summaries from "./summary.js"
 
 const cli = vi.hoisted(() => ({
 	run: vi.fn<(args: string[], options: ExecFileOptions) => Promise<unknown>>(),
+	git: vi.fn<(args: string[], options: ExecFileOptions) => Promise<string | undefined>>(),
 }))
 vi.mock("node:child_process", async (original) => ({
 	...(await original<typeof import("node:child_process")>()),
 	execFile: vi.fn((command, args, options, callback) => {
+		if (command === "git") {
+			void cli.git(args, options).then(
+				(value) => callback(value === undefined ? new Error("No branch") : null, value ?? "", ""),
+				(error) => callback(error, "", ""),
+			)
+			return
+		}
 		expect(command).toBe("gh")
 		void cli.run(args, options).then(
 			(value) => callback(null, JSON.stringify(value), ""),
@@ -79,9 +92,161 @@ beforeEach(() => {
 	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir)
 	updates = []
 	cli.run.mockReset()
+	cli.git.mockReset().mockResolvedValue("feature\n")
 	cli.run.mockImplementation(async (args) =>
 		args[0] === "repo" ? { nameWithOwner: "team/repo", url: "https://github.com/team/repo" } : [[]],
 	)
+})
+
+describe("standalone branch PR lookup", () => {
+	it("uses the resolved repository and explicit branch without writing attribution records", async () => {
+		cli.run.mockImplementation(async (args) =>
+			args[0] === "repo"
+				? { nameWithOwner: "renamed/repo", url: "https://github.com/renamed/repo" }
+				: [
+						{
+							number: 7,
+							url: "https://github.com/renamed/repo/pull/7",
+							state: "OPEN",
+							headRefName: "feature",
+							headRefOid: sha,
+							mergeCommit: null,
+							mergedAt: null,
+							closedAt: null,
+						},
+					],
+		)
+		const onBranch = vi.fn()
+		const result = await lookupBranchPullRequest(repository, new AbortController().signal, onBranch)
+		expect(result).toMatchObject({
+			branch: "feature",
+			pullRequest: { number: 7, state: "open", repository: "renamed/repo" },
+		})
+		expect(cli.run.mock.calls[1][0]).toEqual([
+			"pr",
+			"list",
+			"--head",
+			"feature",
+			"--state",
+			"all",
+			"--limit",
+			"1",
+			"--repo",
+			"renamed/repo",
+			"--json",
+			"number,url,state,headRefName,headRefOid,mergeCommit,mergedAt,closedAt",
+		])
+		expect(onBranch).toHaveBeenCalledWith("feature")
+		expect(existsSync(agentDir)).toBe(false)
+	})
+	it("looks up a numeric branch by its head instead of interpreting it as a PR number", async () => {
+		cli.git.mockResolvedValue("1320\n")
+		cli.run.mockImplementation(async (args) => {
+			if (args[0] === "repo") return { nameWithOwner: "team/repo", url: "https://github.com/team/repo" }
+			const value = {
+				number: 7,
+				url: "https://github.com/team/repo/pull/7",
+				state: "OPEN",
+				headRefName: "1320",
+				headRefOid: sha,
+				mergeCommit: null,
+				mergedAt: null,
+				closedAt: null,
+			}
+			return args[1] === "list"
+				? [value]
+				: {
+						...value,
+						number: 1320,
+						url: "https://github.com/team/repo/pull/1320",
+						headRefName: "unrelated-branch",
+					}
+		})
+		expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toMatchObject({
+			branch: "1320",
+			pullRequest: { number: 7, url: "https://github.com/team/repo/pull/7" },
+		})
+		expect(cli.run.mock.calls[1][0]).toEqual([
+			"pr",
+			"list",
+			"--head",
+			"1320",
+			"--state",
+			"all",
+			"--limit",
+			"1",
+			"--repo",
+			"team/repo",
+			"--json",
+			"number,url,state,headRefName,headRefOid,mergeCommit,mergedAt,closedAt",
+		])
+		expect(existsSync(agentDir)).toBe(false)
+	})
+	it("stays quiet outside a repository or on a detached HEAD", async () => {
+		cli.git.mockResolvedValue(undefined)
+		expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toBeUndefined()
+		expect(cli.run).not.toHaveBeenCalled()
+		expect(existsSync(agentDir)).toBe(false)
+	})
+	it.each(["feature", "1320"])("treats branch %s without a PR as an ordinary empty result", async (branch) => {
+		cli.git.mockResolvedValue(`${branch}\n`)
+		cli.run.mockImplementation(async (args) => {
+			if (args[0] === "repo") return { nameWithOwner: "team/repo", url: "https://github.com/team/repo" }
+			return []
+		})
+		expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toEqual({
+			branch,
+			pullRequest: undefined,
+		})
+	})
+	it("rejects a pull request whose head does not match the current branch", async () => {
+		cli.run.mockImplementation(async (args) =>
+			args[0] === "repo"
+				? { nameWithOwner: "team/repo", url: "https://github.com/team/repo" }
+				: [
+						{
+							number: 7,
+							url: "https://github.com/team/repo/pull/7",
+							state: "OPEN",
+							headRefName: "other",
+							headRefOid: sha,
+							mergeCommit: null,
+							mergedAt: null,
+							closedAt: null,
+						},
+					],
+		)
+		await expect(lookupBranchPullRequest(repository, new AbortController().signal)).rejects.toThrow(
+			"GitHub returned a pull request for a different branch.",
+		)
+	})
+	it("discards a result when checkout changes while GitHub is responding", async () => {
+		cli.git.mockResolvedValueOnce("feature\n").mockResolvedValue("other\n")
+		cli.run.mockImplementation(async (args) =>
+			args[0] === "repo"
+				? { nameWithOwner: "team/repo", url: "https://github.com/team/repo" }
+				: [
+						{
+							number: 7,
+							url: "https://github.com/team/repo/pull/7",
+							state: "OPEN",
+							headRefName: "feature",
+							headRefOid: sha,
+							mergeCommit: null,
+							mergedAt: null,
+							closedAt: null,
+						},
+					],
+		)
+		expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toBeUndefined()
+	})
+	it("reports authentication errors without leaking stderr and remains read-only", async () => {
+		cli.run.mockRejectedValue(Object.assign(new Error("secret"), { code: 4, stderr: "HTTP 401 secret" }))
+		await expect(lookupBranchPullRequest(repository, new AbortController().signal)).rejects.toThrow(
+			"GitHub CLI is not signed in. Run gh auth login.",
+		)
+		expect(existsSync(agentDir)).toBe(false)
+	})
 })
 afterEach(async () => {
 	await summaries.flushWorkSummaries()

@@ -1,6 +1,6 @@
 import type { Model } from "@earendil-works/pi-ai"
 import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
-import { visibleWidth } from "@earendil-works/pi-tui"
+import { hyperlink, visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { StatusLineElementId } from "../config/status-line-config.js"
 import * as AGENTS from "../extensions/agents/index.js"
@@ -113,6 +113,7 @@ function createMockStatusLineData(opts?: {
 	updateAvailable?: string
 	lsp?: string
 	workPr?: string
+	workPrUrl?: string
 }): ReadonlyFooterDataProvider {
 	const statuses = new Map<string, string>()
 	if (opts?.permissionsMode) statuses.set("permissions-mode", opts.permissionsMode)
@@ -120,12 +121,27 @@ function createMockStatusLineData(opts?: {
 	if (opts?.updateAvailable) statuses.set("update-available", opts.updateAvailable)
 	if (opts?.lsp) statuses.set("lsp", opts.lsp)
 	if (opts?.workPr) statuses.set("work-pr", opts.workPr)
+	if (opts?.workPrUrl) statuses.set("work-pr-url", opts.workPrUrl)
 	return {
 		getExtensionStatuses: vi.fn(() => statuses),
 	} as unknown as ReadonlyFooterDataProvider
 }
 
 describe("buildScriptPayload", () => {
+	it("links only the PR number to its saved URL without adding terminal columns", () => {
+		const url = "https://github.com/example/repo/pull/7"
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({ workPr: "PR: #7 open", workPrUrl: url }),
+		}
+		for (const segments of [buildStatusLineSegments(context, new Set()), buildControlsLineSegments(context)]) {
+			const segment = segments.find((item) => item.id === "work-pr")
+			expect(segment?.text).toContain(hyperlink("#7", url))
+			expect(segment?.width).toBe(visibleWidth("PR: #7 open"))
+			expect(visibleWidth(renderFittedLine(segments, 40, context.theme))).toBeLessThanOrEqual(40)
+		}
+	})
 	it("shows PR lookup status in both footers and hides it when no work has commits", () => {
 		const context = {
 			ctx: createMockContext(),

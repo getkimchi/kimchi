@@ -138,28 +138,29 @@ New edit records reference a snapshot of the visible Git references and worktree
 
 ### 4. Find PRs for recorded commits
 
-Create the PR through Kimchi, a browser or another tool. Once GitHub knows the recorded commit, Kimchi can find its PR without a command from you. Install `gh` and sign in with `gh auth login` if you have not already done so.
+Create the PR through Kimchi, a browser or another tool. Kimchi checks for it at startup and every 30 seconds while open. Install `gh` and sign in with `gh auth login` if you have not already done so.
+
+The match starts with a **repository and commit hash** already saved by work tracking. For example, if work A contains commit `abc123` and GitHub returns PR #7 for that commit, Kimchi saves PR #7 under work A. One commit can belong to several PRs; Kimchi keeps every association GitHub returns.
 
 ```mermaid
 flowchart TD
-    C["Recorded commit"] --> S["Startup or next 30-second check"]
-    S --> G["Ask GitHub for PRs containing this commit"]
-    G -->|No PR yet| P["Keep commit pending"]
-    P --> S
-    G -->|PRs found| W["Save each PR on the commit in work.json"]
-    W -->|Open or closed| R["Refresh the saved PR by number"]
-    R -->|Merged| M["Keep the link and merge details"]
-    R -->|Still open or closed| S
-    G -->|CLI, login or access error| E["Show the error and retry later"]
-    E --> S
+    C["Work A contains commit abc123"] --> G["Ask GitHub: which PRs contain abc123?"]
+    G -->|PR #7 found| L["Save PR #7 and its state under work A"]
+    G -->|No PR found| P["Keep the commit waiting"]
+    G -->|Check failed| E["Keep saved links and show the reason"]
 ```
 
-- **PR created outside Kimchi:** the next check finds it from the commit hash. Discovery follows every page returned by GitHub and keeps every returned association.
-- **PR merged while Kimchi is closed:** the next launch catches up. Both regular and squash merges keep the original commit link and the PR's merge commit hash.
-- **Commit rewritten or removed:** a saved PR link is refreshed by PR number. An empty response for the old commit does not erase the link.
-- **GitHub unavailable:** the pending commit and any known links stay on disk. Kimchi shows an actionable warning and retries while coding continues.
+Later checks retry waiting commits and failures. Once a PR is known, Kimchi also checks it by PR number to update its state.
 
-The footer shows `PR: waiting`, a linked PR such as `PR: #7 open`, or `PR: check /work` when lookup fails. `/work` lists the current work's PR URLs, states, pending commits and errors. The same status and notifications are sent to ACP clients; their display depends on the client.
+| Case | How Kimchi finds or keeps the link |
+| --- | --- |
+| A PR is opened in a browser or another tool | GitHub returns it for the recorded commit on a later check. |
+| A PR merges while Kimchi is closed | The next launch catches up, including regular and squash merges. |
+| A commit is rewritten or removed | Kimchi still checks a saved PR by number. An empty commit lookup does not erase the link. |
+| Several PRs contain the commit | All returned PRs are saved, across every result page. |
+| Another Kimchi process does the lookup | This session reads the saved result and updates its footer too. |
+
+The footer shows `PR: waiting`, a linked PR such as `PR: #7 open`, or `PR: check /work` when lookup fails. The PR number is a terminal hyperlink to GitHub; use your terminal's link gesture, usually Cmd-click or Ctrl-click. `/work` lists the current work's PR URLs, states, pending commits and errors. ACP clients receive the same status and notifications; how they display them depends on the client.
 
 Each commit keeps two extra fields:
 
@@ -171,7 +172,9 @@ Each commit keeps two extra fields:
 | `headSha` / `mergeCommitSha` | The PR's head commit and GitHub's merge hash. Before a PR is merged, the latter may be a test-merge hash. Use `state` and `mergedAt` to identify an actual merge. |
 | `mergedAt` / `closedAt` / `checkedAt` | GitHub's merge/close times and when Kimchi last checked that PR. |
 
-Lookup uses no model calls. It runs under the existing background worker's lease, with a separate time budget from local Git matching. Deleting the original worktree is supported while the repository's shared Git directory remains available.
+Lookup uses no model calls. With work tracking present, commit discovery runs under the existing background worker's lease, with a separate time budget from local Git matching. Deleting the original worktree is supported while the repository's shared Git directory remains available.
+
+Work tracking and PR discovery load as separate extensions. Work tracking saves the commits; PR discovery adds their GitHub links. Without the PR extension, local work recording and Git matching still run. Without the work-tracking extension, PR discovery shows the current branch's PR. That branch lookup runs its own read-only check; it does not create work records or link costs. Both load by default; this change adds no setting to disable tracking. Removing the work-tracking extension alone would still leave direct tracking calls in other parts of Kimchi.
 
 GitHub's commit-to-PR endpoint may omit a PR that was closed before Kimchi ever found it. Known closed PRs are rechecked so reopening is detected. This lookup currently supports GitHub repositories accessible through `gh`.
 

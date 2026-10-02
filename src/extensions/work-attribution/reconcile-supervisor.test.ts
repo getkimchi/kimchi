@@ -5,7 +5,11 @@ import * as locks from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as transitions from "./file-transitions.js"
 import * as pullRequests from "./pull-requests.js"
-import { RECONCILIATION_INTERVAL_MS, subscribeFileReconciliation } from "./reconcile-supervisor.js"
+import {
+	RECONCILIATION_INTERVAL_MS,
+	subscribeFileReconciliation,
+	subscribePullRequestReconciliation,
+} from "./reconcile-supervisor.js"
 
 vi.mock("proper-lockfile", async (original) => ({ ...(await original<typeof locks>()) }))
 vi.mock("./file-transitions.js", () => ({
@@ -21,6 +25,11 @@ let directory: string
 const stops: (() => Promise<void>)[] = []
 function subscribe() {
 	const stop = subscribeFileReconciliation()
+	stops.push(stop)
+	return stop
+}
+function subscribePr() {
+	const stop = subscribePullRequestReconciliation({ onPullRequest: () => {} })
 	stops.push(stop)
 	return stop
 }
@@ -42,6 +51,31 @@ afterEach(async () => {
 })
 
 describe("shared file reconciliation", () => {
+	it("does not read PR records or call GitHub when only file reconciliation is enabled", async () => {
+		subscribe()
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2))
+		expect(pullRequests.readWorkPullRequestUpdates).not.toHaveBeenCalled()
+		expect(pullRequests.reconcileWorkPullRequests).not.toHaveBeenCalled()
+	})
+	it("stops only PR network work while local reconciliation remains subscribed", async () => {
+		let active: AbortSignal | undefined
+		vi.mocked(pullRequests.reconcileWorkPullRequests).mockImplementation(async (_directory, signal) => {
+			active = signal
+			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
+		})
+		subscribe()
+		const stopPr = subscribePr()
+		await vi.waitFor(() => expect(active).toBeDefined())
+		await stopPr()
+		expect(active?.aborted).toBe(true)
+		await vi.waitFor(async () => {
+			const release = await locks.lock(join(directory, "work-attribution"), { retries: 0 })
+			await release()
+		})
+		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4))
+		expect(pullRequests.reconcileWorkPullRequests).toHaveBeenCalledOnce()
+	})
 	it("shows another process's saved results while that process owns the lookup lease", async () => {
 		const path = join(directory, "work-attribution")
 		mkdirSync(path)
@@ -58,7 +92,7 @@ describe("shared file reconciliation", () => {
 		}
 		vi.mocked(pullRequests.readWorkPullRequestUpdates).mockReturnValue([update])
 		const onPullRequest = vi.fn()
-		const stop = subscribeFileReconciliation({ onPullRequest })
+		const stop = subscribePullRequestReconciliation({ onPullRequest })
 		stops.push(stop)
 		try {
 			await vi.waitFor(() => expect(onPullRequest).toHaveBeenCalledWith(update))
@@ -80,7 +114,7 @@ describe("shared file reconciliation", () => {
 
 	it("discovers Bash-only commits even when there are no file-transition repositories", async () => {
 		vi.mocked(transitions.knownTransitionRepositories).mockResolvedValue([])
-		subscribe()
+		subscribePr()
 		await vi.waitFor(() => expect(pullRequests.reconcileWorkPullRequests).toHaveBeenCalledTimes(1))
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
 		await vi.waitFor(() => expect(pullRequests.reconcileWorkPullRequests).toHaveBeenCalledTimes(2))
@@ -92,7 +126,7 @@ describe("shared file reconciliation", () => {
 			active = signal
 			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
 		})
-		const stop = subscribe()
+		const stop = subscribePr()
 		await vi.waitFor(() => expect(active).toBeDefined())
 		await stop()
 		expect(active?.aborted).toBe(true)
@@ -183,6 +217,7 @@ describe("shared file reconciliation", () => {
 			},
 		)
 		subscribe()
+		subscribePr()
 		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(1))
 		await vi.waitFor(() => expect(pullRequests.reconcileWorkPullRequests).toHaveBeenCalledTimes(1))
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)

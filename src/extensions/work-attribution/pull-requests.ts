@@ -260,6 +260,100 @@ function api(repository: Repository, endpoint: string): string[] {
 	return ["api", "--method", "GET", "--hostname", repository.host, `repos/${repository.name}/${endpoint}`]
 }
 
+export interface BranchPullRequest {
+	branch: string
+	pullRequest?: WorkPullRequest
+}
+async function currentBranch(cwd: string, signal: AbortSignal): Promise<string | undefined> {
+	signal.throwIfAborted()
+	const env = { ...process.env }
+	for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"]) delete env[key]
+	return new Promise((done, reject) => {
+		execFile(
+			"git",
+			["-C", cwd, "symbolic-ref", "--quiet", "--short", "HEAD"],
+			{
+				cwd,
+				env,
+				signal,
+				encoding: "utf8",
+				timeout: 2000,
+				maxBuffer: 64 * 1024,
+			},
+			(error, stdout) => {
+				if (signal.aborted) reject(signal.reason)
+				else done(error ? undefined : stdout.trim() || undefined)
+			},
+		)
+	})
+}
+/** A branch status check has no work identity, ledger, summary, or attribution side effects. */
+export async function lookupBranchPullRequest(
+	cwd: string,
+	signal: AbortSignal,
+	onBranch?: (branch: string | undefined) => void,
+): Promise<BranchPullRequest | undefined> {
+	const branch = await currentBranch(cwd, signal)
+	onBranch?.(branch)
+	if (!branch) return undefined
+	const deadline = Date.now() + PASS_BUDGET_MS
+	let pull: WorkPullRequest | undefined
+	let failure: unknown
+	try {
+		const remote = await repositoryIdentity(cwd, signal, deadline)
+		const name = remote.host === "github.com" ? remote.name : `${remote.host}/${remote.name}`
+		const values = await gh(
+			[
+				"pr",
+				"list",
+				"--head",
+				branch,
+				"--state",
+				"all",
+				"--limit",
+				"1",
+				"--repo",
+				name,
+				"--json",
+				"number,url,state,headRefName,headRefOid,mergeCommit,mergedAt,closedAt",
+			],
+			cwd,
+			signal,
+			deadline,
+		)
+		if (!Array.isArray(values)) throw new LookupError("GitHub returned invalid pull requests.")
+		if (values.length) {
+			const value = values[0]
+			if (!object(value)) throw new LookupError("GitHub returned an invalid pull request.")
+			if (value.headRefName !== branch) throw new LookupError("GitHub returned a pull request for a different branch.")
+			pull = pullRequest(
+				{
+					html_url: value.url,
+					number: value.number,
+					state:
+						value.state === "OPEN"
+							? "open"
+							: value.state === "CLOSED" || value.state === "MERGED"
+								? "closed"
+								: undefined,
+					head: { sha: value.headRefOid },
+					merge_commit_sha: object(value.mergeCommit) ? value.mergeCommit.oid : null,
+					merged_at: value.mergedAt,
+					closed_at: value.closedAt,
+				},
+				remote.host,
+				new Date().toISOString(),
+			)
+		}
+	} catch (error) {
+		failure = error
+	}
+	// Ignore a result for a branch that was checked out while GitHub was responding.
+	if ((await currentBranch(cwd, signal)) !== branch) return undefined
+	if (failure) throw failure
+	return { branch, pullRequest: pull }
+}
+
 async function scan(
 	agentDir: string,
 	state: DiscoveryState,

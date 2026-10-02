@@ -149,6 +149,16 @@ if (JSON.stringify(args) === JSON.stringify(["repo", "view", "--json", "nameWith
 		statusKey: "work-pr",
 		statusText: "PR: #731 open",
 	})
+	await expectNotification(fixture, sessionId, {
+		method: "setStatus",
+		statusKey: "work-pr-url",
+		statusText: url,
+	})
+	expect(fixture.client.extNotifications).not.toContainEqual(
+		expect.objectContaining({
+			params: expect.objectContaining({ statusKey: "work-pr", statusText: expect.stringContaining("\x1b") }),
+		}),
+	)
 	const beforeLinked = fixture.client.extNotifications.length
 	expect((await prompt(fixture, sessionId, "/work")).stopReason).toBe("end_turn")
 	await expectNotification(

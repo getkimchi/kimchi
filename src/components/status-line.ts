@@ -3,7 +3,7 @@ import { join, resolve } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
 import { readJsonCached } from "../config/json.js"
 import { readStatusLineConfig } from "../config/status-line-config.js"
@@ -598,9 +598,11 @@ function buildCreditsSegment(theme: Theme, pinned: boolean): Segment | null {
 }
 
 function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
-	const status = statusLineData.getExtensionStatuses().get("work-pr")
+	const statuses = statusLineData.getExtensionStatuses()
+	const status = statuses.get("work-pr")
 	if (!status) return null
-	const text = accentText(theme, status)
+	const url = statuses.get("work-pr-url")
+	const text = accentText(theme, url ? status.replace(/#\d+/, (number) => hyperlink(number, url)) : status)
 	return { id: "work-pr", text, width: visibleWidth(text) }
 }
 

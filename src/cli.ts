@@ -120,6 +120,7 @@ import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/
 import { setPrintGate } from "./extensions/print-mode.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
+import pullRequestStatusExtension from "./extensions/pull-request-status.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
@@ -814,6 +815,7 @@ try {
 			contextAssemblyExtension,
 			cacheSummaryExtension,
 			createWorkAttributionExtension(),
+			pullRequestStatusExtension,
 			requestTimingExtension,
 			llmResponseLogExtension,
 			activityExtension,
