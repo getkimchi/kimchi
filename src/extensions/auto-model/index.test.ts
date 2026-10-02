@@ -344,6 +344,7 @@ describe("createAutoModelRoutingExtension", () => {
 describe("catalog-driven Auto default (main session)", () => {
 	beforeEach(() => {
 		settingsStubs.getDefaultModel.mockReturnValue(undefined)
+		settingsStubs.getDefaultProvider.mockReturnValue(undefined)
 	})
 
 	function auto(): Model<Api> {
@@ -447,6 +448,25 @@ describe("catalog-driven Auto default (main session)", () => {
 		await start()
 
 		expect(JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf-8"))).toEqual({ theme: "x" })
+	})
+
+	it("rolls a session on another provider's model (e.g. Claude) back to Auto", async () => {
+		// The rollback is provider-agnostic: a manual switch to a model on a
+		// different provider still ends at Auto on the next fresh session.
+		settingsStubs.getDefaultModel.mockReturnValue("claude-sonnet-4-5")
+		settingsStubs.getDefaultProvider.mockReturnValue("anthropic")
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const c = createContext({
+			model: model("claude-sonnet-4-5", { provider: "anthropic" }),
+			modelRegistry: { find: () => auto() },
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
+
+		expect(extension.setModel).toHaveBeenCalledWith(auto(), { persist: true })
+		expect(c.ui.notify).toHaveBeenCalledWith("Auto is now the default model.", "info")
 	})
 
 	it("does not install when the catalog does not advertise auto", async () => {

@@ -74,7 +74,9 @@ For the main session (not subagents), the auto-model extension additionally:
   always comes up on `auto` when the backend catalog advertises it. A manual
   switch away is honoured for the session it happens in, but the next new
   session rolls back to Auto: for entitled accounts Auto IS the default, not
-  a one-time install. An explicit launch-time `--model` still wins.
+  a one-time install. The rollback is provider-agnostic — switching to
+  another provider's model (e.g. Anthropic's Claude) rolls back too. An
+  explicit launch-time `--model` still wins.
 - **Persists explicit choices** — an explicit launch-time `--model` over an
   auto session is user-initiated and persists.
 - **Unwraps saved defaults** — a persisted default is never wrapped in

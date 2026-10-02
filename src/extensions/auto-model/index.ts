@@ -280,6 +280,32 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 
 			if (options.handleCliModelSelection) dropRetiredAutoDefaultMarker()
 
+			// Catalog-driven Auto default: every fresh main session comes up on
+			// `auto` when the backend actually advertises it — the backend catalog
+			// decides who sees it, so there is no client-side entitlement check.
+			// A manual switch away is honoured for the session it happens in, but
+			// the next fresh session rolls back to Auto: for entitled accounts Auto
+			// IS the default, not a one-time install. This applies whatever
+			// provider the session came up on — a switch to another provider's
+			// model (e.g. Anthropic's Claude) rolls back too. Say so when the
+			// rollback happens — a silent switch away from a deliberately chosen
+			// model reads as a bug.
+			if (mainFreshLaunch && ctx.model && !isAutoRoutedModel(ctx.model)) {
+				const installed = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
+				if (installed) {
+					// Persist: upstream 0.85.1 made setModel session-only by default, and
+					// the notice below claims a default-level change. Persisting also
+					// means a resumed new session restores Auto rather than the
+					// model that was switched to.
+					await pi.setModel(installed, { persist: true })
+					setMultiModelEnabled(sessionId, false)
+					resetLastNotified(sessionId)
+					ctx.ui.notify("Auto is now the default model.", "info")
+					// A fresh session carries no routing state to hydrate; stop here.
+					return
+				}
+			}
+
 			if (!ctx.model || !isRoutableProvider(ctx.model)) {
 				resetLastNotified(sessionId)
 				// A saved default outranks the global multi-model default, whether it
@@ -293,29 +319,6 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			// virtual ids and concrete ones), which is safe because none of them use
 			// multi-model.
 			setMultiModelEnabled(sessionId, false)
-
-			// Catalog-driven Auto default: every fresh main session comes up on
-			// `auto` when the backend actually advertises it — the backend catalog
-			// decides who sees it, so there is no client-side entitlement check.
-			// A manual switch away is honoured for the session it happens in, but
-			// the next fresh session rolls back to Auto: for entitled accounts Auto
-			// IS the default, not a one-time install. Say so when the rollback
-			// happens — a silent switch away from a deliberately chosen model
-			// reads as a bug.
-			if (mainFreshLaunch && !isAutoRoutedModel(ctx.model)) {
-				const installed = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
-				if (installed) {
-					// Persist: upstream 0.85.1 made setModel session-only by default, and
-					// the notice below claims a default-level change. Persisting also
-					// means a resumed new session restores Auto rather than the
-					// model that was switched to.
-					await pi.setModel(installed, { persist: true })
-					setMultiModelEnabled(sessionId, false)
-					ctx.ui.notify("Auto is now the default model.", "info")
-				} else if (hasPersistedDefault()) {
-					setMultiModelEnabled(sessionId, false)
-				}
-			}
 
 			const last = ctx.sessionManager
 				.getEntries()
