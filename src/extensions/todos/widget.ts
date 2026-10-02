@@ -401,18 +401,23 @@ export function buildTodoLines(theme: Theme, sessionId: string): string[] {
 
 /** Body rows for the expanded strip. Long lists render in a fixed-height
  *  scrollable viewport with `↑ N more` / `↓ N more` marker rows (mouse wheel
- *  in fullscreen); `/todos expand all` still dumps every row. */
+ *  in fullscreen); `/todos expand all` still dumps every row.
+ *
+ *  Writes `state.scrollOffset` when the viewport is capped so a later wheel
+ *  event can continue from the window that was just painted. */
 function buildTodoBodyLines(
 	theme: Theme,
 	groups: WidgetScopeGroup[],
 	state: Pick<TodoWidgetState, "expanded" | "scrollOffset" | "userScrolled">,
-): string[] {
+): { lines: string[]; scrollable: boolean } {
 	const rows = buildFullTodoBodyRows(theme, groups)
 
-	if (state.expanded) return rows.map((row) => row.text)
+	if (state.expanded) return { lines: rows.map((row) => row.text), scrollable: false }
 
 	// Fits under the cap with the one-line header and the hint line.
-	if (rows.length + 3 <= MAX_TODO_WIDGET_LINES) return rows.map((row) => row.text)
+	if (rows.length + 3 <= MAX_TODO_WIDGET_LINES) {
+		return { lines: rows.map((row) => row.text), scrollable: false }
+	}
 
 	const showUpBudget = 1
 	const showDownBudget = 1
@@ -432,11 +437,11 @@ function buildTodoBodyLines(
 
 	const visible = rows.slice(offset, offset + contentSlots)
 	const remainingAfter = Math.max(0, rows.length - offset - visible.length)
-	const result: string[] = []
-	if (offset > 0) result.push(theme.fg("dim", `↑ ${offset} more`))
-	for (const row of visible) result.push(row.text)
-	if (remainingAfter > 0) result.push(theme.fg("dim", `↓ ${remainingAfter} more`))
-	return result
+	const lines: string[] = []
+	if (offset > 0) lines.push(theme.fg("dim", `↑ ${offset} more`))
+	for (const row of visible) lines.push(row.text)
+	if (remainingAfter > 0) lines.push(theme.fg("dim", `↓ ${remainingAfter} more`))
+	return { lines, scrollable: showUp || showDown }
 }
 
 function headerScopeLabel(groups: WidgetScopeGroup[]): string | undefined {
@@ -467,9 +472,8 @@ function buildTodoWidgetLines(theme: Theme, state: TodoWidgetState, sessionId: s
 	}
 
 	const body = buildTodoBodyLines(theme, groups, state)
-	const scrollable = !state.expanded && body.some((line) => line.includes(" more"))
-	const hint = scrollable ? `scroll · ${TODO_LIST_HINT_TEXT}` : TODO_LIST_HINT_TEXT
-	return [buildTodoHeaderLine(theme, counts, false, { scopeLabel }), ...body, "", theme.fg("dim", hint)]
+	const hint = body.scrollable ? `scroll · ${TODO_LIST_HINT_TEXT}` : TODO_LIST_HINT_TEXT
+	return [buildTodoHeaderLine(theme, counts, false, { scopeLabel }), ...body.lines, "", theme.fg("dim", hint)]
 }
 
 export function resetTodoWidgetState(ctx: ExtensionContext): void {

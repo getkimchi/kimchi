@@ -200,6 +200,30 @@ describe("todo widget helpers", () => {
 		expect(lines.some((line: string) => line.includes(" 16.  ○ task 16"))).toBe(false)
 	})
 
+	it("does not treat todo content containing ' more' as a scroll marker", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{
+				todos: [
+					{ content: "write more tests", status: "pending" },
+					{ content: "ship more docs", status: "pending" },
+					{ content: "review more PRs", status: "pending" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+
+		openTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		const lines = instance.render(120)
+		expect(lines.some((line: string) => line.includes("write more tests"))).toBe(true)
+		expect(lines.some((line: string) => line.includes("scroll ·"))).toBe(false)
+		expect(lines.some((line: string) => line.includes("↑ ") || line.includes("↓ "))).toBe(false)
+	})
+
 	it("can expand the widget to show all todo rows", () => {
 		const setWidget = vi.fn()
 		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
