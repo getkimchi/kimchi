@@ -110,7 +110,7 @@ export interface SecurityToolResult {
 
 export type SecurityToolRunner = (args: string[], stdin?: string) => SecurityToolResult
 
-const defaultSecurityRunner: SecurityToolRunner = (args, stdin) => {
+export const defaultSecurityRunner: SecurityToolRunner = (args, stdin) => {
 	// A generous bound turns an abandoned keychain consent dialog (possible on
 	// the first read of a legacy ACL item) into a diagnosable error instead of
 	// an indefinite hang. The in-process SecItem path blocked the same way.
