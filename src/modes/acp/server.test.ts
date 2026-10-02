@@ -5543,6 +5543,8 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		expect((err as Error).message).toMatch(/auth required/)
 		// Provider text stays in the message: debugging can tell stale from missing.
 		expect((err as Error).message).toMatch(/401/)
+		// Structured branch signal: clients route to login UI off `data`, not text.
+		expect((err as { data?: unknown }).data).toEqual({ kind: "auth" })
 	})
 
 	// Chain second half: the turn-time 401 is the first proof this key is
@@ -5636,6 +5638,72 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		expect(result.usage?.inputTokens).toBe(10)
 	})
 
+	it("rejection data carries a structured kind plus rate-limit metadata for classifiable provider errors", async () => {
+		const fake = new FakeAgentSession("session-error-data")
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantErrorEvent("Request failed with status code 429: rate limited until 2099-01-01T00:00:00Z"))
+			fake.emit(agentEnd())
+		}
+
+		const err = await agent
+			.prompt({ sessionId: "session-error-data", prompt: [{ type: "text", text: "hello" }] })
+			.catch((e) => e)
+		expect((err as Error).message).toMatch(/429/)
+		expect((err as { data?: unknown }).data).toEqual({
+			kind: "rate_limit",
+			httpStatusCode: 429,
+			retryAtMs: Date.parse("2099-01-01T00:00:00Z"),
+		})
+	})
+
+	it.each([
+		{ message: "budget exhausted for this account", kind: "budget_exhausted", httpStatusCode: undefined },
+		{ message: "Request failed with status code 503: Service Unavailable", kind: "provider_5xx", httpStatusCode: 503 },
+		{ message: "Request failed: prompt too long", kind: "context_window_exceeded", httpStatusCode: undefined },
+	])("rejection data carries kind=$kind for classifiable provider errors", async ({
+		message,
+		kind,
+		httpStatusCode,
+	}) => {
+		const fake = new FakeAgentSession(`session-error-kind-${kind}`)
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantErrorEvent(message))
+			fake.emit(agentEnd())
+		}
+
+		const err = await agent
+			.prompt({ sessionId: `session-error-kind-${kind}`, prompt: [{ type: "text", text: "hello" }] })
+			.catch((e) => e)
+		expect((err as { code?: number }).code).toBe(-32603)
+		expect((err as { data?: unknown }).data).toEqual({
+			kind,
+			...(httpStatusCode !== undefined ? { httpStatusCode } : {}),
+		})
+	})
+
+	it("unclassifiable provider errors reject without a data payload", async () => {
+		const fake = new FakeAgentSession("session-error-nodata")
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantErrorEvent("something totally unusual happened"))
+			fake.emit(agentEnd())
+		}
+
+		const err = await agent
+			.prompt({ sessionId: "session-error-nodata", prompt: [{ type: "text", text: "hello" }] })
+			.catch((e) => e)
+		expect((err as Error).message).toMatch(/something totally unusual/)
+		expect((err as { data?: unknown }).data).toBeUndefined()
+	})
+
 	it("does not fail the turn when the final assistant message was aborted", async () => {
 		const fake = new FakeAgentSession("session-aborted-msg")
 		const agent = makeAgent(fake)
@@ -5651,6 +5719,201 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 			prompt: [{ type: "text", text: "hello" }],
 		})
 		expect(result.stopReason).toBe("end_turn")
+	})
+})
+
+// A turn waiting out a rate-limit deadline or running compaction is silent on
+// the wire — an outstanding prompt with no updates, indistinguishable from a
+// hang. Those pi events go out as _kimchi.dev/agent_activity notifications so
+// the client can pin the stall (and its session) to a cause.
+describe("agent activity notifications", () => {
+	function successEvent(): AgentSessionEvent {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "reply" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 10,
+				output: 5,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 15,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	it("forwards auto_retry_start with sessionId, attempt, delay and error", async () => {
+		const fake = new FakeAgentSession("session-activity-retry")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "auto_retry_start",
+				attempt: 1,
+				maxAttempts: 3,
+				delayMs: 5000,
+				errorMessage: "Request failed with status code 429: rate limited",
+			} as AgentSessionEvent)
+			fake.emit({
+				type: "auto_retry_end",
+				success: true,
+				attempt: 1,
+			} as AgentSessionEvent)
+			fake.emit(successEvent())
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({
+			sessionId: "session-activity-retry",
+			prompt: [{ type: "text", text: "hello" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+		const activities = extNotifications.filter((n) => n.method === "_kimchi.dev/agent_activity")
+		expect(activities).toEqual([
+			{
+				method: "_kimchi.dev/agent_activity",
+				params: {
+					sessionId: "session-activity-retry",
+					kind: "auto_retry_start",
+					attempt: 1,
+					maxAttempts: 3,
+					delayMs: 5000,
+					errorMessage: "Request failed with status code 429: rate limited",
+				},
+			},
+			{
+				method: "_kimchi.dev/agent_activity",
+				params: { sessionId: "session-activity-retry", kind: "auto_retry_end", success: true, attempt: 1 },
+			},
+		])
+	})
+
+	it("forwards compaction start/end with reason and failure detail", async () => {
+		const fake = new FakeAgentSession("session-activity-compaction")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const compactionResult = {
+			summary: "compaction summary text",
+			firstKeptEntryId: "entry-42",
+			tokensBefore: 190_000,
+			estimatedTokensAfter: 40_000,
+		}
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "compaction_start", reason: "overflow" } as AgentSessionEvent)
+			fake.emit({
+				type: "compaction_end",
+				reason: "overflow",
+				result: compactionResult,
+				aborted: false,
+				willRetry: false,
+				errorMessage: "summarization failed",
+			} as AgentSessionEvent)
+			fake.emit(successEvent())
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({
+			sessionId: "session-activity-compaction",
+			prompt: [{ type: "text", text: "hello" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+		const activities = extNotifications.filter((n) => n.method === "_kimchi.dev/agent_activity")
+		expect(activities).toEqual([
+			{
+				method: "_kimchi.dev/agent_activity",
+				params: { sessionId: "session-activity-compaction", kind: "compaction_start", reason: "overflow" },
+			},
+			{
+				method: "_kimchi.dev/agent_activity",
+				params: {
+					sessionId: "session-activity-compaction",
+					kind: "compaction_end",
+					reason: "overflow",
+					result: compactionResult,
+					aborted: false,
+					willRetry: false,
+					errorMessage: "summarization failed",
+				},
+			},
+		])
+	})
+
+	it.each([
+		{
+			event: {
+				type: "summarization_retry_scheduled",
+				attempt: 1,
+				maxAttempts: 3,
+				delayMs: 5000,
+				errorMessage: "Request failed with status code 429",
+			},
+		},
+		{ event: { type: "summarization_retry_attempt_start", source: "branchSummary" } },
+		{ event: { type: "summarization_retry_attempt_start", source: "compaction", reason: "threshold" } },
+		// pi's finished event carries no fields — payload is the bare envelope.
+		{ event: { type: "summarization_retry_finished" } },
+	])("forwards summarization retry lifecycle: $event.type [$event.source ?? ''", async ({ event }) => {
+		const { type, ...expected } = event
+		const sessionId = `session-activity-${type}-${JSON.stringify(expected)}`
+		const fake = new FakeAgentSession(sessionId)
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const msg = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(event as AgentSessionEvent)
+			fake.emit(successEvent())
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId: msg.sessionId, prompt: [{ type: "text", text: "hello" }] })
+		expect(extNotifications).toEqual([
+			{
+				method: "_kimchi.dev/agent_activity",
+				params: { ...expected, sessionId: msg.sessionId, kind: type },
+			},
+		])
+	})
+
+	it("does not forward transcript events as activity", async () => {
+		const fake = new FakeAgentSession("session-activity-quiet")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(successEvent())
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId: "session-activity-quiet", prompt: [{ type: "text", text: "hello" }] })
+		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/agent_activity")).toEqual([])
 	})
 })
 
