@@ -300,7 +300,14 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 					await pi.setModel(installed, { persist: true })
 					setMultiModelEnabled(sessionId, false)
 					resetLastNotified(sessionId)
-					ctx.ui.notify("Auto is now the default model.", "info")
+					// The rollback fires on every fresh session after a deliberate
+					// switch, so the copy must read correctly on the tenth repeat —
+					// state the policy and the escape hatch instead of pretending
+					// this is a first-time install.
+					ctx.ui.notify(
+						"New sessions start on Auto (the default). Use /model to pick a different model for this session.",
+						"info",
+					)
 					// A fresh session carries no routing state to hydrate; stop here.
 					return
 				}

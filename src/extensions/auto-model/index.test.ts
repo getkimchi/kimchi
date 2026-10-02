@@ -392,7 +392,10 @@ describe("catalog-driven Auto default (main session)", () => {
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
 
 		expect(extension.setModel).not.toHaveBeenCalled()
-		expect(c.ui.notify).not.toHaveBeenCalledWith("Auto is now the default model.", "info")
+		expect(c.ui.notify).not.toHaveBeenCalledWith(
+			"New sessions start on Auto (the default). Use /model to pick a different model for this session.",
+			"info",
+		)
 	})
 
 	it("notifies on the install", async () => {
@@ -407,7 +410,10 @@ describe("catalog-driven Auto default (main session)", () => {
 
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
 
-		expect(c.ui.notify).toHaveBeenCalledWith("Auto is now the default model.", "info")
+		expect(c.ui.notify).toHaveBeenCalledWith(
+			"New sessions start on Auto (the default). Use /model to pick a different model for this session.",
+			"info",
+		)
 	})
 
 	it("rolls a switched-away model back to Auto on the next fresh session", async () => {
@@ -466,7 +472,10 @@ describe("catalog-driven Auto default (main session)", () => {
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
 
 		expect(extension.setModel).toHaveBeenCalledWith(auto(), { persist: true })
-		expect(c.ui.notify).toHaveBeenCalledWith("Auto is now the default model.", "info")
+		expect(c.ui.notify).toHaveBeenCalledWith(
+			"New sessions start on Auto (the default). Use /model to pick a different model for this session.",
+			"info",
+		)
 	})
 
 	it("does not install when the catalog does not advertise auto", async () => {

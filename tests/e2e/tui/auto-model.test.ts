@@ -249,7 +249,10 @@ test("a new session installs the catalog's Auto as the default for an entitled a
 			},
 		},
 		async (fixture, trace) => {
-			await waitForText(terminal, "Auto is now the default model.", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "New sessions start on Auto (the default).", {
+				timeoutMs: INPUT_TIMEOUT_MS,
+				full: false,
+			})
 			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("new session rolled into the catalog's Auto")
 			terminal.submit("Route my first prompt")
@@ -290,7 +293,10 @@ test("a switched-away install rolls back to Auto on the next new session", async
 			},
 		},
 		async (fixture, trace) => {
-			await waitForText(terminal, "Auto is now the default model.", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "New sessions start on Auto (the default).", {
+				timeoutMs: INPUT_TIMEOUT_MS,
+				full: false,
+			})
 			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("new session rolled the switched-away default back to Auto")
 			const settingsPath = join(fixture.homeDir, ".config", "kimchi", "harness", "settings.json")
@@ -361,7 +367,7 @@ test("a session-scoped /model choice survives resume but not /new or restart", a
 		launchKimchi(terminal, fixture, [], fixture.seedEnv, { exitMarker })
 		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
 		await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-		expect(viewText(terminal)).not.toContain("Auto is now the default model.")
+		expect(viewText(terminal)).not.toContain("New sessions start on Auto (the default).")
 		terminal.submit("/quit")
 		await waitForText(terminal, exitMarker, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
 
@@ -401,7 +407,7 @@ test("a saved Auto default keeps working across restarts", async ({ terminal }) 
 		},
 		async (fixture, trace) => {
 			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			expect(viewText(terminal)).not.toContain("Auto is now the default model.")
+			expect(viewText(terminal)).not.toContain("New sessions start on Auto (the default).")
 			trace.step("saved default restored without re-install")
 			terminal.submit("Use my saved model")
 			await waitForText(terminal, "Saved Auto still works.", { timeoutMs: STREAM_TIMEOUT_MS })
