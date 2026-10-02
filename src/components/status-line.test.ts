@@ -1,6 +1,6 @@
 import type { Model } from "@earendil-works/pi-ai"
 import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
-import { visibleWidth } from "@earendil-works/pi-tui"
+import { hyperlink, visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { StatusLineElementId } from "../config/status-line-config.js"
 import * as AGENTS from "../extensions/agents/index.js"
@@ -112,18 +112,51 @@ function createMockStatusLineData(opts?: {
 	permissionsWarning?: string
 	updateAvailable?: string
 	lsp?: string
+	workPr?: string
+	workPrUrl?: string
 }): ReadonlyFooterDataProvider {
 	const statuses = new Map<string, string>()
 	if (opts?.permissionsMode) statuses.set("permissions-mode", opts.permissionsMode)
 	if (opts?.permissionsWarning) statuses.set("permissions-warning", opts.permissionsWarning)
 	if (opts?.updateAvailable) statuses.set("update-available", opts.updateAvailable)
 	if (opts?.lsp) statuses.set("lsp", opts.lsp)
+	if (opts?.workPr) statuses.set("work-pr", opts.workPr)
+	if (opts?.workPrUrl) statuses.set("work-pr-url", opts.workPrUrl)
 	return {
 		getExtensionStatuses: vi.fn(() => statuses),
 	} as unknown as ReadonlyFooterDataProvider
 }
 
 describe("buildScriptPayload", () => {
+	it.each([
+		["PR: #7 open", "#7", "https://github.com/example/repo/pull/7"],
+		["MR: !7 open", "!7", "https://gitlab.com/example/team/repo/-/merge_requests/7"],
+	])("links the number in %s without adding terminal columns", (status, number, url) => {
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({ workPr: status, workPrUrl: url }),
+		}
+		for (const segments of [buildStatusLineSegments(context, new Set()), buildControlsLineSegments(context)]) {
+			const segment = segments.find((item) => item.id === "work-pr")
+			expect(segment?.text).toContain(hyperlink(number, url))
+			expect(segment?.width).toBe(visibleWidth(status))
+			expect(visibleWidth(renderFittedLine(segments, 40, context.theme))).toBeLessThanOrEqual(40)
+		}
+	})
+	it("shows PR lookup status in both footers and hides it when no work has commits", () => {
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({ workPr: "PR: #7 open" }),
+		}
+		for (const segments of [buildStatusLineSegments(context, new Set()), buildControlsLineSegments(context)]) {
+			expect(stripAnsi(segments.find((segment) => segment.id === "work-pr")?.text ?? "")).toBe("PR: #7 open")
+			expect(visibleWidth(renderFittedLine(segments, 40, context.theme))).toBeLessThanOrEqual(40)
+		}
+		context.statusLineData = createMockStatusLineData()
+		expect(buildStatusLineSegments(context, new Set()).some((segment) => segment.id === "work-pr")).toBe(false)
+	})
 	it("shows a V2 run in both the default footer and custom-script controls", () => {
 		const data = createMockStatusLineData()
 		vi.mocked(data.getExtensionStatuses).mockReturnValue(

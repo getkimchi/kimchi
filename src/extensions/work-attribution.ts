@@ -30,6 +30,17 @@ export interface WorkContext {
 	cwd: string
 	sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">
 }
+export const WORK_CHANGED_EVENT = "kimchi:work-changed"
+export const WORK_STATE_REQUEST_EVENT = "kimchi:work-state-request"
+export const WORK_DETAILS_REQUEST_EVENT = "kimchi:work-details-request"
+export interface WorkStateRequest {
+	tracking?: boolean
+	current?: { ctx: ExtensionContext; workId: string }
+}
+export interface WorkDetailsRequest {
+	workId: string
+	lines: string[]
+}
 const WORK_IDENTITY_ENTRY = "work_identity"
 const identities = new Map<string, string>()
 const workOutputs = new Map<string, Set<string>>()
@@ -94,7 +105,7 @@ export function appendWorkRecord(
 export function setWorkId(
 	ctx: WorkContext,
 	existingWorkId?: string,
-	pi?: Pick<ExtensionAPI, "appendEntry">,
+	pi?: Pick<ExtensionAPI, "appendEntry" | "events">,
 	continuation?: Pick<WorkContinuation, "source" | "evidence">,
 ): string {
 	const workId = existingWorkId ?? randomUUID()
@@ -103,6 +114,7 @@ export function setWorkId(
 	appendWorkRecord(ctx, { type: "work", ...(continuation ? { continuation } : {}) }, workId)
 	identities.set(workLedgerPath(ctx), workId)
 	pi?.appendEntry(WORK_IDENTITY_ENTRY, { workId, ...(continuation ? { continuation } : {}) })
+	pi?.events.emit(WORK_CHANGED_EVENT, undefined)
 	return workId
 }
 export function getWorkId(ctx: WorkContext): string {
@@ -197,14 +209,34 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 	const isChild = inheritedWorkId !== undefined
 	return (pi) => {
 		let stopReconciliation: (() => Promise<void>) | undefined
+		let activeContext: ExtensionContext | undefined
+		function notifyWorkChanged(): void {
+			if (!isChild) pi.events.emit(WORK_CHANGED_EVENT, undefined)
+		}
+		function registerWorkState(): () => void {
+			return pi.events.on(WORK_STATE_REQUEST_EVENT, (candidate) => {
+				if (isChild || !candidate || typeof candidate !== "object" || Array.isArray(candidate)) return
+				const request = candidate as WorkStateRequest
+				request.tracking = true
+				if (activeContext && initialized.has(workLedgerPath(activeContext)))
+					request.current = { ctx: activeContext, workId: getWorkId(activeContext) }
+			})
+		}
+		let unregisterWorkState: (() => void) | undefined = registerWorkState()
 		pi.on("session_start", (_event, ctx) => {
+			unregisterWorkState ??= registerWorkState()
 			recoverWorkSummaries()
 			try {
 				bind(ctx)
 			} catch (error) {
 				warnWorkAttribution(ctx, error)
 			}
-			if (!isChild && !stopReconciliation) stopReconciliation = subscribeFileReconciliation()
+			if (!isChild && !stopReconciliation)
+				stopReconciliation = subscribeFileReconciliation({
+					onError(error) {
+						if (activeContext) warnWorkAttribution(activeContext, error)
+					},
+				})
 			pi.registerTool(createCommitTrackingBashTool(ctx))
 			// Main sessions use tool-rendering's decorated tools; isolated children need these native fallbacks.
 			pi.registerTool({
@@ -223,8 +255,12 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 		const branchEligible = new Set<string>()
 		const explicitSelection = new Set<string>()
 		function bind(ctx: ExtensionContext): void {
+			activeContext = ctx
 			const key = workLedgerPath(ctx)
-			if (initialized.has(key)) return
+			if (initialized.has(key)) {
+				notifyWorkChanged()
+				return
+			}
 			const branch = ctx.sessionManager.getBranch()
 			const fresh = !existsSync(key) || freshSessionLedgers.has(key)
 			let copiedWorkId: string | undefined
@@ -258,6 +294,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 			if (copiedExplicit && copiedWorkId === workId) explicitSelection.add(key)
 			pi.appendEntry(WORK_IDENTITY_ENTRY, { workId, ...(explicitSelection.has(key) ? { explicit: true } : {}) })
 			initialized.add(key)
+			notifyWorkChanged()
 		}
 		pi.on("input", async (event, ctx) => {
 			if (isChild || event.source === "extension") return
@@ -280,6 +317,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 					return
 				const { workId, source, evidence } = found
 				setWorkId(ctx, workId, pi, { source, evidence })
+				notifyWorkChanged()
 				const message =
 					source === "recent-branch"
 						? `Continuing recent work on branch ${evidence.branch}: ${workId}`
@@ -325,6 +363,9 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 			toolRequests.delete(workLedgerPath(ctx))
 		})
 		pi.on("session_shutdown", async (_event, ctx) => {
+			activeContext = undefined
+			unregisterWorkState?.()
+			unregisterWorkState = undefined
 			const key = workLedgerPath(ctx)
 			const stop = stopReconciliation
 			stopReconciliation = undefined
@@ -341,7 +382,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 			explicitSelection.delete(key)
 		})
 		pi.registerCommand("work", {
-			description: "Show work ID, start new work (/work new), or continue a saved plan (/work <path>)",
+			description: "Show work details, start new work (/work new), or continue a saved plan (/work <path>)",
 			handler: async (args, ctx) => {
 				try {
 					await ctx.waitForIdle()
@@ -358,7 +399,10 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 						explicitSelection.add(workLedgerPath(ctx))
 						pi.appendEntry(WORK_IDENTITY_ENTRY, { workId: getWorkId(ctx), explicit: true })
 					}
-					notify(ctx, `Work ID: ${getWorkId(ctx)}`)
+					notifyWorkChanged()
+					const details: WorkDetailsRequest = { workId: getWorkId(ctx), lines: [] }
+					pi.events.emit(WORK_DETAILS_REQUEST_EVENT, details)
+					notify(ctx, [`Work ID: ${details.workId}`, ...details.lines].join("\n"))
 				} catch (error) {
 					warnWorkAttribution(ctx, error)
 				}
