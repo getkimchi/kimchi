@@ -605,10 +605,17 @@ interface JournalHistory {
 async function readJournalHistory(journal: TransitionJournal, signal?: AbortSignal): Promise<JournalHistory> {
 	const worktree = journal.transitions[0]?.worktree
 	if (!worktree || !existsSync(worktree)) return { journal, transitions: journal.transitions }
-	const repository = realpathSync(
-		await git(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"], { signal }),
-	)
-	if (repository !== journal.transitions[0].repository) return { journal, transitions: [] }
+	let repository: string
+	try {
+		repository = realpathSync(
+			await git(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"], { signal }),
+		)
+	} catch {
+		signal?.throwIfAborted()
+		return { journal, transitions: journal.transitions }
+	}
+	// The path can outlive its old checkout. Its saved ref boundary still belongs to the original repository.
+	if (repository !== journal.transitions[0].repository) return { journal, transitions: journal.transitions }
 	const log = await reflog(worktree, signal)
 	const prefixDigests = new Map<number, string>()
 	const transitions = journal.transitions.filter((row) => {
@@ -663,6 +670,7 @@ function createdAfter(log: Buffer, cursor: number): Map<string, string> {
 interface ContentEvidence {
 	transition: FileTransition
 	requireAncestry: boolean
+	canMatch: boolean
 }
 async function contentCandidates(
 	repository: string,
@@ -672,10 +680,18 @@ async function contentCandidates(
 ): Promise<Map<string, ContentEvidence[]>> {
 	const candidates = new Map<string, ContentEvidence[]>()
 	const boundaries = new Map<string, Set<string>>()
+	const uncertain: ContentEvidence[] = []
 	for (const history of histories) {
-		for (const row of history.transitions) {
+		const validCursors = new Set(history.transitions)
+		for (const row of history.journal.transitions) {
 			checkBudget()
-			const local = history.log && createdAfter(history.log, row.cursor.bytes)
+			const cursorValid = validCursors.has(row)
+			const canMatch = cursorValid || Boolean(row.refTips)
+			const local = cursorValid && history.log ? createdAfter(history.log, row.cursor.bytes) : undefined
+			if (!row.refTips && !local?.size) {
+				uncertain.push({ transition: row, requireAncestry: false, canMatch: false })
+				continue
+			}
 			let fresh = local ? new Set(local.keys()) : new Set<string>()
 			if (row.refTips) {
 				const key = JSON.stringify([row.refTips, [...fresh]])
@@ -696,12 +712,17 @@ async function contentCandidates(
 				const rows = candidates.get(sha) ?? []
 				rows.push({
 					transition: row,
-					requireAncestry: Boolean(history.log && row.baseline && !local?.get(sha)?.startsWith("rebase")),
+					requireAncestry: Boolean(
+						cursorValid && history.log && row.baseline && !local?.get(sha)?.startsWith("rebase"),
+					),
+					canMatch,
 				})
 				candidates.set(sha, rows)
 			}
 		}
 	}
+	// Old rows without a usable time boundary can veto conflicting ownership, never create a match.
+	for (const rows of candidates.values()) rows.push(...uncertain)
 	return candidates
 }
 /** Content identity is weaker than a complete reflog chain; retain that distinction per file. */
@@ -726,9 +747,11 @@ async function matchContentTransitions(
 	)
 	const ancestry = new Map<string, boolean>()
 	const byPath = new Map<string, FileTransition[]>()
-	for (const { transition: row, requireAncestry } of evidence) {
+	const uncertain = new Set<FileTransition>()
+	for (const { transition: row, requireAncestry, canMatch } of evidence) {
 		if (!changedPaths.has(row.path)) continue
 		checkBudget()
+		if (!canMatch) uncertain.add(row)
 		// A reset to an older baseline does not prove that this work survived it.
 		if (requireAncestry && row.baseline) {
 			if (!ancestry.has(row.baseline)) {
@@ -759,6 +782,7 @@ async function matchContentTransitions(
 			const starts = chain.filter((row) => same(row.before, before) && same(row.before, row.baselineFile))
 			if (starts.length > 1) continue
 			if (starts.length === 1) chain = chain.slice(chain.indexOf(starts[0]))
+			if (chain.some((row) => uncertain.has(row))) continue
 			const last = chain[chain.length - 1]
 			if (!same(chain[0].before, chain[0].baselineFile) || same(chain[0].before, last.after)) continue
 			if (!chain.every((row, index) => index === 0 || same(row.before, chain[index - 1].after))) continue
@@ -778,7 +802,7 @@ async function reconcileContentHistory(
 	// Missing ownership evidence must neither produce a partial match nor advance the weak-match checkpoint.
 	if (histories.some(({ journal }) => journal.transitions.some((row) => row.historyBoundaryId && !row.refTips))) return
 	const candidates = await contentCandidates(repository, histories, checkBudget, signal)
-	const evidence = `content-v1:${histories.map(({ journal, log }) => `${journal.digest}:${log ? digest(log) : "deleted"}`).join(":")}:${[...candidates.keys()].join(":")}`
+	const evidence = `content-v2:${histories.map(({ journal, log }) => `${journal.digest}:${log ? digest(log) : "deleted"}`).join(":")}:${[...candidates.keys()].join(":")}`
 	const progressPath = `${histories[0].journal.path}.content-checkpoint`
 	const progress = records(progressPath).at(-1)
 	const entries = [...candidates]

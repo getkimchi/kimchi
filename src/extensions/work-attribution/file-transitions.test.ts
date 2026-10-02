@@ -336,7 +336,10 @@ describe("manual commit reconciliation", () => {
 		)
 	})
 
-	it("recovers a squash in another checkout after the original worktree is deleted", async () => {
+	it.each([
+		false,
+		true,
+	])("recovers a squash after the original worktree is deleted (path reused: %s)", async (reused) => {
 		baseline()
 		const primary = repo
 		const linked = join(root, "deleted-worktree")
@@ -350,6 +353,7 @@ describe("manual commit reconciliation", () => {
 		git("merge", "--squash", "feature")
 		const squashed = commit()
 		git("worktree", "remove", linked)
+		if (reused) mkdirSync(linked)
 		await reconcileFileTransitions(context("another-checkout"))
 		expect(contributions()).toContainEqual(
 			expect.objectContaining({
@@ -726,13 +730,27 @@ describe("manual commit reconciliation", () => {
 		expect(contributions().map((row) => row.sha)).toEqual([second, first])
 		expect(contributions().every((row) => row.transitionIds.length === 1)).toBe(true)
 	})
-	it("rejects a changed reflog prefix even when the new suffix has an exact commit", async () => {
+	it.each([
+		"legacy",
+		"snapshot",
+	])("uses only independent birth evidence after a changed reflog prefix (%s)", async (format) => {
 		baseline()
 		await edit("one", "first")
+		if (format === "legacy") {
+			const directory = join(root, "agent", "work-attribution", "transitions")
+			const path = join(directory, readdirSync(directory)[0])
+			const row = JSON.parse(readFileSync(path, "utf8"))
+			row.historyBoundaryId = undefined
+			writeFileSync(path, `${JSON.stringify(row)}\n`)
+		}
 		git("reflog", "expire", "--expire=all", "--all")
-		commit()
+		const sha = commit()
 		await reconcileFileTransitions(context("fresh"))
-		expect(contributions()).toEqual([])
+		if (format === "snapshot")
+			expect(contributions()).toEqual([
+				expect.objectContaining({ sha, fileMatches: [expect.objectContaining({ method: "path-blob" })] }),
+			])
+		else expect(contributions()).toEqual([])
 	})
 	it("normalizes ordinary Git text attributes and preserves effective index mode", async () => {
 		writeFileSync(join(repo, ".gitattributes"), "*.txt text eol=lf\n")
@@ -831,6 +849,50 @@ describe("manual commit reconciliation", () => {
 		commit()
 		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()).toEqual([])
+	})
+
+	it.each([
+		false,
+		true,
+	])("keeps expired competing ownership without blocking unrelated files (legacy: %s)", async (legacy) => {
+		baseline()
+		const primary = repo
+		const first = join(root, "first-worktree")
+		const second = join(root, "second-worktree")
+		git("worktree", "add", "-qb", "first", first)
+		git("worktree", "add", "-qb", "second", second)
+		repo = first
+		await edit("one", "same", context("first"))
+		repo = second
+		await edit("one", "same", context("second"))
+		if (legacy) {
+			const directory = join(root, "agent", "work-attribution", "transitions")
+			for (const file of readdirSync(directory)) {
+				const path = join(directory, file)
+				const row = JSON.parse(readFileSync(path, "utf8"))
+				if (row.worktree !== realpathSync(second)) continue
+				row.historyBoundaryId = undefined
+				writeFileSync(path, `${JSON.stringify(row)}\n`)
+			}
+		}
+		repo = primary
+		writeFileSync(join(repo, "file.txt"), "same\ntwo\n")
+		const ambiguous = commit()
+		await reconcileFileTransitions(context("before-expiry"))
+		expect(contributions()).toEqual([])
+		execFileSync("git", ["-C", second, "reflog", "expire", "--expire=all", "HEAD"])
+		await reconcileFileTransitions(context("after-expiry"))
+		expect(contributions()).toEqual([])
+		repo = first
+		await write("healthy.txt", "healthy", context("first"))
+		repo = primary
+		writeFileSync(join(repo, "healthy.txt"), "healthy")
+		const healthy = commit()
+		await reconcileFileTransitions(context("healthy"))
+		expect(contributions().some((row) => row.sha === ambiguous)).toBe(false)
+		expect(contributions()).toEqual([
+			expect.objectContaining({ sha: healthy, paths: ["healthy.txt"], sessionId: "first" }),
+		])
 	})
 
 	it.each(["many sessions", "large request history"])("ignores unrelated %s during reconciliation", async (kind) => {
