@@ -4,7 +4,7 @@
 
 import { truncateToWidth } from "@earendil-works/pi-tui"
 import { remountTipWidget } from "../../tips/index.js"
-import { setTodoCrowding } from "../../todos/widget.js"
+import { remountTodosWidget, setTodoCrowding } from "../../todos/widget.js"
 import type { AgentManager } from "../manager/agent-manager.js"
 import { getLifetimeTotal, getSessionContextPercent, type LifetimeUsage, type SessionLike } from "../manager/usage.js"
 import { getConfig } from "../personas/agent-types.js"
@@ -480,9 +480,11 @@ export class AgentWidget {
 			)
 			this.widgetRegistered = true
 			setTodoCrowding("agents", true)
-			// Re-insert tip widget after agents so it renders directly above the editor
-			// (framework renders aboveEditor widgets in Map insertion order).
+			// Re-insert tip/todos widgets after agents so they render above agents,
+			// directly above the editor (framework renders aboveEditor widgets in
+			// Map insertion order).
 			remountTipWidget()
+			remountTodosWidget()
 		} else {
 			;(this.tui as { requestRender?(): void } | undefined)?.requestRender?.()
 		}
