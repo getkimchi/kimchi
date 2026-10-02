@@ -117,6 +117,7 @@ import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup
 import piiRedactionExtension from "./extensions/pii-redaction/index.js"
 import plannotatorExtension from "./extensions/plannotator/index.js"
 import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/index.js"
+import powershellGateExtension from "./extensions/powershell-gate.js"
 import { setPrintGate } from "./extensions/print-mode.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
@@ -736,6 +737,9 @@ try {
 			// steer:aborted — emits when the user Esc-aborts the turn immediately
 			// following a harness steer (the "user vetoed the nudge" signal).
 			steerAbortTrackerExtension,
+			// Powershell is Windows-only: hide it when a config activates it on
+			// another platform (dead schema weight otherwise).
+			powershellGateExtension,
 			hiddenToolGuidanceExtension,
 			...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
 			ideAdapterExtension,

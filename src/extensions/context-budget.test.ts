@@ -256,7 +256,9 @@ describe("context budget", () => {
 				"get_subagent_result",
 				"steer_subagent",
 				"set_phase",
-				"Skill",
+				// Interim (split 2/3): Skill is omitted from the canonical surface —
+				// it registers at session_start only when a .claude skills dir exists
+				// (resource gate; zero-dir state in this measurement).
 				"debug_launch",
 				"debug_state_at",
 				"debug_last_error",
@@ -295,7 +297,7 @@ describe("context budget", () => {
 		// mode the registration gates must remove exactly these two.
 		expect(names.has("questionnaire"), "questionnaire must be gated out of --print sessions").toBe(false)
 		expect(names.has("set_phase"), "set_phase must be gated out of --print sessions").toBe(false)
-		expect(tools.length).toBe(24)
+		expect(tools.length).toBe(23)
 
 		const total = tools.reduce((sum, tool) => sum + tool.tokensEstimated, 0)
 		expect(
