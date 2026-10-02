@@ -23,6 +23,7 @@ import { createModel, createModelRegistry } from "../__mocks__/model-registry.js
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { CLOUD_DECISION_OPTION, EXECUTE_LOCAL_DECISION_OPTION } from "../ferment/plan-review.js"
+import { loadRuntimeState } from "../ferment/runtime-state-store.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
@@ -31,6 +32,8 @@ import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { CUSTOM_BRANCH_ITEM, CUSTOM_BRANCH_PROMPT } from "../remote-run/git-workflow.js"
 import { runCloudAgent } from "../remote-run/runner.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
+import { flushWorkSummaries } from "../work-attribution/summary.js"
+import { getWorkId } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
 import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
@@ -110,6 +113,17 @@ function cleanPermissionEnv(): void {
 	}
 	unregisterSessionPermissionFlagController(TEST_SESSION_ID)
 }
+
+let attributionDir: string
+beforeEach(() => {
+	attributionDir = mkdtempSync(join(tmpdir(), "plan-attribution-"))
+	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
+})
+afterEach(async () => {
+	await flushWorkSummaries()
+	vi.unstubAllEnvs()
+	rmSync(attributionDir, { recursive: true, force: true })
+})
 
 beforeEach(cleanPermissionEnv)
 beforeEach(() => {
@@ -429,7 +443,11 @@ describe("classifier health reporting", () => {
 			await harness.fire("session_start", {}, ctx)
 			vi.mocked(ctx.ui.notify).mockClear()
 			expect(await harness.fire("tool_call", event, ctx)).toBeUndefined()
-			expect(vi.mocked(classifyToolCall).mock.calls[0]?.[3]).toEqual({ timeoutMs: 8000, maxTotalMs: budget ?? 25000 })
+			expect(vi.mocked(classifyToolCall).mock.calls[0]?.[3]).toEqual({
+				context: ctx,
+				timeoutMs: 8000,
+				maxTotalMs: budget ?? 25000,
+			})
 			expect(ctx.ui.notify).not.toHaveBeenCalled()
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
@@ -1261,7 +1279,10 @@ describe("plan mode assumption detection", () => {
 		"## Verification Strategy\nRun pnpm test src/api after each chunk.\n\n" +
 		"## Risks\nCache staleness: short default TTL.\n"
 
-	it("Start as ferment persists a ferment artifact under .kimchi/ferments", async () => {
+	it.each([
+		false,
+		true,
+	])("Start as ferment persists a ferment artifact under .kimchi/ferments (unavailable attribution: %s)", async (unavailable) => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 
@@ -1273,6 +1294,11 @@ describe("plan mode assumption detection", () => {
 			// Project-local ferments are gated on project trust — these tests
 			// exercise the trusted persistence path.
 			setProjectScopeTrusted(tmpDir, true)
+			if (unavailable) {
+				const path = join(attributionDir, "work-attribution")
+				rmSync(path, { recursive: true, force: true })
+				writeFileSync(path, "blocked")
+			}
 			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
 			const fermentsDir = join(tmpDir, ".kimchi", "ferments")
@@ -1281,6 +1307,8 @@ describe("plan mode assumption detection", () => {
 			expect(files).toHaveLength(1)
 
 			const artifact = JSON.parse(readFileSync(join(fermentsDir, files[0]), "utf-8"))
+			expect(existsSync(join(tmpDir, ".kimchi", "plans"))).toBe(true)
+			if (!unavailable) expect(loadRuntimeState(artifact.id, fermentsDir).workId).toBe(getWorkId(ctx))
 			// Status is 'running' because 'Start as ferment' activates the first phase
 			// via the full runtime path when the plan has a structured Chunks section.
 			expect(artifact.status).toMatch(/^(planned|running|active)$/)
@@ -1545,7 +1573,10 @@ describe("plan mode assumption detection", () => {
 	// produce a lossy ferment from raw section splitting. It should persist a draft
 	// ferment via the normal runtime path, notify the user, and leave implementation
 	// tools off.
-	it("Start as ferment falls back to draft-only when the plan has no ## Chunks section", async () => {
+	it.each([
+		false,
+		true,
+	])("Start as ferment falls back to draft-only when the plan has no ## Chunks section (unavailable attribution: %s)", async (unavailable) => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 
@@ -1555,6 +1586,11 @@ describe("plan mode assumption detection", () => {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
 			setProjectScopeTrusted(tmpDir, true)
+			if (unavailable) {
+				const path = join(attributionDir, "work-attribution")
+				rmSync(path, { recursive: true, force: true })
+				writeFileSync(path, "blocked")
+			}
 			await submitPlan(harness, PLAN_WITHOUT_CHUNKS, ctx)
 
 			// 1) The artifact is persisted as a draft (no phase activated).
@@ -1563,6 +1599,8 @@ describe("plan mode assumption detection", () => {
 			const files = readdirSync(fermentsDir).filter((f) => f.endsWith(".json"))
 			expect(files).toHaveLength(1)
 			const artifact = JSON.parse(readFileSync(join(fermentsDir, files[0]), "utf-8"))
+			expect(existsSync(join(tmpDir, ".kimchi", "plans"))).toBe(true)
+			if (!unavailable) expect(loadRuntimeState(artifact.id, fermentsDir).workId).toBe(getWorkId(ctx))
 			expect(artifact.status).toBe("draft")
 			expect(artifact.phases ?? []).toHaveLength(0)
 

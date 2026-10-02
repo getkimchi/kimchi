@@ -20,6 +20,7 @@
 import type { BashOperations, BashToolDetails, BashToolOptions, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { createBashToolDefinition, createLocalBashOperations } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
+import { createWorkCommitTrackingOperations } from "../work-attribution/commits.js"
 import { renderBashCall, renderBashResult } from "./bash-display.js"
 import { awaitCheckin } from "./checkin.js"
 import {
@@ -110,11 +111,13 @@ export function createBackgroundBashToolDefinition(
 	}> {
 		const { command, timeout, checkin_interval, description } = params
 		const resolvedTimeout = timeout ?? DEFAULT_TIMEOUT_SECONDS
+		const operations =
+			options?.operations ?? createWorkCommitTrackingOperations(ctx, toolCallId, defaultLocalOps(options))
 
 		// ── Short-task path: timeout <= 5 → synchronous run-to-completion. ──
 		if (resolvedTimeout <= SHORT_TASK_TIMEOUT_SECONDS) {
 			const upstreamParams = { command, timeout: resolvedTimeout }
-			const result = await wrapped.execute(
+			const result = await createBashToolDefinition(cwd, { ...options, operations }).execute(
 				toolCallId,
 				upstreamParams as Static<typeof wrapped.parameters>,
 				signal,
@@ -139,7 +142,7 @@ export function createBackgroundBashToolDefinition(
 		const handle = registry.spawn(
 			// Use the upstream-injected operations if provided, else the registry
 			// will use its default local backend.
-			options?.operations ?? defaultLocalOps(options),
+			operations,
 			command,
 			cwd,
 			undefined,

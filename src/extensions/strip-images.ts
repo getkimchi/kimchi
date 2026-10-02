@@ -12,6 +12,8 @@ import {
 	storeImageDescription,
 } from "./model-guard.js"
 
+import { getWorkId, pinWorkContext, recordProviderRequest, warnWorkAttribution } from "./work-attribution.js"
+
 const IMAGE_DESCRIPTION_PROMPT = "Describe this image concisely. Include key visual details, text, layout."
 
 /**
@@ -87,6 +89,13 @@ export default function stripImagesExtension(pi: ExtensionAPI) {
 				return
 			}
 
+			const workContext = pinWorkContext(ctx)
+			let workId: string | undefined
+			try {
+				workId = getWorkId(workContext)
+			} catch (error) {
+				warnWorkAttribution(ctx, error)
+			}
 			// Get API key and headers
 			const auth = await ctx.modelRegistry?.getApiKeyAndHeaders(visionModel)
 			if (!auth?.ok || !auth?.apiKey) {
@@ -102,6 +111,14 @@ export default function stripImagesExtension(pi: ExtensionAPI) {
 			let processedCount = 0
 			const errors: string[] = []
 			for (const [hash, img] of images) {
+				const headers = { ...auth.headers }
+				if (workId) {
+					try {
+						headers["X-Request-Id"] = recordProviderRequest(workContext, visionModel, workId).requestId
+					} catch (error) {
+						warnWorkAttribution(ctx, error)
+					}
+				}
 				try {
 					const response = await complete(
 						visionModel,
@@ -123,7 +140,7 @@ export default function stripImagesExtension(pi: ExtensionAPI) {
 						},
 						{
 							apiKey: auth.apiKey,
-							headers: auth.headers,
+							headers,
 							signal: AbortSignal.timeout(45_000),
 							maxTokens: 200,
 						},

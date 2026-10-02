@@ -1,3 +1,4 @@
+import { getWorkId, recordProviderRequest, tryWorkAttribution } from "../work-attribution.js"
 /**
  * Judge — surviving LLM-as-judge surface after the gate-registry migration.
  *
@@ -26,7 +27,7 @@ import type { CharterClauseVerdict, FermentCharter, Grade } from "../../ferment/
 import { findModelByRef } from "../model-catalog/ref-utils.js"
 import { getModelRoles } from "../orchestration/model-roles.js"
 import { renderCharterFull } from "./charter.js"
-import { getJudgeModel, getJudgeModelRegistry, isJudgeMultiModelEnabled } from "./state.js"
+import { getJudgeModel, getJudgeModelRegistry, getJudgeWorkContext, isJudgeMultiModelEnabled } from "./state.js"
 
 const GRADES: Grade[] = ["A", "B", "C", "D", "F"]
 const JOURNEY_GRADE_MAX_ATTEMPTS = 3
@@ -88,10 +89,13 @@ export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTok
 	const model = resolveJudgeModel(registry)
 	if (!model) return { ok: false, reason: "no_model" }
 
-	const auth = await registry.getApiKeyAndHeaders(model)
-	if (!auth.ok || !auth.apiKey) return { ok: false, reason: "no_auth" }
-
+	const workContext = getJudgeWorkContext()
+	if (!workContext) return { ok: false, reason: "api_error", detail: "Judge work context unavailable" }
 	try {
+		const workId = tryWorkAttribution(() => getWorkId(workContext))
+		const auth = await registry.getApiKeyAndHeaders(model)
+		if (!auth.ok || !auth.apiKey) return { ok: false, reason: "no_auth" }
+		const request = workId ? tryWorkAttribution(() => recordProviderRequest(workContext, model, workId)) : undefined
 		const response = await complete(
 			model,
 			{
@@ -100,7 +104,7 @@ export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTok
 			},
 			{
 				apiKey: auth.apiKey,
-				headers: auth.headers,
+				headers: { ...auth.headers, ...(request ? { "X-Request-Id": request.requestId } : {}) },
 				signal: AbortSignal.timeout(45_000),
 				...(maxTokens !== undefined && { maxTokens }),
 			},

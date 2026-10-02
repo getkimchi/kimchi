@@ -284,7 +284,22 @@ test("approved plan Execute starts a neutral named Ferment V2 run when enabled",
 				status: "active",
 			})
 			expect(snapshot.objective).toContain(`Saved plan copy (reference only): ${JSON.stringify(planPath)}`)
-			expect(readFileSync(planPath, "utf-8")).toBe(planText)
+			const savedPlan = readFileSync(planPath, "utf-8")
+			const workId = /^<!-- kimchi-work-id: ([0-9a-f-]{36}) -->\n/.exec(savedPlan)?.[1]
+			expect(workId).toBeDefined()
+			expect(savedPlan).toBe(`<!-- kimchi-work-id: ${workId} -->\n${planText}`)
+			const ledgerDir = join(fixture.agentDir, "work-attribution")
+			const requests = readdirSync(ledgerDir)
+				.flatMap((file) =>
+					readFileSync(join(ledgerDir, file), "utf8")
+						.trim()
+						.split("\n")
+						.map((line) => JSON.parse(line)),
+				)
+				.filter((record) => record.type === "request")
+			expect(requests.length).toBeGreaterThanOrEqual(2)
+			expect(new Set(requests.map((record) => record.workId))).toEqual(new Set([workId]))
+			trace.step("plan approval retained planning work identity automatically, without work commands")
 			await waitForText(terminal, "Plan execution blocked.", { timeoutMs: STREAM_TIMEOUT_MS })
 			expect(fullText(terminal)).not.toContain("Ferment V2 created.")
 			trace.step("model request carried the approved Markdown and the terminal stayed neutral")

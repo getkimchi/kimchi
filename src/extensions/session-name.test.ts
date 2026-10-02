@@ -2,6 +2,9 @@
  * Unit tests for session-name extension
  */
 
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
@@ -11,6 +14,9 @@ import sessionNameExtension, {
 	SESSION_NAME_MODEL,
 	suggestSessionName,
 } from "./session-name.js"
+
+import { flushWorkSummaries } from "./work-attribution/summary.js"
+import { getWorkId, setWorkId } from "./work-attribution.js"
 
 const { mockGetRetrySettings, mockLoadConfig, retryDefaults } = vi.hoisted(() => ({
 	mockGetRetrySettings: vi.fn(),
@@ -51,7 +57,10 @@ vi.mock("node:path", async () => {
 	return { ...actual, basename: () => "my-project" }
 })
 
+let attributionDir: string
 beforeEach(() => {
+	attributionDir = mkdtempSync(join(tmpdir(), "name-attribution-"))
+	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
 	mockGetRetrySettings.mockReset()
 	mockGetRetrySettings.mockReturnValue({ enabled: true, maxRetries: 1, baseDelayMs: 2000 })
 	mockLoadConfig.mockReset()
@@ -61,24 +70,23 @@ beforeEach(() => {
 	})
 })
 
-afterEach(() => {
+afterEach(async () => {
+	vi.useRealTimers()
+	await flushWorkSummaries()
 	vi.unstubAllGlobals()
+	vi.unstubAllEnvs()
+	rmSync(attributionDir, { recursive: true, force: true })
 })
 
-const createMockCtx = (entries: unknown[]) => {
-	return {
+const createMockCtx = (entries: unknown[]) =>
+	createContext({
 		cwd: "/home/user/my-project",
 		hasUI: false,
 		sessionManager: {
 			getBranch: vi.fn().mockReturnValue(entries),
 			getEntries: vi.fn().mockReturnValue(entries),
 		},
-	} as unknown as {
-		cwd: string
-		hasUI: boolean
-		sessionManager: { getBranch: () => unknown[]; getEntries: () => unknown[] }
-	}
-}
+	})
 
 describe("deterministicFallback", () => {
 	it("should return input as-is when <= 50 chars", () => {
@@ -189,6 +197,62 @@ describe("extractFirstUserMessage", () => {
 })
 
 describe("suggestSessionName", () => {
+	it("persists each naming retry before dispatch and pins original work and session", async () => {
+		vi.useFakeTimers()
+		mockLoadConfig.mockReturnValue({ apiKey: "test-key", llmEndpoint: "https://llm.test/openai/v1" })
+		let sessionId = "original"
+		const ctx = createContext({ cwd: attributionDir, sessionManager: { getSessionId: () => sessionId } })
+		const workId = getWorkId(ctx)
+		const requestIds: string[] = []
+		const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+			const rows = readFileSync(join(attributionDir, "work-attribution", "original.jsonl"), "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line))
+			const requestId = new Headers(init?.headers).get("X-Request-Id")
+			expect(requestId).toBeTruthy()
+			expect(rows.at(-1)).toMatchObject({
+				type: "request",
+				requestId,
+				workId,
+				sessionId: "original",
+				model: SESSION_NAME_MODEL,
+			})
+			requestIds.push(String(requestId))
+			if (requestIds.length === 1) {
+				sessionId = "new-session"
+				setWorkId(ctx)
+				return new Response("retry", { status: 500 })
+			}
+			return new Response(JSON.stringify({ choices: [{ message: { content: "Name retained" } }] }), { status: 200 })
+		})
+		vi.stubGlobal("fetch", fetchMock)
+		const pending = suggestSessionName(ctx, "Name this task", true)
+		await vi.runAllTimersAsync()
+		expect(await pending).toBe("Name retained")
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+		expect(new Set(requestIds).size).toBe(2)
+	})
+
+	it.each(["identity", "request"])("keeps naming available when %s persistence fails", async (stage) => {
+		mockLoadConfig.mockReturnValue({ apiKey: "test-key", llmEndpoint: "https://llm.test/openai/v1" })
+		const ctx = createContext({ cwd: attributionDir })
+		if (stage === "request") {
+			getWorkId(ctx)
+			await flushWorkSummaries()
+		}
+		const path = join(attributionDir, "work-attribution")
+		rmSync(path, { recursive: true, force: true })
+		writeFileSync(path, "not a directory")
+		const fetchMock = vi.fn(
+			async () => new Response(JSON.stringify({ choices: [{ message: { content: "Still named" } }] })),
+		)
+		vi.stubGlobal("fetch", fetchMock)
+		expect(await suggestSessionName(ctx, "Task", true)).toBe("Still named")
+		expect(fetchMock).toHaveBeenCalledOnce()
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Work attribution unavailable"), "warning")
+	})
+
 	it("should fall back to basename when no hint and no user messages", async () => {
 		const ctx = createMockCtx([])
 		const result = await suggestSessionName(ctx as never, undefined, true)
@@ -219,11 +283,12 @@ describe("suggestSessionName", () => {
 			"https://llm.test/openai/v1/chat/completions",
 			expect.objectContaining({
 				method: "POST",
-				headers: expect.objectContaining({ Authorization: "Bearer test-key" }),
+				headers: expect.any(Headers),
 			}),
 		)
 		const init = fetchMock.mock.calls[0]?.[1]
 		expect(init).toBeDefined()
+		expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer test-key")
 		const body = JSON.parse(init?.body as string) as { model: string }
 		expect(body.model).toBe(SESSION_NAME_MODEL)
 		expect(body.model).toBe("deepseek-v4-flash-0731")
@@ -317,15 +382,15 @@ describe("sessionNameExtension shutdown", () => {
 		}
 		sessionNameExtension()(pi as never)
 		const entries = [{ type: "message", message: { role: "user", content: "Please review this branch" } }]
-		const ctx = {
+		const ctx = createContext({
 			cwd: "/home/user/my-project",
 			hasUI: false,
 			sessionManager: {
 				getSessionName: () => undefined,
-				getBranch: () => entries,
-				getEntries: () => entries,
+				getBranch: vi.fn().mockReturnValue(entries),
+				getEntries: vi.fn().mockReturnValue(entries),
 			},
-		}
+		})
 		return { handlers, setSessionName, ctx }
 	}
 

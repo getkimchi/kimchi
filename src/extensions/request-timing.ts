@@ -13,10 +13,13 @@
  * diagnostics (status, duration, retries, errors) are visible.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { BeforeProviderHeadersEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { getActiveRequest } from "./work-attribution.js"
 
 /** Shape of the `data` field on a `request_diagnostics` custom entry. */
 export interface RequestDiagnosticsData {
+	requestId?: string
+	workId?: string
 	/** ISO timestamp when the request was sent */
 	requestStartedAt: string
 	/** ISO timestamp when the response was received */
@@ -71,6 +74,7 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 	let lastRequestTime: number | undefined
 	let retryCount = 0
 	let pendingDiagnostics: RequestDiagnosticsData | undefined
+	let requestHeaders: BeforeProviderHeadersEvent["headers"] | undefined
 
 	const flushPendingDiagnostics = (error?: string) => {
 		if (!pendingDiagnostics) return
@@ -87,12 +91,19 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 		retryCount = 0
 	})
 
-	pi.on("before_provider_request", async () => {
+	pi.on("before_provider_headers", async (event) => {
 		flushPendingDiagnostics()
 		lastRequestTime = Date.now()
+		// The runner shares this object across handlers; attribution may run after us.
+		requestHeaders = event.headers
 	})
 
-	pi.on("after_provider_response", async (event) => {
+	pi.on("before_provider_request", async () => {
+		flushPendingDiagnostics()
+		lastRequestTime ??= Date.now()
+	})
+
+	pi.on("after_provider_response", async (event, ctx) => {
 		if (lastRequestTime === undefined) return
 
 		const completedAt = Date.now()
@@ -107,7 +118,10 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 			retryCount++
 		}
 
+		const activeRequest = requestHeaders ? getActiveRequest(ctx) : undefined
+		const identity = activeRequest?.requestId === requestHeaders?.["X-Request-Id"] ? activeRequest : undefined
 		pendingDiagnostics = {
+			...identity,
 			requestStartedAt: new Date(lastRequestTime).toISOString(),
 			requestCompletedAt: new Date(completedAt).toISOString(),
 			durationMs,
@@ -117,13 +131,16 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 		}
 
 		lastRequestTime = undefined
+		requestHeaders = undefined
 	})
 
 	// Flush pending diagnostics once the assistant message is finalized so
 	// provider errors are available (message_end fires after the HTTP response).
 	pi.on("message_end", async (event) => {
 		const msg = event.message as { role?: string; stopReason?: string; errorMessage?: string }
-		if (msg?.role !== "assistant" || !pendingDiagnostics) return
+		if (msg?.role !== "assistant") return
+		lastRequestTime = undefined
+		requestHeaders = undefined
 
 		const error = msg.stopReason === "error" && msg.errorMessage ? msg.errorMessage : undefined
 		flushPendingDiagnostics(error)

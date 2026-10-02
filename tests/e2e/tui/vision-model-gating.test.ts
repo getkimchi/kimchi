@@ -158,6 +158,8 @@ test("pasted image on a text-only model opens the switch dialog and submits on t
 		terminal,
 		{
 			artifactName: "vision-gate-switch",
+			// The editor placeholder appears before clipboard session_start; tips are mounted after it.
+			startupText: "Tip: Press shift+tab to change permissions mode.",
 			models: MODELS,
 			initialModel: "text-basic",
 			responses: [{ stream: ["Ack on vision."], usage: { prompt_tokens: 120, completion_tokens: 6 } }],

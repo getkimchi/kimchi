@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -11,10 +11,12 @@ import {
 	clearBlockRetry,
 	clearFermentState,
 	getBlockRetry,
+	getFermentWorkId,
 	getLastPhaseRefusal,
 	getPhaseStartRef,
 	getStepStartRef,
 	recordBlockHashAndCheckRepeat,
+	setFermentWorkId,
 	setLastPhaseRefusal,
 	setPhaseStartRef,
 	setRuntimeStatePersistRoot,
@@ -33,6 +35,7 @@ afterEach(() => {
 	clearAllStepStarts()
 	clearAllScopingGates()
 	setRuntimeStatePersistRoot(undefined)
+	rmSync(persistRoot, { recursive: true, force: true })
 })
 
 function simulateRestart(): void {
@@ -177,4 +180,14 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 		expect(parsed.blockRetries["phase-1"]).toBe(1)
 		expect(parsed.phaseStartRefs["phase-1"]).toBe("deadbeef")
 	})
+})
+
+it("preserves saved work across retry updates and restart, then clears it on completion", () => {
+	const workId = "91b0ddc0-c965-4f54-9e1a-d5eb71a849c6"
+	setFermentWorkId("saved-plan", workId)
+	bumpStepStart("saved-plan", "phase", "step")
+	simulateRestart()
+	expect(getFermentWorkId("saved-plan")).toBe(workId)
+	clearFermentState("saved-plan")
+	expect(getFermentWorkId("saved-plan")).toBeUndefined()
 })

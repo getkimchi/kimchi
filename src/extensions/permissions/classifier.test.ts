@@ -1,6 +1,12 @@
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "../__mocks__/context.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
+import { flushWorkSummaries } from "../work-attribution/summary.js"
+import { getWorkId } from "../work-attribution.js"
 import { classifyToolCall, parseClassifierOutput } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
 import { resolveClassifierCandidates } from "./classifier-models.js"
@@ -13,7 +19,8 @@ vi.mock("@earendil-works/pi-ai/compat", () => ({
 const primary = createModel("deepseek-v4-flash-0731")
 const fallback = createModel("minimax-m3")
 const call = { toolName: "edit", input: { path: "foo.ts" }, cwd: "/tmp" }
-const options = { timeoutMs: 8000 }
+const options = { timeoutMs: 8000, context: createContext() }
+let attributionDir: string
 function response(content = '{"verdict":"safe","reason":"fine","riskScore":"low"}', stopReason = "stop") {
 	return { content: [{ type: "text", text: content }], stopReason }
 }
@@ -28,6 +35,51 @@ function deferred<T>() {
 }
 
 describe("classifyToolCall", () => {
+	it.each(["identity", "request"])("still classifies when %s storage fails", async (stage) => {
+		if (stage === "request") {
+			getWorkId(options.context)
+			await flushWorkSummaries()
+			rmSync(join(attributionDir, "work-attribution"), { recursive: true })
+		}
+		writeFileSync(join(attributionDir, "work-attribution"), "blocked")
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		completeMock.mockResolvedValue(response())
+		const registry = createModelRegistry()
+		const success = classifyToolCall([primary], registry, call, options)
+		await vi.runAllTimersAsync()
+		const result = await success
+		expect(result).toMatchObject({ ok: true, verdict: "safe", usedModelId: primary.id })
+		expect(completeMock).toHaveBeenCalledTimes(1)
+		expect(completeMock.mock.calls[0][2].headers).not.toHaveProperty("X-Request-Id")
+		expect(warn).toHaveBeenCalled()
+
+		completeMock.mockReset().mockRejectedValue(new Error("provider unavailable"))
+		const failure = classifyToolCall([primary], registry, call, options)
+		await vi.runAllTimersAsync()
+		expect(await failure).toMatchObject({ ok: false, verdict: "requires-confirmation", failureCode: "provider_error" })
+		expect(completeMock).toHaveBeenCalledTimes(3)
+	})
+
+	it("persists distinct retry identities before each auxiliary provider call", async () => {
+		const requestIds: string[] = []
+		completeMock.mockImplementation((_model, _context, opts) => {
+			const records = readdirSync(join(attributionDir, "work-attribution")).flatMap((file) =>
+				readFileSync(join(attributionDir, "work-attribution", file), "utf8")
+					.trim()
+					.split("\n")
+					.map((line) => JSON.parse(line)),
+			)
+			const request = records.at(-1)
+			expect(request.requestId).toBe(opts.headers["X-Request-Id"])
+			requestIds.push(request.requestId)
+			return response("invalid")
+		})
+		const result = classifyToolCall([primary], createModelRegistry(), call, options)
+		await vi.runAllTimersAsync()
+		await result
+		expect(new Set(requestIds).size).toBe(3)
+	})
+
 	it.each([
 		"output",
 		"provider",
@@ -65,13 +117,18 @@ describe("classifyToolCall", () => {
 	})
 
 	beforeEach(() => {
+		attributionDir = mkdtempSync(join(tmpdir(), "classifier-attribution-"))
+		vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
 		completeMock.mockReset()
 		vi.useFakeTimers()
 	})
-	afterEach(() => {
+	afterEach(async () => {
 		expect(vi.getTimerCount()).toBe(0)
-		vi.restoreAllMocks()
 		vi.useRealTimers()
+		await flushWorkSummaries()
+		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
+		rmSync(attributionDir, { recursive: true, force: true })
 	})
 
 	it("uses fallback when the primary slug is missing", async () => {
@@ -170,7 +227,7 @@ describe("classifyToolCall", () => {
 			attemptSignal = opts.signal
 			return new Promise(() => {})
 		})
-		const promise = classifyToolCall([primary], createModelRegistry(), call, { timeoutMs: 8000, maxTotalMs: 2000 })
+		const promise = classifyToolCall([primary], createModelRegistry(), call, { ...options, maxTotalMs: 2000 })
 		const started = performance.now()
 		await vi.runAllTimersAsync()
 		expect(await promise).toMatchObject({ ok: false, failureCode: "budget_exhausted" })
