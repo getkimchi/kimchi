@@ -25,7 +25,9 @@ const MAX_ROLLED_CONTEXT_ROWS = 2
 const TODO_HEIGHT_COLLAPSE_FRACTION = 0.25
 /** Match Agents strip spinner frames (avoid importing agent-widget — circular). */
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-const SPINNER_INTERVAL_MS = 80
+/** Keep this well above tool/status spinners' cadence — each tick force-renders
+ *  the whole TUI, and an 80ms loop pushed tui-e2e past the 25m job budget. */
+const SPINNER_INTERVAL_MS = 200
 
 /** Default auto-collapse threshold: lists with more items than this render
  *  ambiently as a single status line until the user expands them. Mirrors the
@@ -472,10 +474,22 @@ function buildTodoBodyLines(
 	return { lines, scrollable: showUp || showDown }
 }
 
-function estimateExpandedHeight(groups: WidgetScopeGroup[], theme: Theme, expanded: boolean): number {
-	const rows = buildFullTodoBodyRows(theme, groups)
-	if (expanded || rows.length + 3 <= MAX_TODO_WIDGET_LINES) {
-		return 1 + rows.length + 2 // header + body + blank + hint
+/** Cheap body-row count for height-based collapse (no theme / string work). */
+function countTodoBodyRows(groups: WidgetScopeGroup[]): number {
+	if (groups.length === 0) return 0
+	const showScopeLabels = groups.length > 1 || groups[0].scope.kind !== "global"
+	let rows = 0
+	for (const group of groups) {
+		if (showScopeLabels) rows++
+		rows += group.todos.length
+	}
+	return rows
+}
+
+function estimateExpandedHeight(groups: WidgetScopeGroup[], expanded: boolean): number {
+	const rowCount = countTodoBodyRows(groups)
+	if (expanded || rowCount + 3 <= MAX_TODO_WIDGET_LINES) {
+		return 1 + rowCount + 2 // header + body + blank + hint
 	}
 	return 1 + TODO_WIDGET_BODY_LINES + 2
 }
@@ -497,7 +511,7 @@ function buildTodoWidgetLines(theme: Theme, state: TodoWidgetState, sessionId: s
 	const counts = countTodosInGroups(groups)
 	const scopeLabel = headerScopeLabel(groups)
 	const terminalRows = state.tui?.terminal?.rows
-	const expandedHeight = estimateExpandedHeight(groups, theme, state.expanded)
+	const expandedHeight = estimateExpandedHeight(groups, state.expanded)
 
 	if (
 		isTodoBodyCollapsed({
@@ -538,6 +552,12 @@ function syncSpinner(state: TodoWidgetState, sessionId: string): void {
 	const inProgress = countAllActiveTodos(sessionId).inProgress
 	const shouldSpin = state.visible && inProgress > 0
 	if (!shouldSpin) {
+		stopSpinner(state)
+		return
+	}
+	// Keep the running glyph in CI, but skip the interval — each tick
+	// force-renders the whole TUI and blew the 25m tui-e2e budget.
+	if (process.env.CI === "true") {
 		stopSpinner(state)
 		return
 	}
@@ -620,7 +640,7 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 					const counts = countAllActiveTodos(sessionId)
 					const groups = collectWidgetScopes(sessionId)
 					const terminalRows = state.tui?.terminal?.rows
-					const expandedHeight = estimateExpandedHeight(groups, theme, state.expanded)
+					const expandedHeight = estimateExpandedHeight(groups, state.expanded)
 					if (
 						isTodoBodyCollapsed({
 							expanded: state.expanded,
@@ -722,11 +742,7 @@ export function toggleTodoWidget(ctx: ExtensionContext): void {
 	const groups = collectWidgetScopes(sessionId)
 	const counts = countTodosInGroups(groups)
 	const terminalRows = state.tui?.terminal?.rows
-	const themeStub = {
-		fg: (_c: string, t: string) => t,
-		bold: (t: string) => t,
-	} as Theme
-	const expandedHeight = estimateExpandedHeight(groups, themeStub, state.expanded)
+	const expandedHeight = estimateExpandedHeight(groups, state.expanded)
 	if (
 		isTodoBodyCollapsed({
 			expanded: state.expanded,
