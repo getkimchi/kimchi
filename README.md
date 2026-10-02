@@ -127,6 +127,38 @@ With the metadata above, the orchestrator will use minimax for simple build chun
 
 Metadata can also be managed interactively via `/multi-model` → "Edit model metadata" — this is the only in-app path for configuring or overriding metadata, so model selection stays uninterrupted. Custom overrides can be reset to defaults from the same menu. Metadata for builtin models can be overridden the same way.
 
+### Completion sound
+
+Play a system sound when the agent finishes responding (e.g. so you notice while the terminal is in the background). Configured in `~/.config/kimchi/harness/settings.json`:
+
+```json
+{ "sound": "agent-end" }
+```
+
+| Value | Behavior |
+| --- | --- |
+| `"off"` (default) | no sound |
+| `"agent-end"` | play whenever the agent finishes a response |
+| `"agent-end-without-focus"` | play only when the terminal lost focus (or focus is undetectable — see below) |
+
+You can also pick a custom audio file; when unset, a per-platform default is used:
+
+```json
+{ "sound": "agent-end", "soundFile": "/path/to/ding.wav" }
+```
+
+Playback is best-effort with no extra dependencies, falling back to the terminal bell when needed:
+
+| Platform | Player | Default file |
+| --- | --- | --- |
+| macOS | `afplay` | `/System/Library/Sounds/Glass.aiff` |
+| Linux | `paplay` → `aplay` → `ffplay` → `mpv` → `canberra-gtk-play` → `play` | `/usr/share/sounds/freedesktop/stereo/complete.oga` |
+| Windows (from source only) | PowerShell `[console]::beep` | — |
+
+Both settings are re-read on every response, so edits apply live without a restart.
+
+`agent-end-without-focus` uses terminal focus reporting (DECSET 1004): supported by iTerm2, kitty, Alacritty, WezTerm, Ghostty, GNOME Terminal, Konsole, Windows Terminal, and VS Code's integrated terminal. Apple Terminal.app and the Linux console don't implement it, and tmux needs `set -g focus-events on` — in those environments kimchi can't tell whether you're watching, so it plays the sound rather than risk a silent miss.
+
 ### Phase tracking
 
 Kimchi tags every LLM request with a `phase:{name}` label for usage analytics and cost attribution. The orchestrator sets the phase as work progresses and it is displayed in the status line.
