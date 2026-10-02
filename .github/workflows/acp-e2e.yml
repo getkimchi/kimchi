@@ -2,10 +2,32 @@ name: ACP E2E
 
 on:
   pull_request:
+    # Only root/.github markdown: *.md under src/ and resources/ ships in the binary.
+    # TUI test files are ignored, but not tests/e2e/tui/support/ (ACP fixtures import it).
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.github/**/*.md'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'kimchi.png'
+      - 'benchmark/**'
+      - 'docker/**'
+      - 'test-cases/**'
+      - 'src/**/*.test.ts'
+      - 'tests/unit/**'
+      - 'tests/smoke/**'
+      - 'tests/e2e/tui/*.test.ts'
+      - 'tests/e2e/mcp/**'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: acp-e2e-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   acp-e2e:
