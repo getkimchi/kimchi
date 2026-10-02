@@ -94,7 +94,8 @@ export const renderBashCall: NonNullable<ToolDefinition["renderCall"]> = (args, 
 		const summary = purpose || (ctx.expanded ? "" : truncateToWidth(command.replace(/\s+/g, " "), 72, "…"))
 		const color = display ? bashStatusColor(display) : ctx.isError ? "error" : ctx.isPartial ? "accent" : "success"
 		const dot = `${theme.fg(color, "●")} `
-		const lines = [toolHeader("Bash", summary || safeBashText(stringArg(args, "handle")), theme, dot)]
+		const handle = safeBashText(stringArg(args, "handle"))
+		const lines = [toolHeader("Bash", summary || (handle ? `Command ${handle}` : ""), theme, dot)]
 		if (command && ctx.expanded) lines.push(withBranch(theme.fg("mdCode", command), theme, false, true))
 		return new ToolText(lines.join("\n")).render(Math.max(1, width))
 	},

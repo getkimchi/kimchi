@@ -1,5 +1,5 @@
-import { initTheme } from "@earendil-works/pi-coding-agent"
-import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui"
+import { initTheme, type ToolDefinition, ToolExecutionComponent } from "@earendil-works/pi-coding-agent"
+import { ProcessTerminal, stripTerminalSequences, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { testTheme as theme } from "../__mocks__/theme.js"
 import { createToolRenderContext } from "../__mocks__/tool-render-context.js"
@@ -30,6 +30,51 @@ afterEach(async () => {
 	setSessionRegistry(undefined)
 })
 describe("Bash display", () => {
+	it.each([false, true])("renders no empty foreground result row (partial: %s)", (isPartial) => {
+		const result = renderBashResult(
+			{ content: [], details: undefined },
+			{ expanded: false, isPartial },
+			theme,
+			createToolRenderContext({ isPartial }),
+		)
+		expect(result.render(100)).toEqual([])
+	})
+
+	it("labels an unlinked command handle when no display snapshot is available", () => {
+		const ctx = createToolRenderContext({ args: { handle: "c1" } })
+		expect(renderBashCall(ctx.args, theme, ctx).render(100).map(stripTerminalSequences).join("\n")).toContain(
+			"Bash Command c1",
+		)
+	})
+
+	it.each([0, 7])("updates the SDK call header from result state through exit %s", (exitCode) => {
+		const renderers: Pick<ToolDefinition, "renderCall" | "renderResult"> = {
+			renderCall: (args, _theme, ctx) => renderBashCall(args, theme, ctx),
+			renderResult: (result, options, _theme, ctx) => renderBashResult(result, options, theme, ctx),
+		}
+		const component = new ToolExecutionComponent(
+			"bash_control",
+			"control-c1",
+			{ handle: "c1" },
+			{},
+			renderers,
+			new TuiMainScreen(new ProcessTerminal()),
+			"/tmp",
+		)
+		const header = () => component.render(100).find((line) => stripTerminalSequences(line).includes("● Bash"))
+		// A completed check-in is still running; its display state must override isPartial/isError.
+		component.updateResult({ content: [], details: { display }, isError: false }, false)
+		expect(header()).toContain(theme.fg("accent", "●"))
+		expect(stripTerminalSequences(header() ?? "")).toContain("Bash Checking output")
+		component.updateResult(
+			{ content: [], details: { display: { ...display, state: "exited", exitCode } }, isError: false },
+			false,
+		)
+		component.invalidate()
+		expect(header()).toContain(theme.fg(exitCode === 0 ? "success" : "error", "●"))
+		expect(stripTerminalSequences(header() ?? "")).toContain("Bash Checking output")
+	})
+
 	it.each([false, true])("shows one native-style title across the combined card (expanded: %s)", (expanded) => {
 		const ctx = createToolRenderContext({
 			args: { command: display.command, description: display.description },
