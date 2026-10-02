@@ -595,8 +595,25 @@ export function setTodosStatus(ctx: ExtensionContext): void {
 
 export function ensureTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	const sessionId = ctx.sessionManager.getSessionId()
 	const state = getTodoWidgetState(ctx)
+	mountTodoWidget(ctx, state)
+}
+
+/** Re-insert the todos widget at the tail of the aboveEditor map so it renders
+ *  directly above the editor (below agents, tips, etc.). Mirrors the agents ›
+ *  `remountTipWidget` bump: framework renders aboveEditor widgets in Map
+ *  insertion order, and agent widgets race the strip. */
+export function remountTodosWidget(): void {
+	for (const [sessionId, state] of todoWidgetStates) {
+		if (state.registered && state.ctx) mountTodoWidget(state.ctx, state, sessionId)
+	}
+}
+
+function mountTodoWidget(
+	ctx: ExtensionContext,
+	state: TodoWidgetState,
+	sessionId = state.ctx?.sessionManager.getSessionId() ?? ctx.sessionManager.getSessionId(),
+): void {
 	if (state.registered && state.ctx === ctx) return
 
 	const registrationId = state.registrationId + 1
