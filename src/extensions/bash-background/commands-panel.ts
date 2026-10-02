@@ -2,6 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent"
 import {
 	CURSOR_MARKER,
 	matchesKey,
+	TuiAltScreen,
 	TuiMainScreen,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
@@ -28,6 +29,7 @@ export class CommandsPanel {
 	private disposed = false
 	private readonly releaseInput = claimRawInputCapture()
 	private restoreRender: (() => void) | undefined
+	private restoreViewportInput: (() => void) | undefined
 
 	constructor(
 		private readonly registry: ProcessRegistry | undefined,
@@ -35,6 +37,26 @@ export class CommandsPanel {
 		private readonly done: () => void,
 		private readonly theme: Theme,
 	) {
+		if (tui instanceof TuiAltScreen) {
+			// biome-ignore-start lint/complexity/useLiteralKeys: Pi exposes no public viewport-input override.
+			const viewportInput = tui["handleViewportInput"]
+			// Pi handles viewport keys before inline components; let the focused inspector receive its keys.
+			tui["handleViewportInput"] = (data: string) => {
+				if (
+					tui.getFocusedComponent() === this &&
+					(matchesKey(data, "pageUp") ||
+						matchesKey(data, "pageDown") ||
+						matchesKey(data, "home") ||
+						matchesKey(data, "end"))
+				)
+					return undefined
+				return viewportInput.call(tui, data)
+			}
+			this.restoreViewportInput = () => {
+				tui["handleViewportInput"] = viewportInput
+			}
+			// biome-ignore-end lint/complexity/useLiteralKeys: Pi private input hook.
+		}
 		if (tui instanceof TuiMainScreen) {
 			const render = tui.render
 			const editor = tui.getFocusedComponent()
@@ -72,6 +94,7 @@ export class CommandsPanel {
 		this.disposed = true
 		this.releaseInput()
 		this.restoreRender?.()
+		this.restoreViewportInput?.()
 		clearInterval(this.timer)
 		this.unsubscribe?.()
 	}
