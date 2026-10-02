@@ -40,20 +40,32 @@ function syncOrchestratorRef(sessionId: string, roles: ModelRoles): void {
 
 /**
  * Picker tags for a model ref: "unavailable" when the API no longer serves
- * it (gone from /v1/models/metadata), "deprecated" during the announced
- * deprecation window. The auto-model pseudo-ref is exempt.
+ * it (gone from /v1/models/metadata), "deprecated" while the model is past
+ * or approaching deprecated_at but still served — deprecation is a
+ * signalling boundary, sunset is the serving boundary. When the proxy
+ * translates calls to a configured replacement, the tag names it
+ * ("deprecated: serves via X"). The auto-model pseudo-ref is exempt.
  */
 export function modelRefTags(
 	ref: string,
 	apiSlugs: ReadonlySet<string>,
 	deprecatedSlugs: ReadonlySet<string>,
+	servesVia?: ReadonlyMap<string, string>,
+	retiringDates?: ReadonlyMap<string, string>,
 ): string[] {
 	// Routed virtual models (kimchi-dev ids starting with `auto`) are neither
 	// concrete catalog slugs nor deprecated — no tags.
 	if (isAutoRoutedRef(ref)) return []
 	const slug = modelIdFromRef(ref)
 	if (!apiSlugs.has(slug)) return ["unavailable"]
-	if (deprecatedSlugs.has(slug)) return ["deprecated"]
+	if (deprecatedSlugs.has(slug)) {
+		const via = servesVia?.get(slug)
+		if (via) return [`deprecated: serves via ${via}`]
+		// Sunset-only record (vendor retirement, no announced deprecation):
+		// cite the date instead of claiming an invented deprecation.
+		const retiring = retiringDates?.get(slug)
+		return [retiring ? `retiring ${retiring}` : "deprecated"]
+	}
 	return []
 }
 
@@ -361,10 +373,31 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 
 			const apiSlugSet = new Set(apiModels.map((m) => m.slug))
 			const deprecatedSlugs = new Set(
-				apiModels.filter((m) => deriveDeprecationState(m) === "announced").map((m) => m.slug),
+				apiModels
+					.filter((m) => {
+						const state = deriveDeprecationState(m)
+						return state === "announced" || state === "past"
+					})
+					.map((m) => m.slug),
+			)
+			// slugs the proxy translates to a configured replacement → tag names it.
+			const servesVia = new Map(
+				apiModels
+					.filter((m) => deriveDeprecationState(m) === "past" && m.replacement_model)
+					.map((m) => [m.slug, m.replacement_model as string]),
+			)
+			// sunset-only records (vendor retirement date, no announced
+			// deprecation) → tag cites the retirement date.
+			const retiringDates = new Map(
+				apiModels
+					.filter(
+						(m) =>
+							m.deprecated_at === undefined && m.sunset_at !== undefined && deriveDeprecationState(m) === "announced",
+					)
+					.map((m) => [m.slug, (m.sunset_at as string).slice(0, 10)]),
 			)
 			const refSuffix = (ref: string): string => {
-				const tags = modelRefTags(ref, apiSlugSet, deprecatedSlugs)
+				const tags = modelRefTags(ref, apiSlugSet, deprecatedSlugs, servesVia, retiringDates)
 				return tags.length > 0 ? ` (${tags.join(", ")})` : ""
 			}
 
@@ -437,7 +470,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					const tags: string[] = []
 					if (isCurrent) tags.push("current")
 					if (isDefault) tags.push("default")
-					tags.push(...modelRefTags(ref, apiSlugSet, deprecatedSlugs))
+					tags.push(...modelRefTags(ref, apiSlugSet, deprecatedSlugs, servesVia, retiringDates))
 					const suffix = tags.length > 0 ? ` (${tags.join(", ")})` : ""
 					return `${ref}${suffix}`
 				})
