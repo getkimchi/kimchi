@@ -306,16 +306,30 @@ const WatchChangeSchema = Type.Object({
 // Deferral split
 // =============================================================================
 
-/** Visible at session start: the entry point (debug_launch) plus the four
- *  self-contained one-shots. Everything session-scoped is hidden until a
- *  debug session becomes active (see dap.ts installSessionToolDeferral). */
-export const DAP_ALWAYS_VISIBLE_TOOL_NAMES = [
+/** Anchors the entry-tool reveal: a `read` tool_call whose path contains
+ *  this marker loads the dap-debugging skill (the documented discovery
+ *  path), so the DAP entry tools are revealed. Shared with the tests — do
+ *  not inline the literal elsewhere. */
+export const DAP_DEBUGGING_SKILL_PATH_MARKER = "dap-debugging/SKILL.md"
+
+/** Entry point (debug_launch) plus the four self-contained one-shots.
+ *  Hidden at session start (~1.5k est tokens) — revealed one-way when the
+ *  agent loads the dap-debugging skill (the documented discovery path) or
+ *  launches a session; the generic not-found reveal in hidden-tool-guidance
+ *  is the backstop for direct name guesses. Everything session-scoped is
+ *  hidden until a debug session becomes active. */
+export const DAP_ENTRY_TOOL_NAMES = [
 	"debug_launch",
 	"debug_state_at",
 	"debug_last_error",
 	"debug_trace_calls",
 	"debug_watch_change",
 ] as const
+
+/** @deprecated Compatibility alias: until split 3/3 lands, files that still
+ *  reference the pre-split name (context-budget-tools, tool-exposure test)
+ *  keep compiling. Removed in split 3/3. */
+export const DAP_ALWAYS_VISIBLE_TOOL_NAMES = DAP_ENTRY_TOOL_NAMES
 
 /** Session-scoped tools — useless until a session exists. Hidden by default
  *  (~1.2k est tokens); revealed one-way on first active debug session. Name
