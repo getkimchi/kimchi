@@ -13,6 +13,19 @@
 #     pending at https://github.com/nicobailon/pi-mcp-adapter (remove when
 #     upstream supports an opportunistic loopback listener for manual
 #     redirect flows)
+#   - OAuth metadata Accept header: strict gateways answer 406 when
+#     text/event-stream is missing; upstream issue pending at
+#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
+#     sends "Accept: application/json, text/event-stream")
+#   - DCR clientInfo version: hardcoded "2.11.0" in mcp-auth-flow; remove
+#     when upstream derives it from the package version
+# REBASER TRAP: src/extensions/mcp/stray-oauth-entry-cleanup.ts deletes any
+#   dev.kimchi.mcp.oauth keychain entry whose account is NOT sha256-<64hex>
+#   (or a .chunk.<16hex>.<n> piece) — the shapes this adapter version
+#   writes. On every adapter pin bump, re-verify the account shapes in the
+#   new mcp-auth.ts (getAuthEntryAccount / chunk accounts) and extend
+#   VALID_ACCOUNT before release, or the cleanup will delete valid
+#   credentials for new shapes.
 # Changes:
 #   - agent-dir/config (+dist mirrors): resolve the MCP project config
 #     directory via piConfig.mcpProjectConfigDir so project MCP config can
@@ -28,6 +41,10 @@
 #     opportunistic loopback listener on the default callback port/path and
 #     race it against the manual paste prompt; graceful fallback to
 #     paste-only when the listener cannot bind.
+#   - mcp-auth-flow: DCR clientInfo version bumped from stale hardcoded
+#     "2.11.0" to "2.34.0".
+#   - mcp-oauth-provider: configured-discovery metadata fetch sends Accept
+#     "application/json, text/event-stream" instead of "application/json".
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -349,7 +366,7 @@ index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547
          if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
              return true;
 diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
-index 0ae900470d923665153cdbc6028dd91f81c180b2..25183b69f3d3506cfc2c5d76716a3c64c16479a6 100644
+index 0ae900470d923665153cdbc6028dd91f81c180b2..3d931dceb07168480c7211c9eb2ac5835f663ca1 100644
 --- a/mcp-auth-flow.ts
 +++ b/mcp-auth-flow.ts
 @@ -93,6 +93,12 @@ type PendingAuth = {
@@ -365,6 +382,15 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..25183b69f3d3506cfc2c5d76716a3c64
    discovery: AuthDiscovery
    getHeaders: () => Headers
    authStorageOptions: AuthStorageOptions
+@@ -343,7 +349,7 @@ async function probeAuthDiscovery(serverUrl: string, definition?: ServerEntry, s
+         params: {
+           protocolVersion: LATEST_PROTOCOL_VERSION,
+           capabilities: {},
+-          clientInfo: { name: "pi-mcp-adapter", version: "2.11.0" },
++          clientInfo: { name: "pi-mcp-adapter", version: "2.34.0" },
+         },
+       }),
+       ...(discoverySignal ? { signal: discoverySignal } : {}),
 @@ -508,6 +514,15 @@ export async function startAuth(
    const manualRedirect = redirectTarget?.mode === "manual"
    const oauthState = generateState()
@@ -417,6 +443,19 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..25183b69f3d3506cfc2c5d76716a3c64
          ? waitForManualCompletionCancellation(pendingAuth.manualCompletionController!.signal)
          : waitForCallback(oauthState)
        void callbackPromise.catch(() => {})
+diff --git a/mcp-oauth-provider.ts b/mcp-oauth-provider.ts
+index 61369dc32e42649d06f624daf622266bff1f2a29..828604e17c9cefbafc4804dca110fe51b9af464e 100644
+--- a/mcp-oauth-provider.ts
++++ b/mcp-oauth-provider.ts
+@@ -221,7 +221,7 @@ async function loadConfiguredDiscoveryState(
+   fetchFn: FetchLike,
+ ): Promise<OAuthDiscoveryState> {
+   const response = await fetchFn(metadataUrl, {
+-    headers: { accept: "application/json" },
++    headers: { accept: "application/json, text/event-stream" },
+   })
+   if (!response.ok) {
+     await response.text().catch(() => {})
 diff --git a/metadata-cache.ts b/metadata-cache.ts
 index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef31282e511d4f 100644
 --- a/metadata-cache.ts

@@ -1,0 +1,66 @@
+# Patch: OAuth Accept headers for spec-strict gateways (@modelcontextprotocol/sdk 1.29.0)
+#
+# Tracking: internal kimchi MCP OAuth investigation (2026-10) — spec-strict
+# gateways (agentgateway v1.5.0, e.g. mcp.cicd.castai.co) answer 406 to OAuth
+# requests whose Accept header omits text/event-stream. Upstream issue to be
+# filed at modelcontextprotocol/typescript-sdk.
+# Removal: when upstream's discoverAuthorizationServerMetadata and registerClient
+# send "Accept: application/json, text/event-stream".
+# Changes:
+#   - dist/{esm,cjs}/client/auth.js: metadata discovery GET sends Accept
+#     "application/json, text/event-stream" (was "application/json").
+#   - dist/{esm,cjs}/client/auth.js: DCR registerClient POST adds Accept
+#     "application/json, text/event-stream" (was no Accept header).
+#   The token POST (executeTokenRequest) is deliberately left unchanged.
+#   The token POST (executeTokenRequest) is deliberately unchanged.
+# RESIDUAL RISK: a spec-strict server may now legitimately answer the DCR
+#   POST with Content-Type text/event-stream, which the SDK's JSON-only
+#   registerClient response parsing would reject. The target gateway
+#   (Keycloak behind agentgateway) returns JSON for DCR; rebasers should
+#   re-verify that still holds on SDK upgrades.
+diff --git a/dist/cjs/client/auth.js b/dist/cjs/client/auth.js
+index c2e4fa91d26f5336889f6afa416147db75fc4872..95770630378ca7ed2586e6590745231bc4a02161 100644
+--- a/dist/cjs/client/auth.js
++++ b/dist/cjs/client/auth.js
+@@ -632,7 +632,7 @@ function buildDiscoveryUrls(authorizationServerUrl) {
+ async function discoverAuthorizationServerMetadata(authorizationServerUrl, { fetchFn = fetch, protocolVersion = types_js_1.LATEST_PROTOCOL_VERSION } = {}) {
+     const headers = {
+         'MCP-Protocol-Version': protocolVersion,
+-        Accept: 'application/json'
++        Accept: 'application/json, text/event-stream'
+     };
+     // Get the list of URLs to try
+     const urlsToTry = buildDiscoveryUrls(authorizationServerUrl);
+@@ -928,7 +928,8 @@ async function registerClient(authorizationServerUrl, { metadata, clientMetadata
+     const response = await (fetchFn ?? fetch)(registrationUrl, {
+         method: 'POST',
+         headers: {
+-            'Content-Type': 'application/json'
++            'Content-Type': 'application/json',
++            Accept: 'application/json, text/event-stream'
+         },
+         body: JSON.stringify({
+             ...clientMetadata,
+diff --git a/dist/esm/client/auth.js b/dist/esm/client/auth.js
+index e183040fc2bba22ca1ccc784984f3310854403b7..0915f89d01c8a8d055675b7f7c01f5551900d9d9 100644
+--- a/dist/esm/client/auth.js
++++ b/dist/esm/client/auth.js
+@@ -607,7 +607,7 @@ export function buildDiscoveryUrls(authorizationServerUrl) {
+ export async function discoverAuthorizationServerMetadata(authorizationServerUrl, { fetchFn = fetch, protocolVersion = LATEST_PROTOCOL_VERSION } = {}) {
+     const headers = {
+         'MCP-Protocol-Version': protocolVersion,
+-        Accept: 'application/json'
++        Accept: 'application/json, text/event-stream'
+     };
+     // Get the list of URLs to try
+     const urlsToTry = buildDiscoveryUrls(authorizationServerUrl);
+@@ -903,7 +903,8 @@ export async function registerClient(authorizationServerUrl, { metadata, clientM
+     const response = await (fetchFn ?? fetch)(registrationUrl, {
+         method: 'POST',
+         headers: {
+-            'Content-Type': 'application/json'
++            'Content-Type': 'application/json',
++            Accept: 'application/json, text/event-stream'
+         },
+         body: JSON.stringify({
+             ...clientMetadata,
