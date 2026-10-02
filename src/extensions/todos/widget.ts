@@ -18,7 +18,6 @@ const TODO_WIDGET_KEY = "kimchi-todos"
 const TODO_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
 const TODO_STATUS_KEY = "todos"
 const TODO_LIST_HINT_TEXT = "F7 or /todos to collapse"
-const MAX_TODO_WIDGET_LINES = 14
 
 /** Default auto-collapse threshold: lists with more items than this render
  *  ambiently as a single status line until the user expands them. Mirrors the
@@ -410,12 +409,7 @@ function buildTodoWidgetLines(theme: Theme, state: TodoWidgetState, sessionId: s
 	}
 
 	const body = buildTodoBodyLines(theme, groups)
-	return [
-		buildTodoHeaderLine(theme, counts, false, { scopeLabel }),
-		...body,
-		"",
-		theme.fg("dim", TODO_LIST_HINT_TEXT),
-	]
+	return [buildTodoHeaderLine(theme, counts, false, { scopeLabel }), ...body, "", theme.fg("dim", TODO_LIST_HINT_TEXT)]
 }
 
 export function resetTodoWidgetState(ctx: ExtensionContext): void {
