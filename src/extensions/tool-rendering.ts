@@ -875,7 +875,7 @@ function branchLead(text: string, continued = false): string {
 	return `${TOOL_RULE}${continued ? "├─" : "└─"}${TRANSPARENT_RESET} ${WRAP_MARK}${text}`
 }
 
-function withBranch(content: string, _theme: Theme, _isError = false, continued = false): string {
+export function withBranch(content: string, _theme: Theme, _isError = false, continued = false): string {
 	if (!content?.trim()) return ""
 	const lines = content.split("\n")
 	const first = lines[0] ?? ""
