@@ -1,29 +1,29 @@
 ---
 name: gh-cli
-description: Use the GitHub CLI (`gh`) for pull request review (as reviewer or author), workflow run troubleshooting, and general GitHub operations. Use when interacting with PRs, reviews, comments, CI checks, GitHub Actions runs, issues, or releases — including reading inline review comments, posting reviews, fetching CI logs, or triaging failures.
+description: Use the GitHub CLI (`gh`) for PRs, reviews, issues, releases, and Actions/CI runs — reading review threads, posting reviews, fetching failed run logs, triaging checks. Prefer `gh` over web URLs.
 ---
 
 # gh CLI
 
 `gh` is the canonical interface for GitHub. Prefer it over scraping web URLs or guessing API paths. Discover flags with `gh <cmd> --help` rather than enumerating here.
 
-See `## Output & Truncation` and `## Consent & Irreversible Actions` for general rules.
+Consent: posting reviews/comments, merging, releasing, and any `gh api` write are external actions — explicit approval first (the user's; in an Autonomous Session, the task prompt's); read-only commands are fine.
 
-Auth: `gh auth status`. If logged out, ask the user to run `gh auth login`.
+Output: `gh run view --log` and `--paginate` on large result sets are huge — default to `--log-failed`, cap with `--jq`/`--limit`, pipe through `tail -N`. For big PR diffs, list changed paths first (`gh pr diff <N> --name-only`), then read targeted files.
 
-Repo: inferred from cwd. Pass `-R OWNER/REPO` when outside the repo.
+Auth: `gh auth status`. If logged out, ask the user to run `gh auth login`. Repo: inferred from cwd; pass `-R OWNER/REPO` when outside it.
 
 ## PR review — non-obvious bits
 
 Find PRs awaiting your review: `gh pr list --search "review-requested:@me"`.
 
-Existing review state — two endpoints, easy to confuse:
+Review state — two endpoints, easy to confuse:
 ```bash
 gh api repos/OWNER/REPO/pulls/123/comments  --paginate   # inline, line-anchored
 gh api repos/OWNER/REPO/issues/123/comments --paginate   # PR-level conversation
 ```
 
-Post inline comments in one review (line-anchored, multi-comment) — no `gh pr review` flag for this; use the API:
+Post inline comments in one review (line-anchored, multi-comment) — no `gh pr review` flag; use the API:
 ```bash
 gh api repos/OWNER/REPO/pulls/123/reviews -f event=COMMENT \
   -f body="overall notes" \
@@ -41,7 +41,7 @@ Reply to a specific inline thread:
 gh api repos/OWNER/REPO/pulls/123/comments/COMMENT_ID/replies -f body="fixed in abc1234"
 ```
 
-Top-level review verbs: `gh pr review <N> --approve|--request-changes|--comment -b "…"` (see consent section before posting).
+Top-level verbs: `gh pr review <N> --approve|--request-changes|--comment -b "…"` — posting is an external action; get explicit approval first (the user's; in an Autonomous Session, the task prompt's).
 
 ## Workflow runs
 
