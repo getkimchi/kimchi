@@ -134,6 +134,7 @@ import { handleAuthStatus } from "./ext-methods/auth-status.js"
 import { handleImportApply } from "./ext-methods/import-apply.js"
 import { importDiscover } from "./ext-methods/import-discover.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
+import { handleSessionStatus } from "./ext-methods/session-status.js"
 import { handleSetOnboardingFlag } from "./ext-methods/set-onboarding-flag.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { handleSteering } from "./ext-methods/steering.js"
@@ -149,6 +150,7 @@ import {
 } from "./skill-commands.js"
 import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
+import { getStatusProvider } from "./status-provider-registry.js"
 import { notifyDroppedQueue, reconcileQueue } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
@@ -1097,6 +1099,12 @@ export class KimchiAcpAgent implements Agent {
 				return handleSetOnboardingFlag({}, params)
 			case AVAILABLE_EXT_METHODS.set_session_title:
 				return handleSetSessionTitle((sessionId) => this.sessions.get(sessionId)?.session, params)
+			case AVAILABLE_EXT_METHODS.session_status:
+				// Pull-only session status snapshot (ADR
+				// docs/adr/0001-session-status-acp-ext-method.md): gathering lives
+				// in the status extension; the registry reaches its per-session
+				// closure from this session-external dispatch.
+				return handleSessionStatus(getStatusProvider, params)
 			case AVAILABLE_EXT_METHODS.steering:
 				return handleSteering((sessionId) => {
 					const entry = this.sessions.get(sessionId)
