@@ -1,5 +1,5 @@
 import { expect, test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -242,6 +242,122 @@ test("todo widget summary reflects mixed-status counts", async ({ terminal }) =>
 			await waitForText(terminal, "blocked item", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "done item", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("all items visible")
+		},
+	)
+})
+
+test("todo widget auto-collapses long lists and expands to a scrollable viewport", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "todo-widget-rolling-window",
+			responses: [
+				{
+					stream: ["Rolled", " todos."],
+					toolCalls: [
+						{
+							function: {
+								name: "update_todos",
+								arguments: JSON.stringify({
+									todos: Array.from({ length: 19 }, (_, index) => ({
+										content: `task ${index + 1}`,
+										status: index < 9 ? "completed" : index === 9 ? "in_progress" : "pending",
+									})),
+								}),
+							},
+						},
+					],
+				},
+			],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("Create rolling todos")
+
+			// 19 items exceed the auto-collapse threshold: the ambient strip is a
+			// single status line with no todo rows.
+			await waitForText(terminal, "▶ Todos · Global · 9/19 ·", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+				full: false,
+			})
+			trace.step("auto-collapsed status line visible")
+
+			let text = viewText(terminal)
+			expect(text).not.toContain(" 10.  ▶ task 10")
+
+			// Explicit expansion reveals the scrollable viewport around active work.
+			// "/todos expand" exactly matches an autocomplete entry, so the first
+			// Enter can be swallowed by the completion popup; submit twice (the
+			// second submit is a no-op on an already-cleared editor).
+			terminal.write("/todos expand")
+			await waitForText(terminal, "/todos expand", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+			await new Promise((resolve) => setTimeout(resolve, 300))
+			terminal.submit("")
+
+			await waitForText(terminal, "▼ Todos · Global · 9/19 ·", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "↑ 7 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  8.  ✓ task 8", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  9.  ✓ task 9", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, " 10.  ▶ task 10", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "↓ 4 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "scroll ·", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("scrollable active viewport visible after expand")
+
+			text = viewText(terminal)
+			expect(text).not.toContain("  1.  ✓ task 1")
+			expect(text).not.toContain(" 19.  ○ task 19")
+		},
+	)
+})
+
+test("todo widget anchors completed overflow at the end", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "todo-widget-completed-end",
+			responses: [
+				{
+					stream: ["All", " completed."],
+					toolCalls: [
+						{
+							function: {
+								name: "update_todos",
+								arguments: JSON.stringify({
+									todos: Array.from({ length: 19 }, (_, index) => ({
+										content: `task ${index + 1}`,
+										status: "completed",
+									})),
+								}),
+							},
+						},
+					],
+				},
+			],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("Create completed todos")
+			await waitForText(terminal, "All completed.", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+
+			// Past the auto-collapse threshold, a manual open shows the collapsed
+			// one-liner; `/todos expand` reveals the end-anchored viewport. The
+			// command exactly matches an autocomplete entry, so the first Enter can
+			// be swallowed by the completion popup; submit twice (the second submit
+			// is a no-op on an already-cleared editor).
+			terminal.write("/todos expand")
+			await waitForText(terminal, "/todos expand", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+			await new Promise((resolve) => setTimeout(resolve, 300))
+			terminal.submit("")
+
+			await waitForText(terminal, "▼ Todos · Global · 19/19", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "↑ 10 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, " 11.  ✓ task 11", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, " 19.  ✓ task 19", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("completed end window visible")
+
+			const text = viewText(terminal)
+			expect(text).not.toContain("  1.  ✓ task 1")
+			expect(text).not.toContain("↓ ")
 		},
 	)
 })
