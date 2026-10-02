@@ -8,6 +8,55 @@ import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimch
 
 test.use(TUI_TEST_CONFIG)
 
+test("Bash uses one descriptive header like Grep and expands the submitted command", async ({ terminal }) => {
+	const command = "printf 'card-output\\n'"
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "bash-card-layout",
+			extraArgs: ["--plan=false"],
+			env: { KIMCHI_PERMISSIONS: "yolo" },
+			seedHome: (_home, workDir) => writeFileSync(join(workDir, "sample.txt"), "card-output\n"),
+			responses: [
+				{
+					toolCalls: [
+						{
+							id: "grep-card",
+							function: { name: "grep", arguments: JSON.stringify({ pattern: "card-output", path: "sample.txt" }) },
+						},
+					],
+				},
+				{
+					toolCalls: [
+						{
+							id: "bash-card",
+							function: { name: "bash", arguments: JSON.stringify({ command, description: "Check card output" }) },
+						},
+					],
+				},
+				{ stream: ["Card comparison complete."] },
+			],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("Compare the tool cards")
+			await waitForText(terminal, "Card comparison complete.", { full: false })
+			const collapsed = viewText(terminal)
+			expect(collapsed).toContain('● Grep "card-output"')
+			expect(collapsed).toContain("● Bash Check card output")
+			expect(collapsed.match(/Check card output/g)).toHaveLength(1)
+			expect(collapsed).toContain("└─ Exited 0")
+			expect(collapsed).not.toContain(command)
+			expect(collapsed).not.toMatch(/Command [a-f0-9-]{36}/)
+			trace.step("Grep and Bash share one status-dot header with branched results")
+			terminal.keyPress("o", { ctrl: true })
+			await waitForText(terminal, command, { full: false })
+			expect(viewText(terminal).match(/Check card output/g)).toHaveLength(1)
+			expect(viewText(terminal)).toMatch(/Command [a-f0-9-]{36}/)
+			trace.step("expansion shows the command and handle without repeating the title")
+		},
+	)
+})
+
 test("processes preserves the fresh session position and history", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
@@ -86,7 +135,7 @@ test("commands replaces the input in a tall terminal without leaving a second ed
 			terminal.submit("Run the tall terminal check")
 			await waitForText(terminal, "Allow the assistant to run this?", { full: false })
 			terminal.keyPress(Key.Enter)
-			await waitForText(terminal, /^\s*▍ TALL_READY$/m, { full: false })
+			await waitForText(terminal, /^\s*▍\s+TALL_READY$/m, { full: false })
 			const inputRow = () =>
 				viewText(terminal)
 					.split("\n")
@@ -230,8 +279,11 @@ test("inspect a running Bash command without interrupting it or asking the model
 
 			await waitForText(terminal, "The command is still running", { full: false, timeoutMs: 20_000 })
 			expect(requests()).toHaveLength(2)
-			expect(fullText(terminal).match(/Bash ·/g)).toHaveLength(1)
+			expect(fullText(terminal).match(/● Bash /g)).toHaveLength(1)
 			expect(viewText(terminal)).not.toContain("Snapshot at check-in")
+			expect(viewText(terminal).match(/Inspect streaming command/g)).toHaveLength(1)
+			expect(viewText(terminal)).not.toMatch(/Command [a-f0-9-]{36}/)
+			expect(viewText(terminal)).not.toContain("cat initial.txt")
 			trace.step("same command streams output during the control wait")
 			const inputBeforeInspection = editorRow()
 
@@ -266,12 +318,12 @@ test("inspect a running Bash command without interrupting it or asking the model
 
 			terminal.keyCtrlC()
 			await waitForText(terminal, PROMPT_READY, { full: false })
-			// The single Bash preview grows from one line to three plus its omitted-output notice.
-			expect(editorRow()).toBe(Math.min(TUI_TEST_CONFIG.rows - 1, inputBeforeInspection + 3))
+			// The Bash preview grows from one line to three; omission shares its footer.
+			expect(editorRow()).toBe(Math.min(TUI_TEST_CONFIG.rows - 1, inputBeforeInspection + 2))
 			expect(fullText(terminal).match(/Run the streaming command/g)).toHaveLength(1)
 			await waitForText(terminal, "output-after-scrolling", { full: false })
 			expect(requests()).toHaveLength(2)
-			expect(fullText(terminal).match(/Bash ·/g)).toHaveLength(1)
+			expect(fullText(terminal).match(/● Bash /g)).toHaveLength(1)
 			expect(existsSync(join(fixture.workDir, "finished"))).toBe(false)
 			trace.step("Ctrl+C closes inspection without aborting or making a model request")
 
@@ -291,7 +343,7 @@ test("inspect a running Bash command without interrupting it or asking the model
 			terminal.keyEscape()
 			await waitForText(terminal, "Inspection complete.", { full: false })
 			expect(fullText(terminal).match(/Run the streaming command/g)).toHaveLength(1)
-			expect(fullText(terminal).match(/Bash ·/g)).toHaveLength(1)
+			expect(fullText(terminal).match(/● Bash /g)).toHaveLength(1)
 			expect(fullText(terminal)).toContain("Exited 0")
 			expect(fullText(terminal)).toContain("The command is still running")
 			expect(fullText(terminal)).toContain("Checking the completed command once more.")

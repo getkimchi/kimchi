@@ -30,6 +30,82 @@ afterEach(async () => {
 	setSessionRegistry(undefined)
 })
 describe("Bash display", () => {
+	it.each([false, true])("shows one native-style title across the combined card (expanded: %s)", (expanded) => {
+		const ctx = createToolRenderContext({
+			args: { command: display.command, description: display.description },
+			expanded,
+		})
+		const call = renderBashCall(ctx.args, theme, ctx)
+		const result = renderBashResult({ content: [], details: { display } }, { expanded, isPartial: true }, theme, ctx)
+		const lines = [...call.render(100), ...result.render(100)].map(stripTerminalSequences)
+		const text = lines.join("\n")
+		expect(text.match(/Checking output/g)).toHaveLength(1)
+		expect(lines[0]).toMatch(/^[●◐◓◑◒] Bash Checking output/)
+		expect(text).toContain("└─ Running · 42s")
+		expect(text).toContain("fourth")
+		if (expanded) {
+			expect(text).toContain("cat <<'EOF'")
+			expect(text).toContain("hello 字 世界")
+			expect(text).toContain("Command c1")
+			expect(text).toContain("Last output 1s ago")
+		} else {
+			expect(text).not.toContain("cat <<")
+			expect(text).not.toContain("Command c1")
+			expect(text).not.toContain("Last output")
+			expect(text).toContain("Older output omitted · /processes to inspect")
+		}
+	})
+
+	it.each([0, 7])("keeps the final title once and reflects exit %s in the original header", (exitCode) => {
+		const ctx = createToolRenderContext({ args: { command: "printf hello", description: "Checking output" } })
+		const call = renderBashCall(ctx.args, theme, ctx)
+		const result = renderBashResult(
+			{ content: [{ type: "text", text: "hello" }], details: { display: { ...display, state: "exited", exitCode } } },
+			{ expanded: false, isPartial: false },
+			theme,
+			ctx,
+		)
+		const header = call.render(100).join("\n")
+		const text = [header, ...result.render(100)].map(stripTerminalSequences).join("\n")
+		expect(text.match(/Checking output/g)).toHaveLength(1)
+		expect(header).toContain(theme.fg(exitCode === 0 ? "success" : "error", "●"))
+		expect(text).toContain(exitCode === 0 ? "└─ Exited 0" : "└─ Failed (exit 7)")
+		expect(text).toContain("hello")
+		expect(text).not.toContain("Command c1")
+	})
+
+	it("uses the command as the header when no description is provided", () => {
+		const command = "printf hello"
+		const ctx = createToolRenderContext({ args: { command } })
+		const call = renderBashCall(ctx.args, theme, ctx)
+		const result = renderBashResult(
+			{ content: [], details: { display: { ...display, command, description: undefined, output: "" } } },
+			{ expanded: false, isPartial: true },
+			theme,
+			ctx,
+		)
+		const lines = [...call.render(100), ...result.render(100)].map(stripTerminalSequences)
+		expect(lines[0]).toContain("Bash printf hello")
+		expect(lines.join("\n").match(/printf hello/g)).toHaveLength(1)
+		expect(lines.join("\n")).toContain("No output yet")
+	})
+
+	it("bounds a collapsed script without a description and preserves it on expansion", () => {
+		const command = `python3 - <<'END'\n${"print('long script')\n".repeat(100)}END`
+		const ctx = createToolRenderContext({ args: { command } })
+		const call = renderBashCall(ctx.args, theme, ctx)
+		expect(call.render(60).length).toBeLessThanOrEqual(2)
+		expect(call.render(60).map(stripTerminalSequences).join("\n")).toContain("…")
+		ctx.expanded = true
+		expect(
+			call
+				.render(60)
+				.map(stripTerminalSequences)
+				.join("\n")
+				.match(/print\('long script'\)/g),
+		).toHaveLength(100)
+	})
+
 	it("folds repeated historical check-ins into the original row, retaining final expansion and errors", () => {
 		setSessionRegistry(createProcessRegistry())
 		const initial = { content: [], details: { display } }
@@ -160,22 +236,24 @@ describe("Bash display", () => {
 		expect(rendered).toContain("Truncated")
 		expect(rendered).not.toContain("/processes to inspect")
 	})
-	it("shows same process age, purpose, actual script and recent output during control waits", () => {
+	it("shows one purpose and recent output for an unlinked control", () => {
 		const ctx = createToolRenderContext({ args: { handle: "c1" }, isPartial: true })
-		const lines = renderBashResult(
+		const call = renderBashCall(ctx.args, theme, ctx)
+		const result = renderBashResult(
 			{ content: [], details: { display } },
 			{ expanded: false, isPartial: true },
 			theme,
 			ctx,
-		).render(100)
+		)
+		const lines = [...call.render(100), ...result.render(100)]
 		expect(lines.join("\n")).toContain(theme.fg("accent", "/processes"))
-		expect(lines.join("\n")).toContain(theme.fg("text", "Last output 1s ago"))
 		const rendered = lines.map(stripTerminalSequences).join("\n")
-		expect(rendered).toContain("Checking output · Running · 42s")
-		expect(rendered).toContain("cat <<'EOF'")
+		expect(rendered.match(/Checking output/g)).toHaveLength(1)
+		expect(rendered).toContain("└─ Running · 42s")
+		expect(rendered).not.toContain("cat <<'EOF'")
 		expect(rendered).toContain("fourth")
 		expect(rendered).not.toContain("first")
-		expect(rendered).toContain("Last output 1s ago")
+		expect(rendered).not.toContain("Last output 1s ago")
 	})
 	it("marks persisted running check-ins as captured state with frozen elapsed time", () => {
 		const ctx = createToolRenderContext()
@@ -189,13 +267,12 @@ describe("Bash display", () => {
 			.map(stripTerminalSequences)
 			.join("\n")
 		expect(rendered).toContain("Still running at check-in · 42s")
-		expect(rendered).toContain("Snapshot at check-in")
+		expect(rendered.match(/check-in/g)).toHaveLength(1)
 	})
 	it("expansion preserves multiline script and shows a larger output tail", () => {
 		const ctx = createToolRenderContext({ args: { command: display.command }, expanded: true })
-		expect(renderBashCall(ctx.args, theme, ctx).render(100).map(stripTerminalSequences).join("\n")).toContain(
-			display.command,
-		)
+		const script = renderBashCall(ctx.args, theme, ctx).render(100).map(stripTerminalSequences).join("\n")
+		for (const line of display.command.split("\n")) expect(script).toContain(line)
 		const rendered = renderBashResult(
 			{ content: [], details: { display } },
 			{ expanded: true, isPartial: false },
