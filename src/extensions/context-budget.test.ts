@@ -71,16 +71,18 @@ const BUDGET = {
 	/** Total canonical system-prompt + skills surface (~7% headroom over
 	 *  measured 1425). */
 	total: 1530,
-	/** Total canonical tool surface (26 tools after the DAP session-tool +
-	 *  bash_control deferrals, the mcp zero-server registration gate, and the
-	 *  lsp no-server detection gate; ~5% headroom). Dev sessions in a repo WITH
-	 *  a detected language server will exceed this by the five gated lsp_* tools
-	 *  — that is by design, see LSP_TOOL_NAMES in lsp.ts. */
-	toolSurface: 7100,
-	/** Print-mode slice (24 tools — the canonical surface minus questionnaire
+	/** Total canonical tool surface (18 tools after the DAP entry/session and
+	 *  Agent-continuation deferrals, the Skill resource gate, the mcp
+	 *  zero-server registration gate, and the lsp no-server detection gate;
+	 *  ~5% headroom over measured). Dev
+	 *  sessions in a repo WITH a detected language server will exceed this by
+	 *  the five gated lsp_* tools — that is by design, see LSP_TOOL_NAMES in
+	 *  lsp.ts. */
+	toolSurface: 5470,
+	/** Print-mode slice (16 tools — the canonical surface minus questionnaire
 	 *  and set_phase, which the registration gates drop in headless --print
-	 *  runs; ~5% headroom). */
-	printToolSurface: 6300,
+	 *  runs; ~5% headroom over measured). */
+	printToolSurface: 4690,
 	/** Per-tool cap: any single tool above this many est tokens must be deliberate. */
 	singleTool: 1400,
 }
@@ -252,18 +254,17 @@ describe("context budget", () => {
 				"web_fetch",
 				"questionnaire",
 				"Agent",
-				"resume_subagent",
-				"get_subagent_result",
-				"steer_subagent",
+				// bash_control is part of the static surface: a mid-session reveal
+				// invalidates the prompt cache for everything after the tools block.
+				"bash_control",
+				// The 3 Agent continuation tools are omitted: deferred until the
+				// first Agent result.
 				"set_phase",
-				// Interim (split 2/3): Skill is omitted from the canonical surface —
-				// it registers at session_start only when a .claude skills dir exists
-				// (resource gate; zero-dir state in this measurement).
-				"debug_launch",
-				"debug_state_at",
-				"debug_last_error",
-				"debug_trace_calls",
-				"debug_watch_change",
+				// Skill is omitted: it registers at session_start only when a
+				// .claude skills dir exists — a resource gate, not part of the
+				// canonical default surface (mirrors the mcp zero-server state).
+				// The 5 DAP entry tools are omitted: deferred, revealed on the
+				// dap-debugging skill read or the not-found backstop.
 			].sort(),
 		)
 
@@ -293,11 +294,11 @@ describe("context budget", () => {
 		const { tools } = await withPrintGate({ print: true }, () => measureCanonicalToolSurface())
 
 		const names = new Set(tools.map((tool) => tool.name))
-		// The interactive surface is the canonical 26-tool set above; in print
+		// The interactive surface is the canonical 18-tool set above; in print
 		// mode the registration gates must remove exactly these two.
 		expect(names.has("questionnaire"), "questionnaire must be gated out of --print sessions").toBe(false)
 		expect(names.has("set_phase"), "set_phase must be gated out of --print sessions").toBe(false)
-		expect(tools.length).toBe(23)
+		expect(tools.length).toBe(16)
 
 		const total = tools.reduce((sum, tool) => sum + tool.tokensEstimated, 0)
 		expect(
