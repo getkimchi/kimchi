@@ -180,11 +180,14 @@ points carry the flushing session's pi session id as `session.id`.
 | `claude_code.token.usage` | Sum | Token consumption | `type` (`input` / `output` / `cacheRead` / `cacheCreation`), `model` |
 | `claude_code.cost.usage` | Sum | Cost in USD | `model` |
 | `claude_code.commit.count` | Sum | Git commits detected | `tool_name`, `decision` |
-| `claude_code.pull_request.count` | Sum | PR creations detected (`gh pr create`) | `tool_name`, `decision` |
 | `claude_code.lines_of_code.count` | Sum | Lines added or removed | `type` (`added` / `removed`), `language` |
 | `claude_code.tool.usage` | Sum | Tool invocation count | `tool_name` |
 | `claude_code.tool.duration_ms` | Sum | Total tool execution time (ms) | `tool_name` |
 | `claude_code.code_edit_tool.decision` | Sum | Edit tool decisions by language | `tool_name`, `decision`, `language`, `source` |
+
+PR associations are stored locally on each commit in `work/<workId>/work.json`.
+The former `gh pr create` command counter has been removed: a command attempt
+does not confirm that a PR exists. PR reporting is separate from these session metrics.
 
 ### `editDecisions` Key Format
 

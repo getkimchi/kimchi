@@ -23,6 +23,7 @@ import { isWorkId } from "../shared/work-id.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
 import { findWorkContinuation, type WorkContinuation } from "./work-attribution/continuation.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
+import type { WorkPullRequestUpdate } from "./work-attribution/pull-requests.js"
 import { subscribeFileReconciliation } from "./work-attribution/reconcile-supervisor.js"
 import { flushWorkSummaries, markNewWork, recoverWorkSummaries, updateWorkSummary } from "./work-attribution/summary.js"
 
@@ -197,6 +198,51 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 	const isChild = inheritedWorkId !== undefined
 	return (pi) => {
 		let stopReconciliation: (() => Promise<void>) | undefined
+		let activeContext: ExtensionContext | undefined
+		const prUpdates = new Map<string, Map<string, WorkPullRequestUpdate>>()
+		const warnings = new Set<string>()
+		function prDetails(workId = activeContext ? getWorkId(activeContext) : undefined) {
+			const rows = workId ? [...(prUpdates.get(workId)?.values() ?? [])] : []
+			const commits = new Map<string, WorkPullRequestUpdate>()
+			const linked = new Set<string>()
+			const links = new Map<string, WorkPullRequestUpdate["pullRequests"][number]>()
+			for (const row of rows) {
+				const key = JSON.stringify([row.repository, row.sha])
+				const previous = commits.get(key)
+				if (
+					!previous?.prLookup ||
+					(row.prLookup && Date.parse(row.prLookup.checkedAt) >= Date.parse(previous.prLookup.checkedAt))
+				)
+					commits.set(key, row)
+				if (row.pullRequests.length) linked.add(key)
+				for (const pr of row.pullRequests) {
+					const previous = links.get(pr.url)
+					if (!previous || Date.parse(pr.checkedAt) >= Date.parse(previous.checkedAt)) links.set(pr.url, pr)
+				}
+			}
+			return {
+				rows,
+				links: [...links.values()],
+				pending: commits.size - linked.size,
+				errors: [...new Set([...commits.values()].flatMap((row) => (row.prLookup?.error ? [row.prLookup.error] : [])))],
+			}
+		}
+		function renderPrStatus(): void {
+			if (isChild || !activeContext?.hasUI) return
+			const { rows, links, pending, errors } = prDetails()
+			let text: string | undefined
+			if (errors.length) text = "PR: check /work"
+			else if (links.length === 1 && !pending) text = `PR: #${links[0].number} ${links[0].state}`
+			else if (links.length) text = `PRs: ${links.length} linked${pending ? `, ${pending} waiting` : ""}`
+			else if (rows.length) text = "PR: waiting"
+			activeContext.ui.setStatus("work-pr", text)
+		}
+		function warnOnce(error: unknown): void {
+			const message = error instanceof Error ? error.message : String(error)
+			if (!activeContext || warnings.has(message)) return
+			warnings.add(message)
+			warnWorkAttribution(activeContext, message)
+		}
 		pi.on("session_start", (_event, ctx) => {
 			recoverWorkSummaries()
 			try {
@@ -204,7 +250,26 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 			} catch (error) {
 				warnWorkAttribution(ctx, error)
 			}
-			if (!isChild && !stopReconciliation) stopReconciliation = subscribeFileReconciliation()
+			if (!isChild && !stopReconciliation)
+				stopReconciliation = subscribeFileReconciliation({
+					onPullRequest(update) {
+						const rows = prUpdates.get(update.workId) ?? new Map<string, WorkPullRequestUpdate>()
+						rows.set(JSON.stringify([update.repository, update.sha, update.sessionId, update.worktree]), update)
+						prUpdates.set(update.workId, rows)
+						try {
+							if (update.prLookup?.error)
+								// A snapshot may emit an older contributor before a newer success.
+								// Wait for the batch before notifying about errors that still apply.
+								queueMicrotask(() => {
+									for (const error of prDetails(update.workId).errors) warnOnce(error)
+								})
+							renderPrStatus()
+						} catch (error) {
+							warnOnce(error)
+						}
+					},
+					onError: warnOnce,
+				})
 			pi.registerTool(createCommitTrackingBashTool(ctx))
 			// Main sessions use tool-rendering's decorated tools; isolated children need these native fallbacks.
 			pi.registerTool({
@@ -223,8 +288,12 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 		const branchEligible = new Set<string>()
 		const explicitSelection = new Set<string>()
 		function bind(ctx: ExtensionContext): void {
+			activeContext = ctx
 			const key = workLedgerPath(ctx)
-			if (initialized.has(key)) return
+			if (initialized.has(key)) {
+				renderPrStatus()
+				return
+			}
 			const branch = ctx.sessionManager.getBranch()
 			const fresh = !existsSync(key) || freshSessionLedgers.has(key)
 			let copiedWorkId: string | undefined
@@ -258,6 +327,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 			if (copiedExplicit && copiedWorkId === workId) explicitSelection.add(key)
 			pi.appendEntry(WORK_IDENTITY_ENTRY, { workId, ...(explicitSelection.has(key) ? { explicit: true } : {}) })
 			initialized.add(key)
+			renderPrStatus()
 		}
 		pi.on("input", async (event, ctx) => {
 			if (isChild || event.source === "extension") return
@@ -280,6 +350,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 					return
 				const { workId, source, evidence } = found
 				setWorkId(ctx, workId, pi, { source, evidence })
+				renderPrStatus()
 				const message =
 					source === "recent-branch"
 						? `Continuing recent work on branch ${evidence.branch}: ${workId}`
@@ -325,6 +396,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 			toolRequests.delete(workLedgerPath(ctx))
 		})
 		pi.on("session_shutdown", async (_event, ctx) => {
+			activeContext = undefined
 			const key = workLedgerPath(ctx)
 			const stop = stopReconciliation
 			stopReconciliation = undefined
@@ -341,7 +413,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 			explicitSelection.delete(key)
 		})
 		pi.registerCommand("work", {
-			description: "Show work ID, start new work (/work new), or continue a saved plan (/work <path>)",
+			description: "Show work ID and PRs, start new work (/work new), or continue a saved plan (/work <path>)",
 			handler: async (args, ctx) => {
 				try {
 					await ctx.waitForIdle()
@@ -358,7 +430,17 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 						explicitSelection.add(workLedgerPath(ctx))
 						pi.appendEntry(WORK_IDENTITY_ENTRY, { workId: getWorkId(ctx), explicit: true })
 					}
-					notify(ctx, `Work ID: ${getWorkId(ctx)}`)
+					renderPrStatus()
+					const { links, pending, errors } = prDetails()
+					notify(
+						ctx,
+						[
+							`Work ID: ${getWorkId(ctx)}`,
+							...links.map((pr) => `PR #${pr.number} ${pr.state}: ${pr.url}`),
+							...(pending ? [`PR lookup: ${pending} commit${pending === 1 ? "" : "s"} waiting`] : []),
+							...errors.map((error) => `PR lookup: ${error}`),
+						].join("\n"),
+					)
 				} catch (error) {
 					warnWorkAttribution(ctx, error)
 				}

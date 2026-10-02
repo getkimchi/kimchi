@@ -2,7 +2,7 @@
 
 Kimchi keeps a local record of the model requests, file edits, plans and commits that belong to the same work. A `workId` connects them, even when planning and implementation happen in different sessions or repositories.
 
-The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's home directory. Calculating costs, matching work to PRs and uploading these records come later.
+The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's home directory. Kimchi uses the GitHub CLI to find PRs for recorded commits and saves those links in the same file. Calculating costs and uploading these records come later.
 
 ## Where the files live
 
@@ -84,7 +84,7 @@ Other cases use these rules:
 | Reopen a session | Restores its current ID. |
 | Create a local child or branch the conversation | Inherits the parent's ID when the child is created, or the ID at the branch point. |
 | Resume a saved Ferment | Uses the Ferment's saved ID before inference. **Leave paused** keeps the current ID. |
-| Choose explicitly | `/work <plan path>` selects that plan's work; `/work new` creates separate work in the same chat. `/work` shows the current ID. |
+| Choose explicitly | `/work <plan path>` selects that plan's work; `/work new` creates separate work in the same chat. `/work` shows the current ID, PR links and lookup errors. |
 
 Kimchi does not detect later task changes or search other worktrees by filename. One work can span several sessions; one session can contribute to several works.
 
@@ -136,13 +136,52 @@ flowchart LR
 
 New edit records reference a snapshot of the visible Git references and worktree heads to exclude commits that already existed before the edit. Edits share a saved snapshot while those references stay the same. Matching can survive removal of the original linked worktree while the repository and new commit remain available. It cannot recover a repository that was deleted entirely.
 
-### 4. Build the local summary
+### 4. Find PRs for recorded commits
+
+Create the PR through Kimchi, a browser or another tool. Once GitHub knows the recorded commit, Kimchi can find its PR without a command from you. Install `gh` and sign in with `gh auth login` if you have not already done so.
+
+```mermaid
+flowchart TD
+    C["Recorded commit"] --> S["Startup or next 30-second check"]
+    S --> G["Ask GitHub for PRs containing this commit"]
+    G -->|No PR yet| P["Keep commit pending"]
+    P --> S
+    G -->|PRs found| W["Save each PR on the commit in work.json"]
+    W -->|Open or closed| R["Refresh the saved PR by number"]
+    R -->|Merged| M["Keep the link and merge details"]
+    R -->|Still open or closed| S
+    G -->|CLI, login or access error| E["Show the error and retry later"]
+    E --> S
+```
+
+- **PR created outside Kimchi:** the next check finds it from the commit hash. Discovery follows every page returned by GitHub and keeps every returned association.
+- **PR merged while Kimchi is closed:** the next launch catches up. Both regular and squash merges keep the original commit link and the PR's merge commit hash.
+- **Commit rewritten or removed:** a saved PR link is refreshed by PR number. An empty response for the old commit does not erase the link.
+- **GitHub unavailable:** the pending commit and any known links stay on disk. Kimchi shows an actionable warning and retries while coding continues.
+
+The footer shows `PR: waiting`, a linked PR such as `PR: #7 open`, or `PR: check /work` when lookup fails. `/work` lists the current work's PR URLs, states, pending commits and errors. The same status and notifications are sent to ACP clients; their display depends on the client.
+
+Each commit keeps two extra fields:
+
+| Field | Meaning |
+| --- | --- |
+| `prLookup.status` | `pending` when no PR was found, `linked` after a successful lookup with links, or `error` when the lookup failed. A new commit has no lookup result yet. |
+| `prLookup.checkedAt` / `error` | Time of the last lookup and its error, when present. |
+| `pullRequests[]` | Confirmed links, with repository, host, PR number, URL and current state. Links are kept even if a later lookup fails. |
+| `headSha` / `mergeCommitSha` | The PR's head commit and GitHub's merge hash. Before a PR is merged, the latter may be a test-merge hash. Use `state` and `mergedAt` to identify an actual merge. |
+| `mergedAt` / `closedAt` / `checkedAt` | GitHub's merge/close times and when Kimchi last checked that PR. |
+
+Lookup uses no model calls. It runs under the existing background worker's lease, with a separate time budget from local Git matching. Deleting the original worktree is supported while the repository's shared Git directory remains available.
+
+GitHub's commit-to-PR endpoint may omit a PR that was closed before Kimchi ever found it. Known closed PRs are rechecked so reopening is detected. This lookup currently supports GitHub repositories accessible through `gh`.
+
+### 5. Build the local summary
 
 Before sending a covered model request, Kimchi saves and flushes its request ID, work ID and session ID. It then sends `X-Request-Id`. This also works with telemetry disabled.
 
 Records with the same work ID go into the same `work.json`. Requests are deduplicated by request ID; commit records keep the contributing sessions. `fileTransitions` keeps the recorded edits, and `continuations` explains why another session adopted the work. IDs identify records; array positions have no meaning.
 
-A request record describes an attempt. It does not prove a successful response or give its cost. The work records and retained plan text stay local; `work.json` contains paths and metadata, with no prompts, file contents, PR numbers or prices.
+A request record describes an attempt. It does not prove a successful response or give its cost. The work records and retained plan text stay local; `work.json` contains paths, request metadata and PR links, with no prompts, file contents or prices. PR lookup sends repository and commit identifiers to GitHub through your existing CLI access.
 
 <details>
 <summary>Local files and recovery</summary>
@@ -151,7 +190,7 @@ All paths below are inside the agent directory.
 
 | File | What it is for |
 | --- | --- |
-| `work/<workId>/work.json` | Readable summary of sessions, request attempts, plans, file edits, continuation evidence and commits. |
+| `work/<workId>/work.json` | Readable summary of sessions, request attempts, plans, file edits, continuation evidence, commits and PR links. |
 | `work/<workId>/plans/<name>-<content-hash>.md` | Saved plan versions that survive worktree deletion. Identical content reuses the same copy. |
 | `work-attribution/<session-id>.jsonl` | Append-only history used to rebuild the summary. |
 | `work-attribution/transitions/*.jsonl` | Edit evidence: request/tool IDs, repository paths, Git blobs and file modes before and after each native edit/write change. |
@@ -191,7 +230,7 @@ The implementation uses Pi's existing hooks and native Git tracing. It adds no d
 
 ## What still needs work
 
-- **PR costs:** match work to PRs, join requests to billing, then decide how to split one work's cost across several PRs.
+- **PR costs:** join requests to billing, then decide how to split one work's cost across several PRs.
 - **Backend IDs:** verify that the proxy saves the request/session IDs needed for the billing join. The client records do not yet prove that link.
 - **Account and repository IDs:** add account IDs and stable repository IDs from the Git provider.
 - **Remote agents:** link their requests and returned commits to the local work. Remote sessions are outside this MVP.

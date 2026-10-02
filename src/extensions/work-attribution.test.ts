@@ -46,6 +46,86 @@ function records() {
 	)
 }
 describe("local work attribution", () => {
+	it("shows pending PRs, explains errors once, and clears the status when work changes", async () => {
+		const ctx = createContext({ cwd: dir })
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+		const update = vi.mocked(supervisor.subscribeFileReconciliation).mock.calls[0][0]?.onPullRequest
+		const commit = {
+			workId: getWorkId(ctx),
+			sessionId: ctx.sessionManager.getSessionId(),
+			cwd: dir,
+			repository: join(dir, ".git"),
+			worktree: dir,
+			sha: "a".repeat(40),
+			pullRequests: [],
+		}
+		update?.(commit)
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: waiting")
+		const failed = {
+			...commit,
+			prLookup: { status: "error" as const, checkedAt: new Date().toISOString(), error: "Run gh auth login" },
+		}
+		update?.(failed)
+		update?.(failed)
+		await Promise.resolve()
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: check /work")
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("gh auth login"), "warning")
+		const linked = {
+			...commit,
+			prLookup: { status: "linked" as const, checkedAt: new Date().toISOString() },
+			pullRequests: [
+				{
+					url: "https://github.com/example/repo/pull/7",
+					number: 7,
+					state: "open" as const,
+					repository: "example/repo",
+					host: "github.com",
+					headSha: commit.sha,
+					mergeCommitSha: null,
+					mergedAt: null,
+					closedAt: null,
+					checkedAt: new Date().toISOString(),
+				},
+			],
+		}
+		update?.(linked)
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: #7 open")
+		const checkedAt = new Date(Date.now() + 1000).toISOString()
+		update?.({
+			...linked,
+			sessionId: "newer-contributor",
+			prLookup: { status: "linked", checkedAt },
+			pullRequests: [{ ...linked.pullRequests[0], state: "merged", mergedAt: checkedAt, checkedAt }],
+		})
+		// Snapshot replay can still contain another contributor's older observation.
+		update?.(linked)
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: #7 merged")
+		const warningCount = vi.mocked(ctx.ui.notify).mock.calls.length
+		const otherSha = "b".repeat(40)
+		update?.({
+			...failed,
+			sha: otherSha,
+			prLookup: { ...failed.prLookup, error: "Old access failure" },
+		})
+		update?.({
+			...linked,
+			sha: otherSha,
+			sessionId: "newer-contributor",
+			prLookup: { status: "linked", checkedAt },
+		})
+		await Promise.resolve()
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(warningCount)
+		const commandCtx = { ...createCommandContext(), ...ctx }
+		await api.getRegisteredCommand("work").handler("", commandCtx)
+		expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining(linked.pullRequests[0].url), "info")
+		await api.getRegisteredCommand("work").handler("new", commandCtx)
+		update?.(linked)
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", undefined)
+		await api.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
+	})
 	it("adopts a named artifact before dispatch and records why the sessions were joined", async () => {
 		const ctx = createContext({ cwd: dir })
 		const workId = getWorkId(createContext({ cwd: dir, sessionManager: { getSessionId: () => "planning" } }))

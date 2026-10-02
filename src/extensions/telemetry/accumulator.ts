@@ -9,7 +9,6 @@ export interface CumulativeState {
 	tokensByModel: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>
 	costByModel: Record<string, number>
 	commitCount: number
-	prCount: number
 	locByLanguage: Record<string, { added: number; removed: number }>
 	editDecisions: Record<string, number>
 	toolUsage: Record<string, number>
@@ -22,7 +21,6 @@ export function createCumulativeState(): CumulativeState {
 		tokensByModel: {},
 		costByModel: {},
 		commitCount: 0,
-		prCount: 0,
 		locByLanguage: {},
 		editDecisions: {},
 		toolUsage: {},
@@ -49,7 +47,6 @@ export function recordEditDecision(state: CumulativeState, toolName: string, lan
 export function handleBashCumulativeMetrics(state: CumulativeState, args: ToolArgs): void {
 	const command = String(args?.command ?? "")
 	if (/git\s+commit\b/.test(command) && !/--dry-run/.test(command)) state.commitCount++
-	if (/gh\s+pr\s+create\b/.test(command)) state.prCount++
 }
 
 export function accumulateToolUsage(state: CumulativeState, toolName: string, durationMs: number): void {
@@ -97,14 +94,6 @@ export function collectMetrics(state: CumulativeState): MetricData[] {
 			type: "Sum",
 			value: state.commitCount,
 			attrs: { tool_name: "bash", decision: "git_commit" },
-		})
-	}
-	if (state.prCount > 0) {
-		out.push({
-			name: "claude_code.pull_request.count",
-			type: "Sum",
-			value: state.prCount,
-			attrs: { tool_name: "bash", decision: "gh_pr_create" },
 		})
 	}
 	for (const [language, counts] of Object.entries(state.locByLanguage)) {

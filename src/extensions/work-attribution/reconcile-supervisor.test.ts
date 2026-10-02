@@ -4,12 +4,17 @@ import { join } from "node:path"
 import * as locks from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as transitions from "./file-transitions.js"
+import * as pullRequests from "./pull-requests.js"
 import { RECONCILIATION_INTERVAL_MS, subscribeFileReconciliation } from "./reconcile-supervisor.js"
 
 vi.mock("proper-lockfile", async (original) => ({ ...(await original<typeof locks>()) }))
 vi.mock("./file-transitions.js", () => ({
 	knownTransitionRepositories: vi.fn(),
 	reconcileRepositoryTransitions: vi.fn(),
+}))
+vi.mock("./pull-requests.js", () => ({
+	reconcileWorkPullRequests: vi.fn(),
+	readWorkPullRequestUpdates: vi.fn(),
 }))
 
 let directory: string
@@ -25,6 +30,8 @@ beforeEach(() => {
 	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
 	vi.spyOn(transitions, "knownTransitionRepositories").mockResolvedValue(["/repository-a", "/repository-b"])
 	vi.spyOn(transitions, "reconcileRepositoryTransitions").mockResolvedValue()
+	vi.mocked(pullRequests.reconcileWorkPullRequests).mockResolvedValue()
+	vi.mocked(pullRequests.readWorkPullRequestUpdates).mockReturnValue([])
 })
 afterEach(async () => {
 	for (const stop of stops.splice(0)) await stop()
@@ -35,6 +42,61 @@ afterEach(async () => {
 })
 
 describe("shared file reconciliation", () => {
+	it("shows another process's saved results while that process owns the lookup lease", async () => {
+		const path = join(directory, "work-attribution")
+		mkdirSync(path)
+		const release = await locks.lock(path)
+		const update = {
+			workId: "11111111-1111-4111-8111-111111111111",
+			sessionId: "other-process",
+			cwd: "/repo",
+			repository: "/repo/.git",
+			worktree: "/repo",
+			sha: "a".repeat(40),
+			pullRequests: [],
+			prLookup: { status: "pending" as const, checkedAt: new Date().toISOString() },
+		}
+		vi.mocked(pullRequests.readWorkPullRequestUpdates).mockReturnValue([update])
+		const onPullRequest = vi.fn()
+		const stop = subscribeFileReconciliation({ onPullRequest })
+		stops.push(stop)
+		try {
+			await vi.waitFor(() => expect(onPullRequest).toHaveBeenCalledWith(update))
+			expect(pullRequests.reconcileWorkPullRequests).not.toHaveBeenCalled()
+			expect(transitions.reconcileRepositoryTransitions).not.toHaveBeenCalled()
+			const failed = {
+				...update,
+				prLookup: { status: "error" as const, checkedAt: new Date().toISOString(), error: "Run gh auth login" },
+			}
+			vi.mocked(pullRequests.readWorkPullRequestUpdates).mockReturnValue([failed])
+			await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
+			await vi.waitFor(() => expect(onPullRequest).toHaveBeenLastCalledWith(failed))
+			expect(pullRequests.reconcileWorkPullRequests).not.toHaveBeenCalled()
+		} finally {
+			await stop()
+			await release()
+		}
+	})
+
+	it("discovers Bash-only commits even when there are no file-transition repositories", async () => {
+		vi.mocked(transitions.knownTransitionRepositories).mockResolvedValue([])
+		subscribe()
+		await vi.waitFor(() => expect(pullRequests.reconcileWorkPullRequests).toHaveBeenCalledTimes(1))
+		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
+		await vi.waitFor(() => expect(pullRequests.reconcileWorkPullRequests).toHaveBeenCalledTimes(2))
+	})
+
+	it("aborts and drains the GitHub lookup when its owner shuts down", async () => {
+		let active: AbortSignal | undefined
+		vi.mocked(pullRequests.reconcileWorkPullRequests).mockImplementation(async (_directory, signal) => {
+			active = signal
+			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
+		})
+		const stop = subscribe()
+		await vi.waitFor(() => expect(active).toBeDefined())
+		await stop()
+		expect(active?.aborted).toBe(true)
+	})
 	it("starts a new scan when another top-level session subscribes after the owner became idle", async () => {
 		subscribe()
 		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2))
@@ -122,6 +184,7 @@ describe("shared file reconciliation", () => {
 		)
 		subscribe()
 		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(1))
+		await vi.waitFor(() => expect(pullRequests.reconcileWorkPullRequests).toHaveBeenCalledTimes(1))
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
 		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(3))
 		expect(vi.mocked(transitions.reconcileRepositoryTransitions).mock.calls.map(([repository]) => repository)).toEqual([

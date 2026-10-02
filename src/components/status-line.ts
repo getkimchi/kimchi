@@ -35,6 +35,7 @@ export type SegmentId =
 	| "budget"
 	| "lsp"
 	| "dap"
+	| "work-pr"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -343,6 +344,7 @@ function joinSegments(segments: Segment[], sep: string): string {
 const SHED_ORDER: SegmentId[] = [
 	"dap",
 	"lsp",
+	"work-pr",
 	"team",
 	"tags",
 	"phase",
@@ -595,6 +597,13 @@ function buildCreditsSegment(theme: Theme, pinned: boolean): Segment | null {
 	return { id: "credits", text, width: visibleWidth(text) }
 }
 
+function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
+	const status = statusLineData.getExtensionStatuses().get("work-pr")
+	if (!status) return null
+	const text = accentText(theme, status)
+	return { id: "work-pr", text, width: visibleWidth(text) }
+}
+
 function buildBudgetSegment(theme: Theme, pinned: boolean): Segment | null {
 	if (!pinned) return null
 	const budget = getBillingStatusLine()?.budget
@@ -689,6 +698,7 @@ export function buildStatusLineSegments(
 		buildTeamSegment(theme, tags, pinned.has("team")),
 		buildLspSegment(theme, statusLineData),
 		buildDapSegment(theme, statusLineData),
+		buildWorkPrSegment(theme, statusLineData),
 	].filter((s): s is Segment => s !== null)
 }
 
@@ -697,7 +707,14 @@ export function buildStatusLineSegments(
  *  usually covers context/usage itself, so the controls line carries
  *  permissions, model, ferment, and billing — in pool order so permissions
  *  and model lead — fitted through the same compaction/shed pipeline. */
-const CONTROLS_LINE_IDS: ReadonlySet<SegmentId> = new Set(["permissions", "model", "ferment", "credits", "budget"])
+const CONTROLS_LINE_IDS: ReadonlySet<SegmentId> = new Set([
+	"permissions",
+	"model",
+	"ferment",
+	"credits",
+	"budget",
+	"work-pr",
+])
 const CONTROLS_LINE_PINNED: ReadonlySet<SegmentId> = new Set(["credits", "budget"])
 
 export function buildControlsLineSegments(buildCtx: StatusLineBuildContext): Segment[] {

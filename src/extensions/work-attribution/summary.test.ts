@@ -46,6 +46,48 @@ function summary(workId: string) {
 }
 
 describe("readable work summaries", () => {
+	it("retains PR links and their newest state through failed lookups and source replay", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const commit = { type: "commit", sha: "a".repeat(40), repository: "/project/.git", worktree: "/project" }
+		const open = {
+			url: "https://github.com/example/repo/pull/7",
+			number: 7,
+			state: "open",
+			checkedAt: "2026-10-02T08:00:00Z",
+		}
+		const merged = { ...open, state: "merged", mergeCommitSha: "b".repeat(40), checkedAt: "2026-10-02T09:00:00Z" }
+		appendWorkRecord(ctx, {
+			...commit,
+			pullRequests: [open],
+			prLookup: { status: "linked", checkedAt: open.checkedAt },
+		})
+		appendWorkRecord(ctx, {
+			...commit,
+			pullRequests: [merged],
+			prLookup: { status: "linked", checkedAt: merged.checkedAt },
+		})
+		const failure = { status: "error", checkedAt: "2026-10-02T10:00:00Z", error: "Run gh auth login" }
+		appendWorkRecord(ctx, { ...commit, pullRequests: [], prLookup: failure })
+		// A replay or later file reconciliation must not reset network observations.
+		appendWorkRecord(ctx, {
+			...commit,
+			pullRequests: [open],
+			prLookup: { status: "linked", checkedAt: open.checkedAt },
+		})
+		appendWorkRecord(ctx, { ...commit, paths: ["example.ts"] })
+		await flushWorkSummaries()
+		expect(summary(workId).commits).toHaveLength(1)
+		expect(summary(workId).commits[0]).toMatchObject({
+			pullRequests: [merged],
+			prLookup: failure,
+			paths: ["example.ts"],
+		})
+		fs.unlinkSync(path(workId))
+		recoverWorkSummaries()
+		await flushWorkSummaries()
+		expect(summary(workId).commits[0]).toMatchObject({ pullRequests: [merged], prLookup: failure })
+	})
 	it("shows why a session continued another work without changing request timestamps", async () => {
 		const ctx = context()
 		const workId = getWorkId(ctx)
