@@ -41,6 +41,16 @@ kimchi         # launch the coding agent
 
 Run `kimchi --help` to see all available subcommands and flags.
 
+## Desktop notifications
+
+Interactive terminal sessions send native desktop notifications when Kimchi is ready for input, needs permission approval, or asks a question. Notifications are on by default. The title uses the current session name, or just **Kimchi** before the session has a name. The body is a fixed status message. Cancelled runs, subagents, and headless or IDE protocol sessions stay silent.
+
+Use `/notifications off` or `/notifications on` to save your preference in `~/.config/kimchi/harness/settings.json` (`nativeNotifications`). `/notifications` shows the current setting; `/notifications test` sends a test notification even when automatic notifications are off.
+
+On macOS, clicking a notification brings the launching terminal or editor to the front. Kimchi uses the app's `__CFBundleIdentifier`, or recognizes Terminal, iTerm2, Warp, Ghostty, WezTerm, VS Code, and Zed through `TERM_PROGRAM`. If the app cannot be identified, notifications are skipped. This activates the app; it does not select a particular tab or tmux pane. Kimchi includes its own native helper, so no extra install is needed. Allow **Kimchi** when macOS first asks for notification permission. Building from source on macOS requires Xcode Command Line Tools for the Swift compiler.
+
+Linux needs `notify-send` and a running desktop notification service. Windows uses PowerShell's native toast support. Click-to-app activation currently applies to macOS. Notifications appear on the machine running Kimchi; SSH and WSL do not forward them to another desktop. Your OS notification permissions and Do Not Disturb settings control whether banners appear. Missing notification services do not interrupt agent work.
+
 ## Models
 
 ### Model selection
