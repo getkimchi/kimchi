@@ -21,6 +21,12 @@ const TODO_LIST_HINT_TEXT = "F7 or /todos to collapse"
 const MAX_TODO_WIDGET_LINES = 14
 const TODO_WIDGET_BODY_LINES = 10
 const MAX_ROLLED_CONTEXT_ROWS = 2
+/** Fraction of terminal rows the expanded strip may occupy before ambient auto-collapse. */
+const TODO_HEIGHT_COLLAPSE_FRACTION = 0.25
+/** Match Agents strip spinner frames (avoid importing agent-widget — circular). */
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+const SPINNER_INTERVAL_MS = 80
+
 /** Default auto-collapse threshold: lists with more items than this render
  *  ambiently as a single status line until the user expands them. Mirrors the
  *  opencode-todolist plugin's `collapseThreshold` setting. */
@@ -29,7 +35,8 @@ const DEFAULT_TODO_AUTO_COLLAPSE_THRESHOLD = 5
 /** Item count past which the ambient todo strip auto-collapses to a single
  *  status line. Configurable via KIMCHI_TODOS_COLLAPSE_THRESHOLD; values < 1
  *  fall back to the default, and a very large value effectively disables
- *  count-based auto-collapse. Explicit expansion (F7 / `/todos expand`) always overrides. */
+ *  count-based auto-collapse. Height-based collapse (~25% of terminal rows)
+ *  still applies. Explicit expansion (F7 / `/todos expand`) always overrides. */
 export function getTodoAutoCollapseThreshold(env: NodeJS.ProcessEnv = process.env): number {
 	const raw = env.KIMCHI_TODOS_COLLAPSE_THRESHOLD
 	if (raw === undefined) return DEFAULT_TODO_AUTO_COLLAPSE_THRESHOLD
@@ -61,8 +68,13 @@ interface TodoWidgetState {
 	collapsed: boolean
 	registered: boolean
 	registrationId: number
+	spinnerFrame: number
+	spinnerTimer?: ReturnType<typeof setInterval>
 	ctx?: ExtensionContext
-	tui?: { requestRender?: (force?: boolean) => void }
+	tui?: {
+		requestRender?: (force?: boolean) => void
+		terminal?: { rows?: number }
+	}
 }
 
 const todoWidgetStates = new Map<string, TodoWidgetState>()
@@ -121,6 +133,7 @@ function createTodoWidgetState(): TodoWidgetState {
 		collapsed: false,
 		registered: false,
 		registrationId: 0,
+		spinnerFrame: 0,
 	}
 }
 
@@ -142,7 +155,7 @@ export function summarizeTodoCounts(counts: TodoCounts): string {
 }
 
 /** Single-line strip header:
- *  `<chevron> Todos[ · <scope>] · <done>/<total>[ ✓] · <N active>[ · N blocked] (F7)`
+ *  `<chevron> Todos[ · <scope>] · <done>/<total>[ ✓] · <N active>[ · ⠧ N running][ · N blocked] (F7)`
  *  `▶` collapsed, `▼` expanded. In-progress item rows also use `▶`. */
 export function buildTodoHeaderLine(
 	theme: Theme,
@@ -150,6 +163,7 @@ export function buildTodoHeaderLine(
 	collapsed: boolean,
 	options: {
 		scopeLabel?: string
+		spinnerFrame?: number
 	} = {},
 ): string {
 	const chevron = collapsed ? "▶" : "▼"
@@ -163,6 +177,10 @@ export function buildTodoHeaderLine(
 	parts.push(theme.fg("dim", countsText) + (allDone ? ` ${theme.fg("success", "✓")}` : ""))
 	parts.push(theme.fg(live ? "accent" : "dim", `${active} active`))
 	let line = parts.join(" · ")
+	if (live) {
+		const frame = SPINNER[(options.spinnerFrame ?? 0) % SPINNER.length]
+		line += theme.fg("accent", ` · ${frame} ${counts.inProgress} running`)
+	}
 	if (counts.blocked > 0) {
 		line += theme.fg("warning", ` · ${counts.blocked} blocked`)
 	}
@@ -175,15 +193,25 @@ interface CollapseInput {
 	listExpanded: boolean
 	listCollapsed: boolean
 	total: number
+	/** Estimated expanded strip height in rows (header + body). */
+	expandedHeight: number
+	terminalRows?: number
 }
 
 /** True when the strip should render only the collapsed one-line header:
- *  competing UI is crowding the strip, the user clicked it shut, or the list
- *  exceeds the item-count threshold. Explicit expand overrides ambient collapse. */
+ *  competing UI is crowding the strip, the user clicked it shut, the list
+ *  exceeds the item-count threshold, or the expanded height would exceed ~25%
+ *  of the terminal. Explicit expand overrides ambient collapse. */
 function isTodoBodyCollapsed(input: CollapseInput): boolean {
 	if (input.expanded || input.listExpanded) return false
 	if (isTodoCrowdingActive() || input.listCollapsed) return true
-	return input.total > getTodoAutoCollapseThreshold()
+	if (input.total > getTodoAutoCollapseThreshold()) return true
+	const rows = input.terminalRows
+	if (rows && rows > 0) {
+		const maxHeight = Math.max(1, Math.floor(rows * TODO_HEIGHT_COLLAPSE_FRACTION))
+		if (input.expandedHeight > maxHeight) return true
+	}
+	return false
 }
 
 function hasActiveTodos(counts: TodoCounts): boolean {
@@ -444,6 +472,14 @@ function buildTodoBodyLines(
 	return { lines, scrollable: showUp || showDown }
 }
 
+function estimateExpandedHeight(groups: WidgetScopeGroup[], theme: Theme, expanded: boolean): number {
+	const rows = buildFullTodoBodyRows(theme, groups)
+	if (expanded || rows.length + 3 <= MAX_TODO_WIDGET_LINES) {
+		return 1 + rows.length + 2 // header + body + blank + hint
+	}
+	return 1 + TODO_WIDGET_BODY_LINES + 2
+}
+
 function headerScopeLabel(groups: WidgetScopeGroup[]): string | undefined {
 	// Single-scope lists put the scope name (including Global) in the header;
 	// multi-scope keeps per-group labels in the body only.
@@ -460,24 +496,62 @@ function buildTodoWidgetLines(theme: Theme, state: TodoWidgetState, sessionId: s
 
 	const counts = countTodosInGroups(groups)
 	const scopeLabel = headerScopeLabel(groups)
+	const terminalRows = state.tui?.terminal?.rows
+	const expandedHeight = estimateExpandedHeight(groups, theme, state.expanded)
+
 	if (
 		isTodoBodyCollapsed({
 			expanded: state.expanded,
 			listExpanded: state.listExpanded,
 			listCollapsed: state.listCollapsed,
 			total: counts.total,
+			expandedHeight,
+			terminalRows,
 		})
 	) {
-		return [buildTodoHeaderLine(theme, counts, true, { scopeLabel })]
+		return [
+			buildTodoHeaderLine(theme, counts, true, {
+				scopeLabel,
+				spinnerFrame: state.spinnerFrame,
+			}),
+		]
 	}
 
 	const body = buildTodoBodyLines(theme, groups, state)
 	const hint = body.scrollable ? `scroll · ${TODO_LIST_HINT_TEXT}` : TODO_LIST_HINT_TEXT
-	return [buildTodoHeaderLine(theme, counts, false, { scopeLabel }), ...body.lines, "", theme.fg("dim", hint)]
+	return [
+		buildTodoHeaderLine(theme, counts, false, { scopeLabel, spinnerFrame: state.spinnerFrame }),
+		...body.lines,
+		"",
+		theme.fg("dim", hint),
+	]
+}
+
+function stopSpinner(state: TodoWidgetState): void {
+	if (state.spinnerTimer) {
+		clearInterval(state.spinnerTimer)
+		state.spinnerTimer = undefined
+	}
+}
+
+function syncSpinner(state: TodoWidgetState, sessionId: string): void {
+	const inProgress = countAllActiveTodos(sessionId).inProgress
+	const shouldSpin = state.visible && inProgress > 0
+	if (!shouldSpin) {
+		stopSpinner(state)
+		return
+	}
+	if (state.spinnerTimer) return
+	state.spinnerTimer = setInterval(() => {
+		state.spinnerFrame = (state.spinnerFrame + 1) % SPINNER.length
+		state.tui?.requestRender?.(true)
+	}, SPINNER_INTERVAL_MS)
 }
 
 export function resetTodoWidgetState(ctx: ExtensionContext): void {
 	const sessionId = ctx.sessionManager.getSessionId()
+	const state = todoWidgetStates.get(sessionId)
+	if (state) stopSpinner(state)
 	todoWidgetStates.delete(sessionId)
 }
 
@@ -486,6 +560,7 @@ function requestTodoRender(ctx: ExtensionContext): void {
 	const sessionId = ctx.sessionManager.getSessionId()
 	const state = todoWidgetStates.get(sessionId)
 	if (!state?.registered) return
+	syncSpinner(state, sessionId)
 	state.tui?.requestRender?.(true)
 }
 
@@ -507,11 +582,13 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 	const unregister = () => {
 		if (state.registrationId !== registrationId) return
 		state.registered = false
+		stopSpinner(state)
 		state.tui = undefined
 		state.ctx = undefined
 	}
 	const component = (tui: unknown, theme: Theme) => {
 		state.tui = tui as TodoWidgetState["tui"]
+		syncSpinner(state, sessionId)
 		return {
 			render(width: number): string[] {
 				if (!state.visible) return []
@@ -542,12 +619,16 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 				if (event.type === "wheel") {
 					const counts = countAllActiveTodos(sessionId)
 					const groups = collectWidgetScopes(sessionId)
+					const terminalRows = state.tui?.terminal?.rows
+					const expandedHeight = estimateExpandedHeight(groups, theme, state.expanded)
 					if (
 						isTodoBodyCollapsed({
 							expanded: state.expanded,
 							listExpanded: state.listExpanded,
 							listCollapsed: state.listCollapsed,
 							total: counts.total,
+							expandedHeight,
+							terminalRows,
 						})
 					) {
 						return undefined
@@ -618,6 +699,7 @@ export function clearTodoWidget(ctx: ExtensionContext): void {
 	state.listCollapsed = false
 	state.userScrolled = false
 	state.scrollOffset = 0
+	stopSpinner(state)
 	requestTodoRender(ctx)
 }
 
@@ -637,13 +719,22 @@ export function toggleTodoWidget(ctx: ExtensionContext): void {
 		showTodoWidget(ctx)
 		return
 	}
-	const counts = countAllActiveTodos(sessionId)
+	const groups = collectWidgetScopes(sessionId)
+	const counts = countTodosInGroups(groups)
+	const terminalRows = state.tui?.terminal?.rows
+	const themeStub = {
+		fg: (_c: string, t: string) => t,
+		bold: (t: string) => t,
+	} as Theme
+	const expandedHeight = estimateExpandedHeight(groups, themeStub, state.expanded)
 	if (
 		isTodoBodyCollapsed({
 			expanded: state.expanded,
 			listExpanded: state.listExpanded,
 			listCollapsed: state.listCollapsed,
 			total: counts.total,
+			expandedHeight,
+			terminalRows,
 		})
 	) {
 		openTodoWidget(ctx)
@@ -673,6 +764,7 @@ export function disposeTodoWidget(ctx: ExtensionContext): void {
 	if (state) {
 		state.visible = false
 		state.registered = false
+		stopSpinner(state)
 		state.tui = undefined
 		state.ctx = undefined
 	}
