@@ -94,7 +94,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		toolsSection,
 		environmentSection,
 		projectContext,
-		skillsSection: formatSkills(filteredSkills),
+		skillsSection: formatSkillsSection(filteredSkills, effectiveTools),
 		orchestrationSection,
 		systemPromptBlocks: blocks.map((block) => block.content).join("\n\n"),
 		suppressed,
@@ -514,7 +514,64 @@ function formatProjectContext(contextFiles?: readonly ContextFile[]): string {
 	return `## Project Guidelines\n\n${combined}`
 }
 
+/** Cap on a skill's rendered description — the load path is skill_view, so the
+ *  block carries routing info only. 500 is dsh's field-tested catalog bound. */
+const SKILL_DESCRIPTION_MAX_CHARS = 500
+
+function escapeXml(str: string): string {
+	return str
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&apos;")
+}
+
+/** Truncate at a word boundary so the remaining routing vocabulary stays
+ *  readable; descriptions above the cap end with an ellipsis. */
+function truncateDescription(description: string, max: number): string {
+	if (description.length <= max) return description
+	const slice = description.slice(0, max)
+	const lastSpace = slice.lastIndexOf(" ")
+	const cut = lastSpace > max * 0.6 ? lastSpace : max
+	return `${slice.slice(0, cut).trimEnd()}…`
+}
+
+/** Render the model-visible skill catalog. The load path depends on session
+ *  wiring: the tool-routed catalog when skill_view is registered (the cli.ts
+ *  wiring point always pairs this extension with skills-manager), and
+ *  upstream's read-tool catalog otherwise — sessions built without the
+ *  skills-manager extension (tests, SDK entry points) still get a usable
+ *  instruction instead of a pointer to an unregistered tool. */
+function formatSkillsSection(skills: readonly Skill[] | undefined, tools: readonly ToolInfo[]): string {
+	if (!skills || skills.length === 0) return ""
+	if (tools.some((t) => t.name === "skill_view")) return formatSkills(skills)
+	return formatSkillsForPrompt([...skills], "read")
+}
+
+/** Render the tool-routed skill catalog. Built here rather than reusing
+ *  pi's upstream block because the load path is the dedicated skill_view
+ *  tool: file locations (the upstream block's read-a-path affordance) and
+ *  the upstream read-tool instruction are dead weight for the model, and
+ *  long descriptions are pure routing noise. */
 function formatSkills(skills?: readonly Skill[]): string {
 	if (!skills || skills.length === 0) return ""
-	return formatSkillsForPrompt(skills as Skill[])
+	const visible = skills.filter((s) => !s.disableModelInvocation)
+	if (visible.length === 0) return ""
+	const lines = [
+		"The following skills provide specialized instructions for specific tasks.",
+		"Before acting on a task that names or clearly matches a skill, load it with the skill_view tool (name: <skill name>), then follow its instructions.",
+		"",
+		"<available_skills>",
+	]
+	for (const skill of visible) {
+		lines.push("  <skill>")
+		lines.push(`    <name>${escapeXml(skill.name)}</name>`)
+		lines.push(
+			`    <description>${escapeXml(truncateDescription(skill.description, SKILL_DESCRIPTION_MAX_CHARS))}</description>`,
+		)
+		lines.push("  </skill>")
+	}
+	lines.push("</available_skills>")
+	return lines.join("\n")
 }

@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
+import { AgentSession, type ExtensionAPI, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import {
 	getParsedCliArgs,
@@ -132,6 +132,7 @@ import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-
 import settingsTrustSyncExtension from "./extensions/settings-trust-sync.js"
 import shellProfileMigrationExtension from "./extensions/shell-profile-migration.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
+import skillsManagerExtension from "./extensions/skills-manager/index.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import statusExtension from "./extensions/status/index.js"
@@ -692,6 +693,11 @@ try {
 			packageInstallGuardExtension,
 			sessionNameExtension(),
 			shutdownMarkerExtension,
+			// skill_view must always be present: the <available_skills> prompt block
+			// instructs the model to load skills through it. skill_manage (the
+			// write side) stays disabled per #235; re-enable via
+			// registerSkillManageTool after review.
+			(pi: ExtensionAPI) => skillsManagerExtension(pi, { registerSkillManageTool: false }),
 			statsExtension,
 			statusExtension,
 			budgetCommandExtension,

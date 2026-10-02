@@ -88,6 +88,7 @@ describe("buildSystemPrompt", () => {
 	const tools = [
 		{ name: "read", description: "Read file contents" },
 		{ name: "bash", description: "Execute bash commands" },
+		{ name: "skill_view", description: "Load skill instructions" },
 		{ name: "Agent", description: "Launch a specialized agent" },
 		{ name: "get_subagent_result", description: "Get background agent result" },
 		{ name: "steer_subagent", description: "Steer a running background agent" },
@@ -181,7 +182,9 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("## Available Tools\n\nread, bash, Agent, get_subagent_result, steer_subagent")
+			expect(result).toContain(
+				"## Available Tools\n\nread, bash, skill_view, Agent, get_subagent_result, steer_subagent",
+			)
 			// Descriptions are intentionally not duplicated in the prompt: the API
 			// tools parameter already carries them.
 			expect(result).not.toContain("<available_tools>")
@@ -268,6 +271,55 @@ describe("buildSystemPrompt", () => {
 			})
 			expect(result).toContain("safe-skill")
 			expect(result).not.toContain("hidden-skill")
+		})
+
+		it("renders the skill catalog with the skill_view instruction and no file locations", () => {
+			const skills = [createSkill({ name: "deploy", description: "Deploy the app to production" })]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				mode: "orchestrator",
+			})
+			// The catalog routes through the dedicated tool: no read-tool
+			// instruction and no file locations for the model to copy paths from.
+			expect(result).not.toContain("Use the read tool to load a skill's file when the task matches its description.")
+			expect(result).toContain("load it with the skill_view tool (name: <skill name>)")
+			expect(result).not.toContain("<location>")
+		})
+
+		it("falls back to the upstream read-tool catalog when skill_view is not registered", () => {
+			const skills = [createSkill({ name: "deploy", description: "Deploy the app to production" })]
+			const result = buildSystemPrompt({
+				tools: tools.filter((t) => t.name !== "skill_view"),
+				env: testEnv,
+				skills,
+				mode: "orchestrator",
+			})
+			// Sessions without the skills-manager extension must not be directed at
+			// an unregistered tool; upstream's catalog routes through read instead.
+			expect(result).toContain("Use the read tool to load a skill's file when the task matches its description.")
+			expect(result).toContain("<location>")
+			expect(result).not.toContain("load it with the skill_view tool (name: <skill name>)")
+		})
+
+		it("caps skill descriptions at 500 characters", () => {
+			const long = "word ".repeat(200).trim() // 999 chars
+			const skills = [createSkill({ name: "wordy", description: long })]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				mode: "orchestrator",
+			})
+			const descriptionLine = result
+				.split("\n")
+				.find((line) => line.includes("<description>"))
+				?.trim()
+			expect(descriptionLine).toBeDefined()
+			// Word-boundary truncation keeps the line near the cap, not at 999 chars.
+			expect(descriptionLine?.length ?? 0).toBeLessThan(600)
+			expect(descriptionLine?.endsWith("…</description>")).toBe(true)
 		})
 
 		it("injects environment info", () => {
@@ -610,7 +662,9 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "single",
 			})
-			expect(result).toContain("## Available Tools\n\nread, bash, Agent, get_subagent_result, steer_subagent")
+			expect(result).toContain(
+				"## Available Tools\n\nread, bash, skill_view, Agent, get_subagent_result, steer_subagent",
+			)
 		})
 
 		// Interactive single-model sessions expose set_phase — phase payloads are

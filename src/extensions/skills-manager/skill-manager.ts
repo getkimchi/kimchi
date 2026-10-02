@@ -1,17 +1,7 @@
 import { mkdir, readdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises"
-import { dirname, join, resolve, sep } from "node:path"
+import { basename, dirname, join, resolve, sep } from "node:path"
+import type { Skill } from "@earendil-works/pi-coding-agent"
 import { parse as parseYaml } from "yaml"
-
-const SKILLS_DIR_CACHE = new Map<string, SkillManager>()
-
-export function getSkillManager(skillsDir: string): SkillManager {
-	let manager = SKILLS_DIR_CACHE.get(skillsDir)
-	if (!manager) {
-		manager = new SkillManager(skillsDir)
-		SKILLS_DIR_CACHE.set(skillsDir, manager)
-	}
-	return manager
-}
 
 /**
  * Check if a skill directory exists.
@@ -148,13 +138,21 @@ export function formatPreview(content: string, maxLines = 50): string {
 	return result
 }
 
-export type SkillOrigin = "harness" | "bundled"
+export type SkillOrigin = "harness" | "bundled" | "discovered"
 
 interface SkillLocation {
 	skillDir: string
+	/** Entry file inside skillDir carrying the skill's frontmatter/body.
+	 *  "SKILL.md" for harness/bundled skills; a discovered skill's advertised
+	 *  entry file, which for loose single-.md skills is the .md itself. */
+	entryFile: string
 	category: string
 	origin: SkillOrigin
 	readOnly: boolean
+	/** True for loose single-.md discovered skills: the entry file IS the
+	 *  whole skill and skillDir may be a shared multi-skill root, so view()
+	 *  must reject file_path and skip linked-file enumeration. */
+	singleFile?: boolean
 }
 
 export interface SkillManagerOptions {
@@ -169,12 +167,16 @@ export interface SkillManagerOptions {
 /** Refuse mutations on skills that do not live under the writable harness root. */
 function readonlyGuard(loc: SkillLocation): string | null {
 	if (!loc.readOnly) return null
+	if (loc.origin === "discovered") {
+		return `Skill was discovered outside the harness skills dir (origin: ${loc.skillDir}) and is read-only. To customize it, copy it into the harness skills dir first.`
+	}
 	return `Skill is bundled with the harness (origin: ${loc.skillDir}) and is read-only. To customize it, copy it into the harness skills dir first.`
 }
 
 export class SkillManager {
 	private skillsDir: string
 	private bundledRoots: readonly string[]
+	private discoveredSkillsProvider?: () => readonly Skill[]
 
 	/**
 	 * @param skillsDir The single writable root this manager owns. Mutations
@@ -185,6 +187,18 @@ export class SkillManager {
 	constructor(skillsDir: string, options?: SkillManagerOptions) {
 		this.skillsDir = skillsDir
 		this.bundledRoots = options?.bundledRoots ?? []
+	}
+
+	/**
+	 * Session-scoped provider of skills discovered by pi's resource loader
+	 * (project .kimchi/skills, npm packages, .cursor/skills, configured
+	 * skillPaths) — everything that feeds the <available_skills> prompt block
+	 * but does not live under the manager's own roots. Consulted as the last
+	 * resolution tier in _findSkill so skill_view can load any advertised
+	 * skill, not just harness/bundled ones.
+	 */
+	setDiscoveredSkillsProvider(provider: () => readonly Skill[]): void {
+		this.discoveredSkillsProvider = provider
 	}
 
 	private _isUnderSkillsDir(skillDir: string): boolean {
@@ -198,12 +212,22 @@ export class SkillManager {
 	 * 1. Check <skillsDir>/<name>/SKILL.md directly (harness origin).
 	 * 2. Scan immediate subdirectories of skillsDir for <sub>/<name>/SKILL.md.
 	 * 3. Fall back to bundled roots, strongest (later) root first.
+	 * 4. Fall back to the session's discovered inventory (project skills,
+	 *    npm packages, .cursor/skills, configured skillPaths) — read-only.
+	 *    Skills hidden with disableModelInvocation are excluded here too,
+	 *    mirroring the prompt catalog's visibility rule.
 	 */
 	private async _findSkill(name: string): Promise<SkillLocation | null> {
 		const direct = join(this.skillsDir, name, "SKILL.md")
 		if (await this._exists(direct)) {
 			const skillDir = join(this.skillsDir, name)
-			return { skillDir, category: "", origin: "harness", readOnly: !this._isUnderSkillsDir(skillDir) }
+			return {
+				skillDir,
+				entryFile: "SKILL.md",
+				category: "",
+				origin: "harness",
+				readOnly: !this._isUnderSkillsDir(skillDir),
+			}
 		}
 
 		let entries: string[] = []
@@ -217,7 +241,13 @@ export class SkillManager {
 			const candidate = join(this.skillsDir, sub, name, "SKILL.md")
 			if (await this._exists(candidate)) {
 				const skillDir = join(this.skillsDir, sub, name)
-				return { skillDir, category: sub, origin: "harness", readOnly: !this._isUnderSkillsDir(skillDir) }
+				return {
+					skillDir,
+					entryFile: "SKILL.md",
+					category: sub,
+					origin: "harness",
+					readOnly: !this._isUnderSkillsDir(skillDir),
+				}
 			}
 		}
 
@@ -225,7 +255,47 @@ export class SkillManager {
 			const candidate = join(this.bundledRoots[i], name, "SKILL.md")
 			if (await this._exists(candidate)) {
 				const skillDir = join(this.bundledRoots[i], name)
-				return { skillDir, category: "", origin: "bundled", readOnly: !this._isUnderSkillsDir(skillDir) }
+				return {
+					skillDir,
+					entryFile: "SKILL.md",
+					category: "",
+					origin: "bundled",
+					readOnly: !this._isUnderSkillsDir(skillDir),
+				}
+			}
+		}
+
+		const discovered = this.discoveredSkillsProvider?.() ?? []
+		// Mirror the prompt catalog's visibility rule: skills with
+		// disableModelInvocation are user-invocation-only (pi's /skill:name
+		// commands, per upstream's formatSkillsForPrompt contract), so
+		// skill_view must not load them on the model's behalf.
+		const hit = discovered.find((s) => s.name === name && !s.disableModelInvocation)
+		if (hit) {
+			// pi's loader contract: filePath is the skill's entry file directly
+			// under baseDir — "<dir>/SKILL.md" for directory-shaped skills, the
+			// loose .md itself for single-file ones (root .md children of a skills
+			// root, single-.md skillPaths entries). We trust that contract rather
+			// than defensively re-deriving the anchor; linked-file resolution
+			// stays anchored at baseDir and view() defaults to the entry file.
+			// Loose skills (any entry not named SKILL.md) are a single file:
+			// their anchor dir can be a shared skills root, so a file_path read
+			// anchored there would resolve sibling skills' files — including
+			// ones excluded above via disableModelInvocation.
+			const singleFile = basename(hit.filePath) !== "SKILL.md"
+			return {
+				skillDir: hit.baseDir,
+				entryFile: basename(hit.filePath),
+				category: "",
+				origin: "discovered",
+				singleFile,
+				// Discovered skills are strictly read-only: they live outside the
+				// manager's writable roots (anything under them is already covered
+				// by the tiers above), and a loose .md sitting directly on a skills
+				// root must never let edit() write a stray root-level SKILL.md —
+				// per pi's loader that turns the root into a single-skill root and
+				// hides every directory-based skill under it from discovery.
+				readOnly: true,
 			}
 		}
 
@@ -515,7 +585,14 @@ export class SkillManager {
 			return { success: false, error: `Skill '${name}' not found.` }
 		}
 
-		const targetPath = filePath ? join(loc.skillDir, filePath) : join(loc.skillDir, "SKILL.md")
+		// Loose single-.md skills have no linked files, and their skillDir can be
+		// a shared skills root — reject file_path outright so the traversal guard
+		// below can never resolve a sibling skill's files through it.
+		if (filePath && loc.singleFile) {
+			return { success: false, error: `Skill '${name}' is a single-file skill with no linked files; omit file_path.` }
+		}
+
+		const targetPath = filePath ? join(loc.skillDir, filePath) : join(loc.skillDir, loc.entryFile)
 
 		// Path traversal guard
 		if (filePath) {
@@ -529,19 +606,23 @@ export class SkillManager {
 		try {
 			content = await readFile(targetPath, "utf-8")
 		} catch {
-			return { success: false, error: `File '${filePath ?? "SKILL.md"}' not found in skill '${name}'.` }
+			return { success: false, error: `File '${filePath ?? loc.entryFile}' not found in skill '${name}'.` }
 		}
 
 		if (filePath) {
 			return { success: true, message: `Loaded '${filePath}' from '${name}'.`, content }
 		}
 
-		// Collect linked files by subdirectory
+		// Collect linked files by subdirectory. Skipped for loose single-file
+		// skills: they have no linked files, and scanning the conventional
+		// subdirs under a shared skills root would leak sibling content paths.
 		const linked_files: Record<string, string[]> = {}
-		for (const subdir of ["references", "templates", "scripts", "assets"]) {
-			const files: string[] = []
-			await this._collectFiles(join(loc.skillDir, subdir), subdir, files)
-			if (files.length > 0) linked_files[subdir] = files
+		if (!loc.singleFile) {
+			for (const subdir of ["references", "templates", "scripts", "assets"]) {
+				const files: string[] = []
+				await this._collectFiles(join(loc.skillDir, subdir), subdir, files)
+				if (files.length > 0) linked_files[subdir] = files
+			}
 		}
 
 		return {
