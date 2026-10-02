@@ -76,6 +76,10 @@ test("uses Kimchi product language in MCP setup", async ({ terminal }) => {
 			responses: [],
 		},
 		async (_fixture, trace) => {
+			// The stdio fixture server can still be connecting when the ready prompt
+			// appears; its connection banner redraws and can swallow typed input on
+			// slow CI runners. Wait for the banner before submitting commands.
+			await waitForText(terminal, "MCP: 1 servers connected", { timeoutMs: STREAM_TIMEOUT_MS })
 			terminal.submit("/mcp setup")
 			await waitForText(terminal, "Kimchi does not include MCP server presets.", { timeoutMs: STREAM_TIMEOUT_MS })
 
@@ -106,6 +110,7 @@ test("advertises a truthful Kimchi-branded MCP gateway to the model", async ({ t
 			],
 		},
 		async (fixture, trace) => {
+			await waitForText(terminal, "MCP: 1 servers connected", { timeoutMs: STREAM_TIMEOUT_MS })
 			terminal.submit("Inspect the available MCP tools")
 			await waitForText(terminal, "The MCP contract is visible.", { timeoutMs: STREAM_TIMEOUT_MS })
 

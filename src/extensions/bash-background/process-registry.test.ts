@@ -12,7 +12,12 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { BashOperations } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { createProcessRegistry, OutputRingBuffer, type TailSnapshot } from "./process-registry.js"
+import {
+	createProcessRegistry,
+	MAX_COMPLETED_PROCESSES,
+	OutputRingBuffer,
+	type TailSnapshot,
+} from "./process-registry.js"
 
 // ─── Fake BashOperations ─────────────────────────────────────────────────────
 
@@ -220,7 +225,9 @@ describe("createProcessRegistry — snapshotTail", () => {
 
 		await registry.remove(handle)
 		expect(existsSync(spillPath)).toBe(true)
+		expect(registry.completedSnapshot(handle)?.final).toEqual(snap)
 		await registry.shutdown()
+		expect(registry.completedSnapshot(handle)).toBeUndefined()
 		expect(existsSync(spillPath)).toBe(false)
 	})
 
@@ -247,6 +254,30 @@ describe("createProcessRegistry — snapshotTail", () => {
 })
 
 describe("createProcessRegistry — kill", () => {
+	it("bounds completed history without keeping processes active", async () => {
+		const registry = createProcessRegistry()
+		const handles: string[] = []
+		for (let i = 0; i <= MAX_COMPLETED_PROCESSES; i++) {
+			const ops = createFakeOps()
+			const handle = registry.spawn(ops, "echo done", "/tmp", undefined, {
+				intervalSeconds: 1,
+				deadlineMs: Date.now() + 60_000,
+			})
+			handles.push(handle)
+			ops.emit("done\n")
+			await ops.exit(0)
+			await registry.remove(handle)
+		}
+		expect(registry.completedSnapshot(handles[0])).toBeUndefined()
+		expect(handles.slice(1).every((handle) => registry.completedSnapshot(handle)?.final.content === "done\n")).toBe(
+			true,
+		)
+		expect(registry.size).toBe(0)
+		expect(registry.listDisplaySnapshots()).toEqual([])
+		await registry.shutdown()
+		expect(handles.every((handle) => registry.completedSnapshot(handle) === undefined)).toBe(true)
+	})
+
 	it("aborts the running process and marks it stopped with reason 'stop'", async () => {
 		const ops = createFakeOps(0)
 		const registry = createProcessRegistry()
@@ -429,5 +460,131 @@ describe("createProcessRegistry — remove & shutdown", () => {
 		await registry.shutdown()
 
 		expect(existsSync(spillPath)).toBe(false)
+	})
+})
+
+describe("display snapshots", () => {
+	it("an observer failure cannot change process settlement or cleanup", async () => {
+		const ops = createFakeOps()
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "true", "/work", undefined, {
+			intervalSeconds: 15,
+			deadlineMs: Date.now() + 60_000,
+		})
+		const observer = vi
+			.fn()
+			.mockImplementationOnce(() => {})
+			.mockImplementation(() => {
+				throw new Error("view disposed")
+			})
+		registry.observeDisplay(handle, observer)
+		await ops.exit(0)
+		await expect(registry.whenExited(handle)).resolves.toEqual({ exitCode: 0 })
+		await expect(registry.remove(handle)).resolves.toBeUndefined()
+		expect(registry.size).toBe(0)
+	})
+
+	it("waits for complete UTF-8 characters across output chunks", () => {
+		const ring = new OutputRingBuffer(16)
+		const bytes = Buffer.from("𐍈")
+		ring.append(bytes.subarray(0, 2))
+		expect(ring.snapshot()).toEqual({ text: "", bytes: 2 })
+		ring.append(bytes.subarray(2))
+		expect(ring.snapshot()).toEqual({ text: "𐍈", bytes: 4 })
+	})
+	it("counts raw bytes independently of UTF-8 replacement and pending characters", () => {
+		const ring = new OutputRingBuffer(16)
+		ring.append(Buffer.from([0xff, 0xf0, 0x90, 0x8d]))
+		expect(ring.snapshot()).toEqual({ text: "�", bytes: 4 })
+		ring.append(Buffer.from([0x88]))
+		expect(ring.snapshot()).toEqual({ text: "�𐍈", bytes: 5 })
+	})
+	it("does not report an incomplete trailing character as omitted output", async () => {
+		const ops = createFakeOps()
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "echo unicode", "/work", undefined, {
+			intervalSeconds: 15,
+			deadlineMs: Date.now() + 60_000,
+		})
+		ops.emit(Buffer.from([0xf0, 0x90]))
+		expect(registry.displaySnapshot(handle)).toMatchObject({ output: "", outputBytes: 2, omittedBytes: 0 })
+		await registry.shutdown()
+	})
+
+	it("unsubscribes observers and settles timestamps only after output flush", async () => {
+		const ops = createFakeOps()
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "sleep 30", "/work", undefined, {
+			intervalSeconds: 15,
+			deadlineMs: Date.now() + 60_000,
+		})
+		const observer = vi.fn()
+		const off = registry.observeDisplay(handle, observer)
+		off()
+		const stopping = registry.kill(handle)
+		expect(registry.displaySnapshot(handle)?.finishedAt).toBeUndefined()
+		await stopping
+		expect(registry.displaySnapshot(handle)?.finishedAt).toEqual(expect.any(Number))
+		await registry.shutdown()
+		expect(observer).toHaveBeenCalledTimes(1)
+	})
+
+	it("captures immutable identity and bounded Unicode output without changing the deadline", async () => {
+		const ops = createFakeOps()
+		const registry = createProcessRegistry()
+		const command = "cat <<'EOF'\nhello\nEOF"
+		const deadlineMs = Date.now() + 60_000
+		const handle = registry.spawn(ops, command, "/work", undefined, {
+			intervalSeconds: 15,
+			deadlineMs,
+			toolCallId: "origin",
+			description: "Reading input",
+		})
+		const initial = registry.displaySnapshot(handle)
+		ops.emit("prefix𐍈tail")
+		const display = registry.displaySnapshot(handle, 6)
+		expect(display).toMatchObject({
+			handle,
+			command,
+			cwd: "/work",
+			description: "Reading input",
+			toolCallId: "origin",
+			output: "tail",
+			outputBytes: 4,
+			omittedBytes: 10,
+			deadlineMs,
+		})
+		expect(Object.isFrozen(display)).toBe(true)
+		expect(initial?.output).toBe("")
+		expect(registry.listDisplaySnapshots()).toHaveLength(1)
+		expect(registry.getEntry(handle)?.deadlineMs).toBe(deadlineMs)
+		expect(registry.displaySnapshot("missing")).toBeUndefined()
+		await registry.shutdown()
+	})
+
+	it("retains settled final data for an observer before removal, and unsubscribes", async () => {
+		const ops = createFakeOps()
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "exit 7", "/work", undefined, {
+			intervalSeconds: 15,
+			deadlineMs: Date.now() + 60_000,
+		})
+		const observer = vi.fn()
+		const off = registry.observeDisplay(handle, observer)
+		expect(observer).toHaveBeenCalledTimes(1)
+		ops.emit("last line")
+		await ops.exit(7)
+		await registry.whenExited(handle)
+		await registry.remove(handle)
+		expect(observer.mock.lastCall?.[0]).toMatchObject({
+			handle,
+			output: "last line",
+			state: "exited",
+			exitCode: 7,
+			finishedAt: expect.any(Number),
+		})
+		expect(registry.listDisplaySnapshots()).toEqual([])
+		off()
+		await registry.shutdown()
 	})
 })

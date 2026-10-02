@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
+	applyTuiEnvOverrides,
 	buildSkillPathOptions,
 	checkConfigFilePermissions,
 	clearApiKey,
@@ -20,6 +21,7 @@ import {
 	readStudioOnboardingSeenAt,
 	readTelemetryConfig,
 	readTeleportCompactHintEnabled,
+	resetInvalidLlmBaseUrlWarningForTests,
 	resolveEndpoints,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
@@ -30,6 +32,7 @@ import {
 	writeSessionModeWizardSeenAt,
 	writeStudioOnboardingSeenAt,
 	writeTeleportCompactHintEnabled,
+	writeTuiWheelScrollLines,
 } from "./config.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "./project-scope-trust.js"
 
@@ -42,6 +45,7 @@ describe("loadConfig", () => {
 		configPath = join(tempDir, "config.json")
 		vi.stubEnv("KIMCHI_API_KEY", "")
 		resetProjectScopeTrustForTests()
+		resetInvalidLlmBaseUrlWarningForTests()
 	})
 
 	afterEach(() => {
@@ -194,6 +198,61 @@ describe("loadConfig", () => {
 		rmSync(projectDir, { recursive: true, force: true })
 	})
 
+	it("reads tui.wheelScrollLines from global config", () => {
+		writeFileSync(configPath, JSON.stringify({ tui: { wheelScrollLines: 3 } }))
+		expect(loadConfig({ configPath }).tui?.wheelScrollLines).toBe(3)
+	})
+
+	it("rejects invalid tui.wheelScrollLines values", () => {
+		for (const value of [0, -2, "3", Number.NaN, Infinity, null, true]) {
+			writeFileSync(configPath, JSON.stringify({ tui: { wheelScrollLines: value } }))
+			expect(loadConfig({ configPath }).tui?.wheelScrollLines).toBeUndefined()
+		}
+		// non-object tui block is ignored entirely
+		writeFileSync(configPath, JSON.stringify({ tui: 3 }))
+		expect(loadConfig({ configPath }).tui).toBeUndefined()
+	})
+
+	it("floors fractional tui.wheelScrollLines in the pi-tui clamp, not at parse time", () => {
+		writeFileSync(configPath, JSON.stringify({ tui: { wheelScrollLines: 2.7 } }))
+		// parse accepts it; flooring is pi-tui's job (Math.max(1, Math.floor(...)))
+		expect(loadConfig({ configPath }).tui?.wheelScrollLines).toBe(2.7)
+	})
+
+	it("project tui.wheelScrollLines overrides global", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ tui: { wheelScrollLines: 3 } }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ tui: { wheelScrollLines: 5 } }))
+
+		setProjectScopeTrusted(projectDir, true)
+		expect(loadConfig({ configPath: globalPath, cwd: projectDir }).tui?.wheelScrollLines).toBe(5)
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("untrusted project cannot set tui.wheelScrollLines", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ tui: { wheelScrollLines: 3 } }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ tui: { wheelScrollLines: 99 } }))
+
+		// no setProjectScopeTrusted call — project stays untrusted
+		expect(loadConfig({ configPath: globalPath, cwd: projectDir }).tui?.wheelScrollLines).toBe(3)
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
 	it("reports only explicitly persisted legacy MCP keys", () => {
 		const projectDir = join(tempDir, "project")
 		const projectPath = join(projectDir, ".kimchi", "config.json")
@@ -234,6 +293,79 @@ describe("loadConfig", () => {
 		const config = loadConfig({ configPath })
 		expect(config.customLlmEndpoint).toBe("https://custom.example")
 		expect(config.llmEndpoint).toBe("https://custom.example")
+	})
+
+	it("KIMCHI_BASE_URL overrides the configured llmEndpoint", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "my-key", llmEndpoint: "https://custom.example" }))
+		vi.stubEnv("KIMCHI_BASE_URL", "https://env.example")
+		const config = loadConfig({ configPath })
+		expect(config.llmEndpoint).toBe("https://env.example/openai/v1")
+		expect(config.customLlmEndpoint).toBe("https://env.example")
+	})
+
+	it("KIMCHI_BASE_URL wins over the project config tier and trims trailing slashes", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ apiKey: "key", llmEndpoint: "https://global.example.com" }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ apiKey: "key", llmEndpoint: "https://project.example.com" }))
+
+		setProjectScopeTrusted(projectDir, true)
+		vi.stubEnv("KIMCHI_BASE_URL", "https://env.example/")
+		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+		expect(config.llmEndpoint).toBe("https://env.example/openai/v1")
+		expect(config.customLlmEndpoint).toBe("https://env.example")
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("treats a blank KIMCHI_BASE_URL as unset", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "my-key", llmEndpoint: "https://custom.example" }))
+		vi.stubEnv("KIMCHI_BASE_URL", "   ")
+		const config = loadConfig({ configPath })
+		expect(config.llmEndpoint).toBe("https://custom.example")
+		expect(config.customLlmEndpoint).toBe("https://custom.example")
+	})
+
+	it("warns once and ignores a malformed KIMCHI_BASE_URL", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "my-key", llmEndpoint: "https://custom.example" }))
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		vi.stubEnv("KIMCHI_BASE_URL", "https://")
+
+		const first = loadConfig({ configPath })
+		expect(first.llmEndpoint).toBe("https://custom.example")
+		expect(first.customLlmEndpoint).toBe("https://custom.example")
+
+		// Repeated resolution must not re-warn. (Other console.warn calls — e.g.
+		// the group/world-readable config warning — are unrelated and filtered out.)
+		const second = loadConfig({ configPath })
+		expect(second.llmEndpoint).toBe("https://custom.example")
+		const endpointWarns = warn.mock.calls
+			.map((args) => String(args[0]))
+			.filter((msg) => msg.includes("KIMCHI_BASE_URL"))
+		expect(endpointWarns).toHaveLength(1)
+		expect(endpointWarns[0]).toContain('"https://"')
+
+		warn.mockRestore()
+	})
+
+	it("rejects a non-http KIMCHI_BASE_URL scheme", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "my-key" }))
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		vi.stubEnv("KIMCHI_BASE_URL", "ftp://env.example")
+		const config = loadConfig({ configPath })
+		expect(config.llmEndpoint).toBe("https://llm.kimchi.dev/openai/v1")
+		expect(config.customLlmEndpoint).toBeUndefined()
+		const endpointWarns = warn.mock.calls
+			.map((args) => String(args[0]))
+			.filter((msg) => msg.includes("KIMCHI_BASE_URL"))
+		expect(endpointWarns).toHaveLength(1)
+		expect(endpointWarns[0]).toContain("ftp://env.example")
+		warn.mockRestore()
 	})
 
 	it("project llmEndpoint overrides global", () => {
@@ -450,6 +582,78 @@ describe("loadConfig", () => {
 
 		rmSync(globalDir, { recursive: true, force: true })
 		rmSync(projectDir, { recursive: true, force: true })
+	})
+})
+
+describe("writeTuiWheelScrollLines", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("writes into an existing tui block, preserving sibling keys", () => {
+		writeFileSync(configPath, JSON.stringify({ tui: { futureKnob: true } }))
+		writeTuiWheelScrollLines(3, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.tui).toEqual({ futureKnob: true, wheelScrollLines: 3 })
+	})
+
+	it("creates the tui block when absent, preserving top-level keys", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }))
+		writeTuiWheelScrollLines(2, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("k")
+		expect(raw.tui).toEqual({ wheelScrollLines: 2 })
+		expect(loadConfig({ configPath }).tui?.wheelScrollLines).toBe(2)
+	})
+
+	it("replaces a non-object tui value rather than spreading into it", () => {
+		writeFileSync(configPath, JSON.stringify({ tui: 5 }))
+		writeTuiWheelScrollLines(4, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.tui).toEqual({ wheelScrollLines: 4 })
+	})
+})
+
+describe("applyTuiEnvOverrides", () => {
+	const ENV_KEY = "KIMCHI_WHEEL_SCROLL_LINES"
+
+	beforeEach(() => {
+		// stubEnv with a fresh baseline so leaked values from other tests
+		// (or the developer's real shell env) can't skew expectations.
+		vi.stubEnv(ENV_KEY, "")
+		delete process.env[ENV_KEY]
+	})
+
+	afterEach(() => {
+		vi.unstubAllEnvs()
+		delete process.env[ENV_KEY]
+	})
+
+	it("maps tui.wheelScrollLines onto the env var when unset", () => {
+		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
+		applyTuiEnvOverrides({ ...config, tui: { wheelScrollLines: 3 } })
+		expect(process.env[ENV_KEY]).toBe("3")
+	})
+
+	it("does not overwrite a pre-set env var (env > config)", () => {
+		process.env[ENV_KEY] = "5"
+		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
+		applyTuiEnvOverrides({ ...config, tui: { wheelScrollLines: 3 } })
+		expect(process.env[ENV_KEY]).toBe("5")
+	})
+
+	it("does nothing when tui.wheelScrollLines is unconfigured", () => {
+		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
+		applyTuiEnvOverrides({ ...config, tui: undefined })
+		expect(process.env[ENV_KEY]).toBeUndefined()
 	})
 })
 

@@ -5,7 +5,16 @@ import {
 	type KeybindingsManager,
 	type Theme,
 } from "@earendil-works/pi-coding-agent"
-import { type Component, Container, Key, Markdown, matchesKey, Spacer, Text, type TUI } from "@earendil-works/pi-tui"
+import {
+	type Component,
+	Key,
+	Markdown,
+	matchesKey,
+	type TUI,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+} from "@earendil-works/pi-tui"
+import { createModalChrome } from "../../components/modal-chrome.js"
 import { isRemoteRunEnabled } from "../remote-run/runner.js"
 import { withWorkingHidden } from "./prompt-ui.js"
 
@@ -76,26 +85,50 @@ export async function promptPlanReview(
 	return withWorkingHidden(
 		ui,
 		() =>
-			ui.custom?.<PlanReviewOutcome>((tui, theme, keybindings, done) =>
-				createPlanReviewComponent(tui, theme, keybindings, opts.planMarkdown, done, opts.onDismissRegister),
+			ui.custom?.<PlanReviewOutcome>(
+				(tui, theme, keybindings, done) =>
+					createPlanReviewComponent(tui, theme, keybindings, opts.planMarkdown, done, opts.onDismissRegister),
+				{
+					// Overlay mode so the fullscreen viewport defers keyboard input
+					// and routes mouse-wheel events over the dialog to handleMouse
+					// instead of scrolling the chat transcript behind it. The
+					// component self-caps its height, so no maxHeight is needed here.
+					overlay: true,
+					overlayOptions: { width: "95%" },
+				},
 			) ?? Promise.resolve(undefined),
 	)
 }
 
-class PlanReviewComponent extends Container {
-	private static readonly rail = " ▍ "
+class PlanReviewComponent implements Component {
+	/** Lines reserved around the markdown window: frame (2, title drawn in
+	 *  the top border) + spacer (1) + prompt (1) + spacer (1) + hint (1) +
+	 *  positioning slack (3). Deliberately conservative so the overlay never
+	 *  exceeds the terminal height; the decision options count is added on
+	 *  top. */
+	private static readonly reservedChromeLines = 9
+	/** Lines reserved for the feedback editor (in place of the decision options). */
+	private static readonly feedbackEditorLines = 8
 
 	private readonly markdown: Markdown
 	private readonly done: (result: PlanReviewOutcome) => void
 	private readonly theme: Theme
 	private readonly tui: TUI
 	private readonly keybindings: KeybindingsManager
-	private readonly decisionOptions = new Container()
 	private readonly options: string[]
 	private selectedIndex = 0
 	private mode: "decision" | "feedback" = "decision"
 	private editor: ExtensionEditorComponent | undefined
 	private dismissed = false
+	/** Top line of the visible markdown window (internal scrolling). */
+	private scrollOffset = 0
+	/** Max valid scrollOffset measured during the last render — lets key
+	 *  handling clamp without re-measuring the markdown. */
+	private maxScrollOffset = 0
+	/** Where the feedback editor sat in the last render (component-local
+	 *  rows and columns), so mouse events over it can be forwarded with
+	 *  local coords. */
+	private editorBounds = { top: 0, height: 0, left: 0, width: 0 }
 
 	constructor(
 		tui: TUI,
@@ -105,14 +138,12 @@ class PlanReviewComponent extends Container {
 		done: (result: PlanReviewOutcome) => void,
 		onDismissRegister?: (dismiss: () => void) => void,
 	) {
-		super()
 		this.tui = tui
 		this.theme = theme
 		this.keybindings = keybindings
 		this.done = done
 		this.options = getDecisionOptions()
 		this.markdown = new Markdown(planMarkdown, 1, 0, getMarkdownTheme())
-		this.showDecision()
 
 		// Register an external dismiss function so the caller can close
 		// the popup when plannotator decides first.
@@ -123,9 +154,108 @@ class PlanReviewComponent extends Container {
 		})
 	}
 
-	override render(width: number): string[] {
-		const contentWidth = Math.max(0, width - PlanReviewComponent.rail.length)
-		return this.withFrame(super.render(contentWidth), width)
+	/** Cap for the markdown window. The overlay is clipped to the terminal
+	 *  height and in fullscreen (alternate buffer) mode there is no scrollback,
+	 *  so the component manages its own visible window instead. In inline mode
+	 *  the cap avoids flooding the scrollback as well. Without a known terminal
+	 *  height (tests), no cap is applied. */
+	private maxVisibleMarkdownLines(): number {
+		const rows = this.tui.terminal.rows
+		if (!rows) return Number.MAX_SAFE_INTEGER
+		const belowPlan = this.mode === "decision" ? this.options.length : PlanReviewComponent.feedbackEditorLines
+		return Math.max(1, rows - PlanReviewComponent.reservedChromeLines - belowPlan)
+	}
+
+	invalidate(): void {
+		this.markdown.invalidate()
+		this.editor?.invalidate()
+	}
+
+	render(width: number): string[] {
+		const chrome = createModalChrome(this.theme, width)
+		const contentWidth = chrome.contentWidth
+		const markdownLines = this.markdown.render(contentWidth)
+		const visibleCount = this.maxVisibleMarkdownLines()
+		this.maxScrollOffset = Math.max(0, markdownLines.length - visibleCount)
+		this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, this.maxScrollOffset))
+		const visibleMarkdown = markdownLines.slice(this.scrollOffset, this.scrollOffset + visibleCount)
+		const lastVisible = Math.min(markdownLines.length, this.scrollOffset + visibleCount)
+
+		const body: string[] = [...visibleMarkdown, ""]
+		if (this.mode === "feedback") {
+			this.ensureEditor()
+			const editorLines = this.editor?.render(contentWidth) ?? []
+			// +1 for the frame's top border prepended below.
+			this.editorBounds = {
+				top: body.length + 1,
+				height: editorLines.length,
+				left: chrome.contentLeft,
+				width: contentWidth,
+			}
+			body.push(...editorLines, "")
+		} else {
+			body.push(
+				this.theme.fg("toolTitle", this.theme.bold("Proceed with this plan?")),
+				...this.renderDecisionOptions(),
+				"",
+				this.renderHint(markdownLines.length, lastVisible),
+			)
+		}
+		return [
+			chrome.topBorder("Plan review"),
+			...body.map((line) => (line === "" ? chrome.emptyRow : chrome.measuredRow(line))),
+			chrome.bottomBorder,
+		]
+	}
+
+	private renderHint(totalLines: number, lastVisible: number): string {
+		if (this.maxScrollOffset > 0) {
+			return this.theme.fg(
+				"muted",
+				`shift+↑/↓ scroll plan (${this.scrollOffset + 1}-${lastVisible} of ${totalLines}) · ↑/↓ select · enter confirm · esc cancel`,
+			)
+		}
+		return this.theme.fg("muted", "↑/↓ select · enter confirm · esc cancel")
+	}
+
+	/** Moves the plan window; returns whether the offset changed. */
+	private scrollByLines(delta: number): boolean {
+		const next = Math.max(0, Math.min(this.scrollOffset + delta, this.maxScrollOffset))
+		if (next === this.scrollOffset) return false
+		this.scrollOffset = next
+		return true
+	}
+
+	private scrollAndRender(delta: number): void {
+		if (this.scrollByLines(delta)) this.tui.requestRender()
+	}
+
+	/** Mouse wheel over the overlay. pi-tui hit-tests overlay bounds, splits
+	 *  batched stdin into single events, and converts notches to lines (honoring
+	 *  the user's wheel-scroll setting), so wheel input outside the dialog never
+	 *  reaches here. In feedback mode, events over the editor go to it first
+	 *  (click-to-position, autocomplete wheel); anything it leaves unhandled
+	 *  falls back to plan scrolling. */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const editorResult = this.dispatchToEditor(event)
+		if (editorResult) return editorResult
+		if (event.type !== "wheel" || !event.wheelDelta) return undefined
+		return { handled: true, render: this.scrollByLines(event.wheelDelta) }
+	}
+
+	private dispatchToEditor(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.mode !== "feedback" || !this.editor) return undefined
+		const { top, height, left, width } = this.editorBounds
+		const x = event.x - left
+		const y = event.y - top
+		if (x < 0 || y < 0 || y >= height) return undefined
+		const result = this.editor.handleMouse({ ...event, x, y, width, height })
+		if (!result) return undefined
+		// Drop the editor's dispatch target/focusTarget so pi-tui attributes focus
+		// and drag capture to this component: it already forwards every key to
+		// the editor and re-translates follow-up mouse events here.
+		const { handled, capture, focus, render } = result
+		return { handled, capture, focus, render }
 	}
 
 	handleInput(data: string): void {
@@ -135,10 +265,37 @@ class PlanReviewComponent extends Container {
 			return
 		}
 
+		// Plan scrolling. shift+up/down always work; pageUp/pageDown/home/end
+		// also reach the component in overlay mode (the fullscreen viewport
+		// defers input to the focused overlay).
+		if (matchesKey(data, "shift+up")) {
+			this.scrollAndRender(-1)
+			return
+		}
+		if (matchesKey(data, "shift+down")) {
+			this.scrollAndRender(1)
+			return
+		}
+		if (matchesKey(data, Key.pageUp)) {
+			this.scrollAndRender(-this.maxVisibleMarkdownLines())
+			return
+		}
+		if (matchesKey(data, Key.pageDown)) {
+			this.scrollAndRender(this.maxVisibleMarkdownLines())
+			return
+		}
+		if (matchesKey(data, Key.home)) {
+			this.scrollAndRender(-this.maxScrollOffset)
+			return
+		}
+		if (matchesKey(data, Key.end)) {
+			this.scrollAndRender(this.maxScrollOffset)
+			return
+		}
+
 		if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) {
 			const delta = matchesKey(data, Key.up) ? -1 : 1
 			this.selectedIndex = (this.selectedIndex + delta + this.options.length) % this.options.length
-			this.updateDecisionOptions()
 			this.tui.requestRender()
 			return
 		}
@@ -156,42 +313,9 @@ class PlanReviewComponent extends Container {
 				this.done({ kind: "start_cloud" })
 			} else {
 				this.mode = "feedback"
-				this.showFeedback()
+				this.ensureEditor()
 				this.tui.requestRender()
 			}
-		}
-	}
-
-	private showDecision(): void {
-		this.clear()
-		this.addStaticContent()
-		this.addChild(new Text(this.theme.fg("toolTitle", this.theme.bold("Proceed with this plan?")), 0, 0))
-		this.addChild(this.decisionOptions)
-		this.addChild(new Spacer(1))
-		this.updateDecisionOptions()
-	}
-
-	private showFeedback(): void {
-		this.clear()
-		this.addStaticContent()
-		this.ensureEditor()
-		if (this.editor) {
-			this.editor.focused = true
-			this.addChild(this.editor)
-			this.addChild(new Spacer(1))
-		}
-	}
-
-	private addStaticContent(): void {
-		this.addChild(new Text(this.theme.fg("toolTitle", this.theme.bold("Plan review")), 0, 0))
-		this.addChild(this.markdown)
-		this.addChild(new Spacer(1))
-	}
-
-	private updateDecisionOptions(): void {
-		this.decisionOptions.clear()
-		for (const line of this.renderDecisionOptions()) {
-			this.decisionOptions.addChild(new Text(line, 0, 0))
 		}
 	}
 
@@ -202,12 +326,6 @@ class PlanReviewComponent extends Container {
 			const styledLabel = selected ? this.theme.fg("accent", label) : this.theme.fg("text", label)
 			return `${marker}${styledLabel}`
 		})
-	}
-
-	private withFrame(lines: string[], width: number): string[] {
-		const rule = this.theme.fg("borderMuted", "─".repeat(Math.max(0, width)))
-		const rail = this.theme.fg("muted", PlanReviewComponent.rail)
-		return [rule, ...lines.map((line) => `${rail}${line}`), rule]
 	}
 
 	private ensureEditor(): void {
@@ -234,6 +352,6 @@ export function createPlanReviewComponent(
 	planMarkdown: string,
 	done: (result: PlanReviewOutcome) => void,
 	onDismissRegister?: (dismiss: () => void) => void,
-): Component {
+): PlanReviewComponent {
 	return new PlanReviewComponent(tui, theme, keybindings, planMarkdown, done, onDismissRegister)
 }

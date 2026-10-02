@@ -37,10 +37,10 @@ const MAIN_MODEL = {
 }
 
 // Actual card copy from prompts.ts (promptForCompoundApproval).
-const COMPOUND_CARD_HEADER = "The assistant wants to run a compound command with 4 subcommand(s):"
+const COMPOUND_CARD_HEADER = "The assistant wants to run this compound command:"
 const COMPOUND_CARD_QUESTION = "Allow the assistant to run this?"
-const REMEMBER_OPTION = "Allow all from now on"
-const UNREMEMBERABLE_WARNING = "Can't remember some subcommands"
+const REMEMBER_OPTION = "Allow all for this session"
+const UNREMEMBERABLE_WARNING = "This script needs approval each time"
 
 function bashToolCall(command: string) {
 	return { function: { name: "bash", arguments: JSON.stringify({ command }) } }
@@ -123,7 +123,7 @@ test("default mode: remember the mutable command without approving directory cha
 			trace.step("second compound executed without another prompt")
 
 			// No compound card is on screen right now (the variant ran silently).
-			expect(viewText(terminal)).not.toContain("The assistant wants to run a compound command")
+			expect(viewText(terminal)).not.toContain(COMPOUND_CARD_HEADER)
 			trace.step("no compound card visible after the arg variant")
 		},
 	)

@@ -77,6 +77,17 @@ export function selectableRegions(): KimchiRegion[] {
 	return regions.filter((region) => region.id === DEFAULT_REGION)
 }
 
+/**
+ * Low-level region → URL derivations.
+ *
+ * These are building blocks for `endpointsForRegion`/`resolveEndpoints` in
+ * src/config.ts, which layer the env overrides on top (KIMCHI_BASE_URL →
+ * every llmBaseUrl-derived endpoint, KIMCHI_WEB_APP_URL, KIMCHI_REMOTE_ENDPOINT).
+ * Production code must resolve endpoints through those — importing these
+ * helpers directly bypasses the overrides. Only use them directly for URLs
+ * that are genuinely region-fixed regardless of any env override (e.g.
+ * telemetry ingest URLs in src/integrations/constants.ts).
+ */
 /** Platform API base (`/v1/me`, teleport, agents, sandbox). */
 export function platformApiUrl(r: KimchiRegion): string {
 	return `${r.webAppUrl}/api`
@@ -115,7 +126,12 @@ export function telemetryMetricsUrl(r: KimchiRegion): string {
 	return `${r.castApiUrl}/ai-optimizer/v1beta/metrics:ingest`
 }
 
-/** Every endpoint derived from a region. */
+/** Every endpoint derived from a region.
+ *
+ * Building block for `endpointsForRegion`/`resolveEndpoints` in src/config.ts —
+ * see the note above `platformApiUrl`. Production code should consume the
+ * env-aware wrappers, not this function.
+ */
 export interface RegionEndpoints {
 	region: RegionId
 	webAppUrl: string

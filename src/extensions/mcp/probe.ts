@@ -272,9 +272,12 @@ function resolveProbeName(name: string, definition: ServerEntry): string {
 			if (account.status === "absent" || (account.status === "present" && !account.serverUrl)) return name
 			if (account.status === "present" && account.serverUrl === definition.url) return name
 		}
-	} catch {
+	} catch (error) {
 		// Credential inspection is best-effort, but credential preservation is
 		// fail-closed: an unverified URL must never reuse the durable account name.
+		console.warn(
+			`MCP probe: could not inspect stored credentials for "${name}": ${error instanceof Error ? error.message : String(error)}`,
+		)
 	}
 	return `__probe_${randomUUID()}`
 }

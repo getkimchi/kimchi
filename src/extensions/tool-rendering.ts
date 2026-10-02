@@ -662,7 +662,7 @@ function patchToolExecutionRenderers(): void {
 				renderApplyPatchCall(args, theme, ctx, (path: string) => shortPath(ctx.cwd ?? process.cwd(), path))
 		}
 		// Agent renders a dynamic persona header that the generic renderer cannot produce.
-		if (toolName === "Agent" && typeof originalGetCallRenderer === "function") {
+		if ((toolName === "Agent" || toolName === "bash_control") && typeof originalGetCallRenderer === "function") {
 			const renderer = originalGetCallRenderer.call(this)
 			if (renderer) return renderer
 		}
@@ -674,6 +674,10 @@ function patchToolExecutionRenderers(): void {
 
 	proto.getResultRenderer = function patchedGetResultRenderer() {
 		const toolName = typeof this?.toolName === "string" ? this.toolName : ""
+		if (toolName === "bash_control" && typeof originalGetResultRenderer === "function") {
+			const renderer = originalGetResultRenderer.call(this)
+			if (renderer) return renderer
+		}
 		if (toolName === "apply_patch") {
 			return (
 				result: AgentToolResult<unknown>,

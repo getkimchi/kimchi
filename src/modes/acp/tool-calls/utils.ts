@@ -17,6 +17,7 @@ import { asString, truncate } from "../utils.js"
 // still hit the "other" fallback in describeToolCall().
 const TOOL_KINDS: Record<string, ToolKind> = {
 	bash: "execute",
+	powershell: "execute",
 	read: "read",
 	ls: "read",
 	grep: "search",
@@ -28,21 +29,37 @@ const TOOL_KINDS: Record<string, ToolKind> = {
 	Agent: "think",
 }
 
+// Which argument becomes the title, per kind-mapped tool. Keyed on
+// TOOL_KINDS so a kind "other" tool can never get an argument-derived
+// title — those always title with the tool name. `file_path` first is
+// historical precedence; `path` is the schema-conformant alias.
+const TITLE_ARGS: Record<keyof typeof TOOL_KINDS, string[]> = {
+	bash: ["command"],
+	powershell: ["command"],
+	read: ["file_path", "path"],
+	write: ["file_path", "path"],
+	edit: ["file_path", "path"],
+	ls: ["path"],
+	grep: ["pattern"],
+	find: ["pattern"],
+	web_fetch: ["url"],
+	web_search: ["query"],
+	Agent: ["description"],
+}
+
 export function describeToolCall(
 	toolName: string,
 	args: unknown,
 ): { title: string; kind: ToolKind; locations: ToolCallLocation[] } {
 	const a = (args ?? {}) as Record<string, unknown>
-	const path = asString(a.file_path) ?? asString(a.path)
-	const command = asString(a.command)
-	const pattern = asString(a.pattern)
+	const titleArgNames = TITLE_ARGS[toolName] ?? []
+	const targeted = asString(a[titleArgNames[0] ?? ""]) ?? asString(a[titleArgNames[1] ?? ""])
 	// title carries the target/argument only; the ACP `kind` field drives the verb
-	// and icon on the client side. Bash puts its command here; file ops put the
-	// path; search ops put the pattern. Falls back to the tool name when we have
-	// no specific argument to show. Truncate every branch so a long absolute
-	// path or regex doesn't blow up client UIs (locations[].path keeps the full
-	// value for clients that want it).
-	const rawTitle = toolName === "bash" && command ? command : (path ?? pattern ?? toolName)
+	// and icon on the client side. Truncate so a long absolute path or regex
+	// doesn't blow up client UIs (locations[].path keeps the full value for
+	// clients that want it).
+	const rawTitle = targeted ?? toolName
+	const path = asString(a.file_path) || asString(a.path)
 	return {
 		title: truncate(rawTitle, 80),
 		kind: TOOL_KINDS[toolName] ?? "other",

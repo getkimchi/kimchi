@@ -51,7 +51,7 @@ The dedicated `MCP E2E` GitHub Actions workflow runs the aggregate suite for pul
 | direct tools and cache | first-session exposure specification and successful direct invocation after a real process restart |
 | failures | invalid arguments, startup failure, disconnect during a call, bounded slow calls, transport loss, malformed HTTP, and cancellation specification |
 | Streamable HTTP | initialization, session IDs, custom headers, static bearer authentication, unavailable server behavior, and legacy SSE fallback |
-| OAuth | protected-resource and authorization-server metadata, dynamic client registration, authorization code with PKCE, browser callback, denial, token failure, persistence, and refresh after restart |
+| OAuth | protected-resource and authorization-server metadata, dynamic client registration, authorization code with PKCE, browser callback, remote https redirect completed through the loopback callback, denial, token failure, persistence, and refresh after restart |
 | ACP | server probing, cache population, MCP-backed agent turns, image forwarding, authentication-required probing, OAuth login, and protected tool calls |
 | official conformance | the pinned runner's `initialize` and `tools_call` client scenarios against Kimchi's real ACP-hosted client stack |
 

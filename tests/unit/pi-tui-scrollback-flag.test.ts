@@ -1,5 +1,6 @@
 import { TuiMainScreen } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
+import { makeMockTerminal } from "./pi-tui-fake-terminal.js"
 
 /**
  * Regression test for the iTerm2 scroll-to-top bug.
@@ -12,38 +13,6 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
  * This test exercises the patched pi-tui directly and asserts the presence or
  * absence of ESC[3J in the terminal output based on the flag.
  */
-
-/**
- * Minimal fake terminal that satisfies the pi-tui Terminal interface.
- * We only need to capture everything written to stdout; input, resizing,
- * and cursor visibility methods are no-ops for this assertion.
- */
-function makeMockTerminal(): {
-	writes: string[]
-	terminal: import("@earendil-works/pi-tui").Terminal
-} {
-	const writes: string[] = []
-	return {
-		writes,
-		terminal: {
-			start: vi.fn(),
-			stop: vi.fn(),
-			drainInput: vi.fn().mockResolvedValue(undefined),
-			write: vi.fn((data: string) => writes.push(data)),
-			columns: 80,
-			rows: 24,
-			kittyProtocolActive: false,
-			moveBy: vi.fn(),
-			hideCursor: vi.fn(),
-			showCursor: vi.fn(),
-			clearLine: vi.fn(),
-			clearFromCursor: vi.fn(),
-			clearScreen: vi.fn(),
-			setTitle: vi.fn(),
-			setProgress: vi.fn(),
-		} as unknown as import("@earendil-works/pi-tui").Terminal,
-	}
-}
 
 /** Wait long enough for requestRender(true) -> process.nextTick -> doRender. */
 function flushRender(ms = 50): Promise<void> {

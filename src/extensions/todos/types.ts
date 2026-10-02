@@ -1,6 +1,12 @@
 export const TODO_TOOL_RESULT_SCHEMA_VERSION = 1 as const
 
-export const TODO_STATUSES = ["pending", "in_progress", "blocked", "completed"] as const
+export const TODO_STATUS = {
+	PENDING: "pending",
+	IN_PROGRESS: "in_progress",
+	BLOCKED: "blocked",
+	COMPLETED: "completed",
+} as const
+export const TODO_STATUSES = Object.values(TODO_STATUS)
 export type TodoStatus = (typeof TODO_STATUSES)[number]
 
 export interface TodoScopeGlobal {
