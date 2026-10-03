@@ -9,7 +9,13 @@ import { FERMENT_V2_STATUS, FERMENT_V2_STATUSES } from "../ferment-v2/types.js"
 import { TODO_CLOSURE_CUSTOM_TYPE, TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import todosExtension from "./index.js"
 import { TODO_STALENESS_CUSTOM_TYPE } from "./staleness-steers.js"
-import { __resetTodoStore, applyWriteTodos, registerActiveTodoScopeProvider } from "./store.js"
+import {
+	__resetTodoStore,
+	applyWriteTodos,
+	GLOBAL_TODO_SCOPE,
+	getTodosForScope,
+	registerActiveTodoScopeProvider,
+} from "./store.js"
 import { TODO_TOOL_NAMES } from "./tool.js"
 import { TODO_STATUS, type TodoDraft } from "./types.js"
 
@@ -265,6 +271,86 @@ describe("bounded todo cleanup", () => {
 		await h.end(["error", "aborted", "length", "toolUse"].includes(reason) ? reason : "stop")
 		unregister()
 		expect(h.closure()).toHaveLength(0)
+	})
+
+	it.each([
+		"aborted",
+		"error",
+	])("demotes orphaned in_progress todos to pending when the run is %s", async (stopReason) => {
+		// Aborted/errored turns have no follow-up model turn to fix bookkeeping,
+		// so without the demotion the item would render "1 running" forever.
+		const h = await harness()
+		h.write([
+			{ id: 1, content: "Inspect output", status: TODO_STATUS.IN_PROGRESS },
+			{ id: 2, content: "Compare results", status: TODO_STATUS.PENDING },
+			{ id: 3, content: "Summarize findings", status: TODO_STATUS.COMPLETED },
+		])
+		await h.work()
+		await h.end(stopReason)
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, h.manager.getSessionId()).map((todo) => todo.status)).toEqual([
+			"pending",
+			"pending",
+			"completed",
+		])
+		// The demotion is persisted as a hidden todo entry so restore replays it.
+		const demotions = h.appendEntry.mock.calls.filter(([type]) => type === TODO_CUSTOM_ENTRY_TYPE)
+		expect(demotions).toHaveLength(1)
+		expect(demotions[0]?.[1]).toMatchObject({
+			todos: expect.arrayContaining([expect.objectContaining({ content: "Inspect output", status: "pending" })]),
+		})
+		expect(h.closure()).toHaveLength(0)
+	})
+
+	it("replays the demotion when the session is restored after an abort", async () => {
+		const h = await harness()
+		h.appendEntry.mockImplementation((type, payload) => h.manager.appendCustomEntry(type, payload))
+		h.write([{ content: "Inspect output", status: TODO_STATUS.IN_PROGRESS }])
+		await h.end("aborted")
+		await h.fire("session_shutdown")
+		await h.fire("session_start", { reason: "resume" })
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, h.manager.getSessionId()).map((todo) => todo.status)).toEqual([
+			"pending",
+		])
+	})
+
+	it("does not write anything when an aborted run left nothing in progress", async () => {
+		const h = await harness()
+		h.write([
+			{ content: "Done earlier", status: TODO_STATUS.COMPLETED },
+			{ content: "Waiting on approval", status: TODO_STATUS.BLOCKED },
+		])
+		await h.end("aborted")
+		expect(h.appendEntry).not.toHaveBeenCalled()
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, h.manager.getSessionId()).map((todo) => todo.status)).toEqual([
+			"completed",
+			"blocked",
+		])
+	})
+
+	it("demotes ferment-step tasks but leaves the bridge-owned phase list untouched on abort", async () => {
+		const h = await harness()
+		const sessionId = h.manager.getSessionId()
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment", phaseId: "p1" },
+				todos: [{ content: "[Phase 1] Implement", status: TODO_STATUS.IN_PROGRESS }],
+			},
+			sessionId,
+		)
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment-step", phaseId: "p1", stepId: "s1" },
+				todos: [{ content: "Write the code", status: TODO_STATUS.IN_PROGRESS }],
+			},
+			sessionId,
+		)
+		await h.end("aborted")
+		expect(getTodosForScope({ kind: "ferment", phaseId: "p1" }, sessionId).map((todo) => todo.status)).toEqual([
+			"in_progress",
+		])
+		expect(
+			getTodosForScope({ kind: "ferment-step", phaseId: "p1", stepId: "s1" }, sessionId).map((todo) => todo.status),
+		).toEqual(["pending"])
 	})
 
 	it.each(FERMENT_V2_STATUSES)("respects %s Ferment ownership", async (status) => {
