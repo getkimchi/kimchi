@@ -7,7 +7,8 @@ test.use(TUI_TEST_CONFIG)
 /**
  * Widget shows the strip header (`▼ Todos · Global · done/total · N active (F7)`) and todo
  * items when the model writes todos with no explicit scope (default =
- * global). Also verifies the per-item status symbols (○, ▶, ✓).
+ * global). Also verifies the pending status symbol (○) and the running
+ * indicator in the header.
  */
 test("todo widget renders global scope with status symbols", async ({ terminal }) => {
 	await runKimchiSession(
@@ -44,12 +45,12 @@ test("todo widget renders global scope with status symbols", async ({ terminal }
 			await waitForText(terminal, "write e2e tests", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("todo items visible")
 
-			// Status symbols: ▶ for in_progress, ○ for pending.
+			// Status: header running count for in_progress, ○ for pending rows.
 			const text = terminal
 				.getViewableBuffer()
 				.map((r) => r.join(""))
 				.join("\n")
-			expect(text).toContain("▶")
+			expect(text).toContain("1 running")
 			expect(text).toContain("○")
 		},
 	)
@@ -190,9 +191,11 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 			await waitForText(terminal, "Todos · 0/4", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("todo widget appeared — update_todos succeeded during ferment")
 
-			await waitForText(terminal, "Todos · Global", { timeoutMs: INPUT_TIMEOUT_MS })
-			await waitForText(terminal, "write the code", { timeoutMs: INPUT_TIMEOUT_MS })
-			await waitForText(terminal, "run tests", { timeoutMs: INPUT_TIMEOUT_MS })
+			// The 3-row viewport shows the ferment scope window; the global scope
+			// group (label + 2 model-written todos) rolls out below.
+			await waitForText(terminal, "Todos · Ferment", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "Write a todo list via update_todos", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "↓ 3 more", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("todo items visible during ferment")
 		},
 	)
@@ -232,16 +235,23 @@ test("todo widget summary reflects mixed-status counts", async ({ terminal }) =>
 			terminal.submit("Add mixed todos")
 			trace.step("submitted prompt")
 
-			await waitForText(terminal, "Todos · Global · 1/4 · 3 active ·", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "Todos · Global · 1/4 ·", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForText(terminal, "1 blocked", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("header count and blocked suffix visible")
 
-			// All 4 items should appear with their status symbols.
+			// The 3-row viewport shows pending/in_progress/blocked; the completed
+			// item rolls out of the window (window stays around the active row).
 			await waitForText(terminal, "pending item", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "active item", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "blocked item", { timeoutMs: INPUT_TIMEOUT_MS })
-			await waitForText(terminal, "done item", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("all items visible")
+			await waitForText(terminal, "↓ 1 more", { timeoutMs: INPUT_TIMEOUT_MS })
+			expect(
+				terminal
+					.getViewableBuffer()
+					.map((r) => r.join(""))
+					.join("\n"),
+			).not.toContain("done item")
+			trace.step("active items visible; completed item rolled out")
 		},
 	)
 })
@@ -275,14 +285,14 @@ test("todo widget auto-collapses long lists and expands to a scrollable viewport
 
 			// 19 items exceed the auto-collapse threshold: the ambient strip is a
 			// single status line with no todo rows.
-			await waitForText(terminal, "▶ Todos · Global · 9/19 ·", {
+			await waitForText(terminal, "● Todos · Global · 9/19 ·", {
 				timeoutMs: STREAM_TIMEOUT_MS,
 				full: false,
 			})
 			trace.step("auto-collapsed status line visible")
 
 			let text = viewText(terminal)
-			expect(text).not.toContain(" 10.  ▶ task 10")
+			expect(text).not.toContain("task 10")
 
 			// Explicit expansion reveals the scrollable viewport around active work.
 			// "/todos expand" exactly matches an autocomplete entry, so the first
@@ -296,16 +306,19 @@ test("todo widget auto-collapses long lists and expands to a scrollable viewport
 
 			await waitForText(terminal, "▼ Todos · Global · 9/19 ·", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "↑ 7 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "  8.  ✓ task 8", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "  9.  ✓ task 9", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, " 10.  ▶ task 10", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "↓ 4 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "scroll ·", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  ✓ task 8", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  ✓ task 9", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			// in_progress rows render a rotating spinner glyph — match the text only.
+			await waitForText(terminal, " task 10", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "↓ 9 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("scrollable active viewport visible after expand")
 
 			text = viewText(terminal)
-			expect(text).not.toContain("  1.  ✓ task 1")
-			expect(text).not.toContain(" 19.  ○ task 19")
+			// Anchor with newline: "  ✓ task 1" alone is a prefix of "  ✓ task 11" etc.
+			expect(text).not.toContain("  ✓ task 1\n")
+			expect(text).not.toContain("  ○ task 19")
+			// No dangling scroll hint below the strip.
+			expect(text.split("\n").some((line) => line.trim() === "scroll")).toBe(false)
 		},
 	)
 })
@@ -350,13 +363,14 @@ test("todo widget anchors completed overflow at the end", async ({ terminal }) =
 			terminal.submit("")
 
 			await waitForText(terminal, "▼ Todos · Global · 19/19", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "↑ 10 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, " 11.  ✓ task 11", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, " 19.  ✓ task 19", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "↑ 16 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  ✓ task 17", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  ✓ task 19", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("completed end window visible")
 
 			const text = viewText(terminal)
-			expect(text).not.toContain("  1.  ✓ task 1")
+			// Anchor with newline: "  ✓ task 1" alone is a prefix of "  ✓ task 11" etc.
+			expect(text).not.toContain("  ✓ task 1\n")
 			expect(text).not.toContain("↓ ")
 		},
 	)

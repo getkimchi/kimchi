@@ -11,6 +11,7 @@ import { TODO_CLOSURE_CUSTOM_TYPE, TODO_CUSTOM_ENTRY_TYPE } from "./constants.js
 import { registerTodoStatePersistence } from "./context-state.js"
 import { registerFermentTodoPromptBlock } from "./ferment-prompt-block.js"
 import { registerTodoPromptBlock } from "./prompt-block.js"
+import { parseTodoScopeKey } from "./scope.js"
 import { getWriteTodosDetails, isTodoWriteToolName } from "./session.js"
 import {
 	createThresholdSteerTracker,
@@ -20,8 +21,10 @@ import {
 	TODO_STALENESS_THRESHOLDS,
 } from "./staleness-steers.js"
 import {
+	applyWriteTodos,
 	bumpToolCallsSinceTodoWrite,
 	bumpWorkToolCalls,
+	getTodoState,
 	getTodosForScope,
 	getToolCallsSinceTodoWrite,
 	getWorkToolCalls,
@@ -34,7 +37,7 @@ import {
 	subscribeTodoStore,
 } from "./store.js"
 import { registerTodosTool } from "./tool.js"
-import { TODO_STATUS } from "./types.js"
+import { TODO_STATUS, type TodoScope } from "./types.js"
 import {
 	disposeTodoWidget,
 	ensureTodoWidget,
@@ -57,6 +60,41 @@ export * from "./widget.js"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object"
+}
+
+/** An aborted or errored turn has no follow-up model turn to correct todo
+ *  bookkeeping, so any item left in_progress would keep rendering "N running"
+ *  (and the spinner) even though nothing is executing anymore. Demote model-
+ *  writable scopes (global, ferment-step) back to pending and persist the
+ *  correction as a hidden entry (same mechanism the ferment bridge uses), so
+ *  session restore replays the demoted state too. The ferment phase list is
+ *  bridge-owned — its statuses derive from the ferment lifecycle — and is
+ *  deliberately left untouched. */
+function demoteStaleInProgress(pi: ExtensionAPI, ctx: ExtensionContext): boolean {
+	const sessionId = ctx.sessionManager.getSessionId()
+	let changed = false
+	for (const [scopeKey, scopeState] of Object.entries(getTodoState(sessionId).byScope)) {
+		const todos = scopeState.todos
+		if (!todos.some((todo) => todo.status === TODO_STATUS.IN_PROGRESS)) continue
+		let scope: TodoScope
+		try {
+			scope = parseTodoScopeKey(scopeKey)
+		} catch {
+			continue
+		}
+		if (scope.kind === "ferment") continue
+		const demoted = todos.map((todo) =>
+			todo.status === TODO_STATUS.IN_PROGRESS ? { ...todo, status: TODO_STATUS.PENDING } : todo,
+		)
+		const details = applyWriteTodos({ scope, todos: demoted }, sessionId)
+		try {
+			pi.appendEntry(TODO_CUSTOM_ENTRY_TYPE, details)
+		} catch (error) {
+			console.error("[todos] Failed to persist abort demotion:", error)
+		}
+		changed = true
+	}
+	return changed
 }
 
 function restoreTodoStoreFromSessionEntries(sessionManager: Pick<SessionManager, "getBranch" | "getSessionId">): void {
@@ -255,8 +293,12 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	pi.on("turn_end", (event, ctx) => {
 		const message = event.message
 		if (!isRecord(message) || message.role !== "assistant") return
+		if (message.stopReason === "aborted" || message.stopReason === "error") {
+			demoteStaleInProgress(pi, ctx)
+			syncTodoWidget(ctx)
+			return
+		}
 		if ((event.toolResults as readonly unknown[]).length > 0 || ctx.hasPendingMessages?.()) return
-		if (message.stopReason === "aborted" || message.stopReason === "error") return
 		syncTodoWidget(ctx)
 		if (message.stopReason !== "stop" || isAwaitingUserAnswer(message)) return
 		const scope = resolveTodoScope()

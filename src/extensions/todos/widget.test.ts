@@ -12,7 +12,9 @@ import {
 	expandTodoWidget,
 	getTodoAutoCollapseThreshold,
 	openTodoWidget,
+	remountTodosWidget,
 	resetTodoWidgetState,
+	SPINNER_INTERVAL_MS,
 	setTodoCrowding,
 	syncTodoWidget,
 	toggleTodoWidget,
@@ -96,13 +98,13 @@ describe("todo widget helpers", () => {
 			TEST_SESSION_ID,
 		)
 
-		expect(__test_summarizeTodos(TEST_SESSION_ID)).toBe("1/4 done · 3 active · 1 blocked")
+		expect(__test_summarizeTodos(TEST_SESSION_ID)).toBe("1/4 done · 1 blocked")
 		expect(__test_buildTodoLines(theme, TEST_SESSION_ID)).toEqual([
 			"Todos · Global",
 			"",
-			"1/4 done · 3 active · 1 blocked",
+			"1/4 done · 1 blocked",
 			"",
-			"  1.  ▶ active",
+			"  1.  ⠋ active",
 			"  2.  ! blocked",
 			"  3.  ○ pending",
 			"  4.  ✓ done",
@@ -121,9 +123,9 @@ describe("todo widget helpers", () => {
 		)
 
 		const lines = __test_buildTodoLines(theme, TEST_SESSION_ID)
-		expect(lines).toContain("  1.  ▶ trace-visible id")
+		expect(lines).toContain("  1.  ⠋ trace-visible id")
 		expect(lines).toContain("  2.  ○ later id")
-		expect(lines).not.toContain("  6.  ▶ trace-visible id")
+		expect(lines).not.toContain("  6.  ⠋ trace-visible id")
 	})
 
 	it("auto-opens while active todos exist", () => {
@@ -135,8 +137,8 @@ describe("todo widget helpers", () => {
 
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
-		expect(instance.render(80)).toContain("▼ Todos · Global · 0/1 · 1 active (F7)")
-		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", "0/1 done · 1 active -> F7")
+		expect(instance.render(80)).toContain("▼ Todos · Global · 0/1 (F7 to collapse)")
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", "0/1 done -> F7")
 	})
 
 	it("auto-hides when all todos are completed", () => {
@@ -165,8 +167,8 @@ describe("todo widget helpers", () => {
 
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
-		expect(instance.render(80)).toContain("▼ Todos · Global · 1/1 ✓ · 0 active (F7)")
-		expect(instance.render(80)).toContain("  1.  ✓ done")
+		expect(instance.render(80)).toContain("▼ Todos · Global · 1/1 ✓ (F7 to collapse)")
+		expect(instance.render(80)).toContain("  ✓ done")
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", undefined)
 	})
 
@@ -188,16 +190,115 @@ describe("todo widget helpers", () => {
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
 		const lines = instance.render(120)
-		expect(lines[0]).toBe("▼ Todos · Global · 9/16 · 7 active (F7)")
+		expect(lines[0]).toBe("▼ Todos · Global · 9/16 · ⠋ 1 running (F7 to collapse)")
 		expect(lines).toContain("↑ 7 more")
-		expect(lines).toContain("  8.  ✓ task 8")
-		expect(lines).toContain("  9.  ✓ task 9")
-		expect(lines).toContain(" 10.  ▶ task 10")
-		expect(lines).toContain(" 15.  ○ task 15")
+		expect(lines).toContain("  ✓ task 8")
+		expect(lines).toContain("  ✓ task 9")
+		expect(lines).toContain("  ⠋ task 10")
+		// 3-row budget: nothing past the active row's window is visible.
+		expect(lines).toContain("↓ 6 more")
+		expect(lines.some((line: string) => line.includes("task 15"))).toBe(false)
+		// No dangling scroll hint below the window; the ↓ marker is last.
+		expect(lines.some((line: string) => line.trimEnd() === "scroll")).toBe(false)
+		expect(lines[lines.length - 1]).toBe("↓ 6 more")
+		expect(lines.some((line: string) => line.includes("✓ task 1 "))).toBe(false)
+	})
+
+	it("shows the last todo when the active row is at the end", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{
+				todos: Array.from({ length: 16 }, (_, index) => ({
+					content: `task ${index + 1}`,
+					status: index === 15 ? "in_progress" : "completed",
+				})),
+			},
+			TEST_SESSION_ID,
+		)
+
+		openTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		const lines = instance.render(120)
+		expect(lines).toContain("↑ 13 more")
+		expect(lines).toContain("  ✓ task 14")
+		expect(lines).toContain("  ✓ task 15")
+		expect(lines).toContain("  ⠋ task 16")
+		// Bottom-pinned window: no trailing ↓ marker, last row is last line.
+		expect(lines.some((line: string) => line.includes("↓"))).toBe(false)
+		expect(lines[lines.length - 1]).toBe("  ⠋ task 16")
+	})
+
+	it("grows the viewport to five rows on tall terminals", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{
+				todos: Array.from({ length: 19 }, (_, index) => ({
+					content: `task ${index + 1}`,
+					status: "pending",
+				})),
+			},
+			TEST_SESSION_ID,
+		)
+
+		openTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn(), terminal: { rows: 80 } }, theme)
+		const lines = instance.render(120)
+		expect(lines).toContain("  ○ task 5")
+		expect(lines).toContain("↓ 14 more")
+		expect(lines.some((line: string) => line.includes("  ○ task 6"))).toBe(false)
+	})
+
+	it("auto-collapses ambiently on extra-small terminals, regardless of item count", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{
+				todos: [
+					{ content: "task 1", status: "pending" },
+					{ content: "task 2", status: "pending" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+
+		syncTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const xs = component({ requestRender: vi.fn(), terminal: { rows: 20 } }, theme)
+		// 2 - 3 items normally render expanded; xs terminals stay a one-liner.
+		expect(xs.render(80)).toEqual(["● Todos · Global · 0/2 (F7 to expand)"])
+	})
+
+	it("shows one row at a time on extra-small terminals when explicitly expanded", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{
+				todos: [
+					{ content: "task 1", status: "completed" },
+					{ content: "task 2", status: "in_progress" },
+					{ content: "task 3", status: "pending" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+
+		openTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const xs = component({ requestRender: vi.fn(), terminal: { rows: 20 } }, theme)
+		const lines = xs.render(80)
+		// 1-row viewport pins exactly on the active row — no context rows above.
+		expect(lines).toContain("↑ 1 more")
+		expect(lines).toContain("  ⠋ task 2")
 		expect(lines).toContain("↓ 1 more")
-		expect(lines.some((line: string) => line.includes("scroll ·"))).toBe(true)
-		expect(lines.some((line: string) => line.includes("  1.  ✓ task 1"))).toBe(false)
-		expect(lines.some((line: string) => line.includes(" 16.  ○ task 16"))).toBe(false)
+		expect(lines.some((line: string) => line.includes("task 1") || line.includes("task 3"))).toBe(false)
 	})
 
 	it("does not treat todo content containing ' more' as a scroll marker", () => {
@@ -220,7 +321,7 @@ describe("todo widget helpers", () => {
 		const instance = component({ requestRender: vi.fn() }, theme)
 		const lines = instance.render(120)
 		expect(lines.some((line: string) => line.includes("write more tests"))).toBe(true)
-		expect(lines.some((line: string) => line.includes("scroll ·"))).toBe(false)
+		expect(lines.some((line: string) => line.trimEnd() === "scroll")).toBe(false)
 		expect(lines.some((line: string) => line.includes("↑ ") || line.includes("↓ "))).toBe(false)
 	})
 
@@ -242,9 +343,9 @@ describe("todo widget helpers", () => {
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
 		const lines = instance.render(120)
-		expect(lines).toContain("  1.  ✓ task 1")
-		expect(lines).toContain(" 10.  ▶ task 10")
-		expect(lines).toContain(" 11.  ○ task 11")
+		expect(lines).toContain("  ✓ task 1")
+		expect(lines).toContain("  ⠋ task 10")
+		expect(lines).toContain("  ○ task 11")
 		expect(lines).not.toContain("↑ 9 more")
 	})
 
@@ -267,11 +368,11 @@ describe("todo widget helpers", () => {
 		const instance = component({ requestRender: vi.fn() }, theme)
 		const lines = instance.render(120)
 		expect(lines).toContain("↑ 7 more")
-		expect(lines).toContain("  8.  ✓ task 8")
-		expect(lines).toContain("  9.  ✓ task 9")
-		expect(lines).toContain(" 10.  ○ task 10")
-		expect(lines).toContain("↓ 4 more")
-		expect(lines.indexOf("↑ 7 more")).toBeLessThan(lines.indexOf("  8.  ✓ task 8"))
+		expect(lines).toContain("  ✓ task 8")
+		expect(lines).toContain("  ✓ task 9")
+		expect(lines).toContain("  ○ task 10")
+		expect(lines).toContain("↓ 9 more")
+		expect(lines.indexOf("↑ 7 more")).toBeLessThan(lines.indexOf("  ✓ task 8"))
 	})
 
 	it("keeps pending overflow within the capped widget height", () => {
@@ -292,10 +393,10 @@ describe("todo widget helpers", () => {
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
 		const lines = instance.render(120)
-		// header + up to 10 body lines (incl. scroll markers) + blank + hint
-		expect(lines.length).toBeLessThanOrEqual(13)
-		expect(lines).toContain("↓ 10 more")
-		expect(lines.some((line: string) => line.includes(" 10.  ○ task 10"))).toBe(false)
+		// header + up/marker + 3-row viewport budget
+		expect(lines.length).toBeLessThanOrEqual(6)
+		expect(lines).toContain("↓ 16 more")
+		expect(lines.some((line: string) => line.includes("  ○ task 4"))).toBe(false)
 	})
 
 	it("anchors completed overflow at the end", () => {
@@ -316,12 +417,12 @@ describe("todo widget helpers", () => {
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
 		const lines = instance.render(120)
-		expect(lines).toContain("▼ Todos · Global · 19/19 ✓ · 0 active (F7)")
-		expect(lines).toContain("↑ 10 more")
-		expect(lines).toContain(" 11.  ✓ task 11")
-		expect(lines).toContain(" 19.  ✓ task 19")
+		expect(lines).toContain("▼ Todos · Global · 19/19 ✓ (F7 to collapse)")
+		expect(lines).toContain("↑ 16 more")
+		expect(lines).toContain("  ✓ task 17")
+		expect(lines).toContain("  ✓ task 19")
 		expect(lines).not.toContain("↓ ")
-		expect(lines.some((line: string) => line.includes("  1.  ✓ task 1"))).toBe(false)
+		expect(lines.some((line: string) => line.includes("✓ task 9 "))).toBe(false)
 	})
 
 	it("scrolls the viewport on mouse wheel", () => {
@@ -339,8 +440,8 @@ describe("todo widget helpers", () => {
 		openTodoWidget(ctx)
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
-		expect(instance.render(120)).toContain("  1.  ○ task 1")
-		expect(instance.render(120)).toContain("↓ 7 more")
+		expect(instance.render(120)).toContain("  ○ task 1")
+		expect(instance.render(120)).toContain("↓ 13 more")
 
 		const result = instance.handleMouse({
 			type: "wheel",
@@ -360,8 +461,8 @@ describe("todo widget helpers", () => {
 		expect(result).toEqual({ handled: true })
 		const lines = instance.render(120)
 		expect(lines).toContain("↑ 3 more")
-		expect(lines.some((line: string) => line.includes("  1.  ○ task 1"))).toBe(false)
-		expect(lines).toContain("  4.  ○ task 4")
+		expect(lines.some((line: string) => line.includes("○ task 1 "))).toBe(false)
+		expect(lines).toContain("  ○ task 4")
 	})
 
 	it("re-registers the widget for a new context and ignores stale invalidations", () => {
@@ -446,7 +547,7 @@ describe("todo widget helpers", () => {
 			expect(lines[0]).toBe("Todos · Ferment (phase-1)")
 
 			// Phase header is bold and uses activeForm
-			expect(lines).toContain("  1.  ▶ Setup")
+			expect(lines).toContain("  1.  ⠋ Setup")
 
 			// Steps have the ↳ prefix (which is dimmed in actual rendering)
 			expect(lines.some((line) => line.includes("↳ Install dependencies"))).toBe(true)
@@ -556,7 +657,7 @@ describe("todo widget helpers", () => {
 		syncTodoWidget(ctx)
 
 		// 3 total: 1 completed, 2 active (1 in_progress + 1 pending)
-		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", "1/3 done · 2 active -> F7")
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", "1/3 done -> F7")
 	})
 })
 
@@ -576,24 +677,65 @@ describe("todo widget — single-line header and auto-collapse", () => {
 	it("renders the header with scope, counts, active, and F7", () => {
 		const counts = { total: 3, completed: 1, pending: 2, blocked: 0, inProgress: 0 }
 		expect(buildTodoHeaderLine(theme, counts, false, { scopeLabel: "Global" })).toBe(
-			"▼ Todos · Global · 1/3 · 2 active (F7)",
+			"▼ Todos · Global · 1/3 (F7 to collapse)",
 		)
 		expect(buildTodoHeaderLine(theme, counts, true, { scopeLabel: "Global" })).toBe(
-			"▶ Todos · Global · 1/3 · 2 active (F7)",
+			"● Todos · Global · 1/3 (F7 to expand)",
 		)
-		expect(buildTodoHeaderLine(theme, counts, false)).toBe("▼ Todos · 1/3 · 2 active (F7)")
+		expect(buildTodoHeaderLine(theme, counts, false)).toBe("▼ Todos · 1/3 (F7 to collapse)")
 		expect(buildTodoHeaderLine(theme, counts, false, { scopeLabel: "Ferment (phase-1)" })).toBe(
-			"▼ Todos · Ferment (phase-1) · 1/3 · 2 active (F7)",
+			"▼ Todos · Ferment (phase-1) · 1/3 (F7 to collapse)",
 		)
+	})
+
+	it("shows a live spinner count when work is in progress", () => {
+		const counts = { total: 4, completed: 1, pending: 2, blocked: 0, inProgress: 1 }
+		expect(buildTodoHeaderLine(theme, counts, true, { scopeLabel: "Global" })).toBe(
+			"● Todos · Global · 1/4 · ⠋ 1 running (F7 to expand)",
+		)
+		expect(buildTodoHeaderLine(theme, counts, false, { scopeLabel: "Global" })).toBe(
+			"▼ Todos · Global · 1/4 · ⠋ 1 running (F7 to collapse)",
+		)
+	})
+
+	it("ticks the running spinner and stops the timer on dispose", () => {
+		vi.useFakeTimers()
+		const previousCi = process.env.CI
+		delete process.env.CI
+		try {
+			const requestRender = vi.fn()
+			const setWidget = vi.fn()
+			const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+			applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, TEST_SESSION_ID)
+			syncTodoWidget(ctx)
+
+			const component = setWidget.mock.calls[0][1]
+			const instance = component({ requestRender }, theme)
+			expect(instance.render(80)[0]).toContain("⠋ 1 running")
+
+			requestRender.mockClear()
+			vi.advanceTimersByTime(SPINNER_INTERVAL_MS)
+			expect(requestRender).toHaveBeenCalledWith(true)
+			expect(instance.render(80)[0]).toContain("⠙ 1 running")
+
+			instance.dispose()
+			requestRender.mockClear()
+			vi.advanceTimersByTime(SPINNER_INTERVAL_MS * 2)
+			expect(requestRender).not.toHaveBeenCalled()
+		} finally {
+			vi.useRealTimers()
+			if (previousCi === undefined) delete process.env.CI
+			else process.env.CI = previousCi
+		}
 	})
 
 	it("appends the blocked count to the header when present", () => {
 		const counts = { total: 4, completed: 1, pending: 1, blocked: 1, inProgress: 1 }
 		expect(buildTodoHeaderLine(theme, counts, false, { scopeLabel: "Global" })).toBe(
-			"▼ Todos · Global · 1/4 · 3 active · 1 blocked (F7)",
+			"▼ Todos · Global · 1/4 · ⠋ 1 running · 1 blocked (F7 to collapse)",
 		)
 		expect(buildTodoHeaderLine(theme, counts, true, { scopeLabel: "Global" })).toBe(
-			"▶ Todos · Global · 1/4 · 3 active · 1 blocked (F7)",
+			"● Todos · Global · 1/4 · ⠋ 1 running · 1 blocked (F7 to expand)",
 		)
 	})
 
@@ -604,7 +746,25 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		expect(getTodoAutoCollapseThreshold({ KIMCHI_TODOS_COLLAPSE_THRESHOLD: "nope" })).toBe(5)
 	})
 
-	it("renders the full list at or below the auto-collapse threshold", () => {
+	it("renders the full list when it fits the row budget", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{
+				todos: Array.from({ length: 3 }, (_, index) => ({ content: `task ${index + 1}`, status: "pending" })),
+			},
+			TEST_SESSION_ID,
+		)
+
+		syncTodoWidget(ctx)
+
+		const lines = renderWidget(setWidget)
+		expect(lines).toContain("▼ Todos · Global · 0/3 (F7 to collapse)")
+		expect(lines).toContain("  ○ task 1")
+		expect(lines).toContain("  ○ task 3")
+	})
+
+	it("caps the ambient list at three rows with a ↓ marker past the budget", () => {
 		const setWidget = vi.fn()
 		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
 		applyWriteTodos(
@@ -617,9 +777,11 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		syncTodoWidget(ctx)
 
 		const lines = renderWidget(setWidget)
-		expect(lines).toContain("▼ Todos · Global · 0/5 · 5 active (F7)")
-		expect(lines).toContain("  1.  ○ task 1")
-		expect(lines).toContain("  5.  ○ task 5")
+		expect(lines).toContain("▼ Todos · Global · 0/5 (F7 to collapse)")
+		expect(lines).toContain("  ○ task 1")
+		expect(lines).toContain("  ○ task 3")
+		expect(lines).toContain("↓ 2 more")
+		expect(lines.some((line: string) => line.includes("task 4"))).toBe(false)
 	})
 
 	it("auto-collapses the ambient strip past the configurable item count", () => {
@@ -634,7 +796,32 @@ describe("todo widget — single-line header and auto-collapse", () => {
 
 		syncTodoWidget(ctx)
 
-		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/6 · 6 active (F7)"])
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/6 (F7 to expand)"])
+	})
+
+	it("auto-collapses when the expanded height would exceed ~25% of terminal rows", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		// Raise the item-count threshold so only the height rule applies.
+		process.env.KIMCHI_TODOS_COLLAPSE_THRESHOLD = "10"
+		try {
+			applyWriteTodos(
+				{
+					todos: Array.from({ length: 6 }, (_, index) => ({
+						content: `task ${index + 1}`,
+						status: "pending",
+					})),
+				},
+				TEST_SESSION_ID,
+			)
+			syncTodoWidget(ctx)
+			const component = setWidget.mock.calls[0][1]
+			// 20-row terminal → 25% = 5; header+3-row viewport+2 markers = 6 > 5 → collapse
+			const instance = component({ requestRender: vi.fn(), terminal: { rows: 20 } }, theme)
+			expect(instance.render(80)).toEqual(["● Todos · Global · 0/6 (F7 to expand)"])
+		} finally {
+			delete process.env.KIMCHI_TODOS_COLLAPSE_THRESHOLD
+		}
 	})
 
 	it("honours KIMCHI_TODOS_COLLAPSE_THRESHOLD", () => {
@@ -651,7 +838,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 
 			syncTodoWidget(ctx)
 
-			expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/3 · 3 active (F7)"])
+			expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/3 (F7 to expand)"])
 		} finally {
 			delete process.env.KIMCHI_TODOS_COLLAPSE_THRESHOLD
 		}
@@ -667,7 +854,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 			TEST_SESSION_ID,
 		)
 		syncTodoWidget(ctx)
-		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/6 · 6 active (F7)"])
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/6 (F7 to expand)"])
 
 		openTodoWidget(ctx)
 		// A subsequent store write re-syncs the widget; the explicit expansion
@@ -684,8 +871,30 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		syncTodoWidget(ctx)
 
 		const lines = renderWidget(setWidget)
-		expect(lines).toContain("▼ Todos · Global · 0/6 · 6 active (F7)")
-		expect(lines).toContain("  6.  ▶ task 6")
+		expect(lines).toContain("▼ Todos · Global · 0/6 · ⠋ 1 running (F7 to collapse)")
+		expect(lines).toContain("  ⠋ task 6")
+	})
+
+	it("uses the rotating spinner glyph for in_progress rows instead of ▶", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{
+				todos: [
+					{ content: "finished", status: "completed" },
+					{ content: "still running", status: "in_progress" },
+					{ content: "queued", status: "pending" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+
+		openTodoWidget(ctx)
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		const lines = instance.render(80)
+		expect(lines.some((line: string) => line.includes("⠋ still running"))).toBe(true)
+		expect(lines.some((line: string) => line.includes("▶ still running"))).toBe(false)
 	})
 
 	it("toggle cycles hidden → collapsed one-liner → expanded → collapsed", () => {
@@ -700,18 +909,19 @@ describe("todo widget — single-line header and auto-collapse", () => {
 
 		// hidden → visible (auto-collapsed one-liner past the threshold)
 		toggleTodoWidget(ctx)
-		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/6 · 6 active (F7)"])
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/6 (F7 to expand)"])
 
-		// one-liner → expanded list body
+		// one-liner → expanded list body (capped at the 3-row budget)
 		toggleTodoWidget(ctx)
 		const expanded = renderWidget(setWidget)
-		expect(expanded).toContain("▼ Todos · Global · 0/6 · 6 active (F7)")
-		expect(expanded).toContain("  6.  ○ task 6")
-		expect(expanded.some((line) => line.includes("F7 or /todos to collapse"))).toBe(true)
+		expect(expanded).toContain("▼ Todos · Global · 0/6 (F7 to collapse)")
+		expect(expanded).toContain("  ○ task 3")
+		expect(expanded).toContain("↓ 3 more")
+		expect(expanded.some((line: string) => line.includes("F7 or /todos"))).toBe(false)
 
 		// expanded → collapsed one-liner (never hides; Esc does that)
 		toggleTodoWidget(ctx)
-		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/6 · 6 active (F7)"])
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/6 (F7 to expand)"])
 	})
 
 	it("hides the strip entirely once everything is done, even when explicitly expanded", () => {
@@ -727,7 +937,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		openTodoWidget(ctx)
 		const component = setWidget.mock.calls[0][1]
 		const instance = component(tui, theme)
-		expect(instance.render(80)).toContain("  6.  ○ task 6")
+		expect(instance.render(80)).toContain("↓ 3 more")
 
 		applyWriteTodos(
 			{
@@ -753,7 +963,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		openTodoWidget(ctx)
 
 		const lines = renderWidget(setWidget)
-		expect(lines).toContain("▼ Todos · Global · 0/1 · 1 active (F7)")
+		expect(lines).toContain("▼ Todos · Global · 0/1 (F7 to collapse)")
 		expect(lines.filter((line) => line === "Todos · Global")).toEqual([])
 	})
 
@@ -771,13 +981,16 @@ describe("todo widget — single-line header and auto-collapse", () => {
 
 		openTodoWidget(ctx)
 
-		const lines = renderWidget(setWidget)
+		// On a 3-row-budget terminal the global row rolls out of view; a tall
+		// terminal (5-row budget) still shows both scope groups in full.
+		const component = setWidget.mock.calls[0][1]
+		const tall = component({ requestRender: vi.fn(), terminal: { rows: 80 } }, theme).render(80)
 		// Aggregate header counts both scopes (no single scope name)
-		expect(lines).toContain("▼ Todos · 0/2 · 2 active (F7)")
-		expect(lines).toContain("Todos · Step (phase-1/step-1)")
-		expect(lines).toContain("Todos · Global")
-		expect(lines).toContain("  1.  ▶ step task")
-		expect(lines).toContain("  1.  ○ global task")
+		expect(tall).toContain("▼ Todos · 0/2 · ⠋ 1 running (F7 to collapse)")
+		expect(tall).toContain("Todos · Step (phase-1/step-1)")
+		expect(tall).toContain("Todos · Global")
+		expect(tall).toContain("  ⠋ step task")
+		expect(tall).toContain("  ○ global task")
 	})
 
 	it("renders a one-line empty state", () => {
@@ -811,11 +1024,11 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		openTodoWidget(ctx)
 		const component = setWidget.mock.calls[0][1]
 		const instance = component(tui, theme)
-		expect(instance.render(80)).toContain("  1.  ○ task 1")
+		expect(instance.render(80)).toContain("  ○ task 1")
 
 		setTodoCrowding("agents", true)
 
-		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/1 · 1 active (F7)"])
+		expect(instance.render(80)).toEqual(["● Todos · Global · 0/1 (F7 to expand)"])
 		expect(tui.requestRender).toHaveBeenCalled()
 	})
 
@@ -825,13 +1038,13 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		applyWriteTodos({ todos: [{ content: "task 1", status: "pending" }] }, TEST_SESSION_ID)
 		syncTodoWidget(ctx)
 		setTodoCrowding("questionnaire", true)
-		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/1 · 1 active (F7)"])
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/1 (F7 to expand)"])
 
 		setTodoCrowding("questionnaire", false)
 
 		const lines = renderWidget(setWidget)
-		expect(lines).toContain("▼ Todos · Global · 0/1 · 1 active (F7)")
-		expect(lines).toContain("  1.  ○ task 1")
+		expect(lines).toContain("▼ Todos · Global · 0/1 (F7 to collapse)")
+		expect(lines).toContain("  ○ task 1")
 	})
 
 	it("still allows an explicit F7 expand while crowded", () => {
@@ -840,13 +1053,13 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		applyWriteTodos({ todos: [{ content: "task 1", status: "pending" }] }, TEST_SESSION_ID)
 		syncTodoWidget(ctx)
 		setTodoCrowding("agents", true)
-		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/1 · 1 active (F7)"])
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/1 (F7 to expand)"])
 
 		toggleTodoWidget(ctx)
 
 		const lines = renderWidget(setWidget)
-		expect(lines).toContain("▼ Todos · Global · 0/1 · 1 active (F7)")
-		expect(lines).toContain("  1.  ○ task 1")
+		expect(lines).toContain("▼ Todos · Global · 0/1 (F7 to collapse)")
+		expect(lines).toContain("  ○ task 1")
 	})
 
 	it("keeps crowding active until every reason is released", () => {
@@ -857,10 +1070,10 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		setTodoCrowding("agents", true)
 		setTodoCrowding("questionnaire", true)
 		setTodoCrowding("agents", false)
-		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/1 · 1 active (F7)"])
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/1 (F7 to expand)"])
 
 		setTodoCrowding("questionnaire", false)
-		expect(renderWidget(setWidget)).toContain("  1.  ○ task 1")
+		expect(renderWidget(setWidget)).toContain("  ○ task 1")
 	})
 })
 
@@ -906,14 +1119,14 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 
 	it("expands the auto-collapsed one-liner on left click", () => {
 		const { instance } = setupCollapsedStrip()
-		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/6 · 6 active (F7)"])
+		expect(instance.render(80)).toEqual(["● Todos · Global · 0/6 (F7 to expand)"])
 
 		const result = instance.handleMouse(leftClick())
 
 		expect(result).toEqual({ handled: true })
 		const lines = instance.render(80)
-		expect(lines).toContain("▼ Todos · Global · 0/6 · 6 active (F7)")
-		expect(lines).toContain("  6.  ○ task 6")
+		expect(lines).toContain("▼ Todos · Global · 0/6 (F7 to collapse)")
+		expect(lines).toContain("↓ 3 more")
 	})
 
 	it("collapses the expanded strip to the one-liner on left click, and expands on the next", () => {
@@ -923,16 +1136,16 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 		openTodoWidget(ctx)
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
-		expect(instance.render(80)).toContain("▼ Todos · Global · 0/1 · 1 active (F7)")
-		expect(instance.render(80)).toContain("  1.  ○ task 1")
+		expect(instance.render(80)).toContain("▼ Todos · Global · 0/1 (F7 to collapse)")
+		expect(instance.render(80)).toContain("  ○ task 1")
 
 		instance.handleMouse(leftClick())
-		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/1 · 1 active (F7)"])
+		expect(instance.render(80)).toEqual(["● Todos · Global · 0/1 (F7 to expand)"])
 
 		instance.handleMouse(leftClick())
 		const expanded = instance.render(80)
-		expect(expanded).toContain("▼ Todos · Global · 0/1 · 1 active (F7)")
-		expect(expanded).toContain("  1.  ○ task 1")
+		expect(expanded).toContain("▼ Todos · Global · 0/1 (F7 to collapse)")
+		expect(expanded).toContain("  ○ task 1")
 	})
 
 	it("keeps a click-collapsed strip collapsed across store syncs", () => {
@@ -943,12 +1156,12 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
 		instance.handleMouse(leftClick())
-		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/1 · 1 active (F7)"])
+		expect(instance.render(80)).toEqual(["● Todos · Global · 0/1 (F7 to expand)"])
 
 		applyWriteTodos({ todos: [{ id: 1, content: "task 1", status: "in_progress" }] }, TEST_SESSION_ID)
 		syncTodoWidget(ctx)
 
-		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/1 · 1 active (F7)"])
+		expect(instance.render(80)).toEqual(["● Todos · Global · 0/1 · ⠋ 1 running (F7 to expand)"])
 	})
 
 	it("lets wheel fall through on the collapsed one-liner, and ignores right-click", () => {
@@ -957,7 +1170,7 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 		expect(instance.handleMouse(leftClick({ type: "wheel", wheelDelta: -3 }))).toBeUndefined()
 		expect(instance.handleMouse(leftClick({ button: "right" }))).toBeUndefined()
 		// State untouched: still the collapsed one-liner.
-		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/6 · 6 active (F7)"])
+		expect(instance.render(80)).toEqual(["● Todos · Global · 0/6 (F7 to expand)"])
 	})
 
 	it("toggles only once on a double-click", () => {
@@ -968,7 +1181,44 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 
 		expect(result).toEqual({ handled: true })
 		// Expanded by the first click; the trailing click must not collapse it again.
-		expect(instance.render(80)).toContain("  6.  ○ task 6")
+		expect(instance.render(80)).toContain("↓ 3 more")
+	})
+})
+
+describe("remountTodosWidget", () => {
+	beforeEach(() => {
+		__resetTodoStore()
+		__resetTodoCrowding()
+		resetTodoWidgetState(createContext({ sessionManager: { getSessionId: () => TEST_SESSION_ID } }))
+	})
+
+	it("re-disposes and re-registers the widget so it moves to the tail of the framework map", () => {
+		// Regression: remountTodosWidget previously delegated to mountTodoWidget,
+		// whose `registered && same ctx` guard made the remount a silent no-op —
+		// the strip kept its original map position and flipped order relative to
+		// agents/tips whenever any widget re-registered.
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos({ todos: [{ content: "task", status: "pending" }] }, TEST_SESSION_ID)
+		syncTodoWidget(ctx)
+		expect(setWidget).toHaveBeenCalledTimes(1)
+
+		remountTodosWidget()
+
+		// Disposal pass (undefined) followed by the re-registration (factory).
+		expect(setWidget).toHaveBeenCalledTimes(3)
+		expect(setWidget.mock.calls[1][0]).toBe("kimchi-todos")
+		expect(setWidget.mock.calls[1][1]).toBeUndefined()
+		expect(setWidget.mock.calls[2][0]).toBe("kimchi-todos")
+		expect(typeof setWidget.mock.calls[2][1]).toBe("function")
+		// The re-mounted component is fully functional.
+		const instance = setWidget.mock.calls[2][1]({ requestRender: vi.fn() }, theme)
+		expect(instance.render(80).join("\n")).toContain("Todos")
+	})
+
+	it("does nothing when no widget is registered", () => {
+		// beforeEach deleted every widget state, so there is nothing to remount.
+		expect(() => remountTodosWidget()).not.toThrow()
 	})
 })
 
