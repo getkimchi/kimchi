@@ -282,7 +282,7 @@ test("todo widget auto-collapses long lists and expands to a scrollable viewport
 			trace.step("auto-collapsed status line visible")
 
 			let text = viewText(terminal)
-			expect(text).not.toContain(" 10.  ▶ task 10")
+			expect(text).not.toContain("      ▶ task 10")
 
 			// Explicit expansion reveals the scrollable viewport around active work.
 			// "/todos expand" exactly matches an autocomplete entry, so the first
@@ -296,16 +296,16 @@ test("todo widget auto-collapses long lists and expands to a scrollable viewport
 
 			await waitForText(terminal, "▼ Todos · Global · 9/19 ·", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "↑ 7 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "  8.  ✓ task 8", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "  9.  ✓ task 9", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, " 10.  ▶ task 10", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "      ✓ task 8", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "      ✓ task 9", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "      ▶ task 10", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "↓ 4 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "scroll ·", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("scrollable active viewport visible after expand")
 
 			text = viewText(terminal)
-			expect(text).not.toContain("  1.  ✓ task 1")
-			expect(text).not.toContain(" 19.  ○ task 19")
+			expect(text).not.toContain("      ✓ task 1")
+			expect(text).not.toContain("      ○ task 19")
 		},
 	)
 })
@@ -351,12 +351,12 @@ test("todo widget anchors completed overflow at the end", async ({ terminal }) =
 
 			await waitForText(terminal, "▼ Todos · Global · 19/19", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "↑ 10 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, " 11.  ✓ task 11", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, " 19.  ✓ task 19", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "      ✓ task 11", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "      ✓ task 19", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("completed end window visible")
 
 			const text = viewText(terminal)
-			expect(text).not.toContain("  1.  ✓ task 1")
+			expect(text).not.toContain("      ✓ task 1")
 			expect(text).not.toContain("↓ ")
 		},
 	)

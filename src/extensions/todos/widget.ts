@@ -224,15 +224,16 @@ export function summarizeTodos(sessionId: string): string {
 	return summarizeTodoCounts(getTodoCountsForScope(GLOBAL_TODO_SCOPE, sessionId))
 }
 
-/** Render a single todo line. Uses a per-scope sequential position (not the
- *  stored todo id) so numbers restart at 1 within each scope group. Kept
- *  because `/todos done <n>` / `/todos start <n>` address items by index. */
-function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: TodoScope): string {
-	const index = `${displayIndex + 1}`.padStart(2)
+/** Render a single todo line in the widget strip. No row number: a fixed
+ *  5-column indent is used so symbol + text stay in the same columns as
+ *  before and truncation math is unchanged. Row numbers are still available
+ *  for the notify output — see `numberedTodoLine()`. */
+function todoLine(todo: TodoItem, _displayIndex: number, theme: Theme, scope: TodoScope): string {
 	const symbol = TODO_SYMBOL[todo.status]
 	const isFerment = scope.kind === "ferment"
-	// Two-space indent before the (padded) index; keep numbering for `/todos done <n>`.
-	const prefix = ` ${index}. `
+	// Five-character indent replaces the old `" NN. "` numbering so row
+	// heights and truncation stay byte-identical.
+	const prefix = "     "
 
 	// Phase header — bold accent (bridge-written: "[Phase N] Name")
 	if (isFerment && todo.content.startsWith("[Phase ")) {
@@ -265,6 +266,14 @@ function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: Tod
 		return `${prefix} ${theme.fg("accent", symbol)} ${theme.fg("accent", todo.activeForm ?? todo.content)}`
 	}
 	return `${prefix} ${theme.fg("dim", symbol)} ${todo.content}`
+}
+
+/** Numbered row for `/todos` notify output. Applies a `N. ` prefix in place
+ *  of the strip's blank indent so the `/todos done <n>` index lines stay
+ *  intelligible; the positions restart per scope group. */
+function numberedTodoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: TodoScope): string {
+	const index = `${displayIndex + 1}`.padStart(2)
+	return todoLine(todo, displayIndex, theme, scope).replace(/^(\s{5})/, ` ${index}. `)
 }
 
 /** Short scope name for the one-line widget header (no "Todos · " prefix). */
@@ -419,7 +428,7 @@ export function buildTodoLines(theme: Theme, sessionId: string): string[] {
 		lines.push("")
 		let groupIndex = 0
 		for (const todo of group.todos) {
-			lines.push(todoLine(todo, groupIndex, theme, group.scope))
+			lines.push(numberedTodoLine(todo, groupIndex, theme, group.scope))
 			groupIndex++
 		}
 		lines.push("")
