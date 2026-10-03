@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs"
-import { join, resolve } from "node:path"
+import { join, relative, resolve, sep } from "node:path"
 import { describe, expect, it } from "vitest"
 import { ENV_VARS, IGNORED_ENV_VARS, TEST_SUITE_ENV_VARS } from "./env-vars.js"
 
@@ -54,7 +54,7 @@ const SCAN_SELF_FILES = new Set(["env-vars.ts", "env-vars.test.ts"])
 function readAllSources(): Map<string, string> {
 	const sources = new Map<string, string>()
 	for (const file of listSourceFiles(SRC)) {
-		const rel = file.replace(`${SRC}/`, "")
+		const rel = relative(SRC, file).split(sep).join("/")
 		if (SCAN_SELF_FILES.has(rel)) continue
 		sources.set(rel, readFileSync(file, "utf-8"))
 	}

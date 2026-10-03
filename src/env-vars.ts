@@ -102,7 +102,7 @@ export const ENV_VARS: EnvVarDef[] = [
 	},
 	{
 		name: "KIMCHI_MEMORY_DRAIN_CONCURRENCY",
-		description: "Concurrency limit for memory-capture drain jobs (default: MEMORY_DRAIN_CONCURRENCY)",
+		description: "Concurrency limit for memory-capture drain jobs (default: 6)",
 	},
 	{
 		name: "KIMCHI_FERMENTS_DIR",

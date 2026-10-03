@@ -1,15 +1,24 @@
 import { ENV_VARS, type EnvVarDef, IGNORED_ENV_VARS, TEST_SUITE_ENV_VARS } from "../env-vars.js"
 
-const BOLD = "\x1b[1m"
-const DIM = "\x1b[2m"
-const RESET = "\x1b[0m"
+// Keep piped output (`kimchi env > out.txt`, CI logs) free of escape codes.
+const COLOR = process.stdout.isTTY && !process.env.NO_COLOR
+
+function bold(text: string): string {
+	return COLOR ? `\x1b[1m${text}\x1b[0m` : text
+}
+
+function dim(text: string): string {
+	return COLOR ? `\x1b[2m${text}\x1b[0m` : text
+}
 
 const MASKED_VALUE = "****"
 const NOT_SET = "(not set)"
 
 function displayValue(def: EnvVarDef): string {
 	const raw = process.env[def.name]
-	if (raw === undefined) return DIM + NOT_SET + RESET
+	// An explicitly empty value is effectively unset — never render it as a
+	// masked secret, which would imply a real credential is configured.
+	if (raw === undefined || raw === "") return dim(NOT_SET)
 	if (def.secret) return `set: ${MASKED_VALUE}`
 	return `set: ${raw}`
 }
@@ -30,7 +39,7 @@ export async function runEnv(args: string[]): Promise<number> {
 		return 0
 	}
 
-	console.log(`${BOLD}Environment variables recognised by kimchi${RESET}`)
+	console.log(bold("Environment variables recognised by kimchi"))
 	console.log()
 	const pad = Math.max(...ENV_VARS.map((v) => v.name.length))
 	for (const def of ENV_VARS) {
@@ -39,6 +48,6 @@ export async function runEnv(args: string[]): Promise<number> {
 	}
 	console.log()
 	const hidden = IGNORED_ENV_VARS.length + TEST_SUITE_ENV_VARS.length
-	console.log(DIM + `(${hidden} internal/dev variables exist for tests and workflows; they are not listed.)` + RESET)
+	console.log(dim(`(${hidden} internal/dev variables exist for tests and workflows; they are not listed.)`))
 	return 0
 }
