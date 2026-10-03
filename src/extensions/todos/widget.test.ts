@@ -170,6 +170,60 @@ describe("todo widget helpers", () => {
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", undefined)
 	})
 
+	it("auto-scrolls the capped viewport to the active todo", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{
+				todos: Array.from({ length: 16 }, (_, index) => ({
+					content: `task ${index + 1}`,
+					status: index < 9 ? "completed" : index === 9 ? "in_progress" : "pending",
+				})),
+			},
+			TEST_SESSION_ID,
+		)
+
+		openTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		const lines = instance.render(120)
+		expect(lines[0]).toBe("▼ Todos · Global · 9/16 · 7 active (F7)")
+		expect(lines).toContain("↑ 7 more")
+		expect(lines).toContain("  8.  ✓ task 8")
+		expect(lines).toContain("  9.  ✓ task 9")
+		expect(lines).toContain(" 10.  ▶ task 10")
+		expect(lines).toContain(" 15.  ○ task 15")
+		expect(lines).toContain("↓ 1 more")
+		expect(lines.some((line: string) => line.includes("scroll ·"))).toBe(true)
+		expect(lines.some((line: string) => line.includes("  1.  ✓ task 1"))).toBe(false)
+		expect(lines.some((line: string) => line.includes(" 16.  ○ task 16"))).toBe(false)
+	})
+
+	it("does not treat todo content containing ' more' as a scroll marker", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{
+				todos: [
+					{ content: "write more tests", status: "pending" },
+					{ content: "ship more docs", status: "pending" },
+					{ content: "review more PRs", status: "pending" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+
+		openTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		const lines = instance.render(120)
+		expect(lines.some((line: string) => line.includes("write more tests"))).toBe(true)
+		expect(lines.some((line: string) => line.includes("scroll ·"))).toBe(false)
+		expect(lines.some((line: string) => line.includes("↑ ") || line.includes("↓ "))).toBe(false)
+	})
+
 	it("can expand the widget to show all todo rows", () => {
 		const setWidget = vi.fn()
 		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
@@ -192,6 +246,122 @@ describe("todo widget helpers", () => {
 		expect(lines).toContain(" 10.  ▶ task 10")
 		expect(lines).toContain(" 11.  ○ task 11")
 		expect(lines).not.toContain("↑ 9 more")
+	})
+
+	it("indicates scrollable overflow above and below the viewport", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{
+				todos: Array.from({ length: 19 }, (_, index) => ({
+					content: `task ${index + 1}`,
+					status: index < 9 ? "completed" : "pending",
+				})),
+			},
+			TEST_SESSION_ID,
+		)
+
+		openTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		const lines = instance.render(120)
+		expect(lines).toContain("↑ 7 more")
+		expect(lines).toContain("  8.  ✓ task 8")
+		expect(lines).toContain("  9.  ✓ task 9")
+		expect(lines).toContain(" 10.  ○ task 10")
+		expect(lines).toContain("↓ 4 more")
+		expect(lines.indexOf("↑ 7 more")).toBeLessThan(lines.indexOf("  8.  ✓ task 8"))
+	})
+
+	it("keeps pending overflow within the capped widget height", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{
+				todos: Array.from({ length: 19 }, (_, index) => ({
+					content: `task ${index + 1}`,
+					status: "pending",
+				})),
+			},
+			TEST_SESSION_ID,
+		)
+
+		openTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		const lines = instance.render(120)
+		// header + up to 10 body lines (incl. scroll markers) + blank + hint
+		expect(lines.length).toBeLessThanOrEqual(13)
+		expect(lines).toContain("↓ 10 more")
+		expect(lines.some((line: string) => line.includes(" 10.  ○ task 10"))).toBe(false)
+	})
+
+	it("anchors completed overflow at the end", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{
+				todos: Array.from({ length: 19 }, (_, index) => ({
+					content: `task ${index + 1}`,
+					status: "completed",
+				})),
+			},
+			TEST_SESSION_ID,
+		)
+
+		openTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		const lines = instance.render(120)
+		expect(lines).toContain("▼ Todos · Global · 19/19 ✓ · 0 active (F7)")
+		expect(lines).toContain("↑ 10 more")
+		expect(lines).toContain(" 11.  ✓ task 11")
+		expect(lines).toContain(" 19.  ✓ task 19")
+		expect(lines).not.toContain("↓ ")
+		expect(lines.some((line: string) => line.includes("  1.  ✓ task 1"))).toBe(false)
+	})
+
+	it("scrolls the viewport on mouse wheel", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{
+				todos: Array.from({ length: 16 }, (_, index) => ({
+					content: `task ${index + 1}`,
+					status: "pending",
+				})),
+			},
+			TEST_SESSION_ID,
+		)
+		openTodoWidget(ctx)
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		expect(instance.render(120)).toContain("  1.  ○ task 1")
+		expect(instance.render(120)).toContain("↓ 7 more")
+
+		const result = instance.handleMouse({
+			type: "wheel",
+			button: "none",
+			x: 2,
+			y: 2,
+			screenX: 2,
+			screenY: 5,
+			width: 80,
+			height: 12,
+			shift: false,
+			alt: false,
+			ctrl: false,
+			wheelDelta: 3,
+		})
+
+		expect(result).toEqual({ handled: true })
+		const lines = instance.render(120)
+		expect(lines).toContain("↑ 3 more")
+		expect(lines.some((line: string) => line.includes("  1.  ○ task 1"))).toBe(false)
+		expect(lines).toContain("  4.  ○ task 4")
 	})
 
 	it("re-registers the widget for a new context and ignores stale invalidations", () => {
@@ -779,6 +949,15 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 		syncTodoWidget(ctx)
 
 		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/1 · 1 active (F7)"])
+	})
+
+	it("lets wheel fall through on the collapsed one-liner, and ignores right-click", () => {
+		const { instance } = setupCollapsedStrip()
+
+		expect(instance.handleMouse(leftClick({ type: "wheel", wheelDelta: -3 }))).toBeUndefined()
+		expect(instance.handleMouse(leftClick({ button: "right" }))).toBeUndefined()
+		// State untouched: still the collapsed one-liner.
+		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/6 · 6 active (F7)"])
 	})
 
 	it("toggles only once on a double-click", () => {
