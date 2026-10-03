@@ -170,7 +170,7 @@ async function waitForWidgetToHide(terminal: Terminal): Promise<void> {
 	let view = viewText(terminal)
 	while (Date.now() - startedAt < STREAM_TIMEOUT_MS) {
 		// Header ends with the F7 shortcut hint while the strip is visible.
-		if (!view.includes("(F7)")) return
+		if (!view.includes("(F7 to ")) return
 		await new Promise((resolve) => setTimeout(resolve, 100))
 		view = viewText(terminal)
 	}

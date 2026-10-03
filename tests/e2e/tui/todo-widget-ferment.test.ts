@@ -300,7 +300,7 @@ test("todo widget auto-collapses long lists and expands to a scrollable viewport
 			await waitForText(terminal, "      ✓ task 9", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "      ▶ task 10", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "↓ 4 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "scroll ·", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "scroll", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("scrollable active viewport visible after expand")
 
 			text = viewText(terminal)
