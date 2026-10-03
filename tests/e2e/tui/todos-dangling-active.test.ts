@@ -62,9 +62,14 @@ for (const scenario of ["completed", "deferred", "ignored"]) {
 					expect(viewText(terminal)).not.toContain("(F7 to ")
 					terminal.submit("/todos")
 					await waitForText(terminal, "3/3 ✓", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+				} else if (deferred) {
+					// Deferred todo stays pending: no running segment, but the strip
+					// stays open with the pending row.
+					await waitForText(terminal, "Publish after approval", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+					expect(viewText(terminal)).toContain("2/3")
 				} else {
-					await waitForText(terminal, "2/3 · 1 active", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
-					if (deferred) expect(viewText(terminal)).toContain("Publish after approval")
+					// Ignored dangling in_progress row keeps the running segment.
+					await waitForText(terminal, "1 running", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 				}
 				const chat = fixture.fake.requests.filter((request) => request.url === "/openai/v1/chat/completions")
 				expect(chat).toHaveLength(scenario === "ignored" ? 10 : 11)
@@ -114,7 +119,7 @@ test("deferred todos do not trigger cleanup during planning or while waiting for
 			expect(chat()).toHaveLength(6)
 			expect(JSON.stringify(chat())).not.toContain("The turn ended with unfinished todos")
 			expect(viewText(terminal)).toContain("Publish after approval")
-			expect(viewText(terminal)).toContain("0/1 · 1 active")
+			expect(viewText(terminal)).toContain("0/1")
 			trace.step("conversational follow-up preserves deferred work without todo cleanup")
 		},
 	)

@@ -36,9 +36,9 @@ test("completed todos stop pinning the overlay", async ({ terminal }) => {
 		async (_fixture, trace) => {
 			terminal.submit("create todos")
 			await waitForText(terminal, "Todo plan created.", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "Todos · Global · 0/2 · 2 active", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "      ○ sticky panel", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "      ○ follow-up prompt", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "Todos · Global · 0/2", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  ○ sticky panel", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  ○ follow-up prompt", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("active todos overlay visible")
 
 			// Write + submit separately — one-shot `terminal.submit("/todos done 1\r")`
@@ -50,8 +50,8 @@ test("completed todos stop pinning the overlay", async ({ terminal }) => {
 			trace.step("typed /todos done 1")
 			terminal.submit("")
 			await waitForText(terminal, "Updated todo 1.", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "Todos · Global · 1/2 · 1 active", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "      ✓ sticky panel", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "Todos · Global · 1/2", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  ✓ sticky panel", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("partially completed overlay remains visible")
 
 			terminal.write("/todos done 2")
