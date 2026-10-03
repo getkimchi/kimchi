@@ -97,13 +97,13 @@ function makeDeps(cwd: string): ComposedDeps {
 	return {
 		cwd,
 		getSession: (id: string) => sessionRegistry.get(id),
-		launchSession: async (opts: { program: string; stopOnEntry?: boolean }) => {
-			const { adapterForDirectory, adapterForFile } = await import("./adapters.js")
-			const adapters = allAdapters()
-			// program may be an extensionless compiled binary — fall back to
-			// inspecting the sources next to it (mirrors dap.ts launchSession).
-			const adapter =
-				adapterForFile(opts.program, adapters) ?? adapterForDirectory(path.dirname(opts.program), adapters)
+		launchSession: async (opts: { program: string; stopOnEntry?: boolean; sourceFileHint?: string }) => {
+			const { resolveAdapterForProgram } = await import("./adapters.js")
+			const adapter = resolveAdapterForProgram({
+				program: opts.program,
+				sourceFileHint: opts.sourceFileHint,
+				adapters: allAdapters(),
+			})
 			if (!adapter) throw new Error(`No adapter for ${opts.program}`)
 			const client = await clientRegistry.getOrCreate(adapter, cwd)
 			const session = sessionRegistry.create({ adapter, cwd, client })
@@ -283,6 +283,32 @@ describe("DAP integration — Go (dlv dap)", () => {
 				line: 10,
 			})
 			expect(true).toBe(true)
+		},
+		30_000,
+	)
+
+	it.skipIf(!HAS_DLV)(
+		"debug_state_at debugs a prebuilt Go binary via mode exec + source-file hint",
+		async () => {
+			// Regression for the observed failure: program is an extensionless
+			// compiled binary (like `go test -c -o /tmp/x.test`). Adapter resolution
+			// must fall back to the source file, and the launch must use mode "exec"
+			// (mode "debug" would try to `go build` the binary path and fail inside
+			// dlv). The binary goes in a SOURCE-LESS directory so directory-based
+			// detection can't rescue the resolution — only the file hint can.
+			const binDir = tmpDir("dap-go-bin-")
+			const binPath = path.join(binDir, "fixture.testbin")
+			execFileSync("go", ["build", "-gcflags=all=-N -l", "-o", binPath, fixturePath], {
+				cwd: binDir,
+				stdio: "pipe",
+			})
+			const result = await debugStateAt(deps, {
+				file: fixturePath,
+				program: binPath,
+				line: 10,
+			})
+			expect(result.hit).toBe(true)
+			expect(result.backtrace[0]?.name).toMatch(/main/)
 		},
 		30_000,
 	)
