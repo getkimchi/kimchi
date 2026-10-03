@@ -167,7 +167,7 @@ describe("todo widget helpers", () => {
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
 		expect(instance.render(80)).toContain("▼ Todos · Global · 1/1 ✓ · 0 active (F7)")
-		expect(instance.render(80)).toContain("  1.  ✓ done")
+		expect(instance.render(80)).toContain("      ✓ done")
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", undefined)
 	})
 
@@ -191,14 +191,14 @@ describe("todo widget helpers", () => {
 		const lines = instance.render(120)
 		expect(lines[0]).toBe("▼ Todos · Global · 9/16 · 7 active · ⠋ 1 running (F7)")
 		expect(lines).toContain("↑ 7 more")
-		expect(lines).toContain("  8.  ✓ task 8")
-		expect(lines).toContain("  9.  ✓ task 9")
-		expect(lines).toContain(" 10.  ▶ task 10")
-		expect(lines).toContain(" 15.  ○ task 15")
+		expect(lines).toContain("      ✓ task 8")
+		expect(lines).toContain("      ✓ task 9")
+		expect(lines).toContain("      ▶ task 10")
+		expect(lines).toContain("      ○ task 15")
 		expect(lines).toContain("↓ 1 more")
 		expect(lines.some((line: string) => line.includes("scroll ·"))).toBe(true)
-		expect(lines.some((line: string) => line.includes("  1.  ✓ task 1"))).toBe(false)
-		expect(lines.some((line: string) => line.includes(" 16.  ○ task 16"))).toBe(false)
+		expect(lines.some((line: string) => line.includes("✓ task 1 "))).toBe(false)
+		expect(lines.some((line: string) => line.includes("      ○ task 16"))).toBe(false)
 	})
 
 	it("does not treat todo content containing ' more' as a scroll marker", () => {
@@ -243,9 +243,9 @@ describe("todo widget helpers", () => {
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
 		const lines = instance.render(120)
-		expect(lines).toContain("  1.  ✓ task 1")
-		expect(lines).toContain(" 10.  ▶ task 10")
-		expect(lines).toContain(" 11.  ○ task 11")
+		expect(lines).toContain("      ✓ task 1")
+		expect(lines).toContain("      ▶ task 10")
+		expect(lines).toContain("      ○ task 11")
 		expect(lines).not.toContain("↑ 9 more")
 	})
 
@@ -268,11 +268,11 @@ describe("todo widget helpers", () => {
 		const instance = component({ requestRender: vi.fn() }, theme)
 		const lines = instance.render(120)
 		expect(lines).toContain("↑ 7 more")
-		expect(lines).toContain("  8.  ✓ task 8")
-		expect(lines).toContain("  9.  ✓ task 9")
-		expect(lines).toContain(" 10.  ○ task 10")
+		expect(lines).toContain("      ✓ task 8")
+		expect(lines).toContain("      ✓ task 9")
+		expect(lines).toContain("      ○ task 10")
 		expect(lines).toContain("↓ 4 more")
-		expect(lines.indexOf("↑ 7 more")).toBeLessThan(lines.indexOf("  8.  ✓ task 8"))
+		expect(lines.indexOf("↑ 7 more")).toBeLessThan(lines.indexOf("      ✓ task 8"))
 	})
 
 	it("keeps pending overflow within the capped widget height", () => {
@@ -296,7 +296,7 @@ describe("todo widget helpers", () => {
 		// header + up to 10 body lines (incl. scroll markers) + blank + hint
 		expect(lines.length).toBeLessThanOrEqual(13)
 		expect(lines).toContain("↓ 10 more")
-		expect(lines.some((line: string) => line.includes(" 10.  ○ task 10"))).toBe(false)
+		expect(lines.some((line: string) => line.includes("      ○ task 10"))).toBe(false)
 	})
 
 	it("anchors completed overflow at the end", () => {
@@ -319,10 +319,10 @@ describe("todo widget helpers", () => {
 		const lines = instance.render(120)
 		expect(lines).toContain("▼ Todos · Global · 19/19 ✓ · 0 active (F7)")
 		expect(lines).toContain("↑ 10 more")
-		expect(lines).toContain(" 11.  ✓ task 11")
-		expect(lines).toContain(" 19.  ✓ task 19")
+		expect(lines).toContain("      ✓ task 11")
+		expect(lines).toContain("      ✓ task 19")
 		expect(lines).not.toContain("↓ ")
-		expect(lines.some((line: string) => line.includes("  1.  ✓ task 1"))).toBe(false)
+		expect(lines.some((line: string) => line.includes("✓ task 1 "))).toBe(false)
 	})
 
 	it("scrolls the viewport on mouse wheel", () => {
@@ -340,7 +340,7 @@ describe("todo widget helpers", () => {
 		openTodoWidget(ctx)
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
-		expect(instance.render(120)).toContain("  1.  ○ task 1")
+		expect(instance.render(120)).toContain("      ○ task 1")
 		expect(instance.render(120)).toContain("↓ 7 more")
 
 		const result = instance.handleMouse({
@@ -361,8 +361,8 @@ describe("todo widget helpers", () => {
 		expect(result).toEqual({ handled: true })
 		const lines = instance.render(120)
 		expect(lines).toContain("↑ 3 more")
-		expect(lines.some((line: string) => line.includes("  1.  ○ task 1"))).toBe(false)
-		expect(lines).toContain("  4.  ○ task 4")
+		expect(lines.some((line: string) => line.includes("○ task 1 "))).toBe(false)
+		expect(lines).toContain("      ○ task 4")
 	})
 
 	it("re-registers the widget for a new context and ignores stale invalidations", () => {
@@ -660,8 +660,8 @@ describe("todo widget — single-line header and auto-collapse", () => {
 
 		const lines = renderWidget(setWidget)
 		expect(lines).toContain("▼ Todos · Global · 0/5 · 5 active (F7)")
-		expect(lines).toContain("  1.  ○ task 1")
-		expect(lines).toContain("  5.  ○ task 5")
+		expect(lines).toContain("      ○ task 1")
+		expect(lines).toContain("      ○ task 5")
 	})
 
 	it("auto-collapses the ambient strip past the configurable item count", () => {
@@ -752,7 +752,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 
 		const lines = renderWidget(setWidget)
 		expect(lines).toContain("▼ Todos · Global · 0/6 · 6 active · ⠋ 1 running (F7)")
-		expect(lines).toContain("  6.  ▶ task 6")
+		expect(lines).toContain("      ▶ task 6")
 	})
 
 	it("toggle cycles hidden → collapsed one-liner → expanded → collapsed", () => {
@@ -773,7 +773,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		toggleTodoWidget(ctx)
 		const expanded = renderWidget(setWidget)
 		expect(expanded).toContain("▼ Todos · Global · 0/6 · 6 active (F7)")
-		expect(expanded).toContain("  6.  ○ task 6")
+		expect(expanded).toContain("      ○ task 6")
 		expect(expanded.some((line) => line.includes("F7 or /todos to collapse"))).toBe(true)
 
 		// expanded → collapsed one-liner (never hides; Esc does that)
@@ -794,7 +794,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		openTodoWidget(ctx)
 		const component = setWidget.mock.calls[0][1]
 		const instance = component(tui, theme)
-		expect(instance.render(80)).toContain("  6.  ○ task 6")
+		expect(instance.render(80)).toContain("      ○ task 6")
 
 		applyWriteTodos(
 			{
@@ -843,8 +843,8 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		expect(lines).toContain("▼ Todos · 0/2 · 2 active · ⠋ 1 running (F7)")
 		expect(lines).toContain("Todos · Step (phase-1/step-1)")
 		expect(lines).toContain("Todos · Global")
-		expect(lines).toContain("  1.  ▶ step task")
-		expect(lines).toContain("  1.  ○ global task")
+		expect(lines).toContain("      ▶ step task")
+		expect(lines).toContain("      ○ global task")
 	})
 
 	it("renders a one-line empty state", () => {
@@ -878,7 +878,7 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		openTodoWidget(ctx)
 		const component = setWidget.mock.calls[0][1]
 		const instance = component(tui, theme)
-		expect(instance.render(80)).toContain("  1.  ○ task 1")
+		expect(instance.render(80)).toContain("      ○ task 1")
 
 		setTodoCrowding("agents", true)
 
@@ -898,7 +898,7 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 
 		const lines = renderWidget(setWidget)
 		expect(lines).toContain("▼ Todos · Global · 0/1 · 1 active (F7)")
-		expect(lines).toContain("  1.  ○ task 1")
+		expect(lines).toContain("      ○ task 1")
 	})
 
 	it("still allows an explicit F7 expand while crowded", () => {
@@ -913,7 +913,7 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 
 		const lines = renderWidget(setWidget)
 		expect(lines).toContain("▼ Todos · Global · 0/1 · 1 active (F7)")
-		expect(lines).toContain("  1.  ○ task 1")
+		expect(lines).toContain("      ○ task 1")
 	})
 
 	it("keeps crowding active until every reason is released", () => {
@@ -927,7 +927,7 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/1 · 1 active (F7)"])
 
 		setTodoCrowding("questionnaire", false)
-		expect(renderWidget(setWidget)).toContain("  1.  ○ task 1")
+		expect(renderWidget(setWidget)).toContain("      ○ task 1")
 	})
 })
 
@@ -980,7 +980,7 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 		expect(result).toEqual({ handled: true })
 		const lines = instance.render(80)
 		expect(lines).toContain("▼ Todos · Global · 0/6 · 6 active (F7)")
-		expect(lines).toContain("  6.  ○ task 6")
+		expect(lines).toContain("      ○ task 6")
 	})
 
 	it("collapses the expanded strip to the one-liner on left click, and expands on the next", () => {
@@ -991,7 +991,7 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
 		expect(instance.render(80)).toContain("▼ Todos · Global · 0/1 · 1 active (F7)")
-		expect(instance.render(80)).toContain("  1.  ○ task 1")
+		expect(instance.render(80)).toContain("      ○ task 1")
 
 		instance.handleMouse(leftClick())
 		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/1 · 1 active (F7)"])
@@ -999,7 +999,7 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 		instance.handleMouse(leftClick())
 		const expanded = instance.render(80)
 		expect(expanded).toContain("▼ Todos · Global · 0/1 · 1 active (F7)")
-		expect(expanded).toContain("  1.  ○ task 1")
+		expect(expanded).toContain("      ○ task 1")
 	})
 
 	it("keeps a click-collapsed strip collapsed across store syncs", () => {
@@ -1035,7 +1035,7 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 
 		expect(result).toEqual({ handled: true })
 		// Expanded by the first click; the trailing click must not collapse it again.
-		expect(instance.render(80)).toContain("  6.  ○ task 6")
+		expect(instance.render(80)).toContain("      ○ task 6")
 	})
 })
 
