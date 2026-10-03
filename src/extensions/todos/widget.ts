@@ -17,9 +17,16 @@ export const TODO_SHORTCUT_HINT = "F7"
 const TODO_WIDGET_KEY = "kimchi-todos"
 const TODO_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
 const TODO_STATUS_KEY = "todos"
-const SCROLL_HINT_TEXT = "scroll"
-const MAX_TODO_WIDGET_LINES = 14
-const TODO_WIDGET_BODY_LINES = 10
+/** Terminal-height breakpoints (like CSS xs/md/xl tiers), judged by rows only
+ *  — vertical space is the scarce resource for the strip; width matters are
+ *  already handled by truncation.
+ *  - xs (< 24 rows): ambient strip collapses to the one-liner; an explicit
+ *    expand shows a single todo row at a time.
+ *  - md (24–69): 3-row viewport.
+ *  - xl (70+): 5-row viewport.
+ *  Undefined row counts (headless/unit contexts) fall back to md. */
+const TODO_XS_TERMINAL_ROWS = 24
+const TODO_TALL_TERMINAL_ROWS = 70
 const MAX_ROLLED_CONTEXT_ROWS = 2
 /** Fraction of terminal rows the expanded strip may occupy before ambient auto-collapse. */
 const TODO_HEIGHT_COLLAPSE_FRACTION = 0.25
@@ -206,8 +213,11 @@ interface CollapseInput {
 function isTodoBodyCollapsed(input: CollapseInput): boolean {
 	if (input.expanded || input.listExpanded) return false
 	if (isTodoCrowdingActive() || input.listCollapsed) return true
-	if (input.total > getTodoAutoCollapseThreshold()) return true
 	const rows = input.terminalRows
+	// xs tier: ambient expansion would fight the conversation for space — stay
+	// a one-liner until the user explicitly expands (F7 / click).
+	if (rows && rows > 0 && rows < TODO_XS_TERMINAL_ROWS) return true
+	if (input.total > getTodoAutoCollapseThreshold()) return true
 	if (rows && rows > 0) {
 		const maxHeight = Math.max(1, Math.floor(rows * TODO_HEIGHT_COLLAPSE_FRACTION))
 		if (input.expandedHeight > maxHeight) return true
@@ -223,16 +233,14 @@ export function summarizeTodos(sessionId: string): string {
 	return summarizeTodoCounts(getTodoCountsForScope(GLOBAL_TODO_SCOPE, sessionId))
 }
 
-/** Render a single todo line in the widget strip. No row number: a fixed
- *  5-column indent is used so symbol + text stay in the same columns as
- *  before and truncation math is unchanged. Row numbers are still available
- *  for the notify output — see `numberedTodoLine()`. */
+/** Render a single todo line in the widget strip. A single-space indent
+ *  keeps each row tight against the header — row numbers were dropped in
+ *  favor of `/todos done <n>` references, so there's no per-row prefix
+ *  the indent needs to align with. */
 function todoLine(todo: TodoItem, _displayIndex: number, theme: Theme, scope: TodoScope, spinnerFrame: number): string {
 	const symbol = todo.status === "in_progress" ? SPINNER[spinnerFrame % SPINNER.length] : TODO_SYMBOL[todo.status]
 	const isFerment = scope.kind === "ferment"
-	// Five-character indent replaces the old `" NN. "` numbering so row
-	// heights and truncation stay byte-identical.
-	const prefix = "     "
+	const prefix = " "
 
 	// Phase header — bold accent (bridge-written: "[Phase N] Name")
 	if (isFerment && todo.content.startsWith("[Phase ")) {
@@ -273,8 +281,9 @@ function todoLine(todo: TodoItem, _displayIndex: number, theme: Theme, scope: To
 function numberedTodoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: TodoScope): string {
 	const index = `${displayIndex + 1}`.padStart(2)
 	// Notify text is static — use the first spinner frame so in_progress rows
-	// stay distinguishable without the tick.
-	return todoLine(todo, displayIndex, theme, scope, 0).replace(/^(\s{5})/, ` ${index}. `)
+	// stay distinguishable without the tick. Strip the leading indent (one
+	// space in the strip) and re-prefix with the row number.
+	return todoLine(todo, displayIndex, theme, scope, 0).replace(/^ /, ` ${index}. `)
 }
 
 /** Short scope name for the one-line widget header (no "Todos · " prefix). */
@@ -320,14 +329,16 @@ function buildFullTodoBodyRows(theme: Theme, groups: WidgetScopeGroup[], spinner
 }
 
 /** Prefer starting near the first in-progress (else first non-completed) todo,
- *  with a couple of completed rows of context above it. All-completed lists
- *  pin to the end (caller clamps against the real viewport size). */
-function autoScrollOffset(rows: TodoBodyRow[]): number {
+ *  with a couple of completed rows of context above it — scaled to the row
+ *  budget so a 1-row viewport pins exactly on the active row. All-completed
+ *  lists pin to the end (caller clamps against the real viewport size). */
+function autoScrollOffset(rows: TodoBodyRow[], budget: number): number {
+	const context = Math.min(MAX_ROLLED_CONTEXT_ROWS, Math.max(0, budget - 1))
 	const firstRunning = rows.findIndex((row) => row.kind === "todo" && row.status === "in_progress")
-	if (firstRunning !== -1) return Math.max(0, firstRunning - MAX_ROLLED_CONTEXT_ROWS)
+	if (firstRunning !== -1) return Math.max(0, firstRunning - context)
 	const firstActive = rows.findIndex((row) => row.kind === "todo" && row.status !== "completed")
 	if (firstActive === -1) return rows.length
-	return Math.max(0, firstActive - MAX_ROLLED_CONTEXT_ROWS)
+	return Math.max(0, firstActive - context)
 }
 
 function clampScrollOffset(offset: number, rowCount: number, viewport: number): number {
@@ -443,9 +454,19 @@ export function buildTodoLines(theme: Theme, sessionId: string): string[] {
 	return lines
 }
 
-/** Body rows for the expanded strip. Long lists render in a fixed-height
- *  scrollable viewport with `↑ N more` / `↓ N more` marker rows (mouse wheel
- *  in fullscreen); `/todos expand all` still dumps every row.
+/** Todo rows the expanded strip may show at once for the terminal-height
+ *  tier: 1 on xs, 3 on md, 5 on xl. Marker rows (`↑/↓ N more`) render on top
+ *  of this budget — the budget counts todo rows only. */
+export function todoViewportRowBudget(terminalRows: number | undefined): number {
+	if (terminalRows === undefined) return 3
+	if (terminalRows < TODO_XS_TERMINAL_ROWS) return 1
+	if (terminalRows >= TODO_TALL_TERMINAL_ROWS) return 5
+	return 3
+}
+
+/** Body rows for the expanded strip. Long lists render as a small scrollable
+ *  viewport around the active todo with `↑ N more` / `↓ N more` marker rows
+ *  (mouse wheel in fullscreen); `/todos expand all` still dumps every row.
  *
  *  Writes `state.scrollOffset` when the viewport is capped so a later wheel
  *  event can continue from the window that was just painted. */
@@ -453,59 +474,29 @@ function buildTodoBodyLines(
 	theme: Theme,
 	groups: WidgetScopeGroup[],
 	state: Pick<TodoWidgetState, "expanded" | "scrollOffset" | "userScrolled" | "spinnerFrame">,
-): { lines: string[]; scrollable: boolean } {
+	terminalRows: number | undefined,
+): string[] {
 	const rows = buildFullTodoBodyRows(theme, groups, state.spinnerFrame)
 
-	if (state.expanded) return { lines: rows.map((row) => row.text), scrollable: false }
+	if (state.expanded) return rows.map((row) => row.text)
 
-	// Fits under the cap with the one-line header and the hint line.
-	if (rows.length + 3 <= MAX_TODO_WIDGET_LINES) {
-		return { lines: rows.map((row) => row.text), scrollable: false }
+	// The whole list fits the viewport budget.
+	const budget = todoViewportRowBudget(terminalRows)
+	if (rows.length <= budget) {
+		return rows.map((row) => row.text)
 	}
 
-	const showUpBudget = 1
-	const showDownBudget = 1
-	const maxContent =
-		TODO_WIDGET_BODY_LINES - showUpBudget - showDownBudget > 0
-			? TODO_WIDGET_BODY_LINES - showUpBudget - showDownBudget
-			: TODO_WIDGET_BODY_LINES
-
-	// Resolve the visible window in closed form by treating "pinned to bottom"
-	// separately — at the bottom, the ↓ marker is hidden and the freed slot
-	// makes space for one more row, so we can pin rows.length contentSlots.
-	// The user's wheel-direction is irrelevant: clampScrollOffset always
-	// constrains the upper bound by rows.length - contentSlots.
-	let contentSlots = maxContent
-	let offset = state.userScrolled ? state.scrollOffset : autoScrollOffset(rows)
-	offset = clampScrollOffset(offset, rows.length, contentSlots)
-
-	// If this clamp bottoms out, business-logic says "at bottom, no ↓ marker",
-	// so recompute with one extra slot and re-clamp. The up-marker is already
-	// visible at that point, so the math stays linear.
-	const hiddenAfter = Math.max(0, rows.length - offset - maxContent)
-	const showUpInitial = offset > 0
-	if (hiddenAfter === 0 && showUpInitial) {
-		contentSlots = TODO_WIDGET_BODY_LINES - 1 // ↑ only
-		offset = clampScrollOffset(offset, rows.length, contentSlots)
-	} else if (hiddenAfter > 0 && !showUpInitial) {
-		contentSlots = TODO_WIDGET_BODY_LINES - 1 // ↓ only (offset=0)
-		offset = clampScrollOffset(offset, rows.length, contentSlots)
-	} else {
-		// Both markers visible.
-		contentSlots = TODO_WIDGET_BODY_LINES - 2
-		offset = clampScrollOffset(offset, rows.length, contentSlots)
-	}
+	let offset = state.userScrolled ? state.scrollOffset : autoScrollOffset(rows, budget)
+	offset = clampScrollOffset(offset, rows.length, budget)
 	state.scrollOffset = offset
 
-	const visible = rows.slice(offset, offset + contentSlots)
+	const visible = rows.slice(offset, offset + budget)
 	const remainingAfter = Math.max(0, rows.length - offset - visible.length)
-	const showUp = offset > 0
-	const showDown = remainingAfter > 0
 	const lines: string[] = []
-	if (showUp) lines.push(theme.fg("dim", `↑ ${offset} more`))
+	if (offset > 0) lines.push(theme.fg("dim", `↑ ${offset} more`))
 	for (const row of visible) lines.push(row.text)
-	if (showDown) lines.push(theme.fg("dim", `↓ ${remainingAfter} more`))
-	return { lines, scrollable: showUp || showDown }
+	if (remainingAfter > 0) lines.push(theme.fg("dim", `↓ ${remainingAfter} more`))
+	return lines
 }
 
 /** Cheap body-row count for height-based collapse (no theme / string work). */
@@ -520,12 +511,17 @@ function countTodoBodyRows(groups: WidgetScopeGroup[]): number {
 	return rows
 }
 
-function estimateExpandedHeight(groups: WidgetScopeGroup[], expanded: boolean): number {
+function estimateExpandedHeight(
+	groups: WidgetScopeGroup[],
+	expanded: boolean,
+	terminalRows: number | undefined,
+): number {
 	const rowCount = countTodoBodyRows(groups)
-	if (expanded || rowCount + 3 <= MAX_TODO_WIDGET_LINES) {
-		return 1 + rowCount + 2 // header + body + blank + hint
+	if (expanded || rowCount <= todoViewportRowBudget(terminalRows)) {
+		return 1 + rowCount // header + body
 	}
-	return 1 + TODO_WIDGET_BODY_LINES + 2
+	// Worst case: budget rows plus both scroll markers.
+	return 1 + todoViewportRowBudget(terminalRows) + 2
 }
 
 function headerScopeLabel(groups: WidgetScopeGroup[]): string | undefined {
@@ -545,7 +541,7 @@ function buildTodoWidgetLines(theme: Theme, state: TodoWidgetState, sessionId: s
 	const counts = countTodosInGroups(groups)
 	const scopeLabel = headerScopeLabel(groups)
 	const terminalRows = state.tui?.terminal?.rows
-	const expandedHeight = estimateExpandedHeight(groups, state.expanded)
+	const expandedHeight = estimateExpandedHeight(groups, state.expanded, terminalRows)
 
 	if (
 		isTodoBodyCollapsed({
@@ -565,13 +561,8 @@ function buildTodoWidgetLines(theme: Theme, state: TodoWidgetState, sessionId: s
 		]
 	}
 
-	const body = buildTodoBodyLines(theme, groups, state)
-	const lines = [
-		buildTodoHeaderLine(theme, counts, false, { scopeLabel, spinnerFrame: state.spinnerFrame }),
-		...body.lines,
-	]
-	if (body.scrollable) lines.push("", theme.fg("dim", SCROLL_HINT_TEXT))
-	return lines
+	const body = buildTodoBodyLines(theme, groups, state, terminalRows)
+	return [buildTodoHeaderLine(theme, counts, false, { scopeLabel, spinnerFrame: state.spinnerFrame }), ...body]
 }
 
 function stopSpinner(state: TodoWidgetState): void {
@@ -635,10 +626,24 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 /** Re-insert the todos widget at the tail of the aboveEditor map so it renders
  *  directly above the editor (below agents, tips, etc.). Mirrors the agents ›
  *  `remountTipWidget` bump: framework renders aboveEditor widgets in Map
- *  insertion order, and agent widgets race the strip. */
+ *  insertion order, and agent widgets race the strip. `setWidget` re-sets an
+ *  existing key in place, so a real re-insert requires removing the key first
+ *  (which runs the component's dispose/unregister, clearing `registered` so
+ *  the follow-up mount is not skipped by mountTodoWidget's guard). */
 export function remountTodosWidget(): void {
 	for (const [sessionId, state] of todoWidgetStates) {
-		if (state.registered && state.ctx) mountTodoWidget(state.ctx, state, sessionId)
+		if (!state.registered || !state.ctx) continue
+		const ctx = state.ctx
+		ctx.ui.setWidget(TODO_WIDGET_KEY, undefined, TODO_WIDGET_OPTIONS)
+		// Removing the key runs the component's dispose hook (unregister) on
+		// surfaces that invoke it; a surface that doesn't would leave the
+		// guard in place and the re-mount below would be skipped — clear the
+		// registration explicitly so remounting never silently no-ops again.
+		if (state.registered) {
+			state.registered = false
+			stopSpinner(state)
+		}
+		mountTodoWidget(ctx, state, sessionId)
 	}
 }
 
@@ -692,7 +697,7 @@ function mountTodoWidget(
 					const counts = countAllActiveTodos(sessionId)
 					const groups = collectWidgetScopes(sessionId)
 					const terminalRows = state.tui?.terminal?.rows
-					const expandedHeight = estimateExpandedHeight(groups, state.expanded)
+					const expandedHeight = estimateExpandedHeight(groups, state.expanded, terminalRows)
 					if (
 						isTodoBodyCollapsed({
 							expanded: state.expanded,
@@ -706,11 +711,12 @@ function mountTodoWidget(
 						return undefined
 					}
 					const rows = buildFullTodoBodyRows(theme, groups)
-					if (rows.length + 3 <= MAX_TODO_WIDGET_LINES) return undefined
+					const budget = todoViewportRowBudget(terminalRows)
+					if (rows.length <= budget) return undefined
 					const delta = event.wheelDelta ?? 0
 					if (delta === 0) return undefined
 					state.userScrolled = true
-					state.scrollOffset = clampScrollOffset(state.scrollOffset + delta, rows.length, TODO_WIDGET_BODY_LINES - 2)
+					state.scrollOffset = clampScrollOffset(state.scrollOffset + delta, rows.length, budget)
 					requestTodoRender(ctx)
 					return { handled: true }
 				}
@@ -794,7 +800,7 @@ export function toggleTodoWidget(ctx: ExtensionContext): void {
 	const groups = collectWidgetScopes(sessionId)
 	const counts = countTodosInGroups(groups)
 	const terminalRows = state.tui?.terminal?.rows
-	const expandedHeight = estimateExpandedHeight(groups, state.expanded)
+	const expandedHeight = estimateExpandedHeight(groups, state.expanded, terminalRows)
 	if (
 		isTodoBodyCollapsed({
 			expanded: state.expanded,
