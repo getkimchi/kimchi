@@ -1,5 +1,6 @@
 import { loadConfig, readTelemetryConfig, writeTelemetryEnabled, writeTuiWheelScrollLines } from "../config.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
+import { detectWheelScrollDefault } from "../extensions/terminal-compat/wheel-scroll.js"
 import { isRegionId, REGION_ENV, REGIONS, selectableRegions } from "../regions.js"
 
 const TELEMETRY_ENV = "KIMCHI_TELEMETRY_ENABLED"
@@ -16,7 +17,7 @@ interface WritableKeyDef {
 	write: (value: number) => void
 	describeValue: string
 	envKey?: string
-	defaultDisplay: string
+	defaultDisplay: () => string
 }
 
 const WRITABLE_KEYS: Record<string, WritableKeyDef> = {
@@ -28,7 +29,12 @@ const WRITABLE_KEYS: Record<string, WritableKeyDef> = {
 		write: (lines) => writeTuiWheelScrollLines(lines),
 		describeValue: "an integer ≥ 1",
 		envKey: WHEEL_SCROLL_ENV,
-		defaultDisplay: "unset (default 1)",
+		// When nothing is configured, show the terminal-detected fallback if
+		// there is one — otherwise behavior like this would look invisible.
+		defaultDisplay: () => {
+			const detected = detectWheelScrollDefault()
+			return detected ? `unset (auto ${detected.lines} for ${detected.terminal})` : "unset (default 1)"
+		},
 	},
 }
 
@@ -175,7 +181,7 @@ function handleGet(args: string[]): number {
 	for (const part of key.split(".")) {
 		current = current !== null && typeof current === "object" ? (current as Record<string, unknown>)[part] : undefined
 	}
-	console.log(`${key}: ${current === undefined ? def.defaultDisplay : String(current)} (from config)`)
+	console.log(`${key}: ${current === undefined ? def.defaultDisplay() : String(current)} (from config)`)
 	return 0
 }
 

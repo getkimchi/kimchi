@@ -622,17 +622,31 @@ describe("writeTuiWheelScrollLines", () => {
 
 describe("applyTuiEnvOverrides", () => {
 	const ENV_KEY = "KIMCHI_WHEEL_SCROLL_LINES"
+	// Terminal-detection inputs — scrubbed per-test so the developer's real
+	// shell env (iTerm2, VS Code, …) can't flip the detected-default tests.
+	const DETECTION_KEYS = ["TERM_PROGRAM", "TERMINAL_EMULATOR", "KITTY_WINDOW_ID", "WEZTERM_PANE", "TERM"]
+	const saved = new Map<string, string | undefined>()
 
 	beforeEach(() => {
 		// stubEnv with a fresh baseline so leaked values from other tests
 		// (or the developer's real shell env) can't skew expectations.
 		vi.stubEnv(ENV_KEY, "")
 		delete process.env[ENV_KEY]
+		for (const key of DETECTION_KEYS) {
+			saved.set(key, process.env[key])
+			delete process.env[key]
+		}
 	})
 
 	afterEach(() => {
 		vi.unstubAllEnvs()
 		delete process.env[ENV_KEY]
+		for (const key of DETECTION_KEYS) {
+			const value = saved.get(key)
+			if (value === undefined) delete process.env[key]
+			else process.env[key] = value
+		}
+		saved.clear()
 	})
 
 	it("maps tui.wheelScrollLines onto the env var when unset", () => {
@@ -648,10 +662,32 @@ describe("applyTuiEnvOverrides", () => {
 		expect(process.env[ENV_KEY]).toBe("5")
 	})
 
-	it("does nothing when tui.wheelScrollLines is unconfigured", () => {
+	it("does nothing when tui.wheelScrollLines is unconfigured and no slow terminal is detected", () => {
 		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
 		applyTuiEnvOverrides({ ...config, tui: undefined })
 		expect(process.env[ENV_KEY]).toBeUndefined()
+	})
+
+	it("falls back to the terminal-detected default when nothing is configured", () => {
+		process.env.TERM_PROGRAM = "iTerm.app"
+		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
+		applyTuiEnvOverrides({ ...config, tui: undefined })
+		expect(process.env[ENV_KEY]).toBe("3")
+	})
+
+	it("explicit config still wins over the detected default", () => {
+		process.env.TERM_PROGRAM = "vscode"
+		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
+		applyTuiEnvOverrides({ ...config, tui: { wheelScrollLines: 5 } })
+		expect(process.env[ENV_KEY]).toBe("5")
+	})
+
+	it("pre-set env var still wins over the detected default", () => {
+		process.env.TERM_PROGRAM = "iTerm.app"
+		process.env[ENV_KEY] = "2"
+		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
+		applyTuiEnvOverrides({ ...config, tui: undefined })
+		expect(process.env[ENV_KEY]).toBe("2")
 	})
 })
 
