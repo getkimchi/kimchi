@@ -4,7 +4,7 @@ In fullscreen mode (`tuiMode: "fullscreen"` in Kimchi's settings), one mouse-whe
 
 | Terminal / platform | Default |
 |---|---|
-| Windows (any terminal) | 3 |
+| Windows (any terminal, incl. WSL via `WT_SESSION`) | 3 |
 | VS Code, Cursor, Windsurf, VSCodium (`TERM_PROGRAM=vscode`) | 3 |
 | iTerm2 (`TERM_PROGRAM=iTerm.app`) | 3 |
 | JetBrains IDEs — GoLand, IntelliJ, … (`TERMINAL_EMULATOR=JetBrains-*`) | 3 |
@@ -12,7 +12,7 @@ In fullscreen mode (`tuiMode: "fullscreen"` in Kimchi's settings), one mouse-whe
 | Kitty (`KITTY_WINDOW_ID` / `TERM=xterm-kitty`) | 3 |
 | everything else | 1 |
 
-Detection is env-var heuristics only (there is no escape sequence to negotiate wheel deltas). Inside tmux or over SSH the outer terminal's markers may be gone, in which case the default stays 1. Terminals that already multiply wheel events client-side (e.g. Alacritty's `scrolling.multiplier`) are deliberately **not** bumped, to avoid double-applying.
+Detection is env-var heuristics only (there is no escape sequence to negotiate wheel deltas). Inside tmux or over SSH the outer terminal's markers may be gone, in which case the default stays 1 — with two deliberate exceptions: `WEZTERM_PANE` and `WT_SESSION` survive into tmux/WSL sessions, and Kitty is also detected over SSH because ssh forwards `TERM` (the remote app receives Kitty's same 1:1 wheel events, so the bump follows intentionally). Terminals that already multiply wheel events client-side (e.g. Alacritty's `scrolling.multiplier`) are deliberately **not** bumped, to avoid double-applying.
 
 Any explicitly configured value overrides the detected default:
 

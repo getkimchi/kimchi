@@ -49,6 +49,9 @@ export function detectWheelScrollDefault(
 	}
 
 	// Kitty does not set TERM_PROGRAM; its own markers are authoritative.
+	// Note: TERM is forwarded over SSH, so a remote host reached from Kitty
+	// also detects "Kitty". That is intentional — the remote app receives
+	// Kitty's 1:1 wheel events unchanged, so it needs the bump just as much.
 	if (env.KITTY_WINDOW_ID !== undefined || env.TERM === "xterm-kitty") {
 		return { ...slow, terminal: "Kitty" }
 	}
@@ -65,6 +68,13 @@ export function detectWheelScrollDefault(
 			return { ...slow, terminal: "WezTerm" }
 		default:
 			if (env.WEZTERM_PANE !== undefined) return { ...slow, terminal: "WezTerm" }
+			// Windows Terminal under WSL: Node reports "linux" there, but
+			// WT_SESSION is set by Windows Terminal and survives into the WSL
+			// sessions it launches. Checked last — it names the host terminal
+			// that launched the session, so more specific markers (an IDE
+			// intercepting the pty, a multiplexer surviving into the session)
+			// describe reality better when both are present.
+			if (env.WT_SESSION !== undefined) return { ...slow, terminal: "Windows Terminal" }
 			return undefined
 	}
 }

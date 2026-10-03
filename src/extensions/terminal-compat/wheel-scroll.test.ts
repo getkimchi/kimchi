@@ -8,7 +8,16 @@ describe("detectWheelScrollDefault", () => {
 			terminal: "Windows",
 		})
 		// Even a terminal with no other markers (ConHost-hosted shell).
-		expect(detectWheelScrollDefault({ WT_SESSION: "abc" }, "win32")?.lines).toBe(SLOW_TERMINAL_WHEEL_SCROLL_LINES)
+		expect(detectWheelScrollDefault({}, "win32")?.terminal).toBe("Windows")
+	})
+
+	it("detects Windows Terminal inside WSL via WT_SESSION", () => {
+		// WSL reports process.platform === "linux", but Windows Terminal sets
+		// WT_SESSION and WSL inherits it for sessions the terminal launches.
+		expect(detectWheelScrollDefault({ WT_SESSION: "abc" }, "linux")).toEqual({
+			lines: SLOW_TERMINAL_WHEEL_SCROLL_LINES,
+			terminal: "Windows Terminal",
+		})
 	})
 
 	it("detects iTerm2", () => {
@@ -43,6 +52,11 @@ describe("detectWheelScrollDefault", () => {
 	it("detects Kitty via KITTY_WINDOW_ID or TERM", () => {
 		expect(detectWheelScrollDefault({ KITTY_WINDOW_ID: "1" }, "linux")?.terminal).toBe("Kitty")
 		expect(detectWheelScrollDefault({ TERM: "xterm-kitty" }, "linux")?.terminal).toBe("Kitty")
+		// TERM is forwarded over ssh; the bump intentionally follows it — the
+		// remote app receives Kitty's 1:1 wheel events unchanged.
+		expect(
+			detectWheelScrollDefault({ TERM: "xterm-kitty", SSH_CONNECTION: "10.0.0.1 22 10.0.0.2 22" }, "linux")?.terminal,
+		).toBe("Kitty")
 	})
 
 	it("leaves unreported terminals at the upstream default", () => {
@@ -58,8 +72,12 @@ describe("detectWheelScrollDefault", () => {
 		}
 	})
 
-	it("terminal-specific markers win over a Windows-unsettable unknown shell", () => {
-		// Sanity: non-Windows platforms never hit the platform rule.
-		expect(detectWheelScrollDefault({ WT_SESSION: "abc" }, "linux")).toBeUndefined()
+	it("terminal-specific markers win over the WT_SESSION fallback", () => {
+		// A Windows Terminal session can still host a ssh/tmux chain where a
+		// closer marker describes reality better; order keeps WT last among
+		// terminal rules… but with no other marker WT_SESSION still wins.
+		expect(
+			detectWheelScrollDefault({ WT_SESSION: "abc", TERMINAL_EMULATOR: "JetBrains-JediTerm" }, "linux")?.terminal,
+		).toBe("JetBrains IDE")
 	})
 })
