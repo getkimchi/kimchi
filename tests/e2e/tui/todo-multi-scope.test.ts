@@ -176,7 +176,15 @@ test("widget shows multiple scopes together", async ({ terminal }) => {
 			terminal.submit("Add more todos")
 			trace.step("submitted second prompt")
 
-			// Wait for the step scope to also appear
+			// Wait for the combined-count strip header (done=1 of 4 across
+			// both scopes) so we know the second write landed. The default
+			// viewport windows by terminal-height budget, so not all four rows
+			// fit at once — the test expands the strip to verify both scopes.
+			await waitForText(terminal, "Todos · 1/4", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("combined strip header visible")
+
+			// Expand-all dumps every row uncapped so both scope groups render.
+			terminal.submit("/todos expand all")
 			await waitForText(terminal, "Todos · Step", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForText(terminal, "Write code", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "Run tests", { timeoutMs: INPUT_TIMEOUT_MS })
