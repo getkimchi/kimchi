@@ -577,7 +577,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 	it("renders the header with scope, counts, active, and F7", () => {
 		const counts = { total: 3, completed: 1, pending: 2, blocked: 0, inProgress: 0 }
 		expect(buildTodoHeaderLine(theme, counts, false, { scopeLabel: "Global" })).toBe("▼ Todos · Global · 1/3 (F7)")
-		expect(buildTodoHeaderLine(theme, counts, true, { scopeLabel: "Global" })).toBe("▶ Todos · Global · 1/3 (F7)")
+		expect(buildTodoHeaderLine(theme, counts, true, { scopeLabel: "Global" })).toBe("● Todos · Global · 1/3 (F7)")
 		expect(buildTodoHeaderLine(theme, counts, false)).toBe("▼ Todos · 1/3 (F7)")
 		expect(buildTodoHeaderLine(theme, counts, false, { scopeLabel: "Ferment (phase-1)" })).toBe(
 			"▼ Todos · Ferment (phase-1) · 1/3 (F7)",
@@ -587,7 +587,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 	it("shows a live spinner count when work is in progress", () => {
 		const counts = { total: 4, completed: 1, pending: 2, blocked: 0, inProgress: 1 }
 		expect(buildTodoHeaderLine(theme, counts, true, { scopeLabel: "Global" })).toBe(
-			"▶ Todos · Global · 1/4 · ⠋ 1 running (F7)",
+			"● Todos · Global · 1/4 · ⠋ 1 running (F7)",
 		)
 		expect(buildTodoHeaderLine(theme, counts, false, { scopeLabel: "Global" })).toBe(
 			"▼ Todos · Global · 1/4 · ⠋ 1 running (F7)",
@@ -631,7 +631,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 			"▼ Todos · Global · 1/4 · ⠋ 1 running · 1 blocked (F7)",
 		)
 		expect(buildTodoHeaderLine(theme, counts, true, { scopeLabel: "Global" })).toBe(
-			"▶ Todos · Global · 1/4 · ⠋ 1 running · 1 blocked (F7)",
+			"● Todos · Global · 1/4 · ⠋ 1 running · 1 blocked (F7)",
 		)
 	})
 
@@ -672,7 +672,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 
 		syncTodoWidget(ctx)
 
-		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/6 (F7)"])
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/6 (F7)"])
 	})
 
 	it("auto-collapses when the expanded height would exceed ~25% of terminal rows", () => {
@@ -694,7 +694,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 			const component = setWidget.mock.calls[0][1]
 			// 24-row terminal → 25% = 6; header+6 body = 7 > 6 → collapse
 			const instance = component({ requestRender: vi.fn(), terminal: { rows: 24 } }, theme)
-			expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/6 (F7)"])
+			expect(instance.render(80)).toEqual(["● Todos · Global · 0/6 (F7)"])
 		} finally {
 			delete process.env.KIMCHI_TODOS_COLLAPSE_THRESHOLD
 		}
@@ -714,7 +714,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 
 			syncTodoWidget(ctx)
 
-			expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/3 (F7)"])
+			expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/3 (F7)"])
 		} finally {
 			delete process.env.KIMCHI_TODOS_COLLAPSE_THRESHOLD
 		}
@@ -730,7 +730,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 			TEST_SESSION_ID,
 		)
 		syncTodoWidget(ctx)
-		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/6 (F7)"])
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/6 (F7)"])
 
 		openTodoWidget(ctx)
 		// A subsequent store write re-syncs the widget; the explicit expansion
@@ -785,7 +785,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 
 		// hidden → visible (auto-collapsed one-liner past the threshold)
 		toggleTodoWidget(ctx)
-		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/6 (F7)"])
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/6 (F7)"])
 
 		// one-liner → expanded list body
 		toggleTodoWidget(ctx)
@@ -796,7 +796,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 
 		// expanded → collapsed one-liner (never hides; Esc does that)
 		toggleTodoWidget(ctx)
-		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/6 (F7)"])
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/6 (F7)"])
 	})
 
 	it("hides the strip entirely once everything is done, even when explicitly expanded", () => {
@@ -900,7 +900,7 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 
 		setTodoCrowding("agents", true)
 
-		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/1 (F7)"])
+		expect(instance.render(80)).toEqual(["● Todos · Global · 0/1 (F7)"])
 		expect(tui.requestRender).toHaveBeenCalled()
 	})
 
@@ -910,7 +910,7 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		applyWriteTodos({ todos: [{ content: "task 1", status: "pending" }] }, TEST_SESSION_ID)
 		syncTodoWidget(ctx)
 		setTodoCrowding("questionnaire", true)
-		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/1 (F7)"])
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/1 (F7)"])
 
 		setTodoCrowding("questionnaire", false)
 
@@ -925,7 +925,7 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		applyWriteTodos({ todos: [{ content: "task 1", status: "pending" }] }, TEST_SESSION_ID)
 		syncTodoWidget(ctx)
 		setTodoCrowding("agents", true)
-		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/1 (F7)"])
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/1 (F7)"])
 
 		toggleTodoWidget(ctx)
 
@@ -942,7 +942,7 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		setTodoCrowding("agents", true)
 		setTodoCrowding("questionnaire", true)
 		setTodoCrowding("agents", false)
-		expect(renderWidget(setWidget)).toEqual(["▶ Todos · Global · 0/1 (F7)"])
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/1 (F7)"])
 
 		setTodoCrowding("questionnaire", false)
 		expect(renderWidget(setWidget)).toContain("      ○ task 1")
@@ -991,7 +991,7 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 
 	it("expands the auto-collapsed one-liner on left click", () => {
 		const { instance } = setupCollapsedStrip()
-		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/6 (F7)"])
+		expect(instance.render(80)).toEqual(["● Todos · Global · 0/6 (F7)"])
 
 		const result = instance.handleMouse(leftClick())
 
@@ -1012,7 +1012,7 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 		expect(instance.render(80)).toContain("      ○ task 1")
 
 		instance.handleMouse(leftClick())
-		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/1 (F7)"])
+		expect(instance.render(80)).toEqual(["● Todos · Global · 0/1 (F7)"])
 
 		instance.handleMouse(leftClick())
 		const expanded = instance.render(80)
@@ -1028,12 +1028,12 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
 		instance.handleMouse(leftClick())
-		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/1 (F7)"])
+		expect(instance.render(80)).toEqual(["● Todos · Global · 0/1 (F7)"])
 
 		applyWriteTodos({ todos: [{ id: 1, content: "task 1", status: "in_progress" }] }, TEST_SESSION_ID)
 		syncTodoWidget(ctx)
 
-		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/1 · ⠋ 1 running (F7)"])
+		expect(instance.render(80)).toEqual(["● Todos · Global · 0/1 · ⠋ 1 running (F7)"])
 	})
 
 	it("lets wheel fall through on the collapsed one-liner, and ignores right-click", () => {
@@ -1042,7 +1042,7 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 		expect(instance.handleMouse(leftClick({ type: "wheel", wheelDelta: -3 }))).toBeUndefined()
 		expect(instance.handleMouse(leftClick({ button: "right" }))).toBeUndefined()
 		// State untouched: still the collapsed one-liner.
-		expect(instance.render(80)).toEqual(["▶ Todos · Global · 0/6 (F7)"])
+		expect(instance.render(80)).toEqual(["● Todos · Global · 0/6 (F7)"])
 	})
 
 	it("toggles only once on a double-click", () => {

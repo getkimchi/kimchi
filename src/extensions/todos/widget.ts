@@ -156,9 +156,9 @@ export function summarizeTodoCounts(counts: TodoCounts): string {
 }
 
 /** Single-line strip header:
- *  `<chevron> Todos[ · <scope>] · <done>/<total>[ ✓][ · ⠋ N running][ · N blocked] (F7)`
- *  `▶` collapsed, `▼` expanded. In-progress item rows use the live spinner
- *  frame so their tick is the same as the header's. */
+ *  `<marker> Todos[ · <scope>] · <done>/<total>[ ✓][ · ⠋ N running][ · N blocked] (F7)`
+ *  Marker mirrors the agents widget: `●` collapsed (live or not), `▼` expanded.
+ *  In-progress item rows animate with the same braille spinner as the header. */
 export function buildTodoHeaderLine(
 	theme: Theme,
 	counts: TodoCounts,
@@ -168,7 +168,7 @@ export function buildTodoHeaderLine(
 		spinnerFrame?: number
 	} = {},
 ): string {
-	const chevron = collapsed ? "▶" : "▼"
+	const chevron = collapsed ? "●" : "▼"
 	const live = counts.inProgress > 0
 	const title = `${chevron} Todos`
 	const parts = [theme.fg(live ? "accent" : "dim", title)]

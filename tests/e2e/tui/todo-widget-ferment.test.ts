@@ -275,7 +275,7 @@ test("todo widget auto-collapses long lists and expands to a scrollable viewport
 
 			// 19 items exceed the auto-collapse threshold: the ambient strip is a
 			// single status line with no todo rows.
-			await waitForText(terminal, "▶ Todos · Global · 9/19 ·", {
+			await waitForText(terminal, "● Todos · Global · 9/19 ·", {
 				timeoutMs: STREAM_TIMEOUT_MS,
 				full: false,
 			})
