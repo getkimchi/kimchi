@@ -48,20 +48,52 @@ describe("above-editor occupancy", () => {
 		expect(isAboveEditorOccupied()).toBe(false)
 	})
 
-	it("notifies on acquire and release of the first/last occupant", () => {
+	it("notifies only on empty↔occupied transitions of the strip", () => {
 		const listener = vi.fn()
 		onAboveEditorOccupancyChange(listener)
 
-		const release = acquireAboveEditorSlot("todos")
+		const releaseTodos = acquireAboveEditorSlot("todos")
 		expect(listener).toHaveBeenCalledTimes(1)
 
-		const releaseSame = acquireAboveEditorSlot("todos")
+		const releaseAgents = acquireAboveEditorSlot("agents")
 		expect(listener).toHaveBeenCalledTimes(1)
 
-		release()
+		const releaseTodosAgain = acquireAboveEditorSlot("todos")
 		expect(listener).toHaveBeenCalledTimes(1)
 
-		releaseSame()
+		releaseTodos()
+		expect(listener).toHaveBeenCalledTimes(1)
+		releaseTodosAgain()
+		expect(listener).toHaveBeenCalledTimes(1)
+
+		releaseAgents()
 		expect(listener).toHaveBeenCalledTimes(2)
+	})
+
+	it("supports multiple listeners", () => {
+		const first = vi.fn()
+		const second = vi.fn()
+		const unsubFirst = onAboveEditorOccupancyChange(first)
+		onAboveEditorOccupancyChange(second)
+
+		const release = acquireAboveEditorSlot("todos")
+		expect(first).toHaveBeenCalledTimes(1)
+		expect(second).toHaveBeenCalledTimes(1)
+
+		unsubFirst()
+		release()
+		expect(first).toHaveBeenCalledTimes(1)
+		expect(second).toHaveBeenCalledTimes(2)
+	})
+
+	it("keeps the release handle usable when a listener throws", () => {
+		onAboveEditorOccupancyChange(() => {
+			throw new Error("listener boom")
+		})
+
+		const release = acquireAboveEditorSlot("todos")
+		expect(isAboveEditorOccupied()).toBe(true)
+		expect(() => release()).not.toThrow()
+		expect(isAboveEditorOccupied()).toBe(false)
 	})
 })

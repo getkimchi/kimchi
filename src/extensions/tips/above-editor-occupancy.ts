@@ -4,17 +4,28 @@
  */
 
 const occupantCounts = new Map<string, number>()
-let onChange: (() => void) | undefined
+const listeners = new Set<() => void>()
 
 export function isAboveEditorOccupied(): boolean {
 	return occupantCounts.size > 0
 }
 
+function notifyOccupancyChange(): void {
+	for (const listener of listeners) {
+		try {
+			listener()
+		} catch {
+			// Listener failures must not leak slots or break acquire/release callers.
+		}
+	}
+}
+
 /** Claim the above-editor strip. Returns a one-shot release. */
 export function acquireAboveEditorSlot(key: string): () => void {
+	const wasEmpty = occupantCounts.size === 0
 	const previous = occupantCounts.get(key) ?? 0
 	occupantCounts.set(key, previous + 1)
-	if (previous === 0) onChange?.()
+	if (wasEmpty) notifyOccupancyChange()
 
 	let released = false
 	return () => {
@@ -23,7 +34,7 @@ export function acquireAboveEditorSlot(key: string): () => void {
 		const current = occupantCounts.get(key) ?? 0
 		if (current <= 1) {
 			occupantCounts.delete(key)
-			onChange?.()
+			if (occupantCounts.size === 0) notifyOccupancyChange()
 			return
 		}
 		occupantCounts.set(key, current - 1)
@@ -31,14 +42,14 @@ export function acquireAboveEditorSlot(key: string): () => void {
 }
 
 export function onAboveEditorOccupancyChange(listener: () => void): () => void {
-	onChange = listener
+	listeners.add(listener)
 	return () => {
-		if (onChange === listener) onChange = undefined
+		listeners.delete(listener)
 	}
 }
 
-/** Test helper — clears all occupants and the change listener. */
+/** Test helper — clears all occupants and listeners. */
 export function __resetAboveEditorOccupancy(): void {
 	occupantCounts.clear()
-	onChange = undefined
+	listeners.clear()
 }
