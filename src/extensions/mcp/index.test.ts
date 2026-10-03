@@ -3,7 +3,7 @@ import type { McpAdapterOptions, McpConfig } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
-import { createCommandContext, createContext, mountWidget } from "../__mocks__/context.js"
+import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 
 const upstream = vi.hoisted(() => ({
@@ -94,7 +94,11 @@ vi.mock("../permissions/mode-controller.js", () => ({
 }))
 
 import consoleWarnRelayExtension, { resetConsoleWarnRelayForTests } from "../console-warn-relay.js"
-import { resetWarningsSummaryForTests, WARNINGS_WIDGET_KEY } from "../warnings-summary.js"
+import {
+	resetWarningsSummaryForTests,
+	WARNING_AGGREGATE_WINDOW_MS,
+	WARNINGS_SUMMARY_MESSAGE_TYPE,
+} from "../warnings-summary.js"
 
 vi.mock("./oauth-migration.js", () => ({
 	migrateLegacyOAuthCredentials: vi.fn(() => ({
@@ -116,7 +120,7 @@ vi.mock("./project-trust.js", () => ({
 }))
 
 import mcpAdapterExtension, { createKimchiMcpAdapterExtension } from "./index.js"
-import { MCP_STARTUP_ISSUES_WIDGET_KEY } from "./startup-issues.js"
+import { MCP_STARTUP_ISSUES_MESSAGE_TYPE } from "./startup-issues.js"
 
 function tool(name: string, label: string): ToolDefinition {
 	return {
@@ -520,12 +524,17 @@ describe("upstream MCP adapter facade", () => {
 				},
 			},
 		})
-		vi.mocked(ctx.ui.getToolsExpanded).mockReturnValue(true)
-		expect(mountWidget(ctx, MCP_STARTUP_ISSUES_WIDGET_KEY)?.render(120)).toEqual([
-			expect.stringContaining("[MCP issues]"),
-			"project MCP config is not trusted",
-		])
-		expect(harness.sendMessage).not.toHaveBeenCalled()
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: MCP_STARTUP_ISSUES_MESSAGE_TYPE,
+				details: {
+					summary: "[1 MCP issue] Some MCP configuration needs attention.",
+					title: "[MCP issues]",
+					entries: ["project MCP config is not trusted"],
+				},
+			}),
+			{ triggerTurn: false },
+		)
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
 	})
 
@@ -584,7 +593,7 @@ describe("upstream MCP adapter facade", () => {
 		expect(planning.reapplyCurrentProfile).toHaveBeenCalledWith(harness.api)
 	})
 
-	it("reroutes upstream MCP console.warn output to the collapsed warnings row instead of the terminal", async () => {
+	it("reroutes upstream MCP console.warn output to one aggregated collapsed transcript row instead of the terminal", async () => {
 		const sink = vi.spyOn(console, "warn").mockImplementation(() => {})
 		upstream.sessionStart.mockImplementation(() => {
 			console.warn(
@@ -598,22 +607,35 @@ describe("upstream MCP adapter facade", () => {
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
 		const ctx = createContext({ isProjectTrusted: () => true })
+		vi.useFakeTimers()
 		await relayHarness.getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx)
 		await start(harness, ctx)
+		vi.advanceTimersByTime(WARNING_AGGREGATE_WINDOW_MS)
+		vi.useRealTimers()
 
 		expect(sink).not.toHaveBeenCalled()
-		// A UI-only widget: nothing is sent into the session / LLM context.
+		// MCP itself surfaces no startup issues here.
 		expect(harness.sendMessage).not.toHaveBeenCalled()
-		vi.mocked(ctx.ui.getToolsExpanded).mockReturnValue(true)
-		expect(mountWidget(ctx, WARNINGS_WIDGET_KEY)?.render(400)).toEqual([
-			expect.stringContaining("[Warnings]"),
-			expect.stringContaining("MCP: 105 direct tools resolved"),
-			'[mcp] Tool "get_once" promoted to read-only via name convention (no annotations)',
-		])
+		// Startup warns co-occur, so they land in one aggregated collapsed row;
+		// the LLM only sees the one-line annotation in `content`.
+		expect(relayHarness.sendMessage).toHaveBeenCalledTimes(1)
+		expect(relayHarness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: WARNINGS_SUMMARY_MESSAGE_TYPE,
+				details: expect.objectContaining({
+					title: "[Warnings]",
+					entries: [
+						expect.stringContaining("MCP: 105 direct tools resolved"),
+						'[mcp] Tool "get_once" promoted to read-only via name convention (no annotations)',
+					],
+				}),
+			}),
+			{ triggerTurn: false },
+		)
 		sink.mockRestore()
 	})
 
-	it("surfaces compatibility warnings as one collapsed startup-issues widget", async () => {
+	it("surfaces compatibility warnings as one startup-issues transcript message", async () => {
 		configState.warnings = ["legacy config is malformed"]
 		configState.legacyKeys = ["mcpSearch"]
 		oauthMigration.warnings = ["legacy OAuth entry conflicts with the upstream layout"]
@@ -623,20 +645,25 @@ describe("upstream MCP adapter facade", () => {
 
 		await harness.getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx)
 
-		const component = mountWidget(ctx, MCP_STARTUP_ISSUES_WIDGET_KEY)
-		expect(component?.render(120)[0]).toContain("[3 MCP issues] Some MCP configuration needs attention.")
-		vi.mocked(ctx.ui.getToolsExpanded).mockReturnValue(true)
-		expect(component?.render(400)).toEqual([
-			expect.stringContaining("[MCP issues]"),
-			"legacy config is malformed",
-			"legacy OAuth entry conflicts with the upstream layout",
-			expect.stringContaining("mcpSearch no longer controls"),
-		])
-		expect(harness.sendMessage).not.toHaveBeenCalled()
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: MCP_STARTUP_ISSUES_MESSAGE_TYPE,
+				details: {
+					summary: "[3 MCP issues] Some MCP configuration needs attention.",
+					title: "[MCP issues]",
+					entries: [
+						"legacy config is malformed",
+						"legacy OAuth entry conflicts with the upstream layout",
+						expect.stringContaining("mcpSearch no longer controls"),
+					],
+				},
+			}),
+			{ triggerTurn: false },
+		)
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
 	})
 
-	it.each(["resume", "reload", "fork"] as const)("shows startup issues again on session %s", async (reason) => {
+	it.each(["resume", "reload", "fork"] as const)("does not resend startup issues on session %s", async (reason) => {
 		configState.warnings = ["legacy config is malformed"]
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
@@ -644,18 +671,18 @@ describe("upstream MCP adapter facade", () => {
 
 		await harness.getHandler("session_start")({ type: "session_start", reason }, ctx)
 
-		expect(mountWidget(ctx, MCP_STARTUP_ISSUES_WIDGET_KEY)?.render(120)[0]).toContain("[1 MCP issue]")
+		// The transcript block from the original startup is already in this
+		// session's history and re-renders on load; re-sending would duplicate it.
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("clears the startup-issues widget when there are no warnings", async () => {
+	it("sends no startup-issues message when there are no warnings", async () => {
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
 		const ctx = createContext()
 
 		await harness.getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx)
 
-		expect(ctx.ui.setWidget).toHaveBeenCalledWith(MCP_STARTUP_ISSUES_WIDGET_KEY, undefined)
-		expect(mountWidget(ctx, MCP_STARTUP_ISSUES_WIDGET_KEY)).toBeUndefined()
+		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 })

@@ -11,7 +11,7 @@
  * state changes again.
  */
 
-import type { Theme } from "@earendil-works/pi-coding-agent"
+import type { MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { buildAlignedLine } from "./tool-block.js"
@@ -67,4 +67,26 @@ export class CollapsibleNotice implements Component {
 	}
 
 	invalidate(): void {}
+}
+
+/**
+ * Transcript-message counterpart of {@link CollapsibleNotice}: the notice
+ * persists in session history and scrolls with it, but keeps the
+ * collapsed-by-default look of collapsed tool output. The TUI re-invokes the
+ * renderer with the global ctrl+o state (`MessageRenderOptions.expanded`)
+ * whenever it toggles, so expansion follows ctrl+o exactly like tool rows.
+ *
+ * Used for notices delivered via `pi.sendMessage({ customType, details })`
+ * (MCP startup issues, relayed console warnings). The LLM only sees the
+ * message `content` (a one-line system annotation); `details` never enters
+ * the model context, so the entry list can grow without polluting it.
+ */
+export const noticeMessageRenderer: MessageRenderer<CollapsibleNoticeContent> = (message, options, theme) => {
+	const data = message.details as CollapsibleNoticeContent | undefined
+	if (!data) return undefined
+	return new CollapsibleNotice(
+		theme,
+		() => data,
+		() => options.expanded,
+	)
 }

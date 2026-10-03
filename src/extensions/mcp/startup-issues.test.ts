@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from "vitest"
-import { createContext, mountWidget } from "../__mocks__/context.js"
-import { buildMcpStartupIssuesSummary, MCP_STARTUP_ISSUES_WIDGET_KEY, showMcpStartupIssues } from "./startup-issues.js"
+import { describe, expect, it } from "vitest"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import {
+	buildMcpStartupIssuesSummary,
+	MCP_STARTUP_ISSUES_MESSAGE_TYPE,
+	showMcpStartupIssues,
+} from "./startup-issues.js"
 
 describe("buildMcpStartupIssuesSummary", () => {
 	it("pluralizes the issue count", () => {
@@ -10,29 +14,33 @@ describe("buildMcpStartupIssuesSummary", () => {
 })
 
 describe("showMcpStartupIssues", () => {
-	it("mounts a collapsed notice widget that expands to the full issue list", () => {
-		const ctx = createContext()
-		showMcpStartupIssues(ctx, ["server x failed to start", "config key y is unknown"])
+	it("sends one display-only transcript message with the full issue list in details", () => {
+		const harness = createExtensionApi()
 
-		const component = mountWidget(ctx, MCP_STARTUP_ISSUES_WIDGET_KEY)
-		const collapsed = component?.render(100) ?? []
-		expect(collapsed).toHaveLength(1)
-		expect(collapsed[0]).toContain("[2 MCP issues] Some MCP configuration needs attention.")
-		expect(collapsed[0]).toContain("(ctrl+o to expand)")
+		showMcpStartupIssues(harness.api, ["server x failed to start", "config key y is unknown"])
 
-		vi.mocked(ctx.ui.getToolsExpanded).mockReturnValue(true)
-		expect(component?.render(100)).toEqual([
-			expect.stringContaining("[MCP issues]"),
-			"server x failed to start",
-			"config key y is unknown",
-		])
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			{
+				customType: MCP_STARTUP_ISSUES_MESSAGE_TYPE,
+				// The LLM context only ever sees this one-line annotation; the
+				// issue list lives in details above it, never in token content.
+				content: [{ type: "text", text: "<system-annotation>MCP startup issues (2)</system-annotation>" }],
+				display: true,
+				details: {
+					summary: "[2 MCP issues] Some MCP configuration needs attention.",
+					title: "[MCP issues]",
+					entries: ["server x failed to start", "config key y is unknown"],
+				},
+			},
+			{ triggerTurn: false },
+		)
 	})
 
-	it("clears the widget when there are no issues", () => {
-		const ctx = createContext()
-		showMcpStartupIssues(ctx, [])
+	it("sends nothing when there are no issues", () => {
+		const harness = createExtensionApi()
 
-		expect(ctx.ui.setWidget).toHaveBeenCalledWith(MCP_STARTUP_ISSUES_WIDGET_KEY, undefined)
-		expect(mountWidget(ctx, MCP_STARTUP_ISSUES_WIDGET_KEY)).toBeUndefined()
+		showMcpStartupIssues(harness.api, [])
+
+		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 })

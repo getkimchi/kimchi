@@ -46,13 +46,14 @@ test("does not execute an untrusted repository MCP server during startup", async
 			await delay(500)
 			expect(existsSync(sentinel)).toBe(false)
 			// The denial warning is one entry in the collapsed MCP startup-issues
-			// row. Match count-agnostically ("MCP issue" without the "[1" prefix):
-			// other startup issues can legitimately share the row.
+			// row — a transcript block now, collapsed like tool output. Match
+			// count-agnostically ("MCP issue" without the "[1" prefix): other
+			// startup issues can legitimately share the block.
 			await waitForText(terminal, "MCP issue")
 			await waitForText(terminal, "needs attention")
 			expect(fullText(terminal)).toContain("ctrl+o to expand")
 			expect(fullText(terminal)).not.toContain("Project MCP configuration is not trusted")
-			trace.step("collapsed MCP issues row rendered, trust warning hidden")
+			trace.step("collapsed MCP issues transcript row rendered, trust warning hidden")
 
 			terminal.keyPress("o", { ctrl: true })
 			await waitForText(terminal, "Project MCP configuration is not trusted")

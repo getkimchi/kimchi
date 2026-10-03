@@ -48,7 +48,8 @@
 
 import { format, stripVTControlCharacters } from "node:util"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { recordRelayedWarning, trackWarningsSummaryContext } from "./warnings-summary.js"
+import { noticeMessageRenderer } from "../components/collapsible-notice.js"
+import { recordRelayedWarning, trackWarningsSummaryContext, WARNINGS_SUMMARY_MESSAGE_TYPE } from "./warnings-summary.js"
 
 /** Identical messages within this window are swallowed in interactive mode. */
 const DEDUPE_WINDOW_MS = 10_000
@@ -184,8 +185,9 @@ export function resetConsoleWarnRelayForTests(): void {
  */
 export default function consoleWarnRelayExtension(pi: ExtensionAPI): void {
 	installConsoleWarnRelay()
+	pi.registerMessageRenderer(WARNINGS_SUMMARY_MESSAGE_TYPE, noticeMessageRenderer)
 	pi.on("session_start", (_event, ctx) => {
-		trackWarningsSummaryContext(ctx)
+		trackWarningsSummaryContext(ctx, pi)
 		trackConsoleWarnRelayContext(ctx)
 	})
 }

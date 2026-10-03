@@ -1,9 +1,12 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { type TuiMouseEvent, visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it } from "vitest"
-import { CollapsibleNotice, type CollapsibleNoticeContent } from "./collapsible-notice.js"
+import { CollapsibleNotice, type CollapsibleNoticeContent, noticeMessageRenderer } from "./collapsible-notice.js"
 
-const theme = { fg: (_color: string, text: string) => text } as unknown as Theme
+const theme = {
+	fg: (_color: string, text: string) => text,
+	bold: (text: string) => text,
+} as unknown as Theme
 
 const content: CollapsibleNoticeContent = {
 	summary: "[2 issues] Something needs attention.",
@@ -76,5 +79,59 @@ describe("CollapsibleNotice", () => {
 		const component = notice({ expanded: true })
 
 		for (const line of component.render(12)) expect(visibleWidth(line)).toBeLessThanOrEqual(12)
+	})
+})
+
+type RenderedNoticeMessage = Parameters<typeof noticeMessageRenderer>[0]
+
+function renderNoticeMessage(details: CollapsibleNoticeContent, expanded = false): string[] {
+	const message = {
+		role: "custom",
+		customType: "notice-test",
+		content: [],
+		display: true,
+		details,
+		timestamp: 0,
+	} as RenderedNoticeMessage
+	const component = noticeMessageRenderer(message, { expanded, outputPad: 1 }, theme)
+	return component?.render(120) ?? []
+}
+
+describe("noticeMessageRenderer", () => {
+	it("renders collapsed by default like tool output: one summary row, details hidden behind a ctrl+o hint", () => {
+		const lines = renderNoticeMessage({
+			summary: "[2 issues] Something needs attention.",
+			title: "[Issues]",
+			entries: ["first issue", "second issue"],
+		})
+
+		expect(lines).toHaveLength(1)
+		expect(lines[0]).toContain("[2 issues] Something needs attention.")
+		expect(lines[0]).toContain("(ctrl+o to expand)")
+		expect(lines[0]).not.toContain("first issue")
+	})
+
+	it("renders fully expanded when the transcript's global expand state is on", () => {
+		const lines = renderNoticeMessage(
+			{
+				summary: "[2 issues] Something needs attention.",
+				title: "[Issues]",
+				entries: ["first issue", "second line one\nsecond line two"],
+			},
+			true,
+		)
+
+		expect(lines).toEqual([expect.stringContaining("[Issues]"), "first issue", "second line one", "second line two"])
+	})
+
+	it("returns undefined when details are missing", () => {
+		const message = {
+			role: "custom",
+			customType: "notice-test",
+			content: [],
+			display: true,
+			timestamp: 0,
+		} as RenderedNoticeMessage
+		expect(noticeMessageRenderer(message, { expanded: false, outputPad: 1 }, theme)).toBeUndefined()
 	})
 })

@@ -8,6 +8,7 @@ import type {
 import { createMcpAdapter, MCP_STATUS_EVENT } from "pi-mcp-adapter"
 import type { McpAdapterOptions, McpConfig, ServerEntry } from "pi-mcp-adapter/types"
 import { getParsedCliArgs } from "../../cli-args.js"
+import { noticeMessageRenderer } from "../../components/collapsible-notice.js"
 import { getConfiguredLegacyMcpKeys } from "../../config.js"
 import {
 	applyCooperativeTweak,
@@ -28,7 +29,7 @@ import {
 import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
 import { MCP_PROJECT_TRUST_WARNING, resolveMcpProjectTrust } from "./project-trust.js"
 import { collectReadOnlyMcpWireNames } from "./read-only.js"
-import { showMcpStartupIssues } from "./startup-issues.js"
+import { MCP_STARTUP_ISSUES_MESSAGE_TYPE, showMcpStartupIssues } from "./startup-issues.js"
 
 const MCP_PROXY_TOOL = "mcp"
 const MCP_SCRIPT_TOOL = "mcpScript"
@@ -235,6 +236,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	installKeyringRequireBridge()
 	installMcpOAuthCallbackBranding()
 	pi.registerFlag("mcp-config", { description: "Path to MCP config file", type: "string" })
+	pi.registerMessageRenderer(MCP_STARTUP_ISSUES_MESSAGE_TYPE, noticeMessageRenderer)
 	let policy: McpToolSurfacePolicy | undefined
 	const upstreamHandlers: Record<CapturedUpstreamEvent, UpstreamLifecycleHandler[]> = {
 		input: [],
@@ -304,10 +306,11 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		}
 
 		if (ctx.hasUI) {
-			// One collapsed-by-default notice above the editor instead of a
-			// warning notification per issue; ctrl+o or a click expands the full
-			// list. A UI-only widget, so it never reaches the LLM context.
-			showMcpStartupIssues(ctx, warnings)
+			// One transcript message instead of a warning notification per issue.
+			// Sent once per session: resume/reload/fork sessions already carry the
+			// block in their history, so re-sending would duplicate it. The LLM
+			// sees only a one-line system annotation (see startup-issues.ts).
+			if (event.reason === "startup") showMcpStartupIssues(pi, warnings)
 		} else {
 			for (const warning of warnings) console.warn(warning)
 		}

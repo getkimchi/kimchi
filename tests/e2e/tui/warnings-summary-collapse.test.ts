@@ -6,14 +6,16 @@ import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimch
 
 test.use(TUI_TEST_CONFIG)
 
-test("relayed console warnings render as one collapsed row that expands with ctrl+o", async ({ terminal }) => {
+test("relayed console warnings aggregate into one collapsed transcript row that scrolls with history", async ({
+	terminal,
+}) => {
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "warnings-summary-collapse",
 			responses: [{ stream: ["Done."] }],
 			// Test-only extension: emits two console.warn calls from a session_start
-			// handler — the startup-warning scenario the relay exists for. The row
+			// handler — the startup-warning scenario the relay exists for. The rows
 			// must appear live. Guarded to once per process: the fixture boots the
 			// session more than once (trust/restart cycles), and re-dispatched
 			// session_start events would otherwise multiply the warnings.
@@ -39,21 +41,24 @@ test("relayed console warnings render as one collapsed row that expands with ctr
 		async (_fixture, trace) => {
 			await waitForText(terminal, PROMPT_READY, { full: true })
 
-			// Collapsed: a single dim summary row. The exact count N is not
-			// asserted — the fixture environment emits its own real startup
-			// warnings (e.g. [model-roles]) that legitimately share the row;
-			// only the seeded tail is deterministic. The first warning stays
-			// hidden behind the Latest: of the most recent one.
+			// The two co-occurring seeded warns aggregate into one collapsed group
+			// row after the ~1.5s window — the earlier one stays hidden behind the
+			// Latest: of the later one until expanded.
 			await waitForText(terminal, "warnings] Latest: e2e seeded warning two", { full: true })
-			await waitForText(terminal, "(ctrl+o to expand)", { full: true })
+			expect(fullText(terminal)).toContain("(ctrl+o to expand)")
 			expect(fullText(terminal)).not.toContain("e2e seeded warning one")
-			trace.step("one collapsed warnings row; earlier warning hidden")
+			trace.step("one aggregated collapsed row; earlier warning hidden, no widget")
 
 			terminal.keyPress("o", { ctrl: true })
-			await waitForText(terminal, "[Warnings]", { full: true })
-			await waitForText(terminal, "(ctrl+o to collapse)", { full: true })
 			await waitForText(terminal, "e2e seeded warning one", { full: true })
-			trace.step("ctrl+o expands the full warning list")
+			trace.step("ctrl+o expands the grouped warning list")
+
+			// The row scrolls with history — submitting a prompt leaves it in
+			// scrollback and nothing stays pinned under the editor.
+			terminal.submit("hello")
+			await waitForText(terminal, "Done.")
+			expect(fullText(terminal)).toContain("e2e seeded warning one")
+			trace.step("rows remain in scrollback after the prompt")
 		},
 	)
 })
