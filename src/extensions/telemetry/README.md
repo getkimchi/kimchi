@@ -35,6 +35,7 @@ Every in-session payload includes:
 | `client` | `"pi"` |
 | `source` | Where the event originated (e.g. `"cli"`) |
 | `mode` | `"coding"` or `"ferment"` |
+| `region` | Resolved deployment region (`"us"` / `"eu"`) — from `KIMCHI_REGION`, global config, or the default; also stamped on pre-session events and cumulative metrics |
 
 Pre-session events (`app_started`, `harness_launched`, …) still use the **device ID** as `session.id` — no session exists yet.
 

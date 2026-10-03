@@ -36,6 +36,7 @@ function makeTelemetryConfig(overrides?: Record<string, unknown>) {
 		metricsEndpoint: "https://api.cast.ai/metrics",
 		headers: { Authorization: "Bearer test-key" },
 		apiKey: "test-key",
+		region: "us" as const,
 		...overrides,
 	}
 }

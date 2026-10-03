@@ -92,6 +92,7 @@ function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 		metricsEndpoint: "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
 		headers: { Authorization: "Bearer test-key" },
 		apiKey: "",
+		region: "us",
 		...overrides,
 	}
 }
@@ -304,6 +305,7 @@ describe("telemetryExtension integration", () => {
 			pi_mode: "tui",
 			pi_session_id: "test-session",
 			reason: "find files",
+			region: "us",
 			"session.id": expect.any(String),
 			session_type: "coding",
 			source: "cli",

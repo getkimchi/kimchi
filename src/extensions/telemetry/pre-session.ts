@@ -114,6 +114,7 @@ async function doSend(
 
 		const deviceId = ensureDeviceId()
 		const attrs: Record<string, string | number | boolean> = {
+			region: config.region,
 			"telemetry.cli_version": getVersion(),
 			...getOsMetadata(),
 		}

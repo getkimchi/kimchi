@@ -96,6 +96,8 @@ export interface TelemetryConfig {
 	metricsEndpoint: string
 	headers: Record<string, string>
 	apiKey: string
+	/** Resolved region (env/global config/default) — stamped as the `region` attribute on all telemetry. */
+	region: RegionId
 }
 
 export interface SearchStrategyConfig {
@@ -541,7 +543,8 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 		envEnabled !== undefined ? envEnabled !== "0" && envEnabled !== "false" : (fileEnabled ?? defaultEnabled)
 
 	// Explicit telemetry.* config wins over the region defaults.
-	const region = REGIONS[effectiveRegion(fileRegion)]
+	const regionId = effectiveRegion(fileRegion)
+	const region = REGIONS[regionId]
 
 	// Always inject a User-Agent so telemetry is traceable on the server side.
 	const hasUserAgent = Object.keys(headers).some((k) => k.toLowerCase() === "user-agent")
@@ -555,6 +558,7 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 		metricsEndpoint: fileMetricsEndpoint ?? telemetryMetricsUrl(region),
 		headers,
 		apiKey: apiKey ?? "",
+		region: regionId,
 	}
 }
 

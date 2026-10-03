@@ -49,6 +49,7 @@ describe("runSetupTools", () => {
 		metricsEndpoint: "https://example.com",
 		headers: { Authorization: "Bearer test" },
 		apiKey: "test-key",
+		region: "us" as const,
 	}
 
 	beforeEach(() => {
@@ -138,6 +139,7 @@ describe("runSetupTools", () => {
 			metricsEndpoint: "",
 			headers: {},
 			apiKey: "",
+			region: "us" as const,
 		})
 		vi.mocked(updateModelsConfig).mockResolvedValue({
 			models: [{ id: "kimi-k2.5" }],
@@ -178,6 +180,7 @@ describe("runSetupTools", () => {
 			metricsEndpoint: "",
 			headers: {},
 			apiKey: "",
+			region: "us" as const,
 		})
 		vi.mocked(updateModelsConfig).mockResolvedValue({
 			models: [{ id: "kimi-k2.5" }],

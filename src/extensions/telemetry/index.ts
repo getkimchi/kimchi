@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto"
 import type { Message } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { TelemetryConfig } from "../../config.js"
+import { DEFAULT_REGION } from "../../regions.js"
 import {
 	BASH_TOOL_GUARD_EVENTS,
 	type BashToolGuardAllowedByUserRequestPayload,
@@ -151,7 +152,14 @@ export function _getBashGuardCounts(): { warn: number; block: number; allowedByU
 // ---------------------------------------------------------------------------
 
 let _telemetryCtx: TelemetryContext | undefined
-let _telemetryConfig: TelemetryConfig = { enabled: false, endpoint: "", metricsEndpoint: "", headers: {}, apiKey: "" }
+let _telemetryConfig: TelemetryConfig = {
+	enabled: false,
+	endpoint: "",
+	metricsEndpoint: "",
+	headers: {},
+	apiKey: "",
+	region: DEFAULT_REGION,
+}
 let sessionStartEmitted = false
 
 /** @internal — exposed for testing only */

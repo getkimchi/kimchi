@@ -15,6 +15,7 @@ function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 		metricsEndpoint: "https://test.example.com/metrics",
 		headers: { Authorization: "Bearer test" },
 		apiKey: "",
+		region: "us",
 		...overrides,
 	}
 }
@@ -38,6 +39,7 @@ const AMBIENT_BARE_KEYS = new Set([
 	"step_id",
 	"run_id",
 	"model",
+	"region",
 ])
 
 describe("handlers/steers", () => {

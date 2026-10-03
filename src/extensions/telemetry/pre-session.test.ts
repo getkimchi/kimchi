@@ -49,6 +49,7 @@ function makeConfig(overrides?: Record<string, unknown>) {
 		metricsEndpoint: "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
 		headers: testHeaders,
 		apiKey: "test-key",
+		region: "us" as const,
 		...overrides,
 	}
 }
@@ -113,6 +114,7 @@ describe("sendPreSessionEvent", () => {
 		await drain()
 
 		const { attrs } = lastSendLogCall()
+		expect(attrs.region).toBe("us")
 		expect(attrs["telemetry.cli_version"]).toBe("1.0.0-test")
 		expect(attrs["telemetry.os"]).toBe(process.platform)
 		// arch mapping: x64 → amd64
@@ -120,6 +122,14 @@ describe("sendPreSessionEvent", () => {
 		expect(attrs["telemetry.arch"]).toBe(expectedArch)
 		expect(attrs["telemetry.host_os"]).toBe(process.platform) // non-WSL by default in test env
 		expect(attrs["telemetry.is_wsl"]).toBe(false)
+	})
+
+	it("stamps the configured region", async () => {
+		sendPreSessionEvent(makeConfig({ region: "eu" }), "app_started")
+		await drain()
+
+		const { attrs } = lastSendLogCall()
+		expect(attrs.region).toBe("eu")
 	})
 
 	it("includes all four OS metadata keys including host_os and is_wsl", async () => {

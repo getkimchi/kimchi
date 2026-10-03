@@ -21,6 +21,7 @@ function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 		metricsEndpoint: "https://test.example.com/metrics",
 		headers: { Authorization: "Bearer test" },
 		apiKey: "",
+		region: "us",
 		...overrides,
 	}
 }
@@ -67,9 +68,30 @@ describe("SessionContext", () => {
 
 		expect(attrMap.source).toBe("cli")
 		expect(attrMap.session_type).toBe("coding")
+		expect(attrMap.region).toBe("us")
 		expect(attrMap.ferment_id).toBe("")
 		expect(attrMap.custom).toBe("value")
 		expect(attrMap.count).toBe("42")
+	})
+
+	it("emit stamps the configured region on every event", async () => {
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue(undefined)
+
+		const ctx = new TelemetryContext(makeConfig({ region: "eu" }))
+		ctx.emit("test.event", {})
+		ctx.flushLogBuffer()
+
+		await Promise.allSettled([...ctx.inFlight])
+
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrs = body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes
+		const attrMap = Object.fromEntries(
+			attrs.map((a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue]),
+		)
+		expect(attrMap.region).toBe("eu")
 	})
 
 	it("emit includes all four OS metadata keys", async () => {
@@ -649,6 +671,27 @@ describe("SessionContext", () => {
 			const dataPoint = (metric.sum ?? metric.gauge).dataPoints[0]
 			const sessionAttr = dataPoint.attributes.find((a: { key: string }) => a.key === "session.id")
 			expect(sessionAttr?.value.stringValue).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
+		}
+	})
+
+	it("flushMetrics stamps the configured region on every metric data point", async () => {
+		const ctx = new TelemetryContext(makeConfig({ region: "eu" }))
+		ctx.cumulative.tokensByModel.m1 = { input: 100, output: 200, cacheRead: 0, cacheWrite: 0 }
+
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const metricsCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]: unknown[]) =>
+			String(url).includes("/metrics"),
+		)
+		expect(metricsCalls.length).toBe(1)
+		const body = JSON.parse((metricsCalls[0][1] as { body: string }).body)
+		const metrics = body.resourceMetrics[0].scopeMetrics[0].metrics
+		expect(metrics.length).toBeGreaterThan(0)
+		for (const metric of metrics) {
+			const dataPoint = (metric.sum ?? metric.gauge).dataPoints[0]
+			const regionAttr = dataPoint.attributes.find((a: { key: string }) => a.key === "region")
+			expect(regionAttr?.value.stringValue).toBe("eu")
 		}
 	})
 

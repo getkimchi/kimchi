@@ -916,14 +916,17 @@ describe("readTelemetryConfig", () => {
 	let configPath: string
 	let savedApiKey: string | undefined
 	let savedTelemetryEnabled: string | undefined
+	let savedRegion: string | undefined
 
 	beforeEach(() => {
 		tempDir = mkdtempSync(join(tmpdir(), "kimchi-telemetry-test-"))
 		configPath = join(tempDir, "config.json")
 		savedApiKey = process.env.KIMCHI_API_KEY
 		savedTelemetryEnabled = process.env.KIMCHI_TELEMETRY_ENABLED
+		savedRegion = process.env.KIMCHI_REGION
 		delete process.env.KIMCHI_API_KEY
 		delete process.env.KIMCHI_TELEMETRY_ENABLED
+		delete process.env.KIMCHI_REGION
 	})
 
 	afterEach(() => {
@@ -932,6 +935,8 @@ describe("readTelemetryConfig", () => {
 		else delete process.env.KIMCHI_API_KEY
 		if (savedTelemetryEnabled !== undefined) process.env.KIMCHI_TELEMETRY_ENABLED = savedTelemetryEnabled
 		else delete process.env.KIMCHI_TELEMETRY_ENABLED
+		if (savedRegion !== undefined) process.env.KIMCHI_REGION = savedRegion
+		else delete process.env.KIMCHI_REGION
 	})
 
 	it("picks up telemetry.metricsEndpoint when present", () => {
@@ -1012,6 +1017,32 @@ describe("readTelemetryConfig", () => {
 		const config = readTelemetryConfig(configPath)
 		expect(config.headers["user-agent"]).toBe("my-custom-agent/1.0")
 		expect(config.headers["User-Agent"]).toBeUndefined()
+	})
+
+	it("resolves region to the default (us) when unset", () => {
+		writeFileSync(configPath, JSON.stringify({}))
+		const config = readTelemetryConfig(configPath)
+		expect(config.region).toBe("us")
+	})
+
+	it("resolves region from the config file", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu" }))
+		const config = readTelemetryConfig(configPath)
+		expect(config.region).toBe("eu")
+		expect(config.endpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/logs:ingest")
+	})
+
+	it("KIMCHI_REGION env var takes precedence over the config file", () => {
+		process.env.KIMCHI_REGION = "eu"
+		writeFileSync(configPath, JSON.stringify({ region: "us" }))
+		const config = readTelemetryConfig(configPath)
+		expect(config.region).toBe("eu")
+	})
+
+	it("treats an unknown configured region as unset", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "moon" }))
+		const config = readTelemetryConfig(configPath)
+		expect(config.region).toBe("us")
 	})
 
 	it("injects User-Agent even when telemetry is disabled (config still prepared)", () => {

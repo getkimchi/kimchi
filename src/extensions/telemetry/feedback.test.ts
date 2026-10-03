@@ -37,6 +37,7 @@ function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 		metricsEndpoint: "https://test.example.com/metrics",
 		headers: { Authorization: "Bearer test" },
 		apiKey: "",
+		region: "us",
 		...overrides,
 	}
 }

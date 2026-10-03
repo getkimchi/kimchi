@@ -296,6 +296,7 @@ export class TelemetryContext {
 			source: IS_ACP_MODE ? "acp" : "cli",
 			session_type: getSessionType(),
 			model: this.currentModel,
+			region: this.config.region,
 			"telemetry.cli_version": getVersion(),
 			...getAcpAttributes(),
 			...(ctx ? getPiSessionAttributes(ctx) : {}),
@@ -338,6 +339,7 @@ export class TelemetryContext {
 							...m,
 							attrs: {
 								...m.attrs,
+								region: this.config.region,
 								"user.account_uuid": this.userId ?? "",
 							},
 						})),
