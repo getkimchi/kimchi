@@ -52,6 +52,16 @@ describe("runEnv", () => {
 		expect(logs.join("\n")).toContain("(not set)")
 	})
 
+	it("treats an explicitly empty value as not set — never as a masked secret", async () => {
+		vi.stubEnv("KIMCHI_API_KEY", "")
+		await runEnv([])
+		const nameIdx = logs.findIndex((l) => l.includes("KIMCHI_API_KEY"))
+		expect(nameIdx).toBeGreaterThanOrEqual(0)
+		const valueLine = logs.slice(nameIdx, nameIdx + 2).join("\n")
+		expect(valueLine).toContain("(not set)")
+		expect(valueLine).not.toContain("set: ****")
+	})
+
 	it("prints usage on --help without the variable list", async () => {
 		expect(await runEnv(["--help"])).toBe(0)
 		const output = logs.join("\n")
