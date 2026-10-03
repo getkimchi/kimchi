@@ -3,7 +3,7 @@
  */
 
 import { truncateToWidth } from "@earendil-works/pi-tui"
-import { remountTipWidget } from "../../tips/index.js"
+import { acquireAboveEditorSlot } from "../../tips/above-editor-occupancy.js"
 import type { AgentManager } from "../manager/agent-manager.js"
 import { getLifetimeTotal, getSessionContextPercent, type LifetimeUsage, type SessionLike } from "../manager/usage.js"
 import { getConfig } from "../personas/agent-types.js"
@@ -168,6 +168,7 @@ export class AgentWidget {
 	private widgetRegistered = false
 	private tui: unknown = undefined
 	private lastStatusText: string | undefined
+	private releaseAboveEditorSlot: (() => void) | undefined
 
 	constructor(
 		private manager: AgentManager,
@@ -180,6 +181,8 @@ export class AgentWidget {
 			this.widgetRegistered = false
 			this.tui = undefined
 			this.lastStatusText = undefined
+			this.releaseAboveEditorSlot?.()
+			this.releaseAboveEditorSlot = undefined
 		}
 	}
 
@@ -430,6 +433,8 @@ export class AgentWidget {
 				this.uiCtx.setWidget("agents", undefined)
 				this.widgetRegistered = false
 				this.tui = undefined
+				this.releaseAboveEditorSlot?.()
+				this.releaseAboveEditorSlot = undefined
 			}
 			if (this.lastStatusText !== undefined) {
 				this.uiCtx.setStatus("subagents", undefined)
@@ -470,15 +475,16 @@ export class AgentWidget {
 						invalidate: () => {
 							this.widgetRegistered = false
 							this.tui = undefined
+							this.releaseAboveEditorSlot?.()
+							this.releaseAboveEditorSlot = undefined
 						},
 					}
 				},
 				{ placement: "aboveEditor" },
 			)
 			this.widgetRegistered = true
-			// Re-insert tip widget after agents so it renders directly above the editor
-			// (framework renders aboveEditor widgets in Map insertion order).
-			remountTipWidget()
+			// Tip yields the strip while agents are visible.
+			this.releaseAboveEditorSlot = acquireAboveEditorSlot("agents")
 		} else {
 			;(this.tui as { requestRender?(): void } | undefined)?.requestRender?.()
 		}
@@ -496,5 +502,7 @@ export class AgentWidget {
 		this.widgetRegistered = false
 		this.tui = undefined
 		this.lastStatusText = undefined
+		this.releaseAboveEditorSlot?.()
+		this.releaseAboveEditorSlot = undefined
 	}
 }

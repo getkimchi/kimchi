@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
+import { acquireAboveEditorSlot } from "../tips/above-editor-occupancy.js"
 import { parseTodoScopeKey } from "./scope.js"
 import { GLOBAL_TODO_SCOPE, getTodoCountsForScope, getTodoState, resolveTodoScope } from "./store.js"
 import type { TodoCounts, TodoItem, TodoScope, TodoStatus } from "./types.js"
@@ -31,6 +32,7 @@ interface TodoWidgetState {
 	registrationId: number
 	ctx?: ExtensionContext
 	tui?: { requestRender?: (force?: boolean) => void }
+	releaseAboveEditorSlot?: () => void
 }
 
 const todoWidgetStates = new Map<string, TodoWidgetState>()
@@ -325,6 +327,8 @@ function buildTodoWidgetLines(theme: Theme, expanded: boolean, sessionId: string
 
 export function resetTodoWidgetState(ctx: ExtensionContext): void {
 	const sessionId = ctx.sessionManager.getSessionId()
+	const state = todoWidgetStates.get(sessionId)
+	state?.releaseAboveEditorSlot?.()
 	todoWidgetStates.delete(sessionId)
 }
 
@@ -388,6 +392,9 @@ export function openTodoWidget(ctx: ExtensionContext): void {
 	const state = getTodoWidgetState(ctx)
 	state.collapsed = false
 	state.visible = true
+	if (!state.releaseAboveEditorSlot) {
+		state.releaseAboveEditorSlot = acquireAboveEditorSlot("todos")
+	}
 	ensureTodoWidget(ctx)
 	requestTodoRender(ctx)
 	setTodosStatus(ctx)
@@ -405,6 +412,8 @@ export function clearTodoWidget(ctx: ExtensionContext): void {
 	const state = getTodoWidgetState(ctx)
 	state.visible = false
 	state.expanded = false
+	state.releaseAboveEditorSlot?.()
+	state.releaseAboveEditorSlot = undefined
 	requestTodoRender(ctx)
 }
 
@@ -439,6 +448,8 @@ export function disposeTodoWidget(ctx: ExtensionContext): void {
 		state.registered = false
 		state.tui = undefined
 		state.ctx = undefined
+		state.releaseAboveEditorSlot?.()
+		state.releaseAboveEditorSlot = undefined
 	}
 	todoWidgetStates.delete(sessionId)
 }

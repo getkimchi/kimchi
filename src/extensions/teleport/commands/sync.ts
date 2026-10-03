@@ -3,6 +3,7 @@ import { homedir } from "node:os"
 import { basename, isAbsolute, join, posix } from "node:path"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
+import { acquireAboveEditorSlot } from "../../tips/above-editor-occupancy.js"
 import { rsyncInstallHint, whichRsync } from "../preflight/rsync.js"
 import { SANDBOX_HOME, SANDBOX_USER } from "../provisioning/constants.js"
 import { provisionHarnessConfig } from "../provisioning/harness-config.js"
@@ -134,6 +135,7 @@ function createInlineProgress(ctx: TeleportContext): InlineProgress {
 	let frame = 0
 	let stopped = false
 	let tui: { requestRender(force?: boolean): void } | undefined
+	const releaseTipSlot = acquireAboveEditorSlot("teleport-sync")
 
 	const getState = () => ({ spinnerFrame: SPIN_FRAMES[frame], phase, suffix })
 
@@ -168,6 +170,7 @@ function createInlineProgress(ctx: TeleportContext): InlineProgress {
 			stopped = true
 			clearInterval(id)
 			ctx.ui.setWidget(SYNC_WIDGET_KEY, undefined, { placement: "aboveEditor" })
+			releaseTipSlot()
 		},
 	}
 }
