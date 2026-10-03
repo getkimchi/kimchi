@@ -1,7 +1,14 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
-import { isKeyRelease, Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
+import {
+	isKeyRelease,
+	Key,
+	matchesKey,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+	truncateToWidth,
+} from "@earendil-works/pi-tui"
 import { parseTodoScopeKey } from "./scope.js"
-import { GLOBAL_TODO_SCOPE, getTodoCountsForScope, getTodoState, resolveTodoScope } from "./store.js"
+import { GLOBAL_TODO_SCOPE, getTodoCountsForScope, getTodoState } from "./store.js"
 import type { TodoCounts, TodoItem, TodoScope, TodoStatus } from "./types.js"
 
 export const TODO_SHORTCUT = Key.f7
@@ -10,12 +17,25 @@ export const TODO_SHORTCUT_HINT = "F7"
 const TODO_WIDGET_KEY = "kimchi-todos"
 const TODO_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
 const TODO_STATUS_KEY = "todos"
-const TODO_LIST_HINT_TEXT = "F7 or enter '/todos' to collapse"
-const MAX_TODO_WIDGET_LINES = 14
-const TODO_WIDGET_BODY_LINES = 10
-const TODO_WIDGET_ROLL_THRESHOLD = TODO_WIDGET_BODY_LINES - 1
-const MAX_ROLLED_TODO_ROWS = 5
-const MAX_ROLLED_CONTEXT_ROWS = 2
+const TODO_LIST_HINT_TEXT = "F7 or /todos to collapse"
+
+/** Default auto-collapse threshold: lists with more items than this render
+ *  ambiently as a single status line until the user expands them. Mirrors the
+ *  opencode-todolist plugin's `collapseThreshold` setting. */
+const DEFAULT_TODO_AUTO_COLLAPSE_THRESHOLD = 5
+
+/** Item count past which the ambient todo strip auto-collapses to a single
+ *  status line. Configurable via KIMCHI_TODOS_COLLAPSE_THRESHOLD; values < 1
+ *  fall back to the default, and a very large value effectively disables
+ *  count-based auto-collapse. Explicit expansion (F7 / `/todos expand`) always overrides. */
+export function getTodoAutoCollapseThreshold(env: NodeJS.ProcessEnv = process.env): number {
+	const raw = env.KIMCHI_TODOS_COLLAPSE_THRESHOLD
+	if (raw === undefined) return DEFAULT_TODO_AUTO_COLLAPSE_THRESHOLD
+	const parsed = Number.parseInt(raw, 10)
+	if (!Number.isInteger(parsed) || parsed < 1) return DEFAULT_TODO_AUTO_COLLAPSE_THRESHOLD
+	return parsed
+}
+
 const TODO_SYMBOL: Record<TodoStatus, string> = {
 	pending: "○",
 	in_progress: "▶",
@@ -25,7 +45,13 @@ const TODO_SYMBOL: Record<TodoStatus, string> = {
 
 interface TodoWidgetState {
 	visible: boolean
+	/** Uncapped view: show every row (`/todos expand all`). */
 	expanded: boolean
+	/** User override: show the list body even past the auto-collapse threshold. */
+	listExpanded: boolean
+	/** User override (mouse click): keep only the one-line header, even at or
+	 *  below the auto-collapse threshold. Cleared by any explicit expand. */
+	listCollapsed: boolean
 	collapsed: boolean
 	registered: boolean
 	registrationId: number
@@ -35,8 +61,59 @@ interface TodoWidgetState {
 
 const todoWidgetStates = new Map<string, TodoWidgetState>()
 
+/** Reasons the above-editor strip should stay collapsed (agents, questionnaire,
+ *  etc.). Counted as a set so overlapping UIs don't release early. */
+const todoCrowdingReasons = new Set<string>()
+
+export function isTodoCrowdingActive(): boolean {
+	return todoCrowdingReasons.size > 0
+}
+
+/** Force the todo list body closed while competing above-editor UI is visible.
+ *  Clears any prior expand override so the strip shrinks immediately; the user
+ *  can still F7/`/todos` expand while crowded. Call with `active: false` when
+ *  the competing UI dismisses. */
+export function setTodoCrowding(reason: string, active: boolean): void {
+	if (!reason) return
+	const wasCrowded = todoCrowdingReasons.size > 0
+	if (active) todoCrowdingReasons.add(reason)
+	else todoCrowdingReasons.delete(reason)
+	const isCrowded = todoCrowdingReasons.size > 0
+	if (wasCrowded === isCrowded) return
+
+	for (const state of todoWidgetStates.values()) {
+		if (isCrowded) {
+			state.listExpanded = false
+			state.expanded = false
+		}
+		state.tui?.requestRender?.(true)
+	}
+}
+
+export async function withTodoCrowding<T>(reason: string, fn: () => Promise<T>): Promise<T> {
+	setTodoCrowding(reason, true)
+	try {
+		return await fn()
+	} finally {
+		setTodoCrowding(reason, false)
+	}
+}
+
+/** Test-only: clear crowding reasons between cases. */
+export function __resetTodoCrowding(): void {
+	todoCrowdingReasons.clear()
+}
+
 function createTodoWidgetState(): TodoWidgetState {
-	return { visible: false, expanded: false, collapsed: false, registered: false, registrationId: 0 }
+	return {
+		visible: false,
+		expanded: false,
+		listExpanded: false,
+		listCollapsed: false,
+		collapsed: false,
+		registered: false,
+		registrationId: 0,
+	}
 }
 
 function getTodoWidgetState(ctx: ExtensionContext): TodoWidgetState {
@@ -56,6 +133,51 @@ export function summarizeTodoCounts(counts: TodoCounts): string {
 	return `${counts.completed}/${counts.total} done · ${active} active${blocked}`
 }
 
+/** Single-line strip header:
+ *  `<chevron> Todos[ · <scope>] · <done>/<total>[ ✓] · <N active>[ · N blocked] (F7)`
+ *  `▶` collapsed, `▼` expanded. In-progress item rows also use `▶`. */
+export function buildTodoHeaderLine(
+	theme: Theme,
+	counts: TodoCounts,
+	collapsed: boolean,
+	options: {
+		scopeLabel?: string
+	} = {},
+): string {
+	const chevron = collapsed ? "▶" : "▼"
+	const active = counts.pending + counts.inProgress + counts.blocked
+	const live = counts.inProgress > 0
+	const title = `${chevron} Todos`
+	const parts = [theme.fg(live ? "accent" : "dim", title)]
+	if (options.scopeLabel) parts.push(theme.fg("dim", options.scopeLabel))
+	const countsText = `${counts.completed}/${counts.total}`
+	const allDone = counts.total > 0 && counts.completed === counts.total
+	parts.push(theme.fg("dim", countsText) + (allDone ? ` ${theme.fg("success", "✓")}` : ""))
+	parts.push(theme.fg(live ? "accent" : "dim", `${active} active`))
+	let line = parts.join(" · ")
+	if (counts.blocked > 0) {
+		line += theme.fg("warning", ` · ${counts.blocked} blocked`)
+	}
+	line += ` ${theme.fg("dim", `(${TODO_SHORTCUT_HINT})`)}`
+	return line
+}
+
+interface CollapseInput {
+	expanded: boolean
+	listExpanded: boolean
+	listCollapsed: boolean
+	total: number
+}
+
+/** True when the strip should render only the collapsed one-line header:
+ *  competing UI is crowding the strip, the user clicked it shut, or the list
+ *  exceeds the item-count threshold. Explicit expand overrides ambient collapse. */
+function isTodoBodyCollapsed(input: CollapseInput): boolean {
+	if (input.expanded || input.listExpanded) return false
+	if (isTodoCrowdingActive() || input.listCollapsed) return true
+	return input.total > getTodoAutoCollapseThreshold()
+}
+
 function hasActiveTodos(counts: TodoCounts): boolean {
 	return counts.pending + counts.inProgress + counts.blocked > 0
 }
@@ -65,20 +187,21 @@ export function summarizeTodos(sessionId: string): string {
 }
 
 /** Render a single todo line. Uses a per-scope sequential position (not the
- *  stored todo id) so numbers restart at 1 within each scope group. Styling is
- *  determined by `scope.kind` (not content prefixes) so a model-written global
- *  item that starts with "[Phase " gets normal global styling. */
+ *  stored todo id) so numbers restart at 1 within each scope group. Kept
+ *  because `/todos done <n>` / `/todos start <n>` address items by index. */
 function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: TodoScope): string {
 	const index = `${displayIndex + 1}`.padStart(2)
 	const symbol = TODO_SYMBOL[todo.status]
 	const isFerment = scope.kind === "ferment"
+	// Two-space indent before the (padded) index; keep numbering for `/todos done <n>`.
+	const prefix = ` ${index}. `
 
 	// Phase header — bold accent (bridge-written: "[Phase N] Name")
 	if (isFerment && todo.content.startsWith("[Phase ")) {
 		if (todo.status === "completed") {
-			return ` ${index}.  ${theme.fg("success", symbol)} ${theme.fg("dim", todo.content)}`
+			return `${prefix} ${theme.fg("success", symbol)} ${theme.fg("dim", todo.content)}`
 		}
-		return ` ${index}.  ${theme.fg("accent", symbol)} ${theme.fg("accent", theme.bold(todo.activeForm ?? todo.content))}`
+		return `${prefix} ${theme.fg("accent", symbol)} ${theme.fg("accent", theme.bold(todo.activeForm ?? todo.content))}`
 	}
 
 	// Ferment step item — dim the prefix arrow (bridge-written: "↳ description")
@@ -86,69 +209,62 @@ function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: Tod
 		const arrow = "↳ "
 		const text = todo.content.slice(arrow.length)
 		if (todo.status === "completed") {
-			return ` ${index}.  ${theme.fg("success", symbol)} ${theme.fg("dim", arrow)}${theme.fg("dim", text)}`
+			return `${prefix} ${theme.fg("success", symbol)} ${theme.fg("dim", arrow)}${theme.fg("dim", text)}`
 		}
 		if (todo.status === "blocked") {
-			return ` ${index}.  ${theme.fg("warning", symbol)} ${theme.fg("dim", arrow)}${theme.fg("warning", text)}`
+			return `${prefix} ${theme.fg("warning", symbol)} ${theme.fg("dim", arrow)}${theme.fg("warning", text)}`
 		}
 		if (todo.status === "in_progress") {
-			return ` ${index}.  ${theme.fg("accent", symbol)} ${theme.fg("dim", arrow)}${theme.fg("accent", todo.activeForm ?? text)}`
+			return `${prefix} ${theme.fg("accent", symbol)} ${theme.fg("dim", arrow)}${theme.fg("accent", todo.activeForm ?? text)}`
 		}
-		return ` ${index}.  ${theme.fg("dim", symbol)} ${theme.fg("dim", arrow)}${text}`
+		return `${prefix} ${theme.fg("dim", symbol)} ${theme.fg("dim", arrow)}${text}`
 	}
 
 	// All other todos (global, ferment-step sub-tasks) — standard rendering
-	if (todo.status === "completed") return ` ${index}.  ${theme.fg("success", symbol)} ${theme.fg("dim", todo.content)}`
-	if (todo.status === "blocked")
-		return ` ${index}.  ${theme.fg("warning", symbol)} ${theme.fg("warning", todo.content)}`
+	if (todo.status === "completed") return `${prefix} ${theme.fg("success", symbol)} ${theme.fg("dim", todo.content)}`
+	if (todo.status === "blocked") return `${prefix} ${theme.fg("warning", symbol)} ${theme.fg("warning", todo.content)}`
 	if (todo.status === "in_progress") {
-		return ` ${index}.  ${theme.fg("accent", symbol)} ${theme.fg("accent", todo.activeForm ?? todo.content)}`
+		return `${prefix} ${theme.fg("accent", symbol)} ${theme.fg("accent", todo.activeForm ?? todo.content)}`
 	}
-	return ` ${index}.  ${theme.fg("dim", symbol)} ${todo.content}`
+	return `${prefix} ${theme.fg("dim", symbol)} ${todo.content}`
 }
 
-function formatScopeHeader(scope: TodoScope): string {
+/** Short scope name for the one-line widget header (no "Todos · " prefix). */
+function formatScopeLabel(scope: TodoScope): string {
 	if (scope.kind === "ferment") {
-		return `Todos · Ferment (${scope.phaseId})`
+		return `Ferment (${scope.phaseId})`
 	}
 	if (scope.kind === "ferment-step") {
-		return `Todos · Step (${scope.phaseId}/${scope.stepId})`
+		return `Step (${scope.phaseId}/${scope.stepId})`
 	}
-	return "Todos · Global"
+	return "Global"
 }
 
-function selectTodoWindow(todos: TodoItem[]): {
-	todos: TodoItem[]
-	startIndex: number
-	hiddenBefore: number
-	hiddenAfter: number
-} {
-	const firstActiveIndex = todos.findIndex((todo) => todo.status !== "completed")
-	const startIndex =
-		firstActiveIndex === -1
-			? Math.max(0, todos.length - TODO_WIDGET_ROLL_THRESHOLD)
-			: firstActiveIndex >= TODO_WIDGET_ROLL_THRESHOLD
-				? firstActiveIndex - MAX_ROLLED_CONTEXT_ROWS
-				: 0
-	const baseVisibleCount =
-		startIndex > 0 && firstActiveIndex !== -1 ? MAX_ROLLED_CONTEXT_ROWS + MAX_ROLLED_TODO_ROWS : TODO_WIDGET_BODY_LINES
-	const markerCount = (startIndex > 0 ? 1 : 0) + (todos.length > startIndex + baseVisibleCount ? 1 : 0)
-	const visibleCount = Math.min(baseVisibleCount, TODO_WIDGET_BODY_LINES - markerCount)
-	const visibleTodos = todos.slice(startIndex, startIndex + visibleCount)
-	return {
-		todos: visibleTodos,
-		startIndex,
-		hiddenBefore: startIndex,
-		hiddenAfter: Math.max(0, todos.length - startIndex - visibleTodos.length),
+/** Muted group label for multi-scope expanded body. */
+function formatGroupLabel(scope: TodoScope): string {
+	return `Todos · ${formatScopeLabel(scope)}`
+}
+
+interface TodoBodyRow {
+	kind: "scope" | "todo"
+	text: string
+	status?: TodoStatus
+}
+
+function buildFullTodoBodyRows(theme: Theme, groups: WidgetScopeGroup[]): TodoBodyRow[] {
+	const showScopeLabels = groups.length > 1 || groups[0].scope.kind !== "global"
+	const rows: TodoBodyRow[] = []
+	for (const group of groups) {
+		if (showScopeLabels) {
+			rows.push({ kind: "scope", text: theme.fg("dim", formatGroupLabel(group.scope)) })
+		}
+		let groupIndex = 0
+		for (const todo of group.todos) {
+			rows.push({ kind: "todo", text: todoLine(todo, groupIndex, theme, group.scope), status: todo.status })
+			groupIndex++
+		}
 	}
-}
-
-function todoWindowBeforeText(hiddenBefore: number): string | undefined {
-	return hiddenBefore > 0 ? `… ${hiddenBefore} completed` : undefined
-}
-
-function todoWindowAfterText(hiddenAfter: number): string | undefined {
-	return hiddenAfter > 0 ? `… ${hiddenAfter} more` : undefined
+	return rows
 }
 
 /** Collect all non-empty scopes from the store, grouped by kind.
@@ -212,38 +328,41 @@ function collectWidgetScopes(sessionId: string): WidgetScopeGroup[] {
 	return [...fermentScopes, ...stepScopes, ...(globalGroup ? [globalGroup] : [])]
 }
 
-/** Count active todos across all scopes for the status bar. */
-function countAllActiveTodos(sessionId: string): TodoCounts {
-	const groups = collectWidgetScopes(sessionId)
+/** Count todos across scope groups. */
+function countTodosInGroups(groups: WidgetScopeGroup[]): TodoCounts {
 	const allTodos = groups.flatMap((g) => g.todos)
 	return {
 		total: allTodos.length,
 		completed: allTodos.filter((t) => t.status === "completed").length,
 		pending: allTodos.filter((t) => t.status === "pending").length,
-		blocked: allTodos.filter((t) => t.status === "blocked").length,
 		inProgress: allTodos.filter((t) => t.status === "in_progress").length,
+		blocked: allTodos.filter((t) => t.status === "blocked").length,
 	}
 }
 
+function countAllActiveTodos(sessionId: string): TodoCounts {
+	return countTodosInGroups(collectWidgetScopes(sessionId))
+}
+
+/** Build the notification/list text for `/todos` (not the strip). */
 export function buildTodoLines(theme: Theme, sessionId: string): string[] {
 	const groups = collectWidgetScopes(sessionId)
-
 	if (groups.length === 0) {
-		const scope = resolveTodoScope()
-		return [
-			theme.fg("accent", formatScopeHeader(scope)),
-			"",
-			theme.fg("dim", "No todos yet. Add one with `/todos add <text>`."),
-		]
+		return [theme.fg("dim", "No todos yet. Add one with `/todos add <text>`.")]
 	}
 
 	const lines: string[] = []
-
 	for (const group of groups) {
-		const summary = summarizeTodoCounts(getTodoCountsForScope(group.scope, sessionId))
-		lines.push(theme.fg("accent", formatScopeHeader(group.scope)))
+		const counts = {
+			total: group.todos.length,
+			completed: group.todos.filter((t) => t.status === "completed").length,
+			pending: group.todos.filter((t) => t.status === "pending").length,
+			inProgress: group.todos.filter((t) => t.status === "in_progress").length,
+			blocked: group.todos.filter((t) => t.status === "blocked").length,
+		}
+		lines.push(theme.fg("accent", `Todos · ${formatScopeLabel(group.scope)}`))
 		lines.push("")
-		lines.push(theme.fg("dim", summary))
+		lines.push(theme.fg("dim", summarizeTodoCounts(counts)))
 		lines.push("")
 		let groupIndex = 0
 		for (const todo of group.todos) {
@@ -253,74 +372,44 @@ export function buildTodoLines(theme: Theme, sessionId: string): string[] {
 		lines.push("")
 	}
 
-	// Trim trailing blank line
 	while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop()
 	return lines
 }
 
-function buildTodoWidgetLines(theme: Theme, expanded: boolean, sessionId: string): string[] {
+/** Body rows for the expanded strip. Explicit expand shows every row
+ *  (scrollable viewport is a follow-up change). */
+function buildTodoBodyLines(theme: Theme, groups: WidgetScopeGroup[]): string[] {
+	return buildFullTodoBodyRows(theme, groups).map((row) => row.text)
+}
+
+function headerScopeLabel(groups: WidgetScopeGroup[]): string | undefined {
+	if (groups.length !== 1) return undefined
+	return formatScopeLabel(groups[0].scope)
+}
+
+function buildTodoWidgetLines(theme: Theme, state: TodoWidgetState, sessionId: string): string[] {
 	const groups = collectWidgetScopes(sessionId)
 
-	// For the capped (non-expanded) view, collect all todos across scopes
-	// and apply the rolling window to the combined list.
-	const allTodos = groups.flatMap((g) => g.todos)
-	const lines = buildTodoLines(theme, sessionId)
-	const withHint = [...lines, "", theme.fg("dim", TODO_LIST_HINT_TEXT)]
-	if (expanded) return withHint
-	if (withHint.length <= MAX_TODO_WIDGET_LINES) return withHint
-	if (allTodos.length <= TODO_WIDGET_ROLL_THRESHOLD) return lines
-
-	const window = selectTodoWindow(allTodos)
-	const beforeText = todoWindowBeforeText(window.hiddenBefore)
-	const afterText = todoWindowAfterText(window.hiddenAfter)
-
-	// Single pass: for each group, if it contributes ≥1 windowed row, emit
-	// header + summary immediately followed by that group's windowed rows.
-	// Groups with zero windowed rows are skipped entirely (no orphan headers).
-	const result: string[] = []
-	let displayIndex = 0
-	let beforeInserted = false
-
-	for (const group of groups) {
-		const groupTodos = group.todos
-		const groupStartIndex = displayIndex
-		const groupEndIndex = displayIndex + groupTodos.length
-
-		// Skip groups entirely outside the window
-		if (groupEndIndex <= window.hiddenBefore || groupStartIndex >= window.hiddenBefore + window.todos.length) {
-			displayIndex = groupEndIndex
-			continue
-		}
-
-		// Emit header + summary for this group
-		result.push(theme.fg("accent", formatScopeHeader(group.scope)))
-		result.push("")
-		result.push(theme.fg("dim", summarizeTodoCounts(getTodoCountsForScope(group.scope, sessionId))))
-		result.push("")
-
-		// Emit windowed rows for this group, inserting before-marker before the first visible row
-		let groupDisplayIndex = 0
-		for (const todo of groupTodos) {
-			if (displayIndex >= window.hiddenBefore && displayIndex < window.hiddenBefore + window.todos.length) {
-				if (beforeText && !beforeInserted) {
-					result.push(theme.fg("dim", beforeText))
-					beforeInserted = true
-				}
-				result.push(todoLine(todo, groupDisplayIndex, theme, group.scope))
-			}
-			displayIndex++
-			groupDisplayIndex++
-		}
-		result.push("")
+	if (groups.length === 0) {
+		return [theme.fg("dim", "No todos yet. Add one with `/todos add <text>`.")]
 	}
 
-	// Emit after-marker after the last visible row
-	if (afterText) {
-		while (result.length > 0 && result[result.length - 1] === "") result.pop()
-		result.push(theme.fg("dim", afterText))
+	const counts = countTodosInGroups(groups)
+	const scopeLabel = headerScopeLabel(groups)
+
+	if (
+		isTodoBodyCollapsed({
+			expanded: state.expanded,
+			listExpanded: state.listExpanded,
+			listCollapsed: state.listCollapsed,
+			total: counts.total,
+		})
+	) {
+		return [buildTodoHeaderLine(theme, counts, true, { scopeLabel })]
 	}
 
-	return result
+	const body = buildTodoBodyLines(theme, groups)
+	return [buildTodoHeaderLine(theme, counts, false, { scopeLabel }), ...body, "", theme.fg("dim", TODO_LIST_HINT_TEXT)]
 }
 
 export function resetTodoWidgetState(ctx: ExtensionContext): void {
@@ -358,11 +447,11 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 		state.ctx = undefined
 	}
 	const component = (tui: unknown, theme: Theme) => {
-		state.tui = tui as { requestRender?: (force?: boolean) => void }
+		state.tui = tui as TodoWidgetState["tui"]
 		return {
 			render(width: number): string[] {
 				if (!state.visible) return []
-				return buildTodoWidgetLines(theme, state.expanded, sessionId).map((line) =>
+				return buildTodoWidgetLines(theme, state, sessionId).map((line) =>
 					truncateToWidth(line, Math.max(1, width - 4)),
 				)
 			},
@@ -370,11 +459,26 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 			dispose: unregister,
 			handleInput(data: string): void {
 				if (isKeyRelease(data)) return
-				if (matchesKey(data, Key.escape) || matchesKey(data, Key.enter) || matchesKey(data, "return") || data === "q") {
+				// Esc hides the strip when the widget has focus. Do not bind `q` —
+				// it fires while the prompt editor has focus and would steal input.
+				if (matchesKey(data, Key.escape)) {
 					collapseTodoWidget(ctx)
 					return
 				}
-				if (matchesKey(data, TODO_SHORTCUT)) collapseTodoWidget(ctx)
+				// Enter/F7 collapse ↔ expand the list body; Esc hides the strip.
+				if (matchesKey(data, Key.enter) || matchesKey(data, "return") || matchesKey(data, TODO_SHORTCUT)) {
+					toggleTodoWidget(ctx)
+				}
+			},
+			// Mouse only reaches widgets in fullscreen mode (`--tui-mode fullscreen`),
+			// where the alt-screen renderer captures it. Left click mirrors
+			// F7/`/todos` (collapse ↔ expand). Right-click falls through for paste.
+			handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+				if (event.type !== "click" || event.button !== "left") return undefined
+				// Swallow the trailing clicks of a double-click so it toggles once.
+				if (event.clickCount !== undefined && event.clickCount > 1) return { handled: true }
+				toggleTodoWidget(ctx)
+				return { handled: true }
 			},
 		}
 	}
@@ -383,7 +487,10 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 	state.ctx = ctx
 }
 
-export function openTodoWidget(ctx: ExtensionContext): void {
+/** Ambient show: make the strip visible without changing the user's
+ *  expand/collapse overrides, so auto-collapse still applies. Used by the
+ *  store-sync path, which must not count as an explicit expansion. */
+function showTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 	const state = getTodoWidgetState(ctx)
 	state.collapsed = false
@@ -393,11 +500,23 @@ export function openTodoWidget(ctx: ExtensionContext): void {
 	setTodosStatus(ctx)
 }
 
+export function openTodoWidget(ctx: ExtensionContext): void {
+	if (!ctx.hasUI) return
+	// Explicit open (`/todos expand`) shows the list body even when the list is
+	// past the auto-collapse threshold.
+	const state = getTodoWidgetState(ctx)
+	state.listExpanded = true
+	state.listCollapsed = false
+	showTodoWidget(ctx)
+}
+
 export function expandTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 	const state = getTodoWidgetState(ctx)
 	state.expanded = true
-	openTodoWidget(ctx)
+	state.listExpanded = true
+	state.listCollapsed = false
+	showTodoWidget(ctx)
 }
 
 export function clearTodoWidget(ctx: ExtensionContext): void {
@@ -405,6 +524,8 @@ export function clearTodoWidget(ctx: ExtensionContext): void {
 	const state = getTodoWidgetState(ctx)
 	state.visible = false
 	state.expanded = false
+	state.listExpanded = false
+	state.listCollapsed = false
 	requestTodoRender(ctx)
 }
 
@@ -414,9 +535,32 @@ export function collapseTodoWidget(ctx: ExtensionContext): void {
 	setTodosStatus(ctx)
 }
 
+/** Collapse ↔ expand the list body in place. Used by F7, bare `/todos`, Enter,
+ *  and click. Never hides the strip — Esc and `/todos collapse` do that. */
 export function toggleTodoWidget(ctx: ExtensionContext): void {
-	if (getTodoWidgetState(ctx).visible) collapseTodoWidget(ctx)
-	else openTodoWidget(ctx)
+	if (!ctx.hasUI) return
+	const sessionId = ctx.sessionManager.getSessionId()
+	const state = getTodoWidgetState(ctx)
+	if (!state.visible) {
+		showTodoWidget(ctx)
+		return
+	}
+	const counts = countAllActiveTodos(sessionId)
+	if (
+		isTodoBodyCollapsed({
+			expanded: state.expanded,
+			listExpanded: state.listExpanded,
+			listCollapsed: state.listCollapsed,
+			total: counts.total,
+		})
+	) {
+		openTodoWidget(ctx)
+		return
+	}
+	state.listCollapsed = true
+	state.listExpanded = false
+	state.expanded = false
+	requestTodoRender(ctx)
 }
 
 export function syncTodoWidget(ctx: ExtensionContext): void {
@@ -424,7 +568,7 @@ export function syncTodoWidget(ctx: ExtensionContext): void {
 	const sessionId = ctx.sessionManager.getSessionId()
 	const counts = countAllActiveTodos(sessionId)
 	const state = getTodoWidgetState(ctx)
-	if (!state.collapsed && hasActiveTodos(counts)) openTodoWidget(ctx)
+	if (!state.collapsed && hasActiveTodos(counts)) showTodoWidget(ctx)
 	else clearTodoWidget(ctx)
 	setTodosStatus(ctx)
 }
@@ -445,7 +589,7 @@ export function disposeTodoWidget(ctx: ExtensionContext): void {
 
 export function registerTodoShortcut(pi: ExtensionAPI): void {
 	pi.registerShortcut(TODO_SHORTCUT, {
-		description: "Toggle todos overlay",
+		description: "Collapse/expand todos list",
 		handler: (ctx) => toggleTodoWidget(ctx),
 	})
 }

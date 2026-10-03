@@ -22,6 +22,7 @@ import { type Static, Type } from "typebox"
 import { withBlocked } from "../herdr-events.js"
 import { shouldSuppressInteractiveTools } from "../print-mode.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { withTodoCrowding } from "../todos/widget.js"
 import { withWorkingHidden } from "../ui.js"
 import { promptQuestionnaireFallback, type QuestionnaireResult } from "./questionnaire-fallback.js"
 import { createQuestionForm } from "./questionnaire-form.js"
@@ -247,9 +248,11 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 			const result = await withBlocked(pi.events, "Questionnaire", () =>
 				ctx.mode !== "tui"
 					? promptQuestionnaireFallback(ctx.ui, questions)
-					: withWorkingHidden(ctx, () =>
-							ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
-								createQuestionForm(tui, theme, questions, { title: params.header }, done),
+					: withTodoCrowding("questionnaire", () =>
+							withWorkingHidden(ctx, () =>
+								ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
+									createQuestionForm(tui, theme, questions, { title: params.header }, done),
+								),
 							),
 						),
 			)

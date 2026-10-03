@@ -5,6 +5,9 @@ node_modules/
 package-lock.json
 yarn.lock
 
+# Repo-local pnpm store (created when installs run in a sandbox that blocks the global store)
+.pnpm-store/
+
 # Build output
 dist/
 
