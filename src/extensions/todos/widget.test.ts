@@ -1,12 +1,14 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
+import { __resetAboveEditorOccupancy, isAboveEditorOccupied } from "../tips/above-editor-occupancy.js"
 import { __resetTodoStore, applyWriteTodos, registerActiveTodoScopeProvider } from "./store.js"
 import type { TodoScope } from "./types.js"
 import {
 	__test_buildTodoLines,
 	__test_summarizeTodos,
+	clearTodoWidget,
 	expandTodoWidget,
 	openTodoWidget,
 	resetTodoWidgetState,
@@ -18,7 +20,11 @@ describe("todo widget — narrow terminals", () => {
 	// regardless of terminal width, crashing pi-tui at widths < 24.
 	beforeEach(() => {
 		__resetTodoStore()
+		__resetAboveEditorOccupancy()
 		resetTodoWidgetState(createContext({ sessionManager: { getSessionId: () => TEST_SESSION_ID } }))
+	})
+	afterEach(() => {
+		__resetAboveEditorOccupancy()
 	})
 
 	for (const width of [1, 2, 3, 4, 5, 8, 10, 16, 20, 24, 40]) {
@@ -69,7 +75,11 @@ const TEST_SESSION_ID = "test-session"
 describe("todo widget helpers", () => {
 	beforeEach(() => {
 		__resetTodoStore()
+		__resetAboveEditorOccupancy()
 		resetTodoWidgetState(createContext({ sessionManager: { getSessionId: () => TEST_SESSION_ID } }))
+	})
+	afterEach(() => {
+		__resetAboveEditorOccupancy()
 	})
 
 	it("renders empty state", () => {
@@ -161,6 +171,18 @@ describe("todo widget helpers", () => {
 		expect(instance.render(80)).toContain("1/1 done · 0 active")
 		expect(instance.render(80)).toContain("  1.  ✓ done")
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", undefined)
+	})
+
+	it("claims the above-editor slot while visible so the tip can yield", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos({ todos: [{ content: "pending", status: "pending" }] }, TEST_SESSION_ID)
+
+		expect(isAboveEditorOccupied()).toBe(false)
+		openTodoWidget(ctx)
+		expect(isAboveEditorOccupied()).toBe(true)
+		clearTodoWidget(ctx)
+		expect(isAboveEditorOccupied()).toBe(false)
 	})
 
 	it("rolls the capped widget forward when leading todos are completed", () => {

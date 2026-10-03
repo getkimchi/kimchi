@@ -2,6 +2,7 @@ import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { __resetAboveEditorOccupancy, acquireAboveEditorSlot } from "./above-editor-occupancy.js"
 import tipsExtension, { setTipWidgetLocation, TIPS_WIDGET_KEY } from "./index.js"
 import { TipRegistry } from "./registry.js"
 
@@ -89,6 +90,7 @@ beforeEach(() => {
 afterEach(() => {
 	for (const harness of harnesses.splice(0)) harness.shutdown()
 	for (const restore of restoreLocations.splice(0).reverse()) restore()
+	__resetAboveEditorOccupancy()
 })
 
 describe("tips extension", () => {
@@ -145,6 +147,39 @@ describe("tips extension", () => {
 		expect(harness.ui.setWidget).toHaveBeenCalledWith(TIPS_WIDGET_KEY, expect.any(Function), {
 			placement: "aboveEditor",
 		})
+	})
+
+	it("hides the tip while another above-editor section occupies the strip", () => {
+		const harness = createHarness({ hasUI: true })
+		harness.start()
+		harness.ui.setWidget.mockClear()
+
+		const release = acquireAboveEditorSlot("todos")
+
+		expect(harness.ui.setWidget).toHaveBeenCalledWith(TIPS_WIDGET_KEY, undefined, {
+			placement: "aboveEditor",
+		})
+		harness.ui.setWidget.mockClear()
+
+		release()
+
+		expect(harness.ui.setWidget).toHaveBeenCalledWith(TIPS_WIDGET_KEY, expect.any(Function), {
+			placement: "aboveEditor",
+		})
+	})
+
+	it("does not remount the tip while the strip is still occupied", () => {
+		const harness = createHarness({ hasUI: true })
+		harness.start()
+		const releaseTodos = acquireAboveEditorSlot("todos")
+		harness.ui.setWidget.mockClear()
+
+		harness.turnEnd()
+
+		expect(harness.ui.setWidget).not.toHaveBeenCalledWith(TIPS_WIDGET_KEY, expect.any(Function), {
+			placement: "aboveEditor",
+		})
+		releaseTodos()
 	})
 
 	it("clears the widget and unregisters its general provider on shutdown", () => {
