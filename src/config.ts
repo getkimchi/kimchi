@@ -3,6 +3,7 @@ import { homedir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import type { RetrySettings } from "@earendil-works/pi-coding-agent"
 import { writeJson } from "./config/json.js"
+import { detectWheelScrollDefault } from "./extensions/terminal-compat/wheel-scroll.js"
 import { isProjectScopeAllowed } from "./project-scope-trust.js"
 import {
 	DEFAULT_REGION,
@@ -654,14 +655,16 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 
 /**
  * Map TUI config onto the `KIMCHI_WHEEL_SCROLL_LINES` env var consumed by the
- * patched pi-tui `TuiAltScreen` constructor. Env var already set wins over
- * config (env > config > default). Must run before the interactive TUI is
- * constructed — the patched constructor reads the env var once, so later
- * changes do not apply without a restart.
+ * patched pi-tui `TuiAltScreen` constructor. Precedence: env var > config >
+ * terminal-detected default > pi-tui default of 1 — an explicit user value
+ * (env or config) is never overridden by detection. Must run before the
+ * interactive TUI is constructed — the patched constructor reads the env var
+ * once, so later changes do not apply without a restart.
  */
 export function applyTuiEnvOverrides(config: KimchiConfig): void {
-	const lines = config.tui?.wheelScrollLines
-	if (lines !== undefined && process.env.KIMCHI_WHEEL_SCROLL_LINES === undefined) {
+	if (process.env.KIMCHI_WHEEL_SCROLL_LINES !== undefined) return
+	const lines = config.tui?.wheelScrollLines ?? detectWheelScrollDefault()?.lines
+	if (lines !== undefined) {
 		process.env.KIMCHI_WHEEL_SCROLL_LINES = String(lines)
 	}
 }

@@ -443,7 +443,7 @@ Kimchi stores its configuration (settings, sessions, models) under:
 
 ### TUI wheel-scroll speed
 
-Mouse-wheel scroll speed in fullscreen mode is configurable via `tui.wheelScrollLines` or the `KIMCHI_WHEEL_SCROLL_LINES` env var — see [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md).
+Mouse-wheel scroll speed in fullscreen mode auto-adapts to slow terminals (iTerm2, VS Code/Cursor, JetBrains IDEs, WezTerm, Kitty, and everything on Windows get 3 lines per notch instead of 1) and remains configurable via `tui.wheelScrollLines` or the `KIMCHI_WHEEL_SCROLL_LINES` env var — see [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md).
 
 ### Context files
 

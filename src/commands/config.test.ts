@@ -314,14 +314,37 @@ describe("kimchi config set tui.wheelScrollLines", () => {
 })
 
 describe("kimchi config get tui.wheelScrollLines", () => {
+	// Scrub terminal-detection inputs so the developer's real shell env
+	// doesn't change what the unset-value display shows.
+	const DETECTION_KEYS = [
+		"TERM_PROGRAM",
+		"TERMINAL_EMULATOR",
+		"KITTY_WINDOW_ID",
+		"WEZTERM_PANE",
+		"TERM",
+		// The override var too — the "notes the env override" test stubs it explicitly.
+		"KIMCHI_WHEEL_SCROLL_LINES",
+	]
+	const saved = new Map<string, string | undefined>()
+
 	beforeEach(() => {
 		vi.clearAllMocks()
 		vi.spyOn(console, "log").mockImplementation(() => {})
+		for (const key of DETECTION_KEYS) {
+			saved.set(key, process.env[key])
+			delete process.env[key]
+		}
 	})
 
 	afterEach(() => {
 		vi.restoreAllMocks()
 		vi.unstubAllEnvs()
+		for (const key of DETECTION_KEYS) {
+			const value = saved.get(key)
+			if (value === undefined) delete process.env[key]
+			else process.env[key] = value
+		}
+		saved.clear()
 	})
 
 	it("shows the configured value from the merged config", async () => {
@@ -340,6 +363,18 @@ describe("kimchi config get tui.wheelScrollLines", () => {
 
 		expect(exit).toBe(0)
 		expect(console.log).toHaveBeenCalledWith("tui.wheelScrollLines: unset (default 1) (from config)")
+	})
+
+	it("shows the terminal-detected default when unset and a slow terminal is detected", async () => {
+		process.env.TERM_PROGRAM = "vscode"
+		vi.mocked(loadConfig).mockReturnValue({} as ReturnType<typeof loadConfig>)
+
+		const exit = await runConfig(["get", "tui.wheelScrollLines"])
+
+		expect(exit).toBe(0)
+		expect(console.log).toHaveBeenCalledWith(
+			"tui.wheelScrollLines: unset (auto 3 for VS Code-based editor) (from config)",
+		)
 	})
 
 	it("notes the env override when it is in effect", async () => {
