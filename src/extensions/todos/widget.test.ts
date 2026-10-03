@@ -322,7 +322,7 @@ describe("todo widget helpers", () => {
 		expect(lines).toContain("      ✓ task 11")
 		expect(lines).toContain("      ✓ task 19")
 		expect(lines).not.toContain("↓ ")
-		expect(lines.some((line: string) => line.includes("✓ task 1 "))).toBe(false)
+		expect(lines.some((line: string) => line.includes("✓ task 9 "))).toBe(false)
 	})
 
 	it("scrolls the viewport on mouse wheel", () => {
