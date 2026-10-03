@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import type { McpAdapterOptions, McpConfig } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -93,6 +93,13 @@ vi.mock("../permissions/mode-controller.js", () => ({
 	getPermissionMode: () => (permissionState.mode === undefined ? undefined : { mode: permissionState.mode }),
 }))
 
+import consoleWarnRelayExtension, { resetConsoleWarnRelayForTests } from "../console-warn-relay.js"
+import {
+	resetWarningsSummaryForTests,
+	WARNING_AGGREGATE_WINDOW_MS,
+	WARNINGS_SUMMARY_MESSAGE_TYPE,
+} from "../warnings-summary.js"
+
 vi.mock("./oauth-migration.js", () => ({
 	migrateLegacyOAuthCredentials: vi.fn(() => ({
 		migratedServerNames: [],
@@ -113,6 +120,7 @@ vi.mock("./project-trust.js", () => ({
 }))
 
 import mcpAdapterExtension, { createKimchiMcpAdapterExtension } from "./index.js"
+import { MCP_STARTUP_ISSUES_MESSAGE_TYPE } from "./startup-issues.js"
 
 function tool(name: string, label: string): ToolDefinition {
 	return {
@@ -133,6 +141,10 @@ async function start(
 }
 
 describe("upstream MCP adapter facade", () => {
+	afterEach(() => {
+		resetConsoleWarnRelayForTests()
+		resetWarningsSummaryForTests()
+	})
 	beforeEach(() => {
 		upstream.api = undefined
 		upstream.options = undefined
@@ -512,7 +524,18 @@ describe("upstream MCP adapter facade", () => {
 				},
 			},
 		})
-		expect(ctx.ui.notify).toHaveBeenCalledWith("project MCP config is not trusted", "warning")
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: MCP_STARTUP_ISSUES_MESSAGE_TYPE,
+				details: {
+					summary: "[1 MCP issue] Some MCP configuration needs attention.",
+					title: "[MCP issues]",
+					entries: ["project MCP config is not trusted"],
+				},
+			}),
+			{ triggerTurn: false },
+		)
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
 	})
 
 	it("removes impossible mcpScript guidance and Pi product wording from the gateway", async () => {
@@ -570,7 +593,49 @@ describe("upstream MCP adapter facade", () => {
 		expect(planning.reapplyCurrentProfile).toHaveBeenCalledWith(harness.api)
 	})
 
-	it("surfaces compatibility warnings when the session starts", async () => {
+	it("reroutes upstream MCP console.warn output to one aggregated collapsed transcript row instead of the terminal", async () => {
+		const sink = vi.spyOn(console, "warn").mockImplementation(() => {})
+		upstream.sessionStart.mockImplementation(() => {
+			console.warn(
+				"MCP: 105 direct tools resolved. Each direct tool adds prompt context; README guidance recommends targeted sets of 5-20 tools and using the proxy or an explicit string[] when 75+ direct tools would be registered. Set settings.warnOnLargeDirectTools to false to hide this advisory.",
+			)
+			console.warn('[mcp] Tool "get_once" promoted to read-only via name convention (no annotations)')
+		})
+		// The relay is its own extension, registered ahead of MCP in cli.ts.
+		const relayHarness = createExtensionApi()
+		consoleWarnRelayExtension(relayHarness.api)
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		const ctx = createContext({ isProjectTrusted: () => true })
+		vi.useFakeTimers()
+		await relayHarness.getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx)
+		await start(harness, ctx)
+		vi.advanceTimersByTime(WARNING_AGGREGATE_WINDOW_MS)
+		vi.useRealTimers()
+
+		expect(sink).not.toHaveBeenCalled()
+		// MCP itself surfaces no startup issues here.
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		// Startup warns co-occur, so they land in one aggregated collapsed row;
+		// the LLM only sees the one-line annotation in `content`.
+		expect(relayHarness.sendMessage).toHaveBeenCalledTimes(1)
+		expect(relayHarness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: WARNINGS_SUMMARY_MESSAGE_TYPE,
+				details: expect.objectContaining({
+					title: "[Warnings]",
+					entries: [
+						expect.stringContaining("MCP: 105 direct tools resolved"),
+						'[mcp] Tool "get_once" promoted to read-only via name convention (no annotations)',
+					],
+				}),
+			}),
+			{ triggerTurn: false },
+		)
+		sink.mockRestore()
+	})
+
+	it("surfaces compatibility warnings as one startup-issues transcript message", async () => {
 		configState.warnings = ["legacy config is malformed"]
 		configState.legacyKeys = ["mcpSearch"]
 		oauthMigration.warnings = ["legacy OAuth entry conflicts with the upstream layout"]
@@ -580,8 +645,44 @@ describe("upstream MCP adapter facade", () => {
 
 		await harness.getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx)
 
-		expect(ctx.ui.notify).toHaveBeenCalledWith("legacy config is malformed", "warning")
-		expect(ctx.ui.notify).toHaveBeenCalledWith("legacy OAuth entry conflicts with the upstream layout", "warning")
-		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("mcpSearch no longer controls"), "warning")
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: MCP_STARTUP_ISSUES_MESSAGE_TYPE,
+				details: {
+					summary: "[3 MCP issues] Some MCP configuration needs attention.",
+					title: "[MCP issues]",
+					entries: [
+						"legacy config is malformed",
+						"legacy OAuth entry conflicts with the upstream layout",
+						expect.stringContaining("mcpSearch no longer controls"),
+					],
+				},
+			}),
+			{ triggerTurn: false },
+		)
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+	})
+
+	it.each(["resume", "reload", "fork"] as const)("does not resend startup issues on session %s", async (reason) => {
+		configState.warnings = ["legacy config is malformed"]
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		const ctx = createContext()
+
+		await harness.getHandler("session_start")({ type: "session_start", reason }, ctx)
+
+		// The transcript block from the original startup is already in this
+		// session's history and re-renders on load; re-sending would duplicate it.
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("sends no startup-issues message when there are no warnings", async () => {
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		const ctx = createContext()
+
+		await harness.getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 })
