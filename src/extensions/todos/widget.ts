@@ -151,14 +151,14 @@ function getTodoWidgetState(ctx: ExtensionContext): TodoWidgetState {
 
 export function summarizeTodoCounts(counts: TodoCounts): string {
 	if (counts.total === 0) return "No todos"
-	const active = counts.pending + counts.inProgress + counts.blocked
 	const blocked = counts.blocked > 0 ? ` · ${counts.blocked} blocked` : ""
-	return `${counts.completed}/${counts.total} done · ${active} active${blocked}`
+	return `${counts.completed}/${counts.total} done${blocked}`
 }
 
 /** Single-line strip header:
- *  `<chevron> Todos[ · <scope>] · <done>/<total>[ ✓] · <N active>[ · ⠧ N running][ · N blocked] (F7)`
- *  `▶` collapsed, `▼` expanded. In-progress item rows also use `▶`. */
+ *  `<chevron> Todos[ · <scope>] · <done>/<total>[ ✓][ · ⠋ N running][ · N blocked] (F7)`
+ *  `▶` collapsed, `▼` expanded. In-progress item rows use the live spinner
+ *  frame so their tick is the same as the header's. */
 export function buildTodoHeaderLine(
 	theme: Theme,
 	counts: TodoCounts,
@@ -169,7 +169,6 @@ export function buildTodoHeaderLine(
 	} = {},
 ): string {
 	const chevron = collapsed ? "▶" : "▼"
-	const active = counts.pending + counts.inProgress + counts.blocked
 	const live = counts.inProgress > 0
 	const title = `${chevron} Todos`
 	const parts = [theme.fg(live ? "accent" : "dim", title)]
@@ -177,7 +176,6 @@ export function buildTodoHeaderLine(
 	const countsText = `${counts.completed}/${counts.total}`
 	const allDone = counts.total > 0 && counts.completed === counts.total
 	parts.push(theme.fg("dim", countsText) + (allDone ? ` ${theme.fg("success", "✓")}` : ""))
-	parts.push(theme.fg(live ? "accent" : "dim", `${active} active`))
 	let line = parts.join(" · ")
 	if (live) {
 		const frame = SPINNER[(options.spinnerFrame ?? 0) % SPINNER.length]
@@ -228,8 +226,8 @@ export function summarizeTodos(sessionId: string): string {
  *  5-column indent is used so symbol + text stay in the same columns as
  *  before and truncation math is unchanged. Row numbers are still available
  *  for the notify output — see `numberedTodoLine()`. */
-function todoLine(todo: TodoItem, _displayIndex: number, theme: Theme, scope: TodoScope): string {
-	const symbol = TODO_SYMBOL[todo.status]
+function todoLine(todo: TodoItem, _displayIndex: number, theme: Theme, scope: TodoScope, spinnerFrame: number): string {
+	const symbol = todo.status === "in_progress" ? SPINNER[spinnerFrame % SPINNER.length] : TODO_SYMBOL[todo.status]
 	const isFerment = scope.kind === "ferment"
 	// Five-character indent replaces the old `" NN. "` numbering so row
 	// heights and truncation stay byte-identical.
@@ -273,7 +271,9 @@ function todoLine(todo: TodoItem, _displayIndex: number, theme: Theme, scope: To
  *  intelligible; the positions restart per scope group. */
 function numberedTodoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: TodoScope): string {
 	const index = `${displayIndex + 1}`.padStart(2)
-	return todoLine(todo, displayIndex, theme, scope).replace(/^(\s{5})/, ` ${index}. `)
+	// Notify text is static — use the first spinner frame so in_progress rows
+	// stay distinguishable without the tick.
+	return todoLine(todo, displayIndex, theme, scope, 0).replace(/^(\s{5})/, ` ${index}. `)
 }
 
 /** Short scope name for the one-line widget header (no "Todos · " prefix). */
@@ -298,7 +298,7 @@ interface TodoBodyRow {
 	status?: TodoStatus
 }
 
-function buildFullTodoBodyRows(theme: Theme, groups: WidgetScopeGroup[]): TodoBodyRow[] {
+function buildFullTodoBodyRows(theme: Theme, groups: WidgetScopeGroup[], spinnerFrame = 0): TodoBodyRow[] {
 	const showScopeLabels = groups.length > 1 || groups[0].scope.kind !== "global"
 	const rows: TodoBodyRow[] = []
 	for (const group of groups) {
@@ -307,7 +307,11 @@ function buildFullTodoBodyRows(theme: Theme, groups: WidgetScopeGroup[]): TodoBo
 		}
 		let groupIndex = 0
 		for (const todo of group.todos) {
-			rows.push({ kind: "todo", text: todoLine(todo, groupIndex, theme, group.scope), status: todo.status })
+			rows.push({
+				kind: "todo",
+				text: todoLine(todo, groupIndex, theme, group.scope, spinnerFrame),
+				status: todo.status,
+			})
 			groupIndex++
 		}
 	}
@@ -447,9 +451,9 @@ export function buildTodoLines(theme: Theme, sessionId: string): string[] {
 function buildTodoBodyLines(
 	theme: Theme,
 	groups: WidgetScopeGroup[],
-	state: Pick<TodoWidgetState, "expanded" | "scrollOffset" | "userScrolled">,
+	state: Pick<TodoWidgetState, "expanded" | "scrollOffset" | "userScrolled" | "spinnerFrame">,
 ): { lines: string[]; scrollable: boolean } {
-	const rows = buildFullTodoBodyRows(theme, groups)
+	const rows = buildFullTodoBodyRows(theme, groups, state.spinnerFrame)
 
 	if (state.expanded) return { lines: rows.map((row) => row.text), scrollable: false }
 

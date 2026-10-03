@@ -61,7 +61,7 @@ for (const scenario of ["completed", "deferred", "ignored"]) {
 						await new Promise((resolve) => setTimeout(resolve, 100))
 					expect(viewText(terminal)).not.toContain("(F7)")
 					terminal.submit("/todos")
-					await waitForText(terminal, "3/3 ✓ · 0 active", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+					await waitForText(terminal, "3/3 ✓", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 				} else {
 					await waitForText(terminal, "2/3 · 1 active", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 					if (deferred) expect(viewText(terminal)).toContain("Publish after approval")

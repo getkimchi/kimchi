@@ -232,7 +232,7 @@ test("todo widget summary reflects mixed-status counts", async ({ terminal }) =>
 			terminal.submit("Add mixed todos")
 			trace.step("submitted prompt")
 
-			await waitForText(terminal, "Todos · Global · 1/4 · 3 active ·", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "Todos · Global · 1/4 ·", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForText(terminal, "1 blocked", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("header count and blocked suffix visible")
 
