@@ -465,21 +465,41 @@ function buildTodoBodyLines(
 			? TODO_WIDGET_BODY_LINES - showUpBudget - showDownBudget
 			: TODO_WIDGET_BODY_LINES
 
+	// Resolve the visible window in closed form by treating "pinned to bottom"
+	// separately — at the bottom, the ↓ marker is hidden and the freed slot
+	// makes space for one more row, so we can pin rows.length contentSlots.
+	// The user's wheel-direction is irrelevant: clampScrollOffset always
+	// constrains the upper bound by rows.length - contentSlots.
+	let contentSlots = maxContent
 	let offset = state.userScrolled ? state.scrollOffset : autoScrollOffset(rows)
-	offset = clampScrollOffset(offset, rows.length, maxContent)
-	const hiddenAfter = Math.max(0, rows.length - offset - maxContent)
-	const showUp = offset > 0
-	const showDown = hiddenAfter > 0
-	const contentSlots = TODO_WIDGET_BODY_LINES - (showUp ? 1 : 0) - (showDown ? 1 : 0)
 	offset = clampScrollOffset(offset, rows.length, contentSlots)
+
+	// If this clamp bottoms out, business-logic says "at bottom, no ↓ marker",
+	// so recompute with one extra slot and re-clamp. The up-marker is already
+	// visible at that point, so the math stays linear.
+	const hiddenAfter = Math.max(0, rows.length - offset - maxContent)
+	const showUpInitial = offset > 0
+	if (hiddenAfter === 0 && showUpInitial) {
+		contentSlots = TODO_WIDGET_BODY_LINES - 1 // ↑ only
+		offset = clampScrollOffset(offset, rows.length, contentSlots)
+	} else if (hiddenAfter > 0 && !showUpInitial) {
+		contentSlots = TODO_WIDGET_BODY_LINES - 1 // ↓ only (offset=0)
+		offset = clampScrollOffset(offset, rows.length, contentSlots)
+	} else {
+		// Both markers visible.
+		contentSlots = TODO_WIDGET_BODY_LINES - 2
+		offset = clampScrollOffset(offset, rows.length, contentSlots)
+	}
 	state.scrollOffset = offset
 
 	const visible = rows.slice(offset, offset + contentSlots)
 	const remainingAfter = Math.max(0, rows.length - offset - visible.length)
+	const showUp = offset > 0
+	const showDown = remainingAfter > 0
 	const lines: string[] = []
-	if (offset > 0) lines.push(theme.fg("dim", `↑ ${offset} more`))
+	if (showUp) lines.push(theme.fg("dim", `↑ ${offset} more`))
 	for (const row of visible) lines.push(row.text)
-	if (remainingAfter > 0) lines.push(theme.fg("dim", `↓ ${remainingAfter} more`))
+	if (showDown) lines.push(theme.fg("dim", `↓ ${remainingAfter} more`))
 	return { lines, scrollable: showUp || showDown }
 }
 
