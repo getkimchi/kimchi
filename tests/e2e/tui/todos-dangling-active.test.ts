@@ -56,10 +56,10 @@ for (const scenario of ["completed", "deferred", "ignored"]) {
 				await waitForText(terminal, "Cleanup check finished.", { timeoutMs: STREAM_TIMEOUT_MS })
 				if (scenario === "completed") {
 					const deadline = Date.now() + STREAM_TIMEOUT_MS
-					// Ambient strip auto-hides when nothing is active; header ends with (F7).
-					while (viewText(terminal).includes("(F7)") && Date.now() < deadline)
+					// Ambient strip auto-hides when nothing is active; header ends with (F7 to …).
+					while (viewText(terminal).includes("(F7 to ") && Date.now() < deadline)
 						await new Promise((resolve) => setTimeout(resolve, 100))
-					expect(viewText(terminal)).not.toContain("(F7)")
+					expect(viewText(terminal)).not.toContain("(F7 to ")
 					terminal.submit("/todos")
 					await waitForText(terminal, "3/3 ✓", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 				} else {

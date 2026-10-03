@@ -17,7 +17,7 @@ export const TODO_SHORTCUT_HINT = "F7"
 const TODO_WIDGET_KEY = "kimchi-todos"
 const TODO_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
 const TODO_STATUS_KEY = "todos"
-const TODO_LIST_HINT_TEXT = "F7 or /todos to collapse"
+const SCROLL_HINT_TEXT = "scroll"
 const MAX_TODO_WIDGET_LINES = 14
 const TODO_WIDGET_BODY_LINES = 10
 const MAX_ROLLED_CONTEXT_ROWS = 2
@@ -184,7 +184,8 @@ export function buildTodoHeaderLine(
 	if (counts.blocked > 0) {
 		line += theme.fg("warning", ` · ${counts.blocked} blocked`)
 	}
-	line += ` ${theme.fg("dim", `(${TODO_SHORTCUT_HINT})`)}`
+	const verb = collapsed ? "expand" : "collapse"
+	line += ` ${theme.fg("dim", `(${TODO_SHORTCUT_HINT} to ${verb})`)}`
 	return line
 }
 
@@ -565,13 +566,12 @@ function buildTodoWidgetLines(theme: Theme, state: TodoWidgetState, sessionId: s
 	}
 
 	const body = buildTodoBodyLines(theme, groups, state)
-	const hint = body.scrollable ? `scroll · ${TODO_LIST_HINT_TEXT}` : TODO_LIST_HINT_TEXT
-	return [
+	const lines = [
 		buildTodoHeaderLine(theme, counts, false, { scopeLabel, spinnerFrame: state.spinnerFrame }),
 		...body.lines,
-		"",
-		theme.fg("dim", hint),
 	]
+	if (body.scrollable) lines.push("", theme.fg("dim", SCROLL_HINT_TEXT))
+	return lines
 }
 
 function stopSpinner(state: TodoWidgetState): void {
