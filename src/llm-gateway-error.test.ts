@@ -355,6 +355,47 @@ describe("parseRateLimitRetryAt", () => {
 	])("returns undefined for $name", ({ message }) => {
 		expect(parseRateLimitRetryAt(message, NOW)).toBeUndefined()
 	})
+
+	// The relative Retry-After text form; see RATE_LIMIT_IN_RE for why it exists.
+	it.each([
+		{ name: "seconds", message: "429 Too Many Requests, retry after 30 seconds", ms: 30_000 },
+		{ name: "abbreviated seconds", message: "Too many requests. Try again in 45s.", ms: 45_000 },
+		{ name: "minutes", message: "Rate limit exceeded; please try again in 2 minutes", ms: 120_000 },
+		{ name: "hours", message: "quota exhausted, resets in 1 hour", ms: 3_600_000 },
+		{ name: "milliseconds", message: "rate limited, retry after 1500ms", ms: 1_500 },
+		{ name: "a fractional amount", message: "retry after 1.5 seconds", ms: 1_500 },
+	])("reads a relative wait stated in $name", ({ message, ms }) => {
+		expect(parseRateLimitRetryAt(message, NOW)).toBe(NOW + ms)
+	})
+
+	it("prefers the absolute deadline when the message states both", () => {
+		// The absolute form needs no arithmetic and no assumption about when the
+		// message was produced.
+		expect(parseRateLimitRetryAt("rate limited until 2026-08-05T16:27:33Z, retry after 5 seconds", NOW)).toBe(EXPECTED)
+	})
+
+	it("falls back to the duration when the absolute stamp is unreadable", () => {
+		expect(parseRateLimitRetryAt("rate limited until 2026-13-45T99:99:99Z, retry after 5 seconds", NOW)).toBe(
+			NOW + 5_000,
+		)
+	})
+
+	it("ignores the duration when the absolute deadline has already passed", () => {
+		// The limit has lifted by the gateway's own clock; the duration beside it is no newer.
+		expect(parseRateLimitRetryAt("rate limited until 2026-08-05T11:00:00Z, retry after 5 seconds", NOW)).toBeUndefined()
+	})
+
+	it.each([
+		{ name: "a zero wait", message: "retry after 0 seconds" },
+		{ name: "an unknown unit", message: "retry after 5 fortnights" },
+		{ name: "a duration with no retry wording", message: "the request took 30 seconds" },
+		{ name: "a trigger word inside another word", message: "Service unavailable in 5 minutes" },
+		{ name: "resets inside another word", message: "loading presets in 5 seconds" },
+		{ name: "a duration whose product overflows to Infinity", message: `retry after ${"9".repeat(305)} hours` },
+		{ name: "a duration past the Date range", message: "retry after 100000000000 hours" },
+	])("returns undefined for $name", ({ message }) => {
+		expect(parseRateLimitRetryAt(message, NOW)).toBeUndefined()
+	})
 })
 
 describe("formatWait", () => {
