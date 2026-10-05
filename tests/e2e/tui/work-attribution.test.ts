@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFi
 import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { expect, Key, test } from "@microsoft/tui-test"
+import { check } from "proper-lockfile"
 import { fullText, waitForText } from "./support/assertions.js"
 import { launchKimchi, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
@@ -298,7 +299,9 @@ test("a fresh session recovers an external worktree commit after a Git timeout w
 			const deadline = Date.now() + 10_000
 			while (!existsSync(marker) && Date.now() < deadline) await sleep(50)
 			expect(existsSync(marker)).toBe(true)
-			await sleep(2300) // Allow the real two-second execFile timeout and its error handler to finish.
+			const scanDeadline = Date.now() + 10_000
+			while ((await check(ledgerDir)) && Date.now() < scanDeadline) await sleep(50)
+			expect(await check(ledgerDir)).toBe(false)
 			expect(readLedger(ledgerDir).filter((record) => record.type === "commit")).toEqual([])
 			expect(fullText(terminal)).not.toContain("Could not reconcile repository")
 			expect(fullText(terminal)).not.toContain("SIGTERM")
