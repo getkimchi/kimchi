@@ -16,6 +16,7 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { pinWorkContext, type WorkContext } from "../work-attribution.js"
 import {
 	deleteRuntimeState,
 	emptyState,
@@ -316,6 +317,11 @@ export function markHumanInput(): void {
 let judgeModel: Model<Api> | undefined
 let judgeModelRegistry: ModelRegistry | undefined
 let judgeMultiModelEnabled = false
+let judgeWorkContext: WorkContext | undefined
+
+export function getJudgeWorkContext(): WorkContext | undefined {
+	return judgeWorkContext
+}
 
 export function getJudgeModel(): Model<Api> | undefined {
 	return judgeModel
@@ -332,7 +338,13 @@ export function isJudgeMultiModelEnabled(): boolean {
 	return judgeMultiModelEnabled
 }
 
-export function captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry, multiModelEnabled?: boolean): void {
+export function captureJudgeContext(
+	model?: Model<Api>,
+	registry?: ModelRegistry,
+	multiModelEnabled?: boolean,
+	context?: WorkContext,
+): void {
+	if (context) judgeWorkContext = pinWorkContext(context)
 	if (model) judgeModel = model
 	if (registry) judgeModelRegistry = registry
 	if (multiModelEnabled !== undefined) judgeMultiModelEnabled = multiModelEnabled
@@ -405,6 +417,7 @@ export function clearAllStepStarts(): void {
 	// Also forget hydration markers so subsequent accesses re-read from
 	// disk. Tests rely on this when isolating cases via persist-root swaps.
 	hydratedFerments.clear()
+	fermentWorkIds.clear()
 }
 
 // ─── Scoping gate ─────────────────────────────────────────────────────────────
@@ -715,6 +728,18 @@ export function getStepStartRef(fermentId: string, phaseId: string, stepId: stri
 // single-session UI handoff state.
 
 const hydratedFerments = new Set<string>()
+const fermentWorkIds = new Map<string, string>()
+
+export function getFermentWorkId(fermentId: string): string | undefined {
+	hydrateIfNeeded(fermentId)
+	return fermentWorkIds.get(fermentId)
+}
+
+export function setFermentWorkId(fermentId: string, workId: string, root?: string): void {
+	hydrateIfNeeded(fermentId)
+	fermentWorkIds.set(fermentId, workId)
+	persistFerment(fermentId, root)
+}
 
 /** Configurable persistence root, used by tests to redirect writes into a
  *  temp dir. When undefined, resolveFermentsDir() is used. */
@@ -725,6 +750,7 @@ export function setRuntimeStatePersistRoot(root: string | undefined): void {
 	// Forget all hydration markers so subsequent reads re-hydrate from the
 	// new root. Tests rely on this when swapping roots between cases.
 	hydratedFerments.clear()
+	fermentWorkIds.clear()
 }
 
 /** Build a snapshot of the six persisted stores for a single ferment by
@@ -732,6 +758,7 @@ export function setRuntimeStatePersistRoot(root: string | undefined): void {
 function snapshotForFerment(fermentId: string): PersistedRuntimeState {
 	const prefix = `${fermentId}:`
 	const snap = emptyState()
+	snap.workId = fermentWorkIds.get(fermentId)
 	const stripPrefix = (k: string): string => k.slice(prefix.length)
 
 	for (const [k, v] of stepStartCounts.entries()) {
@@ -765,6 +792,7 @@ function hydrateIfNeeded(fermentId: string): void {
 	hydratedFerments.add(fermentId)
 
 	const state = loadRuntimeState(fermentId, runtimeStatePersistRoot)
+	if (state.workId) fermentWorkIds.set(fermentId, state.workId)
 	const prefix = `${fermentId}:`
 	for (const [k, v] of Object.entries(state.stepStartCounts)) stepStartCounts.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.blockRetries)) blockRetryCounts.set(`${prefix}${k}`, v)
@@ -776,9 +804,9 @@ function hydrateIfNeeded(fermentId: string): void {
 }
 
 /** Persist the current in-memory snapshot for a ferment. Best-effort. */
-function persistFerment(fermentId: string): void {
+function persistFerment(fermentId: string, root = runtimeStatePersistRoot): void {
 	saveRuntimeState(fermentId, snapshotForFerment(fermentId), {
-		root: runtimeStatePersistRoot,
+		root,
 		onError: (err) => {
 			console.error(`[ferment] runtime-state persist failed for ${fermentId}:`, err)
 		},
@@ -841,6 +869,7 @@ export function clearFermentState(fermentId: string): void {
 		if (key.startsWith(prefix)) stepStartRefs.delete(key)
 	}
 	hydratedFerments.delete(fermentId)
+	fermentWorkIds.delete(fermentId)
 	// Per-ferment compaction state: a pending request left in the map for a
 	// completed/abandoned/deleted ferment will never be drained, and an
 	// in-flight marker that outlives the ferment blocks future compactions

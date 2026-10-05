@@ -1,7 +1,6 @@
 import { parseArgs } from "node:util"
 import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import { type CliMode, getCliModeArg, PROTOCOL_MODES } from "./cli-modes.js"
-import { AUTO_MODEL_ID, AUTO_MODEL_PROVIDER, AUTO_MODEL_REF } from "./extensions/router/constants.js"
 
 // Re-export the shared leaf-module helpers so existing callers can keep
 // importing them from cli-args.ts without touching their import paths.
@@ -193,6 +192,10 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		type: "boolean",
 		description: "Start in yolo mode (run freely, no classifier - DANGER)",
 	},
+	"dangerously-skip-permissions": {
+		type: "boolean",
+		description: "Skip all permission checks (DANGER)",
+	},
 	approve: {
 		type: "boolean",
 		short: "a",
@@ -250,6 +253,7 @@ export interface SessionCliArgs {
 		plan?: boolean
 		auto?: boolean
 		yolo?: boolean
+		"dangerously-skip-permissions"?: boolean
 		approve?: boolean
 		"no-approve"?: boolean
 		"permissions-config"?: string
@@ -304,6 +308,7 @@ export const CACHEABLE_OPTION_NAMES = [
 	"plan",
 	"auto",
 	"yolo",
+	"dangerously-skip-permissions",
 	"approve",
 	"no-approve",
 	"permissions-config",
@@ -353,15 +358,6 @@ export function getParsedCliArgs(): SessionCliArgs {
 	return cachedCliArgs
 }
 
-/** True when launch arguments explicitly request the gated Auto model. */
-export function isExplicitAutoModelSelection(args: SessionCliArgs): boolean {
-	const provider = args.options.provider?.toLowerCase()
-	const model = args.options.model?.toLowerCase().replace(/:(off|minimal|low|medium|high|xhigh|max)$/, "")
-	if (!model) return false
-	if (model === AUTO_MODEL_REF) return true
-	return model === AUTO_MODEL_ID && (!provider || provider === AUTO_MODEL_PROVIDER)
-}
-
 export function normalizeResumeIdArgs(args: string[]): string[] {
 	const normalized: string[] = []
 	for (let i = 0; i < args.length; i += 1) {
@@ -401,10 +397,16 @@ export function isHelpOrVersionArgs(args: string[]): boolean {
 // Modes where stdout belongs to the caller (protocol channel or user-facing
 // print output). Terminal OSC writes and compat warnings must be suppressed
 // because they corrupt that stream.
+
+/** True when the parsed `--mode` value selects a protocol (non-TUI) CLI mode. */
+export function isProtocolCliMode(mode: string | undefined): boolean {
+	return mode !== undefined && PROTOCOL_MODES.has(mode as CliMode)
+}
+
 export function isProtocolOrPrintMode(args: string[]): boolean {
 	const parsed = parsePiArgs(args)
 	const mode = parsed.mode ?? getCliModeArg(args)
-	return (mode !== undefined && PROTOCOL_MODES.has(mode as CliMode)) || parsed.print === true
+	return isProtocolCliMode(mode) || parsed.print === true
 }
 
 export function isTerminalUiMode(args: string[], io: { stdinIsTTY: boolean; stdoutIsTTY: boolean }): boolean {

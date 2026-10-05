@@ -9,6 +9,7 @@ import { readJsonCached } from "../config/json.js"
 import { readStatusLineConfig } from "../config/status-line-config.js"
 import { parseTag } from "../config/tags.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
+import { isAutoRoutedModel } from "../extensions/auto-model/constants.js"
 import { getBillingStatusLine } from "../extensions/billing/status.js"
 import { formatBudgetStatusLine, formatCreditsStatusLine } from "../extensions/billing/status-line-format.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
@@ -453,7 +454,8 @@ function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
 
 function buildThinkingSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
 	if (!pinned) return null
-	const text = `${dimText(theme, "thinking:")}${accentText(theme, ctx.thinkingLevel ?? "—")}`
+	const level = isAutoRoutedModel(ctx.model) ? "auto" : (ctx.thinkingLevel ?? "—")
+	const text = `${dimText(theme, "thinking:")}${accentText(theme, level)}`
 	return { id: "thinking", text, width: visibleWidth(text) }
 }
 

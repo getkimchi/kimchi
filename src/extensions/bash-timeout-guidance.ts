@@ -27,7 +27,7 @@
 
 import type { TextContent } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ToolResultEvent } from "@earendil-works/pi-coding-agent"
-import { markHarnessSteer } from "./steer-marker.js"
+import { sendSteer } from "./steer-events.js"
 
 const TIMEOUT_PATTERN = /Command timed out after (\d+) seconds/
 
@@ -61,9 +61,8 @@ export function isBashTimeoutResult(event: ToolResultEvent): boolean {
 }
 
 export default function bashTimeoutGuidanceExtension(pi: ExtensionAPI): void {
-	pi.on("tool_result", (event) => {
+	pi.on("tool_result", (event, ctx) => {
 		if (!isBashTimeoutResult(event)) return
-
 		const timeoutSecs = extractTimeoutSeconds(
 			event.content
 				.filter((b): b is TextContent => b.type === "text")
@@ -75,13 +74,11 @@ export default function bashTimeoutGuidanceExtension(pi: ExtensionAPI): void {
 			? `${STEER_MESSAGE} (The command was killed after ${timeoutSecs}s — the partial output above was captured before the timeout.)`
 			: STEER_MESSAGE
 
-		pi.sendMessage(
-			{
-				customType: "bash-timeout-guidance",
-				content: [{ type: "text", text: markHarnessSteer(message) }],
-				display: false,
-			},
-			{ deliverAs: "steer" },
-		)
+		sendSteer(pi, ctx, {
+			kind: "bash_timeout_guidance",
+			reason: "timeout",
+			customType: "bash-timeout-guidance",
+			text: message,
+		})
 	})
 }

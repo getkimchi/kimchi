@@ -3,6 +3,7 @@ import { Type } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, SessionManager, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
+import { getParsedCliArgs } from "../../cli-args.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { resolveFermentsDir } from "../../ferment/store.js"
 import { isExistingDirectory } from "../../fs-paths.js"
@@ -30,12 +31,14 @@ import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { BASH_CONTROL_TOOL_NAME } from "../bash-background/bash-control-tool.js"
+import { readE2eSeam } from "../e2e-seam.js"
 import { createFerment } from "../ferment/create.js"
 import { emitFermentCreated } from "../ferment/domain-events-emitter.js"
 import { appendRefEntry } from "../ferment/nudge.js"
+import { CLOUD_DECISION_OPTION, EXECUTE_LOCAL_DECISION_OPTION } from "../ferment/plan-review.js"
 import { defaultFermentRuntime } from "../ferment/runtime.js"
 import { safeSendMessage } from "../ferment/safe-send.js"
-import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
+import { hasActiveFerment, notifyFermentActive, onActiveFermentChange, setFermentWorkId } from "../ferment/state.js"
 import { createApplyAndPersist, formatNextActionHint, formatNoReplanningGuidance } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
@@ -47,11 +50,12 @@ import { getMultiModelEnabled } from "../multi-model.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
 import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
-import { buildRemotePlanPrompt } from "../remote-run/prompt-builder.js"
+import { buildRemotePlanPromptWithIntent } from "../remote-run/prompt-builder.js"
 import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
+import { appendWorkRecord, getWorkId, tryWorkAttribution } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
 import { resolveClassifierCandidates } from "./classifier-models.js"
@@ -73,7 +77,6 @@ import {
 	type ApprovalOutcome,
 	buildPermissionChoices,
 	type CompoundApprovalOutcome,
-	type CompoundSubcommand,
 	promptForCompoundApproval,
 	terminalPrompter,
 	withWorkingHidden,
@@ -544,10 +547,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		session.addMany(parseRules(loaded.allowBySource.cli, "allow", "cli"))
 		session.addMany(parseRules(loaded.denyBySource.cli, "deny", "cli"))
 
-		if (pi.getFlag("plan")) cliMode = "plan"
-		else if (pi.getFlag("auto")) cliMode = "auto"
+		const modeFlags = getParsedCliArgs().options
+		if (modeFlags.plan) cliMode = "plan"
+		else if (modeFlags.auto) cliMode = "auto"
 		// YOLO mode: --yolo and --dangerously-skip-permissions both set yolo mode (no classifier, auto-approve all)
-		else if (pi.getFlag("yolo") || pi.getFlag("dangerously-skip-permissions")) cliMode = "yolo"
+		else if (modeFlags.yolo || modeFlags[DANGEROUS_BYPASS_FLAG]) cliMode = "yolo"
 
 		const current = getInitialPermissionMode(ctx.sessionManager)
 		let next = current
@@ -726,13 +730,19 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// Save plan to disk
 			if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
 			let planPath: string | undefined
+			let snapshotPath: string | undefined
+			const workId = tryWorkAttribution(() => getWorkId(ctx))
 			try {
-				planPath = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText })
+				const saved = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText, workId })
+				planPath = saved.path
+				snapshotPath = saved.snapshotPath
+				if (workId) tryWorkAttribution(() => appendWorkRecord(ctx, { type: "plan", ...saved }, workId))
 			} catch (err) {
 				const detail = err instanceof Error ? err.message : String(err)
 				if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
 				else console.error(`permissions: failed to save plan file: ${detail}`)
 			}
+			const retainedPlanNote = snapshotPath ? `\nContinue from another worktree using: ${snapshotPath}` : ""
 
 			// Agent worker: silent submit. Saves the plan and terminates the turn
 			// with no review emit — workers have no review surface, the parent
@@ -744,10 +754,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text",
-							text: planPath ? `Plan submitted and saved to ${planPath}.` : "Plan submitted.",
+							text: (planPath ? `Plan submitted and saved to ${planPath}.` : "Plan submitted.") + retainedPlanNote,
 						},
 					],
-					details: { submitted: true, source: "worker", planPath },
+					details: { submitted: true, source: "worker", planPath, snapshotPath },
 					terminate: true,
 				}
 			}
@@ -761,13 +771,29 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				{ ctx, planPath, planText, rawText: planText, activePlanSlug },
 			)
 
+			// TUI-E2E seam (KIMCHI_E2E_FAKE_PLANNOTATOR_DECISION): when set to a
+			// PlanReviewDecision value (e.g. "execute"), emits a fake plannotator
+			// decision shortly after the review request so TUI e2e tests drive the
+			// plannotator decision route — including the "where should it run?"
+			// dialog — without a browser. Test-only; never set in production.
+			const fakeDecision = readE2eSeam("KIMCHI_E2E_FAKE_PLANNOTATOR_DECISION")
+			if (fakeDecision) {
+				setTimeout(() => {
+					emitPlanReviewDecision(pi, {
+						decision: fakeDecision as PlanReviewDecisionPayload["decision"],
+						source: "plannotator",
+						planReviewSource: "adhoc",
+					})
+				}, 1_000)
+			}
+
 			// Non-TUI / oneshot: no popup to show — end the turn. The emit above
 			// is a no-op today (adapter skips subscribing), but future integrations
 			// (logging, CI reviewers, alternative UIs) can hook in without changes.
 			if (!ctx.hasUI || pi.getFlag?.("ferment-oneshot") === true) {
 				return {
-					content: [{ type: "text", text: "Plan submitted." }],
-					details: { submitted: true },
+					content: [{ type: "text", text: `Plan submitted.${retainedPlanNote}` }],
+					details: { submitted: true, planPath, snapshotPath },
 					terminate: true,
 				}
 			}
@@ -783,13 +809,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				planMenuAbort.abort()
 			})
 
-			const EXECUTE = "Execute the plan locally"
 			const DECLINE = "Rework the plan"
 			const START_AS_FERMENT = "Start as ferment"
-			const START_IN_CLOUD = "Execute the plan in a remote workspace"
 
-			const options = [EXECUTE]
-			if (isRemoteRunEnabled()) options.push(START_IN_CLOUD)
+			const options: string[] = [EXECUTE_LOCAL_DECISION_OPTION]
+			if (isRemoteRunEnabled()) options.push(CLOUD_DECISION_OPTION)
 			options.push(DECLINE, START_AS_FERMENT)
 
 			void withBlocked(pi.events, "Plan complete", () =>
@@ -803,7 +827,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					unsubscribeAbortListener()
 					// select returns undefined when aborted — plannotator already decided.
 					if (choice === undefined) return
-					if (choice === EXECUTE) {
+					if (choice === EXECUTE_LOCAL_DECISION_OPTION) {
 						emitPlanReviewDecision(pi, {
 							decision: "execute",
 							source: "kimchi-tui",
@@ -815,7 +839,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 							source: "kimchi-tui",
 							planReviewSource: "adhoc",
 						})
-					} else if (choice === START_IN_CLOUD) {
+					} else if (choice === CLOUD_DECISION_OPTION) {
 						emitPlanReviewDecision(pi, {
 							decision: "start_cloud",
 							source: "kimchi-tui",
@@ -837,8 +861,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				})
 
 			return {
-				content: [{ type: "text", text: "Plan submitted for review. Waiting for user decision." }],
-				details: { submitted: true },
+				content: [{ type: "text", text: `Plan submitted for review. Waiting for user decision.${retainedPlanNote}` }],
+				details: { submitted: true, planPath, snapshotPath },
 				terminate: true,
 			}
 		},
@@ -852,10 +876,71 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (!reviewCtx) return
 		const { ctx, planPath, planText, rawText, activePlanSlug: reviewedPlanSlug } = reviewCtx
 
-		if (payload.decision === "execute") {
+		const executeLocally = async () => {
 			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
 			await executePlan(ctx, planPath, planText, reviewedPlanSlug)
 			activePlanSlug = undefined
+		}
+
+		// Spawn a foreground remote agent to execute the plan in a cloud sandbox.
+		// Mode switches to auto immediately; the call blocks until the remote
+		// agent completes (or is killed via Ctrl+X). The result is injected
+		// into the local session as a steer message so the local agent has
+		// context for follow-up work. Shared by the start_cloud decision and
+		// the plannotator "where should it run?" route below.
+		const executeInCloud = async () => {
+			const approvedSlug = activePlanSlug
+			activePlanSlug = undefined
+			pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
+			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+			const cloudDescription = `${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
+			try {
+				const { prompt: cloudPrompt, gitWorkflow } = await buildRemotePlanPromptWithIntent(ctx, planText, {
+					origin: "plan-mode",
+				})
+				await runCloudAgent(pi, ctx, cloudPrompt, cloudDescription, { background: true, gitWorkflow })
+			} catch (err) {
+				// Spawn failed — otherwise the user is stranded in auto mode with
+				// no active plan and no visible error. Surface the error and
+				// restore plan mode so they can retry.
+				const message = err instanceof Error ? err.message : String(err)
+				ctx.ui?.notify?.(`Could not start the remote agent: ${message}`, "error")
+				activePlanSlug = approvedSlug
+				changeMode(ctx, "auto", { mode: "plan", initiatedBy: "user", source: "runtime" }, "cloud_spawn_failed")
+			}
+		}
+
+		if (payload.decision === "execute") {
+			// Plannotator's own dialog has no cloud option — when remote
+			// execution is enabled, ask where the plan should run instead of
+			// auto-executing locally. Escape/dismiss defers: no mode change,
+			// nothing starts; re-open the review to choose again.
+			if (payload.source === "plannotator" && isRemoteRunEnabled()) {
+				// The same decision event dismisses the older review surface (TUI
+				// menu) via a listener registered AFTER this handler. pi's TUI
+				// keeps a single extensionSelector and disposes whatever is
+				// current on abort — opening our dialog before that listener runs
+				// gets OUR dialog destroyed and its promise never resolves. Defer
+				// one macrotask so the old surface tears down first.
+				await new Promise((resolve) => setTimeout(resolve, 0))
+				const choice = await withWorkingHidden(
+					ctx,
+					() =>
+						ctx.ui?.select?.("Plan approved — where should it run?", [
+							EXECUTE_LOCAL_DECISION_OPTION,
+							CLOUD_DECISION_OPTION,
+						]) ?? Promise.resolve(undefined),
+				)
+				if (choice === CLOUD_DECISION_OPTION) {
+					await executeInCloud()
+				} else if (choice === EXECUTE_LOCAL_DECISION_OPTION) {
+					await executeLocally()
+				} else {
+					ctx.ui?.notify?.("Plan execution deferred — re-open the review to choose again.", "info")
+				}
+				return
+			}
+			await executeLocally()
 		} else if (payload.decision === "start_ferment") {
 			// Converted into a ferment — same release as the execute path.
 			activePlanSlug = undefined
@@ -922,6 +1007,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						hasUI: ctx.hasUI,
 						isOneShot: pi.getFlag("ferment-oneshot") === true,
 					})
+					tryWorkAttribution(() => setFermentWorkId(draft.id, getWorkId(ctx), fermentDir))
 					defaultFermentRuntime.setActive(draft)
 					if (pi.events) emitFermentCreated(pi.events, draft)
 					appendRefEntry(pi, draft.id)
@@ -944,6 +1030,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				})
 				// Set the draft active before emitting STARTED so telemetry can capture
 				// the scoping baseline. Keep planning tools until activation succeeds.
+				tryWorkAttribution(() => setFermentWorkId(draft.id, getWorkId(ctx), fermentDir))
 				defaultFermentRuntime.setActive(draft)
 				if (pi.events) emitFermentCreated(pi.events, draft)
 				// Scope it using the structured fields from the shared plan.
@@ -1019,28 +1106,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				ctx.ui?.notify?.(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`)
 			}
 		} else if (payload.decision === "start_cloud") {
-			// Spawn a foreground remote agent to execute the plan in a cloud sandbox.
-			// Mode switches to auto immediately; the call blocks until the remote
-			// agent completes (or is killed via Ctrl+X). The result is injected
-			// into the local session as a steer message so the local agent has
-			// context for follow-up work.
-			const approvedSlug = activePlanSlug
-			activePlanSlug = undefined
-			pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
-			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
-			const cloudPrompt = buildRemotePlanPrompt(planText, { origin: "plan-mode" })
-			const cloudDescription = `${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
-			try {
-				await runCloudAgent(pi, ctx, cloudPrompt, cloudDescription, { background: true })
-			} catch (err) {
-				// Spawn failed — otherwise the user is stranded in auto mode with
-				// no active plan and no visible error. Surface the error and
-				// restore plan mode so they can retry.
-				const message = err instanceof Error ? err.message : String(err)
-				ctx.ui?.notify?.(`Could not start the remote agent: ${message}`, "error")
-				activePlanSlug = approvedSlug
-				changeMode(ctx, "auto", { mode: "plan", initiatedBy: "user", source: "runtime" }, "cloud_spawn_failed")
-			}
+			await executeInCloud()
 		} else if (payload.decision === "feedback") {
 			safeSendMessage(
 				pi,
@@ -1214,6 +1280,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					ctx.modelRegistry,
 					{ toolName, input, cwd: ctx.cwd },
 					{
+						context: ctx,
 						timeoutMs: loaded.config.classifierTimeoutMs,
 						maxTotalMs: loaded.config.classifierMaxTotalMs,
 					},
@@ -1439,13 +1506,9 @@ export async function handleCompoundConfirm(
 				return applyApprovalOutcome(outcome, opts.session)
 			}
 
-			const compoundSubs: CompoundSubcommand[] = opts.subcommands.map((cmd) => ({
-				command: cmd,
-			}))
-
 			const outcome = await promptForCompoundApproval({
 				toolName: event.toolName,
-				commands: compoundSubs,
+				command: "command" in event.input ? String(event.input.command) : "",
 				ctx: opts.ctx,
 				signal: abort.signal,
 			})

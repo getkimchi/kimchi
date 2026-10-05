@@ -38,7 +38,7 @@ import {
 	type LoopGuardWarnPayload,
 } from "../loop-guard-events.js"
 import { PERMISSION_EVENTS, type PermissionToolDecisionPayload } from "../permissions/permissions-events.js"
-import { isAutoModel } from "../router/constants.js"
+import { STEER_EVENTS } from "../steer-events.js"
 import { resetTelemetryFermentV2Context, setTelemetryFermentV2Context } from "./ferment-v2-context.js"
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./handlers/messages.js"
 import { handleToolDecision } from "./handlers/permissions.js"
@@ -48,6 +48,7 @@ import {
 	handleSessionShutdown,
 	handleSessionStart,
 } from "./handlers/session.js"
+import { handleSteerAborted, handleSteerFired, handleSteerOutcome } from "./handlers/steers.js"
 import { handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/tools.js"
 import { handleWorkflowEvent } from "./handlers/workflows.js"
 import { TELEMETRY_PROVIDER_HEADER_NAMES } from "./provider-headers.js"
@@ -284,6 +285,14 @@ export type RemoteExecutionStage =
 	| "sync.started"
 	| "sync.completed"
 	| "sync.failed"
+	| "push.started"
+	| "push.completed"
+	| "push.failed"
+	| "steer.started"
+	| "steer.completed"
+	| "steer.failed"
+	| "review.started"
+	| "ide.opened"
 	| "viewed"
 	| "custom_action"
 	| "done"
@@ -695,7 +704,7 @@ function onScopingComplete(raw: unknown): void {
 	scopingTokenSnapshots.delete(payload.fermentId)
 	const attrs: TelemetryAttributes & { ferment_id: string } = {
 		ferment_id: payload.fermentId,
-		session_id: ctx.telemetryId,
+		session_id: ctx.resolveSessionId(),
 		duration_ms: durationMs,
 		steering_count: steeringCount,
 		delta_input_tokens: deltaInput,
@@ -714,7 +723,7 @@ function onUserUnblocked(raw: unknown): void {
 	const payload = raw as UserUnblockedPayload
 	ctx.emitWithIds("user.unblock_time", {
 		ferment_id: payload.fermentId,
-		session_id: ctx.telemetryId,
+		session_id: ctx.resolveSessionId(),
 		duration_ms: payload.durationMs,
 	})
 }
@@ -750,6 +759,7 @@ function onBashGuardWarn(raw: unknown): void {
 		category: payload.category,
 		tool: payload.tool,
 		count: payload.count,
+		interactive: payload.interactive,
 	})
 }
 
@@ -763,6 +773,7 @@ function onBashGuardBlock(raw: unknown): void {
 		category: payload.category,
 		tool: payload.tool,
 		count: payload.count,
+		interactive: payload.interactive,
 	})
 }
 
@@ -790,6 +801,7 @@ function onLoopGuardWarn(raw: unknown): void {
 		detector: payload.detector,
 		count: payload.count,
 		is_subagent: payload.is_subagent,
+		interactive: payload.interactive,
 	})
 }
 
@@ -803,6 +815,31 @@ function onLoopGuardSubagentAbort(raw: unknown): void {
 		count: payload.count,
 		is_subagent: payload.is_subagent,
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Steer/nudge domain event handlers (subscribed via pi.events)
+// ---------------------------------------------------------------------------
+
+function onSteerFired(raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _telemetryCtx
+	if (!ctx) return
+	handleSteerFired(ctx, raw)
+}
+
+function onSteerOutcome(raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _telemetryCtx
+	if (!ctx) return
+	handleSteerOutcome(ctx, raw)
+}
+
+function onSteerAborted(raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _telemetryCtx
+	if (!ctx) return
+	handleSteerAborted(ctx, raw)
 }
 
 // ---------------------------------------------------------------------------
@@ -899,6 +936,13 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(LOOP_GUARD_EVENTS.WARN, onLoopGuardWarn)
 		pi.events.on(LOOP_GUARD_EVENTS.SUBAGENT_ABORT, onLoopGuardSubagentAbort)
 
+		// Subscribe to steer/nudge domain events. Guard/nudge
+		// extensions publish fire/outcome facts; telemetry forwards them
+		// through the attribute allowlist in handlers/steers.ts.
+		pi.events.on(STEER_EVENTS.FIRED, onSteerFired)
+		pi.events.on(STEER_EVENTS.OUTCOME, onSteerOutcome)
+		pi.events.on(STEER_EVENTS.ABORTED, onSteerAborted)
+
 		// Subscribe to permission decision events. The permissions extension
 		// publishes one fact per gated tool decision; telemetry translates them
 		// into `claude_code.tool_decision` OTLP records (the acceptance signal).
@@ -924,7 +968,6 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		})
 		pi.on("model_select", async (event) => {
 			telemetryCtx.currentModel = event.model.id
-			telemetryCtx.selectedModelIsAuto = isAutoModel(event.model)
 		})
 		pi.on("session_compact", async (_event, ctx) => {
 			handleSessionCompact(telemetryCtx, ctx)
@@ -957,7 +1000,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			}
 		})
 		pi.on("before_provider_headers", (event) => {
-			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.sessionId] = telemetryCtx.telemetryId
+			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.sessionId] = telemetryCtx.resolveSessionId()
 			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.conversationId] = conversationId
 			// 0 means "before first turn" (sentinel); backend should treat it accordingly.
 			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.turnIndex] = String(telemetryCtx.turnIndex)

@@ -3,11 +3,13 @@ import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type AgentEndEvent, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 import { classifyLLMGatewayError } from "../../llm-gateway-error.js"
 import { INTERNAL_SESSION_ENTRY } from "../../session-visibility.js"
+import { findModelByRef } from "../model-catalog/ref-utils.js"
 import { getMultiModelEnabled } from "../multi-model.js"
-import { getModelRoles, normalizeRoleModels, splitModelRef } from "../orchestration/model-roles.js"
+import { getModelRoles, normalizeRoleModels } from "../orchestration/model-roles.js"
 import { getRedactionConfig } from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
 import type { TodoItem } from "../todos/types.js"
+import { appendWorkRecord, getWorkId, recordProviderRequest, tryWorkAttribution } from "../work-attribution.js"
 import type { FermentV2EvaluatorFailureType } from "./domain-events.js"
 import { latestFinalAnswerDraft } from "./final-answer.js"
 import { type FermentV2Lesson, MAX_FERMENT_V2_LESSON_CHARS, MAX_FERMENT_V2_LESSONS } from "./lessons.js"
@@ -149,8 +151,7 @@ export function resolveFermentV2EvaluatorModel(ctx: ExtensionContext): Model<Api
 	const sessionModel = ctx.model
 	if (!getMultiModelEnabled(ctx.sessionManager)) return sessionModel
 	const assignment = normalizeRoleModels(getModelRoles().judge)[0]
-	const ref = assignment ? splitModelRef(assignment) : undefined
-	return (ref ? ctx.modelRegistry.find(ref.provider, ref.modelId) : undefined) ?? sessionModel
+	return (assignment ? findModelByRef(ctx.modelRegistry, assignment) : undefined) ?? sessionModel
 }
 
 export function parseFermentV2EvaluatorOutput(raw: string): ParsedFermentV2EvaluatorOutput | undefined {
@@ -298,6 +299,7 @@ export async function evaluateFermentV2(
 		diagnostics: diagnostics(failureType, httpStatusCode),
 	})
 	try {
+		const inheritedWorkId = tryWorkAttribution(() => getWorkId(ctx))
 		const objective = objectiveText(input.objective, ctx.cwd)
 		const model = resolveFermentV2EvaluatorModel(ctx)
 		if (!model) return unavailable("No evaluator model is available.", "no_model")
@@ -341,6 +343,8 @@ export async function evaluateFermentV2(
 			],
 		}
 		const evaluatorSession = createEvaluatorSession(ctx)
+		const workContext = { cwd: ctx.cwd, sessionManager: evaluatorSession }
+		if (inheritedWorkId) tryWorkAttribution(() => appendWorkRecord(workContext, { type: "work" }, inheritedWorkId))
 		evaluatorSession.appendCustomEntry(INTERNAL_SESSION_ENTRY, { kind: "ferment-evaluator" })
 		evaluatorSession.appendSessionInfo("Ferment V2 evaluator")
 		evaluatorSession.appendModelChange(model.provider, model.id)
@@ -352,10 +356,13 @@ export async function evaluateFermentV2(
 				input.signal?.throwIfAborted()
 				deadline = AbortSignal.timeout(timeoutMs)
 				const signal = input.signal ? AbortSignal.any([deadline, input.signal]) : deadline
+				const attribution = inheritedWorkId
+					? tryWorkAttribution(() => recordProviderRequest(workContext, model, inheritedWorkId))
+					: undefined
 				providerRequestCount++
 				const response = await completeSimple(model, requestContext, {
 					apiKey: auth.apiKey,
-					headers: auth.headers,
+					headers: { ...auth.headers, ...(attribution ? { "X-Request-Id": attribution.requestId } : {}) },
 					reasoning: "minimal",
 					thinkingBudgets: correcting ? { minimal: 0 } : undefined,
 					samplingParams: isKimchiManagedJsonModeProvider(model.provider)

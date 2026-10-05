@@ -12,6 +12,7 @@
  */
 
 import type { BashOperations } from "@earendil-works/pi-coding-agent"
+import { Value } from "typebox/value"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
 
@@ -254,5 +255,77 @@ describe("createBackgroundBashToolDefinition — background checkin path (timeou
 		expect((result.content[0] as { text: string }).text).not.toContain("bash_control")
 		expect(result.details?.handle).toBeUndefined()
 		expect(result.details?.checkin).toBeFalsy()
+	})
+})
+
+describe("background visibility", () => {
+	it("validates an optional purpose bounded to 120 characters", () => {
+		const schema = makeTool(createFakeOps()).parameters
+		expect(Value.Check(schema, { command: "true" })).toBe(true)
+		expect(Value.Check(schema, { command: "true", description: "x".repeat(120) })).toBe(true)
+		expect(Value.Check(schema, { command: "true", description: "x".repeat(121) })).toBe(false)
+		expect(Value.Check(schema, { command: "true", description: 42 })).toBe(false)
+	})
+
+	it.each(["deadline", "aborted"])("publishes %s before error and clears the wait timer", async (reason) => {
+		vi.useFakeTimers()
+		const ops = createFakeOps()
+		const tool = makeTool(ops)
+		const onUpdate = vi.fn()
+		const abort = new AbortController()
+		const execution = tool.execute(
+			"origin",
+			{ command: "sleep 30", timeout: 6 },
+			abort.signal,
+			onUpdate,
+			undefined as never,
+		)
+		const failure = expect(execution).rejects.toThrow(
+			reason === "deadline" ? "Command timed out after 6 seconds" : "Command aborted",
+		)
+		if (reason === "deadline") await vi.advanceTimersByTimeAsync(6_000)
+		else abort.abort()
+		await failure
+		expect(onUpdate.mock.lastCall?.[0].details).toMatchObject({
+			exited: true,
+			display: { state: "stopped", reason, finishedAt: expect.any(Number) },
+		})
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
+	it("streams identity and output before check-in and preserves terminal metadata before throwing", async () => {
+		vi.useFakeTimers()
+		const ops = createFakeOps()
+		const tool = makeTool(ops)
+		const onUpdate = vi.fn()
+		const execution = tool.execute(
+			"origin",
+			{ command: "echo progress; exit 7", description: "Checking output", timeout: 60 },
+			undefined,
+			onUpdate,
+			undefined as never,
+		)
+		const failure = expect(execution).rejects.toThrow("Command exited with code 7")
+		ops.emit("progress\n")
+		await vi.advanceTimersByTimeAsync(250)
+		expect(onUpdate.mock.lastCall?.[0]).toMatchObject({
+			content: [{ type: "text", text: "progress\n" }],
+			details: {
+				display: {
+					command: "echo progress; exit 7",
+					description: "Checking output",
+					toolCallId: "origin",
+					output: "progress\n",
+					state: "running",
+				},
+			},
+		})
+		await ops.exit(7)
+		await failure
+		expect(onUpdate.mock.lastCall?.[0].details).toMatchObject({
+			exited: true,
+			display: { state: "exited", exitCode: 7, finishedAt: expect.any(Number) },
+		})
+		expect(vi.getTimerCount()).toBe(0)
 	})
 })

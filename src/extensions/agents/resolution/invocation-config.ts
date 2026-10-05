@@ -24,12 +24,26 @@ interface AgentInvocationParams {
  * Other fields:
  * - tokenBudget: caller override first, then persona default.
  * - thinking: caller override first, then persona default (orchestrator selects per delegation).
- * - maxTurns, isolation, inheritContext, runInBackground: persona
- *   policy first, then caller value.
+ * - maxTurns, isolation, inheritContext: persona policy first, then
+ *   caller value.
+ * - runInBackground: in interactive sessions (defaultRunInBackground true)
+ *   the order is persona policy → caller value → background default. In
+ *   headless sessions (false) persona pins are IGNORED and only an explicit
+ *   caller value can opt into background — backgrounded work can outlive a
+ *   headless process, so automation keeps it an explicit per-call choice.
  */
 export function resolveAgentInvocationConfig(
 	agentConfig: AgentConfig | undefined,
 	params: AgentInvocationParams,
+	/**
+	 * Interactive-session signal: true when the session has a UI loop that
+	 * can consume completion notifications. Interactive sessions default to
+	 * background (persona pin and caller value still take precedence).
+	 * Headless sessions default to foreground AND ignore persona pins — only
+	 * an explicit caller opt-in backgrounds work, since backgrounded agents
+	 * would outlive the process.
+	 */
+	defaultRunInBackground = true,
 ): {
 	modelInput?: string
 	modelFromParams: boolean
@@ -58,7 +72,9 @@ export function resolveAgentInvocationConfig(
 		tokenBudget: params.token_budget ?? params.tokenBudget ?? agentConfig?.tokenBudget,
 		maxDuration: params.max_duration ?? agentConfig?.maxDuration,
 		inheritContext: agentConfig?.inheritContext ?? params.inherit_context ?? false,
-		runInBackground: agentConfig?.runInBackground ?? params.run_in_background ?? false,
+		runInBackground: defaultRunInBackground
+			? (agentConfig?.runInBackground ?? params.run_in_background ?? true)
+			: (params.run_in_background ?? false),
 		isolated: agentConfig?.isolated ?? params.isolated ?? false,
 		isolation: agentConfig?.isolation ?? params.isolation,
 	}

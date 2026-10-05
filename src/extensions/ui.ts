@@ -23,9 +23,10 @@ import { refreshGitBranch } from "../utils.js"
 import { getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
 import { isBareExitAlias } from "./exit-utils.js"
 import { formatDuration } from "./format.js"
+import { findModelByRef } from "./model-catalog/ref-utils.js"
 import { sessionHasImages } from "./model-guard.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
-import { getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
+import { getOrchestratorModelRef } from "./orchestration/model-roles.js"
 import { isRawInputCaptureActive } from "./shared-input.js"
 import {
 	isSessionModeOnboardingStatusLineSuppressed,
@@ -493,6 +494,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 				// The exit stage is handled here (not upstream) because the abort
 				// stage consumes the event, leaving upstream's lastSigintTime stale.
 				if (matchesKey(data, Key.ctrl("c")) && !isKeyRelease(data)) {
+					if (isRawInputCaptureActive()) return undefined
 					const now = Date.now()
 					const hasText = (currentEditor?.getText().trim().length ?? 0) > 0
 					const streaming = currentCtx ? !currentCtx.isIdle() : false
@@ -536,10 +538,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 							: allAvailable
 						const current = ctx.model
 						const orchRef = getOrchestratorModelRef(sessionId)
-						const orchParsed = splitModelRef(orchRef)
-						const orchestratorModel = orchParsed
-							? ctx.modelRegistry.find(orchParsed.provider, orchParsed.modelId)
-							: undefined
+						const orchestratorModel = ctx.modelRegistry ? findModelByRef(ctx.modelRegistry, orchRef) : undefined
 
 						// Cycle order: model[0] → ... → model[last] → multi-model → model[0]
 						// kimi-k2.6 appears as a regular model AND multi-model appears

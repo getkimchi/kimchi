@@ -39,6 +39,14 @@ export interface LaunchSessionOptions {
 	stopOnEntry?: boolean
 	/** Extra environment variables for the debuggee. */
 	env?: Record<string, string>
+	/** Last-resort adapter-resolution hint: the source file the program was
+	 *  built from. Used only when the program path itself doesn't resolve to an
+	 *  adapter (e.g. an extensionless compiled binary in /tmp). */
+	sourceFileHint?: string
+	/** Default request/stop budget for the new session (overrides the 30s
+	 *  DapSession default). Composed tools pass their wall-clock timeout so
+	 *  internal stop-waits don't expire before the caller's own budget. */
+	sessionTimeoutMs?: number
 }
 
 export interface DapToolDeps {

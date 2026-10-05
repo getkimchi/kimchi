@@ -50,7 +50,8 @@ export { modelIdFromRef, splitModelRef } from "./model-ref-utils.js"
 
 import { readConfigSetting, writeConfigSetting } from "../../config/settings.js"
 import { getProcessOrchestratorRef } from "../kimchi-process.js"
-import { modelIdFromRef, splitModelRef } from "./model-ref-utils.js"
+import { findModelByRef } from "../model-catalog/ref-utils.js"
+import { modelIdFromRef } from "./model-ref-utils.js"
 
 /** Task-type affinity tag used to match an agent persona to a model role. */
 export type ModelRole = "review" | "build" | "plan" | "explore" | "research"
@@ -380,9 +381,8 @@ export function getOrchestratorModel(
 ): { model: Model<Api> | undefined; modelId: string; modelRef: string } {
 	const orchRef = getOrchestratorModelRef(sessionId)
 	const orchId = modelIdFromRef(orchRef)
-	const parsed = splitModelRef(orchRef)
 	return {
-		model: parsed ? modelRegistry.find(parsed.provider, parsed.modelId) : undefined,
+		model: findModelByRef(modelRegistry, orchRef),
 		modelId: orchId,
 		modelRef: orchRef,
 	}

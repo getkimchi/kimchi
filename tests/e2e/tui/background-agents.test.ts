@@ -1,7 +1,7 @@
 /**
  * E2E for Ctrl+B detach-to-background and Ctrl+X kill.
  *
- * response[0]: orchestrator calls Agent (foreground, no run_in_background)
+ * response[0]: orchestrator calls Agent (foreground, run_in_background: false pinned)
  * response[1]: inner agent's slow stream (time to press Ctrl+B before it finishes)
  * response[2]: orchestrator follow-up (consumed if it continues its turn)
  *
@@ -20,7 +20,10 @@ function foregroundAgentCall(id: string, description: string, prompt: string) {
 		id,
 		function: {
 			name: "Agent",
-			arguments: JSON.stringify({ prompt, description, subagent_type: "General-Purpose" }),
+			// Pin foreground explicitly: Agent defaults to background in
+			// interactive sessions, and these specs assert Ctrl+B detach from a
+			// running FOREGROUND agent.
+			arguments: JSON.stringify({ prompt, description, subagent_type: "General-Purpose", run_in_background: false }),
 		},
 	}
 }

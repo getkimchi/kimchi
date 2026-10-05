@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs"
+import { resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type {
 	ExtensionAPI,
@@ -5,13 +7,18 @@ import type {
 	ExtensionFactory,
 	MessageEndEvent,
 	MessageUpdateEvent,
+	SessionEntry,
 } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
+import { getParsedCliArgs, MULTI_MODEL_ID } from "../../cli-args.js"
+import { writeJson } from "../../config/json.js"
+import { getAgentConfigDir } from "../../config.js"
+import { getSettingsManager } from "../../settings-watcher.js"
 import { setMultiModelEnabled } from "../multi-model.js"
-import { syncAutoCapabilities } from "../router/capabilities.js"
-import { AUTO_MODEL_PROVIDER } from "../router/constants.js"
-import { clearAutoRoutingState, setAutoRoutingState } from "../router/state.js"
+import { syncAutoCapabilities } from "./capabilities.js"
+import { AUTO_MODEL_PROVIDER, isAutoRoutedModel } from "./constants.js"
 import { type RoutedModelResolution, resolveRoutedModel } from "./routed-model.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "./state.js"
 
 export const ROUTED_MODEL_RESOLUTION_ENTRY = "kimchi_routed_model_resolution"
 
@@ -81,13 +88,87 @@ function isRoutableProvider(model: { provider: string } | undefined): boolean {
 	return model?.provider === AUTO_MODEL_PROVIDER
 }
 
-export function createAutoModelRoutingExtension(): ExtensionFactory {
+/**
+ * The virtual id the backend owns as the product-level "Auto" default.
+ * Catalog-driven: installed as the saved default only when the backend
+ * actually advertises it. The rest of the extension stays id-agnostic.
+ */
+const DEFAULT_VIRTUAL_MODEL_ID = "auto"
+
+/**
+ * Drop the retired `autoDefaultApplied` marker from settings.json. Existing
+ * installs still carry it, and harness settings writes merge onto the file,
+ * so nothing else ever removes a key it no longer knows. Idempotent: a file
+ * without the key is left untouched.
+ */
+function dropRetiredAutoDefaultMarker(): void {
+	const path = resolve(getAgentConfigDir(), "settings.json")
+	try {
+		const settings: unknown = JSON.parse(readFileSync(path, "utf-8"))
+		if (
+			settings !== null &&
+			typeof settings === "object" &&
+			!Array.isArray(settings) &&
+			"autoDefaultApplied" in settings
+		) {
+			const { autoDefaultApplied: _dropped, ...rest } = settings as Record<string, unknown>
+			writeJson(path, rest)
+		}
+	} catch {
+		// A missing or unreadable settings file needs no cleanup.
+	}
+}
+
+/**
+ * Whether a default model is saved in settings.json, concrete or virtual.
+ *
+ * Used to keep a saved default from being wrapped in multi-model mode. It
+ * deliberately does not gate the Auto default: login and Ctrl+P cycling both
+ * persist a default too, so most accounts carry one without ever having chosen
+ * it.
+ */
+function hasPersistedDefault(): boolean {
+	return !!getSettingsManager()?.getDefaultModel()
+}
+
+/** Whether the saved default itself is a routed virtual model (provider + auto* id). */
+function persistedDefaultIsRoutedAuto(): boolean {
+	const manager = getSettingsManager()
+	if (!manager) return false
+	return isAutoRoutedModel({ provider: manager.getDefaultProvider() ?? "", id: manager.getDefaultModel() ?? "" })
+}
+
+/**
+ * Whether the session's persisted entries show the user's latest selection is
+ * a routed virtual model. `model_change` entries match by the `auto*` prefix
+ * on the kimchi-dev provider, and a routed resolution entry implies a virtual
+ * selection as well. A later concrete `model_change` overrides earlier
+ * entries.
+ */
+export function sessionSelectsRoutedAuto(entries: readonly SessionEntry[]): boolean {
+	let selected = false
+	for (const entry of entries) {
+		if (entry.type === "custom" && entry.customType === ROUTED_MODEL_RESOLUTION_ENTRY) {
+			selected = true
+		} else if (entry.type === "model_change") {
+			selected = isAutoRoutedModel({ provider: entry.provider, id: entry.modelId })
+		}
+	}
+	return selected
+}
+
+export interface AutoModelRoutingExtensionOptions {
+	/** Apply main-session defaults and CLI choices; leave child model selection to the caller. */
+	handleCliModelSelection?: boolean
+}
+
+export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensionOptions = {}): ExtensionFactory {
 	/**
 	 * Learn the routed pick from a streamed/committed assistant message and, when
 	 * it changed, announce it and re-sync capabilities. Fires from `message_update`
-	 * (near stream-start, matching v1's early notice) and from `message_end` as a
-	 * fallback for responses that never streamed a `message_update`
-	 * (e.g. non-streamed providers). Idempotent per pick via `lastNotifiedModel`.
+	 * (near stream-start) and from `message_end` as a fallback for responses that
+	 * never streamed a `message_update` (e.g. non-streamed providers). Idempotent
+	 * per pick via `lastNotifiedModel`.
 	 */
 	function applyRoutedResolution(
 		pi: ExtensionAPI,
@@ -143,7 +224,7 @@ export function createAutoModelRoutingExtension(): ExtensionFactory {
 		})
 
 		// `message_update` fires from the first streamed chunk carrying `model`, so
-		// the notice appears near stream-start (matching v1) rather than at turn-end.
+		// the notice appears near stream-start rather than at turn-end.
 		pi.on("message_update", (event: MessageUpdateEvent, ctx) => {
 			applyRoutedResolution(pi, event.message, ctx, ctx.sessionManager.getSessionId())
 		})
@@ -153,15 +234,96 @@ export function createAutoModelRoutingExtension(): ExtensionFactory {
 			applyRoutedResolution(pi, event.message, ctx, ctx.sessionManager.getSessionId())
 		})
 
-		pi.on("session_start", async (_event, ctx) => {
+		pi.on("session_start", async (event, ctx) => {
 			const sessionId = ctx.sessionManager.getSessionId()
+			const entries = ctx.sessionManager.getEntries()
+			const cliOptions = options.handleCliModelSelection ? getParsedCliArgs().options : undefined
+			const requestedModel = event.reason === "startup" ? cliOptions?.model : undefined
+
+			// An explicit CLI `--model` over a routed-virtual default or session is
+			// user-initiated: persist it as the default (0.84.1 semantics — upstream
+			// 0.85.1 made setModel session-only by default). On a fresh startup the
+			// CLI choice has already replaced the saved default in ctx.model, so the
+			// persisted default is checked too. When the choice is concrete, stop
+			// tracking the previous virtual pick.
+			if (
+				requestedModel &&
+				requestedModel !== MULTI_MODEL_ID &&
+				ctx.model &&
+				(isAutoRoutedModel(ctx.model) || sessionSelectsRoutedAuto(entries) || persistedDefaultIsRoutedAuto())
+			) {
+				setMultiModelEnabled(sessionId, false)
+				await pi.setModel(ctx.model, { persist: true })
+				if (!isAutoRoutedModel(ctx.model)) {
+					clearAutoRoutingState(sessionId)
+					resetLastNotified(sessionId)
+					return
+				}
+			}
+
+			// The main session opening a new conversation with no model named on the
+			// command line is the only moment a saved default may be installed or
+			// unwrapped. Subagents are excluded so a child never rewrites the global
+			// default, and a resumed conversation keeps the model it was using.
+			const sessionFile = ctx.sessionManager.getSessionFile()
+			const hasPersistedSession = sessionFile !== undefined && existsSync(sessionFile)
+			const freshSession =
+				event.reason === "new" ||
+				(event.reason === "startup" &&
+					!event.previousSessionFile &&
+					!hasPersistedSession &&
+					!entries.some((entry) => entry.type === "message"))
+			const explicitLaunchChoice =
+				event.reason === "startup" &&
+				(cliOptions?.model || cliOptions?.provider || cliOptions?.["multi-model"] || cliOptions?.models)
+			const mainFreshLaunch = !!options.handleCliModelSelection && freshSession && !explicitLaunchChoice
+
+			if (options.handleCliModelSelection) dropRetiredAutoDefaultMarker()
+
+			// Catalog-driven Auto default: every fresh main session comes up on
+			// `auto` when the backend actually advertises it — the backend catalog
+			// decides who sees it, so there is no client-side entitlement check.
+			// A manual switch away is honoured for the session it happens in, but
+			// the next fresh session rolls back to Auto: for entitled accounts Auto
+			// IS the default, not a one-time install. This applies whatever
+			// provider the session came up on — a switch to another provider's
+			// model (e.g. Anthropic's Claude) rolls back too. Say so when the
+			// rollback happens — a silent switch away from a deliberately chosen
+			// model reads as a bug.
+			if (mainFreshLaunch && ctx.model && !isAutoRoutedModel(ctx.model)) {
+				const installed = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
+				if (installed) {
+					// Persist: upstream 0.85.1 made setModel session-only by default, and
+					// the notice below claims a default-level change. Persisting also
+					// means a resumed new session restores Auto rather than the
+					// model that was switched to.
+					await pi.setModel(installed, { persist: true })
+					setMultiModelEnabled(sessionId, false)
+					resetLastNotified(sessionId)
+					// The rollback fires on every fresh session after a deliberate
+					// switch, so the copy must read correctly on the tenth repeat —
+					// state the policy and the escape hatch instead of pretending
+					// this is a first-time install.
+					ctx.ui.notify(
+						"New sessions start on Auto (the default). Use /model to pick a different model for this session.",
+						"info",
+					)
+					// A fresh session carries no routing state to hydrate; stop here.
+					return
+				}
+			}
+
 			if (!ctx.model || !isRoutableProvider(ctx.model)) {
 				resetLastNotified(sessionId)
+				// A saved default outranks the global multi-model default, whether it
+				// is concrete or virtual: without this the session comes up as
+				// multi-model wrapping the saved model rather than the model itself.
+				if (mainFreshLaunch && hasPersistedDefault()) setMultiModelEnabled(sessionId, false)
 				return
 			}
 			// A selected model on the `kimchi-dev` provider must not be wrapped by
 			// multi-model. This covers every `kimchi-dev` session model (routed
-			// virtual ids and v1 `auto`), which is safe because none of them use
+			// virtual ids and concrete ones), which is safe because none of them use
 			// multi-model.
 			setMultiModelEnabled(sessionId, false)
 
@@ -221,6 +383,6 @@ export function createAutoModelRoutingExtension(): ExtensionFactory {
 	}
 }
 
-const autoModelExtension = createAutoModelRoutingExtension()
+const autoModelRoutingExtension = createAutoModelRoutingExtension({ handleCliModelSelection: true })
 
-export default autoModelExtension
+export default autoModelRoutingExtension

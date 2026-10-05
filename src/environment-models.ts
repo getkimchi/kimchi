@@ -1,14 +1,14 @@
 import { InMemoryModelsStore } from "@earendil-works/pi-ai"
 import { ModelRuntime, type ProviderConfig } from "@earendil-works/pi-coding-agent"
 import { resolveEndpoints } from "./config.js"
-import { AUTO_MODEL_ID } from "./extensions/router/constants.js"
 import { isKimchiProvider } from "./kimchi-provider.js"
 import {
-	autoModelConfig,
 	buildModelsConfig,
 	discoverModelsConfig,
 	isTransientModelsError,
 	type ModelMetadata,
+	registerAutoDescriptionFallback,
+	registerDescriptionsFromProviders,
 } from "./models.js"
 import { discoverOllamaProvider, ollamaModelsToMetadata, resolveOllamaHost } from "./ollama.js"
 
@@ -34,16 +34,19 @@ export async function discoverEnvironmentModels(
 	if (options.experimental) {
 		providers["kimchi-experimental"] = { ...root, baseUrl: resolveEndpoints().experimentalOpenAiBaseUrl }
 	}
-	// Only append the harness virtual `auto` when the fetched catalog does not
-	// already advertise one; a backend-owned `auto` wins, otherwise this would
-	// create a duplicate `kimchi-dev/auto` provider entry.
-	const hasFetchedAuto = (root.models ?? []).some((model) => model.id === AUTO_MODEL_ID)
-	providers["kimchi-dev"] = {
-		...root,
-		models: hasFetchedAuto ? root.models : [...(root.models ?? []), autoModelConfig(models)],
-	}
+	// The kimchi-dev catalog comes straight from the backend — including routed
+	// virtual models like `auto`. Register exactly what was fetched.
+	providers["kimchi-dev"] = { ...root, models: root.models ?? [] }
 	const ollama = await discoverOllamaProvider(resolveOllamaHost())
 	providers.ollama = ollama
+	// This path replaces updateModelsConfig, which normally fills the /model
+	// selector's description registry on the config-account path — without
+	// this, KIMCHI_API_KEY sessions render the DESCRIPTION column empty.
+	// Fresh endpoint data replaces older descriptions; the Auto fallback
+	// mirrors the config-account path so a backend-owned auto keeps a
+	// description even when the endpoint sends none.
+	registerDescriptionsFromProviders(providers)
+	registerAutoDescriptionFallback()
 	return {
 		providers,
 		models: [...models, ...ollamaModelsToMetadata(ollama.models)],

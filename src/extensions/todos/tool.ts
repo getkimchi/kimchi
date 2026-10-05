@@ -314,7 +314,7 @@ export function registerTodosTool(pi: ExtensionAPI): void {
 		name: UPDATE_TODOS_TOOL_NAME,
 		label: "Update Todos",
 		description:
-			"Replace the entire todo list. Use only when the plan changes significantly (adding, removing, or reordering items). For routine status changes, use mark_todo instead — it is lighter and pairs more naturally with a work tool call. For appending a single item, use add_todo instead of rewriting the whole list. Always pair this with the next work tool call in the same turn — never make a turn that is only a todo update.",
+			"Replace the entire todo list. Use only when the plan changes significantly (adding, removing, or reordering items). For routine status changes, use mark_todo instead — it is lighter and pairs more naturally with a work tool call. For appending a single item, use add_todo instead of rewriting the whole list. Pair this with work tool calls when possible; todo-only cleanup is appropriate at wrap-up.",
 		promptSnippet: "Replace the whole todo list when the plan changes",
 		parameters: TODO_TOOL_PARAMETERS,
 		executionMode: "parallel",
@@ -336,7 +336,7 @@ export function registerTodosTool(pi: ExtensionAPI): void {
 		name: MARK_TODO_TOOL_NAME,
 		label: "Mark Todo",
 		description:
-			"Mark one todo as pending, in_progress, blocked, or completed by id. This is the primary tool for routine progress updates — use it to mark the current item completed and the next one in_progress as you work. Always pair this with the next work tool call in the same turn — never make a turn that is only a todo status change.",
+			"Mark one todo as pending, in_progress, blocked, or completed by id. This is the primary tool for routine progress updates — use it to mark the current item completed and the next one in_progress as you work. Pair this with work tool calls when possible; todo-only cleanup is appropriate at wrap-up.",
 		promptSnippet: "Mark one todo's progress by id",
 		parameters: MARK_TODO_PARAMETERS,
 		executionMode: "parallel",

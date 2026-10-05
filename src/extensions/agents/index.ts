@@ -36,8 +36,8 @@ import {
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
+import type { RemoteGitWorkflow } from "../remote-run/git-workflow.js"
 import { handleRemoteCompletion, handleRemoteFailure } from "../remote-run/post-completion.js"
-import { isAutoModel } from "../router/constants.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { type RemoteExecutionStats, trackRemoteExecution, trackSubagentSpawned } from "../telemetry/index.js"
@@ -146,10 +146,48 @@ export function resolveRoleModelRef(subagentType: string): string | undefined {
 // If they do not settle, manager.dispose() still runs hard-fallback cleanup.
 const SUBAGENT_SHUTDOWN_WAIT_MS = 5_000
 
+// Hard cap for get_subagent_result(wait: true). A backgrounded agent should
+// never block the caller's run indefinitely — results arrive via the
+// completion notification; the wait is only a bounded join for real
+// dependencies (e.g. ferment worker handoff).
+const GET_SUBAGENT_RESULT_WAIT_CAP_MS = 60_000
+
+type AgentWaitOutcome = "completed" | "timed_out" | "aborted"
+
+/**
+ * Bounded, interruptible wait on an agent's run promise.
+ * Resolves "completed" when the agent settles (success or failure), or early
+ * on cap timeout / abort signal. Never rejects.
+ */
+function waitForAgentCompletion(agentPromise: Promise<unknown>, signal?: AbortSignal): Promise<AgentWaitOutcome> {
+	return new Promise((resolve) => {
+		let done = false
+		const onAbort = () => finish("aborted")
+		const timer = setTimeout(() => finish("timed_out"), GET_SUBAGENT_RESULT_WAIT_CAP_MS)
+		function finish(outcome: AgentWaitOutcome) {
+			if (done) return
+			done = true
+			clearTimeout(timer)
+			signal?.removeEventListener("abort", onAbort)
+			resolve(outcome)
+		}
+		if (signal?.aborted) {
+			finish("aborted")
+			return
+		}
+		signal?.addEventListener("abort", onAbort)
+		agentPromise.then(
+			() => finish("completed"),
+			() => finish("completed"),
+		)
+	})
+}
+
 export const AGENT_TOOL_GUIDELINES = `Guidelines:
 - Follow the **Orchestration** section (workflow, delegation, models, budgets, Explore-agent prompt shaping).
-- One call per task, detailed prompt; run_in_background for parallelism.
-- Follow-ups: resume_subagent (continue), get_subagent_result (poll), steer_subagent (redirect).`
+- Choose the mode by dependency: agents run in the background by default, so set run_in_background: false only when the agent blocks your very next action (immediate dependency). If the result is needed for a LATER step, keep it backgrounded and join it with get_subagent_result wait: true when you need it — do not wait right after spawning; do independent work or end your turn first. For fire-and-forget or parallel work, background it and rely on the completion notification; the notification contains the results.
+- One call per task, detailed prompt.
+- Follow-ups: resume_subagent (continue), get_subagent_result (status check or bounded join), steer_subagent (redirect).`
 
 export const AGENT_MODEL_PARAMETER_DESCRIPTION =
 	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId". Partial model IDs (e.g. "kimi") are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only role-configured models may be used.'
@@ -528,6 +566,17 @@ export interface SpawnRemoteAgentOptions {
 	 *  pause the ferment during cloud execution and complete/resume it on
 	 *  completion. */
 	fermentId?: string
+	/**
+	 * Git intent captured at dispatch (PR-first flow): the branch the remote
+	 * agent commits on. Threaded into the agent record + persisted
+	 * remote_run:state so the completion flow (possibly after a restart) can
+	 * review, steer, and push. Absent = plain run.
+	 */
+	gitWorkflow?: RemoteGitWorkflow
+	/** Steer continuation of a kept-alive PR session: the manager attaches
+	 *  via session/load on the persisted ACP id (never session/new) instead
+	 *  of provisioning a fresh workspace/session. */
+	continuation?: { remoteSession: RemoteSessionMeta; acpSessionId: string }
 }
 
 /** Spawn function type — set during agents extension init. */
@@ -999,6 +1048,7 @@ export default function (pi: ExtensionAPI) {
 					acpSessionId: record.acpSessionId,
 					remoteOrigin: record.remoteOrigin,
 					fermentId: record.fermentId,
+					gitWorkflow: record.gitWorkflow,
 					outputFile: record.outputFile,
 					startedAt: record.startedAt,
 					status:
@@ -1010,7 +1060,13 @@ export default function (pi: ExtensionAPI) {
 				})
 			}
 
-			if (record.resultConsumed) {
+			// A consumed result normally suppresses the completion surface — but
+			// never for remote runs: polling a remote background agent with
+			// get_subagent_result consumes its result, and bailing here would
+			// silently kill the user's post-completion dropdown (sync/review/push),
+			// stranding the changes on the sandbox. The dropdown fires at most once
+			// (the flag is reset in that branch below).
+			if (record.resultConsumed && !record.triggersRemoteCompletion) {
 				agentActivity.delete(record.id)
 				widget.markFinished(record.id)
 				widget.update()
@@ -1063,7 +1119,9 @@ export default function (pi: ExtensionAPI) {
 						transcriptPath: record.outputFile,
 						agentId: record.id,
 						remoteSession: record.remoteSession,
+						acpSessionId: record.acpSessionId,
 						fermentId: record.fermentId,
+						gitWorkflow: record.gitWorkflow,
 						recoveryNote: record.recoveryNote,
 					}).catch((err) => {
 						currentUi?.notify(
@@ -1158,6 +1216,12 @@ export default function (pi: ExtensionAPI) {
 			isBackground: opts?.background ?? false,
 			remote: true,
 			maxTurns: 1,
+			// PR-first git intent — planted onto the record inside spawn (see
+			// SpawnOptions.gitWorkflow), so _runRemote reads it deterministically.
+			gitWorkflow: opts?.gitWorkflow,
+			// PR steer continuation: attach to the kept-alive session instead of
+			// provisioning a fresh workspace (never session/new).
+			...(opts?.continuation ? { continuation: opts.continuation } : {}),
 			...transcriptCallbacks,
 			// The streamer wrapper only forwards AcpSessionCallbacks, so the
 			// activity tracker's onSessionCreated is wired here too. _runRemote
@@ -1189,6 +1253,7 @@ export default function (pi: ExtensionAPI) {
 					acpSessionId,
 					remoteOrigin: opts?.origin ?? "plan",
 					fermentId: opts?.fermentId,
+					gitWorkflow: rec?.gitWorkflow,
 					outputFile: rec?.outputFile,
 					startedAt: rec?.startedAt ?? Date.now(),
 					status: "running",
@@ -1298,11 +1363,20 @@ export default function (pi: ExtensionAPI) {
 	// them) are persisted in the session transcript — resume them here so the
 	// user sees the still-running cloud agent (and gets the completion
 	// dropdown once it finishes).
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		// Subagent sessions don't own remote runs — the dispatch happens in the
 		// main session, whose transcript holds the remote_run:state entries.
 		if (process.env[PARENT_SESSION_ID_ENV_KEY]) return
 		const resumable = findResumableRemoteRuns(ctx.sessionManager)
+		// Explicit continuation intent and no resumable remote runs: name the
+		// outcome instead of a silent boot. reason "resume" covers every resume
+		// mechanism (-c / --resume / --session load an existing session); a fresh
+		// boot fires "startup".
+		if (resumable.length === 0 && ctx.hasUI) {
+			if (event.reason === "resume") {
+				ctx.ui.notify?.("Continued session — no in-progress remote runs to resume")
+			}
+		}
 		if (resumable.length === 0) return
 		// The widget needs a UI context to render at all — normally the remote
 		// dispatch (spawnRemoteAgentFn) or the first local tool_execution_start
@@ -1490,7 +1564,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				run_in_background: Type.Optional(
 					Type.Boolean({
 						description:
-							"Set to true to run in background. Returns agent ID immediately. You will be notified on completion.",
+							"Default: true in interactive sessions (false in headless runs). Run the agent in the background and return its ID immediately; you will be notified on completion. Set to false only when the next step in your workflow cannot proceed without the agent's result.",
 					}),
 				),
 				isolated: Type.Optional(
@@ -1626,9 +1700,13 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 				const customConfig = getAgentConfig(subagentType)
 
+				// Background-by-default only applies with a UI loop that can consume
+				// completion notifications; headless/one-shot runs keep foreground so
+				// spawned work cannot outlive the process.
 				const resolvedConfig = resolveAgentInvocationConfig(
 					customConfig,
 					params as Parameters<typeof resolveAgentInvocationConfig>[1],
+					ctx.hasUI,
 				)
 
 				let model = ctx.model
@@ -1718,7 +1796,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 				// extract image paths from read tool calls and prepend them to the prompt.
 				const modelInput = (model as { input?: string[] } | undefined)?.input
 				const imagePaths = sessionHasImages() && modelInput?.includes("image") ? extractImagePathsFromSession(ctx) : []
-				const requiresVision = imagePaths.length > 0 && isAutoModel(model)
 				const effectivePrompt =
 					imagePaths.length > 0
 						? `Context images from parent session: ${imagePaths.join(", ")}. Read them if needed for your task.\n\n${params.prompt as string}`
@@ -1782,7 +1859,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 							description: params.description as string,
 							visibility,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
-							requiresVision,
 							maxTurns: effectiveMaxTurns,
 							tokenBudget: resolvedConfig.tokenBudget,
 							taskRef,
@@ -1836,7 +1912,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 					const isQueued = record?.status === "queued"
 					return textResult(
-						`Agent ${isQueued ? "queued" : "started"} in background.\nAgent ID: ${id}\nType: ${displayName}\nDescription: ${params.description}\n${record?.outputFile ? `Output file: ${record.outputFile}\n` : ""}${isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : ""}\nYou will be notified when this agent completes.\nUse get_subagent_result to retrieve full results, or steer_subagent to send it messages.\nDo not duplicate this agent's work.`,
+						`Agent ${isQueued ? "queued" : "started"} in background.\nAgent ID: ${id}\nType: ${displayName}\nDescription: ${params.description}\n${record?.outputFile ? `Output file: ${record.outputFile}\n` : ""}${isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : ""}\nYou will be notified when this agent completes — the completion notification will contain the results.\nDo NOT call get_subagent_result with wait: true just to wait for it — that blocks your run and queues user input. Continue with other independent work, or stop your turn and return control to the user.\nUse steer_subagent to send it messages. Do not duplicate this agent's work.`,
 						{ ...detailBase, toolUses: 0, tokens: "", durationMs: 0, status: "background" as const, agentId: id },
 					)
 				}
@@ -1930,7 +2006,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 						description: params.description as string,
 						visibility,
 						model: model as Parameters<typeof manager.spawn>[4]["model"],
-						requiresVision,
 						maxTurns: effectiveMaxTurns,
 						tokenBudget: resolvedConfig.tokenBudget,
 						taskRef,
@@ -2128,7 +2203,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 				}),
 				wait: Type.Optional(
 					Type.Boolean({
-						description: "If true, wait for the agent to complete before returning. Default: false.",
+						description:
+							"If true, block until the agent completes (capped at 60s). Do NOT use right after backgrounding an agent — you will be notified when it completes, and blocking queues user input. Only for true dependencies. Default: false.",
 					}),
 				),
 				verbose: Type.Optional(
@@ -2192,16 +2268,23 @@ ${AGENT_TOOL_GUIDELINES}`,
 				return new Text(line, 0, 0)
 			},
 
-			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
+			execute: async (_toolCallId, params, signal, _onUpdate, _ctx) => {
 				const record = manager.getRecord(params.agent_id as string)
 				if (!record) {
 					return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`)
 				}
 
+				let waitOutcome: AgentWaitOutcome | undefined
 				if (params.wait && record.status === "running" && record.promise) {
-					record.resultConsumed = true
-					cancelNudge(params.agent_id as string)
-					await record.promise
+					// Bounded, interruptible join: honor the tool's abort signal and
+					// the wait cap instead of blocking the caller's run indefinitely.
+					// On timeout/abort the result stays unconsumed and the completion
+					// nudge stays armed, so the notification still delivers the result.
+					waitOutcome = await waitForAgentCompletion(record.promise, signal)
+					if (waitOutcome === "completed") {
+						record.resultConsumed = true
+						cancelNudge(params.agent_id as string)
+					}
 				}
 
 				const displayName = getDisplayName(record.type)
@@ -2220,8 +2303,19 @@ ${AGENT_TOOL_GUIDELINES}`,
 					`Description: ${record.description}\n\n`
 
 				let bodyForDisplay: string
-				if (record.status === "running") {
-					bodyForDisplay = "Agent is still running. Use wait: true or check back later."
+				if (record.status === "queued") {
+					bodyForDisplay = `Agent is queued behind the background-agent concurrency cap (max ${manager.getMaxConcurrent()} concurrent) and has not started. Do not wait on it — you will be notified when it completes. If its output is a hard dependency, check back with wait: true once it reports running.`
+					output += bodyForDisplay
+				} else if (record.status === "running") {
+					if (waitOutcome === "timed_out") {
+						bodyForDisplay = `Waited ${GET_SUBAGENT_RESULT_WAIT_CAP_MS / 1000}s (cap) and the agent is still running. The result was NOT consumed — you will be notified when it completes. If this agent's output is a hard dependency (e.g. joining a ferment worker), call get_subagent_result with wait: true again to re-join; otherwise end your turn and continue when the notification arrives.`
+					} else if (waitOutcome === "aborted") {
+						bodyForDisplay =
+							"Wait cancelled before the agent completed. The result was NOT consumed — you will be notified when it completes. Re-call with wait: true to re-join, or continue other work and wait for the notification."
+					} else {
+						bodyForDisplay =
+							"Agent is still running. Do not poll or wait for it — end your turn; you will be notified when it completes and the notification will contain the results."
+					}
 					output += bodyForDisplay
 				} else if (record.status === "error") {
 					bodyForDisplay = `Error: ${record.error}`
@@ -2735,7 +2829,7 @@ extensions: <true (inherit all MCP/extension tools), false (none), or comma-sepa
 skills: <true (inherit all), false (none), or comma-separated skill names to preload into prompt. Default: true>
 disallowed_tools: <comma-separated tool names to block, even if otherwise available. Omit for none>
 inherit_context: <true to fork parent conversation into agent so it sees chat history. Default: false>
-run_in_background: <true to run in background by default. Default: false>
+run_in_background: <true to run in background. Default: true in interactive sessions; the pin is ignored in headless runs>
 isolated: <true for no extension/MCP tools, only built-in tools. Default: false>
 memory: <"user" (global), "project" (per-project), or "local" (gitignored per-project) for persistent memory. Omit for none>
 ---

@@ -319,6 +319,25 @@ describe("debug_state_at", () => {
 		expect(result.hit).toBe(true)
 		expect(stub.terminate).toHaveBeenCalledTimes(1)
 	})
+
+	it("propagates timeout_ms as the session's default budget (sessionTimeoutMs)", async () => {
+		const stub = createStubSession()
+		stub.continue.mockResolvedValue(stop("breakpoint"))
+		const { deps } = createDeps()
+
+		let launchOpts: Record<string, unknown> | undefined
+		deps.launchSession = async (opts: Record<string, unknown>) => {
+			launchOpts = opts
+			return stub as unknown as DapSession
+		}
+
+		await debugStateAt(deps, { file: "/proj/main.go", line: 4, timeoutMs: 60_000 })
+
+		// The wall-clock budget must ALSO become the session's default stop-wait
+		// budget — otherwise large binaries (dlv + 30MB test binaries) die on the
+		// 30s internal default while the caller's longer timeout still ticks.
+		expect(launchOpts?.sessionTimeoutMs).toBe(60_000)
+	})
 })
 
 // ── collection caps (locals + watch changes) ────────────────────────────────

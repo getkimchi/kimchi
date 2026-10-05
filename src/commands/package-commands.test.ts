@@ -1,3 +1,4 @@
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { findPackageCommand, listPackageCommands, type PackageCommand, runPackageCommand } from "./package-commands.js"
@@ -23,6 +24,21 @@ afterEach(() => {
 })
 
 describe("package-commands discovery", () => {
+	it.each([
+		"@fake/commands@1.0.0",
+		"@fake/commands@^1",
+		"@fake/commands@latest",
+		"commands@1.0.0",
+	])("finds commands from versioned package %s", async (spec) => {
+		const packageName = spec.slice(0, spec.lastIndexOf("@"))
+		installFakePackage(agentDir, packageName, { hello: "./dist/hello.js" }, { "dist/hello.js": ECHO_MODULE })
+		writeSettings(agentDir, [`npm:${spec}`])
+		const command = findPackageCommand("hello")
+		expect(command?.packageName).toBe(packageName)
+		if (!command) throw new Error("Package command was not discovered")
+		vi.spyOn(console, "log").mockImplementation(() => {})
+		expect(await runPackageCommand(command, ["world"])).toBe(7)
+	})
 	it("finds commands declared by an installed package", () => {
 		installFakePackage(agentDir, "@fake/commands", { hello: "./dist/hello.js" }, { "dist/hello.js": ECHO_MODULE })
 
@@ -38,7 +54,6 @@ describe("package-commands discovery", () => {
 	it("is unaffected by pi packages without a kimchi manifest (strictly additive)", () => {
 		writeSettings(agentDir, ["npm:@fake/pi-only"])
 		const pkgRoot = join(agentDir, "npm", "node_modules", "@fake/pi-only")
-		const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs")
 		mkdirSync(join(pkgRoot, "src"), { recursive: true })
 		writeFileSync(
 			join(pkgRoot, "package.json"),
@@ -53,7 +68,6 @@ describe("package-commands discovery", () => {
 	it("returns nothing without settings.json, with corrupt settings, or for non-npm sources", () => {
 		expect(findPackageCommand("hello")).toBeUndefined()
 
-		const { writeFileSync } = require("node:fs") as typeof import("node:fs")
 		writeFileSync(join(agentDir, "settings.json"), "{not json")
 		expect(findPackageCommand("hello")).toBeUndefined()
 
@@ -63,7 +77,6 @@ describe("package-commands discovery", () => {
 
 	it("lets the first package in settings order win a name collision", () => {
 		writeSettings(agentDir, ["npm:@fake/first", "npm:@fake/second"])
-		const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs")
 		for (const name of ["@fake/first", "@fake/second"]) {
 			const pkgRoot = join(agentDir, "npm", "node_modules", name)
 			mkdirSync(join(pkgRoot, "dist"), { recursive: true })

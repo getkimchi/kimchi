@@ -30,13 +30,24 @@ Every in-session payload includes:
 
 | Attribute | Value |
 |-----------|-------|
-| `session.id` | Per-process telemetry session id — shared by the main agent and in-process subagents, so events roll up under one backend session; not a per-agent id, and out-of-process agents (remote, session-review subprocesses) have their own |
+| `session.id` | The emitting session's own pi session id — the same id the user sees via pi's built-in `/session` overlay and in the JSONL filename. Subagents (in-process or subprocess) carry their own; see [Subagent identification](#subagent-identification) |
 | `session.parent_id` | Spawning (parent) session's pi session id — present only on events emitted from inside a subagent run |
 | `client` | `"pi"` |
 | `source` | Where the event originated (e.g. `"cli"`) |
 | `mode` | `"coding"` or `"ferment"` |
 
-Pre-session payloads use the **device ID** (from PostHog) as `session.id`.
+Pre-session events (`app_started`, `harness_launched`, …) still use the **device ID** as `session.id` — no session exists yet.
+
+### ID scheme
+
+Four distinct ids flow through telemetry — do not conflate them:
+
+| Id | Role |
+|----|------|
+| **pi session id** (UUIDv7) | Canonical id of a pi session. Emitted as `session.id` on every log record and metric, and sent as the `X-Session-Id` provider header. Each session — main agent or subagent — has its own. |
+| **device id** | A UUID generated locally and persisted in `~/.config/kimchi/config.json` (`src/posthog-device.ts`); serves as PostHog's `distinct_id`. Stands in as `session.id` for pre-session events, when no session exists yet. |
+| **account uuid** | Identifies the account (`user.account_uuid`; empty when unknown in-session, omitted entirely on pre-session events while unresolved); orthogonal to sessions. |
+| **process telemetryId** | Internal only — survives solely as the accumulator key for cumulative state (ReplacingMergeTree monotonic-flush grouping). Not the emitted session id. |
 
 ### Subagent identification
 
@@ -47,24 +58,25 @@ is emitted only when the process is inside an Agent-subagent execution
 set for the whole subagent run by `withParentSessionEnv` in
 `extensions/agents/manager/agent-runner.ts`). Its value is the **parent**
 session's pi session id; the emitting session's own id is `pi_session_id`.
-Combine the two to reconstruct the spawn tree:
 
-| Attribute | Main agent event | In-process subagent event |
-|-----------|------------------|---------------------------|
-| `session.id` | process telemetryId `T` | `T` (shared — same process) |
-| `pi_session_id` | parent session id `P` | subagent session id `S` |
+| Attribute | Main agent event | Subagent event (in-process or subprocess) |
+|-----------|------------------|-------------------------------------------|
+| `session.id` | the session's own pi session id `P` | the subagent's own pi session id `S` |
+| `pi_session_id` | `P` | `S` |
 | `session.parent_id` | *(absent)* | `P` |
 
-An event with `session.parent_id != ""` whose `session.id` equals the
-parent's is from an **in-process** subagent (same process — the main agent and
-its in-process subagents share the module-level telemetryId). Two caveats:
+Every event's `session.id` is the emitting session's own pi session id — the
+same id the user sees via pi's built-in `/session` overlay and in the JSONL filename. Parent linkage
+is carried exclusively by `session.parent_id` (and `X-Parent-Session-Id` on
+provider requests); combine the two to reconstruct the spawn tree. The
+former rule that detected in-process subagents by `session.id` equalling the
+parent's telemetryId no longer applies — in-process and separate-process
+subagents are indistinguishable in telemetry, which is fine: the tree is
+reconstructible from `session.parent_id` alone.
 
-- The **curator session-review subprocess** also sets `KIMCHI_SUBAGENT=1` and
-  `KIMCHI_PARENT_SESSION_ID`, so its events carry `session.parent_id` too. It
-  is a separate process, so it is distinguished by its own `session.id`
-  (different from the parent's telemetryId).
-- **Remote sandbox agents** never receive the env var, so their events carry
-  no `session.parent_id`.
+One caveat: **remote sandbox agents** never receive the env var, so their events
+carry no `session.parent_id` — they cannot be linked to their spawner (the
+parent's own `remote_execution.*` events are the only trace of the run).
 
 `subagent.spawned` (raised by the *parent*) additionally declares the
 subagent's `agent_type` and `reason`, so spawning events can be paired with
@@ -107,6 +119,7 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 | `file_edited` | `edit` / `multiedit` / `patch` succeed | `model`, `language`, `file_hash`, `lines_added`, `lines_deleted`, `duration_ms` |
 | `command_executed` | `bash` tool runs | `model`, `command_type`, `exit_code`, `duration_ms` |
 | `error` | Agent, tool, or transport error | `model`, `error_type` (`agent_error` / `tool_failure` / `transport_error`), `error_message` *(truncated to 300 chars)*, `request.trace_id` / `request.span_id` *(when a provider request context exists)* |
+| `agent.interrupted` | User aborts the agent mid-turn (Esc) | `phase` (`llm` for a cancelled provider stream, `tool` for a cancelled tool execution), `tool_name` *(present only when `phase` is `tool` — the errored, i.e. killed, tool's result)*, `is_subagent` (`true` when the aborted run belonged to an Agents subagent — deduplicate an Esc that cascades to parent and subagent runs via this flag and `session.parent_id`), `turn_index`, `ms_into_turn` *(wall-clock ms from the user prompt's `before_agent_start` until the abort)*, `model` — the user-facing selection: `auto` when the Auto router is active, otherwise the concrete model id; `routed_model` *(present only under Auto routing)* — the router's concrete pick |
 | `claude_code.tool_decision` | Every gated permission decision, prompted or automatic | `tool_name`, `tool_use_id`, `decision` (`accept` / `reject`), `decision_source` (`config` / `hook` / `user_permanent` / `user_temporary` / `user_abort` / `user_reject`), `source_detail`, `permission_mode` (`default` / `plan` / `auto` / `yolo`), `model` — the user-facing selection: `auto` when the Auto router is active, otherwise the concrete model id |
 | `subagent.spawned` | Sub-agent created | `model`, `agent_type`, `reason` |
 | `remote_execution.started` | Remote agent successfully spawned | `origin` |
@@ -128,6 +141,8 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 > **Privacy:** Loop-guard events carry only structured fields — `detector` (which loop detector fired), `count` (per-session warn count), and `is_subagent`. Raw tool args, command text, and the human-readable reason string are intentionally **not** emitted, to avoid leaking user data or secrets.
 
 > **Tool decisions:** `decision_source` is the official Claude Code `source` attribute, renamed because `source` already holds the session origin (`cli` / `acp`). `source_detail` is a kimchi-specific refinement (see `PermissionDecisionSourceDetail` in `permissions/permissions-events.ts`). Acceptance rate = `accept / (accept + reject)`.
+>
+> **Interruptions:** `session.end{ended_by}` never observes mid-turn aborts — pi's `ended_by` vocabulary (`fork|manual|new|overflow|quit|reload|resume|startup`) is session-scoped. `agent.interrupted` is emitted once per aborted agent run instead, detected from the final assistant message's `stopReason === "aborted"`: an aborted message with streamed content means the cancel landed mid-LLM-stream (`phase: "llm"`); an empty aborted message preceded by an errored tool result means the cancel landed during that tool's execution (`phase: "tool"`). Follow-up prompts (steering) are intentionally NOT interruptions: they already produce a `user_message` record, so they are detectable by turn ordering downstream. Join interruptions to the turn's `user_message` / `tool_result` records via (`session.id`, `turn_index`).
 
 ## Workflow Events
 
@@ -155,7 +170,10 @@ Common attributes: `run_id`, `workflow_name`, `at` (producer ISO timestamp). Ste
 
 ## Cumulative Metrics (OTLP Sum)
 
-Accumulated across the whole session and flushed every 30s to the **metrics endpoint**.
+Accumulated per process — the accumulator is keyed by the internal process
+telemetryId (see [ID scheme](#id-scheme)), so totals span every session in the
+process — and flushed every 30s to the **metrics endpoint**. Each flush's data
+points carry the flushing session's pi session id as `session.id`.
 
 | Metric Name | Type | Description | Attributes |
 |-------------|------|-------------|------------|

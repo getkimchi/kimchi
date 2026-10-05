@@ -785,3 +785,48 @@ describe("formatGateBlockReason", () => {
 		expect(reason).toContain("all pending processes")
 	})
 })
+
+describe("terminal display metadata", () => {
+	it("restores thrown-result details through the supported result hook and then clears them", async () => {
+		const pi = makeFakePi()
+		bashControlExtension(pi, { getRegistry: () => undefined })
+		await pi.emit("session_start", {})
+		const details = {
+			handle: "h1",
+			exited: true,
+			exitCode: 7,
+			display: { handle: "h1", command: "exit 7", state: "exited", exitCode: 7 },
+		}
+		await pi.emit("tool_execution_update", {
+			toolName: "bash",
+			toolCallId: "failed",
+			partialResult: { content: [{ type: "text", text: "last line" }], details },
+		})
+		const event = {
+			toolName: "bash",
+			toolCallId: "failed",
+			content: [{ type: "text", text: "Command exited with code 7" }],
+			details: {},
+			isError: true,
+		}
+		const results = await pi.emit("tool_result", event)
+		expect(results).toContainEqual({ details })
+		expect(event.isError).toBe(true)
+		expect(event.content[0].text).toBe("Command exited with code 7")
+		expect(await pi.emit("tool_result", event)).toEqual([undefined])
+	})
+
+	it("drops unconsumed metadata on session replacement", async () => {
+		const pi = makeFakePi()
+		bashControlExtension(pi, { getRegistry: () => undefined })
+		await pi.emit("tool_execution_update", {
+			toolName: "bash",
+			toolCallId: "old",
+			partialResult: { details: { handle: "h1", exited: true, display: { state: "exited" } } },
+		})
+		await pi.emit("session_start", {})
+		expect(await pi.emit("tool_result", { toolName: "bash", toolCallId: "old", details: {}, isError: true })).toEqual([
+			undefined,
+		])
+	})
+})

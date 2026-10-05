@@ -4,10 +4,13 @@ import { isHarnessSteer } from "../steer-marker.js"
 import {
 	ASSISTANT_OUTPUT_WITHHELD,
 	brandUnmarkedSteers,
+	CONTINUATION_NUDGE_TEXT,
 	ContinuationNudge,
 	DONE_SIGNAL,
 	EmptyTurnNudge,
+	isAwaitingUserAnswer,
 	type OrchestratorMessages,
+	SECOND_NUDGE_TEXT,
 	stripStaleNudges,
 	stripUiOnlyMessages,
 	tagSelfEchoes,
@@ -349,6 +352,32 @@ describe("ContinuationNudge.isDoneSignalReceived", () => {
 		expect(guard.isDoneSignalReceived()).toBe(false)
 	})
 
+	it("returns false when prose precedes the done signal", () => {
+		const guard = new ContinuationNudge()
+		guard.accumulateResponse("Stopped. <done>")
+		expect(guard.isDoneSignalReceived()).toBe(false)
+	})
+
+	it("returns false for a trailing period after the done signal", () => {
+		const guard = new ContinuationNudge()
+		guard.accumulateResponse("<done>.")
+		expect(guard.isDoneSignalReceived()).toBe(false)
+	})
+
+	it("returns false for uppercase variants and the plain word", () => {
+		const mixedCase = new ContinuationNudge()
+		mixedCase.accumulateResponse("<Done>")
+		expect(mixedCase.isDoneSignalReceived()).toBe(false)
+
+		const upper = new ContinuationNudge()
+		upper.accumulateResponse("<DONE>")
+		expect(upper.isDoneSignalReceived()).toBe(false)
+
+		const plain = new ContinuationNudge()
+		plain.accumulateResponse("done")
+		expect(plain.isDoneSignalReceived()).toBe(false)
+	})
+
 	it("clears accumulated response on reset", () => {
 		const guard = new ContinuationNudge()
 		guard.accumulateResponse(DONE_SIGNAL)
@@ -397,6 +426,42 @@ describe("ContinuationNudge nudge-response-pending state", () => {
 		expect(guard.isNudgeResponsePending()).toBe(true)
 		guard.recordToolCall() // model obeyed the nudge
 		expect(guard.isNudgeResponsePending()).toBe(false)
+	})
+})
+
+describe("ContinuationNudge.clearNudgeResponsePending", () => {
+	it("clears pending state and the accumulated response text", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		guard.evaluateTurn(textOnlyMessage)
+		guard.accumulateResponse(DONE_SIGNAL)
+		expect(guard.isNudgeResponsePending()).toBe(true)
+		expect(guard.isDoneSignalReceived()).toBe(true)
+
+		guard.clearNudgeResponsePending()
+
+		expect(guard.isNudgeResponsePending()).toBe(false)
+		expect(guard.isDoneSignalReceived()).toBe(false)
+	})
+
+	it("is safe when nothing is pending", () => {
+		const guard = new ContinuationNudge()
+		guard.clearNudgeResponsePending()
+		expect(guard.isNudgeResponsePending()).toBe(false)
+		expect(guard.isDoneSignalReceived()).toBe(false)
+	})
+
+	it("allows a later eligible evaluation to re-arm recovery", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		guard.evaluateTurn(textOnlyMessage) // first nudge fires, pending armed
+		guard.clearNudgeResponsePending()
+		expect(guard.isNudgeResponsePending()).toBe(false)
+
+		// The model drifts again with statement-only text — the next eligible
+		// evaluation re-arms pending for the new recovery response.
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.isNudgeResponsePending()).toBe(true)
 	})
 })
 
@@ -716,11 +781,147 @@ describe("ContinuationNudge question suppression", () => {
 		expect(guard.evaluateTurn(asking)).toBe(false)
 	})
 
-	it("still nudges when the text contains a question but ends with a statement", () => {
+	it("does not nudge when a blocking question appears mid-text (issue_1 entry 2022)", () => {
+		// Deliberate behavior flip: a text-only turn containing any question now
+		// suppresses the nudge. The failure trade is asymmetric — missed drift
+		// recovery leaves a stalled session the user can prod, while the old
+		// trailing-? heuristic produced unauthorized continued work after a
+		// blocking question (the model rationalized the imperative steer as the
+		// user answering).
 		const guard = new ContinuationNudge()
 		simulateSessionWithPriorToolCall(guard)
-		const mixed = makeAssistant([{ type: "text", text: "You asked about the ADR. I will delegate this to Nemotron." }])
-		expect(guard.evaluateTurn(mixed)).toBe(true)
+		const asking = makeAssistant([
+			{
+				type: "text",
+				text: "I checked the working tree. Did you intentionally delete happy-path.spec.ts? Everything else matches the plan, so I will hold off.",
+			},
+		])
+		expect(guard.evaluateTurn(asking)).toBe(false)
+	})
+
+	it("still nudges statement-only drift text", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const drift = makeAssistant([{ type: "text", text: "You asked about the ADR. I will delegate this to Nemotron." }])
+		expect(guard.evaluateTurn(drift)).toBe(true)
+	})
+})
+
+describe("ContinuationNudge waiting-phrase suppression", () => {
+	it("does not nudge when the assistant will wait until the user says so (issue_1 entry 2044)", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const waiting = makeAssistant([{ type: "text", text: "Stopped. No further action until you say so." }])
+		expect(guard.evaluateTurn(waiting)).toBe(false)
+	})
+
+	it("does not nudge on 'say the word' hand-back phrasing (issue_1 entry 2022)", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const waiting = makeAssistant([
+			{ type: "text", text: "The rebase is staged. Say the word and I'll include that in the resolution." },
+		])
+		expect(guard.evaluateTurn(waiting)).toBe(false)
+	})
+
+	it("does not nudge on 'let me know' hand-back phrasing", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const waiting = makeAssistant([
+			{ type: "text", text: "I'll hold off on the commit. Let me know when you want it." },
+		])
+		expect(guard.evaluateTurn(waiting)).toBe(false)
+	})
+
+	it("does not match waiting phrases inside code identifiers", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const code = makeAssistant([
+			{ type: "text", text: "I renamed the helper to waitForYourApproval and added a letMeKnow callback." },
+		])
+		expect(guard.evaluateTurn(code)).toBe(true)
+	})
+})
+
+describe("isAwaitingUserAnswer", () => {
+	it("returns true for a trailing question", () => {
+		expect(isAwaitingUserAnswer(makeAssistant([{ type: "text", text: "Shall I proceed?" }]))).toBe(true)
+	})
+
+	it("returns true for a mid-text question", () => {
+		expect(
+			isAwaitingUserAnswer(
+				makeAssistant([{ type: "text", text: "Did you delete the file? I will wait for your answer either way." }]),
+			),
+		).toBe(true)
+	})
+
+	it("returns true for explicit waiting phrases", () => {
+		const phrases = [
+			"No further action until you say so.",
+			"Say the word and I'll include it.",
+			"Let me know if you want the commit.",
+			"It's your call how we proceed.",
+			"I'm waiting on your decision.",
+			"Awaiting the user's confirmation.",
+			"Tell me whether to abort the rebase.",
+		]
+		for (const text of phrases) {
+			expect(isAwaitingUserAnswer(makeAssistant([{ type: "text", text }]))).toBe(true)
+		}
+	})
+
+	it("joins multiple text blocks before matching", () => {
+		const message = makeAssistant([
+			{ type: "text", text: "Stopped." },
+			{ type: "text", text: " No further action until you say so." },
+		])
+		expect(isAwaitingUserAnswer(message)).toBe(true)
+	})
+
+	it("returns false for plain statements", () => {
+		expect(isAwaitingUserAnswer(makeAssistant([{ type: "text", text: "I will delegate this to Nemotron." }]))).toBe(
+			false,
+		)
+	})
+
+	it("ignores waiting-phrase fragments inside code identifiers", () => {
+		expect(
+			isAwaitingUserAnswer(
+				makeAssistant([
+					{ type: "text", text: "I renamed the helper to waitForYourApproval and added a letMeKnow callback." },
+				]),
+			),
+		).toBe(false)
+	})
+})
+
+describe("nudge copy", () => {
+	it("requests exactly the done signal in both nudges", () => {
+		expect(CONTINUATION_NUDGE_TEXT).toContain("respond with exactly <done>")
+		expect(SECOND_NUDGE_TEXT).toContain("respond with exactly <done>")
+	})
+
+	it("defines the done signal as end-of-turn, not task completion, in both nudges", () => {
+		const semantics = "it ends your turn and does not claim the task is complete"
+		expect(CONTINUATION_NUDGE_TEXT).toContain(semantics)
+		expect(SECOND_NUDGE_TEXT).toContain(semantics)
+	})
+
+	it("prohibits repeating the previous answer in both nudges", () => {
+		expect(CONTINUATION_NUDGE_TEXT).toContain("Do not repeat your previous answer")
+		expect(SECOND_NUDGE_TEXT).toContain("Do not repeat your previous answer")
+	})
+
+	it("includes the waiting-state escape in both nudges", () => {
+		expect(CONTINUATION_NUDGE_TEXT).toContain("waiting for the user")
+		expect(CONTINUATION_NUDGE_TEXT).toContain("told you to stop or wait")
+		expect(SECOND_NUDGE_TEXT).toContain("waiting for the user")
+	})
+
+	it("preserves <system-reminder> branding on both nudges", () => {
+		expect(isHarnessSteer(CONTINUATION_NUDGE_TEXT)).toBe(true)
+		expect(isHarnessSteer(SECOND_NUDGE_TEXT)).toBe(true)
 	})
 })
 

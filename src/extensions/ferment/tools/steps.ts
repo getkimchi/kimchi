@@ -12,9 +12,9 @@ import { determineNextAction } from "../../../ferment/engine.js"
 import type { Ferment, Phase, Step, StepResult } from "../../../ferment/types.js"
 import { getAgentRecordForTaskValidation } from "../../agents/index.js"
 import { FERMENT_WORKER_BUDGETS, type FermentWorkerBudgetTier } from "../../agents/worker-budget-policy.js"
+import { getEffectiveModel } from "../../auto-model/state.js"
 import { withBlocked } from "../../herdr-events.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
-import { getEffectiveModel } from "../../router/state.js"
 import { withWorkingHidden } from "../../ui.js"
 import { askUserForm, createJudgeDecisionRecorder } from "../ask-user.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
@@ -414,7 +414,7 @@ Do NOT call start_ferment_step again without user input.`,
 	const isMultiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 	return toolOk(
 		withNextActionHint(
-			`${planFirstPreamble}\n\nStep ${step.index}: "${step.description}" started. ${isMultiModelEnabled ? `Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary.` : `Execute this step directly with bash/edit/write — measured run 019ff530 showed direct execution is fastest at bench scale (28 steps in 109 min, A/B grades) and you already hold the project context. Delegate to a linked subagent worker ONLY when the step would dump heavy residue into this session: long builds, large suite output, many large file reads, or independent parallelizable units (use run_in_background). If you delegate: spawn the persona matching this step's intent, pass task_ref: ${JSON.stringify(taskRef)} and the selected limits (the worker receives its Agent ID and must call submit_agent_report before its final answer). When a subagent returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary. For direct execution, call complete_ferment_step with just the summary and gates (worker_agent_id is optional).`}${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
+			`${planFirstPreamble}\n\nStep ${step.index}: "${step.description}" started. ${isMultiModelEnabled ? `Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary. The worker may stay backgrounded — join it with get_subagent_result wait: true once its outcome is your next dependency; complete_ferment_step will point you at the wait if no outcome is recorded yet.` : `Execute this step directly with bash/edit/write — measured run 019ff530 showed direct execution is fastest at bench scale (28 steps in 109 min, A/B grades) and you already hold the project context. Delegate to a linked subagent worker ONLY when the step would dump heavy residue into this session: long builds, large suite output, many large file reads, or independent parallelizable units (use run_in_background). If you delegate: spawn the persona matching this step's intent, pass task_ref: ${JSON.stringify(taskRef)} and the selected limits (the worker receives its Agent ID and must call submit_agent_report before its final answer). When a subagent returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary. For direct execution, call complete_ferment_step with just the summary and gates (worker_agent_id is optional).`}${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
 			outcome.ferment,
 			multiModelEnabled,
 		),
@@ -512,7 +512,7 @@ export async function completeStep(
 	services: StepHandlerServices = defaultStepHandlerServices,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
-	runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry, getMultiModelEnabled(ctx.sessionManager))
+	runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry, getMultiModelEnabled(ctx.sessionManager), ctx)
 
 	const f = runtime.getStorage().get(params.ferment_id)
 	if (!f) return toolErr("Ferment not found.")

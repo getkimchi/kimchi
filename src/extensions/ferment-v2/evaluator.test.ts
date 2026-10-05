@@ -11,6 +11,8 @@ import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles } from "../orchestration/model-roles.js"
 import { resetRedactionConfigCache } from "../pii-redaction/config.js"
 import * as redactor from "../pii-redaction/redactor.js"
+import { flushWorkSummaries } from "../work-attribution/summary.js"
+import * as attribution from "../work-attribution.js"
 import {
 	evaluateFermentV2,
 	MAX_TODO_STATE_CHARS,
@@ -55,6 +57,17 @@ const usage = {
 	costUsd: 0.33,
 }
 
+let attributionDir: string
+beforeEach(() => {
+	attributionDir = mkdtempSync(join(tmpdir(), "evaluator-attribution-"))
+	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
+})
+afterEach(async () => {
+	await flushWorkSummaries()
+	vi.unstubAllEnvs()
+	rmSync(attributionDir, { recursive: true, force: true })
+})
+
 let savedRedactionEnv: string | undefined
 
 describe("Ferment V2 evaluator", () => {
@@ -86,6 +99,21 @@ describe("Ferment V2 evaluator", () => {
 		vi.restoreAllMocks()
 	})
 
+	it.each([
+		"getWorkId",
+		"appendWorkRecord",
+		"recordProviderRequest",
+	] as const)("evaluates normally when %s fails", async (operation) => {
+		vi.spyOn(attribution, operation).mockImplementation(() => {
+			throw new Error("ledger unavailable")
+		})
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"more work"}'))
+		const result = await evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext())
+		expect(result).toMatchObject({ verdict: "continue", reason: "more work" })
+		expect(completeMock).toHaveBeenCalledOnce()
+		expect(warning).toHaveBeenCalled()
+	})
 	it("uses the session model in single-model mode", () => {
 		const ctx = evaluatorContext()
 		expect(resolveFermentV2EvaluatorModel(ctx)).toEqual(sessionModel)
@@ -135,9 +163,9 @@ describe("Ferment V2 evaluator", () => {
 		multiModelMock.mockReturnValue(true)
 		const ctx = evaluatorContext(judgeModel)
 		expect(resolveFermentV2EvaluatorModel(ctx)).toBe(judgeModel)
-		expect(ctx.modelRegistry.find).toHaveBeenCalledWith("judge", "independent")
+		expect(ctx.modelRegistry.getAvailable).toHaveBeenCalled()
 
-		vi.mocked(ctx.modelRegistry.find).mockReturnValue(undefined)
+		vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValue([])
 		expect(resolveFermentV2EvaluatorModel(ctx)).toEqual(sessionModel)
 	})
 
@@ -1374,6 +1402,7 @@ function evaluatorContext(
 		model: reasoning ? { ...activeModel, reasoning: true } : activeModel,
 		modelRegistry: {
 			find: vi.fn(() => resolvedJudge),
+			getAvailable: vi.fn(() => (resolvedJudge ? [resolvedJudge] : [])),
 			getApiKeyAndHeaders: vi.fn(async () => ({ ok: true as const, apiKey: "test-key" })),
 		},
 	})

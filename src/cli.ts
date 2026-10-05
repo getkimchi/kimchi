@@ -13,7 +13,6 @@ import {
 	hasPrintFlag,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
-	isExplicitAutoModelSelection,
 	isHelpOrVersionArgs,
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
@@ -24,6 +23,7 @@ import {
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
+import { installModelTableRenderer } from "./model-selector-table.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
 import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
@@ -35,6 +35,7 @@ import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import "./session-selector-adapter.js"
 import {
+	applyTuiEnvOverrides,
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
 	ensureHideThinkingBlockDefault,
@@ -54,6 +55,7 @@ import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
+import { installAutoModelAdapters } from "./extensions/auto-model/adapters.js"
 import autoModelRoutingExtension from "./extensions/auto-model/index.js"
 import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
 import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
@@ -103,6 +105,7 @@ import { UpstreamMcpProbe } from "./extensions/mcp/probe.js"
 import { MEMORY_RESOURCE_ID } from "./extensions/memory/config.js"
 import memoryExtension from "./extensions/memory/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
+import modelListExtension from "./extensions/model-list.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
@@ -123,9 +126,6 @@ import remoteRunExtension from "./extensions/remote-run/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
-import { installAutoModelAdapters } from "./extensions/router/adapters.js"
-import { shouldDefaultToAuto, warmAutoDefaultGate } from "./extensions/router/auto-default-gate.js"
-import autoModelExtension from "./extensions/router/index.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
@@ -135,6 +135,8 @@ import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import skillsManagerExtension from "./extensions/skills-manager/index.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
+import statusExtension from "./extensions/status/index.js"
+import { steerAbortTrackerExtension } from "./extensions/steer-events.js"
 import stripImagesExtension from "./extensions/strip-images.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
@@ -155,6 +157,7 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
+import { createWorkAttributionExtension } from "./extensions/work-attribution.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import { installGlobalFetchInstrumentation } from "./http/instrument-fetch.js"
 import {
@@ -163,7 +166,6 @@ import {
 	KIMCHI_INFRA_ERROR_EXIT_CODE,
 } from "./infrastructure-error.js"
 import {
-	injectAutoModel,
 	injectExperimentalProvider,
 	isTransientModelsError,
 	readExperimentalModels,
@@ -196,6 +198,7 @@ import { captureSessionStart } from "./utils/session-metadata-store.js"
 import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
+installModelTableRenderer()
 installCompactionRecoveryPatch()
 installInlineCompactPatch()
 installPiNativeCompatibilityShim()
@@ -360,10 +363,6 @@ try {
 		// args that reach main(), so pi.getFlag can't discover it.
 		setExperimentalFeaturesEnabled(experimentalFeatures)
 		installAutoModelAdapters()
-		// Kick off the /v1/me identity lookup now (result cached process-wide) so
-		// the Auto-discovery filter and the fresh-session default gate never wait
-		// on the network in render paths.
-		warmAutoDefaultGate()
 		// Publish the print-mode gate the
 		// same way so interactive-only (questionnaire) and ferment-mode-only
 		// (set_phase, list_ferments, ferment suite) tools stay out of headless
@@ -375,6 +374,12 @@ try {
 		// is unnecessary (idempotent) but loadConfig below depends on it.
 
 		let config = loadConfig()
+
+		// Map tui.wheelScrollLines onto KIMCHI_WHEEL_SCROLL_LINES before any
+		// interactive bootstrap: the patched pi-tui TuiAltScreen constructor
+		// reads the env var once at construction (later in startup), so this
+		// ordering is load-bearing.
+		applyTuiEnvOverrides(config)
 
 		const envKey = captureApiKeyFromEnvironment()
 
@@ -454,7 +459,6 @@ try {
 					injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
 					models = [...models, ...readExperimentalModels(modelsJsonPath)]
 				}
-				injectAutoModel(modelsJsonPath)
 				// Auto-discover a local Ollama server and merge its models into the
 				// registry. Probe is silent on failure — startup is never blocked.
 				await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
@@ -485,7 +489,6 @@ try {
 					injectExperimentalProvider(modelsJsonPath, currentApiKey)
 					models = [...models, ...readExperimentalModels(modelsJsonPath)]
 				}
-				injectAutoModel(modelsJsonPath)
 				await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
 				models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
 			} else if (isTransientModelsError(err)) {
@@ -597,9 +600,6 @@ try {
 		// before upstream pi-mono sees them (it does not recognize "multi-model"
 		// as a model id).
 		populateCliArgs(rawArgs)
-		if (!experimentalFeatures && isExplicitAutoModelSelection(getParsedCliArgs()) && !(await shouldDefaultToAuto())) {
-			throw new Error("kimchi-dev/auto is experimental. Re-run with --enable-experimental-features to select it.")
-		}
 		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
 
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
@@ -700,6 +700,7 @@ try {
 			// registerSkillManageTool after review.
 			(pi: ExtensionAPI) => skillsManagerExtension(pi, { registerSkillManageTool: false }),
 			statsExtension,
+			statusExtension,
 			budgetCommandExtension,
 			branchCommandExtension,
 			...terminalUiExtensionFactories,
@@ -738,6 +739,9 @@ try {
 			bashHooksAdapterExtension,
 			bashToolGuardExtension,
 			bashTimeoutGuidanceExtension,
+			// steer:aborted — emits when the user Esc-aborts the turn immediately
+			// following a harness steer (the "user vetoed the nudge" signal).
+			steerAbortTrackerExtension,
 			hiddenToolGuidanceExtension,
 			...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
 			ideAdapterExtension,
@@ -746,10 +750,9 @@ try {
 				{ id: "extensions.ferment", factory: fermentExtension },
 			] satisfies ManagedExtensionFactory[]),
 			questionnaireExtension,
-			// Resolve kimchi-dev/auto before prompt construction needs concrete model behavior.
-			autoModelExtension,
-			// Backend-routed virtual models (`auto-beta`, future backend-owned `auto`)
-			// learn + display the concrete pick and re-sync capabilities.
+			// Backend-routed virtual models (`auto`, `auto-beta`, …) learn + display
+			// the concrete pick, re-sync capabilities, and (main session) install the
+			// catalog-driven Auto default.
 			autoModelRoutingExtension,
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, configuredSkillPaths) },
@@ -807,6 +810,7 @@ try {
 				{ id: MEMORY_RESOURCE_ID, factory: memoryExtension },
 			] satisfies ManagedExtensionFactory[]),
 			modelSwitchExtension,
+			modelListExtension,
 			modelGuardExtension,
 			orphanToolResultRepairExtension,
 			orphanToolResultSanitizerExtension,
@@ -815,6 +819,7 @@ try {
 			traceIdExtension,
 			contextAssemblyExtension,
 			cacheSummaryExtension,
+			createWorkAttributionExtension(),
 			requestTimingExtension,
 			llmResponseLogExtension,
 			activityExtension,

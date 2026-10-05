@@ -278,18 +278,35 @@ describe("ACP integration — plan updates from todo writes", () => {
 	it("mirrors the Ferment phase and step lifecycle through the Todo store", { timeout: 180_000 }, async () => {
 		const previousActiveFerment = process.env.KIMCHI_ACTIVE_FERMENT
 		process.env.KIMCHI_ACTIVE_FERMENT = FERMENT_ID
+		let releasePhaseResponse = () => {}
+		const phaseResponseReady = new Promise<void>((resolve) => {
+			releasePhaseResponse = resolve
+		})
 		try {
-			await startWith(fermentLifecycleResponses())
+			const responses = fermentLifecycleResponses()
+			await startWith([{ ...responses[0], holdUntil: phaseResponseReady }, ...responses.slice(1)])
 			seedPlannedFerment(fixture.workDir)
 			fixture.client.answerNextElicitationWith({ action: "accept", content: { value: "Resume" } })
 
 			const sessionId = await newSession(fixture, fixture.workDir)
+			// Resume can run during extension binding, before ACP subscribes to Todo writes.
+			// Start the lifecycle only after newSession has attached the plan tracker.
+			releasePhaseResponse()
 			// A streaming model chunk means the auto-resume kick is in flight — it
 			// streams from the moment the prompt starts, long before the plan
 			// snapshot arrives at tool completion. Prompting while the kick runs
 			// would consume the next scripted model response and start the step
 			// early (this was the CI flake: an 8s deadline fired while the kick
 			// was merely slow on a loaded runner).
+			//
+			// The deadline here must be generous: if it fires and we fall through
+			// to the manual "Continue the Ferment" prompt, that prompt consumes a
+			// scripted response and skews the script — the session can race ahead
+			// to the step-start response before the pending phase snapshot is ever
+			// observed, which fails the assertion below. A slow CI runner needs
+			// enough headroom that the kick path wins instead. 20s = 2.5× the
+			// observed-fastest kick; the unbounded kick fallback still covers
+			// anything beyond it.
 			const kickIsStreaming = () =>
 				fixture.client.sessionUpdates.some(
 					(u) =>
@@ -304,7 +321,7 @@ describe("ACP integration — plan updates from todo writes", () => {
 				sessionId,
 				stepIsPending,
 				"Ferment phase Todo snapshot did not arrive",
-				8_000,
+				20_000,
 			)
 				.catch(async () => {
 					if (kickIsStreaming()) {
@@ -334,7 +351,12 @@ describe("ACP integration — plan updates from todo writes", () => {
 						"Prompt-driven Ferment phase Todo snapshot did not arrive",
 					)
 				})
-			expect(initial.some((entry) => entry.status === "pending" && entry.content.includes(STEP_DESCRIPTION))).toBe(true)
+			// Presence, not status: the manual-fallback paths above can return a
+			// snapshot where the step has already moved past "pending" — on a slow
+			// runner the delayed auto-resume kick and the manual "Continue the Ferment"
+			// prompts can all advance the phase before the snapshot lands. The primary
+			// wait already enforces pending on the happy path, so nothing is lost.
+			expect(initial.some((entry) => entry.content.includes(STEP_DESCRIPTION))).toBe(true)
 
 			await prompt(fixture, sessionId, "Start the step")
 			await waitForPlanSnapshot(
@@ -362,6 +384,7 @@ describe("ACP integration — plan updates from todo writes", () => {
 				"Cleared Ferment phase Todo snapshot did not arrive",
 			)
 		} finally {
+			releasePhaseResponse()
 			if (previousActiveFerment === undefined) Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
 			else process.env.KIMCHI_ACTIVE_FERMENT = previousActiveFerment
 		}

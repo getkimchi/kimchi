@@ -84,3 +84,40 @@ describe("resolveAgentInvocationConfig — persona policy precedence", () => {
 		expect(result.maxTurns).toBe(3)
 	})
 })
+
+describe("resolveAgentInvocationConfig — runInBackground default", () => {
+	it("defaults to background when neither persona nor params specify a value", () => {
+		const result = resolveAgentInvocationConfig(agent, {})
+		expect(result.runInBackground).toBe(true)
+	})
+
+	it("caller can opt out of background with run_in_background: false", () => {
+		const result = resolveAgentInvocationConfig(agent, { run_in_background: false })
+		expect(result.runInBackground).toBe(false)
+	})
+
+	it("persona policy overrides the default", () => {
+		const result = resolveAgentInvocationConfig({ ...agent, runInBackground: false }, {})
+		expect(result.runInBackground).toBe(false)
+	})
+
+	it("headless callers can pass a foreground fallback", () => {
+		const result = resolveAgentInvocationConfig(agent, {}, false)
+		expect(result.runInBackground).toBe(false)
+	})
+
+	it("headless sessions ignore persona background pins", () => {
+		// Persona pins are a session-mode preference; in headless automation
+		// backgrounded work can outlive the process, so only explicit
+		// per-call opt-in backgrounds an agent.
+		expect(resolveAgentInvocationConfig({ ...agent, runInBackground: true }, {}, false).runInBackground).toBe(false)
+	})
+
+	it("explicit run_in_background: true still opts into background in headless sessions", () => {
+		expect(resolveAgentInvocationConfig(agent, { run_in_background: true }, false).runInBackground).toBe(true)
+		expect(
+			resolveAgentInvocationConfig({ ...agent, runInBackground: false }, { run_in_background: true }, false)
+				.runInBackground,
+		).toBe(true)
+	})
+})

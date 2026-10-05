@@ -7,7 +7,7 @@ import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-a
  */
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
-import { AUTO_MODEL_REF } from "../router/constants.js"
+
 import type { RoleModelAssignment } from "./model-roles.js"
 import { splitModelRef } from "./model-roles.js"
 import {
@@ -390,6 +390,6 @@ describe("modelRefTags", () => {
 	})
 
 	it("never tags the auto-model pseudo-ref", () => {
-		expect(modelRefTags(AUTO_MODEL_REF, apiSlugs, deprecatedSlugs)).toEqual([])
+		expect(modelRefTags("kimchi-dev/auto", apiSlugs, deprecatedSlugs)).toEqual([])
 	})
 })

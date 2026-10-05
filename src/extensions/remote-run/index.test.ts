@@ -35,6 +35,7 @@ function makePi(): {
 	const pi = {
 		registerTool: (tool: CapturedTool) => tools.push(tool),
 		registerCommand: (name: string, command: CapturedCommand) => commands.set(name, command),
+		registerEntryRenderer: vi.fn(),
 		on: (event: string, handler: () => void) => {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler])
 		},

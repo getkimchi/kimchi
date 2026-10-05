@@ -2,7 +2,12 @@ import type { AvailableCommand } from "@agentclientprotocol/sdk"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 
 import { SLASH_COMMANDS } from "../../extensions/slash-commands.js"
-import { type AcpSkillInfo, buildSkillAvailableCommands, discoverAcpSkillCommands } from "./skill-commands.js"
+import {
+	type AcpSkillInfo,
+	buildSkillAvailableCommands,
+	discoverAcpSkillCommands,
+	invalidateSkillListBlock,
+} from "./skill-commands.js"
 
 export const CAPABILITIES_KEY = "kimchi.dev"
 
@@ -46,6 +51,13 @@ export async function reloadSkillCommandsMap(session: AgentSession): Promise<Map
 		throw new TypeError("AgentSession.extendResourcesFromExtensions missing (upstream pi rename?)")
 	}
 	await (refreshable.extendResourcesFromExtensions as (reason: "reload") => Promise<void>).call(session, "reload")
+	// The loader's skill set is now fresh: drop any cached system-prompt
+	// skill-list block HERE — after the reload, not before requesting it — so
+	// a prompt rebuild that raced the reload cannot permanently re-cache
+	// stale content (nothing later would invalidate it: trust decisions are
+	// not filesystem events the watcher can observe). This also keeps
+	// watcher-driven skill uploads from leaving a stale block behind.
+	invalidateSkillListBlock(session.resourceLoader)
 	return discoverSkillCommandsMap(session)
 }
 
@@ -68,11 +80,30 @@ export interface CommandsRefresher {
 // the same window.
 export const REFRESH_DEBOUNCE_MS = 250
 
+/** Advertised-content equality: names + descriptions of the skill commands. */
+export function skillCommandsEqual(
+	a: ReadonlyMap<string, AcpSkillInfo>,
+	b: ReadonlyMap<string, AcpSkillInfo>,
+): boolean {
+	if (a.size !== b.size) return false
+	for (const [name, prev] of a) {
+		const next = b.get(name)
+		if (!next || next.description !== prev.description) return false
+	}
+	return true
+}
+
 /**
  * Re-advertise every session's palette after the skills set changes. Each
  * session reloads its own loader (keeping project-local shadowing intact),
  * then `broadcast` re-emits its available_commands_update; sessions whose
- * reload fails keep their stale palette.
+ * reload fails keep their stale palette. The reloaded palette is recorded
+ * even when nothing is re-broadcast, so non-advertised fields (filePath)
+ * stay current; a broadcast that throws reverts the palette so the next
+ * sweep retries the notification. Sessions whose palette survived the
+ * reload unchanged are not re-broadcast: fs watchers emit deletion/rewrite
+ * bursts as several events spread over hundreds of ms, so one deliberate
+ * change can kick several sweeps — only the first has anything new to say.
  */
 export function createCommandsRefresher(opts: {
 	sessions: () => Iterable<[string, CommandsRefreshSession]>
@@ -89,15 +120,33 @@ export function createCommandsRefresher(opts: {
 		// palette from session setup) aren't reloaded redundantly.
 		for (const [sessionId, record] of Array.from(opts.sessions())) {
 			if (cancelled) return
+			let fresh: Map<string, AcpSkillInfo>
 			try {
-				record.skillCommands = await reloadSkillCommandsMap(record.session)
+				fresh = await reloadSkillCommandsMap(record.session)
 			} catch (err) {
 				const msg = `acp refresh_available_commands: reload failed for session ${sessionId}: ${String(err)}\n`
 				process.stderr.write(msg)
 				continue
 			}
 			if (cancelled) return
-			opts.broadcast(sessionId)
+			// Record the reloaded palette unconditionally; the equality check
+			// only controls whether to send the notification. Skipping the
+			// assignment on equal palettes would drop fields outside the
+			// advertised-content comparison (e.g. filePath after a skill move
+			// or shadowing).
+			const prev = record.skillCommands
+			record.skillCommands = fresh
+			if (skillCommandsEqual(prev, fresh)) continue
+			try {
+				opts.broadcast(sessionId)
+			} catch (err) {
+				// A broadcast failure reverts the palette so a later sweep
+				// retries the notification — otherwise the committed fresh
+				// palette makes every subsequent sweep exit early at the
+				// equality check and the notification is never retried.
+				record.skillCommands = prev
+				throw err
+			}
 		}
 	}
 

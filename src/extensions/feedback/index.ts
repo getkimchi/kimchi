@@ -1,13 +1,17 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { MULTI_MODEL_ID } from "../../cli-args.js"
+import { isAutoRoutedModel } from "../auto-model/constants.js"
+import { getAutoRoutingState } from "../auto-model/state.js"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
-import { isAutoModel } from "../router/constants.js"
-import { getAutoRoutingState, isRoutedModel } from "../router/state.js"
+import { isStaleCtxError } from "../stale-ctx.js"
 import { trackFeedback, trackModelSwitchFeedback } from "../telemetry/index.js"
+import { isVisionGateDialogOpen } from "../vision-gate.js"
 import { type FeedbackSentiment, isPredefinedReason, showFeedbackDetailsDialog } from "./dialog.js"
 import { clearModelSwitchInvitation, getModelSwitchInvitation, setModelSwitchInvitation } from "./invitation-state.js"
 import { showModelSwitchDialog } from "./model-switch-dialog.js"
+import { showRatingSelectorDialog } from "./rating-dialog.js"
+import { usesLegacyRatingPrompt } from "./rating-keys.js"
 import { type FeedbackSummaryDetails, feedbackSummaryRenderer, type ModelSwitchSummaryDetails } from "./renderer.js"
 
 const FEEDBACK_SUMMARY_CUSTOM_TYPE = "feedback-summary"
@@ -40,6 +44,7 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		routedUsedId = undefined
 		clearModelSwitchInvitation()
 		stopListeningForCtrlR()
+		stopListeningForLegacyRatingKey()
 	}
 
 	// Rating shortcuts are registered statically: they are always available once
@@ -72,8 +77,51 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		unsubscribeCtrlR = ctx.ui.onTerminalInput((data: string) => {
 			// Returning undefined passes the key through untouched.
 			if (!matchesKey(data, Key.ctrl("r"))) return undefined
+			// An open vision-gate dialog takes precedence — its own Ctrl+R
+			// binding ("remove image(s)") handles the key.
+			if (isVisionGateDialogOpen()) return undefined
 			// Nothing awaits this handler, so a rejection would otherwise be
 			// unhandled — surface it in the UI instead of crashing the process.
+			void handleShortcut(ctx).catch((err: unknown) => {
+				ctx.ui.notify(`[feedback] Feedback shortcut failed: ${err}`, "error")
+			})
+			return { consume: true }
+		})
+	}
+
+	// Terminals without the Kitty keyboard protocol (e.g. macOS Terminal.app)
+	// have no encoding for Ctrl+<digit>: Terminal.app sends no bytes at all for
+	// Ctrl+1, so the rating shortcuts above can never fire there. Fall back to a
+	// single legacy control code:
+	//   - Ctrl+R → opens a Good/Bad picker, then the details dialog.
+	// Ctrl+R's only built-in meaning is session rename, and that lives inside
+	// the /resume selector — the main prompt editor has no binding for the key,
+	// and the Ctrl+1/Ctrl+2 rating shortcuts above fire regardless of editor
+	// content. So raw input claims Ctrl+R whenever a rating can actually
+	// happen, whether or not a draft prompt is typed, and passes the key
+	// through untouched the rest of the time.
+	//
+	// Known tradeoff: raw input runs before whatever has focus, and extensions
+	// can't tell whether a selector or overlay (e.g. /model, /help) is up. Opened
+	// right after a response, such UI loses Ctrl+R due to the rating dialog —
+	// including /resume's rename binding while a rating invitation is active.
+	let unsubscribeLegacyRatingKey: (() => void) | undefined
+	const stopListeningForLegacyRatingKey = () => {
+		unsubscribeLegacyRatingKey?.()
+		unsubscribeLegacyRatingKey = undefined
+	}
+	const listenForLegacyRatingKey = (ctx: ExtensionContext) => {
+		stopListeningForLegacyRatingKey()
+		if (!usesLegacyRatingPrompt()) return
+		unsubscribeLegacyRatingKey = ctx.ui.onTerminalInput((data: string) => {
+			if (!matchesKey(data, Key.ctrl("r"))) return undefined
+			// A model-switch invitation takes precedence — its own Ctrl+R
+			// listener (set up on model_select) handles the key.
+			if (getModelSwitchInvitation()) return undefined
+			// An open vision-gate dialog takes precedence — its own Ctrl+R
+			// binding ("remove image(s)") handles the key.
+			if (isVisionGateDialogOpen()) return undefined
+			if (state !== "inviting") return undefined
 			void handleShortcut(ctx).catch((err: unknown) => {
 				ctx.ui.notify(`[feedback] Feedback shortcut failed: ${err}`, "error")
 			})
@@ -93,29 +141,40 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 	// auto-compact and retry, or run queued follow-up messages, so rating there
 	// can prompt on a response that is about to be superseded.
 	pi.on("agent_settled", (_event, ctx: ExtensionContext) => {
-		state = "inviting"
-		const sessionId = ctx.sessionManager.getSessionId()
-		autoModelUsed = isAutoModel(ctx.model) || isRoutedModel(ctx.model, sessionId)
-		// Capture the concrete pick the router served, so `routing_model` reports
-		// the resolved model (e.g. `glm-5.3`) rather than the requested virtual id
-		// (`auto-beta`). Undefined when auto wasn't used or hasn't resolved yet.
-		const routingState = getAutoRoutingState(sessionId)
-		routedUsedId = routingState.status === "resolved" ? routingState.model.id : undefined
+		// Print mode disposes the runtime from its SIGTERM/SIGHUP handler: that
+		// aborts an in-flight prompt and invalidates the extension runner, but
+		// upstream still emits agent_settled for the torn-down run, delivering a
+		// stale ctx here. The rating bookkeeping below is best-effort, so bail
+		// on stale-ctx instead of surfacing the error.
+		try {
+			// All stale-prone ctx reads happen before any module-state mutation,
+			// so a torn-down session leaves the extension state fully untouched.
+			const sessionId = ctx.sessionManager.getSessionId()
+			const usedAutoModel = isAutoRoutedModel(ctx.model)
+			// Capture the concrete pick the router served, so `routing_model` reports
+			// the resolved model (e.g. `glm-5.3`) rather than the requested virtual id
+			// (`auto-beta`). Undefined when auto wasn't used or hasn't resolved yet.
+			const routingState = getAutoRoutingState(sessionId)
+			const resolvedModelId = routingState.status === "resolved" ? routingState.model.id : undefined
+			listenForLegacyRatingKey(ctx)
+			state = "inviting"
+			autoModelUsed = usedAutoModel
+			routedUsedId = resolvedModelId
+		} catch (err) {
+			if (!isStaleCtxError(err)) throw err
+		}
 	})
 
 	pi.on("model_select", (event, ctx: ExtensionContext) => {
 		// Only react in TUI mode — headless modes can't show a dialog.
 		if (ctx.mode !== "tui" || !ctx.hasUI) return
 		// Only react when the previous model was auto or a routed virtual model.
-		if (
-			!event.previousModel ||
-			(!isAutoModel(event.previousModel) && !isRoutedModel(event.previousModel, ctx.sessionManager.getSessionId()))
-		) {
+		if (!event.previousModel || !isAutoRoutedModel(event.previousModel)) {
 			return
 		}
 		// Only react when the new model is a concrete model — skip auto/multi-model.
 		const newModel = event.model
-		if (isAutoModel(newModel)) return
+		if (isAutoRoutedModel(newModel)) return
 		if (newModel.id === MULTI_MODEL_ID) return
 
 		const modelId = newModel.id
@@ -136,7 +195,18 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 			// timer was queued — don't render a stale hint for it.
 			if (getModelSwitchInvitation()?.modelId !== modelId) return
 			const payload: ModelSwitchSummaryDetails = { model: modelName, reason: "" }
-			pi.appendEntry(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, payload)
+			// The timer lives outside upstream's emit error boundary: if the
+			// runtime was disposed in the meantime, pi is stale and appendEntry
+			// throws — swallow that specific case instead of crashing the
+			// process with an uncaught timer exception. Non-stale errors are
+			// re-thrown on purpose: timers have no error boundary, so an
+			// unexpected appendEntry failure crashes loudly by design (this
+			// fail-fast path is intentionally untested).
+			try {
+				pi.appendEntry(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, payload)
+			} catch (err) {
+				if (!isStaleCtxError(err)) throw err
+			}
 		}, 0)
 	})
 
@@ -202,9 +272,6 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 			return
 		}
 
-		// Rating shortcuts carry a sentiment; if none was passed we have nothing
-		// to do (e.g. Ctrl+R without an active invitation).
-		if (sentiment === undefined) return
 		if (state !== "inviting") return
 		state = "collecting"
 		// Capture the auto-model flag for this invitation so the details dialog
@@ -215,10 +282,20 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		let keepInviting = false
 		try {
 			// Yield once so the TUI removes the previous overlay (if any) before
-			// the details dialog is mounted. Without this yield the dialog's
-			// first frame can be composited with stale overlay content.
+			// the dialog is mounted. Without this yield the dialog's first frame
+			// can be composited with stale overlay content.
 			await Promise.resolve()
-			const submitted = await handleRating(pi, ctx, sentiment, usedAutoModel, usedRoutedId)
+			let chosen = sentiment
+			// No sentiment pre-picked (legacy Ctrl+R): open the Good/Bad picker
+			// first. Esc there cancels before the details dialog even mounts.
+			if (chosen === undefined) {
+				chosen = await pickRatingSentiment(ctx)
+				if (chosen === undefined) {
+					keepInviting = true
+					return
+				}
+			}
+			const submitted = await handleRating(pi, ctx, chosen, usedAutoModel, usedRoutedId)
 			// Esc from the details dialog: keep the invitation alive so the
 			// user can rate the same turn again.
 			if (!submitted) keepInviting = true
@@ -233,6 +310,18 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 				autoModelUsed = false
 			}
 		}
+	}
+}
+
+// Legacy Ctrl+R path: open the Good/Bad picker. Errors are reported via the
+// UI rather than rejecting — the caller's finally block keeps the state
+// machine consistent either way.
+async function pickRatingSentiment(ctx: ExtensionContext): Promise<FeedbackSentiment | undefined> {
+	try {
+		return await showRatingSelectorDialog(ctx)
+	} catch (err) {
+		ctx.ui.notify(`[feedback] Failed to open rating picker: ${err}`, "error")
+		return undefined
 	}
 }
 
@@ -265,7 +354,6 @@ async function handleRating(
 			sentiment,
 			reason,
 			reasonType: isPredefinedReason(reason) ? "predefined" : "freeform",
-			autoModelUsed,
 			routingModelId: autoModelUsed ? routedUsedId : undefined,
 		})
 	} catch (err) {

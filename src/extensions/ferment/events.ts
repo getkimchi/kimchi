@@ -3,10 +3,10 @@ import { clearFermentCache } from "../../ferment/store.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
 import { formatSanitizedErrorMessage, isRetryableErrorStillPending } from "../../sanitized-error-message.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { getEffectiveModel } from "../auto-model/state.js"
 import { deferExtensionAction } from "../deferred-action.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
-import { getEffectiveModel } from "../router/state.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { maybeTriggerFermentCompaction, maybeTriggerMidTurnFermentCompaction } from "./auto-compaction.js"
 import { formatDuration } from "./colors.js"
@@ -341,6 +341,12 @@ export function registerFermentEvents(
 		if (isAgentWorker()) {
 			return
 		}
+		runtime.captureJudgeContext(
+			getEffectiveModel(ctx),
+			ctx.modelRegistry,
+			getMultiModelEnabled(ctx.sessionManager),
+			ctx,
+		)
 		clearAllLifecycleGuards()
 		runtime.setContinuationPolicy(ctx?.hasUI ? "manual" : "automated")
 		runtime.clearAllStepStarts()
@@ -522,12 +528,22 @@ export function registerFermentEvents(
 	})
 
 	pi.on("model_select", (_event, ctx) => {
-		runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry)
+		runtime.captureJudgeContext(
+			getEffectiveModel(ctx),
+			ctx.modelRegistry,
+			getMultiModelEnabled(ctx.sessionManager),
+			ctx,
+		)
 	})
 
 	pi.on("turn_end", async (event, ctx) => {
 		if (isAgentWorker()) return
-		runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry)
+		runtime.captureJudgeContext(
+			getEffectiveModel(ctx),
+			ctx.modelRegistry,
+			getMultiModelEnabled(ctx.sessionManager),
+			ctx,
+		)
 		if (event.message.role !== "assistant") return
 		const content = getAssistantContentParts(event.message.content)
 		const activeId = runtime.getActiveId()

@@ -18,11 +18,10 @@ import type { ExtensionAPI, ExtensionUIContext, ToolCallEvent } from "@earendil-
 import { isAgentWorker } from "./agent-worker-context.js"
 import {
 	adapterExists,
-	adapterForDirectory,
-	adapterForFile,
 	allAdapters,
 	detectAdapters,
 	detectMissingAdapters,
+	resolveAdapterForProgram,
 } from "./dap/adapters.js"
 import { DapClientRegistry } from "./dap/client.js"
 import { DapSessionRegistry } from "./dap/session.js"
@@ -461,25 +460,17 @@ export default function (pi: ExtensionAPI) {
 	async function launchSession(opts: LaunchSessionOptions) {
 		const program = resolvePath(opts.program)
 
-		// Resolve adapter by explicit name, file extension, or directory contents.
+		// Resolve adapter by explicit name, file extension, directory contents,
+		// or the caller's source-file hint (extensionless compiled binary).
 		// allAdapters() returns the full static registry; getOrCreateClient
 		// will surface a clear error if the binary isn't installed.
 		const adapters = allAdapters()
-		let adapter: (typeof adapters)[0] | null
-		if (opts.adapterName) {
-			adapter = adapters.find((a) => a.name === opts.adapterName) ?? null
-		} else {
-			// Try file extension first, then directory-based detection: the program
-			// may itself be a package directory (./cmd/server for Go) or an
-			// extensionless compiled binary — in the latter case inspect the source
-			// files alongside it (main next to main.c).
-			adapter = adapterForFile(program, adapters)
-			if (!adapter) adapter = adapterForDirectory(program, adapters)
-			if (!adapter) {
-				const parent = path.dirname(program)
-				if (parent !== program) adapter = adapterForDirectory(parent, adapters)
-			}
-		}
+		const adapter = resolveAdapterForProgram({
+			program,
+			adapterName: opts.adapterName,
+			sourceFileHint: opts.sourceFileHint ? resolvePath(opts.sourceFileHint) : undefined,
+			adapters,
+		})
 
 		if (!adapter) {
 			const supportedExts = allAdapters()
@@ -508,7 +499,7 @@ export default function (pi: ExtensionAPI) {
 		// so debug_terminate can never cross-kill another session's client.
 		const sessionId = randomUUID()
 		const client = await clientRegistry.getOrCreate(adapter, cwd, sessionId)
-		const session = sessionRegistry.create({ adapter, cwd, client, id: sessionId })
+		const session = sessionRegistry.create({ adapter, cwd, client, id: sessionId, timeoutMs: opts.sessionTimeoutMs })
 		try {
 			await session.launch({
 				program,

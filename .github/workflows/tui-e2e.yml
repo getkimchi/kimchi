@@ -2,10 +2,31 @@ name: TUI E2E
 
 on:
   pull_request:
+    # Only root/.github markdown: *.md under src/ and resources/ ships in the binary.
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.github/**/*.md'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'kimchi.png'
+      - 'benchmark/**'
+      - 'docker/**'
+      - 'test-cases/**'
+      - 'src/**/*.test.ts'
+      - 'tests/unit/**'
+      - 'tests/smoke/**'
+      - 'tests/e2e/acp/**'
+      - 'tests/e2e/mcp/**'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: tui-e2e-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   tui-e2e:

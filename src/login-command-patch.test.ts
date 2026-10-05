@@ -334,7 +334,9 @@ it("shows the region selector after account login and runs EU browser auth when 
 
 it("returns to the auth-method selector when Esc is pressed on the region selector", async () => {
 	const cliAuthModule = await import("./cli-auth/index.js")
-	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser")
+	// Mock the resolution: an unmocked spy would call through to the real
+	// authenticateViaBrowser, which starts a callback server and opens a browser.
+	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "test-token" })
 
 	const registry = makeFakeModelRegistry()
 	const fakeIm = makeFakeInteractiveMode(registry)
@@ -511,6 +513,131 @@ it("selecting Europe for API-key login defaults the endpoint to the EU gateway",
 	expect(modelsModule.updateModelsConfig).toHaveBeenCalledWith("/tmp/kimchi-api-login-test/models.json", "eu-key-789", {
 		allowCachedFallback: false,
 		endpoint: "https://llm.eu.kimchi.dev",
+	})
+})
+
+it("selecting Self-hosted for API-key login prompts for the base URL, not a separate endpoint", async () => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// Base URL prompt first, then the API key — no endpoint prompt: the base
+	// URL is the single source every endpoint derives from.
+	fakeIm.showExtensionInput
+		.mockResolvedValueOnce(" https://kimchi.example.com/ ")
+		.mockResolvedValueOnce("self-hosted-key")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm, 2) // Self-hosted region
+	await waitForMockCall(fakeIm.session.setModel)
+
+	expect(fakeIm.showExtensionInput).toHaveBeenNthCalledWith(
+		1,
+		"Self-hosted Kimchi base URL:",
+		"https://your-kimchi-host.example.com",
+	)
+	expect(fakeIm.showExtensionInput).toHaveBeenNthCalledWith(2, "Kimchi API Key:", "Enter your Kimchi API key")
+	expect(fakeIm.showExtensionInput).toHaveBeenCalledTimes(2)
+	expect(fakeIm.showStatus).toHaveBeenCalledWith("Refreshing Kimchi models from https://kimchi.example.com/llm...")
+	// Self-hosted persists region + selfHostedUrl only — a stored llmEndpoint
+	// would override the region derivation.
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("self-hosted-key", undefined, {
+		region: "self-hosted",
+		selfHostedUrl: "https://kimchi.example.com",
+	})
+	expect(modelsModule.updateModelsConfig).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/models.json",
+		"self-hosted-key",
+		{
+			allowCachedFallback: false,
+			endpoint: "https://kimchi.example.com/llm",
+		},
+	)
+})
+
+it("re-prompts for the self-hosted base URL until it parses", async () => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput
+		.mockResolvedValueOnce("not a url")
+		.mockResolvedValueOnce("https://kimchi.example.com")
+		.mockResolvedValueOnce("self-hosted-key")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm, 2) // Self-hosted region
+	await waitForMockCall(fakeIm.session.setModel)
+
+	expect(fakeIm.showError).toHaveBeenCalledWith(
+		'Invalid base URL "not a url" (expected an http(s) URL, e.g. https://kimchi.example.com)',
+	)
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("self-hosted-key", undefined, {
+		region: "self-hosted",
+		selfHostedUrl: "https://kimchi.example.com",
+	})
+})
+
+it("Esc on the self-hosted base URL prompt returns to the auth-method selector without logging in", async () => {
+	const registry = makeFakeModelRegistry()
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce(undefined)
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	// Account login → region selector → Self-hosted → Esc on the base URL.
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+	fakeIm.selectorComponent.handleInput("j")
+	fakeIm.selectorComponent.handleInput("j")
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+
+	expect(fakeIm.showError).not.toHaveBeenCalled()
+	expect(configModule.writeApiKey).not.toHaveBeenCalled()
+})
+
+it("selecting Self-hosted for account login prompts for the base URL and targets its web app", async () => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-login-test")
+	const cliAuthModule = await import("./cli-auth/index.js")
+	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "self-hosted-token" })
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce("https://kimchi.example.com")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	// Auth-method selector: "Use a Kimchi account".
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+	// Region selector: navigate down twice to Self-hosted and confirm.
+	fakeIm.selectorComponent.handleInput("j")
+	fakeIm.selectorComponent.handleInput("j")
+	fakeIm.selectorComponent.handleInput("\n")
+	await waitForMockCall(authSpy)
+	await flushAsyncLogin()
+
+	expect(fakeIm.showExtensionInput).toHaveBeenCalledWith(
+		"Self-hosted Kimchi base URL:",
+		"https://your-kimchi-host.example.com",
+	)
+	expect(authSpy.mock.calls[0]?.[0]?.webAppUrl).toBe("https://kimchi.example.com")
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("self-hosted-token", undefined, {
+		region: "self-hosted",
+		selfHostedUrl: "https://kimchi.example.com",
 	})
 })
 
