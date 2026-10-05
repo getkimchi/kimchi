@@ -25,8 +25,8 @@ export default function skillsManagerExtension(pi: ExtensionAPI, options?: Skill
 	const tracker = new UsageTracker(skillsDir)
 
 	// Feed pi's resolved skill inventory (project .kimchi/skills, npm packages,
-	// .cursor/skills, configured skillPaths — everything behind the
-	// <available_skills> prompt block) into the manager as the last resolution
+	// .cursor/skills, configured skillPaths — everything behind the prompt's
+	// skills catalog) into the manager as the last resolution
 	// tier, so skill_view can load any advertised skill, not just harness/
 	// bundled ones. Updated on every agent start; the closure lives with this
 	// pi instance, so in-process subagents keep their own inventories.

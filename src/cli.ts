@@ -694,10 +694,11 @@ try {
 			packageInstallGuardExtension,
 			sessionNameExtension(),
 			shutdownMarkerExtension,
-			// skill_view must always be present: the <available_skills> prompt block
-			// instructs the model to load skills through it. skill_manage (the
-			// write side) stays disabled per #235; re-enable via
-			// registerSkillManageTool after review.
+			// skill_view must always be present: the skills catalog in the system
+			// prompt directs the model to load skills through it. skill_manage
+			// (the write side) stays disabled — #235 turned it off because its
+			// autonomous skill-authoring guidance proved noisy in practice;
+			// re-enable only deliberately via registerSkillManageTool.
 			(pi: ExtensionAPI) => skillsManagerExtension(pi, { registerSkillManageTool: false }),
 			statsExtension,
 			statusExtension,

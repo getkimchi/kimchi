@@ -83,6 +83,18 @@ function createSkill(overrides: Partial<Skill> & { name: string; description: st
 	}
 }
 
+/** Extract the skills-catalog bullets from a built prompt, ignoring `- **`
+ *  bullets in other prompt sections. */
+function skillsCatalogBullets(result: string): string[] {
+	const lines = result.split("\n")
+	const start = lines.indexOf("## Skills")
+	if (start === -1) return []
+	const rest = lines.slice(start + 1)
+	const nextHeading = rest.findIndex((line) => line.startsWith("## "))
+	const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading)
+	return section.filter((line) => line.startsWith("- **"))
+}
+
 describe("buildSystemPrompt", () => {
 	const tools = [
 		{ name: "read", description: "Read file contents" },
@@ -254,7 +266,7 @@ describe("buildSystemPrompt", () => {
 				skills,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("available_skills")
+			expect(result).toContain("## Skills")
 			expect(result).toContain("deploy")
 			expect(result).toContain("Deploy the app to production")
 		})
@@ -284,12 +296,12 @@ describe("buildSystemPrompt", () => {
 			})
 			// The catalog routes through the dedicated tool: no read-tool
 			// instruction and no file locations for the model to copy paths from.
-			expect(result).not.toContain("Use the read tool to load a skill's file when the task matches its description.")
+			expect(result).not.toContain("read its SKILL.md with the read tool")
 			expect(result).toContain("load it with the skill_view tool (name: <skill name>)")
-			expect(result).not.toContain("<location>")
+			expect(skillsCatalogBullets(result)).toEqual(["- **deploy** — Deploy the app to production"])
 		})
 
-		it("falls back to the upstream read-tool catalog when skill_view is not registered", () => {
+		it("falls back to the read-tool catalog when skill_view is not registered", () => {
 			const skills = [createSkill({ name: "deploy", description: "Deploy the app to production" })]
 			const result = buildSystemPrompt({
 				tools: tools.filter((t) => t.name !== "skill_view"),
@@ -298,9 +310,12 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			// Sessions without the skills-manager extension must not be directed at
-			// an unregistered tool; upstream's catalog routes through read instead.
-			expect(result).toContain("Use the read tool to load a skill's file when the task matches its description.")
-			expect(result).toContain("<location>")
+			// an unregistered tool; the read-tool catalog keeps the SKILL.md path
+			// so the model can load the body itself.
+			expect(result).toContain("read its SKILL.md with the read tool")
+			expect(skillsCatalogBullets(result)).toEqual([
+				"- **deploy** — Deploy the app to production (`/skills/deploy/SKILL.md`)",
+			])
 			expect(result).not.toContain("load it with the skill_view tool (name: <skill name>)")
 		})
 
@@ -313,14 +328,46 @@ describe("buildSystemPrompt", () => {
 				skills,
 				mode: "orchestrator",
 			})
-			const descriptionLine = result
-				.split("\n")
-				.find((line) => line.includes("<description>"))
-				?.trim()
+			const descriptionLine = result.split("\n").find((line) => line.startsWith("- **wordy**"))
 			expect(descriptionLine).toBeDefined()
 			// Word-boundary truncation keeps the line near the cap, not at 999 chars.
 			expect(descriptionLine?.length ?? 0).toBeLessThan(600)
-			expect(descriptionLine?.endsWith("…</description>")).toBe(true)
+			expect(descriptionLine?.endsWith("…")).toBe(true)
+		})
+
+		it("degrades over-budget catalog entries to name-only bullets", () => {
+			// ~30 full entries at ~500 chars each far exceed the block budget.
+			const skills = Array.from({ length: 30 }, (_, i) =>
+				createSkill({ name: `skill-${i}`, description: `${i} ${'"word "'.repeat(120).trim()}` }),
+			)
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				mode: "orchestrator",
+			})
+			const bullets = skillsCatalogBullets(result)
+			// Head of the catalog keeps full entries; the tail degrades to
+			// name-only, and the block itself stays bounded.
+			expect(bullets.length).toBeGreaterThan(2)
+			expect(bullets.length).toBeLessThan(30)
+			expect(bullets.slice(0, 3).every((b) => b.includes("—"))).toBe(true)
+			expect(bullets.slice(-3).every((b) => !b.includes("—"))).toBe(true)
+		})
+
+		it("drops catalog entries that exceed the block budget even name-only", () => {
+			// A 6k-char advertised name fits neither as a full nor a name-only bullet.
+			const skills = [
+				createSkill({ name: "normal", description: "short" }),
+				createSkill({ name: "huge".repeat(1500), description: "short" }),
+			]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				mode: "orchestrator",
+			})
+			expect(skillsCatalogBullets(result)).toEqual(["- **normal** — short"])
 		})
 
 		it("injects environment info", () => {
@@ -587,7 +634,7 @@ describe("buildSystemPrompt", () => {
 				skills,
 				mode: "subagent",
 			})
-			expect(result).toContain("available_skills")
+			expect(result).toContain("## Skills")
 			expect(result).toContain("deploy")
 		})
 

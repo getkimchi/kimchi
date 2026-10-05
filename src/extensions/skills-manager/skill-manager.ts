@@ -192,8 +192,8 @@ export class SkillManager {
 	/**
 	 * Session-scoped provider of skills discovered by pi's resource loader
 	 * (project .kimchi/skills, npm packages, .cursor/skills, configured
-	 * skillPaths) — everything that feeds the <available_skills> prompt block
-	 * but does not live under the manager's own roots. Consulted as the last
+	 * skillPaths) — everything that feeds the prompt's skills catalog but does
+	 * not live under the manager's own roots. Consulted as the last
 	 * resolution tier in _findSkill so skill_view can load any advertised
 	 * skill, not just harness/bundled ones.
 	 */
