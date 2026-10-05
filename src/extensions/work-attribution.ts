@@ -25,6 +25,7 @@ import { writeConfigSetting } from "../config/settings.js"
 import type { ModelRequestMetadata } from "../http/instrument-fetch.js"
 import { readPlanWorkId } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
+import { trackPRCostMetric } from "./telemetry/pr-cost.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
 import { findWorkContinuation, hasWorkReference, type WorkContinuation } from "./work-attribution/continuation.js"
 import {
@@ -563,6 +564,7 @@ export function createWorkAttributionExtension(
 			const generation = ++inputGeneration
 			semanticAbort?.abort()
 			if (event.source === "extension") return
+			let matchingFailed = false
 			try {
 				bind(ctx)
 				const key = workLedgerPath(ctx)
@@ -712,7 +714,14 @@ export function createWorkAttributionExtension(
 				)
 				await rememberWorkIntent(ctx.cwd, workId, event.text, intents.repository, intents.account)
 			} catch (error) {
+				matchingFailed = true
 				warnWorkAttribution(ctx, error)
+			} finally {
+				if (generation === inputGeneration)
+					trackPRCostMetric({
+						kind: "matching",
+						outcome: matchingFailed ? "failed" : (getWorkSegment(ctx)?.attribution ?? "unknown"),
+					})
 			}
 		})
 		pi.on("before_provider_headers", (event, ctx) => {

@@ -8,6 +8,7 @@ import {
 	reconcileWorkPullRequests,
 	type WorkPullRequestUpdate,
 } from "../pull-request-status/pull-requests.js"
+import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { reconcileWorkCosts } from "./cost-sync.js"
 import { knownTransitionRepositories, reconcileRepositoryTransitions } from "./file-transitions.js"
 import { reconcileWorkContinuations } from "./links.js"
@@ -63,6 +64,7 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 		if (compromised) throw compromised
 	}
 	const deadline = Date.now() + PASS_BUDGET_MS
+	trackPRCostMetric({ kind: "reconciliation" })
 	const exhausted = new Error("Work attribution reconciliation time limit exceeded")
 	const checkBudget = () => {
 		assertLease()

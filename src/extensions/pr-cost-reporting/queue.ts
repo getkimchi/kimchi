@@ -3,6 +3,7 @@ import { mkdir, open, rename, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { lock } from "proper-lockfile"
 import { isWorkId } from "../../shared/work-id.js"
+import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { isWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
 import {
 	accountKey,
@@ -95,9 +96,16 @@ export async function readReportingState(agentDir: string): Promise<ReportingSta
 					throw new Error("Invalid PR reporting state")
 			}
 		}
+		trackPRCostMetric({
+			kind: "queueDepth",
+			value: Object.values(value.entries).filter((entry) => entry.pending).length,
+		})
 		return value
 	} catch (error) {
-		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return empty()
+		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+			trackPRCostMetric({ kind: "queueDepth", value: 0 })
+			return empty()
+		}
 		throw new Error("PR reporting state is unreadable; queued reports were not replaced", { cause: error })
 	}
 }
@@ -135,6 +143,10 @@ async function update(agentDir: string, mutate: (state: ReportingState) => void)
 		} finally {
 			await parent.close()
 		}
+		trackPRCostMetric({
+			kind: "queueDepth",
+			value: Object.values(state.entries).filter((entry) => entry.pending).length,
+		})
 		return state
 	} finally {
 		await rm(temp, { force: true })

@@ -41,10 +41,90 @@ describe("SessionContext", () => {
 		globalThis.fetch = originalFetch
 		_resetSharedAccumulators()
 		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
 		// session.parent_id simulation env — never leak the subagent worker flag
 		// or the parent session id into sibling tests.
 		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 		Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
+	})
+
+	it("flushes PR health without adding user or session labels", async () => {
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.setPiSessionId("private-session")
+		ctx.userId = "private-user"
+		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, queueDepth: 0, startTimeUnixNano: "1000000000" }
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+		const [, options] = vi.mocked(globalThis.fetch).mock.calls[0]
+		const body = JSON.parse(String(options?.body))
+		const serialized = JSON.stringify(body)
+		expect(serialized).not.toContain("private-session")
+		expect(serialized).not.toContain("private-user")
+		expect(serialized).not.toContain("user.account_uuid")
+		expect(serialized).not.toContain("session.id")
+		expect(body.resourceMetrics[0].scopeMetrics[0].metrics).toHaveLength(2)
+	})
+
+	it("drops buffered PR health when telemetry is turned off before flush", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, startTimeUnixNano: "1000000000" }
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+		expect(globalThis.fetch).not.toHaveBeenCalled()
+		expect(ctx.cumulative.prCost).toBeUndefined()
+	})
+
+	it("rechecks PR health consent after pending identity lookup", async () => {
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		const ctx = new TelemetryContext(makeConfig())
+		let release!: () => void
+		ctx.userEmailReady = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, startTimeUnixNano: "1000000000" }
+		ctx.flushMetrics()
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+		release()
+		await Promise.allSettled([...ctx.inFlight])
+		expect(globalThis.fetch).not.toHaveBeenCalled()
+		expect(ctx.cumulative.prCost).toBeUndefined()
+	})
+
+	it("does not retry a PR health batch after telemetry is turned off", async () => {
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		vi.spyOn(Math, "random").mockReturnValue(0)
+		vi.mocked(globalThis.fetch).mockImplementationOnce(async () => {
+			vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+			return new Response(null, { status: 503 })
+		})
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, startTimeUnixNano: "1000000000" }
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+	})
+
+	it("does not restore a discarded batch if telemetry is re-enabled before identity resolves", async () => {
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		const ctx = new TelemetryContext(makeConfig())
+		let release!: () => void
+		ctx.userEmailReady = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		ctx.cumulative.prCost = { matching: { explicit: 4 }, delivery: {}, startTimeUnixNano: "1000000000" }
+		ctx.flushMetrics()
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+		ctx.flushMetrics()
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		ctx.cumulative.prCost = { matching: { session: 1 }, delivery: {}, startTimeUnixNano: "2000000000" }
+		ctx.flushMetrics()
+		release()
+		await Promise.allSettled([...ctx.inFlight])
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const body = JSON.parse(String(vi.mocked(globalThis.fetch).mock.calls[0][1]?.body))
+		expect(body.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].startTimeUnixNano).toBe("2000000000")
 	})
 
 	it("emit appends source and session_type to every event", async () => {

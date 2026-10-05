@@ -6,6 +6,7 @@ import { setImmediate } from "node:timers/promises"
 import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations.js"
 import { loadConfig, resolveEndpoints } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
+import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { calculatePullRequestCosts, decimalNanos, type RequestCostObservation } from "./costs.js"
 import { isWorkAccount } from "./scope.js"
@@ -559,6 +560,10 @@ export function readWorkCostReport(agentDir: string, checkBudget: () => void = (
 }
 async function publishReports(agentDir: string, assertLease: () => void): Promise<void> {
 	const { records, report, requests } = readWorkCostReport(agentDir, assertLease)
+	trackPRCostMetric({
+		kind: "unpriced",
+		value: report.requests.filter((request) => request.priceStatus !== "priced").length,
+	})
 	const workIds = new Set(records.map((row) => row.workId))
 	for (const workId of workIds) {
 		assertLease()

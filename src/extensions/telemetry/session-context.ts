@@ -1,7 +1,7 @@
 import crypto from "node:crypto"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getMe } from "../../api/me.js"
-import type { TelemetryConfig } from "../../config.js"
+import { readTelemetryConfig, type TelemetryConfig } from "../../config.js"
 import { IS_ACP_MODE } from "../../modes/acp/state.js"
 import { getOsMetadata } from "../../utils/os-metadata.js"
 import { getVersion } from "../../utils.js"
@@ -327,23 +327,32 @@ export class TelemetryContext {
 	}
 
 	flushMetrics(): void {
+		if (!this.config.enabled || !readTelemetryConfig().enabled) this.cumulative.prCost = undefined
 		const metrics = collectMetrics(this.cumulative)
 		if (metrics.length > 0) {
 			this.track(
-				this.userEmailReady.then(() =>
-					sendMetrics(
+				this.userEmailReady.then(() => {
+					const allowPRCostMetrics = this.config.enabled && readTelemetryConfig().enabled
+					if (!allowPRCostMetrics) this.cumulative.prCost = undefined
+					return sendMetrics(
 						this.config,
 						this.resolveSessionId(),
-						metrics.map((m) => ({
-							...m,
-							attrs: {
-								...m.attrs,
-								"user.account_uuid": this.userId ?? "",
-							},
-						})),
+						metrics
+							.filter(
+								(m) =>
+									m.scope !== "aggregate" ||
+									(allowPRCostMetrics && m.startTimeUnixNano === this.cumulative.prCost?.startTimeUnixNano),
+							)
+							.map((m) => ({
+								...m,
+								attrs: {
+									...m.attrs,
+									...(m.scope === "aggregate" ? {} : { "user.account_uuid": this.userId ?? "" }),
+								},
+							})),
 						this.sessionStartNano,
-					),
-				),
+					)
+				}),
 			)
 		}
 	}
