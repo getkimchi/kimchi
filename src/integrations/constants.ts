@@ -4,9 +4,13 @@ import { REGIONS, telemetryLogsUrl, telemetryMetricsUrl } from "../regions.js"
 export const PROVIDER_NAME = "kimchi"
 export const API_KEY_ENV = "KIMCHI_API_KEY"
 
-/** Telemetry ingest URLs of every region, to recognise ones Kimchi wrote earlier. */
+/** Telemetry ingest URLs of every region, to recognise ones Kimchi wrote earlier.
+ * Self-hosted telemetry URLs derive from the user's base URL, so they cannot
+ * be enumerated here — the placeholder entry's empty URLs are skipped. */
 export const ALL_TELEMETRY_URLS: ReadonlySet<string> = new Set(
-	Object.values(REGIONS).flatMap((r) => [telemetryLogsUrl(r), telemetryMetricsUrl(r)]),
+	Object.values(REGIONS)
+		.filter((r) => r.castApiUrl)
+		.flatMap((r) => [telemetryLogsUrl(r), telemetryMetricsUrl(r)]),
 )
 
 export const NPM_REGISTRY_BASE_URL = "https://registry.npmjs.org"

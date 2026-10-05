@@ -638,7 +638,7 @@ async function reconcileExactHistory(
 	const start = Math.min(...transitions.map((row) => row.cursor.bytes))
 	const candidates = commitsFromReflog(log, start)
 	// Resume only completed candidates from the same evidence snapshot, including unresolved ones.
-	const evidence = `sessions-v1:matches-v2:${journal.digest}:${digest(log)}`
+	const evidence = `${journal.digest}:${digest(log)}`
 	const progressPath = `${journal.path}.progress`
 	const progress = records(progressPath).at(-1)
 	const completed =
@@ -758,7 +758,9 @@ async function matchContentTransitions(
 				try {
 					await git(repository, ["merge-base", "--is-ancestor", row.baseline, sha], { signal })
 					ancestry.set(row.baseline, true)
-				} catch {
+				} catch (error) {
+					// Only exit 1 means "not an ancestor"; interrupted/failed reads must remain retryable.
+					if (!(error instanceof Error && "code" in error && error.code === 1)) throw error
 					ancestry.set(row.baseline, false)
 				}
 			}
@@ -802,7 +804,7 @@ async function reconcileContentHistory(
 	// Missing ownership evidence must neither produce a partial match nor advance the weak-match checkpoint.
 	if (histories.some(({ journal }) => journal.transitions.some((row) => row.historyBoundaryId && !row.refTips))) return
 	const candidates = await contentCandidates(repository, histories, checkBudget, signal)
-	const evidence = `content-v2:${histories.map(({ journal, log }) => `${journal.digest}:${log ? digest(log) : "deleted"}`).join(":")}:${[...candidates.keys()].join(":")}`
+	const evidence = `${histories.map(({ journal, log }) => `${journal.digest}:${log ? digest(log) : "deleted"}`).join(":")}:${[...candidates.keys()].join(":")}`
 	const progressPath = `${histories[0].journal.path}.content-checkpoint`
 	const progress = records(progressPath).at(-1)
 	const entries = [...candidates]

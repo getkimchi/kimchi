@@ -51,6 +51,52 @@ afterEach(async () => {
 })
 
 describe("shared file reconciliation", () => {
+	it("keeps local Git failures out of PR warnings while reporting a failed PR lookup", async () => {
+		const onError = vi.fn()
+		const lookupError = new Error("PR lookup unavailable")
+		vi.mocked(transitions.reconcileRepositoryTransitions).mockRejectedValueOnce(new Error("Git timed out"))
+		vi.mocked(pullRequests.reconcileWorkPullRequests).mockRejectedValueOnce(lookupError)
+		subscribe()
+		stops.push(subscribePullRequestReconciliation({ onPullRequest: () => {}, onError }))
+		await vi.waitFor(() => expect(onError).toHaveBeenCalledExactlyOnceWith(lookupError))
+		expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2)
+	})
+
+	it("keeps a failed repository off the console, scans its sibling and retries on the next pass", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const error = Object.assign(new Error("Git timed out"), { code: null, killed: true, signal: "SIGTERM" })
+		vi.mocked(transitions.reconcileRepositoryTransitions).mockRejectedValueOnce(error)
+		subscribe()
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2))
+		await vi.waitFor(async () => {
+			const release = await locks.lock(join(directory, "work-attribution"), { retries: 0 })
+			await release()
+		})
+		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4))
+		expect(vi.mocked(transitions.reconcileRepositoryTransitions).mock.calls.map(([repository]) => repository)).toEqual([
+			"/repository-a",
+			"/repository-b",
+			"/repository-a",
+			"/repository-b",
+		])
+		expect(warn).not.toHaveBeenCalled()
+	})
+
+	it("keeps a discovery failure off the console and retries on the next pass", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		vi.mocked(transitions.knownTransitionRepositories).mockRejectedValueOnce(new Error("Cannot read journals"))
+		subscribe()
+		await vi.waitFor(() => expect(transitions.knownTransitionRepositories).toHaveBeenCalledTimes(1))
+		await vi.waitFor(async () => {
+			const release = await locks.lock(join(directory, "work-attribution"), { retries: 0 })
+			await release()
+		})
+		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2))
+		expect(warn).not.toHaveBeenCalled()
+	})
+
 	it("does not read PR records or call GitHub when only file reconciliation is enabled", async () => {
 		subscribe()
 		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2))

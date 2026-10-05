@@ -15,17 +15,16 @@ import {
 	loadConfig,
 	RETRY_DEFAULTS,
 	readApiKeyFromConfigFile,
-	readAutoDefaultApplied,
 	readGitToken,
 	readHideTips,
 	readStudioOnboardingSeenAt,
 	readTelemetryConfig,
 	readTeleportCompactHintEnabled,
 	resetInvalidLlmBaseUrlWarningForTests,
+	resetInvalidSelfHostedUrlWarningForTests,
 	resolveEndpoints,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
-	writeAutoDefaultApplied,
 	writeDeviceId,
 	writeGitToken,
 	writeHideTips,
@@ -707,6 +706,35 @@ describe("writeApiKey", () => {
 		expect(raw.llmEndpoint).toBeUndefined()
 	})
 
+	it("persists region and selfHostedUrl together, normalized, without llmEndpoint (self-hosted login)", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "old-key", llmEndpoint: "https://custom.example" }))
+		writeApiKey("new-token", configPath, { region: "self-hosted", selfHostedUrl: "https://kimchi.example.com/" })
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("new-token")
+		expect(raw.region).toBe("self-hosted")
+		// Trailing slash stripped on write; no llmEndpoint so the region
+		// derivation stays single-sourced (a stored llmEndpoint would win over it).
+		expect(raw.selfHostedUrl).toBe("https://kimchi.example.com")
+		expect(raw.llmEndpoint).toBeUndefined()
+	})
+
+	it("drops an invalid selfHostedUrl instead of storing it", () => {
+		writeApiKey("new-token", configPath, { region: "self-hosted", selfHostedUrl: "not a url" })
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.region).toBe("self-hosted")
+		expect(raw.selfHostedUrl).toBeUndefined()
+	})
+
+	it("leaves the stored selfHostedUrl untouched when switching away from self-hosted", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://kimchi.example.com" }))
+		writeApiKey("us-token", configPath, { region: "us", llmEndpoint: "https://llm.kimchi.dev/openai/v1" })
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.region).toBe("us")
+		// The base URL only matters for the self-hosted region, so it survives
+		// the switch and is offered as the default when switching back.
+		expect(raw.selfHostedUrl).toBe("https://kimchi.example.com")
+	})
+
 	it("keeps llmEndpoint behavior when only a custom endpoint is given", () => {
 		writeApiKey("token", configPath, { llmEndpoint: "https://custom.example" })
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
@@ -728,6 +756,8 @@ describe("region config", () => {
 		vi.stubEnv("KIMCHI_WEB_APP_URL", undefined)
 		vi.stubEnv("KIMCHI_REMOTE_ENDPOINT", undefined)
 		vi.stubEnv("KIMCHI_REGION", undefined)
+		vi.stubEnv("KIMCHI_BASE_URL", undefined)
+		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", undefined)
 		resetProjectScopeTrustForTests()
 	})
 
@@ -848,6 +878,58 @@ describe("region config", () => {
 		const cfg = readTelemetryConfig(configPath)
 		expect(cfg.endpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/logs:ingest")
 		expect(cfg.metricsEndpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/metrics:ingest")
+	})
+
+	it("loadConfig: self-hosted region with a stored base URL derives the gateway", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://kimchi.example.com" }))
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("self-hosted")
+		expect(cfg.selfHostedUrl).toBe("https://kimchi.example.com")
+		expect(cfg.llmEndpoint).toBe("https://kimchi.example.com/llm/openai/v1")
+	})
+
+	it("loadConfig: KIMCHI_SELF_HOSTED_URL env wins over the stored base URL", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://config.example.com" }))
+		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://env.example.com")
+		const cfg = loadConfig({ configPath })
+		expect(cfg.selfHostedUrl).toBe("https://env.example.com")
+		expect(cfg.llmEndpoint).toBe("https://env.example.com/llm/openai/v1")
+	})
+
+	it("loadConfig: an invalid stored selfHostedUrl counts as unset", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "not a url" }))
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("self-hosted")
+		expect(cfg.selfHostedUrl).toBeUndefined()
+	})
+
+	it("loadConfig: an invalid KIMCHI_SELF_HOSTED_URL warns once and counts as unset", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://config.example.com" }))
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+		resetInvalidSelfHostedUrlWarningForTests()
+		// Only the self-hosted warning; the temp file's loose permissions warn separately.
+		const selfHostedWarnings = () =>
+			warnSpy.mock.calls.map((call) => String(call[0])).filter((message) => message.includes("KIMCHI_SELF_HOSTED_URL"))
+
+		try {
+			vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "not a url")
+			const first = loadConfig({ configPath })
+			expect(first.selfHostedUrl).toBe("https://config.example.com")
+			// Repeated reads warn only once (the stored base keeps serving).
+			loadConfig({ configPath })
+			expect(selfHostedWarnings()).toHaveLength(1)
+			expect(selfHostedWarnings()[0]).toContain("Ignoring invalid KIMCHI_SELF_HOSTED_URL")
+		} finally {
+			resetInvalidSelfHostedUrlWarningForTests()
+			warnSpy.mockRestore()
+		}
+	})
+
+	it("telemetry defaults follow the self-hosted base URL", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://kimchi.example.com" }))
+		const cfg = readTelemetryConfig(configPath)
+		expect(cfg.endpoint).toBe("https://kimchi.example.com/api/ai-optimizer/v1beta/logs:ingest")
+		expect(cfg.metricsEndpoint).toBe("https://kimchi.example.com/api/ai-optimizer/v1beta/metrics:ingest")
 	})
 })
 
@@ -1493,95 +1575,6 @@ describe("ensureQuietStartupDefault", () => {
 		const verbose = { quietStartup: false }
 		expect(ensureQuietStartupDefault(verbose)).toBe(false)
 		expect(verbose.quietStartup).toBe(false)
-	})
-})
-
-describe("readAutoDefaultApplied / writeAutoDefaultApplied", () => {
-	let tempDir: string
-	let settingsPath: string
-
-	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
-		settingsPath = join(tempDir, "settings.json")
-	})
-
-	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true })
-	})
-
-	it("round-trips the marker", () => {
-		expect(readAutoDefaultApplied(settingsPath)).toBe(false)
-
-		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
-		expect(readAutoDefaultApplied(settingsPath)).toBe(true)
-	})
-
-	// Regression: writing only the marker left the previous defaultModel in
-	// place, so the session came up on Auto once and fell back on the next
-	// launch — with the marker now blocking a retry.
-	it("installs the default alongside the marker", () => {
-		writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "kimchi-dev", defaultModel: "kimi-k3" }))
-
-		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
-
-		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toMatchObject({
-			defaultProvider: "kimchi-dev",
-			defaultModel: "auto",
-			autoDefaultApplied: true,
-		})
-	})
-
-	it("preserves the surrounding settings", () => {
-		writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "kimchi-dev", defaultModel: "kimi-k3", theme: "x" }))
-
-		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
-
-		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({
-			defaultProvider: "kimchi-dev",
-			defaultModel: "auto",
-			theme: "x",
-			autoDefaultApplied: true,
-		})
-	})
-
-	it("writes a fresh file when settings do not exist yet", () => {
-		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
-
-		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({
-			defaultProvider: "kimchi-dev",
-			defaultModel: "auto",
-			autoDefaultApplied: true,
-		})
-	})
-})
-
-describe("readAutoDefaultApplied error handling", () => {
-	let tempDir: string
-
-	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
-	})
-
-	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true })
-	})
-
-	it("reads a missing file as not applied", () => {
-		expect(readAutoDefaultApplied(join(tempDir, "absent.json"))).toBe(false)
-	})
-
-	it("reads malformed JSON as not applied", () => {
-		const path = join(tempDir, "settings.json")
-		writeFileSync(path, "{ not json")
-
-		expect(readAutoDefaultApplied(path)).toBe(false)
-	})
-
-	it("ignores a non-boolean marker", () => {
-		const path = join(tempDir, "settings.json")
-		writeFileSync(path, JSON.stringify({ autoDefaultApplied: "yes" }))
-
-		expect(readAutoDefaultApplied(path)).toBe(false)
 	})
 })
 

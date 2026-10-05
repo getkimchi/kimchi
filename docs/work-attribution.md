@@ -106,6 +106,10 @@ One request can produce edits in several repositories. Each edit keeps the ID of
 
 There are two routes. A commit made through Bash is linked when the command finishes. Background checks find supported external commits in all repositories already known through local edit journals. They run at startup and every 30 seconds while a top-level Kimchi process remains open; reopening the original worktree is not required.
 
+Linked worktrees share a `repository` path pointing to Git's common directory (usually the main checkout's `.git`). Each edit also records its actual `worktree` path, including worktrees outside the main checkout. Git object comparisons can therefore run from the shared `.git` directory.
+
+Failed background Git comparisons remain eligible for a later scan. They do not print raw errors into the terminal. To inspect reconciliation failures, launch with `NODE_DEBUG=kimchi:work-attribution kimchi`. A failed ancestry lookup stays unresolved; only Git's explicit “not an ancestor” result counts as a non-match.
+
 **During a Bash call**
 
 ```mermaid

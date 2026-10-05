@@ -1,0 +1,42 @@
+import { describe, expect, it } from "vitest"
+import { resolveHasUserLoop } from "./session-user-loop.js"
+
+describe("resolveHasUserLoop", () => {
+	const base = { stdinIsTTY: true, stdoutIsTTY: true, acpMode: false }
+
+	it("treats interactive TUI sessions as user-present", () => {
+		expect(resolveHasUserLoop(base)).toBe(true)
+	})
+
+	it("treats ACP sessions as user-present even without a TTY", () => {
+		expect(resolveHasUserLoop({ ...base, acpMode: true, stdinIsTTY: false, stdoutIsTTY: false })).toBe(true)
+	})
+
+	it("treats print mode as userless", () => {
+		expect(resolveHasUserLoop({ ...base, print: true })).toBe(false)
+	})
+
+	it("treats rpc mode (embedded frontends, human present) as user-present", () => {
+		expect(resolveHasUserLoop({ ...base, mode: "rpc" })).toBe(true)
+	})
+
+	it("treats rpc mode over piped IO (how frontends spawn it) as user-present", () => {
+		expect(resolveHasUserLoop({ ...base, mode: "rpc", stdinIsTTY: false, stdoutIsTTY: false })).toBe(true)
+	})
+
+	it("treats json protocol mode as userless", () => {
+		expect(resolveHasUserLoop({ ...base, mode: "json" })).toBe(false)
+	})
+
+	it("treats piped stdin as userless even without a print flag", () => {
+		expect(resolveHasUserLoop({ ...base, stdinIsTTY: false })).toBe(false)
+	})
+
+	it("treats piped stdout as userless even without a print flag", () => {
+		expect(resolveHasUserLoop({ ...base, stdoutIsTTY: false })).toBe(false)
+	})
+
+	it("treats a container-like invocation (no TTYs) as userless", () => {
+		expect(resolveHasUserLoop({ stdinIsTTY: false, stdoutIsTTY: false, acpMode: false })).toBe(false)
+	})
+})

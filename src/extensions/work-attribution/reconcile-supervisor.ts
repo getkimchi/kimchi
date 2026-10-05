@@ -1,5 +1,6 @@
 import { mkdir } from "node:fs/promises"
 import { join, resolve } from "node:path"
+import { debuglog } from "node:util"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { lock } from "proper-lockfile"
 import {
@@ -11,6 +12,7 @@ import { knownTransitionRepositories, reconcileRepositoryTransitions } from "./f
 
 export const RECONCILIATION_INTERVAL_MS = 30_000
 const PASS_BUDGET_MS = 3000
+const debug = debuglog("kimchi:work-attribution")
 interface Supervisor {
 	subscribers: Set<ReconciliationSubscriber>
 	controller: AbortController
@@ -72,11 +74,11 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 						await reconcileRepositoryTransitions(repositories[index], signal, checkBudget, assertLease)
 					} catch (error) {
 						if (error === exhausted || signal.aborted) throw error
-						reportError(owner, error)
+						debug("Could not reconcile repository %s: %o", repositories[index], error)
 					}
 				}
 			} catch (error) {
-				if (error !== exhausted && !signal.aborted) reportError(owner, error)
+				if (error !== exhausted && !signal.aborted) debug("Could not discover repositories: %o", error)
 			}
 		}
 		// Network lookup has its own deadline. A slow local repository must not starve it,
@@ -91,7 +93,7 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 			const pending = reconcileWorkPullRequests(agentDir, prSignal, assertPullRequestLease, (update) => {
 				for (const subscriber of owner.subscribers) subscriber.onPullRequest?.(update)
 			}).catch((error) => {
-				if (!prSignal.aborted) throw error
+				if (!prSignal.aborted) reportError(owner, error)
 			})
 			owner.pullRequestRunning = pending
 			try {
@@ -129,7 +131,7 @@ function tick(agentDir: string, owner: Supervisor): void {
 	if (owner.running) return
 	owner.running = scan(agentDir, owner)
 		.catch((error) => {
-			if (!owner.controller.signal.aborted) reportError(owner, error)
+			if (!owner.controller.signal.aborted) debug("Reconciliation unavailable: %o", error)
 		})
 		.finally(() => {
 			owner.running = undefined
