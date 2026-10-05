@@ -51,6 +51,39 @@ describe("extractTypedImagePaths", () => {
 		expect(matches[0].image.mimeType).toBe("image/jpeg")
 	})
 
+	it("attaches an unquoted path with literal spaces (macOS screenshot drag shape)", () => {
+		const spacedPath = join(tmpDir, "Screenshot 2026-10-05 at 14.32.10.png")
+		writeFileSync(spacedPath, PNG_BYTES)
+		const matches = extractTypedImagePaths(`what is ${spacedPath}?`, tmpDir)
+		expect(matches).toHaveLength(1)
+		expect(matches[0].resolvedPath).toBe(spacedPath)
+		expect(matches[0].image.mimeType).toBe("image/png")
+	})
+
+	it("attaches an unquoted path with backslash-escaped spaces (terminal drag shape)", () => {
+		const spacedPath = join(tmpDir, "Screenshot 2026-10-05 at 14.32.10.png")
+		writeFileSync(spacedPath, PNG_BYTES)
+		const escaped = spacedPath.replace(/ /g, "\\ ")
+		const matches = extractTypedImagePaths(`what is ${escaped}?`, tmpDir)
+		expect(matches).toHaveLength(1)
+		expect(matches[0].resolvedPath).toBe(spacedPath)
+	})
+
+	it("does not join prose spanning a quoted boundary into a phantom path", () => {
+		const spacedPath = join(tmpDir, "Screenshot 2026-10-05 at 14.32.10.png")
+		writeFileSync(spacedPath, PNG_BYTES)
+		// The join must stop at the quoted span — "Screenshot" alone is not a path.
+		const matches = extractTypedImagePaths(`"Screenshot" is in ${spacedPath}`, tmpDir)
+		expect(matches).toHaveLength(1)
+		expect(matches[0].resolvedPath).toBe(spacedPath)
+	})
+
+	it("does not join prose into phantom image paths", () => {
+		// A path-looking token whose joined forms do not exist must stay ignored.
+		const matches = extractTypedImagePaths(`check the final report.png draft now`, tmpDir)
+		expect(matches).toEqual([])
+	})
+
 	it("attaches single-quoted paths", () => {
 		const spacedPath = join(tmpDir, "my cat.png")
 		writeFileSync(spacedPath, PNG_BYTES)
