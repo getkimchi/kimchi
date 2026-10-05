@@ -36,7 +36,14 @@ const MAX_TRACE_CALLS = 1000
 export interface ComposedDeps {
 	cwd: string
 	getSession: (id: string) => DapSession | undefined
-	launchSession: (opts: { program: string; stopOnEntry?: boolean }) => Promise<DapSession>
+	launchSession: (opts: {
+		program: string
+		stopOnEntry?: boolean
+		sourceFileHint?: string
+		/** Default request/stop budget for the new session — pass the caller's
+		 *  wall-clock timeoutMs so internal waits don't die on the 30s default. */
+		sessionTimeoutMs?: number
+	}) => Promise<DapSession>
 }
 
 // =============================================================================
@@ -176,11 +183,19 @@ async function collectLocals(session: DapSession, frameId?: number): Promise<Var
 }
 
 /** Resolve a session: use an existing one by id (don't terminate), or create
- *  a new one from the program path (terminate on all paths). */
+ *  a new one from the program path (terminate on all paths). `sourceFileHint`
+ *  helps adapter resolution for extensionless compiled binaries (resolved from
+ *  the source file the program was built from). `sessionTimeoutMs` aligns the
+ *  session's default request/stop budget with the caller's wall-clock budget —
+ *  without it a debuggee on a large binary (dlv + a 30MB Go test binary with
+ *  thousands of gdb-remote round-trips) can die on the 30s default while the
+ *  caller's longer timeout is still ticking. */
 async function resolveSession(
 	deps: ComposedDeps,
 	sessionId: string | undefined,
 	program: string,
+	sourceFileHint?: string,
+	sessionTimeoutMs?: number,
 ): Promise<{ session: DapSession; shouldTerminate: boolean }> {
 	if (sessionId) {
 		const session = deps.getSession(sessionId)
@@ -190,7 +205,7 @@ async function resolveSession(
 	// Launch with stopOnEntry so breakpoints can be set BEFORE the debuggee
 	// runs — otherwise adapters like dlv dap start the program immediately on
 	// configurationDone and it may exit before the breakpoint is registered.
-	const session = await deps.launchSession({ program, stopOnEntry: true })
+	const session = await deps.launchSession({ program, stopOnEntry: true, sourceFileHint, sessionTimeoutMs })
 	return { session, shouldTerminate: true }
 }
 
@@ -279,7 +294,15 @@ export interface DebugStateAtOptions {
  *  without hitting the breakpoint. */
 export async function debugStateAt(deps: ComposedDeps, opts: DebugStateAtOptions): Promise<DebugStateAtResult> {
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_COMPOSED_TIMEOUT_MS
-	const { session, shouldTerminate } = await resolveSession(deps, opts.sessionId, opts.program ?? opts.file)
+	// `file` doubles as the adapter-resolution hint: when `program` is an
+	// extensionless compiled binary, the adapter is resolved from `file`.
+	const { session, shouldTerminate } = await resolveSession(
+		deps,
+		opts.sessionId,
+		opts.program ?? opts.file,
+		opts.file,
+		timeoutMs,
+	)
 
 	return withTimeoutAndCleanup(
 		timeoutMs,
@@ -362,7 +385,7 @@ export async function debugLastError(
 	opts: DebugLastErrorOptions,
 ): Promise<DebugLastErrorResult | null> {
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_COMPOSED_TIMEOUT_MS
-	const { session, shouldTerminate } = await resolveSession(deps, opts.sessionId, opts.program)
+	const { session, shouldTerminate } = await resolveSession(deps, opts.sessionId, opts.program, undefined, timeoutMs)
 
 	return withTimeoutAndCleanup(
 		timeoutMs,
@@ -433,7 +456,7 @@ export async function debugTraceCalls(
 	opts: DebugTraceCallsOptions,
 ): Promise<DebugTraceCallsResult> {
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_COMPOSED_TIMEOUT_MS
-	const { session, shouldTerminate } = await resolveSession(deps, opts.sessionId, opts.program)
+	const { session, shouldTerminate } = await resolveSession(deps, opts.sessionId, opts.program, undefined, timeoutMs)
 
 	return withTimeoutAndCleanup(
 		timeoutMs,
@@ -480,7 +503,7 @@ export async function debugWatchChange(
 	opts: DebugWatchChangeOptions,
 ): Promise<DebugWatchChangeResult> {
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_COMPOSED_TIMEOUT_MS
-	const { session, shouldTerminate } = await resolveSession(deps, opts.sessionId, opts.program)
+	const { session, shouldTerminate } = await resolveSession(deps, opts.sessionId, opts.program, undefined, timeoutMs)
 	const supportsDataBp = session.capabilities?.supportsDataBreakpoints === true
 	// v1: always use polling. The capability is detected for future use but
 	// the data-breakpoint code path is not yet implemented.

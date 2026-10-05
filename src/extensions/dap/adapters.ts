@@ -92,8 +92,13 @@ const ADAPTERS: DapAdapterConfig[] = [
 		languages: ["go"],
 		extensions: ["go"],
 		launchType: "go",
-		// dlv dap requires mode: "debug" to build & launch the program.
+		// mode "debug" (build & launch) is the safe default; prepareLaunchArgs
+		// switches to "exec" when the program is a prebuilt binary.
 		launchConfig: { mode: "debug" },
+		// mode "debug" runs `go build` before launching — a cold build of a large
+		// module easily exceeds the generic 5s handshake budget.
+		handshakeTimeoutMs: 30_000,
+		prepareLaunchArgs: prepareDlvLaunchArgs,
 		installHint: "go install github.com/go-delve/delve/cmd/dlv@latest",
 	},
 	{
@@ -297,6 +302,52 @@ export function detectMissingAdapters(cwd: string): DapAdapterConfig[] {
 }
 
 /**
+ * Walk up from `dir` to the filesystem root and return the first directory
+ * containing a go.mod — the module root. Returns null when no go.mod exists.
+ * Delve runs `go build <absolute program path>` from ITS OWN cwd when mode is
+ * "debug"; in nested-module repos (go.mod in a subdirectory rather than the
+ * repo root) that build fails with "cannot find main module" unless dlv first
+ * chdirs into the module root (DAP `dlvCwd`).
+ */
+function dlvModuleRoot(dir: string): string | null {
+	let current = path.resolve(dir)
+	while (true) {
+		if (fs.existsSync(path.join(current, "go.mod"))) return current
+		const parent = path.dirname(current)
+		if (parent === current) return null
+		current = parent
+	}
+}
+
+/**
+ * Tailor the delve `launch` arguments to the concrete program path:
+ * - directory (Go package) → mode "debug" + `dlvCwd` at the module root
+ * - *.go source file      → mode "debug" (dlv builds the file)
+ * - any other existing file (compiled binary, e.g. a `go test -c` output)
+ *   → mode "exec"; building a binary path would fail inside dlv
+ * - nonexistent path      → no overrides; dlv's own error is surfaced instead
+ *
+ * The DAP tools stay language-agnostic — this is the only place that knows
+ * about delve's mode/cwd semantics.
+ */
+function prepareDlvLaunchArgs(ctx: { program: string; cwd: string; stopOnEntry?: boolean }): Record<string, unknown> {
+	let stat: fs.Stats
+	try {
+		stat = fs.statSync(ctx.program)
+	} catch {
+		return {}
+	}
+	if (stat.isDirectory()) {
+		const moduleRoot = dlvModuleRoot(ctx.program)
+		return moduleRoot ? { mode: "debug", dlvCwd: moduleRoot } : { mode: "debug" }
+	}
+	if (path.extname(ctx.program).toLowerCase() === ".go") {
+		return { mode: "debug" }
+	}
+	return { mode: "exec" }
+}
+
+/**
  * Resolve an adapter for a file path from the given (already-detected)
  * adapters, by extension. Returns null if none applies. Mirrors
  * lsp/servers.ts serverForFile. Extension match is dotless (e.g. "ts").
@@ -314,6 +365,38 @@ export function adapterForFile(filePath: string, adapters: DapAdapterConfig[]): 
 export function adapterForLanguage(language: string, adapters: DapAdapterConfig[]): DapAdapterConfig | null {
 	const lang = language.toLowerCase()
 	return adapters.find((a) => a.languages.some((l) => l.toLowerCase() === lang)) ?? null
+}
+
+/**
+ * The full adapter-resolution chain shared by dap.ts (the extension entry)
+ * and the integration-test harness, in priority order:
+ *   1. explicit adapter name
+ *   2. program file extension (adapterForFile)
+ *   3. program directory contents (Go package dir like ./cmd/server)
+ *   4. parent directory contents (extensionless binary next to its sources)
+ *   5. caller's source-file hint (extensionless compiled binary debugged via
+ *      the source file it was built from — e.g. debug_state_at's `file`)
+ * `program` and `sourceFileHint` must be pre-resolved absolute paths.
+ * Returns null when nothing matches.
+ */
+export function resolveAdapterForProgram(opts: {
+	program: string
+	adapterName?: string
+	sourceFileHint?: string
+	adapters: DapAdapterConfig[]
+}): DapAdapterConfig | null {
+	const { program, adapterName, sourceFileHint, adapters } = opts
+	if (adapterName) {
+		return adapters.find((a) => a.name === adapterName) ?? null
+	}
+	let adapter = adapterForFile(program, adapters)
+	if (!adapter) adapter = adapterForDirectory(program, adapters)
+	if (!adapter) {
+		const parent = path.dirname(program)
+		if (parent !== program) adapter = adapterForDirectory(parent, adapters)
+	}
+	if (!adapter && sourceFileHint) adapter = adapterForFile(sourceFileHint, adapters)
+	return adapter
 }
 
 /** The full registry. Exported for tests and the status-footer lookup. */

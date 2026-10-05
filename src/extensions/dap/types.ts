@@ -307,4 +307,14 @@ export interface DapAdapterConfig {
 	installHint?: string
 	/** Adapter-specific default launch config (merged into the `launch` request arguments). */
 	launchConfig?: Record<string, unknown>
+	/** Optional hook that tailors the `launch` request arguments to the concrete
+	 *  program being debugged. Called by DapSession.launch() AFTER merging
+	 *  `launchConfig`, so the returned fields override the static defaults.
+	 *  Example: dlv needs mode:"exec" for prebuilt binaries and `dlvCwd`
+	 *  pointing at the Go module root for packages in nested-module repos. */
+	prepareLaunchArgs?: (ctx: { program: string; cwd: string; stopOnEntry?: boolean }) => Record<string, unknown>
+	/** Milliseconds to wait for the adapter's `initialized` event during the
+	 *  launch handshake before giving up. Default is 5000ms. Adapters that build
+	 *  before launching (dlv mode:"debug") need more headroom for cold builds. */
+	handshakeTimeoutMs?: number
 }
