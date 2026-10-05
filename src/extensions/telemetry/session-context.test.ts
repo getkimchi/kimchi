@@ -127,6 +127,29 @@ describe("SessionContext", () => {
 		expect(body.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].startTimeUnixNano).toBe("2000000000")
 	})
 
+	it("does not retry discarded health counts after telemetry is re-enabled", async () => {
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		vi.spyOn(Math, "random").mockReturnValue(0)
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.cumulative.prCost = { matching: { explicit: 4 }, delivery: {}, startTimeUnixNano: "1000000000" }
+		vi.mocked(globalThis.fetch).mockImplementationOnce(async () => {
+			vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+			ctx.flushMetrics()
+			vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+			ctx.cumulative.prCost = { matching: { session: 1 }, delivery: {}, startTimeUnixNano: "2000000000" }
+			return new Response(null, { status: 503 })
+		})
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+		expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+		const body = JSON.parse(String(vi.mocked(globalThis.fetch).mock.calls[1][1]?.body))
+		expect(body.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].startTimeUnixNano).toBe("2000000000")
+	})
+
 	it("emit appends source and session_type to every event", async () => {
 		const { getActiveFerment } = await import("../ferment/index.js")
 		vi.mocked(getActiveFerment).mockReturnValue(undefined)
