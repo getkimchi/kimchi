@@ -5,6 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import type * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { observeToolFiles } from "../work-attribution/file-observations.js"
+
+vi.mock("../work-attribution/file-observations.js", () => ({
+	observeToolFiles: vi.fn((_ctx, _id, _source, run) => run()),
+}))
 
 const upstream = vi.hoisted(() => ({
 	api: undefined as ExtensionAPI | undefined,
@@ -329,6 +334,21 @@ describe("upstream MCP adapter facade", () => {
 		api.registerTool(tool("docs_delete_issue", "MCP: delete_issue"))
 		expect(harness.getActiveToolNames()).toContain("docs_delete_issue")
 		profiles.resetAll()
+	})
+
+	it("observes local file changes for write-capable MCP tools but skips qualified read-only tools", async () => {
+		vi.mocked(observeToolFiles).mockClear()
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		readOnlyState.wireNames.add("docs_get_issue")
+		upstream.api?.registerTool(tool("docs_get_issue", "Read"))
+		upstream.api?.registerTool(tool("docs_write", "Write"))
+		const ctx = createContext()
+		for (const registered of harness.getRegisteredTools())
+			await registered.execute(registered.name, {}, undefined, undefined, ctx)
+		expect(observeToolFiles).toHaveBeenCalledExactlyOnceWith(ctx, "docs_write", "mcp", expect.any(Function))
 	})
 
 	it("blocks all direct and gateway MCP calls while the live permission mode is plan", async () => {

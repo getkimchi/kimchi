@@ -162,6 +162,34 @@ describe("readable work summaries", () => {
 		const row = field === "billingLookup" ? summary(workId).requests[0] : summary(workId).commits[0]
 		expect(row[field]).toEqual(field === "pullRequests" ? [valid] : valid)
 	})
+	it("retains hunk matches and lets only stronger file evidence replace them", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const commit = { type: "commit", sha: "a".repeat(40), repository: "/project/.git", worktree: "/project" }
+		const record = async (method: string, transitionId: string) => {
+			appendWorkRecord(ctx, {
+				...commit,
+				fileMatches: [{ path: "file.ts", method, transitionIds: [transitionId], worktree: "/project" }],
+			})
+			await flushWorkSummaries()
+		}
+		await record("file-hunks", "hunk-one")
+		await record("file-hunks", "hunk-two")
+		expect(summary(workId).commits[0].fileMatches).toEqual([
+			{ path: "file.ts", method: "file-hunks", transitionIds: ["hunk-one", "hunk-two"], worktree: "/project" },
+		])
+		await record("path-blob", "blob")
+		await record("file-hunks", "late-hunk")
+		expect(summary(workId).commits[0].fileMatches).toEqual([
+			{ path: "file.ts", method: "path-blob", transitionIds: ["blob"], worktree: "/project" },
+		])
+		await record("file-chain", "exact")
+		await record("path-blob", "late-blob")
+		await record("file-hunks", "last-hunk")
+		expect(summary(workId).commits[0].fileMatches).toEqual([
+			{ path: "file.ts", method: "file-chain", transitionIds: ["exact"], worktree: "/project" },
+		])
+	})
 	it("shows why a session continued another work without changing request timestamps", async () => {
 		const ctx = context()
 		const workId = getWorkId(ctx)
@@ -369,7 +397,7 @@ describe("readable work summaries", () => {
 			expect.objectContaining({ transitionId: "old-transition", toolCallId: "old-tool" }),
 		])
 		expect(summary(request.workId).fileTransitions[0]).not.toHaveProperty("requestId")
-		expect(JSON.parse(fs.readFileSync(join(dir, "work-attribution", ".recovered.json"), "utf8")).version).toBe(4)
+		expect(JSON.parse(fs.readFileSync(join(dir, "work-attribution", ".recovered.json"), "utf8")).version).toBe(5)
 		fs.rmSync(path(request.workId))
 		vi.resetModules()
 		const relaunched = await import("./summary.js")
@@ -377,6 +405,48 @@ describe("readable work summaries", () => {
 		await relaunched.flushWorkSummaries()
 		expect(summary(request.workId).fileTransitions).toHaveLength(1)
 		expect(summary(request.workId).requests[0]).toEqual(existing.requests[0])
+	})
+	it("replays unchanged version-4 ledgers to restore observations and hunk evidence", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const fileMatch = { path: "file.ts", worktree: "/project", method: "file-hunks", transitionIds: ["native-edit"] }
+		appendWorkRecord(ctx, {
+			type: "commit",
+			sha: "a".repeat(40),
+			repository: "/project/.git",
+			worktree: "/project",
+			fileMatches: [fileMatch],
+		})
+		appendWorkRecord(ctx, {
+			type: "file_observation",
+			observationId: "shell-window",
+			toolCallId: "shell-tool",
+			source: "bash",
+			repository: "/project/.git",
+			worktree: "/project",
+			files: [],
+			complete: false,
+		})
+		await flushWorkSummaries()
+		const old = summary(workId)
+		old.fileObservations = undefined
+		old.commits[0].fileMatches = []
+		fs.writeFileSync(path(workId), JSON.stringify(old))
+		const { size, mtimeMs } = fs.statSync(path(workId))
+		const ledger = join(dir, "work-attribution", "parent.jsonl")
+		const past = new Date(Date.now() - 60 * 60 * 1000)
+		fs.utimesSync(ledger, past, past)
+		fs.writeFileSync(
+			join(dir, "work-attribution", ".recovered.json"),
+			JSON.stringify({ version: 4, startedAt: Date.now(), summaries: { [workId]: `${size}:${mtimeMs}` } }),
+		)
+		recoverWorkSummaries()
+		await flushWorkSummaries()
+		expect(summary(workId).fileObservations).toEqual([
+			expect.objectContaining({ observationId: "shell-window", complete: false }),
+		])
+		expect(summary(workId).commits[0].fileMatches).toEqual([fileMatch])
+		expect(fs.statSync(ledger).mtimeMs).toBe(past.getTime())
 	})
 	it.each([
 		undefined,

@@ -407,6 +407,32 @@ describe("exclusive native contributions within a multi-PR work", () => {
 	const firstKey = "github:github.com/example/repository#1"
 	const secondKey = "github:github.com/example/repository#2"
 	const otherCommit = () => commit("work-a", [secondPull()], "session-a", { sha: "b".repeat(40) })
+	it.each([
+		"session",
+		"inferred",
+	])("allows complete evidence to strengthen an earlier hunk match (%s)", (attribution) => {
+		const edit = nativeEdit("a")
+		const weak = contribution(edit, pullRequest(), {
+			fileMatches: [
+				{ path: edit.path, worktree: edit.worktree, method: "file-hunks", transitionIds: [edit.transitionId] },
+			],
+		})
+		const rows = [
+			request("a", undefined, undefined, undefined, { segment: { id: "input-a", attribution, reason: "test" } }),
+			edit,
+			weak,
+			otherCommit(),
+		]
+		const prices = [charge("a", "1")]
+		expect(calculatePullRequestCosts(rows, prices).requests[0].allocation).toBe(
+			attribution === "inferred" ? "inferred" : "shared",
+		)
+		rows.push(contribution(edit))
+		const report = calculatePullRequestCosts(rows, prices)
+		expect(report.requests[0]).toMatchObject({ allocation: "pull-request", pullRequestIds: [firstKey] })
+		expect(report.pullRequests.find((row) => row.key === firstKey)?.totalCostUsd).toBe("1.000000000")
+		expect(calculatePullRequestCosts(rows.toReversed(), prices)).toEqual(report)
+	})
 
 	it("allocates each editing request once while leaving planning and auxiliary requests shared", () => {
 		const first = nativeEdit("first")

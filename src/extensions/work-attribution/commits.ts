@@ -10,7 +10,15 @@ import {
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
 
-import { appendWorkRecord, getWorkId, pinWorkContext, type WorkContext, workLedgerPath } from "../work-attribution.js"
+import {
+	appendWorkRecord,
+	getToolRequest,
+	getWorkId,
+	pinWorkContext,
+	type WorkContext,
+	workLedgerPath,
+} from "../work-attribution.js"
+import { observeToolFiles } from "./file-observations.js"
 
 const MAX_TRACE_BYTES = 8 * 1024 * 1024
 const GIT_LOOKUP_TIMEOUT_MS = 2000
@@ -301,12 +309,20 @@ export function createWorkCommitTrackingOperations(
 ): BashOperations {
 	const pinned = pinWorkContext(ctx)
 	try {
-		const workId = getWorkId(pinned)
+		const origin = getToolRequest(pinned, toolCallId)
+		const workId = origin?.workId ?? getWorkId(pinned)
+		const observed: BashOperations = {
+			exec: (command, cwd, options) =>
+				observeToolFiles(pinned, toolCallId, "bash", () => local.exec(command, cwd, options), {
+					workId,
+					requestId: origin?.requestId,
+				}),
+		}
 		return createCommitTrackingOperations((commit) => {
 			// Follow only copies of this work's own commits, not unrelated commits a rebase or pick replays.
 			if (commit.rewrittenFrom && !recordedCommits(pinned, workId).has(commit.rewrittenFrom)) return
-			appendWorkRecord(pinned, { type: "commit", ...commit, toolCallId }, workId)
-		}, local)
+			appendWorkRecord(pinned, { type: "commit", ...commit, toolCallId, requestId: origin?.requestId }, workId)
+		}, observed)
 	} catch (error) {
 		console.warn("[work-attribution] Could not initialize Git attribution:", error)
 		return local

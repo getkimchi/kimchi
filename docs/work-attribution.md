@@ -165,6 +165,10 @@ One request can produce edits in several repositories. Each edit keeps the ID of
 
 `fileTransitions` contains these edits in the summary. Old records can have no `requestId`; Kimchi does not invent one. These links support later cost allocation, but edit counts do not determine a price split.
 
+Bash and attributed write-capable MCP calls also compare the starting repository before and after execution. Changed paths appear in `fileObservations`, including writes before a failure or cancellation. Background Bash records its observation when the process finishes. Existing dirty files are compared against their actual starting contents, so a read-only command does not claim earlier human edits.
+
+These observations are candidates: a human or another agent can edit during the same window. They cannot prove exclusive PR ownership or automatically connect a named ADR. Qualified read-only MCP calls are skipped. Opaque remote changes and changes outside the starting repository have no local observation. Snapshots read at most 128 dirty paths within a one-second scan budget; unsupported files or incomplete scans record `complete: false`, with no inferred file ownership.
+
 ### 3. Link commits to the work that produced them
 
 There are two routes. A commit made through Bash is linked when the command finishes. Background checks find supported external commits in all repositories already known through local edit journals. They run at startup and every 30 seconds while a top-level Kimchi process remains open; reopening the original worktree is not required.
@@ -192,7 +196,9 @@ flowchart LR
     M -->|Yes| T["Save file-chain evidence"]
     M -->|No| B{"New reachable commit changes path<br/>to the same blob and mode,<br/>with one recorded work owner?"}
     B -->|Yes| P["Save weaker path-blob evidence"]
-    B -->|No| U["Leave file unmatched"]
+    B -->|No| H{"All native changed sections survive<br/>with unique unchanged context?"}
+    H -->|Yes| Q["Save file-hunks evidence"]
+    H -->|No| U["Leave file unmatched"]
 ```
 
 - **Bash route:** covers new commits, reverts and non-fast-forward merges. Rebase and cherry-pick copies keep the original hash in `rewrittenFrom`.
@@ -202,6 +208,10 @@ flowchart LR
 - **A commit can have several contributions.** File matches keep each work, session and matched paths. Repeating a commit hash does not create another commit or imply another charge.
 
 New edit records reference a snapshot of the visible Git references and worktree heads to exclude commits that already existed before the edit. Edits share a saved snapshot while those references stay the same. Matching can survive removal of the original linked worktree while the repository and new commit remain available. It cannot recover a repository that was deleted entirely.
+
+`file-hunks` handles disjoint human and agent edits in the same text file, including inserted lines that shift the agent's change. Every native changed section must appear completely, with unique unchanged context. Overlap, partial staging, repeated ambiguous context, broken edit chains and missing objects stay unmatched. Whole-file evidence takes precedence; a later hunk match cannot weaken it.
+
+Native writes retain eligible before/after file contents as local Git blobs for this comparison. Eligible files are tracked UTF-8 text, no larger than 256 KiB; matching allows up to 64 changed sections. The journal still stores hashes and IDs. Ordinary pushes do not send these unreferenced blobs, but local backups can retain them and Git garbage collection can remove them. Reading a file for continuation does not create a blob. A failed optional snapshot leaves ordinary whole-file tracking available.
 
 ### 4. Find pull requests and merge requests
 
@@ -269,7 +279,7 @@ Kimchi tries credentials in this order: an environment token for the selected ho
 
 Before sending a covered model request, Kimchi saves and flushes its request ID, work ID and session ID. It then sends `X-Request-Id`. This also works with telemetry disabled.
 
-Records with the same work ID go into the same `work.json`. Requests are deduplicated by request ID; commit records keep the contributing sessions. `fileTransitions` keeps native edits, and `continuations` explains why another session adopted the work. IDs identify records; array positions have no meaning.
+Records with the same work ID go into the same `work.json`. Requests are deduplicated by request ID; commit records keep the contributing sessions. `fileTransitions` keeps native edits, `fileObservations` keeps candidate Bash/MCP changes, and `continuations` explains why another session adopted the work. IDs identify records; array positions have no meaning.
 
 A request record describes an attempt. It does not prove a successful response or a charge. Covered HTTP replies add their status and safe response IDs. Billing lookups later add exact prices when available. `work.json` contains paths, request metadata, PR links and billing rows, with no prompts or file contents. Retained native plans contain the plan text and stay local. PR lookup sends repository and commit identifiers to the repository's GitHub or GitLab API.
 
@@ -285,8 +295,6 @@ All paths below are inside the agent directory.
 | `work/<workId>/scope.json` | Original API endpoint, organization, user and Git common-directory identity. Credentials are not saved here. |
 | `work/<workId>/intent.json` | Saved task text for opt-in model matching, bound to its original account and repository. |
 | `work/<workId>/plans/<name>-<content-hash>.md` | Saved plan versions that survive worktree deletion. Identical content reuses the same copy. |
-| `work/<workId>/intent.json` | First-message text and repository identity for model matching. Sent in matching calls to the selected provider; not included in `work.json`. |
-| `work/<workId>/scope.json` | Original verified account and Git repository of newly created work. Contains stable IDs, no credentials. Used to check automatic continuation. |
 | `work-attribution/<session-id>.jsonl` | Append-only history used to rebuild the summary. |
 | `work-attribution/transitions/*.jsonl` | Edit evidence: request/tool IDs, repository paths, Git blobs and file modes before and after each native edit/write change. |
 | `work-attribution/ref-tips/*.json` | Shared snapshots of the commit references and worktree heads visible when an edit was saved. `historyBoundaryId` identifies the snapshot. |
@@ -314,7 +322,7 @@ All paths below are inside the agent directory.
 
 **Background commit matching**
 
-- Partial staging, overlapping human edits, competing work, Bash/MCP-only edits, unsupported filters and symlinks can leave files unmatched.
+- Partial staging, overlapping human edits, competing work, Bash/MCP-only edits, unsupported filters and symlinks can leave files unmatched. Disjoint human edits can match through `file-hunks`.
 - The scan checks up to 512 recent commits within a time budget. Files, journals and logs have 8 MiB limits. Finished candidates are checkpointed; changed evidence allows another attempt.
 - `historyBoundaryId` connects an edit to its saved Git reference snapshot. Large snapshots share the journal's size limits; when the required history is unavailable, Kimchi leaves the weaker match unresolved. Old journals can only use the history they actually recorded.
 - Top-level sessions in one process share a worker. Separate processes take turns through a nonblocking lease. Children neither start scans nor wait for a parent's scan at shutdown. Closing the last owning session stops its worker; no separate daemon runs after Kimchi exits.
@@ -354,7 +362,7 @@ flowchart TD
 
 Planning, implementation, local children and fixes count together when their saved work links point to the same PR. Related discussion also counts when it belongs to that work, even if it changes no files. Two works contributing to one PR produce one combined total only when their API endpoint, organization and user match. Different accounts get separate totals. Separate works in one conversation keep their own PR links and costs. A malformed PR link affects only its own work. Repeating a lookup, rebasing a commit or rebuilding the summary does not multiply its charges.
 
-When one work spans several PRs, complete edit evidence can assign an editing request's whole price to one PR. Every recorded edit from that request must lead there. Planning without edits, a request touching both PRs, missing or conflicting proof, and weaker `path-blob` evidence stay shared. Kimchi never divides one request's charge by file count or a guessed percentage. Rewrite ancestry alone cannot establish an exclusive allocation.
+When one work spans several PRs, complete edit evidence can assign an editing request's whole price to one PR. Every recorded edit from that request must lead there. Planning without edits, a request touching both PRs, missing or conflicting proof, and weaker `path-blob` or `file-hunks` evidence stay shared. Kimchi never divides one request's charge by file count or a guessed percentage. Rewrite ancestry alone cannot establish an exclusive allocation.
 
 Pending prices become eligible for another check after 30 seconds; priced requests become eligible after five minutes. Each pass has time and request limits, so a backlog can take several passes. A price that arrives late still belongs to the original request and merge cutoff. Closing the last top-level session stops the worker; the next launch resumes it. `/work` reads the saved result without making a model call or waiting for the network.
 
