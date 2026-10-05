@@ -291,8 +291,8 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			// session, CLI flags) keep their precedence on top of the seeded
 			// default. When no flash candidate is served either, the org stays on
 			// multi-model untouched.
-			const autoServed = !!ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
-			const gatedDefault = autoServed
+			const autoModel = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
+			const gatedDefault = autoModel
 				? undefined
 				: GATED_DEFAULT_MODEL_CANDIDATES.map((id) => ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, id)).find(
 						(candidate) => candidate !== undefined,
@@ -310,8 +310,6 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			// rollback happens — a silent switch away from a deliberately chosen
 			// model reads as a bug.
 			if (mainFreshLaunch && ctx.model && !isAutoRoutedModel(ctx.model)) {
-				const installed = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
-
 				// Installs the fresh-session default — the gated flash model or Auto —
 				// and announces it. Persist: upstream 0.85.1 made setModel session-only
 				// by default, and the notice claims a default-level change. Persisting
@@ -330,13 +328,14 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 					)
 				}
 
-				if (!installed && gatedDefault) {
+				if (!autoModel && gatedDefault) {
 					// Gated organization: Auto is absent from the catalog, so the
 					// served flash model is the default instead of multi-model.
 					// Mirrors the Auto rollback below — session-level switches are
 					// honoured for their session, fresh sessions roll back. A session
-					// already on the gated default needs no churn: falling through
-					// to the kimchi-dev unwrap below still disables multi-model.
+					// already on the gated default needs no churn: multi-model stays
+					// disabled for the session and nothing is re-installed or announced,
+					// so return early.
 					const alreadyOnDefault = ctx.model.provider === AUTO_MODEL_PROVIDER && ctx.model.id === gatedDefault.id
 					if (alreadyOnDefault) {
 						setMultiModelEnabled(sessionId, false)
@@ -346,8 +345,8 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 					await installFreshDefault(gatedDefault, gatedDefault.name)
 					return
 				}
-				if (installed) {
-					await installFreshDefault(installed, AUTO_MODEL_NAME)
+				if (autoModel) {
+					await installFreshDefault(autoModel, AUTO_MODEL_NAME)
 					// A fresh session carries no routing state to hydrate; stop here.
 					return
 				}

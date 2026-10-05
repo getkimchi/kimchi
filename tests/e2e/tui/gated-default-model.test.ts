@@ -23,7 +23,7 @@ test.use(TUI_TEST_CONFIG)
  * served, `auto` is not.
  *
  * The multi-model deprecation label is likewise pinned here: the virtual row
- * renders "Deprecated — replaced by Auto." in the /model picker, mirroring
+ * renders "[to be deprecated]" in the /model picker, mirroring
  * the ACP surface's description.
  */
 
@@ -135,7 +135,7 @@ test("the /model picker labels multi-model deprecated", async ({ terminal }) => 
 			})
 			const picker = viewText(terminal)
 			expect(picker).toContain("multi-model")
-			expect(picker).toContain("Deprecated — replaced by Auto.")
+			expect(picker).toContain("[to be deprecated]")
 			trace.step("picker labels multi-model deprecated")
 			terminal.keyEscape()
 			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS, full: false })

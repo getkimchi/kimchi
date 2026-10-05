@@ -1,8 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
-import { MULTI_MODEL_ID } from "./cli-args.js"
-import { MULTI_MODEL_DEPRECATION_LABEL } from "./extensions/auto-model/constants.js"
 import { humanizeContextWindow } from "./extensions/vision-support.js"
 
 export interface ModelTableRow {
@@ -72,10 +70,11 @@ export function renderModelTable(
 		if (row.warning && !showDesc) {
 			description = `  ${theme.fg("warning", "⚠")}`
 		} else if (showDesc) {
-			// The virtual multi-model row is harness-side and cannot carry a
-			// backend deprecation marker; its label is pinned here, outranking
-			// any default-model annotation the patch supplied.
-			const annotation = row.id === MULTI_MODEL_ID ? MULTI_MODEL_DEPRECATION_LABEL : (row.annotation ?? "")
+			// The annotation comes from the row producer: the pi-coding-agent
+			// patch annotates the virtual multi-model row with the deprecation
+			// label (outranking "Default for new sessions.") and defaults with
+			// "Default for new sessions.".
+			const annotation = row.annotation ?? ""
 			if (row.warning && annotation) {
 				const annotationW = Math.min(visibleWidth(annotation), descW)
 				const remaining = descW - annotationW - 3

@@ -38,10 +38,16 @@ export const GATED_DEFAULT_MODEL_CANDIDATES: readonly string[] = ["deepseek-v4-f
 /**
  * The harness-side deprecation label for the virtual multi-model selection.
  * Multi-model does not exist in the platform catalog, so no backend marker
- * can carry this; both user surfaces (TUI /model selector, ACP config
- * options) render this constant instead.
+ * can carry this. ACP sources this constant; the TUI /model selector renders
+ * the same literal from the pi-coding-agent patch (patched dist code cannot
+ * import harness source), and the rendered-text tests pin both sides to the
+ * same string.
+ *
+ * The wording is deliberately replacement-agnostic: organizations gated off
+ * the `auto` virtual model never see Auto, so "replaced by Auto" would point
+ * at a model they cannot select.
  */
-export const MULTI_MODEL_DEPRECATION_LABEL = "Deprecated — replaced by Auto."
+export const MULTI_MODEL_DEPRECATION_LABEL = "[to be deprecated]"
 
 /**
  * Whether the model is a routed virtual model, by the `auto*` naming

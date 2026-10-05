@@ -243,7 +243,7 @@ describe("/model selector capability table (installed patch)", () => {
 				expect(multiRow).toContain("orchestration")
 				// Orchestrator (kimi-k2.6) stats: 200k context, vision ✓. Its
 				// description follows the harness-side deprecation label.
-				expect(multiRow).toMatch(/✓ {7}Deprecated — replaced by Auto\./)
+				expect(multiRow).toMatch(/✓ {7}\[to be deprecated\]/)
 				expect(multiRow).toContain("Flagship vision model.")
 				expect(multiRow).toContain("200k")
 			})
@@ -268,7 +268,7 @@ describe("/model selector capability table (installed patch)", () => {
 				})
 				const multiRow = modelRows(renderPlain(120)).find((r) => r.includes("multi-model"))
 				expect(multiRow).toBeDefined()
-				expect(multiRow).toContain("Deprecated — replaced by Auto.")
+				expect(multiRow).toContain("[to be deprecated]")
 				expect(multiRow).not.toContain("Default for new sessions.")
 				expect(multiRow).toContain("Flagship vision model.")
 			})

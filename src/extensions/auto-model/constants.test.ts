@@ -18,9 +18,10 @@ describe("GATED_DEFAULT_MODEL_CANDIDATES", () => {
 })
 
 describe("MULTI_MODEL_DEPRECATION_LABEL", () => {
-	it("names Auto as the replacement", () => {
-		expect(MULTI_MODEL_DEPRECATION_LABEL).toContain("Deprecated")
-		expect(MULTI_MODEL_DEPRECATION_LABEL).toContain("Auto")
+	it("does not name Auto as the replacement", () => {
+		// Organizations gated off the `auto` virtual model never see Auto, so
+		// the label must not point at a model they cannot select.
+		expect(MULTI_MODEL_DEPRECATION_LABEL).toBe("[to be deprecated]")
 	})
 })
 

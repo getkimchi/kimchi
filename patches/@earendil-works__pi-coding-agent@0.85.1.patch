@@ -25,7 +25,12 @@
 #     /v1/models/metadata, persisted through models.json) with the
 #     "Default for new sessions." annotation, replacing the old `· default`
 #     badge. The virtual multi-model row inherits its orchestrator model's
-#     stats/description. Layout width reads tui.terminal.columns (pi-tui's
+#     stats/description and is annotated "[to be deprecated]" —
+#     a literal mirroring MULTI_MODEL_DEPRECATION_LABEL in
+#     src/extensions/auto-model/constants.ts, which the patched dist cannot
+#     import (ACP sources the constant; rendered-text tests in
+#     src/model-selector-table.test.ts and tests/e2e/tui pin both sides to
+#     the same string). Layout width reads tui.terminal.columns (pi-tui's
 #     Terminal exposes `columns`, not `cols`); the last column is clipped,
 #     never padded, so the header cannot wrap onto a phantom blank line, and
 #     rows total exactly the terminal width. On narrow terminals the
@@ -718,7 +723,7 @@ index bd8894046f77385541fd9bd7b88268866a34a526..23f6a0c0328dbbf3b7226786dded8f0c
 +            selected: index === this.selectedIndex,
 +            current: item._isMultiModel ? enabled : !enabled && modelsAreEqual(this.currentModel, item.model),
 +            description: descriptions?.get(`${item.model.provider}/${item.model.id}`) ?? "",
-+            annotation: this.isDefaultModel(item.model) ? "Default for new sessions." : "",
++            annotation: item._isMultiModel ? "[to be deprecated]" : this.isDefaultModel(item.model) ? "Default for new sessions." : "",
 +        }));
 +        const renderTable = process.__kimchiRenderModelTable;
 +        if (typeof renderTable === "function") {
