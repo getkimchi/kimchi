@@ -16,7 +16,10 @@ function jsonResponse(body: unknown, status = 200): Response {
 describe("verifyApiKey", () => {
 	it("returns the org id the key is scoped to", async () => {
 		const fetchImpl = vi.fn(async () => jsonResponse({ organizationId: "org-1", userId: "user-1" }))
-		await expect(verifyApiKey("key", { fetch: fetchImpl })).resolves.toEqual({ organizationId: "org-1" })
+		await expect(verifyApiKey("key", { fetch: fetchImpl })).resolves.toEqual({
+			organizationId: "org-1",
+			userId: "user-1",
+		})
 		expect(fetchImpl).toHaveBeenCalledWith("https://api.test/ai-optimizer/v1beta/api-keys:verify", {
 			method: "POST",
 			headers: { Authorization: "Bearer key", Accept: "application/json" },

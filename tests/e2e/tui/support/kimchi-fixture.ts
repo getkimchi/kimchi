@@ -87,6 +87,7 @@ export interface SeedHomeResult {
 }
 
 export interface CreateKimchiFixtureOptions {
+	account?: Parameters<typeof startFakeOpenAiServer>[0]["account"]
 	rejectedApiKeys?: string[]
 	models?: FakeModel[]
 	responses: FakeResponseScript[]

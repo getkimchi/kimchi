@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { Socket } from "node:net"
 import { setTimeout as sleep } from "node:timers/promises"
+import type { VerifyApiKeyResponse } from "../../../../src/api/organizations.js"
 
 export interface FakeModel {
 	slug: string
@@ -113,6 +114,7 @@ export interface FakeOpenAiServer {
 }
 
 interface StartFakeOpenAiServerOptions {
+	account?: VerifyApiKeyResponse
 	rejectedApiKeys?: string[]
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
@@ -193,6 +195,14 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 		try {
 			if (options.rejectedApiKeys?.some((key) => req.headers.authorization === `Bearer ${key}`)) {
 				writeJson(res, 401, { error: "Invalid API key" })
+				return
+			}
+			if (req.method === "POST" && req.url === "/ai-optimizer/v1beta/api-keys:verify" && options.account) {
+				writeJson(
+					res,
+					req.headers.authorization === "Bearer fake" ? 200 : 401,
+					req.headers.authorization === "Bearer fake" ? options.account : { error: "Invalid fixture key" },
+				)
 				return
 			}
 			if (req.method === "GET" && req.url?.startsWith("/v1/models/metadata")) {
@@ -539,12 +549,30 @@ function pickResponseScript(
 	const useSubagent = subagentQueue.length > 0 && isSubagentRequest(request)
 	const primary = useSubagent ? subagentQueue : mainQueue
 	const fallback = useSubagent ? mainQueue : subagentQueue
-	return takeResponseScript(primary, request) ?? takeResponseScript(fallback, request) ?? { stream: ["fake response"] }
+	return (
+		takeResponseScript(primary, request) ??
+		takeResponseScript(fallback, request) ?? {
+			stream: [isWorkMatchingRequest(request) ? '{"decision":"unknown"}' : "fake response"],
+		}
+	)
+}
+
+/** Separate matching calls must not consume a scripted assistant turn. */
+export function isWorkMatchingRequest(request: FakeResponseRequest): boolean {
+	const body = request.body
+	if (!body || typeof body !== "object" || !("messages" in body) || !Array.isArray(body.messages)) return false
+	const first = body.messages[0]
+	return (
+		(first?.role === "system" || first?.role === "developer") &&
+		typeof first.content === "string" &&
+		/^(Decide whether a user's new message|Compare a new user message|Read a new user's message)/.test(first.content)
+	)
 }
 
 function takeResponseScript(queue: FakeResponseScript[], request: FakeResponseRequest): FakeResponseScript | undefined {
 	const matched = queue.findIndex((script) => script.match?.(request))
-	const index = matched >= 0 ? matched : queue.findIndex((script) => !script.match)
+	const index =
+		matched >= 0 ? matched : isWorkMatchingRequest(request) ? -1 : queue.findIndex((script) => !script.match)
 	return index >= 0 ? queue.splice(index, 1)[0] : undefined
 }
 

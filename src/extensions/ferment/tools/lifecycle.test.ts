@@ -6,8 +6,9 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import { createContext } from "../../__mocks__/context.js"
-import { flushWorkSummaries } from "../../work-attribution/summary.js"
-import { getWorkId } from "../../work-attribution.js"
+import { createExtensionApi } from "../../__mocks__/extension-api.js"
+import { flushWorkSummaries, readWorkRecords } from "../../work-attribution/summary.js"
+import { createWorkAttributionExtension, getWorkId, setWorkId } from "../../work-attribution.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { loadRuntimeState } from "../runtime-state-store.js"
 import { captureJudgeContext, setRuntimeStatePersistRoot } from "../state.js"
@@ -602,6 +603,49 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		expect(existsSync(join(attributionDir, ".kimchi", "plans"))).toBe(true)
 		if (stage !== "identity")
 			expect(loadRuntimeState(active.id, attributionDir).workId).toBe(originalWorkId ?? getWorkId(ctx))
+	})
+
+	it("saves the proposal's originating request even if work changed before the tool ran", async () => {
+		const { execute } = createProposeHarness()
+		const ctx = createContext({ hasUI: false, cwd: attributionDir })
+		const tracing = createExtensionApi()
+		createWorkAttributionExtension()(tracing.api)
+		const headers: Record<string, string> = {}
+		await tracing.getHandler("before_provider_headers")({ headers }, ctx)
+		const workId = getWorkId(ctx)
+		await tracing.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "tool-call-1", name: "propose_ferment_scoping" }],
+				},
+			},
+			ctx,
+		)
+		setWorkId(ctx)
+		const result = await execute(
+			"tool-call-1",
+			{
+				title: "Pinned Proposal",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "P1", goal: "Build it", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+		expect(okText(result)).toContain("Plan saved")
+		expect(readWorkRecords(attributionDir)).toContainEqual(
+			expect.objectContaining({
+				type: "plan",
+				workId,
+				requestId: headers["X-Request-Id"],
+			}),
+		)
 	})
 
 	it("creates a new draft ferment when an unknown ferment_id is provided and no active ferment exists", async () => {

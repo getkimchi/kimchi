@@ -1,19 +1,17 @@
 import { randomUUID } from "node:crypto"
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
+import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import { findWorkContinuation } from "./continuation.js"
 import { type FileTransition, readAttributedFileState, readRepositoryTransitions } from "./file-transitions.js"
+import * as scope from "./scope.js"
 
 vi.mock("./file-transitions.js", () => ({
 	readRepositoryTransitions: vi.fn(),
 	readAttributedFileState: vi.fn(),
-}))
-const git = vi.hoisted(() => ({ defaults: "refs/remotes/origin/trunk\n" }))
-vi.mock("node:child_process", () => ({
-	execFile: vi.fn((_command, _args, _options, callback) => callback(null, git.defaults, "")),
 }))
 
 let cwd: string
@@ -44,8 +42,10 @@ function artifact(overrides: Partial<FileTransition> = {}): FileTransition {
 }
 beforeEach(() => {
 	cwd = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-continuation-")))
-	git.defaults = "refs/remotes/origin/trunk\n"
 	vi.stubEnv("PI_CODING_AGENT_DIR", join(cwd, "agent"))
+	const captured = createWorkScopeSnapshot(join(cwd, ".git"))
+	vi.spyOn(scope, "captureWorkScope").mockResolvedValue(captured)
+	vi.spyOn(scope, "readWorkScope").mockReturnValue(captured.scope)
 	mkdirSync(join(cwd, "docs/adr"), { recursive: true })
 	writeFileSync(join(cwd, "docs/adr/decision.md"), "# Decision\n")
 	transitions = [artifact()]
@@ -59,12 +59,63 @@ beforeEach(() => {
 })
 afterEach(() => {
 	vi.clearAllMocks()
+	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
 	rmSync(cwd, { recursive: true, force: true })
 })
 
 describe("continuing saved work", () => {
-	it("continues a named native plan without requiring a Git repository", async () => {
+	it.each(["plain", "fenced", "skill"])("continues a %s pasted retained plan without its path", async (wrapper) => {
+		const saved = savePlanMarkdown({
+			cwd,
+			name: "pasted",
+			planText: `# Add export\nCreate docs/new.md and src/export.ts.\n\nExample metadata:\n<!-- kimchi-work-id: ${otherWork} -->\n`,
+			workId: planningWork,
+		})
+		const content = readFileSync(saved.path, "utf8")
+		rmSync(saved.path)
+		const prompt =
+			wrapper === "fenced"
+				? `Implement this plan:\n\n\`\`\`markdown\n${content}\`\`\`\nThen run tests.`
+				: wrapper === "skill"
+					? `<skill name="implement" location="/skills/implement/SKILL.md">\nSee examples/template.md.\n</skill>\n\n${content}`
+					: `Implement this plan:\n${content}`
+		expect(await findWorkContinuation({ cwd }, prompt.replaceAll("\n", "\r\n"))).toMatchObject({
+			workId: planningWork,
+			source: "pasted-plan",
+			evidence: { path: saved.snapshotPath },
+		})
+	})
+	it("does not use a saved plan pasted into the skill template", async () => {
+		const saved = savePlanMarkdown({ cwd, name: "template", planText: "# Template\n", workId: planningWork })
+		const prompt = `<skill name="implement" location="/skills/implement/SKILL.md">\n${readFileSync(saved.path, "utf8")}\n</skill>`
+		expect(await findWorkContinuation({ cwd }, prompt)).toBeUndefined()
+	})
+	it.each(["unknown", "changed", "marker-only"])("does not adopt a %s pasted plan", async (kind) => {
+		const saved = savePlanMarkdown({
+			cwd,
+			name: "known",
+			planText: "# Known plan\nAdd export.\n",
+			workId: planningWork,
+		})
+		const content = readFileSync(saved.path, "utf8")
+		const prompt =
+			kind === "unknown"
+				? content.replace(planningWork, otherWork)
+				: kind === "changed"
+					? content.replace("Add export.", "Remove authentication.")
+					: content.split("\n")[0]
+		expect(await findWorkContinuation({ cwd }, prompt)).toBeUndefined()
+	})
+	it("does not choose between conflicting pasted plans or an unknown outside path", async () => {
+		const first = savePlanMarkdown({ cwd, name: "first", planText: "# First\n", workId: planningWork })
+		const second = savePlanMarkdown({ cwd, name: "second", planText: "# Second\n", workId: otherWork })
+		const content = readFileSync(first.path, "utf8")
+		expect(await findWorkContinuation({ cwd }, `${content}\n${readFileSync(second.path, "utf8")}`)).toBeUndefined()
+		expect(await findWorkContinuation({ cwd }, `${content}\nAlso follow missing.md`)).toBeUndefined()
+		expect(await findWorkContinuation({ cwd }, `${content}\nAlso follow ${second.path}`)).toBeUndefined()
+	})
+	it("resolves a scoped native plan without requiring file-transition evidence", async () => {
 		const saved = savePlanMarkdown({ cwd, name: "feature", planText: "# Plan", workId: planningWork })
 		vi.mocked(readRepositoryTransitions).mockResolvedValue(undefined)
 		expect(await findWorkContinuation({ cwd }, `Implement ${saved.path}`)).toMatchObject({
@@ -106,62 +157,19 @@ describe("continuing saved work", () => {
 		const plan = savePlanMarkdown({ cwd, name: "other", planText: "# Other", workId: otherWork })
 		expect(await findWorkContinuation({ cwd }, `Implement docs/adr/decision.md and ${plan.path}`)).toBeUndefined()
 	})
-	it("does not use branch fallback for an explicit unknown artifact", async () => {
-		expect(
-			await findWorkContinuation({ cwd }, "Implement docs/adr/missing.md", { allowBranchFallback: true }),
-		).toBeUndefined()
+	it("leaves an unknown artifact unresolved", async () => {
+		expect(await findWorkContinuation({ cwd }, "Implement docs/adr/missing.md")).toBeUndefined()
 	})
 	it("does not ignore an unknown Markdown link with a section fragment", async () => {
 		expect(
-			await findWorkContinuation({ cwd }, "Implement [the other design](docs/adr/missing.md#details).", {
-				allowBranchFallback: true,
-			}),
+			await findWorkContinuation({ cwd }, "Implement [the other design](docs/adr/missing.md#details)."),
 		).toBeUndefined()
 	})
-	it("requires callers to allow the branch fallback", async () => {
-		expect(await findWorkContinuation({ cwd }, "/skill:implement")).toBeUndefined()
-	})
-	it("labels missing-path continuation as a recent branch match", async () => {
-		expect(await findWorkContinuation({ cwd }, "/skill:implement", { allowBranchFallback: true })).toMatchObject({
-			workId: planningWork,
-			source: "recent-branch",
-			evidence: {
-				branch: "feature",
-				path: join(cwd, "docs/adr/decision.md"),
-				transitionId: transitions[0].transitionId,
-			},
-		})
-	})
 	it.each([
-		{ branch: "trunk" },
-		{ branch: undefined },
-		{ branch: "different-feature" },
-		{ recordedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString() },
-		{ recordedAt: undefined },
-		{ worktree: "/other-worktree" },
-	])("does not guess from ineligible planning evidence: %j", async (fields) => {
-		transitions = [artifact(fields)]
-		expect(await findWorkContinuation({ cwd }, "/skill:implement", { allowBranchFallback: true })).toBeUndefined()
-	})
-	it("leaves two recent planning works separate", async () => {
-		transitions.push(artifact({ workId: otherWork, path: "docs/adr/another.md" }))
-		expect(await findWorkContinuation({ cwd }, "/skill:implement", { allowBranchFallback: true })).toBeUndefined()
-	})
-	it("does not let a later human change become a branch match", async () => {
-		vi.mocked(readAttributedFileState).mockResolvedValue({ ...after, blob: "human-edit" })
-		expect(await findWorkContinuation({ cwd }, "/skill:implement", { allowBranchFallback: true })).toBeUndefined()
-	})
-	it("does not guess when the repository default branch is unknown", async () => {
-		git.defaults = ""
-		expect(await findWorkContinuation({ cwd }, "/skill:implement", { allowBranchFallback: true })).toBeUndefined()
-	})
-	it("does not continue planning on the repository default branch", async () => {
-		git.defaults = "refs/remotes/origin/feature\n"
-		expect(await findWorkContinuation({ cwd }, "/skill:implement", { allowBranchFallback: true })).toBeUndefined()
-	})
-	it("leaves unrelated recent source edits out of a planning work", async () => {
-		transitions.push(artifact({ workId: otherWork, path: "src/other.ts" }))
-		expect(await findWorkContinuation({ cwd }, "/skill:implement", { allowBranchFallback: true })).toBeUndefined()
+		"Explain what a closure is.",
+		"/skill:implement",
+	])("leaves a message without a saved file unresolved: %s", async (text) => {
+		expect(await findWorkContinuation({ cwd }, text)).toBeUndefined()
 	})
 	it("does not forget an older competing artifact owner", async () => {
 		transitions.unshift(
@@ -170,6 +178,6 @@ describe("continuing saved work", () => {
 				recordedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
 			}),
 		)
-		expect(await findWorkContinuation({ cwd }, "/skill:implement", { allowBranchFallback: true })).toBeUndefined()
+		expect(await findWorkContinuation({ cwd }, "Implement docs/adr/decision.md")).toBeUndefined()
 	})
 })

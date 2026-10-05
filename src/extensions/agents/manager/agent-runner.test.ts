@@ -7,7 +7,8 @@ import { createContext } from "../../__mocks__/context.js"
 import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { AUTO_MODEL_PROVIDER } from "../../auto-model/constants.js"
 import dapExtension from "../../dap.js"
-import { flushWorkSummaries } from "../../work-attribution/summary.js"
+import { flushWorkSummaries, readWorkRecords } from "../../work-attribution/summary.js"
+import type { WorkSegment } from "../../work-attribution.js"
 
 let attributionDir: string
 beforeEach(() => {
@@ -129,6 +130,7 @@ vi.mock("../../auto-model/index.js", () => ({
 
 import {
 	type AgentSession,
+	type BeforeProviderHeadersEvent,
 	type CreateAgentSessionResult,
 	createAgentSession,
 	DefaultResourceLoader,
@@ -365,6 +367,8 @@ describe("runAgent — telemetry extension", () => {
 	})
 
 	it("passes required Kimchi extensions to DefaultResourceLoader", async () => {
+		const segment: WorkSegment = { id: "parent-input", attribution: "unknown", reason: "model-uncertain" }
+		Object.assign(ctx, { segment })
 		const session = makeFakeSession({})
 		mockCreateAgentSession.mockResolvedValue({
 			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
@@ -385,6 +389,16 @@ describe("runAgent — telemetry extension", () => {
 		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+		const childApi = createExtensionApi()
+		await runInlineExtension(ctorArg?.extensionFactories?.[1], childApi.api)
+		const child = createContext({ cwd: attributionDir, sessionManager: { getSessionId: () => "child-segment" } })
+		await childApi.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(
+			{ type: "before_provider_headers", headers: {} },
+			child,
+		)
+		expect(readWorkRecords(attributionDir)).toContainEqual(
+			expect.objectContaining({ type: "request", sessionId: "child-segment", segment }),
+		)
 	})
 
 	it("starts a child when attribution storage is unavailable", async () => {

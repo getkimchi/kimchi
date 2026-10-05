@@ -9,6 +9,7 @@ import type {
 	TerminalInputHandler,
 } from "@earendil-works/pi-coding-agent"
 import { type Mocked, vi } from "vitest"
+import { createModelRegistry } from "./model-registry.js"
 
 export function createCommandContext(): ExtensionCommandContext {
 	return {
@@ -54,6 +55,7 @@ export function createContext(
 		scopedModels: [],
 		isIdle: vi.fn(),
 		getContextUsage: vi.fn().mockReturnValue(undefined),
+		modelRegistry: createModelRegistry(),
 		...overrides,
 		model: overrides?.model
 			? {

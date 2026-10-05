@@ -1,4 +1,10 @@
-import { appendWorkRecord, getWorkId, tryWorkAttribution } from "../../work-attribution.js"
+import {
+	appendWorkRecord,
+	getToolRequest,
+	getWorkId,
+	pinWorkContext,
+	tryWorkAttribution,
+} from "../../work-attribution.js"
 /**
  * Ferment lifecycle tools: list, scope, update fields, complete.
  *
@@ -1085,7 +1091,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
-		async execute(_, rawParams, _signal, _onUpdate, ctx) {
+		async execute(toolCallId, rawParams, _signal, _onUpdate, ctx) {
 			clearScopingStatus(ctx)
 			const normalized = normalizeProposeScopingParams(rawParams)
 			if (!normalized.ok) return normalized.error
@@ -1106,6 +1112,9 @@ ${renderGateGuidance("scope_ferment")}`,
 			const questions = params.questions ?? []
 			const questionValidationError = validateScopingQuestions(questions)
 			if (questionValidationError) return toolErr(questionValidationError)
+			const pinned = pinWorkContext(ctx)
+			const origin = tryWorkAttribution(() => getToolRequest(pinned, toolCallId))
+			const workId = tryWorkAttribution(() => origin?.workId ?? getWorkId(pinned))
 
 			// 3. Resolve the target ferment. If no id is given and no active ferment
 			// exists, bootstrap a new draft from the proposal.
@@ -1175,7 +1184,6 @@ ${renderGateGuidance("scope_ferment")}`,
 			// can continue without a path.
 			let planPath: string | undefined
 			let snapshotPath: string | undefined
-			const workId = tryWorkAttribution(() => getWorkId(ctx))
 			try {
 				const saved = savePlanMarkdown({
 					cwd: ctx.cwd,
@@ -1188,7 +1196,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				if (workId) {
 					tryWorkAttribution(() => {
 						setFermentWorkId(fermentId, workId)
-						appendWorkRecord(ctx, { type: "plan", ...saved }, workId)
+						appendWorkRecord(pinned, { type: "plan", ...saved, ...origin }, workId)
 					})
 				}
 			} catch (err) {

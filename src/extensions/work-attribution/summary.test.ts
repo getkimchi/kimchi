@@ -295,7 +295,7 @@ describe("readable work summaries", () => {
 			expect.objectContaining({ transitionId: "old-transition", toolCallId: "old-tool" }),
 		])
 		expect(summary(request.workId).fileTransitions[0]).not.toHaveProperty("requestId")
-		expect(JSON.parse(fs.readFileSync(join(dir, "work-attribution", ".recovered.json"), "utf8")).version).toBe(2)
+		expect(JSON.parse(fs.readFileSync(join(dir, "work-attribution", ".recovered.json"), "utf8")).version).toBe(3)
 		fs.rmSync(path(request.workId))
 		vi.resetModules()
 		const relaunched = await import("./summary.js")

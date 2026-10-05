@@ -129,7 +129,11 @@ export interface SavePlanMarkdownOptions {
  * `<cwd>/.kimchi/plans/<slug(name)>.md` and retain its version when attributed.
  * Local save errors propagate; a failed retained copy warns without blocking review.
  */
-export function savePlanMarkdown(opts: SavePlanMarkdownOptions): { path: string; snapshotPath?: string } {
+export function savePlanMarkdown(opts: SavePlanMarkdownOptions): {
+	path: string
+	snapshotPath?: string
+	contentHash?: string
+} {
 	const plansDir = resolve(opts.cwd, PLAN_DIR)
 	mkdirSync(plansDir, { recursive: true })
 	const filePath = resolve(plansDir, `${slugifyPlanName(opts.name)}.md`)
@@ -150,7 +154,7 @@ export function savePlanMarkdown(opts: SavePlanMarkdownOptions): { path: string;
 			const hash = createHash("sha256").update(content).digest("hex")
 			const snapshotPath = join(plans, `${slugifyPlanName(opts.name)}-${hash}.md`)
 			writeFileAtomic(snapshotPath, content)
-			return { path: filePath, snapshotPath }
+			return { path: filePath, snapshotPath, contentHash: hash }
 		} catch (error) {
 			console.warn("[work-attribution] Could not retain plan version:", error)
 		}

@@ -1,14 +1,19 @@
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { expect, Key, test } from "@microsoft/tui-test"
 import { check } from "proper-lockfile"
 import { fullText, waitForText } from "./support/assertions.js"
+import { type FakeResponseRequest, isWorkMatchingRequest } from "./support/fake-openai-server.js"
 import { launchKimchi, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 const models = [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }]
+const account = {
+	organizationId: "30000000-0000-4000-8000-000000000003",
+	userId: "40000000-0000-4000-8000-000000000004",
+}
 const readLedger = (directory: string) =>
 	readdirSync(directory)
 		.filter((file) => file.endsWith(".jsonl"))
@@ -19,10 +24,74 @@ const readLedger = (directory: string) =>
 				.map((line) => JSON.parse(line)),
 		)
 
+test("a separate check uses the selected model before an unrelated question starts new work", async ({ terminal }) => {
+	const main = (request: FakeResponseRequest) => !isWorkMatchingRequest(request)
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "work-selected-model",
+			account,
+			gitInit: true,
+			models: [...models, { slug: "second", displayName: "Second selected model", reasoning: true }],
+			responses: [
+				{ match: main, stream: ["CSV plan ready."] },
+				{ match: isWorkMatchingRequest, stream: ['{"decision":"new"}'] },
+				{ match: main, stream: ["Blue light scatters more strongly."] },
+				{ match: isWorkMatchingRequest, stream: ['{"decision":"same"}'] },
+				{ match: main, stream: ["Sunset light travels through more atmosphere."] },
+				{ match: main, stream: ["Matching disabled; answering another question."] },
+			],
+		},
+		async (fixture, trace) => {
+			const records = () => readLedger(join(fixture.agentDir, "work-attribution"))
+			const chats = () =>
+				fixture.fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+			const mainRecord = () =>
+				records().find(
+					(row) => row.type === "request" && row.requestId === chats().filter(main).at(-1)?.headers["x-request-id"],
+				)
+			terminal.submit("/work matching on")
+			await waitForText(terminal, "Task matching enabled")
+			terminal.submit("Plan a CSV export with quoted fields.")
+			await waitForText(terminal, "CSV plan ready.")
+			const original = mainRecord()
+			expect(original.model).toBe("basic")
+			expect(chats().filter(isWorkMatchingRequest).length).toBe(0)
+			terminal.submit("/model fake/second")
+			await waitForText(terminal, "second", { full: false })
+			terminal.submit("Why is the sky blue?")
+			await waitForText(terminal, "Blue light scatters more strongly.")
+			const unrelated = mainRecord()
+			expect(unrelated.model).toBe("second")
+			expect(unrelated.workId).not.toBe(original.workId)
+			terminal.submit("What changes at sunset?")
+			await waitForText(terminal, "Sunset light travels through more atmosphere.")
+			expect(mainRecord().workId).toBe(unrelated.workId)
+			const checks = chats().filter(isWorkMatchingRequest)
+			expect(checks.length).toBe(2)
+			for (const [index, request] of checks.entries()) {
+				expect(request.body).toMatchObject({ model: "second" })
+				expect(request.headers.authorization).toBeDefined()
+				const row = records().find((row) => row.type === "request" && row.requestId === request.headers["x-request-id"])
+				expect(row.workId).toBe(index === 0 ? original.workId : unrelated.workId)
+				expect(chats().indexOf(request)).toBeLessThan(chats().indexOf(chats().filter(main)[index + 1]))
+			}
+			trace.step("separate checks follow model selection, retain their original work and precede main replies")
+			terminal.submit("/work matching off")
+			await waitForText(terminal, "Task matching disabled")
+			terminal.submit("Explain ocean tides.")
+			await waitForText(terminal, "Matching disabled; answering another question.")
+			expect(chats().filter(isWorkMatchingRequest).length).toBe(2)
+			expect(mainRecord().segment).toMatchObject({ attribution: "session", reason: "matching-disabled" })
+			trace.step("the user can turn matching off without disabling ordinary local request capture")
+		},
+	)
+})
+
 async function waitForSummary(
 	agentDir: string,
 	workId: string,
-	minimum: Partial<Record<"sessions" | "requests" | "plans" | "commits", number>>,
+	minimum: Partial<Record<"sessions" | "requests" | "plans" | "commits" | "workLinks", number>>,
 ) {
 	const path = join(agentDir, "work", workId, "work.json")
 	const deadline = Date.now() + 15_000
@@ -35,6 +104,153 @@ async function waitForSummary(
 	}
 	throw new Error(`Work summary did not become ready: ${path}`)
 }
+
+test("the next message recovers account tracking after its saved scope is lost", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "work-scope-recovery",
+			account,
+			gitInit: true,
+			models,
+			responses: [{ stream: ["The first design is ready."] }, { stream: ["The next design is ready."] }],
+		},
+		async (fixture, trace) => {
+			const records = () => readLedger(join(fixture.agentDir, "work-attribution"))
+			const mainRecord = () => {
+				const sent = fixture.fake.requests
+					.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+					.at(-1)
+				return records().find((row) => row.type === "request" && row.requestId === sent?.headers["x-request-id"])
+			}
+			terminal.submit("Plan an export.")
+			await waitForText(terminal, "The first design is ready.")
+			const original = mainRecord()
+			expect(original.scope.account).toMatchObject(account)
+			const missing = join(fixture.agentDir, "work", original.workId, "scope.json")
+			rmSync(missing)
+			trace.step("the original request retains its account evidence when the work scope file disappears")
+			terminal.submit("Plan an import.")
+			await waitForText(terminal, "The next design is ready.")
+			const next = mainRecord()
+			expect(next.workId).not.toBe(original.workId)
+			expect(next.scope.account).toMatchObject(account)
+			expect(records().find((row) => row.type === "request" && row.requestId === original.requestId)).toEqual(original)
+			expect(existsSync(missing)).toBe(false)
+			terminal.submit("/work")
+			await waitForText(terminal, `Work ID: ${next.workId}`, { full: false })
+			trace.step("the next message uses newly scoped work without assigning today's identity to old history")
+		},
+	)
+})
+
+test("the user can correct one earlier planning turn and revoke that correction", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "work-historical-correction",
+			account,
+			gitInit: true,
+			models,
+			exitMarker: "CORRECTION_PLANNER_EXITED",
+			responses: [
+				{ stream: ["The CSV design is ready."] },
+				{ stream: ["Clouds consist of water droplets."] },
+				{ stream: ["The CSV implementation is ready."] },
+			],
+		},
+		async (fixture, trace) => {
+			const records = () => readLedger(join(fixture.agentDir, "work-attribution"))
+			const mainRecord = () => {
+				const sent = fixture.fake.requests
+					.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+					.at(-1)
+				return records().find((row) => row.type === "request" && row.requestId === sent?.headers["x-request-id"])
+			}
+			terminal.submit("Plan CSV export quoting rules.")
+			await waitForText(terminal, "The CSV design is ready.")
+			const planning = mainRecord()
+			terminal.submit("What are clouds made of?")
+			await waitForText(terminal, "Clouds consist of water droplets.")
+			const unrelated = mainRecord()
+			expect(unrelated.workId).toBe(planning.workId)
+			expect(unrelated.segment.id).not.toBe(planning.segment.id)
+			terminal.submit("/quit")
+			await waitForText(terminal, "CORRECTION_PLANNER_EXITED")
+			launchKimchi(terminal, fixture, [], fixture.seedEnv)
+			await waitForText(terminal, PROMPT_READY, { full: false })
+			terminal.submit("Implement CSV export quoting rules.")
+			await waitForText(terminal, "The CSV implementation is ready.")
+			const implementation = mainRecord()
+			expect(implementation.workId).not.toBe(planning.workId)
+			terminal.submit(`/work link ${planning.workId} ${planning.segment.id}`)
+			await waitForText(terminal, "Work correction saved", { full: false })
+			const link = records().find((row) => row.type === "work_link")
+			expect(link.requestIds).toContain(planning.requestId)
+			expect(link.requestIds).not.toContain(unrelated.requestId)
+			expect(link.targetWorkId).toBe(implementation.workId)
+			expect(records().find((row) => row.type === "request" && row.requestId === planning.requestId).workId).toBe(
+				planning.workId,
+			)
+			await waitForSummary(fixture.agentDir, implementation.workId, { workLinks: 1 })
+			trace.step("the correction selects the planning input, leaving unrelated chat and original request IDs unchanged")
+			terminal.submit(`/work unlink ${link.linkId}`)
+			await waitForText(terminal, "Work correction revoked", { full: false })
+			const revisions = records().filter((row) => row.type === "work_link")
+			expect(revisions.map((row) => [row.revision, row.status])).toEqual([
+				[1, "active"],
+				[2, "revoked"],
+			])
+			await waitForSummary(fixture.agentDir, implementation.workId, { workLinks: 2 })
+			trace.step("revoking saves a newer correction revision")
+		},
+	)
+})
+
+test("the user can confirm an uncertain turn already in the current work", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "work-confirm-current",
+			account,
+			gitInit: true,
+			models,
+			responses: [{ stream: ["The document plan is ready."] }],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Plan the creation of docs/new-output.md.")
+			await waitForText(terminal, "The document plan is ready.")
+			const records = () => readLedger(join(fixture.agentDir, "work-attribution"))
+			const sent = fixture.fake.requests.find((request) => request.url.startsWith("/openai/v1/chat/completions"))
+			const original = records().find(
+				(row) => row.type === "request" && row.requestId === sent?.headers["x-request-id"],
+			)
+			expect(original.segment.attribution).toBe("unknown")
+			terminal.submit(`/work link ${original.workId} ${original.segment.id}`)
+			await waitForText(terminal, "Work correction saved", { full: false })
+			const link = records().find((row) => row.type === "work_link")
+			expect(link).toMatchObject({
+				sourceWorkId: original.workId,
+				targetWorkId: original.workId,
+				status: "active",
+			})
+			expect(link.requestIds).toContain(original.requestId)
+			expect(records().find((row) => row.type === "request" && row.requestId === original.requestId)).toEqual(original)
+			trace.step("the user's explicit correction confirms the existing work without rewriting the uncertain request")
+			terminal.submit(`/work unlink ${link.linkId}`)
+			await waitForText(terminal, "Work correction revoked", { full: false })
+			expect(
+				records()
+					.filter((row) => row.type === "work_link")
+					.at(-1),
+			).toMatchObject({
+				linkId: link.linkId,
+				status: "revoked",
+				revision: 2,
+			})
+		},
+	)
+})
 
 test("work and request IDs are durable before the first reply, and commits belong to that work", async ({
 	terminal,
@@ -137,101 +353,133 @@ test("work and request IDs are durable before the first reply, and commits belon
 	}
 })
 
-test("a new worktree continues a retained plan after its original worktree is deleted", async ({ terminal }) => {
-	await runKimchiSession(
+for (const reference of ["path", "paste"]) {
+	test(`a new worktree continues a retained plan by ${reference} after its original worktree is deleted`, async ({
 		terminal,
-		{
-			artifactName: "work-attribution-plan",
-			gitInit: true,
-			models,
-			extraArgs: ["--plan=true"],
-			exitMarker: "PLANNING_SESSION_EXITED",
-			responses: [
-				{
-					toolCalls: [
-						{
-							function: {
-								name: "submit_plan",
-								arguments: JSON.stringify({ plan: "# Attribution Plan\n\nAdd a greeting." }),
+	}) => {
+		await runKimchiSession(
+			terminal,
+			{
+				artifactName: `work-attribution-plan-${reference}`,
+				account,
+				gitInit: true,
+				models,
+				extraArgs: ["--plan=true"],
+				exitMarker: "PLANNING_SESSION_EXITED",
+				responses: [
+					{
+						toolCalls: [
+							{
+								function: {
+									name: "submit_plan",
+									arguments: JSON.stringify({ plan: "# Attribution Plan\n\nAdd a greeting." }),
+								},
 							},
-						},
-					],
-				},
-				{ stream: ["Continuing the saved attribution plan."] },
-			],
-		},
-		async (fixture, trace) => {
-			terminal.submit("/quit")
-			await waitForText(terminal, "PLANNING_SESSION_EXITED", { full: false })
-			execFileSync(
-				"git",
-				[
-					"-c",
-					"user.name=Attribution Test",
-					"-c",
-					"user.email=attribution@example.invalid",
-					"-c",
-					"commit.gpgSign=false",
-					"commit",
-					"--allow-empty",
-					"-m",
-					"Plan test baseline",
+						],
+					},
+					{ stream: ["Continuing the saved attribution plan."] },
 				],
-				{ cwd: fixture.workDir },
-			)
-			const planningTree = join(fixture.workDir, "planning")
-			const implementingTree = join(fixture.workDir, "implementing")
-			for (const [branch, path] of [
-				["planning", planningTree],
-				["implementing", implementingTree],
-			])
-				execFileSync("git", ["worktree", "add", "-b", branch, path], { cwd: fixture.workDir })
-			launchKimchi(terminal, { ...fixture, workDir: planningTree }, ["--plan=true"], fixture.seedEnv, {
-				exitMarker: "PLAN_WORKTREE_EXITED",
-			})
-			await waitForText(terminal, PROMPT_READY, { full: false })
-			terminal.submit("Plan a greeting feature.")
-			await waitForText(terminal, "Execute the plan")
-			const planPath = join(realpathSync(planningTree), ".kimchi/plans/attribution-plan.md")
-			const plan = readFileSync(planPath, "utf8")
-			const workId = /<!-- kimchi-work-id: ([0-9a-f-]+) -->/.exec(plan)?.[1]
-			if (!workId) throw new Error("Saved plan has no work ID")
-			const planned = await waitForSummary(fixture.agentDir, workId, { plans: 1 })
-			const snapshotPath = planned.plans[0].snapshotPath
-			expect(typeof snapshotPath).toBe("string")
-			expect(readFileSync(snapshotPath, "utf8")).toBe(plan)
-			trace.step("planning produced a saved plan carrying work identity")
-			terminal.keyPress(Key.Escape)
-			await expect(
-				terminal.getByText("Plan complete. How would you like to proceed?", { full: false }),
-			).not.toBeVisible()
-			terminal.submit("/quit")
-			await waitForText(terminal, "PLAN_WORKTREE_EXITED", { full: false })
-			execFileSync("git", ["worktree", "remove", "--force", planningTree], { cwd: fixture.workDir })
-			expect(existsSync(planPath)).toBe(false)
-			launchKimchi(terminal, { ...fixture, workDir: implementingTree }, [], fixture.seedEnv)
-			await waitForText(terminal, PROMPT_READY, { full: false })
-			terminal.submit(`Implement ${snapshotPath}`)
-			await waitForText(terminal, "Continuing the saved attribution plan.")
-			const ledgerDir = join(fixture.agentDir, "work-attribution")
-			const requests = readLedger(ledgerDir).filter((record) => record.type === "request")
-			expect(new Set(requests.map((record) => record.sessionId)).size).toBe(2)
-			expect(new Set(requests.map((record) => record.workId))).toEqual(new Set([workId]))
-			const summary = await waitForSummary(fixture.agentDir, workId, { sessions: 2, requests: 2, plans: 1 })
-			expect(summary.workId).toBe(workId)
-			expect(new Set(summary.sessions)).toEqual(new Set(requests.map((record) => record.sessionId)))
-			expect(summary.plans).toContainEqual(expect.objectContaining({ path: planPath, snapshotPath }))
-			for (const request of requests)
-				expect(
-					summary.requests.some(
-						(item: { requestId: string; sessionId: string }) =>
-							item.requestId === request.requestId && item.sessionId === request.sessionId,
-					),
-				).toBe(true)
-			trace.step("the retained plan links both sessions after deleting the planning worktree")
-		},
-	)
-})
+			},
+			async (fixture, trace) => {
+				terminal.submit("/quit")
+				await waitForText(terminal, "PLANNING_SESSION_EXITED", { full: false })
+				execFileSync(
+					"git",
+					[
+						"-c",
+						"user.name=Attribution Test",
+						"-c",
+						"user.email=attribution@example.invalid",
+						"-c",
+						"commit.gpgSign=false",
+						"commit",
+						"--allow-empty",
+						"-m",
+						"Plan test baseline",
+					],
+					{ cwd: fixture.workDir },
+				)
+				const planningTree = join(fixture.workDir, "planning")
+				const implementingTree = join(fixture.workDir, "implementing")
+				for (const [branch, path] of [
+					["planning", planningTree],
+					["implementing", implementingTree],
+				])
+					execFileSync("git", ["worktree", "add", "-b", branch, path], { cwd: fixture.workDir })
+				launchKimchi(terminal, { ...fixture, workDir: planningTree }, ["--plan=true"], fixture.seedEnv, {
+					exitMarker: "PLAN_WORKTREE_EXITED",
+				})
+				await waitForText(terminal, PROMPT_READY, { full: false })
+				terminal.submit("Plan a greeting feature documented in docs/greeting.md.")
+				await waitForText(terminal, "Execute the plan")
+				const planPath = join(realpathSync(planningTree), ".kimchi/plans/attribution-plan.md")
+				const plan = readFileSync(planPath, "utf8")
+				const workId = /<!-- kimchi-work-id: ([0-9a-f-]+) -->/.exec(plan)?.[1]
+				if (!workId) throw new Error("Saved plan has no work ID")
+				const planned = await waitForSummary(fixture.agentDir, workId, { plans: 1 })
+				const producer = planned.requests.find(
+					(row: { requestId: string }) => row.requestId === planned.plans[0].requestId,
+				)
+				expect(producer?.segment).toMatchObject({ attribution: "unknown", reason: "unresolved-reference" })
+				const snapshotPath = planned.plans[0].snapshotPath
+				expect(typeof snapshotPath).toBe("string")
+				expect(readFileSync(snapshotPath, "utf8")).toBe(plan)
+				trace.step("planning produced a saved plan carrying work identity")
+				terminal.keyPress(Key.Escape)
+				await expect(
+					terminal.getByText("Plan complete. How would you like to proceed?", { full: false }),
+				).not.toBeVisible()
+				terminal.submit("/quit")
+				await waitForText(terminal, "PLAN_WORKTREE_EXITED", { full: false })
+				execFileSync("git", ["worktree", "remove", "--force", planningTree], { cwd: fixture.workDir })
+				expect(existsSync(planPath)).toBe(false)
+				launchKimchi(terminal, { ...fixture, workDir: implementingTree }, [], fixture.seedEnv)
+				await waitForText(terminal, PROMPT_READY, { full: false })
+				if (reference === "path") terminal.submit(`Implement ${snapshotPath}`)
+				else {
+					terminal.write(`\x1b[200~Implement this plan:\n${plan}\x1b[201~`)
+					terminal.keyPress(Key.Enter)
+				}
+				await waitForText(terminal, "Continuing the saved attribution plan.")
+				const ledgerDir = join(fixture.agentDir, "work-attribution")
+				const requests = readLedger(ledgerDir).filter((record) => record.type === "request")
+				expect(new Set(requests.map((record) => record.sessionId)).size).toBe(2)
+				expect(new Set(requests.map((record) => record.workId))).toEqual(new Set([workId]))
+				const summary = await waitForSummary(fixture.agentDir, workId, {
+					sessions: 2,
+					requests: 2,
+					plans: 1,
+					workLinks: 1,
+				})
+				expect(summary.workLinks).toContainEqual(
+					expect.objectContaining({
+						sourceWorkId: workId,
+						targetWorkId: workId,
+						requestIds: requests
+							.filter((row) => row.segment?.id === producer.segment.id)
+							.map((row) => row.requestId)
+							.sort(),
+						evidence: expect.objectContaining({
+							source: reference === "paste" ? "pasted-plan" : "saved-plan",
+							segmentId: producer.segment.id,
+						}),
+					}),
+				)
+				expect(summary.workId).toBe(workId)
+				expect(new Set(summary.sessions)).toEqual(new Set(requests.map((record) => record.sessionId)))
+				expect(summary.plans).toContainEqual(expect.objectContaining({ path: planPath, snapshotPath }))
+				for (const request of requests)
+					expect(
+						summary.requests.some(
+							(item: { requestId: string; sessionId: string }) =>
+								item.requestId === request.requestId && item.sessionId === request.sessionId,
+						),
+					).toBe(true)
+				trace.step(`the retained plan ${reference} links both sessions after deleting the planning worktree`)
+			},
+		)
+	})
+}
 
 test("a fresh session recovers an external worktree commit after a Git timeout without console noise", async ({
 	terminal,
@@ -344,7 +592,7 @@ test("a fresh session recovers an external worktree commit after a Git timeout w
 	)
 })
 
-test("a skill-written ADR continues in a fresh session, and starting new work opts out", async ({ terminal }) => {
+test("a named ADR continues its work while unrelated chat on the same branch stays separate", async ({ terminal }) => {
 	let releaseImplementation = () => {}
 	const held = new Promise<void>((release) => {
 		releaseImplementation = release
@@ -354,6 +602,7 @@ test("a skill-written ADR continues in a fresh session, and starting new work op
 			terminal,
 			{
 				artifactName: "work-attribution-skill-plan",
+				account,
 				gitInit: true,
 				models,
 				exitMarker: "ADR_PLANNER_EXITED",
@@ -380,6 +629,15 @@ test("a skill-written ADR continues in a fresh session, and starting new work op
 						],
 					},
 					{ stream: ["The design is saved as an ADR."] },
+					{
+						toolCalls: [
+							{
+								id: "read-current-adr",
+								function: { name: "read", arguments: JSON.stringify({ path: "docs/adr/greeting.md" }) },
+							},
+						],
+					},
+					{ stream: ["The same-session design is ready to implement."] },
 					{ holdUntil: held, stream: ["Implementing the saved design."] },
 					{ stream: ["This request belongs to separate work."] },
 				],
@@ -390,7 +648,21 @@ test("a skill-written ADR continues in a fresh session, and starting new work op
 				const ledgerDir = join(fixture.agentDir, "work-attribution")
 				const original = readLedger(ledgerDir).find((record) => record.type === "request")
 				expect(readFileSync(join(fixture.workDir, "docs/adr/greeting.md"), "utf8")).toBe("# Add a greeting\n")
+				expect(original.segment).toMatchObject({ attribution: "unknown", reason: "unresolved-reference" })
 				expect(readLedger(ledgerDir).filter((record) => record.type === "plan")).toEqual([])
+				terminal.submit("Explain docs/adr/greeting.md without changing it.")
+				await waitForText(terminal, "The same-session design is ready to implement.")
+				const followupId = fixture.fake.requests
+					.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+					.at(-1)?.headers["x-request-id"]
+				expect(
+					readLedger(ledgerDir).find((record) => record.type === "request" && record.requestId === followupId),
+				).toMatchObject({
+					workId: original.workId,
+					sessionId: original.sessionId,
+					segment: { attribution: "explicit", reason: "named-artifact" },
+				})
+				trace.step("same-session ADR reference confirms its work after the native write")
 				terminal.submit("/quit")
 				await waitForText(terminal, "ADR_PLANNER_EXITED")
 				launchKimchi(terminal, fixture, [], fixture.seedEnv, { exitMarker: "ADR_IMPLEMENTER_EXITED" })
@@ -398,7 +670,7 @@ test("a skill-written ADR continues in a fresh session, and starting new work op
 				const before = fixture.fake.requests.filter((request) =>
 					request.url.startsWith("/openai/v1/chat/completions"),
 				).length
-				terminal.submit("Implement the saved design.")
+				terminal.submit("Implement docs/adr/greeting.md.")
 				const deadline = Date.now() + 15_000
 				while (
 					fixture.fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")).length ===
@@ -413,15 +685,13 @@ test("a skill-written ADR continues in a fresh session, and starting new work op
 				expect(implementing).toBeDefined()
 				expect(implementing.workId).toBe(original.workId)
 				expect(implementing.sessionId).not.toBe(original.sessionId)
-				trace.step("fresh session without a plan path adopts the ADR work before its held first response")
+				trace.step("fresh session names the ADR and adopts its work before the held first response")
 				releaseImplementation()
 				await waitForText(terminal, "Implementing the saved design.")
 				terminal.submit("/quit")
 				await waitForText(terminal, "ADR_IMPLEMENTER_EXITED")
 				launchKimchi(terminal, fixture, [], fixture.seedEnv)
 				await waitForText(terminal, PROMPT_READY, { full: false })
-				terminal.submit("/work new")
-				await waitForText(terminal, "Work ID:", { full: false })
 				terminal.submit("Do unrelated work in this same branch.")
 				await waitForText(terminal, "This request belongs to separate work.")
 				const separateId = fixture.fake.requests
@@ -429,7 +699,26 @@ test("a skill-written ADR continues in a fresh session, and starting new work op
 					.at(-1)?.headers["x-request-id"]
 				const separate = readLedger(ledgerDir).find((record) => record.requestId === separateId)
 				expect(separate.workId).not.toBe(original.workId)
-				const summary = await waitForSummary(fixture.agentDir, original.workId, { sessions: 2, requests: 3 })
+				const summary = await waitForSummary(fixture.agentDir, original.workId, {
+					sessions: 2,
+					requests: 5,
+					workLinks: 1,
+				})
+				expect(summary.workLinks).toContainEqual(
+					expect.objectContaining({
+						sourceWorkId: original.workId,
+						targetWorkId: original.workId,
+						requestIds: readLedger(ledgerDir)
+							.filter((row) => row.type === "request" && row.segment?.id === original.segment.id)
+							.map((row) => row.requestId)
+							.sort(),
+						evidence: expect.objectContaining({
+							source: "named-artifact",
+							requestId: original.requestId,
+							segmentId: original.segment.id,
+						}),
+					}),
+				)
 				expect(summary.requests.some((request: { requestId: string }) => request.requestId === separateId)).toBe(false)
 				expect(summary.fileTransitions).toContainEqual(
 					expect.objectContaining({ path: "docs/adr/greeting.md", requestId: original.requestId }),
@@ -437,11 +726,11 @@ test("a skill-written ADR continues in a fresh session, and starting new work op
 				expect(summary.continuations).toContainEqual(
 					expect.objectContaining({
 						sessionId: implementing.sessionId,
-						source: "recent-branch",
-						evidence: expect.objectContaining({ branch: "feature" }),
+						source: "named-artifact",
+						evidence: expect.objectContaining({ path: join(realpathSync(fixture.workDir), "docs/adr/greeting.md") }),
 					}),
 				)
-				trace.step("explicit new work remains separate despite the recent ADR on this branch")
+				trace.step("unrelated chat stays separate without a command despite the recent ADR on this branch")
 			},
 		)
 	} finally {

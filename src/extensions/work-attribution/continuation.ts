@@ -1,18 +1,25 @@
-import { execFile } from "node:child_process"
-import { readFile, realpath } from "node:fs/promises"
+import { readdir, readFile, realpath } from "node:fs/promises"
 import { basename, dirname, join, relative, resolve } from "node:path"
-import { parseSkillBlock } from "@earendil-works/pi-coding-agent"
+import { getAgentDir, parseSkillBlock } from "@earendil-works/pi-coding-agent"
 import { readPlanWorkId } from "../../shared/planning/plan-markdown.js"
 import type { WorkContext } from "../work-attribution.js"
 import { type FileTransition, readAttributedFileState, readRepositoryTransitions } from "./file-transitions.js"
+import { captureWorkScope, readWorkScope, sameWorkScope, type WorkAccount, type WorkScopeSnapshot } from "./scope.js"
 
-const RECENT_WORK_MS = 24 * 60 * 60 * 1000
 const MARKDOWN_REFERENCE = /(?:^|[\s@'"`([])([^\s@'"`()[\]<>#]+\.md)(?:#[^\s'"`()[\]<>]*)?(?=$|[\s'"`()[\],;:.!?])/gi
 const NATIVE_PLAN_PATH = /\/(?:\.kimchi\/plans|work\/[\da-f-]{36}\/plans)\/[^/]+\.md$/i
 
+/** Unresolved explicit references must not be overridden by a semantic guess. */
+export function hasWorkReference(text: string): boolean {
+	const normalized = text.replaceAll("\r\n", "\n")
+	const skill = parseSkillBlock(normalized)
+	const message = skill ? (skill.userMessage ?? "") : normalized
+	return message.includes("<!-- kimchi-work-id:") || [...message.matchAll(MARKDOWN_REFERENCE)].length > 0
+}
+
 export interface WorkContinuation {
 	workId: string
-	source: "saved-plan" | "named-artifact" | "recent-branch"
+	source: "saved-plan" | "pasted-plan" | "named-artifact" | "semantic"
 	evidence: {
 		path: string
 		transitionId?: string
@@ -20,12 +27,19 @@ export interface WorkContinuation {
 		worktree?: string
 		branch?: string
 		recordedAt?: string
+		model?: string
+		decision?: "same" | "continue" | "new" | "unknown"
+		inputHash?: string
+		segmentId?: string
+		promptVersion?: number
+		candidateWorkIds?: string[]
+		account?: WorkAccount
 	}
 }
-function artifactMatch(row: FileTransition, path: string, source: WorkContinuation["source"]): WorkContinuation {
+function artifactMatch(row: FileTransition, path: string): WorkContinuation {
 	return {
 		workId: row.workId,
-		source,
+		source: "named-artifact",
 		evidence: {
 			path,
 			transitionId: row.transitionId,
@@ -69,57 +83,65 @@ async function namedArtifact(cwd: string, named: string): Promise<WorkContinuati
 	)
 	if (new Set(rows.map((row) => row.workId)).size !== 1) return
 	const row = latest(rows)
-	if (row && (await unchanged(row, path))) return artifactMatch(row, path, "named-artifact")
+	if (row && (await unchanged(row, path))) return artifactMatch(row, path)
 }
-async function defaultBranches(cwd: string): Promise<Set<string>> {
-	const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0" }
-	for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"]) delete env[key]
-	return new Promise((resolve) => {
-		execFile(
-			"git",
-			["-C", cwd, "for-each-ref", "--format=%(symref)", "refs/remotes"],
-			{ encoding: "utf8", timeout: 2000, env },
-			(error, stdout) =>
-				resolve(new Set(error ? [] : [...stdout.matchAll(/^refs\/remotes\/[^/]+\/(.+)$/gm)].map((match) => match[1]))),
-		)
-	})
+
+async function pastedPlans(text: string): Promise<{ matches: WorkContinuation[]; remaining: string } | undefined> {
+	const matches: WorkContinuation[] = []
+	let end = 0
+	let remaining = ""
+	for (const marker of text.matchAll(/^<!-- kimchi-work-id: [^\n]* -->$/gm)) {
+		if (marker.index < end) continue // Metadata examples inside a verified plan are just plan content.
+		const workId = readPlanWorkId(marker[0])
+		if (!workId) return
+		const directory = join(getAgentDir(), "work", workId, "plans")
+		const pasted = text.slice(marker.index)
+		let found: { path: string; length: number } | undefined
+		try {
+			for (const file of await readdir(directory, { withFileTypes: true })) {
+				if (!file.isFile() || !file.name.endsWith(".md")) continue
+				const path = join(directory, file.name)
+				const content = (await readFile(path, "utf8")).replaceAll("\r\n", "\n").trimEnd()
+				if (
+					readPlanWorkId(content) === workId &&
+					content.length > marker[0].length &&
+					pasted.startsWith(content) &&
+					(pasted.length === content.length || pasted[content.length] === "\n") &&
+					content.length > (found?.length ?? 0)
+				)
+					found = { path, length: content.length }
+			}
+		} catch {
+			return
+		}
+		if (!found) return
+		matches.push({ workId, source: "pasted-plan", evidence: { path: found.path } })
+		remaining += text.slice(end, marker.index)
+		end = marker.index + found.length
+	}
+	return { matches, remaining: remaining + text.slice(end) }
 }
 
 /** Resolve identity before dispatch; the caller owns fresh-session and explicit-selection gates. */
 export async function findWorkContinuation(
 	ctx: Pick<WorkContext, "cwd">,
 	text: string,
-	options: { allowBranchFallback?: boolean } = {},
+	captured?: WorkScopeSnapshot,
 ): Promise<WorkContinuation | undefined> {
+	const scope = captured ?? (await captureWorkScope(ctx.cwd))
+	if (!scope?.isCurrent()) return
 	// RPC clients can pass an already expanded skill. Only its user arguments select work.
-	const skill = parseSkillBlock(text)
-	const userText = skill ? (skill.userMessage ?? "") : text
-	const paths = [...new Set([...userText.matchAll(MARKDOWN_REFERENCE)].map((match) => match[1]))]
-	if (paths.length) {
-		const matches = await Promise.all(paths.map((path) => namedArtifact(ctx.cwd, path)))
-		if (matches.some((match) => !match) || new Set(matches.map((match) => match?.workId)).size !== 1) return
-		return matches[0]
-	}
-	if (!options.allowBranchFallback) return
-	const evidence = await readRepositoryTransitions(ctx.cwd)
-	if (!evidence?.branch) return
-	const defaults = await defaultBranches(evidence.worktree)
-	if (!defaults.size || defaults.has(evidence.branch)) return
-	const now = Date.now()
-	const recent = evidence.transitions.filter(
-		(row) =>
-			row.repository === evidence.repository &&
-			row.worktree === evidence.worktree &&
-			row.branch === evidence.branch &&
-			recordedTime(row) <= now &&
-			now - recordedTime(row) <= RECENT_WORK_MS,
-	)
-	if (new Set(recent.map((row) => row.workId)).size !== 1) return
-	const row = latest(recent.filter((row) => row.path.toLowerCase().endsWith(".md")))
-	if (!row) return
-	const owners = evidence.transitions.filter((entry) => entry.path === row.path).map((entry) => entry.workId)
-	if (new Set(owners).size !== 1) return
-	// A branch match is a heuristic, kept visible in the saved continuation evidence.
-	const path = join(evidence.worktree, row.path)
-	if (await unchanged(row, path)) return artifactMatch(row, path, "recent-branch")
+	const normalized = text.replaceAll("\r\n", "\n")
+	const skill = parseSkillBlock(normalized)
+	const userText = skill ? (skill.userMessage ?? "") : normalized
+	const pasted = await pastedPlans(userText)
+	if (!pasted) return
+	const paths = [...new Set([...pasted.remaining.matchAll(MARKDOWN_REFERENCE)].map((match) => match[1]))]
+	const matches = [...pasted.matches, ...(await Promise.all(paths.map((path) => namedArtifact(ctx.cwd, path))))]
+	if (matches.some((match) => !match) || new Set(matches.map((match) => match?.workId)).size !== 1) return
+	const match = matches[0]
+	const owner = match && readWorkScope(match.workId)
+	if (!owner || !sameWorkScope(owner, scope.scope) || !scope.isCurrent()) return
+	const current = await captureWorkScope(ctx.cwd)
+	if (current && sameWorkScope(current.scope, scope.scope) && scope.isCurrent()) return match
 }
