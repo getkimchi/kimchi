@@ -1,5 +1,8 @@
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
-import { subscribeReportingReconciliation } from "../work-attribution/reconcile-supervisor.js"
+import {
+	requestWorkReconciliation,
+	subscribeReportingReconciliation,
+} from "../work-attribution/reconcile-supervisor.js"
 import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } from "../work-attribution.js"
 import { readReportingState, setReportingEnabled } from "./queue.js"
 import { reconcileReporting } from "./worker.js"
@@ -36,6 +39,9 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 		started = true
 		synchronize(ctx)
 	})
+	pi.on("agent_end", () => {
+		if (started && stop) requestWorkReconciliation()
+	})
 	pi.on("session_shutdown", async () => {
 		started = false
 		await Promise.all([draining, stop?.()])
@@ -43,7 +49,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 		context = undefined
 	})
 	pi.registerCommand("pr-reporting", {
-		description: "Opt in to PR cost reporting: on, off, or status (default off)",
+		description: "PR cost reporting: on, off, or status (defaults to the SaaS telemetry setting)",
 		handler: async (args, ctx) => {
 			const command = args.trim() || "status"
 			if (!["on", "off", "status"].includes(command)) {
@@ -53,6 +59,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 			try {
 				if (command === "on") {
 					await setReportingEnabled(getAgentDir(), true)
+					if (started && stop) requestWorkReconciliation()
 					ctx.ui.notify(
 						"PR reporting on. Kimchi will send repository/PR metadata, request and billing IDs, timestamps, and matching evidence to your account. Prompts, plans, local work/session IDs, paths, and prices stay local. Delivery runs in the background.",
 						"info",

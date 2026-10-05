@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { complete, getModel } from "@earendil-works/pi-ai/compat"
 import {
@@ -23,7 +23,7 @@ import { createCommandContext, createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createWorkScopeSnapshot } from "./__mocks__/work-scope.js"
 import requestTimingExtension from "./request-timing.js"
-import * as billingSource from "./work-attribution/billing-source.js"
+import { copySessionFileAndAddHandoffNote, removeTempDir } from "./teleport/provisioning/handoff-note.js"
 import { createWorkCommitTrackingOperations } from "./work-attribution/commits.js"
 import * as continuation from "./work-attribution/continuation.js"
 import * as supervisor from "./work-attribution/reconcile-supervisor.js"
@@ -1113,6 +1113,55 @@ describe("local work attribution", () => {
 		)
 		expect(getWorkId(resumedCtx)).toBe(original)
 		expect(getWorkSegment(resumedCtx)).toEqual(originalSegment)
+	})
+
+	it.each([
+		false,
+		true,
+	])("does not invent accounting history from a teleported conversation (explicit: %s)", async (explicit) => {
+		vi.mocked(scope.readWorkScope).mockRestore()
+		const captured = createWorkScopeSnapshot(join(dir, "sandbox", ".git"))
+		vi.mocked(scope.captureWorkScope).mockResolvedValue(captured)
+		const original = randomUUID()
+		const oldRequest = randomUUID()
+		const local = SessionManager.inMemory("/local/project")
+		local.appendMessage({ role: "user", content: "Plan a small change", timestamp: 1 })
+		local.appendCustomEntry("work_identity", { workId: original, explicit })
+		local.appendCustomEntry("request_diagnostics", { requestId: oldRequest })
+		const source = join(dir, "local-session.jsonl")
+		const text = `${[local.getHeader(), ...local.getEntries()].map((entry) => JSON.stringify(entry)).join("\n")}\n`
+		writeFileSync(source, text)
+		const copy = copySessionFileAndAddHandoffNote(source, "[Teleport] Moved to a fresh sandbox.")
+		if (!copy) throw new Error("Expected annotated session copy")
+		try {
+			const sessionManager = SessionManager.open(copy)
+			const ctx = { ...createContext({ cwd: join(dir, "sandbox") }), sessionManager }
+			const api = createExtensionApi()
+			api.appendEntry.mockImplementation((type, data) => sessionManager.appendCustomEntry(type, data))
+			createWorkAttributionExtension()(api.api)
+			await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "resume" }, ctx)
+			expect(getWorkId(ctx)).toBe(original)
+			expect(scope.readWorkScope(original)).toBeUndefined()
+			await api.getHandler<InputEvent>("input")(
+				{ type: "input", source: "interactive", text: "Continue implementing the change" },
+				ctx,
+			)
+			const current = recordProviderRequest(ctx, ctx.model)
+			const request = records().find((row) => row.type === "request" && row.requestId === current.requestId)
+			// Conversation transfer does not carry the original scope or request ledger.
+			if (explicit) {
+				expect(current.workId).toBe(original)
+				expect(request.scope).toBeNull()
+			} else {
+				expect(current.workId).not.toBe(original)
+				expect(request.scope).toEqual(captured.scope)
+			}
+			expect(records().some((row) => row.type === "request" && row.requestId === oldRequest)).toBe(false)
+			expect(readFileSync(source, "utf8")).toBe(text)
+			await api.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
+		} finally {
+			removeTempDir(dirname(copy))
+		}
 	})
 
 	it("ignores malformed copied work metadata and lets the session's ledger win", async () => {

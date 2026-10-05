@@ -1,12 +1,16 @@
 # PR cost reporting
 
-PR cost reporting is off by default. Local work tracking and the branch PR link work without it.
+PR cost reporting follows the SaaS telemetry setting by default. When SaaS uploads are on, Kimchi reports existing work automatically, including requests made before a PR exists. An explicit `/pr-reporting on` or `off` overrides that default and survives restart. Existing saved choices are preserved.
 
-- `/pr-reporting on` allows background uploads for the verified account.
+- `/pr-reporting on` enables uploads for the verified account and requests an immediate update.
 - `/pr-reporting status` shows queued repositories, acknowledgements and delivery problems.
 - `/pr-reporting off` cancels delivery and deletes pending payloads. Local work history and revision counters remain. Reports already accepted by the server remain there.
 
 Only main sessions with work tracking run this extension. Child sessions contribute their existing request records through the local calculator; they do not start upload workers. Removing work tracking leaves the independent branch PR status available.
+
+The worker gathers the existing local inventory at startup, refreshes after each agent turn and checks again every 30 seconds while Kimchi runs. A request can first appear as unlinked or unknown, then gain a PR and a price in later reports. Changed reports receive a higher `revision` and a new `generatedAt`; the server replaces the previous report, so repeated updates do not add the same charge again. A running pass or a saved retry deadline can delay an update.
+
+Teleport transfers conversation history but does not transfer the local accounting journals or account scope. On a fresh sandbox, normal continuation starts a new work on the first input. An explicitly selected work keeps its ID, but its missing scope remains unknown. Neither case establishes a complete cost across local and remote work. Remote-agent accounting is outside this reporting change.
 
 ## What leaves the machine
 

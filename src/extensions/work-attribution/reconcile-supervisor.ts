@@ -26,6 +26,7 @@ interface Supervisor extends ContinuationProgress {
 	controller: AbortController
 	timer?: ReturnType<typeof setInterval>
 	running?: Promise<void>
+	requested?: boolean
 	nextRepository?: string
 	channels: Map<ChannelKind, Channel>
 }
@@ -187,7 +188,20 @@ function tick(agentDir: string, owner: Supervisor): void {
 		})
 		.finally(() => {
 			owner.running = undefined
+			if (owner.requested) {
+				owner.requested = false
+				tick(agentDir, owner)
+			}
 		})
+}
+
+/** Refresh existing subscribers now, or once the current leased pass finishes. */
+export function requestWorkReconciliation(): void {
+	const agentDir = resolve(getAgentDir())
+	const owner = supervisors.get(agentDir)
+	if (!owner || owner.controller.signal.aborted) return
+	if (owner.running) owner.requested = true
+	else tick(agentDir, owner)
 }
 
 /** One optional worker per harness directory. Local children never subscribe. */

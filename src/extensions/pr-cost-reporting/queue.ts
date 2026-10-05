@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { mkdir, open, rename, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { lock } from "proper-lockfile"
+import { readTelemetryConfig } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { isWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
@@ -40,6 +41,8 @@ export interface PendingRepository {
 export interface ReportingState {
 	version: 1
 	enabled: boolean
+	/** New queues follow SaaS uploads until an explicit /pr-reporting choice is saved. */
+	followsTelemetry?: true
 	producerId: string
 	entries: Record<string, PendingRepository>
 	error?: string
@@ -50,7 +53,13 @@ export function reportingDirectory(agentDir: string): string {
 const statePath = (agentDir: string) => join(reportingDirectory(agentDir), "state.json")
 const requestHash = (requestId: string) => createHash("sha256").update(requestId).digest("hex")
 function empty(): ReportingState {
-	return { version: 1, enabled: false, producerId: randomUUID(), entries: {} }
+	return {
+		version: 1,
+		enabled: readTelemetryConfig().enabled,
+		followsTelemetry: true,
+		producerId: randomUUID(),
+		entries: {},
+	}
 }
 
 export async function readReportingState(agentDir: string): Promise<ReportingState> {
@@ -67,6 +76,7 @@ export async function readReportingState(agentDir: string): Promise<ReportingSta
 		if (
 			value?.version !== 1 ||
 			typeof value.enabled !== "boolean" ||
+			(value.followsTelemetry !== undefined && value.followsTelemetry !== true) ||
 			!isWorkId(value.producerId) ||
 			!value.entries ||
 			typeof value.entries !== "object" ||
@@ -96,6 +106,7 @@ export async function readReportingState(agentDir: string): Promise<ReportingSta
 					throw new Error("Invalid PR reporting state")
 			}
 		}
+		if (value.followsTelemetry) value.enabled = readTelemetryConfig().enabled
 		trackPRCostMetric({
 			kind: "queueDepth",
 			value: Object.values(value.entries).filter((entry) => entry.pending).length,
@@ -157,6 +168,7 @@ async function update(agentDir: string, mutate: (state: ReportingState) => void)
 export function setReportingEnabled(agentDir: string, enabled: boolean): Promise<ReportingState> {
 	return update(agentDir, (state) => {
 		state.enabled = enabled
+		state.followsTelemetry = undefined
 		state.error = undefined
 		if (!enabled)
 			for (const entry of Object.values(state.entries)) {

@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as pullRequests from "../pull-request-status/pull-requests.js"
 import * as health from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
 import { queueSnapshots, readReportingState, setReportingEnabled } from "./queue.js"
@@ -12,6 +13,7 @@ const config = vi.hoisted(() => ({ key: "test-key", endpoint: "https://api.examp
 vi.mock("../../config.js", () => ({
 	loadConfig: () => ({ apiKey: config.key }),
 	resolveEndpoints: () => ({ platformApiUrl: config.endpoint }),
+	readTelemetryConfig: () => ({ enabled: true }),
 }))
 const org = "11111111-1111-4111-8111-111111111111"
 const user = "22222222-2222-4222-8222-222222222222"
@@ -123,6 +125,52 @@ async function seedLinked(priced = true) {
 }
 
 describe("account-fenced reporting delivery", () => {
+	it("reports existing work before a PR exists, then replaces it when the PR is discovered", async () => {
+		await rm(join(directory, "pr-cost-reporting", "state.json"))
+		await seedLinked()
+		const path = join(directory, "work-attribution", "source.jsonl")
+		const linked = await readFile(path, "utf8")
+		await writeFile(
+			path,
+			`${linked
+				.trim()
+				.split("\n")
+				.filter((line) => JSON.parse(line).type !== "commit")
+				.join("\n")}\n`,
+		)
+		vi.spyOn(pullRequests, "lookupRepositoryIdentity").mockResolvedValue({
+			...content.content.repository,
+			name: "example/repo",
+		})
+		const sent: WireSnapshot[] = []
+		http.mockImplementation(async (input, init) => {
+			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
+			const payload: WireSnapshot = JSON.parse(String(init?.body))
+			sent.push(payload)
+			return Response.json({ status: "accepted", revision: payload.revision, receivedAt: new Date().toISOString() })
+		})
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(sent).toHaveLength(1)
+		expect(sent[0]).toMatchObject({
+			revision: "1",
+			pullRequests: [],
+			requests: [{ requestId, allocation: { kind: "unlinked", pullRequestIds: [] } }],
+		})
+		await writeFile(path, linked)
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(sent).toHaveLength(2)
+		expect(sent[1]).toMatchObject({
+			producerId: sent[0].producerId,
+			revision: "2",
+			pullRequests: [{ id: "101" }],
+			requests: [{ requestId, allocation: { pullRequestIds: ["101"] } }],
+		})
+		expect(sent[1].requests).toHaveLength(1)
+		expect(sent[1].requests[0].billingRecordIds).toEqual(sent[0].requests[0].billingRecordIds)
+		expect(Date.parse(sent[1].generatedAt)).toBeGreaterThanOrEqual(Date.parse(sent[0].generatedAt))
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(sent).toHaveLength(2)
+	})
 	it.each([
 		"success",
 		"failed",

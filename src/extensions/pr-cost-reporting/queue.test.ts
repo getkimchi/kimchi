@@ -31,13 +31,32 @@ let directory: string
 vi.mock("node:fs/promises", async (original) => ({ ...(await original<typeof files>()) }))
 beforeEach(async () => {
 	directory = await mkdtemp(join(tmpdir(), "kimchi-reporting-"))
+	vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
 })
 afterEach(async () => {
 	vi.restoreAllMocks()
+	vi.unstubAllEnvs()
 	await rm(directory, { recursive: true, force: true })
 })
 
 describe("durable reporting queue", () => {
+	it("follows SaaS uploads by default after the queue is saved and reopened", async () => {
+		expect((await readReportingState(directory)).enabled).toBe(true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const original = await readReportingState(directory)
+		expect(Object.values(original.entries)[0].pending?.requests[0].requestId).toBe(requestId)
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+		expect((await readReportingState(directory)).enabled).toBe(false)
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		expect(await readReportingState(directory)).toEqual(original)
+	})
+	it.each([true, false])("preserves an explicit reporting choice (%s) when SaaS uploads change", async (enabled) => {
+		await setReportingEnabled(directory, enabled)
+		for (const telemetry of ["false", "true"]) {
+			vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", telemetry)
+			expect((await readReportingState(directory)).enabled).toBe(enabled)
+		}
+	})
 	it.each([
 		{ acknowledged: true, optOut: false },
 		{ acknowledged: true, optOut: true },
@@ -265,9 +284,15 @@ describe("durable reporting queue", () => {
 		await expect(queueSnapshots(directory, [snapshot()])).rejects.toThrow("unreadable")
 		expect(await readFile(join(directory, "pr-cost-reporting", "state.json"), "utf8")).toBe("{broken")
 	})
-	it("defaults off and never retains payloads before consent", async () => {
+	it("defaults off while SaaS uploads are disabled and starts collecting when they are enabled", async () => {
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
 		await queueSnapshots(directory, [snapshot()])
 		expect((await readReportingState(directory)).entries).toEqual({})
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		await queueSnapshots(directory, [snapshot([requestId])])
+		expect(Object.values((await readReportingState(directory)).entries)[0]?.pending?.requests[0].requestId).toBe(
+			requestId,
+		)
 	})
 	it("replaces pending snapshots, survives restart and ignores a late acknowledgement", async () => {
 		await setReportingEnabled(directory, true)

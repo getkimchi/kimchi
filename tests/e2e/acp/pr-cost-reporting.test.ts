@@ -9,9 +9,13 @@ afterEach(async () => {
 	await fixture?.stop()
 })
 
-it("exposes explicit PR-reporting consent and status in Studio without inference", async () => {
+it.each([
+	false,
+	true,
+])("follows SaaS uploads (%s) and exposes PR-reporting controls in Studio without inference", async (telemetry) => {
 	const active = await startAcpFixture({
 		artifactName: "pr-cost-reporting",
+		telemetry,
 		responses: [],
 		clientMeta: { "kimchi.dev": { pi_notify: true } },
 	})
@@ -28,8 +32,8 @@ it("exposes explicit PR-reporting consent and status in Studio without inference
 				params: expect.objectContaining({ sessionId, message: expect.stringContaining(message) }),
 			})
 	}
-	await command("/pr-reporting status", "PR reporting: off")
-	expect(existsSync(path)).toBe(false)
+	await command("/pr-reporting status", `PR reporting: ${telemetry ? "on" : "off"}`)
+	if (!telemetry) expect(existsSync(path)).toBe(false)
 	await command("/pr-reporting on", "PR reporting on.")
 	expect(JSON.parse(readFileSync(path, "utf8")).enabled).toBe(true)
 	await command("/pr-reporting off", "Pending uploads were deleted")
