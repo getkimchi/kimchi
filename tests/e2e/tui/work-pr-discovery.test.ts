@@ -131,7 +131,11 @@ test("pending work survives a GitHub login error and finds a PR while coding con
 				.trim()
 				.split("\n")
 				.map((line) => JSON.parse(line))
-			expect(calls.filter((call) => call.kind === "commit").map((call) => call.mode)).toEqual(["auth", "open"])
+			// Turn completion can refresh discovery before the periodic retry.
+			expect([...new Set(calls.filter((call) => call.kind === "commit").map((call) => call.mode))]).toEqual([
+				"auth",
+				"open",
+			])
 			expect(calls.every((call) => call.tokenMatched)).toBe(true)
 		},
 	)

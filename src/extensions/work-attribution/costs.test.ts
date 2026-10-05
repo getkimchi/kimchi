@@ -67,7 +67,7 @@ describe("account-scoped PR totals", () => {
 			id: "81",
 			repositoryId: "42",
 		})
-		const conflicting = commit("work-a", [pullRequest({ id: "82", repositoryId: "42" })])
+		const conflicting = commit("work-a", [pullRequest({ id: "81", repositoryId: "43" })])
 		expect(calculatePullRequestCosts([request("a"), first, conflicting], []).pullRequests[0].pullRequest).toBeNull()
 	})
 	it.each(["organizationId", "userId", "apiUrl"] as const)("separates the same PR by %s", (field) => {
