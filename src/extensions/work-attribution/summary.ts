@@ -143,24 +143,35 @@ async function readSummary(path: string, workId: string): Promise<WorkSummary | 
 		if (!(error instanceof SyntaxError) && (!object(error) || error.code !== "ENOENT")) throw error
 	}
 }
-export function readWorkRecords(agentDir: string, modifiedSince?: number): WorkRecord[] {
+export function readWorkRecords(
+	agentDir: string,
+	modifiedSince?: number,
+	checkBudget: () => void = () => {},
+	onInvalidRecord?: () => void,
+): WorkRecord[] {
+	checkBudget()
 	const directory = join(agentDir, "work-attribution")
 	if (!existsSync(directory)) return []
 	const records: WorkRecord[] = []
 	// Both kinds of source journals feed work.json; there is no second copy of file evidence.
 	for (const source of [directory, join(directory, "transitions")]) {
+		checkBudget()
 		if (!existsSync(source)) continue
 		for (const file of readdirSync(source, { withFileTypes: true })) {
+			checkBudget()
 			if (!file.isFile() || !file.name.endsWith(".jsonl")) continue
 			try {
 				const path = join(source, file.name)
 				if (modifiedSince !== undefined && statSync(path).mtimeMs < modifiedSince) continue
 				for (const line of readFileSync(path, "utf8").split("\n")) {
+					checkBudget()
+					if (!line.trim()) continue
 					try {
 						const value = JSON.parse(line)
 						if (record(value)) records.push(value)
+						else onInvalidRecord?.()
 					} catch {
-						/* interrupted append */
+						onInvalidRecord?.()
 					}
 				}
 			} catch (error) {
@@ -169,6 +180,7 @@ export function readWorkRecords(agentDir: string, modifiedSince?: number): WorkR
 			}
 		}
 	}
+	checkBudget()
 	return records
 }
 function strings(...values: unknown[]): string[] {

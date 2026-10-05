@@ -63,7 +63,16 @@ it("links a plan pasted into Studio before dispatching its first request", async
 			expect.objectContaining({
 				type: "work",
 				workId,
-				continuation: { source: "pasted-plan", evidence: { path } },
+				continuation: {
+					source: "pasted-plan",
+					evidence: expect.objectContaining({
+						path,
+						contentHash: hash,
+						segmentId: expect.any(String),
+						account: { ...account, apiUrl: active.fake.baseUrl },
+						repository: realpathSync(join(active.workDir, ".git")),
+					}),
+				},
 			}),
 		)
 	} finally {
@@ -143,6 +152,21 @@ it("keeps unrelated Studio chat separate until a saved ADR is named, without mov
 		workId: original.workId,
 		segment: { attribution: "explicit", reason: "named-artifact" },
 	})
+	expect(records()).toContainEqual(
+		expect.objectContaining({
+			type: "work",
+			workId: original.workId,
+			sessionId: original.sessionId,
+			continuation: {
+				source: "named-artifact",
+				evidence: expect.objectContaining({
+					requestId: chats()[0].headers["x-request-id"],
+					segmentId: lastRequest().segment.id,
+					account: { ...account, apiUrl: active.fake.baseUrl },
+				}),
+			},
+		}),
+	)
 	const fresh = await newSession(active, cwd)
 	expect((await prompt(active, fresh, "Explain what a closure is.")).stopReason).toBe("end_turn")
 	const unrelated = lastRequest()

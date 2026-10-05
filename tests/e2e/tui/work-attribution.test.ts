@@ -465,6 +465,18 @@ for (const reference of ["path", "paste"]) {
 						}),
 					}),
 				)
+				expect(summary.continuations).toContainEqual(
+					expect.objectContaining({
+						source: reference === "paste" ? "pasted-plan" : "saved-plan",
+						evidence: expect.objectContaining({
+							path: reference === "path" ? realpathSync(snapshotPath) : snapshotPath,
+							contentHash: planned.plans[0].contentHash,
+							requestId: producer.requestId,
+							segmentId: expect.any(String),
+							...producer.scope,
+						}),
+					}),
+				)
 				expect(summary.workId).toBe(workId)
 				expect(new Set(summary.sessions)).toEqual(new Set(requests.map((record) => record.sessionId)))
 				expect(summary.plans).toContainEqual(expect.objectContaining({ path: planPath, snapshotPath }))

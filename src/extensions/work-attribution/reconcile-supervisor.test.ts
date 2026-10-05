@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as pullRequests from "../pull-request-status/pull-requests.js"
 import * as costs from "./cost-sync.js"
 import * as transitions from "./file-transitions.js"
+import * as continuations from "./links.js"
 import {
 	RECONCILIATION_INTERVAL_MS,
 	subscribeCostReconciliation,
@@ -23,6 +24,7 @@ vi.mock("../pull-request-status/pull-requests.js", () => ({
 	readWorkPullRequestUpdates: vi.fn(),
 }))
 vi.mock("./cost-sync.js", () => ({ reconcileWorkCosts: vi.fn() }))
+vi.mock("./links.js", () => ({ reconcileWorkContinuations: vi.fn() }))
 
 let directory: string
 const stops: (() => Promise<void>)[] = []
@@ -45,6 +47,7 @@ beforeEach(() => {
 	vi.mocked(pullRequests.reconcileWorkPullRequests).mockResolvedValue()
 	vi.mocked(pullRequests.readWorkPullRequestUpdates).mockReturnValue([])
 	vi.mocked(costs.reconcileWorkCosts).mockResolvedValue()
+	vi.mocked(continuations.reconcileWorkContinuations).mockResolvedValue()
 })
 afterEach(async () => {
 	for (const stop of stops.splice(0)) await stop()
@@ -55,6 +58,82 @@ afterEach(async () => {
 })
 
 describe("shared file reconciliation", () => {
+	it("runs PR and cost work before a failed historical repair and retries without a PR warning", async () => {
+		const order: string[] = []
+		const onError = vi.fn()
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		vi.mocked(pullRequests.reconcileWorkPullRequests).mockImplementation(async () => {
+			order.push("pr")
+		})
+		vi.mocked(costs.reconcileWorkCosts).mockImplementation(async () => {
+			order.push("cost")
+		})
+		vi.mocked(continuations.reconcileWorkContinuations).mockImplementation(async () => {
+			order.push("history")
+			throw new Error("Unreadable historical ledger")
+		})
+		subscribe()
+		stops.push(subscribePullRequestReconciliation({ onPullRequest: () => {}, onError }))
+		stops.push(subscribeCostReconciliation())
+		await vi.waitFor(() => expect(order).toEqual(["pr", "cost", "history"]))
+		await vi.waitFor(async () => {
+			const release = await locks.lock(join(directory, "work-attribution"), { retries: 0 })
+			await release()
+		})
+		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
+		await vi.waitFor(() => expect(order).toEqual(["pr", "cost", "history", "pr", "cost", "history"]))
+		expect(onError).not.toHaveBeenCalled()
+		expect(warn).not.toHaveBeenCalled()
+	})
+
+	it("gives historical repair a fresh budget after local Git uses its budget", async () => {
+		let now = 0
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		vi.mocked(transitions.reconcileRepositoryTransitions).mockImplementation(async (_repository, _signal, budget) => {
+			now += 4000
+			budget?.()
+		})
+		const published = vi.fn()
+		vi.mocked(continuations.reconcileWorkContinuations).mockImplementation(async (_directory, signal, assertLease) => {
+			signal.throwIfAborted()
+			assertLease()
+			published()
+		})
+		subscribe()
+		await vi.waitFor(() => expect(published).toHaveBeenCalledOnce())
+	})
+
+	it("passes lease loss to a historical repair before it can publish", async () => {
+		let compromised: locks.LockOptions["onCompromised"]
+		vi.spyOn(locks, "lock").mockImplementation(async (_path, options) => {
+			compromised = options?.onCompromised
+			return async () => {}
+		})
+		let finish!: () => void
+		const gate = new Promise<void>((resolve) => {
+			finish = resolve
+		})
+		let active: AbortSignal | undefined
+		const published = vi.fn()
+		vi.mocked(continuations.reconcileWorkContinuations).mockImplementation(async (_directory, signal, assertLease) => {
+			active = signal
+			await gate
+			assertLease()
+			published()
+		})
+		const stop = subscribe()
+		try {
+			await vi.waitFor(() => expect(active).toBeDefined())
+			compromised?.(Object.assign(new Error("Lease lost"), { code: "ECOMPROMISED" }))
+			finish()
+			await stop()
+			expect(active?.aborted).toBe(true)
+			expect(published).not.toHaveBeenCalled()
+		} finally {
+			finish()
+		}
+	})
+
 	it("keeps billing write failures out of PR warnings and retries billing on the next pass", async () => {
 		const onError = vi.fn()
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})

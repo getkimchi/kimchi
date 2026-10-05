@@ -18,7 +18,7 @@ import {
 	setWorkId,
 } from "../work-attribution.js"
 
-import { flushWorkSummaries, recoverWorkSummaries } from "./summary.js"
+import { flushWorkSummaries, readWorkRecords, recoverWorkSummaries } from "./summary.js"
 
 vi.mock("proper-lockfile", async (importOriginal) => ({ ...(await importOriginal<typeof locks>()) }))
 vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
@@ -46,6 +46,18 @@ function summary(workId: string) {
 }
 
 describe("readable work summaries", () => {
+	it("reports malformed nonblank ledger rows without treating a trailing newline as lost history", () => {
+		const ctx = context()
+		recordProviderRequest(ctx)
+		const invalid = vi.fn()
+		const ledger = join(dir, "work-attribution", "parent.jsonl")
+		readWorkRecords(dir, undefined, () => {}, invalid)
+		expect(invalid).not.toHaveBeenCalled()
+		fs.appendFileSync(ledger, '\n{broken\n{"type":"request"}\n')
+		readWorkRecords(dir, undefined, () => {}, invalid)
+		expect(invalid).toHaveBeenCalledTimes(2)
+	})
+
 	it("retains PR links and their newest state through failed lookups and source replay", async () => {
 		const ctx = context()
 		const workId = getWorkId(ctx)

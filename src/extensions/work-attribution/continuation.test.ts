@@ -65,6 +65,32 @@ afterEach(() => {
 })
 
 describe("continuing saved work", () => {
+	it.each([
+		"path",
+		"paste",
+	])("keeps the accepted %s bytes when the file changes during the final account check", async (kind) => {
+		const saved = savePlanMarkdown({
+			cwd,
+			name: "accepted",
+			planText: "# Accepted\r\nOriginal bytes.\r\n",
+			workId: planningWork,
+		})
+		const content = readFileSync(saved.path, "utf8")
+		const captured = createWorkScopeSnapshot(join(cwd, ".git"))
+		vi.mocked(scope.captureWorkScope).mockImplementation(async () => {
+			const path = kind === "path" ? saved.path : saved.snapshotPath
+			if (!path) throw new Error("Missing retained plan")
+			writeFileSync(path, `<!-- kimchi-work-id: ${planningWork} -->\n# Replacement\n`)
+			return captured
+		})
+		expect(
+			await findWorkContinuation({ cwd }, kind === "path" ? `Implement ${saved.path}` : content, captured),
+		).toMatchObject({
+			workId: planningWork,
+			evidence: { contentHash: saved.contentHash },
+		})
+	})
+
 	it.each(["plain", "fenced", "skill"])("continues a %s pasted retained plan without its path", async (wrapper) => {
 		const saved = savePlanMarkdown({
 			cwd,

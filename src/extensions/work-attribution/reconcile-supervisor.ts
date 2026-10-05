@@ -10,6 +10,7 @@ import {
 } from "../pull-request-status/pull-requests.js"
 import { reconcileWorkCosts } from "./cost-sync.js"
 import { knownTransitionRepositories, reconcileRepositoryTransitions } from "./file-transitions.js"
+import { reconcileWorkContinuations } from "./links.js"
 
 export const RECONCILIATION_INTERVAL_MS = 30_000
 const PASS_BUDGET_MS = 3000
@@ -20,6 +21,7 @@ interface Supervisor {
 	timer?: ReturnType<typeof setInterval>
 	running?: Promise<void>
 	nextRepository?: string
+	nextContinuation?: string
 	pullRequestController?: AbortController
 	pullRequestRunning?: Promise<void>
 	costController?: AbortController
@@ -119,6 +121,14 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 				await pending
 			} finally {
 				if (owner.costRunning === pending) owner.costRunning = undefined
+			}
+		}
+		// Historical repair is local and has its own budget; PR and billing work run first.
+		if ([...owner.subscribers].some((subscriber) => subscriber.kind === "files")) {
+			try {
+				await reconcileWorkContinuations(agentDir, signal, assertLease, owner)
+			} catch (error) {
+				if (!signal.aborted) debug("Could not reconcile work continuations: %o", error)
 			}
 		}
 	} finally {

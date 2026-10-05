@@ -135,7 +135,13 @@ If account verification recovers after an unavailable first input, the next mess
 
 Continuing a verified plan or native artifact also checks its producing request. If that request's input was unresolved, Kimchi confirms the requests from that input under the continued work. For example, `Plan docs/new-feature.md` can be unresolved because the file does not exist yet; continuing its saved plan later confirms the planning requests automatically. Other inputs in that conversation stay unchanged.
 
-This needs one recorded producer, an unchanged retained plan version or native edit, and matching account/repository scope. Missing or conflicting producer records stay unresolved. An existing correction or revocation takes precedence. The resulting `workLinks` entry names the plan/artifact evidence, producing `requestId` and `segmentId`; no source rows are rewritten. Model guesses do not create these confirmations.
+This needs one recorded producer, the accepted retained plan version or native edit, and matching account/repository scope. Missing or conflicting producer records stay unresolved. An existing correction or revocation takes precedence. The resulting `workLinks` entry names the plan/artifact evidence, producing `requestId` and `segmentId`; no source rows are rewritten. Model guesses do not create these confirmations.
+
+Kimchi saves each accepted continuation, including a reference to the current work. Plan receipts retain a hash of the accepted bytes; receipts also retain the original account, repository and accepting input, plus the producing request when it is known. Editing a plan later does not change that receipt.
+
+After restart and during ordinary background reconciliation, Kimchi retries accepted continuations whose producer could not yet be confirmed. It uses the original scoped records and makes no model or authentication calls for this repair. A restored source record can complete the evidence. A later identical plan cannot replace a known producer; without a pinned producer, the source record must predate acceptance. Missing evidence stays unresolved and is retried. Old plan receipts without an acceptance hash remain unresolved, even when they name a retained snapshot; older native-artifact receipts can use their exact saved transition ID. This never changes original request IDs or exact prices, and it cannot replace a correction or revocation.
+
+Repair shares the existing reconciliation worker and lease. PR discovery and billing run first. Each repair pass checks its three-second budget while reading history and examines at most 25 receipts, rotating past slow or failed candidates. Failed or interrupted passes do not mark history complete.
 
 If planning and implementation already ended up in separate works, open the implementing work and run:
 
@@ -279,7 +285,7 @@ Kimchi tries credentials in this order: an environment token for the selected ho
 
 Before sending a covered model request, Kimchi saves and flushes its request ID, work ID and session ID. It then sends `X-Request-Id`. This also works with telemetry disabled.
 
-Records with the same work ID go into the same `work.json`. Requests are deduplicated by request ID; commit records keep the contributing sessions. `fileTransitions` keeps native edits, `fileObservations` keeps candidate Bash/MCP changes, and `continuations` explains why another session adopted the work. IDs identify records; array positions have no meaning.
+Records with the same work ID go into the same `work.json`. Requests are deduplicated by request ID; commit records keep the contributing sessions. `fileTransitions` keeps native edits, `fileObservations` keeps candidate Bash/MCP changes, and `continuations` explains why an input continued the current or another saved work. IDs identify records; array positions have no meaning.
 
 A request record describes an attempt. It does not prove a successful response or a charge. Covered HTTP replies add their status and safe response IDs. Billing lookups later add exact prices when available. `work.json` contains paths, request metadata, PR links and billing rows, with no prompts or file contents. Retained native plans contain the plan text and stay local. PR lookup sends repository and commit identifiers to the repository's GitHub or GitLab API.
 
