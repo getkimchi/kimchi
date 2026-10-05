@@ -11,7 +11,6 @@ import type { RequestCostAllocation } from "./costs.js"
 
 const execFileAsync = promisify(execFile)
 const scriptPath = fileURLToPath(new URL("./accuracy-cli.ts", import.meta.url))
-const tsxPath = join(process.cwd(), "node_modules", ".bin", "tsx")
 
 const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-accuracy-cli-"))
 
@@ -84,13 +83,13 @@ const USAGE = "Usage: pnpm exec tsx src/extensions/work-attribution/accuracy-cli
 type CliSpawnError = Error & { code: number | string | undefined; stdout: string; stderr: string }
 
 /**
- * Run the script through tsx exactly as the documented command does. Vitest sets VITEST in this
+ * Run the script with the tsx loader. Vitest sets VITEST in this
  * process and spawned children inherit it, which would keep the script entry inert, so strip it
  * to make the child behave like a real CLI run.
  */
 function spawnCli(args: readonly string[]) {
 	const { VITEST: _omitVitest, ...childEnv } = process.env
-	return execFileAsync(tsxPath, [scriptPath, ...args], { env: childEnv, timeout: 120_000 })
+	return execFileAsync(process.execPath, ["--import", "tsx", scriptPath, ...args], { env: childEnv, timeout: 20_000 })
 }
 
 async function expectSpawnFailure(args: readonly string[]): Promise<CliSpawnError> {
@@ -109,7 +108,8 @@ function writeFixture(name: string, value: unknown): string {
 	return path
 }
 
-describe("accuracy-cli (spawned via tsx)", () => {
+// Leave time for the child to exit and report its error before Vitest removes the fixtures.
+describe("accuracy-cli (spawned via tsx)", { timeout: 30_000 }, () => {
 	it("exits 0 and prints the complete summary for a valid report and labels", async () => {
 		const reportPath = writeFixture("valid-report.json", {
 			pullRequests: [],
@@ -174,7 +174,7 @@ describe("runCli (in-process)", () => {
 		expect(runCli([reportPath, labelsPath]).code).toBe(2)
 	})
 
-	it("exits incomplete when a real CLI invocation scores only USD 1 of USD 10", async () => {
+	it("exits incomplete when only USD 1 of USD 10 is labelled", () => {
 		const reportPath = writeFixture("partial-label-report.json", {
 			requests: [
 				row("req-labelled", { allocation: "pull-request", pullRequestIds: [PR1], knownCostUsd: "1.000000000" }),
@@ -183,9 +183,9 @@ describe("runCli (in-process)", () => {
 		})
 		const labelsPath = writeFixture("partial-label-labels.json", [label("req-labelled", PR1)])
 
-		const error = await expectSpawnFailure([reportPath, labelsPath])
-		expect(error.code).toBe(2)
-		expect(error.stdout).toContain("req-unlabelled")
+		const outcome = runCli([reportPath, labelsPath])
+		expect(outcome.code).toBe(2)
+		expect(outcome.stdout.join("\n")).toContain("req-unlabelled")
 	})
 
 	it("exits 1 with the usage line for wrong argument counts", () => {
