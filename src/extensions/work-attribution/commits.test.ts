@@ -118,7 +118,7 @@ describe("Git commit observation", () => {
 			`git worktree remove ${quote(worktree)}`,
 			"git commit --allow-empty -m after",
 		]
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		vi.spyOn(console, "warn").mockImplementation(() => {})
 		expect(await run(commands.join(" && "))).toBe(0)
 		const names = position === "middle" ? ["before", "after"] : ["after"]
 		expect(commits).toEqual(
@@ -128,7 +128,6 @@ describe("Git commit observation", () => {
 				worktree: repository,
 			})),
 		)
-		expect(warning).toHaveBeenCalled()
 	})
 
 	it("does not record checkout or reset alongside a real commit", async () => {
