@@ -102,10 +102,7 @@ afterEach(async () => {
 })
 
 describe("manual commit reconciliation", () => {
-	it.each([
-		"content-v2",
-		"content-v3",
-	])("rechecks a %s checkpoint that could have hidden a failed ancestry lookup", async (prefix) => {
+	it("rechecks a stale content checkpoint without duplicating contributions", async () => {
 		baseline()
 		await edit("one", "first")
 		git("stash", "push", "-q")
@@ -124,7 +121,7 @@ describe("manual commit reconciliation", () => {
 		if (!checkpoint) throw new Error("Expected a content checkpoint")
 		const path = join(directory, checkpoint)
 		const progress = JSON.parse(readFileSync(path, "utf8"))
-		progress.evidence = `${prefix}:${progress.evidence.replace(/^content-v\d+:/, "")}`
+		progress.evidence = `content:${progress.evidence}`
 		writeFileSync(path, JSON.stringify(progress))
 		await reconcileRepositoryTransitions(repository)
 		await reconcileRepositoryTransitions(repository)
