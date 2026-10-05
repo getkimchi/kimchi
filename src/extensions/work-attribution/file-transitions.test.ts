@@ -102,7 +102,10 @@ afterEach(async () => {
 })
 
 describe("manual commit reconciliation", () => {
-	it("rechecks older content checkpoints that could have hidden a failed ancestry lookup", async () => {
+	it.each([
+		"content-v2",
+		"content-v3",
+	])("rechecks a %s checkpoint that could have hidden a failed ancestry lookup", async (prefix) => {
 		baseline()
 		await edit("one", "first")
 		git("stash", "push", "-q")
@@ -121,7 +124,7 @@ describe("manual commit reconciliation", () => {
 		if (!checkpoint) throw new Error("Expected a content checkpoint")
 		const path = join(directory, checkpoint)
 		const progress = JSON.parse(readFileSync(path, "utf8"))
-		progress.evidence = progress.evidence.replace(/^content-v\d+:/, "content-v2:")
+		progress.evidence = `${prefix}:${progress.evidence.replace(/^content-v\d+:/, "")}`
 		writeFileSync(path, JSON.stringify(progress))
 		await reconcileRepositoryTransitions(repository)
 		await reconcileRepositoryTransitions(repository)
@@ -538,7 +541,10 @@ describe("manual commit reconciliation", () => {
 		])
 	})
 
-	it("backfills a missing session from a completed older checkpoint", async () => {
+	it.each([
+		"matches-v2",
+		"sessions-v1:matches-v2",
+	])("backfills a missing session from a completed %s checkpoint", async (prefix) => {
 		baseline()
 		const first = context("first")
 		const second = context("second")
@@ -563,7 +569,7 @@ describe("manual commit reconciliation", () => {
 		if (!progressFile) throw new Error("Expected a completed reconciliation checkpoint")
 		const progressPath = join(transitionDirectory, progressFile)
 		const progress = JSON.parse(readFileSync(progressPath, "utf8"))
-		progress.evidence = progress.evidence.replace(/^sessions-v1:/, "")
+		progress.evidence = `${prefix}:${progress.evidence.replace(/^(?:sessions-v1:)?matches-v2:/, "")}`
 		writeFileSync(progressPath, JSON.stringify(progress))
 		await reconcileFileTransitions(context("upgrade"))
 		await reconcileFileTransitions(context("repeat"))
