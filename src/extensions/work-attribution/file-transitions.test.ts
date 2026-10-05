@@ -102,6 +102,83 @@ afterEach(async () => {
 })
 
 describe("manual commit reconciliation", () => {
+	it("rechecks older content checkpoints that could have hidden a failed ancestry lookup", async () => {
+		baseline()
+		await edit("one", "first")
+		git("stash", "push", "-q")
+		git("stash", "pop", "-q")
+		const sha = commit()
+		const repository = realpathSync(join(repo, ".git"))
+		await reconcileRepositoryTransitions(repository)
+		expect(contributions()).toHaveLength(1)
+		const ledger = join(root, "agent", "work-attribution", "original.jsonl")
+		const retained = readFileSync(ledger, "utf8")
+			.split("\n")
+			.filter((line) => line && JSON.parse(line).type !== "commit")
+		writeFileSync(ledger, `${retained.join("\n")}\n`)
+		const directory = join(root, "agent", "work-attribution", "transitions")
+		const checkpoint = readdirSync(directory).find((name) => name.endsWith(".content-checkpoint"))
+		if (!checkpoint) throw new Error("Expected a content checkpoint")
+		const path = join(directory, checkpoint)
+		const progress = JSON.parse(readFileSync(path, "utf8"))
+		progress.evidence = progress.evidence.replace(/^content-v\d+:/, "content-v2:")
+		writeFileSync(path, JSON.stringify(progress))
+		await reconcileRepositoryTransitions(repository)
+		await reconcileRepositoryTransitions(repository)
+		expect(contributions()).toEqual([expect.objectContaining({ sha })])
+	})
+
+	it.each([
+		"ls-tree",
+		"merge-base",
+	])("retries a timed-out %s comparison in an external linked worktree without checkpointing it", async (command) => {
+		baseline()
+		const primary = repo
+		repo = join(root, "external-worktree")
+		execFileSync("git", ["-C", primary, "worktree", "add", "-qb", "external", repo])
+		await edit("one", "first")
+		const workId = getWorkId(context())
+		// Stash interrupts the exact file chain, exercising comparisons in the shared .git directory.
+		git("stash", "push", "-q")
+		git("stash", "pop", "-q")
+		const sha = commit()
+		const repository = realpathSync(join(primary, ".git"))
+		const worktree = realpathSync(repo)
+		expect(await knownTransitionRepositories()).toEqual([repository])
+		expect(rows().find((row) => row.type === "file_transition")).toMatchObject({ repository, worktree, workId })
+
+		const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim()
+		const bin = join(root, "bin")
+		mkdirSync(bin)
+		const marker = join(root, "timed-out-command")
+		writeFileSync(
+			join(bin, "git"),
+			`#!/bin/sh\nif [ "$2" = '${repository}' ] && [ "$3" = "${command}" ] && [ ! -f '${marker}' ]; then\n  printf '%s\\n' "$@" > '${marker}'\n  exec sleep 10\nfi\nexec '${realGit}' "$@"\n`,
+			{ mode: 0o755 },
+		)
+		vi.stubEnv("PATH", `${bin}:${process.env.PATH}`)
+		await expect(reconcileRepositoryTransitions(repository)).rejects.toMatchObject({
+			killed: true,
+			signal: "SIGTERM",
+		})
+		expect(readFileSync(marker, "utf8").split("\n").slice(0, 3)).toEqual(["-C", repository, command])
+		expect(contributions()).toEqual([])
+		const journals = join(root, "agent", "work-attribution", "transitions")
+		expect(readdirSync(journals).filter((path) => path.endsWith(".content-checkpoint"))).toEqual([])
+
+		await reconcileRepositoryTransitions(repository)
+		await reconcileRepositoryTransitions(repository)
+		expect(contributions()).toEqual([
+			expect.objectContaining({
+				sha,
+				workId,
+				repository,
+				worktree,
+				fileMatches: [expect.objectContaining({ path: "file.txt", method: "path-blob", worktree })],
+			}),
+		])
+	}, 10000)
+
 	it("retains discovery progress when reading journal headers exhausts a pass", async () => {
 		for (let index = 0; index < 5; index++) {
 			repo = join(root, `repository-${index}`)

@@ -1,11 +1,13 @@
 import { mkdir } from "node:fs/promises"
 import { join, resolve } from "node:path"
+import { debuglog } from "node:util"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { lock } from "proper-lockfile"
 import { knownTransitionRepositories, reconcileRepositoryTransitions } from "./file-transitions.js"
 
 export const RECONCILIATION_INTERVAL_MS = 30_000
 const PASS_BUDGET_MS = 3000
+const debug = debuglog("kimchi:work-attribution")
 interface Supervisor {
 	subscribers: number
 	controller: AbortController
@@ -58,7 +60,7 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 				await reconcileRepositoryTransitions(repositories[index], signal, checkBudget, assertLease)
 			} catch (error) {
 				if (error === exhausted || signal.aborted) throw error
-				console.warn("[work-attribution] Could not reconcile repository:", repositories[index], error)
+				debug("Could not reconcile repository %s: %o", repositories[index], error)
 			}
 		}
 	} catch (error) {
@@ -72,7 +74,7 @@ function tick(agentDir: string, owner: Supervisor): void {
 	if (owner.running || owner.controller.signal.aborted) return
 	owner.running = scan(agentDir, owner)
 		.catch((error) => {
-			if (!owner.controller.signal.aborted) console.warn("[work-attribution] Reconciliation unavailable:", error)
+			if (!owner.controller.signal.aborted) debug("Reconciliation unavailable: %o", error)
 		})
 		.finally(() => {
 			owner.running = undefined

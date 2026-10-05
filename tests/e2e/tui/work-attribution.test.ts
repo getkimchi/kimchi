@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process"
-import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { expect, Key, test } from "@microsoft/tui-test"
-import { waitForText } from "./support/assertions.js"
+import { fullText, waitForText } from "./support/assertions.js"
 import { launchKimchi, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -232,18 +232,24 @@ test("a new worktree continues a retained plan after its original worktree is de
 	)
 })
 
-test("a fresh session links a manual commit to the work that wrote its files", async ({ terminal }) => {
+test("a fresh session recovers an external worktree commit after a Git timeout without console noise", async ({
+	terminal,
+}) => {
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "work-attribution-manual-commit",
-			gitInit: true,
 			models,
 			exitMarker: "WRITING_SESSION_EXITED",
-			seedHome(_home, cwd) {
-				execFileSync("git", ["config", "user.name", "Attribution Test"], { cwd })
-				execFileSync("git", ["config", "user.email", "attribution@example.invalid"], { cwd })
-				execFileSync("git", ["config", "commit.gpgSign", "false"], { cwd })
+			seedHome(home, cwd) {
+				const primary = join(home, "primary-repo")
+				execFileSync("git", ["init", primary])
+				const git = (...args: string[]) => execFileSync("git", ["-C", primary, ...args])
+				git("config", "user.name", "Attribution Test")
+				git("config", "user.email", "attribution@example.invalid")
+				git("config", "commit.gpgSign", "false")
+				git("commit", "--allow-empty", "-m", "Baseline")
+				git("worktree", "add", "-b", "external", cwd)
 			},
 			responses: [
 				{
@@ -273,6 +279,32 @@ test("a fresh session links a manual commit to the work that wrote its files", a
 			execFileSync("git", ["commit", "-m", "User commits the agent contribution"], { cwd: fixture.workDir })
 			const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: fixture.workDir, encoding: "utf8" }).trim()
 			trace.step("agent wrote the file; user committed it after Kimchi exited")
+			const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim()
+			const bin = join(fixture.homeDir, "bin")
+			mkdirSync(bin)
+			const marker = join(fixture.homeDir, "git-timeout")
+			writeFileSync(
+				join(bin, "git"),
+				`#!/bin/sh\nif [ "$3" = "ls-tree" ] && [ ! -f '${marker}' ]; then\n  touch '${marker}'\n  exec sleep 10\nfi\nexec '${realGit}' "$@"\n`,
+				{ mode: 0o755 },
+			)
+			launchKimchi(
+				terminal,
+				fixture,
+				[],
+				{ ...fixture.seedEnv, PATH: `${bin}:${process.env.PATH}`, NODE_DEBUG: "" },
+				{ exitMarker: "INTERRUPTED_SCAN_EXITED" },
+			)
+			const deadline = Date.now() + 10_000
+			while (!existsSync(marker) && Date.now() < deadline) await sleep(50)
+			expect(existsSync(marker)).toBe(true)
+			await sleep(2300) // Allow the real two-second execFile timeout and its error handler to finish.
+			expect(readLedger(ledgerDir).filter((record) => record.type === "commit")).toEqual([])
+			expect(fullText(terminal)).not.toContain("Could not reconcile repository")
+			expect(fullText(terminal)).not.toContain("SIGTERM")
+			trace.step("Git timed out; no partial attribution or raw error appeared in the terminal")
+			terminal.submit("/quit")
+			await waitForText(terminal, "INTERRUPTED_SCAN_EXITED", { full: false })
 			launchKimchi(terminal, fixture, [], fixture.seedEnv)
 			await waitForText(terminal, PROMPT_READY, { full: false })
 			terminal.submit("Confirm this is a fresh session.")
@@ -285,6 +317,8 @@ test("a fresh session links a manual commit to the work that wrote its files", a
 				paths: ["manual.txt"],
 				sessionId: original.sessionId,
 				workId: original.workId,
+				repository: realpathSync(join(fixture.homeDir, "primary-repo", ".git")),
+				worktree: realpathSync(fixture.workDir),
 			})
 			const requestId = fixture.fake.requests
 				.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
