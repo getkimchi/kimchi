@@ -641,7 +641,7 @@ describe("bash_control — wait", () => {
 		controller.abort()
 		const result = await execPromise
 
-		expect(textOf(result)).toContain("Wait cancelled")
+		expect(textOf(result)).toBe("Wait cancelled after 0s. 1 background process still running.")
 		expect(result.details.aborted).toBe(true)
 		expect(result.details.event).toBe("aborted")
 		expect(registry.getEntry(handle)?.state).toBe("running")
@@ -815,25 +815,59 @@ describe("bash_control — pending terminal delivery state", () => {
 		expect(vi.getTimerCount()).toBe(timersBefore)
 	})
 
-	it("wait with only queued pending outcomes keeps waiting for live work (mixed queued + live)", async () => {
+	it("wait yields immediately for queued results even with live work", async () => {
 		const { tool } = setup()
 		const survivor = spawnRunning("survivor")
 		const handle = "queued-mixed"
 		state.delivery.record(handle, "[TERMINAL PAYLOAD never-duplicated]", "automatic")
 		state.delivery.markQueued(handle, "delivery-qm")
 
+		const timersBefore = vi.getTimerCount()
 		const execPromise = callExecute(tool, { wait: true, waitSeconds: 5 })
-		await Promise.resolve()
 		await vi.advanceTimersByTimeAsync(5_000)
 		const result = await execPromise
-		// The survivor is still running; the queued outcome is owned by its
-		// notification — reported as pending, not duplicated, and the wait
-		// still checkpoints normally.
-		expect(result.details.event).toBe("checkpoint")
+		expect(result.details.event).toBe("inspection")
+		expect(result.details.waitedSeconds).toBeUndefined()
+		expect(vi.getTimerCount()).toBe(timersBefore)
 		expect(result.details.runningHandles).toEqual([survivor])
 		expect(result.details.pendingHandles).toEqual([handle])
 		expect(textOf(result)).toContain("queued for automatic delivery")
 		expect(textOf(result)).not.toContain("never-duplicated")
+	})
+
+	it("a queued automatic result wakes an armed wait without delivering its payload", async () => {
+		const { tool } = setup()
+		const survivor = spawnRunning("survivor")
+		const timersBefore = vi.getTimerCount()
+		const execPromise = callExecute(tool, { wait: true, waitSeconds: 5 })
+		await vi.advanceTimersByTimeAsync(1_000)
+		state.delivery.record("late-result", "PRIVATE PAYLOAD", "automatic")
+		state.delivery.markQueued("late-result", "late-batch")
+		await vi.advanceTimersByTimeAsync(4_000)
+		const result = await execPromise
+		expect(result.details.event).toBe("inspection")
+		expect(result.details.waitedSeconds).toBe(1)
+		expect(result.details.pendingHandles).toEqual(["late-result"])
+		expect(result.details.runningHandles).toEqual([survivor])
+		expect(textOf(result)).not.toContain("PRIVATE PAYLOAD")
+		expect(state.delivery.getPending("late-result")?.owner).toBe("automatic")
+		expect(vi.getTimerCount()).toBe(timersBefore)
+	})
+
+	it("cancellation reports pending results without promising delivery", async () => {
+		const { tool } = setup()
+		const handle = spawnRunning("teardown")
+		const execPromise = callExecute(tool, { wait: true })
+		await Promise.resolve()
+		state.delivery.record("retained", "PAYLOAD", "automatic")
+		coordinator.dispose()
+		await registry.kill(handle)
+		const result = await execPromise
+		expect(textOf(result)).toBe(
+			"Wait cancelled after 0s. 0 background processes still running.\n\n1 exit result remains pending delivery.",
+		)
+		expect(result.details.pendingHandles).toEqual(["retained"])
+		expect(textOf(result)).not.toContain("PAYLOAD")
 	})
 
 	it("an unknown handle makes no delivered assertion", async () => {

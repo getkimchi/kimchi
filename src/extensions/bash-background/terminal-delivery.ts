@@ -143,12 +143,17 @@ export interface TerminalDelivery {
 	pendingHandles(): string[]
 	/** Whether any terminal outcome awaits delivery. */
 	hasPending(): boolean
+	/** Whether an automatic notification awaits conversation acknowledgement. */
+	hasQueuedAutomatic(): boolean
+	/** Observe automatic enqueue transitions. Returns a subscription cleanup. */
+	onQueuedAutomatic(listener: () => void): () => void
 	/** Total live entries (live + pending-terminal for assertions). */
 	readonly size: number
 }
 
 export function createTerminalDelivery(): TerminalDelivery {
 	const pendings = new Map<string, PendingTerminal>()
+	const queuedListeners = new Set<() => void>()
 	const sessionId = randomUUID()
 
 	function record(handle: string, payload: string, owner: TerminalOwner): PendingTerminal {
@@ -178,6 +183,7 @@ export function createTerminalDelivery(): TerminalDelivery {
 		if (pending?.phase !== "available" || pending.owner !== "automatic") return undefined
 		pending.phase = "queued"
 		pending.deliveryId = deliveryId
+		for (const listener of queuedListeners) listener()
 		return pending
 	}
 
@@ -248,6 +254,13 @@ export function createTerminalDelivery(): TerminalDelivery {
 		getPending: (handle) => pendings.get(handle),
 		pendingHandles: () => [...pendings.keys()],
 		hasPending: () => pendings.size > 0,
+		hasQueuedAutomatic: () => [...pendings.values()].some((p) => p.phase === "queued" && p.owner === "automatic"),
+		onQueuedAutomatic(listener) {
+			queuedListeners.add(listener)
+			return () => {
+				queuedListeners.delete(listener)
+			}
+		},
 		get size() {
 			return pendings.size
 		},

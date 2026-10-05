@@ -14,8 +14,8 @@
  *    delivered, and each running process reports runtime, output age,
  *    checkpoint streak, and remaining safety budget.
  *  - `wait: true`: apply stops, then block until the first process exit
- *    in the cohort (joiners included) or a bounded checkpoint —
- *    `waitSeconds` seconds when provided, 300s (five minutes) by
+ *    in the cohort (joiners included), pending automatic delivery, or a
+ *    bounded checkpoint — `waitSeconds` seconds when provided, 300s (five minutes) by
  *    default, capped at 600s (ten minutes). At most one cohort wait may
  *    be active per session; a second concurrent wait is rejected with a
  *    clear error.
@@ -62,11 +62,11 @@ const bashControlSchema = Type.Object({
 	),
 	wait: Type.Boolean({
 		description:
-			"true: after applying any stops, block until the first cohort process exit or a bounded checkpoint, and return one consolidated snapshot. Use only when you have no independent work to do. false: apply stops and return an immediate inspection of every tracked process; processes continue by default and their exit results arrive automatically.",
+			"true: after applying any stops, block until the first cohort process exit, pending automatic delivery, or a bounded checkpoint, and return one consolidated snapshot. Use only when you have no independent work to do. false: apply stops and return an immediate inspection of every tracked process; processes continue by default and their exit results arrive automatically.",
 	}),
 	waitSeconds: Type.Optional(
 		Type.Number({
-			description: `Optional wait duration in seconds for wait: true. Omitted: ${DEFAULT_WAIT_SECONDS}s (five minutes). Requests above ${MAX_WAIT_SECONDS}s are capped at ${MAX_WAIT_SECONDS}s. The wait returns earlier when a process exits. This duration never extends any process's runtime limit.`,
+			description: `Optional wait duration in seconds for wait: true. Omitted: ${DEFAULT_WAIT_SECONDS}s (five minutes). Requests above ${MAX_WAIT_SECONDS}s are capped at ${MAX_WAIT_SECONDS}s. The wait returns earlier when a process exits or an automatic exit result is pending delivery. This duration never extends any process's runtime limit.`,
 		}),
 	),
 	/** @deprecated Ignored. Deadlines are harness-owned; retained one release so resumed sessions and ACP replays carrying legacy timing payloads still validate. */
@@ -107,7 +107,7 @@ export const BASH_CONTROL_TOOL_DESCRIPTION = `Control background bash processes 
 Background processes continue by default: each process's final exit result is delivered to you automatically — it reaches the conversation at the next turn boundary while you keep working, or immediately when the agent is idle. You do NOT need to call this tool to keep a process alive or to collect its output.
 
 - \`wait: false\`: inspect every tracked process now — running runtime, output age, and new output — without stopping anything. Use it before dependent work when you need current status. Terminal results that already ended are delivered in the response; results already queued for automatic delivery are reported as pending.
-- \`wait: true\`: block until the first cohort exit or a bounded checkpoint (${DEFAULT_WAIT_SECONDS}s by default, at most ${MAX_WAIT_SECONDS}s; set an earlier one with \`waitSeconds\`), then receive one consolidated snapshot with evidence. Use this ONLY when you have no independent work to do — never to poll a single process. Only one wait can be active at a time. When every process has already ended, the wait returns immediately with the outcomes — pending or delivered — instead of starting a timer; a genuinely empty session answers at once with no wait at all.
+- \`wait: true\`: block until the first cohort exit or a bounded checkpoint (${DEFAULT_WAIT_SECONDS}s by default, at most ${MAX_WAIT_SECONDS}s; set an earlier one with \`waitSeconds\`), then receive one consolidated snapshot with evidence. Use this ONLY when you have no independent work to do — never to poll a single process. Only one wait can be active at a time. When an exit result is queued for automatic delivery, the wait returns pending status immediately so delivery can proceed, even while other processes run. When every process has already ended, the wait returns immediately with the outcomes — pending or delivered — instead of starting a timer; a genuinely empty session answers at once with no wait at all.
 - \`stop_handles\`: stop the named processes now and get their final results in one response. Every unlisted handle keeps running.
 
 At a checkpoint, compare each process's runtime with its expected duration and decide: wait again, investigate, or stop. A checkpoint does not prove a hang — silence alone does not establish a stall.`
@@ -489,14 +489,14 @@ export function createBashControlToolDefinition(
 		// (available AND automatic-owned — e.g. released after an aborted run
 		// dropped its notification) exists alongside a live survivor — the
 		// wait never defers deliverable output to the 300s checkpoint.
-		// Control-owned available outcomes are excluded: they belong to a
-		// bash_control result already in progress, and queued-automatic
-		// outcomes do NOT end the wait (their notification is the carrier).
-		const hasRecoverableOutcome = state.delivery.pendingHandles().some((handle) => {
+		// Control-owned outcomes belong to another call. Automatic outcomes
+		// either deliver here (available) or need a turn boundary (queued),
+		// so neither may be postponed behind a live survivor's wait timer.
+		const hasAutomaticOutcome = state.delivery.pendingHandles().some((handle) => {
 			const pending = state.delivery.getPending(handle)
-			return pending?.phase === "available" && pending.owner === "automatic"
+			return pending?.owner === "automatic"
 		})
-		if (coordinator.size === 0 || hasRecoverableOutcome) {
+		if (coordinator.size === 0 || hasAutomaticOutcome) {
 			const snapshot = await collectCohortSnapshot(state, { toolCallId })
 			exitedHandles.push(...snapshot.exitedHandles)
 			if (snapshot.exitedHandles.length > 0 || snapshot.pendingHandles.length > 0) {
@@ -535,7 +535,7 @@ export function createBashControlToolDefinition(
 		let event: Awaited<ReturnType<typeof coordinator.awaitCohortEvent>>
 		const waitStartedAtMs = Date.now()
 		try {
-			event = await coordinator.awaitCohortEvent(toolCallId, signal, effectiveWaitSeconds)
+			event = await coordinator.awaitCohortEvent(toolCallId, signal, effectiveWaitSeconds, state.delivery)
 		} finally {
 			coordinator.endCohortWait(toolCallId)
 		}
@@ -547,15 +547,21 @@ export function createBashControlToolDefinition(
 			// Abort cancels only this wait — the cohort keeps running. No
 			// checkpoint count is committed and no cursor advances: the
 			// cohort was not observed.
-			const running = coordinator.handles()
+			const running = coordinator.handles().filter((handle) => state.registry.getEntry(handle)?.state === "running")
+			const pendingHandles = state.delivery.pendingHandles().filter((handle) => !exitedHandles.includes(handle))
 			blocks.push(
-				`Wait cancelled after ${waitedSeconds}s. ${running.length} background process${running.length === 1 ? "" : "es"} still running; ` +
-					"their exit results will continue to arrive automatically.",
+				`Wait cancelled after ${waitedSeconds}s. ${running.length} background process${running.length === 1 ? "" : "es"} still running.`,
 			)
+			if (pendingHandles.length > 0) {
+				blocks.push(
+					`${pendingHandles.length} exit result${pendingHandles.length === 1 ? " remains" : "s remain"} pending delivery.`,
+				)
+			}
 			return {
 				content: [{ type: "text", text: blocks.join("\n\n") }],
 				details: {
 					exitedHandles,
+					pendingHandles,
 					aborted: true,
 					event: "aborted",
 					effectiveWaitSeconds,
@@ -591,9 +597,11 @@ export function createBashControlToolDefinition(
 		const responseEvent: BashControlEvent =
 			event.kind === "checkpoint"
 				? "checkpoint"
-				: event.kind === "exit" || snapshot.exitedHandles.length > 0 || snapshot.pendingHandles.length > 0
+				: event.kind === "exit" || snapshot.exitedHandles.length > 0
 					? "exit"
-					: "empty"
+					: snapshot.pendingHandles.length > 0 || event.kind === "pending-delivery"
+						? "inspection"
+						: "empty"
 		if (responseEvent === "checkpoint") coordinator.commitWaitTimeout(snapshot.runningHandles)
 		else coordinator.commitObservation(snapshot.runningHandles)
 

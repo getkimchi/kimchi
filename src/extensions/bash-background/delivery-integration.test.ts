@@ -551,6 +551,67 @@ describe("background bash exit delivery (real installed agent loop)", () => {
 		expect(harness.agent.state.messages.filter((m) => JSON.stringify(m).includes(MARKER))).toHaveLength(1)
 	})
 
+	it("consecutive waits yield to a queued exit batch behind advisory messages", async () => {
+		const stopSurvivor = { stop_handles: [] as string[], wait: false }
+		const harness = await setupIntegration([
+			{ stopReason: "toolUse", toolCalls: [{ id: "survivor", name: "bash", arguments: { command: "survivor" } }] },
+			{ stopReason: "toolUse", toolCalls: [{ id: "first", name: "bash", arguments: { command: "first-exit" } }] },
+			{ stopReason: "toolUse", toolCalls: [{ id: "second", name: "bash", arguments: { command: "second-exit" } }] },
+			{ stopReason: "toolUse", toolCalls: [{ id: "work", name: "read", arguments: {} }] },
+			{
+				stopReason: "toolUse",
+				toolCalls: [{ id: "wait-1", name: "bash_control", arguments: { wait: true, waitSeconds: 0.01 } }],
+			},
+			{
+				stopReason: "toolUse",
+				toolCalls: [{ id: "wait-2", name: "bash_control", arguments: { wait: true, waitSeconds: 0.01 } }],
+			},
+			{ stopReason: "toolUse", toolCalls: [{ id: "cleanup", name: "bash_control", arguments: stopSurvivor }] },
+			{ stopReason: "stop" },
+		])
+		registry = harness.state.registry
+		const origEmit = harness.pi.emit.bind(harness.pi)
+		harness.pi.emit = async (event, payload, context) => {
+			const p = payload as { toolName?: string }
+			if (event === "tool_execution_start" && p.toolName === "read") {
+				// Deterministic FIFO backlog: two advisories precede the coalesced
+				// exit notification. The survivor must not keep either wait blocked.
+				harness.agent.clearAllQueues()
+				for (const text of ["advisory-one", "advisory-two"]) {
+					harness.agent.steer({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() })
+				}
+				harness.ops.emitMatching("first-exit", `${MARKER} first\n`)
+				harness.ops.emitMatching("second-exit", `${MARKER} second\n`)
+				await Promise.all([harness.ops.exitMatching("first-exit", 0), harness.ops.exitMatching("second-exit", 0)])
+				stopSurvivor.stop_handles = harness.state.coordinator
+					.handles()
+					.filter((handle) => harness.state.registry.getEntry(handle)?.commandSummary === "survivor")
+			}
+			return origEmit(event, payload, context)
+		}
+		await harness.agent.prompt([{ role: "user", content: [{ type: "text", text: "run" }], timestamp: Date.now() }])
+		expect(harness.requests[4]?.markerVisible).toBe(false)
+		expect(harness.requests[5]?.markerVisible).toBe(false)
+		expect(harness.requests[6]?.markerVisible).toBe(true)
+		const waits = harness.agent.state.messages.filter((m) => {
+			const message = m as { role?: string; toolCallId?: string }
+			return message.role === "toolResult" && ["wait-1", "wait-2"].includes(message.toolCallId ?? "")
+		})
+		expect(waits).toHaveLength(2)
+		for (const wait of waits) {
+			expect(wait).toMatchObject({ details: { event: "inspection", exitedHandles: [] } })
+			expect(JSON.stringify(wait)).not.toContain(MARKER)
+			expect(JSON.stringify(wait)).not.toContain("Wait checkpoint")
+		}
+		expect(harness.exitMessageEnds).toHaveLength(1)
+		expect(harness.exitMessageEnds[0]).toMatchObject({
+			details: { handles: [expect.any(String), expect.any(String)] },
+			replaced: false,
+		})
+		expect(harness.agent.state.messages.filter((m) => JSON.stringify(m).includes(MARKER))).toHaveLength(1)
+		expect(harness.state.delivery.hasPending()).toBe(false)
+	})
+
 	it("a post-abort exit appends without restarting inference and retires without message_end", async () => {
 		// The user aborts while the process is still RUNNING (the TUI/ACP also
 		// drop queued steering, but nothing is queued here). The process then
