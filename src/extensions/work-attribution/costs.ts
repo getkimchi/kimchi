@@ -305,7 +305,7 @@ function exclusiveRequestPulls(
 				row.source === "native-file-transition" &&
 				ids.length === match.transitionIds.length &&
 				evidence.length === ids.length &&
-				(match.method === "file-chain" || match.method === "path-blob") &&
+				(match.method === "file-chain" || match.method === "path-blob" || match.method === "file-hunks") &&
 				match.worktree === row.worktree &&
 				evidence.every(
 					({ row: edit, fingerprint }) =>

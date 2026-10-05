@@ -13,7 +13,7 @@ const LOCK_STALE_MS = 5000
 const MERGE_BATCH_SIZE = 1000
 const LOCK_RETRIES = { retries: 60, factor: 1.5, minTimeout: 25, maxTimeout: 100 }
 const RECOVERY_STAMP = ".recovered.json"
-const RECOVERY_VERSION = 4
+const RECOVERY_VERSION = 5
 // Coarse filesystem timestamps and small clock differences must not hide an append.
 const RECOVERY_MTIME_SLACK_MS = 2000
 /** Background reads yield to the event loop after each chunk of this size. */
@@ -34,6 +34,7 @@ export interface WorkRecord extends SummaryEntry {
 		| "plan"
 		| "commit"
 		| "file_transition"
+		| "file_observation"
 	workId: string
 }
 interface WorkSummary {
@@ -45,6 +46,7 @@ interface WorkSummary {
 	plans: SummaryEntry[]
 	commits: SummaryEntry[]
 	fileTransitions: SummaryEntry[]
+	fileObservations: SummaryEntry[]
 	continuations: SummaryEntry[]
 }
 interface PendingUpdate {
@@ -90,6 +92,12 @@ function record(value: unknown): value is WorkRecord {
 			return entry(value, ["sha", "repository", "worktree"])
 		case "file_transition":
 			return entry(value, ["transitionId", "toolCallId", "repository", "worktree", "path"])
+		case "file_observation":
+			return (
+				entry(value, ["observationId", "toolCallId", "repository", "worktree", "source"]) &&
+				Array.isArray(value.files) &&
+				typeof value.complete === "boolean"
+			)
 		default:
 			return false
 	}
@@ -115,6 +123,12 @@ function validSummary(value: unknown, workId: string): value is WorkSummary {
 				value.fileTransitions.every((row) =>
 					entry(row, ["transitionId", "toolCallId", "repository", "worktree", "path"]),
 				))) &&
+		(value.fileObservations === undefined ||
+			(Array.isArray(value.fileObservations) &&
+				value.fileObservations.every(
+					(row) =>
+						entry(row, ["observationId", "toolCallId", "repository", "worktree", "source"]) && Array.isArray(row.files),
+				))) &&
 		(value.continuations === undefined ||
 			(Array.isArray(value.continuations) &&
 				value.continuations.every((row) => entry(row, ["source"]) && object(row.evidence))))
@@ -128,6 +142,7 @@ async function readSummary(path: string, workId: string): Promise<WorkSummary | 
 				...value,
 				workLinks: value.workLinks ?? [],
 				fileTransitions: value.fileTransitions ?? [],
+				fileObservations: value.fileObservations ?? [],
 				continuations: value.continuations ?? [],
 			}
 	} catch (error) {
@@ -244,11 +259,17 @@ function billingRowKey(row: unknown): string {
 function pullRequestLinks(...values: unknown[]): Record<string, unknown>[] {
 	return mergePullRequestLinks(...values.map((value) => (Array.isArray(value) ? value.filter(object) : [])))
 }
+/** Whole-file evidence takes precedence over a match of surviving native hunks. */
+export function fileMatchStrength(method: unknown): number {
+	if (method === "file-chain") return 3
+	if (method === "path-blob") return 2
+	return method === "file-hunks" ? 1 : 0
+}
 /** A repeated scan can add evidence or strengthen a match without discarding earlier links. */
 function fileMatches(...values: unknown[]) {
 	const matches = new Map<
 		string,
-		{ path: string; method: "file-chain" | "path-blob"; transitionIds: string[]; worktree: string }
+		{ path: string; method: "file-chain" | "path-blob" | "file-hunks"; transitionIds: string[]; worktree: string }
 	>()
 	for (const value of values) {
 		if (!Array.isArray(value)) continue
@@ -257,12 +278,12 @@ function fileMatches(...values: unknown[]) {
 				!object(item) ||
 				typeof item.path !== "string" ||
 				typeof item.worktree !== "string" ||
-				(item.method !== "file-chain" && item.method !== "path-blob")
+				(item.method !== "file-chain" && item.method !== "path-blob" && item.method !== "file-hunks")
 			)
 				continue
 			const key = JSON.stringify([item.path, item.worktree])
 			const existing = matches.get(key)
-			if (existing?.method === "file-chain" && item.method === "path-blob") continue
+			if (fileMatchStrength(existing?.method) > fileMatchStrength(item.method)) continue
 			matches.set(key, {
 				path: item.path,
 				worktree: item.worktree,
@@ -295,6 +316,8 @@ function recordKey(type: WorkRecord["type"], row: SummaryEntry): string {
 			return planKey(row)
 		case "commit":
 			return commitKey(row)
+		case "file_observation":
+			return JSON.stringify(row.observationId)
 		default:
 			return JSON.stringify(row.transitionId)
 	}
@@ -306,6 +329,7 @@ async function merge(summary: WorkSummary, records: WorkRecord[]): Promise<void>
 	const plans = new Map(summary.plans.map((row) => [planKey(row), row]))
 	const commits = new Map(summary.commits.map((row) => [commitKey(row), row]))
 	const transitions = new Map(summary.fileTransitions.map((row) => [JSON.stringify(row.transitionId), row]))
+	const observations = new Map(summary.fileObservations.map((row) => [JSON.stringify(row.observationId), row]))
 	const continuations = new Map(summary.continuations.map((row) => [continuationKey(row), row]))
 	const entriesByType = {
 		work_link: links,
@@ -316,6 +340,7 @@ async function merge(summary: WorkSummary, records: WorkRecord[]): Promise<void>
 		plan: plans,
 		commit: commits,
 		file_transition: transitions,
+		file_observation: observations,
 	}
 	for (let index = 0; index < records.length; index++) {
 		if (index % MERGE_BATCH_SIZE === 0) await setImmediate()
@@ -375,6 +400,7 @@ async function merge(summary: WorkSummary, records: WorkRecord[]): Promise<void>
 	summary.plans = [...plans.values()]
 	summary.commits = [...commits.values()]
 	summary.fileTransitions = [...transitions.values()]
+	summary.fileObservations = [...observations.values()]
 	summary.continuations = [...continuations.values()]
 }
 function publish(directory: string, summary: WorkSummary, assertLease: () => void): Promise<void> {
@@ -400,6 +426,7 @@ async function update(
 		plans: [],
 		commits: [],
 		fileTransitions: [],
+		fileObservations: [],
 		continuations: [],
 	}
 	const history = !summary && !complete ? readWorkRecords(agentDir).filter((row) => row.workId === workId) : []

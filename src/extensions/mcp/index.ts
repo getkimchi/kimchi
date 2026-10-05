@@ -17,6 +17,7 @@ import {
 } from "../../shared/planning/tool-profile-manager.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { observeToolFiles } from "../work-attribution/file-observations.js"
 import { loadKimchiMcpConfig } from "./config.js"
 import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
 import {
@@ -141,7 +142,10 @@ function createUpstreamApi(
 							) {
 								return blockedPlanningResult(brandedTool.name)
 							}
-							return brandMcpAdapterOwnedToolResult(await execute(...args))
+							const result = getReadOnlyToolNames().includes(brandedTool.name)
+								? await execute(...args)
+								: await observeToolFiles(args[4], args[0], "mcp", () => execute(...args))
+							return brandMcpAdapterOwnedToolResult(result)
 						},
 					})
 					visibility.enable([tool.name])
