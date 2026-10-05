@@ -13,7 +13,7 @@ const LOCK_STALE_MS = 5000
 const MERGE_BATCH_SIZE = 1000
 const LOCK_RETRIES = { retries: 60, factor: 1.5, minTimeout: 25, maxTimeout: 100 }
 const RECOVERY_STAMP = ".recovered.json"
-const RECOVERY_VERSION = 3
+const RECOVERY_VERSION = 4
 // Coarse filesystem timestamps and small clock differences must not hide an append.
 const RECOVERY_MTIME_SLACK_MS = 2000
 interface SummaryEntry {
@@ -22,7 +22,16 @@ interface SummaryEntry {
 }
 export interface WorkRecord extends SummaryEntry {
 	version: 1
-	type: "work" | "work_link" | "request" | "plan" | "commit" | "file_transition"
+	type:
+		| "work"
+		| "work_link"
+		| "request"
+		| "request_dispatch"
+		| "request_response"
+		| "request_cost"
+		| "plan"
+		| "commit"
+		| "file_transition"
 	workId: string
 }
 interface WorkSummary {
@@ -67,6 +76,9 @@ function record(value: unknown): value is WorkRecord {
 		case "work_link":
 			return entry(value, ["linkId", "sourceWorkId", "targetWorkId"]) && Array.isArray(value.requestIds)
 		case "request":
+		case "request_dispatch":
+		case "request_response":
+		case "request_cost":
 			return entry(value, ["requestId"])
 		case "plan":
 			return entry(value, ["path"])
@@ -163,8 +175,10 @@ function continuationKey(row: SummaryEntry): string {
 	return JSON.stringify([row.sessionId, row.source, row.evidence])
 }
 function latestObservation(previous: unknown, current: unknown): Record<string, unknown> | undefined {
-	if (!object(current) || typeof current.checkedAt !== "string") return object(previous) ? previous : undefined
-	if (!object(previous) || typeof previous.checkedAt !== "string") return current
+	if (!object(current) || typeof current.checkedAt !== "string" || !Number.isFinite(Date.parse(current.checkedAt)))
+		return object(previous) ? previous : undefined
+	if (!object(previous) || typeof previous.checkedAt !== "string" || !Number.isFinite(Date.parse(previous.checkedAt)))
+		return current
 	return Date.parse(current.checkedAt) >= Date.parse(previous.checkedAt) ? current : previous
 }
 /** Empty or failed lookups never remove an association already confirmed by GitHub. */
@@ -214,6 +228,9 @@ function recordKey(type: WorkRecord["type"], row: SummaryEntry): string {
 				row.evidence,
 			])
 		case "request":
+		case "request_dispatch":
+		case "request_response":
+		case "request_cost":
 			return JSON.stringify(row.requestId)
 		case "plan":
 			return planKey(row)
@@ -234,6 +251,9 @@ async function merge(summary: WorkSummary, records: WorkRecord[]): Promise<void>
 	const entriesByType = {
 		work_link: links,
 		request: requests,
+		request_dispatch: requests,
+		request_response: requests,
+		request_cost: requests,
 		plan: plans,
 		commit: commits,
 		file_transition: transitions,
@@ -263,6 +283,12 @@ async function merge(summary: WorkSummary, records: WorkRecord[]): Promise<void>
 		const entries = entriesByType[type]
 		const key = recordKey(type, item)
 		const existing = entries.get(key)
+		if (type === "request_cost" && existing?.billingRows !== undefined && Array.isArray(item.billingRows)) {
+			const rows = Array.isArray(existing.billingRows) ? existing.billingRows : []
+			item.billingRows = [...new Map([...rows, ...item.billingRows].map((row) => [JSON.stringify(row), row])).values()]
+		}
+		if (type === "request_cost" && (item.billingLookup !== undefined || existing?.billingLookup !== undefined))
+			item.billingLookup = latestObservation(existing?.billingLookup, item.billingLookup)
 		if (type === "commit" && (item.fileMatches !== undefined || existing?.fileMatches !== undefined))
 			item.fileMatches = fileMatches(existing?.fileMatches, item.fileMatches)
 		if (type === "commit") {

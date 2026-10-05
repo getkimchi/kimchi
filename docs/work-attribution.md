@@ -2,7 +2,7 @@
 
 Kimchi keeps a local record of the model requests, file edits, plans and commits that belong to the same work. A `workId` connects them, even when planning and implementation happen in different sessions or worktrees of the same repository.
 
-The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's home directory. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits and saves those links in the same file. Calculating costs and uploading these records come later.
+The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's home directory. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits, then looks up their request costs in the background. `/work` shows the saved result; `costs.json` keeps the calculation. Missing billing data stays unknown. These files are not uploaded.
 
 ## Where the files live
 
@@ -15,6 +15,7 @@ The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's h
 # User: summary and retained plan versions
 ~/.config/kimchi/harness/work/<workId>/work.json
 ~/.config/kimchi/harness/work/<workId>/scope.json
+~/.config/kimchi/harness/work/<workId>/costs.json
 ~/.config/kimchi/harness/work/<workId>/plans/add-search-<content-hash>.md
 
 # User: saved task text used for later matching
@@ -123,7 +124,7 @@ Model checks share a three-second limit, including provider authentication and r
 
 Comparisons stop rather than omit evidence above 256 saved task texts, 32 retained plan versions per work, a latest retained plan over 16,000 bytes or 12,000 serialized input characters. Work directories without saved task text do not count. When any of these limits stops matching, `/work` says so instead of warning on every prompt. Large histories, slow providers and unsupported output formats can therefore remain unresolved. Earlier works without saved task text are not backfilled.
 
-These are model judgments and can be wrong. Each request keeps its input's segment ID, matching method and reason. An uncertain answer preserves the current work ID and marks that input as unknown. Later inputs cannot silently reclassify earlier requests. A future cost calculation must preserve this uncertainty. `/work new` or `/work <plan path>` gives an explicit choice.
+These are model judgments and can be wrong. Each request keeps its input's segment ID, matching method and reason. An uncertain answer preserves the current work ID and marks that input as unknown. Later inputs cannot silently reclassify earlier requests. Cost calculations preserve this uncertainty. `/work new` or `/work <plan path>` gives an explicit choice.
 
 Segments distinguish an explicit plan or work choice, a model inference, ordinary grouping within a session, and an unknown result. Retries, delayed side calls and local children retain their originating segment. Restarting a child restores its saved decision; a historical fork keeps the decision at its fork point. Matching calls have their own `session` segment with `reason: "work-matching"` and `purpose: "work-matching"`; they remain overhead of the work active before the decision. With model matching disabled, ordinary session grouping remains available; its source is recorded as `session`, not as a model decision.
 
@@ -147,7 +148,7 @@ The planning work's `work.json` lists `requests[].segment.id`. The command selec
 
 If an uncertain input already belongs to the right work, use that current work ID as the source. This records your confirmation without changing its original request or work IDs. `/work unlink <link-id>` also revokes this confirmation.
 
-The command saves a `work_link` revision in the implementing work. It names the selected requests and their intended work; original request and work IDs stay unchanged. The target work's `work.json` keeps these revisions in `workLinks` for later cost calculations. Model decisions do not retroactively rewrite earlier requests.
+The command saves a `work_link` revision in the implementing work. It names the selected requests and their intended work; original request and work IDs stay unchanged. The target work's `work.json` keeps these revisions in `workLinks` for cost calculations. Model decisions do not retroactively rewrite earlier requests.
 
 To withdraw it, run `/work unlink <link-id>` in the implementing work. A revoked or conflicting correction leaves the affected assignment unknown until corrected again. Linking those requests from another work replaces the earlier link with a newer revision, including a revoked automatic confirmation. Only the work with the newest revision can then revoke it.
 
@@ -271,11 +272,11 @@ Kimchi tries credentials in this order: an environment token for the selected ho
 
 ### 5. Build the local summary
 
-Before sending a covered model request, Kimchi saves and flushes its request ID, work ID, session ID, input segment and account/repository scope. Missing scope is saved as `null`. It then sends `X-Request-Id`. This also works with telemetry disabled.
+Before sending a covered model request, Kimchi saves and flushes its request ID, work ID and session ID. It then sends `X-Request-Id`. This also works with telemetry disabled.
 
-Records with the same work ID go into the same `work.json`. Requests are deduplicated by request ID; commit records keep the contributing sessions. `fileTransitions` keeps the recorded edits, `continuations` explains why another session adopted the work, and `workLinks` keeps correction revisions. IDs identify records; array positions have no meaning.
+Records with the same work ID go into the same `work.json`. Requests are deduplicated by request ID; commit records keep the contributing sessions. `fileTransitions` keeps native edits, and `continuations` explains why another session adopted the work. IDs identify records; array positions have no meaning.
 
-A request record describes an attempt. It does not prove a successful response or give its cost. The work records and retained plan text stay local; `work.json` contains paths, request metadata and PR links, with no prompts, file contents or prices. PR lookup sends repository and commit identifiers to the repository's GitHub or GitLab API.
+A request record describes an attempt. It does not prove a successful response or a charge. Covered HTTP replies add their status and safe response IDs. Billing lookups later add exact prices when available. `work.json` contains paths, request metadata, PR links and billing rows, with no prompts or file contents. Retained native plans contain the plan text and stay local. PR lookup sends repository and commit identifiers to the repository's GitHub or GitLab API.
 
 <details>
 <summary>Local files and recovery</summary>
@@ -285,9 +286,12 @@ All paths below are inside the agent directory.
 | File | What it is for |
 | --- | --- |
 | `work/<workId>/work.json` | Readable summary of sessions, request attempts, plans, file edits, continuation evidence, commits and PR links. |
+| `work/<workId>/costs.json` | Derived PR totals and each request's allocation, price and billing lookup status. Rebuilt from source records when missing. |
 | `work/<workId>/scope.json` | Original API endpoint, organization, user and Git common-directory identity. Credentials are not saved here. |
 | `work/<workId>/intent.json` | Saved task text for opt-in model matching, bound to its original account and repository. |
 | `work/<workId>/plans/<name>-<content-hash>.md` | Saved plan versions that survive worktree deletion. Identical content reuses the same copy. |
+| `work/<workId>/intent.json` | First-message text and repository identity for model matching. Sent in matching calls to the selected provider; not included in `work.json`. |
+| `work/<workId>/scope.json` | Original verified account and Git repository of newly created work. Contains stable IDs, no credentials. Used to check automatic continuation. |
 | `work-attribution/<session-id>.jsonl` | Append-only history used to rebuild the summary. |
 | `work-attribution/transitions/*.jsonl` | Edit evidence: request/tool IDs, repository paths, Git blobs and file modes before and after each native edit/write change. |
 | `work-attribution/ref-tips/*.json` | Shared snapshots of the commit references and worktree heads visible when an edit was saved. `historyBoundaryId` identifies the snapshot. |
@@ -316,7 +320,7 @@ All paths below are inside the agent directory.
 
 **Background commit matching**
 
-- Partial staging, later human edits, competing work, Bash/MCP-only edits, unsupported filters and symlinks can leave files unmatched.
+- Partial staging, overlapping human edits, competing work, Bash/MCP-only edits, unsupported filters and symlinks can leave files unmatched.
 - The scan checks up to 512 recent commits within a time budget. Files, journals and logs have 8 MiB limits. Finished candidates are checkpointed; changed evidence allows another attempt.
 - `historyBoundaryId` connects an edit to its saved Git reference snapshot. Large snapshots share the journal's size limits; when the required history is unavailable, Kimchi leaves the weaker match unresolved. Old journals can only use the history they actually recorded.
 - Top-level sessions in one process share a worker. Separate processes take turns through a nonblocking lease. Children neither start scans nor wait for a parent's scan at shutdown. Closing the last owning session stops its worker; no separate daemon runs after Kimchi exits.
@@ -325,15 +329,128 @@ The implementation uses Pi's existing hooks and native Git tracing. It adds no d
 
 </details>
 
+### 6. Read exact request costs
+
+Kimchi adds a unique `kimchi-request:<requestId>` tag to each covered HTTP attempt. It saves the tag and the original billing source before sending the request. The existing billing API can then return that attempt's charged rows, including for streaming requests. No backend deployment is needed for this tag lookup.
+
+The tag identifies the request; it does not decide which PR owns the cost. That decision uses the recorded work and commit links. Kimchi does not use token estimates, session timing or local model rates as a substitute for a billed price.
+
+```mermaid
+flowchart TD
+    R["Saved request attempt"] --> I{"Saved billing tag or supported prompt ID,<br/>and original account available?"}
+    I -->|No| U["Keep price unknown"]
+    I -->|Yes| B["Fetch exact billing rows for that request"]
+    B -->|Missing, invalid or incomplete| P["Show known subtotal;<br/>keep full total unknown"]
+    B -->|Complete| K{"Same verified account<br/>in work and bill?"}
+    K -->|No| UO["Keep price;<br/>leave PR assignment unknown"]
+    K -->|Yes| D{"Work match unresolved?"}
+    D -->|Yes| UO
+    D -->|No| T{"Request started after<br/>all linked PRs merged?"}
+    T -->|Yes| L["Keep as work after merge"]
+    T -->|No| C{"This request's work belongs<br/>to several PRs?"}
+    C -->|Yes| F{"All native edits from this request<br/>have complete file-chain evidence<br/>leading to exactly one PR?"}
+    F -->|No| S["Keep the request in shared costs"]
+    F -->|Yes| M
+    C -->|No| M{"One confirmed merged PR?"}
+    M -->|No| O["Keep request unlinked or unmerged"]
+    M -->|Yes| E{"Model-inferred match<br/>without stronger evidence?"}
+    E -->|Yes| IN["Show as inferred;<br/>exclude from confirmed PR total"]
+    E -->|No| A["Count each billing row once<br/>for this account and PR"]
+```
+
+Planning, implementation, local children and fixes count together when their saved work links point to the same PR. Related discussion also counts when it belongs to that work, even if it changes no files. Two works contributing to one PR produce one combined total only when their API endpoint, organization and user match. Different accounts get separate totals. Separate works in one conversation keep their own PR links and costs. A malformed PR link affects only its own work. Repeating a lookup, rebasing a commit or rebuilding the summary does not multiply its charges.
+
+When one work spans several PRs, complete edit evidence can assign an editing request's whole price to one PR. Every recorded edit from that request must lead there. Planning without edits, a request touching both PRs, missing or conflicting proof, and weaker `path-blob` evidence stay shared. Kimchi never divides one request's charge by file count or a guessed percentage. Rewrite ancestry alone cannot establish an exclusive allocation.
+
+Pending prices become eligible for another check after 30 seconds; priced requests become eligible after five minutes. Each pass has time and request limits, so a backlog can take several passes. A price that arrives late still belongs to the original request and merge cutoff. Closing the last top-level session stops the worker; the next launch resumes it. `/work` reads the saved result without making a model call or waiting for the network.
+
+Prices are USD decimal strings with up to nine decimal places. `knownCostUsd` is the confirmed subtotal; `totalCostUsd` is `null` while a required price or allocation remains uncertain. An explicit billed zero is valid. A missing row is not zero.
+
+An exact price does not confirm a model's task match. Those requests keep their prices in the `inferred` bucket and appear under `inferredRequestIds` on the candidate PR. `/work` shows inferred assignments separately from unresolved and shared requests. Complete native edit evidence or a valid saved correction can confirm the assignment later.
+
+If a refresh hits Kimchi's pass deadline before receiving any billing page, the last confirmed price stays usable. `billingLookup` still shows the failed refresh and its real timestamp. Partial pagination and billing errors keep the full total unknown. Older generic timeout records also stay unknown until a complete lookup succeeds, because they do not record whether a page had arrived.
+
+Billing details appear on the matching `work.json` request. This excerpt uses example IDs; comments explain the fields and are not part of the stored JSON:
+
+```jsonc
+{
+  // Kimchi's unique ID for this HTTP attempt.
+  "requestId": "11111111-1111-4111-8111-111111111111",
+  // The input this request belongs to, and the evidence for its work assignment.
+  "segment": {
+    "id": "22222222-2222-4222-8222-222222222222",
+    // explicit, inferred, session, or unknown; an exact price does not strengthen this evidence.
+    "attribution": "explicit",
+    "reason": "saved-plan"
+  },
+  // Saved before sending; the tag selects this attempt's billing rows.
+  "billingSelector": {
+    "type": "tag",
+    "tag": "kimchi-request:11111111-1111-4111-8111-111111111111",
+    // Fixed query bounds allow charges to arrive after the stream ends.
+    "startTime": "2026-10-02T09:55:00.000Z",
+    "endTime": "2026-11-03T10:00:00.000Z"
+  },
+  "response": {
+    "status": 200,
+    "receivedAt": "2026-10-02T10:00:01.000Z"
+  },
+  "billingRows": [
+    {
+      // Stable billing-row ID; repeated observations count once.
+      "id": "33333333-3333-4333-8333-333333333333",
+      // Exact backend price, preserved without floating-point rounding.
+      "costUsd": "0.000166000",
+      // The billed model can differ from the model requested by the session.
+      "model": "glm-5.3-flash",
+      // Raw billed counters stay exact strings. Cache reads are separate here.
+      "promptTokens": "1000",
+      "completionTokens": "20",
+      "cacheReadInputTokens": "200",
+      "totalTokens": "1020",
+      // These explain costUsd; they are not added to it again.
+      "promptPrice": "0.000150000",
+      "completionPrice": "0.000010000",
+      "cacheReadPrice": "0.000006000",
+      "cacheCreationPrice": "0.000000000"
+    }
+  ],
+  "billingLookup": {
+    "status": "priced",
+    "checkedAt": "2026-10-02T10:00:30.000Z",
+    // Organization verified for the credential that made the request.
+    "organizationId": "44444444-4444-4444-8444-444444444444",
+    // Verified API-key owner; required to assign the bill to scoped work.
+    "userId": "55555555-5555-4555-8555-555555555555"
+  }
+}
+```
+
+The request also keeps the API and gateway addresses and a one-way credential fingerprint in `billingSource`. Kimchi uses them to avoid querying another account after a login or endpoint change; it never saves the credential itself in work records. After a key change, older requests become `account-changed` when refreshed. Saved prices still contribute to the known subtotal, but the full total stays unknown until the original source is available again. Billing calls send the request tag and account scope, without plans, prompts, file contents, work IDs or PR data.
+
+The verified billing account must also match the request's saved work account. If the account changes between choosing work and sending the request, the exact billed charge remains visible but its PR assignment becomes unknown. Missing user identity or old requests without saved work scope also remain unassigned. Kimchi never fills that gap with the current login.
+
+Each PR total in `costs.json` has an `account` alongside its canonical `key`. Compare both fields when combining reports. `account: null` means the work account could not be established. If an older work contains several account groups for one PR, `/work` labels those groups separately.
+
+The gateway accepts ten combined tags across the body and headers. Kimchi preserves existing tags and skips its billing tag when the request is full, uses the reserved tag already, or has a body it cannot safely inspect. The skip reason stays in the request record. A captured `X-Prompt-Id` can provide a fallback when the backend supports an exact prompt-ID query; otherwise the price remains unknown. Old untagged streaming requests cannot be recovered from timestamps alone.
+
+The lookup window stays fixed from five minutes before dispatch to 32 days after it. This fits the API's time-range limit and includes delayed reports; the UUID tag still supplies the exact match. A charge outside that window or no longer retained by the backend stays unknown.
+
+When the API supplies them, each billing row also retains token counters, price components, model/provider details and the report time. Original and recommended prices are comparisons, not extra charges. Missing fields stay absent; `metadataUnavailable` names optional fields rejected as malformed. Prompt previews and arbitrary response fields are not stored.
+
+Saved records can be recalculated offline. An air-gapped client still needs actual billing observations to know a charge; token counts or a current price page cannot establish a missing historical price. Keeping the original counters and components allows later checks without changing the original work or request IDs.
+
+The footer and Ferment budgets have different token scopes. Ferment V2 counts parent turns, while children and evaluation have their own requests. Local model rates can be zero even for billed requests. The work total uses the API's charged USD, including the price components already included in each returned total.
+
 ## Turning Cost per PR off
 
 Cost per PR is listed in `/resources` like other built-in extensions and is on by default. Disabling it there, or with `kimchi resources disable extensions.cost-per-pr`, takes effect at the next start: Kimchi records no work, looks up no PRs and shows no `/work` or PR/MR status. Other extensions stop recording work at once. Records already saved stay on disk.
 
 ## What still needs work
 
-- **PR costs:** join requests to billing, then decide how to split one work's cost across several PRs.
-- **Backend IDs:** verify that the proxy saves the request/session IDs needed for the billing join. The client records do not yet prove that link.
-- **Stable repository IDs:** account scope is recorded locally; recover stable provider IDs for older links that lack them.
+- **Shared costs:** planning and requests without complete exclusive edit evidence stay shared when the work spans several PRs.
+- **Missing request identity:** older untagged attempts and requests whose billing tag had to be skipped can remain unpriced.
+- **Stable repository IDs:** recover stable provider IDs for older links that lack them.
 - **Historical repair:** old records without account or producer evidence stay unresolved. Automatic replay of newly available evidence is still separate work.
 - **Remote agents:** link their requests and returned commits to the local work. Remote sessions are outside this MVP.
 
@@ -341,7 +458,7 @@ Cost per PR is listed in `/resources` like other built-in extensions and is on b
 <summary>Current billing and remote-agent limits</summary>
 
 - With telemetry enabled, main requests send the stored Pi session ID as `X-Session-Id`. Session naming, permission classification and image-description calls do not explicitly send that header.
-- Matching by session and time still needs verified proxy storage, header coverage for those calls and a way to separate overlapping work in one session. Client request IDs do not yet have a verified match to streaming backend billing rows.
+- Cost lookup uses the saved request tag, or a supported exact prompt-ID lookup for older records. A failed attempt can still have a charge; an empty billing result stays pending. HTTP capture covers chat-completions, Responses and Anthropic messages. WebSocket requests need separate coverage.
 - Remote ACP requests carry a parent-session tag but no work ID. Returned commits bypass Bash tracing. Both are absent from the parent's work summary.
 
 </details>

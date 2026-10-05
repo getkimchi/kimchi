@@ -22,6 +22,7 @@ import {
 	createWorkAttributionExtension,
 	getWorkId,
 	pinWorkContext,
+	prepareProviderRequest,
 	recordProviderRequest,
 	setWorkId,
 	WORK_CHANGED_EVENT,
@@ -75,6 +76,7 @@ beforeEach(() => {
 	execFileSync("git", ["init", "-q", cwd])
 	vi.mocked(classifyWorkIntent).mockReset()
 	vi.spyOn(supervisor, "subscribeFileReconciliation").mockReturnValue(async () => {})
+	vi.spyOn(supervisor, "subscribeCostReconciliation").mockReturnValue(async () => {})
 })
 
 it("does not load damaged private history or call the matcher when matching is disabled", async () => {
@@ -184,7 +186,7 @@ it("keeps ambiguous input on its current work without selecting a candidate", as
 	)
 })
 
-it("pins the input's segment for delayed side calls", async () => {
+it("pins the input's segment for delayed side calls and hidden SDK retries", async () => {
 	await rememberWorkIntent(cwd, planned, first)
 	const ctx = createContext({ cwd, model, modelRegistry })
 	const api = createExtensionApi()
@@ -195,13 +197,16 @@ it("pins the input's segment for delayed side calls", async () => {
 	const originalWork = getWorkId(ctx)
 	const pinned = pinWorkContext(ctx)
 	const original = recordProviderRequest(ctx, model)
+	prepareProviderRequest(new Headers({ "X-Request-Id": original.requestId }))
 	vi.mocked(classifyWorkIntent).mockResolvedValueOnce({ decision: "new", model: "selected/chat" })
 	await input({ type: "input", source: "interactive", text: "Explain the tides" }, ctx)
 	const side = recordProviderRequest(pinned, model, originalWork)
+	prepareProviderRequest(new Headers({ "X-Request-Id": original.requestId }))
 	const records = readWorkRecords(join(root, "agent")).filter((row) => row.type === "request")
 	const firstRequest = records.find((row) => row.requestId === original.requestId)
 	expect(firstRequest?.segment).toMatchObject({ attribution: "unknown", reason: "model-uncertain" })
 	expect(records.find((row) => row.requestId === side.requestId)?.segment).toEqual(firstRequest?.segment)
+	expect(records.find((row) => row.parentRequestId === original.requestId)?.segment).toEqual(firstRequest?.segment)
 })
 
 it("keeps the existing work and request available when private metadata is damaged", async () => {

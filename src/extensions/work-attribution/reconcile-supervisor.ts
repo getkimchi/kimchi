@@ -7,6 +7,7 @@ import {
 	reconcileWorkPullRequests,
 	type WorkPullRequestUpdate,
 } from "../pull-request-status/pull-requests.js"
+import { reconcileWorkCosts } from "./cost-sync.js"
 import { debugWorkAttribution as debug } from "./diagnostics.js"
 import { knownTransitionRepositories, reconcileRepositoryTransitions } from "./file-transitions.js"
 
@@ -20,9 +21,11 @@ interface Supervisor {
 	nextRepository?: string
 	pullRequestController?: AbortController
 	pullRequestRunning?: Promise<void>
+	costController?: AbortController
+	costRunning?: Promise<void>
 }
 interface ReconciliationSubscriber {
-	kind: "files" | "pull-requests"
+	kind: "files" | "pull-requests" | "costs"
 	onPullRequest?: (update: WorkPullRequestUpdate) => void
 	onError?: (error: unknown) => void
 }
@@ -101,6 +104,22 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 				if (owner.pullRequestRunning === pending) owner.pullRequestRunning = undefined
 			}
 		}
+		const costController = owner.costController
+		if (costController && !costController.signal.aborted) {
+			const costSignal = AbortSignal.any([signal, costController.signal])
+			const pending = reconcileWorkCosts(agentDir, costSignal, () => {
+				assertLease()
+				costSignal.throwIfAborted()
+			}).catch((error) => {
+				if (!costSignal.aborted) debug("Could not reconcile costs: %o", error)
+			})
+			owner.costRunning = pending
+			try {
+				await pending
+			} finally {
+				if (owner.costRunning === pending) owner.costRunning = undefined
+			}
+		}
 	} finally {
 		if (!compromised) await release()
 	}
@@ -155,6 +174,8 @@ function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Pr
 		(!owner.pullRequestController || owner.pullRequestController.signal.aborted)
 	)
 		owner.pullRequestController = new AbortController()
+	if (subscriber.kind === "costs" && (!owner.costController || owner.costController.signal.aborted))
+		owner.costController = new AbortController()
 	tick(agentDir, owner)
 	const current = owner
 	let stopped = false
@@ -163,13 +184,19 @@ function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Pr
 		stopped = true
 		current.subscribers.delete(subscription)
 		let pendingPullRequests: Promise<void> | undefined
+		let pendingCosts: Promise<void> | undefined
 		if (![...current.subscribers].some((entry) => entry.kind === "pull-requests")) {
 			current.pullRequestController?.abort()
 			current.pullRequestController = undefined
 			pendingPullRequests = current.pullRequestRunning
 		}
+		if (![...current.subscribers].some((entry) => entry.kind === "costs")) {
+			current.costController?.abort()
+			current.costController = undefined
+			pendingCosts = current.costRunning
+		}
 		if (current.subscribers.size) {
-			await pendingPullRequests
+			await Promise.all([pendingPullRequests, pendingCosts])
 			return
 		}
 		clearInterval(current.timer)
@@ -189,4 +216,9 @@ export function subscribePullRequestReconciliation(subscriber: {
 	onError?: (error: unknown) => void
 }): () => Promise<void> {
 	return subscribeReconciliation({ ...subscriber, kind: "pull-requests" })
+}
+
+/** Price lookups share the timer and lease; only main work-tracking sessions subscribe. */
+export function subscribeCostReconciliation(): () => Promise<void> {
+	return subscribeReconciliation({ kind: "costs" })
 }

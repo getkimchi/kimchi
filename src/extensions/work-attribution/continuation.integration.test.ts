@@ -20,10 +20,11 @@ import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import { appendWorkRecord, createWorkAttributionExtension, getWorkId } from "../work-attribution.js"
 import { createCommitTrackingBashTool } from "./commits.js"
 import { findWorkContinuation } from "./continuation.js"
+import { calculatePullRequestCosts } from "./costs.js"
 import { createTrackedWriteTool } from "./file-transitions.js"
 import { correctWorkLink } from "./links.js"
 import * as scope from "./scope.js"
-import { flushWorkSummaries, readWorkRecords } from "./summary.js"
+import { flushWorkSummaries, readWorkRecords, type WorkRecord } from "./summary.js"
 
 let root: string | undefined
 afterEach(async () => {
@@ -379,11 +380,54 @@ it.each([
 		evidence: { source: kind === "artifact" ? "named-artifact" : kind === "paste" ? "pasted-plan" : "saved-plan" },
 	})
 	expect(rows.filter((row) => row.type === "request" && row.requestId !== implementation)).toEqual(flow.original)
+	const withPull = (): WorkRecord[] => [
+		...readWorkRecords(flow.agentDir),
+		{
+			version: 1,
+			type: "commit",
+			workId: flow.workId,
+			sessionId: "consumer",
+			sha: "a".repeat(40),
+			repository: join(flow.cwd, ".git"),
+			worktree: flow.cwd,
+			pullRequests: [
+				{
+					provider: "github",
+					host: "github.com",
+					repository: "example/repo",
+					number: 1,
+					url: "https://github.com/example/repo/pull/1",
+					state: "merged",
+					headSha: "a".repeat(40),
+					mergeCommitSha: "b".repeat(40),
+					mergedAt: new Date(Date.now() + 60_000).toISOString(),
+					closedAt: null,
+					checkedAt: new Date(Date.now() + 60_000).toISOString(),
+				},
+			],
+		},
+	]
+	const prices = [flow.unrelated, flow.research, flow.producer, implementation].map((requestId) => ({
+		requestId,
+		billingRecordId: requestId,
+		costUsd: "1",
+		account: createWorkScopeSnapshot(join(flow.cwd, ".git")).scope.account,
+	}))
+	const report = calculatePullRequestCosts(withPull(), prices)
+	for (const requestId of [flow.research, flow.producer, implementation])
+		expect(report.requests.find((row) => row.requestId === requestId)?.allocation).toBe("pull-request")
+	expect(report.requests.find((row) => row.requestId === flow.unrelated)?.allocation).toBe("unknown")
+	expect(report.pullRequests[0].knownCostUsd).toBe("3.000000000")
 	await correctWorkLink(flow.implementer, `unlink ${link?.linkId}`)
 	const next = createContext({ cwd: flow.cwd, sessionManager: { getSessionId: () => "later-consumer" } })
 	await flow.input({ type: "input", source: "interactive", text: flow.text }, next)
 	rows = readWorkRecords(flow.agentDir)
 	expect(rows.filter((row) => row.type === "work_link")).toHaveLength(2)
+	const revoked = calculatePullRequestCosts(withPull(), prices)
+	expect(revoked.requests.find((row) => row.requestId === flow.producer)).toMatchObject({
+		allocation: "unknown",
+		totalCostUsd: "1.000000000",
+	})
 })
 
 it.each([

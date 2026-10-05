@@ -110,7 +110,11 @@ it("shows pending and discovered GitLab MR details over ACP without a model requ
 	await expectNotification(
 		fixture,
 		sessionId,
-		{ method: "notify", notifyType: "info", message: `Work ID: ${workId}\nPR/MR lookup: 1 commit waiting` },
+		{
+			method: "notify",
+			notifyType: "info",
+			message: expect.stringContaining(`Work ID: ${workId}\nPR/MR lookup: 1 commit waiting\nCost`),
+		},
 		beforePending,
 	)
 
@@ -137,7 +141,11 @@ it("shows pending and discovered GitLab MR details over ACP without a model requ
 	await expectNotification(
 		fixture,
 		sessionId,
-		{ method: "notify", notifyType: "info", message: `Work ID: ${workId}\nMR !731 open: ${url}` },
+		{
+			method: "notify",
+			notifyType: "info",
+			message: expect.stringContaining(`Work ID: ${workId}\nMR !731 open: ${url}\nCost`),
+		},
 		beforeLinked,
 	)
 	await expect
