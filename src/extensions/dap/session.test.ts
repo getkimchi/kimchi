@@ -18,6 +18,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { BunProcess } from "../lsp/types.js"
+import { sendRequest } from "./client.js"
 import { type DapSession, type DapSessionOptions, DapSessionRegistry } from "./session.js"
 import type {
 	DapAdapterConfig,
@@ -572,5 +573,49 @@ describe("DapSession", () => {
 			registry.clearAll()
 			expect(registry.getActive()).toHaveLength(0)
 		})
+	})
+})
+
+// =============================================================================
+// Launch handshake error surfacing — a failed/hung launch must report WHY
+// (launch response error + adapter output) instead of the opaque timeout.
+// =============================================================================
+
+describe("launch handshake error surfacing", () => {
+	it("failed launch surfaces the launch error plus adapter output, not the timeout", async () => {
+		const client = createMockClient(null)
+		// The adapter never emits `initialized` for a failed launch.
+		client.initializedPromise = new Promise(() => {})
+		client.outputLines.push(
+			{ category: "console", text: "Building /proj" },
+			{
+				category: "console",
+				text: "Build Error: go build -o /tmp/__debug_bin123 -gcflags all=-N -l /proj: cannot find main module",
+			},
+		)
+		const session = makeSession(client)
+		queueResponse("launch", undefined, false)
+		await session.launch({ program: "/proj/main.go", cwd: CWD })
+
+		const err = await session.setBreakpoint("/proj/main.go", 10).catch((e: unknown) => e as Error)
+		expect(err.message).toMatch(/DAP launch failed/)
+		expect(err.message).toContain("cannot find main module")
+		// The launch failure must win over the (longer) initialized wait — if this
+		// assertion resolved via the 5s timer the error would be the timeout text.
+		expect(err.message).not.toMatch(/did not emit 'initialized'/)
+	})
+
+	it("hung handshake times out with the adapter budget and includes recent output", async () => {
+		const client = createMockClient(null)
+		client.initializedPromise = new Promise(() => {})
+		client.outputLines.push({ category: "console", text: "Building /proj" })
+		const session = registry.create({ adapter: { ...FAKE_CONFIG, handshakeTimeoutMs: 5 }, cwd: CWD, client })
+		// Launch request never settles (hung adapter) — only the timer can fire.
+		vi.mocked(sendRequest).mockImplementationOnce(() => new Promise(() => {}) as never)
+		await session.launch({ program: "/proj/main.go", cwd: CWD })
+
+		const err = await session.setBreakpoint("/proj/main.go", 10).catch((e: unknown) => e as Error)
+		expect(err.message).toContain("did not emit 'initialized' within 5ms")
+		expect(err.message).toContain("Building /proj")
 	})
 })

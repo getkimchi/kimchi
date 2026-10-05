@@ -15,6 +15,30 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
 
 ---
 
+## 0.85.1 (mid-version, additive) — configurable wheel-scroll speed
+
+Not an upgrade: a new behavior was added to the pi-tui patch while the pin stayed
+at 0.85.1. Rebasers can ignore this section entirely; it exists only to explain
+where the `tui-alt-screen.js` hunk came from.
+
+### `@earendil-works/pi-tui`
+
+- **NEW — `tui-alt-screen.js`: `KIMCHI_WHEEL_SCROLL_LINES` env fallback.** The
+  constructor previously hardcoded `options.wheelScrollLines ?? 1`. The patch
+  inserts module-level `kimchiWheelScrollLines()` (parseInt; `Number.isFinite`
+  guard; returns `undefined` for absent/invalid) and threads it as the middle
+  fallback: explicit option > env > upstream default `1`. Kimchi maps its
+  `tui.wheelScrollLines` config onto the env var in `src/cli.ts` at startup, so
+  this is the only channel needed — no pi-coding-agent wiring. Explicit-option
+  precedence is deliberate: if upstream later adds a `wheelScrollLines` setting
+  (7+ open issues; all community PRs auto-closed), the construction site wins
+  over the env var and the patch reduces to the `?? 1` removal.
+  The bundle copy in pi-coding-agent's `dist/bundle/chunks/` has the same code
+  inlined but is only reachable via the standalone `pi` bin — Kimchi runs the
+  unbundled modules, so one hunk covers the whole harness.
+
+---
+
 ## 0.84.1 → 0.85.1
 
 ### `@earendil-works/pi-ai`

@@ -9,9 +9,13 @@
  * steer into the closing session. The extension must UNPUBLISH the
  * session state before awaiting the drain.
  */
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it } from "vitest"
+import type { ExtensionContext, KeybindingsManager } from "@earendil-works/pi-coding-agent"
+import { ProcessTerminal, Text, TuiMainScreen } from "@earendil-works/pi-tui"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { createCommandContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { testTheme } from "../__mocks__/theme.js"
+import { CommandsPanel } from "./commands-panel.js"
 import bashBackgroundExtension from "./index.js"
 import { DEFAULT_BASH_PROCESS_LIMIT_SECONDS } from "./process-registry.js"
 import { type BashSessionState, getSessionState, setSessionState } from "./session-registry.js"
@@ -136,5 +140,61 @@ describe("bashBackgroundExtension — production description composition", () =>
 		expect(typeof bash?.execute).toBe("function")
 
 		await emit("session_shutdown", {})
+	})
+
+	it.each([
+		"session_start",
+		"session_shutdown",
+	])("closes the inspector on %s and clears refresh work", async (event) => {
+		vi.useFakeTimers()
+		const pi = createExtensionApi()
+		bashBackgroundExtension(pi.api)
+		const ctx = createCommandContext()
+		await pi.getHandler("session_start")({}, ctx)
+		const tui = new TuiMainScreen(new ProcessTerminal())
+		const render = tui.render
+		const requestRender = vi.spyOn(tui, "requestRender").mockImplementation(() => {})
+		const editor = new Text("original input", 0, 0)
+		const renderEditor = editor.render
+		tui.addChild(editor)
+		tui.setFocus(editor)
+		const dispose = vi.spyOn(CommandsPanel.prototype, "dispose")
+		vi.mocked(ctx.ui.custom).mockImplementation(
+			(factory) =>
+				new Promise((resolve) => {
+					void Promise.resolve(
+						factory(tui, testTheme, {} as KeybindingsManager, () => {
+							tui.clear()
+							tui.addChild(editor)
+							resolve(undefined)
+						}),
+					).then((component) => {
+						tui.clear()
+						tui.addChild(component)
+					})
+				}),
+		)
+		try {
+			const opened = pi.getRegisteredCommand("processes").handler("", ctx)
+			await Promise.resolve()
+			expect(vi.getTimerCount()).toBe(1)
+			expect(tui.render(80).join("\n")).not.toContain("original input")
+			await pi.getHandler(event)({}, ctx)
+			expect(vi.getTimerCount()).toBe(0)
+			await opened
+			expect(tui.render).toBe(render)
+			expect(editor.render).toBe(renderEditor)
+			expect(tui.render(80).join("\n")).toContain("original input")
+			expect(dispose).toHaveBeenCalled()
+			expect(vi.getTimerCount()).toBe(0)
+			requestRender.mockClear()
+			await vi.advanceTimersByTimeAsync(1000)
+			expect(requestRender).not.toHaveBeenCalled()
+			expect(ctx.waitForIdle).not.toHaveBeenCalled()
+			expect(pi.sendMessage).not.toHaveBeenCalled()
+		} finally {
+			dispose.mockRestore()
+			vi.useRealTimers()
+		}
 	})
 })

@@ -9,6 +9,7 @@ import { AUTO_MODEL_DESCRIPTION } from "./extensions/auto-model/constants.js"
 import { readModelDeprecations } from "./model-deprecation.js"
 import {
 	__clearModelDescriptionsForTest,
+	buildModelsConfig,
 	getModelDescription,
 	injectExperimentalProvider,
 	isTransientModelsError,
@@ -1408,5 +1409,140 @@ describe("model description registry (/model table DESCRIPTION column)", () => {
 		vi.restoreAllMocks()
 
 		expect(getModelDescription("kimchi-dev/auto")).toBe("Backend router with vision routing.")
+	})
+})
+
+describe("openai Responses API routing", () => {
+	function openaiModel(slug: string, overrides: Partial<{ reasoning: boolean }> = {}): unknown {
+		return {
+			slug,
+			display_name: slug,
+			provider: "openai",
+			reasoning: overrides.reasoning ?? true,
+			input_modalities: ["text"],
+			is_serverless: false,
+			limits: { context_window: 128000, max_output_tokens: 16384 },
+		}
+	}
+
+	function openaiProviderModels(models: unknown[]) {
+		const { providers } = buildModelsConfig(models as never, "https://example.invalid")
+		return providers["kimchi-dev/openai"]?.models ?? []
+	}
+
+	it("routes Responses-capable OpenAI models through openai-responses", () => {
+		const models = openaiProviderModels([
+			openaiModel("gpt-5.6"),
+			openaiModel("gpt-5.6-terra"),
+			openaiModel("gpt-5.4-mini"),
+			openaiModel("gpt-6-astra"),
+			openaiModel("gpt-4o", { reasoning: false }),
+			openaiModel("gpt-4.1-mini", { reasoning: false }),
+			openaiModel("o4-mini"),
+			openaiModel("o3-2025-04-16"),
+		])
+		expect(models).toHaveLength(8)
+		for (const model of models) {
+			expect(model.api).toBe("openai-responses")
+		}
+	})
+
+	it("maps thinking off per model family — 'none' only where OpenAI accepts it", () => {
+		const models = openaiProviderModels([
+			openaiModel("o1"),
+			openaiModel("o3"),
+			openaiModel("o3-2025-04-16"),
+			openaiModel("o3-mini"),
+			openaiModel("o4-mini"),
+			openaiModel("gpt-5"),
+			openaiModel("gpt-5-2025-08-07"),
+			openaiModel("gpt-5-mini"),
+			openaiModel("gpt-5-nano"),
+			openaiModel("gpt-5.1"),
+			openaiModel("gpt-5.2"),
+			openaiModel("gpt-5.4-mini"),
+			openaiModel("gpt-5.6"),
+			openaiModel("gpt-5.6-terra"),
+			openaiModel("gpt-6-astra"),
+		])
+		expect(models).toHaveLength(15)
+		for (const model of models) {
+			expect(model.api).toBe("openai-responses")
+		}
+		// o-series: reasoning can be neither disabled nor minimized.
+		for (const slug of ["o1", "o3", "o3-2025-04-16", "o3-mini", "o4-mini"]) {
+			expect(models.find((m) => m.id === slug)?.thinkingLevelMap).toEqual({ off: null, minimal: null })
+		}
+		// base gpt-5 family: reasoning cannot be disabled.
+		for (const slug of ["gpt-5", "gpt-5-2025-08-07", "gpt-5-mini", "gpt-5-nano"]) {
+			expect(models.find((m) => m.id === slug)?.thinkingLevelMap).toEqual({ off: null })
+		}
+		// gpt-5.1+ / gpt-6 accept effort "none".
+		for (const slug of ["gpt-5.1", "gpt-5.2", "gpt-5.4-mini", "gpt-5.6", "gpt-5.6-terra", "gpt-6-astra"]) {
+			expect(models.find((m) => m.id === slug)?.thinkingLevelMap).toEqual({ off: "none" })
+		}
+	})
+
+	it("keeps gpt-4o non-chat variants (audio/realtime/transcribe/tts) off the Responses route", () => {
+		const models = openaiProviderModels([
+			openaiModel("gpt-4o-audio-preview", { reasoning: false }),
+			openaiModel("gpt-4o-mini-realtime-preview", { reasoning: false }),
+			openaiModel("gpt-4o-transcribe", { reasoning: false }),
+			openaiModel("gpt-4o-mini-tts", { reasoning: false }),
+		])
+		expect(models).toHaveLength(4)
+		for (const model of models) {
+			expect(model.api).toBeUndefined()
+			expect(model.thinkingLevelMap).toBeUndefined()
+		}
+	})
+
+	it("does not set a thinkingLevelMap on non-reasoning gated models", () => {
+		const models = openaiProviderModels([openaiModel("gpt-4o", { reasoning: false })])
+		expect(models[0]?.thinkingLevelMap).toBeUndefined()
+	})
+
+	it("keeps the OpenAI legacy tail and non-chat models on openai-completions", () => {
+		const models = openaiProviderModels([
+			openaiModel("gpt-3.5-turbo", { reasoning: false }),
+			openaiModel("gpt-4", { reasoning: false }),
+			openaiModel("gpt-4-turbo-2024-04-09", { reasoning: false }),
+			openaiModel("gpt-audio", { reasoning: false }),
+			openaiModel("text-embedding-3-small", { reasoning: false }),
+			openaiModel("gpt-5-search-api"),
+		])
+		expect(models).toHaveLength(6)
+		for (const model of models) {
+			expect(model.api).toBeUndefined()
+			expect(model.thinkingLevelMap).toBeUndefined()
+		}
+	})
+
+	it("leaves per-model baseUrl unset so gated models inherit the provider's /openai/v1 base", () => {
+		const models = openaiProviderModels([openaiModel("gpt-5.6")])
+		expect(models[0]?.baseUrl).toBeUndefined()
+	})
+
+	it("warns when an OpenAI slug matches neither routing table (catalog lint)", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const models = openaiProviderModels([
+			openaiModel("o5"),
+			openaiModel("gpt-3.5-turbo", { reasoning: false }),
+			openaiModel("gpt-4o", { reasoning: false }),
+		])
+		expect(models).toHaveLength(3)
+		// Unknown slug still routes via chat completions — the lint only warns.
+		expect(models.find((m) => m.id === "o5")?.api).toBeUndefined()
+		expect(warn).toHaveBeenCalledTimes(1)
+		expect(warn.mock.calls[0]?.[0]).toContain("'o5'")
+	})
+
+	it("does not touch non-openai providers", () => {
+		const { providers } = buildModelsConfig([KIMI, SONNET_46] as never, "https://example.invalid")
+		const kimi = providers["kimchi-dev/ai-enabler"]?.models ?? []
+		const claude = providers["kimchi-dev/anthropic"]?.models ?? []
+		for (const model of [...kimi, ...claude]) {
+			expect(model.api).toBeUndefined()
+		}
 	})
 })

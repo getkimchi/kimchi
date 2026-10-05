@@ -8,6 +8,7 @@ vi.mock("node:fs", () => ({
 	default: {
 		existsSync: vi.fn(),
 		readdirSync: vi.fn(),
+		statSync: vi.fn(),
 	},
 }))
 
@@ -22,17 +23,20 @@ import {
 	allAdapters,
 	detectAdapters,
 	detectMissingAdapters,
+	resolveAdapterForProgram,
 	resolveJsDebugScript,
 } from "./adapters.js"
 
 const mockExistsSync = vi.mocked(fs.existsSync)
 const mockReaddirSync = vi.mocked(fs.readdirSync)
+const mockStatSync = vi.mocked(fs.statSync)
 const mockSpawnSync = vi.mocked(spawnSync)
 
 // Suppress Bun global so exists() uses the spawnSync path (deterministic).
 beforeEach(() => {
 	mockExistsSync.mockReset()
 	mockReaddirSync.mockReset()
+	mockStatSync.mockReset()
 	mockSpawnSync.mockReset()
 	// biome-ignore lint/suspicious/noExplicitAny: suppress Bun global for deterministic Node-path testing
 	;(globalThis as any).Bun = undefined
@@ -471,5 +475,90 @@ describe("adapterForDirectory", () => {
 			throw new Error("ENOTDIR")
 		}) as never)
 		expect(adapterForDirectory("/proj", allAdapters())).toBeNull()
+	})
+})
+
+// =============================================================================
+// dlv prepareLaunchArgs — per-program launch tailoring (mode + module cwd)
+// =============================================================================
+
+describe("dlv prepareLaunchArgs", () => {
+	const dlv = allAdapters().find((a) => a.name === "dlv")
+	const prepare = (program: string) => dlv?.prepareLaunchArgs?.({ program, cwd: "/cwd" })
+
+	it("mode exec for an extensionless compiled binary", () => {
+		mockStatSync.mockReturnValue({ isDirectory: () => false } as never)
+		expect(prepare("/tmp/oasvc.test")).toEqual({ mode: "exec" })
+	})
+
+	it("mode debug for a .go source file", () => {
+		mockStatSync.mockReturnValue({ isDirectory: () => false } as never)
+		expect(prepare("/proj/cmd/server/main.go")).toEqual({ mode: "debug" })
+	})
+
+	it("mode debug + dlvCwd at the module root for a package directory", () => {
+		mockStatSync.mockReturnValue({ isDirectory: () => true } as never)
+		// Nested-module repo: go.mod lives at /repo/services/mod, not /repo.
+		mockExistsSync.mockImplementation((p) => String(p) === "/repo/services/mod/go.mod")
+		expect(prepare("/repo/services/mod/internal/foo")).toEqual({ mode: "debug", dlvCwd: "/repo/services/mod" })
+	})
+
+	it("mode debug without dlvCwd when no go.mod exists in any ancestor", () => {
+		mockStatSync.mockReturnValue({ isDirectory: () => true } as never)
+		mockExistsSync.mockReturnValue(false)
+		expect(prepare("/tmp/gopkg")).toEqual({ mode: "debug" })
+	})
+
+	it("stops the go.mod walk at the first (deepest) match", () => {
+		mockStatSync.mockReturnValue({ isDirectory: () => true } as never)
+		mockExistsSync.mockImplementation((p) => String(p) === "/repo/go.mod" || String(p) === "/repo/go.work")
+		// /repo/go.mod matches on the first probe — never walks past it.
+		expect(prepare("/repo")).toEqual({ mode: "debug", dlvCwd: "/repo" })
+	})
+
+	it("no overrides for a nonexistent program (dlv's own error is surfaced)", () => {
+		mockStatSync.mockImplementation((() => {
+			throw new Error("ENOENT")
+		}) as never)
+		expect(prepare("/does/not/exist")).toEqual({})
+	})
+})
+
+// =============================================================================
+// resolveAdapterForProgram — full resolution chain incl. the source-file hint
+// =============================================================================
+
+describe("resolveAdapterForProgram", () => {
+	it("explicit adapter name wins", () => {
+		expect(
+			resolveAdapterForProgram({ program: "/proj/main.go", adapterName: "debugpy", adapters: allAdapters() })?.name,
+		).toBe("debugpy")
+	})
+
+	it("extensionless binary in a source-less dir resolves via the source-file hint", () => {
+		// Program path matches nothing: no extension, /tmp/bin readdir fails, and
+		// its parent contains no recognizable sources.
+		mockReaddirSync.mockImplementation((() => {
+			throw new Error("ENOTDIR")
+		}) as never)
+		const adapter = resolveAdapterForProgram({
+			program: "/tmp/bin/fixture.test",
+			sourceFileHint: "/proj/internal/secrets/secrets.go",
+			adapters: allAdapters(),
+		})
+		expect(adapter?.name).toBe("dlv")
+	})
+
+	it("returns null when neither the program nor the hint resolves", () => {
+		mockReaddirSync.mockImplementation((() => {
+			throw new Error("ENOTDIR")
+		}) as never)
+		expect(
+			resolveAdapterForProgram({
+				program: "/tmp/bin/fixture.test",
+				sourceFileHint: "/proj/README.md",
+				adapters: allAdapters(),
+			}),
+		).toBeNull()
 	})
 })

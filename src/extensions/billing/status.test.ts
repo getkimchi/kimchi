@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { openAiBaseUrl, selfHostedRegion } from "../../regions.js"
 
 const {
 	AUTOMATIC_REFRESH_MIN_INTERVAL_MS,
@@ -40,6 +41,17 @@ describe("billing status", () => {
 	it("derives the budget endpoint alongside credits", () => {
 		expect(budgetEndpointFromLlmEndpoint("https://llm.kimchi.dev")).toBe("https://llm.kimchi.dev/v1/budget")
 		expect(budgetEndpointFromLlmEndpoint("https://llm.kimchi.dev/openai/v1/")).toBe("https://llm.kimchi.dev/v1/budget")
+	})
+
+	it("derives self-hosted credits and budget from the region's chat endpoint (base/llm)", () => {
+		// Self-hosted gateway base is <base>/llm, so the positional derivation
+		// (strip the /openai/v1 suffix off the chat endpoint) must land at
+		// <base>/llm/v1/{credits,budget} — the endpoints the self-hosted LLM
+		// gateway serves.
+		const chatEndpoint = openAiBaseUrl(selfHostedRegion("https://kimchi.example.com"))
+		expect(chatEndpoint).toBe("https://kimchi.example.com/llm/openai/v1")
+		expect(creditsEndpointFromLlmEndpoint(chatEndpoint)).toBe("https://kimchi.example.com/llm/v1/credits")
+		expect(budgetEndpointFromLlmEndpoint(chatEndpoint)).toBe("https://kimchi.example.com/llm/v1/budget")
 	})
 
 	it("formats budget spending, limits, and compact thousands", () => {

@@ -32,6 +32,11 @@ export const GENERAL_TIPS = [
 		message: "Todos: `/todos` or `F7`; expand tools with `ctrl+o`.",
 	},
 	{
+		id: "bash-processes",
+		scope: "general",
+		message: "Use `/processes` to inspect running Bash scripts and output.",
+	},
+	{
 		id: "add-tags",
 		scope: "general",
 		message: "Tag requests in Analytics: `/tags add key:value` (e.g. project:myapp).",

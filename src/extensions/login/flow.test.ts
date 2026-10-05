@@ -25,10 +25,13 @@ describe("createRegionSelector", () => {
 
 	it("lists the current region first", () => {
 		const us = createRegionSelector({ currentRegion: "us", onSelect: vi.fn(), onBack: vi.fn() })
-		expect(optionsOf(us)).toEqual(["United States \u2014 current", "Europe"])
+		expect(optionsOf(us)).toEqual(["United States \u2014 current", "Europe", "Self-hosted"])
 
 		const eu = createRegionSelector({ currentRegion: "eu", onSelect: vi.fn(), onBack: vi.fn() })
-		expect(optionsOf(eu)).toEqual(["Europe \u2014 current", "United States"])
+		expect(optionsOf(eu)).toEqual(["Europe \u2014 current", "United States", "Self-hosted"])
+
+		const selfHosted = createRegionSelector({ currentRegion: "self-hosted", onSelect: vi.fn(), onBack: vi.fn() })
+		expect(optionsOf(selfHosted)).toEqual(["Self-hosted \u2014 current", "United States", "Europe"])
 	})
 
 	it("maps the selected option to its region id", () => {
@@ -64,7 +67,7 @@ describe("createRegionSelector", () => {
 		expect(onSelect).not.toHaveBeenCalled()
 	})
 
-	it("hides EU when experimental features are off", () => {
+	it("hides EU and self-hosted when experimental features are off", () => {
 		setExperimentalFeaturesEnabled(false)
 
 		const us = createRegionSelector({ currentRegion: "us", onSelect: vi.fn(), onBack: vi.fn() })
@@ -76,6 +79,13 @@ describe("createRegionSelector", () => {
 
 		const eu = createRegionSelector({ currentRegion: "eu", onSelect: vi.fn(), onBack: vi.fn() })
 		expect(optionsOf(eu)).toEqual(["Europe \u2014 current", "United States"])
+	})
+
+	it("still lists the configured self-hosted region first when experimental features are off", () => {
+		setExperimentalFeaturesEnabled(false)
+
+		const selfHosted = createRegionSelector({ currentRegion: "self-hosted", onSelect: vi.fn(), onBack: vi.fn() })
+		expect(optionsOf(selfHosted)).toEqual(["Self-hosted \u2014 current", "United States"])
 	})
 })
 
@@ -95,6 +105,71 @@ describe("regionChoiceRequired", () => {
 	it("is true when EU is experimental-gated but already configured (user can switch back)", () => {
 		setExperimentalFeaturesEnabled(false)
 		expect(regionChoiceRequired("eu")).toBe(true)
+	})
+
+	it("is true when self-hosted is experimental-gated but already configured", () => {
+		setExperimentalFeaturesEnabled(false)
+		expect(regionChoiceRequired("self-hosted")).toBe(true)
+	})
+})
+
+describe("promptSelfHostedBaseUrl", () => {
+	it("normalizes a valid base URL", async () => {
+		const { promptSelfHostedBaseUrl } = await import("./flow.js")
+		const prompt = vi.fn().mockResolvedValueOnce(" https://kimchi.example.com/ ")
+		const notifyError = vi.fn()
+
+		const url = await promptSelfHostedBaseUrl({ prompt, notifyError })
+
+		expect(url).toBe("https://kimchi.example.com")
+		expect(prompt).toHaveBeenCalledWith("Self-hosted Kimchi base URL:", "https://your-kimchi-host.example.com")
+		expect(notifyError).not.toHaveBeenCalled()
+	})
+
+	it("offers the stored URL as the Enter default", async () => {
+		const { promptSelfHostedBaseUrl } = await import("./flow.js")
+		const prompt = vi.fn().mockResolvedValueOnce("")
+
+		const url = await promptSelfHostedBaseUrl({ prompt, notifyError: vi.fn(), storedUrl: "https://stored.example.com" })
+
+		expect(url).toBe("https://stored.example.com")
+		expect(prompt).toHaveBeenCalledWith("Self-hosted base URL (press Enter to use https://stored.example.com):", "")
+	})
+
+	it("re-prompts on invalid input until it parses", async () => {
+		const { promptSelfHostedBaseUrl } = await import("./flow.js")
+		const prompt = vi.fn().mockResolvedValueOnce("not a url").mockResolvedValueOnce("https://kimchi.example.com")
+		const notifyError = vi.fn()
+
+		const url = await promptSelfHostedBaseUrl({ prompt, notifyError })
+
+		expect(url).toBe("https://kimchi.example.com")
+		expect(prompt).toHaveBeenCalledTimes(2)
+		expect(notifyError).toHaveBeenCalledWith(
+			'Invalid base URL "not a url" (expected an http(s) URL, e.g. https://kimchi.example.com)',
+		)
+	})
+
+	it("re-prompts when no stored URL exists and the input is blank", async () => {
+		const { promptSelfHostedBaseUrl } = await import("./flow.js")
+		const prompt = vi.fn().mockResolvedValueOnce("").mockResolvedValueOnce("https://kimchi.example.com")
+		const notifyError = vi.fn()
+
+		const url = await promptSelfHostedBaseUrl({ prompt, notifyError })
+
+		expect(url).toBe("https://kimchi.example.com")
+		expect(notifyError).toHaveBeenCalledWith(
+			"A base URL is required for the self-hosted region, e.g. https://kimchi.example.com",
+		)
+	})
+
+	it("returns undefined on Esc (cancel)", async () => {
+		const { promptSelfHostedBaseUrl } = await import("./flow.js")
+		const prompt = vi.fn().mockResolvedValueOnce(undefined)
+
+		const url = await promptSelfHostedBaseUrl({ prompt, notifyError: vi.fn() })
+
+		expect(url).toBeUndefined()
 	})
 })
 

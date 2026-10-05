@@ -121,7 +121,7 @@ for (const referenceState of ["changed", "missing"] as const) {
 			terminal.submit("Prepare the approved snapshot")
 			await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
 			const planPath = join(realpathSync(fixture.workDir), ".kimchi", "plans", "approved-snapshot.md")
-			expect(readFileSync(planPath, "utf8")).toBe(plan)
+			expect(readFileSync(planPath, "utf8").replace(/^<!-- kimchi-work-id: [0-9a-f-]{36} -->\n/, "")).toBe(plan)
 			if (referenceState === "changed") writeFileSync(planPath, "# Unapproved\nReturn CHANGED_TOKEN.\n")
 			else renameSync(planPath, `${planPath}.saved`)
 			steps.push({
@@ -287,7 +287,7 @@ test("approved plan edits save separate files and reopen full requirements after
 		const original = lastRun(sessionFile)
 		if (!original) throw new Error("Approved plan snapshot was not persisted")
 		const originalPath = join(realpathSync(fixture.workDir), ".kimchi", "plans", "editable-plan.md")
-		expect(readFileSync(originalPath, "utf8")).toBe(plan)
+		expect(readFileSync(originalPath, "utf8").replace(/^<!-- kimchi-work-id: [0-9a-f-]{36} -->\n/, "")).toBe(plan)
 		const originalEntries = readEntries(sessionFile)
 
 		terminal.submit("/ferment-v2 edit")
@@ -309,7 +309,7 @@ test("approved plan edits save separate files and reopen full requirements after
 		expect(revision2Path).toMatch(/\/[0-9a-f-]{36}-objective\.md$/)
 		expect(revision2Path).toContain(join(realpathSync(fixture.workDir), ".kimchi", "plans"))
 		expect(readFileSync(revision2Path, "utf8")).toBe(revision2Text)
-		expect(readFileSync(originalPath, "utf8")).toBe(plan)
+		expect(readFileSync(originalPath, "utf8").replace(/^<!-- kimchi-work-id: [0-9a-f-]{36} -->\n/, "")).toBe(plan)
 		expect(readEntries(sessionFile).slice(0, originalEntries.length)).toEqual(originalEntries)
 		terminal.submit("/ferment-v2")
 		await waitForText(terminal, "Objective: Read the Kimchi objective file", { full: false })
@@ -350,7 +350,7 @@ test("approved plan edits save separate files and reopen full requirements after
 		expect(revision3Path).not.toBe(revision2Path)
 		expect(readFileSync(revision3Path, "utf8")).toBe(revision3Text)
 		expect(readFileSync(revision2Path, "utf8")).toBe(revision2Text)
-		expect(readFileSync(originalPath, "utf8")).toBe(plan)
+		expect(readFileSync(originalPath, "utf8").replace(/^<!-- kimchi-work-id: [0-9a-f-]{36} -->\n/, "")).toBe(plan)
 
 		readCurrentPlan.function.arguments = JSON.stringify({ path: revision3Path })
 		terminal.submit("/ferment-v2 resume")

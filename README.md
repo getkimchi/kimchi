@@ -441,6 +441,10 @@ Kimchi stores its configuration (settings, sessions, models) under:
 ~/.config/kimchi/harness/
 ```
 
+### TUI wheel-scroll speed
+
+Mouse-wheel scroll speed in fullscreen mode is configurable via `tui.wheelScrollLines` or the `KIMCHI_WHEEL_SCROLL_LINES` env var — see [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md).
+
 ### Context files
 
 You can provide custom instructions that are injected into the system prompt on every session. Kimchi discovers two kinds of context files:
@@ -485,6 +489,7 @@ kimchi update v1.2.3                # install a specific Kimchi release (downgra
 kimchi update v1.2.3-rc.1           # install a release candidate
 kimchi update --canary              # install the latest canary build from master
 ```
+
 
 ### HTTP proxy
 
@@ -539,6 +544,26 @@ When the same MCP server name appears in multiple sources:
 #### "Never ask again"
 
 Stored in `~/.config/kimchi/config.json` (`migrationState: "skip-forever"`). Delete that field to re-trigger the prompt. Adding support for another agent is a small change -- drop a new definition into `src/agent-discovery/agents/` and append it to the registry.
+
+### Extensions
+
+#### Plannotator (interactive plan review)
+
+[Plannotator](https://github.com/backnotprop/plannotator) is a third-party Pi extension that opens a browser-based UI for reviewing and annotating a plan whenever the agent submits one, as an alternative to the native terminal plan-review menu.
+
+Install it like any other package:
+
+```bash
+kimchi install npm:@plannotator/pi-extension
+```
+
+Plannotator pops up automatically whenever the agent calls the plan-mode `submit_plan` tool in an interactive session — no extra configuration needed. It races against Kimchi's native terminal plan-review menu; whichever you respond to first wins, and the other is cancelled. It stays silent (does not pop up) for:
+
+- non-interactive sessions (`--print`/`-p`, `--mode json|rpc`)
+- subagent sessions (delegated work spawned via `extensions.agents`)
+
+If it never shows up, confirm it's installed with `kimchi list` and check `packages` in `~/.config/kimchi/harness/settings.json`.
+
 
 ## Development
 

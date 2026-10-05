@@ -2,19 +2,21 @@ import type { Theme } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 
 /**
- * Shared frame drawing for the feedback dialogs.
+ * Shared modal frame drawing — a titled, rounded box used by every overlay
+ * dialog: the feedback dialogs (rate-response, model-switch) and the ferment
+ * plan review.
  *
  * Pi's `Box` only applies padding and a background, and `DynamicBorder` draws a
  * plain horizontal rule — neither renders a titled box, so the frame is drawn
- * here. This module exists so the two feedback dialogs draw it exactly once
- * rather than keeping divergent copies of the same border arithmetic.
+ * here. This module exists so all dialogs draw it exactly once rather than
+ * keeping divergent copies of the same border arithmetic.
  *
  * `rawKeyHint` from pi-coding-agent is deliberately not used for hint rows: it
  * styles via the module-global `theme`, which is undefined for extensions
  * loaded through jiti (see the note on `DynamicBorder`). Dialogs pass their own
  * `Theme` instead.
  */
-export interface DialogChrome {
+export interface ModalChrome {
 	/** A blank row spanning the frame's interior. */
 	emptyRow: string
 	/**
@@ -31,9 +33,14 @@ export interface DialogChrome {
 	bottomBorder: string
 	/** Usable interior width, i.e. the width content rows are padded to. */
 	contentWidth: number
+	/** Column (0-based, relative to the frame's left edge) where interior
+	 *  content starts — the border column plus the padding. Components that
+	 *  translate mouse coordinates into a child widget's local space need it
+	 *  to shift `event.x`. */
+	contentLeft: number
 }
 
-export function createDialogChrome(theme: Theme, width: number): DialogChrome {
+export function createModalChrome(theme: Theme, width: number): ModalChrome {
 	const innerW = Math.max(1, width - 2)
 	const contentW = Math.max(1, innerW - 4)
 	const b = (s: string) => theme.fg("border", s)
@@ -45,6 +52,7 @@ export function createDialogChrome(theme: Theme, width: number): DialogChrome {
 
 	return {
 		contentWidth: contentW,
+		contentLeft: 3,
 		emptyRow: `${b("│")}${" ".repeat(innerW)}${b("│")}`,
 		contentRow,
 		measuredRow: (line: string) => contentRow(line, visibleWidth(line)),

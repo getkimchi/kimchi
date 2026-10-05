@@ -58,9 +58,14 @@ export const DEFAULT_BASH_PROCESS_LIMIT_SECONDS = 3600
 /** Reason recorded when the harness safety limit kills a process. */
 export const SAFETY_LIMIT_REASON = "safety-limit"
 
+/** Bounded display history for completed commands. */
+export const MAX_COMPLETED_PROCESSES = 100
+
 export type ProcessState = "running" | "stopped" | "exited"
 
 export interface SpawnOptions {
+	toolCallId?: string
+	description?: string
 	/** Absolute safety limit in seconds; the process is killed when it is still running this long after spawn. */
 	limitSeconds: number
 	/** Max bytes retained in the output ring buffer. */
@@ -81,7 +86,7 @@ export function summarizeCommand(command: string, maxLength = 96): string {
 export interface TailSnapshot {
 	/** UTF-8 decode of the last `bytes` of output. */
 	text: string
-	/** Number of bytes in the snapshot. */
+	/** Raw bytes retained after skipping leading UTF-8 fragments, including an incomplete trailing character. */
 	bytes: number
 	state: ProcessState
 	exitCode: number | null
@@ -115,6 +120,28 @@ export interface IncrementalSnapshot {
 	reason: string | null
 }
 
+/** Detached, immutable display data. Reading it never changes process ownership. */
+export interface ProcessDisplaySnapshot {
+	readonly handle: string
+	readonly command: string
+	readonly cwd: string
+	readonly toolCallId?: string
+	readonly description?: string
+	readonly startedAt: number
+	readonly observedAt: number
+	readonly finishedAt?: number
+	readonly lastOutputAt?: number
+	readonly deadlineMs: number
+	readonly state: ProcessState
+	readonly exitCode: number | null
+	readonly reason: string | null
+	readonly output: string
+	/** Raw tail bytes; includes an incomplete trailing character awaiting more output. */
+	readonly outputBytes: number
+	/** Source bytes before the retained tail, including skipped leading UTF-8 fragments. */
+	readonly omittedBytes: number
+}
+
 /** Full output snapshot for final results (mirrors upstream OutputSnapshot). */
 export interface FinalSnapshot {
 	/** Full output text (truncated to upstream limits). */
@@ -126,6 +153,12 @@ export interface FinalSnapshot {
 	state: ProcessState
 	exitCode: number | null
 	reason: string | null
+}
+
+interface CompletedProcessSnapshot {
+	final: FinalSnapshot
+	display: ProcessDisplaySnapshot
+	deadlineSeconds: number
 }
 
 interface OutputSnapshot {
@@ -316,6 +349,10 @@ class OutputAccumulator {
 }
 
 export interface ProcessEntry {
+	readonly command: string
+	readonly toolCallId?: string
+	readonly description?: string
+	finishedAt?: number
 	readonly handle: string
 	/** Wall-clock ms (Date.now()) when the process was spawned. Used to report elapsed time. */
 	readonly spawnedAtMs: number
@@ -349,10 +386,8 @@ export interface ProcessEntry {
  * over-sized chunk). `snapshot(maxBytes)` returns the last `maxBytes`
  * bytes as a UTF-8 string.
  *
- * Note: byte-level truncation can split a multi-byte UTF-8 sequence at the
- * head of the window. This is acceptable for a command-output tail window
- * (overwhelmingly ASCII) and matches the granularity of upstream bash
- * truncation.
+ * Snapshot boundaries exclude partial UTF-8 characters, including a trailing
+ * sequence whose remaining bytes have not arrived yet.
  */
 export class OutputRingBuffer {
 	private chunks: Buffer[] = []
@@ -411,7 +446,10 @@ export class OutputRingBuffer {
 			chunk.copy(result, remaining - take, chunk.length - take, chunk.length)
 			remaining -= take
 		}
-		return { text: result.toString("utf8"), bytes: limit }
+		let start = 0
+		while (start < result.length && (result[start] & 0xc0) === 0x80) start++
+		const text = new TextDecoder().decode(result.subarray(start), { stream: true })
+		return { text, bytes: result.length - start }
 	}
 
 	/**
@@ -438,7 +476,12 @@ export class OutputRingBuffer {
 			}
 			chunkStart = chunkEnd
 		}
-		return { text: result.toString("utf8"), bytes: written }
+		let leading = 0
+		while (leading < written && (result[leading] & 0xc0) === 0x80) leading++
+		return {
+			text: new TextDecoder().decode(result.subarray(leading, written), { stream: true }),
+			bytes: written - leading,
+		}
 	}
 
 	clear(): void {
@@ -471,8 +514,14 @@ export interface ProcessRegistry {
 	snapshotSince(handle: string, maxBytes?: number): IncrementalSnapshot
 	/** Advance the entry's delivered cursor after an authoritative delivery. */
 	markDelivered(handle: string, cursor: number): void
+	displaySnapshot(handle: string, maxBytes?: number): ProcessDisplaySnapshot | undefined
+	listDisplaySnapshots(maxBytes?: number): readonly ProcessDisplaySnapshot[]
+	/** Initial + settled terminal snapshots; removal/shutdown detach observers. */
+	observeDisplay(handle: string, listener: (snapshot: ProcessDisplaySnapshot) => void, maxBytes?: number): () => void
 	/** Full output snapshot (truncated + temp-file spill, like upstream). */
-	finalSnapshot(handle: string): FinalSnapshot | undefined
+	finalSnapshot(handle: string, fullOutput?: boolean): FinalSnapshot | undefined
+	/** Final result for a recently removed command, until eviction or session shutdown. */
+	completedSnapshot(handle: string): CompletedProcessSnapshot | undefined
 	/** Kill a running process and await abort settlement. `reason` defaults to "stop". */
 	kill(handle: string, reason?: string): Promise<void>
 	/** Promise that resolves with the exit code when the process ends. */
@@ -517,7 +566,9 @@ export function elapsedSecondsSince(spawnedAtMs: number): number {
 
 export function createProcessRegistry(): ProcessRegistry {
 	const entries = new Map<string, ProcessEntry>()
+	const completed = new Map<string, CompletedProcessSnapshot>()
 	const spillPaths = new Set<string>()
+	const displayObservers = new Map<string, Set<() => void>>()
 
 	function clearDeadlineTimer(entry: ProcessEntry): void {
 		if (entry.deadlineTimer) {
@@ -581,6 +632,7 @@ export function createProcessRegistry(): ProcessRegistry {
 				entry.lastOutputAtMs = Date.now()
 				buffer.append(data)
 				accumulator.append(data)
+				notifyDisplay(handle)
 			},
 			signal: controller.signal,
 			// No upstream timeout: the registry owns the absolute safety limit.
@@ -607,10 +659,15 @@ export function createProcessRegistry(): ProcessRegistry {
 			.finally(() => {
 				clearDeadlineTimer(entry)
 				accumulator.finish()
+				entry.finishedAt = Date.now()
+				notifyDisplay(handle)
 			})
 
 		entry = {
 			handle,
+			command,
+			toolCallId: opts.toolCallId,
+			description: opts.description,
 			spawnedAtMs: Date.now(),
 			state: "running",
 			exitCode: null,
@@ -640,6 +697,73 @@ export function createProcessRegistry(): ProcessRegistry {
 		}
 		const { text, bytes } = entry.buffer.snapshot(maxBytes)
 		return { text, bytes, state: entry.state, exitCode: entry.exitCode, reason: entry.reason }
+	}
+
+	function displaySnapshot(handle: string, maxBytes = DEFAULT_TAIL_BYTES): ProcessDisplaySnapshot | undefined {
+		const entry = entries.get(handle)
+		if (!entry) return undefined
+		const { text, bytes } = entry.buffer.snapshot(maxBytes)
+		return Object.freeze({
+			handle,
+			command: entry.command,
+			cwd: entry.cwd,
+			toolCallId: entry.toolCallId,
+			description: entry.description,
+			startedAt: entry.spawnedAtMs,
+			observedAt: Date.now(),
+			finishedAt: entry.finishedAt,
+			lastOutputAt: entry.lastOutputAtMs,
+			deadlineMs: entry.deadlineMs,
+			state: entry.state,
+			exitCode: entry.exitCode,
+			reason: entry.reason,
+			output: text,
+			outputBytes: bytes,
+			omittedBytes: Math.max(0, entry.buffer.appendedBytes - bytes),
+		})
+	}
+
+	function listDisplaySnapshots(maxBytes = DEFAULT_TAIL_BYTES): readonly ProcessDisplaySnapshot[] {
+		return Object.freeze(
+			[...entries.keys()].flatMap((handle) => {
+				const snapshot = displaySnapshot(handle, maxBytes)
+				return snapshot ? [snapshot] : []
+			}),
+		)
+	}
+
+	function notifyDisplay(handle: string): void {
+		for (const notify of displayObservers.get(handle) ?? []) {
+			try {
+				notify()
+			} catch {
+				// A disposed/broken view must never change process settlement or removal.
+				displayObservers.get(handle)?.delete(notify)
+			}
+		}
+	}
+
+	function observeDisplay(
+		handle: string,
+		listener: (snapshot: ProcessDisplaySnapshot) => void,
+		maxBytes = DEFAULT_TAIL_BYTES,
+	): () => void {
+		const notify = () => {
+			const snapshot = displaySnapshot(handle, maxBytes)
+			if (snapshot) listener(snapshot)
+		}
+		if (!entries.has(handle)) return () => {}
+		let listeners = displayObservers.get(handle)
+		if (!listeners) {
+			listeners = new Set()
+			displayObservers.set(handle, listeners)
+		}
+		listeners.add(notify)
+		notify()
+		return () => {
+			listeners.delete(notify)
+			if (listeners.size === 0) displayObservers.delete(handle)
+		}
 	}
 
 	function snapshotSince(handle: string, maxBytes: number = DEFAULT_TAIL_BYTES): IncrementalSnapshot {
@@ -754,7 +878,7 @@ export function createProcessRegistry(): ProcessRegistry {
 		return entries.get(handle)
 	}
 
-	function finalSnapshot(handle: string): FinalSnapshot | undefined {
+	function finalSnapshot(handle: string, fullOutput = false): FinalSnapshot | undefined {
 		const entry = entries.get(handle)
 		if (!entry) return undefined
 		const snap = entry.accumulator.snapshot({ persistIfTruncated: true })
@@ -763,7 +887,7 @@ export function createProcessRegistry(): ProcessRegistry {
 		// range, so drop the already-delivered prefix instead of re-sending it.
 		const retainedStart = snap.truncation.totalBytes - byteLength(snap.content)
 		const deliveredOverlap = entry.deliveredCursor - retainedStart
-		const content = deliveredOverlap > 0 ? sliceBufferText(snap.content, deliveredOverlap) : snap.content
+		const content = !fullOutput && deliveredOverlap > 0 ? sliceBufferText(snap.content, deliveredOverlap) : snap.content
 		return {
 			content,
 			truncation: snap.truncation,
@@ -784,7 +908,18 @@ export function createProcessRegistry(): ProcessRegistry {
 		const entry = entries.get(handle)
 		if (!entry) return
 		await kill(handle)
+		const final = finalSnapshot(handle, true)
+		const display = displaySnapshot(handle)
 		await closeOutput(entry)
+		if (final && display) {
+			completed.set(handle, { final, display, deadlineSeconds: entry.deadlineSeconds })
+			if (completed.size > MAX_COMPLETED_PROCESSES) {
+				const oldest = completed.keys().next().value
+				if (oldest !== undefined) completed.delete(oldest)
+			}
+		}
+		notifyDisplay(handle)
+		displayObservers.delete(handle)
 		entries.delete(handle)
 	}
 
@@ -792,17 +927,24 @@ export function createProcessRegistry(): ProcessRegistry {
 		const activeEntries = [...entries.values()]
 		await Promise.all(activeEntries.map((entry) => kill(entry.handle)))
 		await Promise.all(activeEntries.map(closeOutput))
+		for (const entry of activeEntries) notifyDisplay(entry.handle)
+		displayObservers.clear()
 		entries.clear()
+		completed.clear()
 		await Promise.allSettled([...spillPaths].map((p) => rm(p, { force: true })))
 		spillPaths.clear()
 	}
 
 	return {
 		spawn,
+		displaySnapshot,
+		listDisplaySnapshots,
+		observeDisplay,
 		snapshotTail,
 		snapshotSince,
 		markDelivered,
 		finalSnapshot,
+		completedSnapshot: (handle) => completed.get(handle),
 		kill,
 		whenExited,
 		claimTerminal,

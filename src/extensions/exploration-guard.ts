@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works
 import { isAgentWorker } from "./agent-worker-context.js"
 import { ASSISTANT_OUTPUT_WITHHELD } from "./orchestration/continuation-nudge.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
-import { markHarnessSteer } from "./steer-marker.js"
+import { sendSteer } from "./steer-events.js"
 
 export const DEFAULT_READ_TOOLS = new Set([
 	"read",
@@ -25,7 +25,7 @@ export const DEFAULT_READ_TOOLS = new Set([
 
 export const DEFAULT_WRITE_TOOLS = new Set(["edit", "write", "lsp_rename", "ask_user", "steer_subagent", "Agent"])
 
-export const DEFAULT_NEUTRAL_TOOLS = new Set(["set_phase", "set_model"])
+export const DEFAULT_NEUTRAL_TOOLS = new Set(["list_models", "set_model", "set_phase"])
 
 export interface ExplorationGuardOptions {
 	/** Tools that count as read-only (default: common inspection tools). */
@@ -298,14 +298,7 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 		}
 
 		guard.turnEnd((text) => {
-			pi.sendMessage(
-				{
-					customType: STEER_MESSAGE_TYPE,
-					content: [{ type: "text", text: markHarnessSteer(text) }],
-					display: false,
-				},
-				{ deliverAs: "steer" },
-			)
+			sendSteer(pi, ctx, { kind: "exploration_guard", reason: "turn_end", customType: STEER_MESSAGE_TYPE, text })
 		})
 	})
 }

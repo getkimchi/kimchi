@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
+import { setWorkId, tryWorkAttribution } from "../work-attribution.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
 import { emitFermentScopingResumed } from "./domain-events-emitter.js"
 import { clearLifecycleGuard } from "./lifecycle-obligation-guard.js"
@@ -10,9 +11,16 @@ import { triggerPendingPlanReview } from "./plan-review-trigger.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
+import { getFermentWorkId } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { setActiveFermentAndApplyProfile } from "./tool-scope.js"
 import { checkWorktree } from "./worktree.js"
+
+/** Called after continuation is accepted, before any inference can be scheduled. */
+export function restoreFermentWork(pi: ExtensionAPI, fermentId: string, ctx: ExtensionContext): void {
+	const workId = getFermentWorkId(fermentId)
+	if (workId) tryWorkAttribution(() => setWorkId(ctx, workId, pi))
+}
 
 /**
  * Load a ferment as the active one without engaging the planner.
@@ -109,6 +117,8 @@ export function resumeFerment(
 			return
 		}
 	}
+
+	restoreFermentWork(pi, existing.id, ctx)
 
 	if (existing.status === "draft" && ctx?.hasUI) {
 		runtime.markScopingInteractive(existing.id)

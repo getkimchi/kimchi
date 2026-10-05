@@ -26,12 +26,18 @@ export interface BashToolGuardWarnPayload {
 	tool: string
 	/** How many times this category has been seen in the session so far. */
 	count: number
+	/** True in interactive sessions (UI present); false in print/protocol/
+	 *  benchmark sessions. Added for steer telemetry. */
+	interactive: boolean
 }
 
 export interface BashToolGuardBlockPayload {
 	category: BashCategory
 	tool: string
 	count: number
+	/** True in interactive sessions (UI present); false in print/protocol/
+	 *  benchmark sessions. Added for steer telemetry. */
+	interactive: boolean
 }
 
 export interface BashToolGuardAllowedByUserRequestPayload {

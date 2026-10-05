@@ -27,7 +27,7 @@
 import type { TextContent } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ToolResultEvent } from "@earendil-works/pi-coding-agent"
 import { SAFETY_LIMIT_MESSAGE_PATTERN } from "./bash-background/terminal-status.js"
-import { markHarnessSteer } from "./steer-marker.js"
+import { sendSteer } from "./steer-events.js"
 
 const LEGACY_TIMEOUT_PATTERN = /Command timed out after (\d+) seconds/
 
@@ -59,7 +59,7 @@ export function isBashLimitResult(event: ToolResultEvent): boolean {
 }
 
 export default function bashTimeoutGuidanceExtension(pi: ExtensionAPI): void {
-	pi.on("tool_result", (event) => {
+	pi.on("tool_result", (event, ctx) => {
 		if (!isBashLimitResult(event)) return
 
 		const text = event.content
@@ -78,13 +78,11 @@ export default function bashTimeoutGuidanceExtension(pi: ExtensionAPI): void {
 			return
 		}
 
-		pi.sendMessage(
-			{
-				customType: "bash-timeout-guidance",
-				content: [{ type: "text", text: markHarnessSteer(message) }],
-				display: false,
-			},
-			{ deliverAs: "steer" },
-		)
+		sendSteer(pi, ctx, {
+			kind: "bash_timeout_guidance",
+			reason: "timeout",
+			customType: "bash-timeout-guidance",
+			text: message,
+		})
 	})
 }

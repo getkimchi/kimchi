@@ -203,7 +203,7 @@ describe("system prompt blocks", () => {
 		expect(result).toContain("## B Block")
 		expect(result).not.toContain("## Orchestration")
 		expect(result).not.toContain("Project rule.")
-		expect(result).not.toContain("available_skills")
+		expect(result).not.toContain("## Skills")
 	})
 
 	it("suppression union is idempotent when multiple active blocks suppress the same section", () => {

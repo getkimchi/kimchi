@@ -14,20 +14,22 @@
  *     facts, and unseen output; the process stays tracked and its exit is
  *     delivered automatically.
  *
- * The model-facing schema advertises only `{ command }`. Legacy
+ * The model-facing schema advertises `{ command, description? }`. Legacy
  * `timeout`/`checkin_interval` fields from resumed sessions and ACP
  * replays are accepted as deprecated, ignored compatibility inputs.
  *
- * `renderCall`/`renderResult` are delegated to the wrapped upstream
- * definition so the TUI rendering is unchanged.
+ * Shared Bash renderers display identity, elapsed time and bounded live output.
  */
 import type { BashOperations, BashToolDetails, BashToolOptions, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { createBashToolDefinition, createLocalBashOperations } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
+import { createWorkCommitTrackingOperations } from "../work-attribution/commits.js"
+import { renderBashCall, renderBashResult } from "./bash-display.js"
 import {
 	createProcessRegistry,
 	DEFAULT_BASH_PROCESS_LIMIT_SECONDS,
 	elapsedSecondsSince,
+	type ProcessDisplaySnapshot,
 	type ProcessRegistry,
 } from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
@@ -38,6 +40,7 @@ import { throwIfTerminal } from "./terminal-status.js"
 
 /** Details returned in background-mode results (adds the handle). */
 export interface BackgroundBashToolDetails extends BashToolDetails {
+	display?: ProcessDisplaySnapshot
 	/** Handle for the background process; pass to `bash_control`. Omitted when the command exited pre-handoff. */
 	handle?: string
 	/** Whether the process has exited. */
@@ -52,9 +55,10 @@ export interface BackgroundBashToolDetails extends BashToolDetails {
 	elapsedSeconds?: number
 }
 
-/** Model-facing schema: only the command. Legacy timing fields are deprecated/ignored. */
+/** Model-facing schema: command and optional purpose. Legacy timing fields are deprecated/ignored. */
 const backgroundBashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
+	description: Type.Optional(Type.String({ maxLength: 120, description: "Short purpose of this command" })),
 	/** @deprecated Ignored. Runtimes are bounded by the harness process limit; retained so resumed sessions and ACP replays with legacy payloads still validate. */
 	timeout: Type.Optional(Type.Number()),
 	/** @deprecated Ignored. Review cadence is harness-owned; retained for the same compatibility reason. */
@@ -108,11 +112,11 @@ export function createBackgroundBashToolDefinition(
 	const description = wrapped.description.replace(" Optionally provide a timeout in seconds.", "")
 
 	async function execute(
-		_toolCallId: string,
+		toolCallId: string,
 		params: BackgroundBashInput,
 		signal: AbortSignal | undefined,
 		onUpdate: Parameters<ToolDefinition["execute"]>[3] | undefined,
-		_ctx: Parameters<ToolDefinition["execute"]>[4],
+		ctx: Parameters<ToolDefinition["execute"]>[4],
 	): Promise<{
 		content: { type: "text"; text: string }[]
 		details: BackgroundBashToolDetails | undefined
@@ -124,24 +128,39 @@ export function createBackgroundBashToolDefinition(
 		}
 		const { registry, coordinator } = state
 
-		const handle = registry.spawn(options?.operations ?? defaultLocalOps(options), command, cwd, undefined, {
-			limitSeconds: state.limitSeconds,
-		})
+		const handle = registry.spawn(
+			options?.operations ?? createWorkCommitTrackingOperations(ctx, toolCallId, defaultLocalOps(options)),
+			command,
+			cwd,
+			undefined,
+			{
+				limitSeconds: state.limitSeconds,
+				toolCallId,
+				description: params.description,
+			},
+		)
 		coordinator.handleSpawned(handle)
 
-		// Emit an initial partial (empty) so the TUI shows the call as running.
-		onUpdate?.({
-			content: [{ type: "text", text: "" }],
-			details: { handle, exited: false, exitCode: null, handoff: true },
-		})
-
-		// Resolve at the one-time handoff OR process exit (or abort), whichever
-		// comes first. Aborting before the handoff kills the process tree,
-		// matching upstream behavior for a cancelled bash call.
-		const outcome = await coordinator.awaitInitialHandoff(handle, signal)
+		// Display updates never advance the model's delivered-output cursor.
+		const unsubscribe = onUpdate
+			? registry.observeDisplay(handle, (display) => {
+					onUpdate({
+						content: [{ type: "text", text: display.output }],
+						details: { handle, exited: display.state !== "running", exitCode: display.exitCode, display },
+					})
+				})
+			: undefined
+		let outcome: Awaited<ReturnType<typeof coordinator.awaitInitialHandoff>>
+		try {
+			outcome = await coordinator.awaitInitialHandoff(handle, signal)
+		} catch (error) {
+			unsubscribe?.()
+			throw error
+		}
 
 		if (outcome === "aborted") {
 			await registry.kill(handle, "aborted")
+			unsubscribe?.()
 			coordinator.handleRemoved(handle)
 			await registry.remove(handle).catch(() => {})
 			throw new Error("Command aborted")
@@ -153,12 +172,27 @@ export function createBackgroundBashToolDefinition(
 			const deadlineSeconds = entry?.deadlineSeconds ?? state.limitSeconds
 			const final = registry.finalSnapshot(handle)
 			const snapshot = registry.snapshotTail(handle)
+			const display = registry.displaySnapshot(handle)
+			unsubscribe?.()
 			coordinator.handleRemoved(handle)
-			await registry.remove(handle).catch(() => {})
 
 			// Mirror upstream's error behavior: throw on non-zero exit,
 			// abort, or a safety-limit kill.
 			const fullOutput = final?.content ?? snapshot.text
+			onUpdate?.({
+				content: [{ type: "text", text: fullOutput }],
+				details: {
+					handle,
+					exited: true,
+					exitCode: snapshot.exitCode,
+					reason: snapshot.reason,
+					display,
+					...(final?.truncation?.truncated
+						? { truncation: final.truncation, fullOutputPath: final.fullOutputPath }
+						: {}),
+				},
+			})
+			await registry.remove(handle).catch(() => {})
 			throwIfTerminal(snapshot, fullOutput, deadlineSeconds)
 
 			const truncated = final?.truncation?.truncated === true
@@ -186,10 +220,13 @@ export function createBackgroundBashToolDefinition(
 					...(truncated ? { truncation: final?.truncation, fullOutputPath: final?.fullOutputPath } : {}),
 					exited: true,
 					exitCode: snapshot.exitCode,
+					display,
 					elapsedSeconds: elapsed,
 				},
 			}
 		}
+
+		unsubscribe?.()
 
 		// Still running at the handoff — deliver identity, activity facts,
 		// and unseen output; the process stays tracked and its exit is
@@ -212,6 +249,7 @@ export function createBackgroundBashToolDefinition(
 				exited: false,
 				exitCode: null,
 				handoff: true,
+				display: registry.displaySnapshot(handle),
 				reason: null,
 				elapsedSeconds: elapsed,
 			},
@@ -230,12 +268,8 @@ export function createBackgroundBashToolDefinition(
 			| undefined,
 		executionMode: wrapped.executionMode,
 		execute: execute as ToolDefinition<typeof backgroundBashSchema, BackgroundBashToolDetails | undefined>["execute"],
-		renderCall: wrapped.renderCall as
-			| ToolDefinition<typeof backgroundBashSchema, BackgroundBashToolDetails | undefined>["renderCall"]
-			| undefined,
-		renderResult: wrapped.renderResult as
-			| ToolDefinition<typeof backgroundBashSchema, BackgroundBashToolDetails | undefined>["renderResult"]
-			| undefined,
+		renderCall: renderBashCall,
+		renderResult: renderBashResult,
 	}
 }
 

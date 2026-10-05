@@ -1,6 +1,13 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "../__mocks__/context.js"
+import { createModel } from "../__mocks__/model-registry.js"
+import { flushWorkSummaries } from "../work-attribution/summary.js"
+import { getWorkId, setWorkId } from "../work-attribution.js"
 import {
 	describeJudgeModel,
 	type GraderSubagentResult,
@@ -1147,9 +1154,66 @@ describe("describeJudgeModel", () => {
 })
 
 describe("judgeApiCall", () => {
-	afterEach(() => {
+	let attributionDir: string
+	beforeEach(() => {
+		attributionDir = mkdtempSync(join(tmpdir(), "judge-attribution-"))
+		vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
+		captureJudgeContext(undefined, undefined, false, createContext())
+	})
+	afterEach(async () => {
+		await flushWorkSummaries()
+		vi.unstubAllEnvs()
+		rmSync(attributionDir, { recursive: true, force: true })
 		completeMock.mockReset()
 		captureJudgeContext(undefined, undefined, false)
+	})
+	it.each(["identity", "request"])("grades normally when %s attribution fails", async (stage) => {
+		const ctx = createContext()
+		if (stage === "request") getWorkId(ctx)
+		const path = join(attributionDir, "work-attribution")
+		rmSync(path, { recursive: true, force: true })
+		writeFileSync(path, "blocked")
+		const model = createModel("judge-x")
+		const registry = createContext({
+			modelRegistry: { getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true, apiKey: "test", headers: {} }) },
+		}).modelRegistry
+		captureJudgeContext(model, registry, false, ctx)
+		completeMock.mockResolvedValue({ content: [{ type: "text", text: "grade evidence" }], stopReason: "stop" })
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			expect(await judgeApiCall("system", "user")).toEqual({ ok: true, text: "grade evidence" })
+			expect(completeMock).toHaveBeenCalledOnce()
+			expect(warning).toHaveBeenCalled()
+		} finally {
+			warning.mockRestore()
+		}
+	})
+	it("persists the captured work and session before dispatch despite auth changing sessions", async () => {
+		let sessionId = "judge-original"
+		const ctx = createContext({ sessionManager: { getSessionId: () => sessionId } })
+		const workId = getWorkId(ctx)
+		const model = createModel("judge-x")
+		const registry = createContext({ modelRegistry: { getApiKeyAndHeaders: vi.fn() } }).modelRegistry
+		vi.mocked(registry.getApiKeyAndHeaders).mockImplementation(async () => {
+			sessionId = "judge-next"
+			setWorkId(ctx)
+			return { ok: true, apiKey: "test", headers: {} }
+		})
+		captureJudgeContext(model, registry, false, ctx)
+		completeMock.mockImplementation((_model, _context, options) => {
+			const rows = readFileSync(join(attributionDir, "work-attribution", "judge-original.jsonl"), "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line))
+			expect(rows.at(-1)).toMatchObject({
+				type: "request",
+				workId,
+				sessionId: "judge-original",
+				requestId: options.headers["X-Request-Id"],
+			})
+			return { content: [{ type: "text", text: "ok" }], stopReason: "stop" }
+		})
+		expect(await judgeApiCall("system", "user")).toEqual({ ok: true, text: "ok" })
 	})
 
 	it.each(["kimi-k3", "judge-x"])("sends Pi token limits to the judge model (%s)", async (modelId) => {

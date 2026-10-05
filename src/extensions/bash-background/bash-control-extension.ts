@@ -218,9 +218,11 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	// completion continuation to suppress redundant reminders.
 	let pendingExitDeliveries: string[] = []
 	let exitDeliveryScheduled = false
+	const terminalDetails = new Map<string, Record<string, unknown>>()
 	let disposed = false
 
 	pi.on("session_start", () => {
+		terminalDetails.clear()
 		trackedHandles = new Set()
 		activeControlCalls = new Map()
 		claimedExits = new Map()
@@ -494,22 +496,35 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		armExitWatcher(handle)
 	}
 
+	// Pi drops details when execute throws; restore the terminal display update
+	// through the supported result hook on both TUI and ACP.
+	pi.on("tool_execution_update", (event) => {
+		if (event.toolName !== "bash" && event.toolName !== BASH_CONTROL_TOOL_NAME) return
+		const details: unknown = event.partialResult?.details
+		if (!details || typeof details !== "object") return
+		const value = details as Record<string, unknown>
+		if (value.exited === true && value.display) terminalDetails.set(event.toolCallId, value)
+	})
+
 	pi.on("tool_result", (event) => {
 		if (event.toolName !== "bash" && event.toolName !== BASH_CONTROL_TOOL_NAME) return
-		const details = readDetails(event.details)
+		const saved = terminalDetails.get(event.toolCallId)
+		terminalDetails.delete(event.toolCallId)
+		const restored = event.isError && saved ? { details: saved } : undefined
+		const details = readDetails(restored?.details ?? event.details)
 		const state = getState()
 
 		if (event.toolName === "bash") {
-			if (!details.handle) return
+			if (!details.handle) return restored
 			if (details.handoff && !details.exited) {
 				trackHandle(details.handle)
-				return
+				return restored
 			}
 			if (details.exited) {
 				trackedHandles.delete(details.handle)
 				claimedExits.delete(details.handle)
 			}
-			return
+			return restored
 		}
 
 		// bash_control consolidated result: the tool_result event fires from
@@ -527,6 +542,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		// Missing details are ambiguous (transient error that never
 		// observed the process state) — keep tracking rather than risk
 		// forgetting a still-running process.
+		return restored
 	})
 
 	pi.on("message_end", (event, _ctx: ExtensionContext) => {
@@ -749,6 +765,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 
 	pi.on("session_shutdown", () => {
 		disposed = true
+		terminalDetails.clear()
 		trackedHandles.clear()
 		activeControlCalls.clear()
 		claimedExits.clear()

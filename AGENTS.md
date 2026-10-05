@@ -22,6 +22,16 @@ You are editing the kimchi coding harness. This repo extends the pi-mono SDK (`@
 - **Pre-commit**: `.husky/pre-commit` runs `pnpm run lint` — CI runs full `check` (lint + typecheck)
 - **README changes**: Run `./scripts/copy-resources.js --dev` after editing to propagate to dist/
 
+## Shared TUI components
+
+Reusable TUI building blocks live in `src/components/` (`editor.ts`, `status-line.ts`, `logo.ts`, `tool-block.ts`, `modal-chrome.ts`), each with a co-located test. Follow this pattern:
+
+- **Promotion, not creation** — start UI code feature-local (e.g. inside `src/extensions/<feature>/`) and move it to `src/components/` only when a second consumer arrives. No speculative shared abstractions.
+- **Two shapes, kept distinct** — stateless paint helpers stay factory functions (e.g. `createModalChrome(theme, width)`); stateful behavior (scrolling, focus) stays a class or explicit state object. Never mix both in one module.
+- **Theme is always passed in** — never rely on the module-global `theme` (undefined for extensions loaded through jiti).
+- **Degenerate geometry is part of the contract** — clamp widths/heights to ≥1; never `" ".repeat(-1)`. Tiny-terminal cases belong in the co-located test.
+- **Dependency direction is one-way** — features import from `src/components/`, never the reverse.
+
 ## Live harness checks
 
 Use the bundled `kimchi-tmux` when developing or verifying harness commands, menus, and TUI workflows. Follow the skill for setup, controller usage, and cleanup.
@@ -41,6 +51,30 @@ Use the bundled `kimchi-tmux` when developing or verifying harness commands, men
 - **Known product bugs can use `test.fail`.** Add a short comment naming the bug/repro. When the underlying issue is fixed, the unexpected pass is the signal to remove `test.fail`.
 - **Quarantine only for unstable tests.** Use `tests/e2e/tui/skip-list.js` with a specific reason and remove the entry as soon as the instability is fixed.
 - **Don't hand-write common dependency mocks in tests.** Avoid creating `ExtensionContext` (`ctx`) or `ExtensionAPI` (`pi`) mocks inline inside a test file. Use shared mocks (e.g. under `src/extensions/__mocks__/**` for unit tests) when they exist, and add new ones there if several tests need the same dependency. Don't copy-paste partial mocks across tests.
+
+## Dual-surface parity (TUI ↔ ACP)
+
+The harness ships two user-facing surfaces: the interactive TUI (`src/modes/interactive/`) and the ACP server (`src/modes/acp/`, JSON-RPC/IDE integration), each with its own e2e suite (`pnpm run test:e2e:tui` / `pnpm run test:e2e:acp`). Most harness changes must work on both surfaces — forgetting the ACP side is a recurring source of drift and follow-up `fix(acp):` PRs.
+
+**Whenever you change the harness, check whether ACP needs a parallel change — before you consider the task done.** A change is ACP-relevant until proven otherwise if it touches:
+
+- slash commands or the available-commands palette
+- tool-call presentation (titles, `rawInput`, in-progress/complete state)
+- permission/approval prompts or project-trust decisions
+- model selection/routing and advertised model lists
+- session listing, resume, or visibility
+- skills (discovery, reload, advertised skill commands)
+- streamed text the user sees: steering, `<done>`/recovery markers, usage/progress output
+- MCP servers, probing, or OAuth flows
+- image/content forwarding
+
+If the change is ACP-relevant:
+
+- Mirror the behavior for ACP. Prefer putting shared logic in `src/extensions/` / `src/shared/` and keep `src/modes/*` as thin adapters over it — don't duplicate logic per surface.
+- Add or update the matching ACP e2e test alongside the TUI one (see Testing expectations), or explain in the PR why ACP coverage isn't practical.
+- Run `pnpm run test:e2e:acp` when the change crosses the ACP boundary.
+
+If the change is genuinely TUI-only, say so explicitly in the PR summary. A silent skip is the failure mode this rule exists to catch.
 
 ## Code clean-up checklist
 

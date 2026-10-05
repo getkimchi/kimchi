@@ -140,6 +140,7 @@ import {
 	getSessionPermissionFlagController,
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
+import { applyWriteTodos, clearTodoStore } from "../../extensions/todos/store.js"
 import { updateModelsConfig } from "../../models.js"
 import { ACP_LIFETIME_USAGE_META_KEY, ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
 import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
@@ -617,6 +618,39 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		sessionId = res.sessionId
 	})
 
+	it("publishes todos written during extension startup before the plan subscription exists", async () => {
+		const startup = new FakeAgentSession("startup-todos")
+		const updates: SessionNotification[] = []
+		const conn = makeConn()
+		conn.sessionUpdate = async (notification) => {
+			updates.push(notification)
+		}
+		startup.bindExtensionsImpl = async () => {
+			applyWriteTodos({ todos: [{ content: "Write unit tests", status: "pending" }] }, startup.sessionId)
+		}
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(startup),
+		})
+		try {
+			await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+			expect(updates.filter(({ update }) => update.sessionUpdate === "plan")).toEqual([
+				{
+					sessionId: startup.sessionId,
+					update: {
+						sessionUpdate: "plan",
+						entries: [{ content: "Write unit tests", priority: "medium", status: "pending" }],
+						_meta: { "kimchi.dev": { scope: { kind: "global" } } },
+					},
+				},
+			])
+		} finally {
+			await localAgent.unstable_closeSession({ sessionId: startup.sessionId })
+			clearTodoStore(startup.sessionId)
+		}
+	})
+
 	// initialize() should declare image support based on cached models.json
 	describe("initialize capability detection", () => {
 		const tempAgentDir = "/tmp/kimchi-acp-test-agent-dir"
@@ -834,7 +868,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods).toHaveLength(3)
+			expect(response.authMethods).toHaveLength(4)
 			expect(response.authMethods?.[0]).toMatchObject({
 				id: "kimchi-agent",
 				name: "Kimchi Login",
@@ -857,9 +891,14 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
 			const ids = response.authMethods?.map((m) => m.id)
-			expect(ids).toEqual(["kimchi-agent", "kimchi-agent-us", "kimchi-agent-eu"])
+			expect(ids).toEqual(["kimchi-agent", "kimchi-agent-us", "kimchi-agent-eu", "kimchi-agent-self-hosted"])
 			expect(response.authMethods?.[1]).toMatchObject({ id: "kimchi-agent-us", name: "Kimchi Login (US)" })
 			expect(response.authMethods?.[2]).toMatchObject({ id: "kimchi-agent-eu", name: "Kimchi Login (EU)" })
+			expect(response.authMethods?.[3]).toMatchObject({
+				id: "kimchi-agent-self-hosted",
+				name: "Kimchi Login (SELF-HOSTED)",
+				description: "Authenticate via browser to Kimchi (Self-hosted region)",
+			})
 			// Agent Auth leaves `type` absent, like the plain method.
 			for (const method of response.authMethods ?? []) {
 				expect("type" in method).toBe(false)
@@ -889,7 +928,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				protocolVersion: 1,
 				clientCapabilities: { auth: { terminal: true } },
 			})
-			expect(response.authMethods).toHaveLength(4)
+			expect(response.authMethods).toHaveLength(5)
 			const terminalMethod = response.authMethods?.find((m) => "type" in m && m.type === "terminal")
 			expect(terminalMethod).toMatchObject({
 				id: "kimchi-terminal",
@@ -908,7 +947,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			// No clientCapabilities at all
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods).toHaveLength(3)
+			expect(response.authMethods).toHaveLength(4)
 			expect(response.authMethods?.some((m) => "type" in m && m.type === "terminal")).toBe(false)
 
 			// clientCapabilities present but auth.terminal is false/omitted
@@ -916,7 +955,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				protocolVersion: 1,
 				clientCapabilities: { auth: { terminal: false } },
 			})
-			expect(response2.authMethods).toHaveLength(3)
+			expect(response2.authMethods).toHaveLength(4)
 			expect(response2.authMethods?.some((m) => "type" in m && m.type === "terminal")).toBe(false)
 		})
 
@@ -1058,6 +1097,52 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				successMessage: ACP_SUCCESS_MESSAGE,
 			})
 			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_us-token", undefined, { region: "us" })
+		})
+
+		it("authenticates against the self-hosted region and persists region + base URL", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_self-hosted-token" })
+
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			// ACP clients have no interactive prompt; the base URL comes from the
+			// env override (or a previously stored selfHostedUrl).
+			vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://kimchi.example.com")
+			onTestFinished(() => {
+				vi.unstubAllEnvs()
+			})
+
+			const result = await testAgent.authenticate({ methodId: "kimchi-agent-self-hosted" })
+
+			expect(result).toEqual({})
+			expect(authenticateViaBrowser).toHaveBeenCalledWith({
+				webAppUrl: "https://kimchi.example.com",
+				successMessage: ACP_SUCCESS_MESSAGE,
+			})
+			// The resolved base is persisted next to the region so later launches
+			// resolve without the env override.
+			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_self-hosted-token", undefined, {
+				region: "self-hosted",
+				selfHostedUrl: "https://kimchi.example.com",
+			})
+		})
+
+		it("fails fast when kimchi-agent-self-hosted has no base URL configured", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			// The isolated test home stores no selfHostedUrl, so nothing resolves.
+			await expect(testAgent.authenticate({ methodId: "kimchi-agent-self-hosted" })).rejects.toThrow(
+				/self-hosted.*base URL is configured/s,
+			)
+			expect(authenticateViaBrowser).not.toHaveBeenCalled()
+			expect(writeApiKey).not.toHaveBeenCalled()
 		})
 
 		it("throws invalidParams for unknown methodId", async () => {
@@ -1227,6 +1312,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				apiKey,
 				agentConfigDir: tempAgentDir,
 				region: "us",
+				selfHostedUrl: undefined,
 				llmEndpoint: "https://llm.kimchi.dev/openai/v1",
 				customLlmEndpoint: undefined,
 				maxToolResultChars: 12000,
@@ -3333,6 +3419,25 @@ describe("KimchiAcpAgent message_end text reconciliation", () => {
 		expect(updates.some((u) => u.update.sessionUpdate === "agent_message_chunk")).toBe(false)
 		expect(updates.some((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBe(false)
 	})
+
+	// The continuation-nudge blanking handler in prompt-enrichment.ts hides
+	// the hidden recovery response (including the done token) by zeroing
+	// both the message content and the event delta. ACP reads only the
+	// event delta, so a zeroed delta must produce no agent_message_chunk,
+	// and message_end must not re-emit the blanked block either.
+	it("emits nothing for zeroed deltas and a blanked message_end block", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitTextDelta(0, "")
+			emitTextDelta(0, "")
+			fake.emit(messageEndEvent([{ type: "text", text: "" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		expect(chunks()).toEqual([])
+	})
 })
 
 // Streaming tools (bash in particular) emit tool_execution_update with a
@@ -4072,6 +4177,244 @@ describe("KimchiAcpAgent tool execution stream", () => {
 				}),
 			}),
 		])
+	})
+
+	// toolcall_end carries the complete arguments — the pending card's rawInput
+	// (and derived title/locations) must reach the client before approval and
+	// tool_execution_start, so e.g. an edit's path is visible while the model
+	// is done generating but the call hasn't executed yet.
+	it("emits tool_call_update with complete rawInput at toolcall_end, before tool_execution_start", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-args-1", name: "edit", arguments: {} }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 0,
+					toolCall: {
+						type: "toolCall",
+						id: "tc-args-1",
+						name: "edit",
+						arguments: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+					},
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-args-1",
+								name: "edit",
+								arguments: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-args-1",
+				toolName: "edit",
+				args: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(toolCalls).toHaveLength(1)
+		const acpId = (toolCalls[0].update as { toolCallId: string }).toolCallId
+
+		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+		expect(toolCallUpdates).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					toolCallId: acpId,
+					status: "pending",
+					title: "/tmp/demo.ts",
+					locations: [{ path: "/tmp/demo.ts" }],
+					rawInput: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+					_meta: { piToolCallId: "tc-args-1" },
+				}),
+			}),
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					toolCallId: acpId,
+					status: "in_progress",
+					_meta: { piToolCallId: "tc-args-1" },
+				}),
+			}),
+		])
+	})
+
+	// Back-compat for providers that never emit toolcall_start: toolcall_end
+	// alone must not produce a stray update for a tool the client never saw.
+	it("ignores toolcall_end for an unannounced tool call", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 0,
+					toolCall: {
+						type: "toolCall",
+						id: "tc-args-2",
+						name: "edit",
+						arguments: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+					},
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-args-2",
+								name: "edit",
+								arguments: { file_path: "/tmp/demo.ts", oldText: "a", newText: "b" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		expect(updates.filter((u) => u.update.sessionUpdate === "tool_call")).toHaveLength(0)
+		expect(updates.filter((u) => u.update.sessionUpdate === "tool_call_update")).toHaveLength(0)
+	})
+
+	// Hidden at start, still hidden at end: the retirement at toolcall_end is a
+	// no-op for never-announced ids — no stray update for a card the client
+	// never saw.
+	it("emits nothing when a call hidden at toolcall_start stays hidden at toolcall_end", async () => {
+		const hiddenArgs = { description: "internal", visibility: "system" }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-hidden-1", name: "Agent", arguments: hiddenArgs }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 0,
+					toolCall: { type: "toolCall", id: "tc-hidden-1", name: "Agent", arguments: hiddenArgs },
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-hidden-1", name: "Agent", arguments: hiddenArgs }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-hidden-1", toolName: "Agent", args: hiddenArgs })
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-hidden-1",
+				toolName: "Agent",
+				result: { content: [{ type: "text", text: "done" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		expect(updates.filter((u) => u.update.sessionUpdate === "tool_call")).toHaveLength(0)
+		expect(updates.filter((u) => u.update.sessionUpdate === "tool_call_update")).toHaveLength(0)
+	})
+
+	// Announced with empty partial args, revealed as hidden only at toolcall_end:
+	// the pending card goes out (unavoidable — args weren't known), but no
+	// further updates and execution events stay suppressed.
+	it("withdraws an announced call revealed as hidden at toolcall_end", async () => {
+		const fullArgs = { description: "internal", visibility: "system" }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-hidden-2", name: "Agent", arguments: {} }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 0,
+					toolCall: { type: "toolCall", id: "tc-hidden-2", name: "Agent", arguments: fullArgs },
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-hidden-2", name: "Agent", arguments: fullArgs }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-hidden-2", toolName: "Agent", args: fullArgs })
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-hidden-2",
+				toolName: "Agent",
+				result: { content: [{ type: "text", text: "done" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(toolCalls).toHaveLength(1)
+		expect(toolCalls[0].update).toMatchObject({ status: "pending", _meta: { piToolCallId: "tc-hidden-2" } })
+		expect(updates.filter((u) => u.update.sessionUpdate === "tool_call_update")).toHaveLength(0)
 	})
 
 	// Back-compat: providers that don't emit toolcall_start must still get the
@@ -5252,6 +5595,8 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		expect((err as Error).message).toMatch(/auth required/)
 		// Provider text stays in the message: debugging can tell stale from missing.
 		expect((err as Error).message).toMatch(/401/)
+		// Structured branch signal: clients route to login UI off `data`, not text.
+		expect((err as { data?: unknown }).data).toEqual({ kind: "auth" })
 	})
 
 	// Chain second half: the turn-time 401 is the first proof this key is
@@ -5345,6 +5690,72 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		expect(result.usage?.inputTokens).toBe(10)
 	})
 
+	it("rejection data carries a structured kind plus rate-limit metadata for classifiable provider errors", async () => {
+		const fake = new FakeAgentSession("session-error-data")
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantErrorEvent("Request failed with status code 429: rate limited until 2099-01-01T00:00:00Z"))
+			fake.emit(agentEnd())
+		}
+
+		const err = await agent
+			.prompt({ sessionId: "session-error-data", prompt: [{ type: "text", text: "hello" }] })
+			.catch((e) => e)
+		expect((err as Error).message).toMatch(/429/)
+		expect((err as { data?: unknown }).data).toEqual({
+			kind: "rate_limit",
+			httpStatusCode: 429,
+			retryAtMs: Date.parse("2099-01-01T00:00:00Z"),
+		})
+	})
+
+	it.each([
+		{ message: "budget exhausted for this account", kind: "budget_exhausted", httpStatusCode: undefined },
+		{ message: "Request failed with status code 503: Service Unavailable", kind: "provider_5xx", httpStatusCode: 503 },
+		{ message: "Request failed: prompt too long", kind: "context_window_exceeded", httpStatusCode: undefined },
+	])("rejection data carries kind=$kind for classifiable provider errors", async ({
+		message,
+		kind,
+		httpStatusCode,
+	}) => {
+		const fake = new FakeAgentSession(`session-error-kind-${kind}`)
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantErrorEvent(message))
+			fake.emit(agentEnd())
+		}
+
+		const err = await agent
+			.prompt({ sessionId: `session-error-kind-${kind}`, prompt: [{ type: "text", text: "hello" }] })
+			.catch((e) => e)
+		expect((err as { code?: number }).code).toBe(-32603)
+		expect((err as { data?: unknown }).data).toEqual({
+			kind,
+			...(httpStatusCode !== undefined ? { httpStatusCode } : {}),
+		})
+	})
+
+	it("unclassifiable provider errors reject without a data payload", async () => {
+		const fake = new FakeAgentSession("session-error-nodata")
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantErrorEvent("something totally unusual happened"))
+			fake.emit(agentEnd())
+		}
+
+		const err = await agent
+			.prompt({ sessionId: "session-error-nodata", prompt: [{ type: "text", text: "hello" }] })
+			.catch((e) => e)
+		expect((err as Error).message).toMatch(/something totally unusual/)
+		expect((err as { data?: unknown }).data).toBeUndefined()
+	})
+
 	it("does not fail the turn when the final assistant message was aborted", async () => {
 		const fake = new FakeAgentSession("session-aborted-msg")
 		const agent = makeAgent(fake)
@@ -5360,6 +5771,201 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 			prompt: [{ type: "text", text: "hello" }],
 		})
 		expect(result.stopReason).toBe("end_turn")
+	})
+})
+
+// A turn waiting out a rate-limit deadline or running compaction is silent on
+// the wire — an outstanding prompt with no updates, indistinguishable from a
+// hang. Those pi events go out as _kimchi.dev/agent_activity notifications so
+// the client can pin the stall (and its session) to a cause.
+describe("agent activity notifications", () => {
+	function successEvent(): AgentSessionEvent {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "reply" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 10,
+				output: 5,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 15,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	it("forwards auto_retry_start with sessionId, attempt, delay and error", async () => {
+		const fake = new FakeAgentSession("session-activity-retry")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "auto_retry_start",
+				attempt: 1,
+				maxAttempts: 3,
+				delayMs: 5000,
+				errorMessage: "Request failed with status code 429: rate limited",
+			} as AgentSessionEvent)
+			fake.emit({
+				type: "auto_retry_end",
+				success: true,
+				attempt: 1,
+			} as AgentSessionEvent)
+			fake.emit(successEvent())
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({
+			sessionId: "session-activity-retry",
+			prompt: [{ type: "text", text: "hello" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+		const activities = extNotifications.filter((n) => n.method === "_kimchi.dev/agent_activity")
+		expect(activities).toEqual([
+			{
+				method: "_kimchi.dev/agent_activity",
+				params: {
+					sessionId: "session-activity-retry",
+					kind: "auto_retry_start",
+					attempt: 1,
+					maxAttempts: 3,
+					delayMs: 5000,
+					errorMessage: "Request failed with status code 429: rate limited",
+				},
+			},
+			{
+				method: "_kimchi.dev/agent_activity",
+				params: { sessionId: "session-activity-retry", kind: "auto_retry_end", success: true, attempt: 1 },
+			},
+		])
+	})
+
+	it("forwards compaction start/end with reason and failure detail", async () => {
+		const fake = new FakeAgentSession("session-activity-compaction")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const compactionResult = {
+			summary: "compaction summary text",
+			firstKeptEntryId: "entry-42",
+			tokensBefore: 190_000,
+			estimatedTokensAfter: 40_000,
+		}
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "compaction_start", reason: "overflow" } as AgentSessionEvent)
+			fake.emit({
+				type: "compaction_end",
+				reason: "overflow",
+				result: compactionResult,
+				aborted: false,
+				willRetry: false,
+				errorMessage: "summarization failed",
+			} as AgentSessionEvent)
+			fake.emit(successEvent())
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({
+			sessionId: "session-activity-compaction",
+			prompt: [{ type: "text", text: "hello" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+		const activities = extNotifications.filter((n) => n.method === "_kimchi.dev/agent_activity")
+		expect(activities).toEqual([
+			{
+				method: "_kimchi.dev/agent_activity",
+				params: { sessionId: "session-activity-compaction", kind: "compaction_start", reason: "overflow" },
+			},
+			{
+				method: "_kimchi.dev/agent_activity",
+				params: {
+					sessionId: "session-activity-compaction",
+					kind: "compaction_end",
+					reason: "overflow",
+					result: compactionResult,
+					aborted: false,
+					willRetry: false,
+					errorMessage: "summarization failed",
+				},
+			},
+		])
+	})
+
+	it.each([
+		{
+			event: {
+				type: "summarization_retry_scheduled",
+				attempt: 1,
+				maxAttempts: 3,
+				delayMs: 5000,
+				errorMessage: "Request failed with status code 429",
+			},
+		},
+		{ event: { type: "summarization_retry_attempt_start", source: "branchSummary" } },
+		{ event: { type: "summarization_retry_attempt_start", source: "compaction", reason: "threshold" } },
+		// pi's finished event carries no fields — payload is the bare envelope.
+		{ event: { type: "summarization_retry_finished" } },
+	])("forwards summarization retry lifecycle: $event.type [$event.source ?? ''", async ({ event }) => {
+		const { type, ...expected } = event
+		const sessionId = `session-activity-${type}-${JSON.stringify(expected)}`
+		const fake = new FakeAgentSession(sessionId)
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const msg = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(event as AgentSessionEvent)
+			fake.emit(successEvent())
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId: msg.sessionId, prompt: [{ type: "text", text: "hello" }] })
+		expect(extNotifications).toEqual([
+			{
+				method: "_kimchi.dev/agent_activity",
+				params: { ...expected, sessionId: msg.sessionId, kind: type },
+			},
+		])
+	})
+
+	it("does not forward transcript events as activity", async () => {
+		const fake = new FakeAgentSession("session-activity-quiet")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(successEvent())
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId: "session-activity-quiet", prompt: [{ type: "text", text: "hello" }] })
+		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/agent_activity")).toEqual([])
 	})
 })
 
@@ -8503,7 +9109,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			result: { text: "html" },
 			expect: {
 				kind: "fetch",
-				title: "web_fetch",
+				title: "https://example.com",
 				status: "completed",
 				locations: [],
 			},

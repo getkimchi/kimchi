@@ -23,7 +23,11 @@ export const SAFETY_LIMIT_MESSAGE_PATTERN = /Process killed by the harness safet
  * results (`bash_control`, notifications) mark each failure explicitly
  * instead of discarding sibling statuses.
  */
-export function throwIfTerminal(snapshot: TailSnapshot, output: string, deadlineSeconds: number): void {
+export function throwIfTerminal(
+	snapshot: Pick<TailSnapshot, "reason" | "exitCode">,
+	output: string,
+	deadlineSeconds: number,
+): void {
 	if (snapshot.reason === "aborted") {
 		throw new Error(appendStatus(output, "Command aborted"))
 	}

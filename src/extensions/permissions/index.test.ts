@@ -10,6 +10,7 @@ import type {
 	ToolInfo,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { populateCliArgs } from "../../cli-args.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
@@ -22,6 +23,7 @@ import { createModel, createModelRegistry } from "../__mocks__/model-registry.js
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { CLOUD_DECISION_OPTION, EXECUTE_LOCAL_DECISION_OPTION } from "../ferment/plan-review.js"
+import { loadRuntimeState } from "../ferment/runtime-state-store.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
@@ -30,6 +32,8 @@ import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { CUSTOM_BRANCH_ITEM, CUSTOM_BRANCH_PROMPT } from "../remote-run/git-workflow.js"
 import { runCloudAgent } from "../remote-run/runner.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
+import { flushWorkSummaries } from "../work-attribution/summary.js"
+import { getWorkId } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
 import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
@@ -110,10 +114,23 @@ function cleanPermissionEnv(): void {
 	unregisterSessionPermissionFlagController(TEST_SESSION_ID)
 }
 
+let attributionDir: string
+beforeEach(() => {
+	attributionDir = mkdtempSync(join(tmpdir(), "plan-attribution-"))
+	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
+})
+afterEach(async () => {
+	await flushWorkSummaries()
+	vi.unstubAllEnvs()
+	rmSync(attributionDir, { recursive: true, force: true })
+})
+
 beforeEach(cleanPermissionEnv)
 beforeEach(() => {
+	populateCliArgs([])
 	isResourceEnabledMock.mockReturnValue(false)
 })
+afterEach(() => populateCliArgs([]))
 afterEach(cleanPermissionEnv)
 afterEach(resetProjectScopeTrustForTests)
 
@@ -219,6 +236,7 @@ function createPermissionsHarness(
 	flags: Record<string, boolean | string | undefined> = {},
 	initialActiveTools: string[] = toolNames,
 ) {
+	populateCliArgs(Object.entries(flags).flatMap(([name, value]) => (value === undefined ? [] : [`--${name}=${value}`])))
 	const handlers = new Map<string, ExtensionHandler[]>()
 	const commands = new Map<string, RegisteredCommand>()
 	const registeredTools = new Map<string, { name: string; execute: unknown }>()
@@ -425,11 +443,45 @@ describe("classifier health reporting", () => {
 			await harness.fire("session_start", {}, ctx)
 			vi.mocked(ctx.ui.notify).mockClear()
 			expect(await harness.fire("tool_call", event, ctx)).toBeUndefined()
-			expect(vi.mocked(classifyToolCall).mock.calls[0]?.[3]).toEqual({ timeoutMs: 8000, maxTotalMs: budget ?? 25000 })
+			expect(vi.mocked(classifyToolCall).mock.calls[0]?.[3]).toEqual({
+				context: ctx,
+				timeoutMs: 8000,
+				maxTotalMs: budget ?? 25000,
+			})
 			expect(ctx.ui.notify).not.toHaveBeenCalled()
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
 		}
+	})
+})
+
+describe("permission mode CLI booleans", () => {
+	it.each([
+		"plan",
+		"auto",
+		"yolo",
+		"dangerously-skip-permissions",
+	])("--%s=false does not enable that mode", async (flag) => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "default")
+		const harness = createPermissionsHarness(["bash"], { [flag]: "false" })
+		await harness.fire("session_start", {}, createMockContext())
+		expect(getPermissionMode(TEST_SESSION_ID)).toMatchObject({ mode: "default", source: "env" })
+	})
+	it.each([
+		["plan", "plan"],
+		["auto", "auto"],
+		["yolo", "yolo"],
+		["dangerously-skip-permissions", "yolo"],
+	])("--%s=true enables %s", async (flag, mode) => {
+		const harness = createPermissionsHarness(["bash"], { [flag]: "true" })
+		await harness.fire("session_start", {}, createMockContext())
+		expect(getPermissionMode(TEST_SESSION_ID)).toMatchObject({ mode, source: "flag" })
+	})
+	it("a disabled plan flag preserves the configured launch mode", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "plan")
+		const harness = createPermissionsHarness(["bash"], { plan: "false" })
+		await harness.fire("session_start", {}, createMockContext())
+		expect(getPermissionMode(TEST_SESSION_ID)).toMatchObject({ mode: "plan", source: "env" })
 	})
 })
 
@@ -1227,7 +1279,10 @@ describe("plan mode assumption detection", () => {
 		"## Verification Strategy\nRun pnpm test src/api after each chunk.\n\n" +
 		"## Risks\nCache staleness: short default TTL.\n"
 
-	it("Start as ferment persists a ferment artifact under .kimchi/ferments", async () => {
+	it.each([
+		false,
+		true,
+	])("Start as ferment persists a ferment artifact under .kimchi/ferments (unavailable attribution: %s)", async (unavailable) => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 
@@ -1239,6 +1294,11 @@ describe("plan mode assumption detection", () => {
 			// Project-local ferments are gated on project trust — these tests
 			// exercise the trusted persistence path.
 			setProjectScopeTrusted(tmpDir, true)
+			if (unavailable) {
+				const path = join(attributionDir, "work-attribution")
+				rmSync(path, { recursive: true, force: true })
+				writeFileSync(path, "blocked")
+			}
 			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
 			const fermentsDir = join(tmpDir, ".kimchi", "ferments")
@@ -1247,6 +1307,8 @@ describe("plan mode assumption detection", () => {
 			expect(files).toHaveLength(1)
 
 			const artifact = JSON.parse(readFileSync(join(fermentsDir, files[0]), "utf-8"))
+			expect(existsSync(join(tmpDir, ".kimchi", "plans"))).toBe(true)
+			if (!unavailable) expect(loadRuntimeState(artifact.id, fermentsDir).workId).toBe(getWorkId(ctx))
 			// Status is 'running' because 'Start as ferment' activates the first phase
 			// via the full runtime path when the plan has a structured Chunks section.
 			expect(artifact.status).toMatch(/^(planned|running|active)$/)
@@ -1511,7 +1573,10 @@ describe("plan mode assumption detection", () => {
 	// produce a lossy ferment from raw section splitting. It should persist a draft
 	// ferment via the normal runtime path, notify the user, and leave implementation
 	// tools off.
-	it("Start as ferment falls back to draft-only when the plan has no ## Chunks section", async () => {
+	it.each([
+		false,
+		true,
+	])("Start as ferment falls back to draft-only when the plan has no ## Chunks section (unavailable attribution: %s)", async (unavailable) => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 
@@ -1521,6 +1586,11 @@ describe("plan mode assumption detection", () => {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
 			setProjectScopeTrusted(tmpDir, true)
+			if (unavailable) {
+				const path = join(attributionDir, "work-attribution")
+				rmSync(path, { recursive: true, force: true })
+				writeFileSync(path, "blocked")
+			}
 			await submitPlan(harness, PLAN_WITHOUT_CHUNKS, ctx)
 
 			// 1) The artifact is persisted as a draft (no phase activated).
@@ -1529,6 +1599,8 @@ describe("plan mode assumption detection", () => {
 			const files = readdirSync(fermentsDir).filter((f) => f.endsWith(".json"))
 			expect(files).toHaveLength(1)
 			const artifact = JSON.parse(readFileSync(join(fermentsDir, files[0]), "utf-8"))
+			expect(existsSync(join(tmpDir, ".kimchi", "plans"))).toBe(true)
+			if (!unavailable) expect(loadRuntimeState(artifact.id, fermentsDir).workId).toBe(getWorkId(ctx))
 			expect(artifact.status).toBe("draft")
 			expect(artifact.phases ?? []).toHaveLength(0)
 
@@ -2353,7 +2425,7 @@ describe("compound bash permission regressions", () => {
 	})
 
 	it("TUI default: Allow all remembers an identical compound", async () => {
-		const ctx = createMockContext(["Allow all from now on"])
+		const ctx = createMockContext(["Allow all for this session"])
 		const harness = createPermissionsHarness(["bash"])
 		await harness.fire("session_start", {}, ctx)
 
@@ -2365,7 +2437,7 @@ describe("compound bash permission regressions", () => {
 
 	// Bug: Allow all stores npm *, silently approving unrelated npm subcommands.
 	it("TUI default: remembering npm install still asks before npm publish", async () => {
-		const ctx = createMockContext(["Allow all from now on", "No — tell the assistant what to do differently"])
+		const ctx = createMockContext(["Allow all for this session", "No — tell the assistant what to do differently"])
 		const harness = createPermissionsHarness(["bash"])
 		await harness.fire("session_start", {}, ctx)
 
@@ -2393,7 +2465,7 @@ describe("compound bash permission regressions", () => {
 	// made the compound's remember choice a silent no-op (stored only the cd scope).
 	it("TUI default: remembering a tail-pipelined compound approves the identical rerun silently", async () => {
 		const piped = "cd /tmp && npm install 2>&1 | tail -40"
-		const ctx = createMockContext(["Allow all from now on"])
+		const ctx = createMockContext(["Allow all for this session"])
 		const harness = createPermissionsHarness(["bash"])
 		await harness.fire("session_start", {}, ctx)
 
@@ -2407,7 +2479,7 @@ describe("compound bash permission regressions", () => {
 	// Guard pin: `sh` is NOT a whitelisted output filter — a remembered tail-
 	// pipelined compound must never widen to cover an appended shell stage.
 	it("TUI default: a shell stage after the filter tail still prompts on rerun", async () => {
-		const ctx = createMockContext(["Allow all from now on", "No — tell the assistant what to do differently"])
+		const ctx = createMockContext(["Allow all for this session", "No — tell the assistant what to do differently"])
 		const harness = createPermissionsHarness(["bash"])
 		await harness.fire("session_start", {}, ctx)
 
@@ -2503,8 +2575,13 @@ describe("handleCompoundConfirm", () => {
 	})
 
 	it("adds narrow per-segment rules to session for allow-all-remember", async () => {
-		const ctx = createMockContext(["Allow all from now on"])
-		const event = createMockEvent()
+		const ctx = createMockContext(["Allow all for this session"])
+		const event: ToolCallEvent = {
+			type: "tool_call",
+			toolName: "bash",
+			toolCallId: "remember",
+			input: { command: "npm install; npm test" },
+		}
 
 		const result = await handleCompoundConfirm(event, {
 			ctx,
@@ -3932,7 +4009,7 @@ describe("permissions:tool_decision emissions", () => {
 	it("compound remember → compound_rule on repeat, then session_rule for a matching plain call", async () => {
 		const command = "cd /tmp && npm install"
 		const harness = createPermissionsHarness(["bash"])
-		const ctx = createMockContext(["Allow all from now on"])
+		const ctx = createMockContext(["Allow all for this session"])
 		const decisions = collectDecisions(harness)
 		await harness.fire("session_start", {}, ctx)
 		setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })

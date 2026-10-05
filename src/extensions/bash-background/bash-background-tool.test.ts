@@ -11,6 +11,7 @@
  * `checkin_interval` input fields are accepted and ignored.
  */
 
+import { Value } from "typebox/value"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createFakeOps, type FakeOps } from "./__mocks__/fake-bash-ops.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
@@ -31,7 +32,7 @@ function makeState(handoffSeconds: number): BashSessionState {
 	}
 }
 
-function makeTool(ops: FakeOps, state: BashSessionState) {
+function makeTool(ops: FakeOps, state: BashSessionState = makeState(60)) {
 	return createBackgroundBashToolDefinition("/test/cwd", { operations: ops, state })
 }
 
@@ -231,5 +232,79 @@ describe("createBackgroundBashToolDefinition — handoff", () => {
 		const assertion = expect(execPromise).rejects.toThrow(/Process killed by the harness safety limit \(5s\)/)
 		await vi.advanceTimersByTimeAsync(6_000)
 		await assertion
+	})
+})
+
+describe("background visibility", () => {
+	it("validates an optional purpose bounded to 120 characters", () => {
+		const schema = makeTool(createFakeOps()).parameters
+		expect(Value.Check(schema, { command: "true" })).toBe(true)
+		expect(Value.Check(schema, { command: "true", description: "x".repeat(120) })).toBe(true)
+		expect(Value.Check(schema, { command: "true", description: "x".repeat(121) })).toBe(false)
+		expect(Value.Check(schema, { command: "true", description: 42 })).toBe(false)
+	})
+
+	it.each(["safety-limit", "aborted"])("publishes %s before error and clears the wait timer", async (reason) => {
+		vi.useFakeTimers()
+		const ops = createFakeOps()
+		const state = makeState(60)
+		state.limitSeconds = 6
+		const tool = makeTool(ops, state)
+		const onUpdate = vi.fn()
+		const abort = new AbortController()
+		const execution = tool.execute(
+			"origin",
+			{ command: "sleep 30", timeout: 6 },
+			abort.signal,
+			onUpdate,
+			undefined as never,
+		)
+		const failure = expect(execution).rejects.toThrow(
+			reason === "safety-limit" ? "Process killed by the harness safety limit (6s)" : "Command aborted",
+		)
+		if (reason === "safety-limit") await vi.advanceTimersByTimeAsync(6_000)
+		else abort.abort()
+		await failure
+		expect(onUpdate.mock.lastCall?.[0].details).toMatchObject({
+			exited: true,
+			display: { state: "stopped", reason, finishedAt: expect.any(Number) },
+		})
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
+	it("streams identity and output before check-in and preserves terminal metadata before throwing", async () => {
+		vi.useFakeTimers()
+		const ops = createFakeOps()
+		const tool = makeTool(ops)
+		const onUpdate = vi.fn()
+		const execution = tool.execute(
+			"origin",
+			{ command: "echo progress; exit 7", description: "Checking output", timeout: 60 },
+			undefined,
+			onUpdate,
+			undefined as never,
+		)
+		const failure = expect(execution).rejects.toThrow("Command exited with code 7")
+		ops.emit("progress\n")
+		await vi.advanceTimersByTimeAsync(250)
+		expect(onUpdate.mock.lastCall?.[0]).toMatchObject({
+			content: [{ type: "text", text: "progress\n" }],
+			details: {
+				display: {
+					command: "echo progress; exit 7",
+					description: "Checking output",
+					toolCallId: "origin",
+					output: "progress\n",
+					state: "running",
+				},
+			},
+		})
+		await ops.exit(7)
+		await failure
+		expect(onUpdate.mock.lastCall?.[0].details).toMatchObject({
+			exited: true,
+			display: { state: "exited", exitCode: 7, finishedAt: expect.any(Number) },
+		})
+		expect(vi.getTimerCount()).toBe(0)
 	})
 })

@@ -22,6 +22,7 @@ function createTodosHarness(activeTools: string[] = [...TODO_TOOL_NAMES]) {
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
 		getActiveTools: vi.fn(() => activeTools),
+		events: { emit: vi.fn(), on: vi.fn() },
 		on: vi.fn((event: string, handler: ExtensionHandler) => {
 			const list = handlers.get(event) ?? []
 			list.push(handler)
@@ -42,6 +43,7 @@ function createTodosHarness(activeTools: string[] = [...TODO_TOOL_NAMES]) {
 		appendEntry: pi.appendEntry,
 		sendMessage: pi.sendMessage,
 		getActiveTools: pi.getActiveTools,
+		events: pi.events,
 	}
 }
 
@@ -454,6 +456,72 @@ describe("early todo nudge", () => {
 		expect(steerCallsByReason(harness.sendMessage, "early_nudge")).toHaveLength(0)
 	})
 
+	it("emits steer:fired with kind todo_early_nudge when the nudge fires", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		for (let i = 0; i < 10; i++) {
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		}
+
+		const fired = vi.mocked(harness.events.emit).mock.calls.filter(([channel]) => channel === "steer:fired")
+		expect(fired).toHaveLength(1)
+		expect(fired[0]?.[1]).toMatchObject({ kind: "todo_early_nudge", reason: "early_nudge" })
+	})
+
+	it("kill switch: KIMCHI_DISABLE_NUDGE_TODO_EARLY=1 suppresses the steer and the event", async () => {
+		process.env.KIMCHI_DISABLE_NUDGE_TODO_EARLY = "1"
+		try {
+			const harness = createTodosHarness()
+			const ctx = createContext("session", [])
+			await harness.fire("session_start", { reason: "new" }, ctx)
+
+			for (let i = 0; i < 10; i++) {
+				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			}
+
+			expect(steerCallsByReason(harness.sendMessage, "early_nudge")).toHaveLength(0)
+			expect(vi.mocked(harness.events.emit).mock.calls.filter(([channel]) => channel === "steer:fired")).toHaveLength(0)
+		} finally {
+			delete process.env.KIMCHI_DISABLE_NUDGE_TODO_EARLY
+		}
+	})
+
+	describe("early nudge outcome events", () => {
+		it("todo write within the outcome window after the nudge → steer:outcome complied", async () => {
+			const harness = createTodosHarness()
+			const ctx = createContext("session", [])
+			await harness.fire("session_start", { reason: "new" }, ctx)
+
+			// Fire the nudge (threshold 5).
+			for (let i = 0; i < 6; i++) {
+				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			}
+			// Adopt within the window (3): a todo write counts as compliance.
+			applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, "session")
+			await harness.fire("tool_execution_end", { toolName: "create_todos", isError: false }, ctx)
+
+			const outcomes = vi.mocked(harness.events.emit).mock.calls.filter(([channel]) => channel === "steer:outcome")
+			expect(outcomes).toHaveLength(1)
+			expect(outcomes[0]?.[1]).toMatchObject({ kind: "todo_early_nudge", outcome: "complied" })
+		})
+
+		it("window expiry with no todo write → steer:outcome repeated (once)", async () => {
+			const harness = createTodosHarness()
+			const ctx = createContext("session", [])
+			await harness.fire("session_start", { reason: "new" }, ctx)
+
+			for (let i = 0; i < 12; i++) {
+				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			}
+
+			const outcomes = vi.mocked(harness.events.emit).mock.calls.filter(([channel]) => channel === "steer:outcome")
+			expect(outcomes).toHaveLength(1)
+			expect(outcomes[0]?.[1]).toMatchObject({ kind: "todo_early_nudge", outcome: "repeated" })
+		})
+	})
+
 	describe("staleness threshold steers", () => {
 		it("fires one-shot steers at 9/17/25 post-write tool calls and resets on todo write", async () => {
 			const harness = createTodosHarness()
@@ -462,45 +530,28 @@ describe("early todo nudge", () => {
 			applyWriteTodos({ todos: [{ content: "long task", status: "in_progress" }] }, "session")
 
 			const stalenessCalls = () => steerCallsByReason(harness.sendMessage, "staleness")
-
-			// Below the first threshold: nothing.
-			for (let i = 0; i < 8; i++) {
+			const thresholds = [9, 17, 25]
+			for (let count = 1; count <= 30; count++) {
 				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+				expect(stalenessCalls()).toHaveLength(thresholds.filter((threshold) => threshold <= count).length)
 			}
-			expect(stalenessCalls()).toHaveLength(0)
-
-			// Ninth call crosses 9: exactly one steer, and no refire on later calls.
-			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-			expect(stalenessCalls()).toHaveLength(1)
-			expect((stalenessCalls()[0]?.[0] as { content: string }).content).toContain("9 changes since last update")
-			expect((stalenessCalls()[0]?.[0] as { content: string }).content).toMatch(/^<system-reminder>\n/)
-			expect(stalenessCalls()[0]?.[1]).toEqual({ deliverAs: "steer" })
-
-			for (let i = 0; i < 3; i++) {
-				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			for (const [index, threshold] of thresholds.entries()) {
+				const message = stalenessCalls()[index]?.[0] as { content: string }
+				expect(message.content).toContain(`${threshold} changes`)
+				expect(message.content).toMatch(/^<system-reminder>\n/)
+				expect(stalenessCalls()[index]?.[1]).toEqual({ deliverAs: "steer" })
 			}
-			expect(stalenessCalls()).toHaveLength(1)
-
-			// 17 and 25 crossings each fire once more.
-			for (let i = 0; i < 5; i++) {
-				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-			}
-			expect(stalenessCalls()).toHaveLength(2)
-			expect((stalenessCalls()[1]?.[0] as { content: string }).content).toContain("17 changes since last update")
-
-			for (let i = 0; i < 8; i++) {
-				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-			}
-			expect(stalenessCalls()).toHaveLength(3)
 			expect((stalenessCalls()[2]?.[0] as { content: string }).content).toContain("significantly stale")
 
-			// A todo write resets both the counter and the epoch: crossing 9
-			// again fires a fresh steer.
-			applyWriteTodos({ todos: [{ id: 1, content: "long task", status: "completed" }] }, "session")
-			for (let i = 0; i < 9; i++) {
+			// A todo write resets the counter and allows the nine-call reminder again.
+			applyWriteTodos(
+				{ todos: [{ id: 1, content: "long task", status: "in_progress", note: "Progress recorded" }] },
+				"session",
+			)
+			for (let count = 1; count <= 9; count++) {
 				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+				expect(stalenessCalls()).toHaveLength(3 + thresholds.filter((threshold) => threshold <= count).length)
 			}
-			expect(stalenessCalls()).toHaveLength(4)
 		})
 
 		it("does not fire when the current scope has no todos", async () => {

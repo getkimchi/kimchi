@@ -92,6 +92,21 @@ vi.mock("./dap/adapters.js", () => ({
 	adapterForDirectory: vi.fn(() => null),
 	adapterExists: vi.fn(() => true),
 	allAdapters: vi.fn(() => adapterState.active),
+	// Mirrors dap-entry.test.ts: resolve by explicit name, else first active
+	// adapter (file-extension path). Directory detection stays null here.
+	resolveAdapterForProgram: vi.fn(
+		({
+			adapterName,
+		}: {
+			program: string
+			adapterName?: string
+			sourceFileHint?: string
+			adapters: DapAdapterConfig[]
+		}) =>
+			adapterName
+				? (adapterState.active.find((a) => a.name === adapterName) ?? null)
+				: (adapterState.active[0] ?? null),
+	),
 }))
 
 // =============================================================================

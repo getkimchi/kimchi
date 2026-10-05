@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
+	applyTuiEnvOverrides,
 	buildSkillPathOptions,
 	checkConfigFilePermissions,
 	clearApiKey,
@@ -14,23 +15,23 @@ import {
 	loadConfig,
 	RETRY_DEFAULTS,
 	readApiKeyFromConfigFile,
-	readAutoDefaultApplied,
 	readGitToken,
 	readHideTips,
 	readStudioOnboardingSeenAt,
 	readTelemetryConfig,
 	readTeleportCompactHintEnabled,
 	resetInvalidLlmBaseUrlWarningForTests,
+	resetInvalidSelfHostedUrlWarningForTests,
 	resolveEndpoints,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
-	writeAutoDefaultApplied,
 	writeDeviceId,
 	writeGitToken,
 	writeHideTips,
 	writeSessionModeWizardSeenAt,
 	writeStudioOnboardingSeenAt,
 	writeTeleportCompactHintEnabled,
+	writeTuiWheelScrollLines,
 } from "./config.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "./project-scope-trust.js"
 
@@ -191,6 +192,61 @@ describe("loadConfig", () => {
 		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
 		expect(config.mcpSearch.strategy).toBe("bm25")
 		expect(config.mcpSearch.bm25K1).toBe(1.5) // inherited from global
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("reads tui.wheelScrollLines from global config", () => {
+		writeFileSync(configPath, JSON.stringify({ tui: { wheelScrollLines: 3 } }))
+		expect(loadConfig({ configPath }).tui?.wheelScrollLines).toBe(3)
+	})
+
+	it("rejects invalid tui.wheelScrollLines values", () => {
+		for (const value of [0, -2, "3", Number.NaN, Infinity, null, true]) {
+			writeFileSync(configPath, JSON.stringify({ tui: { wheelScrollLines: value } }))
+			expect(loadConfig({ configPath }).tui?.wheelScrollLines).toBeUndefined()
+		}
+		// non-object tui block is ignored entirely
+		writeFileSync(configPath, JSON.stringify({ tui: 3 }))
+		expect(loadConfig({ configPath }).tui).toBeUndefined()
+	})
+
+	it("floors fractional tui.wheelScrollLines in the pi-tui clamp, not at parse time", () => {
+		writeFileSync(configPath, JSON.stringify({ tui: { wheelScrollLines: 2.7 } }))
+		// parse accepts it; flooring is pi-tui's job (Math.max(1, Math.floor(...)))
+		expect(loadConfig({ configPath }).tui?.wheelScrollLines).toBe(2.7)
+	})
+
+	it("project tui.wheelScrollLines overrides global", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ tui: { wheelScrollLines: 3 } }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ tui: { wheelScrollLines: 5 } }))
+
+		setProjectScopeTrusted(projectDir, true)
+		expect(loadConfig({ configPath: globalPath, cwd: projectDir }).tui?.wheelScrollLines).toBe(5)
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("untrusted project cannot set tui.wheelScrollLines", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ tui: { wheelScrollLines: 3 } }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ tui: { wheelScrollLines: 99 } }))
+
+		// no setProjectScopeTrusted call — project stays untrusted
+		expect(loadConfig({ configPath: globalPath, cwd: projectDir }).tui?.wheelScrollLines).toBe(3)
 
 		rmSync(globalDir, { recursive: true, force: true })
 		rmSync(projectDir, { recursive: true, force: true })
@@ -528,6 +584,78 @@ describe("loadConfig", () => {
 	})
 })
 
+describe("writeTuiWheelScrollLines", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("writes into an existing tui block, preserving sibling keys", () => {
+		writeFileSync(configPath, JSON.stringify({ tui: { futureKnob: true } }))
+		writeTuiWheelScrollLines(3, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.tui).toEqual({ futureKnob: true, wheelScrollLines: 3 })
+	})
+
+	it("creates the tui block when absent, preserving top-level keys", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }))
+		writeTuiWheelScrollLines(2, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("k")
+		expect(raw.tui).toEqual({ wheelScrollLines: 2 })
+		expect(loadConfig({ configPath }).tui?.wheelScrollLines).toBe(2)
+	})
+
+	it("replaces a non-object tui value rather than spreading into it", () => {
+		writeFileSync(configPath, JSON.stringify({ tui: 5 }))
+		writeTuiWheelScrollLines(4, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.tui).toEqual({ wheelScrollLines: 4 })
+	})
+})
+
+describe("applyTuiEnvOverrides", () => {
+	const ENV_KEY = "KIMCHI_WHEEL_SCROLL_LINES"
+
+	beforeEach(() => {
+		// stubEnv with a fresh baseline so leaked values from other tests
+		// (or the developer's real shell env) can't skew expectations.
+		vi.stubEnv(ENV_KEY, "")
+		delete process.env[ENV_KEY]
+	})
+
+	afterEach(() => {
+		vi.unstubAllEnvs()
+		delete process.env[ENV_KEY]
+	})
+
+	it("maps tui.wheelScrollLines onto the env var when unset", () => {
+		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
+		applyTuiEnvOverrides({ ...config, tui: { wheelScrollLines: 3 } })
+		expect(process.env[ENV_KEY]).toBe("3")
+	})
+
+	it("does not overwrite a pre-set env var (env > config)", () => {
+		process.env[ENV_KEY] = "5"
+		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
+		applyTuiEnvOverrides({ ...config, tui: { wheelScrollLines: 3 } })
+		expect(process.env[ENV_KEY]).toBe("5")
+	})
+
+	it("does nothing when tui.wheelScrollLines is unconfigured", () => {
+		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
+		applyTuiEnvOverrides({ ...config, tui: undefined })
+		expect(process.env[ENV_KEY]).toBeUndefined()
+	})
+})
+
 describe("writeApiKey", () => {
 	let tempDir: string
 	let configPath: string
@@ -578,6 +706,35 @@ describe("writeApiKey", () => {
 		expect(raw.llmEndpoint).toBeUndefined()
 	})
 
+	it("persists region and selfHostedUrl together, normalized, without llmEndpoint (self-hosted login)", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "old-key", llmEndpoint: "https://custom.example" }))
+		writeApiKey("new-token", configPath, { region: "self-hosted", selfHostedUrl: "https://kimchi.example.com/" })
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("new-token")
+		expect(raw.region).toBe("self-hosted")
+		// Trailing slash stripped on write; no llmEndpoint so the region
+		// derivation stays single-sourced (a stored llmEndpoint would win over it).
+		expect(raw.selfHostedUrl).toBe("https://kimchi.example.com")
+		expect(raw.llmEndpoint).toBeUndefined()
+	})
+
+	it("drops an invalid selfHostedUrl instead of storing it", () => {
+		writeApiKey("new-token", configPath, { region: "self-hosted", selfHostedUrl: "not a url" })
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.region).toBe("self-hosted")
+		expect(raw.selfHostedUrl).toBeUndefined()
+	})
+
+	it("leaves the stored selfHostedUrl untouched when switching away from self-hosted", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://kimchi.example.com" }))
+		writeApiKey("us-token", configPath, { region: "us", llmEndpoint: "https://llm.kimchi.dev/openai/v1" })
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.region).toBe("us")
+		// The base URL only matters for the self-hosted region, so it survives
+		// the switch and is offered as the default when switching back.
+		expect(raw.selfHostedUrl).toBe("https://kimchi.example.com")
+	})
+
 	it("keeps llmEndpoint behavior when only a custom endpoint is given", () => {
 		writeApiKey("token", configPath, { llmEndpoint: "https://custom.example" })
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
@@ -599,6 +756,8 @@ describe("region config", () => {
 		vi.stubEnv("KIMCHI_WEB_APP_URL", undefined)
 		vi.stubEnv("KIMCHI_REMOTE_ENDPOINT", undefined)
 		vi.stubEnv("KIMCHI_REGION", undefined)
+		vi.stubEnv("KIMCHI_BASE_URL", undefined)
+		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", undefined)
 		resetProjectScopeTrustForTests()
 	})
 
@@ -719,6 +878,58 @@ describe("region config", () => {
 		const cfg = readTelemetryConfig(configPath)
 		expect(cfg.endpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/logs:ingest")
 		expect(cfg.metricsEndpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/metrics:ingest")
+	})
+
+	it("loadConfig: self-hosted region with a stored base URL derives the gateway", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://kimchi.example.com" }))
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("self-hosted")
+		expect(cfg.selfHostedUrl).toBe("https://kimchi.example.com")
+		expect(cfg.llmEndpoint).toBe("https://kimchi.example.com/llm/openai/v1")
+	})
+
+	it("loadConfig: KIMCHI_SELF_HOSTED_URL env wins over the stored base URL", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://config.example.com" }))
+		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://env.example.com")
+		const cfg = loadConfig({ configPath })
+		expect(cfg.selfHostedUrl).toBe("https://env.example.com")
+		expect(cfg.llmEndpoint).toBe("https://env.example.com/llm/openai/v1")
+	})
+
+	it("loadConfig: an invalid stored selfHostedUrl counts as unset", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "not a url" }))
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("self-hosted")
+		expect(cfg.selfHostedUrl).toBeUndefined()
+	})
+
+	it("loadConfig: an invalid KIMCHI_SELF_HOSTED_URL warns once and counts as unset", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://config.example.com" }))
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+		resetInvalidSelfHostedUrlWarningForTests()
+		// Only the self-hosted warning; the temp file's loose permissions warn separately.
+		const selfHostedWarnings = () =>
+			warnSpy.mock.calls.map((call) => String(call[0])).filter((message) => message.includes("KIMCHI_SELF_HOSTED_URL"))
+
+		try {
+			vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "not a url")
+			const first = loadConfig({ configPath })
+			expect(first.selfHostedUrl).toBe("https://config.example.com")
+			// Repeated reads warn only once (the stored base keeps serving).
+			loadConfig({ configPath })
+			expect(selfHostedWarnings()).toHaveLength(1)
+			expect(selfHostedWarnings()[0]).toContain("Ignoring invalid KIMCHI_SELF_HOSTED_URL")
+		} finally {
+			resetInvalidSelfHostedUrlWarningForTests()
+			warnSpy.mockRestore()
+		}
+	})
+
+	it("telemetry defaults follow the self-hosted base URL", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://kimchi.example.com" }))
+		const cfg = readTelemetryConfig(configPath)
+		expect(cfg.endpoint).toBe("https://kimchi.example.com/api/ai-optimizer/v1beta/logs:ingest")
+		expect(cfg.metricsEndpoint).toBe("https://kimchi.example.com/api/ai-optimizer/v1beta/metrics:ingest")
 	})
 })
 
@@ -1364,95 +1575,6 @@ describe("ensureQuietStartupDefault", () => {
 		const verbose = { quietStartup: false }
 		expect(ensureQuietStartupDefault(verbose)).toBe(false)
 		expect(verbose.quietStartup).toBe(false)
-	})
-})
-
-describe("readAutoDefaultApplied / writeAutoDefaultApplied", () => {
-	let tempDir: string
-	let settingsPath: string
-
-	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
-		settingsPath = join(tempDir, "settings.json")
-	})
-
-	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true })
-	})
-
-	it("round-trips the marker", () => {
-		expect(readAutoDefaultApplied(settingsPath)).toBe(false)
-
-		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
-		expect(readAutoDefaultApplied(settingsPath)).toBe(true)
-	})
-
-	// Regression: writing only the marker left the previous defaultModel in
-	// place, so the session came up on Auto once and fell back on the next
-	// launch — with the marker now blocking a retry.
-	it("installs the default alongside the marker", () => {
-		writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "kimchi-dev", defaultModel: "kimi-k3" }))
-
-		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
-
-		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toMatchObject({
-			defaultProvider: "kimchi-dev",
-			defaultModel: "auto",
-			autoDefaultApplied: true,
-		})
-	})
-
-	it("preserves the surrounding settings", () => {
-		writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "kimchi-dev", defaultModel: "kimi-k3", theme: "x" }))
-
-		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
-
-		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({
-			defaultProvider: "kimchi-dev",
-			defaultModel: "auto",
-			theme: "x",
-			autoDefaultApplied: true,
-		})
-	})
-
-	it("writes a fresh file when settings do not exist yet", () => {
-		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
-
-		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({
-			defaultProvider: "kimchi-dev",
-			defaultModel: "auto",
-			autoDefaultApplied: true,
-		})
-	})
-})
-
-describe("readAutoDefaultApplied error handling", () => {
-	let tempDir: string
-
-	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
-	})
-
-	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true })
-	})
-
-	it("reads a missing file as not applied", () => {
-		expect(readAutoDefaultApplied(join(tempDir, "absent.json"))).toBe(false)
-	})
-
-	it("reads malformed JSON as not applied", () => {
-		const path = join(tempDir, "settings.json")
-		writeFileSync(path, "{ not json")
-
-		expect(readAutoDefaultApplied(path)).toBe(false)
-	})
-
-	it("ignores a non-boolean marker", () => {
-		const path = join(tempDir, "settings.json")
-		writeFileSync(path, JSON.stringify({ autoDefaultApplied: "yes" }))
-
-		expect(readAutoDefaultApplied(path)).toBe(false)
 	})
 })
 

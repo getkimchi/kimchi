@@ -137,4 +137,87 @@ describe("loopGuardExtension telemetry", () => {
 		expect(() => getHandler(handlers, "tool_result")(toolResult)).not.toThrow()
 		expect(() => getHandler(handlers, "tool_result")(toolResult)).not.toThrow()
 	})
+
+	it("a repeat warn after a prior warn emits steer:outcome repeated", async () => {
+		const { api, handlers, events } = createMockApi()
+		const emitSpy = events.emit as ReturnType<typeof vi.fn>
+		const { default: loopGuardExtension } = await import("./loop-guard.js")
+
+		loopGuardExtension(api)
+		await getHandler(handlers, "session_start")({}, { abort: vi.fn() })
+
+		const toolResult = {
+			toolName: "bash",
+			input: { command: "ls" },
+			isError: true,
+			content: [{ type: "text", text: "error output" }],
+		}
+		// Three identical results fire the first warn (consecutive_identical);
+		// continuing the loop produces further warns — the first repeat warn
+		// after the initial one is the ignore outcome.
+		for (let i = 0; i < 23; i++) getHandler(handlers, "tool_result")(toolResult)
+
+		const outcomes = emitSpy.mock.calls.filter(([ch]: unknown[]) => ch === "steer:outcome")
+		expect(outcomes.length).toBeGreaterThanOrEqual(1)
+		expect(outcomes[0][1]).toMatchObject({ kind: "loop_guard", outcome: "repeated" })
+	})
+
+	it("clean follow-through of 5 results after a warn closes the window as complied", async () => {
+		const { api, handlers, events } = createMockApi()
+		const emitSpy = events.emit as ReturnType<typeof vi.fn>
+		const { default: loopGuardExtension } = await import("./loop-guard.js")
+
+		loopGuardExtension(api)
+		await getHandler(handlers, "session_start")({}, { abort: vi.fn() })
+
+		const toolResult = {
+			toolName: "bash",
+			input: { command: "ls" },
+			isError: true,
+			content: [{ type: "text", text: "error output" }],
+		}
+		// Three identical results fire the warn (window opens).
+		getHandler(handlers, "tool_result")(toolResult)
+		getHandler(handlers, "tool_result")(toolResult)
+		getHandler(handlers, "tool_result")(toolResult)
+		expect(emitSpy.mock.calls.filter(([ch]: unknown[]) => ch === LOOP_GUARD_EVENTS.WARN)).toHaveLength(1)
+
+		// Five distinct, non-repeating results: window reaches zero ⇒ complied.
+		const distinct = (n: number) => ({
+			toolName: "read",
+			input: { path: `/x/file-${n}.ts` },
+			isError: false,
+			content: [{ type: "text", text: `content-${n}` }],
+		})
+		for (let i = 0; i < 5; i++) getHandler(handlers, "tool_result")(distinct(i))
+
+		const outcomes = emitSpy.mock.calls.filter(([ch]: unknown[]) => ch === "steer:outcome")
+		expect(outcomes).toHaveLength(1)
+		expect(outcomes[0][1]).toMatchObject({ kind: "loop_guard", outcome: "complied" })
+	})
+
+	it("KIMCHI_DISABLE_GUARD_LOOP=1 suppresses the record path — no warns, no events", async () => {
+		process.env.KIMCHI_DISABLE_GUARD_LOOP = "1"
+		try {
+			const { api, handlers, events } = createMockApi()
+			const emitSpy = events.emit as ReturnType<typeof vi.fn>
+			const { default: loopGuardExtension } = await import("./loop-guard.js")
+
+			loopGuardExtension(api)
+			await getHandler(handlers, "session_start")({}, { abort: vi.fn() })
+
+			const toolResult = {
+				toolName: "bash",
+				input: { command: "ls" },
+				isError: true,
+				content: [{ type: "text", text: "error output" }],
+			}
+			for (let i = 0; i < 10; i++) getHandler(handlers, "tool_result")(toolResult)
+
+			expect(emitSpy.mock.calls.filter(([ch]: unknown[]) => ch === LOOP_GUARD_EVENTS.WARN)).toHaveLength(0)
+			expect(emitSpy.mock.calls.filter(([ch]: unknown[]) => String(ch).startsWith("steer:"))).toHaveLength(0)
+		} finally {
+			delete process.env.KIMCHI_DISABLE_GUARD_LOOP
+		}
+	})
 })

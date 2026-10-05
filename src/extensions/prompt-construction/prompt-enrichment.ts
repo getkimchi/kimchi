@@ -66,8 +66,10 @@ import {
 	validateModelRoles,
 } from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
+import { emitSteerFired, isSteerDisabled } from "../steer-events.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
+import { hasUserLoop } from "./session-user-loop.js"
 import {
 	buildSystemPrompt,
 	DELEGATION_TOOL_NAMES,
@@ -500,10 +502,19 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				if (ame.type !== "text_delta") return
 				const message = event.message as AssistantMessage
 				const content = message.content[ame.contentIndex]
-				if (content?.type === "text") {
-					continuationNudge.accumulateResponse(content.text)
-					content.text = ""
-				}
+				if (content?.type !== "text") return
+				continuationNudge.accumulateResponse(content.text)
+				content.text = ""
+				// Also zero the event delta. Consumers that stream raw deltas
+				// (ACP mode forwards text_delta as agent_message_chunk) read
+				// ame.delta instead of the message content, so clearing only
+				// content.text leaks the hidden recovery response (including
+				// the <done> token) to those clients. Extension handlers run
+				// before subscribe listeners for the same event, so this
+				// mutation reaches every consumer. ACP skips empty deltas,
+				// which also keeps its streamed-prefix tracking consistent so
+				// message_end re-emits nothing for the blanked block.
+				ame.delta = ""
 			})
 
 			pi.on("turn_end", async (event, ctx) => {
@@ -519,7 +530,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				// block can detect when the orchestrator hasn't updated step todos.
 				// Scoped to this session so concurrent sessions do not share a counter.
 				bumpStallCounter(sessionId)
-				fireStepStallSteerIfStalled(pi, sessionId)
+				fireStepStallSteerIfStalled(pi, sessionId, { interactive: ctx.hasUI })
 
 				// Mark each delegation tool call so the continuation nudge stays
 				// suppressed until all delegated-agent results have been received.
@@ -530,18 +541,34 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 					}
 				}
 
-				if (continuationNudge.isNudgeResponsePending()) {
-					if (continuationNudge.isDoneSignalReceived() || assistantMsg.stopReason === "stop") {
+				// Consume the pending recovery state before any terminal decision:
+				// snapshot whether a nudge response was pending and whether its
+				// accumulated text is exactly the done signal, then clear pending and
+				// the accumulated text. A respected stop, an abort, a provider error,
+				// budget exhaustion, or a suppressed evaluation must not leave stale
+				// recovery state that blanks the next unrelated
+				// extension-triggered response (message_update). Only an eligible
+				// continuation evaluation that queues another nudge below re-arms
+				// pending.
+				const wasNudgeResponsePending = continuationNudge.isNudgeResponsePending()
+				const hadDoneSignal = wasNudgeResponsePending && continuationNudge.isDoneSignalReceived()
+				if (wasNudgeResponsePending) {
+					continuationNudge.clearNudgeResponsePending()
+				}
+
+				if (wasNudgeResponsePending) {
+					if (hadDoneSignal || assistantMsg.stopReason === "stop") {
 						// The model either explicitly sent the <done> signal or ended its
 						// turn with stopReason "stop" (intentional end-of-turn). Either
 						// way, respect the stop — do not send another nudge that would
 						// trigger a new turn and make the model think it received user input.
 						return
 					}
-					// While a continuation nudge response is pending, the model is already
-					// in a recovery cycle. Skip empty-turn nudge here to avoid sending
-					// mixed instructions ("call a tool" vs "summarize or continue").
-					// Fall through to continuationNudge.evaluateTurn below.
+					// The model is already in a recovery cycle. Skip the empty-turn
+					// nudge to avoid sending mixed instructions ("call a tool" vs
+					// "summarize or continue") and fall through to the continuation
+					// evaluation, which can re-arm pending only if another nudge is
+					// eligible and queued.
 				} else if (
 					// Suppress the empty-turn nudge when any tool was called during this
 					// agent run. After a completed tool sequence, an empty response is
@@ -551,14 +578,18 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 					!continuationNudge.hasToolBeenCalledThisRun() &&
 					emptyTurnNudge.evaluateTurn(assistantMsg)
 				) {
-					pi.sendMessage(
-						{ customType: NUDGE_CUSTOM_TYPE, content: EMPTY_TURN_NUDGE_TEXT, display: false },
-						{ deliverAs: "followUp" },
-					)
+					if (!isSteerDisabled("continuation_nudge")) {
+						pi.sendMessage(
+							{ customType: NUDGE_CUSTOM_TYPE, content: EMPTY_TURN_NUDGE_TEXT, display: false },
+							{ deliverAs: "followUp" },
+						)
+						emitSteerFired(pi, "continuation_nudge", "empty_turn", { interactive: ctx.hasUI, sessionId })
+					}
 					return
 				}
 
 				if (!continuationNudge.evaluateTurn(assistantMsg)) return
+				if (isSteerDisabled("continuation_nudge")) return
 				pi.sendMessage(
 					{
 						customType: NUDGE_CUSTOM_TYPE,
@@ -567,6 +598,26 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 					},
 					{ deliverAs: "followUp" },
 				)
+				emitSteerFired(pi, "continuation_nudge", "continuation", { interactive: ctx.hasUI, sessionId })
+			})
+
+			// Fallback cleanup for an abandoned recovery run: if the response to a
+			// queued nudge errors out before its turn_end fires (or the run is
+			// torn down some other way), the pending/accumulation state would
+			// otherwise survive until the next user input or tool call and blank
+			// any unrelated extension-triggered response in between. The normal
+			// path clears pending at turn_end; this guard covers the case where
+			// that never runs. It cannot race an in-flight nudge: the agent loop's
+			// continue-while-queued check keeps the loop alive while the followUp
+			// queue is non-empty, so agent_end only fires after a queued nudge's
+			// turn has run. That upstream invariant is guarded end-to-end by the
+			// continuation-nudge TUI test: it asserts the streamed <done> token
+			// stays blanked, which fails if agent_end ever cleared pending while
+			// a queued nudge's response was still in flight.
+			pi.on("agent_end", async (_event, ctx) => {
+				const sessionId = ctx.sessionManager.getSessionId()
+				const continuationNudge = getContinuationNudge(sessionId)
+				continuationNudge.clearNudgeResponsePending()
 			})
 
 			pi.on("context", async (event, ctx) => {
@@ -687,6 +738,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				roles,
 				customConfigs,
 				sessionId,
+				hasUserLoop: hasUserLoop(),
 			})
 
 			// The rebuilt prompt replaces pi's base prompt entirely, which would
