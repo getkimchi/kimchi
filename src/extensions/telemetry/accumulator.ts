@@ -18,6 +18,7 @@ export interface CumulativeState {
 	sessionStartNano: string
 	prCost?: {
 		startTimeUnixNano: string
+		consentVersion?: string
 		matching: Partial<Record<WorkSegment["attribution"] | "failed", number>>
 		delivery: Partial<Record<"success" | "failed" | "canceled", number>>
 		unpriced?: number

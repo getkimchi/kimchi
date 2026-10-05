@@ -30,6 +30,7 @@ import {
 	writeHideTips,
 	writeSessionModeWizardSeenAt,
 	writeStudioOnboardingSeenAt,
+	writeTelemetryEnabled,
 	writeTeleportCompactHintEnabled,
 	writeTuiWheelScrollLines,
 } from "./config.js"
@@ -1030,6 +1031,21 @@ describe("readTelemetryConfig", () => {
 		)
 		const config = readTelemetryConfig(configPath)
 		expect(config.metricsEndpoint).toBe("https://custom.example.com/metrics:ingest")
+	})
+
+	it("persists consent changes across off/on while repeated on keeps the current version", () => {
+		writeFileSync(configPath, JSON.stringify({ telemetry: { enabled: true } }))
+		expect(readTelemetryConfig(configPath).consentVersion).toBeUndefined()
+		writeTelemetryEnabled(false, configPath)
+		const disabled = readTelemetryConfig(configPath)
+		expect(disabled.enabled).toBe(false)
+		expect(disabled.consentVersion).toEqual(expect.any(String))
+		writeTelemetryEnabled(true, configPath)
+		const enabled = readTelemetryConfig(configPath)
+		expect(enabled.enabled).toBe(true)
+		expect(enabled.consentVersion).not.toBe(disabled.consentVersion)
+		writeTelemetryEnabled(true, configPath)
+		expect(readTelemetryConfig(configPath).consentVersion).toBe(enabled.consentVersion)
 	})
 
 	it("falls back to default metrics endpoint when absent", () => {

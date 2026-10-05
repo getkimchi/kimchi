@@ -1,9 +1,15 @@
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
+import * as config from "../../config.js"
 import * as osMetadata from "../../utils/os-metadata.js"
 import { createContext } from "../__mocks__/context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { setTelemetryFermentV2Context } from "./ferment-v2-context.js"
+import * as telemetry from "./index.js"
+import { trackPRCostMetric } from "./pr-cost.js"
 import { _resetSharedAccumulators, TelemetryContext } from "./session-context.js"
 
 vi.mock("../../api/me.js", () => ({
@@ -148,6 +154,65 @@ describe("SessionContext", () => {
 		expect(globalThis.fetch).toHaveBeenCalledTimes(2)
 		const body = JSON.parse(String(vi.mocked(globalThis.fetch).mock.calls[1][1]?.body))
 		expect(body.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].startTimeUnixNano).toBe("2000000000")
+	})
+
+	it.each([
+		"buffered",
+		"identity",
+		"identity-with-fresh-counts",
+		"retry",
+	])("discards %s health after persisted off/on between flushes", async (stage) => {
+		const directory = mkdtempSync(join(tmpdir(), "kimchi-health-consent-"))
+		const path = join(directory, "config.json")
+		const readConfig = config.readTelemetryConfig
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", undefined)
+		vi.spyOn(config, "readTelemetryConfig").mockImplementation(() => readConfig(path))
+		vi.spyOn(Math, "random").mockReturnValue(0)
+		try {
+			config.writeTelemetryEnabled(true, path)
+			const ctx = new TelemetryContext(makeConfig())
+			vi.spyOn(telemetry, "_getTelemetryCtx").mockReturnValue(ctx)
+			trackPRCostMetric({ kind: "matching", outcome: "explicit" })
+			const toggle = () => {
+				config.writeTelemetryEnabled(false, path)
+				config.writeTelemetryEnabled(true, path)
+			}
+			let release!: () => void
+			if (stage.startsWith("identity"))
+				ctx.userEmailReady = new Promise<void>((resolve) => {
+					release = resolve
+				})
+			if (stage === "retry")
+				vi.mocked(globalThis.fetch).mockImplementationOnce(async () => {
+					toggle()
+					return new Response(null, { status: 503 })
+				})
+			if (stage === "buffered") toggle()
+			ctx.flushMetrics()
+			if (stage.startsWith("identity")) {
+				toggle()
+				if (stage === "identity-with-fresh-counts") trackPRCostMetric({ kind: "matching", outcome: "session" })
+				release()
+			}
+			await Promise.allSettled([...ctx.inFlight])
+			const previousAttempts = stage === "retry" ? 1 : 0
+			expect(globalThis.fetch).toHaveBeenCalledTimes(previousAttempts)
+
+			if (stage !== "identity-with-fresh-counts") trackPRCostMetric({ kind: "matching", outcome: "session" })
+			ctx.flushMetrics()
+			await Promise.allSettled([...ctx.inFlight])
+			expect(globalThis.fetch).toHaveBeenCalledTimes(previousAttempts + 1)
+			const body = JSON.parse(String(vi.mocked(globalThis.fetch).mock.calls.at(-1)?.[1]?.body))
+			const metrics = body.resourceMetrics[0].scopeMetrics[0].metrics
+			expect(metrics).toHaveLength(1)
+			expect(metrics[0].sum.dataPoints[0].asInt).toBe("1")
+			expect(metrics[0].sum.dataPoints[0].attributes).toContainEqual({
+				key: "decision",
+				value: { stringValue: "session" },
+			})
+		} finally {
+			rmSync(directory, { recursive: true, force: true })
+		}
 	})
 
 	it("emit appends source and session_type to every event", async () => {

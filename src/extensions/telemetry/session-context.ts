@@ -327,14 +327,18 @@ export class TelemetryContext {
 	}
 
 	flushMetrics(): void {
-		if (!this.config.enabled || !readTelemetryConfig().enabled) this.cumulative.prCost = undefined
+		const consent = readTelemetryConfig()
+		if (!this.config.enabled || !consent.enabled || this.cumulative.prCost?.consentVersion !== consent.consentVersion)
+			this.cumulative.prCost = undefined
 		const prCost = this.cumulative.prCost
 		const metrics = collectMetrics(this.cumulative)
 		if (metrics.length > 0) {
 			this.track(
 				this.userEmailReady.then(() => {
-					const allowPRCostMetrics = this.config.enabled && readTelemetryConfig().enabled
-					if (!allowPRCostMetrics) this.cumulative.prCost = undefined
+					const currentConsent = readTelemetryConfig()
+					const allowPRCostMetrics =
+						this.config.enabled && currentConsent.enabled && prCost?.consentVersion === currentConsent.consentVersion
+					if (!allowPRCostMetrics && prCost === this.cumulative.prCost) this.cumulative.prCost = undefined
 					return sendMetrics(
 						this.config,
 						this.resolveSessionId(),
@@ -349,7 +353,10 @@ export class TelemetryContext {
 							})),
 						this.sessionStartNano,
 						undefined,
-						() => this.config.enabled && prCost === this.cumulative.prCost,
+						(current) =>
+							this.config.enabled &&
+							prCost === this.cumulative.prCost &&
+							prCost?.consentVersion === current.consentVersion,
 					)
 				}),
 			)

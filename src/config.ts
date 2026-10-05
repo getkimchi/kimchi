@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { existsSync, readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, relative, resolve } from "node:path"
@@ -95,6 +96,7 @@ export function buildSkillPathOptions(discoveredDirs: string[]): string[] {
 
 export interface TelemetryConfig {
 	enabled: boolean
+	consentVersion?: string
 	endpoint: string
 	metricsEndpoint: string
 	headers: Record<string, string>
@@ -524,6 +526,7 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	const envEnabled = process.env.KIMCHI_TELEMETRY_ENABLED
 	let fileEnabled: boolean | undefined
+	let fileConsentVersion: string | undefined
 	let fileEndpoint: string | undefined
 	let fileMetricsEndpoint: string | undefined
 	let fileHeaders: Record<string, string> | undefined
@@ -538,6 +541,7 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 		const t = parsed.telemetry
 		if (t && typeof t === "object") {
 			if (typeof t.enabled === "boolean") fileEnabled = t.enabled
+			if (typeof t.consentVersion === "string") fileConsentVersion = t.consentVersion
 			if (typeof t.endpoint === "string" && t.endpoint.length > 0) fileEndpoint = t.endpoint
 			if (typeof t.metricsEndpoint === "string" && t.metricsEndpoint.length > 0) fileMetricsEndpoint = t.metricsEndpoint
 			if (t.headers && typeof t.headers === "object" && !Array.isArray(t.headers)) {
@@ -579,6 +583,7 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 
 	return {
 		enabled,
+		consentVersion: fileConsentVersion,
 		endpoint: fileEndpoint ?? telemetryLogsUrl(region),
 		metricsEndpoint: fileMetricsEndpoint ?? telemetryMetricsUrl(region),
 		headers,
@@ -1138,6 +1143,8 @@ export function writeTelemetryEnabled(enabled: boolean, configPath?: string): vo
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateConfigFile(path, (raw) => {
 		const t = (raw.telemetry as Record<string, unknown> | undefined) ?? {}
+		// A different process may turn telemetry off and on between export attempts.
+		if (t.enabled !== enabled) t.consentVersion = randomUUID()
 		t.enabled = enabled
 		raw.telemetry = t
 	})

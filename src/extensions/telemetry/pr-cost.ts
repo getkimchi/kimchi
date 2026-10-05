@@ -13,11 +13,18 @@ type PRCostMetric =
 export function trackPRCostMetric(metric: PRCostMetric): void {
 	const ctx = _getTelemetryCtx()
 	if (!ctx) return
-	if (!ctx.config.enabled || !ctx.config.metricsEndpoint || !readTelemetryConfig().enabled) {
+	const consent = readTelemetryConfig()
+	if (!ctx.config.enabled || !ctx.config.metricsEndpoint || !consent.enabled) {
 		ctx.cumulative.prCost = undefined
 		return
 	}
-	ctx.cumulative.prCost ??= { matching: {}, delivery: {}, startTimeUnixNano: nowNano() }
+	if (ctx.cumulative.prCost?.consentVersion !== consent.consentVersion) ctx.cumulative.prCost = undefined
+	ctx.cumulative.prCost ??= {
+		matching: {},
+		delivery: {},
+		startTimeUnixNano: nowNano(),
+		consentVersion: consent.consentVersion,
+	}
 	const state = ctx.cumulative.prCost
 	if (metric.kind === "matching" || metric.kind === "delivery") {
 		const counts: Partial<Record<string, number>> = state[metric.kind]
