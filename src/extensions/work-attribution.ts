@@ -29,7 +29,7 @@ import { isResourceEnabled } from "../resources/store.js"
 import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
 import { isHarnessSteer } from "./steer-marker.js"
-import { type BillingSource, captureBillingSource, requestTagSelector } from "./work-attribution/billing-source.js"
+import { trackPRCostMetric } from "./telemetry/pr-cost.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
 import { findWorkContinuation, hasWorkReference, type WorkContinuation } from "./work-attribution/continuation.js"
 import { workCostDetails } from "./work-attribution/cost-details.js"
@@ -639,6 +639,7 @@ export function createWorkAttributionExtension(
 			if (event.source === "extension") return
 			// Optional model matching never interrupts the user; its failures leave the input unresolved.
 			let matching = false
+			let matchingFailed = false
 			try {
 				bind(ctx)
 				const key = workLedgerPath(ctx)
@@ -824,9 +825,20 @@ export function createWorkAttributionExtension(
 				)
 				await rememberWorkIntent(ctx.cwd, workId, event.text, intents.repository, intents.account)
 			} catch (error) {
-				if (error instanceof WorkMatchingLimit) matchingLimit = error.message
-				if (matching || error instanceof WorkMatchingLimit) debugWorkAttribution("Work matching skipped:", error)
-				else warnWorkAttribution(ctx, error)
+				if (error instanceof WorkMatchingLimit) {
+					matchingLimit = error.message
+					debugWorkAttribution("Work matching skipped:", error)
+				} else {
+					matchingFailed = true
+					if (matching) debugWorkAttribution("Work matching skipped:", error)
+					else warnWorkAttribution(ctx, error)
+				}
+			} finally {
+				if (generation === inputGeneration)
+					trackPRCostMetric({
+						kind: "matching",
+						outcome: matchingFailed ? "failed" : (getWorkSegment(ctx)?.attribution ?? "unknown"),
+					})
 			}
 		}
 		pi.on("before_provider_headers", (event, ctx) => {

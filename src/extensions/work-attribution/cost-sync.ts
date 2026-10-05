@@ -6,6 +6,7 @@ import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations
 import { writeFileAtomic, writeFileDurably } from "../../config/json.js"
 import { loadConfig } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
+import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { BEFORE_PAGE_TIMEOUT_MESSAGE, type BillingRow, billingResponse, lookupRows } from "./billing-api.js"
 import {
@@ -26,7 +27,7 @@ import {
 	totalRequestCosts,
 } from "./costs.js"
 import type { WorkAccount } from "./scope.js"
-import { object, readWorkRecords, readWorkRecordsAsync, workJournalFingerprint } from "./summary.js"
+import { object, readWorkRecords, readWorkRecordsAsync, type WorkRecord, workJournalFingerprint } from "./summary.js"
 
 // The background pass: it looks up due bills within a budget, journals new evidence and publishes reports.
 
@@ -95,9 +96,11 @@ function costFingerprint(rows: unknown[], lookup: BillingLookup): string {
 /** Read durable evidence rather than combining per-work caches. */
 export function readWorkCostReport(agentDir: string, checkBudget: () => void = () => {}, snapshot?: WorkRecord[]) {
 	let historyComplete = true
-	const records = snapshot ?? readWorkRecords(agentDir, undefined, checkBudget, () => {
-		historyComplete = false
-	})
+	const records =
+		snapshot ??
+		readWorkRecords(agentDir, undefined, checkBudget, () => {
+			historyComplete = false
+		})
 	const requests = billingRequests(records)
 	const noCharge = new Map<string, WorkAccount>()
 	for (const item of requests.values()) {
@@ -206,6 +209,10 @@ async function publishReports(
 	polls: Record<string, BillingPoll>,
 	assertLease: () => void,
 ): Promise<void> {
+	trackPRCostMetric({
+		kind: "unpriced",
+		value: report.requests.filter((request) => request.priceStatus !== "priced").length,
+	})
 	// Shared PR totals and correction links connect works, transitively; a saved report covers the whole component.
 	const neighbours = new Map<string, Set<string>>()
 	for (const ids of [

@@ -208,6 +208,23 @@ describe("sendLogBatch", () => {
 })
 
 describe("sendMetrics", () => {
+	it("omits session identity from aggregate health metrics", async () => {
+		const config = makeConfig()
+		const health = {
+			name: "kimchi.pr_cost.queue.depth",
+			type: "Gauge" as const,
+			value: 2,
+			attrs: {},
+			scope: "aggregate" as const,
+		}
+		await sendMetrics(config, "private-session", [health], BASE_NS)
+		const body = JSON.parse(vi.mocked(globalThis.fetch).mock.calls[0][1]?.body as string)
+		const point = body.resourceMetrics[0].scopeMetrics[0].metrics[0].gauge.dataPoints[0]
+		expect(point.asInt).toBe("2")
+		expect(point.attributes).toEqual([{ key: "client", value: { stringValue: "pi" } }])
+		expect(JSON.stringify(body)).not.toContain("private-session")
+	})
+
 	let originalFetch: typeof globalThis.fetch
 
 	beforeEach(() => {

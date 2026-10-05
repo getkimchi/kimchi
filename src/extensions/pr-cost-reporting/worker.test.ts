@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as health from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
 import { queueSnapshots, readReportingState, setReportingEnabled } from "./queue.js"
 import { buildSnapshots, type RepositorySnapshot, type WireSnapshot } from "./snapshot.js"
@@ -122,6 +123,30 @@ async function seedLinked(priced = true) {
 }
 
 describe("account-fenced reporting delivery", () => {
+	it.each([
+		"success",
+		"failed",
+		"canceled",
+	] as const)("records one %s delivery outcome and the remaining queue", async (outcome) => {
+		const metric = vi.spyOn(health, "trackPRCostMetric").mockImplementation(() => {})
+		const abort = new AbortController()
+		http.mockImplementation(async (input) => {
+			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
+			if (outcome === "canceled") {
+				abort.abort()
+				throw abort.signal.reason
+			}
+			return outcome === "failed"
+				? new Response(null, { status: 503 })
+				: Response.json({ status: "accepted", revision: "1", receivedAt: new Date().toISOString() })
+		})
+		await deliverSnapshots(directory, "/project", abort.signal, () => {})
+		await readReportingState(directory)
+		expect(metric.mock.calls.map(([value]) => value).filter((value) => value.kind === "delivery")).toEqual([
+			{ kind: "delivery", outcome },
+		])
+		expect(metric).toHaveBeenLastCalledWith({ kind: "queueDepth", value: outcome === "success" ? 0 : 1 })
+	})
 	it("uploads every same-repository post-merge candidate without holding the repository", async () => {
 		await seedLinked()
 		const path = join(directory, "work-attribution", "source.jsonl")

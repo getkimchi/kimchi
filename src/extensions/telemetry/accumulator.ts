@@ -1,3 +1,4 @@
+import type { WorkSegment } from "../work-attribution.js"
 import { computeLineChanges, computeWriteLines, inferLanguage, type ToolArgs } from "./helpers.js"
 import type { MetricData } from "./transport.js"
 
@@ -15,6 +16,14 @@ export interface CumulativeState {
 	toolUsage: Record<string, number>
 	toolDurationMs: Record<string, number>
 	sessionStartNano: string
+	prCost?: {
+		startTimeUnixNano: string
+		matching: Partial<Record<WorkSegment["attribution"] | "failed", number>>
+		delivery: Partial<Record<"success" | "failed" | "canceled", number>>
+		unpriced?: number
+		queueDepth?: number
+		reconciliationStartedAt?: number
+	}
 }
 
 export function createCumulativeState(): CumulativeState {
@@ -79,6 +88,21 @@ export function handleEditCumulativeMetrics(state: CumulativeState, toolName: st
 
 export function collectMetrics(state: CumulativeState): MetricData[] {
 	const out: MetricData[] = []
+	if (state.prCost) {
+		const common = { scope: "aggregate" as const, startTimeUnixNano: state.prCost.startTimeUnixNano }
+		for (const [kind, counts] of Object.entries({ matching: state.prCost.matching, delivery: state.prCost.delivery }))
+			for (const [decision, value] of Object.entries(counts))
+				out.push({ name: `kimchi.pr_cost.${kind}.count`, type: "Sum", value, attrs: { decision }, ...common })
+		for (const [name, value] of Object.entries({
+			"pricing.unpriced": state.prCost.unpriced,
+			"queue.depth": state.prCost.queueDepth,
+			"reconciliation.age":
+				state.prCost.reconciliationStartedAt === undefined
+					? undefined
+					: Math.max(0, Date.now() - state.prCost.reconciliationStartedAt) / 1000,
+		}))
+			if (value !== undefined) out.push({ name: `kimchi.pr_cost.${name}`, type: "Gauge", value, attrs: {}, ...common })
+	}
 
 	for (const [model, t] of Object.entries(state.tokensByModel)) {
 		for (const [type, val] of Object.entries(t) as [string, number][]) {

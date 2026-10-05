@@ -3,6 +3,7 @@ import { verifyApiKey } from "../../api/organizations.js"
 import { loadConfig, resolveEndpoints } from "../../config.js"
 import { computeRetryDelayMs, fetchWithRetry, parseRetryAfterMs } from "../../utils/http.js"
 import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js"
+import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
 import { isWorkAccount, isWorkScope, sameWorkAccount } from "../work-attribution/scope.js"
 import {
@@ -164,7 +165,9 @@ export async function deliverSnapshots(
 				const ack: SnapshotAck = await response.json()
 				assertCurrent()
 				await acknowledgeSnapshot(agentDir, id, snapshot.revision, ack)
+				trackPRCostMetric({ kind: "delivery", outcome: "success" })
 			} catch {
+				trackPRCostMetric({ kind: "delivery", outcome: combined.aborted ? "canceled" : "failed" })
 				if (signal.aborted) return
 				await deferSnapshot(agentDir, id, snapshot.revision, Date.now() + Math.max(30_000, retryMs), errorMessage)
 			}
