@@ -15,6 +15,9 @@ const SHA = /^(?:[a-f\d]{40}|[a-f\d]{64})$/i
 
 export interface WorkPullRequest {
 	provider?: "github" | "gitlab"
+	/** Provider IDs belong to the target repository, including fork contributions. */
+	id?: string
+	repositoryId?: string
 	url: string
 	number: number
 	state: "open" | "closed" | "merged"
@@ -81,6 +84,10 @@ function timestamp(value: unknown): value is string {
 function nullableTimestamp(value: unknown): value is string | null {
 	return value === null || timestamp(value)
 }
+function providerId(value: unknown): string | undefined {
+	if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return String(value)
+	if (typeof value === "string" && /^[1-9]\d{0,19}$/.test(value)) return value
+}
 function httpsURL(value: unknown): URL {
 	if (typeof value === "string") {
 		try {
@@ -138,6 +145,14 @@ function pullRequest(
 	)
 		throw new LookupError(`${label(repository)} returned an invalid pull request.`, false, true)
 	const url = httpsURL(provider === "gitlab" ? value.web_url : value.html_url)
+	const id = providerId(value.id)
+	const repositoryId = providerId(
+		provider === "gitlab"
+			? value.target_project_id
+			: object(value.base) && object(value.base.repo)
+				? value.base.repo.id
+				: undefined,
+	)
 	const path = (provider === "gitlab" ? /^\/(.+)\/-\/merge_requests\/(\d+)$/ : /^\/(.+)\/pull\/(\d+)$/).exec(
 		url.pathname,
 	)
@@ -145,6 +160,8 @@ function pullRequest(
 		throw new LookupError(`${label(repository)} returned a pull request from an unexpected repository.`, false, true)
 	return {
 		provider,
+		...(id ? { id } : {}),
+		...(repositoryId ? { repositoryId } : {}),
 		url: url.href,
 		number,
 		state,
@@ -167,6 +184,9 @@ function storedPullRequests(value: unknown): WorkPullRequest[] {
 			return [
 				pullRequest(
 					{
+						id: item.id,
+						base: { repo: { id: item.repositoryId } },
+						target_project_id: item.repositoryId,
 						html_url: item.url,
 						web_url: item.url,
 						number: item.number,
@@ -666,6 +686,16 @@ export interface BranchPullRequest {
 	branch: string
 	pullRequest?: WorkPullRequest
 }
+/** Provider identity for captured unlinked requests; credentials stay inside discovery. */
+export async function lookupRepositoryIdentity(
+	cwd: string,
+	signal: AbortSignal,
+): Promise<{ provider: "github" | "gitlab"; host: string; name: string; id: string }> {
+	const repository = await repositoryIdentity(cwd, signal, Date.now() + PASS_BUDGET_MS, new Map())
+	const id = providerId(repository.id)
+	if (!id) throw new LookupError("The Git provider returned no stable repository ID.", false, true)
+	return { provider: repository.provider, host: repository.host, name: repository.name, id }
+}
 async function currentBranch(cwd: string, signal: AbortSignal, deadline: number): Promise<string | undefined> {
 	return command(
 		"git",
@@ -767,7 +797,7 @@ async function scan(
 		const known = mergePullRequests(...commits.map((commit) => commit.pullRequests))
 		if (
 			known.length &&
-			known.every((pr) => pr.state === "merged") &&
+			known.every((pr) => pr.state === "merged" && pr.id && pr.repositoryId) &&
 			commits.every(
 				(commit) =>
 					commit.prLookup?.status === "linked" && JSON.stringify(commit.pullRequests) === JSON.stringify(known),
@@ -809,7 +839,11 @@ async function scan(
 		let refreshedKnown = false
 		let refreshFailure: LookupError | undefined
 		for (const previous of known.sort((a, b) => Date.parse(a.checkedAt) - Date.parse(b.checkedAt))) {
-			if (previous.state === "merged" || found.some((item) => item.url === previous.url)) continue
+			if (
+				(previous.state === "merged" && previous.id && previous.repositoryId) ||
+				found.some((item) => item.url === previous.url)
+			)
+				continue
 			try {
 				let request = refreshed.get(previous.url)
 				if (!request) {

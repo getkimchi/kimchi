@@ -26,9 +26,12 @@ interface Supervisor {
 	pullRequestRunning?: Promise<void>
 	costController?: AbortController
 	costRunning?: Promise<void>
+	reportingController?: AbortController
+	reportingRunning?: Promise<void>
 }
 interface ReconciliationSubscriber {
-	kind: "files" | "pull-requests" | "costs"
+	kind: "files" | "pull-requests" | "costs" | "reporting"
+	onReport?: (agentDir: string, signal: AbortSignal, assertLease: () => void) => Promise<void>
 	onPullRequest?: (update: WorkPullRequestUpdate) => void
 	onError?: (error: unknown) => void
 }
@@ -131,6 +134,25 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 				if (!signal.aborted) debug("Could not reconcile work continuations: %o", error)
 			}
 		}
+		const reporting = [...owner.subscribers].find((subscriber) => subscriber.kind === "reporting")
+		const reportingController = owner.reportingController
+		if (reporting?.onReport && reportingController && !reportingController.signal.aborted) {
+			const reportingSignal = AbortSignal.any([signal, reportingController.signal])
+			const pending = reporting
+				.onReport(agentDir, reportingSignal, () => {
+					assertLease()
+					reportingSignal.throwIfAborted()
+				})
+				.catch((error) => {
+					if (!reportingSignal.aborted) debug("Could not report PR costs: %o", error)
+				})
+			owner.reportingRunning = pending
+			try {
+				await pending
+			} finally {
+				if (owner.reportingRunning === pending) owner.reportingRunning = undefined
+			}
+		}
 	} finally {
 		if (!compromised) await release()
 	}
@@ -187,6 +209,8 @@ function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Pr
 		owner.pullRequestController = new AbortController()
 	if (subscriber.kind === "costs" && (!owner.costController || owner.costController.signal.aborted))
 		owner.costController = new AbortController()
+	if (subscriber.kind === "reporting" && (!owner.reportingController || owner.reportingController.signal.aborted))
+		owner.reportingController = new AbortController()
 	tick(agentDir, owner)
 	const current = owner
 	let stopped = false
@@ -196,6 +220,7 @@ function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Pr
 		current.subscribers.delete(subscription)
 		let pendingPullRequests: Promise<void> | undefined
 		let pendingCosts: Promise<void> | undefined
+		let pendingReporting: Promise<void> | undefined
 		if (![...current.subscribers].some((entry) => entry.kind === "pull-requests")) {
 			current.pullRequestController?.abort()
 			current.pullRequestController = undefined
@@ -206,8 +231,13 @@ function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Pr
 			current.costController = undefined
 			pendingCosts = current.costRunning
 		}
+		if (![...current.subscribers].some((entry) => entry.kind === "reporting")) {
+			current.reportingController?.abort()
+			current.reportingController = undefined
+			pendingReporting = current.reportingRunning
+		}
 		if (current.subscribers.size) {
-			await Promise.all([pendingPullRequests, pendingCosts])
+			await Promise.all([pendingPullRequests, pendingCosts, pendingReporting])
 			return
 		}
 		clearInterval(current.timer)
@@ -234,4 +264,10 @@ export function subscribePullRequestReconciliation(subscriber: {
 /** Price lookups share the timer and lease; only main work-tracking sessions subscribe. */
 export function subscribeCostReconciliation(): () => Promise<void> {
 	return subscribeReconciliation({ kind: "costs" })
+}
+/** An optional extension supplies delivery; work tracking has no reporting dependency. */
+export function subscribeReportingReconciliation(
+	onReport: NonNullable<ReconciliationSubscriber["onReport"]>,
+): () => Promise<void> {
+	return subscribeReconciliation({ kind: "reporting", onReport })
 }

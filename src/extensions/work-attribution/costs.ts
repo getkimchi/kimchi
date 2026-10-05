@@ -171,6 +171,10 @@ function storedPullRequest(row: unknown): { identity: PullIdentity; pullRequest:
 		identity,
 		pullRequest: {
 			...identity,
+			...(typeof row.id === "string" && /^[1-9]\d{0,19}$/.test(row.id) ? { id: row.id } : {}),
+			...(typeof row.repositoryId === "string" && /^[1-9]\d{0,19}$/.test(row.repositoryId)
+				? { repositoryId: row.repositoryId }
+				: {}),
 			state: row.state,
 			headSha: row.headSha,
 			mergeCommitSha: row.mergeCommitSha,
@@ -510,7 +514,13 @@ export function calculatePullRequestCosts(
 			if (!previous || checkedAt > previous.checkedAt) pulls.set(key, { checkedAt, pullRequest: pull })
 			else if (checkedAt === previous.checkedAt && previous.pullRequest) {
 				const other = previous.pullRequest
-				if (other.state !== pull.state || time(other.mergedAt) !== time(pull.mergedAt)) previous.pullRequest = null
+				if (
+					other.state !== pull.state ||
+					time(other.mergedAt) !== time(pull.mergedAt) ||
+					(other.id && pull.id && other.id !== pull.id) ||
+					(other.repositoryId && pull.repositoryId && other.repositoryId !== pull.repositoryId)
+				)
+					previous.pullRequest = null
 				// Equivalent cost evidence may still carry different display metadata. Keep output stable.
 				else if (JSON.stringify(pull) < JSON.stringify(other)) previous.pullRequest = pull
 			}

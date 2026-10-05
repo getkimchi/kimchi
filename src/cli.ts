@@ -117,6 +117,7 @@ import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup
 import piiRedactionExtension from "./extensions/pii-redaction/index.js"
 import plannotatorExtension from "./extensions/plannotator/index.js"
 import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/index.js"
+import prCostReportingExtension from "./extensions/pr-cost-reporting/index.js"
 import { setPrintGate } from "./extensions/print-mode.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
@@ -822,6 +823,7 @@ try {
 			cacheSummaryExtension,
 			createWorkAttributionExtension(),
 			pullRequestStatusExtension,
+			prCostReportingExtension,
 			requestTimingExtension,
 			llmResponseLogExtension,
 			activityExtension,

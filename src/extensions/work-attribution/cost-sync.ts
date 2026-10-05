@@ -531,8 +531,12 @@ async function lookupRows(
 	throw new Error("Billing lookup exceeded the page limit")
 }
 
-async function publishReports(agentDir: string, assertLease: () => void): Promise<void> {
-	const records = readWorkRecords(agentDir)
+/** One validated source for local summaries and opt-in reporting; never merge per-work caches. */
+export function readWorkCostReport(agentDir: string, checkBudget: () => void = () => {}) {
+	let historyComplete = true
+	const records = readWorkRecords(agentDir, undefined, checkBudget, () => {
+		historyComplete = false
+	})
 	const requests = billingRequests(records)
 	const incomplete = new Set(
 		[...requests.values()]
@@ -544,6 +548,17 @@ async function publishReports(agentDir: string, assertLease: () => void): Promis
 		[...requests.values()].flatMap((item) => (item.invalid ? [] : item.observations)),
 		incomplete,
 	)
+	const costRefreshes = new Map(
+		[...requests.values()].flatMap((item) =>
+			!item.invalid && item.substantiveLookup?.status === "priced"
+				? [[item.requestId, item.substantiveLookup.checkedAt] as const]
+				: [],
+		),
+	)
+	return { records, report, requests, historyComplete, costRefreshes }
+}
+async function publishReports(agentDir: string, assertLease: () => void): Promise<void> {
+	const { records, report, requests } = readWorkCostReport(agentDir, assertLease)
 	const workIds = new Set(records.map((row) => row.workId))
 	for (const workId of workIds) {
 		assertLease()
