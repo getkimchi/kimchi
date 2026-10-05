@@ -328,6 +328,7 @@ export class TelemetryContext {
 
 	flushMetrics(): void {
 		if (!this.config.enabled || !readTelemetryConfig().enabled) this.cumulative.prCost = undefined
+		const prCost = this.cumulative.prCost
 		const metrics = collectMetrics(this.cumulative)
 		if (metrics.length > 0) {
 			this.track(
@@ -338,11 +339,7 @@ export class TelemetryContext {
 						this.config,
 						this.resolveSessionId(),
 						metrics
-							.filter(
-								(m) =>
-									m.scope !== "aggregate" ||
-									(allowPRCostMetrics && m.startTimeUnixNano === this.cumulative.prCost?.startTimeUnixNano),
-							)
+							.filter((m) => m.scope !== "aggregate" || (allowPRCostMetrics && prCost === this.cumulative.prCost))
 							.map((m) => ({
 								...m,
 								attrs: {
@@ -351,6 +348,8 @@ export class TelemetryContext {
 								},
 							})),
 						this.sessionStartNano,
+						undefined,
+						() => this.config.enabled && prCost === this.cumulative.prCost,
 					)
 				}),
 			)

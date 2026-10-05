@@ -156,6 +156,7 @@ export async function sendMetrics(
 	metrics: MetricData[],
 	sessionStartNano: string,
 	userEmail?: string,
+	canSendAggregate?: () => boolean,
 ): Promise<void> {
 	if (!config.enabled || !config.metricsEndpoint || metrics.length === 0) return
 	const now = nowNano()
@@ -208,7 +209,7 @@ export async function sendMetrics(
 				retry: { maxRetries: 3 },
 				signal: consent.signal,
 				fetchImpl: (url, init) => {
-					if (aggregate && !readTelemetryConfig().enabled) consent.abort()
+					if (aggregate && (!readTelemetryConfig().enabled || canSendAggregate?.() === false)) consent.abort()
 					consent.signal.throwIfAborted()
 					return globalThis.fetch(url, init)
 				},
