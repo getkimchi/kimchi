@@ -644,16 +644,24 @@ describe("local work attribution", () => {
 		const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
 		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(event, ctx)
 		expect(records().find((row) => row.requestId === event.headers["X-Request-Id"]).workId).toBe(workId)
+		const accepted = {
+			source: selected.source,
+			evidence: {
+				...selected.evidence,
+				...createWorkScopeSnapshot(join(dir, ".git")).scope,
+				segmentId: getWorkSegment(ctx)?.id,
+			},
+		}
 		expect(records()).toContainEqual(
 			expect.objectContaining({
 				type: "work",
 				workId,
-				continuation: { source: selected.source, evidence: selected.evidence },
+				continuation: accepted,
 			}),
 		)
 		expect(api.getAppendedEntries("work_identity")).toContainEqual({
 			workId,
-			continuation: { source: selected.source, evidence: selected.evidence },
+			continuation: accepted,
 		})
 	})
 	it("keeps an accepted plan continuation for later inputs until a reference to other work ends it", async () => {

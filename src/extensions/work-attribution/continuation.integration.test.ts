@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import {
+	appendFileSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -22,7 +24,7 @@ import { createCommitTrackingBashTool } from "./commits.js"
 import { findWorkContinuation } from "./continuation.js"
 import { calculatePullRequestCosts } from "./costs.js"
 import { createTrackedWriteTool } from "./file-transitions.js"
-import { correctWorkLink } from "./links.js"
+import { correctWorkLink, reconcileWorkContinuations } from "./links.js"
 import * as scope from "./scope.js"
 import { flushWorkSummaries, readWorkRecords, recoverWorkSummaries, type WorkRecord } from "./summary.js"
 
@@ -197,7 +199,7 @@ it.each(["interactive", "rpc"] as const)("adopts a pasted plan before the first 
 		expect.objectContaining({
 			sessionId: "pasted-session",
 			source: "pasted-plan",
-			evidence: { path: saved.snapshotPath },
+			evidence: expect.objectContaining({ path: saved.snapshotPath, contentHash: saved.contentHash }),
 		}),
 	)
 })
@@ -522,4 +524,75 @@ it.each([
 	)
 	// Keeping a work marker is not proof that the old request produced this new content.
 	expect(readWorkRecords(flow.agentDir).filter((row) => row.type === "work_link")).toEqual([])
+})
+
+it.each(
+	(["path", "snapshot", "paste", "artifact"] as const).flatMap((kind) =>
+		[false, true].map((sameWork) => ({ kind, sameWork })),
+	),
+)("retains accepted $kind evidence and original scope (same work: $sameWork)", async ({ kind, sameWork }) => {
+	const flow = await recordedPlan(kind)
+	const ctx = sameWork ? flow.planner : flow.implementer
+	await flow.input({ type: "input", source: "rpc", text: flow.text }, ctx)
+	const rows = readWorkRecords(flow.agentDir)
+	const receipt = rows.find(
+		(row) => row.type === "work" && row.sessionId === ctx.sessionManager.getSessionId() && row.continuation,
+	)
+	expect(receipt).toMatchObject({
+		workId: flow.workId,
+		continuation: {
+			source: kind === "artifact" ? "named-artifact" : kind === "paste" ? "pasted-plan" : "saved-plan",
+			evidence: {
+				segmentId: expect.any(String),
+				requestId: flow.producer,
+				...createWorkScopeSnapshot(join(flow.cwd, ".git")).scope,
+				...(kind === "artifact" ? {} : { contentHash: rows.find((row) => row.type === "plan")?.contentHash }),
+			},
+		},
+	})
+})
+
+it("retains the edited snapshot's accepted bytes after the original snapshot is restored", async () => {
+	const flow = await recordedPlan("snapshot")
+	const plan = readWorkRecords(flow.agentDir).find((row) => row.type === "plan")
+	if (typeof plan?.snapshotPath !== "string") throw new Error("Missing retained plan")
+	const original = readFileSync(plan.snapshotPath)
+	const edited = `<!-- kimchi-work-id: ${flow.workId} -->\n# Different accepted task\n`
+	writeFileSync(plan.snapshotPath, edited)
+	await flow.input({ type: "input", source: "interactive", text: flow.text }, flow.implementer)
+	writeFileSync(plan.snapshotPath, original)
+	const rows = readWorkRecords(flow.agentDir)
+	expect(rows.filter((row) => row.type === "work_link")).toEqual([])
+	expect(rows.find((row) => row.type === "work" && row.continuation)).toMatchObject({
+		continuation: { evidence: { contentHash: createHash("sha256").update(edited).digest("hex") } },
+	})
+	await reconcileWorkContinuations(flow.agentDir, new AbortController().signal, () => {})
+	expect(readWorkRecords(flow.agentDir).filter((row) => row.type === "work_link")).toEqual([])
+})
+
+it.each([
+	"interactive",
+	"rpc",
+] as const)("repairs same-work acceptance after missing producer requests return (%s)", async (source) => {
+	const flow = await recordedPlan("path")
+	const ledger = join(flow.agentDir, "work-attribution", "producer.jsonl")
+	const original = readWorkRecords(flow.agentDir).filter((row) => row.sessionId === "producer")
+	const request = original.find((row) => row.type === "request" && row.requestId === flow.producer)
+	writeFileSync(
+		ledger,
+		`${original
+			.filter((row) => row !== request)
+			.map((row) => JSON.stringify(row))
+			.join("\n")}\n`,
+	)
+	await flow.input({ type: "input", source, text: flow.text }, flow.planner)
+	expect(readWorkRecords(flow.agentDir).filter((row) => row.type === "work_link")).toEqual([])
+	appendFileSync(ledger, `${JSON.stringify(request)}\n`)
+	await reconcileWorkContinuations(flow.agentDir, new AbortController().signal, () => {})
+	expect(readWorkRecords(flow.agentDir).filter((row) => row.type === "work_link")).toMatchObject([
+		{
+			workId: flow.workId,
+			requestIds: [flow.research, flow.producer].sort(),
+		},
+	])
 })

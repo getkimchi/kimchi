@@ -40,7 +40,7 @@ import {
 import { workCostDetails } from "./work-attribution/cost-details.js"
 import { debugWorkAttribution } from "./work-attribution/diagnostics.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
-import { confirmWorkContinuation, correctWorkLink } from "./work-attribution/links.js"
+import { confirmWorkContinuation, correctWorkLink, pinWorkContinuation } from "./work-attribution/links.js"
 import { subscribeCostReconciliation, subscribeFileReconciliation } from "./work-attribution/reconcile-supervisor.js"
 import { prepareBillingTag } from "./work-attribution/request-tags.js"
 import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
@@ -718,17 +718,23 @@ export function createWorkAttributionExtension(
 						? await findWorkContinuation(pinWorkContext(ctx), event.text, captured)
 						: undefined
 				if (!unchanged()) return
-				if (found && (found.workId === current || eligible())) {
+				if (found && captured && (found.workId === current || eligible())) {
+					const accepted = { ...found, evidence: { ...found.evidence, segmentId, ...captured.scope } }
+					const pinned = tryWorkAttribution(() => pinWorkContinuation(accepted)) ?? accepted
+					const continuation = {
+						source: pinned.source,
+						evidence: pinned.evidence,
+					}
 					if (found.workId !== current) {
-						setWorkId(ctx, found.workId, pi, { source: found.source, evidence: found.evidence })
+						setWorkId(ctx, found.workId, pi, continuation)
 						notify(
 							ctx,
 							`Continuing the saved ${found.source === "named-artifact" ? "artifact" : "plan"}'s work: ${found.workId}`,
 						)
-					}
+					} else appendWorkRecord(ctx, { type: "work", continuation }, current)
 					explicitSelection.set(key, found.source)
 					useSegment("explicit", found.source)
-					if (captured) confirmWorkContinuation(ctx, found, captured.scope, records)
+					confirmWorkContinuation(ctx, { ...found, ...continuation }, captured.scope)
 					if (model) await rememberWorkIntent(ctx.cwd, found.workId, event.text)
 					return
 				}

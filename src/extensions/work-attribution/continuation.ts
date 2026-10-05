@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { readFileSync, realpathSync } from "node:fs"
 import { readdir, readFile, realpath } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
@@ -71,6 +72,8 @@ export interface WorkContinuation {
 	source: "saved-plan" | "pasted-plan" | "named-artifact" | "semantic"
 	evidence: {
 		path: string
+		contentHash?: string
+		requestId?: string
 		transitionId?: string
 		repository?: string
 		worktree?: string
@@ -142,12 +145,22 @@ async function namedArtifact(
 	}
 	if (NATIVE_PLAN_PATH.test(path)) {
 		try {
-			const content = (await readFile(path, "utf8")).replaceAll("\r\n", "\n")
-			const workId = readPlanWorkId(content)
+			const content = await readFile(path)
+			const normalized = content.toString("utf8").replaceAll("\r\n", "\n")
+			const workId = readPlanWorkId(normalized)
 			if (workId) {
-				const verified = await pastedPlans(content)
+				const verified = await pastedPlans(normalized)
 				const exact = verified?.matches.length === 1 && !verified.remaining.trim()
-				native = { owners: [workId], match: exact ? { workId, source: "saved-plan", evidence: { path } } : undefined }
+				native = {
+					owners: [workId],
+					match: exact
+						? {
+								workId,
+								source: "saved-plan",
+								evidence: { path, contentHash: createHash("sha256").update(content).digest("hex") },
+							}
+						: undefined,
+				}
 			}
 		} catch {
 			// Missing files still have to pass the ownership check below.
@@ -183,12 +196,13 @@ async function pastedPlans(text: string): Promise<{ matches: WorkContinuation[];
 		if (!workId) return
 		const directory = join(getAgentDir(), "work", workId, "plans")
 		const pasted = text.slice(marker.index)
-		let found: { path: string; length: number } | undefined
+		let found: { path: string; length: number; contentHash: string } | undefined
 		try {
 			for (const file of await readdir(directory, { withFileTypes: true })) {
 				if (!file.isFile() || !file.name.endsWith(".md")) continue
 				const path = join(directory, file.name)
-				const content = (await readFile(path, "utf8")).replaceAll("\r\n", "\n").trimEnd()
+				const saved = await readFile(path)
+				const content = saved.toString("utf8").replaceAll("\r\n", "\n").trimEnd()
 				if (
 					readPlanWorkId(content) === workId &&
 					content.length > marker[0].length &&
@@ -196,13 +210,13 @@ async function pastedPlans(text: string): Promise<{ matches: WorkContinuation[];
 					(pasted.length === content.length || pasted[content.length] === "\n") &&
 					content.length > (found?.length ?? 0)
 				)
-					found = { path, length: content.length }
+					found = { path, length: content.length, contentHash: createHash("sha256").update(saved).digest("hex") }
 			}
 		} catch {
 			return
 		}
 		if (!found) return
-		matches.push({ workId, source: "pasted-plan", evidence: { path: found.path } })
+		matches.push({ workId, source: "pasted-plan", evidence: { path: found.path, contentHash: found.contentHash } })
 		remaining += text.slice(end, marker.index)
 		end = marker.index + found.length
 	}

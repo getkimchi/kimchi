@@ -157,25 +157,44 @@ function parseRecord(line: string, records: WorkRecord[]): void {
 		/* interrupted append */
 	}
 }
-export function readWorkRecords(agentDir: string, modifiedSince?: number): WorkRecord[] {
+export function readWorkRecords(
+	agentDir: string,
+	modifiedSince?: number,
+	checkBudget: () => void = () => {},
+	onInvalidRecord?: () => void,
+): WorkRecord[] {
+	checkBudget()
 	const directory = join(agentDir, "work-attribution")
 	if (!existsSync(directory)) return []
 	const records: WorkRecord[] = []
 	// Both kinds of source journals feed work.json; there is no second copy of file evidence.
 	for (const source of [directory, join(directory, "transitions")]) {
+		checkBudget()
 		if (!existsSync(source)) continue
 		for (const file of readdirSync(source, { withFileTypes: true })) {
+			checkBudget()
 			if (!file.isFile() || !file.name.endsWith(".jsonl")) continue
 			try {
 				const path = join(source, file.name)
 				if (modifiedSince !== undefined && statSync(path).mtimeMs < modifiedSince) continue
-				for (const line of readFileSync(path, "utf8").split("\n")) parseRecord(line, records)
+				for (const line of readFileSync(path, "utf8").split("\n")) {
+					checkBudget()
+					if (!line.trim()) continue
+					try {
+						const value = JSON.parse(line)
+						if (record(value)) records.push(value)
+						else onInvalidRecord?.()
+					} catch {
+						onInvalidRecord?.()
+					}
+				}
 			} catch (error) {
 				// An incomplete scan must not advance recovery past a journal we could not read.
 				throw new Error(`Could not read work ledger ${file.name}`, { cause: error })
 			}
 		}
 	}
+	checkBudget()
 	return records
 }
 /** The journals both readers parse, in the same order. */
