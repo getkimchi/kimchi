@@ -241,13 +241,39 @@ describe("/model selector capability table (installed patch)", () => {
 				const multiRow = rows.find((r) => r.includes("multi-model"))
 				expect(multiRow).toBeDefined()
 				expect(multiRow).toContain("orchestration")
-				// Orchestrator (kimi-k2.6) stats: 200k context, vision ✓, its description.
-				expect(multiRow).toMatch(/✓ {7}Flagship/)
+				// Orchestrator (kimi-k2.6) stats: 200k context, vision ✓. Its
+				// description follows the harness-side deprecation label.
+				expect(multiRow).toMatch(/✓ {7}Deprecated — replaced by Auto\./)
+				expect(multiRow).toContain("Flagship vision model.")
 				expect(multiRow).toContain("200k")
 			})
 		} finally {
 			patchedProcess.__kimchiOrchestratorRef = undefined
 			patchedProcess.__kimchiMultiModelEnabled = undefined
+		}
+	})
+
+	it("labels the virtual multi-model row as deprecated", () => {
+		// The deprecation label is harness-side: multi-model does not exist in
+		// the platform catalog, so no backend marker can carry it. It outranks
+		// the default-model annotation and keeps the orchestrator description.
+		patchedProcess.__kimchiOrchestratorRef = new Map([["mm-session", "kimchi-dev/kimi-k2.6"]])
+		try {
+			withDescriptions({ "kimchi-dev/kimi-k2.6": "Flagship vision model." }, () => {
+				const { renderPlain } = makeSelector({
+					sessionId: "mm-session",
+					// The saved default is the orchestrator model — the patch would
+					// annotate the multi-model row "Default for new sessions." too.
+					defaultModel: { provider: "kimchi-dev", id: "kimi-k2.6" },
+				})
+				const multiRow = modelRows(renderPlain(120)).find((r) => r.includes("multi-model"))
+				expect(multiRow).toBeDefined()
+				expect(multiRow).toContain("Deprecated — replaced by Auto.")
+				expect(multiRow).not.toContain("Default for new sessions.")
+				expect(multiRow).toContain("Flagship vision model.")
+			})
+		} finally {
+			patchedProcess.__kimchiOrchestratorRef = undefined
 		}
 	})
 

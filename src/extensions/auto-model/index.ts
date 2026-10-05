@@ -12,11 +12,12 @@ import type {
 import { Text } from "@earendil-works/pi-tui"
 import { getParsedCliArgs, MULTI_MODEL_ID } from "../../cli-args.js"
 import { writeJson } from "../../config/json.js"
+import { writeConfigSetting } from "../../config/settings.js"
 import { getAgentConfigDir } from "../../config.js"
 import { getSettingsManager } from "../../settings-watcher.js"
 import { setMultiModelEnabled } from "../multi-model.js"
 import { syncAutoCapabilities } from "./capabilities.js"
-import { AUTO_MODEL_PROVIDER, isAutoRoutedModel } from "./constants.js"
+import { AUTO_MODEL_NAME, AUTO_MODEL_PROVIDER, GATED_DEFAULT_MODEL_CANDIDATES, isAutoRoutedModel } from "./constants.js"
 import { type RoutedModelResolution, resolveRoutedModel } from "./routed-model.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "./state.js"
 
@@ -280,6 +281,24 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 
 			if (options.handleCliModelSelection) dropRetiredAutoDefaultMarker()
 
+			// Catalog-driven organization gating: an organization the backend
+			// does not serve a routed virtual model (`auto`) to is gated.
+			// Gated organizations default to a concrete
+			// flash model instead of multi-model — and their settings.json
+			// `multiModel` value is a seeded default, not a user choice, so the
+			// harness overwrites it on every main session start. Session-level
+			// choices (mid-session toggles, /resume of a persisted multi-model
+			// session, CLI flags) keep their precedence on top of the seeded
+			// default. When no flash candidate is served either, the org stays on
+			// multi-model untouched.
+			const autoServed = !!ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
+			const gatedDefault = autoServed
+				? undefined
+				: GATED_DEFAULT_MODEL_CANDIDATES.map((id) => ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, id)).find(
+						(candidate) => candidate !== undefined,
+					)
+			if (options.handleCliModelSelection && gatedDefault) writeConfigSetting("multiModel", false)
+
 			// Catalog-driven Auto default: every fresh main session comes up on
 			// `auto` when the backend actually advertises it — the backend catalog
 			// decides who sees it, so there is no client-side entitlement check.
@@ -292,22 +311,43 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			// model reads as a bug.
 			if (mainFreshLaunch && ctx.model && !isAutoRoutedModel(ctx.model)) {
 				const installed = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
-				if (installed) {
-					// Persist: upstream 0.85.1 made setModel session-only by default, and
-					// the notice below claims a default-level change. Persisting also
-					// means a resumed new session restores Auto rather than the
-					// model that was switched to.
-					await pi.setModel(installed, { persist: true })
+
+				// Installs the fresh-session default — the gated flash model or Auto —
+				// and announces it. Persist: upstream 0.85.1 made setModel session-only
+				// by default, and the notice claims a default-level change. Persisting
+				// also means a resumed new session restores the default rather than
+				// the model that was switched to. The rollback fires on every fresh
+				// session after a deliberate switch, so the copy must read correctly on
+				// the tenth repeat — state the policy and the escape hatch instead of
+				// pretending this is a first-time install.
+				const installFreshDefault = async (candidate: Model<Api>, displayName: string): Promise<void> => {
+					await pi.setModel(candidate, { persist: true })
 					setMultiModelEnabled(sessionId, false)
 					resetLastNotified(sessionId)
-					// The rollback fires on every fresh session after a deliberate
-					// switch, so the copy must read correctly on the tenth repeat —
-					// state the policy and the escape hatch instead of pretending
-					// this is a first-time install.
 					ctx.ui.notify(
-						"New sessions start on Auto (the default). Use /model to pick a different model for this session.",
+						`New sessions start on ${displayName} (the default). Use /model to pick a different model for this session.`,
 						"info",
 					)
+				}
+
+				if (!installed && gatedDefault) {
+					// Gated organization: Auto is absent from the catalog, so the
+					// served flash model is the default instead of multi-model.
+					// Mirrors the Auto rollback below — session-level switches are
+					// honoured for their session, fresh sessions roll back. A session
+					// already on the gated default needs no churn: falling through
+					// to the kimchi-dev unwrap below still disables multi-model.
+					const alreadyOnDefault = ctx.model.provider === AUTO_MODEL_PROVIDER && ctx.model.id === gatedDefault.id
+					if (alreadyOnDefault) {
+						setMultiModelEnabled(sessionId, false)
+						resetLastNotified(sessionId)
+						return
+					}
+					await installFreshDefault(gatedDefault, gatedDefault.name)
+					return
+				}
+				if (installed) {
+					await installFreshDefault(installed, AUTO_MODEL_NAME)
 					// A fresh session carries no routing state to hydrate; stop here.
 					return
 				}

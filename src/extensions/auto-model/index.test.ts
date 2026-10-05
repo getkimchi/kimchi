@@ -33,6 +33,16 @@ vi.mock("../../settings-watcher.js", () => ({
 	getSettingsManager: () => settingsStubs,
 }))
 
+// The gated-org overwrite writes the developer's real settings.json in
+// production; intercept it so tests only record calls. readConfigSetting
+// stays real (read-only).
+const settingsWriteStubs = vi.hoisted(() => ({ writeConfigSetting: vi.fn() }))
+vi.mock(import("../../config/settings.js"), async (importOriginal) => ({
+	...(await importOriginal()),
+	writeConfigSetting: settingsWriteStubs.writeConfigSetting,
+}))
+
+import { getProcessMultiModelEnabled } from "../kimchi-process.js"
 import autoModelExtension, {
 	_resetAutoModelNoticeCache,
 	createAutoModelRoutingExtension,
@@ -498,6 +508,123 @@ describe("catalog-driven Auto default (main session)", () => {
 	})
 })
 
+describe("catalog-driven gated default — orgs without auto", () => {
+	const DEEPSEEK = "deepseek-v4-flash"
+
+	beforeEach(() => {
+		populateCliArgs([])
+		settingsStubs.getDefaultModel.mockReturnValue(undefined)
+		settingsStubs.getDefaultProvider.mockReturnValue(undefined)
+		settingsWriteStubs.writeConfigSetting.mockClear()
+	})
+
+	/** Registry serving exactly the given kimchi-dev ids (no `auto` unless listed). */
+	function registryServing(ids: string[]) {
+		return {
+			find: (_p: string, mid: string) => (ids.includes(mid) ? model(mid, { name: `Model ${mid}` }) : undefined),
+		}
+	}
+
+	function runSessionStart(ctxOverride: Parameters<typeof createContext>[0] = {}) {
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const c = createContext({
+			model: model("kimi-k3"),
+			modelRegistry: registryServing([DEEPSEEK]),
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+			...ctxOverride,
+		})
+		return {
+			...extension,
+			ctx: c,
+			start: () =>
+				extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c),
+		}
+	}
+
+	it("installs the served flash model as the persisted default and disables multi-model", async () => {
+		const { setModel, ctx, start } = runSessionStart()
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(model(DEEPSEEK, { name: `Model ${DEEPSEEK}` }), { persist: true })
+		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(false)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			`New sessions start on Model ${DEEPSEEK} (the default). Use /model to pick a different model for this session.`,
+			"info",
+		)
+	})
+
+	it("overwrites settings.json multiModel to false for gated organizations", async () => {
+		const { start } = runSessionStart()
+
+		await start()
+
+		expect(settingsWriteStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
+	})
+
+	it("falls back to deepseek-v4-flash-0731 when the canonical slug is unserved", async () => {
+		const { setModel, start } = runSessionStart({
+			modelRegistry: registryServing(["deepseek-v4-flash-0731"]),
+		})
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(model("deepseek-v4-flash-0731", { name: "Model deepseek-v4-flash-0731" }), {
+			persist: true,
+		})
+	})
+
+	it("is a silent no-op when the fresh session already comes up on the gated default", async () => {
+		const { setModel, ctx, start } = runSessionStart({
+			model: model(DEEPSEEK),
+		})
+
+		await start()
+
+		expect(setModel).not.toHaveBeenCalled()
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		// The seeded-default overwrite still applies; multi-model is off either way.
+		expect(settingsWriteStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
+		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(false)
+	})
+
+	it("does not gate organizations that the catalog serves auto to", async () => {
+		const { setModel, start } = runSessionStart({
+			modelRegistry: registryServing(["auto", DEEPSEEK]),
+		})
+
+		await start()
+
+		expect(settingsWriteStubs.writeConfigSetting).not.toHaveBeenCalled()
+		// Pre-existing behaviour: fresh sessions roll back to Auto.
+		expect(setModel).toHaveBeenCalledWith(model("auto", { name: "Model auto" }), { persist: true })
+	})
+
+	it("leaves multi-model alone when neither auto nor a flash candidate is served", async () => {
+		const { setModel, start } = runSessionStart({
+			modelRegistry: registryServing(["kimi-k3"]),
+		})
+
+		await start()
+
+		expect(setModel).not.toHaveBeenCalled()
+		expect(settingsWriteStubs.writeConfigSetting).not.toHaveBeenCalled()
+	})
+
+	it("respects an explicit --multi-model launch choice in a gated org", async () => {
+		populateCliArgs(["--multi-model"])
+		const { setModel, start } = runSessionStart()
+
+		await start()
+
+		// Session-level choice wins: no install. The seeded default is still
+		// overwritten — it is not a user choice.
+		expect(setModel).not.toHaveBeenCalled()
+		expect(settingsWriteStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
+	})
+})
+
 describe("main-session CLI model selection", () => {
 	it("records an explicit Auto CLI selection once through Pi's normal model path", async () => {
 		populateCliArgs(["--model", "kimchi-dev/auto"])
@@ -529,6 +656,7 @@ describe("main-session CLI model selection", () => {
 		const c = createContext({
 			model: model("kimi-k2.5"),
 			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+			modelRegistry: { find: () => undefined },
 		})
 
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
@@ -597,6 +725,7 @@ describe("main-session CLI model selection", () => {
 		const c = createContext({
 			model: model("kimi-k2.5"),
 			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+			modelRegistry: { find: () => undefined },
 		})
 
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
