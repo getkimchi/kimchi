@@ -530,6 +530,7 @@ describe("readable work summaries", () => {
 		const ledger = join(dir, "work-attribution", "parent.jsonl")
 		const past = new Date(Date.now() - 60 * 60 * 1000)
 		fs.utimesSync(ledger, past, past)
+		const ledgerMtime = fs.statSync(ledger).mtimeMs
 		fs.writeFileSync(
 			join(dir, "work-attribution", ".recovered.json"),
 			JSON.stringify({ version: 4, startedAt: Date.now(), summaries: { [workId]: `${size}:${mtimeMs}` } }),
@@ -540,7 +541,7 @@ describe("readable work summaries", () => {
 			expect.objectContaining({ observationId: "shell-window", complete: false }),
 		])
 		expect(summary(workId).commits[0].fileMatches).toEqual([fileMatch])
-		expect(fs.statSync(ledger).mtimeMs).toBe(past.getTime())
+		expect(fs.statSync(ledger).mtimeMs).toBe(ledgerMtime)
 	})
 	it.each([
 		undefined,
