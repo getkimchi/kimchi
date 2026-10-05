@@ -31,7 +31,7 @@ function isRetryableResponse(response: Response): boolean {
 	return RETRYABLE_STATUSES.has(response.status)
 }
 
-function parseRetryAfterMs(response: Response): number | null {
+export function parseRetryAfterMs(response: Response): number | null {
 	const header = response.headers.get("retry-after")
 	if (!header) return null
 	const seconds = Number(header)

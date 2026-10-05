@@ -6,7 +6,7 @@ import { isAbsolute, join } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { readGitToken } from "../../config.js"
 import { object } from "../work-attribution/summary.js"
-import { httpsURL, LookupError, label, type Repository, repositoryPath } from "./provider-records.js"
+import { httpsURL, LookupError, label, providerId, type Repository, repositoryPath } from "./provider-records.js"
 
 const COMMAND_TIMEOUT_MS = 5000
 
@@ -509,4 +509,18 @@ export async function repositoryIdentity(
 		}
 	}
 	throw new LookupError("This repository has no supported GitHub or GitLab API.", "unsupported")
+}
+
+/** A captured request's repository identity gets at most this long; the caller's signal usually ends it sooner. */
+const IDENTITY_BUDGET_MS = 10_000
+
+/** Provider identity for captured unlinked requests; credentials stay inside discovery. */
+export async function lookupRepositoryIdentity(
+	cwd: string,
+	signal: AbortSignal,
+): Promise<{ provider: "github" | "gitlab"; host: string; name: string; id: string }> {
+	const repository = await repositoryIdentity(cwd, signal, Date.now() + IDENTITY_BUDGET_MS, new Map())
+	const id = providerId(repository.id)
+	if (!id) throw new LookupError("The Git provider returned no stable repository ID.", "invalid")
+	return { provider: repository.provider, host: repository.host, name: repository.name, id }
 }

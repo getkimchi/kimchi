@@ -93,7 +93,11 @@ function costFingerprint(rows: unknown[], lookup: BillingLookup): string {
 }
 
 /** Read durable evidence rather than combining per-work caches. */
-export function readWorkCostReport(agentDir: string, records = readWorkRecords(agentDir)) {
+export function readWorkCostReport(agentDir: string, checkBudget: () => void = () => {}, snapshot?: WorkRecord[]) {
+	let historyComplete = true
+	const records = snapshot ?? readWorkRecords(agentDir, undefined, checkBudget, () => {
+		historyComplete = false
+	})
 	const requests = billingRequests(records)
 	const noCharge = new Map<string, WorkAccount>()
 	for (const item of requests.values()) {
@@ -125,7 +129,14 @@ export function readWorkCostReport(agentDir: string, records = readWorkRecords(a
 		incomplete,
 		noCharge,
 	)
-	return { records, requests, report }
+	const costRefreshes = new Map(
+		[...requests.values()].flatMap((item) =>
+			!item.invalid && item.substantiveLookup?.status === "priced"
+				? [[item.requestId, item.substantiveLookup.checkedAt] as const]
+				: [],
+		),
+	)
+	return { records, report, requests, historyComplete, costRefreshes }
 }
 
 interface CostState {
@@ -152,7 +163,7 @@ async function costState(agentDir: string, signal: AbortSignal): Promise<CostSta
 	const records = await readWorkRecordsAsync(agentDir, signal)
 	// The calculation cannot stop midway; a closing session must not wait for one it no longer needs.
 	signal.throwIfAborted()
-	const { requests, report } = readWorkCostReport(agentDir, records)
+	const { requests, report } = readWorkCostReport(agentDir, undefined, records)
 	const open: OpenBilling[] = []
 	const displays = new Map<string, BillingDisplay>()
 	for (const item of requests.values()) {

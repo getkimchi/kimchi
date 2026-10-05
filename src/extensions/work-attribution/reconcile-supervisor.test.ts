@@ -12,6 +12,7 @@ import {
 	subscribeCostReconciliation,
 	subscribeFileReconciliation,
 	subscribePullRequestReconciliation,
+	subscribeReportingReconciliation,
 } from "./reconcile-supervisor.js"
 
 vi.mock("proper-lockfile", async (original) => ({ ...(await original<typeof locks>()) }))
@@ -58,6 +59,29 @@ afterEach(async () => {
 })
 
 describe("shared file reconciliation", () => {
+	it("runs optional reporting after costs and historical repair and cancels only that subscription", async () => {
+		const order: string[] = []
+		vi.mocked(costs.reconcileWorkCosts).mockImplementation(async () => {
+			order.push("costs")
+		})
+		vi.mocked(continuations.reconcileWorkContinuations).mockImplementation(async () => {
+			order.push("history")
+		})
+		subscribe()
+		stops.push(subscribeCostReconciliation())
+		let reportSignal: AbortSignal | undefined
+		const stop = subscribeReportingReconciliation(async (_directory, signal, assertLease) => {
+			assertLease()
+			order.push("reporting")
+			reportSignal = signal
+			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
+		})
+		stops.push(stop)
+		await vi.waitFor(() => expect(order).toEqual(["costs", "history", "reporting"]))
+		await stop()
+		expect(reportSignal?.aborted).toBe(true)
+		expect(vi.getTimerCount()).toBe(1)
+	})
 	it("runs PR and cost work before a failed historical repair and retries without a PR warning", async () => {
 		const order: string[] = []
 		const onError = vi.fn()

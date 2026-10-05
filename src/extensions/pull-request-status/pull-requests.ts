@@ -266,7 +266,7 @@ async function scan(
 		const known = mergePullRequests(...commits.map((commit) => commit.pullRequests))
 		if (
 			known.length &&
-			known.every((pr) => pr.state === "merged") &&
+			known.every((pr) => pr.state === "merged" && pr.id && pr.repositoryId) &&
 			commits.every(
 				(commit) =>
 					commit.prLookup?.status === "linked" && JSON.stringify(commit.pullRequests) === JSON.stringify(known),
@@ -311,7 +311,10 @@ async function scan(
 		let refreshedKnown = false
 		let refreshFailure: LookupError | undefined
 		for (const previous of known.sort((a, b) => Date.parse(a.checkedAt) - Date.parse(b.checkedAt))) {
-			if (previous.state === "merged" || found.some((item) => pullRequestKey(item) === pullRequestKey(previous)))
+			if (
+				(previous.state === "merged" && previous.id && previous.repositoryId) ||
+				found.some((item) => pullRequestKey(item) === pullRequestKey(previous))
+			)
 				continue
 			try {
 				let request = refreshed.get(previous.url)

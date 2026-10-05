@@ -14,7 +14,7 @@ import { type ContinuationProgress, reconcileWorkContinuations } from "./links.j
 
 export const RECONCILIATION_INTERVAL_MS = 30_000
 const PASS_BUDGET_MS = 3000
-type ChannelKind = "pull-requests" | "costs"
+type ChannelKind = "pull-requests" | "costs" | "reporting"
 /** Optional work with its own cancellation; unsubscribing waits only for that channel's pass. */
 interface Channel {
 	controller: AbortController
@@ -30,6 +30,7 @@ interface Supervisor extends ContinuationProgress {
 }
 interface ReconciliationSubscriber {
 	kind: "files" | ChannelKind
+	onReport?: (agentDir: string, signal: AbortSignal, assertLease: () => void) => Promise<void>
 	onPullRequest?: (update: WorkPullRequestUpdate) => void
 	onError?: (error: unknown) => void
 }
@@ -141,6 +142,16 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 				if (!signal.aborted) debug("Could not reconcile work continuations: %o", error)
 			}
 		}
+		const report = [...owner.subscribers].find((subscriber) => subscriber.kind === "reporting")?.onReport
+		if (report)
+			await runChannel(
+				owner,
+				"reporting",
+				signal,
+				assertLease,
+				(channelSignal, assertChannel) => report(agentDir, channelSignal, assertChannel),
+				(error) => debug("Could not report PR costs: %o", error),
+			)
 	} finally {
 		if (!compromised) await release()
 	}
@@ -232,4 +243,10 @@ export function subscribePullRequestReconciliation(subscriber: {
 /** Price lookups share the timer and lease; only main work-tracking sessions subscribe. */
 export function subscribeCostReconciliation(): () => Promise<void> {
 	return subscribeReconciliation({ kind: "costs" })
+}
+/** An optional extension supplies delivery; work tracking has no reporting dependency. */
+export function subscribeReportingReconciliation(
+	onReport: NonNullable<ReconciliationSubscriber["onReport"]>,
+): () => Promise<void> {
+	return subscribeReconciliation({ kind: "reporting", onReport })
 }
