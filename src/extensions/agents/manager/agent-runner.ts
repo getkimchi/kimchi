@@ -33,7 +33,12 @@ import { loadProjectContextFiles } from "../../prompt-construction/context-files
 import requestTimingExtension from "../../request-timing.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
-import { createWorkAttributionExtension, getWorkId, tryWorkAttribution } from "../../work-attribution.js"
+import {
+	createWorkAttributionExtension,
+	getWorkId,
+	getWorkSegment,
+	tryWorkAttribution,
+} from "../../work-attribution.js"
 import { detectEnv } from "../env.js"
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { DEFAULT_AGENTS } from "../personas/default-agents.js"
@@ -367,6 +372,7 @@ async function runAgentInner(
 	options: RunOptions,
 ): Promise<RunResult> {
 	const inheritedWorkId = tryWorkAttribution(() => getWorkId(ctx))
+	const inheritedSegment = getWorkSegment(ctx)
 	const config = getConfig(type)
 	const agentConfig = getAgentConfig(type)
 
@@ -490,7 +496,7 @@ ${skillLines}`
 		: []
 	const extensionFactories: InlineExtension[] = [
 		telemetryExtension(readTelemetryConfig()),
-		createWorkAttributionExtension(inheritedWorkId ?? null),
+		createWorkAttributionExtension(inheritedWorkId ?? null, inheritedSegment),
 		requestTimingExtension,
 		...autoExtensionFactories,
 		bashExtension,

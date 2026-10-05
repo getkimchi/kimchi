@@ -3,6 +3,7 @@ import { fetchWithRetry } from "../utils/http.js"
 
 export interface VerifyApiKeyResponse {
 	organizationId: string
+	userId?: string
 }
 
 export interface Organization {
@@ -22,9 +23,14 @@ function resolveEndpoint(): string {
  */
 export async function verifyApiKey(
 	apiKey: string,
-	options?: { fetch?: typeof globalThis.fetch },
+	options?: {
+		fetch?: typeof globalThis.fetch
+		endpoint?: string
+		signal?: AbortSignal
+		retry?: { maxRetries: number }
+	},
 ): Promise<VerifyApiKeyResponse> {
-	const endpoint = resolveEndpoint()
+	const endpoint = options?.endpoint ?? resolveEndpoint()
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 
 	const url = `${endpoint}/ai-optimizer/v1beta/api-keys:verify`
@@ -37,7 +43,7 @@ export async function verifyApiKey(
 				Accept: "application/json",
 			},
 		},
-		{ fetchImpl },
+		{ fetchImpl, signal: options?.signal, retry: options?.retry },
 	)
 
 	if (!resp.ok) {
@@ -52,7 +58,10 @@ export async function verifyApiKey(
 		throw new Error(`Missing organizationId in api-keys:verify response from ${url}`)
 	}
 
-	return { organizationId: data.organizationId }
+	return {
+		organizationId: data.organizationId,
+		...(typeof data.userId === "string" && data.userId ? { userId: data.userId } : {}),
+	}
 }
 
 /** Fetch organization by id. */

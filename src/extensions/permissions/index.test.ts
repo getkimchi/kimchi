@@ -17,6 +17,7 @@ import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../pr
 import { isResourceEnabled } from "../../resources/store.js"
 import { emitPlanReviewDecision, PLAN_REVIEW_DECISION_CHANNEL } from "../../shared/planning/plan-review-bus.js"
 import { registerReadOnlyToolProvider } from "../../shared/planning/tool-profile-manager.js"
+import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
@@ -32,8 +33,8 @@ import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { CUSTOM_BRANCH_ITEM, CUSTOM_BRANCH_PROMPT } from "../remote-run/git-workflow.js"
 import { runCloudAgent } from "../remote-run/runner.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
-import { flushWorkSummaries } from "../work-attribution/summary.js"
-import { getWorkId } from "../work-attribution.js"
+import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary.js"
+import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
 import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
@@ -953,6 +954,41 @@ describe("plan mode assumption detection", () => {
 			"# Plan: Cache Layer\n\n## Goal\nAdd caching layer.\n\n## Chunks\n\n### Chunk 1: Add cache primitive\n- **Accept When**: round-trip works"
 		const PLAN_V2 =
 			"# Plan: Cache Layer\n\n## Goal\nAdd caching layer with TTL.\n\n## Chunks\n\n### Chunk 1: Add cache primitive\n- **Accept When**: round-trip works"
+
+		it("saves the plan's originating request even if work changed before the tool ran", async () => {
+			const ctx = createContext({
+				cwd: attributionDir,
+				hasUI: false,
+				sessionManager: { getSessionId: () => TEST_SESSION_ID },
+			})
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, ctx)
+			const tracing = createExtensionApi()
+			createWorkAttributionExtension()(tracing.api)
+			const headers: Record<string, string> = {}
+			await tracing.getHandler("before_provider_headers")({ headers }, ctx)
+			expect(headers["X-Request-Id"]).toBeTypeOf("string")
+			const workId = getWorkId(ctx)
+			await tracing.getHandler("message_end")(
+				{
+					message: {
+						role: "assistant",
+						stopReason: "toolUse",
+						content: [{ type: "toolCall", id: "tc-submit-plan", name: "submit_plan" }],
+					},
+				},
+				ctx,
+			)
+			setWorkId(ctx)
+			await submitPlan(harness, PLAN_V1, ctx)
+			expect(readWorkRecords(attributionDir)).toContainEqual(
+				expect.objectContaining({
+					type: "plan",
+					workId,
+					requestId: headers["X-Request-Id"],
+				}),
+			)
+		})
 
 		it("saves the plan file when the plan is produced, before the approval choice", async () => {
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
