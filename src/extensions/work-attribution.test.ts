@@ -5,6 +5,7 @@ import { join } from "node:path"
 import {
 	type BeforeProviderHeadersEvent,
 	type InputEvent,
+	type SessionBeforeCompactEvent,
 	SessionManager,
 	type SessionShutdownEvent,
 	type SessionStartEvent,
@@ -56,6 +57,81 @@ function records() {
 		)
 }
 describe("local work attribution", () => {
+	it.each([
+		"user",
+		"custom",
+		"assistant",
+		"toolResult",
+	] as const)("keeps work metadata without creating an extra compaction summary before %s", async (role) => {
+		const manager = SessionManager.inMemory(dir)
+		manager.appendMessage({ role: "user", content: "Earlier task", timestamp: 1 })
+		manager.appendMessage({ role: "user", content: "Previous turn", timestamp: 2 })
+		const earlierMessages = manager.buildSessionContext().messages
+		const firstKeptEntryId = manager.appendCustomEntry("work_identity", { workId: randomUUID() })
+		manager.appendCustomEntry("work_identity", { segment: { id: randomUUID() } })
+		if (role === "custom") manager.appendCustomMessageEntry("annotation", "Continue", false)
+		else if (role === "user") manager.appendMessage({ role, content: "Continue", timestamp: 3 })
+		else if (role === "toolResult")
+			manager.appendMessage({
+				role,
+				toolCallId: "write",
+				toolName: "write",
+				content: [{ type: "text", text: "Written" }],
+				isError: false,
+				timestamp: 3,
+			})
+		else
+			manager.appendMessage({
+				role,
+				content: [{ type: "text", text: "Continuing" }],
+				api: "openai-completions",
+				provider: "test",
+				model: "test",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: 3,
+			})
+		// Pi 0.85.1 moves its cut back over invisible metadata, then incorrectly
+		// treats the previous turn as a prefix even when the kept user turn is whole.
+		const event: SessionBeforeCompactEvent = {
+			type: "session_before_compact",
+			branchEntries: manager.getBranch(),
+			preparation: {
+				firstKeptEntryId,
+				messagesToSummarize: earlierMessages.slice(0, 1),
+				turnPrefixMessages: earlierMessages.slice(1),
+				isSplitTurn: true,
+				tokensBefore: 100,
+				fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+				settings: { enabled: true, reserveTokens: 100, keepRecentTokens: 10 },
+			},
+			reason: "manual",
+			willRetry: false,
+			signal: new AbortController().signal,
+		}
+		const before = structuredClone(event.preparation)
+		const branchBefore = structuredClone(event.branchEntries)
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		for (const handler of api.getHandlers<SessionBeforeCompactEvent>("session_before_compact"))
+			await handler(event, createContext({ cwd: dir, sessionManager: manager }))
+		if (role === "user" || role === "custom") {
+			expect(event.preparation).toEqual({
+				...before,
+				messagesToSummarize: earlierMessages,
+				turnPrefixMessages: [],
+				isSplitTurn: false,
+			})
+		} else expect(event.preparation).toEqual(before)
+		expect(event.branchEntries).toEqual(branchBefore)
+	})
 	it("marks a new request's missing scope as unknown instead of making it look like legacy history", () => {
 		const ctx = createContext({ cwd: dir })
 		const original = recordProviderRequest(ctx)

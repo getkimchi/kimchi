@@ -16,7 +16,9 @@ import {
 	createWriteToolDefinition,
 	type ExtensionAPI,
 	type ExtensionContext,
+	findTurnStartIndex,
 	getAgentDir,
+	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent"
 import { writeConfigSetting } from "../config/settings.js"
 import { readPlanWorkId } from "../shared/planning/plan-markdown.js"
@@ -295,6 +297,21 @@ export function createWorkAttributionExtension(
 			})
 		}
 		let unregisterWorkState: (() => void) | undefined = registerWorkState()
+		pi.on("session_before_compact", ({ preparation, branchEntries }) => {
+			if (!preparation.isSplitTurn) return
+			const firstKept = branchEntries.findIndex((entry) => entry.id === preparation.firstKeptEntryId)
+			if (firstKept < 0) return
+			let firstVisible = firstKept
+			while (firstVisible < branchEntries.length && !sessionEntryToContextMessages(branchEntries[firstVisible]).length)
+				firstVisible++
+			if (firstVisible === firstKept || firstVisible === branchEntries.length) return
+			if (findTurnStartIndex(branchEntries, firstVisible, firstVisible) !== firstVisible) return
+			// Pi 0.85.1 mistakes metadata before a whole turn for a mid-turn cut.
+			// Keep our work identity entries, but summarize the earlier history only once.
+			preparation.messagesToSummarize.push(...preparation.turnPrefixMessages)
+			preparation.turnPrefixMessages = []
+			preparation.isSplitTurn = false
+		})
 		pi.on("session_start", (_event, ctx) => {
 			inputGeneration++
 			semanticAbort?.abort()
