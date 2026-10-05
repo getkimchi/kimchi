@@ -157,7 +157,11 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
-import { createWorkAttributionExtension } from "./extensions/work-attribution.js"
+import {
+	createWorkAttributionExtension,
+	prepareProviderRequest,
+	recordProviderResponse,
+} from "./extensions/work-attribution.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import { installGlobalFetchInstrumentation } from "./http/instrument-fetch.js"
 import {
@@ -652,6 +656,8 @@ try {
 
 		installGlobalFetchInstrumentation({
 			userAgent: `kimchi/${getVersion()}`,
+			onModelRequest: prepareProviderRequest,
+			onModelResponse: recordProviderResponse,
 			onModelCompletionSettled: (originalFetch) =>
 				refreshBillingStatusFromConfig({ fetch: originalFetch, mode: "automatic" }),
 		})

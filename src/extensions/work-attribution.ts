@@ -12,6 +12,7 @@ import {
 } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import {
+	type BeforeProviderHeadersEvent,
 	createEditToolDefinition,
 	createWriteToolDefinition,
 	type ExtensionAPI,
@@ -21,18 +22,27 @@ import {
 	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent"
 import { writeConfigSetting } from "../config/settings.js"
+import type { ModelRequestMetadata } from "../http/instrument-fetch.js"
 import { readPlanWorkId } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
 import { findWorkContinuation, hasWorkReference, type WorkContinuation } from "./work-attribution/continuation.js"
+import {
+	type BillingSource,
+	captureBillingSource,
+	requestTagSelector,
+	workCostDetails,
+} from "./work-attribution/cost-sync.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
 import { confirmWorkContinuation, correctWorkLink } from "./work-attribution/links.js"
-import { subscribeFileReconciliation } from "./work-attribution/reconcile-supervisor.js"
+import { subscribeCostReconciliation, subscribeFileReconciliation } from "./work-attribution/reconcile-supervisor.js"
+import { prepareBillingTag } from "./work-attribution/request-tags.js"
 import {
 	captureWorkScope,
 	readWorkScope,
 	sameWorkScope,
 	saveNewWorkScope,
+	type WorkScope,
 	workRepository,
 } from "./work-attribution/scope.js"
 import {
@@ -91,6 +101,33 @@ const workOutputs = new Map<string, Set<string>>()
 /** Earlier startup hooks can allocate a fresh ledger before the extension binds it. */
 const freshSessionLedgers = new Set<string>()
 type RequestModel = Pick<NonNullable<ExtensionContext["model"]>, "provider" | "id">
+interface PendingRequest {
+	ctx: WorkContext
+	workId: string
+	path: string
+	model?: RequestModel
+	startedAt: string
+	logicalRequestId: string
+	segment?: WorkSegment
+	scope?: WorkScope | null
+	purpose?: "work-matching"
+	dispatched: boolean
+	responded: boolean
+	billingSource?: BillingSource
+	billingTag?: string
+	headers?: BeforeProviderHeadersEvent["headers"]
+}
+const pendingRequests = new Map<string, PendingRequest>()
+
+function rememberRequest(requestId: string, request: PendingRequest): void {
+	// ponytail: retain at most 1000 attempts for SDK retries; older ledger rows remain durable.
+	if (pendingRequests.size >= 1000) {
+		const oldest = pendingRequests.keys().next().value
+		if (oldest) pendingRequests.delete(oldest)
+	}
+	pendingRequests.set(requestId, request)
+}
+
 export function workLedgerPath(ctx: WorkContext): string {
 	// Session IDs also come from imported sessions; never interpret them as paths.
 	return join(getAgentDir(), "work-attribution", `${encodeURIComponent(ctx.sessionManager.getSessionId())}.jsonl`)
@@ -216,7 +253,123 @@ export function recordProviderRequest(
 		},
 		workId,
 	)
+	rememberRequest(requestId, {
+		ctx: pinWorkContext(ctx),
+		workId,
+		path: workLedgerPath(ctx),
+		model: model && { provider: model.provider, id: model.id },
+		startedAt,
+		logicalRequestId: requestId,
+		segment,
+		scope,
+		purpose,
+		dispatched: false,
+		responded: false,
+	})
 	return { requestId, workId }
+}
+/** Persist the identity of each HTTP dispatch, including retries inside provider SDKs. */
+export function prepareProviderRequest(headers: Headers, url?: string, metadata?: ModelRequestMetadata): void {
+	const logicalId = headers.get("x-request-id")
+	const request = logicalId && pendingRequests.get(logicalId)
+	if (!request) return
+	const billingSource = url ? captureBillingSource(headers, url, request.ctx.cwd) : undefined
+	const retry = request.dispatched
+	const requestId = retry ? randomUUID() : logicalId
+	const startedAt = retry ? new Date().toISOString() : request.startedAt
+	const dispatchedAt = new Date().toISOString()
+	const tagging = prepareBillingTag(headers, metadata?.bodyTags, requestId, (tag) => {
+		if (!tag.startsWith("kimchi-request:")) return false
+		const previous = pendingRequests.get(tag.slice("kimchi-request:".length))
+		return previous?.billingTag === tag && previous.logicalRequestId === request.logicalRequestId
+	})
+	const billingSelector = billingSource && tagging.billingTag ? requestTagSelector(requestId, dispatchedAt) : undefined
+	// Even a failed metadata write represents a dispatch; a subsequent SDK retry needs another ID.
+	request.dispatched = true
+	const active = activeRequests.get(request.path)
+	const isActive = active && pendingRequests.get(active.requestId)?.logicalRequestId === request.logicalRequestId
+	try {
+		if (retry)
+			appendWorkRecord(
+				request.ctx,
+				{
+					type: "request",
+					requestId,
+					parentRequestId: request.logicalRequestId,
+					segment: request.segment,
+					scope: request.scope,
+					purpose: request.purpose,
+					startedAt,
+					provider: request.model?.provider,
+					model: request.model?.id,
+					modelSource: "context",
+				},
+				request.workId,
+				request.path,
+			)
+		appendWorkRecord(
+			request.ctx,
+			{
+				type: "request_dispatch",
+				requestId,
+				startedAt,
+				dispatchedAt,
+				billingSource,
+				billingSelector,
+				...(!billingSelector
+					? { billingTagSkipped: billingSource ? tagging.billingTagSkipped : "unsupported-source" }
+					: {}),
+			},
+			request.workId,
+			request.path,
+		)
+	} catch (error) {
+		if (isActive) {
+			activeRequests.delete(request.path)
+			if (request.headers) request.headers["X-Request-Id"] = null
+		}
+		throw error
+	}
+	rememberRequest(requestId, {
+		...request,
+		startedAt,
+		billingSource,
+		billingTag: billingSelector ? tagging.billingTag : undefined,
+		dispatched: true,
+		responded: false,
+	})
+	headers.set("X-Request-Id", requestId)
+	if (billingSelector && tagging.header) headers.set("X-Tags", tagging.header)
+	if (isActive) {
+		activeRequests.set(request.path, { requestId, workId: request.workId })
+		// Timing retains this same object from before_provider_headers; move both identities together.
+		if (request.headers) request.headers["X-Request-Id"] = requestId
+	}
+}
+/** A response belongs to the identity captured before dispatch, even after /work new or /new. */
+export function recordProviderResponse(requestId: string, response: Pick<Response, "status" | "headers">): void {
+	const request = pendingRequests.get(requestId)
+	if (!request || request.responded) return
+	const promptId = response.headers.get("x-prompt-id")
+	const traceId = response.headers.get("x-trace-id")
+	appendWorkRecord(
+		request.ctx,
+		{
+			type: "request_response",
+			requestId,
+			startedAt: request.startedAt,
+			billingSource: request.billingSource,
+			response: {
+				status: response.status,
+				receivedAt: new Date().toISOString(),
+				...(isWorkId(promptId) ? { promptId } : {}),
+				...(traceId && /^[a-f\d]{32}$/i.test(traceId) ? { traceId } : {}),
+			},
+		},
+		request.workId,
+		request.path,
+	)
+	request.responded = true
 }
 /** Snapshot the session so later async work stays attributed to it after a session switch. */
 export function pinWorkContext(ctx: WorkContext): WorkContext {
@@ -283,6 +436,7 @@ export function createWorkAttributionExtension(
 	const isChild = inheritedWorkId !== undefined
 	return (pi) => {
 		let stopReconciliation: (() => Promise<void>) | undefined
+		let stopCosts: (() => Promise<void>) | undefined
 		let activeContext: ExtensionContext | undefined
 		function notifyWorkChanged(): void {
 			if (!isChild) pi.events.emit(WORK_CHANGED_EVENT, undefined)
@@ -328,6 +482,7 @@ export function createWorkAttributionExtension(
 						if (activeContext) warnWorkAttribution(activeContext, error)
 					},
 				})
+			if (!isChild && !stopCosts) stopCosts = subscribeCostReconciliation()
 			pi.registerTool(createCommitTrackingBashTool(ctx))
 			// Main sessions use tool-rendering's decorated tools; isolated children need these native fallbacks.
 			pi.registerTool({
@@ -559,6 +714,8 @@ export function createWorkAttributionExtension(
 				bind(ctx)
 				const identity = recordProviderRequest(ctx, ctx.model)
 				event.headers["X-Request-Id"] = identity.requestId
+				const request = pendingRequests.get(identity.requestId)
+				if (request) request.headers = event.headers
 				// Kept local: work identity is used by diagnostics, not uploaded as a header.
 				activeRequests.set(workLedgerPath(ctx), identity)
 			} catch (error) {
@@ -597,8 +754,10 @@ export function createWorkAttributionExtension(
 			const key = workLedgerPath(ctx)
 			const stop = stopReconciliation
 			stopReconciliation = undefined
+			const costStop = stopCosts
+			stopCosts = undefined
 			continuationEligible.delete(key)
-			await stop?.()
+			await Promise.all([costStop?.(), stop?.()])
 			await flushWorkSummaries()
 			activeRequests.delete(key)
 			activeSegments.delete(key)
@@ -659,6 +818,7 @@ export function createWorkAttributionExtension(
 					notifyWorkChanged()
 					const details: WorkDetailsRequest = { workId: getWorkId(ctx), lines: [] }
 					pi.events.emit(WORK_DETAILS_REQUEST_EVENT, details)
+					details.lines.push(...workCostDetails(getAgentDir(), details.workId))
 					notify(ctx, [`Work ID: ${details.workId}`, ...details.lines].join("\n"))
 				} catch (error) {
 					warnWorkAttribution(ctx, error)

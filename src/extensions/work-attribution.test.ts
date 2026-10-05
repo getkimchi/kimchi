@@ -1,7 +1,9 @@
+import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { complete, getModel } from "@earendil-works/pi-ai/compat"
 import {
 	type BeforeProviderHeadersEvent,
 	type InputEvent,
@@ -11,22 +13,27 @@ import {
 	type SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { installGlobalFetchInstrumentation } from "../http/instrument-fetch.js"
 import { readPlanWorkId, savePlanMarkdown } from "../shared/planning/plan-markdown.js"
 import { createCommandContext, createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createWorkScopeSnapshot } from "./__mocks__/work-scope.js"
 import requestTimingExtension from "./request-timing.js"
 import * as continuation from "./work-attribution/continuation.js"
+import * as costSync from "./work-attribution/cost-sync.js"
 import * as supervisor from "./work-attribution/reconcile-supervisor.js"
 import * as scope from "./work-attribution/scope.js"
-import { flushWorkSummaries, recoverWorkSummaries } from "./work-attribution/summary.js"
+import { flushWorkSummaries, readWorkRecords, recoverWorkSummaries } from "./work-attribution/summary.js"
 import {
 	appendWorkRecord,
 	createWorkAttributionExtension,
+	getActiveRequest,
 	getToolRequest,
 	getWorkId,
 	getWorkSegment,
+	prepareProviderRequest,
 	recordProviderRequest,
+	recordProviderResponse,
 	setWorkId,
 } from "./work-attribution.js"
 
@@ -38,6 +45,7 @@ beforeEach(() => {
 	vi.spyOn(scope, "captureWorkScope").mockResolvedValue(captured)
 	vi.spyOn(scope, "readWorkScope").mockReturnValue(captured.scope)
 	vi.spyOn(supervisor, "subscribeFileReconciliation").mockReturnValue(async () => {})
+	vi.spyOn(supervisor, "subscribeCostReconciliation").mockReturnValue(async () => {})
 })
 afterEach(async () => {
 	await flushWorkSummaries()
@@ -55,6 +63,11 @@ function records() {
 				.split("\n")
 				.map((line) => JSON.parse(line)),
 		)
+}
+function wireHeaders(values: BeforeProviderHeadersEvent["headers"]): Headers {
+	const headers = new Headers()
+	for (const [key, value] of Object.entries(values)) if (value !== null) headers.set(key, value)
+	return headers
 }
 describe("local work attribution", () => {
 	it.each([
@@ -192,6 +205,387 @@ describe("local work attribution", () => {
 				requestIds: [selected.requestId],
 			}),
 		])
+	})
+	it("starts billing reconciliation once for a main session and never for its child", async () => {
+		const stop = vi.fn(async () => {})
+		vi.mocked(supervisor.subscribeCostReconciliation).mockReturnValue(stop)
+		const parent = createExtensionApi()
+		const child = createExtensionApi()
+		const ctx = createContext({ cwd: dir })
+		createWorkAttributionExtension()(parent.api)
+		createWorkAttributionExtension(getWorkId(ctx))(child.api)
+		for (const api of [parent, parent, child])
+			await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+		expect(supervisor.subscribeCostReconciliation).toHaveBeenCalledOnce()
+		await child.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
+		expect(stop).not.toHaveBeenCalled()
+		await parent.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
+		expect(stop).toHaveBeenCalledOnce()
+	})
+	it("pins billing metadata at dispatch before a later account or work switch", () => {
+		const ctx = createContext({ cwd: dir })
+		const identity = recordProviderRequest(ctx, ctx.model)
+		const original = {
+			apiUrl: "https://billing.example/api",
+			gatewayUrl: "https://gateway.example/v1/chat/completions",
+			credentialHash: "a".repeat(64),
+		}
+		vi.spyOn(costSync, "captureBillingSource").mockReturnValue(original)
+		const headers = new Headers({ "X-Request-Id": identity.requestId, Authorization: "Bearer test-key" })
+		prepareProviderRequest(headers, original.gatewayUrl)
+		vi.mocked(costSync.captureBillingSource).mockReturnValue({ ...original, credentialHash: "b".repeat(64) })
+		setWorkId(ctx)
+		recordProviderResponse(identity.requestId, {
+			status: 200,
+			headers: new Headers({ "X-Prompt-Id": "11111111-2222-4333-8444-555555555555" }),
+		})
+		expect(records().find((row) => row.type === "request_response")).toMatchObject({
+			workId: identity.workId,
+			billingSource: original,
+		})
+	})
+	it.each([
+		{ bodyTags: undefined, header: "team:one", reason: "body-uninspectable" },
+		{ bodyTags: Array.from({ length: 10 }, () => "duplicate:tag"), header: "", reason: "tag-limit" },
+		{ bodyTags: ["kimchi-request:user-owned"], header: "team:one", reason: "reserved-tag" },
+	])("persists skipped tagging without changing user tags: $reason", ({ bodyTags, header, reason }) => {
+		const ctx = createContext({ cwd: dir })
+		const { requestId } = recordProviderRequest(ctx, ctx.model)
+		vi.spyOn(costSync, "captureBillingSource").mockReturnValue({
+			apiUrl: "https://billing.invalid",
+			gatewayUrl: "https://model.invalid/v1/chat/completions",
+			credentialHash: "a".repeat(64),
+		})
+		const headers = new Headers({ "X-Request-Id": requestId, "X-Tags": header })
+		prepareProviderRequest(headers, "https://model.invalid/v1/chat/completions", { bodyTags })
+		expect(headers.get("X-Tags")).toBe(header)
+		expect(records().find((row) => row.type === "request_dispatch")).toMatchObject({
+			requestId,
+			billingTagSkipped: reason,
+		})
+		expect(records().find((row) => row.type === "request_dispatch")).not.toHaveProperty("billingSelector")
+	})
+	it.each([
+		false,
+		true,
+	])("does not send an unrecorded tag when dispatch persistence fails (retry: %s)", async (retry) => {
+		const ctx = createContext({ cwd: dir })
+		const { requestId } = recordProviderRequest(ctx, ctx.model)
+		const url = "https://model.invalid/v1/chat/completions"
+		vi.spyOn(costSync, "captureBillingSource").mockReturnValue({
+			apiUrl: "https://billing.invalid",
+			gatewayUrl: url,
+			credentialHash: "a".repeat(64),
+		})
+		const headers = new Headers({ "X-Request-Id": requestId, "X-Tags": "team:one" })
+		if (retry) prepareProviderRequest(headers, url, { bodyTags: [] })
+		await flushWorkSummaries()
+		rmSync(join(dir, "work-attribution"), { recursive: true })
+		writeFileSync(join(dir, "work-attribution"), "blocked")
+		const sent = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+			const outgoing = new Headers(init?.headers)
+			expect(outgoing.get("X-Request-Id")).toBeNull()
+			expect(outgoing.get("X-Tags")).toBe("team:one")
+			return new Response("ok")
+		})
+		vi.stubGlobal("fetch", sent)
+		vi.spyOn(console, "warn").mockImplementation(() => {})
+		installGlobalFetchInstrumentation({ userAgent: "test", onModelRequest: prepareProviderRequest })
+		expect(await (await fetch(url, { headers, body: "{}", method: "POST" })).text()).toBe("ok")
+		expect(sent).toHaveBeenCalledOnce()
+	})
+	it.each([
+		"http",
+		"network",
+	])("records Pi's hidden %s retry and attributes diagnostics and native writes to the successful attempt", async (failure) => {
+		vi.stubEnv("KIMCHI_STREAM_IDLE_TIMEOUT_MS", "0")
+		execFileSync("git", ["init", "-q", dir])
+		const model = {
+			...getModel("openai", "gpt-4o-mini"),
+			api: "openai-completions" as const,
+			baseUrl: "https://model.invalid/v1",
+		}
+		const ctx = createContext({ cwd: dir, model })
+		const api = createExtensionApi()
+		if (failure === "network") requestTimingExtension(api.api)
+		createWorkAttributionExtension()(api.api)
+		if (failure === "http") requestTimingExtension(api.api)
+		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+		const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		for (const handler of api.getHandlers<BeforeProviderHeadersEvent>("before_provider_headers"))
+			await handler(event, ctx)
+		const logicalId = event.headers["X-Request-Id"]
+		const promptIds = ["11111111-2222-4333-8444-555555555555", "22222222-2222-4333-8444-555555555555"]
+		vi.spyOn(costSync, "captureBillingSource").mockReturnValue({
+			apiUrl: "https://billing.invalid/api",
+			gatewayUrl: `${model.baseUrl}/chat/completions`,
+			credentialHash: "a".repeat(64),
+		})
+		const calls: {
+			requestId: string | null
+			recordedBeforeSend: boolean
+			tag: string | null
+			tagRecordedBeforeSend: boolean
+		}[] = []
+		vi.stubGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+			const headers = new Headers(init?.headers)
+			const requestId = headers.get("x-request-id")
+			const tag = headers.get("x-tags")
+			calls.push({
+				requestId,
+				recordedBeforeSend: records().some((row) => row.type === "request" && row.requestId === requestId),
+				tag,
+				tagRecordedBeforeSend: records().some(
+					(row) => row.type === "request_dispatch" && row.requestId === requestId && row.billingSelector?.tag === tag,
+				),
+			})
+			if (calls.length === 1) {
+				if (failure === "network") throw new TypeError("fetch failed")
+				return Response.json(
+					{ error: { message: "retry", type: "server_error" } },
+					{ status: 503, headers: { "Retry-After": "0", "X-Prompt-Id": promptIds[0] } },
+				)
+			}
+			const chunk = {
+				id: "chat",
+				object: "chat.completion.chunk",
+				created: 1,
+				model: model.id,
+				choices: [
+					{
+						index: 0,
+						delta: {
+							role: "assistant",
+							tool_calls: [
+								{
+									index: 0,
+									id: "write-success",
+									type: "function",
+									function: {
+										name: "write",
+										arguments: JSON.stringify({ path: "retry.txt", content: "saved after retry\n" }),
+									},
+								},
+							],
+						},
+						finish_reason: "tool_calls",
+					},
+				],
+				usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+			}
+			return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
+				headers: { "Content-Type": "text/event-stream", "X-Prompt-Id": promptIds[1] },
+			})
+		})
+		installGlobalFetchInstrumentation({
+			userAgent: "retry-test",
+			onModelRequest: prepareProviderRequest,
+			onModelResponse: recordProviderResponse,
+		})
+		const result = await complete(
+			model,
+			{
+				messages: [{ role: "user", content: "Write a file", timestamp: Date.now() }],
+				tools: [api.getRegisteredTool("write")],
+			},
+			{
+				apiKey: "fake",
+				headers: event.headers,
+				maxRetries: 1,
+				maxRetryDelayMs: 1,
+				onResponse: async (response) => {
+					await api.getHandler("after_provider_response")({ type: "after_provider_response", ...response }, ctx)
+				},
+			},
+		)
+		expect(result.errorMessage).toBeUndefined()
+		expect(result.stopReason).toBe("toolUse")
+		expect(calls).toHaveLength(2)
+		expect(calls.every((call) => call.recordedBeforeSend)).toBe(true)
+		expect(calls.every((call) => call.tagRecordedBeforeSend)).toBe(true)
+		expect(calls.map((call) => call.tag)).toEqual(calls.map((call) => `kimchi-request:${call.requestId}`))
+		expect(calls[0].requestId).toBe(logicalId)
+		expect(calls[1].requestId).not.toBe(logicalId)
+		for (const handler of api.getHandlers("message_end")) await handler({ message: result }, ctx)
+		expect(api.getAppendedEntries("request_diagnostics")).toEqual([
+			expect.objectContaining({ requestId: calls[1].requestId, status: 200 }),
+		])
+		await api
+			.getRegisteredTool("write")
+			.execute("write-success", { path: "retry.txt", content: "saved after retry\n" }, undefined, undefined, ctx)
+		expect(readFileSync(join(dir, "retry.txt"), "utf8")).toBe("saved after retry\n")
+		expect(readWorkRecords(dir).find((row) => row.type === "file_transition")).toMatchObject({
+			requestId: calls[1].requestId,
+		})
+		await flushWorkSummaries()
+		const requests = JSON.parse(readFileSync(join(dir, "work", getWorkId(ctx), "work.json"), "utf8")).requests
+		expect(requests).toHaveLength(2)
+		expect(records().filter((row) => row.type === "request")).toHaveLength(2)
+		expect(records().filter((row) => row.type === "request_dispatch")).toHaveLength(2)
+		expect(requests[0].billingSelector.tag).toBe(calls[0].tag)
+		expect(requests[1]).toMatchObject({
+			requestId: calls[1].requestId,
+			parentRequestId: logicalId,
+			response: { status: 200, promptId: promptIds[1] },
+		})
+		if (failure === "http") expect(requests[0].response).toMatchObject({ status: 503, promptId: promptIds[0] })
+		else expect(requests[0]).not.toHaveProperty("response")
+	})
+	it("keeps retries of both original and alias IDs in the original work after another main request starts", async () => {
+		const ctx = createContext({ cwd: dir, model: { provider: "original", id: "first-model" } })
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const original: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(original, ctx)
+		const logicalId = original.headers["X-Request-Id"]
+		const originalWork = getWorkId(ctx)
+		prepareProviderRequest(wireHeaders(original.headers))
+		const firstRetry = wireHeaders(original.headers)
+		prepareProviderRequest(firstRetry)
+		const retryId = firstRetry.get("x-request-id")
+		expect(retryId).not.toBe(logicalId)
+		expect(getActiveRequest(ctx)?.requestId).toBe(retryId)
+		expect(original.headers["X-Request-Id"]).toBe(retryId)
+		setWorkId(ctx)
+		ctx.model = { ...getModel("openai", "gpt-4o-mini") }
+		const current: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(current, ctx)
+		for (const id of [logicalId, retryId]) {
+			if (!id) throw new Error("Expected request ID")
+			const wire = new Headers({ "X-Request-Id": id })
+			prepareProviderRequest(wire)
+			expect(wire.get("x-request-id")).not.toBe(id)
+			expect(records().find((row) => row.requestId === wire.get("x-request-id"))).toMatchObject({
+				workId: originalWork,
+				parentRequestId: logicalId,
+				provider: "original",
+				model: "first-model",
+			})
+			expect(getActiveRequest(ctx)?.requestId).toBe(current.headers["X-Request-Id"])
+		}
+		expect(original.headers["X-Request-Id"]).toBe(retryId)
+	})
+	it("does not let auxiliary retries replace the main response's tool identity", async () => {
+		const ctx = createContext({ cwd: dir })
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const main: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(main, ctx)
+		prepareProviderRequest(wireHeaders(main.headers))
+		const auxiliary = recordProviderRequest(ctx, { provider: "kimchi-dev", id: "classifier" })
+		prepareProviderRequest(new Headers({ "X-Request-Id": auxiliary.requestId }))
+		const retry = new Headers({ "X-Request-Id": auxiliary.requestId })
+		prepareProviderRequest(retry)
+		expect(retry.get("x-request-id")).not.toBe(auxiliary.requestId)
+		await api.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "write", name: "write" }],
+				},
+			},
+			ctx,
+		)
+		expect(getToolRequest(ctx, "write")?.requestId).toBe(main.headers["X-Request-Id"])
+	})
+	it("pins a retry's session and model even when the caller changes both", async () => {
+		let sessionId = "first-session"
+		const model = { provider: "original", id: "original-model" }
+		const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
+		const original = recordProviderRequest(ctx, model)
+		prepareProviderRequest(new Headers({ "X-Request-Id": original.requestId }))
+		sessionId = "next-session"
+		model.id = "next-model"
+		setWorkId(ctx)
+		const retry = new Headers({ "X-Request-Id": original.requestId })
+		prepareProviderRequest(retry)
+		expect(records().find((row) => row.requestId === retry.get("x-request-id"))).toMatchObject({
+			parentRequestId: original.requestId,
+			sessionId: "first-session",
+			workId: original.workId,
+			model: "original-model",
+		})
+	})
+	it("drops stale timing and tool identities when a retry cannot be persisted", async () => {
+		const ctx = createContext({ cwd: dir })
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(event, ctx)
+		const sdkHeaders = wireHeaders(event.headers)
+		const sent: (string | null)[] = []
+		vi.stubGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+			sent.push(new Headers(init?.headers).get("x-request-id"))
+			return new Response("ok")
+		})
+		installGlobalFetchInstrumentation({
+			userAgent: "test",
+			onModelRequest: prepareProviderRequest,
+			onModelResponse: recordProviderResponse,
+		})
+		await fetch("https://model.invalid/v1/chat/completions", { headers: sdkHeaders })
+		await flushWorkSummaries()
+		rmSync(join(dir, "work-attribution"), { recursive: true })
+		writeFileSync(join(dir, "work-attribution"), "blocked")
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		expect(await (await fetch("https://model.invalid/v1/chat/completions", { headers: sdkHeaders })).text()).toBe("ok")
+		expect(sent).toEqual([sdkHeaders.get("X-Request-Id"), null])
+		expect(event.headers["X-Request-Id"]).toBeNull()
+		expect(getActiveRequest(ctx)).toBeUndefined()
+		await api.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "write", name: "write" }],
+				},
+			},
+			ctx,
+		)
+		expect(getToolRequest(ctx, "write")).toBeUndefined()
+		expect(warning).toHaveBeenCalledWith("[work-attribution] Request identity unavailable:", expect.any(Error))
+	})
+	it("saves billing response IDs with the request's original work, session and start time", async () => {
+		let sessionId = "billing-origin"
+		const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
+		const attempt = recordProviderRequest(ctx, { provider: "kimchi-dev", id: "glm-5.3" })
+		const original = records().find((row) => row.requestId === attempt.requestId)
+		sessionId = "switched-session"
+		setWorkId(ctx)
+		const promptId = "11111111-2222-4333-8444-555555555555"
+		recordProviderResponse(attempt.requestId, {
+			status: 200,
+			headers: new Headers({ "X-Prompt-Id": promptId, "X-Trace-Id": "a".repeat(32), Authorization: "must-not-save" }),
+		})
+		recordProviderResponse(attempt.requestId, { status: 500, headers: new Headers() })
+		await flushWorkSummaries()
+		const summary = JSON.parse(readFileSync(join(dir, "work", attempt.workId, "work.json"), "utf8"))
+		expect(summary.requests).toHaveLength(1)
+		expect(summary.requests[0]).toMatchObject({
+			requestId: attempt.requestId,
+			sessionId: "billing-origin",
+			startedAt: original.startedAt,
+			response: { status: 200, promptId, traceId: "a".repeat(32) },
+		})
+		expect(Date.parse(original.startedAt)).toBeLessThanOrEqual(Date.parse(original.recordedAt))
+		expect(JSON.stringify(records())).not.toContain("must-not-save")
+		expect(records().filter((row) => row.type === "request")).toHaveLength(1)
+		expect(records().filter((row) => row.type === "request_response")).toHaveLength(1)
+		expect(summary.requests[0]).not.toHaveProperty("costUsd")
+	})
+	it("records missing or malformed billing identity without inventing a charge", async () => {
+		const ctx = createContext({ cwd: dir })
+		const attempt = recordProviderRequest(ctx)
+		recordProviderResponse(attempt.requestId, {
+			status: 503,
+			headers: new Headers({ "X-Prompt-Id": "not-an-id", "X-Trace-Id": "sensitive garbage" }),
+		})
+		recordProviderResponse("unknown-request", { status: 200, headers: new Headers() })
+		await flushWorkSummaries()
+		const summary = JSON.parse(readFileSync(join(dir, "work", attempt.workId, "work.json"), "utf8"))
+		expect(summary.requests).toHaveLength(1)
+		expect(summary.requests[0].response).toEqual({ status: 503, receivedAt: expect.any(String) })
 	})
 	it("adopts a named artifact before dispatch and records why the sessions were joined", async () => {
 		const ctx = createContext({ cwd: dir })

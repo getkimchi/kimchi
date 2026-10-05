@@ -1,0 +1,1185 @@
+import { randomUUID } from "node:crypto"
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as config from "../../config.js"
+import { createContext } from "../__mocks__/context.js"
+import { appendWorkRecord, getWorkId } from "../work-attribution.js"
+import { captureBillingSource, reconcileWorkCosts, requestTagSelector, workCostDetails } from "./cost-sync.js"
+import { flushWorkSummaries, readWorkRecords, recoverWorkSummaries } from "./summary.js"
+
+vi.mock("../../config.js", async (original) => ({ ...(await original<typeof config>()) }))
+
+const API = "https://billing.example/api"
+const GATEWAY = "https://gateway.example/openai/v1/chat/completions"
+const PROMPT = "11111111-2222-4333-8444-555555555555"
+const ROW = "22222222-2222-4333-8444-555555555555"
+const ORG = "33333333-2222-4333-8444-555555555555"
+let dir: string
+let currentKey: string
+const fetchMock = vi.fn<typeof fetch>()
+
+beforeEach(() => {
+	dir = mkdtempSync(join(tmpdir(), "kimchi-cost-sync-"))
+	currentKey = "test-only-original-key"
+	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
+	const originalConfig = config.loadConfig()
+	const endpoints = config.resolveEndpoints()
+	vi.spyOn(config, "loadConfig").mockImplementation(() => ({ ...originalConfig, apiKey: currentKey }))
+	vi.spyOn(config, "resolveEndpoints").mockReturnValue({
+		...endpoints,
+		platformApiUrl: API,
+		openAiBaseUrl: "https://gateway.example/openai/v1",
+		anthropicBaseUrl: "https://gateway.example/anthropic",
+		experimentalOpenAiBaseUrl: "https://gateway.example/experimental/openai/v1",
+		llmEndpoint: "https://gateway.example/openai/v1",
+	})
+	fetchMock.mockReset()
+	fetchMock.mockImplementation(async (input) =>
+		String(input).endsWith("api-keys:verify")
+			? Response.json({ organizationId: ORG, userId: PROMPT })
+			: Response.json({ items: [{ id: ROW, promptId: PROMPT, totalPrice: "0.123456789" }], nextPageCursor: "" }),
+	)
+	vi.stubGlobal("fetch", fetchMock)
+})
+afterEach(async () => {
+	await flushWorkSummaries()
+	vi.restoreAllMocks()
+	vi.unstubAllEnvs()
+	vi.unstubAllGlobals()
+	rmSync(dir, { recursive: true, force: true })
+})
+
+function tracked(
+	sessionId = "session",
+	requestId = "request",
+	promptId = PROMPT,
+	response = true,
+	fields: Record<string, unknown> = {},
+) {
+	const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
+	const workId = getWorkId(ctx)
+	const source = captureBillingSource(new Headers({ Authorization: `Bearer ${currentKey}` }), GATEWAY, dir)
+	appendWorkRecord(ctx, {
+		type: "request",
+		requestId,
+		startedAt: "2026-10-01T08:00:00Z",
+		scope: { account: { apiUrl: API, organizationId: ORG, userId: PROMPT }, repository: join(dir, ".git") },
+		...fields,
+	})
+	if (response)
+		appendWorkRecord(ctx, { type: "request_response", requestId, billingSource: source, response: { promptId } })
+	appendWorkRecord(ctx, {
+		type: "commit",
+		sha: "a".repeat(40),
+		repository: join(dir, ".git"),
+		worktree: dir,
+		pullRequests: [
+			{
+				provider: "github",
+				host: "github.com",
+				repository: "example/repo",
+				number: 1,
+				url: "https://github.com/example/repo/pull/1",
+				state: "merged",
+				headSha: "a".repeat(40),
+				mergeCommitSha: "b".repeat(40),
+				mergedAt: "2026-10-01T09:00:00Z",
+				closedAt: "2026-10-01T09:00:00Z",
+				checkedAt: "2026-10-01T10:00:00Z",
+			},
+		],
+	})
+	return { ctx, workId, source }
+}
+function report(workId: string) {
+	return JSON.parse(readFileSync(join(dir, "work", workId, "costs.json"), "utf8"))
+}
+function sync() {
+	return reconcileWorkCosts(dir, new AbortController().signal)
+}
+function tagged(response = false) {
+	const requestId = randomUUID()
+	const result = tracked("tagged", requestId, PROMPT, response)
+	const dispatchedAt = "2026-10-01T08:00:00.000Z"
+	const selector = requestTagSelector(requestId, dispatchedAt)
+	appendWorkRecord(result.ctx, {
+		type: "request_dispatch",
+		requestId,
+		dispatchedAt,
+		billingSource: result.source,
+		billingSelector: selector,
+	})
+	return { ...result, requestId, selector }
+}
+
+describe("automatic exact work cost lookup", () => {
+	it("labels separate accounts when a work view contains the same PR more than once", async () => {
+		const { workId } = tracked()
+		await sync()
+		const saved = report(workId)
+		saved.pullRequests.push({
+			...saved.pullRequests[0],
+			account: null,
+			knownCostUsd: "0.000000000",
+			totalCostUsd: null,
+		})
+		writeFileSync(join(dir, "work", workId, "costs.json"), JSON.stringify(saved))
+		const lines = workCostDetails(dir, workId)
+		expect(lines).toContain(`Account: ${ORG} / ${PROMPT} (${API})`)
+		expect(lines).toContain("Account: unknown")
+	})
+
+	it("keeps a legacy request's exact price without assigning today's account to its work", async () => {
+		const { workId } = tracked("legacy", "request", PROMPT, true, { scope: undefined })
+		await sync()
+		expect(report(workId).requests[0]).toMatchObject({
+			account: null,
+			allocation: "unknown",
+			reason: "work-account-unverified",
+			totalCostUsd: "0.123456789",
+		})
+		expect(report(workId).pullRequests[0]).toMatchObject({
+			account: null,
+			requestIds: [],
+			knownCostUsd: "0.000000000",
+			totalCostUsd: null,
+		})
+	})
+	it.each([
+		"organization",
+		"user",
+		"same-account",
+	])("persists separate account totals for one PR after restart: %s", async (kind) => {
+		const first = { apiUrl: API, organizationId: ORG, userId: PROMPT }
+		const second = { ...first }
+		if (kind === "organization") second.organizationId = ROW
+		if (kind === "user") second.userId = ROW
+		const works = [first, second].map((account, index) => {
+			currentKey = `test-only-account-${index}`
+			const requestId = `request-${index}`
+			const promptId = index === 0 ? PROMPT : ROW
+			const saved = tracked(`session-${index}`, requestId, promptId, true, {
+				scope: { account, repository: join(dir, ".git") },
+			})
+			appendWorkRecord(saved.ctx, {
+				type: "request_cost",
+				requestId,
+				billingSource: saved.source,
+				billingSelector: { type: "prompt", promptId },
+				billingRows: [{ id: index === 0 ? ROW : ORG, promptId, costUsd: String(index + 1) }],
+				billingLookup: {
+					status: "priced",
+					checkedAt: new Date().toISOString(),
+					organizationId: account.organizationId,
+					userId: account.userId,
+				},
+			})
+			return saved.workId
+		})
+		await sync()
+		for (const [index, workId] of works.entries()) {
+			const saved = report(workId)
+			expect(saved.requests).toHaveLength(1)
+			expect(saved.pullRequests).toHaveLength(1)
+			expect(saved.pullRequests[0]).toMatchObject({
+				account: index === 0 ? first : second,
+				requestIds: kind === "same-account" ? ["request-0", "request-1"] : [`request-${index}`],
+				workIds: kind === "same-account" ? [...works].sort() : [workId],
+				totalCostUsd: kind === "same-account" ? "3.000000000" : `${index + 1}.000000000`,
+			})
+			unlinkSync(join(dir, "work", workId, "costs.json"))
+		}
+		await sync()
+		expect(report(works[0]).pullRequests[0].totalCostUsd).toBe(kind === "same-account" ? "3.000000000" : "1.000000000")
+		expect(fetchMock).not.toHaveBeenCalled()
+	})
+
+	it("shows inferred PR ownership separately from an exact price", async () => {
+		const account = { apiUrl: API, organizationId: ORG, userId: PROMPT }
+		const { workId } = tracked("inferred", "request", PROMPT, true, {
+			scope: { account, repository: join(dir, ".git") },
+			segment: { id: "input", attribution: "inferred", reason: "model-continue" },
+		})
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		await sync()
+		expect(report(workId).requests[0]).toMatchObject({
+			priceStatus: "priced",
+			allocation: "inferred",
+			totalCostUsd: "0.123456789",
+		})
+		expect(workCostDetails(dir, workId)).toContain(
+			"Cost: unknown; $0.000000000 USD confirmed so far — https://github.com/example/repo/pull/1",
+		)
+		expect(workCostDetails(dir, workId)).toContain(
+			"Prices: 1/1 requests billed. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
+		)
+	})
+
+	it("shows price coverage and unresolved ownership separately in work details", async () => {
+		const { ctx, workId } = tracked("details", "priced", PROMPT, true, {
+			segment: { id: "uncertain", attribution: "unknown", reason: "model-uncertain" },
+		})
+		appendWorkRecord(ctx, { type: "request", requestId: "not-billed", startedAt: "2026-10-01T08:00:00Z" })
+		await sync()
+		expect(workCostDetails(dir, workId)).toContain(
+			"Prices: 1/2 requests billed. PR assignments: 2 unresolved, 0 inferred, 0 shared.",
+		)
+	})
+	it("refreshes both work views after a correction and revocation without duplicating bills", async () => {
+		const scope = { account: { apiUrl: API, organizationId: ORG, userId: PROMPT }, repository: join(dir, ".git") }
+		const requestId = randomUUID()
+		const plan = tracked("planning", requestId, PROMPT, true, { scope })
+		const implementation = tracked("implementation", randomUUID(), ORG, true, { scope })
+		const link = {
+			type: "work_link",
+			linkId: randomUUID(),
+			revision: 1,
+			sourceWorkId: plan.workId,
+			targetWorkId: implementation.workId,
+			requestIds: [requestId],
+			scope,
+			status: "active",
+			evidence: { source: "work-command" },
+		}
+		appendWorkRecord(implementation.ctx, link)
+		fetchMock.mockImplementation(async (input) => {
+			const url = new URL(String(input))
+			if (url.pathname.endsWith("api-keys:verify")) return Response.json({ organizationId: ORG, userId: PROMPT })
+			const promptId = url.searchParams.get("promptId")
+			return Response.json({
+				items: [{ id: promptId === PROMPT ? ROW : ORG, promptId, totalPrice: promptId === PROMPT ? "1" : "2" }],
+			})
+		})
+		await sync()
+		expect(report(implementation.workId).requests).toHaveLength(2)
+		expect(report(implementation.workId).pullRequests[0].totalCostUsd).toBe("3.000000000")
+		expect(report(plan.workId).requests[0]).toMatchObject({
+			workIds: [plan.workId],
+			linkedWorkIds: [implementation.workId],
+			totalCostUsd: "1.000000000",
+		})
+		appendWorkRecord(implementation.ctx, { ...link, revision: 2, status: "revoked" })
+		await sync()
+		const revoked = report(implementation.workId)
+		expect(revoked.pullRequests[0]).toMatchObject({
+			knownCostUsd: "2.000000000",
+			totalCostUsd: null,
+			unknownRequestIds: [requestId],
+		})
+		unlinkSync(join(dir, "work", implementation.workId, "costs.json"))
+		await sync()
+		expect(report(implementation.workId)).toEqual(revoked)
+		expect(fetchMock).toHaveBeenCalledTimes(3)
+	})
+	it.each([
+		"organization",
+		"user",
+		"endpoint",
+		"missing-user",
+		"same-account",
+	])("keeps the exact bill but checks the work account after %s at dispatch", async (change) => {
+		const account = { apiUrl: API, organizationId: ORG, userId: PROMPT }
+		if (change === "organization") account.organizationId = ROW
+		if (change === "user") account.userId = ROW
+		if (change === "endpoint") account.apiUrl = "https://other.example/api"
+		const { workId } = tracked("session", "request", PROMPT, true, {
+			scope: { account, repository: join(dir, ".git") },
+		})
+		fetchMock.mockResolvedValueOnce(
+			Response.json({ organizationId: ORG, ...(change === "missing-user" ? {} : { userId: PROMPT }) }),
+		)
+		await sync()
+		const costs = report(workId)
+		expect(costs.requests[0]).toMatchObject({
+			priceStatus: "priced",
+			totalCostUsd: "0.123456789",
+			allocation: change === "same-account" ? "pull-request" : "unknown",
+		})
+		if (change !== "same-account") {
+			expect(costs.requests[0].reason).toBe(
+				change === "missing-user" ? "work-account-unverified" : "work-account-mismatch",
+			)
+			expect(costs.pullRequests[0]).toMatchObject({
+				requestIds: [],
+				unknownRequestIds: ["request"],
+				totalCostUsd: null,
+			})
+		}
+		await sync()
+		expect(report(workId)).toEqual(costs)
+	})
+
+	it("retains safe billed metadata through source records, work.json and recovery", async () => {
+		const { workId } = tagged()
+		const metadata = {
+			promptId: PROMPT,
+			sessionId: ROW,
+			parentSessionId: ORG,
+			createTime: "2026-10-01T08:00:01.123456789Z",
+			provider: "ai-enabler",
+			providerName: "configured-provider",
+			model: "served-model",
+			originalModel: "requested-model",
+			recommendedModel: "recommended-model",
+			recommendedProvider: "other-provider",
+			routed: true,
+			recovered: false,
+			responseStatusCode: 200,
+			promptTokens: "18446744073709551615",
+			completionTokens: "7",
+			totalTokens: "9007199254740993",
+			cacheReadInputTokens: "100",
+			cacheCreationFiveMinuteTokens: "0",
+			cacheCreationOneHourTokens: "3",
+			webSearchRequests: "0",
+			promptPrice: "0.100000001",
+			completionPrice: "0.020000002",
+			cacheReadPrice: "0.003456786",
+			cacheCreationPrice: "0",
+			originalTotalPrice: "0.2",
+			recommendedTotalPrice: "0.05",
+			messageCount: 12,
+			contextWindowSize: 200000,
+			turnIndex: 4,
+			contextUtilizationPct: 55.25,
+		}
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(
+			Response.json({
+				items: [
+					{
+						id: ROW,
+						totalPrice: "0.123456789",
+						...metadata,
+						completionTokens: 7,
+						promptPreview: "DO_NOT_SAVE",
+						authorization: "DO_NOT_SAVE",
+						apiKeyAlias: "DO_NOT_SAVE",
+						workloadLabels: { secret: "DO_NOT_SAVE" },
+						unknownField: "DO_NOT_SAVE",
+					},
+				],
+			}),
+		)
+		await sync()
+		const expected = { id: ROW, costUsd: "0.123456789", ...metadata }
+		expect(readWorkRecords(dir).find((row) => row.type === "request_cost")?.billingRows).toEqual([expected])
+		await flushWorkSummaries()
+		const path = join(dir, "work", workId, "work.json")
+		expect(JSON.parse(readFileSync(path, "utf8")).requests[0].billingRows).toEqual([expected])
+		writeFileSync(path, "damaged")
+		recoverWorkSummaries()
+		await flushWorkSummaries()
+		expect(JSON.parse(readFileSync(path, "utf8")).requests[0].billingRows).toEqual([expected])
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
+		expect(JSON.stringify(readWorkRecords(dir))).not.toContain("DO_NOT_SAVE")
+	})
+	it.each([
+		["0", "0"],
+		["18446744073709551615", "18446744073709551615"],
+		[9007199254740991, "9007199254740991"],
+		[9007199254740992, undefined],
+		["18446744073709551616", undefined],
+		[-1, undefined],
+		[1.5, undefined],
+		["1e3", undefined],
+	])("retains exact counter %s or marks only that metadata unavailable", async (value, expected) => {
+		const { workId } = tagged()
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(Response.json({ items: [{ id: ROW, totalPrice: "0", promptTokens: value }] }))
+		await sync()
+		const row = readWorkRecords(dir).find((row) => row.type === "request_cost")?.billingRows
+		expect(row).toEqual([
+			{
+				id: ROW,
+				costUsd: "0",
+				...(expected === undefined ? { metadataUnavailable: ["promptTokens"] } : { promptTokens: expected }),
+			},
+		])
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.000000000")
+	})
+	it("keeps absent metadata unknown and never saves malformed optional values", async () => {
+		tagged()
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(
+			Response.json({
+				items: [
+					{
+						id: ROW,
+						totalPrice: "1",
+						promptPrice: "NaN",
+						completionPrice: "0.0000000001",
+						cacheReadPrice: 0.1,
+						cacheCreationPrice: null,
+						completionTokens: null,
+						createTime: "2026-02-31T08:00:00Z",
+						model: "DO_NOT_SAVE\n",
+						sessionId: "DO_NOT_SAVE",
+						routed: "yes",
+						responseStatusCode: -1,
+						contextUtilizationPct: -2,
+					},
+				],
+			}),
+		)
+		await sync()
+		const rows = readWorkRecords(dir).find((row) => row.type === "request_cost")?.billingRows
+		expect(rows).toEqual([
+			{
+				id: ROW,
+				costUsd: "1",
+				metadataUnavailable: [
+					"cacheReadPrice",
+					"completionPrice",
+					"contextUtilizationPct",
+					"createTime",
+					"model",
+					"promptPrice",
+					"responseStatusCode",
+					"routed",
+					"sessionId",
+				],
+			},
+		])
+		expect(JSON.stringify(readWorkRecords(dir))).not.toContain("DO_NOT_SAVE")
+	})
+	it("enriches legacy billed rows without changing price totals or losing earlier evidence", async () => {
+		const { workId } = tracked()
+		await sync()
+		const now = Date.now()
+		vi.spyOn(Date, "now").mockReturnValue(now + 6 * 60_000)
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		const enriched = { id: ROW, promptId: PROMPT, totalPrice: "0.123456789", promptTokens: "100", cacheReadPrice: "0" }
+		fetchMock.mockResolvedValueOnce(Response.json({ items: [enriched, enriched], totalCount: 1 }))
+		await sync()
+		await flushWorkSummaries()
+		const rows = JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8")).requests[0].billingRows
+		expect(rows).toEqual([
+			{ id: ROW, promptId: PROMPT, costUsd: "0.123456789" },
+			{ id: ROW, promptId: PROMPT, costUsd: "0.123456789", promptTokens: "100", cacheReadPrice: "0" },
+		])
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
+		vi.mocked(Date.now).mockReturnValue(now + 12 * 60_000)
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(Response.json({ items: [enriched], totalCount: 1 }))
+		await sync()
+		await flushWorkSummaries()
+		expect(JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8")).requests[0].billingRows).toEqual(
+			rows,
+		)
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
+	})
+	it.each([
+		"verification-failure",
+		"changed-key",
+	])("retains verified account identity in the summary after %s", async (failure) => {
+		const { workId } = tagged()
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(Response.json({ items: [{ id: ROW, totalPrice: "0.1" }] }))
+		await sync()
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6 * 60_000)
+		if (failure === "changed-key") currentKey = "another-key"
+		else fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }))
+		await sync()
+		await flushWorkSummaries()
+		const request = JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8")).requests[0]
+		expect(request.billingLookup).toMatchObject({
+			organizationId: ORG,
+			userId: PROMPT,
+			status: failure === "changed-key" ? "account-changed" : "unavailable",
+		})
+		expect(report(workId).pullRequests[0]).toMatchObject({ totalCostUsd: null, knownCostUsd: "0.100000000" })
+		expect(fetchMock).toHaveBeenCalledTimes(failure === "changed-key" ? 2 : 3)
+	})
+	it("pins the gateway's X-API-Key account when both auth headers are present", () => {
+		const original = captureBillingSource(new Headers({ "x-api-key": currentKey }), GATEWAY, dir)
+		expect(
+			captureBillingSource(new Headers({ "x-api-key": currentKey, Authorization: "Bearer another-key" }), GATEWAY, dir),
+		).toEqual(original)
+		expect(
+			captureBillingSource(new Headers({ "x-api-key": "", Authorization: `Bearer ${currentKey}` }), GATEWAY, dir),
+		).toBeUndefined()
+	})
+	it("captures Anthropic beta requests without persisting URL query data", () => {
+		const gatewayUrl = "https://gateway.example/anthropic/v1/messages"
+		const captured = captureBillingSource(
+			new Headers({ "x-api-key": currentKey }),
+			`${gatewayUrl}?beta=true&private=do-not-save`,
+			dir,
+		)
+		expect(captured).toMatchObject({ apiUrl: API, gatewayUrl })
+		expect(JSON.stringify(captured)).not.toContain("do-not-save")
+		expect(
+			captureBillingSource(
+				new Headers({ "x-api-key": currentKey }),
+				"https://user:secret@gateway.example/anthropic/v1/messages?beta=true",
+				dir,
+			),
+		).toBeUndefined()
+	})
+	it("rejects an exact-tag row belonging to a different verified API key owner", async () => {
+		const { workId } = tagged()
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(
+			Response.json({ items: [{ id: ROW, castaiApiKeyOwnerId: ORG, totalPrice: "0.25" }] }),
+		)
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+		expect(report(workId).requests[0].billingLookup.reason).toMatch(/owner/)
+	})
+	it("keeps the first verified owner when the same credential later resolves to another owner", async () => {
+		const { workId } = tagged()
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(Response.json({ items: [] }))
+		await sync()
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000)
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: ROW }))
+		await sync()
+		expect(fetchMock).toHaveBeenCalledTimes(3)
+		expect(report(workId).requests[0].billingLookup).toMatchObject({ status: "account-changed", userId: PROMPT })
+	})
+	it.each([
+		"2026-02-31T08:00:00.000Z",
+		"275760-09-13T00:00:00.000Z",
+		"invalid",
+	])("rejects an impossible dispatch timestamp %s", (timestamp) => {
+		expect(requestTagSelector(PROMPT, timestamp)).toBeUndefined()
+	})
+	it.each([
+		false,
+		true,
+	])("uses the captured exact tag with deployed price rows (response present: %s)", async (response) => {
+		const { workId, requestId } = tagged(response)
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(Response.json({ items: [{ id: ROW, totalPrice: "0.000068350" }], totalCount: 1 }))
+		await sync()
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+		const query = new URL(String(fetchMock.mock.calls[1][0])).searchParams
+		expect(Object.fromEntries(query)).toEqual({
+			tags: `kimchi-request:${requestId}`,
+			startTime: "2026-10-01T07:55:00.000Z",
+			endTime: "2026-11-02T08:00:00.000Z",
+			inferUserFromApiKey: "true",
+			"page.limit": "100",
+		})
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.000068350")
+		expect(readWorkRecords(dir).find((row) => row.type === "request_cost")).toMatchObject({
+			billingSelector: { type: "tag", tag: `kimchi-request:${requestId}` },
+			billingRows: [{ id: ROW, costUsd: "0.000068350" }],
+		})
+	})
+	it("keeps the original tag window for late billing and deduplicates overlapping pages", async () => {
+		const { workId, requestId } = tagged()
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(Response.json({ items: [] }))
+		await sync()
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 90 * 24 * 60 * 60_000)
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(
+			Response.json({ items: [{ id: ROW, totalPrice: "0.1" }], nextPageCursor: "next", totalCount: 2 }),
+		)
+		fetchMock.mockResolvedValueOnce(
+			Response.json({
+				items: [
+					{ id: ROW, totalPrice: "0.1" },
+					{ id: PROMPT, totalPrice: "0.2" },
+				],
+				totalCount: 2,
+			}),
+		)
+		await sync()
+		const urls = fetchMock.mock.calls.map(([url]) => new URL(String(url))).filter((url) => url.searchParams.has("tags"))
+		expect(urls).toHaveLength(3)
+		expect(
+			urls.every(
+				(url) =>
+					url.searchParams.get("tags") === `kimchi-request:${requestId}` &&
+					url.searchParams.get("startTime") === "2026-10-01T07:55:00.000Z",
+			),
+		).toBe(true)
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.300000000")
+	})
+	it.each(["owner", "tag", "window"])("rejects conflicting captured tag %s evidence", async (conflict) => {
+		const { workId, requestId, ctx, source, selector } = tagged()
+		appendWorkRecord(
+			conflict === "owner" ? createContext({ cwd: dir, sessionManager: { getSessionId: () => "other" } }) : ctx,
+			{
+				type: "request_dispatch",
+				requestId,
+				dispatchedAt: "2026-10-01T08:00:00.000Z",
+				billingSource: source,
+				billingSelector: {
+					...selector,
+					...(conflict === "tag" ? { tag: `kimchi-request:${PROMPT}` } : {}),
+					...(conflict === "window" ? { endTime: "2026-10-01T08:01:00.000Z" } : {}),
+				},
+			},
+		)
+		await sync()
+		expect(fetchMock).not.toHaveBeenCalled()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+	})
+	it.each([
+		"key",
+		"organization",
+	])("keeps retrying current-account billing behind many unchanged %s mismatches", async (mismatch) => {
+		for (let i = 0; i < 30; i++) {
+			const promptId = randomUUID()
+			const { ctx, source } = tracked(`old-${i}`, `old-${i}`, promptId)
+			appendWorkRecord(ctx, {
+				type: "request_cost",
+				requestId: `old-${i}`,
+				billingSource: source,
+				promptId,
+				billingRows: [],
+				billingLookup: {
+					status: "account-changed",
+					checkedAt: "2026-10-01T12:00:00Z",
+					reason:
+						mismatch === "key"
+							? "Original credential or endpoint is no longer configured"
+							: "Original billing organization changed",
+					...(mismatch === "organization" ? { organizationId: "44444444-2222-4333-8444-555555555555" } : {}),
+				},
+			})
+		}
+		if (mismatch === "key") currentKey = "test-only-new-account"
+		const { workId } = tracked("live", "live")
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(Response.json({ items: [] }))
+		await sync()
+		const before = readWorkRecords(dir).filter((row) => row.type === "request_cost" && row.requestId !== "live")
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000)
+		await sync()
+		expect(fetchMock).toHaveBeenCalledTimes(4)
+		expect(report(workId).requests[0].totalCostUsd).toBe("0.123456789")
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost" && row.requestId !== "live")).toEqual(
+			before,
+		)
+	})
+	it("bounds processed requests when all share one cached failed account verification", async () => {
+		for (let i = 0; i < 35; i++) tracked(`session-${i}`, `request-${i}`, randomUUID())
+		fetchMock.mockImplementation(async () => new Response(null, { status: 503 }))
+		await sync()
+		expect(fetchMock).toHaveBeenCalledOnce()
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toHaveLength(30)
+		await sync()
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toHaveLength(35)
+	})
+	it("enforces the wall deadline before another HTTP call even before the timer fires", async () => {
+		const { workId } = tracked("a", "a")
+		tracked("b", "b", randomUUID())
+		const now = Date.now()
+		vi.spyOn(Date, "now").mockReturnValue(now)
+		fetchMock.mockImplementation(async () => {
+			vi.mocked(Date.now).mockReturnValue(now + 5001)
+			return Response.json({ organizationId: ORG, userId: PROMPT })
+		})
+		await sync()
+		expect(fetchMock).toHaveBeenCalledOnce()
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toHaveLength(1)
+		expect(report(workId).requests[0]).toMatchObject({
+			priceStatus: "missing",
+			totalCostUsd: null,
+			billingLookup: {
+				status: "unavailable",
+				reason: "Billing lookup time limit exceeded before receiving any billing page",
+			},
+		})
+	})
+	it("keeps a confirmed price when an empty refresh exhausts the pass budget without claiming a fresh check", async () => {
+		const { workId } = tagged()
+		await sync()
+		const original = readWorkRecords(dir).find((row) => row.type === "request_cost")
+		let now = Date.now() + 6 * 60_000
+		const refreshStarted = new Date(now).toISOString()
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		fetchMock.mockImplementationOnce(async () => {
+			now += 5001
+			return Response.json({ organizationId: ORG, userId: PROMPT })
+		})
+		await sync()
+		const observations = readWorkRecords(dir).filter((row) => row.type === "request_cost")
+		expect(observations).toHaveLength(2)
+		expect(observations[0]).toEqual(original)
+		expect(observations[1]).toMatchObject({
+			billingRows: [],
+			billingLookup: {
+				status: "unavailable",
+				checkedAt: refreshStarted,
+				reason: "Billing lookup time limit exceeded before receiving any billing page",
+			},
+		})
+		expect(report(workId).requests[0]).toMatchObject({
+			priceStatus: "priced",
+			totalCostUsd: "0.123456789",
+			billingLookup: observations[1].billingLookup,
+		})
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
+		fetchMock.mockClear()
+		await sync()
+		expect(fetchMock).not.toHaveBeenCalled()
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual(observations)
+		now += 30_000
+		await sync()
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+		expect(report(workId).requests[0].billingLookup).toMatchObject({
+			status: "priced",
+			checkedAt: new Date(now).toISOString(),
+		})
+	})
+	it("keeps a legacy timeout unknown through a new empty timeout until a complete lookup succeeds", async () => {
+		const { workId, requestId, ctx, source, selector } = tagged()
+		await sync()
+		let now = Date.now() + 6 * 60_000
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		appendWorkRecord(ctx, {
+			type: "request_cost",
+			requestId,
+			billingSource: source,
+			billingSelector: selector,
+			billingRows: [],
+			billingLookup: {
+				status: "unavailable",
+				checkedAt: new Date(now).toISOString(),
+				organizationId: ORG,
+				reason: "Billing lookup time limit exceeded",
+			},
+		})
+		fetchMock.mockClear()
+		await sync()
+		expect(fetchMock).not.toHaveBeenCalled()
+		expect(report(workId).requests[0]).toMatchObject({
+			priceStatus: "missing",
+			knownCostUsd: "0.123456789",
+			totalCostUsd: null,
+		})
+		now += 30_000
+		const refreshStarted = new Date(now).toISOString()
+		fetchMock.mockImplementationOnce(async () => {
+			now += 5001
+			return Response.json({ organizationId: ORG, userId: PROMPT })
+		})
+		await sync()
+		expect(report(workId).requests[0]).toMatchObject({
+			priceStatus: "missing",
+			totalCostUsd: null,
+			billingLookup: {
+				status: "unavailable",
+				checkedAt: refreshStarted,
+				reason: "Billing lookup time limit exceeded before receiving any billing page",
+			},
+		})
+		now += 30_000
+		await sync()
+		expect(report(workId).requests[0]).toMatchObject({
+			priceStatus: "priced",
+			totalCostUsd: "0.123456789",
+			billingLookup: { status: "priced", checkedAt: new Date(now).toISOString() },
+		})
+	})
+	it("keeps a partial refresh incomplete when the next page exhausts the pass budget", async () => {
+		const { workId } = tagged()
+		await sync()
+		let now = Date.now() + 6 * 60_000
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockImplementationOnce(async () => {
+			now += 5001
+			return Response.json({
+				items: [{ id: "44444444-2222-4333-8444-555555555555", totalPrice: "0.2" }],
+				nextPageCursor: "unfinished",
+			})
+		})
+		await sync()
+		expect(report(workId).requests[0]).toMatchObject({
+			priceStatus: "missing",
+			knownCostUsd: "0.323456789",
+			totalCostUsd: null,
+			billingLookup: { status: "unavailable", reason: "Billing lookup time limit exceeded during pagination" },
+		})
+	})
+	it("keeps an empty page incomplete when its continuation exhausts the pass budget", async () => {
+		const { workId } = tagged()
+		await sync()
+		let now = Date.now() + 6 * 60_000
+		const refreshStarted = new Date(now).toISOString()
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockImplementationOnce(async () => {
+			now += 5001
+			return Response.json({ items: [], totalCount: 1, nextPageCursor: "next-page" })
+		})
+		await sync()
+		expect(fetchMock).toHaveBeenCalledTimes(4)
+		expect(report(workId).requests[0]).toMatchObject({
+			priceStatus: "missing",
+			knownCostUsd: "0.123456789",
+			totalCostUsd: null,
+		})
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")[1]).toMatchObject({
+			billingRows: [],
+			billingLookup: {
+				status: "unavailable",
+				checkedAt: refreshStarted,
+				reason: "Billing lookup time limit exceeded during pagination",
+			},
+		})
+		now += 30_000
+		fetchMock.mockImplementationOnce(async () => {
+			now += 5001
+			return Response.json({ organizationId: ORG, userId: PROMPT })
+		})
+		await sync()
+		expect(report(workId).requests[0].billingLookup.reason).toBe(
+			"Billing lookup time limit exceeded before receiving any billing page",
+		)
+		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+	})
+	it.each([
+		"http",
+		"auth",
+		"account",
+		"owner",
+		"malformed",
+		"empty",
+		"conflicting",
+	])("does not revive an old price after %s evidence followed by an empty budget timeout", async (failure) => {
+		const { workId } = tagged()
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		await sync()
+		let now = Date.now() + 6 * 60_000
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		if (failure === "account") currentKey = "changed-account"
+		else if (failure === "auth") fetchMock.mockResolvedValueOnce(new Response(null, { status: 401 }))
+		else {
+			fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+			const item = {
+				id: ROW,
+				totalPrice: failure === "malformed" ? "NaN" : "0.5",
+				castaiApiKeyOwnerId: failure === "owner" ? ROW : PROMPT,
+			}
+			fetchMock.mockResolvedValueOnce(
+				failure === "http"
+					? new Response(null, { status: 503 })
+					: Response.json({ items: failure === "empty" ? [] : [item] }),
+			)
+		}
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+		currentKey = "test-only-original-key"
+		now += 6 * 60_000
+		fetchMock.mockImplementationOnce(async () => {
+			now += 5001
+			return Response.json({ organizationId: ORG, userId: PROMPT })
+		})
+		await sync()
+		expect(report(workId).requests[0].billingLookup).toMatchObject({
+			status: "unavailable",
+			reason: "Billing lookup time limit exceeded before receiving any billing page",
+		})
+		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+	})
+	it.each([2, -1, 1.5, "2"])("keeps an incomplete or invalid reported count (%s) unknown", async (totalCount) => {
+		const { workId } = tracked()
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(
+			Response.json({ items: [{ id: ROW, promptId: PROMPT, totalPrice: "1.25" }], totalCount }),
+		)
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+	})
+	it("rejects response metadata owned by another work or session", async () => {
+		const { workId, source } = tracked()
+		const other = createContext({ cwd: dir, sessionManager: { getSessionId: () => "unrelated-session" } })
+		appendWorkRecord(other, {
+			type: "request_response",
+			requestId: "request",
+			billingSource: source,
+			response: { promptId: PROMPT },
+		})
+		await sync()
+		expect(fetchMock).not.toHaveBeenCalled()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+	})
+	it("accepts a later valid price after a malformed decimal without preserving the rejected amount", async () => {
+		const { workId } = tracked()
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(Response.json({ items: [{ id: ROW, promptId: PROMPT, totalPrice: "NaN" }] }))
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000)
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
+		expect(JSON.stringify(readWorkRecords(dir))).not.toContain("NaN")
+	})
+	it("recovers exact prices into a damaged work summary from the source ledger", async () => {
+		const { workId } = tracked()
+		await sync()
+		await flushWorkSummaries()
+		const path = join(dir, "work", workId, "work.json")
+		const before = JSON.parse(readFileSync(path, "utf8"))
+		writeFileSync(path, "broken")
+		recoverWorkSummaries()
+		await flushWorkSummaries()
+		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(before)
+	})
+	it("bounds requests per pass and visits the remaining requests on the next pass", async () => {
+		for (let i = 0; i < 35; i++) tracked(`session-${i}`, `request-${i}`, randomUUID())
+		fetchMock.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: ORG, userId: PROMPT })
+				: Response.json({ items: [] }),
+		)
+		await sync()
+		expect(fetchMock).toHaveBeenCalledTimes(30)
+		await sync()
+		expect(fetchMock).toHaveBeenCalledTimes(37)
+		expect(
+			new Set(
+				fetchMock.mock.calls.map(([input]) => new URL(String(input)).searchParams.get("promptId")).filter(Boolean),
+			).size,
+		).toBe(35)
+	})
+	it("aborts a stalled response body and cancels its reader", async () => {
+		tracked()
+		const controller = new AbortController()
+		const cancel = vi.fn()
+		fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({ cancel })))
+		const running = reconcileWorkCosts(dir, controller.signal)
+		const rejected = expect(running).rejects.toThrow()
+		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+		controller.abort()
+		await rejected
+		expect(cancel).toHaveBeenCalledOnce()
+	})
+	it("does not grow the ledger for unchanged requests that have no billing identity", async () => {
+		const ctx = createContext({ cwd: dir })
+		const workId = getWorkId(ctx)
+		appendWorkRecord(ctx, { type: "request", requestId: "old-gateway" })
+		appendWorkRecord(ctx, { type: "request_response", requestId: "old-gateway", response: { status: 200 } })
+		const before = readWorkRecords(dir)
+		await sync()
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000)
+		await sync()
+		expect(readWorkRecords(dir)).toEqual(before)
+		expect(fetchMock).not.toHaveBeenCalled()
+		expect(report(workId).requests[0].totalCostUsd).toBeNull()
+	})
+	it("rebuilds a missing derived report from durable cost observations without refetching", async () => {
+		const { workId } = tracked()
+		await sync()
+		const before = report(workId)
+		unlinkSync(join(dir, "work", workId, "costs.json"))
+		fetchMock.mockClear()
+		await sync()
+		expect(report(workId)).toEqual(before)
+		expect(fetchMock).not.toHaveBeenCalled()
+	})
+	it("does not let a malformed cost observation claim a complete total", async () => {
+		const { ctx, workId, source } = tracked()
+		appendWorkRecord(ctx, {
+			type: "request_cost",
+			requestId: "request",
+			billingSource: source,
+			promptId: PROMPT,
+			billingRows: [{ id: ROW, promptId: PROMPT, costUsd: "100" }],
+			billingLookup: { status: "priced", checkedAt: new Date().toISOString() },
+		})
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+	})
+	it("remembers the original verified organization across failed or changed-account refreshes", async () => {
+		const { workId } = tracked()
+		await sync()
+		const now = Date.now()
+		vi.spyOn(Date, "now").mockReturnValue(now + 6 * 60_000)
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: "44444444-2222-4333-8444-555555555555" }))
+		await sync()
+		vi.mocked(Date.now).mockReturnValue(now + 7 * 60_000)
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: "44444444-2222-4333-8444-555555555555" }))
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+		expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("llm-requests"))).toHaveLength(1)
+	})
+	it("bounds looping pages and keeps the known subtotal unknown", async () => {
+		const { workId } = tracked()
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockImplementation(async () =>
+			Response.json({ items: [{ id: ROW, promptId: PROMPT, totalPrice: "1" }], nextPageCursor: "same-page" }),
+		)
+		await sync()
+		expect(fetchMock).toHaveBeenCalledTimes(3)
+		expect(report(workId).pullRequests[0]).toMatchObject({ knownCostUsd: "1.000000000", totalCostUsd: null })
+	})
+	it("bounds oversized responses without persisting any response contents", async () => {
+		const { workId } = tracked()
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(new Response("x".repeat(1_048_577)))
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+		expect(JSON.stringify(readWorkRecords(dir)).length).toBeLessThan(10_000)
+	})
+	it("pins only configured gateway and API identity without persisting a credential", () => {
+		const source = captureBillingSource(new Headers({ Authorization: `Bearer ${currentKey}` }), GATEWAY, dir)
+		expect(source).toMatchObject({
+			apiUrl: API,
+			gatewayUrl: GATEWAY,
+			credentialHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+		})
+		expect(JSON.stringify(source)).not.toContain(currentKey)
+		expect(
+			captureBillingSource(
+				new Headers({ Authorization: `Bearer ${currentKey}` }),
+				"https://unrelated.example/v1/chat/completions",
+				dir,
+			),
+		).toBeUndefined()
+		expect(captureBillingSource(new Headers(), GATEWAY, dir)).toBeUndefined()
+		expect(
+			captureBillingSource(new Headers({ Authorization: `Bearer ${currentKey}` }), `${GATEWAY}?key=private`, dir),
+		).toEqual(source)
+	})
+	it("looks up the exact prompt under the verified organization and persists decimal prices", async () => {
+		const { workId } = tracked()
+		await sync()
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+		const lookup = new URL(String(fetchMock.mock.calls[1][0]))
+		expect(lookup.pathname).toBe(`/api/ai-optimizer/v1beta/organizations/${ORG}/llm-requests`)
+		expect(Object.fromEntries(lookup.searchParams)).toEqual({
+			promptId: PROMPT,
+			inferUserFromApiKey: "true",
+			"page.limit": "100",
+		})
+		expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get("Authorization")).toBe(`Bearer ${currentKey}`)
+		expect(fetchMock.mock.calls[1][1]?.body).toBeUndefined()
+		expect(report(workId).pullRequests[0]).toMatchObject({ knownCostUsd: "0.123456789", totalCostUsd: "0.123456789" })
+		await flushWorkSummaries()
+		const summary = JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8"))
+		expect(summary.requests).toHaveLength(1)
+		expect(summary.requests[0].billingRows).toEqual([{ id: ROW, promptId: PROMPT, costUsd: "0.123456789" }])
+		expect(JSON.stringify(readWorkRecords(dir))).not.toContain(currentKey)
+		expect(workCostDetails(dir, workId).join("\n")).toContain("$0.123456789")
+	})
+	it("allocates a PR across two works and counts repeated sync only once", async () => {
+		const first = tracked("planning", "plan")
+		const second = tracked("implementation", "implement", "44444444-2222-4333-8444-555555555555")
+		fetchMock.mockImplementation(async (input) => {
+			const url = new URL(String(input))
+			if (url.pathname.endsWith("api-keys:verify")) return Response.json({ organizationId: ORG, userId: PROMPT })
+			const promptId = url.searchParams.get("promptId")
+			return Response.json({
+				items: [
+					{
+						id: promptId === PROMPT ? ROW : "55555555-2222-4333-8444-555555555555",
+						promptId,
+						totalPrice: "0.000000001",
+					},
+				],
+			})
+		})
+		await sync()
+		await sync()
+		for (const { workId } of [first, second])
+			expect(report(workId).pullRequests[0]).toMatchObject({
+				totalCostUsd: "0.000000002",
+				requestIds: ["implement", "plan"],
+			})
+	})
+	it("follows all pages, deduplicates repeated billing rows, and sums distinct rows", async () => {
+		const { workId } = tracked()
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(
+			Response.json({ items: [{ id: ROW, promptId: PROMPT, totalPrice: "1.000000001" }], nextPageCursor: "page two" }),
+		)
+		fetchMock.mockResolvedValueOnce(
+			Response.json({
+				items: [
+					{ id: ROW, promptId: PROMPT, totalPrice: "1.000000001" },
+					{ id: "44444444-2222-4333-8444-555555555555", promptId: PROMPT, totalPrice: "2.000000002" },
+				],
+			}),
+		)
+		await sync()
+		expect(new URL(String(fetchMock.mock.calls[2][0])).searchParams.get("page.cursor")).toBe("page two")
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("3.000000003")
+	})
+	it.each([401, 403, 404, 422, 503])("keeps HTTP %s lookups unknown and exposes the reason locally", async (status) => {
+		const { workId } = tracked()
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(new Response("unavailable", { status }))
+		await sync()
+		expect(report(workId).pullRequests[0]).toMatchObject({ knownCostUsd: "0.000000000", totalCostUsd: null })
+		expect(workCostDetails(dir, workId).join("\n")).toContain("unknown")
+	})
+	it.each([
+		{ id: ROW, totalPrice: "1" },
+		{ id: ROW, promptId: "44444444-2222-4333-8444-555555555555", totalPrice: "1" },
+		{ id: "invalid", promptId: PROMPT, totalPrice: "1" },
+		{ id: ROW, promptId: PROMPT, totalPrice: 1.5 },
+		{ id: ROW, promptId: PROMPT, totalPrice: "NaN" },
+		{ id: ROW, promptId: PROMPT, totalPrice: "0.0000000001" },
+	])("rejects older or malformed billing evidence: %j", async (item) => {
+		const { workId } = tracked()
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(Response.json({ items: [item] }))
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+	})
+	it("keeps missing billing pending and accepts a late explicit zero", async () => {
+		const { workId } = tracked()
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(Response.json({ items: [] }))
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000)
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(Response.json({ items: [{ id: ROW, promptId: PROMPT, totalPrice: "0" }] }))
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.000000000")
+	})
+	it("never queries another key for an old request", async () => {
+		const { workId } = tracked()
+		currentKey = "test-only-another-account"
+		await sync()
+		expect(fetchMock).not.toHaveBeenCalled()
+		expect(report(workId).requests[0].billingLookup.status).toBe("account-changed")
+		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+	})
+	it("does not trust prompt IDs reused by different request attempts", async () => {
+		const first = tracked("a", "attempt-a")
+		tracked("b", "attempt-b")
+		await sync()
+		expect(fetchMock).not.toHaveBeenCalled()
+		expect(report(first.workId).pullRequests[0].totalCostUsd).toBeNull()
+	})
+	it("keeps known rows as a subtotal when pagination stops early", async () => {
+		const { workId } = tracked()
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(
+			Response.json({ items: [{ id: ROW, promptId: PROMPT, totalPrice: "1.25" }], nextPageCursor: "more" }),
+		)
+		fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }))
+		await sync()
+		expect(report(workId).pullRequests[0]).toMatchObject({ knownCostUsd: "1.250000000", totalCostUsd: null })
+	})
+	it("aborts an in-flight lookup without publishing a completed result", async () => {
+		const { workId } = tracked()
+		const controller = new AbortController()
+		fetchMock.mockImplementation(
+			async (_input, init) =>
+				new Promise((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true })
+				}),
+		)
+		const running = reconcileWorkCosts(dir, controller.signal)
+		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled())
+		controller.abort()
+		await expect(running).rejects.toThrow()
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual([])
+		expect(() => report(workId)).toThrow()
+	})
+})

@@ -88,6 +88,80 @@ describe("readable work summaries", () => {
 		await flushWorkSummaries()
 		expect(summary(workId).commits[0]).toMatchObject({ pullRequests: [merged], prLookup: failure })
 	})
+	it.each(["priced", "unavailable"])("keeps newer billing status (%s) through delayed recovery", async (status) => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const request = recordProviderRequest(ctx)
+		const charge = { id: randomUUID(), costUsd: "0.25" }
+		const priced = { status: "priced" }
+		const unavailable = { status: "unavailable", reason: "Billing API returned HTTP 503" }
+		const older = { ...(status === "priced" ? unavailable : priced), checkedAt: "2026-10-04T09:00:00Z" }
+		const newer = { ...(status === "priced" ? priced : unavailable), checkedAt: "2026-10-04T09:05:00Z" }
+		appendWorkRecord(ctx, {
+			type: "request_cost",
+			requestId: request.requestId,
+			billingRows: older.status === "priced" ? [charge] : [],
+			billingLookup: older,
+		})
+		await flushWorkSummaries()
+		// A second process can capture an older ledger before waiting for the summary lock.
+		vi.resetModules()
+		const recovering = await import("./summary.js")
+		const originalLock = locks.lock
+		let release!: () => void
+		let waiting!: () => void
+		const blocked = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const entered = new Promise<void>((resolve) => {
+			waiting = resolve
+		})
+		vi.spyOn(locks, "lock").mockImplementationOnce(async (...args) => {
+			waiting()
+			await blocked
+			return originalLock(...args)
+		})
+		recovering.recoverWorkSummaries()
+		try {
+			await entered
+			appendWorkRecord(ctx, {
+				type: "request_cost",
+				requestId: request.requestId,
+				billingRows: newer.status === "priced" ? [charge] : [],
+				billingLookup: newer,
+			})
+			await flushWorkSummaries()
+			expect(summary(workId).requests[0].billingLookup).toEqual(newer)
+		} finally {
+			release()
+			await recovering.flushWorkSummaries()
+		}
+		expect(summary(workId).requests[0]).toMatchObject({ billingLookup: newer, billingRows: [charge] })
+	})
+	it.each([
+		"billingLookup",
+		"prLookup",
+		"pullRequests",
+	])("recovers %s from a malformed observation timestamp", async (field) => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const base =
+			field === "billingLookup"
+				? { type: "request_cost", requestId: recordProviderRequest(ctx).requestId }
+				: { type: "commit", sha: "a".repeat(40), repository: "/project/.git", worktree: "/project" }
+		const invalid = {
+			url: "https://github.com/example/repo/pull/7",
+			status: "unavailable",
+			checkedAt: "invalid-history",
+		}
+		const valid = { ...invalid, status: "complete", checkedAt: "2026-10-04T10:00:00Z" }
+		for (const observation of [invalid, valid, invalid]) {
+			appendWorkRecord(ctx, { ...base, [field]: field === "pullRequests" ? [observation] : observation })
+			await flushWorkSummaries()
+		}
+		const row = field === "billingLookup" ? summary(workId).requests[0] : summary(workId).commits[0]
+		expect(row[field]).toEqual(field === "pullRequests" ? [valid] : valid)
+	})
 	it("shows why a session continued another work without changing request timestamps", async () => {
 		const ctx = context()
 		const workId = getWorkId(ctx)
@@ -295,7 +369,7 @@ describe("readable work summaries", () => {
 			expect.objectContaining({ transitionId: "old-transition", toolCallId: "old-tool" }),
 		])
 		expect(summary(request.workId).fileTransitions[0]).not.toHaveProperty("requestId")
-		expect(JSON.parse(fs.readFileSync(join(dir, "work-attribution", ".recovered.json"), "utf8")).version).toBe(3)
+		expect(JSON.parse(fs.readFileSync(join(dir, "work-attribution", ".recovered.json"), "utf8")).version).toBe(4)
 		fs.rmSync(path(request.workId))
 		vi.resetModules()
 		const relaunched = await import("./summary.js")

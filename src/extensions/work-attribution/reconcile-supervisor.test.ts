@@ -4,9 +4,11 @@ import { join } from "node:path"
 import * as locks from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as pullRequests from "../pull-request-status/pull-requests.js"
+import * as costs from "./cost-sync.js"
 import * as transitions from "./file-transitions.js"
 import {
 	RECONCILIATION_INTERVAL_MS,
+	subscribeCostReconciliation,
 	subscribeFileReconciliation,
 	subscribePullRequestReconciliation,
 } from "./reconcile-supervisor.js"
@@ -20,6 +22,7 @@ vi.mock("../pull-request-status/pull-requests.js", () => ({
 	reconcileWorkPullRequests: vi.fn(),
 	readWorkPullRequestUpdates: vi.fn(),
 }))
+vi.mock("./cost-sync.js", () => ({ reconcileWorkCosts: vi.fn() }))
 
 let directory: string
 const stops: (() => Promise<void>)[] = []
@@ -41,6 +44,7 @@ beforeEach(() => {
 	vi.spyOn(transitions, "reconcileRepositoryTransitions").mockResolvedValue()
 	vi.mocked(pullRequests.reconcileWorkPullRequests).mockResolvedValue()
 	vi.mocked(pullRequests.readWorkPullRequestUpdates).mockReturnValue([])
+	vi.mocked(costs.reconcileWorkCosts).mockResolvedValue()
 })
 afterEach(async () => {
 	for (const stop of stops.splice(0)) await stop()
@@ -51,6 +55,24 @@ afterEach(async () => {
 })
 
 describe("shared file reconciliation", () => {
+	it("keeps billing write failures out of PR warnings and retries billing on the next pass", async () => {
+		const onError = vi.fn()
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		vi.mocked(costs.reconcileWorkCosts).mockRejectedValueOnce(new Error("Could not save cost report"))
+		stops.push(subscribePullRequestReconciliation({ onPullRequest: () => {}, onError }))
+		stops.push(subscribeCostReconciliation())
+		await vi.waitFor(() => expect(costs.reconcileWorkCosts).toHaveBeenCalledOnce())
+		await vi.waitFor(async () => {
+			const release = await locks.lock(join(directory, "work-attribution"), { retries: 0 })
+			await release()
+		})
+		expect(onError).not.toHaveBeenCalled()
+		expect(warn).not.toHaveBeenCalled()
+		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
+		await vi.waitFor(() => expect(costs.reconcileWorkCosts).toHaveBeenCalledTimes(2))
+		expect(pullRequests.reconcileWorkPullRequests).toHaveBeenCalledTimes(2)
+	})
+
 	it("keeps local Git failures out of PR warnings while reporting a failed PR lookup", async () => {
 		const onError = vi.fn()
 		const lookupError = new Error("PR lookup unavailable")
@@ -97,6 +119,26 @@ describe("shared file reconciliation", () => {
 		expect(warn).not.toHaveBeenCalled()
 	})
 
+	it("uses the same worker for costs and aborts only cost work when its subscriber leaves", async () => {
+		let active: AbortSignal | undefined
+		vi.mocked(costs.reconcileWorkCosts).mockImplementation(async (_directory, signal) => {
+			active = signal
+			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
+		})
+		subscribe()
+		const stop = subscribeCostReconciliation()
+		stops.push(stop)
+		await vi.waitFor(() => expect(active).toBeDefined())
+		await stop()
+		expect(active?.aborted).toBe(true)
+		await vi.waitFor(async () => {
+			const release = await locks.lock(join(directory, "work-attribution"), { retries: 0 })
+			await release()
+		})
+		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4))
+		expect(costs.reconcileWorkCosts).toHaveBeenCalledOnce()
+	})
 	it("does not read PR records or call GitHub when only file reconciliation is enabled", async () => {
 		subscribe()
 		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2))
