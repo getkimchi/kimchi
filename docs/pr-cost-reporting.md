@@ -38,7 +38,7 @@ An upload with one request still waiting for billing looks like this:
     "requestId": "22222222-2222-4222-8222-222222222222",
     "billingRecordIds": [],
     "startedAt": "2026-10-05T11:59:00.000Z",
-    "allocation": { "kind": "unlinked", "pullRequestIds": [], "method": "native" }
+    "allocation": { "kind": "unknown", "pullRequestIds": [], "method": "session" }
   }],
   "coverage": { "observedRequests": 1, "unpricedRequests": 1, "historyComplete": true }
 }
