@@ -20,6 +20,7 @@ import { initTheme } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it, vi } from "vitest"
 import { ModelSelectorComponent } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/model-selector.js"
+import { MULTI_MODEL_DEPRECATION_LABEL } from "./extensions/auto-model/constants.js"
 import { installModelTableRenderer, renderModelTable } from "./model-selector-table.js"
 
 beforeAll(() => {
@@ -257,6 +258,11 @@ describe("/model selector capability table (installed patch)", () => {
 		// The deprecation label is harness-side: multi-model does not exist in
 		// the platform catalog, so no backend marker can carry it. It outranks
 		// the default-model annotation and keeps the orchestrator description.
+		//
+		// This is THE cross-surface pin: the patch renders a literal it cannot
+		// import from harness source, so the row produced by the patched
+		// selector is asserted against MULTI_MODEL_DEPRECATION_LABEL itself —
+		// any drift between patch literal and constant fails here.
 		patchedProcess.__kimchiOrchestratorRef = new Map([["mm-session", "kimchi-dev/kimi-k2.6"]])
 		try {
 			withDescriptions({ "kimchi-dev/kimi-k2.6": "Flagship vision model." }, () => {
@@ -268,7 +274,7 @@ describe("/model selector capability table (installed patch)", () => {
 				})
 				const multiRow = modelRows(renderPlain(120)).find((r) => r.includes("multi-model"))
 				expect(multiRow).toBeDefined()
-				expect(multiRow).toContain("[to be deprecated]")
+				expect(multiRow).toContain(MULTI_MODEL_DEPRECATION_LABEL)
 				expect(multiRow).not.toContain("Default for new sessions.")
 				expect(multiRow).toContain("Flagship vision model.")
 			})

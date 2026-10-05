@@ -297,7 +297,17 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 				: GATED_DEFAULT_MODEL_CANDIDATES.map((id) => ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, id)).find(
 						(candidate) => candidate !== undefined,
 					)
-			if (options.handleCliModelSelection && gatedDefault) writeConfigSetting("multiModel", false)
+			if (options.handleCliModelSelection && gatedDefault) {
+				// Bookkeeping only: readJson throws on a corrupt settings.json and
+				// writeJson throws on a read-only one; a seeded-default write must
+				// never take down session start.
+				try {
+					writeConfigSetting("multiModel", false)
+				} catch {
+					// The in-memory session still gets the gated default below; the
+					// file stays stale until it is writable again.
+				}
+			}
 
 			// Catalog-driven Auto default: every fresh main session comes up on
 			// `auto` when the backend actually advertises it — the backend catalog
@@ -308,8 +318,11 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			// provider the session came up on — a switch to another provider's
 			// model (e.g. Anthropic's Claude) rolls back too. Say so when the
 			// rollback happens — a silent switch away from a deliberately chosen
-			// model reads as a bug.
-			if (mainFreshLaunch && ctx.model && !isAutoRoutedModel(ctx.model)) {
+			// model reads as a bug. A first run with no current model at all (no
+			// persisted default) installs the default too — otherwise gated
+			// greenfield users would get multiModel=false above with nothing
+			// installed on top of it.
+			if (mainFreshLaunch && (!ctx.model || !isAutoRoutedModel(ctx.model))) {
 				// Installs the fresh-session default — the gated flash model or Auto —
 				// and announces it. Persist: upstream 0.85.1 made setModel session-only
 				// by default, and the notice claims a default-level change. Persisting
@@ -322,8 +335,10 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 					await pi.setModel(candidate, { persist: true })
 					setMultiModelEnabled(sessionId, false)
 					resetLastNotified(sessionId)
+					// Mode-neutral copy: this notice is also relayed to ACP clients
+					// (Zed, Studio), where /model is not an available interaction.
 					ctx.ui.notify(
-						`New sessions start on ${displayName} (the default). Use /model to pick a different model for this session.`,
+						`New sessions start on ${displayName} (the default). To pick a different model for this session, use your client's model selector (/model in the terminal).`,
 						"info",
 					)
 				}
@@ -336,7 +351,8 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 					// already on the gated default needs no churn: multi-model stays
 					// disabled for the session and nothing is re-installed or announced,
 					// so return early.
-					const alreadyOnDefault = ctx.model.provider === AUTO_MODEL_PROVIDER && ctx.model.id === gatedDefault.id
+					const alreadyOnDefault =
+						ctx.model !== undefined && ctx.model.provider === AUTO_MODEL_PROVIDER && ctx.model.id === gatedDefault.id
 					if (alreadyOnDefault) {
 						setMultiModelEnabled(sessionId, false)
 						resetLastNotified(sessionId)

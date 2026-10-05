@@ -403,7 +403,7 @@ describe("catalog-driven Auto default (main session)", () => {
 
 		expect(extension.setModel).not.toHaveBeenCalled()
 		expect(c.ui.notify).not.toHaveBeenCalledWith(
-			"New sessions start on Auto (the default). Use /model to pick a different model for this session.",
+			"New sessions start on Auto (the default). To pick a different model for this session, use your client's model selector (/model in the terminal).",
 			"info",
 		)
 	})
@@ -421,7 +421,7 @@ describe("catalog-driven Auto default (main session)", () => {
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
 
 		expect(c.ui.notify).toHaveBeenCalledWith(
-			"New sessions start on Auto (the default). Use /model to pick a different model for this session.",
+			"New sessions start on Auto (the default). To pick a different model for this session, use your client's model selector (/model in the terminal).",
 			"info",
 		)
 	})
@@ -483,7 +483,7 @@ describe("catalog-driven Auto default (main session)", () => {
 
 		expect(extension.setModel).toHaveBeenCalledWith(auto(), { persist: true })
 		expect(c.ui.notify).toHaveBeenCalledWith(
-			"New sessions start on Auto (the default). Use /model to pick a different model for this session.",
+			"New sessions start on Auto (the default). To pick a different model for this session, use your client's model selector (/model in the terminal).",
 			"info",
 		)
 	})
@@ -550,7 +550,7 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		expect(setModel).toHaveBeenCalledWith(model(DEEPSEEK, { name: `Model ${DEEPSEEK}` }), { persist: true })
 		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(false)
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			`New sessions start on Model ${DEEPSEEK} (the default). Use /model to pick a different model for this session.`,
+			`New sessions start on Model ${DEEPSEEK} (the default). To pick a different model for this session, use your client's model selector (/model in the terminal).`,
 			"info",
 		)
 	})
@@ -561,6 +561,32 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		await start()
 
 		expect(settingsWriteStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
+	})
+
+	it("still installs the gated default when the settings.json write fails", async () => {
+		// readJson throws on a corrupt settings.json and writeJson on a
+		// read-only one; the bookkeeping overwrite must never take down
+		// session start.
+		settingsWriteStubs.writeConfigSetting.mockImplementationOnce(() => {
+			throw new Error("read-only settings.json")
+		})
+		const { setModel, start } = runSessionStart()
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(model(DEEPSEEK, { name: `Model ${DEEPSEEK}` }), { persist: true })
+	})
+
+	it("installs the gated default on a first run with no current model", async () => {
+		// Greenfield gated org with no persisted default: settings.json
+		// multiModel is seeded false above, so something must be installed on
+		// top of it or the user ends up on nothing.
+		const { setModel, start } = runSessionStart({ model: undefined })
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(model(DEEPSEEK, { name: `Model ${DEEPSEEK}` }), { persist: true })
+		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(false)
 	})
 
 	it("falls back to deepseek-v4-flash-0731 when the canonical slug is unserved", async () => {
