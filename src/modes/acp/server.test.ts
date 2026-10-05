@@ -868,7 +868,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods).toHaveLength(3)
+			expect(response.authMethods).toHaveLength(4)
 			expect(response.authMethods?.[0]).toMatchObject({
 				id: "kimchi-agent",
 				name: "Kimchi Login",
@@ -891,9 +891,14 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
 			const ids = response.authMethods?.map((m) => m.id)
-			expect(ids).toEqual(["kimchi-agent", "kimchi-agent-us", "kimchi-agent-eu"])
+			expect(ids).toEqual(["kimchi-agent", "kimchi-agent-us", "kimchi-agent-eu", "kimchi-agent-self-hosted"])
 			expect(response.authMethods?.[1]).toMatchObject({ id: "kimchi-agent-us", name: "Kimchi Login (US)" })
 			expect(response.authMethods?.[2]).toMatchObject({ id: "kimchi-agent-eu", name: "Kimchi Login (EU)" })
+			expect(response.authMethods?.[3]).toMatchObject({
+				id: "kimchi-agent-self-hosted",
+				name: "Kimchi Login (SELF-HOSTED)",
+				description: "Authenticate via browser to Kimchi (Self-hosted region)",
+			})
 			// Agent Auth leaves `type` absent, like the plain method.
 			for (const method of response.authMethods ?? []) {
 				expect("type" in method).toBe(false)
@@ -923,7 +928,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				protocolVersion: 1,
 				clientCapabilities: { auth: { terminal: true } },
 			})
-			expect(response.authMethods).toHaveLength(4)
+			expect(response.authMethods).toHaveLength(5)
 			const terminalMethod = response.authMethods?.find((m) => "type" in m && m.type === "terminal")
 			expect(terminalMethod).toMatchObject({
 				id: "kimchi-terminal",
@@ -942,7 +947,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			// No clientCapabilities at all
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods).toHaveLength(3)
+			expect(response.authMethods).toHaveLength(4)
 			expect(response.authMethods?.some((m) => "type" in m && m.type === "terminal")).toBe(false)
 
 			// clientCapabilities present but auth.terminal is false/omitted
@@ -950,7 +955,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				protocolVersion: 1,
 				clientCapabilities: { auth: { terminal: false } },
 			})
-			expect(response2.authMethods).toHaveLength(3)
+			expect(response2.authMethods).toHaveLength(4)
 			expect(response2.authMethods?.some((m) => "type" in m && m.type === "terminal")).toBe(false)
 		})
 
@@ -1092,6 +1097,52 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				successMessage: ACP_SUCCESS_MESSAGE,
 			})
 			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_us-token", undefined, { region: "us" })
+		})
+
+		it("authenticates against the self-hosted region and persists region + base URL", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_self-hosted-token" })
+
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			// ACP clients have no interactive prompt; the base URL comes from the
+			// env override (or a previously stored selfHostedUrl).
+			vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://kimchi.example.com")
+			onTestFinished(() => {
+				vi.unstubAllEnvs()
+			})
+
+			const result = await testAgent.authenticate({ methodId: "kimchi-agent-self-hosted" })
+
+			expect(result).toEqual({})
+			expect(authenticateViaBrowser).toHaveBeenCalledWith({
+				webAppUrl: "https://kimchi.example.com",
+				successMessage: ACP_SUCCESS_MESSAGE,
+			})
+			// The resolved base is persisted next to the region so later launches
+			// resolve without the env override.
+			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_self-hosted-token", undefined, {
+				region: "self-hosted",
+				selfHostedUrl: "https://kimchi.example.com",
+			})
+		})
+
+		it("fails fast when kimchi-agent-self-hosted has no base URL configured", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			// The isolated test home stores no selfHostedUrl, so nothing resolves.
+			await expect(testAgent.authenticate({ methodId: "kimchi-agent-self-hosted" })).rejects.toThrow(
+				/self-hosted.*base URL is configured/s,
+			)
+			expect(authenticateViaBrowser).not.toHaveBeenCalled()
+			expect(writeApiKey).not.toHaveBeenCalled()
 		})
 
 		it("throws invalidParams for unknown methodId", async () => {
@@ -1261,6 +1312,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				apiKey,
 				agentConfigDir: tempAgentDir,
 				region: "us",
+				selfHostedUrl: undefined,
 				llmEndpoint: "https://llm.kimchi.dev/openai/v1",
 				customLlmEndpoint: undefined,
 				maxToolResultChars: 12000,
