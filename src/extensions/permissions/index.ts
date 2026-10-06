@@ -723,10 +723,18 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			//    evaluator.
 			const mode = getRuntimePermissionMode().mode
 			if (mode !== "plan" && mode !== "auto" && !isAgentWorker()) {
-				const hint =
-					mode === "default"
-						? "To enter plan mode, call the questionnaire tool."
-						: "Ask the user to switch (shift+tab or /permissions mode plan)."
+				// Surface-aware guidance: shift+tab and the /permissions slash
+				// command are TUI affordances. ACP clients (ctx.mode === "rpc") and
+				// headless runs own the mode switch through their own UI, so the
+				// instruction stays surface-neutral there.
+				let hint: string
+				if (mode === "default") {
+					hint = "To enter plan mode, call the questionnaire tool."
+				} else if (ctx.hasUI && ctx.mode !== "rpc") {
+					hint = "Ask the user to switch to plan mode (shift+tab or /permissions mode plan)."
+				} else {
+					hint = "Ask the user to switch the permission mode to plan."
+				}
 				return {
 					content: [
 						{
