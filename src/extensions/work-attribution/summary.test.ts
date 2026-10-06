@@ -4,7 +4,11 @@ import * as fs from "node:fs"
 import * as asyncFs from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import type { BeforeProviderHeadersEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
+import type {
+	BeforeProviderHeadersEvent,
+	SessionShutdownEvent,
+	SessionStartEvent,
+} from "@earendil-works/pi-coding-agent"
 import * as locks from "proper-lockfile"
 import { lockSync } from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -29,12 +33,18 @@ let dir: string
 beforeEach(() => {
 	dir = fs.mkdtempSync(join(tmpdir(), "kimchi-work-summary-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
+	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
 })
 afterEach(async () => {
 	await flushWorkSummaries()
-	vi.restoreAllMocks()
-	vi.unstubAllEnvs()
-	fs.rmSync(dir, { recursive: true, force: true })
+	try {
+		expect(vi.getTimerCount()).toBe(0)
+	} finally {
+		vi.useRealTimers()
+		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
+		fs.rmSync(dir, { recursive: true, force: true })
+	}
 })
 function context(sessionId = "parent") {
 	return createContext({ cwd: "/project", sessionManager: { getSessionId: () => sessionId } })
@@ -350,17 +360,22 @@ describe("readable work summaries", () => {
 		else fs.writeFileSync(path(workId), corrupt.replace("WORK_ID", workId))
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
-		await api.getHandler<SessionStartEvent>("session_start")(
-			{ type: "session_start", reason: "startup" },
-			context("fresh"),
-		)
-		await flushWorkSummaries()
-		expect(summary(workId)).toMatchObject({
-			workId,
-			sessions: expect.arrayContaining(["parent", "child"]),
-			requests: [expect.objectContaining({ requestId: "old-request", sessionId: "parent" })],
-			plans: [expect.objectContaining({ path: "/old-plan.md", sessionId: "child" })],
-		})
+		const fresh = context("fresh")
+		try {
+			await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, fresh)
+			await flushWorkSummaries()
+			expect(summary(workId)).toMatchObject({
+				workId,
+				sessions: expect.arrayContaining(["parent", "child"]),
+				requests: [expect.objectContaining({ requestId: "old-request", sessionId: "parent" })],
+				plans: [expect.objectContaining({ path: "/old-plan.md", sessionId: "child" })],
+			})
+		} finally {
+			await api.getHandler<SessionShutdownEvent>("session_shutdown")(
+				{ type: "session_shutdown", reason: "quit" },
+				fresh,
+			)
+		}
 	})
 	it("keeps a durable request header when the derived summary directory is blocked", async () => {
 		fs.writeFileSync(join(dir, "work"), "blocked")
