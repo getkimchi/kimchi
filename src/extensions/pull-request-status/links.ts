@@ -24,6 +24,7 @@ export function mergePullRequestLinks<T extends PullRequestObservation>(...group
 			const update =
 				!previous ||
 				typeof previous.checkedAt !== "string" ||
+				!Number.isFinite(Date.parse(previous.checkedAt)) ||
 				Date.parse(item.checkedAt) >= Date.parse(previous.checkedAt)
 					? { ...previous, ...item }
 					: { ...item, ...previous }

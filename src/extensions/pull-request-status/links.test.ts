@@ -22,3 +22,11 @@ describe("saved provider links", () => {
 		expect(mergePullRequestLinks([renamed], [old])).toEqual([renamed])
 	})
 })
+
+it.each([false, true])("keeps the valid PR observation when a timestamp is damaged (valid first: %s)", (validFirst) => {
+	const valid = { url: "https://github.com/example/repo/pull/7", state: "merged", checkedAt: "2026-10-04T10:00:00Z" }
+	const damaged = { ...valid, state: "open", checkedAt: "invalid-history" }
+	const rows = validFirst ? [valid, damaged] : [damaged, valid]
+	// Recovery can replay records in either order.
+	expect(mergePullRequestLinks(rows)).toEqual([valid])
+})
