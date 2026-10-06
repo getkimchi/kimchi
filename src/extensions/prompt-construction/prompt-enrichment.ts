@@ -35,6 +35,7 @@ import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/reso
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { getEffectiveModel } from "../auto-model/state.js"
 import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
 import { bumpStallCounter, fireStepStallSteerIfStalled } from "../ferment/todo-sync.js"
@@ -734,7 +735,10 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				skills: skills,
 				currentModelId: mode === "orchestrator" ? getOrchestratorModelId(sessionId) : effectiveModel?.id,
 				registry: registry,
-				contextWindow: effectiveModel?.contextWindow,
+				// Auto-routed sessions resolve to the concrete pick's descriptor once a
+				// request has been routed; until then the virtual model's advertised
+				// window may not reflect the routed pool, so keep the floor budget.
+				contextWindow: effectiveModel && !isAutoRoutedModel(effectiveModel) ? effectiveModel.contextWindow : undefined,
 				mode,
 				roles,
 				customConfigs,

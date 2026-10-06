@@ -319,7 +319,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("load it with the skill_view tool (name: <skill name>)")
 		})
 
-		it("caps skill descriptions at 500 characters", () => {
+		it("caps skill descriptions at 200 characters", () => {
 			const long = "word ".repeat(200).trim() // 999 chars
 			const skills = [createSkill({ name: "wordy", description: long })]
 			const result = buildSystemPrompt({
@@ -331,12 +331,12 @@ describe("buildSystemPrompt", () => {
 			const descriptionLine = result.split("\n").find((line) => line.startsWith("- **wordy**"))
 			expect(descriptionLine).toBeDefined()
 			// Word-boundary truncation keeps the line near the cap, not at 999 chars.
-			expect(descriptionLine?.length ?? 0).toBeLessThan(600)
+			expect(descriptionLine?.length ?? 0).toBeLessThan(300)
 			expect(descriptionLine?.endsWith("…")).toBe(true)
 		})
 
 		it("degrades over-budget catalog entries to name-only bullets without dropping them", () => {
-			// ~30 full entries at ~500 chars each far exceed the block budget.
+			// 30 entries at ~220 chars each exceed the 5k floor budget.
 			const skills = Array.from({ length: 30 }, (_, i) =>
 				createSkill({ name: `skill-${i}`, description: `${i} ${'"word "'.repeat(120).trim()}` }),
 			)
@@ -376,9 +376,10 @@ describe("buildSystemPrompt", () => {
 		})
 
 		it("scales the catalog budget with the model's context window", () => {
-			// 20 entries at ~500 chars each: a full render needs ~10k chars, which
-			// the 5k floor budget cannot fit but a 1M-token window's ~1% budget can.
-			const skills = Array.from({ length: 20 }, (_, i) =>
+			// 30 entries at ~220 chars each (200-char capped descriptions): a full
+			// render needs ~6.6k chars, which the 5k floor budget cannot fit but a
+			// 1M-token window's ~1% budget can.
+			const skills = Array.from({ length: 30 }, (_, i) =>
 				createSkill({ name: `skill-${i}`, description: `${i} ${'"word "'.repeat(120).trim()}` }),
 			)
 			const floored = buildSystemPrompt({
@@ -395,8 +396,8 @@ describe("buildSystemPrompt", () => {
 				contextWindow: 1_000_000,
 			})
 			const fullBullets = (result: string) => skillsCatalogBullets(result).filter((b) => b.includes("—"))
-			expect(fullBullets(floored).length).toBeLessThan(20)
-			expect(fullBullets(scaled)).toHaveLength(20)
+			expect(fullBullets(floored).length).toBeLessThan(30)
+			expect(fullBullets(scaled)).toHaveLength(30)
 			expect(scaled).not.toContain("name-only")
 		})
 

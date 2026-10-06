@@ -550,10 +550,12 @@ function formatProjectContext(contextFiles?: readonly ContextFile[]): string {
 }
 
 /** Cap on a skill's rendered description — the catalog carries routing info
- *  only, so a long authored description is truncated at a word boundary. 500
- *  chars keeps the model able to recognize a match without dragging the skill
- *  body into the prompt. */
-const SKILL_DESCRIPTION_MAX_CHARS = 500
+ *  only, so a long authored description is truncated at a word boundary. 200
+ *  chars (the pre-#1288 value, in line with the ~250-char discovery-listing
+ *  convention other harnesses use) keeps the model able to recognize a match
+ *  without dragging the skill body into the prompt — and lets more entries
+ *  fit the budget with their descriptions intact. */
+const SKILL_DESCRIPTION_MAX_CHARS = 200
 
 /** Block-level floor for the whole catalog. The live budget scales with the
  *  model's context window (~1% expressed in chars, see skillsBlockBudget) —
