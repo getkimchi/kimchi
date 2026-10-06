@@ -134,6 +134,28 @@ export function inspectionHeaderText(processCount: number): string {
 }
 
 /**
+ * Status line for a terminal outcome that is queued for the automatic
+ * delivery channel and not yet acknowledged in the conversation. The
+ * payload is deliberately NOT repeated here — the identified notification
+ * is the authoritative carrier (irreversible channel ownership).
+ */
+export function pendingDeliveryText(handle: string): string {
+	return (
+		`${handle}: exited; its final result is queued for automatic delivery and not yet ` +
+		"acknowledged in the conversation. It will arrive on its own — do not wait for or re-request it."
+	)
+}
+
+/**
+ * Genuinely empty cohort at a `bash_control` call: no live processes and no
+ * pending terminal outcomes. Returned immediately without starting the
+ * bounded wait timer.
+ */
+export function emptyWaitText(): string {
+	return "No background processes or pending results remain. No wait timer was started; this call does not sleep."
+}
+
+/**
  * Reassessment guidance appended to a checkpoint response. A checkpoint is
  * an opportunity to reassess, not an instruction to wait again — and
  * silence alone never establishes a stall.
@@ -196,7 +218,7 @@ export function terminalResultText(input: TerminalResultInput): string {
 		parts.push("Final output:")
 		parts.push(input.output)
 	} else if (input.truncated) {
-		parts.push("All output was already delivered in previous reviews.")
+		parts.push("All output was already delivered in earlier results.")
 	} else {
 		parts.push("The process produced no further output.")
 	}

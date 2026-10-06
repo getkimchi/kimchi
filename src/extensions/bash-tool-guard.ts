@@ -168,9 +168,9 @@ const NO_DAEMON_STEER =
 function backgroundSuggestion(): string {
 	const daemon = isExperimentalFeaturesEnabled()
 	return (
-		"Use the bash tool for long-running commands: if one is still running after its initial handoff (~15s), you get a handle and it continues by default — reviews and the exit result arrive automatically, so do not poll; drive stops via bash_control stop_handles. " +
+		"Use the bash tool for long-running commands: if one is still running after its brief initial handoff (~2s), you get a handle and it continues by default — its exit result is delivered automatically at the next turn boundary while you keep working, so do not poll; drive stops via bash_control stop_handles. " +
 		"Do not background processes with `&`, `nohup`, or `disown` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs. " +
-		(daemon
+		+(daemon
 			? `Managed background (bash + bash_control) is killed when the session ends; ${DAEMON_STEER}`
 			: `Managed background is likewise killed at session end; ${NO_DAEMON_STEER}`)
 	)

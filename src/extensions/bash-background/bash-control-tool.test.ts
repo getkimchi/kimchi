@@ -14,6 +14,7 @@ import { createBashControlToolDefinition } from "./bash-control-tool.js"
 import { createProcessRegistry, type ProcessRegistry } from "./process-registry.js"
 import { createReviewCoordinator, type ReviewCoordinator } from "./review-coordinator.js"
 import type { BashSessionState } from "./session-registry.js"
+import { createTerminalDelivery } from "./terminal-delivery.js"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -27,7 +28,7 @@ beforeEach(() => {
 	ops = createFakeOps()
 	registry = createProcessRegistry()
 	coordinator = createReviewCoordinator({ registry, handoffSeconds: 1 })
-	state = { registry, coordinator, limitSeconds: 3600 }
+	state = { registry, coordinator, delivery: createTerminalDelivery(), limitSeconds: 3600 }
 })
 
 afterEach(async () => {
@@ -252,10 +253,10 @@ describe("bash_control — immediate inspection (wait: false)", () => {
 		expect(registry.getEntry(alive)?.state).toBe("running")
 	})
 
-	it("returns 'No background processes remain' for an empty cohort", async () => {
+	it("returns 'No background processes or pending results remain' for an empty cohort", async () => {
 		const { tool } = setup()
 		const result = await callExecute(tool, { wait: false })
-		expect(textOf(result)).toContain("No background processes remain")
+		expect(textOf(result)).toContain("No background processes or pending results remain")
 		expect(result.details.event).toBe("inspection")
 	})
 
@@ -640,7 +641,7 @@ describe("bash_control — wait", () => {
 		controller.abort()
 		const result = await execPromise
 
-		expect(textOf(result)).toContain("Wait cancelled")
+		expect(textOf(result)).toBe("Wait cancelled after 0s. 1 background process still running.")
 		expect(result.details.aborted).toBe(true)
 		expect(result.details.event).toBe("aborted")
 		expect(registry.getEntry(handle)?.state).toBe("running")
@@ -658,11 +659,12 @@ describe("bash_control — wait", () => {
 		expect(coordinator.getCheckpointStreak(handle)).toBe(0)
 	})
 
-	it("wait with an empty cohort returns immediately without starting a timer", async () => {
+	it("wait with a genuinely empty cohort returns immediately without starting a timer", async () => {
 		const { tool } = setup()
 		const timersBefore = vi.getTimerCount()
 		const result = await callExecute(tool, { wait: true })
-		expect(textOf(result)).toContain("nothing to wait for")
+		expect(textOf(result)).toContain("No background processes or pending results remain")
+		expect(textOf(result)).toContain("No wait timer was started; this call does not sleep")
 		expect(result.details.event).toBe("empty")
 		expect(vi.getTimerCount()).toBe(timersBefore)
 	})
@@ -693,7 +695,7 @@ describe("bash_control — wait", () => {
 		expect(registry.getEntry(victim)).toBeUndefined()
 		expect(result.details.exitedHandles).toEqual([victim])
 		expect(result.details.event).toBe("exit")
-		expect(textOf(result)).toContain("No background processes remain running")
+		expect(textOf(result)).toContain("No background processes or pending results remain")
 		// No wait timer was armed.
 		expect(vi.getTimerCount()).toBe(timersBefore - 1)
 	})
@@ -714,5 +716,179 @@ describe("bash_control — wait", () => {
 		// The survivor's streak INCREMENTED (the event that ended the wait
 		// was the checkpoint), not reset by the stop's terminal delivery.
 		expect(coordinator.getCheckpointStreak(survivor)).toBe(1)
+	})
+})
+
+describe("bash_control — pending terminal delivery state", () => {
+	it("reports a queued automatic outcome as pending without duplicating its payload", async () => {
+		const { tool } = setup()
+		// The automatic channel collected the outcome and enqueued its
+		// identified steering message (registry entry removed — no live
+		// process remains).
+		const handle = "collected-handle"
+		state.delivery.record(handle, "[TERMINAL PAYLOAD unique-marker]", "automatic")
+		state.delivery.markQueued(handle, "delivery-x")
+
+		const result = await callExecute(tool, { wait: false })
+		const text = textOf(result)
+		expect(text).toContain(handle)
+		expect(text).toContain("queued for automatic delivery")
+		// The payload belongs to the notification — it is not repeated here.
+		expect(text).not.toContain("unique-marker")
+		expect(result.details.pendingHandles).toEqual([handle])
+		expect(result.details.exitedHandles).toEqual([])
+	})
+
+	it("delivers a recoverable (available) outcome through the claiming call", async () => {
+		const { tool } = setup()
+		const handle = spawnRunning("sleeper")
+		// Post-abort release: the automatic message was dropped, the outcome
+		// is recoverable and owned by nobody.
+		state.delivery.record(handle, "[TERMINAL PAYLOAD recovered-marker]", "automatic")
+
+		const result = await callExecute(tool, { wait: false })
+		expect(textOf(result)).toContain("recovered-marker")
+		expect(result.details.exitedHandles).toEqual([handle])
+		expect(state.delivery.getPending(handle)?.owner).toEqual({ controlCallId: "call-1" })
+	})
+
+	it("wait with only queued pending outcomes returns their status immediately (no timer)", async () => {
+		const { tool } = setup()
+		const handle = "collected-handle"
+		state.delivery.record(handle, "[TERMINAL PAYLOAD wait-marker]", "automatic")
+		state.delivery.markQueued(handle, "delivery-y")
+		const timersBefore = vi.getTimerCount()
+
+		const result = await callExecute(tool, { wait: true })
+		expect(result.details.event).toBe("inspection")
+		expect(result.details.pendingHandles).toEqual([handle])
+		expect(textOf(result)).toContain("queued for automatic delivery")
+		expect(textOf(result)).not.toContain("wait-marker")
+		// No wait timer was armed for a session with no live work.
+		expect(vi.getTimerCount()).toBe(timersBefore)
+	})
+
+	it("wait with only recoverable pending outcomes delivers them immediately (no timer)", async () => {
+		const { tool } = setup()
+		const handle = "released-handle"
+		state.delivery.record(handle, "[TERMINAL PAYLOAD wait-recovered]", "automatic")
+		const timersBefore = vi.getTimerCount()
+
+		const result = await callExecute(tool, { wait: true })
+		expect(result.details.event).toBe("exit")
+		expect(result.details.exitedHandles).toEqual([handle])
+		expect(textOf(result)).toContain("wait-recovered")
+		expect(vi.getTimerCount()).toBe(timersBefore)
+	})
+
+	it("stop of a queued outcome reports the pending status without a duplicate payload", async () => {
+		const { tool } = setup()
+		const handle = "collected-handle"
+		state.delivery.record(handle, "[TERMINAL PAYLOAD stop-marker]", "automatic")
+		state.delivery.markQueued(handle, "delivery-z")
+
+		const result = await callExecute(tool, { stop_handles: [handle], wait: false })
+		const text = textOf(result)
+		expect(text).toContain("queued for automatic delivery")
+		expect(text).not.toContain("stop-marker")
+		expect(result.details.pendingHandles).toEqual([handle])
+	})
+
+	it("wait with a live survivor and a recoverable pending outcome returns it immediately (no timer)", async () => {
+		const { tool } = setup()
+		const survivor = spawnRunning("survivor")
+		// A recoverable (available) outcome exists alongside the live
+		// survivor — e.g. released after an aborted run dropped its
+		// notification. The wait must NOT defer this deliverable output to the
+		// 300s checkpoint behind the survivor.
+		const handle = "recovered-mixed"
+		state.delivery.record(handle, "[TERMINAL PAYLOAD mixed-recovered]", "automatic")
+		const timersBefore = vi.getTimerCount()
+
+		const result = await callExecute(tool, { wait: true })
+		expect(result.details.event).toBe("exit")
+		expect(result.details.exitedHandles).toEqual([handle])
+		expect(result.details.runningHandles).toEqual([survivor])
+		expect(textOf(result)).toContain("mixed-recovered")
+		expect(textOf(result)).toContain("survivor")
+		// No wait timer was armed for deliverable output.
+		expect(vi.getTimerCount()).toBe(timersBefore)
+	})
+
+	it("wait yields immediately for queued results even with live work", async () => {
+		const { tool } = setup()
+		const survivor = spawnRunning("survivor")
+		const handle = "queued-mixed"
+		state.delivery.record(handle, "[TERMINAL PAYLOAD never-duplicated]", "automatic")
+		state.delivery.markQueued(handle, "delivery-qm")
+
+		const timersBefore = vi.getTimerCount()
+		const execPromise = callExecute(tool, { wait: true, waitSeconds: 5 })
+		await vi.advanceTimersByTimeAsync(5_000)
+		const result = await execPromise
+		expect(result.details.event).toBe("inspection")
+		expect(result.details.waitedSeconds).toBeUndefined()
+		expect(vi.getTimerCount()).toBe(timersBefore)
+		expect(result.details.runningHandles).toEqual([survivor])
+		expect(result.details.pendingHandles).toEqual([handle])
+		expect(textOf(result)).toContain("queued for automatic delivery")
+		expect(textOf(result)).not.toContain("never-duplicated")
+	})
+
+	it("a queued automatic result wakes an armed wait without delivering its payload", async () => {
+		const { tool } = setup()
+		const survivor = spawnRunning("survivor")
+		const timersBefore = vi.getTimerCount()
+		const execPromise = callExecute(tool, { wait: true, waitSeconds: 5 })
+		await vi.advanceTimersByTimeAsync(1_000)
+		state.delivery.record("late-result", "PRIVATE PAYLOAD", "automatic")
+		state.delivery.markQueued("late-result", "late-batch")
+		await vi.advanceTimersByTimeAsync(4_000)
+		const result = await execPromise
+		expect(result.details.event).toBe("inspection")
+		expect(result.details.waitedSeconds).toBe(1)
+		expect(result.details.pendingHandles).toEqual(["late-result"])
+		expect(result.details.runningHandles).toEqual([survivor])
+		expect(textOf(result)).not.toContain("PRIVATE PAYLOAD")
+		expect(state.delivery.getPending("late-result")?.owner).toBe("automatic")
+		expect(vi.getTimerCount()).toBe(timersBefore)
+	})
+
+	it("cancellation reports pending results without promising delivery", async () => {
+		const { tool } = setup()
+		const handle = spawnRunning("teardown")
+		const execPromise = callExecute(tool, { wait: true })
+		await Promise.resolve()
+		state.delivery.record("retained", "PAYLOAD", "automatic")
+		coordinator.dispose()
+		await registry.kill(handle)
+		const result = await execPromise
+		expect(textOf(result)).toBe(
+			"Wait cancelled after 0s. 0 background processes still running.\n\n1 exit result remains pending delivery.",
+		)
+		expect(result.details.pendingHandles).toEqual(["retained"])
+		expect(textOf(result)).not.toContain("PAYLOAD")
+	})
+
+	it("an unknown handle makes no delivered assertion", async () => {
+		const { tool } = setup()
+		const result = await callExecute(tool, { stop_handles: ["ghost"], wait: false })
+		const text = textOf(result)
+		expect(text).toContain("Unknown handle 'ghost' in this session")
+		// Truthful evidence-based wording: no claim that a result was delivered.
+		expect(text).not.toContain("its result was delivered")
+	})
+
+	it("a stop delivers a pending owned by the same call exactly once (no sweep duplicate)", async () => {
+		const { tool } = setup()
+		const handle = spawnRunning("sleeper")
+		// First call stops it (records the control-owned pending), then the
+		// sweep must not re-deliver the recorded payload.
+		const result = await callExecute(tool, { stop_handles: [handle], wait: false })
+		const occurrences = textOf(result).split("TERMINAL").length - 1
+		// The terminal block appears once (its header), never twice.
+		expect(result.details.exitedHandles).toEqual([handle])
+		expect(occurrences).toBeLessThanOrEqual(1)
+		expect(textOf(result).split("[Background bash process ended").length - 1).toBe(1)
 	})
 })

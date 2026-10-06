@@ -15,8 +15,8 @@
  *  - Cohort wait (`awaitCohortEvent`): blocks until the first cohort
  *    exit (including joiners), the wait's bounded checkpoint (the
  *    effective duration validated by the caller, capped at
- *    `MAX_WAIT_SECONDS`), abort, or cohort disposal. The checkpoint
- *    timer starts when the actual wait begins — after any requested
+ *    `MAX_WAIT_SECONDS`), pending automatic delivery, abort, or cohort
+ *    disposal. The checkpoint timer starts when the actual wait begins — after any requested
  *    stops were applied — and joining handles never postpone it.
  *
  * Exit observation uses ONE permanent `whenExited` continuation per
@@ -35,6 +35,7 @@
  * it stays unit-testable with fake timers.
  */
 import type { ProcessRegistry } from "./process-registry.js"
+import type { TerminalDelivery } from "./terminal-delivery.js"
 
 /** One-time per-command handoff deadline (seconds). */
 export const INITIAL_HANDOFF_SECONDS = 2
@@ -52,6 +53,7 @@ export type CohortWaitEvent =
 	| { kind: "checkpoint" }
 	| { kind: "aborted" }
 	| { kind: "empty" }
+	| { kind: "pending-delivery" }
 
 export interface ReviewCoordinatorOptions {
 	registry: ProcessRegistry
@@ -79,11 +81,16 @@ export interface ReviewCoordinator {
 	beginCohortWait(toolCallId: string): { ok: true } | { ok: false; error: string }
 	/**
 	 * Block until the first cohort exit (joiners included), the bounded
-	 * checkpoint (starting NOW, for `waitSeconds` seconds), abort, or
-	 * cohort disposal. Must be paired with `beginCohortWait`/
+	 * checkpoint (starting NOW, for `waitSeconds` seconds), pending
+	 * automatic delivery, abort, or cohort disposal. Must be paired with `beginCohortWait`/
 	 * `endCohortWait`.
 	 */
-	awaitCohortEvent(toolCallId: string, signal?: AbortSignal, waitSeconds?: number): Promise<CohortWaitEvent>
+	awaitCohortEvent(
+		toolCallId: string,
+		signal?: AbortSignal,
+		waitSeconds?: number,
+		delivery?: TerminalDelivery,
+	): Promise<CohortWaitEvent>
 	/** Release the cohort-wait slot without awaiting further events. */
 	endCohortWait(toolCallId: string): void
 	/** Whether a `bash_control(wait: true)` currently owns the wait slot. */
@@ -238,7 +245,12 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 		return { ok: true }
 	}
 
-	function awaitCohortEvent(toolCallId: string, signal?: AbortSignal, waitSeconds?: number): Promise<CohortWaitEvent> {
+	function awaitCohortEvent(
+		toolCallId: string,
+		signal?: AbortSignal,
+		waitSeconds?: number,
+		delivery?: TerminalDelivery,
+	): Promise<CohortWaitEvent> {
 		if (!activeWait || activeWait.toolCallId !== toolCallId) {
 			return Promise.resolve({ kind: "aborted" })
 		}
@@ -282,6 +294,16 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 			const onAbort = () => settle({ kind: "aborted" })
 			signal.addEventListener("abort", onAbort, { once: true })
 			cleanups.push(() => signal.removeEventListener("abort", onAbort))
+		}
+
+		// Subscribe before checking: a queued result must yield a turn
+		// boundary for its automatic message, even with live survivors.
+		if (delivery) {
+			cleanups.push(delivery.onQueuedAutomatic(() => settle({ kind: "pending-delivery" })))
+			if (delivery.hasQueuedAutomatic()) {
+				settle({ kind: "pending-delivery" })
+				return promise
+			}
 		}
 
 		// A handle that already reached a terminal state before the wait

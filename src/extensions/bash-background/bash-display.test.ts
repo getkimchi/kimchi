@@ -7,11 +7,13 @@ import { bashStatus, bashStatusColor, renderBashCall, renderBashResult, safeBash
 import { createProcessRegistry, type ProcessDisplaySnapshot } from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
 import { getSessionState, setSessionState } from "./session-registry.js"
+import { createTerminalDelivery } from "./terminal-delivery.js"
 
 function makeState(registry: ReturnType<typeof createProcessRegistry>) {
 	return {
 		registry,
 		coordinator: createReviewCoordinator({ registry }),
+		delivery: createTerminalDelivery(),
 		limitSeconds: 60,
 	}
 }

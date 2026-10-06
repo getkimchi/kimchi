@@ -35,6 +35,7 @@ import {
 import { createReviewCoordinator } from "./review-coordinator.js"
 import { type BashSessionState, getSessionState } from "./session-registry.js"
 import { handoffGuidanceText, runningResultText, terminalResultText } from "./status-text.js"
+import { createTerminalDelivery } from "./terminal-delivery.js"
 import { throwIfTerminal } from "./terminal-status.js"
 
 /** Details returned in background-mode results (adds the handle). */
@@ -81,6 +82,7 @@ function fallbackState(
 	const state: BashSessionState = {
 		registry,
 		coordinator: createReviewCoordinator({ registry }),
+		delivery: createTerminalDelivery(),
 		limitSeconds,
 		cwd,
 	}

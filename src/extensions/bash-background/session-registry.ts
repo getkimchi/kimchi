@@ -10,14 +10,23 @@
  */
 import type { ProcessRegistry } from "./process-registry.js"
 import type { ReviewCoordinator } from "./review-coordinator.js"
+import type { TerminalDelivery } from "./terminal-delivery.js"
 
 /**
- * Everything a session's background-bash cohort needs: processes +
- * lifecycle coordination (per-command handoffs and bounded waits).
+ * Everything a session's background-bash cohort needs: processes,
+ * lifecycle coordination (per-command handoffs and bounded waits), and
+ * terminal-delivery ownership/acknowledgement state.
  */
 export interface BashSessionState {
 	registry: ProcessRegistry
 	coordinator: ReviewCoordinator
+	/**
+	 * Terminal-delivery state shared by the extension (automatic
+	 * notifications) and the tool (control results): retains terminal
+	 * snapshots until an authoritative conversation acknowledgement, so
+	 * pending outcomes stay queryable and recoverable.
+	 */
+	delivery: TerminalDelivery
 	/** Absolute per-process safety limit in seconds (operator-configured). */
 	limitSeconds: number
 	/**

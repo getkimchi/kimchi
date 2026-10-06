@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createFakeOps, type FakeOps } from "./__mocks__/fake-bash-ops.js"
 import { createProcessRegistry } from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
+import { createTerminalDelivery } from "./terminal-delivery.js"
 
 const HANDOFF = 2
 
@@ -396,5 +397,73 @@ describe("checkpoint streaks", () => {
 		c.handleRemoved(a)
 		c.commitWaitTimeout([a])
 		expect(c.getCheckpointStreak(a)).toBe(0)
+	})
+})
+
+describe("pending automatic delivery", () => {
+	it("checks already queued results after subscribing without starting a timer", async () => {
+		const c = makeCoordinator()
+		c.handleSpawned(spawnOne())
+		const delivery = createTerminalDelivery()
+		delivery.record("exit", "payload", "automatic")
+		delivery.markQueued("exit", "batch")
+		const timersBefore = vi.getTimerCount()
+		c.beginCohortWait("call")
+		await expect(c.awaitCohortEvent("call", undefined, 10, delivery)).resolves.toEqual({ kind: "pending-delivery" })
+		expect(vi.getTimerCount()).toBe(timersBefore)
+		expect(c.hasActiveWait()).toBe(false)
+	})
+
+	it("does not wake for available outcomes or results owned by another control call", async () => {
+		const c = makeCoordinator()
+		c.handleSpawned(spawnOne())
+		const delivery = createTerminalDelivery()
+		c.beginCohortWait("call")
+		const event = c.awaitCohortEvent("call", undefined, 1, delivery)
+		delivery.record("available", "payload", "automatic")
+		delivery.record("owned", "payload", { controlCallId: "other" })
+		expect(delivery.markQueued("owned", "batch")).toBeUndefined()
+		await vi.advanceTimersByTimeAsync(1_000)
+		await expect(event).resolves.toEqual({ kind: "checkpoint" })
+	})
+
+	it.each([
+		"checkpoint",
+		"abort",
+		"exit",
+		"dispose",
+		"pending",
+	] as const)("cleans up the enqueue subscription and timer on %s", async (mode) => {
+		const c = makeCoordinator()
+		c.handleSpawned(spawnOne())
+		const delivery = createTerminalDelivery()
+		const subscribe = delivery.onQueuedAutomatic.bind(delivery)
+		const cleanup = vi.fn()
+		vi.spyOn(delivery, "onQueuedAutomatic").mockImplementation((listener) => {
+			const unsubscribe = subscribe(listener)
+			return () => {
+				cleanup()
+				unsubscribe()
+			}
+		})
+		const controller = new AbortController()
+		c.beginCohortWait("call")
+		const event = c.awaitCohortEvent("call", controller.signal, 10, delivery)
+		if (mode === "checkpoint") await vi.advanceTimersByTimeAsync(10_000)
+		else if (mode === "abort") controller.abort()
+		else if (mode === "exit") await ops.exit(0)
+		else if (mode === "dispose") c.dispose()
+		else {
+			delivery.record("exit", "payload", "automatic")
+			delivery.markQueued("exit", "batch")
+		}
+		await event
+		expect(cleanup).toHaveBeenCalledOnce()
+		expect(c.hasActiveWait()).toBe(false)
+		// Late enqueues cannot wake or re-clean an already settled wait.
+		delivery.record("late", "payload", "automatic")
+		delivery.markQueued("late", "late-batch")
+		expect(cleanup).toHaveBeenCalledOnce()
+		expect(vi.getTimerCount()).toBe(mode === "exit" ? 0 : 1)
 	})
 })

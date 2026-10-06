@@ -11,11 +11,13 @@ import bashBackgroundExtension from "../bash-background/index.js"
 import { createProcessRegistry } from "../bash-background/process-registry.js"
 import { createReviewCoordinator } from "../bash-background/review-coordinator.js"
 import { getSessionState, setSessionState } from "../bash-background/session-registry.js"
+import { createTerminalDelivery } from "../bash-background/terminal-delivery.js"
 
 function bashState(registry: ReturnType<typeof createProcessRegistry>) {
 	return {
 		registry,
 		coordinator: createReviewCoordinator({ registry, handoffSeconds: 0.01 }),
+		delivery: createTerminalDelivery(),
 		limitSeconds: 60,
 	}
 }

@@ -4,8 +4,161 @@ import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
-// Group control workflows. Automatic exit delivery is covered in the stacked delivery MR.
+// Human-designed workflow spec for the bounded background bash control.
+// One workflow per test:
+//   1. unattended exit wakes an idle agent; the survivor is stopped in one call
+//   2. an exit landing mid-stream queues at a safe boundary — no interleaved
+//      output, no duplicate turn, no orphaned result
+//   3. an explicit bounded wait returns a checkpoint with evidence; the
+//      silent command is then stopped
+//   4. cancelling a wait (Escape) leaves the command alive — an inspection
+//      confirms it, then it is stopped
+//   5. an unattended exit during continued independent tool work reaches the
+//      NEXT request without a tool-free stop — the model acts on it and
+//      settles
+// Abort-vs-shutdown semantics are covered at unit level in
+// src/extensions/bash-background/bash-control-tool.test.ts and
+// process-registry.test.ts, where abort signals and registry shutdown are
+// directly controllable.
 
+test("background bash cohort: unattended exit wakes the agent; survivor stopped in one call", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "bash-background-cohort-exit-wakes-agent",
+			responses: [
+				// Turn 1: the model starts two commands — one short-lived past the
+				// handoff (exit notification expected), one long-lived survivor.
+				{
+					stream: ["Starting two background commands."],
+					toolCalls: [
+						{
+							id: "call_bash_exit",
+							index: 0,
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({ command: "echo quick-done && sleep 6" }),
+							},
+						},
+						{
+							id: "call_bash_stay",
+							index: 1,
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({ command: "echo staying-alive && sleep 90" }),
+							},
+						},
+					],
+				},
+				// Turn 2 (triggered by the unattended-exit notification while the
+				// agent is idle): the model stops the surviving process.
+				{
+					stream: ["The quick command exited; stopping the survivor."],
+					toolCalls: [
+						{
+							id: "call_stop",
+							function: {
+								name: "bash_control",
+								arguments: JSON.stringify({
+									stop_handles: ["__BASH_HANDLE__"],
+									wait: false,
+								}),
+							},
+						},
+					],
+				},
+				// Turn 3: the model finishes with both processes resolved.
+				{ stream: ["Cohort fully resolved."] },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Start two long commands; let one exit and stop the other")
+
+			// The quick command exits at ~6s: its exit notification must wake the
+			// idle agent into a new turn (the scripted stop call appears).
+			await waitForText(terminal, "stopping the survivor", { timeoutMs: STREAM_TIMEOUT_MS * 2 })
+			trace.step("unattended exit woke the idle agent")
+
+			// The survivor was stopped; the session completes with everything resolved.
+			await waitForText(terminal, "Cohort fully resolved", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("session completed with cohort resolved")
+
+			// 3+ LLM requests: dual spawn, exit-notification turn, final.
+			expect(fixture.fake.requests.length).toBeGreaterThanOrEqual(3)
+		},
+	)
+})
+
+// The quick command exits WHILE the follow-up response is still streaming.
+// The exit notification must queue at a safe boundary: it must not clobber or
+// interleave the in-flight stream, must not be delivered twice, and must not
+// be orphaned (an orphaned result would leave the handle tracked and fire the
+// completion continuation, producing an extra request).
+test("background bash cohort: exit during streaming queues at a safe boundary, delivered exactly once", async ({
+	terminal,
+}) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "bash-background-cohort-exit-while-streaming",
+			responses: [
+				// Turn 1: start a command that exits at ~5s, a few seconds past
+				// the ~2s initial handoff.
+				{
+					stream: ["Starting a short-lived command."],
+					toolCalls: [
+						{
+							id: "call_bash_quick",
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({ command: "echo quick-done && sleep 5" }),
+							},
+						},
+					],
+				},
+				// Turn 2: a long slow stream (~8s). The process exits mid-stream;
+				// its notification must queue for the next safe boundary rather
+				// than interrupting this stream.
+				{
+					stream: Array.from({ length: 40 }, (_, i) => `draft segment ${i + 1} of 40. `),
+					textDelayMs: 200,
+				},
+				// Turn 3: driven by the queued exit notification.
+				{ stream: ["The quick command exited while I was drafting."] },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Run a short command, keep talking while it exits")
+
+			// The slow stream completes intact — the exit notification queued
+			// behind it instead of interleaving.
+			await waitForText(terminal, "segment 40 of 40", { timeoutMs: STREAM_TIMEOUT_MS * 3 })
+			trace.step("long stream completed intact")
+
+			// The queued notification drives the next turn.
+			await waitForText(terminal, "exited while I was drafting", { timeoutMs: STREAM_TIMEOUT_MS * 2 })
+			trace.step("queued exit notification delivered after the safe boundary")
+
+			// Exactly-once: the final accumulated history carries the exit
+			// notification exactly once, and no completion continuation fired
+			// (an orphaned result would leave the handle tracked). The recorded
+			// request count includes retries, so assert on message content
+			// instead of totals.
+			await waitForTurnToSettle(fixture.fake.requests)
+			const history = JSON.stringify(
+				fixture.fake.requests.flatMap((r) => (r.body as { messages?: unknown[] } | undefined)?.messages ?? []),
+			)
+			expect(history.split("[Background bash process ended").length - 1).toBe(1)
+			expect(history).not.toContain("Task completion requires a disposition")
+			trace.step("exactly-once delivery confirmed")
+		},
+	)
+})
+
+// An explicit bounded wait with a short requested duration returns a
+// checkpoint with evidence (requested vs waited time, runtime, output age,
+// checkpoint streak, remaining safety budget) — the wait does not stop the
+// process; the model decides to stop it after reassessing.
 test("background bash cohort: a short bounded wait checkpoints with evidence, then the command is stopped", async ({
 	terminal,
 }) => {
@@ -221,6 +374,135 @@ test("background bash cohort: a checkpoint leaves the command alive; queued inpu
 			expect(contains("Task completion requires a disposition")).toBe(false)
 			// 5 LLM requests: spawn, wait, inspection, stop, final.
 			expect(fixture.fake.requests.length).toBeGreaterThanOrEqual(5)
+		},
+	)
+})
+
+// The starvation regression as a user workflow: a command exits unattended
+// after its handoff while the model keeps doing independent read work. The
+// terminal marker is emitted AT exit (well after the handoff window), so the
+// initial handoff result cannot already contain it. With steering delivery
+// the notification reaches the NEXT request — the model acts on the marker
+// and settles WITHOUT a tool-free stop in between. (With the old followUp
+// delivery the marker stayed invisible through every tool-bearing request;
+// it surfaced only after a tool-free stop, so this workflow could not pass.)
+test("background bash cohort: unattended exit during continued tool work reaches the next request and settles", async ({
+	terminal,
+}) => {
+	// The marker is emitted at process exit (~6s), past the ~2s handoff — and
+	// assembled by the shell at runtime, so no request history can contain
+	// it before the exit output is delivered. The wider fake context keeps
+	// this multi-turn workflow from tripping the tiny default window's
+	// auto-compaction (same pattern as ask-user-form.test.ts).
+	const EXIT_MARKER = "COHORT-EXIT-MARKER-4d71"
+	const NO_COMPACTION_MODEL = { slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }
+	await runKimchiSession(
+		terminal,
+		{
+			models: [NO_COMPACTION_MODEL],
+			artifactName: "bash-background-cohort-exit-during-tool-work",
+			responses: [
+				// Turn 1: start a command that exits unattended at ~6s, emitting
+				// its unique terminal marker at exit. The echo argument is
+				// quote-split so the command text itself NEVER contains the
+				// assembled marker — searching request histories for the marker then
+				// proves the DELIVERED OUTPUT arrived, not the echoed command.
+				{
+					stream: ["Starting the marker command."],
+					toolCalls: [
+						{
+							id: "call_bash_marker",
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({ command: `sleep 6 && echo "COHORT-EXIT-"MARKER-4d71` }),
+							},
+						},
+					],
+				},
+				// Turn 2: independent read work while the command runs (~3s of
+				// streamed text keeps this turn alive past the handoff).
+				{
+					stream: Array.from({ length: 6 }, (_, i) => `independent segment ${i + 1} of 6. `),
+					textDelayMs: 500,
+					toolCalls: [
+						{
+							id: "call_read_1",
+							function: {
+								name: "read",
+								arguments: JSON.stringify({ path: "README.md" }),
+							},
+						},
+					],
+				},
+				// Turn 3: more independent work (~5s) — the command exits unattended
+				// during this turn, so its notification queues as steering for the
+				// NEXT boundary (no tool-free stop is required).
+				{
+					stream: Array.from({ length: 8 }, (_, i) => `continued work segment ${i + 1} of 8. `),
+					textDelayMs: 600,
+					toolCalls: [
+						{
+							id: "call_read_2",
+							function: {
+								name: "read",
+								arguments: JSON.stringify({ path: "README.md" }),
+							},
+						},
+					],
+				},
+				// Turn 4: the model has seen the exit notification at the turn
+				// boundary and acts on the terminal marker — no further tools.
+				{ stream: [`The command finished with ${EXIT_MARKER}; all work is resolved.`] },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Run the marker command and keep reading files until it finishes")
+
+			// Independent work continues across the exit. The terminal wraps long
+			// streamed paragraphs at arbitrary columns, so the segment waits use
+			// newline-tolerant regexes (a wrap point can split any fixed phrase).
+			await waitForText(terminal, /independent\s+segment\s+1\s+of\s+6/, { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("independent read work started")
+			await waitForText(terminal, /continued\s+work\s+segment\s+8\s+of\s+8/, { timeoutMs: STREAM_TIMEOUT_MS * 3 })
+			trace.step("independent work continued across the exit")
+
+			// The model acts on the terminal marker and settles.
+			await waitForText(terminal, "all work is resolved", { timeoutMs: STREAM_TIMEOUT_MS * 2 })
+			trace.step("model acted on the terminal marker and settled")
+
+			// First-request visibility: the marker first appears in the request
+			// AFTER the turn during which the exit landed — never in the
+			// requests before the exit — and no extra tool-free stop was needed.
+			// Only the main conversation's requests count: the fixture also
+			// records side-channel completions (e.g. title generation on a
+			// different model slug), which would skew request indices.
+			await waitForTurnToSettle(fixture.fake.requests)
+			const mainRequests = fixture.fake.requests.filter(
+				(r) => (r.body as { model?: string } | undefined)?.model === "basic",
+			)
+			const requests = mainRequests.map((r) =>
+				JSON.stringify((r.body as { messages?: unknown[] } | undefined)?.messages ?? []),
+			)
+			expect(requests.length).toBeGreaterThanOrEqual(4)
+			const firstVisible = requests.findIndex((body) => body.includes(EXIT_MARKER))
+			// The spawn and the two read turns precede the exit (~6s lands during
+			// turn 3): the marker is first visible in the request that follows.
+			expect(firstVisible).toBeGreaterThanOrEqual(1)
+			expect(firstVisible).toBeLessThanOrEqual(3)
+			for (let i = 0; i < firstVisible; i++) {
+				expect(requests[i]).not.toContain(EXIT_MARKER)
+			}
+			// The run settled at the scripted final turn: no extra main-model
+			// request followed the stop (a completion continuation or a leaked
+			// steer would have produced one during the settle window).
+			expect(requests.length).toBe(4)
+			// Once-per-history payload presence: in the FINAL request's history
+			// the exit notification appears exactly once, and no completion
+			// continuation fired (the exit resolved the state by itself).
+			const finalHistory = requests[requests.length - 1] ?? ""
+			expect(finalHistory.split("[Background bash process ended").length - 1).toBe(1)
+			expect(finalHistory).not.toContain("Task completion requires a disposition")
+			trace.step("first-request visibility and exactly-once delivery confirmed")
 		},
 	)
 })

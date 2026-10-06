@@ -11,8 +11,9 @@
  * (`__mocks__/extension-api.ts`) plus a real registry/coordinator driven
  * by a fake BashOperations.
  */
-import type { ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent"
+import type { ToolCallEventResult } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createFakeOps, type FakeOps } from "./__mocks__/fake-bash-ops.js"
 import bashControlExtension, {
@@ -24,6 +25,7 @@ import { createBashControlToolDefinition } from "./bash-control-tool.js"
 import { createProcessRegistry, type ProcessRegistry } from "./process-registry.js"
 import { createReviewCoordinator, type ReviewCoordinator } from "./review-coordinator.js"
 import type { BashSessionState } from "./session-registry.js"
+import { createTerminalDelivery } from "./terminal-delivery.js"
 
 // Control isAgentWorker() per test: workers keep bash_control visible.
 const workerState = vi.hoisted(() => ({ isWorker: false }))
@@ -49,6 +51,7 @@ interface SentMessage {
 	customType: string
 	content: { type: string; text?: string }[]
 	display?: boolean
+	details?: unknown
 	options?: Record<string, unknown>
 }
 
@@ -67,7 +70,7 @@ beforeEach(() => {
 	ops = createFakeOps()
 	registry = createProcessRegistry()
 	coordinator = createReviewCoordinator({ registry, handoffSeconds: 1 })
-	state = { registry, coordinator, limitSeconds: 600, cwd: "/test/cwd" }
+	state = { registry, coordinator, delivery: createTerminalDelivery(), limitSeconds: 600, cwd: "/test/cwd" }
 	currentState = state
 })
 
@@ -84,7 +87,7 @@ function spawnRunning(command = "long-running", cwd = "/test/cwd"): string {
 
 // ─── Event helpers ────────────────────────────────────────────────────────────
 
-const ctx = {} as ExtensionContext
+const ctx = createContext()
 
 function fireSessionStart(harness: ReturnType<typeof createExtensionApi>): Promise<unknown[]> {
 	return harness.emit("session_start", {}, ctx)
@@ -116,6 +119,14 @@ function fireTurnEnd(
 	message: { role: string; stopReason?: string },
 ): Promise<unknown[]> {
 	return harness.emit("turn_end", { type: "turn_end", turnIndex: 0, message, toolResults: [] }, ctx)
+}
+
+/** Fire a message_end event for a custom message (the acknowledgement seam). */
+function fireMessageEnd(
+	harness: ReturnType<typeof createExtensionApi>,
+	message: Record<string, unknown>,
+): Promise<unknown[]> {
+	return harness.emit("message_end", { type: "message_end", message }, ctx)
 }
 
 function fireToolExecutionStart(
@@ -280,7 +291,7 @@ describe("bash_control deferral (token optimization)", () => {
 })
 
 describe("unattended exits", () => {
-	it("delivers the terminal result immediately with triggerTurn followUp and removes the handle", async () => {
+	it("delivers the terminal result immediately as steering with typed delivery identity and removes the handle", async () => {
 		const harness = makePiWithState()
 		const handle = spawnRunning("sleeper")
 		await startTrackedSession(harness, handle)
@@ -294,10 +305,22 @@ describe("unattended exits", () => {
 		expect(text).toContain(` handle: ${handle}`)
 		expect(text).toContain("exited (exit code 0)")
 		expect(text).toContain("output-from-0")
+		// Steering is consumed at the next turn boundary of the running loop,
+		// so delivery never depends on a tool-free assistant stop.
 		expect(exits[0]?.options?.triggerTurn).toBe(true)
-		expect(exits[0]?.options?.deliverAs).toBe("followUp")
+		expect(exits[0]?.options?.deliverAs).toBe("steer")
+		// Typed identity: the message carries its deliveryId, session
+		// identity, and EVERY represented handle, so message_end can
+		// acknowledge all of them at once.
+		const details = exits[0]?.details as { deliveryId?: string; sessionId?: string; handles?: string[] } | undefined
+		expect(typeof details?.deliveryId).toBe("string")
+		expect(details?.sessionId).toBe(state.delivery.sessionId)
+		expect(details?.handles).toEqual([handle])
 		expect(registry.getEntry(handle)).toBeUndefined()
 		expect(coordinator.handles()).not.toContain(handle)
+		// The outcome stays pending (recoverable) until the message_end
+		// acknowledgement retires it.
+		expect(state.delivery.getPending(handle)?.phase).toBe("queued")
 	})
 
 	it("includes compact statuses for remaining running handles", async () => {
@@ -771,6 +794,311 @@ describe("completion continuation", () => {
 
 		await flush()
 		expect(followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(1)
+	})
+})
+
+describe("delivery acknowledgement (message_end seam)", () => {
+	it("retires the pending outcomes when the queued notification is acknowledged", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning("sleeper")
+		await startTrackedSession(harness, handle)
+		await exitProcess(handle, 0)
+		await flush()
+		expect(state.delivery.getPending(handle)?.phase).toBe("queued")
+
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		const details = exits[0]?.details as { deliveryId: string; sessionId: string; handles: string[] }
+		// The installed loop emits message_end when the steering message is
+		// injected into the run context — before the next provider request.
+		await fireMessageEnd(harness, {
+			role: "custom",
+			customType: BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
+			content: [],
+			display: false,
+			details,
+			timestamp: Date.now(),
+		})
+		expect(state.delivery.hasPending()).toBe(false)
+	})
+
+	it("replaces a superseded notification with a suppression note instead of repeating the payload", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning("sleeper")
+		await startTrackedSession(harness, handle)
+		await exitProcess(handle, 0)
+		await flush()
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		const details = exits[0]?.details as { deliveryId: string; sessionId: string; handles: string[] }
+		// Abort-release + control claim: a bash_control result already
+		// delivered the payload authoritatively.
+		state.delivery.releaseAutomatic()
+		state.delivery.claimControl(handle, "call-r")
+
+		const results = await fireMessageEnd(harness, {
+			role: "custom",
+			customType: BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
+			content: [{ type: "text", text: "ORIGINAL PAYLOAD output-from-0" }],
+			display: false,
+			details,
+			timestamp: Date.now(),
+		})
+		const replacement = results[0] as { message?: { content?: { text?: string }[] } } | undefined
+		expect(replacement?.message).toBeDefined()
+		const text = replacement?.message?.content?.[0]?.text ?? ""
+		expect(text).toContain("suppressed")
+		// The authoritative payload is NOT repeated.
+		expect(text).not.toContain("output-from-0")
+		// The control-owned pending survives for its own acknowledgement.
+		expect(state.delivery.getPending(handle)?.owner).toEqual({ controlCallId: "call-r" })
+	})
+
+	it("ignores acknowledgements from another session generation", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning("sleeper")
+		await startTrackedSession(harness, handle)
+		await exitProcess(handle, 0)
+		await flush()
+		expect(state.delivery.getPending(handle)?.phase).toBe("queued")
+
+		await fireMessageEnd(harness, {
+			role: "custom",
+			customType: BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
+			content: [],
+			display: false,
+			details: {
+				deliveryId: "bogus",
+				sessionId: "another-session-generation",
+				handles: [handle],
+			},
+			timestamp: Date.now(),
+		})
+		// Not retired: identity mismatch.
+		expect(state.delivery.getPending(handle)?.phase).toBe("queued")
+	})
+
+	it("acknowledges every handle of a coalesced batch through the shared delivery id", async () => {
+		const harness = makePiWithState()
+		const a = spawnRunning("first-exit")
+		const b = spawnRunning("second-exit")
+		await startTrackedSession(harness, a)
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "c2",
+			input: {},
+			content: [],
+			isError: false,
+			details: { handle: b, handoff: true, exited: false },
+		})
+		// Both exit in the same scheduling boundary → ONE message carrying BOTH handles.
+		const commandA = registry.getEntry(a)?.commandSummary ?? ""
+		const commandB = registry.getEntry(b)?.commandSummary ?? ""
+		await Promise.all([ops.exitMatching(commandA, 0), ops.exitMatching(commandB, 0)])
+		await flush()
+
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(exits).toHaveLength(1)
+		const details = exits[0]?.details as { handles: string[]; deliveryId: string; sessionId: string }
+		expect([...details.handles].sort()).toEqual([a, b].sort())
+
+		await fireMessageEnd(harness, {
+			role: "custom",
+			customType: BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
+			content: [],
+			display: false,
+			details,
+			timestamp: Date.now(),
+		})
+		expect(state.delivery.hasPending()).toBe(false)
+	})
+
+	it("retires control-owned outcomes when the bash_control result carrying them arrives", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning("sleeper")
+		await startTrackedSession(harness, handle)
+		state.delivery.record(handle, "payload", { controlCallId: "call-z" })
+
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash_control",
+			toolCallId: "call-z",
+			input: {},
+			content: [],
+			isError: false,
+			details: { exitedHandles: [handle] },
+		})
+		expect(state.delivery.hasPending()).toBe(false)
+	})
+})
+
+describe("cancellation-aware delivery", () => {
+	it("an aborted run releases queued outcomes for recovery and suppresses later triggerTurn", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning("sleeper")
+		await startTrackedSession(harness, handle)
+		await exitProcess(handle, 0)
+		await flush()
+		expect(state.delivery.getPending(handle)?.phase).toBe("queued")
+
+		// The user aborts (the TUI/ACP drop queued steering): the queued
+		// outcome is released back to recoverable state.
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "aborted" })
+		expect(state.delivery.getPending(handle)?.phase).toBe("available")
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(0)
+
+		// A later exit must NOT restart the cancelled run's inference.
+		const later = spawnRunning("late-exit")
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "c3",
+			input: {},
+			content: [],
+			isError: false,
+			details: { handle: later, handoff: true, exited: false },
+		})
+		await exitProcess(later, 0)
+		await flush()
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		const last = exits[exits.length - 1]
+		expect(last?.options?.triggerTurn).toBe(false)
+		expect(last?.options?.deliverAs).toBe("steer")
+		// The installed session's append path does NOT dispatch extension
+		// message_end handlers (listener emit only), so the extension retires
+		// the batch itself right after the synchronous append — the payload is
+		// committed to the conversation, no inference wake, no stuck-queued
+		// outcome that a later abort-release could recover and duplicate.
+		expect(state.delivery.getPending(later)).toBeUndefined()
+	})
+
+	it("agent_start clears the cancelled-run state (a new run may be woken again)", async () => {
+		const harness = makePiWithState()
+		await startTrackedSession(harness, spawnRunning())
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "error" })
+
+		await harness.emit("agent_start", { type: "agent_start" }, ctx)
+		const handle = spawnRunning("post-retry")
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "c4",
+			input: {},
+			content: [],
+			isError: false,
+			details: { handle, handoff: true, exited: false },
+		})
+		await exitProcess(handle, 0)
+		await flush()
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(exits[exits.length - 1]?.options?.triggerTurn).toBe(true)
+	})
+
+	it("a failed owning call requeues its recorded payload without re-collection", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning("sleeper")
+		await startTrackedSession(harness, handle)
+		// An owning wait claims the handle; the process exits (claimed → no
+		// notification yet); the sweep collects and records the outcome, but
+		// the call errors before delivering it.
+		await fireToolExecutionStart(harness, "call-f", "bash_control", { wait: true })
+		await ops.exit(0)
+		await flush()
+		state.delivery.claimControl(handle, "call-f")
+		await fireToolExecutionEnd(harness, "call-f", "bash_control", true)
+		await flush()
+		// The backstop requeued the recorded outcome through the automatic
+		// channel — the registry entry is gone (collected once).
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(exits).toHaveLength(1)
+		expect(registry.getEntry(handle)).toBeUndefined()
+	})
+
+	it("a failed owning call requeues EVERY recorded outcome in one coalesced message", async () => {
+		const harness = makePiWithState()
+		const first = spawnRunning("first-multi")
+		const second = spawnRunning("second-multi")
+		await startTrackedSession(harness, first)
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "c9",
+			input: {},
+			content: [],
+			isError: false,
+			details: { handle: second, handoff: true, exited: false },
+		})
+		// An owning wait claims both handles; both exit while claimed (the
+		// watcher stays silent), and the call's sweep collected+recorded both
+		// outcomes — then the call errors before delivering them.
+		await fireToolExecutionStart(harness, "call-m", "bash_control", { wait: true })
+		await ops.exitMatching("first-multi", 0)
+		await ops.exitMatching("second-multi", 0)
+		await flush()
+		state.delivery.record(first, "PAYLOAD-FIRST-MULTI", { controlCallId: "call-m" })
+		state.delivery.record(second, "PAYLOAD-SECOND-MULTI", { controlCallId: "call-m" })
+		await fireToolExecutionEnd(harness, "call-m", "bash_control", true)
+		await flush()
+		// BOTH outcomes requeue — one identified, coalesced notification.
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(exits).toHaveLength(1)
+		const details = exits[0]?.details as { handles?: string[] }
+		expect([...(details?.handles ?? [])].sort()).toEqual([first, second].sort())
+		const text = exits[0]?.content[0]?.text ?? ""
+		expect(text).toContain("PAYLOAD-FIRST-MULTI")
+		expect(text).toContain("PAYLOAD-SECOND-MULTI")
+	})
+
+	it("a synchronous enqueue failure rolls the batch back to recoverable availability", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning("sleeper")
+		await startTrackedSession(harness, handle)
+		harness.sendMessage.mockImplementationOnce(() => {
+			throw new Error("send boom")
+		})
+		await exitProcess(handle, 0)
+		await flush()
+		// The enqueue failed synchronously; the outcome is NOT stranded in
+		// `queued` (which inspection cannot claim and the completion guard
+		// would wrongly suppress) — it is available again.
+		expect(state.delivery.getPending(handle)?.phase).toBe("available")
+		// An explicit inspection can still claim and deliver the payload.
+		const tool = harness.getRegisteredTool("bash_control")
+		const result = await tool.execute("call-r2", { wait: false } as never, undefined, undefined, undefined as never)
+		const text = result.content.map((block) => (block.type === "text" ? block.text : "")).join("")
+		expect(text).toContain("output-from-0")
+	})
+
+	it("does not enqueue a result whose collection crossed a session replacement", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning("sleeper")
+		// A state whose registry.remove swaps the session state mid-collection
+		// (the async gap between snapshotting and enqueueing).
+		const originalRemove = registry.remove.bind(registry)
+		const replacementRegistry = createProcessRegistry()
+		const replacement: BashSessionState = {
+			registry: replacementRegistry,
+			coordinator: createReviewCoordinator({ registry: replacementRegistry }),
+			delivery: createTerminalDelivery(),
+			limitSeconds: 600,
+			cwd: "/test/cwd",
+		}
+		const swappedState: BashSessionState = {
+			...state,
+			registry: {
+				...registry,
+				remove: async (h: string) => {
+					currentState = replacement
+					await originalRemove(h)
+				},
+			},
+		}
+		currentState = swappedState
+		await startTrackedSession(harness, handle)
+		await exitProcess(handle, 0)
+		await flush()
+		// The stale flush re-checks the session identity after collection:
+		// nothing is sent into the replacement session.
+		expect(followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(0)
 	})
 })
 
