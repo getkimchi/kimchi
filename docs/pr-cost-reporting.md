@@ -101,7 +101,9 @@ Failed attempts retain their payload and retry time, including `Retry-After`. An
 
 Uploads are limited to 2 MiB, 10,000 requests, 100 PRs and 8 billing IDs per request. An oversized inventory is held with an error; it is never silently truncated. The local queue is bounded to 24 MiB. No request, session, PR or user IDs are added to metric labels.
 
-Upload windowing and server retention still need implementation before rollout. Trimming a repository replacement now would erase earlier claims, so finalized reports must be preserved first. Local no-charge settlement also needs independent server verification; those attempts still upload without billing IDs and remain unpriced on the server.
+Upload windowing and automatic server cleanup still need implementation before rollout. The reporting API can keep previously reported merged or closed PRs through `retainedPullRequestIds`; this client does not yet send that field. Trimming uploads before adding it would remove earlier claims.
+
+For attempts without billing IDs, the reporting API checks the exact request tag. A complete empty lookup settles the attempt at $0 once it is 24 hours old. A later bill updates that amount. Failed or incomplete lookups cannot settle an attempt.
 
 ## Health metrics
 
