@@ -173,7 +173,7 @@ fs.writeFileSync(${JSON.stringify(sizePath)}, String(fs.statSync(process.env.${v
 				worktree: repository,
 			})),
 		)
-		expect(warning).toHaveBeenCalled()
+		expect(warning).toHaveBeenCalledWith("Could not resolve Git commit repository:", expect.any(Error))
 	})
 
 	it("does not record checkout or reset alongside a real commit", async () => {
@@ -298,6 +298,7 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 
 	it.each(["allocation", "cleanup"])("preserves Bash execution when trace %s fails", async (stage) => {
 		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
+		const silence = vi.spyOn(console, "warn")
 		const failure = new Error("trace storage unavailable")
 		const hook =
 			stage === "allocation"
@@ -309,7 +310,11 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 					})
 		try {
 			expect(await run("printf still-running")).toBe(0)
-			expect(warning).toHaveBeenCalledWith(expect.stringContaining("Git trace:"), failure)
+			expect(warning).toHaveBeenCalledWith(
+				stage === "allocation" ? "Could not initialize Git trace:" : "Could not remove Git trace:",
+				failure,
+			)
+			expect(silence).not.toHaveBeenCalled()
 		} finally {
 			const tracePath = hook.mock.calls[0]?.[0]
 			hook.mockRestore()

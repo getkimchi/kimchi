@@ -114,6 +114,14 @@ export class DapSession {
 			cwd: opts.cwd,
 			stopOnEntry: opts.stopOnEntry ?? false,
 			...this.adapter.launchConfig,
+			// Adapter-specific tailoring of the launch arguments to the concrete
+			// program (e.g. dlv: mode "exec" for prebuilt binaries, dlvCwd at the
+			// Go module root for package dirs in nested-module repos).
+			...this.adapter.prepareLaunchArgs?.({
+				program: opts.program,
+				cwd: opts.cwd,
+				stopOnEntry: opts.stopOnEntry,
+			}),
 		}
 		if (opts.args && opts.args.length > 0) launchArgs.args = opts.args
 		if (opts.env) launchArgs.env = opts.env
@@ -206,16 +214,52 @@ export class DapSession {
 	 *  configuration requests (setBreakpoints, setExceptionBreakpoints, etc.)
 	 *  AFTER `initialized` arrives. Throws on timeout so a hung handshake fails
 	 *  loudly instead of silently degrading the session. */
-	private async waitForInitialized(timeoutMs = 5000): Promise<void> {
+	private async waitForInitialized(timeoutMs?: number): Promise<void> {
+		// Some adapters build before launching (dlv mode "debug") or start slowly;
+		// their config can raise the generic 5s budget via handshakeTimeoutMs.
+		const budget = timeoutMs ?? this.adapter.handshakeTimeoutMs ?? 5000
 		const timedOut = Symbol("initialized-timeout")
-		const result = await Promise.race([
+		const launchFailed = Symbol("launch-failed")
+		let launchError: Error | null = null
+		const racers: Array<Promise<"initialized" | typeof timedOut | typeof launchFailed>> = [
 			this.client.initializedPromise.then(() => "initialized" as const),
-			new Promise((resolve) => setTimeout(() => resolve(timedOut), timeoutMs)),
-		])
-		if (result !== timedOut) return
-		throw new Error(
-			`DAP adapter did not emit 'initialized' within ${timeoutMs}ms — the launch handshake cannot be completed`,
-		)
+			new Promise((resolve) => setTimeout(() => resolve(timedOut), budget)),
+		]
+		// A failed `launch` response means `initialized` will never arrive —
+		// surface the real failure immediately instead of the opaque timeout.
+		if (this.launchPromise) {
+			racers.push(
+				this.launchPromise.then(
+					() => "initialized" as const, // launch OK but event lost — fall back to event/timer
+					(err: unknown) => {
+						launchError = err instanceof Error ? err : new Error(String(err))
+						return launchFailed
+					},
+				),
+			)
+		}
+		const result = await Promise.race(racers)
+		if (result === "initialized") return
+		throw new Error(this.handshakeErrorMessage(launchError, budget))
+	}
+
+	/** Build an actionable handshake-failure message from the launch error (if
+	 *  any) and the adapter's own output lines, which carry the real cause for
+	 *  build-and-launch adapters (dlv prints "Building …" / "Build Error: …").
+	 *  Without this, every failure collapsed into one opaque timeout message. */
+	private handshakeErrorMessage(launchError: Error | null, budgetMs: number): string {
+		const tail = this.client.outputLines
+			.slice(-8)
+			.map((l) => l.text.trimEnd())
+			.filter((l) => l.length > 0)
+			.join("\n")
+		const detail = tail.length > 0 ? `\nAdapter output:\n${tail}` : ""
+		if (launchError) {
+			// The wire error already names the command ("DAP launch failed: …") —
+			// don't re-prefix it.
+			return `${launchError.message}${detail}`
+		}
+		return `DAP adapter did not emit 'initialized' within ${budgetMs}ms — the launch handshake cannot be completed${detail}`
 	}
 
 	/** Set a breakpoint at `line` in `file`. DAP `setBreakpoints` replaces the

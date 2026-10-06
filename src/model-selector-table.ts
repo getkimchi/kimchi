@@ -70,6 +70,10 @@ export function renderModelTable(
 		if (row.warning && !showDesc) {
 			description = `  ${theme.fg("warning", "⚠")}`
 		} else if (showDesc) {
+			// The annotation comes from the row producer: the pi-coding-agent
+			// patch annotates the virtual multi-model row with the deprecation
+			// label (outranking "Default for new sessions.") and defaults with
+			// "Default for new sessions.".
 			const annotation = row.annotation ?? ""
 			if (row.warning && annotation) {
 				const annotationW = Math.min(visibleWidth(annotation), descW)
