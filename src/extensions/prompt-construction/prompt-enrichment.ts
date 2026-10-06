@@ -303,8 +303,8 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				const notePart = info.note ? ` Docs: ${info.note}` : ""
 				const switchPart =
 					replacement && registry.getAll().some((m) => m.id === replacement)
-						? `Switch to "${replacement}" via /model.`
-						: "Pick a replacement via /model."
+						? `Switch to "${replacement}" using your client's model selector (/model in the terminal).`
+						: "Pick a replacement using your client's model selector (/model in the terminal)."
 				// Retirement-only record (no announced deprecation, e.g. a vendor
 				// sunset the catalog carries without a curation pass): state the
 				// date plainly rather than claiming an announced deprecation.
@@ -317,6 +317,11 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				// until sunset". Fall back to deprecated_at only when no sunset
 				// date is announced.
 				const sunsetPart = info.sunsetAt ? ` and stops being served on ${info.sunsetAt.slice(0, 10)}` : ""
+				// Past its deprecation date with no sunset announced: never cite the
+				// past deprecated_at as a future retirement.
+				if (info.isPast && !info.sunsetAt) {
+					return `Model "${modelId}" is deprecated (past its deprecation date) but still served. ${switchPart}${notePart}`
+				}
 				const datePart =
 					info.sunsetAt === undefined && info.deprecatedAt
 						? ` and will be retired on ${info.deprecatedAt.slice(0, 10)}`

@@ -124,7 +124,8 @@ function dropRetiredAutoDefaultMarker(): void {
 /**
  * Remove defaultModel/defaultProvider from settings.json. Used when the saved
  * default resolves against nothing in the catalog and there is no catalog
- * model to fall forward to, releasing the org back to multi-model. Idempotent;
+ * model to fall forward to: the dead pointer is dropped and multi-model stays
+ * disabled (its removal is planned — it is never re-enabled here). Idempotent;
  * a missing or unreadable file is left alone, and the write must never take
  * down session start (same guard as the seeded-default writes).
  */
@@ -378,9 +379,15 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			const settingsManager = getSettingsManager()
 			const persistedProvider = settingsManager?.getDefaultProvider()
 			const persistedModelId = settingsManager?.getDefaultModel()
+			// Heal candidates are kimchi-dev models, and the multi-model / routed
+			// virtual sentinels are policy states (the migration and the Auto
+			// rollback own them), not dead pointers — only a concrete kimchi-dev
+			// default the catalog no longer serves is dead.
 			const deadDefault =
-				persistedProvider !== undefined &&
+				persistedProvider === AUTO_MODEL_PROVIDER &&
 				persistedModelId !== undefined &&
+				persistedModelId !== MULTI_MODEL_ID &&
+				!persistedDefaultIsRoutedAuto() &&
 				ctx.modelRegistry.find(persistedProvider, persistedModelId) === undefined
 					? { provider: persistedProvider, id: persistedModelId }
 					: undefined
@@ -427,10 +434,7 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 					// finally the first served catalog model, which is exactly what
 					// upstream's findInitialModel would silently pick on every launch;
 					// the heal just makes that pick stable, persisted, and announced.
-					const successor =
-						deadDefault.provider === AUTO_MODEL_PROVIDER
-							? findMetadataSuccessor(deadDefault.id, ctx.modelRegistry)
-							: undefined
+					const successor = findMetadataSuccessor(deadDefault.id, ctx.modelRegistry)
 					const firstServed = ctx.modelRegistry.getAvailable().find((m) => m.provider === AUTO_MODEL_PROVIDER)
 					const heir = successor?.model ?? autoModel ?? gatedDefault ?? firstServed
 					resetLastNotified(sessionId)

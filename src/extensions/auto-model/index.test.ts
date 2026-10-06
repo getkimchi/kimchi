@@ -10,7 +10,7 @@ import type {
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { populateCliArgs } from "../../cli-args.js"
+import { MULTI_MODEL_ID, populateCliArgs } from "../../cli-args.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 
@@ -934,6 +934,42 @@ describe("self-heal — persisted default no longer served", () => {
 			`Default model "${DEAD}" is no longer served and has been cleared. To pick a model for this session, use your client's model selector (/model in the terminal).`,
 			"info",
 		)
+	})
+
+	it("does not treat the multi-model sentinel default as dead — the migration owns it", async () => {
+		// A persisted defaultModel of the multi-model sentinel is the factory
+		// state the gated migration exists to convert, not a dead pointer; the
+		// heal must leave it to the migration branch.
+		settingsStubs.getDefaultModel.mockReturnValue(MULTI_MODEL_ID)
+		// Factory state: the sentinel default with multiModel still enabled —
+		// exactly the pre-branch cohort the gated migration converts.
+		seedSettings({ multiModel: true, defaultProvider: "kimchi-dev", defaultModel: MULTI_MODEL_ID })
+		setProcessMultiModelEnabled(SESSION_ID, true)
+		const { setModel, ctx, start } = runSessionStart()
+
+		await start()
+
+		// Installed by the one-time migration, not the heal: no dead-default notice.
+		expect(setModel).toHaveBeenCalledWith(model("deepseek-v4-flash-0731", { name: "Model deepseek-v4-flash-0731" }), {
+			persist: true,
+		})
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining(`"${DEAD}" is no longer served`), "info")
+	})
+
+	it("leaves a dead non-kimchi default to upstream's fallback", async () => {
+		// Heal remedies are kimchi-dev models; a dead default from another
+		// provider is not healed onto them (and never flips multiModel).
+		settingsStubs.getDefaultProvider.mockReturnValue("anthropic")
+		settingsStubs.getDefaultModel.mockReturnValue("claude-opus-4-8")
+		seedSettings({ multiModel: false, defaultProvider: "anthropic", defaultModel: "claude-opus-4-8" })
+		const { setModel, ctx, start } = runSessionStart()
+
+		await start()
+
+		expect(setModel).not.toHaveBeenCalled()
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		// The dead pointer stays on disk; upstream's per-launch fallback serves.
+		expect(readSettings()).toMatchObject({ defaultProvider: "anthropic", defaultModel: "claude-opus-4-8" })
 	})
 
 	it("does not treat a still-served default as dead", async () => {

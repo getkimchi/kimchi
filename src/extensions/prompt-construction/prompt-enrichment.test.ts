@@ -736,7 +736,7 @@ describe("deprecated model notification", () => {
 		await sessionStart({}, ctx)
 
 		expect(ctx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Switch to "${replacementModelId}" via /model.`,
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Switch to "${replacementModelId}" using your client's model selector (/model in the terminal).`,
 			"warning",
 		)
 	})
@@ -769,7 +769,7 @@ describe("deprecated model notification", () => {
 		await sessionStart({}, ctx)
 
 		expect(ctx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated and stops being served on ${isoWithinDays(5).slice(0, 10)}. Still served until then. Switch to "${replacementModelId}" via /model.`,
+			`Model "${deprecatedModelId}" is deprecated and stops being served on ${isoWithinDays(5).slice(0, 10)}. Still served until then. Switch to "${replacementModelId}" using your client's model selector (/model in the terminal).`,
 			"warning",
 		)
 	})
@@ -795,7 +795,7 @@ describe("deprecated model notification", () => {
 		await sessionStart({}, ctx)
 
 		expect(ctx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement via /model.`,
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement using your client's model selector (/model in the terminal).`,
 			"warning",
 		)
 	})
@@ -920,7 +920,7 @@ describe("deprecated model notification", () => {
 		await sessionStart({}, ctx)
 
 		expect(ctx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement via /model.`,
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement using your client's model selector (/model in the terminal).`,
 			"warning",
 		)
 	})
@@ -961,7 +961,7 @@ describe("deprecated model notification", () => {
 		const cycleOneCtx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 		await modelSelect({ source: "cycle" }, cycleOneCtx)
 		expect(cycleOneCtx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement via /model.`,
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement using your client's model selector (/model in the terminal).`,
 			"warning",
 		)
 
@@ -979,7 +979,7 @@ describe("deprecated model notification", () => {
 		const cycleTwoCtx = createContext({ model: { provider: "kimchi-dev", id: "kimi-k2.5-old" } })
 		await modelSelect({ source: "cycle" }, cycleTwoCtx)
 		expect(cycleTwoCtx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "kimi-k2.5-old" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement via /model.`,
+			`Model "kimi-k2.5-old" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement using your client's model selector (/model in the terminal).`,
 			"warning",
 		)
 	})
@@ -1025,7 +1025,7 @@ describe("deprecated model notification", () => {
 		const switchCtx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 		await modelSelect({ source: "cycle" }, switchCtx)
 		expect(switchCtx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement via /model.`,
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement using your client's model selector (/model in the terminal).`,
 			"warning",
 		)
 
@@ -1066,7 +1066,7 @@ describe("deprecated model notification", () => {
 		await sessionStart({}, ctx)
 
 		expect(ctx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement via /model.`,
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement using your client's model selector (/model in the terminal).`,
 			"warning",
 		)
 	})
@@ -1119,7 +1119,7 @@ describe("deprecated model notification", () => {
 		const ctx = createContext({ model: { provider: "kimchi-dev/openai", id: "gpt-4" } })
 		await sessionStart({}, ctx)
 		expect(ctx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "gpt-4" stops being served on ${isoWithinDays(21).slice(0, 10)} (vendor retirement). Pick a replacement via /model.`,
+			`Model "gpt-4" stops being served on ${isoWithinDays(21).slice(0, 10)} (vendor retirement). Pick a replacement using your client's model selector (/model in the terminal).`,
 			"warning",
 		)
 	})
