@@ -724,7 +724,11 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		settingsStubs.getDefaultModel.mockReturnValue("kimi-k3")
 		seedSettings({ multiModel: false })
 		expect(readSettings()).toMatchObject({ multiModel: false })
-		const { setModel, ctx, start } = runSessionStart()
+		// The registry serves the deliberate default too — otherwise the heal
+		// would (correctly) re-derive it as a dead pointer.
+		const { setModel, ctx, start } = runSessionStart({
+			modelRegistry: registryServing([DEEPSEEK, "kimi-k3"]),
+		})
 
 		await start()
 
@@ -764,6 +768,132 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		expect(setModel).not.toHaveBeenCalled()
 		expect(settingsFileStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
 		expect(readSettings()).toMatchObject({ multiModel: false })
+	})
+})
+
+describe("self-heal — persisted default no longer served", () => {
+	const DEAD = "deepseek-v4-flash"
+
+	function seedSettings(settings: Record<string, unknown>) {
+		writeFileSync(configStubs.settingsPath, JSON.stringify(settings))
+	}
+
+	function readSettings(): Record<string, unknown> {
+		return JSON.parse(readFileSync(configStubs.settingsPath, "utf-8"))
+	}
+
+	function registryServing(ids: string[]) {
+		return {
+			find: (_p: string, mid: string) => (ids.includes(mid) ? model(mid, { name: `Model ${mid}` }) : undefined),
+		}
+	}
+
+	function runSessionStart(ctxOverride: Parameters<typeof createContext>[0] = {}) {
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const c = createContext({
+			// Upstream's findInitialModel already landed the session on some
+			// fallback model; ctx.model is never the dead default here.
+			model: model("kimi-k3"),
+			modelRegistry: registryServing(["deepseek-v4-flash-0731"]),
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+			...ctxOverride,
+		})
+		return {
+			...extension,
+			ctx: c,
+			start: () =>
+				extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c),
+		}
+	}
+
+	beforeEach(() => {
+		populateCliArgs([])
+		// The completed gated migration: a dead default with multiModel=false.
+		// gatedDefaultOwed evaluates false here, so without the heal the one-time
+		// migration branch would early-return and the dead default would survive.
+		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
+		settingsStubs.getDefaultModel.mockReturnValue(DEAD)
+		seedSettings({ multiModel: false, defaultProvider: "kimchi-dev", defaultModel: DEAD })
+	})
+
+	it("repairs a dead default to the served flash heir when auto is absent", async () => {
+		const { setModel, ctx, start } = runSessionStart()
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(model("deepseek-v4-flash-0731", { name: "Model deepseek-v4-flash-0731" }), {
+			persist: true,
+		})
+		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(false)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			`Default model "${DEAD}" is no longer served and has been replaced. New sessions start on Model deepseek-v4-flash-0731 (the new default). To pick a different model for this session, use your client's model selector (/model in the terminal).`,
+			"info",
+		)
+	})
+
+	it("repairs a dead default to Auto when auto is served", async () => {
+		const { setModel, ctx, start } = runSessionStart({
+			modelRegistry: registryServing(["auto"]),
+		})
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(model("auto", { name: "Model auto" }), { persist: true })
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			`Default model "${DEAD}" is no longer served and has been replaced. New sessions start on Auto (the new default). To pick a different model for this session, use your client's model selector (/model in the terminal).`,
+			"info",
+		)
+	})
+
+	it("releases the dead default and returns to multi-model when no heir is served", async () => {
+		setProcessMultiModelEnabled(SESSION_ID, false)
+		const { setModel, ctx, start } = runSessionStart({
+			modelRegistry: registryServing(["kimi-k3"]),
+		})
+
+		await start()
+
+		expect(setModel).not.toHaveBeenCalled()
+		// The dead pointer is dropped from the file and the gated migration's
+		// multiModel=false is reverted, so the next launch stops re-falling-back.
+		expect(readSettings()).toEqual({ multiModel: true })
+		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(true)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			`Default model "${DEAD}" is no longer served and new sessions run multi-model again. To pin a fixed model, use your client's model selector (/model in the terminal).`,
+			"info",
+		)
+	})
+
+	it("does not treat a still-served default as dead", async () => {
+		// The default is deliberately rotated to a sibling; the heal must leave
+		// deliberate choices alone (the gated policy's no-op guard handles it).
+		settingsStubs.getDefaultModel.mockReturnValue("deepseek-v4-flash-0731")
+		const { setModel, start } = runSessionStart({
+			modelRegistry: registryServing(["deepseek-v4-flash-0731"]),
+		})
+
+		await start()
+
+		expect(setModel).not.toHaveBeenCalled()
+	})
+
+	it("leaves a resumed session on its restored model without healing", async () => {
+		// reason "reload" is not a fresh launch: the session's model was
+		// already restored (possibly via upstream's fallback) and the persisted
+		// default stays untouched for the next fresh launch to handle.
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const c = createContext({
+			model: model("kimi-k3"),
+			modelRegistry: registryServing(["deepseek-v4-flash-0731"]),
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "reload" }, c)
+
+		expect(extension.setModel).not.toHaveBeenCalled()
+		expect(readSettings()).toMatchObject({ defaultModel: DEAD, multiModel: false })
 	})
 })
 

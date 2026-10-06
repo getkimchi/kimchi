@@ -121,6 +121,26 @@ function dropRetiredAutoDefaultMarker(): void {
 }
 
 /**
+ * Remove defaultModel/defaultProvider from settings.json. Used when the saved
+ * default resolves against nothing in the catalog and there is no catalog
+ * model to fall forward to, releasing the org back to multi-model. Idempotent;
+ * a missing or unreadable file is left alone, and the write must never take
+ * down session start (same guard as the seeded-default writes).
+ */
+function clearPersistedDefault(): void {
+	const path = resolve(getAgentConfigDir(), "settings.json")
+	try {
+		const settings: unknown = JSON.parse(readFileSync(path, "utf-8"))
+		if (settings !== null && typeof settings === "object" && !Array.isArray(settings)) {
+			const { defaultModel: _model, defaultProvider: _provider, ...rest } = settings as Record<string, unknown>
+			writeJson(path, rest)
+		}
+	} catch {
+		// Nothing to clear.
+	}
+}
+
+/**
  * Whether a default model is saved in settings.json, concrete or virtual.
  *
  * Used to keep a saved default from being wrapped in multi-model mode. It
@@ -317,6 +337,29 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			// gated default is still owed (the configured default is still
 			// multi-model — the factory default — or there is no default at all).
 			const gatedDefaultOwed = !hasPersistedDefault() || getGlobalDefault()
+
+			// Self-heal dead defaults. A persisted default the catalog no longer
+			// serves (sunset, org de-list, rename) never resolves: upstream's
+			// findInitialModel silently falls back to some provider default on
+			// EVERY launch and leaves settings.json pointing at the dead entry
+			// forever, with only a generic restore-failure notice. Instead, heal
+			// once per fresh launch: re-derive the default with the same catalog
+			// policy as seeding (heir = Auto when served, else the first served
+			// flash candidate), persist it, and say why. When nothing in the
+			// catalog can inherit, release the dead default and return the org to
+			// multi-model — the policy for orgs where no candidate is served.
+			// Detection runs on catalog membership only, so a deprecated-but-served
+			// default is never healed away while the proxy still translates it.
+			const settingsManager = getSettingsManager()
+			const persistedProvider = settingsManager?.getDefaultProvider()
+			const persistedModelId = settingsManager?.getDefaultModel()
+			const deadDefault =
+				persistedProvider !== undefined &&
+				persistedModelId !== undefined &&
+				ctx.modelRegistry.find(persistedProvider, persistedModelId) === undefined
+					? { provider: persistedProvider, id: persistedModelId }
+					: undefined
+
 			if (options.handleCliModelSelection && gatedDefault) {
 				// Bookkeeping only: readJson throws on a corrupt settings.json and
 				// writeJson throws on a read-only one; a seeded-default write must
@@ -351,6 +394,35 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 						`New sessions start on ${displayName} (the default). To pick a different model for this session, use your client's model selector (/model in the terminal).`,
 						"info",
 					)
+				}
+
+				if (deadDefault) {
+					const heir = autoModel ?? gatedDefault
+					resetLastNotified(sessionId)
+					if (heir) {
+						await pi.setModel(heir, { persist: true })
+						setMultiModelEnabled(sessionId, false)
+						// Mode-neutral copy: this notice is also relayed to ACP clients
+						// (Zed, Studio), where /model is not an available interaction.
+						ctx.ui.notify(
+							`Default model "${deadDefault.id}" is no longer served and has been replaced. New sessions start on ${autoModel ? AUTO_MODEL_NAME : heir.name} (the new default). To pick a different model for this session, use your client's model selector (/model in the terminal).`,
+							"info",
+						)
+					} else {
+						clearPersistedDefault()
+						setMultiModelEnabled(sessionId, true)
+						try {
+							writeConfigSetting("multiModel", true)
+						} catch {
+							// File write failed; the in-memory heal still applies to this
+							// session and the next launch retries.
+						}
+						ctx.ui.notify(
+							`Default model "${deadDefault.id}" is no longer served and new sessions run multi-model again. To pin a fixed model, use your client's model selector (/model in the terminal).`,
+							"info",
+						)
+					}
+					return
 				}
 
 				if (!autoModel && gatedDefault) {
