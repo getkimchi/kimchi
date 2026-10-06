@@ -73,7 +73,6 @@ vi.mock(import("../../config/settings.js"), async (importOriginal) => {
 })
 
 import { getProcessMultiModelEnabled, setProcessMultiModelEnabled } from "../kimchi-process.js"
-import { getGlobalDefault } from "../multi-model.js"
 import autoModelExtension, {
 	_resetAutoModelNoticeCache,
 	createAutoModelRoutingExtension,
@@ -549,8 +548,10 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		settingsStubs.getDefaultProvider.mockReturnValue(undefined)
 		settingsFileStubs.writeConfigSetting.mockClear()
 		settingsFileStubs.readConfigSetting.mockClear()
-		// Default: settings.json absent — multiModel keeps the factory
-		// multi-model default, so the gated migration is still owed.
+		// Pre-branch cohort: settings.json carries multiModel=true (the seeded
+		// factory default), so the gated migration is still owed. Greenfield
+		// scenarios remove the file per test.
+		seedSettings({ multiModel: true })
 	})
 
 	function seedSettings(settings: Record<string, unknown>) {
@@ -590,6 +591,7 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		// global default) — the assertions below must be the outcome of
 		// start(), not residual state.
 		setProcessMultiModelEnabled(SESSION_ID, true)
+		expect(readSettings()).toMatchObject({ multiModel: true })
 		const { setModel, ctx, start } = runSessionStart()
 
 		await start()
@@ -604,17 +606,8 @@ describe("catalog-driven gated default — orgs without auto", () => {
 
 	it("overwrites settings.json multiModel to false for gated organizations", async () => {
 		// Pre-state: a real settings.json on disk carrying multiModel=true
-		// (the seeded pre-branch default). Without pinning this, asserting
-		// `false` below would prove nothing — the same assertion would also
-		// pass against a file whose value was already false.
-		seedSettings({ multiModel: true })
+		expect(readSettings()).toMatchObject({ multiModel: true })
 		const { start } = runSessionStart()
-
-		// The migration gate reads the configured default through the same
-		// file, so this is the value start() must overwrite — and no write
-		// may have happened before start() ran.
-		expect(getGlobalDefault()).toBe(true)
-		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
 
 		await start()
 
@@ -631,6 +624,7 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		// readJson throws on a corrupt settings.json and writeJson on a
 		// read-only one; the bookkeeping overwrite must never take down
 		// session start.
+		expect(readSettings()).toMatchObject({ multiModel: true })
 		settingsFileStubs.writeConfigSetting.mockImplementationOnce(() => {
 			throw new Error("read-only settings.json")
 		})
@@ -642,9 +636,11 @@ describe("catalog-driven gated default — orgs without auto", () => {
 	})
 
 	it("installs the gated default on a first run with no current model", async () => {
-		// Greenfield gated org with no persisted default: settings.json
-		// multiModel is seeded false above, so something must be installed on
-		// top of it or the user ends up on nothing.
+		// Greenfield gated org: no persisted default and NO settings.json at
+		// all — the seeded-default overwrite runs below, so something must be
+		// installed on top of it or the user ends up on nothing.
+		rmSync(configStubs.settingsPath, { force: true })
+		expect(existsSync(configStubs.settingsPath)).toBe(false)
 		setProcessMultiModelEnabled(SESSION_ID, true)
 		const { setModel, start } = runSessionStart({ model: undefined })
 
@@ -652,9 +648,11 @@ describe("catalog-driven gated default — orgs without auto", () => {
 
 		expect(setModel).toHaveBeenCalledWith(model(DEEPSEEK, { name: `Model ${DEEPSEEK}` }), { persist: true })
 		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(false)
+		expect(readSettings()).toMatchObject({ multiModel: false })
 	})
 
 	it("falls back to deepseek-v4-flash-0731 when the canonical slug is unserved", async () => {
+		expect(readSettings()).toMatchObject({ multiModel: true })
 		const { setModel, start } = runSessionStart({
 			modelRegistry: registryServing(["deepseek-v4-flash-0731"]),
 		})
@@ -671,11 +669,12 @@ describe("catalog-driven gated default — orgs without auto", () => {
 			model: model(DEEPSEEK),
 		})
 
-		// Pre-state: the session came up multi-model-enabled, so the disabled
-		// state asserted below is provably the outcome of start().
+		// Pre-state: the session came up multi-model-enabled and settings.json
+		// still carries multiModel=true, so the disabled state asserted below
+		// is provably the outcome of start().
 		setProcessMultiModelEnabled(SESSION_ID, true)
 		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(true)
-		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
+		expect(readSettings()).toMatchObject({ multiModel: true })
 
 		await start()
 
@@ -688,6 +687,7 @@ describe("catalog-driven gated default — orgs without auto", () => {
 	})
 
 	it("does not gate organizations that the catalog serves auto to", async () => {
+		expect(readSettings()).toMatchObject({ multiModel: true })
 		const { setModel, start } = runSessionStart({
 			modelRegistry: registryServing(["auto", DEEPSEEK]),
 		})
@@ -695,11 +695,14 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		await start()
 
 		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
+		// On disk the seed is untouched: entitled orgs keep their multi-model flag.
+		expect(readSettings()).toMatchObject({ multiModel: true })
 		// Pre-existing behaviour: fresh sessions roll back to Auto.
 		expect(setModel).toHaveBeenCalledWith(model("auto", { name: "Model auto" }), { persist: true })
 	})
 
 	it("leaves multi-model alone when neither auto nor a flash candidate is served", async () => {
+		expect(readSettings()).toMatchObject({ multiModel: true })
 		const { setModel, start } = runSessionStart({
 			modelRegistry: registryServing(["kimi-k3"]),
 		})
@@ -708,8 +711,8 @@ describe("catalog-driven gated default — orgs without auto", () => {
 
 		expect(setModel).not.toHaveBeenCalled()
 		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
-		// And on disk: no settings.json was ever created.
-		expect(existsSync(configStubs.settingsPath)).toBe(false)
+		// On disk the seeded settings.json is untouched.
+		expect(readSettings()).toMatchObject({ multiModel: true })
 	})
 
 	it("respects a deliberate default after the migration — no rollback, no notice", async () => {
@@ -720,31 +723,27 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
 		settingsStubs.getDefaultModel.mockReturnValue("kimi-k3")
 		seedSettings({ multiModel: false })
+		expect(readSettings()).toMatchObject({ multiModel: false })
 		const { setModel, ctx, start } = runSessionStart()
-
-		// A completed migration: the configured default is already off — the
-		// no-op assertions below must hold against that before state.
-		expect(getGlobalDefault()).toBe(false)
 
 		await start()
 
 		expect(setModel).not.toHaveBeenCalled()
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		// The completed-migration overwrite was a redundant write: the value
+		// was already false, so the file is unchanged.
+		expect(readSettings()).toMatchObject({ multiModel: false })
 	})
 
 	it("migrates a user whose saved default came up as multi-model (multiModel still true)", async () => {
 		// Pre-branch cohort: a concrete defaultModel was persisted (e.g. by
-		// login) but multiModel stayed at the factory default, so the session
-		// defaulted into multi-model. These are the users the migration is for.
+		// login) but multiModel stayed at the factory default (seeded in
+		// beforeEach), so the session defaulted into multi-model. These are
+		// the users the migration is for.
 		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
 		settingsStubs.getDefaultModel.mockReturnValue("routine")
-		seedSettings({ multiModel: true })
+		expect(readSettings()).toMatchObject({ multiModel: true })
 		const { setModel, start } = runSessionStart()
-
-		// The migration is owed only while the configured default is still
-		// multi-model — pin that before state so the install below is
-		// provably its outcome.
-		expect(getGlobalDefault()).toBe(true)
 
 		await start()
 
@@ -753,13 +752,10 @@ describe("catalog-driven gated default — orgs without auto", () => {
 
 	it("respects an explicit --multi-model launch choice in a gated org", async () => {
 		populateCliArgs(["--multi-model"])
-		// Pre-state: settings.json still carries multiModel=true, so the seed
+		// Pre-state: the beforeEach seed carries multiModel=true, so the seed
 		// overwrite below is a real transition caused by start().
-		seedSettings({ multiModel: true })
+		expect(readSettings()).toMatchObject({ multiModel: true })
 		const { setModel, start } = runSessionStart()
-
-		expect(getGlobalDefault()).toBe(true)
-		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
 
 		await start()
 
