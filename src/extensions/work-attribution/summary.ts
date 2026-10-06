@@ -177,16 +177,20 @@ export function readWorkRecords(
 			try {
 				const path = join(source, file.name)
 				if (modifiedSince !== undefined && statSync(path).mtimeMs < modifiedSince) continue
-				for (const line of readFileSync(path, "utf8").split("\n")) {
+				const lines = readFileSync(path, "utf8").split("\n")
+				for (const [index, line] of lines.entries()) {
 					checkBudget()
 					if (!line.trim()) continue
+					let value: unknown
 					try {
-						const value = JSON.parse(line)
-						if (record(value)) records.push(value)
-						else onInvalidRecord?.()
+						value = JSON.parse(line)
 					} catch {
-						onInvalidRecord?.()
+						// A writer may still be appending, or may have stopped before its final newline.
+						if (index < lines.length - 1) onInvalidRecord?.()
+						continue
 					}
+					if (record(value)) records.push(value)
+					else onInvalidRecord?.()
 				}
 			} catch (error) {
 				// An incomplete scan must not advance recovery past a journal we could not read.

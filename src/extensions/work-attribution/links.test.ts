@@ -414,7 +414,6 @@ it.each([
 	"request-unscoped",
 	"ambiguous-producer",
 	"missing-segment",
-	"inferred-segment",
 ])("leaves %s history unknown", async (kind) => {
 	const flow = acceptedContinuation()
 	const receipt = structuredClone(flow.continuation)
@@ -443,12 +442,22 @@ it.each([
 		)
 	if (kind === "request-unscoped") appendWorkRecord(flow.ctx, { ...request, scope: null }, flow.workId)
 	if (kind === "missing-segment") appendWorkRecord(flow.ctx, { ...request, segment: undefined }, flow.workId)
-	if (kind === "inferred-segment")
-		appendWorkRecord(flow.ctx, { ...request, segment: { ...flow.segment, attribution: "inferred" } }, flow.workId)
 	if (kind === "ambiguous-producer")
 		appendWorkRecord(flow.ctx, { ...flow.origin, requestId: flow.unrelated }, flow.workId)
 	await repair()
 	expect(links()).toEqual([])
+})
+
+it.each(["session", "inferred"] as const)("confirms the restored %s planning input only", async (attribution) => {
+	const flow = acceptedContinuation()
+	const requests = readWorkRecords(dir).filter((row) => row.type === "request")
+	for (const row of requests.filter((row) => row.requestId !== flow.unrelated)) {
+		appendWorkRecord(flow.ctx, { ...row, segment: { ...flow.segment, attribution } }, flow.workId)
+	}
+	await repair()
+	expect(links()).toHaveLength(1)
+	expect(links()[0].requestIds).toEqual([flow.research, flow.producer].sort())
+	expect(requestWorkLinks(readWorkRecords(dir)).has(flow.unrelated)).toBe(false)
 })
 
 it("repairs a legacy native transition receipt using only its original scope", async () => {

@@ -378,3 +378,25 @@ it("leaves an input unresolved without a warning when matching history exceeds i
 	expect(getWorkSegment(ctx)).toMatchObject({ attribution: "unknown" })
 	expect(ctx.ui.notify).not.toHaveBeenCalled()
 })
+
+describe("one torn ledger line during live plan continuation", () => {
+	it("adopts the plan without surfacing an attribution failure for an unrelated torn append", async () => {
+		const planned = "11111111-1111-4111-8111-111111111111"
+		vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue({
+			workId: planned,
+			source: "saved-plan",
+			evidence: { path: "/plans/plan.md", contentHash: "a".repeat(64) },
+		})
+		mkdirSync(join(dir, "work-attribution"), { recursive: true })
+		writeFileSync(join(dir, "work-attribution", "crashed.jsonl"), '{"type":"request","requestId":"0b8f')
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const ctx = createContext({ cwd: dir })
+		await api.getHandler<InputEvent>("input")(
+			{ type: "input", text: "Implement /plans/plan.md", source: "interactive" },
+			ctx,
+		)
+		expect(getWorkId(ctx)).toBe(planned)
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("Incomplete work history"), "warning")
+	})
+})

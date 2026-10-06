@@ -145,6 +145,8 @@ After restart and during ordinary background reconciliation, Kimchi retries acce
 
 Repair shares the existing reconciliation worker and lease. PR discovery and billing run first. Each repair pass checks its three-second budget while reading history and examines at most 25 receipts, rotating past slow or failed candidates. Failed or interrupted passes do not mark history complete.
 
+A crash can leave the last journal line unfinished. Readers skip that line when it has no final newline and cannot be parsed, so another session can still continue a plan. Complete invalid records and malformed lines earlier in a journal still block confirmation and historical repair until the source is repaired.
+
 If planning and implementation already ended up in separate works, open the implementing work and run:
 
 ```text

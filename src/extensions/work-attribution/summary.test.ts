@@ -94,6 +94,25 @@ describe("readable work summaries", () => {
 		readWorkRecords(dir, undefined, () => {}, invalid)
 		expect(invalid).toHaveBeenCalledTimes(2)
 	})
+	it.each(["", "transitions"])("skips only an unfinished last append in %s journals", (source) => {
+		const row = { version: 1, type: "work", workId: randomUUID(), sessionId: "writer" }
+		const complete = JSON.stringify(row)
+		const directory = join(dir, "work-attribution", source)
+		fs.mkdirSync(directory, { recursive: true })
+		const ledger = join(directory, "interrupted.jsonl")
+		for (const [suffix, invalidCount, rows] of [
+			['{"type":"request"', 0, [row]],
+			['{"type":"request"\n', 1, [row]],
+			['{"type":"request"}', 1, [row]],
+			[`{"type":"request"\n${complete}`, 1, [row, row]],
+			[complete, 0, [row, row]],
+		] as const) {
+			fs.writeFileSync(ledger, `${complete}\n${suffix}`)
+			const invalid = vi.fn()
+			expect(readWorkRecords(dir, undefined, () => {}, invalid)).toEqual(rows)
+			expect(invalid).toHaveBeenCalledTimes(invalidCount)
+		}
+	})
 
 	it("retains PR links and their newest state through failed lookups and source replay", async () => {
 		const ctx = context()
