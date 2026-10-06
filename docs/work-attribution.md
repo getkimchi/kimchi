@@ -167,6 +167,7 @@ Once a link is known, Kimchi also checks that PR or MR by number to refresh its 
 | A PR or MR is opened in a browser or another tool | The provider returns it for the recorded commit on a later check. |
 | A known PR or MR merges while Kimchi is closed | The next launch refreshes its saved link, including after a squash merge. |
 | A commit is rewritten or removed | Kimchi still checks a saved link by number. An empty commit lookup does not erase it. |
+| A repository is renamed or transferred | The provider's PR or MR ID keeps one link, with the latest repository name and URL. |
 | The provider returns several associations | All returned links are saved, across every result page. |
 | Another Kimchi process does the lookup | This session reads the saved result and updates its footer too. |
 
@@ -177,9 +178,10 @@ Each commit keeps two extra fields:
 | Field | Meaning |
 | --- | --- |
 | `prLookup.status` | `pending` when no PR or MR was found, `linked` after a successful lookup with links, or `error` when the lookup failed. A new commit has no lookup result yet. |
-| `prLookup.checkedAt` / `error` | Time of the last lookup and its error, when present. |
+| `prLookup.checkedAt` / `error` | Time and error of the last saved lookup result. Unchanged checks do not append another record. |
 | `pullRequests[]` | Confirmed GitHub or GitLab links. The existing field name stays the same for compatibility; later errors do not erase links. |
 | `provider` / `number` | `github` uses the PR number; `gitlab` uses the project's MR number (`iid`), not its global ID. Older links without `provider` mean GitHub. |
+| `id` / `repositoryId` | Stable provider IDs for the PR or MR and its target repository, when returned. These survive repository renames; older records can omit them. |
 | `headSha` / `mergeCommitSha` | The head commit and the provider's merge hash. GitHub may return a test-merge hash before merging; use `state` to establish an actual merge. |
 | `mergedAt` / `closedAt` / `checkedAt` | Provider event times, or `null` when unavailable, and when Kimchi checked the link. GitLab's state can be `merged` even when its response omits `mergedAt`. |
 
@@ -200,7 +202,7 @@ Kimchi tries credentials in this order: an environment token for the selected ho
 | No token and no CLI | Tries public repository access. Private repositories require credentials. |
 | No access, network failure or rate limit | Shows the reason and retries later; local request, edit and commit recording continue. |
 
-`GH_TOKEN` or `GITHUB_TOKEN` apply to github.com. GitLab uses `GITLAB_TOKEN` or `GITLAB_ACCESS_TOKEN` for `GITLAB_HOST` (gitlab.com by default). Enterprise GitHub tokens require the matching `GH_HOST`. Saved Kimchi tokens are read by exact host. Credentials never follow a redirect to another host. Anonymous requests have lower rate limits.
+`GH_TOKEN` or `GITHUB_TOKEN` apply to github.com. GitLab accepts `GITLAB_TOKEN`, `GLAB_TOKEN` or `GITLAB_ACCESS_TOKEN`. Its host comes from `GITLAB_HOST`, then `GL_HOST`, then `GITLAB_URI`; gitlab.com is the default only when none is set. An invalid host disables the environment token. It never falls back to sending that token to gitlab.com. Enterprise GitHub tokens require the matching `GH_HOST`. Saved Kimchi tokens are read by exact host. Credentials never follow a redirect to another host. Anonymous requests have lower rate limits.
 
 ### 5. Build the local summary
 
@@ -259,7 +261,7 @@ The implementation uses Pi's existing hooks and native Git tracing. It adds no d
 
 - **PR costs:** join requests to billing, then decide how to split one work's cost across several PRs.
 - **Backend IDs:** verify that the proxy saves the request/session IDs needed for the billing join. The client records do not yet prove that link.
-- **Account and repository IDs:** add account IDs and stable repository IDs from the Git provider.
+- **Account and repository IDs:** add account IDs and recover stable provider IDs for older links that lack them.
 - **Remote agents:** link their requests and returned commits to the local work. Remote sessions are outside this MVP.
 
 <details>

@@ -10,6 +10,7 @@ import {
 	type WorkDetailsRequest,
 	type WorkStateRequest,
 } from "../work-attribution.js"
+import { mergePullRequestLinks } from "./links.js"
 import { lookupBranchPullRequest, type WorkPullRequest, type WorkPullRequestUpdate } from "./pull-requests.js"
 
 function requestStatus(pr: WorkPullRequest): string {
@@ -50,7 +51,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		const rows = selected ? [...(updates.get(selected)?.values() ?? [])] : []
 		const commits = new Map<string, WorkPullRequestUpdate>()
 		const linked = new Set<string>()
-		const links = new Map<string, WorkPullRequestUpdate["pullRequests"][number]>()
+		const links: WorkPullRequest[] = []
 		for (const row of rows) {
 			const key = JSON.stringify([row.repository, row.sha])
 			const previous = commits.get(key)
@@ -60,14 +61,11 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 			)
 				commits.set(key, row)
 			if (row.pullRequests.length) linked.add(key)
-			for (const pr of row.pullRequests) {
-				const previous = links.get(pr.url)
-				if (!previous || Date.parse(pr.checkedAt) >= Date.parse(previous.checkedAt)) links.set(pr.url, pr)
-			}
+			links.push(...row.pullRequests)
 		}
 		return {
 			rows,
-			links: [...links.values()],
+			links: mergePullRequestLinks(links),
 			pending: commits.size - linked.size,
 			errors: [...new Set([...commits.values()].flatMap((row) => (row.prLookup?.error ? [row.prLookup.error] : [])))],
 		}

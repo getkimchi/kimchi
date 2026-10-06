@@ -46,6 +46,32 @@ function summary(workId: string) {
 }
 
 describe("readable work summaries", () => {
+	it("keeps one PR after provider IDs are added and the repository is renamed", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const commit = { type: "commit", sha: "a".repeat(40), repository: "/project/.git", worktree: "/project" }
+		const old = {
+			provider: "github",
+			host: "github.com",
+			url: "https://github.com/example/old/pull/7",
+			checkedAt: "2026-10-02T08:00:00Z",
+		}
+		appendWorkRecord(ctx, { ...commit, pullRequests: [old] })
+		appendWorkRecord(ctx, { ...commit, pullRequests: [{ ...old, id: "42" }] })
+		const renamed = {
+			...old,
+			id: "42",
+			url: "https://github.com/example/new/pull/7",
+			checkedAt: "2026-10-02T09:00:00Z",
+		}
+		appendWorkRecord(ctx, { ...commit, pullRequests: [renamed] })
+		await flushWorkSummaries()
+		expect(summary(workId).commits[0].pullRequests).toEqual([renamed])
+		fs.unlinkSync(path(workId))
+		recoverWorkSummaries()
+		await flushWorkSummaries()
+		expect(summary(workId).commits[0].pullRequests).toEqual([renamed])
+	})
 	it("retains PR links and their newest state through failed lookups and source replay", async () => {
 		const ctx = context()
 		const workId = getWorkId(ctx)

@@ -6,6 +6,7 @@ import { setImmediate } from "node:timers/promises"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { lock } from "proper-lockfile"
 import { isWorkId } from "../../shared/work-id.js"
+import { mergePullRequestLinks } from "../pull-request-status/links.js"
 
 const LOCK_STALE_MS = 5000
 const MERGE_BATCH_SIZE = 1000
@@ -156,16 +157,7 @@ function latestObservation(previous: unknown, current: unknown): Record<string, 
 }
 /** Empty or failed lookups never remove an association already confirmed by GitHub. */
 function pullRequestLinks(...values: unknown[]): Record<string, unknown>[] {
-	const links = new Map<string, Record<string, unknown>>()
-	for (const value of values) {
-		if (!Array.isArray(value)) continue
-		for (const row of value) {
-			if (!object(row) || typeof row.url !== "string") continue
-			const latest = latestObservation(links.get(row.url), row)
-			if (latest) links.set(row.url, latest)
-		}
-	}
-	return [...links.values()]
+	return mergePullRequestLinks(...values.map((value) => (Array.isArray(value) ? value.filter(object) : [])))
 }
 /** A repeated scan can add evidence or strengthen a match without discarding earlier links. */
 function fileMatches(...values: unknown[]) {

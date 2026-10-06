@@ -96,7 +96,7 @@ function pull(number = 7, overrides: Record<string, unknown> = {}) {
 }
 function mr(number = 7, overrides: Record<string, unknown> = {}) {
 	return {
-		id: 98731,
+		id: 98724 + number,
 		iid: number,
 		web_url: `https://gitlab.com/team/subgroup/repo/-/merge_requests/${number}`,
 		state: "opened",
@@ -1029,5 +1029,201 @@ describe("durable work pull request discovery", () => {
 		await lookup()
 		expect(reads.mock.calls[2][1]).toBe(checkpoint)
 		expect(commitCalls()).toHaveLength(2)
+	})
+})
+
+describe("self-managed GitLab credentials", () => {
+	it.each([
+		["GITLAB_HOST", "http://gitlab.internal.example"],
+		["GITLAB_HOST", "https://example.com/gitlab"],
+		["GITLAB_URI", "https://gitlab.internal.example"],
+	])("does not send a GITLAB_TOKEN configured for %s=%s to gitlab.com", async (name, value) => {
+		seed()
+		useProvider("gitlab")
+		vi.stubEnv(name, value)
+		vi.stubEnv("GITLAB_TOKEN", "self-managed-token")
+		replies(() => [mr()])
+		await lookup()
+		const sentToGitLabCom = http.mock.calls.filter(
+			([url, options]) => url.host === "gitlab.com" && new Headers(options.headers).has("authorization"),
+		)
+		expect(sentToGitLabCom).toEqual([])
+	})
+	it.each(["GITLAB_HOST", "GL_HOST", "GITLAB_URI"])("keeps %s credentials on the configured host", async (name) => {
+		seed()
+		remote("https://gitlab.internal.example/team/repo.git")
+		vi.stubEnv(name, "https://gitlab.internal.example")
+		vi.stubEnv("GITLAB_TOKEN", "self-managed-token")
+		await lookup()
+		expect(http).toHaveBeenCalledTimes(2)
+		for (const [url, options] of http.mock.calls) {
+			expect(url.host).toBe("gitlab.internal.example")
+			expect(url.pathname).toMatch(/^\/api\/v4\//)
+			expect(new Headers(options.headers).get("authorization")).toBe("Bearer self-managed-token")
+		}
+	})
+	it.each([
+		"",
+		"http://gitlab.internal.example",
+		"https://example.com/gitlab",
+		"https://user:pass@example.com",
+	])("does not fall back from invalid GITLAB_HOST %j to a lower-priority host", async (value) => {
+		seed()
+		useProvider("gitlab")
+		vi.stubEnv("GITLAB_HOST", value)
+		vi.stubEnv("GL_HOST", "gitlab.com")
+		vi.stubEnv("GITLAB_TOKEN", "self-managed-token")
+		cli.token.mockReturnValue("saved-cloud-token")
+		await lookup()
+		expect(http).toHaveBeenCalledTimes(2)
+		for (const [, options] of http.mock.calls)
+			expect(new Headers(options.headers).get("authorization")).toBe("Bearer saved-cloud-token")
+	})
+})
+
+describe("commits the provider has not received yet", () => {
+	it.each(["404 Project Not Found", "404 Not Found"])("keeps GitLab %s as an access error", async (message) => {
+		seed()
+		useProvider("gitlab")
+		replies(() => Response.json({ message }, { status: 404 }))
+		await lookup()
+		expect(saved().at(-1).prLookup.status).toBe("error")
+	})
+	it("does not turn a missing GitLab repository into a pending commit", async () => {
+		seed()
+		useProvider("gitlab")
+		http.mockResolvedValue(Response.json({ message: "404 Commit Not Found" }, { status: 404 }))
+		await lookup()
+		expect(saved().at(-1).prLookup.status).toBe("error")
+	})
+	it("keeps a GitLab commit waiting when GitLab does not know the SHA yet", async () => {
+		seed()
+		useProvider("gitlab")
+		// GitLab answers an unknown SHA on /repository/commits/:sha/merge_requests with 404 "Commit Not Found".
+		replies(() => Response.json({ message: "404 Commit Not Found" }, { status: 404 }))
+		await lookup()
+		expect(saved().at(-1).prLookup).toMatchObject({ status: "pending" })
+		expect(saved().at(-1).prLookup.error).toBeUndefined()
+	})
+})
+
+describe("provider pagination links", () => {
+	it.each([
+		{ id: "other/repo" },
+		{ sha: "b".repeat(40) },
+	])("rejects changed GitLab route parameters: %j", async (changed) => {
+		seed()
+		useProvider("gitlab")
+		replies((url) => {
+			const next = new URL(url)
+			next.search = new URLSearchParams({
+				id: "team/subgroup/repo",
+				page: "2",
+				per_page: "100",
+				sha,
+				...changed,
+			}).toString()
+			return Response.json([mr()], { headers: { link: `<${next.href}>; rel="next"` } })
+		})
+		await lookup()
+		expect(commitCalls()).toHaveLength(1)
+		expect(saved().at(-1).prLookup.status).toBe("error")
+	})
+	it("follows GitHub's /repositories/:id next link for commit associations", async () => {
+		seed()
+		replies((url) => {
+			if (url.pathname === `/repositories/42/commits/${sha}/pulls` && url.searchParams.get("page") === "2")
+				return [pull(8)]
+			const next = `https://api.github.com/repositories/42/commits/${sha}/pulls?per_page=100&page=2`
+			return Response.json([pull(7)], { headers: { link: `<${next}>; rel="next", <${next}>; rel="last"` } })
+		})
+		await lookup()
+		expect(saved().at(-1).prLookup.error).toBeUndefined()
+		expect(
+			saved()
+				.at(-1)
+				.pullRequests.map((pr: { number: number }) => pr.number),
+		).toEqual([7, 8])
+	})
+	it("follows GitLab's next link when it repeats route parameters in the query", async () => {
+		seed()
+		useProvider("gitlab")
+		replies((url) => {
+			if (url.searchParams.get("page") === "2") return [mr(8, { id: 98008 })]
+			const next = new URL(url)
+			next.search = new URLSearchParams({ id: "team/subgroup/repo", page: "2", per_page: "100", sha }).toString()
+			return Response.json([mr(7)], { headers: { link: `<${next.href}>; rel="next"`, "x-next-page": "2" } })
+		})
+		await lookup()
+		expect(saved().at(-1).prLookup.error).toBeUndefined()
+		expect(
+			saved()
+				.at(-1)
+				.pullRequests.map((pr: { number: number }) => pr.number),
+		).toEqual([7, 8])
+	})
+})
+
+describe("repository renames", () => {
+	it("keeps one link per provider PR and stops polling its old URL after the repository is renamed", async () => {
+		const merged = pull(7, {
+			id: 98731,
+			state: "closed",
+			merged_at: "2026-10-02T12:00:00Z",
+			closed_at: "2026-10-02T12:00:00Z",
+		})
+		seed({
+			prLookup: { status: "linked", checkedAt: "2026-10-01T12:00:00Z" },
+			pullRequests: [
+				stored("github", {
+					id: "98731",
+					repositoryId: "42",
+					url: "https://github.com/team/old/pull/7",
+					repository: "team/old",
+				}),
+			],
+		})
+		remote("https://github.com/team/old.git")
+		http.mockImplementation(async (url) => {
+			// GitHub redirects old-name API paths to /repositories/:id on the same origin.
+			if (url.pathname === "/repos/team/old")
+				return new Response(null, { status: 301, headers: { location: "https://api.github.com/repositories/42" } })
+			if (url.pathname === "/repositories/42")
+				return Response.json({ id: 42, full_name: "team/repo", html_url: "https://github.com/team/repo" })
+			if (url.pathname === "/repos/team/old/pulls/7")
+				return new Response(null, {
+					status: 301,
+					headers: { location: "https://api.github.com/repositories/42/pulls/7" },
+				})
+			if (url.pathname === "/repositories/42/pulls/7") return Response.json(merged)
+			if (url.pathname === `/repos/team/repo/commits/${sha}/pulls`) return Response.json([merged])
+			return new Response(null, { status: 404 })
+		})
+		await lookup()
+		expect(
+			saved()
+				.at(-1)
+				.pullRequests.map((pr: { id: string; url: string; state: string }) => [pr.id, pr.url, pr.state]),
+		).toEqual([["98731", "https://github.com/team/repo/pull/7", "merged"]])
+		http.mockClear()
+		await lookup()
+		expect(http).not.toHaveBeenCalled()
+	})
+})
+
+describe("unchanged lookup results", () => {
+	it("does not append another commit row when a pass finds the same links", async () => {
+		seed()
+		replies(() => [pull()])
+		for (let pass = 0; pass < 3; pass++) await lookup()
+		expect(saved().filter((row) => row.type === "commit")).toHaveLength(1)
+	})
+	it("does not append a row per commit on every pass while the provider is rate limited", async () => {
+		for (let index = 0; index < 20; index++) seed({ sha: index.toString(16).padStart(40, "0") })
+		http.mockImplementation(async () => new Response(null, { status: 429, headers: { "retry-after": "3600" } }))
+		await lookup()
+		const rows = saved().length
+		for (let pass = 0; pass < 5; pass++) await lookup()
+		expect(saved()).toHaveLength(rows)
 	})
 })

@@ -82,6 +82,27 @@ afterEach(async () => {
 })
 
 describe("PR status extension", () => {
+	it("shows one renamed PR when contributors saved different repository names", async () => {
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const status = createExtensionApi()
+		pullRequestStatusExtension({ ...status.api, events: api.api.events })
+		await start(api)
+		await start(status)
+		const update = vi.mocked(supervisor.subscribePullRequestReconciliation).mock.calls[0][0]?.onPullRequest
+		const commit = contribution(getWorkId(ctx))
+		update?.({ ...commit, pullRequests: [{ ...pr, id: "42" }] })
+		const renamed = {
+			...pr,
+			id: "42",
+			url: "https://github.com/example/renamed/pull/7",
+			repository: "example/renamed",
+			checkedAt: "2026-10-02T11:00:00Z",
+		}
+		update?.({ ...commit, sessionId: "other-contributor", pullRequests: [renamed] })
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: #7 open")
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-pr-url", renamed.url)
+	})
 	it("shows pending PRs, explains errors once, and clears the status when work changes", async () => {
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)

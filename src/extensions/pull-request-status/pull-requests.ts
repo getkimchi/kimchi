@@ -6,6 +6,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { readGitToken } from "../../config.js"
 import { readWorkRecords } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
+import { mergePullRequestLinks as mergePullRequests, pullRequestKey } from "./links.js"
 
 const PASS_BUDGET_MS = 10_000
 const COMMAND_TIMEOUT_MS = 5000
@@ -15,6 +16,9 @@ const SHA = /^(?:[a-f\d]{40}|[a-f\d]{64})$/i
 
 export interface WorkPullRequest {
 	provider?: "github" | "gitlab"
+	/** Provider IDs belong to the target repository, including fork contributions. */
+	id?: string
+	repositoryId?: string
 	url: string
 	number: number
 	state: "open" | "closed" | "merged"
@@ -81,6 +85,10 @@ function timestamp(value: unknown): value is string {
 function nullableTimestamp(value: unknown): value is string | null {
 	return value === null || timestamp(value)
 }
+function providerId(value: unknown): string | undefined {
+	if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return String(value)
+	if (typeof value === "string" && /^[1-9]\d{0,19}$/.test(value)) return value
+}
 function httpsURL(value: unknown): URL {
 	if (typeof value === "string") {
 		try {
@@ -138,6 +146,14 @@ function pullRequest(
 	)
 		throw new LookupError(`${label(repository)} returned an invalid pull request.`, false, true)
 	const url = httpsURL(provider === "gitlab" ? value.web_url : value.html_url)
+	const id = providerId(value.id)
+	const repositoryId = providerId(
+		provider === "gitlab"
+			? value.target_project_id
+			: object(value.base) && object(value.base.repo)
+				? value.base.repo.id
+				: undefined,
+	)
 	const path = (provider === "gitlab" ? /^\/(.+)\/-\/merge_requests\/(\d+)$/ : /^\/(.+)\/pull\/(\d+)$/).exec(
 		url.pathname,
 	)
@@ -145,6 +161,8 @@ function pullRequest(
 		throw new LookupError(`${label(repository)} returned a pull request from an unexpected repository.`, false, true)
 	return {
 		provider,
+		...(id ? { id } : {}),
+		...(repositoryId ? { repositoryId } : {}),
 		url: url.href,
 		number,
 		state,
@@ -167,6 +185,9 @@ function storedPullRequests(value: unknown): WorkPullRequest[] {
 			return [
 				pullRequest(
 					{
+						id: item.id,
+						base: { repo: { id: item.repositoryId } },
+						target_project_id: item.repositoryId,
 						html_url: item.url,
 						web_url: item.url,
 						number: item.number,
@@ -194,14 +215,14 @@ function storedPullRequests(value: unknown): WorkPullRequest[] {
 		}
 	})
 }
-function mergePullRequests(...groups: WorkPullRequest[][]): WorkPullRequest[] {
-	const merged = new Map<string, WorkPullRequest>()
-	for (const group of groups)
-		for (const item of group) {
-			const previous = merged.get(item.url)
-			if (!previous || Date.parse(item.checkedAt) >= Date.parse(previous.checkedAt)) merged.set(item.url, item)
-		}
-	return [...merged.values()]
+function lookupResult(commit: WorkPullRequestUpdate): string {
+	return JSON.stringify([
+		commit.prLookup?.status,
+		commit.prLookup?.error,
+		commit.pullRequests
+			.map(({ checkedAt: _checkedAt, ...pr }) => pr)
+			.sort((a, b) => pullRequestKey(a).localeCompare(pullRequestKey(b))),
+	])
 }
 function commitKey(row: WorkPullRequestUpdate): string {
 	return JSON.stringify([row.workId, row.sessionId, row.repository, row.worktree, row.sha])
@@ -328,14 +349,16 @@ function configuredHost(value: string | undefined): string | undefined {
 		return undefined
 	}
 }
+function gitlabHost(): string | undefined {
+	// An explicit but invalid host must not send its token to the cloud default.
+	return configuredHost(process.env.GITLAB_HOST ?? process.env.GL_HOST ?? process.env.GITLAB_URI ?? "gitlab.com")
+}
 function environmentToken(repository: Pick<Repository, "provider" | "host">): string | undefined {
 	if (repository.provider === "github") {
 		if (repository.host === "github.com") return process.env.GH_TOKEN || process.env.GITHUB_TOKEN
 		if (repository.host === configuredHost(process.env.GH_HOST))
 			return process.env.GH_ENTERPRISE_TOKEN || process.env.GITHUB_ENTERPRISE_TOKEN
-	} else if (
-		repository.host === (configuredHost(process.env.GITLAB_HOST) ?? configuredHost(process.env.GL_HOST) ?? "gitlab.com")
-	) {
+	} else if (repository.host === gitlabHost()) {
 		return process.env.GITLAB_TOKEN || process.env.GLAB_TOKEN || process.env.GITLAB_ACCESS_TOKEN
 	}
 	return undefined
@@ -465,12 +488,18 @@ async function requestJSON(
 					throw new LookupError(`${label(repository)} rate limit reached. Kimchi will retry after the limit resets.`)
 				continue
 			}
-			// GitHub returns 422 while a locally recorded commit has not been pushed.
-			// Inspect only that endpoint's bounded body; other validation errors stay errors.
+			// Only a commit-association endpoint can report an unpublished commit.
+			// Inspect its bounded body; repository and permission errors stay errors.
 			const missingCommitSha =
 				repository.provider === "github" && response.status === 422
-					? /^\/(?:api\/v3\/)?repos\/[^/]+\/[^/]+\/commits\/([a-f\d]{40}|[a-f\d]{64})\/pulls$/i.exec(url.pathname)?.[1]
-					: undefined
+					? /^\/(?:api\/v3\/)?(?:repos\/[^/]+\/[^/]+|repositories\/\d+)\/commits\/([a-f\d]{40}|[a-f\d]{64})\/pulls$/i.exec(
+							url.pathname,
+						)?.[1]
+					: repository.provider === "gitlab" && response.status === 404
+						? /^\/api\/v4\/projects\/[^/]+\/repository\/commits\/([a-f\d]{40}|[a-f\d]{64})\/merge_requests$/i.exec(
+								url.pathname,
+							)?.[1]
+						: undefined
 			if (!response.ok && (!missingCommitSha || limitedUntil)) {
 				await response.body?.cancel()
 				if (limitedUntil)
@@ -514,8 +543,13 @@ async function requestJSON(
 				throw new LookupError(`${label(repository)} returned invalid JSON.`, false, true)
 			}
 			if (missingCommitSha) {
-				if (!object(value) || value.message !== `No commit found for SHA: ${missingCommitSha}`)
-					throw new LookupError("GitHub lookup failed (HTTP 422). Kimchi will retry.")
+				const message =
+					repository.provider === "github" ? `No commit found for SHA: ${missingCommitSha}` : "404 Commit Not Found"
+				if (!object(value) || value.message !== message)
+					throw new LookupError(
+						`${label(repository)} lookup failed (HTTP ${response.status}). Kimchi will retry.`,
+						response.status === 404,
+					)
 				value = []
 			}
 			return { value, headers: response.headers, url, bytes }
@@ -560,18 +594,37 @@ async function pages(
 		if (!link && nextPage) next.searchParams.set("page", nextPage)
 		sameOrigin(next, initialURL.origin)
 		const pageNumber = next.searchParams.get("page") ?? ""
+		const numericRoute = /^\/(?:api\/v3\/)?repositories\/([1-9]\d*)(\/.+)$/.exec(next.pathname)
+		const sameRepositoryRoute =
+			repository.provider === "github" &&
+			numericRoute &&
+			(repository.id === undefined || String(repository.id) === numericRoute[1]) &&
+			next.pathname === result.url.pathname.replace(/\/repos\/[^/]+\/[^/]+(?=\/)/, `/repositories/${numericRoute[1]}`)
 		if (
-			next.pathname !== result.url.pathname ||
+			(next.pathname !== result.url.pathname && !sameRepositoryRoute) ||
 			!/^[1-9]\d*$/.test(pageNumber) ||
 			!Number.isSafeInteger(Number(pageNumber)) ||
 			next.searchParams.getAll("page").length !== 1 ||
 			Number(pageNumber) <= Number(url.searchParams.get("page") ?? 1)
 		)
 			throw new LookupError("The Git provider returned invalid pagination.")
+		if (repository.provider === "gitlab") {
+			const routeId = /^\/api\/v4\/projects\/([^/]+)(?:\/|$)/.exec(result.url.pathname)?.[1]
+			const routeSha = /\/repository\/commits\/([^/]+)\//.exec(result.url.pathname)?.[1]
+			for (const [key, value] of Object.entries({ id: routeId, sha: routeSha }))
+				if (
+					value &&
+					next.searchParams.getAll(key).length === 1 &&
+					next.searchParams.get(key) === decodeURIComponent(value)
+				)
+					next.searchParams.delete(key)
+		}
 		for (const key of new Set([...result.url.searchParams.keys(), ...next.searchParams.keys()]))
 			if (key !== "page" && result.url.searchParams.get(key) !== next.searchParams.get(key))
 				throw new LookupError("The Git provider changed the pagination query.")
-		url = next
+		url = new URL(result.url)
+		url.pathname = next.pathname
+		url.searchParams.set("page", pageNumber)
 	}
 	throw new LookupError("The Git provider returned too many pages.")
 }
@@ -628,7 +681,7 @@ async function repositoryIdentity(
 				? "gitlab"
 				: configuredHost(process.env.GH_HOST) === remote.host
 					? "github"
-					: (configuredHost(process.env.GITLAB_HOST) ?? configuredHost(process.env.GL_HOST)) === remote.host
+					: gitlabHost() === remote.host
 						? "gitlab"
 						: undefined
 	const candidates: Repository["provider"][] = provider ? [provider] : ["github", "gitlab"]
@@ -809,7 +862,8 @@ async function scan(
 		let refreshedKnown = false
 		let refreshFailure: LookupError | undefined
 		for (const previous of known.sort((a, b) => Date.parse(a.checkedAt) - Date.parse(b.checkedAt))) {
-			if (previous.state === "merged" || found.some((item) => item.url === previous.url)) continue
+			if (previous.state === "merged" || found.some((item) => pullRequestKey(item) === pullRequestKey(previous)))
+				continue
 			try {
 				let request = refreshed.get(previous.url)
 				if (!request) {
@@ -847,19 +901,20 @@ async function scan(
 			signal.throwIfAborted()
 			assertLease()
 			const update = { ...commit, pullRequests, prLookup }
-			appendWorkRecord(
-				{ cwd: commit.cwd, sessionManager: { getSessionId: () => commit.sessionId } },
-				{
-					type: "commit",
-					sha: commit.sha,
-					repository: commit.repository,
-					worktree: commit.worktree,
-					pullRequests,
-					prLookup,
-				},
-				commit.workId,
-				join(agentDir, "work-attribution", `${encodeURIComponent(commit.sessionId)}.jsonl`),
-			)
+			if (lookupResult(commit) !== lookupResult(update))
+				appendWorkRecord(
+					{ cwd: commit.cwd, sessionManager: { getSessionId: () => commit.sessionId } },
+					{
+						type: "commit",
+						sha: commit.sha,
+						repository: commit.repository,
+						worktree: commit.worktree,
+						pullRequests,
+						prLookup,
+					},
+					commit.workId,
+					join(agentDir, "work-attribution", `${encodeURIComponent(commit.sessionId)}.jsonl`),
+				)
 			state.commits.set(commitKey(commit), update)
 			onUpdate?.(update)
 		}
