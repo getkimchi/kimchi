@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { setImmediate } from "node:timers/promises"
+import { debuglog } from "node:util"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { lock } from "proper-lockfile"
 import { isWorkId } from "../../shared/work-id.js"
@@ -44,8 +45,9 @@ const backgroundTasks = new Set<Promise<unknown>>()
 const recoveredDirectories = new Set<string>()
 /** Work IDs generated in this process: they cannot have older history to scan. */
 const newWork = new Set<string>()
+const debug = debuglog("kimchi:work-attribution")
 function warn(error: unknown): void {
-	console.warn("[work-attribution] Work summary unavailable:", error)
+	debug("Work summary unavailable: %o", error)
 }
 function object(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)

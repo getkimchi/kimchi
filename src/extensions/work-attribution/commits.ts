@@ -2,7 +2,7 @@ import { execFile, execFileSync } from "node:child_process"
 import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { promisify } from "node:util"
+import { debuglog, promisify } from "node:util"
 import {
 	type BashOperations,
 	createBashToolDefinition,
@@ -11,6 +11,8 @@ import {
 } from "@earendil-works/pi-coding-agent"
 
 import { appendWorkRecord, getWorkId, pinWorkContext, type WorkContext, workLedgerPath } from "../work-attribution.js"
+
+const debug = debuglog("kimchi:work-attribution")
 
 const MAX_TRACE_BYTES = 8 * 1024 * 1024
 const GIT_LOOKUP_TIMEOUT_MS = 2000
@@ -199,7 +201,7 @@ function collectCommits(trace: string, refs: string, stopped?: { worktree: strin
 							}).trim(),
 						)
 					} catch (error) {
-						console.warn("[work-attribution] Could not resolve Git commit repository:", error)
+						debug("Could not resolve Git commit repository: %o", error)
 						pending = undefined
 						continue
 					}
@@ -240,7 +242,7 @@ export function createCommitTrackingOperations(
 			try {
 				directory = mkdtempSync(join(tmpdir(), "kimchi-git-attribution-"))
 			} catch (error) {
-				console.warn("[work-attribution] Could not initialize Git trace:", error)
+				debug("Could not initialize Git trace: %o", error)
 				return local.exec(command, cwd, options)
 			}
 			const trace = join(directory, "events")
@@ -258,12 +260,12 @@ export function createCommitTrackingOperations(
 				try {
 					for (const commit of collectCommits(readTrace(trace), readTrace(refs), stopped)) record(commit)
 				} catch (error) {
-					console.warn("[work-attribution] Could not record Git commits:", error)
+					debug("Could not record Git commits: %o", error)
 				} finally {
 					try {
 						rmSync(directory, { recursive: true, force: true })
 					} catch (error) {
-						console.warn("[work-attribution] Could not remove Git trace:", error)
+						debug("Could not remove Git trace: %o", error)
 					}
 				}
 			}
@@ -308,7 +310,7 @@ export function createWorkCommitTrackingOperations(
 			appendWorkRecord(pinned, { type: "commit", ...commit, toolCallId }, workId)
 		}, local)
 	} catch (error) {
-		console.warn("[work-attribution] Could not initialize Git attribution:", error)
+		debug("Could not initialize Git attribution: %o", error)
 		return local
 	}
 }

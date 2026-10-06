@@ -20,14 +20,20 @@ import {
 
 import { flushWorkSummaries, recoverWorkSummaries } from "./summary.js"
 
+const { debug } = vi.hoisted(() => ({ debug: vi.fn() }))
 vi.mock("proper-lockfile", async (importOriginal) => ({ ...(await importOriginal<typeof locks>()) }))
 vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
 vi.mock("node:fs", async (importOriginal) => ({ ...(await importOriginal<typeof fs>()) }))
+vi.mock("node:util", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:util")>()),
+	debuglog: () => debug,
+}))
 
 let dir: string
 beforeEach(() => {
 	dir = fs.mkdtempSync(join(tmpdir(), "kimchi-work-summary-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
+	debug.mockClear()
 })
 afterEach(async () => {
 	await flushWorkSummaries()
@@ -295,7 +301,6 @@ describe("readable work summaries", () => {
 	})
 	it("keeps a durable request header when the derived summary directory is blocked", async () => {
 		fs.writeFileSync(join(dir, "work"), "blocked")
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
 		const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
@@ -307,7 +312,7 @@ describe("readable work summaries", () => {
 			.map((line) => JSON.parse(line))
 		expect(event.headers["X-Request-Id"]).toBe(rows.find((row) => row.type === "request").requestId)
 		await flushWorkSummaries()
-		expect(warn).toHaveBeenCalled()
+		expect(debug).toHaveBeenCalledWith(expect.stringContaining("Work summary unavailable"), expect.any(Error))
 	})
 	it("does not scan unrelated histories for an ordinary append", async () => {
 		const workId = getWorkId(context())
@@ -462,13 +467,12 @@ describe("readable work summaries", () => {
 		})
 		if (failure === "rename")
 			vi.spyOn(asyncFs, "rename").mockRejectedValue(new Error("injected summary rename failure"))
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		const request = recordProviderRequest(ctx)
 		await flushWorkSummaries()
 		expect(summary(workId).requests).toEqual([])
 		expect(fs.readFileSync(join(dir, "work-attribution", "parent.jsonl"), "utf8")).toContain(request.requestId)
 		expect(fs.readdirSync(dirname(path(workId))).some((file) => file.endsWith(".tmp"))).toBe(false)
-		expect(warn).toHaveBeenCalled()
+		expect(debug).toHaveBeenCalledWith(expect.stringContaining("Work summary unavailable"), expect.any(Error))
 		vi.restoreAllMocks()
 		recoverWorkSummaries()
 		await flushWorkSummaries()
@@ -497,13 +501,12 @@ describe("readable work summaries", () => {
 			return file
 		})
 		const rename = vi.spyOn(asyncFs, "rename")
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		const request = recordProviderRequest(ctx)
 		await flushWorkSummaries()
 		expect(rename).not.toHaveBeenCalled()
 		expect(summary(workId).requests).toEqual([])
 		expect(fs.readFileSync(join(dir, "work-attribution", "parent.jsonl"), "utf8")).toContain(request.requestId)
-		expect(warn).toHaveBeenCalled()
+		expect(debug).toHaveBeenCalledWith(expect.stringContaining("Work summary unavailable"), expect.any(Error))
 		// This test invokes the observer directly; release the still-owned real fixture lease.
 		await locks.unlock(dirname(path(workId)))
 	})
@@ -527,7 +530,7 @@ appendWorkRecord({cwd:"/project",sessionManager:{getSessionId:()=>"compromised"}
 console.log("durable"); await flushWorkSummaries();`,
 		)
 		const child = spawn(process.execPath, ["--import", "tsx", script], {
-			env: { ...process.env, PI_CODING_AGENT_DIR: dir },
+			env: { ...process.env, PI_CODING_AGENT_DIR: dir, NODE_DEBUG: "kimchi:work-attribution" },
 		})
 		let output = "",
 			errors = "",
