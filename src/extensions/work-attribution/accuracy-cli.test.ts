@@ -4,10 +4,17 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
-import { afterAll, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as config from "../../config.js"
+import { createContext } from "../__mocks__/context.js"
+import { appendWorkRecord, getWorkId } from "../work-attribution.js"
 import type { AttributionLabel } from "./accuracy.js"
 import { runCli } from "./accuracy-cli.js"
+import { captureBillingSource, reconcileWorkCosts } from "./cost-sync.js"
 import type { RequestCostAllocation } from "./costs.js"
+import { flushWorkSummaries } from "./summary.js"
+
+vi.mock("../../config.js", async (original) => ({ ...(await original<typeof config>()) }))
 
 const execFileAsync = promisify(execFile)
 const scriptPath = fileURLToPath(new URL("./accuracy-cli.ts", import.meta.url))
@@ -83,14 +90,9 @@ const USAGE = "Usage: pnpm exec tsx src/extensions/work-attribution/accuracy-cli
 
 type CliSpawnError = Error & { code: number | string | undefined; stdout: string; stderr: string }
 
-/**
- * Run the script through tsx exactly as the documented command does. Vitest sets VITEST in this
- * process and spawned children inherit it, which would keep the script entry inert, so strip it
- * to make the child behave like a real CLI run.
- */
+/** Run the documented command with the caller's environment intact. */
 function spawnCli(args: readonly string[]) {
-	const { VITEST: _omitVitest, ...childEnv } = process.env
-	return execFileAsync(tsxPath, [scriptPath, ...args], { env: childEnv, timeout: 120_000 })
+	return execFileAsync(tsxPath, [scriptPath, ...args], { timeout: 120_000 })
 }
 
 async function expectSpawnFailure(args: readonly string[]): Promise<CliSpawnError> {
@@ -265,5 +267,115 @@ describe("runCli (in-process)", () => {
 		expect(lines).toContain("Correct coverage: n/a (zero spending denominator); n/a (zero request denominator)")
 		expect(lines).toContain(OVERLAP_NOTE)
 		expect(lines.at(-1)).toBe("Complete")
+	})
+})
+
+describe("accuracy-cli as a script", { timeout: 30_000 }, () => {
+	it("still reads its inputs when VITEST is inherited from a parent process", async () => {
+		const outcome = await execFileAsync(
+			process.execPath,
+			["--import", "tsx", scriptPath, join(tempRoot, "missing-report.json"), join(tempRoot, "missing-reference.json")],
+			{ env: { ...process.env, VITEST: "true" }, timeout: 20_000 },
+		).then(
+			() => ({ code: 0 }),
+			(error: CliSpawnError) => ({ code: error.code }),
+		)
+		expect(outcome.code).toBe(1)
+	})
+})
+
+describe("scoring a saved costs.json", () => {
+	const api = "https://billing.example/api"
+	const organizationId = "33333333-2222-4333-8444-555555555555"
+	const userId = "11111111-2222-4333-8444-555555555555"
+	const pullRequestId = "github:github.com/example/repo#1"
+	let agentDir: string
+	beforeEach(() => {
+		agentDir = mkdtempSync(join(tmpdir(), "kimchi-accuracy-saved-"))
+		vi.stubEnv("PI_CODING_AGENT_DIR", agentDir)
+		const original = config.loadConfig()
+		const endpoints = config.resolveEndpoints()
+		vi.spyOn(config, "loadConfig").mockImplementation(() => ({ ...original, apiKey: "test-only-key" }))
+		vi.spyOn(config, "resolveEndpoints").mockReturnValue({
+			...endpoints,
+			platformApiUrl: api,
+			openAiBaseUrl: "https://gateway.example/openai/v1",
+			llmEndpoint: "https://gateway.example/openai/v1",
+		})
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL) =>
+				String(input).endsWith("api-keys:verify")
+					? Response.json({ organizationId, userId })
+					: Response.json({
+							items: [{ id: "22222222-2222-4333-8444-555555555555", promptId: userId, totalPrice: "0.123456789" }],
+							nextPageCursor: "",
+						}),
+			),
+		)
+	})
+	afterEach(async () => {
+		await flushWorkSummaries()
+		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
+		vi.unstubAllGlobals()
+		rmSync(agentDir, { recursive: true, force: true })
+	})
+
+	it("certifies a correct costs.json written by the cost reconciler against a matching reference", async () => {
+		const ctx = createContext({ cwd: agentDir, sessionManager: { getSessionId: () => "session" } })
+		const workId = getWorkId(ctx)
+		appendWorkRecord(ctx, {
+			type: "request",
+			requestId: "request",
+			startedAt: "2026-10-01T08:00:00Z",
+			scope: { account: { apiUrl: api, organizationId, userId }, repository: join(agentDir, ".git") },
+		})
+		appendWorkRecord(ctx, {
+			type: "request_response",
+			requestId: "request",
+			billingSource: captureBillingSource(
+				new Headers({ Authorization: "Bearer test-only-key" }),
+				"https://gateway.example/openai/v1/chat/completions",
+				agentDir,
+			),
+			response: { promptId: userId },
+		})
+		appendWorkRecord(ctx, {
+			type: "commit",
+			sha: "a".repeat(40),
+			repository: join(agentDir, ".git"),
+			worktree: agentDir,
+			pullRequests: [
+				{
+					provider: "github",
+					host: "github.com",
+					repository: "example/repo",
+					number: 1,
+					url: "https://github.com/example/repo/pull/1",
+					state: "merged",
+					headSha: "a".repeat(40),
+					mergeCommitSha: "b".repeat(40),
+					mergedAt: "2026-10-01T09:00:00Z",
+					closedAt: "2026-10-01T09:00:00Z",
+					checkedAt: "2026-10-01T10:00:00Z",
+				},
+			],
+		})
+		await reconcileWorkCosts(agentDir, new AbortController().signal)
+		const reportPath = join(agentDir, "work", workId, "costs.json")
+		// Independent facts: gateway receipt, verified key owner and the Git PR, not the report itself.
+		const referencePath = writeFixture("saved-costs-reference.json", {
+			version: 1,
+			requests: [
+				{
+					requestId: "request",
+					account: { apiUrl: api, organizationId, userId },
+					costUsd: "0.123456789",
+					expected: { kind: "pull-request", pullRequestId },
+				},
+			],
+		})
+		expect(runCli([reportPath, referencePath]).code).toBe(0)
 	})
 })

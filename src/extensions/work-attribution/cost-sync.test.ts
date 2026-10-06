@@ -122,6 +122,54 @@ function tagged(sessionId = "tagged", requestId: string = randomUUID(), fields: 
 }
 
 describe("automatic exact work cost lookup", () => {
+	it("saves every request contributing to a PR total across works", async () => {
+		const first = tracked("first", "first-request")
+		const second = tracked("second", "second-request", ORG)
+		fetchMock.mockImplementation(async (input) => {
+			const url = new URL(String(input))
+			if (url.pathname.endsWith("api-keys:verify")) return Response.json({ organizationId: ORG, userId: PROMPT })
+			const promptId = url.searchParams.get("promptId")
+			return Response.json({
+				items: [{ id: promptId === PROMPT ? ROW : ORG, promptId, totalPrice: promptId === PROMPT ? "1" : "2" }],
+			})
+		})
+		await sync()
+		for (const { workId } of [first, second]) {
+			const saved = report(workId)
+			expect(saved.pullRequests[0].totalCostUsd).toBe("3.000000000")
+			expect(saved.requests.map((row: { requestId: string }) => row.requestId)).toEqual([
+				"first-request",
+				"second-request",
+			])
+		}
+	})
+
+	it("saves only the selected work's unrelated requests in its aggregate buckets", async () => {
+		const works = ["first", "second"].map((sessionId) => {
+			const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
+			const workId = getWorkId(ctx)
+			appendWorkRecord(ctx, {
+				type: "request",
+				requestId: sessionId,
+				startedAt: "2026-10-01T08:00:00Z",
+			})
+			return { workId, requestId: sessionId }
+		})
+		await sync()
+		for (const { workId, requestId } of works) {
+			const saved = report(workId)
+			expect(saved.requests.map((row: { requestId: string }) => row.requestId)).toEqual([requestId])
+			expect(saved.unallocated).toMatchObject({
+				unknown: { requestIds: [requestId], knownCostUsd: "0.000000000", totalCostUsd: null },
+				inferred: { requestIds: [], knownCostUsd: "0.000000000", totalCostUsd: "0.000000000" },
+				shared: { requestIds: [] },
+				unlinked: { requestIds: [] },
+				unmerged: { requestIds: [] },
+				"post-merge": { requestIds: [] },
+			})
+		}
+	})
+
 	it("labels separate accounts when a work view contains the same PR more than once", async () => {
 		const { workId } = tagged()
 		await sync()
@@ -241,7 +289,7 @@ describe("automatic exact work cost lookup", () => {
 		await sync()
 		for (const [index, workId] of works.entries()) {
 			const saved = report(workId)
-			expect(saved.requests).toHaveLength(1)
+			expect(saved.requests).toHaveLength(kind === "same-account" ? 2 : 1)
 			expect(saved.pullRequests).toHaveLength(1)
 			expect(saved.pullRequests[0]).toMatchObject({
 				account: index === 0 ? first : second,
@@ -344,7 +392,9 @@ describe("automatic exact work cost lookup", () => {
 		await sync()
 		expect(report(implementation.workId).requests).toHaveLength(2)
 		expect(report(implementation.workId).pullRequests[0].totalCostUsd).toBe("3.000000000")
-		expect(report(plan.workId).requests[0]).toMatchObject({
+		expect(
+			report(plan.workId).requests.find((row: { requestId: string }) => row.requestId === requestId),
+		).toMatchObject({
 			workIds: [plan.workId],
 			linkedWorkIds: [implementation.workId],
 			totalCostUsd: "1.000000000",

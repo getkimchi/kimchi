@@ -74,6 +74,8 @@ function fixture() {
 				unknownRequestIds: [],
 				knownCostUsd: "1.000000001",
 				totalCostUsd: "1.000000001",
+				explicit: { requestIds: ["r1"], knownCostUsd: "1.000000001", totalCostUsd: "1.000000001" },
+				inferred: empty(),
 			},
 		],
 		unallocated: {
@@ -95,6 +97,121 @@ function compare(report: unknown, reference: unknown) {
 	writeFileSync(referencePath, JSON.stringify(reference))
 	return runCli([reportPath, referencePath])
 }
+
+describe("sure and likely report totals", () => {
+	function reportFor(pullRequest: WorkPullRequest = MERGED_PR) {
+		const records: WorkRecord[] = [
+			...(["explicit", "session"] as const).map((attribution, index) => ({
+				version: 1 as const,
+				type: "request" as const,
+				workId: "work",
+				sessionId: "session",
+				requestId: `r${index + 1}`,
+				recordedAt: "2026-10-04T08:00:00Z",
+				scope: { account: ACCOUNT, repository: "/repo/.git" },
+				segment: { id: attribution, attribution, reason: "fixture" },
+			})),
+			{
+				version: 1,
+				type: "commit",
+				workId: "work",
+				sessionId: "session",
+				repository: "/repo/.git",
+				worktree: "/repo",
+				sha: "a".repeat(40),
+				pullRequests: [pullRequest],
+			},
+		]
+		return calculatePullRequestCosts(records, [
+			{ requestId: "r1", billingRecordId: "b1", account: ACCOUNT, costUsd: "0.100000001" },
+			{ requestId: "r2", billingRecordId: "b2", account: ACCOUNT, costUsd: "0.200000002" },
+		])
+	}
+	const reference = {
+		version: 1 as const,
+		requests: [
+			{
+				requestId: "r1",
+				account: ACCOUNT,
+				costUsd: "0.100000001",
+				expected: { kind: "pull-request", pullRequestId: PR },
+			},
+			{
+				requestId: "r2",
+				account: ACCOUNT,
+				costUsd: "0.200000002",
+				expected: { kind: "pull-request", pullRequestId: PR },
+			},
+		],
+	}
+
+	it("counts likely spend once in the headline while keeping confirmed coverage separate", () => {
+		const report = reportFor()
+		expect(report.pullRequests[0]).toMatchObject({
+			totalCostUsd: "0.300000003",
+			explicit: { totalCostUsd: "0.100000001" },
+			inferred: { totalCostUsd: "0.200000002" },
+		})
+		const result = compareIndependentAttribution(report, reference)
+		expect(result).toMatchObject({ complete: true, matches: false, sumAbsolutePullRequestErrorUsd: "0.000000000" })
+		expect(result.comparison.correct.requestIds).toEqual(["r1"])
+		expect(result.comparison.missed.requestIds).toEqual(["r2"])
+		expect(result.differences).toEqual([expect.objectContaining({ kind: "ownership-mismatch", requestId: "r2" })])
+	})
+
+	it.each([
+		"explicit",
+		"inferred",
+	] as const)("detects a wrong %s portion even when the headline is correct", (portion) => {
+		const report = reportFor()
+		report.pullRequests[0][portion].knownCostUsd = report.pullRequests[0][portion].totalCostUsd = "0"
+		const result = compareIndependentAttribution(report, reference)
+		expect(result.differences).toContainEqual(
+			expect.objectContaining({ kind: "aggregate-mismatch", detail: expect.stringContaining(`.${portion}:`) }),
+		)
+	})
+
+	it("cannot certify a report that omits a confidence portion", () => {
+		const report = reportFor()
+		const { inferred: _missing, ...pull } = report.pullRequests[0]
+		expect(compareIndependentAttribution({ ...report, pullRequests: [pull] }, reference).complete).toBe(false)
+	})
+
+	it.each(["github", "gitlab"] as const)("accepts the %s provider identity used by the calculator", (provider) => {
+		const key = JSON.stringify([provider, `${provider}.com`, "12345"])
+		const pull: WorkPullRequest = {
+			...MERGED_PR,
+			provider,
+			host: `${provider}.com`,
+			id: "12345",
+			repositoryId: "54321",
+			url: `https://${provider}.com/acme/api/${provider === "github" ? "pull" : "-/merge_requests"}/7`,
+		}
+		const report = reportFor(pull)
+		const refs = {
+			...reference,
+			requests: reference.requests.map((row) => ({ ...row, expected: { kind: "pull-request", pullRequestId: key } })),
+		}
+		const result = compareIndependentAttribution(report, refs)
+		expect(result).toMatchObject({ complete: true, sumAbsolutePullRequestErrorUsd: "0.000000000" })
+		expect(result.problems).toEqual([])
+		expect(result.differences).toEqual([expect.objectContaining({ kind: "ownership-mismatch", requestId: "r2" })])
+	})
+
+	it.each([
+		'["github","github.com"]',
+		'["github","github.com","0"]',
+		'["github","github.com",12345]',
+		'["github","user@github.com","12345"]',
+		'["gitlab","gitlab.com/path","12345"]',
+	])("rejects a malformed provider identity %s", (key) => {
+		const { report, reference } = fixture()
+		report.requests[0].pullRequestIds = [key]
+		report.pullRequests[0].key = key
+		reference.requests[0].expected.pullRequestId = key
+		expect(compare(report, reference).code).toBe(2)
+	})
+})
 
 describe("independent accuracy reference", () => {
 	it("checks independently inventoried requests, prices, labels and full report totals", () => {
@@ -234,6 +351,7 @@ describe("independent accuracy reference", () => {
 			unknownRequestIds: [],
 			knownCostUsd: "0.000000000",
 			totalCostUsd: null,
+			explicit: empty(),
 		}))
 		report.unallocated.shared = { requestIds: ["r1"], knownCostUsd: "1.000000001", totalCostUsd: "1.000000001" }
 		const refs = {
@@ -303,6 +421,7 @@ describe("independent accuracy reference", () => {
 		reference.requests[0].costUsd = "0.000000000"
 		report.requests[0].knownCostUsd = report.requests[0].totalCostUsd = "0.000000000"
 		report.pullRequests[0].knownCostUsd = report.pullRequests[0].totalCostUsd = "0.000000000"
+		report.pullRequests[0].explicit.knownCostUsd = report.pullRequests[0].explicit.totalCostUsd = "0.000000000"
 		const result = compare(report, reference)
 		expect(result.code).toBe(0)
 		expect(result.stdout.join("\n")).toContain(
@@ -338,6 +457,7 @@ describe("independent accuracy reference", () => {
 			requestIds: [],
 			knownCostUsd: "0.000000000",
 			totalCostUsd: null,
+			explicit: empty(),
 		}
 		report.unallocated.unmerged = { requestIds: ["r1"], knownCostUsd: "1.000000001", totalCostUsd: "1.000000001" }
 		const result = compare(report, {
@@ -416,6 +536,7 @@ describe("independent accuracy reference", () => {
 		reference.requests[0].costUsd = costUsd
 		report.requests[0].knownCostUsd = report.requests[0].totalCostUsd = costUsd
 		report.pullRequests[0].knownCostUsd = report.pullRequests[0].totalCostUsd = costUsd
+		report.pullRequests[0].explicit.knownCostUsd = report.pullRequests[0].explicit.totalCostUsd = costUsd
 		expect(compare(report, reference).code).toBe(0)
 		report.pullRequests[0].pullRequest = {
 			...MERGED_PR,
@@ -509,6 +630,7 @@ describe("account-scoped independent accuracy", () => {
 			requestIds: ["r2"],
 			knownCostUsd: "2.000000002",
 			totalCostUsd: "2.000000002",
+			explicit: { requestIds: ["r2"], knownCostUsd: "2.000000002", totalCostUsd: "2.000000002" },
 		})
 		const result = compareIndependentAttribution(report, reference)
 		expect(result).toMatchObject({ complete: true, matches: true, sumAbsolutePullRequestErrorUsd: "0.000000000" })
@@ -591,10 +713,9 @@ describe("inferred report bookkeeping", () => {
 		report.requests[0].allocation = "inferred"
 		report.pullRequests[0] = {
 			...report.pullRequests[0],
-			requestIds: [],
 			inferredRequestIds: ["r1"],
-			knownCostUsd: "0.000000000",
-			totalCostUsd: null,
+			explicit: empty(),
+			inferred: { requestIds: ["r1"], knownCostUsd: "1.000000001", totalCostUsd: "1.000000001" },
 		}
 		report.unallocated.inferred = { requestIds: ["r1"], knownCostUsd: "1.000000001", totalCostUsd: "1.000000001" }
 		return { report, reference }
@@ -603,7 +724,7 @@ describe("inferred report bookkeeping", () => {
 	it("keeps an exact inferred price outside confirmed assignment coverage", () => {
 		const { report, reference } = inferredFixture()
 		const result = compareIndependentAttribution(report, reference)
-		expect(result).toMatchObject({ complete: true, matches: false, sumAbsolutePullRequestErrorUsd: "1.000000001" })
+		expect(result).toMatchObject({ complete: true, matches: false, sumAbsolutePullRequestErrorUsd: "0.000000000" })
 		expect(result.problems).toEqual([])
 		expect(result.comparison.assigned.requestIds).toEqual([])
 		expect(result.comparison.correct.requestIds).toEqual([])
@@ -647,6 +768,8 @@ describe("inferred report bookkeeping", () => {
 		reference.requests[0].costUsd = "0"
 		report.requests[0].knownCostUsd = report.requests[0].totalCostUsd = "0"
 		report.unallocated.inferred.knownCostUsd = report.unallocated.inferred.totalCostUsd = "0"
+		report.pullRequests[0].knownCostUsd = report.pullRequests[0].totalCostUsd = "0"
+		report.pullRequests[0].inferred.knownCostUsd = report.pullRequests[0].inferred.totalCostUsd = "0"
 		const result = compareIndependentAttribution(report, reference)
 		expect(result).toMatchObject({ complete: true, matches: false, sumAbsolutePullRequestErrorUsd: "0.000000000" })
 		expect(result.comparison.missed.requestIds).toEqual(["r1"])
@@ -656,6 +779,13 @@ describe("inferred report bookkeeping", () => {
 	it("checks each candidate in its account while counting one inferred charge once", () => {
 		const { report, reference } = inferredFixture()
 		report.requests[0].pullRequestIds = [PR, OTHER]
+		report.pullRequests[0] = {
+			...report.pullRequests[0],
+			requestIds: [],
+			knownCostUsd: "0.000000000",
+			totalCostUsd: null,
+			inferred: empty(),
+		}
 		report.requests.push({
 			...report.requests[0],
 			requestId: "r2",
@@ -666,7 +796,15 @@ describe("inferred report bookkeeping", () => {
 		})
 		report.pullRequests.push(
 			{ ...report.pullRequests[0], key: OTHER },
-			{ ...report.pullRequests[0], account: OTHER_ACCOUNT, inferredRequestIds: ["r2"] },
+			{
+				...report.pullRequests[0],
+				account: OTHER_ACCOUNT,
+				requestIds: ["r2"],
+				inferredRequestIds: ["r2"],
+				knownCostUsd: "2.000000002",
+				totalCostUsd: "2.000000002",
+				inferred: { requestIds: ["r2"], knownCostUsd: "2.000000002", totalCostUsd: "2.000000002" },
+			},
 		)
 		report.unallocated.inferred = {
 			requestIds: ["r1", "r2"],
@@ -681,7 +819,7 @@ describe("inferred report bookkeeping", () => {
 		})
 		const before = JSON.stringify({ report, reference })
 		const result = compareIndependentAttribution(report, reference)
-		expect(result).toMatchObject({ complete: true, matches: false, sumAbsolutePullRequestErrorUsd: "3.000000003" })
+		expect(result).toMatchObject({ complete: true, matches: false, sumAbsolutePullRequestErrorUsd: "1.000000001" })
 		expect(result.pullRequests).toHaveLength(3)
 		expect(result.comparison.assigned.requestIds).toEqual([])
 		expect(result.comparison.missed.requestIds).toEqual(["r1", "r2"])

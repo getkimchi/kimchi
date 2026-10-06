@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs"
+import { readFileSync, realpathSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 import { type AttributionAccuracyResult, type AttributionLabel, compareAttributionAccuracy } from "./accuracy.js"
 import { compareIndependentAttribution, isAttributionReference } from "./accuracy-reference.js"
 import type { RequestCostAllocation } from "./costs.js"
@@ -136,8 +137,7 @@ export function runCli(argv: readonly string[]): CliOutcome {
 	return { code: result.complete ? 0 : 2, stdout, stderr: [] }
 }
 
-// Script entry — vitest sets process.env.VITEST, so imports stay inert under test.
-if (!process.env.VITEST) {
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
 	const outcome = runCli(process.argv.slice(2))
 	for (const line of outcome.stdout) console.log(line)
 	for (const line of outcome.stderr) console.error(line)

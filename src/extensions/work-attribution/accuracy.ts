@@ -58,6 +58,30 @@ const NANOS_PER_USD = 1_000_000_000n
 const PERCENT_SCALE = 100_000_000_000n
 const EXPECTED_PULL_REQUEST_ID = /^[a-z]+:.+\/.+#[1-9]\d*$/
 
+/** Accept provider IDs and complete keys from older URL-only records. */
+export function isAccuracyPullRequestKey(value: string): boolean {
+	if (/^(github|gitlab):[^/\s]+\/[^#\s]+\/[^#\s]+#[1-9]\d*$/.test(value)) return true
+	try {
+		const key: unknown = JSON.parse(value)
+		if (!Array.isArray(key) || key.length !== 3) return false
+		const [provider, host, id] = key
+		return (
+			(provider === "github" || provider === "gitlab") &&
+			typeof host === "string" &&
+			typeof id === "string" &&
+			/^[1-9]\d*$/.test(id) &&
+			new URL(`https://${host}`).host === host &&
+			JSON.stringify(key) === value
+		)
+	} catch {
+		return false
+	}
+}
+
+function isExpectedPullRequestId(value: string): boolean {
+	return isAccuracyPullRequestKey(value) || EXPECTED_PULL_REQUEST_ID.test(value)
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 }
@@ -208,7 +232,7 @@ export function compareAttributionAccuracy(
 				row.allocation,
 			) ||
 			!Array.isArray(row.pullRequestIds) ||
-			!row.pullRequestIds.every((id) => typeof id === "string" && EXPECTED_PULL_REQUEST_ID.test(id)) ||
+			!row.pullRequestIds.every((id) => typeof id === "string" && isExpectedPullRequestId(id)) ||
 			new Set(row.pullRequestIds).size !== row.pullRequestIds.length ||
 			(row.allocation === "pull-request" && row.pullRequestIds.length !== 1)
 		) {
@@ -227,7 +251,7 @@ export function compareAttributionAccuracy(
 		if (excluded.has(label.requestId)) continue
 		if (invalid.has(label.requestId)) continue
 		const expected = label.expectedPullRequestId
-		if (expected !== null && !EXPECTED_PULL_REQUEST_ID.test(expected)) {
+		if (expected !== null && !isExpectedPullRequestId(expected)) {
 			problems.push({
 				kind: "invalid-expected-pull-request-id",
 				requestId: label.requestId,
@@ -341,7 +365,7 @@ export function compareAttributionAccuracy(
 					!excluded.has(label.requestId) &&
 					!invalid.has(label.requestId) &&
 					rows.has(label.requestId) &&
-					(label.expectedPullRequestId === null || EXPECTED_PULL_REQUEST_ID.test(label.expectedPullRequestId)),
+					(label.expectedPullRequestId === null || isExpectedPullRequestId(label.expectedPullRequestId)),
 			).length,
 			pricedRequests: [...rows.keys()].filter((id) => !invalid.has(id)).length - unpricedRequestIds.length,
 			scoredRequests: survivors.length,

@@ -8,6 +8,8 @@ pnpm exec tsx src/extensions/work-attribution/accuracy-cli.ts report.json refere
 
 The command reads these two files and prints the differences. It makes no network or model calls, reads no credentials and writes nothing. Keep real receipts and labels outside the repository.
 
+By default, Kimchi saves the report at `~/.config/kimchi/harness/work/<workId>/costs.json`. It contains request rows, PR totals and all six unallocated buckets. When several works contribute to the same PR, each saved report includes their contributing requests and connected PR totals. Prepare reference entries for every request in that file. Do not add per-work reports together: connected works can contain the same requests.
+
 ## Prepare the reference before inspecting matcher output
 
 Use provider or gateway receipts to list requests, their billing accounts and exact billed prices. Label which PR each request belongs to using the task history and Git evidence. Do not generate this reference from `work.json`, `costs.json`, matcher confidence or the allocator under test: that would repeat the same mistakes on both sides.
@@ -38,7 +40,7 @@ The version 1 reference has one entry per request:
 - `requestId` joins the independent inventory to a recorded request.
 - `account` identifies the billing API, organization and API-key owner from independent evidence. Use the recorded API base URL and both UUIDs. Do not copy them from the report or use today's login to fill a gap. The command validates these fields without contacting the provider.
 - `costUsd` is the exact billed USD amount as a decimal string, with at most nine fractional digits. Use `null` when the receipt is missing; zero means a confirmed free request.
-- `expected` is the human ownership label. Use the complete `provider:host/owner/repo#number` key from independent Git evidence; GitLab subgroup paths are allowed.
+- `expected` is the human ownership label. Current discovery uses the provider, host and provider's numeric PR ID, encoded as a JSON string: `"[\"github\",\"github.com\",\"12345\"]"`. This is the API's `id`, not the PR number. Older URL-only records use `provider:host/owner/repo#number`, as in the example above; GitLab subgroup paths are allowed. Establish the identity from independent Git provider evidence, using the same key format as the saved report.
 
 These ownership labels keep different cases separate:
 
@@ -58,7 +60,7 @@ The report must contain the full `requests`, `pullRequests` and `unallocated` fi
 1. Request coverage in both directions, including requests that were never captured.
 2. Each request's account and charge against its independent receipt.
 3. Request ownership, including the complete shared PR set.
-4. Each PR's exclusive total and request membership, plus its shared, inferred and unknown references.
+4. Each PR's total, sure and likely portions, and contributing request IDs, plus its shared, inferred and unknown references.
 5. The inferred, shared, unlinked, unmerged, post-merge and unknown aggregate buckets.
 
 PR totals use the account and the complete PR key together. Two users billed for the same PR get separate output lines; a charge under the wrong account is a disagreement. Two totals for the same account and PR are malformed evidence.
@@ -67,7 +69,9 @@ With priced, exclusively labelled requests and no shared labels, a PR's expected
 
 When no independently labelled request belongs exclusively to a PR, the command checks final totals against the report's provider state. An open or closed PR keeps an unknown final total; a merged PR with only post-merge requests has a confirmed zero exclusive total. Provider state itself is not independently verified by the offline command.
 
-An `inferred` request has candidate PRs but no confirmed assignment. Its billed amount belongs in `unallocated.inferred`, and each candidate lists it in `inferredRequestIds`. The check verifies that these lists and amounts agree with the report's requests. These bookkeeping checks do not turn a candidate into a human ownership label: if the independent label expects one PR, the inferred request still counts as missed coverage.
+A likely (`inferred`) request with one candidate PR contributes once to that PR's headline total. `explicit` holds sure spending and `inferred` holds likely spending. Both portions must list their own requests and match the independent receipt amounts; a correct headline cannot hide a wrong split. A likely request with several candidates stays outside each headline because its price has no agreed split.
+
+The `unallocated.inferred` bucket lists all likely requests, including those already counted in a headline. It is a confidence view, not an extra charge. Each candidate also lists the request in `inferredRequestIds`. The check verifies those lists without treating them as human ownership labels: if a human assigns a likely request to one PR, its dollars can match while confirmed assignment coverage still counts it as missed. That comparison exits with code 3 and reports the ownership difference.
 
 Amounts use integer arithmetic. The check shows each PR's signed error and the sum of absolute PR errors. Overcharging one PR by USD 1 and undercharging another by USD 1 yields USD 2 of absolute error, not zero. Missing evidence makes full errors unavailable; unknown prices are never displayed as zero-dollar expectations.
 

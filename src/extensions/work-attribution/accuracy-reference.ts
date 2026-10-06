@@ -1,4 +1,9 @@
-import { type AttributionAccuracyResult, compareAttributionAccuracy, isAccuracyAccount } from "./accuracy.js"
+import {
+	type AttributionAccuracyResult,
+	compareAttributionAccuracy,
+	isAccuracyAccount,
+	isAccuracyPullRequestKey,
+} from "./accuracy.js"
 import { decimalNanos, type RequestCostAllocation } from "./costs.js"
 import { sameWorkAccount, type WorkAccount } from "./scope.js"
 
@@ -47,7 +52,6 @@ export interface IndependentAccuracyResult {
 }
 
 const UNALLOCATED: Unallocated[] = ["inferred", "shared", "unlinked", "unmerged", "post-merge", "unknown"]
-const PR_KEY = /^(github|gitlab):[^/\s]+\/[^#\s]+\/[^#\s]+#[1-9]\d*$/
 
 function object(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -72,13 +76,17 @@ function sameIds(actual: unknown, expected: readonly string[]): boolean {
 
 function ownership(value: unknown): ExpectedOwnership | undefined {
 	if (!object(value)) return undefined
-	if (value.kind === "pull-request" && typeof value.pullRequestId === "string" && PR_KEY.test(value.pullRequestId))
+	if (
+		value.kind === "pull-request" &&
+		typeof value.pullRequestId === "string" &&
+		isAccuracyPullRequestKey(value.pullRequestId)
+	)
 		return { kind: "pull-request", pullRequestId: value.pullRequestId }
 	if (
 		value.kind === "shared" &&
 		identifiers(value.pullRequestIds) &&
 		value.pullRequestIds.length > 1 &&
-		value.pullRequestIds.every((id) => PR_KEY.test(id))
+		value.pullRequestIds.every(isAccuracyPullRequestKey)
 	)
 		return { kind: "shared", pullRequestIds: [...value.pullRequestIds].sort() }
 	if (
@@ -272,13 +280,16 @@ export function compareIndependentAttribution(
 			for (const key of expected.pullRequestIds) pr(key, account).sharedRequestIds.push(requestId)
 	}
 
-	// Candidate lists reconcile the report's bookkeeping, never supply human ownership labels.
-	const inferredPRs = new Map<string, PullIdentity & { requestIds: string[] }>()
+	// Reported confidence reconciles bookkeeping; only the reference supplies ownership and prices.
+	const reportedPRs = new Map<
+		string,
+		PullIdentity & { explicit: ExpectedTotal; inferred: ExpectedTotal; inferredRequestIds: string[] }
+	>()
 	const inferredTotal = expectedUnallocated.get("inferred")
 	for (const row of rows.values()) {
-		if (row.allocation !== "inferred") continue
+		if (row.allocation !== "pull-request" && row.allocation !== "inferred") continue
 		const nanos = decimalNanos(row.knownCostUsd)
-		if (inferredTotal) {
+		if (row.allocation === "inferred" && inferredTotal) {
 			inferredTotal.requestIds.push(row.requestId)
 			inferredTotal.nanos += nanos ?? 0n
 			inferredTotal.priced &&= row.priceStatus === "priced" && nanos !== undefined
@@ -286,21 +297,34 @@ export function compareIndependentAttribution(
 		if (
 			!identifiers(row.pullRequestIds) ||
 			!row.pullRequestIds.length ||
-			!row.pullRequestIds.every((key) => PR_KEY.test(key))
+			!row.pullRequestIds.every(isAccuracyPullRequestKey)
 		) {
 			problems.push({
 				kind: "invalid-report-row",
 				requestId: row.requestId,
-				detail: "inferred request needs complete, unique candidate PR keys",
+				detail: "assigned request needs complete, unique PR keys",
 			})
 			continue
 		}
 		if (!isAccuracyAccount(row.account)) continue
 		for (const key of row.pullRequestIds) {
 			const id = groupKey(key, row.account)
-			const group = inferredPRs.get(id) ?? { key, account: row.account, requestIds: [] }
-			group.requestIds.push(row.requestId)
-			inferredPRs.set(id, group)
+			const group = reportedPRs.get(id) ?? {
+				key,
+				account: row.account,
+				explicit: empty(),
+				inferred: empty(),
+				inferredRequestIds: [],
+			}
+			if (row.allocation === "inferred") group.inferredRequestIds.push(row.requestId)
+			if (row.pullRequestIds.length === 1) {
+				const portion = group[row.allocation === "pull-request" ? "explicit" : "inferred"]
+				const price = unique.get(row.requestId)?.nanos
+				portion.requestIds.push(row.requestId)
+				portion.nanos += price ?? 0n
+				portion.priced &&= row.priceStatus === "priced" && price !== undefined
+			}
+			reportedPRs.set(id, group)
 		}
 	}
 
@@ -313,7 +337,7 @@ export function compareIndependentAttribution(
 			if (
 				!object(entry) ||
 				typeof entry.key !== "string" ||
-				!PR_KEY.test(entry.key) ||
+				!isAccuracyPullRequestKey(entry.key) ||
 				!isAccuracyAccount(entry.account)
 			) {
 				problems.push({ kind: "invalid-aggregate", requestId: null, detail: "PR total needs a valid key and account" })
@@ -377,13 +401,16 @@ export function compareIndependentAttribution(
 
 	const pullRequests: IndependentAccuracyResult["pullRequests"] = []
 	let absoluteError = 0n
-	for (const id of [...new Set([...expectedPRs.keys(), ...observedPRs.keys(), ...inferredPRs.keys()])].sort()) {
+	for (const id of [...new Set([...expectedPRs.keys(), ...observedPRs.keys(), ...reportedPRs.keys()])].sort()) {
 		const expected = expectedPRs.get(id) ?? empty()
 		const actual = observedPRs.get(id)
-		const identity = expectedPRs.get(id) ?? actual ?? inferredPRs.get(id)
+		const identity = expectedPRs.get(id) ?? actual ?? reportedPRs.get(id)
 		if (!identity) continue
 		const { key, account } = identity
-		const inferredIds = inferredPRs.get(id)?.requestIds ?? []
+		const inferredIds = reportedPRs.get(id)?.inferredRequestIds ?? []
+		if (actual)
+			for (const portion of ["explicit", "inferred"] as const)
+				checkTotal(actual[portion], reportedPRs.get(id)?.[portion] ?? empty(), `${key}.${portion}`, false)
 		// An omitted nonzero PR is an observed zero, not an absent receipt.
 		const nanos = actual ? checkTotal(actual, expected, key, true, inferredIds) : 0n
 		if (!actual && !duplicatePRs.has(id))

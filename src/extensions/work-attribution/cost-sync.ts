@@ -19,8 +19,16 @@ import {
 } from "./billing-evidence.js"
 import { type BillingSource, captureBillingSource, LOOKUP_WINDOW_MS, sameBillingSource } from "./billing-source.js"
 import { calculatePullRequestCosts, type PullRequestCost, type PullRequestCostReport } from "./costs.js"
-import type { WorkAccount } from "./scope.js"
-import { object, readWorkRecords, readWorkRecordsAsync, workJournalFingerprint } from "./summary.js"
+import { PRICED_TAG_LIMIT } from "./request-tags.js"
+import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
+import {
+	object,
+	readWorkRecords,
+	readWorkRecordsAsync,
+	SHA256_HEX,
+	type WorkRecord,
+	workJournalFingerprint,
+} from "./summary.js"
 
 // The background pass: it looks up due bills within a budget, journals new evidence and publishes reports.
 
@@ -177,7 +185,7 @@ function refreshFailures(state: CostState, polls: Record<string, BillingPoll>): 
 	)
 }
 
-function group<T>(groups: Map<string, T[]>, key: string, value: T): void {
+function group<K, T>(groups: Map<K, T[]>, key: K, value: T): void {
 	const values = groups.get(key)
 	if (values) values.push(value)
 	else groups.set(key, [value])
@@ -189,38 +197,73 @@ async function publishReports(
 	polls: Record<string, BillingPoll>,
 	assertLease: () => void,
 ): Promise<void> {
-	// Group rows by work once instead of filtering every row for every work.
-	const pullRequests = new Map<string, PullRequestCost[]>()
-	for (const row of report.pullRequests) for (const workId of row.workIds) group(pullRequests, workId, row)
-	const workRequests = new Map<string, unknown[]>()
-	for (const row of report.requests) {
+	// Shared PR totals and correction links connect works, transitively; a saved report covers the whole component.
+	const neighbours = new Map<string, Set<string>>()
+	for (const ids of [
+		...report.pullRequests.map((row) => row.workIds),
+		...report.requests.map((row) => [...row.workIds, ...(row.linkedWorkIds ?? [])]),
+	])
+		for (const id of ids) {
+			const linked = neighbours.get(id) ?? new Set<string>()
+			for (const other of ids) linked.add(other)
+			neighbours.set(id, linked)
+		}
+	const components = new Map<string, Set<string>>()
+	const component = (workId: string) => {
+		let found = components.get(workId)
+		if (found) return found
+		found = new Set([workId])
+		// A Set iterator also visits members added during the loop, so this walks the whole component once.
+		for (const id of found) for (const other of neighbours.get(id) ?? []) found.add(other)
+		for (const id of found) components.set(id, found)
+		return found
+	}
+	// Group rows by component once instead of filtering every row for every work.
+	const pullRequests = new Map<Set<string>, PullRequestCost[]>()
+	for (const row of report.pullRequests) if (row.workIds.length) group(pullRequests, component(row.workIds[0]), row)
+	const requests = new Map<Set<string>, RequestCostAllocation[]>()
+	for (const row of report.requests) if (row.workIds.length) group(requests, component(row.workIds[0]), row)
+	const shown = (row: RequestCostAllocation) => {
 		const display = displays.get(row.requestId)
 		const failure = shownFailure(display, polls[row.requestId])
-		const shown = {
+		return {
 			...row,
 			...(display?.tagSkipped ? { billingTagSkipped: display.tagSkipped } : {}),
 			billingLookup: failure
 				? { status: "unavailable", checkedAt: failure.checkedAt, ...display?.refresh, reason: failure.reason }
 				: (display?.billingLookup ?? { status: "pending", reason: "No captured billing source or request selector" }),
 		}
-		for (const workId of new Set([...row.workIds, ...(row.linkedWorkIds ?? [])])) group(workRequests, workId, shown)
+	}
+	// Members of one component share the same rows, so build them once per component.
+	const contents = new Map<Set<string>, object>()
+	const content = (included: Set<string>) => {
+		let found = contents.get(included)
+		if (found) return found
+		const workRequests = requests.get(included) ?? []
+		found = {
+			pullRequests: pullRequests.get(included) ?? [],
+			requests: workRequests.map(shown),
+			unallocated: Object.fromEntries(
+				Object.keys(report.unallocated).map((kind) => [
+					kind,
+					totalRequestCosts(workRequests.filter((row) => row.allocation === kind)),
+				]),
+			),
+		}
+		contents.set(included, found)
+		return found
 	}
 	for (const workId of workIds) {
 		assertLease()
 		const directory = join(agentDir, "work", workId)
 		await mkdir(directory, { recursive: true, mode: 0o700 })
-		const value = {
-			version: 1,
-			workId,
-			pullRequests: pullRequests.get(workId) ?? [],
-			requests: workRequests.get(workId) ?? [],
-		}
-
-		const content = `${JSON.stringify(value, null, 2)}\n`
+		// ponytail: connected works repeat in per-work files; use one shared snapshot if storage growth warrants it.
+		const value = { version: 1, workId, ...content(component(workId)) }
+		const text = `${JSON.stringify(value, null, 2)}\n`
 		try {
-			if (readFileSync(join(directory, "costs.json"), "utf8") === content) continue
+			if (readFileSync(join(directory, "costs.json"), "utf8") === text) continue
 		} catch {}
-		await writeFileDurably(join(directory, "costs.json"), content, assertLease)
+		await writeFileDurably(join(directory, "costs.json"), text, assertLease)
 	}
 }
 
