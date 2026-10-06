@@ -34,11 +34,16 @@ vi.mock("../../settings-watcher.js", () => ({
 }))
 
 // The gated-org overwrite writes the developer's real settings.json in
-// production; intercept it so tests only record calls. readConfigSetting
-// stays real (read-only).
+// production; intercept it so tests only record calls. readConfigSetting is
+// stubbed too: the gated seed gate reads the configured multi-model default
+// through it, and tests must not depend on the developer's real settings.json.
 const settingsWriteStubs = vi.hoisted(() => ({ writeConfigSetting: vi.fn() }))
+const settingsReadStubs = vi.hoisted(() => ({
+	readConfigSetting: vi.fn(() => undefined as unknown),
+}))
 vi.mock(import("../../config/settings.js"), async (importOriginal) => ({
 	...(await importOriginal()),
+	readConfigSetting: settingsReadStubs.readConfigSetting,
 	writeConfigSetting: settingsWriteStubs.writeConfigSetting,
 }))
 
@@ -516,6 +521,9 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		settingsStubs.getDefaultModel.mockReturnValue(undefined)
 		settingsStubs.getDefaultProvider.mockReturnValue(undefined)
 		settingsWriteStubs.writeConfigSetting.mockClear()
+		// Default: multiModel absent from settings.json — the factory
+		// multi-model default — so the gated migration is still owed.
+		settingsReadStubs.readConfigSetting.mockReturnValue(undefined)
 	})
 
 	/** Registry serving exactly the given kimchi-dev ids (no `auto` unless listed). */
@@ -636,6 +644,36 @@ describe("catalog-driven gated default — orgs without auto", () => {
 
 		expect(setModel).not.toHaveBeenCalled()
 		expect(settingsWriteStubs.writeConfigSetting).not.toHaveBeenCalled()
+	})
+
+	it("respects a deliberate default after the migration — no rollback, no notice", async () => {
+		// Post-migration state: the seed wrote multiModel=false and the user
+		// deliberately switched their default to kimi-k3 afterwards. The gated
+		// default is a one-time migration of the multi-model default, not an
+		// ever-re-forced default — only Auto rolls back on fresh sessions.
+		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
+		settingsStubs.getDefaultModel.mockReturnValue("kimi-k3")
+		settingsReadStubs.readConfigSetting.mockReturnValue(false)
+		const { setModel, ctx, start } = runSessionStart()
+
+		await start()
+
+		expect(setModel).not.toHaveBeenCalled()
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+	})
+
+	it("migrates a user whose saved default came up as multi-model (multiModel still true)", async () => {
+		// Pre-branch cohort: a concrete defaultModel was persisted (e.g. by
+		// login) but multiModel stayed at the factory default, so the session
+		// defaulted into multi-model. These are the users the migration is for.
+		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
+		settingsStubs.getDefaultModel.mockReturnValue("routine")
+		settingsReadStubs.readConfigSetting.mockReturnValue(true)
+		const { setModel, start } = runSessionStart()
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(model(DEEPSEEK, { name: `Model ${DEEPSEEK}` }), { persist: true })
 	})
 
 	it("respects an explicit --multi-model launch choice in a gated org", async () => {

@@ -15,7 +15,7 @@ import { writeJson } from "../../config/json.js"
 import { writeConfigSetting } from "../../config/settings.js"
 import { getAgentConfigDir } from "../../config.js"
 import { getSettingsManager } from "../../settings-watcher.js"
-import { setMultiModelEnabled } from "../multi-model.js"
+import { getGlobalDefault, setMultiModelEnabled } from "../multi-model.js"
 import { syncAutoCapabilities } from "./capabilities.js"
 import { AUTO_MODEL_NAME, AUTO_MODEL_PROVIDER, GATED_DEFAULT_MODEL_CANDIDATES, isAutoRoutedModel } from "./constants.js"
 import { type RoutedModelResolution, resolveRoutedModel } from "./routed-model.js"
@@ -283,13 +283,14 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 
 			// Catalog-driven organization gating: an organization the backend
 			// does not serve a routed virtual model (`auto`) to is gated.
-			// Gated organizations default to a concrete
-			// flash model instead of multi-model — and their settings.json
-			// `multiModel` value is a seeded default, not a user choice, so the
-			// harness overwrites it on every main session start. Session-level
-			// choices (mid-session toggles, /resume of a persisted multi-model
-			// session, CLI flags) keep their precedence on top of the seeded
-			// default. When no flash candidate is served either, the org stays on
+			// Gated organizations get a concrete flash model INSTEAD of
+			// multi-model as their default — a one-time migration, since their
+			// settings.json `multiModel` value is a seeded default, not a user
+			// choice (overwritten below). Session-level choices (mid-session
+			// toggles, /resume of a persisted multi-model session, CLI flags)
+			// keep their precedence on top of the seeded default. A deliberate
+			// default pick afterwards is respected: the migration does not run
+			// again. When no flash candidate is served either, the org stays on
 			// multi-model untouched.
 			const autoModel = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
 			const gatedDefault = autoModel
@@ -297,6 +298,10 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 				: GATED_DEFAULT_MODEL_CANDIDATES.map((id) => ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, id)).find(
 						(candidate) => candidate !== undefined,
 					)
+			// Captured BEFORE the multiModel overwrite below: it decides whether the
+			// gated default is still owed (the configured default is still
+			// multi-model — the factory default — or there is no default at all).
+			const gatedDefaultOwed = !hasPersistedDefault() || getGlobalDefault()
 			if (options.handleCliModelSelection && gatedDefault) {
 				// Bookkeeping only: readJson throws on a corrupt settings.json and
 				// writeJson throws on a read-only one; a seeded-default write must
@@ -309,19 +314,20 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 				}
 			}
 
-			// Catalog-driven Auto default: every fresh main session comes up on
-			// `auto` when the backend actually advertises it — the backend catalog
-			// decides who sees it, so there is no client-side entitlement check.
-			// A manual switch away is honoured for the session it happens in, but
-			// the next fresh session rolls back to Auto: for entitled accounts Auto
-			// IS the default, not a one-time install. This applies whatever
-			// provider the session came up on — a switch to another provider's
-			// model (e.g. Anthropic's Claude) rolls back too. Say so when the
-			// rollback happens — a silent switch away from a deliberately chosen
-			// model reads as a bug. A first run with no current model at all (no
-			// persisted default) installs the default too — otherwise gated
-			// greenfield users would get multiModel=false above with nothing
-			// installed on top of it.
+			// Catalog-driven defaults, two policies: `auto` is EVER-RE-FORCED
+			// when the backend advertises it — a manual switch away is honoured
+			// for its session, but the next fresh session rolls back to Auto,
+			// because for entitled accounts Auto IS the default, not a one-time
+			// install. This applies whatever provider the session came up on — a
+			// switch to another provider's model (e.g. Anthropic's Claude) rolls
+			// back too. Say so when the rollback happens — a silent switch away
+			// from a deliberately chosen model reads as a bug. Gated
+			// organizations instead get a ONE-TIME migration (see the gated
+			// branch below): the flash model replaces the multi-model default
+			// once and afterwards the user's deliberate default wins. A first
+			// run with no current model at all (no persisted default) installs
+			// the default too — otherwise gated greenfield users would get
+			// multiModel=false above with nothing installed on top of it.
 			if (mainFreshLaunch && (!ctx.model || !isAutoRoutedModel(ctx.model))) {
 				// Installs the fresh-session default — the gated flash model or Auto —
 				// and announces it. Persist: upstream 0.85.1 made setModel session-only
@@ -345,12 +351,20 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 
 				if (!autoModel && gatedDefault) {
 					// Gated organization: Auto is absent from the catalog, so the
-					// served flash model is the default instead of multi-model.
-					// Mirrors the Auto rollback below — session-level switches are
-					// honoured for their session, fresh sessions roll back. A session
-					// already on the gated default needs no churn: multi-model stays
-					// disabled for the session and nothing is re-installed or announced,
-					// so return early.
+					// served flash model replaces multi-model as the default. Unlike
+					// Auto this is a ONE-TIME migration of the multi-model default,
+					// not an ever-re-forced default: once the seed wrote multiModel
+					// false and a concrete defaultModel, a deliberate user pick
+					// afterwards is respected — no rollback, no notice. (Only Auto,
+					// further below, rolls back on every fresh session.)
+					if (!gatedDefaultOwed) {
+						setMultiModelEnabled(sessionId, false)
+						resetLastNotified(sessionId)
+						return
+					}
+					// A session already on the gated default needs no churn: multi-model
+					// stays disabled for the session and nothing is re-installed or
+					// announced, so return early.
 					const alreadyOnDefault =
 						ctx.model !== undefined && ctx.model.provider === AUTO_MODEL_PROVIDER && ctx.model.id === gatedDefault.id
 					if (alreadyOnDefault) {

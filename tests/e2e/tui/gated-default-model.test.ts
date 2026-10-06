@@ -180,6 +180,21 @@ test("a relaunch keeps the installed gated default without re-announcing it", as
 		expect(relaunchView).toContain("deepseek-v4-flash")
 		trace.step("run 2: came up on the persisted default, notice not repeated")
 		expect(settings().defaultModel).toBe("deepseek-v4-flash")
+		await session.quit()
+
+		// A deliberate default pick afterwards wins: simulate the persisted
+		// side effect of a /model selection (Enter persists the default), then
+		// relaunch. The gated default is a one-time migration, not an
+		// ever-re-forced default — no rollback, no notice.
+		const settingsPath = join(fixture.agentDir, "settings.json")
+		writeFileSync(settingsPath, JSON.stringify({ ...settings(), defaultModel: "routine" }, null, "\t"))
+		await session.start()
+		await new Promise((resolve) => setTimeout(resolve, 2_000))
+		const afterPickView = viewText(terminal)
+		expect(afterPickView).not.toContain("New sessions start on")
+		expect(afterPickView).not.toContain("deepseek-v4-flash")
+		trace.step("run 3: deliberate default pick respected, no rollback to the gated default")
+		expect(settings().defaultModel).toBe("routine")
 	} catch (error) {
 		try {
 			await writeTuiArtifact({ name: artifactName, outcome: "fail", terminal, fixture, steps, error })
