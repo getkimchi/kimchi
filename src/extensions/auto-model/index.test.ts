@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
@@ -16,8 +16,9 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 
 // The retired-marker cleanup reads settings.json under the real agent config
 // dir; point it at a per-test temp dir so tests never touch the developer's
-// own settings.json.
-const configStubs = vi.hoisted(() => ({ agentConfigDir: "" }))
+// own settings.json. settingsPath additionally backs the file-backed
+// read/writeConfigSetting stubs below.
+const configStubs = vi.hoisted(() => ({ agentConfigDir: "", settingsPath: "" }))
 vi.mock(import("../../config.js"), async (importOriginal) => ({
 	...(await importOriginal()),
 	getAgentConfigDir: () => configStubs.agentConfigDir,
@@ -34,18 +35,42 @@ vi.mock("../../settings-watcher.js", () => ({
 }))
 
 // The gated-org overwrite writes the developer's real settings.json in
-// production; intercept it so tests only record calls. readConfigSetting is
-// stubbed too: the gated seed gate reads the configured multi-model default
-// through it, and tests must not depend on the developer's real settings.json.
-const settingsWriteStubs = vi.hoisted(() => ({ writeConfigSetting: vi.fn() }))
-const settingsReadStubs = vi.hoisted(() => ({
-	readConfigSetting: vi.fn(() => undefined as unknown),
+// production — HARNESS_SETTINGS_PATH is baked from homedir() at module load,
+// so the path itself cannot be redirected in-process. Back the stubs with the
+// per-test temp settings.json instead: reads and writes hit real JSON on disk
+// through the production helpers (readJson/writeJson/getConfigSetting), so
+// tests observe the actual file transition instead of recorded mock calls.
+// Only the redundant-write skip (config[key] === value) is re-implemented.
+const settingsFileStubs = vi.hoisted(() => ({
+	readConfigSetting: vi.fn(),
+	writeConfigSetting: vi.fn(),
 }))
-vi.mock(import("../../config/settings.js"), async (importOriginal) => ({
-	...(await importOriginal()),
-	readConfigSetting: settingsReadStubs.readConfigSetting,
-	writeConfigSetting: settingsWriteStubs.writeConfigSetting,
-}))
+vi.mock(import("../../config/settings.js"), async (importOriginal) => {
+	const actual = await importOriginal()
+	const { readJson, writeJson } = await import("../../config/json.js")
+	settingsFileStubs.readConfigSetting.mockImplementation(
+		<T>(key: string, satisfies: (value: unknown) => value is T, fallback?: T): T | undefined => {
+			try {
+				return actual.getConfigSetting(readJson(configStubs.settingsPath), key, satisfies, fallback)
+			} catch {
+				// Malformed temp file: same fallback as production.
+				return fallback ?? undefined
+			}
+		},
+	)
+	settingsFileStubs.writeConfigSetting.mockImplementation((key: string, value: unknown) => {
+		const config = readJson(configStubs.settingsPath)
+		// Mirror the production skip: never rewrite an unchanged value.
+		if (config[key] === value) return
+		config[key] = value
+		writeJson(configStubs.settingsPath, config)
+	})
+	return {
+		...actual,
+		readConfigSetting: settingsFileStubs.readConfigSetting,
+		writeConfigSetting: settingsFileStubs.writeConfigSetting,
+	}
+})
 
 import { getProcessMultiModelEnabled, setProcessMultiModelEnabled } from "../kimchi-process.js"
 import { getGlobalDefault } from "../multi-model.js"
@@ -119,6 +144,7 @@ let tempDir: string
 beforeEach(() => {
 	tempDir = mkdtempSync(join(tmpdir(), "kimchi-auto-model-test-"))
 	configStubs.agentConfigDir = tempDir
+	configStubs.settingsPath = join(tempDir, "settings.json")
 })
 
 afterEach(() => {
@@ -521,11 +547,19 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		populateCliArgs([])
 		settingsStubs.getDefaultModel.mockReturnValue(undefined)
 		settingsStubs.getDefaultProvider.mockReturnValue(undefined)
-		settingsWriteStubs.writeConfigSetting.mockClear()
-		// Default: multiModel absent from settings.json — the factory
-		// multi-model default — so the gated migration is still owed.
-		settingsReadStubs.readConfigSetting.mockReturnValue(undefined)
+		settingsFileStubs.writeConfigSetting.mockClear()
+		settingsFileStubs.readConfigSetting.mockClear()
+		// Default: settings.json absent — multiModel keeps the factory
+		// multi-model default, so the gated migration is still owed.
 	})
+
+	function seedSettings(settings: Record<string, unknown>) {
+		writeFileSync(configStubs.settingsPath, JSON.stringify(settings))
+	}
+
+	function readSettings(): Record<string, unknown> {
+		return JSON.parse(readFileSync(configStubs.settingsPath, "utf-8"))
+	}
 
 	/** Registry serving exactly the given kimchi-dev ids (no `auto` unless listed). */
 	function registryServing(ids: string[]) {
@@ -569,29 +603,35 @@ describe("catalog-driven gated default — orgs without auto", () => {
 	})
 
 	it("overwrites settings.json multiModel to false for gated organizations", async () => {
-		// Pre-state: settings.json still carries multiModel=true (the seeded
-		// pre-branch default). Without pinning this, asserting `false` below
-		// would prove nothing — the same assertion would also pass against a
-		// file whose value was already false.
-		settingsReadStubs.readConfigSetting.mockReturnValue(true)
+		// Pre-state: a real settings.json on disk carrying multiModel=true
+		// (the seeded pre-branch default). Without pinning this, asserting
+		// `false` below would prove nothing — the same assertion would also
+		// pass against a file whose value was already false.
+		seedSettings({ multiModel: true })
 		const { start } = runSessionStart()
 
 		// The migration gate reads the configured default through the same
-		// stub, so this is the value start() must overwrite — and no write may
-		// have happened before start() ran.
+		// file, so this is the value start() must overwrite — and no write
+		// may have happened before start() ran.
 		expect(getGlobalDefault()).toBe(true)
-		expect(settingsWriteStubs.writeConfigSetting).not.toHaveBeenCalled()
+		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
 
 		await start()
 
-		expect(settingsWriteStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
+		// Exactly one write in the whole start() run, and the file on disk
+		// really transitioned — nothing outside the gated-overwrite block
+		// could have driven multiModel to false. (The negative-control tests
+		// in this suite pin that non-gated start() paths never write at all.)
+		expect(settingsFileStubs.writeConfigSetting).toHaveBeenCalledTimes(1)
+		expect(settingsFileStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
+		expect(readSettings()).toMatchObject({ multiModel: false })
 	})
 
 	it("still installs the gated default when the settings.json write fails", async () => {
 		// readJson throws on a corrupt settings.json and writeJson on a
 		// read-only one; the bookkeeping overwrite must never take down
 		// session start.
-		settingsWriteStubs.writeConfigSetting.mockImplementationOnce(() => {
+		settingsFileStubs.writeConfigSetting.mockImplementationOnce(() => {
 			throw new Error("read-only settings.json")
 		})
 		const { setModel, start } = runSessionStart()
@@ -635,14 +675,15 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		// state asserted below is provably the outcome of start().
 		setProcessMultiModelEnabled(SESSION_ID, true)
 		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(true)
-		expect(settingsWriteStubs.writeConfigSetting).not.toHaveBeenCalled()
+		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
 
 		await start()
 
 		expect(setModel).not.toHaveBeenCalled()
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
 		// The seeded-default overwrite still applies; multi-model is off either way.
-		expect(settingsWriteStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
+		expect(settingsFileStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
+		expect(readSettings()).toMatchObject({ multiModel: false })
 		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(false)
 	})
 
@@ -653,7 +694,7 @@ describe("catalog-driven gated default — orgs without auto", () => {
 
 		await start()
 
-		expect(settingsWriteStubs.writeConfigSetting).not.toHaveBeenCalled()
+		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
 		// Pre-existing behaviour: fresh sessions roll back to Auto.
 		expect(setModel).toHaveBeenCalledWith(model("auto", { name: "Model auto" }), { persist: true })
 	})
@@ -666,7 +707,9 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		await start()
 
 		expect(setModel).not.toHaveBeenCalled()
-		expect(settingsWriteStubs.writeConfigSetting).not.toHaveBeenCalled()
+		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
+		// And on disk: no settings.json was ever created.
+		expect(existsSync(configStubs.settingsPath)).toBe(false)
 	})
 
 	it("respects a deliberate default after the migration — no rollback, no notice", async () => {
@@ -676,7 +719,7 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		// ever-re-forced default — only Auto rolls back on fresh sessions.
 		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
 		settingsStubs.getDefaultModel.mockReturnValue("kimi-k3")
-		settingsReadStubs.readConfigSetting.mockReturnValue(false)
+		seedSettings({ multiModel: false })
 		const { setModel, ctx, start } = runSessionStart()
 
 		// A completed migration: the configured default is already off — the
@@ -695,7 +738,7 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		// defaulted into multi-model. These are the users the migration is for.
 		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
 		settingsStubs.getDefaultModel.mockReturnValue("routine")
-		settingsReadStubs.readConfigSetting.mockReturnValue(true)
+		seedSettings({ multiModel: true })
 		const { setModel, start } = runSessionStart()
 
 		// The migration is owed only while the configured default is still
@@ -712,18 +755,19 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		populateCliArgs(["--multi-model"])
 		// Pre-state: settings.json still carries multiModel=true, so the seed
 		// overwrite below is a real transition caused by start().
-		settingsReadStubs.readConfigSetting.mockReturnValue(true)
+		seedSettings({ multiModel: true })
 		const { setModel, start } = runSessionStart()
 
 		expect(getGlobalDefault()).toBe(true)
-		expect(settingsWriteStubs.writeConfigSetting).not.toHaveBeenCalled()
+		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
 
 		await start()
 
 		// Session-level choice wins: no install. The seeded default is still
 		// overwritten — it is not a user choice.
 		expect(setModel).not.toHaveBeenCalled()
-		expect(settingsWriteStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
+		expect(settingsFileStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
+		expect(readSettings()).toMatchObject({ multiModel: false })
 	})
 })
 
