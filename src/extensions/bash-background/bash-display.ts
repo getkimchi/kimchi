@@ -7,7 +7,7 @@ import {
 import { stripTerminalSequences, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { ToolText, toolHeader, withBranch } from "../tool-rendering.js"
 import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry.js"
-import { getSessionRegistry } from "./session-registry.js"
+import { getSessionState } from "./session-registry.js"
 
 type BashResult = Parameters<NonNullable<ToolDefinition["renderResult"]>>[0]
 type BashRow = {
@@ -23,7 +23,7 @@ type BashRow = {
 const sessionRows = new WeakMap<ProcessRegistry, Map<string, BashRow>>()
 
 function rowsForSession(): Map<string, BashRow> | undefined {
-	const registry = getSessionRegistry()
+	const registry = getSessionState()?.registry
 	if (!registry) return undefined
 	let rows = sessionRows.get(registry)
 	if (!rows) {
@@ -103,7 +103,7 @@ export const renderBashCall: NonNullable<ToolDefinition["renderCall"]> = (args, 
 
 export const renderBashResult: NonNullable<ToolDefinition["renderResult"]> = (result, options, theme, ctx) => {
 	const display = (result.details as { display?: ProcessDisplaySnapshot } | undefined)?.display
-	const registry = getSessionRegistry()
+	const registry = getSessionState()?.registry
 	const rows = rowsForSession()
 	if (stringArg(ctx.args, "handle")) {
 		ctx.state.bashControlError = !display
@@ -127,7 +127,7 @@ export const renderBashResult: NonNullable<ToolDefinition["renderResult"]> = (re
 			const target = row
 			let subscribed = false
 			target.unsubscribe = registry.observeDisplay(display.handle, (snapshot) => {
-				const final = snapshot.state !== "running" ? registry.finalSnapshot(snapshot.handle) : undefined
+				const final = snapshot.state !== "running" ? registry.finalSnapshot(snapshot.handle, true) : undefined
 				target.result = {
 					content: [{ type: "text", text: final?.content ?? snapshot.output }],
 					details: { ...final, display: snapshot },

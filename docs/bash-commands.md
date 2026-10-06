@@ -20,7 +20,7 @@ Entering a command sizes its detail view from the script/output available then, 
 
 **Output** shows a bounded tail that updates while the command runs. Scrolling turns following off; End resumes it. The panel identifies omitted output and distinguishes no output yet from the age of the last output. Silence does not necessarily mean the command is stuck.
 
-The conversation shows one Bash header with its purpose, or the command when no purpose was provided. A status dot and branched result match the other native tools. The result shows status, elapsed time and recent output. **Ctrl+O** reveals the full submitted script, command handle, output age and a larger running-output preview. Completed results retain ordinary Bash output expansion, truncation notices and saved-output paths. A persisted check-in says **Still running at check-in**; it is not proof that the process finished. Later control calls update the original card.
+The conversation shows one Bash header with its purpose, or the command when no purpose was provided. A status dot and branched result match the other native tools. The result shows status, elapsed time and recent output. **Ctrl+O** reveals the full submitted script, command handle, output age and a larger running-output preview. Completed results retain ordinary Bash output expansion, truncation notices and saved-output paths. After the one-time handoff, the original card continues updating until the process exits. Cohort control calls show their consolidated results separately.
 
 Opening and closing the inspector does not stop the command, extend its deadline or ask the model another question. A selected command's final output remains readable if it exits while the inspector is open. Escape closes the inspector; it does not cancel the running command.
 
@@ -30,8 +30,8 @@ Compound command approval shows the original script, including quoting. **Allow 
 
 ## For tool authors
 
-The Bash tool accepts an optional short `description` alongside `command`, `timeout` and `checkin_interval`. The description states purpose; expand the card to see the command. No extra model call is used to generate labels.
+The Bash tool accepts an optional short `description` alongside `command`. The description states purpose; expand the card to see the command. No extra model call is used to generate labels.
 
-`bash_control` remains the model-facing tool name. Its `continue` action waits on an existing process; it does not resume a paused process or start a new script. Use `extend_seconds` to move the deadline separately from `checkin_interval`.
+`bash_control` remains the model-facing tool name. Use `wait: false` to inspect the cohort immediately, `wait: true` to wait for an exit or a bounded checkpoint, and `stop_handles` to stop selected commands. Commands continue by default. The harness owns the absolute safety limit (`--bash-process-limit`); legacy `timeout`, `checkin_interval`, and `extend_seconds` inputs are accepted and ignored.
 
 See the [design research](research/bash-visibility.md) for the prior behavior, alternatives and integration rationale.

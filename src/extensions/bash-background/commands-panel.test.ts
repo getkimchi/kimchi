@@ -26,8 +26,7 @@ function start(registry: ProcessRegistry, command: string, description?: string)
 	}
 	const handle = registry.spawn(operations, command, "/tmp", undefined, {
 		description,
-		intervalSeconds: 15,
-		deadlineMs: Date.now() + 120000,
+		limitSeconds: 120,
 	})
 	return {
 		handle,

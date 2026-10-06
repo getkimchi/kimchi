@@ -8,6 +8,8 @@ export function createExtensionApi(): {
 	api: ExtensionAPI
 	getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R>
 	getHandlers<E, R = undefined>(event: string): ExtensionHandler<E, R>[]
+	/** Invoke every handler registered for `event`, awaiting each in turn; returns their results. */
+	emit(event: string, payload: unknown, ctx?: ExtensionContext): Promise<unknown[]>
 	getRegisteredTool(name: string): Parameters<ExtensionAPI["registerTool"]>[0]
 	getRegisteredCommand(name: string): Parameters<ExtensionAPI["registerCommand"]>[1]
 	sendMessage: ReturnType<typeof vi.fn<ExtensionAPI["sendMessage"]>>
@@ -16,6 +18,7 @@ export function createExtensionApi(): {
 	setModel: ReturnType<typeof vi.fn<ExtensionAPI["setModel"]>>
 	registerEntryRenderer: ReturnType<typeof vi.fn<ExtensionAPI["registerEntryRenderer"]>>
 	getEntryRenderer(customType: string): Parameters<ExtensionAPI["registerEntryRenderer"]>[1]
+	registerCommand: ReturnType<typeof vi.fn<ExtensionAPI["registerCommand"]>>
 	emitEvent: ReturnType<typeof vi.fn>
 	registerTool: ReturnType<typeof vi.fn<ExtensionAPI["registerTool"]>>
 	setActiveTools: ReturnType<typeof vi.fn<ExtensionAPI["setActiveTools"]>>
@@ -95,6 +98,13 @@ export function createExtensionApi(): {
 		getHandlers<E, R = undefined>(event: string): ExtensionHandler<E, R>[] {
 			return (handlers.get(event) ?? []) as ExtensionHandler<E, R>[]
 		},
+		async emit(event: string, payload: unknown, ctx?: ExtensionContext): Promise<unknown[]> {
+			const results: unknown[] = []
+			for (const handler of handlers.get(event) ?? []) {
+				results.push(await handler(payload, ctx as ExtensionContext))
+			}
+			return results
+		},
 		getRegisteredTool(name: string): Parameters<ExtensionAPI["registerTool"]>[0] {
 			const call = registerTool.mock.calls.find(([tool]) => tool.name === name)
 			if (!call) throw new Error(`Tool ${name} was not registered`)
@@ -115,6 +125,7 @@ export function createExtensionApi(): {
 		},
 		emitEvent: emit,
 		registerTool,
+		registerCommand,
 		setActiveTools,
 		getRegisteredTools: () => [...registeredTools.values()],
 		getActiveToolNames: () => [...activeToolNames],

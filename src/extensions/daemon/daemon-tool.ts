@@ -2,8 +2,8 @@
  * `daemon` tool — start a detached process that outlives the session.
  *
  * DESIGN GOAL: this tool must be UNATTRACTIVE for ordinary work. The
- * default for long-running commands is `bash` with a realistic timeout
- * (and checkin_interval + bash_control for managed background). `daemon`
+ * default for long-running commands is `bash` (managed background with
+ * automatic cohort reviews and bash_control for stops/waits). `daemon`
  * is the deliberate last resort for one specific shape of problem: a
  * service that an external party connects to AFTER the agent's session
  * has ended — a web/DB server for the user, an emulator, a benchmark
@@ -41,7 +41,7 @@ Use ONLY for long-lived services that someone connects to after you finish:
 - emulators / VMs that must stay up for external access
 - anything whose whole purpose is to outlive you
 
-Do NOT use for: builds, installs, tests, downloads, training runs, or ANY command with a natural end — use \`bash\` with a realistic timeout for those (and checkin_interval + bash_control for managed background). Managed background is the right default; it gets progress checkins, a deadline auto-kill, and cleanup at session end. Daemons get NONE of those: no timeout, no streamed output, no automatic cleanup. They just run.
+Do NOT use for: builds, installs, tests, downloads, training runs, or ANY command with a natural end — use \`bash\` for those (managed background: automatic cohort reviews and exit results, \`bash_control\` for stops/waits, a harness safety limit, and cleanup at session end). Daemons get NONE of those: no timeout, no streamed output, no automatic cleanup. They just run.
 
 After starting, verify the service actually works (e.g. curl it) and report the address to the user. Manage later via daemon_control (list / status / logs / stop).`
 

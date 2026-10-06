@@ -24,11 +24,6 @@ import {
 	type ExtensionAPI,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
-// Import order is load-bearing: resources/definitions.ts embeds
-// DEFAULT_BASH_TIMEOUT_SECONDS in a description at module scope, so a headless
-// import of bash-control/agents/questionnaire must see the timeout module already
-// initialized (otherwise TDZ ReferenceError).
-import "./bash-default-timeout.js"
 import bashControlExtension from "./bash-background/bash-control-extension.js"
 import { BASH_CONTROL_TOOL_NAME } from "./bash-background/bash-control-tool.js"
 import { createLayer1Tools, createLayer2Tools, DAP_ALWAYS_VISIBLE_TOOL_NAMES, type DapToolDeps } from "./dap/tools.js"
