@@ -209,7 +209,7 @@ fs.writeFileSync(${JSON.stringify(sizePath)}, String(fs.statSync(process.env.${v
 	})
 
 	it.each([
-		"maintenance run --auto --no-detach",
+		"maintenance run --auto --no-detach --task=gc",
 		"gc --auto --no-detach",
 	])("records a commit while Git %s is running", async (maintenance) => {
 		// Two packs trigger auto-GC without relying on Git's loose-object sampling.
