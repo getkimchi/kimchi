@@ -84,6 +84,28 @@ describe("extractTypedImagePaths", () => {
 		expect(matches).toEqual([])
 	})
 
+	it("does not glue a trailing backslash into the next line's quoted span", () => {
+		const quotedPath = join(tmpDir, "pic 1.png")
+		writeFileSync(quotedPath, PNG_BYTES)
+		// Pasted shell line-continuation: the backslash at end of line 1 must not
+		// swallow the newline, or the quoted span on line 2 stops being a token.
+		const lineContinuation = `convert in.png \\` // trailing shell continuation backslash
+		const text = `${lineContinuation}\n"${quotedPath}" is the output`
+		const matches = extractTypedImagePaths(text, tmpDir)
+		expect(matches).toHaveLength(1)
+		expect(matches[0].resolvedPath).toBe(quotedPath)
+	})
+
+	it("joins up to the token bound and not beyond", () => {
+		const bounded = join(tmpDir, "p1 p2 p3 p4 p5 p6 p7 p8 end.png") // anchor + 8
+		writeFileSync(bounded, PNG_BYTES)
+		expect(extractTypedImagePaths(`open ${bounded}`, tmpDir).map((m) => m.resolvedPath)).toEqual([bounded])
+
+		const tooDeep = join(tmpDir, "q1 q2 q3 q4 q5 q6 q7 q8 q9 end.png") // anchor + 9
+		writeFileSync(tooDeep, PNG_BYTES)
+		expect(extractTypedImagePaths(`open ${tooDeep}`, tmpDir)).toEqual([])
+	})
+
 	it("attaches single-quoted paths", () => {
 		const spacedPath = join(tmpDir, "my cat.png")
 		writeFileSync(spacedPath, PNG_BYTES)

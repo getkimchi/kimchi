@@ -35,9 +35,12 @@ export interface TypedImagePathMatch {
 // Quoted spans (double, single, backtick) are single tokens so paths with
 // spaces and inline code spans attach; an unquoted span keeps `\ ` (the shell
 // escape for a space that terminal drags produce) inside the token instead of
-// splitting on it. Everything else is whitespace-split (\s covers \r, so CRLF
-// line breaks need no special handling).
-const TOKEN_RE = /("(?:[^"\n]+)"|'(?:[^'\n]+)'|`(?:[^`\n]+)`)|((?:\\\s|\S)+)/g
+// splitting on it. The glue is deliberately space-only: a backslash before a
+// newline or tab must NOT merge lines, or a trailing `\` on a pasted shell
+// line-continuation would swallow the next line and break its quoted spans.
+// Everything else is whitespace-split (\s covers \r, so CRLF line breaks need
+// no special handling).
+const TOKEN_RE = /("(?:[^"\n]+)"|'(?:[^'\n]+)'|`(?:[^`\n]+)`)|((?:\\ |\S)+)/g
 
 // Prose punctuation clinging to the edges of a typed path in chat text.
 const LEADING_JUNK_RE = /^[([{<'"`]+/
@@ -51,6 +54,8 @@ const SHELL_SPACE_ESCAPE_RE = /\\( )/g
 // How many preceding unquoted tokens may be joined to recover a path with
 // literal (unescaped) spaces. "Screenshot 2026-10-05 at 16.51.59.png" needs
 // four parts; the bound is generous headroom for longer capture names.
+// Joins re-assemble with single spaces, so names containing consecutive
+// spaces are not recovered — quoted or escaped shapes handle those exactly.
 const MAX_JOIN_TOKENS = 8
 
 interface Token {
