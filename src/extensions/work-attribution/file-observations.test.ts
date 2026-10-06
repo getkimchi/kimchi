@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
@@ -98,4 +98,25 @@ it("pins a delayed Bash operation to its original work before execution starts",
 	setWorkId(ctx)
 	await operation.exec("printf 'changed\\n' > source.ts", cwd, { onData: () => {} })
 	expect(observations()[0]).toMatchObject({ workId: original, toolCallId: "delayed", complete: true })
+})
+
+it.each([
+	["an untracked symlink", () => symlinkSync("source.ts", join(cwd, "link"))],
+	["a dirty file over 8 MiB", () => writeFileSync(join(cwd, "big.log"), Buffer.alloc(8 * 1024 * 1024 + 1, 97))],
+	[
+		"a nested repository",
+		() => {
+			mkdirSync(join(cwd, "vendor"))
+			execFileSync("git", ["-C", join(cwd, "vendor"), "init", "-q"])
+		},
+	],
+])("observes a read-only Bash call silently in a repository with %s", async (_case, setup) => {
+	setup()
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+	try {
+		await observeToolFiles(createContext({ cwd }), "read-only", "bash", async () => "listing")
+		expect(warn).not.toHaveBeenCalled()
+	} finally {
+		warn.mockRestore()
+	}
 })

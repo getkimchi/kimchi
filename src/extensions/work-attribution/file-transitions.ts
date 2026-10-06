@@ -110,7 +110,7 @@ async function diskState(
 ): Promise<FileState | null | undefined> {
 	if (!existsSync(path)) return null
 	const stat = lstatSync(path)
-	if (!stat.isFile() || stat.size > MAX_FILE_BYTES) throw new Error("Unsupported file for work attribution")
+	if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return undefined
 	// Git resolves a symlinked directory to the repository it points into, as repositoryFile does.
 	const parent = realpathSync(dirname(path))
 	const file = join(parent, basename(path))

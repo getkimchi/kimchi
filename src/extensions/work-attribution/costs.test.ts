@@ -1476,3 +1476,139 @@ describe("work-matching side calls", () => {
 		expect(report.pullRequests[0].totalCostUsd).not.toBeNull()
 	})
 })
+
+describe("exclusive allocation with tool-observed edits", () => {
+	const second = pullRequest({
+		number: 2,
+		url: "https://github.com/example/repository/pull/2",
+		mergedAt: time(50),
+		closedAt: time(50),
+		checkedAt: time(55),
+	})
+	const edit: WorkRecord = {
+		version: 1,
+		type: "file_transition",
+		workId: "work-a",
+		sessionId: "session-a",
+		requestId: "r",
+		transitionId: "edit-r",
+		toolCallId: "edit-tool",
+		cwd: "/repo",
+		repository: "/repo/.git",
+		worktree: "/repo",
+		path: "a.ts",
+		baseline: "c".repeat(40),
+		baselineFile: { blob: "d".repeat(40), mode: "100644" },
+		before: { blob: "d".repeat(40), mode: "100644" },
+		after: { blob: "e".repeat(40), mode: "100644" },
+		cursor: { bytes: 100, digest: "f".repeat(64) },
+	}
+	const nativeCommit = commit("work-a", [pullRequest()], "session-a", {
+		source: "native-file-transition",
+		paths: ["a.ts"],
+		transitionIds: ["edit-r"],
+		fileMatches: [{ path: "a.ts", worktree: "/repo", method: "file-chain", transitionIds: ["edit-r"] }],
+	})
+	// The same request also ran a Bash command; its commit landed in PR 2.
+	const bashCommit = commit("work-a", [second], "session-a", {
+		sha: "9".repeat(40),
+		toolCallId: "bash-tool",
+		requestId: "r",
+	})
+	it.each([
+		[
+			"a complete Bash observation",
+			{ complete: true, files: [{ path: "b.ts", before: null, after: { blob: "1".repeat(40), mode: "100644" } }] },
+		],
+		["an incomplete Bash observation", { complete: false, files: [], reason: "incomplete-snapshot" }],
+	])("keeps a request shared when %s shows it also wrote outside its native edits", (_case, fields) => {
+		const observation: WorkRecord = {
+			version: 1,
+			type: "file_observation",
+			workId: "work-a",
+			sessionId: "session-a",
+			observationId: "obs-1",
+			source: "bash",
+			toolCallId: "bash-tool",
+			requestId: "r",
+			repository: "/repo/.git",
+			worktree: "/repo",
+			startedAt: time(11),
+			...fields,
+		}
+		const report = calculatePullRequestCosts(
+			[request("r"), edit, nativeCommit, observation, bashCommit],
+			[charge("r", "1")],
+		)
+		expect(report.requests[0].allocation).toBe("shared")
+	})
+
+	it("keeps a request shared when its Bash commit belongs to another PR without an observation", () => {
+		const report = calculatePullRequestCosts([request("r"), edit, nativeCommit, bashCommit], [charge("r", "1")])
+		expect(report.requests[0].allocation).toBe("shared")
+	})
+
+	it.each([
+		{ name: "same PR", pull: pullRequest(), allocation: "pull-request" },
+		{ name: "other PR", pull: second, allocation: "shared" },
+	])("checks a local child's Bash commit to the $name for the whole input", ({ pull, allocation }) => {
+		const segment = { id: "input", attribution: "session", reason: "new-task" }
+		const report = calculatePullRequestCosts(
+			[
+				request("r", "work-a", "session-a", time(10), { segment }),
+				request("child", "work-a", "child-session", time(11), { segment }),
+				edit,
+				nativeCommit,
+				{ ...bashCommit, sessionId: "child-session", requestId: "child", pullRequests: [pull] },
+			],
+			[charge("r", "1"), charge("child", "2")],
+		)
+		expect(report.requests.map((row) => row.allocation)).toEqual([allocation, allocation])
+	})
+
+	it.each(["bash", "mcp"])("keeps the whole input likely when a child's %s observation is incomplete", (source) => {
+		const segment = { id: "input", attribution: "session", reason: "new-task" }
+		const report = calculatePullRequestCosts(
+			[
+				request("r", "work-a", "session-a", time(10), { segment }),
+				request("child", "work-a", "child-session", time(11), { segment }),
+				edit,
+				nativeCommit,
+				{
+					version: 1,
+					type: "file_observation",
+					workId: "work-a",
+					sessionId: "child-session",
+					requestId: "child",
+					observationId: "child-observation",
+					toolCallId: "child-tool",
+					source,
+					repository: "/repo/.git",
+					worktree: "/repo",
+					complete: false,
+					files: [],
+				},
+			],
+			[charge("r", "1"), charge("child", "2")],
+		)
+		expect(report.requests.map((row) => row.allocation)).toEqual(["inferred", "inferred"])
+		expect(report.pullRequests[0]).toMatchObject({
+			totalCostUsd: "3.000000000",
+			explicit: { requestIds: [] },
+			inferred: { totalCostUsd: "3.000000000" },
+		})
+	})
+
+	it("does not treat a Bash commit alone as native input evidence", () => {
+		const report = calculatePullRequestCosts(
+			[
+				request("r", "work-a", "session-a", time(10), {
+					segment: { id: "input", attribution: "session", reason: "new-task" },
+				}),
+				bashCommit,
+			],
+			[charge("r", "1")],
+		)
+		expect(report.requests[0].allocation).toBe("inferred")
+	})
+})
