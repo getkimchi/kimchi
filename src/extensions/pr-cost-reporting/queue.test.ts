@@ -3,8 +3,18 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { acknowledgeSnapshot, deferSnapshot, queueSnapshots, readReportingState, setReportingEnabled } from "./queue.js"
-import type { RepositorySnapshot } from "./snapshot.js"
+import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
+import { calculatePullRequestCosts } from "../work-attribution/costs.js"
+import type { WorkRecord } from "../work-attribution/summary.js"
+import {
+	acknowledgeSnapshot,
+	deferSnapshot,
+	queueSnapshots,
+	readReportingState,
+	setReportingEnabled,
+	takeReportingNotice,
+} from "./queue.js"
+import { buildSnapshots, type RepositorySnapshot } from "./snapshot.js"
 
 const account = {
 	apiUrl: "https://api.example",
@@ -40,6 +50,13 @@ afterEach(async () => {
 })
 
 describe("durable reporting queue", () => {
+	it("claims the default-on notice once across concurrent sessions", async () => {
+		expect((await Promise.all([takeReportingNotice(directory), takeReportingNotice(directory)])).sort()).toEqual([
+			false,
+			true,
+		])
+		expect(await takeReportingNotice(directory)).toBe(false)
+	})
 	it("follows SaaS uploads by default after the queue is saved and reopened", async () => {
 		expect((await readReportingState(directory)).enabled).toBe(true)
 		await queueSnapshots(directory, [snapshot([requestId])])
@@ -342,5 +359,71 @@ describe("durable reporting queue", () => {
 		const state = await readReportingState(directory)
 		expect(Object.keys(state.entries)).toHaveLength(2)
 		expect(state.entries[key].pending?.revision).toBe("9")
+	})
+})
+
+describe("unusable provider metadata for one PR", () => {
+	const at = (minutes: number) => new Date(Date.UTC(2026, 9, 2, 10, minutes)).toISOString()
+	const mergeRequest = (number: number, overrides: Partial<WorkPullRequest> = {}): WorkPullRequest => ({
+		provider: "gitlab",
+		id: String(9000 + number),
+		repositoryId: "42",
+		host: "gitlab.com",
+		repository: "team/repo",
+		number,
+		url: `https://gitlab.com/team/repo/-/merge_requests/${number}`,
+		state: "open",
+		headSha: "a".repeat(40),
+		mergeCommitSha: null,
+		mergedAt: null,
+		closedAt: null,
+		checkedAt: at(15),
+		...overrides,
+	})
+	const request = (id: string, workId: string, minutes: number): WorkRecord => ({
+		version: 1,
+		type: "request",
+		workId,
+		sessionId: workId,
+		requestId: id,
+		recordedAt: at(minutes),
+		scope: { account, repository: "/repo/.git" },
+	})
+	const commit = (workId: string, sha: string, pullRequests: WorkPullRequest[]): WorkRecord => ({
+		version: 1,
+		type: "commit",
+		workId,
+		sessionId: workId,
+		sha: sha.repeat(40),
+		repository: "/repo/.git",
+		worktree: "/repo",
+		recordedAt: at(20),
+		pullRequests,
+	})
+	async function scan(rows: WorkRecord[]) {
+		const built = buildSnapshots(
+			rows,
+			calculatePullRequestCosts(rows, []),
+			new Map([["/repo/.git", { provider: "gitlab" as const, host: "gitlab.com", id: "42", name: "team/repo" }]]),
+			true,
+		)
+		return queueSnapshots(directory, built.snapshots, !built.incomplete)
+	}
+
+	it("keeps reporting other MRs in a repository after GitLab marks one MR merged without merged_at", async () => {
+		const first = await scan([request(requestId, "work-a", 10), commit("work-a", "a", [mergeRequest(7)])])
+		const [key] = Object.keys(first.entries)
+		await acknowledgeSnapshot(directory, key, "1", { status: "accepted", revision: "1", receivedAt: at(16) })
+		// GitLab can report state "merged" while omitting merged_at; meanwhile unrelated work lands on MR !8.
+		const next = await scan([
+			request(requestId, "work-a", 10),
+			commit("work-a", "a", [mergeRequest(7, { state: "merged", checkedAt: at(40) })]),
+			request(otherRequestId, "work-b", 41),
+			commit("work-b", "b", [mergeRequest(8, { checkedAt: at(42) })]),
+		])
+		expect(next.entries[key].held).toBeUndefined()
+		expect(next.entries[key].pending?.requests.map((row) => row.requestId).sort()).toEqual(
+			[requestId, otherRequestId].sort(),
+		)
 	})
 })

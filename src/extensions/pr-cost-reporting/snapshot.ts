@@ -182,10 +182,19 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 	if (Buffer.byteLength(JSON.stringify(snapshot)) > MAX_SNAPSHOT_BYTES) fail()
 }
 
-function method(request: RequestCostAllocation): SnapshotContent["requests"][number]["allocation"]["method"] {
-	if (request.linkIds?.length) return "user-correction"
+function method(
+	request: RequestCostAllocation,
+	links: Map<string, WorkRecord>,
+): SnapshotContent["requests"][number]["allocation"]["method"] {
+	if (request.linkIds?.length)
+		return request.linkIds.some((id) => {
+			const evidence = links.get(id)?.evidence
+			return evidence && typeof evidence === "object" && "source" in evidence && evidence.source === "work-command"
+		})
+			? "user-correction"
+			: "explicit"
 	if (request.allocation === "inferred") return request.segment?.attribution === "inferred" ? "model" : "session"
-	if (request.segment?.attribution === "session") return "session"
+	if (request.segment?.attribution === "session" && request.allocation !== "pull-request") return "session"
 	if (request.segment?.attribution === "explicit") return "explicit"
 	return "native"
 }
@@ -202,9 +211,16 @@ export function buildSnapshots(
 	let incomplete = !historyComplete
 	let skippedRequests = 0
 	const original = new Map<string, WorkRecord[]>()
-	for (const row of records)
+	const links = new Map<string, WorkRecord>()
+	const conflicts = new Set<string>()
+	for (const row of records) {
 		if (row.type === "request" && typeof row.requestId === "string")
 			original.set(row.requestId, [...(original.get(row.requestId) ?? []), row])
+		if (row.type === "work_link" && typeof row.linkId === "string" && typeof row.revision === "number") {
+			const previous = links.get(row.linkId)
+			if (!previous || Number(previous.revision) < row.revision) links.set(row.linkId, row)
+		}
+	}
 	for (const request of report.requests) {
 		if (!request.account || !isWorkId(request.requestId) || !request.startedAt) {
 			incomplete = true
@@ -219,7 +235,9 @@ export function buildSnapshots(
 		let missing = false
 		for (const candidate of candidates) {
 			const pr = candidate.pullRequest
-			if (!pr?.id || !pr.repositoryId) {
+			// Missing merge metadata leaves this request unknown; its repository can still report.
+			if (!pr) continue
+			if (!pr.id || !pr.repositoryId) {
 				missing = true
 				continue
 			}
@@ -281,8 +299,10 @@ export function buildSnapshots(
 					...(pr.mergedAt ? { mergedAt: pr.mergedAt } : {}),
 				}
 				const existing = group.content.pullRequests.find((other) => other.id === pr.id)
-				if (existing && JSON.stringify(existing) !== JSON.stringify(metadata))
-					throw new Error("PR reporting found conflicting provider IDs")
+				if (existing && JSON.stringify(existing) !== JSON.stringify(metadata)) {
+					conflicts.add(key)
+					incomplete = true
+				}
 				if (!existing) group.content.pullRequests.push(metadata)
 				pullRequestIds.push(pr.id)
 			}
@@ -307,7 +327,7 @@ export function buildSnapshots(
 				allocation: {
 					kind,
 					pullRequestIds: kind === "unknown" || kind === "unlinked" ? [] : [...new Set(pullRequestIds)].sort(),
-					method: method(request),
+					method: method(request, links),
 				},
 			})
 			group.content.coverage.observedRequests++
@@ -322,6 +342,7 @@ export function buildSnapshots(
 		}
 	}
 	const snapshots = [...groups.entries()]
+		.filter(([key]) => !conflicts.has(key))
 		.sort(([a], [b]) => a.localeCompare(b))
 		.map(([, group]) => {
 			group.content.requests.sort((a, b) => a.requestId.localeCompare(b.requestId))

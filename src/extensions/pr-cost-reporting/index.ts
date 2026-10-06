@@ -4,7 +4,7 @@ import {
 	subscribeReportingReconciliation,
 } from "../work-attribution/reconcile-supervisor.js"
 import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } from "../work-attribution.js"
-import { readReportingState, setReportingEnabled } from "./queue.js"
+import { readReportingState, setReportingEnabled, takeReportingNotice } from "./queue.js"
 import { reconcileReporting } from "./worker.js"
 
 export default function prCostReportingExtension(pi: ExtensionAPI): void {
@@ -13,6 +13,21 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 	let activeKey = ""
 	let stop: (() => Promise<void>) | undefined
 	let draining = Promise.resolve()
+	async function reportingEnabled(): Promise<boolean> {
+		try {
+			const state = await readReportingState(getAgentDir())
+			const ctx = context
+			if (ctx?.hasUI && state.enabled && state.followsTelemetry && !state.defaultNoticeShown)
+				if (await takeReportingNotice(getAgentDir()))
+					ctx.ui.notify(
+						"PR costs are reported to your account (repository/PR details and request/billing IDs). Turn off with /pr-reporting off.",
+						"info",
+					)
+			return state.enabled
+		} catch {
+			return false
+		}
+	}
 	function synchronize(ctx = context): void {
 		if (!started || !ctx) return
 		const request: WorkStateRequest = {}
@@ -35,12 +50,13 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 		}
 	}
 	pi.events.on(WORK_CHANGED_EVENT, () => synchronize())
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
 		started = true
 		synchronize(ctx)
+		if (stop) await reportingEnabled()
 	})
-	pi.on("agent_end", () => {
-		if (started && stop) requestWorkReconciliation()
+	pi.on("agent_end", async () => {
+		if (started && stop && (await reportingEnabled())) requestWorkReconciliation()
 	})
 	pi.on("session_shutdown", async () => {
 		started = false
@@ -77,7 +93,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 					const errors = [...new Set([state.error, ...pending.map((entry) => entry.lastError)].filter(Boolean))]
 					ctx.ui.notify(
 						[
-							`PR reporting: ${state.enabled ? "on" : "off"}`,
+							`PR reporting: ${state.enabled ? "on" : "off"} (${state.followsTelemetry ? "SaaS default" : "explicit choice"})`,
 							`Queued repositories: ${pending.length}`,
 							`Acknowledged repositories: ${entries.filter((entry) => entry.lastAcknowledgedAt).length}`,
 							...errors,

@@ -176,3 +176,154 @@ describe("allowlisted repository snapshots", () => {
 		).toBe(at)
 	})
 })
+
+describe("local and reported confidence", () => {
+	it("sends native evidence for the editing input and session evidence for a separate input", () => {
+		const segment = { id: billingId, attribution: "session", reason: "matching-disabled" }
+		const [request, commit] = records([pull()], { segment })
+		const other = "55555555-5555-4555-8555-555555555555"
+		const transition: WorkRecord = {
+			...request,
+			type: "file_transition",
+			transitionId: "edit",
+			toolCallId: "tool",
+			cwd: "/private/repo",
+			repository: "/private/repo/.git",
+			worktree: "/private/repo",
+			path: "code.ts",
+			baseline: "c".repeat(40),
+			baselineFile: { blob: "d".repeat(40), mode: "100644" },
+			before: { blob: "d".repeat(40), mode: "100644" },
+			after: { blob: "e".repeat(40), mode: "100644" },
+			cursor: { bytes: 100, digest: "f".repeat(64) },
+		}
+		const rows = [
+			request,
+			{ ...request, requestId: other, segment: { ...segment, id: other } },
+			transition,
+			{
+				...commit,
+				source: "native-file-transition",
+				paths: ["code.ts"],
+				transitionIds: ["edit"],
+				fileMatches: [{ path: "code.ts", worktree: "/private/repo", method: "file-chain", transitionIds: ["edit"] }],
+			},
+		]
+		const report = calculatePullRequestCosts(rows, [
+			{ requestId, billingRecordId: billingId, costUsd: "0.1", account },
+			{ requestId: other, billingRecordId: other, costUsd: "0.000000001", account },
+		])
+		expect(report.pullRequests[0]).toMatchObject({
+			totalCostUsd: "0.100000001",
+			explicit: { requestIds: [requestId] },
+			inferred: { requestIds: [other] },
+		})
+		expect(buildSnapshots(rows, report, new Map(), true).snapshots[0].content.requests).toMatchObject([
+			{ requestId, allocation: { kind: "pull-request", method: "native" } },
+			{ requestId: other, allocation: { kind: "pull-request", method: "session" } },
+		])
+	})
+	it.each([
+		"saved-plan",
+		"pasted-plan",
+		"named-artifact",
+		"work-command",
+	])("labels a %s confirmation with its actual source", (source) => {
+		const rows: WorkRecord[] = records([pull()], {
+			segment: { id: billingId, attribution: "session", reason: "test" },
+		}).map((row) => ({ ...row, workId: requestId }))
+		rows.push({
+			...rows[0],
+			type: "work_link",
+			linkId: "55555555-5555-4555-8555-555555555555",
+			revision: 1,
+			status: "active",
+			sourceWorkId: requestId,
+			targetWorkId: requestId,
+			requestIds: [requestId],
+			evidence: { source, requestId, segmentId: billingId },
+		})
+		const result = build(rows)
+		expect(result.snapshots[0].content.requests[0].allocation).toEqual({
+			kind: "pull-request",
+			pullRequestIds: ["101"],
+			method: source === "work-command" ? "user-correction" : "explicit",
+		})
+	})
+	// The server counts only native, explicit and user-correction methods as confirmed (explicit) PR spend.
+	const confirmedMethods = ["native", "explicit", "user-correction"]
+	it.each([
+		"session",
+		"explicit",
+		"inferred",
+	] as const)("reports a %s request with the confidence it has in the local PR total", (attribution) => {
+		const rows = records([pull()], { segment: { id: "segment", attribution, reason: "test" } })
+		const report = calculatePullRequestCosts(rows, [{ requestId, billingRecordId: billingId, costUsd: "1", account }])
+		const confirmedLocally = report.requests
+			.filter((request) => request.allocation === "pull-request")
+			.map((request) => request.requestId)
+		const confirmedOnServer = buildSnapshots(rows, report, new Map(), true)
+			.snapshots[0].content.requests.filter(
+				(request) => request.allocation.kind === "pull-request" && confirmedMethods.includes(request.allocation.method),
+			)
+			.map((request) => request.requestId)
+		expect(confirmedOnServer).toEqual(confirmedLocally)
+	})
+})
+
+describe("conflicting PR metadata", () => {
+	it("holds only the repository whose provider metadata conflicts", () => {
+		const other = "55555555-5555-4555-8555-555555555555"
+		const healthy = records([pull(2, "example/other", "43")], { requestId: other }).map((row) => ({
+			...row,
+			workId: "other-work",
+		}))
+		const rows = [...records(), ...healthy]
+		const report = calculatePullRequestCosts(rows, [])
+		const bad = report.pullRequests.find((row) => row.pullRequest?.id === "101")
+		const request = report.requests.find((row) => row.requestId === requestId)
+		if (!bad?.pullRequest || !request) throw new Error("Fixture has no first PR")
+		report.pullRequests.push({ ...bad, key: "contradictory", pullRequest: { ...bad.pullRequest, number: 9 } })
+		request.pullRequestIds.push("contradictory")
+		const result = buildSnapshots(rows, report, new Map(), true)
+		expect(result.incomplete).toBe(true)
+		expect(result.snapshots.map((snapshot) => snapshot.content.repository.id)).toEqual(["43"])
+	})
+	it("keeps reporting when a PR has links from before and after a repository rename", () => {
+		const beforeRename = { ...pull(1), state: "open", mergedAt: null, checkedAt: "2026-10-04T12:30:00.000Z" }
+		const afterRename = { ...pull(1, "example/renamed"), checkedAt: "2026-10-04T13:30:00.000Z" }
+		const otherRequest = "55555555-5555-4555-8555-555555555555"
+		const [request, commit] = records()
+		const rows: WorkRecord[] = [
+			request,
+			{ ...commit, pullRequests: [beforeRename, afterRename] },
+			{
+				version: 1,
+				type: "request",
+				workId: "other-work",
+				sessionId: "other-session",
+				requestId: otherRequest,
+				startedAt: at,
+				recordedAt: at,
+				scope: { account, repository: "/private/other/.git" },
+			},
+			{
+				version: 1,
+				type: "commit",
+				workId: "other-work",
+				sessionId: "other-session",
+				sha: "b".repeat(40),
+				repository: "/private/other/.git",
+				worktree: "/private/other",
+				recordedAt: at,
+				pullRequests: [pull(2, "example/other", "43")],
+			},
+		]
+		const report = calculatePullRequestCosts(rows, [])
+		let snapshots: ReturnType<typeof buildSnapshots>["snapshots"] = []
+		expect(() => {
+			snapshots = buildSnapshots(rows, report, new Map(), true).snapshots
+		}).not.toThrow()
+		expect(snapshots.map((snapshot) => snapshot.content.repository.id).sort()).toEqual(["42", "43"])
+	})
+})

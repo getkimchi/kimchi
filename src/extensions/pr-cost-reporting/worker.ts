@@ -19,6 +19,8 @@ import { buildSnapshots, type ReportingRepository, validateSnapshot } from "./sn
 
 const PASS_MS = 5000
 const RESPONSE_BYTES = 64 * 1024
+const REPOSITORY_CACHE_MS = 5 * 60_000
+const repositoryCache = new Map<string, { checkedAt: number; value?: ReportingRepository }>()
 
 /** Verify and acknowledgement responses are small; neither response text nor headers enter durable state. */
 async function boundedResponse(response: Response, signal: AbortSignal): Promise<Response> {
@@ -218,11 +220,30 @@ export async function reconcileReporting(
 			if (linked.length && linked.every((pr) => pr.pullRequest?.id && pr.pullRequest.repositoryId)) continue
 			for (const repository of requestRepositories.get(request.requestId) ?? []) needed.set(repository, repository)
 		}
-		for (const [repository, path] of needed) {
+		for (const [key, cached] of repositoryCache)
+			if (Date.now() - cached.checkedAt >= REPOSITORY_CACHE_MS) repositoryCache.delete(key)
+		const cacheKey = (repository: string) => JSON.stringify([agentDir, repository])
+		for (const repository of needed.keys()) {
+			const cached = repositoryCache.get(cacheKey(repository))
+			if (cached?.value) repositories.set(repository, cached.value)
+		}
+		for (const [repository, path] of [...needed].sort(
+			([a], [b]) =>
+				(repositoryCache.get(cacheKey(a))?.checkedAt ?? 0) - (repositoryCache.get(cacheKey(b))?.checkedAt ?? 0),
+		)) {
+			const key = cacheKey(repository)
+			const cached = repositoryCache.get(key)
+			if (cached?.value || (cached && Date.now() - cached.checkedAt < 30_000)) continue
+			// Reserve time to persist and deliver known groups even when discovery is slow.
+			if (Date.now() >= deadline - 2000) break
 			check()
 			try {
-				repositories.set(repository, await lookupRepositoryIdentity(path, bounded))
+				const lookupMs = Math.min(3000, deadline - Date.now() - 1000)
+				const value = await lookupRepositoryIdentity(path, AbortSignal.any([bounded, AbortSignal.timeout(lookupMs)]))
+				repositoryCache.set(key, { checkedAt: Date.now(), value })
+				repositories.set(repository, value)
 			} catch {
+				repositoryCache.set(key, { checkedAt: Date.now() })
 				check()
 			}
 		}

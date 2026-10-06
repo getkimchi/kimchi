@@ -43,6 +43,7 @@ export interface ReportingState {
 	enabled: boolean
 	/** New queues follow SaaS uploads until an explicit /pr-reporting choice is saved. */
 	followsTelemetry?: true
+	defaultNoticeShown?: true
 	producerId: string
 	entries: Record<string, PendingRepository>
 	error?: string
@@ -77,6 +78,7 @@ export async function readReportingState(agentDir: string): Promise<ReportingSta
 			value?.version !== 1 ||
 			typeof value.enabled !== "boolean" ||
 			(value.followsTelemetry !== undefined && value.followsTelemetry !== true) ||
+			(value.defaultNoticeShown !== undefined && value.defaultNoticeShown !== true) ||
 			!isWorkId(value.producerId) ||
 			!value.entries ||
 			typeof value.entries !== "object" ||
@@ -182,6 +184,17 @@ export function setReportingEnabled(agentDir: string, enabled: boolean): Promise
 				entry.retryAt = 0
 			}
 	})
+}
+/** Claim the installation notice under the queue lock so concurrent sessions show it once. */
+export async function takeReportingNotice(agentDir: string): Promise<boolean> {
+	let show = false
+	await update(agentDir, (state) => {
+		if (state.enabled && state.followsTelemetry && !state.defaultNoticeShown) {
+			state.defaultNoticeShown = true
+			show = true
+		}
+	})
+	return show
 }
 export function recordReportingError(agentDir: string, error: string): Promise<ReportingState> {
 	return update(agentDir, (state) => {

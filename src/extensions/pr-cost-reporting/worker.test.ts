@@ -477,3 +477,123 @@ describe("account-fenced reporting delivery", () => {
 		expect(http).not.toHaveBeenCalled()
 	})
 })
+
+describe("repository identity for work without a PR", () => {
+	it("delivers a known repository while another lookup times out, then retries that lookup after cooldown", async () => {
+		await seedLinked()
+		const path = join(directory, "work-attribution", "source.jsonl")
+		const source = await readFile(path, "utf8")
+		await writeFile(
+			path,
+			`${source}${JSON.stringify({
+				version: 1,
+				type: "request",
+				workId: "77777777-7777-4777-8777-777777777777",
+				sessionId: "other-session",
+				requestId: "66666666-6666-4666-8666-666666666666",
+				startedAt: "2026-10-04T12:00:00.000Z",
+				recordedAt: "2026-10-04T12:00:00.000Z",
+				scope: { account: content.account, repository: "/slow/.git" },
+			})}\n`,
+		)
+		const lookup = vi.spyOn(pullRequests, "lookupRepositoryIdentity").mockImplementation(
+			(_path, signal) =>
+				new Promise((_resolve, reject) => {
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+				}),
+		)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		expect(http.mock.calls.filter(([url]) => String(url).endsWith("pr-cost-snapshots"))).toHaveLength(1)
+		await run()
+		expect(lookup).toHaveBeenCalledOnce()
+		const next = Date.now() + 31_000
+		vi.spyOn(Date, "now").mockReturnValue(next)
+		lookup.mockResolvedValue({ provider: "github", host: "github.com", name: "team/slow", id: "99" })
+		await run()
+		expect(lookup).toHaveBeenCalledTimes(2)
+		expect(
+			Object.values((await readReportingState(directory)).entries).some((entry) => entry.repository.id === "99"),
+		).toBe(true)
+	})
+	it("refreshes cached repository identity after five minutes", async () => {
+		await seedLinked()
+		const path = join(directory, "work-attribution", "source.jsonl")
+		const rows = (await readFile(path, "utf8"))
+			.trim()
+			.split("\n")
+			.filter((line) => JSON.parse(line).type !== "commit")
+		await writeFile(path, `${rows.join("\n")}\n`)
+		const lookup = vi.spyOn(pullRequests, "lookupRepositoryIdentity").mockResolvedValue({
+			provider: "github",
+			host: "github.com",
+			name: "team/first",
+			id: "98",
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		await run()
+		expect(lookup).toHaveBeenCalledOnce()
+		const next = Date.now() + 5 * 60_000
+		vi.spyOn(Date, "now").mockReturnValue(next)
+		lookup.mockResolvedValue({ provider: "github", host: "github.com", name: "team/moved", id: "99" })
+		await run()
+		expect(lookup).toHaveBeenCalledTimes(2)
+	})
+	it("queues pre-PR work from a dozen repositories without re-fetching each repository's identity every pass", async () => {
+		await rm(join(directory, "pr-cost-reporting", "state.json"))
+		const rows = Array.from({ length: 12 }, (_, index) => ({
+			version: 1,
+			type: "request",
+			workId: `55555555-5555-4555-8555-${String(index).padStart(12, "0")}`,
+			sessionId: `session-${index}`,
+			requestId: `66666666-6666-4666-8666-${String(index).padStart(12, "0")}`,
+			recordedAt: "2026-10-04T12:00:00.000Z",
+			startedAt: "2026-10-04T12:00:00.000Z",
+			scope: { account: content.account, repository: `/src/repo-${index}/.git` },
+		}))
+		await mkdir(join(directory, "work-attribution"), { recursive: true })
+		await writeFile(
+			join(directory, "work-attribution", "source.jsonl"),
+			`${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
+		)
+		let lookups = 0
+		// A realistic lookup: Git remote read, CLI token lookup and one provider API round-trip.
+		vi.spyOn(pullRequests, "lookupRepositoryIdentity").mockImplementation(async (path) => {
+			lookups++
+			await new Promise((resolve) => setTimeout(resolve, 450))
+			return {
+				provider: "github",
+				host: "github.com",
+				name: `team/${path.split("/")[2]}`,
+				id: String(1000 + Number(path.split("-")[1].split("/")[0])),
+			}
+		})
+		for (let pass = 0; pass < 3; pass++)
+			await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		const queued = Object.values((await readReportingState(directory)).entries).filter(
+			(entry) => entry.repository.provider === "github" && Number(entry.repository.id) >= 1000,
+		)
+		expect(queued).toHaveLength(12)
+		// One lookup per repository, plus at most one abandoned when a pass deadline interrupts it.
+		expect(lookups).toBeLessThanOrEqual(13)
+	}, 30_000)
+})
+
+describe("journals with a torn final append", () => {
+	it("keeps reporting recorded work when another session's journal ends with a partial line", async () => {
+		await rm(join(directory, "pr-cost-reporting", "state.json"))
+		await seedLinked()
+		// A process died during its final append; that record was never complete or reported.
+		await writeFile(join(directory, "work-attribution", "crashed.jsonl"), '{"type":"request","requestId":"0b8f')
+		const sent: WireSnapshot[] = []
+		http.mockImplementation(async (input, init) => {
+			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
+			const payload: WireSnapshot = JSON.parse(String(init?.body))
+			sent.push(payload)
+			return Response.json({ status: "accepted", revision: payload.revision, receivedAt: new Date().toISOString() })
+		})
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(sent.map((payload) => payload.requests.map((request) => request.requestId))).toEqual([[requestId]])
+	})
+})

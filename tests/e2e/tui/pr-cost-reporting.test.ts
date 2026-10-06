@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import { waitForText } from "./support/assertions.js"
+import { fullText, waitForText } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -29,8 +29,13 @@ for (const telemetry of [false, true]) {
 			},
 			async (fixture, trace) => {
 				const path = join(fixture.agentDir, "pr-cost-reporting", "state.json")
+				if (telemetry) {
+					await waitForText(terminal, "PR costs are reported to your account")
+					expect(fullText(terminal)).toMatch(/\/pr-reporting\s+off/)
+					expect(JSON.parse(readFileSync(path, "utf8")).defaultNoticeShown).toBe(true)
+				} else expect(fullText(terminal)).not.toContain("PR costs are reported to your account")
 				terminal.submit("/pr-reporting status")
-				await waitForText(terminal, `PR reporting: ${telemetry ? "on" : "off"}`)
+				await waitForText(terminal, `PR reporting: ${telemetry ? "on" : "off"} (SaaS default)`)
 				if (!telemetry) expect(existsSync(path)).toBe(false)
 				trace.step("reporting follows the existing SaaS upload setting")
 				terminal.submit("/pr-reporting on")
