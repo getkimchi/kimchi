@@ -138,6 +138,10 @@ const PLAN_MODE_TOOL_SET = new Set(getToolsForProfile("planning-adhoc").map((too
 //
 // Names are lowercased because the tool_call handler lowercases event.toolName
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
+
+/** Tool name of the plan-review submission tool (registered below). */
+const SUBMIT_PLAN_TOOL_NAME = "submit_plan"
+
 const BUILTIN_ALLOW_TOOL_NAMES = [
 	"set_phase",
 	"agent",
@@ -145,7 +149,7 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	"steer_subagent",
 	// Plan-review control plane: writes the plan artifact and opens the review
 	// flow — there is nothing for permissions to gate here.
-	"submit_plan",
+	SUBMIT_PLAN_TOOL_NAME,
 	BASH_CONTROL_TOOL_NAME,
 	...FERMENT_V2_TOOL_NAMES,
 	...TODO_TOOL_NAMES,
@@ -688,7 +692,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// For ferment, the model should call propose_ferment_scoping first (to
 	// populate the structured scope), then submit_plan to trigger the review.
 	pi.registerTool({
-		name: "submit_plan",
+		name: SUBMIT_PLAN_TOOL_NAME,
 		label: "Submit Plan",
 		description:
 			"Submit your completed plan for user review. Call this only after the plan " +

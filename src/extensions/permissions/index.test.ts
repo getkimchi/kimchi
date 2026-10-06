@@ -305,7 +305,7 @@ async function submitPlan(
 	ctx: ExtensionContext,
 ): Promise<unknown> {
 	const tool = harness.registeredTools.get("submit_plan") as SubmitPlanToolDef | undefined
-	if (!tool) throw new Error("submit_plan tool was not registered with pi")
+	if (!tool) throw new Error("submit_plan tool was not registered with kimchi")
 	const result = await tool.execute("tc-submit-plan", { plan }, undefined, undefined, ctx)
 	await new Promise<void>((resolve) => setTimeout(resolve, 0))
 	return result
