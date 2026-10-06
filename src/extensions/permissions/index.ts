@@ -143,6 +143,10 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	"agent",
 	"get_subagent_result",
 	"steer_subagent",
+	// Plan-review control plane: writes the plan artifact and opens the review
+	// flow. Mode eligibility (plan / auto / agent worker) is enforced inside
+	// the tool's execute — there is nothing for permissions to gate here.
+	"submit_plan",
 	BASH_CONTROL_TOOL_NAME,
 	...FERMENT_V2_TOOL_NAMES,
 	...TODO_TOOL_NAMES,
@@ -711,16 +715,23 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 			// Allowed contexts:
 			// 1. Adhoc plan mode (mode === "plan") — full review flow.
-			// 2. Agent workers (e.g. Plan persona subagents) — saves + terminates
+			// 2. Auto mode — the session is already in an execution posture; the
+			//    model may still draft a plan and request review mid-run.
+			//    Approval continues in auto — no mode transition.
+			// 3. Agent workers (e.g. Plan persona subagents) — saves + terminates
 			//    with no review emit; the parent orchestrator is the plan's
 			//    evaluator.
 			const mode = getRuntimePermissionMode().mode
-			if (mode !== "plan" && !isAgentWorker()) {
+			if (mode !== "plan" && mode !== "auto" && !isAgentWorker()) {
+				const hint =
+					mode === "default"
+						? "To enter plan mode, call the questionnaire tool."
+						: "Ask the user to switch (shift+tab or /permissions mode plan)."
 				return {
 					content: [
 						{
 							type: "text",
-							text: "Error: submit_plan is only available during plan mode or in a Plan agent worker.",
+							text: `Error: submit_plan is only available in plan mode, auto mode, or from a Plan agent worker (current mode: ${mode}). ${hint}`,
 						},
 					],
 					details: { submitted: false },
@@ -877,22 +888,32 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const { ctx, planPath, planText, rawText, activePlanSlug: reviewedPlanSlug } = reviewCtx
 
 		const executeLocally = async () => {
-			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+			// Plan mode withholds execution until approval — release it to auto.
+			// Submissions made from auto mode are already executable: no transition.
+			if (getRuntimePermissionMode().mode === "plan") {
+				changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+			}
 			await executePlan(ctx, planPath, planText, reviewedPlanSlug)
 			activePlanSlug = undefined
 		}
 
 		// Spawn a foreground remote agent to execute the plan in a cloud sandbox.
-		// Mode switches to auto immediately; the call blocks until the remote
-		// agent completes (or is killed via Ctrl+X). The result is injected
-		// into the local session as a steer message so the local agent has
-		// context for follow-up work. Shared by the start_cloud decision and
-		// the plannotator "where should it run?" route below.
+		// From plan mode the session switches to auto; submissions already in
+		// auto stay there. The call blocks until the remote agent completes (or
+		// is killed via Ctrl+X). The result is injected into the local session
+		// as a steer message so the local agent has context for follow-up work.
+		// Shared by the start_cloud decision and the plannotator "where should
+		// it run?" route below.
 		const executeInCloud = async () => {
 			const approvedSlug = activePlanSlug
 			activePlanSlug = undefined
 			pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
-			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+			// Only plan mode needs the release-to-auto transition; submissions
+			// from auto mode are already in an execution posture.
+			const wasPlanMode = getRuntimePermissionMode().mode === "plan"
+			if (wasPlanMode) {
+				changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+			}
 			const cloudDescription = `${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
 			try {
 				const { prompt: cloudPrompt, gitWorkflow } = await buildRemotePlanPromptWithIntent(ctx, planText, {
@@ -902,11 +923,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			} catch (err) {
 				// Spawn failed — otherwise the user is stranded in auto mode with
 				// no active plan and no visible error. Surface the error and
-				// restore plan mode so they can retry.
+				// restore plan mode (when we switched away from it) so they can retry.
 				const message = err instanceof Error ? err.message : String(err)
 				ctx.ui?.notify?.(`Could not start the remote agent: ${message}`, "error")
 				activePlanSlug = approvedSlug
-				changeMode(ctx, "auto", { mode: "plan", initiatedBy: "user", source: "runtime" }, "cloud_spawn_failed")
+				if (wasPlanMode) {
+					changeMode(ctx, "auto", { mode: "plan", initiatedBy: "user", source: "runtime" }, "cloud_spawn_failed")
+				}
 			}
 		}
 
@@ -1011,7 +1034,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					defaultFermentRuntime.setActive(draft)
 					if (pi.events) emitFermentCreated(pi.events, draft)
 					appendRefEntry(pi, draft.id)
-					changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+					if (getRuntimePermissionMode().mode === "plan") {
+						changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+					}
 					ctx.ui?.notify?.(
 						`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment list to resume and scope it interactively.`,
 					)
@@ -1097,7 +1122,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					},
 					{ triggerTurn: true },
 				)
-				changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+				if (getRuntimePermissionMode().mode === "plan") {
+					changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+				}
 			} catch (err) {
 				// Promotion failed before activation. Keep the planning profile, clear
 				// the half-set runtime state, and tell the user that they can retry.
