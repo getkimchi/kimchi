@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { expect, test } from "@microsoft/tui-test"
-import { STARTUP_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import { fullText, STARTUP_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runKimchiSession, runMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -45,8 +45,19 @@ test("does not execute an untrusted repository MCP server during startup", async
 		async (_fixture, trace) => {
 			await delay(500)
 			expect(existsSync(sentinel)).toBe(false)
+			// The denial warning is one entry in the collapsed MCP startup-issues
+			// row — a transcript block now, collapsed like tool output. Match
+			// count-agnostically ("MCP issue" without the "[1" prefix): other
+			// startup issues can legitimately share the block.
+			await waitForText(terminal, "MCP issue")
+			await waitForText(terminal, "needs attention")
+			expect(fullText(terminal)).toContain("ctrl+o to expand")
+			expect(fullText(terminal)).not.toContain("Project MCP configuration is not trusted")
+			trace.step("collapsed MCP issues transcript row rendered, trust warning hidden")
+
+			terminal.keyPress("o", { ctrl: true })
 			await waitForText(terminal, "Project MCP configuration is not trusted")
-			trace.step("repository MCP process remained stopped after trust was denied")
+			trace.step("trust warning visible after expand; repository MCP process remained stopped")
 		},
 	)
 })

@@ -72,6 +72,7 @@ import cacheSummaryExtension from "./extensions/cache-summary.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
+import consoleWarnRelayExtension from "./extensions/console-warn-relay.js"
 import contextAssemblyExtension from "./extensions/context-assembly.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
@@ -686,7 +687,10 @@ try {
 			{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 		] satisfies ManagedExtensionFactory[])
 		const extensionFactories = [
-			// First so its session_start handler syncs project trust onto the
+			// First so console.warn is rerouted before any other extension loads
+			// and its session_start context is tracked before theirs run.
+			consoleWarnRelayExtension,
+			// Next so its session_start handler syncs project trust onto the
 			// settings watcher before any other handler reads settings.
 			settingsTrustSyncExtension,
 			autoUpdateSettingsExtension,
