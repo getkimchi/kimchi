@@ -81,6 +81,13 @@ function cleanUnquotedPart(raw: string): string {
 }
 
 /**
+ * Whether the (cleaned) token ends with a supported image extension.
+ */
+function hasImageExtension(raw: string): boolean {
+	return IMAGE_EXT_TO_MIME[extname(raw).toLowerCase()] !== undefined
+}
+
+/**
  * Candidate path strings for the token at `index`, most precise first.
  *
  * Quoted tokens yield a single exact candidate. Unquoted tokens yield the
@@ -90,12 +97,21 @@ function cleanUnquotedPart(raw: string): string {
  * rebuilt from the extension-bearing token outward. Joins stop at a quoted
  * span (a quoted boundary means the unquoted text is not one path) and are
  * bounded by MAX_JOIN_TOKENS.
+ *
+ * Joins only prepend words, so every candidate for a token shares the token's
+ * trailing extension. Tokens without one return no candidates at all — join
+ * construction is skipped for plain prose, the overwhelmingly common case.
  */
 function candidatesForToken(tokens: Token[], index: number): string[] {
 	const token = tokens[index]
-	if (token.quoted) return [token.raw.trim()]
-	const out = [cleanUnquotedPart(token.raw)]
-	let joined = out[0]
+	if (token.quoted) {
+		const raw = token.raw.trim()
+		return hasImageExtension(raw) ? [raw] : []
+	}
+	const anchor = cleanUnquotedPart(token.raw)
+	if (!hasImageExtension(anchor)) return []
+	const out = [anchor]
+	let joined = anchor
 	for (let j = index - 1; j >= 0 && index - j <= MAX_JOIN_TOKENS; j--) {
 		if (tokens[j].quoted) break
 		joined = `${cleanUnquotedPart(tokens[j].raw)} ${joined}`
@@ -123,9 +139,11 @@ export function extractTypedImagePaths(text: string, cwd: string): TypedImagePat
 
 	for (let i = 0; i < tokens.length; i++) {
 		for (const raw of candidatesForToken(tokens, i)) {
-			// URLs and file:// URIs are never local attachments.
+			// URLs and file:// URIs are never local attachments. Checked per
+			// candidate: a join can pull a URL-bearing word in front of the
+			// extension-bearing anchor. (The extension itself is already gated in
+			// candidatesForToken — every candidate for a token shares it.)
 			if (raw.includes("://")) continue
-			if (!IMAGE_EXT_TO_MIME[extname(raw).toLowerCase()]) continue
 			const resolvedPath = resolve(cwd, expandHome(raw))
 			if (seen.has(resolvedPath)) continue
 			const image = readImageFileFromDisk(resolvedPath)
