@@ -6,6 +6,7 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createModel } from "../__mocks__/model-registry.js"
+import * as diagnostics from "../work-attribution/diagnostics.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { getWorkId, setWorkId } from "../work-attribution.js"
 import {
@@ -1179,7 +1180,7 @@ describe("judgeApiCall", () => {
 		}).modelRegistry
 		captureJudgeContext(model, registry, false, ctx)
 		completeMock.mockResolvedValue({ content: [{ type: "text", text: "grade evidence" }], stopReason: "stop" })
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		try {
 			expect(await judgeApiCall("system", "user")).toEqual({ ok: true, text: "grade evidence" })
 			expect(completeMock).toHaveBeenCalledOnce()

@@ -22,6 +22,7 @@ import { readPlanWorkId } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
 import { findWorkContinuation, type WorkContinuation } from "./work-attribution/continuation.js"
+import { debugWorkAttribution } from "./work-attribution/diagnostics.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
 import { subscribeFileReconciliation } from "./work-attribution/reconcile-supervisor.js"
 import { flushWorkSummaries, markNewWork, recoverWorkSummaries, updateWorkSummary } from "./work-attribution/summary.js"
@@ -51,12 +52,12 @@ export function workLedgerPath(ctx: WorkContext): string {
 	// Session IDs also come from imported sessions; never interpret them as paths.
 	return join(getAgentDir(), "work-attribution", `${encodeURIComponent(ctx.sessionManager.getSessionId())}.jsonl`)
 }
-/** Attribution is observational: callers may continue without IDs after a visible persistence failure. */
+/** Attribution is observational: callers may continue without IDs after a persistence failure. */
 export function tryWorkAttribution<T>(record: () => T): T | undefined {
 	try {
 		return record()
 	} catch (error) {
-		console.warn("[work-attribution] Attribution unavailable:", error)
+		debugWorkAttribution("Attribution unavailable:", error)
 		return undefined
 	}
 }
@@ -64,7 +65,7 @@ export async function tryWorkAttributionAsync<T>(record: () => Promise<T>): Prom
 	try {
 		return await record()
 	} catch (error) {
-		console.warn("[work-attribution] Attribution unavailable:", error)
+		debugWorkAttribution("Attribution unavailable:", error)
 		return undefined
 	}
 }

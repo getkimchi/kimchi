@@ -12,10 +12,11 @@ import { createProcessRegistry } from "../bash-background/process-registry.js"
 import { getSessionRegistry, setSessionRegistry } from "../bash-background/session-registry.js"
 import * as attribution from "../work-attribution.js"
 import { createCommitTrackingBashTool, createCommitTrackingOperations, type ObservedCommit } from "./commits.js"
+import * as diagnostics from "./diagnostics.js"
 import { flushWorkSummaries } from "./summary.js"
 
 vi.mock("node:fs", async (importOriginal) => ({
-	...(await importOriginal<typeof import("node:fs")>()),
+	...(await importOriginal<typeof fs>()),
 }))
 
 let directory: string
@@ -89,6 +90,50 @@ describe("Git commit observation", () => {
 		expect(commits).toEqual(shas.map((sha) => ({ sha, repository: join(repository, ".git"), worktree: repository })))
 	})
 
+	it.each([
+		"GIT_TRACE2_EVENT",
+		"GIT_TRACE_REFS",
+	])("records commits before and after %s exceeds 8 MiB", async (variable) => {
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const sizePath = join(directory, "trace-size")
+		const pad = `const fs = require("node:fs");
+const line = ${variable === "GIT_TRACE2_EVENT" ? 'JSON.stringify({ event: "data", detail: "x".repeat(1024) })' : '"12:00:00.000000 refs/debug.c:1: read_raw_ref: " + "x".repeat(1024)'} + "\\n";
+fs.appendFileSync(process.env.${variable}, line.repeat(8192));
+fs.writeFileSync(${JSON.stringify(sizePath)}, String(fs.statSync(process.env.${variable}).size));`
+		expect(
+			await run(
+				`git commit --allow-empty -m before && ${quote(process.execPath)} -e ${quote(pad)} && git commit --allow-empty -m after; false`,
+			),
+		).toBe(1)
+		expect(Number(fs.readFileSync(sizePath, "utf8"))).toBeGreaterThan(8 * 1024 * 1024)
+		expect(commits.map((commit) => commit.sha)).toEqual(git(repository, "reflog", "--format=%H").split("\n").reverse())
+		expect(warning).not.toHaveBeenCalled()
+	})
+
+	it("does not print a failed Git trace over the terminal", async () => {
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		vi.spyOn(fs, "mkdtempSync").mockImplementation(() => {
+			throw new Error("trace storage unavailable")
+		})
+		expect(await run("true")).toBe(0)
+		expect(warning).not.toHaveBeenCalled()
+	})
+
+	it.each(["malformed", "unreadable"])("keeps Bash results and cleans up a %s trace", async (failure) => {
+		const debug = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
+		const cleanup = vi.spyOn(fs, "rmSync")
+		const damage =
+			failure === "malformed"
+				? 'printf "bad json\\n" >> "$GIT_TRACE2_EVENT"'
+				: 'rm "$GIT_TRACE2_EVENT" && mkdir "$GIT_TRACE2_EVENT"'
+		expect(await run(`git commit --allow-empty -m unverified && ${damage}; false`)).toBe(1)
+		expect(commits).toEqual([])
+		expect(debug).toHaveBeenCalledWith("Could not record Git commits:", expect.any(Error))
+		const tracePath = cleanup.mock.calls[0]?.[0]
+		expect(tracePath).toBeTruthy()
+		if (tracePath) expect(fs.existsSync(tracePath)).toBe(false)
+	})
+
 	it("tracks the actual git -C and shell cd worktrees", async () => {
 		git(repository, "commit", "--allow-empty", "-m", "base")
 		const worktree = join(directory, "linked tree")
@@ -118,7 +163,7 @@ describe("Git commit observation", () => {
 			`git worktree remove ${quote(worktree)}`,
 			"git commit --allow-empty -m after",
 		]
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		expect(await run(commands.join(" && "))).toBe(0)
 		const names = position === "middle" ? ["before", "after"] : ["after"]
 		expect(commits).toEqual(
@@ -252,7 +297,7 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 	})
 
 	it.each(["allocation", "cleanup"])("preserves Bash execution when trace %s fails", async (stage) => {
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		const failure = new Error("trace storage unavailable")
 		const hook =
 			stage === "allocation"
@@ -264,7 +309,7 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 					})
 		try {
 			expect(await run("printf still-running")).toBe(0)
-			expect(warning).toHaveBeenCalledWith(expect.stringContaining("work-attribution"), failure)
+			expect(warning).toHaveBeenCalledWith(expect.stringContaining("Git trace:"), failure)
 		} finally {
 			const tracePath = hook.mock.calls[0]?.[0]
 			hook.mockRestore()
@@ -277,7 +322,7 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 		vi.spyOn(attribution, "getWorkId").mockImplementation(() => {
 			throw new Error("ledger unavailable")
 		})
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		const registry = createProcessRegistry()
 		try {
 			const tool =
@@ -293,7 +338,7 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 			)
 			expect(result.content).toEqual(expect.arrayContaining([expect.objectContaining({ text: "bash-still-works" })]))
 			expect(warning).toHaveBeenCalledWith(
-				expect.stringContaining("work-attribution"),
+				"Could not initialize Git attribution:",
 				expect.objectContaining({ message: "ledger unavailable" }),
 			)
 		} finally {

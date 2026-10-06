@@ -18,6 +18,7 @@ import {
 	setWorkId,
 } from "../work-attribution.js"
 
+import * as diagnostics from "./diagnostics.js"
 import { flushWorkSummaries, recoverWorkSummaries } from "./summary.js"
 
 vi.mock("proper-lockfile", async (importOriginal) => ({ ...(await importOriginal<typeof locks>()) }))
@@ -363,7 +364,7 @@ describe("readable work summaries", () => {
 	})
 	it("keeps a durable request header when the derived summary directory is blocked", async () => {
 		fs.writeFileSync(join(dir, "work"), "blocked")
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const warn = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
 		const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
@@ -461,7 +462,7 @@ describe("readable work summaries", () => {
 			if (args[0] === ledger) throw new Error("injected ledger read failure")
 			return read(...args)
 		})
-		vi.spyOn(console, "warn").mockImplementation(() => {})
+		vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		recoverWorkSummaries()
 		await flushWorkSummaries()
 		expect(fs.existsSync(join(dir, "work-attribution", ".recovered.json"))).toBe(false)
@@ -530,7 +531,7 @@ describe("readable work summaries", () => {
 		})
 		if (failure === "rename")
 			vi.spyOn(asyncFs, "rename").mockRejectedValue(new Error("injected summary rename failure"))
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const warn = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		const request = recordProviderRequest(ctx)
 		await flushWorkSummaries()
 		expect(summary(workId).requests).toEqual([])
@@ -565,7 +566,7 @@ describe("readable work summaries", () => {
 			return file
 		})
 		const rename = vi.spyOn(asyncFs, "rename")
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const warn = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		const request = recordProviderRequest(ctx)
 		await flushWorkSummaries()
 		expect(rename).not.toHaveBeenCalled()
@@ -595,7 +596,7 @@ appendWorkRecord({cwd:"/project",sessionManager:{getSessionId:()=>"compromised"}
 console.log("durable"); await flushWorkSummaries();`,
 		)
 		const child = spawn(process.execPath, ["--import", "tsx", script], {
-			env: { ...process.env, PI_CODING_AGENT_DIR: dir },
+			env: { ...process.env, PI_CODING_AGENT_DIR: dir, NODE_DEBUG: "kimchi:work-attribution" },
 		})
 		let output = "",
 			errors = "",
@@ -619,7 +620,8 @@ console.log("durable"); await flushWorkSummaries();`,
 		try {
 			const code = await new Promise<number | null>((resolve) => child.once("exit", resolve))
 			expect(code, errors).toBe(0)
-			expect(errors).toContain("Work summary unavailable")
+			expect(errors).not.toMatch(/work-attribution|Work summary unavailable/)
+			expect(fs.readFileSync(join(dir, "logs", "work-attribution.log"), "utf8")).toContain("Work summary unavailable")
 			expect(summary(workId).requests).toEqual([])
 			recoverWorkSummaries()
 			await flushWorkSummaries()

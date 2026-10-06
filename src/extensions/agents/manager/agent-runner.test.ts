@@ -7,6 +7,7 @@ import { createContext } from "../../__mocks__/context.js"
 import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { AUTO_MODEL_PROVIDER } from "../../auto-model/constants.js"
 import dapExtension from "../../dap.js"
+import * as diagnostics from "../../work-attribution/diagnostics.js"
 import { flushWorkSummaries } from "../../work-attribution/summary.js"
 
 let attributionDir: string
@@ -389,7 +390,7 @@ describe("runAgent — telemetry extension", () => {
 
 	it("starts a child when attribution storage is unavailable", async () => {
 		writeFileSync(join(attributionDir, "work-attribution"), "blocked")
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		const session = makeFakeSession({})
 		mockCreateAgentSession.mockResolvedValue({
 			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],

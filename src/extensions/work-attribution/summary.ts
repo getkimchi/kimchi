@@ -7,6 +7,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { lock } from "proper-lockfile"
 import { isWorkId } from "../../shared/work-id.js"
 import { mergePullRequestLinks } from "../pull-request-status/links.js"
+import { debugWorkAttribution } from "./diagnostics.js"
 
 const LOCK_STALE_MS = 5000
 const MERGE_BATCH_SIZE = 1000
@@ -46,7 +47,7 @@ const recoveredDirectories = new Set<string>()
 /** Work IDs generated in this process: they cannot have older history to scan. */
 const newWork = new Set<string>()
 function warn(error: unknown): void {
-	console.warn("[work-attribution] Work summary unavailable:", error)
+	debugWorkAttribution("Work summary unavailable:", error)
 }
 function object(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)

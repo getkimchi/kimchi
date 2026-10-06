@@ -1,6 +1,5 @@
 import { mkdir } from "node:fs/promises"
 import { join, resolve } from "node:path"
-import { debuglog } from "node:util"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { lock } from "proper-lockfile"
 import {
@@ -8,11 +7,11 @@ import {
 	reconcileWorkPullRequests,
 	type WorkPullRequestUpdate,
 } from "../pull-request-status/pull-requests.js"
+import { debugWorkAttribution as debug } from "./diagnostics.js"
 import { knownTransitionRepositories, reconcileRepositoryTransitions } from "./file-transitions.js"
 
 export const RECONCILIATION_INTERVAL_MS = 30_000
 const PASS_BUDGET_MS = 3000
-const debug = debuglog("kimchi:work-attribution")
 interface Supervisor {
 	subscribers: Set<ReconciliationSubscriber>
 	controller: AbortController
@@ -114,7 +113,7 @@ function reportError(owner: Supervisor, error: unknown): void {
 		subscriber.onError(error)
 		reported = true
 	}
-	if (!reported) console.warn("[work-attribution] Reconciliation unavailable:", error)
+	if (!reported) debug("Reconciliation unavailable:", error)
 }
 
 function tick(agentDir: string, owner: Supervisor): void {

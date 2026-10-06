@@ -108,7 +108,7 @@ There are two routes. A commit made through Bash is linked when the command fini
 
 Linked worktrees share a `repository` path pointing to Git's common directory (usually the main checkout's `.git`). Each edit also records its actual `worktree` path, including worktrees outside the main checkout. Git object comparisons can therefore run from the shared `.git` directory.
 
-Failed background Git comparisons remain eligible for a later scan. They do not print raw errors into the terminal. To inspect reconciliation failures, launch with `NODE_DEBUG=kimchi:work-attribution kimchi`. A failed ancestry lookup stays unresolved; only Git's explicit “not an ancestor” result counts as a non-match.
+Failed background Git comparisons remain eligible for a later scan. Attribution diagnostics stay off the terminal, including when debug is enabled. Launch with `NODE_DEBUG=kimchi:work-attribution kimchi` to save them in `~/.config/kimchi/harness/logs/work-attribution.log`. A failed ancestry lookup stays unresolved; only Git's explicit “not an ancestor” result counts as a non-match.
 
 **During a Bash call**
 
@@ -239,12 +239,12 @@ All paths below are inside the agent directory.
 
 - Covers the main model, compaction, permission classification, image descriptions, Ferment evaluation and session naming.
 - Background memory capture can combine several sessions, so it is not assigned to one work.
-- If saving attribution fails, Kimchi warns and continues. Permission checks still apply, but the records can have gaps.
+- If saving attribution fails, Kimchi continues and records a diagnostic when debug is enabled. Permission checks still apply, but the records can have gaps.
 
 **Bash commits**
 
 - A conflicted rebase or cherry-pick can continue after a restart. Kimchi caches Git's state-file paths per working directory and reads the files before each Bash call. Continuing through another repository's `git -C` can remain unmatched.
-- Missing or changed Git history, ambiguous concurrent commands and oversized traces can prevent a match.
+- Bash traces are read line by line, so a trace larger than 8 MiB can still produce commit records. Missing or changed Git history, unreadable or malformed traces and ambiguous concurrent commands can prevent a match.
 
 **Background commit matching**
 
