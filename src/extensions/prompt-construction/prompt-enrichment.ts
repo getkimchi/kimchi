@@ -734,6 +734,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				skills: skills,
 				currentModelId: mode === "orchestrator" ? getOrchestratorModelId(sessionId) : effectiveModel?.id,
 				registry: registry,
+				contextWindow: effectiveModel?.contextWindow,
 				mode,
 				roles,
 				customConfigs,

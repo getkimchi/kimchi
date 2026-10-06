@@ -49,6 +49,9 @@ export interface SystemPromptBuildOptions {
 	skills?: readonly Skill[]
 	currentModelId?: string
 	registry?: ModelRegistry
+	/** Context window (tokens) of the effective model — scales the skills
+	 *  catalog budget (~1% of the window). Omitted in tests/SDK sessions. */
+	contextWindow?: number
 	mode: PromptMode
 	/** Role-based model assignments for orchestrator mode. */
 	roles?: ModelRoles
@@ -101,7 +104,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		toolsSection,
 		environmentSection,
 		projectContext,
-		skillsSection: formatSkillsSection(filteredSkills, effectiveTools),
+		skillsSection: formatSkillsSection(filteredSkills, effectiveTools, options.contextWindow),
 		orchestrationSection,
 		systemPromptBlocks: blocks.map((block) => block.content).join("\n\n"),
 		suppressed,
@@ -552,13 +555,20 @@ function formatProjectContext(contextFiles?: readonly ContextFile[]): string {
  *  body into the prompt. */
 const SKILL_DESCRIPTION_MAX_CHARS = 500
 
-/** Block-level budget for the whole catalog (~1% of a 131k-token window under
- *  the repo's chars-per-token estimator). Full entries render until the budget
- *  is exhausted; the tail degrades to name-only bullets so an oversized
- *  inventory cannot blow up the prompt. Degradation order is the inventory's
- *  own — there is no per-skill usage signal in this renderer to rank
- *  least-used first. */
+/** Block-level floor for the whole catalog. The live budget scales with the
+ *  model's context window (~1% expressed in chars, see skillsBlockBudget) —
+ *  this constant is the floor so sessions without model info keep a bounded
+ *  catalog. */
 const SKILLS_BLOCK_MAX_CHARS = 5_000
+
+/** Catalog budget as ~1% of the model's context window under the repo's
+ *  chars-per-token estimator (4 chars/token), floored at the historical
+ *  5,000 chars. Matches the discovery-listing budget convention used by
+ *  other harnesses (claude-code budgets ~1% of the window). */
+function skillsBlockBudget(contextWindow?: number): number {
+	if (contextWindow === undefined) return SKILLS_BLOCK_MAX_CHARS
+	return Math.max(SKILLS_BLOCK_MAX_CHARS, Math.floor(contextWindow / 25))
+}
 
 /** Truncate at a word boundary so the remaining routing vocabulary stays
  *  readable; descriptions above the cap end with an ellipsis. Whitespace is
@@ -578,9 +588,13 @@ function truncateDescription(description: string, max: number): string {
  *  a read-tool catalog otherwise — sessions built without the skills-manager
  *  extension (tests, SDK entry points) still get a usable instruction instead
  *  of a pointer to an unregistered tool. Both variants render as markdown. */
-function formatSkillsSection(skills: readonly Skill[] | undefined, tools: readonly ToolInfo[]): string {
+function formatSkillsSection(
+	skills: readonly Skill[] | undefined,
+	tools: readonly ToolInfo[],
+	contextWindow?: number,
+): string {
 	if (!skills || skills.length === 0) return ""
-	return formatSkills(skills, tools.some((t) => t.name === "skill_view") ? "skill_view" : "read")
+	return formatSkills(skills, tools.some((t) => t.name === "skill_view") ? "skill_view" : "read", contextWindow)
 }
 
 /** Render the skill catalog as markdown (no XML — same formatting language as
@@ -588,7 +602,11 @@ function formatSkillsSection(skills: readonly Skill[] | undefined, tools: readon
  *  read-a-path affordances and out of file locations; the read-tool fallback
  *  includes the SKILL.md path because there the model must load the body
  *  itself. */
-function formatSkills(skills: readonly Skill[] | undefined, loadTool: "skill_view" | "read"): string {
+function formatSkills(
+	skills: readonly Skill[] | undefined,
+	loadTool: "skill_view" | "read",
+	contextWindow?: number,
+): string {
 	if (!skills || skills.length === 0) return ""
 	const visible = skills.filter((s) => !s.disableModelInvocation)
 	if (visible.length === 0) return ""
@@ -603,23 +621,48 @@ function formatSkills(skills: readonly Skill[] | undefined, loadTool: "skill_vie
 		"",
 	]
 	let used = lines.join("\n").length
+	const budget = skillsBlockBudget(contextWindow)
+	let nameOnlyCount = 0
+	let omittedCount = 0
 	for (const skill of visible) {
 		const name = skill.name.replace(/\s+/g, " ").trim()
 		const description = truncateDescription(skill.description, SKILL_DESCRIPTION_MAX_CHARS)
 		const fullBullet =
 			loadTool === "read" ? `- **${name}** — ${description} (\`${skill.filePath}\`)` : `- **${name}** — ${description}`
-		if (used + 1 + fullBullet.length <= SKILLS_BLOCK_MAX_CHARS) {
+		if (used + 1 + fullBullet.length <= budget) {
 			lines.push(fullBullet)
 			used += 1 + fullBullet.length
 			continue
 		}
 		const nameOnly = `- **${name}**`
-		if (used + 1 + nameOnly.length <= SKILLS_BLOCK_MAX_CHARS) {
+		// The tail degrades to name-only but is never silently dropped: every
+		// visible skill stays listed (and addressable via the load tool). The
+		// per-entry bound guards only pathological oversized names — ordinary
+		// accumulation cannot push name-only bullets past the budget because
+		// they are not counted against it.
+		if (nameOnly.length <= budget) {
 			lines.push(nameOnly)
-			used += 1 + nameOnly.length
+			nameOnlyCount++
 			continue
 		}
-		break // even a name-only bullet exceeds the budget — drop the tail entirely
+		// Pathological case (a name alone exceeds the whole budget): count the
+		// omission and surface it in the note below instead of dropping silently.
+		omittedCount++
+	}
+	if (nameOnlyCount > 0 || omittedCount > 0) {
+		lines.push("")
+		if (nameOnlyCount > 0) {
+			const nameOnlyNote = [
+				`${nameOnlyCount} of ${visible.length} skills are listed name-only to fit the catalog budget`,
+				loadTool === "skill_view" ? "use the skill_view tool to inspect them" : undefined,
+			]
+				.filter((part) => part !== undefined)
+				.join(" — ")
+			lines.push(`> ${nameOnlyNote}.`)
+		}
+		if (omittedCount > 0) {
+			lines.push(`> ${omittedCount} oversized ${omittedCount === 1 ? "entry" : "entries"} omitted.`)
+		}
 	}
 	return lines.join("\n")
 }
