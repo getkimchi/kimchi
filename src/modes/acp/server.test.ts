@@ -6076,7 +6076,7 @@ describe("newSession model state", () => {
 			modelId: "multi-model",
 			name: "Multi-model (kimi-k2.7)",
 			// Harness-side deprecation label + routing one-liner.
-			description: "[to be deprecated] Routes each task to the best model, with an orchestrator and workers.",
+			description: "[Deprecated] Routes each task to the best model, with an orchestrator and workers.",
 		})
 		expect(res.models?.availableModels[1]).toEqual({
 			modelId: "anthropic/claude-3",

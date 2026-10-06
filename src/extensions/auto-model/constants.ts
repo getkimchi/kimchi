@@ -47,7 +47,7 @@ export const GATED_DEFAULT_MODEL_CANDIDATES: readonly string[] = ["deepseek-v4-f
  * the `auto` virtual model never see Auto, so "replaced by Auto" would point
  * at a model they cannot select.
  */
-export const MULTI_MODEL_DEPRECATION_LABEL = "[to be deprecated]"
+export const MULTI_MODEL_DEPRECATION_LABEL = "[Deprecated]"
 
 /**
  * Whether the model is a routed virtual model, by the `auto*` naming
