@@ -174,6 +174,9 @@ export function getMissingConfiguredDirectToolServers(config: McpConfig, cache: 
 	return missing
 }
 
+/** Max lazy servers listed individually in the proxy description; the rest fold into a summary count. */
+const MAX_LAZY_SERVERS_LISTED = 10
+
 export function buildProxyDescription(
 	config: McpConfig,
 	cache: MetadataCache | null,
@@ -192,6 +195,7 @@ export function buildProxyDescription(
 	}
 
 	const serverSummaries: string[] = []
+	let lazyCount = 0
 	for (const serverName of Object.keys(config.mcpServers)) {
 		const entry = cache?.servers?.[serverName]
 		const definition = config.mcpServers[serverName]
@@ -207,8 +211,14 @@ export function buildProxyDescription(
 				: 0
 		const totalItems = toolCount + resourceCount
 		if (totalItems === 0) {
+			// No cached metadata: configured but never successfully connected
+			// (or cache cleared/failed). Advertise as lazy so the agent can
+			// connect on demand. Capped to keep the description bounded.
 			if (!entry) {
-				serverSummaries.push(`${serverName} (lazy)`)
+				lazyCount++
+				if (lazyCount <= MAX_LAZY_SERVERS_LISTED) {
+					serverSummaries.push(`${serverName} (lazy)`)
+				}
 			}
 			continue
 		}
@@ -217,6 +227,11 @@ export function buildProxyDescription(
 		if (proxyCount > 0) {
 			serverSummaries.push(`${serverName} (${proxyCount} tools)`)
 		}
+	}
+
+	const lazyOverflow = lazyCount - MAX_LAZY_SERVERS_LISTED
+	if (lazyOverflow > 0) {
+		serverSummaries.push(`... and ${lazyOverflow} more (lazy)`)
 	}
 
 	if (serverSummaries.length > 0) {

@@ -50,6 +50,23 @@ describe("buildProxyDescription", () => {
 			expect(desc).toContain("lazy-a (lazy)")
 			expect(desc).toContain("lazy-b (lazy)")
 		})
+
+		it("caps listed lazy servers and folds the remainder into a count", () => {
+			const config = makeConfig(
+				Object.fromEntries(
+					Array.from({ length: 12 }, (_, i) => [`lazy-${i}`, { command: "npx", args: ["-y", `s${i}`] }]),
+				),
+			)
+			const cache = makeCache({})
+
+			const desc = buildProxyDescription(config, cache, [])
+
+			expect(desc).toContain("lazy-0 (lazy)")
+			expect(desc).toContain("lazy-9 (lazy)")
+			expect(desc).not.toContain("lazy-10 (lazy)")
+			expect(desc).not.toContain("lazy-11 (lazy)")
+			expect(desc).toContain("... and 2 more (lazy)")
+		})
 	})
 
 	describe("eager-only behaviour unchanged", () => {
