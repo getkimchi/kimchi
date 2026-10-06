@@ -110,6 +110,8 @@ Linked worktrees share a `repository` path pointing to Git's common directory (u
 
 Failed background Git comparisons remain eligible for a later scan. Attribution diagnostics stay off the terminal, including when debug is enabled. Launch with `NODE_DEBUG=kimchi:work-attribution kimchi` to save them in `~/.config/kimchi/harness/logs/work-attribution.log`. A failed ancestry lookup stays unresolved; only Git's explicit “not an ancestor” result counts as a non-match.
 
+While the TUI is active, console output from extensions and dependencies goes to `~/.config/kimchi/harness/logs/tui.log`. The file is private and starts over at 1 MiB. Normal console output returns when the terminal stops, including for an external editor or crash. Plain CLI and Studio output are unchanged.
+
 **During a Bash call**
 
 ```mermaid

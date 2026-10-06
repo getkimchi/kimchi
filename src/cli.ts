@@ -187,6 +187,7 @@ import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
+import { installTuiConsoleLogging } from "./tui-console.js"
 import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
 import { installCompactionRecoveryPatch, installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
 import {
@@ -608,6 +609,7 @@ try {
 		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
 		const terminalStartupOutputAllowed = isTerminalUiMode(rawArgs, terminalIo)
 		if (terminalStartupOutputAllowed) {
+			installTuiConsoleLogging()
 			await probeTerminalBackground()
 			await probeKittyKeyboardSupport()
 		}
