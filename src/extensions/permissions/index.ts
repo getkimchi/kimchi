@@ -144,8 +144,7 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	"get_subagent_result",
 	"steer_subagent",
 	// Plan-review control plane: writes the plan artifact and opens the review
-	// flow. Mode eligibility (plan / auto / agent worker) is enforced inside
-	// the tool's execute — there is nothing for permissions to gate here.
+	// flow — there is nothing for permissions to gate here.
 	"submit_plan",
 	BASH_CONTROL_TOOL_NAME,
 	...FERMENT_V2_TOOL_NAMES,
@@ -713,30 +712,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				}
 			}
 
-			// Allowed contexts:
-			// 1. Adhoc plan mode (mode === "plan") — full review flow.
-			// 2. Auto mode — the session is already in an execution posture; the
-			//    model may still draft a plan and request review mid-run.
-			//    Approval continues in auto — no mode transition.
-			// 3. Agent workers (e.g. Plan persona subagents) — saves + terminates
-			//    with no review emit; the parent orchestrator is the plan's
-			//    evaluator.
-			const mode = getRuntimePermissionMode().mode
-			if (mode !== "plan" && mode !== "auto" && !isAgentWorker()) {
-				const hint =
-					mode === "default"
-						? "To enter plan mode, call the questionnaire tool."
-						: "Ask the user to switch the permission mode to plan."
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Error: submit_plan is only available in plan mode, auto mode, or from a Plan agent worker (current mode: ${mode}). ${hint}`,
-						},
-					],
-					details: { submitted: false },
-				}
-			}
+			// Available in every permission mode. Plan mode is the only one that
+			// transitions on approval (released into auto); submissions from
+			// default/auto/yolo continue in their current mode.
 
 			// Save plan to disk
 			if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))

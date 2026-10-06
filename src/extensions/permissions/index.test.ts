@@ -4338,10 +4338,10 @@ describe("adhoc plan review plannotator decision routing", () => {
 })
 
 // =============================================================================
-// submit_plan mode gating (auto allowed; default/yolo refused with guidance)
+// submit_plan availability across permission modes
 // =============================================================================
 
-describe("adhoc submit_plan mode gating", () => {
+describe("adhoc submit_plan mode availability", () => {
 	const PLAN =
 		"# Plan: Cache Layer\n\n## Goal\nAdd caching layer.\n\n## Chunks\n\n### Chunk 1: Add cache primitive\n- **Accept When**: round-trip works"
 
@@ -4405,22 +4405,58 @@ describe("adhoc submit_plan mode gating", () => {
 		}
 	})
 
-	it("refuses submit_plan from default mode with an actionable error", async () => {
+	it("allows submit_plan from default mode: approval executes without a mode transition", async () => {
 		const harness = createPermissionsHarness(["read", "bash"])
 		await harness.fire("session_start", {}, createMockContext([]))
-		const result = await executeSubmitPlan(harness, PLAN, createMockContext([]))
-		expect(result.details?.submitted).toBe(false)
-		expect(result.content[0]?.text).toContain("current mode: default")
-		expect(result.content[0]?.text).toContain("questionnaire")
+		const modeChanged = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.MODE_CHANGED, modeChanged)
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-default-submit-"))
+		try {
+			// TUI menu pick ("Execute the plan locally") drives the kimchi-tui decision.
+			const ctx = createMockContext([EXECUTE_LOCAL_DECISION_OPTION])
+			ctx.cwd = tmpDir
+			const result = await executeSubmitPlan(harness, PLAN, ctx)
+			expect(result.details?.submitted).toBe(true)
+
+			await vi.waitFor(() => {
+				expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+					expect.objectContaining({ customType: "plan-execute", content: expect.stringContaining(PLAN) }),
+					expect.anything(),
+				)
+			})
+			// Approval must not change the mode: per-edit permission prompts
+			// continue to gate execution in default mode.
+			expect(modeChanged).not.toHaveBeenCalled()
+			expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("default")
+			expect(readdirSync(join(tmpDir, ".kimchi", "plans"))).toEqual(["plan-cache-layer.md"])
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
 	})
 
-	it("refuses submit_plan from yolo mode with an actionable error", async () => {
+	it("allows submit_plan from yolo mode: approval executes without a mode transition", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { yolo: true })
 		await harness.fire("session_start", {}, createMockContext([]))
-		const result = await executeSubmitPlan(harness, PLAN, createMockContext([]))
-		expect(result.details?.submitted).toBe(false)
-		expect(result.content[0]?.text).toContain("current mode: yolo")
-		expect(result.content[0]?.text).toContain("Ask the user to switch the permission mode to plan")
-		expect(result.content[0]?.text).not.toContain("shift+tab")
+		const modeChanged = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.MODE_CHANGED, modeChanged)
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-yolo-submit-"))
+		try {
+			const ctx = createMockContext([EXECUTE_LOCAL_DECISION_OPTION])
+			ctx.cwd = tmpDir
+			const result = await executeSubmitPlan(harness, PLAN, ctx)
+			expect(result.details?.submitted).toBe(true)
+
+			await vi.waitFor(() => {
+				expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+					expect.objectContaining({ customType: "plan-execute", content: expect.stringContaining(PLAN) }),
+					expect.anything(),
+				)
+			})
+			expect(modeChanged).not.toHaveBeenCalled()
+			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "flag", initiatedBy: "user" })
+			expect(readdirSync(join(tmpDir, ".kimchi", "plans"))).toEqual(["plan-cache-layer.md"])
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
 	})
 })
