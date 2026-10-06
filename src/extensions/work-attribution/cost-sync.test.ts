@@ -1,12 +1,18 @@
 import { randomUUID } from "node:crypto"
-import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as config from "../../config.js"
 import { createContext } from "../__mocks__/context.js"
 import { appendWorkRecord, getWorkId } from "../work-attribution.js"
-import { captureBillingSource, reconcileWorkCosts, requestTagSelector, workCostDetails } from "./cost-sync.js"
+import {
+	captureBillingSource,
+	readWorkCostReport,
+	reconcileWorkCosts,
+	requestTagSelector,
+	workCostDetails,
+} from "./cost-sync.js"
 import { flushWorkSummaries, readWorkRecords, recoverWorkSummaries } from "./summary.js"
 
 vi.mock("../../config.js", async (original) => ({ ...(await original<typeof config>()) }))
@@ -21,6 +27,8 @@ let currentKey: string
 const fetchMock = vi.fn<typeof fetch>()
 
 beforeEach(() => {
+	vi.useFakeTimers({ toFake: ["Date"] })
+	vi.setSystemTime(new Date("2026-10-01T12:00:00.000Z"))
 	dir = mkdtempSync(join(tmpdir(), "kimchi-cost-sync-"))
 	currentKey = "test-only-original-key"
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
@@ -48,6 +56,7 @@ afterEach(async () => {
 	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
 	vi.unstubAllGlobals()
+	vi.useRealTimers()
 	rmSync(dir, { recursive: true, force: true })
 })
 
@@ -209,12 +218,11 @@ describe("automatic exact work cost lookup", () => {
 			allocation: "inferred",
 			totalCostUsd: "0.123456789",
 		})
+		expect(workCostDetails(dir, workId)).toContain("Cost: $0.123456789 USD — https://github.com/example/repo/pull/1")
 		expect(workCostDetails(dir, workId)).toContain(
-			"Cost: unknown; $0.000000000 USD confirmed so far — https://github.com/example/repo/pull/1",
+			"Prices: 1/1 requests priced. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
 		)
-		expect(workCostDetails(dir, workId)).toContain(
-			"Prices: 1/1 requests billed. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
-		)
+		expect(workCostDetails(dir, workId)).toContain("Sure: $0.000000000 USD; likely: $0.123456789 USD.")
 	})
 
 	it("shows price coverage and unresolved ownership separately in work details", async () => {
@@ -224,7 +232,7 @@ describe("automatic exact work cost lookup", () => {
 		appendWorkRecord(ctx, { type: "request", requestId: "not-billed", startedAt: "2026-10-01T08:00:00Z" })
 		await sync()
 		expect(workCostDetails(dir, workId)).toContain(
-			"Prices: 1/2 requests billed. PR assignments: 2 unresolved, 0 inferred, 0 shared.",
+			"Prices: 1/2 requests priced. PR assignments: 2 unresolved, 0 inferred, 0 shared.",
 		)
 	})
 	it("refreshes both work views after a correction and revocation without duplicating bills", async () => {
@@ -1181,5 +1189,122 @@ describe("automatic exact work cost lookup", () => {
 		await expect(running).rejects.toThrow()
 		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual([])
 		expect(() => report(workId)).toThrow()
+	})
+})
+
+describe("billing refresh after the request tag window closes", () => {
+	function taggedRequest() {
+		const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => "session" } })
+		getWorkId(ctx)
+		const requestId = randomUUID()
+		const dispatchedAt = "2026-10-01T08:00:00.000Z"
+		appendWorkRecord(ctx, {
+			type: "request",
+			requestId,
+			startedAt: dispatchedAt,
+			scope: { account: { apiUrl: API, organizationId: ORG, userId: PROMPT }, repository: join(dir, ".git") },
+		})
+		appendWorkRecord(ctx, {
+			type: "request_dispatch",
+			requestId,
+			dispatchedAt,
+			billingSource: captureBillingSource(new Headers({ Authorization: `Bearer ${currentKey}` }), GATEWAY, dir),
+			billingSelector: requestTagSelector(requestId, dispatchedAt),
+		})
+	}
+	const ledgerBytes = () =>
+		readdirSync(join(dir, "work-attribution"))
+			.filter((name) => name.endsWith(".jsonl"))
+			.reduce((sum, name) => sum + statSync(join(dir, "work-attribution", name)).size, 0)
+	const costRows = () => readWorkRecords(dir).filter((row) => row.type === "request_cost")
+	const billingCalls = () => fetchMock.mock.calls.filter(([url]) => String(url).includes("llm-requests")).length
+
+	it("stops re-querying and re-recording a never-billed attempt once no bill can still arrive", async () => {
+		taggedRequest()
+		fetchMock.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: ORG, userId: PROMPT })
+				: Response.json({ items: [] }),
+		)
+		// 50 days after dispatch, past the selector's fixed 32-day end time.
+		let now = Date.parse("2026-11-20T00:00:00.000Z")
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		const before = ledgerBytes()
+		for (let pass = 0; pass < 20; pass++) {
+			await reconcileWorkCosts(dir, new AbortController().signal)
+			now += 31_000
+		}
+		expect(billingCalls()).toBeLessThanOrEqual(1)
+		expect(costRows().length).toBeLessThanOrEqual(1)
+		expect(ledgerBytes() - before).toBeLessThan(2000)
+		expect(readWorkCostReport(dir).report.requests[0].totalCostUsd).toBe("0.000000000")
+	})
+	it("does not re-record an unchanged confirmed price on every refresh", async () => {
+		taggedRequest()
+		fetchMock.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: ORG, userId: PROMPT })
+				: Response.json({ items: [{ id: ROW, totalPrice: "0.000166000" }] }),
+		)
+		let now = Date.parse("2026-11-20T00:00:00.000Z")
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		for (let pass = 0; pass < 12; pass++) {
+			await reconcileWorkCosts(dir, new AbortController().signal)
+			now += 5 * 60_000 + 1000
+		}
+		expect(costRows()).toHaveLength(1)
+	})
+})
+
+describe("empty billing settlement", () => {
+	it("settles a complete empty lookup after 24 hours and accepts a later bill", async () => {
+		const { workId, requestId } = tagged()
+		const dispatchedAt = Date.parse("2026-10-01T08:00:00.000Z")
+		let now = dispatchedAt + 23 * 60 * 60_000
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		let billed = false
+		fetchMock.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: ORG, userId: PROMPT })
+				: Response.json({ items: billed ? [{ id: ROW, totalPrice: "0.012345678" }] : [] }),
+		)
+		await sync()
+		expect(report(workId).requests[0].totalCostUsd).toBeNull()
+		now = dispatchedAt + 24 * 60 * 60_000
+		await sync()
+		expect(report(workId).requests[0]).toMatchObject({ requestId, totalCostUsd: "0.000000000", billingRecordIds: [] })
+		billed = true
+		now += 24 * 60 * 60_000
+		await sync()
+		expect(report(workId).requests[0]).toMatchObject({ totalCostUsd: "0.012345678", billingRecordIds: [ROW] })
+	})
+	it.each(["incomplete", "error"])("does not settle a %s empty lookup", async (kind) => {
+		const { workId } = tagged()
+		vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-03T08:00:00.000Z"))
+		fetchMock.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: ORG, userId: PROMPT })
+				: kind === "incomplete"
+					? Response.json({ items: [], totalCount: 1 })
+					: new Response("unavailable", { status: 503 }),
+		)
+		await sync()
+		expect(report(workId).requests[0].totalCostUsd).toBeNull()
+	})
+	it("keeps unchanged checks out of journals and preserves retry timing across reloads", async () => {
+		const { workId } = tagged()
+		let now = Date.parse("2026-10-02T08:00:00.000Z")
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		await sync()
+		const before = readWorkRecords(dir).filter((row) => row.type === "request_cost")
+		now += 6 * 60_000
+		await sync()
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual(before)
+		fetchMock.mockClear()
+		vi.resetModules()
+		const reloaded = await import("./cost-sync.js")
+		await reloaded.reconcileWorkCosts(dir, new AbortController().signal)
+		expect(fetchMock).not.toHaveBeenCalled()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
 	})
 })

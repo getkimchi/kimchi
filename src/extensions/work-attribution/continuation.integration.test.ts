@@ -416,8 +416,13 @@ it.each([
 	const report = calculatePullRequestCosts(withPull(), prices)
 	for (const requestId of [flow.research, flow.producer, implementation])
 		expect(report.requests.find((row) => row.requestId === requestId)?.allocation).toBe("pull-request")
-	expect(report.requests.find((row) => row.requestId === flow.unrelated)?.allocation).toBe("unknown")
-	expect(report.pullRequests[0].knownCostUsd).toBe("3.000000000")
+	expect(report.requests.find((row) => row.requestId === flow.unrelated)?.allocation).toBe("inferred")
+	expect(report.pullRequests[0]).toMatchObject({
+		knownCostUsd: "4.000000000",
+		totalCostUsd: "4.000000000",
+		explicit: { totalCostUsd: "3.000000000" },
+		inferred: { totalCostUsd: "1.000000000" },
+	})
 	await correctWorkLink(flow.implementer, `unlink ${link?.linkId}`)
 	const next = createContext({ cwd: flow.cwd, sessionManager: { getSessionId: () => "later-consumer" } })
 	await flow.input({ type: "input", source: "interactive", text: flow.text }, next)

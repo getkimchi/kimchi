@@ -346,10 +346,12 @@ describe("request matching decisions", () => {
 		)
 		expect(report.requests[0]).toMatchObject({ allocation: "inferred", segment, totalCostUsd: "1.000000000" })
 		expect(report.pullRequests[0]).toMatchObject({
-			requestIds: [],
+			requestIds: ["inferred"],
 			inferredRequestIds: ["inferred"],
-			knownCostUsd: "0.000000000",
-			totalCostUsd: null,
+			knownCostUsd: "1.000000000",
+			totalCostUsd: "1.000000000",
+			explicit: { requestIds: [], totalCostUsd: "0.000000000" },
+			inferred: { requestIds: ["inferred"], totalCostUsd: "1.000000000" },
 		})
 		expect(report.unallocated.inferred).toMatchObject({ requestIds: ["inferred"], totalCostUsd: "1.000000000" })
 	})
@@ -677,6 +679,54 @@ describe("exclusive native contributions within a multi-PR work", () => {
 		expect(calculatePullRequestCosts(records, [charge("a", "0.123456789")]).pullRequests[0].totalCostUsd).toBe(
 			"0.123456789",
 		)
+	})
+})
+
+describe("sure and likely spend per input", () => {
+	it("confirms the input that produced native edits and keeps other session inputs likely", () => {
+		const segment = { id: "implementation", attribution: "session", reason: "matching-disabled" }
+		const edit = nativeEdit("edit")
+		const rows = [
+			request("prepare", "work-a", "session-a", time(8), { segment }),
+			request("edit", "work-a", "session-a", time(10), { segment }),
+			request("chat", "work-a", "session-a", time(11), { segment: { ...segment, id: "side-question" } }),
+			edit,
+			contribution(edit),
+		]
+		const costs = calculatePullRequestCosts(rows, [
+			charge("prepare", "0.1"),
+			charge("edit", "0.2"),
+			charge("chat", "0.000000001"),
+		])
+		expect(costs.requests.map((row) => [row.requestId, row.allocation])).toEqual([
+			["chat", "inferred"],
+			["edit", "pull-request"],
+			["prepare", "pull-request"],
+		])
+		expect(costs.pullRequests[0]).toMatchObject({
+			requestIds: ["chat", "edit", "prepare"],
+			totalCostUsd: "0.300000001",
+			explicit: { requestIds: ["edit", "prepare"], totalCostUsd: "0.300000000" },
+			inferred: { requestIds: ["chat"], totalCostUsd: "0.000000001" },
+		})
+	})
+	it("keeps an input shared when its requests edited two different PRs", () => {
+		const segment = { id: "one-input", attribution: "session", reason: "matching-disabled" }
+		const first = nativeEdit("first")
+		const second = nativeEdit("second", { path: "second.ts" })
+		const costs = calculatePullRequestCosts(
+			[
+				request("first", "work-a", "session-a", time(10), { segment }),
+				request("second", "work-a", "session-a", time(11), { segment }),
+				first,
+				second,
+				contribution(first),
+				contribution(second, secondPull(), { sha: "b".repeat(40) }),
+			],
+			[charge("first", "1"), charge("second", "2")],
+		)
+		expect(costs.requests.map((row) => row.allocation)).toEqual(["shared", "shared"])
+		expect(costs.pullRequests.every((row) => row.totalCostUsd === null)).toBe(true)
 	})
 })
 
@@ -1158,5 +1208,80 @@ describe("calculatePullRequestCosts", () => {
 			[charge("a", "999999999.999999999"), charge("b", "999999999.999999999"), charge("c", "0.000000001")],
 		)
 		expect(report.pullRequests[0].totalCostUsd).toBe("1999999999.999999999")
+	})
+})
+
+describe("repository renames", () => {
+	it("prices a PR once when links from before and after a rename share its provider ID", () => {
+		const beforeRename = pullRequest({
+			id: "81",
+			repositoryId: "42",
+			state: "open",
+			mergeCommitSha: null,
+			mergedAt: null,
+			closedAt: null,
+			checkedAt: time(25),
+		})
+		const afterRename = pullRequest({
+			id: "81",
+			repositoryId: "42",
+			repository: "example/renamed",
+			url: "https://github.com/example/renamed/pull/1",
+			checkedAt: time(45),
+		})
+		const report = calculatePullRequestCosts(
+			[request("a"), commit("work-a", [beforeRename, afterRename])],
+			[charge("a", "1")],
+		)
+		expect(report.pullRequests).toHaveLength(1)
+		expect(report.requests[0]).toMatchObject({ allocation: "pull-request", totalCostUsd: "1.000000000" })
+		expect(report.pullRequests[0]).toMatchObject({ requestIds: ["a"], totalCostUsd: "1.000000000" })
+	})
+})
+
+describe("requests started after a PR merged", () => {
+	it.each([
+		["has no bill yet", [] as RequestCostObservation[], {}],
+		[
+			"has an unresolved work match",
+			[charge("late", "2")],
+			{ segment: { id: "later-input", attribution: "unknown", reason: "model-uncertain" } },
+		],
+		[
+			"was billed to another account",
+			[{ ...charge("late", "2"), account: { ...testScope.account, userId: "50000000-0000-4000-8000-000000000005" } }],
+			{},
+		],
+	])("keeps the merged PR total complete when a later request %s", (_case, lateCharges, fields) => {
+		const report = calculatePullRequestCosts(
+			[request("before"), request("late", "work-a", "session-a", time(35), fields), commit()],
+			[charge("before", "1"), ...lateCharges],
+		)
+		expect(report.pullRequests[0]).toMatchObject({
+			requestIds: ["before"],
+			unknownRequestIds: [],
+			totalCostUsd: "1.000000000",
+		})
+	})
+})
+
+describe("work-matching side calls", () => {
+	it("keeps a merged PR total complete when matching calls ran before the input's decision", () => {
+		const report = calculatePullRequestCosts(
+			[
+				// Recorded while the input's provisional segment was still unresolved (work-attribution.ts input handler).
+				request("matching", "work-a", "session-a", time(9), {
+					purpose: "work-matching",
+					segment: { id: "input", attribution: "unknown", reason: "matching-unresolved" },
+				}),
+				request("main", "work-a", "session-a", time(10), {
+					segment: { id: "input", attribution: "session", reason: "new-task" },
+				}),
+				commit(),
+			],
+			[charge("matching", "0.001"), charge("main", "1")],
+		)
+		expect(report.pullRequests[0].unknownRequestIds).toEqual([])
+		expect(report.pullRequests[0].totalCostUsd).not.toBeNull()
 	})
 })

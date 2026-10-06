@@ -37,6 +37,7 @@ beforeEach(() => {
 	vi.spyOn(scope, "captureWorkScope").mockResolvedValue(captured)
 	vi.spyOn(scope, "readWorkScope").mockReturnValue(captured.scope)
 	vi.spyOn(supervisor, "subscribeFileReconciliation").mockReturnValue(async () => {})
+	vi.spyOn(supervisor, "subscribeCostReconciliation").mockReturnValue(async () => {})
 })
 afterEach(async () => {
 	await flushWorkSummaries()

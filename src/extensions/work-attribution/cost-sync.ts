@@ -4,11 +4,12 @@ import { mkdir, open, rename, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations.js"
+import { writeFileAtomic } from "../../config/json.js"
 import { loadConfig, resolveEndpoints } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { calculatePullRequestCosts, decimalNanos, type RequestCostObservation } from "./costs.js"
-import { isWorkAccount } from "./scope.js"
+import { isWorkAccount, type WorkAccount } from "./scope.js"
 import { readWorkRecords, type WorkRecord } from "./summary.js"
 
 export interface BillingSource {
@@ -71,7 +72,7 @@ interface BillingRow {
 	metadataUnavailable?: string[]
 }
 interface BillingLookup {
-	status: "priced" | "pending" | "unavailable" | "invalid" | "account-changed"
+	status: "priced" | "no-charge" | "pending" | "unavailable" | "invalid" | "account-changed"
 	checkedAt: string
 	organizationId?: string
 	userId?: string
@@ -87,6 +88,7 @@ interface RequestBilling {
 	invalid: boolean
 	lookup?: BillingLookup
 	substantiveLookup?: BillingLookup
+	lastCost?: WorkRecord
 	organizationId?: string
 	userId?: string
 	observations: RequestCostObservation[]
@@ -100,6 +102,38 @@ const MAX_BODY_BYTES = 1_048_576
 const PAGE_SIZE = 100
 const PENDING_REFRESH_MS = 30_000
 const PRICED_REFRESH_MS = 5 * 60_000
+const DAY_MS = 24 * 60 * 60_000
+const SLOW_REFRESH_MS = 60 * 60_000
+
+interface BillingPoll {
+	checkedAt: number
+	/** Ignore scheduling state if its source observation has changed or disappeared. */
+	lookupAt: string
+}
+
+function readBillingPolls(path: string): Record<string, BillingPoll> {
+	const polls: Record<string, BillingPoll> = Object.create(null)
+	try {
+		const value: unknown = JSON.parse(readFileSync(path, "utf8"))
+		if (object(value))
+			for (const [id, entry] of Object.entries(value)) {
+				if (
+					object(entry) &&
+					typeof entry.checkedAt === "number" &&
+					Number.isFinite(entry.checkedAt) &&
+					entry.checkedAt <= Date.now() &&
+					typeof entry.lookupAt === "string"
+				)
+					polls[id] = { checkedAt: entry.checkedAt, lookupAt: entry.lookupAt }
+			}
+	} catch {}
+	return polls
+}
+
+function costFingerprint(rows: unknown[], lookup: BillingLookup): string {
+	const { checkedAt: _, ...result } = lookup
+	return JSON.stringify([result, [...new Set(rows.map((row) => JSON.stringify(row)))].sort()])
+}
 
 function object(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -135,6 +169,7 @@ function storedLookup(value: unknown): value is BillingLookup {
 		return false
 	return (
 		(value.status === "priced" ||
+			value.status === "no-charge" ||
 			value.status === "pending" ||
 			value.status === "unavailable" ||
 			value.status === "invalid" ||
@@ -272,7 +307,11 @@ function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
 			continue
 		}
 		const lookup = row.billingLookup
-		if (!lookup.organizationId && (row.billingRows.length || lookup.status === "priced")) {
+		if (
+			(!lookup.organizationId &&
+				(row.billingRows.length || lookup.status === "priced" || lookup.status === "no-charge")) ||
+			(lookup.status === "no-charge" && row.billingRows.length > 0)
+		) {
 			item.invalid = true
 			continue
 		}
@@ -284,7 +323,10 @@ function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
 			if (item.userId && item.userId !== lookup.userId) item.invalid = true
 			item.userId = lookup.userId
 		}
-		if (!item.lookup || Date.parse(lookup.checkedAt) >= Date.parse(item.lookup.checkedAt)) item.lookup = lookup
+		if (!item.lookup || Date.parse(lookup.checkedAt) >= Date.parse(item.lookup.checkedAt)) {
+			item.lookup = lookup
+			item.lastCost = row
+		}
 		// A timeout before any billing page adds no evidence. Retain its retry timing
 		// and diagnostics. Older generic timeout records may contain incomplete pages.
 		const beforePageTimeout =
@@ -531,19 +573,42 @@ async function lookupRows(
 	throw new Error("Billing lookup exceeded the page limit")
 }
 
-async function publishReports(agentDir: string, assertLease: () => void): Promise<void> {
-	const records = readWorkRecords(agentDir)
+/** Read durable evidence rather than combining per-work caches. */
+export function readWorkCostReport(agentDir: string, records = readWorkRecords(agentDir)) {
 	const requests = billingRequests(records)
+	const noCharge = new Map<string, WorkAccount>()
+	for (const item of requests.values()) {
+		const lookup = item.substantiveLookup
+		if (
+			!item.invalid &&
+			!item.observations.length &&
+			item.source &&
+			lookup?.status === "no-charge" &&
+			lookup.organizationId &&
+			lookup.userId
+		)
+			noCharge.set(item.requestId, {
+				apiUrl: item.source.apiUrl,
+				organizationId: lookup.organizationId,
+				userId: lookup.userId,
+			})
+	}
 	const incomplete = new Set(
 		[...requests.values()]
-			.filter((item) => item.invalid || item.substantiveLookup?.status !== "priced")
+			.filter((item) => item.invalid || (item.substantiveLookup?.status !== "priced" && !noCharge.has(item.requestId)))
 			.map((item) => item.requestId),
 	)
 	const report = calculatePullRequestCosts(
 		records,
 		[...requests.values()].flatMap((item) => (item.invalid ? [] : item.observations)),
 		incomplete,
+		noCharge,
 	)
+	return { records, requests, report }
+}
+
+async function publishReports(agentDir: string, assertLease: () => void, snapshot?: WorkRecord[]): Promise<void> {
+	const { records, requests, report } = readWorkCostReport(agentDir, snapshot)
 	const workIds = new Set(records.map((row) => row.workId))
 	for (const workId of workIds) {
 		assertLease()
@@ -584,7 +649,12 @@ export async function reconcileWorkCosts(
 	signal: AbortSignal,
 	assertLease: () => void = () => {},
 ): Promise<void> {
-	const requests = billingRequests(readWorkRecords(agentDir))
+	const records = readWorkRecords(agentDir)
+	const requests = billingRequests(records)
+	let changed = false
+	const pollingPath = join(agentDir, "work-attribution", "billing-polls.json")
+	const polls = readBillingPolls(pollingPath)
+	const previousPolls = JSON.stringify(polls)
 	const deadline = Date.now() + PASS_MS
 	const controller = new AbortController()
 	const timeout = setTimeout(() => controller.abort(new Error(BEFORE_PAGE_TIMEOUT_MESSAGE)), PASS_MS)
@@ -603,9 +673,13 @@ export async function reconcileWorkCosts(
 	const organizations = new Map<string, Promise<VerifyApiKeyResponse>>()
 	const credentials = new Map<string, { key: string; source?: BillingSource }>()
 	try {
-		const ordered = [...requests.values()].sort((left, right) =>
-			(left.lookup?.checkedAt ?? "").localeCompare(right.lookup?.checkedAt ?? ""),
-		)
+		const checkedAt = (item: RequestBilling) => {
+			const poll = polls[item.requestId]
+			return poll && item.lookup && poll.lookupAt === item.lookup.checkedAt
+				? poll.checkedAt
+				: Date.parse(item.lookup?.checkedAt ?? "")
+		}
+		const ordered = [...requests.values()].sort((left, right) => (checkedAt(left) || 0) - (checkedAt(right) || 0))
 		for (const item of ordered) {
 			signal.throwIfAborted()
 			assertLease()
@@ -614,8 +688,23 @@ export async function reconcileWorkCosts(
 			// Without an exact identity there is no network work to retry. The report derives
 			// this state from source records instead of appending the same event every tick.
 			if (item.invalid || !item.source || !item.selector) continue
-			const refresh = item.lookup?.status === "priced" ? PRICED_REFRESH_MS : PENDING_REFRESH_MS
-			if (item.lookup && Date.now() - Date.parse(item.lookup.checkedAt) < refresh) continue
+			const startedAt =
+				item.selector.type === "tag"
+					? Date.parse(item.selector.endTime) - 32 * DAY_MS
+					: Date.parse(String(item.request.startedAt ?? item.request.recordedAt))
+			const lastCheck = checkedAt(item)
+			// One final lookup may catch up after a closed client; subsequent launches reuse it.
+			if (Number.isFinite(startedAt) && lastCheck >= startedAt + 32 * DAY_MS) continue
+			const age = Date.now() - startedAt
+			const refresh =
+				item.lookup?.status === "no-charge"
+					? SLOW_REFRESH_MS
+					: item.lookup?.status === "priced"
+						? PRICED_REFRESH_MS
+						: item.lookup?.status === "pending" && age >= DAY_MS
+							? PRICED_REFRESH_MS
+							: PENDING_REFRESH_MS
+			if (Date.now() - lastCheck < refresh) continue
 			const lookup: BillingLookup = {
 				status: "pending",
 				checkedAt: new Date(Date.now()).toISOString(),
@@ -685,6 +774,8 @@ export async function reconcileWorkCosts(
 								rows,
 							)
 							lookup.status = rows.length && rows.every((row) => row.costUsd !== null) ? "priced" : "pending"
+							if (!rows.length && !item.observations.length && age >= DAY_MS && lookup.userId)
+								lookup.status = "no-charge"
 						}
 					}
 				}
@@ -698,10 +789,20 @@ export async function reconcileWorkCosts(
 						: "Billing lookup unavailable"
 			}
 			assertLease()
+			const previousLookup = item.lookup
+			const unchanged =
+				previousLookup &&
+				Array.isArray(item.lastCost?.billingRows) &&
+				costFingerprint(rows, lookup) === costFingerprint(item.lastCost.billingRows, previousLookup)
+			polls[item.requestId] = {
+				checkedAt: Date.parse(lookup.checkedAt),
+				lookupAt: unchanged ? previousLookup.checkedAt : lookup.checkedAt,
+			}
 			if (
-				lookup.status === "account-changed" &&
-				item.lookup?.status === lookup.status &&
-				item.lookup.reason === lookup.reason
+				unchanged ||
+				(lookup.status === "account-changed" &&
+					item.lookup?.status === lookup.status &&
+					item.lookup.reason === lookup.reason)
 			) {
 				processed--
 				continue
@@ -724,12 +825,20 @@ export async function reconcileWorkCosts(
 				item.request.workId,
 				join(agentDir, "work-attribution", `${encodeURIComponent(item.request.sessionId)}.jsonl`),
 			)
+			changed = true
 		}
 		signal.throwIfAborted()
-		await publishReports(agentDir, () => {
-			signal.throwIfAborted()
-			assertLease()
-		})
+		assertLease()
+		const currentPolls = JSON.stringify(polls)
+		if (currentPolls !== previousPolls) writeFileAtomic(pollingPath, `${currentPolls}\n`)
+		await publishReports(
+			agentDir,
+			() => {
+				signal.throwIfAborted()
+				assertLease()
+			},
+			changed ? undefined : records,
+		)
 	} finally {
 		clearTimeout(timeout)
 	}
@@ -753,6 +862,10 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 			const label = object(row.pullRequest) ? row.pullRequest.url : row.key
 			if (typeof row.totalCostUsd === "string") lines.push(`Cost: $${row.totalCostUsd} USD — ${label}`)
 			else lines.push(`Cost: unknown; $${row.knownCostUsd} USD confirmed so far — ${label}`)
+			if (object(row.explicit) && object(row.inferred))
+				lines.push(
+					`Sure: $${row.explicit.knownCostUsd} USD; likely: $${row.inferred.knownCostUsd} USD${row.totalCostUsd === null ? " known so far" : ""}.`,
+				)
 		}
 		if (Array.isArray(value.requests)) {
 			const requests = value.requests.filter(object)
@@ -761,7 +874,7 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 			const inferred = requests.filter((row) => row.allocation === "inferred").length
 			const shared = requests.filter((row) => row.allocation === "shared").length
 			lines.push(
-				`Prices: ${priced}/${requests.length} requests billed. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
+				`Prices: ${priced}/${requests.length} requests priced. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
 			)
 		}
 		return [...lines, `Cost details: ${join(agentDir, "work", workId, "costs.json")}`]

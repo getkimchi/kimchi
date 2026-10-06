@@ -2,7 +2,7 @@
 
 Kimchi keeps a local record of the model requests, file edits, plans and commits that belong to the same work. A `workId` connects them, even when planning and implementation happen in different sessions or worktrees of the same repository.
 
-The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's home directory. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits, then looks up their request costs in the background. `/work` shows the saved result; `costs.json` keeps the calculation. Missing billing data stays unknown. These files are not uploaded.
+The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's home directory. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits, then looks up their request costs in the background. `/work` shows one total split into sure and likely spend; `costs.json` keeps the calculation. Incomplete billing stays unknown. These files are not uploaded.
 
 ## Where the files live
 
@@ -287,6 +287,7 @@ All paths below are inside the agent directory.
 | --- | --- |
 | `work/<workId>/work.json` | Readable summary of sessions, request attempts, plans, file edits, continuation evidence, commits and PR links. |
 | `work/<workId>/costs.json` | Derived PR totals and each request's allocation, price and billing lookup status. Rebuilt from source records when missing. |
+| `work-attribution/billing-polls.json` | Latest polling times. Replaced after checks so unchanged results do not grow the journal. |
 | `work/<workId>/scope.json` | Original API endpoint, organization, user and Git common-directory identity. Credentials are not saved here. |
 | `work/<workId>/intent.json` | Saved task text for opt-in model matching, bound to its original account and repository. |
 | `work/<workId>/plans/<name>-<content-hash>.md` | Saved plan versions that survive worktree deletion. Identical content reuses the same copy. |
@@ -337,36 +338,42 @@ The tag identifies the request; it does not decide which PR owns the cost. That 
 
 ```mermaid
 flowchart TD
-    R["Saved request attempt"] --> I{"Saved billing tag or supported prompt ID,<br/>and original account available?"}
+    R["Saved request attempt"] --> T{"Request started after<br/>all linked PRs merged?"}
+    T -->|Yes| L["Exclude from PR totals;<br/>retain its own price status"]
+    T -->|No| I{"Saved billing tag or supported prompt ID,<br/>and original account available?"}
     I -->|No| U["Keep price unknown"]
     I -->|Yes| B["Fetch exact billing rows for that request"]
-    B -->|Missing, invalid or incomplete| P["Show known subtotal;<br/>keep full total unknown"]
-    B -->|Complete| K{"Same verified account<br/>in work and bill?"}
+    B -->|Invalid, incomplete or empty before 24 hours| P["Show known subtotal;<br/>keep full total unknown"]
+    B -->|Complete and empty after 24 hours| Z["Record no charge;<br/>keep checking for late bills"]
+    Z --> K
+    B -->|Complete with priced rows| K{"Same verified account<br/>in work and bill?"}
     K -->|No| UO["Keep price;<br/>leave PR assignment unknown"]
     K -->|Yes| D{"Work match unresolved?"}
     D -->|Yes| UO
-    D -->|No| T{"Request started after<br/>all linked PRs merged?"}
-    T -->|Yes| L["Keep as work after merge"]
-    T -->|No| C{"This request's work belongs<br/>to several PRs?"}
-    C -->|Yes| F{"All native edits from this request<br/>have complete file-chain evidence<br/>leading to exactly one PR?"}
+    D -->|No| C{"This request's work belongs<br/>to several PRs?"}
+    C -->|Yes| F{"All native edits from this input<br/>have complete file-chain evidence<br/>leading to exactly one PR?"}
     F -->|No| S["Keep the request in shared costs"]
     F -->|Yes| M
     C -->|No| M{"One confirmed merged PR?"}
     M -->|No| O["Keep request unlinked or unmerged"]
-    M -->|Yes| E{"Model-inferred match<br/>without stronger evidence?"}
-    E -->|Yes| IN["Show as inferred;<br/>exclude from confirmed PR total"]
-    E -->|No| A["Count each billing row once<br/>for this account and PR"]
+    M -->|Yes| E{"Native input edits landed,<br/>or explicit plan/work choice?"}
+    E -->|Yes| SU["Sure spend"]
+    E -->|No| IN["Likely spend"]
+    SU --> A["One PR total: sure plus likely;<br/>count each billing row once"]
+    IN --> A
 ```
 
 Planning, implementation, local children and fixes count together when their saved work links point to the same PR. Related discussion also counts when it belongs to that work, even if it changes no files. Two works contributing to one PR produce one combined total only when their API endpoint, organization and user match. Different accounts get separate totals. Separate works in one conversation keep their own PR links and costs. A malformed PR link affects only its own work. Repeating a lookup, rebasing a commit or rebuilding the summary does not multiply its charges.
 
-When one work spans several PRs, complete edit evidence can assign an editing request's whole price to one PR. Every recorded edit from that request must lead there. Planning without edits, a request touching both PRs, missing or conflicting proof, and weaker `path-blob` evidence stay shared. Kimchi never divides one request's charge by file count or a guessed percentage. Rewrite ancestry alone cannot establish an exclusive allocation.
+Sure spend includes the requests from an input whose own native edits landed in that PR, plus explicit plan, work and correction choices. Other session inputs and model matches are likely spend. An input can include several requests and local children; they keep the same confidence when their complete edit evidence belongs to one PR.
 
-Pending prices become eligible for another check after 30 seconds; priced requests become eligible after five minutes. Each pass has time and request limits, so a backlog can take several passes. A price that arrives late still belongs to the original request and merge cutoff. Closing the last top-level session stops the worker; the next launch resumes it. `/work` reads the saved result without making a model call or waiting for the network.
+When one work spans several PRs, every recorded native edit from an input must lead to one PR to confirm that assignment. Planning without edits, an input touching both PRs, missing or conflicting proof, and weaker `path-blob` evidence stay shared. Kimchi never divides one request's charge by file count or a guessed percentage. Rewrite ancestry alone cannot establish an exclusive allocation.
 
-Prices are USD decimal strings with up to nine decimal places. `knownCostUsd` is the confirmed subtotal; `totalCostUsd` is `null` while a required price or allocation remains uncertain. An explicit billed zero is valid. A missing row is not zero.
+Pending prices are checked after 30 seconds, slowing to five minutes after a day. Priced requests are checked after five minutes; settled no-charge attempts after an hour. Each pass has time and request limits, so a backlog can take several passes. Polling stops after a final check at or beyond the fixed 32-day window. A late launch can make that final check. Polling times survive restarts without adding unchanged billing rows to the journal. `/work` reads the saved result without waiting for the network.
 
-An exact price does not confirm a model's task match. Those requests keep their prices in the `inferred` bucket and appear under `inferredRequestIds` on the candidate PR. `/work` shows inferred assignments separately from unresolved and shared requests. Complete native edit evidence or a valid saved correction can confirm the assignment later.
+Prices are USD decimal strings with up to nine decimal places. `knownCostUsd` is the known subtotal; `totalCostUsd` includes sure and likely spend and is `null` while required prices or PR ownership remain unresolved. `explicit` and `inferred` hold the two portions. An explicit billed zero is valid. A complete empty lookup also settles to zero once the attempt is 24 hours old, with `billingLookup.status: "no-charge"` and no invented billing ID. Errors, incomplete pages and missing account evidence cannot settle a request. A later bill replaces the zero.
+
+An exact price does not confirm a model's task match. Likely requests remain listed under `inferredRequestIds` and in the `inferred` cost portion. `/work` shows the combined total and its sure/likely split. Shared requests stay outside individual PR totals. Requests started after all linked PRs merged also stay outside those totals, including when their billing or task match is unresolved.
 
 If a refresh hits Kimchi's pass deadline before receiving any billing page, the last confirmed price stays usable. `billingLookup` still shows the failed refresh and its real timestamp. Partial pagination and billing errors keep the full total unknown. Older generic timeout records also stay unknown until a complete lookup succeeds, because they do not record whether a page had arrived.
 
@@ -458,7 +465,7 @@ Cost per PR is listed in `/resources` like other built-in extensions and is on b
 <summary>Current billing and remote-agent limits</summary>
 
 - With telemetry enabled, main requests send the stored Pi session ID as `X-Session-Id`. Session naming, permission classification and image-description calls do not explicitly send that header.
-- Cost lookup uses the saved request tag, or a supported exact prompt-ID lookup for older records. A failed attempt can still have a charge; an empty billing result stays pending. HTTP capture covers chat-completions, Responses and Anthropic messages. WebSocket requests need separate coverage.
+- Cost lookup uses the saved request tag, or a supported exact prompt-ID lookup for older records. A failed attempt can still have a charge. Complete empty lookups settle under the 24-hour rule above. HTTP capture covers chat-completions, Responses and Anthropic messages. WebSocket requests need separate coverage.
 - Remote ACP requests carry a parent-session tag but no work ID. Returned commits bypass Bash tracing. Both are absent from the parent's work summary.
 
 </details>

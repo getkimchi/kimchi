@@ -1,3 +1,4 @@
+import { pullRequestKey } from "../pull-request-status/links.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import type { WorkSegment } from "../work-attribution.js"
 import { requestWorkLinks } from "./links.js"
@@ -54,6 +55,9 @@ export interface RequestCostAllocation {
 }
 
 export interface PullRequestCost extends CostTotal {
+	/** Sure and likely portions of the headline total. */
+	explicit: CostTotal
+	inferred: CostTotal
 	/** Canonical provider identity; combine with account when comparing totals. */
 	key: string
 	account: WorkAccount | null
@@ -107,7 +111,8 @@ function add(map: Map<string, Set<string>>, key: string, value: string): void {
 	map.set(key, values)
 }
 
-type PullIdentity = Required<Pick<WorkPullRequest, "provider" | "host" | "repository" | "number" | "url">>
+type PullIdentity = Required<Pick<WorkPullRequest, "provider" | "host" | "repository" | "number" | "url">> &
+	Pick<WorkPullRequest, "id" | "repositoryId">
 
 /** Keep a valid identity even when its provider metadata cannot yet establish a merge cutoff. */
 function storedPullRequest(row: unknown): { identity: PullIdentity; pullRequest: WorkPullRequest | null } | undefined {
@@ -120,7 +125,9 @@ function storedPullRequest(row: unknown): { identity: PullIdentity; pullRequest:
 		typeof row.number !== "number" ||
 		!Number.isSafeInteger(row.number) ||
 		row.number < 1 ||
-		typeof row.url !== "string"
+		typeof row.url !== "string" ||
+		(row.id !== undefined && (typeof row.id !== "string" || !/^[1-9]\d*$/.test(row.id))) ||
+		(row.repositoryId !== undefined && (typeof row.repositoryId !== "string" || !/^[1-9]\d*$/.test(row.repositoryId)))
 	)
 		return undefined
 	const repository = provider === "github" ? row.repository.toLowerCase() : row.repository
@@ -154,6 +161,8 @@ function storedPullRequest(row: unknown): { identity: PullIdentity; pullRequest:
 		repository,
 		number: row.number,
 		url: `https://${host}${path}`,
+		...(typeof row.id === "string" ? { id: row.id } : {}),
+		...(typeof row.repositoryId === "string" ? { repositoryId: row.repositoryId } : {}),
 	}
 	if (
 		(row.state !== "open" && row.state !== "closed" && row.state !== "merged") ||
@@ -366,6 +375,32 @@ function exclusiveRequestPulls(
 		}
 		if (complete && pulls.size === 1) for (const pull of pulls) exclusive.set(requestId, pull)
 	}
+	// One input can require several requests or local children before producing its edits.
+	const inputs = new Map<string, { requests: string[]; pulls: Set<string>; complete: boolean }>()
+	for (const [requestId, owner] of ownership) {
+		if (!owner.segment || owner.workIds.size !== 1) continue
+		const key = JSON.stringify([
+			[...owner.workIds][0],
+			owner.segment.id,
+			owner.account?.apiUrl,
+			owner.account?.organizationId,
+			owner.account?.userId,
+		])
+		const input = inputs.get(key) ?? { requests: [], pulls: new Set<string>(), complete: true }
+		input.requests.push(requestId)
+		if (requestTransitions.has(requestId) || unresolvedRequests.has(requestId)) {
+			const pull = exclusive.get(requestId)
+			if (pull) input.pulls.add(pull)
+			else input.complete = false
+		}
+		inputs.set(key, input)
+	}
+	for (const input of inputs.values()) {
+		for (const requestId of input.requests) {
+			exclusive.delete(requestId)
+			if (input.complete && input.pulls.size === 1) for (const pull of input.pulls) exclusive.set(requestId, pull)
+		}
+	}
 	return exclusive
 }
 
@@ -375,7 +410,7 @@ interface BillingRow {
 	invalid: boolean
 }
 
-function requestPrices(observations: readonly RequestCostObservation[]) {
+function requestPrices(observations: readonly RequestCostObservation[], noCharge: ReadonlyMap<string, WorkAccount>) {
 	const billing = new Map<string, BillingRow>()
 	const requestBilling = new Map<string, Set<string>>()
 	const invalidRequests = new Set<string>()
@@ -406,7 +441,7 @@ function requestPrices(observations: readonly RequestCostObservation[]) {
 	return (requestId: string) => {
 		const billingRecordIds = [...(requestBilling.get(requestId) ?? [])].sort()
 		let nanos = 0n
-		let missing = billingRecordIds.length === 0
+		let missing = billingRecordIds.length === 0 && !noCharge.has(requestId)
 		let invalid = invalidRequests.has(requestId)
 		let conflict = false
 		for (const billingId of billingRecordIds) {
@@ -452,6 +487,7 @@ export function calculatePullRequestCosts(
 	records: readonly WorkRecord[],
 	observations: readonly RequestCostObservation[],
 	incompleteRequestIds: ReadonlySet<string> = new Set(),
+	noCharge: ReadonlyMap<string, WorkAccount> = new Map(),
 ): PullRequestCostReport {
 	const ownership = new Map<string, RequestOwnership>()
 	const workPulls = new Map<string, Set<string>>()
@@ -459,6 +495,14 @@ export function calculatePullRequestCosts(
 	const invalidWorkLinks = new Set<string>()
 	const pulls = new Map<string, PullObservation>()
 	const commitPulls = new Map<string, Set<string>>()
+	const identitiesByUrl = new Map<string, Set<string>>()
+	for (const row of records) {
+		if (row.type !== "commit" || !Array.isArray(row.pullRequests)) continue
+		for (const value of row.pullRequests) {
+			const identity = storedPullRequest(value)?.identity
+			if (identity?.id) add(identitiesByUrl, identity.url, pullRequestKey(identity))
+		}
+	}
 	for (const row of records) {
 		if (row.type === "request_response") continue
 		if (row.type === "request" && typeof row.requestId === "string" && row.requestId) {
@@ -467,7 +511,9 @@ export function calculatePullRequestCosts(
 				sessionIds: new Set<string>(),
 			}
 			if (row.segment !== undefined) {
-				const segment = requestSegment(row.segment)
+				let segment = requestSegment(row.segment)
+				if (segment && row.purpose === "work-matching")
+					segment = { ...segment, attribution: "session", reason: "work-matching" }
 				owner.unresolvedMatch ||=
 					!segment ||
 					segment.attribution === "unknown" ||
@@ -496,7 +542,12 @@ export function calculatePullRequestCosts(
 				continue
 			}
 			const { identity, pullRequest: pull } = parsed
-			const key = `${identity.provider}:${identity.host}/${identity.repository}#${identity.number}`
+			const aliases = identitiesByUrl.get(identity.url)
+			const key = identity.id
+				? pullRequestKey(identity)
+				: aliases?.size === 1
+					? [...aliases][0]
+					: `${identity.provider}:${identity.host}/${identity.repository}#${identity.number}`
 			const commitKey = commitIdentity(row)
 			if (commitKey !== undefined) add(commitPulls, commitKey, key)
 			add(workPulls, row.workId, key)
@@ -518,8 +569,9 @@ export function calculatePullRequestCosts(
 	}
 	const exclusivePulls = exclusiveRequestPulls(records, ownership, commitPulls)
 	const links = requestWorkLinks(records)
-	const priceFor = requestPrices(observations)
+	const priceFor = requestPrices(observations, noCharge)
 	const billingAccounts = new Map<string, (WorkAccount | undefined)[]>()
+	for (const [requestId, account] of noCharge) billingAccounts.set(requestId, [account])
 	for (const row of observations) {
 		const accounts = billingAccounts.get(row.requestId) ?? []
 		accounts.push(row.account)
@@ -546,10 +598,13 @@ export function calculatePullRequestCosts(
 				pullRequestIds = [exclusive]
 				allocated = allocation(owner, pullRequestIds, pulls, invalidWorkLinks)
 			}
-			if (owner.unresolvedMatch && !exclusive && !link)
+			const postMerge = allocated.allocation === "post-merge"
+			if (!postMerge && owner.unresolvedMatch && !exclusive && !link)
 				allocated = { allocation: "unknown", reason: "work-match-unresolved" }
 			else if (
-				owner.segment?.attribution === "inferred" &&
+				!postMerge &&
+				(owner.segment?.attribution === "inferred" ||
+					(owner.segment?.attribution === "session" && allocated.allocation === "pull-request")) &&
 				!exclusive &&
 				!link &&
 				(allocated.allocation === "pull-request" ||
@@ -557,16 +612,21 @@ export function calculatePullRequestCosts(
 					allocated.allocation === "unmerged")
 			)
 				allocated = { allocation: "inferred" }
-			if (link && (link.unresolved || linkedWorkIds.some((workId) => invalidWorkLinks.has(workId))))
+			if (!postMerge && link && (link.unresolved || linkedWorkIds.some((workId) => invalidWorkLinks.has(workId))))
 				allocated = { allocation: "unknown", reason: "work-link-unresolved" }
 			const accounts = billingAccounts.get(requestId) ?? []
 			const workAccount = owner.account
 			if (
-				owner.unverifiedAccount ||
-				(workAccount && (!accounts.length || accounts.some((account) => !isWorkAccount(account))))
+				!postMerge &&
+				(owner.unverifiedAccount ||
+					(workAccount && (!accounts.length || accounts.some((account) => !isWorkAccount(account)))))
 			)
 				allocated = { allocation: "unknown", reason: "work-account-unverified" }
-			else if (workAccount && accounts.some((account) => account && !sameWorkAccount(workAccount, account)))
+			else if (
+				!postMerge &&
+				workAccount &&
+				accounts.some((account) => account && !sameWorkAccount(workAccount, account))
+			)
 				allocated = { allocation: "unknown", reason: "work-account-mismatch" }
 			const { nanos, ...price } = priceFor(requestId)
 			if (incompleteRequestIds.has(requestId) && price.priceStatus === "priced") price.priceStatus = "missing"
@@ -629,18 +689,26 @@ export function calculatePullRequestCosts(
 					const sharedRequestIds = linked.filter((row) => row.allocation === "shared").map((row) => row.requestId)
 					const inferredRequestIds = linked.filter((row) => row.allocation === "inferred").map((row) => row.requestId)
 					const unknownRequestIds = linked.filter((row) => row.allocation === "unknown").map((row) => row.requestId)
-					const cost = total(linked.filter((row) => row.allocation === "pull-request"))
+					const assigned = linked.filter(
+						(row) =>
+							row.allocation === "pull-request" || (row.allocation === "inferred" && row.pullRequestIds.length === 1),
+					)
+					const sure = assigned.filter((row) => row.allocation === "pull-request")
+					const likely = assigned.filter((row) => row.allocation === "inferred")
+					const cost = total(assigned)
 					return {
 						key,
 						account,
 						pullRequest,
 						workIds: [...workIds].sort(),
 						...cost,
+						explicit: total(sure),
+						inferred: total(likely),
 						totalCostUsd:
 							account &&
 							pullRequest?.state === "merged" &&
 							!sharedRequestIds.length &&
-							!inferredRequestIds.length &&
+							inferredRequestIds.length === likely.length &&
 							!unknownRequestIds.length
 								? cost.totalCostUsd
 								: null,
