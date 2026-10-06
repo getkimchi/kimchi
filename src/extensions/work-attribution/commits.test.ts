@@ -261,6 +261,7 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 
 	it.each(["allocation", "cleanup"])("preserves Bash execution when trace %s fails", async (stage) => {
 		const failure = new Error("trace storage unavailable")
+		const silence = vi.spyOn(console, "warn")
 		const hook =
 			stage === "allocation"
 				? vi.spyOn(fs, "mkdtempSync").mockImplementation(() => {
@@ -277,6 +278,7 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 				),
 				failure,
 			)
+			expect(silence).not.toHaveBeenCalled()
 		} finally {
 			const tracePath = hook.mock.calls[0]?.[0]
 			hook.mockRestore()

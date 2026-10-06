@@ -46,7 +46,7 @@ const recoveredDirectories = new Set<string>()
 /** Work IDs generated in this process: they cannot have older history to scan. */
 const newWork = new Set<string>()
 const debug = debuglog("kimchi:work-attribution")
-function warn(error: unknown): void {
+function logDebug(error: unknown): void {
 	debug("Work summary unavailable: %o", error)
 }
 function object(value: unknown): value is Record<string, unknown> {
@@ -327,7 +327,7 @@ function refresh(agentDir: string, workId: string, records: WorkRecord[], comple
 	})().then(
 		() => true,
 		(error: unknown) => {
-			warn(error)
+			logDebug(error)
 			return false
 		},
 	)
@@ -386,7 +386,7 @@ export function recoverWorkSummaries(): void {
 	trackAttributionTask(
 		recover(agentDir).catch((error) => {
 			recoveredDirectories.delete(agentDir)
-			warn(error)
+			logDebug(error)
 		}),
 	)
 }
