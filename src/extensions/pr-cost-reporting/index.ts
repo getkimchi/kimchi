@@ -1,4 +1,5 @@
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
+import { Text } from "@earendil-works/pi-tui"
 import {
 	requestWorkReconciliation,
 	subscribeReportingReconciliation,
@@ -8,6 +9,10 @@ import { readReportingState, setReportingEnabled, takeReportingNotice } from "./
 import { reconcileReporting } from "./worker.js"
 
 export default function prCostReportingExtension(pi: ExtensionAPI): void {
+	// A custom entry preserves other startup notices and stays out of model context.
+	pi.registerEntryRenderer<string>("pr-cost-reporting-notice", (entry, _options, theme) =>
+		typeof entry.data === "string" ? new Text(theme.fg("dim", entry.data), 1, 0) : undefined,
+	)
 	let context: ExtensionContext | undefined
 	let started = false
 	let activeKey = ""
@@ -19,9 +24,9 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 			const ctx = context
 			if (ctx?.hasUI && state.enabled && state.followsTelemetry && !state.defaultNoticeShown)
 				if (await takeReportingNotice(getAgentDir()))
-					ctx.ui.notify(
+					pi.appendEntry(
+						"pr-cost-reporting-notice",
 						"PR costs are reported to your account (repository/PR details and request/billing IDs). Turn off with /pr-reporting off.",
-						"info",
 					)
 			return state.enabled
 		} catch {
@@ -55,8 +60,11 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 		synchronize(ctx)
 		if (stop) await reportingEnabled()
 	})
-	pi.on("agent_end", async () => {
-		if (started && stop && (await reportingEnabled())) requestWorkReconciliation()
+	pi.on("agent_end", () => {
+		// Disk reads must not hold turn completion or the dialogs waiting for idle.
+		draining = draining.then(async () => {
+			if (started && stop && (await reportingEnabled())) requestWorkReconciliation()
+		})
 	})
 	pi.on("session_shutdown", async () => {
 		started = false

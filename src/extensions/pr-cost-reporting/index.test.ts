@@ -8,6 +8,7 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import * as supervisor from "../work-attribution/reconcile-supervisor.js"
 import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } from "../work-attribution.js"
 import reportingExtension from "./index.js"
+import * as queue from "./queue.js"
 import { readReportingState, setReportingEnabled } from "./queue.js"
 
 vi.mock("../work-attribution/reconcile-supervisor.js", () => ({
@@ -40,12 +41,13 @@ describe("optional PR reporting", () => {
 		await expect(
 			api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx),
 		).resolves.toBeUndefined()
-		await expect(api.getHandler("agent_end")({}, ctx)).resolves.toBeUndefined()
+		await expect(Promise.resolve(api.getHandler("agent_end")({}, ctx))).resolves.toBeUndefined()
 		expect(supervisor.requestWorkReconciliation).not.toHaveBeenCalled()
 		await api.getHandler("session_shutdown")({}, ctx)
 	})
 	it("shows the default-on notice once across launches and says how to turn it off", async () => {
 		const ctx = createContext()
+		const notices: unknown[] = []
 		for (let launch = 0; launch < 2; launch++) {
 			const api = createExtensionApi()
 			api.api.events.on(WORK_STATE_REQUEST_EVENT, (value) => {
@@ -55,9 +57,40 @@ describe("optional PR reporting", () => {
 			await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
 			await api.getHandler("agent_end")({}, ctx)
 			await api.getHandler("session_shutdown")({}, ctx)
+			notices.push(...api.getAppendedEntries("pr-cost-reporting-notice"))
 		}
-		expect(ctx.ui.notify).toHaveBeenCalledOnce()
-		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/pr-reporting off"), "info")
+		expect(notices).toEqual([expect.stringContaining("/pr-reporting off")])
+		// Consecutive info notifications replace one another in the TUI.
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+	})
+	it("lets the turn finish while reporting state is still being read", async () => {
+		await setReportingEnabled(directory, true)
+		const state = await readReportingState(directory)
+		const api = createExtensionApi()
+		const ctx = createContext()
+		api.api.events.on(WORK_STATE_REQUEST_EVENT, (value) => {
+			Object.assign(value as WorkStateRequest, { tracking: true, current: { workId: "test-work", ctx } })
+		})
+		reportingExtension(api.api)
+		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+		let release!: (value: queue.ReportingState) => void
+		const blocked = new Promise<queue.ReportingState>((resolve) => {
+			release = resolve
+		})
+		const read = vi.spyOn(queue, "readReportingState").mockReturnValueOnce(blocked)
+		let finished = false
+		const dispatched = Promise.resolve(api.getHandler("agent_end")({}, ctx)).then(() => {
+			finished = true
+		})
+		try {
+			await vi.waitFor(() => expect(finished).toBe(true), { timeout: 100 })
+			expect(supervisor.requestWorkReconciliation).not.toHaveBeenCalled()
+		} finally {
+			release(state)
+			await dispatched
+			await api.getHandler("session_shutdown")({}, ctx)
+			read.mockRestore()
+		}
 	})
 	it.each(["telemetry-off", "explicit-on", "explicit-off"])("skips the default notice for %s", async (choice) => {
 		if (choice === "telemetry-off") vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
@@ -71,6 +104,7 @@ describe("optional PR reporting", () => {
 		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
 		await api.getHandler("agent_end")({}, ctx)
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		expect(api.getAppendedEntries("pr-cost-reporting-notice")).toEqual([])
 		if (choice !== "explicit-on") expect(supervisor.requestWorkReconciliation).not.toHaveBeenCalled()
 		await api.getHandler("session_shutdown")({}, ctx)
 	})
@@ -118,7 +152,7 @@ describe("optional PR reporting", () => {
 		expect((await readReportingState(directory)).enabled).toBe(true)
 		expect(commandCtx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("request and billing IDs"), "info")
 		await api.getHandler("agent_end")({}, ctx)
-		expect(supervisor.requestWorkReconciliation).toHaveBeenCalledTimes(2)
+		await vi.waitFor(() => expect(supervisor.requestWorkReconciliation).toHaveBeenCalledTimes(2))
 		await command.handler("off", commandCtx)
 		expect((await readReportingState(directory)).enabled).toBe(false)
 		await api.getHandler("session_shutdown")({}, ctx)
