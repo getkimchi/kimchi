@@ -372,7 +372,44 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			expect(skillsCatalogBullets(result)).toEqual(["- **normal** — short"])
-			expect(result).toContain("1 oversized entry omitted")
+			expect(result).toContain("1 further entry omitted from the catalog")
+		})
+
+		it("bounds the name-only tail against pathological inventories", () => {
+			// 1000 short skills overflow both the full-bullet budget and the
+			// degraded-tail allowance; the overflow is counted and surfaced in the
+			// note rather than growing the block without limit.
+			const skills = Array.from({ length: 1000 }, (_, i) => createSkill({ name: `skill-${i}`, description: "d" }))
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				mode: "orchestrator",
+			})
+			const listed = skillsCatalogBullets(result).length
+			expect(listed).toBeGreaterThan(0)
+			expect(listed).toBeLessThan(1000)
+			expect(result).toContain(`${1000 - listed} further entries omitted from the catalog.`)
+		})
+
+		it("keeps SKILL.md paths on degraded read-catalog entries", () => {
+			// Read-routed sessions (no skill_view tool) must keep degraded entries
+			// addressable: the bullet carries the path, and the note points at it.
+			const skills = Array.from({ length: 30 }, (_, i) =>
+				createSkill({ name: `skill-${i}`, description: `${i} ${'"word "'.repeat(40).trim()}` }),
+			)
+			const result = buildSystemPrompt({
+				tools: tools.filter((t) => t.name !== "skill_view"),
+				env: testEnv,
+				skills,
+				mode: "orchestrator",
+			})
+			const bullets = skillsCatalogBullets(result)
+			expect(bullets).toHaveLength(30)
+			// Full bullets carry descriptions; degraded ones carry just the path.
+			expect(bullets.slice(0, 3).every((b) => b.includes(" — "))).toBe(true)
+			expect(bullets.slice(-3).every((b) => b.includes("(`/skills/skill-"))).toBe(true)
+			expect(result).toContain("read the listed SKILL.md paths to inspect them")
 		})
 
 		it("scales the catalog budget with the model's context window", () => {

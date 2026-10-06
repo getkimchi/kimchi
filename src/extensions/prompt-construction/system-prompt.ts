@@ -624,6 +624,12 @@ function formatSkills(
 	]
 	let used = lines.join("\n").length
 	const budget = skillsBlockBudget(contextWindow)
+	// Degraded name-only bullets draw from a separate, twice-larger allowance:
+	// realistic tails keep every visible skill listed, while the block stays
+	// bounded against pathological inventories — anything past the allowance
+	// joins omittedCount and is surfaced in the note, never dropped silently.
+	const nameOnlyBudget = budget * 2
+	let usedNameOnly = 0
 	let nameOnlyCount = 0
 	let omittedCount = 0
 	for (const skill of visible) {
@@ -636,19 +642,17 @@ function formatSkills(
 			used += 1 + fullBullet.length
 			continue
 		}
-		const nameOnly = `- **${name}**`
-		// The tail degrades to name-only but is never silently dropped: every
-		// visible skill stays listed (and addressable via the load tool). The
-		// per-entry bound guards only pathological oversized names — ordinary
-		// accumulation cannot push name-only bullets past the budget because
-		// they are not counted against it.
-		if (nameOnly.length <= budget) {
+		// The read-tool fallback keeps the SKILL.md path on degraded bullets too
+		// — without it the entry is advertised but unaddressable.
+		const nameOnly = loadTool === "read" ? `- **${name}** (\`${skill.filePath}\`)` : `- **${name}**`
+		if (usedNameOnly + 1 + nameOnly.length <= nameOnlyBudget && nameOnly.length <= budget) {
 			lines.push(nameOnly)
+			usedNameOnly += 1 + nameOnly.length
 			nameOnlyCount++
 			continue
 		}
-		// Pathological case (a name alone exceeds the whole budget): count the
-		// omission and surface it in the note below instead of dropping silently.
+		// Past the degraded-tail allowance, or a single entry too large for the
+		// whole budget: count the omission and surface it in the note.
 		omittedCount++
 	}
 	if (nameOnlyCount > 0 || omittedCount > 0) {
@@ -656,14 +660,14 @@ function formatSkills(
 		if (nameOnlyCount > 0) {
 			const nameOnlyNote = [
 				`${nameOnlyCount} of ${visible.length} skills are listed name-only to fit the catalog budget`,
-				loadTool === "skill_view" ? "use the skill_view tool to inspect them" : undefined,
-			]
-				.filter((part) => part !== undefined)
-				.join(" — ")
+				loadTool === "skill_view"
+					? "use the skill_view tool to inspect them"
+					: "read the listed SKILL.md paths to inspect them",
+			].join(" — ")
 			lines.push(`> ${nameOnlyNote}.`)
 		}
 		if (omittedCount > 0) {
-			lines.push(`> ${omittedCount} oversized ${omittedCount === 1 ? "entry" : "entries"} omitted.`)
+			lines.push(`> ${omittedCount} further ${omittedCount === 1 ? "entry" : "entries"} omitted from the catalog.`)
 		}
 	}
 	return lines.join("\n")
