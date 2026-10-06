@@ -228,7 +228,7 @@ it.each(["saved", "unresolved"])("keeps %s explicit plan references ahead of sem
 	const api = createExtensionApi()
 	createWorkAttributionExtension()(api.api)
 	await api.getHandler<InputEvent>("input")(
-		{ type: "input", source: "rpc", text: `Implement ${kind === "saved" ? saved.path : "missing.md"}` },
+		{ type: "input", source: "rpc", text: `Implement ${saved.path}${kind === "unresolved" ? " and missing.md" : ""}` },
 		ctx,
 	)
 	expect(getWorkId(ctx)).toBe(kind === "saved" ? planned : current)

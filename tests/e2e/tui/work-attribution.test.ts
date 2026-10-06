@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -23,6 +24,81 @@ const readLedger = (directory: string) =>
 				.filter(Boolean)
 				.map((line) => JSON.parse(line)),
 		)
+
+for (const mode of ["steer", "followUp"] as const) {
+	test(`a queued ${mode} keeps the running input's work until delivery`, async ({ terminal }) => {
+		let release = () => {}
+		const held = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		try {
+			await runKimchiSession(
+				terminal,
+				{
+					artifactName: `work-queued-${mode}`,
+					account,
+					gitInit: true,
+					models,
+					responses: [
+						{
+							holdUntil: held,
+							toolCalls: [{ function: { name: "read", arguments: JSON.stringify({ path: "README.md" }) } }],
+						},
+						...(mode === "followUp" ? [{ stream: ["Original explanation complete."] }] : []),
+						{ stream: ["Saved plan continuation complete."] },
+					],
+				},
+				async (fixture, trace) => {
+					writeFileSync(join(fixture.workDir, "README.md"), "# Example\n")
+					const planned = randomUUID()
+					const directory = join(fixture.agentDir, "work", planned)
+					mkdirSync(join(directory, "plans"), { recursive: true })
+					const plan = join(directory, "plans", "queued.md")
+					writeFileSync(plan, `<!-- kimchi-work-id: ${planned} -->\n# Explain exports\n`)
+					writeFileSync(
+						join(directory, "scope.json"),
+						JSON.stringify({
+							version: 1,
+							workId: planned,
+							account: { ...account, apiUrl: fixture.fake.baseUrl },
+							repository: realpathSync(join(fixture.workDir, ".git")),
+						}),
+					)
+					const chats = () =>
+						fixture.fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+					const rows = () => readLedger(join(fixture.agentDir, "work-attribution"))
+					terminal.submit("Read README.md and explain it.")
+					const deadline = Date.now() + 15_000
+					while (!chats().length && Date.now() < deadline) await sleep(50)
+					expect(chats().length).toBe(1)
+					const original = rows().find((row) => row.requestId === chats()[0].headers["x-request-id"])
+					expect(original.segment.attribution).toBe("session")
+					terminal.write(`Implement ${plan}`)
+					if (mode === "followUp") terminal.write("\u001b[13;3u")
+					else terminal.keyPress(Key.Enter)
+					await waitForText(terminal, mode === "followUp" ? "Follow-up:" : "Steering:")
+					expect(
+						rows()
+							.filter((row) => row.type === "work")
+							.at(-1)?.segment.id,
+					).toBe(original.segment.id)
+					trace.step("queued input is visible while the first response remains held; attribution is unchanged")
+					release()
+					await waitForText(terminal, "Saved plan continuation complete.")
+					const requests = chats().map((request) =>
+						rows().find((row) => row.type === "request" && row.requestId === request.headers["x-request-id"]),
+					)
+					expect(requests[0]).toEqual(original)
+					if (mode === "followUp") expect(requests[1].segment.id).toBe(original.segment.id)
+					expect(requests.at(-1)).toMatchObject({ workId: planned, segment: { attribution: "explicit" } })
+					trace.step("the delivered input adopts the saved plan before its first model request")
+				},
+			)
+		} finally {
+			release()
+		}
+	})
+}
 
 test("a separate check uses the selected model before an unrelated question starts new work", async ({ terminal }) => {
 	const main = (request: FakeResponseRequest) => !isWorkMatchingRequest(request)
@@ -218,7 +294,7 @@ test("the user can confirm an uncertain turn already in the current work", async
 			responses: [{ stream: ["The document plan is ready."] }],
 		},
 		async (fixture, trace) => {
-			terminal.submit("Plan the creation of docs/new-output.md.")
+			terminal.submit("Continue this plan: <!-- kimchi-work-id: 11111111-1111-4111-8111-111111111111 -->")
 			await waitForText(terminal, "The document plan is ready.")
 			const records = () => readLedger(join(fixture.agentDir, "work-attribution"))
 			const sent = fixture.fake.requests.find((request) => request.url.startsWith("/openai/v1/chat/completions"))
@@ -420,7 +496,7 @@ for (const reference of ["path", "paste"]) {
 				const producer = planned.requests.find(
 					(row: { requestId: string }) => row.requestId === planned.plans[0].requestId,
 				)
-				expect(producer?.segment).toMatchObject({ attribution: "unknown", reason: "unresolved-reference" })
+				expect(producer?.segment).toMatchObject({ attribution: "session", reason: "matching-disabled" })
 				const snapshotPath = planned.plans[0].snapshotPath
 				expect(typeof snapshotPath).toBe("string")
 				expect(readFileSync(snapshotPath, "utf8")).toBe(plan)
@@ -648,7 +724,7 @@ test("a named ADR continues its work while unrelated chat on the same branch sta
 				const ledgerDir = join(fixture.agentDir, "work-attribution")
 				const original = readLedger(ledgerDir).find((record) => record.type === "request")
 				expect(readFileSync(join(fixture.workDir, "docs/adr/greeting.md"), "utf8")).toBe("# Add a greeting\n")
-				expect(original.segment).toMatchObject({ attribution: "unknown", reason: "unresolved-reference" })
+				expect(original.segment).toMatchObject({ attribution: "session", reason: "matching-disabled" })
 				expect(readLedger(ledgerDir).filter((record) => record.type === "plan")).toEqual([])
 				terminal.submit("Explain docs/adr/greeting.md without changing it.")
 				await waitForText(terminal, "The same-session design is ready to implement.")

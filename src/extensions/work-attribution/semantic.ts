@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { mkdir, open, opendir, readFile, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
@@ -230,6 +231,8 @@ export async function classifyWorkIntent(
 	if (JSON.stringify(input).length > 12000 || !input.message.trim() || signal?.aborted) return unknown
 	if (!input.current && !input.candidates.length) return { decision: "new", model: unknown.model }
 	const context = pinWorkContext(ctx)
+	// Matching is overhead of the original work, independent of the task decision it produces.
+	context.segment = { id: randomUUID(), attribution: "session", reason: "work-matching" }
 	const workId = tryWorkAttribution(() => getWorkId(context))
 	const deadline = AbortSignal.timeout(3000)
 	const permission = new AbortController()

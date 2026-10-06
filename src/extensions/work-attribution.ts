@@ -11,6 +11,7 @@ import {
 	writeFileSync,
 } from "node:fs"
 import { dirname, join, resolve } from "node:path"
+import { contentText } from "@earendil-works/pi-ai"
 import {
 	createEditToolDefinition,
 	createWriteToolDefinition,
@@ -18,13 +19,20 @@ import {
 	type ExtensionContext,
 	findTurnStartIndex,
 	getAgentDir,
+	type InputEvent,
 	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent"
 import { writeConfigSetting } from "../config/settings.js"
 import { readPlanWorkId } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
+import { isHarnessSteer } from "./steer-marker.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
-import { findWorkContinuation, hasWorkReference, type WorkContinuation } from "./work-attribution/continuation.js"
+import {
+	findWorkContinuation,
+	hasOwnedWorkReference,
+	hasWorkReference,
+	type WorkContinuation,
+} from "./work-attribution/continuation.js"
 import { debugWorkAttribution } from "./work-attribution/diagnostics.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
 import { confirmWorkContinuation, correctWorkLink } from "./work-attribution/links.js"
@@ -43,7 +51,13 @@ import {
 	workIntentPath,
 	workMatchingEnabled,
 } from "./work-attribution/semantic.js"
-import { flushWorkSummaries, markNewWork, recoverWorkSummaries, updateWorkSummary } from "./work-attribution/summary.js"
+import {
+	flushWorkSummaries,
+	markNewWork,
+	readWorkRecords,
+	recoverWorkSummaries,
+	updateWorkSummary,
+} from "./work-attribution/summary.js"
 
 export interface WorkSegment {
 	id: string
@@ -70,6 +84,8 @@ export function isWorkSegment(value: unknown): value is WorkSegment {
 export interface WorkContext {
 	cwd: string
 	sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">
+	/** Queued local children retain the work selected at spawn. */
+	workId?: string
 	/** Null pins the absence of a segment before a later input creates one. */
 	segment?: WorkSegment | null
 }
@@ -169,6 +185,7 @@ export function setWorkId(
 	return workId
 }
 export function getWorkId(ctx: WorkContext): string {
+	if (ctx.workId !== undefined) return ctx.workId
 	const path = workLedgerPath(ctx)
 	const cached = identities.get(path)
 	if (cached) return cached
@@ -283,6 +300,8 @@ export function createWorkAttributionExtension(
 ): (pi: ExtensionAPI) => void {
 	const isChild = inheritedWorkId !== undefined
 	return (pi) => {
+		let preparedInput = false
+		const extensionInputs = new Set<string>()
 		let stopReconciliation: (() => Promise<void>) | undefined
 		let activeContext: ExtensionContext | undefined
 		function notifyWorkChanged(): void {
@@ -314,6 +333,8 @@ export function createWorkAttributionExtension(
 			preparation.isSplitTurn = false
 		})
 		pi.on("session_start", (_event, ctx) => {
+			preparedInput = false
+			extensionInputs.clear()
 			inputGeneration++
 			semanticAbort?.abort()
 			unregisterWorkState ??= registerWorkState()
@@ -398,7 +419,34 @@ export function createWorkAttributionExtension(
 			initialized.add(key)
 			notifyWorkChanged()
 		}
-		pi.on("input", async (event, ctx) => {
+		pi.on("input", (event, ctx) => {
+			// Pi emits input before enqueueing; the running turn still owns its next request.
+			if (event.streamingBehavior) {
+				if (event.source === "extension") extensionInputs.add(event.text)
+				return
+			}
+			return attributeInput(event, ctx)
+		})
+		pi.on("before_agent_start", () => {
+			// The initial prompt was handled before skill/template expansion by the input hook.
+			preparedInput = true
+		})
+		pi.on("message_start", async (event, ctx) => {
+			if (event.message.role !== "user") return
+			if (preparedInput) {
+				preparedInput = false
+				return
+			}
+			const text = contentText(event.message.content, "")
+			if (extensionInputs.delete(text) || isHarnessSteer(text)) return
+			// Pi awaits message_start before sending the request that receives a queued message.
+			await attributeInput({ type: "input", text, source: "interactive" }, ctx)
+		})
+		pi.on("agent_settled", () => {
+			preparedInput = false
+			extensionInputs.clear()
+		})
+		async function attributeInput(event: InputEvent, ctx: ExtensionContext): Promise<void> {
 			if (isChild) return
 			const model = ctx.model ? { ...ctx.model } : undefined
 			const generation = ++inputGeneration
@@ -441,7 +489,6 @@ export function createWorkAttributionExtension(
 					// Recovered identity belongs to new inputs, never to earlier unscoped history.
 					current = setWorkId(ctx, undefined, pi)
 					explicitSelection.delete(key)
-					continuationEligible.add(key)
 					useSegment(workMatchingEnabled() ? "unknown" : "session", previousScope ? "scope-changed" : "scope-recovered")
 				}
 				const saveScope = (workId: string) => {
@@ -467,6 +514,7 @@ export function createWorkAttributionExtension(
 					getWorkId(ctx) === current &&
 					!explicitSelection.has(key)
 				const referencesWork = hasWorkReference(event.text)
+				const records = referencesWork ? readWorkRecords(getAgentDir()) : undefined
 				const found =
 					captured && (eligible() || referencesWork)
 						? await findWorkContinuation(pinWorkContext(ctx), event.text, captured)
@@ -481,11 +529,11 @@ export function createWorkAttributionExtension(
 						)
 					}
 					useSegment("explicit", found.source)
-					if (captured) confirmWorkContinuation(ctx, found, captured.scope)
+					if (captured) confirmWorkContinuation(ctx, found, captured.scope, records)
 					if (model) await rememberWorkIntent(ctx.cwd, found.workId, event.text)
 					return
 				}
-				if (referencesWork) {
+				if (found || (records && hasOwnedWorkReference(ctx, event.text, records))) {
 					useSegment("unknown", "unresolved-reference")
 					return
 				}
@@ -548,7 +596,7 @@ export function createWorkAttributionExtension(
 			} catch (error) {
 				warnWorkAttribution(ctx, error)
 			}
-		})
+		}
 		pi.on("before_provider_headers", (event, ctx) => {
 			try {
 				bind(ctx)
@@ -584,6 +632,8 @@ export function createWorkAttributionExtension(
 			toolRequests.delete(workLedgerPath(ctx))
 		})
 		pi.on("session_shutdown", async (_event, ctx) => {
+			preparedInput = false
+			extensionInputs.clear()
 			inputGeneration++
 			semanticAbort?.abort()
 			activeContext = undefined

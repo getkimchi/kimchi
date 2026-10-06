@@ -117,6 +117,7 @@ it("uses the selected model and normal auth with a durable ID per separate reque
 	const overhead = readWorkRecords(join(server.root, "agent")).filter((row) => row.type === "request")
 	expect(overhead).toHaveLength(2)
 	expect(overhead.every((row) => row.purpose === "work-matching")).toBe(true)
+	for (const row of overhead) expect(row.segment).toMatchObject({ attribution: "session", reason: "work-matching" })
 })
 
 it("does not authenticate or send private task history when matching is disabled", async () => {

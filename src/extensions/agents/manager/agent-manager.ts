@@ -15,6 +15,7 @@ import { type ClonePlan, resolveClonePlan } from "../../teleport/provisioning/cl
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import { repoBasename } from "../../teleport/provisioning/paths.js"
 import { GitTokenPromptComponent, type GitTokenPromptResult } from "../../teleport/ui/git-token-prompt.js"
+import { getWorkId, getWorkSegment, tryWorkAttribution } from "../../work-attribution.js"
 import type {
 	AgentAbortReason,
 	AgentOutcome,
@@ -226,9 +227,12 @@ export class AgentManager {
 		}
 		this.agents.set(id, record)
 
+		const workContext = effectiveOptions.remote
+			? ctx
+			: { ...ctx, workId: tryWorkAttribution(() => getWorkId(ctx)), segment: getWorkSegment(ctx) ?? null }
 		const args: SpawnArgs = {
 			pi,
-			ctx,
+			ctx: workContext,
 			type,
 			prompt: withAgentReportProtocol(prompt, effectiveOptions.taskRef),
 			options: effectiveOptions,

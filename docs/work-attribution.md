@@ -53,18 +53,18 @@ flowchart LR
 
 ### 1. Choose the work ID before the request
 
-CLI and Studio choose the work before sending the request:
+CLI and Studio choose the work before sending the request. A message queued while the agent is responding takes ownership only when delivered. Until then, requests and edits keep the running input's work. A local child keeps the work and input captured when it was spawned, even if it waits in a queue.
 
 For a main-session input, a verified account or repository change starts separate work before these matching rules run. Missing identity prevents automatic adoption of another work.
 
 ```mermaid
 flowchart LR
-    P["User message"] --> E{"Explicit work choice,<br/>child or extension input?"}
+    P["Delivered user message"] --> E{"Explicit work choice,<br/>child or extension input?"}
     E -->|Yes| K["Keep current ID"]
-    E -->|No| F{"Named file or pasted<br/>native plan?"}
+    E -->|No| F{"Reference to recorded work<br/>or native plan?"}
     F -->|Yes| V{"Same account and repository;<br/>one valid owner: current work,<br/>or a fresh session without output?"}
     V -->|Yes| A["Use saved work ID"]
-    V -->|No| K
+    V -->|No| U["Keep current ID;<br/>input unresolved"]
     F -->|No| J{"Model matching enabled,<br/>same account and saved task text?"}
     J -->|No| K
     J -->|Yes| D{"Compare message with current task<br/>and eligible saved tasks in this repository"}
@@ -74,11 +74,12 @@ flowchart LR
     K --> R["Record next request"]
     A --> R
     N --> R
+    U --> R
 ```
 
 - **Named native plan:** reads the work ID saved at the top of the file. Its retained copy works after deleting the original worktree.
 - **Pasted native plan:** requires the work-ID header and complete text of a locally retained version. Plain text and Markdown code blocks both work. A changed plan, unknown ID, or conflicting plan stays unresolved. File paths inside the verified plan are its instructions, not additional work selections.
-- **Named Markdown file:** requires one recorded work owner and the same current Git blob and file mode as the saved edit. A committed ADR can therefore continue work from another worktree. Conflicting or unknown paths prevent automatic selection.
+- **Named Markdown file:** requires one recorded work owner and the same current Git blob and file mode as the saved edit. A committed ADR can therefore continue work from another worktree. Mentioning an unowned file, such as `Fix README.md`, is ordinary input. A saved plan mixed with another unresolved path still prevents automatic selection.
 - **Separate model check:** when enabled, the model selected when the message is submitted can compare it with saved task text from the same authenticated account and repository. It can continue one earlier task or separate an unrelated question. The branch, worktree and recent activity alone do not establish a link.
 - **Keep an explicit choice:** `/work new`, local children and extension-injected input do not automatically switch work. Restored sessions and existing work output prevent adopting another saved task. Naming a verified plan or artifact from the current work still confirms that input, including after restart. The model check can still start new work for a clearly unrelated message. A skill's template paths do not count as user references.
 
@@ -118,13 +119,13 @@ flowchart TD
     C -->|Exactly one earlier task matches| A["Saved work ID; send main request"]
 ```
 
-Model checks share a three-second limit, including provider authentication and redaction. Account verification has a separate one-second limit and a short in-memory cache. Cancellation, opt-out, account or model changes, a session change or a newer message prevents a late result from changing work. Unknown or unresolved file references are never overridden by a model guess. Explicit choices and local children keep the rules above.
+Model checks share a three-second limit, including provider authentication and redaction. Account verification has a separate one-second limit and a short in-memory cache. Cancellation, opt-out, account or model changes, a session change or a newer delivered message prevents a late result from changing work. Unresolved references to recorded work are never overridden by a model guess. Explicit choices and local children keep the rules above.
 
 Comparisons stop rather than omit evidence above 256 work directories, 32 retained plan versions per work or 12,000 serialized input characters. Large histories, slow providers and unsupported output formats can therefore remain unresolved. Earlier works without saved task text are not backfilled.
 
 These are model judgments and can be wrong. Each request keeps its input's segment ID, matching method and reason. An uncertain answer preserves the current work ID and marks that input as unknown. Later inputs cannot silently reclassify earlier requests. A future cost calculation must preserve this uncertainty. `/work new` or `/work <plan path>` gives an explicit choice.
 
-Segments distinguish an explicit plan or work choice, a model inference, ordinary grouping within a session, and an unknown result. Retries, delayed side calls and local children retain their originating segment. Restarting a child restores its saved decision; a historical fork keeps the decision at its fork point. Matching calls are marked `purpose: "work-matching"` and keep the work active before the decision. With model matching disabled, ordinary session grouping remains available; its source is recorded as `session`, not as a model decision.
+Segments distinguish an explicit plan or work choice, a model inference, ordinary grouping within a session, and an unknown result. Retries, delayed side calls and local children retain their originating segment. Restarting a child restores its saved decision; a historical fork keeps the decision at its fork point. Matching calls have their own `session` segment with `reason: "work-matching"` and `purpose: "work-matching"`; they remain overhead of the work active before the decision. With model matching disabled, ordinary session grouping remains available; its source is recorded as `session`, not as a model decision.
 
 Automatic continuation also requires the same verified account and Git repository. New work saves the API endpoint, organization, user and Git common-directory identity in `scope.json`; requests retain that scope. Another worktree of the same repository can continue it. Switching account or repository starts separate work. Missing account verification, a non-Git directory or an older work without scope prevents automatic adoption. `/work <plan path>` remains an explicit local choice; older records are never assigned today's account just because they were reopened.
 
@@ -132,7 +133,7 @@ If account verification recovers after an unavailable first input, the next mess
 
 #### Correct earlier requests
 
-Continuing a verified plan or native artifact also checks its producing request. If that request's input was unresolved, Kimchi confirms the requests from that input under the continued work. For example, `Plan docs/new-feature.md` can be unresolved because the file does not exist yet; continuing its saved plan later confirms the planning requests automatically. Other inputs in that conversation stay unchanged.
+Continuing a verified plan or native artifact also checks its producing request. Kimchi confirms the requests from that input under the continued work, whether they were ordinary session work, inferred or unresolved. For example, `Plan docs/new-feature.md` starts as session work; continuing its saved plan later confirms the planning requests automatically. Other inputs in that conversation stay unchanged.
 
 This needs one recorded producer, an unchanged retained plan version or native edit, and matching account/repository scope. Missing or conflicting producer records stay unresolved. An existing correction or revocation takes precedence. The resulting `workLinks` entry names the plan/artifact evidence, producing `requestId` and `segmentId`; no source rows are rewritten. Model guesses do not create these confirmations.
 
@@ -148,7 +149,7 @@ If an uncertain input already belongs to the right work, use that current work I
 
 The command saves a `work_link` revision in the implementing work. It names the selected requests and their intended work; original request and work IDs stay unchanged. The target work's `work.json` keeps these revisions in `workLinks` for later cost calculations. Model decisions do not retroactively rewrite earlier requests.
 
-To withdraw it, run `/work unlink <link-id>` in the implementing work. A revoked or conflicting correction leaves the affected assignment unknown until corrected again. Repeating the link command creates a newer revision.
+To withdraw it, run `/work unlink <link-id>` in the implementing work. A revoked or conflicting correction leaves the affected assignment unknown until corrected again. Linking those requests from another work replaces the earlier link with a newer revision, including a revoked automatic confirmation.
 
 ### 2. Connect each file edit to its model request
 

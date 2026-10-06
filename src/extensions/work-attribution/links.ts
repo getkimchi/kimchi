@@ -123,9 +123,14 @@ export function requestWorkLinks(records: readonly WorkRecord[]): Map<string, Re
 }
 
 /** Confirm the producer's input after a verified continuation; never override an existing correction. */
-export function confirmWorkContinuation(ctx: WorkContext, continuation: WorkContinuation, scope: WorkScope): void {
+export function confirmWorkContinuation(
+	ctx: WorkContext,
+	continuation: WorkContinuation,
+	scope: WorkScope,
+	records?: readonly WorkRecord[],
+): void {
 	if (continuation.source === "semantic" || getWorkId(ctx) !== continuation.workId) return
-	const records = readWorkRecords(getAgentDir())
+	records ??= readWorkRecords(getAgentDir())
 	const { workId, source, evidence } = continuation
 	const producers = records.filter((row) => {
 		if (row.workId !== workId) return false
@@ -161,7 +166,7 @@ export function confirmWorkContinuation(ctx: WorkContext, continuation: WorkCont
 	if (
 		!isWorkSegment(segment) ||
 		!isWorkId(segment.id) ||
-		segment.attribution !== "unknown" ||
+		segment.attribution === "explicit" ||
 		!origins.every(
 			(row) =>
 				row.workId === workId &&
@@ -223,28 +228,9 @@ export async function correctWorkLink(ctx: WorkContext, args: string): Promise<s
 	)
 		throw new Error("Work correction needs the original account and repository")
 	const records = readWorkRecords(getAgentDir())
-	const existing = records.filter(
-		(row) =>
-			row.type === "work_link" &&
-			row.targetWorkId === targetWorkId &&
-			(command === "unlink"
-				? row.linkId === id
-				: row.sourceWorkId === id &&
-					!!row.evidence &&
-					typeof row.evidence === "object" &&
-					"segmentId" in row.evidence &&
-					row.evidence.segmentId === segmentId),
+	let existing = records.filter(
+		(row) => row.type === "work_link" && row.targetWorkId === targetWorkId && row.linkId === id,
 	)
-	if (
-		existing.some(
-			(row) =>
-				!isWorkId(row.linkId) ||
-				typeof row.revision !== "number" ||
-				!Number.isSafeInteger(row.revision) ||
-				row.revision < 1,
-		)
-	)
-		throw new Error("Existing work correction is damaged")
 	let requestIds: string[]
 	let sourceWorkId: string
 	if (command === "link") {
@@ -269,6 +255,17 @@ export async function correctWorkLink(ctx: WorkContext, args: string): Promise<s
 			throw new Error("The selected requests need matching account and repository evidence")
 		requestIds = [...new Set(selected.map((row) => String(row.requestId)))].sort()
 		sourceWorkId = id
+		const overlapping = new Set(
+			records
+				.filter(
+					(row) =>
+						row.type === "work_link" &&
+						Array.isArray(row.requestIds) &&
+						row.requestIds.some((requestId) => requestIds.includes(requestId)),
+				)
+				.map((row) => row.linkId),
+		)
+		existing = records.filter((row) => row.type === "work_link" && overlapping.has(row.linkId))
 	} else {
 		const previous = existing[0]
 		if (
@@ -283,19 +280,33 @@ export async function correctWorkLink(ctx: WorkContext, args: string): Promise<s
 		].sort()
 		sourceWorkId = previous.sourceWorkId
 	}
-	const linkId = existing[0]?.linkId ?? randomUUID()
-	const revision = 1 + Math.max(0, ...existing.map((row) => (typeof row.revision === "number" ? row.revision : 0)))
+	if (
+		existing.some(
+			(row) =>
+				!isWorkId(row.linkId) ||
+				row.sourceWorkId !== sourceWorkId ||
+				typeof row.revision !== "number" ||
+				!Number.isSafeInteger(row.revision) ||
+				row.revision < 1,
+		)
+	)
+		throw new Error("Existing work correction is damaged")
+	const linkIds = existing.length ? [...new Set(existing.map((row) => String(row.linkId)))] : [randomUUID()]
 	if (!captured.isCurrent() || getWorkId(ctx) !== targetWorkId) throw new Error("Work changed during correction")
-	appendWorkRecord(ctx, {
-		type: "work_link",
-		linkId,
-		revision,
-		sourceWorkId,
-		targetWorkId,
-		requestIds,
-		scope: captured.scope,
-		status: command === "link" ? "active" : "revoked",
-		evidence: command === "link" ? { source: "work-command", segmentId } : existing[0].evidence,
-	})
-	return `Work correction ${command === "link" ? "saved" : "revoked"}: ${linkId}. Original request IDs are unchanged.`
+	for (const linkId of linkIds) {
+		const revision =
+			1 + Math.max(0, ...existing.filter((row) => row.linkId === linkId).map((row) => Number(row.revision)))
+		appendWorkRecord(ctx, {
+			type: "work_link",
+			linkId,
+			revision,
+			sourceWorkId,
+			targetWorkId,
+			requestIds,
+			scope: captured.scope,
+			status: command === "link" ? "active" : "revoked",
+			evidence: command === "link" ? { source: "work-command", segmentId } : existing[0].evidence,
+		})
+	}
+	return `Work correction ${command === "link" ? "saved" : "revoked"}: ${linkIds.join(", ")}. Original request IDs are unchanged.`
 }

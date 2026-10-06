@@ -1,3 +1,4 @@
+import { readFileSync, realpathSync } from "node:fs"
 import { readdir, readFile, realpath } from "node:fs/promises"
 import { basename, dirname, join, relative, resolve } from "node:path"
 import { getAgentDir, parseSkillBlock } from "@earendil-works/pi-coding-agent"
@@ -5,6 +6,7 @@ import { readPlanWorkId } from "../../shared/planning/plan-markdown.js"
 import type { WorkContext } from "../work-attribution.js"
 import { type FileTransition, readAttributedFileState, readRepositoryTransitions } from "./file-transitions.js"
 import { captureWorkScope, readWorkScope, sameWorkScope, type WorkAccount, type WorkScopeSnapshot } from "./scope.js"
+import type { WorkRecord } from "./summary.js"
 
 const MARKDOWN_REFERENCE = /(?:^|[\s@'"`([])([^\s@'"`()[\]<>#]+\.md)(?:#[^\s'"`()[\]<>]*)?(?=$|[\s'"`()[\],;:.!?])/gi
 const NATIVE_PLAN_PATH = /\/(?:\.kimchi\/plans|work\/[\da-f-]{36}\/plans)\/[^/]+\.md$/i
@@ -15,6 +17,46 @@ export function hasWorkReference(text: string): boolean {
 	const skill = parseSkillBlock(normalized)
 	const message = skill ? (skill.userMessage ?? "") : normalized
 	return message.includes("<!-- kimchi-work-id:") || [...message.matchAll(MARKDOWN_REFERENCE)].length > 0
+}
+
+/** Ordinary Markdown mentions do not select work; recorded owners and plan markers do. */
+export function hasOwnedWorkReference(
+	ctx: Pick<WorkContext, "cwd">,
+	text: string,
+	records: readonly WorkRecord[],
+): boolean {
+	const normalized = text.replaceAll("\r\n", "\n")
+	const skill = parseSkillBlock(normalized)
+	const message = skill ? (skill.userMessage ?? "") : normalized
+	if (message.includes("<!-- kimchi-work-id:")) return true
+	const canonical = (path: string) => {
+		try {
+			return join(realpathSync(dirname(path)), basename(path))
+		} catch {
+			return path
+		}
+	}
+	const paths = new Set([...message.matchAll(MARKDOWN_REFERENCE)].map((match) => canonical(resolve(ctx.cwd, match[1]))))
+	for (const path of paths) {
+		if (!NATIVE_PLAN_PATH.test(path)) continue
+		try {
+			if (readPlanWorkId(readFileSync(path, "utf8"))) return true
+		} catch {}
+	}
+	return records.some((row) => {
+		if (row.type === "plan" && typeof row.cwd === "string") {
+			const cwd = row.cwd
+			return [row.path, row.snapshotPath].some(
+				(path) => typeof path === "string" && paths.has(canonical(resolve(cwd, path))),
+			)
+		}
+		return (
+			row.type === "file_transition" &&
+			typeof row.path === "string" &&
+			typeof row.worktree === "string" &&
+			paths.has(canonical(resolve(row.worktree, row.path)))
+		)
+	})
 }
 
 export interface WorkContinuation {
@@ -135,7 +177,7 @@ export async function findWorkContinuation(
 	const skill = parseSkillBlock(normalized)
 	const userText = skill ? (skill.userMessage ?? "") : normalized
 	const pasted = await pastedPlans(userText)
-	if (!pasted) return
+	if (!pasted || pasted.remaining.includes("<!-- kimchi-work-id:")) return
 	const paths = [...new Set([...pasted.remaining.matchAll(MARKDOWN_REFERENCE)].map((match) => match[1]))]
 	const matches = [...pasted.matches, ...(await Promise.all(paths.map((path) => namedArtifact(ctx.cwd, path))))]
 	if (matches.some((match) => !match) || new Set(matches.map((match) => match?.workId)).size !== 1) return
