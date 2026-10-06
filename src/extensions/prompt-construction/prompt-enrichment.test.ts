@@ -346,7 +346,7 @@ describe("prompt enrichment skills", () => {
 		)) as { systemPrompt: string }
 
 		expect(result.systemPrompt).toContain("## Skills")
-		expect(result.systemPrompt).toContain("**typescript-safety**")
+		expect(result.systemPrompt).toContain("- **typescript-safety**")
 		expect(result.systemPrompt).toContain("Use safe TypeScript patterns before editing TypeScript files.")
 	})
 
@@ -360,7 +360,7 @@ describe("prompt enrichment skills", () => {
 
 		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
 
-		expect(result.systemPrompt).not.toContain("<name>typescript-safety</name>")
+		expect(result.systemPrompt).not.toContain("- **typescript-safety**")
 	})
 
 	it("contributes ancestor .kimchi/skills through resources_discover", async () => {

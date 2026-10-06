@@ -24,8 +24,13 @@ import * as attribution from "../work-attribution.js"
 import { createCommitTrackingBashTool, createCommitTrackingOperations, type ObservedCommit } from "./commits.js"
 import { flushWorkSummaries } from "./summary.js"
 
+const { debug } = vi.hoisted(() => ({ debug: vi.fn() }))
 vi.mock("node:fs", async (importOriginal) => ({
 	...(await importOriginal<typeof import("node:fs")>()),
+}))
+vi.mock("node:util", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:util")>()),
+	debuglog: () => debug,
 }))
 
 let directory: string
@@ -57,6 +62,7 @@ beforeEach(() => {
 	git(repository, "config", "user.email", "test@example.invalid")
 	git(repository, "config", "commit.gpgSign", "false")
 	commits = []
+	debug.mockClear()
 })
 
 afterEach(async () => {
@@ -128,7 +134,6 @@ describe("Git commit observation", () => {
 			`git worktree remove ${quote(worktree)}`,
 			"git commit --allow-empty -m after",
 		]
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
 		expect(await run(commands.join(" && "))).toBe(0)
 		const names = position === "middle" ? ["before", "after"] : ["after"]
 		expect(commits).toEqual(
@@ -138,7 +143,10 @@ describe("Git commit observation", () => {
 				worktree: repository,
 			})),
 		)
-		expect(warning).toHaveBeenCalled()
+		expect(debug).toHaveBeenCalledWith(
+			expect.stringContaining("Could not resolve Git commit repository"),
+			expect.any(Error),
+		)
 	})
 
 	it("does not record checkout or reset alongside a real commit", async () => {
@@ -262,8 +270,8 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 	})
 
 	it.each(["allocation", "cleanup"])("preserves Bash execution when trace %s fails", async (stage) => {
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
 		const failure = new Error("trace storage unavailable")
+		const silence = vi.spyOn(console, "warn")
 		const hook =
 			stage === "allocation"
 				? vi.spyOn(fs, "mkdtempSync").mockImplementation(() => {
@@ -274,7 +282,13 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 					})
 		try {
 			expect(await run("printf still-running")).toBe(0)
-			expect(warning).toHaveBeenCalledWith(expect.stringContaining("work-attribution"), failure)
+			expect(debug).toHaveBeenCalledWith(
+				expect.stringContaining(
+					stage === "allocation" ? "Could not initialize Git trace" : "Could not remove Git trace",
+				),
+				failure,
+			)
+			expect(silence).not.toHaveBeenCalled()
 		} finally {
 			const tracePath = hook.mock.calls[0]?.[0]
 			hook.mockRestore()
@@ -287,7 +301,6 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 		vi.spyOn(attribution, "getWorkId").mockImplementation(() => {
 			throw new Error("ledger unavailable")
 		})
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
 		const registry = createProcessRegistry()
 		try {
 			const tool =
@@ -304,8 +317,8 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 			expect(result.content).toEqual(
 				expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("bash-still-works") })]),
 			)
-			expect(warning).toHaveBeenCalledWith(
-				expect.stringContaining("work-attribution"),
+			expect(debug).toHaveBeenCalledWith(
+				expect.stringContaining("Could not initialize Git attribution"),
 				expect.objectContaining({ message: "ledger unavailable" }),
 			)
 		} finally {

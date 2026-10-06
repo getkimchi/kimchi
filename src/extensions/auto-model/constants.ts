@@ -23,6 +23,33 @@ export const AUTO_MODEL_DESCRIPTION = "Picks the best model for your tasks autom
 export const AUTO_MODEL_PI_NAME = `${AUTO_MODEL_NAME} — ${AUTO_MODEL_DESCRIPTION}`
 
 /**
+ * Default-model candidates for organizations whose catalog does not serve a
+ * routed virtual model (`auto`). Until the Auto router reaches GA, such
+ * organizations default to a concrete flash model instead of multi-model.
+ * First match in the served catalog wins; when none is served the
+ * organization stays on multi-model.
+ *
+ * `deepseek-v4-flash` is the platform's canonical slug; `deepseek-v4-flash-0731`
+ * mirrors the existing extraction-model fallback (memory/backend.ts
+ * EXTRACTION_MODEL) so a versioned slug still satisfies the gate.
+ */
+export const GATED_DEFAULT_MODEL_CANDIDATES: readonly string[] = ["deepseek-v4-flash", "deepseek-v4-flash-0731"]
+
+/**
+ * The harness-side deprecation label for the virtual multi-model selection.
+ * Multi-model does not exist in the platform catalog, so no backend marker
+ * can carry this. ACP sources this constant; the TUI /model selector renders
+ * the same literal from the pi-coding-agent patch (patched dist code cannot
+ * import harness source), and the rendered-text tests pin both sides to the
+ * same string.
+ *
+ * The wording is deliberately replacement-agnostic: organizations gated off
+ * the `auto` virtual model never see Auto, so "replaced by Auto" would point
+ * at a model they cannot select.
+ */
+export const MULTI_MODEL_DEPRECATION_LABEL = "[Deprecated]"
+
+/**
  * Whether the model is a routed virtual model, by the `auto*` naming
  * convention: any `kimchi-dev` model whose id starts with `auto` is
  * backend-routed (`auto` today, `auto-beta`, future variants) — the backend
