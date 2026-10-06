@@ -11,7 +11,7 @@ import { appendWorkRecord, getWorkId } from "../work-attribution.js"
 import type { AttributionLabel } from "./accuracy.js"
 import { runCli } from "./accuracy-cli.js"
 import { captureBillingSource, reconcileWorkCosts } from "./cost-sync.js"
-import type { RequestCostAllocation } from "./costs.js"
+import { calculatePullRequestCosts, type RequestCostAllocation } from "./costs.js"
 import { flushWorkSummaries } from "./summary.js"
 
 vi.mock("../../config.js", async (original) => ({ ...(await original<typeof config>()) }))
@@ -112,7 +112,7 @@ function writeFixture(name: string, value: unknown): string {
 }
 
 describe("accuracy-cli (spawned via tsx)", () => {
-	it("exits 0 and prints the complete summary for a valid report and labels", async () => {
+	it("exits 3 and prints the complete summary when a valid report disagrees with its labels", async () => {
 		const reportPath = writeFixture("valid-report.json", {
 			pullRequests: [],
 			requests: validRows(),
@@ -121,7 +121,8 @@ describe("accuracy-cli (spawned via tsx)", () => {
 		})
 		const labelsPath = writeFixture("valid-labels.json", validLabels())
 
-		const { stdout } = await spawnCli([reportPath, labelsPath])
+		const { code, stdout } = await expectSpawnFailure([reportPath, labelsPath])
+		expect(code).toBe(3)
 		const lines = stdout.trimEnd().split("\n")
 		expect(lines[0]).toBe("Work-attribution accuracy comparison")
 		expect(stdout).toContain(
@@ -134,7 +135,7 @@ describe("accuracy-cli (spawned via tsx)", () => {
 			lines.indexOf(EXPECTED_AMOUNTS[0]),
 		)
 		expect(stdout).toContain(OVERLAP_NOTE)
-		expect(lines.at(-1)).toBe("Complete")
+		expect(lines.at(-1)).toBe("Complete comparison; assignments differ from labels")
 	})
 
 	it("exits 1 naming the path when the report file is unreadable", async () => {
@@ -167,6 +168,29 @@ describe("accuracy-cli (spawned via tsx)", () => {
 })
 
 describe("runCli (in-process)", () => {
+	it.each([
+		{ name: "label-only", reference: [] },
+		{ name: "version-1", reference: { version: 1, requests: [] } },
+	])("exits incomplete for an empty $name comparison", ({ name, reference }) => {
+		const reportPath = writeFixture(`empty-${name}-report.json`, calculatePullRequestCosts([], []))
+		const referencePath = writeFixture(`empty-${name}-reference.json`, reference)
+
+		const outcome = runCli([reportPath, referencePath])
+		expect(outcome.code).toBe(2)
+		expect(outcome.stdout.at(-1)).toBe("Incomplete — no requests to compare")
+	})
+
+	it.each(["pull-request", "unlinked"] as const)("fails a zero-cost %s ownership mismatch", (allocation) => {
+		const reportPath = writeFixture(`zero-cost-${allocation}-report.json`, {
+			requests: [row("free-request", { allocation, pullRequestIds: allocation === "pull-request" ? [PR7] : [] })],
+		})
+		const labelsPath = writeFixture(`zero-cost-${allocation}-labels.json`, [label("free-request", PR1)])
+
+		const outcome = runCli([reportPath, labelsPath])
+		expect(outcome.code).toBe(3)
+		expect(outcome.stdout.at(-1)).toBe("Complete comparison; assignments differ from labels")
+	})
+
 	it("does not exit successfully for an entirely unlabelled report", () => {
 		const reportPath = writeFixture("unlabelled-report.json", {
 			requests: [row("req-unlabelled", { knownCostUsd: "1.000000000" })],
@@ -266,7 +290,7 @@ describe("runCli (in-process)", () => {
 		expect(lines).toContain("Reference: 0.000000000 USD (0 requests)")
 		expect(lines).toContain("Correct coverage: n/a (zero spending denominator); n/a (zero request denominator)")
 		expect(lines).toContain(OVERLAP_NOTE)
-		expect(lines.at(-1)).toBe("Complete")
+		expect(lines.at(-1)).toBe("Complete comparison; assignments match labels")
 	})
 })
 

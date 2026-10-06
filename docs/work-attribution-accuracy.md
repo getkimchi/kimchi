@@ -91,7 +91,7 @@ Version 1 weights both metrics by independent receipt prices. The command also p
 | --- | --- |
 | 0 | The version 1 reference is complete and all checked report values match. |
 | 1 | The command cannot run: wrong arguments, unreadable or invalid JSON, or an unsupported top-level input shape. |
-| 2 | Evidence is incomplete or malformed. Known amounts and the missing evidence are listed. |
+| 2 | Evidence is empty, incomplete or malformed. Known amounts and the missing evidence are listed. |
 | 3 | The evidence is complete, but prices, ownership or aggregate totals differ. |
 
 An offline match proves agreement with the supplied reference. It does not establish that human labels are correct or represent ordinary usage. Keep held-out tasks separate from cases used to tune the matcher.
@@ -107,6 +107,6 @@ The command still accepts the previous array format:
 ]
 ```
 
-This mode checks request ownership and label coverage using the report's own prices. Its output says that accounts, prices and aggregates were not independently checked. Exit 0 means the label comparison is complete, even when it found wrong assignments. Use a version 1 reference for a pass/fail check of full PR totals.
+This mode checks request ownership and label coverage using the report's own prices. Its output says that accounts, prices and aggregates were not independently checked. Exit 0 means the nonempty comparison is complete and assignments match the labels; wrong or missed assignments return 3, including zero-cost requests. Empty or incomplete comparisons return 2. Use a version 1 reference to also check accounts, prices and full PR totals.
 
 The label-only output includes observed, labelled, priced and scored request counts, known report spending, and scored spending. A USD 10 report with only USD 1 labelled is incomplete, including when the unlabelled requests were free.

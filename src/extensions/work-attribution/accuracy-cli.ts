@@ -66,6 +66,13 @@ export function runCli(argv: readonly string[]): CliOutcome {
 	if (!labels.ok) return rejected(labels.message)
 	if (!Array.isArray(labels.value) && !isAttributionReference(labels.value))
 		return rejected(`Invalid reference ${labelsPath}: expected a version 1 reference or an array of attribution labels`)
+	const referenceRequests = Array.isArray(labels.value) ? labels.value : labels.value.requests
+	if (report.value.requests.length === 0 && referenceRequests.length === 0)
+		return {
+			code: 2,
+			stdout: ["Work-attribution accuracy comparison", "Incomplete — no requests to compare"],
+			stderr: [],
+		}
 
 	if (isAttributionReference(labels.value)) {
 		const result = compareIndependentAttribution(
@@ -131,10 +138,13 @@ export function runCli(argv: readonly string[]): CliOutcome {
 		})
 	}
 
+	const matches = result.wrong.requestIds.length === 0 && result.missed.requestIds.length === 0
 	stdout.push(
-		result.complete ? "Complete" : `Incomplete — ${result.problems.length} problems; full percentages unavailable`,
+		result.complete
+			? `Complete comparison; assignments ${matches ? "match" : "differ from"} labels`
+			: `Incomplete — ${result.problems.length} problems; full percentages unavailable`,
 	)
-	return { code: result.complete ? 0 : 2, stdout, stderr: [] }
+	return { code: !result.complete ? 2 : matches ? 0 : 3, stdout, stderr: [] }
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
