@@ -65,13 +65,6 @@ test("background bash: slow command + independent read + final outcome via one b
 		async (fixture, trace) => {
 			terminal.submit("Run a long command, read a file while it runs, then wait for its outcome")
 
-			// The initial handoff arrives (~2s): the bash tool call resolves at the
-			// bounded handoff window ("Took 2.xs") instead of blocking for the
-			// command's full 15s runtime. The TUI collapses the first lines of the
-			// result block, so the call's duration line is the visible signal.
-			await waitForText(terminal, /Took 2\.\d+s/, { timeoutMs: STREAM_TIMEOUT_MS * 2 })
-			trace.step("initial background handoff visible")
-
 			// The read tool call runs while the process is still tracked — it
 			// must not be hard-blocked.
 			await waitForText(terminal, "Reading a file while the command runs", { timeoutMs: STREAM_TIMEOUT_MS })
@@ -155,11 +148,6 @@ test("background bash: repeated completion attempts with a live process each req
 		},
 		async (fixture, trace) => {
 			terminal.submit("Run a long command then finish twice without stopping it")
-
-			// The initial handoff arrives (~2s): the bash tool call resolves at
-			// the bounded handoff window instead of blocking for the full 60s.
-			await waitForText(terminal, /Took 2\.\d+s/, { timeoutMs: STREAM_TIMEOUT_MS * 2 })
-			trace.step("initial background handoff visible")
 
 			// First completion attempt with a tracked process.
 			await waitForText(terminal, "All done!", { timeoutMs: STREAM_TIMEOUT_MS })

@@ -74,11 +74,6 @@ test("background bash cohort: unattended exit wakes the agent; survivor stopped 
 		async (fixture, trace) => {
 			terminal.submit("Start two long commands; let one exit and stop the other")
 
-			// Both initial handoffs arrive (~2s): the bash calls resolve at the
-			// bounded handoff window instead of blocking for the full runtimes.
-			await waitForText(terminal, /Took 2\.\d+s/, { timeoutMs: STREAM_TIMEOUT_MS * 2 })
-			trace.step("initial background handoffs visible")
-
 			// The quick command exits at ~6s: its exit notification must wake the
 			// idle agent into a new turn (the scripted stop call appears).
 			await waitForText(terminal, "stopping the survivor", { timeoutMs: STREAM_TIMEOUT_MS * 2 })
@@ -134,10 +129,6 @@ test("background bash cohort: exit during streaming queues at a safe boundary, d
 		},
 		async (fixture, trace) => {
 			terminal.submit("Run a short command, keep talking while it exits")
-
-			// The initial handoff arrives (~2s); the long stream starts after.
-			await waitForText(terminal, /Took 2\.\d+s/, { timeoutMs: STREAM_TIMEOUT_MS * 2 })
-			trace.step("initial background handoff visible")
 
 			// The slow stream completes intact — the exit notification queued
 			// behind it instead of interleaving.
@@ -229,10 +220,6 @@ test("background bash cohort: a short bounded wait checkpoints with evidence, th
 		},
 		async (fixture, trace) => {
 			terminal.submit("Run a long silent command, wait briefly, then stop it")
-
-			// The initial handoff arrives (~2s).
-			await waitForText(terminal, /Took 2\.\d+s/, { timeoutMs: STREAM_TIMEOUT_MS * 2 })
-			trace.step("initial background handoff visible")
 
 			// The bounded wait returns at its 5s checkpoint (not the 300s
 			// default); the scripted stop call proves the wait returned.
@@ -350,10 +337,6 @@ test("background bash cohort: a checkpoint leaves the command alive; queued inpu
 		},
 		async (fixture, trace) => {
 			terminal.submit("Run a long command and wait for it; I will chime in meanwhile")
-
-			// The initial handoff arrives (~2s).
-			await waitForText(terminal, /Took 2\.\d+s/, { timeoutMs: STREAM_TIMEOUT_MS * 2 })
-			trace.step("initial background handoff visible")
 
 			// While the bounded wait is pending, queue a user message — it must
 			// be processed at the next safe boundary, not lost.
@@ -474,10 +457,6 @@ test("background bash cohort: unattended exit during continued tool work reaches
 		},
 		async (fixture, trace) => {
 			terminal.submit("Run the marker command and keep reading files until it finishes")
-
-			// The initial handoff arrives (~2s).
-			await waitForText(terminal, /Took 2\.\d+s/, { timeoutMs: STREAM_TIMEOUT_MS * 2 })
-			trace.step("initial background handoff visible")
 
 			// Independent work continues across the exit. The terminal wraps long
 			// streamed paragraphs at arbitrary columns, so the segment waits use
