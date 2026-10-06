@@ -4420,17 +4420,6 @@ describe("adhoc submit_plan mode gating", () => {
 		const result = await executeSubmitPlan(harness, PLAN, createMockContext([]))
 		expect(result.details?.submitted).toBe(false)
 		expect(result.content[0]?.text).toContain("current mode: yolo")
-		expect(result.content[0]?.text).toContain("/permissions mode plan")
-	})
-
-	it("refuses submit_plan from yolo mode with surface-neutral guidance over ACP", async () => {
-		const harness = createPermissionsHarness(["read", "bash"], { yolo: true })
-		await harness.fire("session_start", {}, createMockContext([]))
-		// ACP sessions run as ctx.mode === "rpc": no shift+tab or slash-command hint.
-		const ctx = { ...createMockContext([]), mode: "rpc" } as unknown as ExtensionContext
-		const result = await executeSubmitPlan(harness, PLAN, ctx)
-		expect(result.details?.submitted).toBe(false)
-		expect(result.content[0]?.text).toContain("current mode: yolo")
 		expect(result.content[0]?.text).toContain("Ask the user to switch the permission mode to plan")
 		expect(result.content[0]?.text).not.toContain("shift+tab")
 	})
