@@ -22,6 +22,7 @@ import { type Static, Type } from "typebox"
 import { withBlocked } from "../herdr-events.js"
 import { shouldSuppressInteractiveTools } from "../print-mode.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { acquireAboveEditorSlot } from "../tips/above-editor-occupancy.js"
 import { withWorkingHidden } from "../ui.js"
 import { promptQuestionnaireFallback, type QuestionnaireResult } from "./questionnaire-fallback.js"
 import { createQuestionForm } from "./questionnaire-form.js"
@@ -244,15 +245,20 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 
 			// Static label (see herdr-events.ts Privacy): params.header is
 			// agent-generated and may embed question text.
-			const result = await withBlocked(pi.events, "Questionnaire", () =>
-				ctx.mode !== "tui"
-					? promptQuestionnaireFallback(ctx.ui, questions)
-					: withWorkingHidden(ctx, () =>
-							ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
-								createQuestionForm(tui, theme, questions, { title: params.header }, done),
-							),
-						),
-			)
+			const result = await withBlocked(pi.events, "Questionnaire", async () => {
+				const releaseTipSlot = acquireAboveEditorSlot("questionnaire")
+				try {
+					return ctx.mode !== "tui"
+						? await promptQuestionnaireFallback(ctx.ui, questions)
+						: await withWorkingHidden(ctx, () =>
+								ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
+									createQuestionForm(tui, theme, questions, { title: params.header }, done),
+								),
+							)
+				} finally {
+					releaseTipSlot()
+				}
+			})
 
 			if (result.cancelled) {
 				return {

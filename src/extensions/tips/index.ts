@@ -4,6 +4,7 @@ import { AUTO_UPDATE_TIP } from "../auto-update/tips.js"
 import { subscribeBillingStatus } from "../billing/status.js"
 import { createBillingTipProvider } from "../billing/tips.js"
 import { FERMENT_TIPS } from "../ferment/tips.js"
+import { isAboveEditorOccupied, onAboveEditorOccupancyChange } from "./above-editor-occupancy.js"
 import { createGeneralTipProvider, GENERAL_TIPS } from "./general-tips.js"
 import { TipPresenter } from "./presenter.js"
 import { globalTipRegistry, type TipRegistry } from "./registry.js"
@@ -18,7 +19,6 @@ export type TipWidgetLocation = VisibleTipWidgetLocation | "hidden"
 const DEFAULT_TIP_WIDGET_LOCATION: VisibleTipWidgetLocation = "aboveEditor"
 let tipWidgetLocation: TipWidgetLocation = DEFAULT_TIP_WIDGET_LOCATION
 let onLocationChange: (() => void) | undefined
-let onRemountRequest: (() => void) | undefined
 
 export function setTipWidgetLocation(location: TipWidgetLocation): () => void {
 	const previous = tipWidgetLocation
@@ -61,10 +61,6 @@ function onTipWidgetLocationChange(listener: () => void): () => void {
 	}
 }
 
-export function remountTipWidget(): void {
-	onRemountRequest?.()
-}
-
 export interface TipsExtensionOptions {
 	registry?: TipRegistry
 	generalProvider?: TipProvider
@@ -81,6 +77,7 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 		let unregisterBilling: (() => void) | undefined
 		let unregisterBillingStatus: (() => void) | undefined
 		let unregisterLocationChange: (() => void) | undefined
+		let unregisterOccupancyChange: (() => void) | undefined
 		let activeCtx: ExtensionContext | undefined
 		let activeTui: { requestRender?(): void } | undefined
 		let widgetMounted = false
@@ -105,6 +102,7 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 		}
 
 		const mountWidget = (ctx: ExtensionContext) => {
+			if (isAboveEditorOccupied()) return
 			const currentTip = getCurrentVisibleTip()
 			const location = getEffectiveTipWidgetLocation(currentTip)
 			if (!location) return
@@ -126,6 +124,10 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 		const updateWidget = (ctx: ExtensionContext) => {
 			if (!ctx.hasUI) return
 			activeCtx = ctx
+			if (isAboveEditorOccupied()) {
+				unmountWidget(ctx)
+				return
+			}
 			const currentTip = getCurrentVisibleTip()
 			const location = getEffectiveTipWidgetLocation(currentTip)
 			if (!location || !currentTip) {
@@ -143,21 +145,19 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 			unregisterBilling?.()
 			unregisterGeneral?.()
 			unregisterLocationChange?.()
+			unregisterOccupancyChange?.()
 			unregisterBillingStatus?.()
 			unregisterBilling = registry.registerProvider(billingProvider)
 			unregisterGeneral = registry.registerProvider(generalProvider)
 			unregisterLocationChange = onTipWidgetLocationChange(() => {
 				if (activeCtx) updateWidget(activeCtx)
 			})
+			unregisterOccupancyChange = onAboveEditorOccupancyChange(() => {
+				if (activeCtx) updateWidget(activeCtx)
+			})
 			unregisterBillingStatus = subscribeBillingStatus(() => {
 				if (activeCtx) updateWidget(activeCtx)
 			})
-			onRemountRequest = () => {
-				if (activeCtx && widgetMounted) {
-					unmountWidget()
-					mountWidget(activeCtx)
-				}
-			}
 			activeCtx = ctx
 
 			if (readHideTips()) {
@@ -183,7 +183,8 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 			unregisterBillingStatus = undefined
 			unregisterLocationChange?.()
 			unregisterLocationChange = undefined
-			onRemountRequest = undefined
+			unregisterOccupancyChange?.()
+			unregisterOccupancyChange = undefined
 		})
 
 		pi.registerCommand("tips", {
