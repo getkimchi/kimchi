@@ -208,6 +208,56 @@ fs.writeFileSync(${JSON.stringify(sizePath)}, String(fs.statSync(process.env.${v
 		expect(commits.map((commit) => commit.sha)).toEqual([git(repository, "rev-parse", "HEAD")])
 	})
 
+	it.each([
+		"maintenance run --auto --no-detach",
+		"gc --auto --no-detach",
+	])("records a commit while Git %s is running", async (maintenance) => {
+		// Two packs trigger auto-GC without relying on Git's loose-object sampling.
+		for (const message of ["base", "second"]) {
+			git(repository, "commit", "--allow-empty", "-qm", message)
+			execFileSync("git", ["-C", repository, "pack-objects", join(repository, ".git", "objects", "pack", "pack")], {
+				input: `${git(repository, "rev-parse", "HEAD")}\n`,
+				stdio: ["pipe", "pipe", "pipe"],
+			})
+		}
+		git(repository, "config", "gc.autoPackLimit", "1")
+		const ready = quote(join(directory, "maintenance-ready"))
+		const release = quote(join(directory, "maintenance-release"))
+		writeFileSync(
+			join(repository, ".git", "hooks", "pre-auto-gc"),
+			`#!/bin/sh
+touch ${ready}
+attempt=0
+while ! test -f ${release}; do
+  attempt=$((attempt + 1))
+  test "$attempt" -lt 500 || exit 1
+  sleep 0.02
+done
+`,
+			{ mode: 0o700 },
+		)
+		expect(
+			await run(`
+git ${maintenance} &
+maintenance_pid=$!
+finish() { touch ${release}; wait "$maintenance_pid"; }
+trap finish EXIT
+attempt=0
+while ! test -f ${ready}; do
+  attempt=$((attempt + 1))
+  test "$attempt" -lt 400 || exit 1
+  sleep 0.02
+done
+git -c maintenance.auto=false -c gc.auto=0 commit --allow-empty -qm concurrent
+commit_result=$?
+touch ${release}
+wait "$maintenance_pid" || exit 1
+exit "$commit_result"
+`),
+		).toBe(0)
+		expect(commits.map((commit) => commit.sha)).toEqual([git(repository, "rev-parse", "HEAD")])
+	})
+
 	it("does not record failed commits or dry runs", async () => {
 		git(repository, "commit", "--allow-empty", "-m", "base")
 		await run("git commit -m empty; git commit --dry-run --allow-empty -m dry")

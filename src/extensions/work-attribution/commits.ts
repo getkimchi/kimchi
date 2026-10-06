@@ -123,7 +123,11 @@ function within(process: GitProcess, ancestor: GitProcess): boolean {
 
 /** Nested Git processes (hooks, sequencer commits) own the moment; unrelated concurrent ones make it ambiguous. */
 function ownerAt(time: string, running: GitProcess[]): GitProcess | undefined {
-	const candidates = running.filter((process) => localTimeInProcess(time, process) !== undefined)
+	// Housekeeping controllers never move HEAD. Keep their children: hooks can run real Git mutations.
+	const candidates = running.filter(
+		(process) =>
+			process.command !== "maintenance" && process.command !== "gc" && localTimeInProcess(time, process) !== undefined,
+	)
 	return candidates.find((process) => candidates.every((other) => within(process, other)))
 }
 
