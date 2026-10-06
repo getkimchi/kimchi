@@ -47,7 +47,8 @@ vi.mock(import("../../config/settings.js"), async (importOriginal) => ({
 	writeConfigSetting: settingsWriteStubs.writeConfigSetting,
 }))
 
-import { getProcessMultiModelEnabled } from "../kimchi-process.js"
+import { getProcessMultiModelEnabled, setProcessMultiModelEnabled } from "../kimchi-process.js"
+import { getGlobalDefault } from "../multi-model.js"
 import autoModelExtension, {
 	_resetAutoModelNoticeCache,
 	createAutoModelRoutingExtension,
@@ -551,6 +552,10 @@ describe("catalog-driven gated default — orgs without auto", () => {
 	}
 
 	it("installs the served flash model as the persisted default and disables multi-model", async () => {
+		// Pre-state: the session comes up multi-model-enabled (the seeded
+		// global default) — the assertions below must be the outcome of
+		// start(), not residual state.
+		setProcessMultiModelEnabled(SESSION_ID, true)
 		const { setModel, ctx, start } = runSessionStart()
 
 		await start()
@@ -564,7 +569,18 @@ describe("catalog-driven gated default — orgs without auto", () => {
 	})
 
 	it("overwrites settings.json multiModel to false for gated organizations", async () => {
+		// Pre-state: settings.json still carries multiModel=true (the seeded
+		// pre-branch default). Without pinning this, asserting `false` below
+		// would prove nothing — the same assertion would also pass against a
+		// file whose value was already false.
+		settingsReadStubs.readConfigSetting.mockReturnValue(true)
 		const { start } = runSessionStart()
+
+		// The migration gate reads the configured default through the same
+		// stub, so this is the value start() must overwrite — and no write may
+		// have happened before start() ran.
+		expect(getGlobalDefault()).toBe(true)
+		expect(settingsWriteStubs.writeConfigSetting).not.toHaveBeenCalled()
 
 		await start()
 
@@ -589,6 +605,7 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		// Greenfield gated org with no persisted default: settings.json
 		// multiModel is seeded false above, so something must be installed on
 		// top of it or the user ends up on nothing.
+		setProcessMultiModelEnabled(SESSION_ID, true)
 		const { setModel, start } = runSessionStart({ model: undefined })
 
 		await start()
@@ -613,6 +630,12 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		const { setModel, ctx, start } = runSessionStart({
 			model: model(DEEPSEEK),
 		})
+
+		// Pre-state: the session came up multi-model-enabled, so the disabled
+		// state asserted below is provably the outcome of start().
+		setProcessMultiModelEnabled(SESSION_ID, true)
+		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(true)
+		expect(settingsWriteStubs.writeConfigSetting).not.toHaveBeenCalled()
 
 		await start()
 
@@ -656,6 +679,10 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		settingsReadStubs.readConfigSetting.mockReturnValue(false)
 		const { setModel, ctx, start } = runSessionStart()
 
+		// A completed migration: the configured default is already off — the
+		// no-op assertions below must hold against that before state.
+		expect(getGlobalDefault()).toBe(false)
+
 		await start()
 
 		expect(setModel).not.toHaveBeenCalled()
@@ -671,6 +698,11 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		settingsReadStubs.readConfigSetting.mockReturnValue(true)
 		const { setModel, start } = runSessionStart()
 
+		// The migration is owed only while the configured default is still
+		// multi-model — pin that before state so the install below is
+		// provably its outcome.
+		expect(getGlobalDefault()).toBe(true)
+
 		await start()
 
 		expect(setModel).toHaveBeenCalledWith(model(DEEPSEEK, { name: `Model ${DEEPSEEK}` }), { persist: true })
@@ -678,7 +710,13 @@ describe("catalog-driven gated default — orgs without auto", () => {
 
 	it("respects an explicit --multi-model launch choice in a gated org", async () => {
 		populateCliArgs(["--multi-model"])
+		// Pre-state: settings.json still carries multiModel=true, so the seed
+		// overwrite below is a real transition caused by start().
+		settingsReadStubs.readConfigSetting.mockReturnValue(true)
 		const { setModel, start } = runSessionStart()
+
+		expect(getGlobalDefault()).toBe(true)
+		expect(settingsWriteStubs.writeConfigSetting).not.toHaveBeenCalled()
 
 		await start()
 

@@ -281,17 +281,32 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 
 			if (options.handleCliModelSelection) dropRetiredAutoDefaultMarker()
 
-			// Catalog-driven organization gating: an organization the backend
-			// does not serve a routed virtual model (`auto`) to is gated.
-			// Gated organizations get a concrete flash model INSTEAD of
-			// multi-model as their default — a one-time migration, since their
-			// settings.json `multiModel` value is a seeded default, not a user
-			// choice (overwritten below). Session-level choices (mid-session
-			// toggles, /resume of a persisted multi-model session, CLI flags)
-			// keep their precedence on top of the seeded default. A deliberate
-			// default pick afterwards is respected: the migration does not run
-			// again. When no flash candidate is served either, the org stays on
-			// multi-model untouched.
+			// Catalog-driven defaults — two policies, decided by what the
+			// backend catalog serves:
+			//
+			// - Orgs served a routed virtual model (`auto`): Auto is
+			//   EVER-RE-FORCED — a manual switch away is honoured for its
+			//   session, but the next fresh session rolls back to Auto, because
+			//   for entitled accounts Auto IS the default, not a one-time
+			//   install. This applies whatever provider the session came up on —
+			//   a switch to another provider's model (e.g. Anthropic's Claude)
+			//   rolls back too. The rollback is announced: a silent switch away
+			//   from a deliberately chosen model reads as a bug.
+			// - Orgs NOT served `auto` are gated: they get a concrete flash
+			//   model INSTEAD of multi-model as the default — a ONE-TIME
+			//   migration, since their settings.json `multiModel` value is a
+			//   seeded default, not a user choice (overwritten below;
+			//   writeConfigSetting skips unchanged writes, so running this on
+			//   every launch costs nothing). Session-level choices (mid-session
+			//   toggles, /resume of a persisted multi-model session, CLI flags)
+			//   keep their precedence on top of the seeded default, and a
+			//   deliberate default pick afterwards is respected — the migration
+			//   does not run again. When no flash candidate is served either,
+			//   the org stays on multi-model untouched.
+			// - A first run with no current model at all (no persisted default)
+			//   installs the default too — otherwise gated greenfield users
+			//   would get multiModel=false below with nothing installed on top
+			//   of it.
 			const autoModel = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
 			const gatedDefault = autoModel
 				? undefined
@@ -314,20 +329,9 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 				}
 			}
 
-			// Catalog-driven defaults, two policies: `auto` is EVER-RE-FORCED
-			// when the backend advertises it — a manual switch away is honoured
-			// for its session, but the next fresh session rolls back to Auto,
-			// because for entitled accounts Auto IS the default, not a one-time
-			// install. This applies whatever provider the session came up on — a
-			// switch to another provider's model (e.g. Anthropic's Claude) rolls
-			// back too. Say so when the rollback happens — a silent switch away
-			// from a deliberately chosen model reads as a bug. Gated
-			// organizations instead get a ONE-TIME migration (see the gated
-			// branch below): the flash model replaces the multi-model default
-			// once and afterwards the user's deliberate default wins. A first
-			// run with no current model at all (no persisted default) installs
-			// the default too — otherwise gated greenfield users would get
-			// multiModel=false above with nothing installed on top of it.
+			// Fresh main sessions: enforce the catalog-driven defaults policy
+			// described above — Auto for entitled orgs, the gated flash model
+			// (or nothing) for gated ones.
 			if (mainFreshLaunch && (!ctx.model || !isAutoRoutedModel(ctx.model))) {
 				// Installs the fresh-session default — the gated flash model or Auto —
 				// and announces it. Persist: upstream 0.85.1 made setModel session-only
@@ -350,13 +354,9 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 				}
 
 				if (!autoModel && gatedDefault) {
-					// Gated organization: Auto is absent from the catalog, so the
-					// served flash model replaces multi-model as the default. Unlike
-					// Auto this is a ONE-TIME migration of the multi-model default,
-					// not an ever-re-forced default: once the seed wrote multiModel
-					// false and a concrete defaultModel, a deliberate user pick
-					// afterwards is respected — no rollback, no notice. (Only Auto,
-					// further below, rolls back on every fresh session.)
+					// Gated organization: the guards below implement the ONE-TIME
+					// migration policy described above (a completed migration is a
+					// no-op; only Auto rolls back on every fresh session).
 					if (!gatedDefaultOwed) {
 						setMultiModelEnabled(sessionId, false)
 						resetLastNotified(sessionId)
