@@ -286,6 +286,31 @@ function createPermissionsHarness(
 	}
 }
 
+type SubmitPlanToolDef = {
+	execute: (
+		toolCallId: string,
+		params: { plan: string },
+		signal: AbortSignal | undefined,
+		onUpdate: undefined,
+		ctx: ExtensionContext,
+	) => Promise<unknown>
+}
+
+// Drive submit_plan so the review context (plan text/path) is stored on the
+// bus, then flush the task queue so the TUI menu's resolved select has been
+// handled before the test emits its own decision.
+async function submitPlan(
+	harness: ReturnType<typeof createPermissionsHarness>,
+	plan: string,
+	ctx: ExtensionContext,
+): Promise<unknown> {
+	const tool = harness.registeredTools.get("submit_plan") as SubmitPlanToolDef | undefined
+	if (!tool) throw new Error("submit_plan tool was not registered with kimchi")
+	const result = await tool.execute("tc-submit-plan", { plan }, undefined, undefined, ctx)
+	await new Promise<void>((resolve) => setTimeout(resolve, 0))
+	return result
+}
+
 describe("classifier health reporting", () => {
 	const event = {
 		type: "tool_call",
@@ -4173,31 +4198,6 @@ describe("adhoc plan review plannotator decision routing", () => {
 	const PLAN =
 		"# Plan: Cache Layer\n\n## Goal\nAdd caching layer.\n\n## Chunks\n\n### Chunk 1: Add cache primitive\n- **Accept When**: round-trip works"
 
-	type SubmitPlanToolDef = {
-		execute: (
-			toolCallId: string,
-			params: { plan: string },
-			signal: AbortSignal | undefined,
-			onUpdate: undefined,
-			ctx: ExtensionContext,
-		) => Promise<unknown>
-	}
-
-	// Drive submit_plan so the review context (plan text/path) is stored on the
-	// bus, then flush the task queue so the TUI menu's resolved select has been
-	// handled before the test emits its own plannotator decision.
-	async function submitPlan(
-		harness: ReturnType<typeof createPermissionsHarness>,
-		plan: string,
-		ctx: ExtensionContext,
-	): Promise<unknown> {
-		const tool = harness.registeredTools.get("submit_plan") as SubmitPlanToolDef | undefined
-		if (!tool) throw new Error("submit_plan tool was not registered with pi")
-		const result = await tool.execute("tc-submit-plan", { plan }, undefined, undefined, ctx)
-		await new Promise<void>((resolve) => setTimeout(resolve, 0))
-		return result
-	}
-
 	beforeEach(() => {
 		runCloudAgentMock.mockClear()
 	})
@@ -4334,5 +4334,129 @@ describe("adhoc plan review plannotator decision routing", () => {
 		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
 		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "runtime", initiatedBy: "user" })
 		expect(runCloudAgentMock).not.toHaveBeenCalled()
+	})
+})
+
+// =============================================================================
+// submit_plan availability across permission modes
+// =============================================================================
+
+describe("adhoc submit_plan mode availability", () => {
+	const PLAN =
+		"# Plan: Cache Layer\n\n## Goal\nAdd caching layer.\n\n## Chunks\n\n### Chunk 1: Add cache primitive\n- **Accept When**: round-trip works"
+
+	interface SubmitResult {
+		content: Array<{ type: string; text: string }>
+		details: { submitted?: boolean }
+		terminate?: boolean
+	}
+
+	async function executeSubmitPlan(
+		harness: ReturnType<typeof createPermissionsHarness>,
+		plan: string,
+		ctx: ExtensionContext,
+	): Promise<SubmitResult> {
+		return (await submitPlan(harness, plan, ctx)) as SubmitResult
+	}
+
+	it("allows submit_plan from auto mode: review menu, approval executes without a mode transition", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { auto: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const modeChanged = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.MODE_CHANGED, modeChanged)
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-auto-submit-"))
+		try {
+			// TUI menu pick ("Execute the plan locally") drives the kimchi-tui decision.
+			const ctx = createMockContext([EXECUTE_LOCAL_DECISION_OPTION])
+			ctx.cwd = tmpDir
+			const result = await executeSubmitPlan(harness, PLAN, ctx)
+			expect(result.details?.submitted).toBe(true)
+
+			await vi.waitFor(() => {
+				expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+					expect.objectContaining({ customType: "plan-execute", content: expect.stringContaining(PLAN) }),
+					expect.anything(),
+				)
+			})
+			// Approval from auto mode must not touch the mode: no plan→auto
+			// release transition, no MODE_CHANGED churn.
+			expect(modeChanged).not.toHaveBeenCalled()
+			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "flag", initiatedBy: "user" })
+			// The plan artifact still lands on disk.
+			expect(readdirSync(join(tmpDir, ".kimchi", "plans"))).toEqual(["plan-cache-layer.md"])
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	it("saves the plan and terminates cleanly when submitting from auto mode without a UI", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { auto: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-auto-headless-"))
+		try {
+			const ctx = { ...createMockContext([]), hasUI: false, cwd: tmpDir } as unknown as ExtensionContext
+			const result = await executeSubmitPlan(harness, PLAN, ctx)
+			expect(result.details?.submitted).toBe(true)
+			expect(result.terminate).toBe(true)
+			expect(result.content[0]?.text).toContain("Plan submitted.")
+			expect(readdirSync(join(tmpDir, ".kimchi", "plans"))).toEqual(["plan-cache-layer.md"])
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	it("allows submit_plan from default mode: approval executes without a mode transition", async () => {
+		const harness = createPermissionsHarness(["read", "bash"])
+		await harness.fire("session_start", {}, createMockContext([]))
+		const modeChanged = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.MODE_CHANGED, modeChanged)
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-default-submit-"))
+		try {
+			// TUI menu pick ("Execute the plan locally") drives the kimchi-tui decision.
+			const ctx = createMockContext([EXECUTE_LOCAL_DECISION_OPTION])
+			ctx.cwd = tmpDir
+			const result = await executeSubmitPlan(harness, PLAN, ctx)
+			expect(result.details?.submitted).toBe(true)
+
+			await vi.waitFor(() => {
+				expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+					expect.objectContaining({ customType: "plan-execute", content: expect.stringContaining(PLAN) }),
+					expect.anything(),
+				)
+			})
+			// Approval must not change the mode: per-edit permission prompts
+			// continue to gate execution in default mode.
+			expect(modeChanged).not.toHaveBeenCalled()
+			expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("default")
+			expect(readdirSync(join(tmpDir, ".kimchi", "plans"))).toEqual(["plan-cache-layer.md"])
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	it("allows submit_plan from yolo mode: approval executes without a mode transition", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { yolo: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const modeChanged = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.MODE_CHANGED, modeChanged)
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-yolo-submit-"))
+		try {
+			const ctx = createMockContext([EXECUTE_LOCAL_DECISION_OPTION])
+			ctx.cwd = tmpDir
+			const result = await executeSubmitPlan(harness, PLAN, ctx)
+			expect(result.details?.submitted).toBe(true)
+
+			await vi.waitFor(() => {
+				expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+					expect.objectContaining({ customType: "plan-execute", content: expect.stringContaining(PLAN) }),
+					expect.anything(),
+				)
+			})
+			expect(modeChanged).not.toHaveBeenCalled()
+			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "flag", initiatedBy: "user" })
+			expect(readdirSync(join(tmpDir, ".kimchi", "plans"))).toEqual(["plan-cache-layer.md"])
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
 	})
 })
