@@ -48,6 +48,7 @@ import {
 	classifyWorkIntent,
 	loadWorkIntents,
 	rememberWorkIntent,
+	WorkMatchingLimit,
 	workIntentPath,
 	workMatchingEnabled,
 } from "./work-attribution/semantic.js"
@@ -301,7 +302,12 @@ export function createWorkAttributionExtension(
 	const isChild = inheritedWorkId !== undefined
 	return (pi) => {
 		let preparedInput = false
-		const extensionInputs = new Set<string>()
+		// Mirrors Pi's queues: it matches a delivered message by text, steering first.
+		const queued: Record<"steer" | "followUp", { text: string; extension: boolean }[]> = { steer: [], followUp: [] }
+		const clearQueued = () => {
+			queued.steer = []
+			queued.followUp = []
+		}
 		let stopReconciliation: (() => Promise<void>) | undefined
 		let activeContext: ExtensionContext | undefined
 		function notifyWorkChanged(): void {
@@ -334,7 +340,7 @@ export function createWorkAttributionExtension(
 		})
 		pi.on("session_start", (_event, ctx) => {
 			preparedInput = false
-			extensionInputs.clear()
+			clearQueued()
 			inputGeneration++
 			semanticAbort?.abort()
 			unregisterWorkState ??= registerWorkState()
@@ -422,12 +428,9 @@ export function createWorkAttributionExtension(
 		pi.on("input", (event, ctx) => {
 			// Pi emits input before enqueueing; the running turn still owns its next request.
 			if (event.streamingBehavior) {
-				if (event.source === "extension") {
-					// Input hooks have no message ID. Carry a nonce through Pi's queue instead of matching user text.
-					const nonce = randomUUID()
-					extensionInputs.add(nonce)
-					return { action: "transform", text: `${event.text}\n<!-- kimchi-extension-input:${nonce} -->` }
-				}
+				// An empty Pi queue means earlier entries were delivered or restored to the editor.
+				if (!ctx.hasPendingMessages()) clearQueued()
+				queued[event.streamingBehavior].push({ text: event.text, extension: event.source === "extension" })
 				return
 			}
 			return attributeInput(event, ctx)
@@ -443,24 +446,16 @@ export function createWorkAttributionExtension(
 				return
 			}
 			const text = contentText(event.message.content, "")
-			const marker = /\n<!-- kimchi-extension-input:([a-f0-9-]+) -->$/.exec(text)
-			if (marker && extensionInputs.delete(marker[1])) {
-				// message_start is awaited before persistence, rendering and the provider request.
-				event.message.content =
-					typeof event.message.content === "string"
-						? event.message.content.replace(marker[0], "")
-						: event.message.content.map((part) =>
-								part.type === "text" ? { ...part, text: part.text.replace(marker[0], "") } : part,
-							)
-				return
-			}
+			const queue = queued.steer.some((entry) => entry.text === text) ? queued.steer : queued.followUp
+			const index = queue.findIndex((entry) => entry.text === text)
+			if (index >= 0 && queue.splice(index, 1)[0].extension) return
 			if (isHarnessSteer(text)) return
 			// Pi awaits message_start before sending the request that receives a queued message.
 			await attributeInput({ type: "input", text, source: "interactive" }, ctx)
 		})
 		pi.on("agent_settled", () => {
 			preparedInput = false
-			extensionInputs.clear()
+			clearQueued()
 		})
 		async function attributeInput(event: InputEvent, ctx: ExtensionContext): Promise<void> {
 			if (isChild) return
@@ -610,7 +605,8 @@ export function createWorkAttributionExtension(
 				)
 				await rememberWorkIntent(ctx.cwd, workId, event.text, intents.repository, intents.account)
 			} catch (error) {
-				warnWorkAttribution(ctx, error)
+				if (error instanceof WorkMatchingLimit) debugWorkAttribution("Work matching skipped:", error)
+				else warnWorkAttribution(ctx, error)
 			}
 		}
 		pi.on("before_provider_headers", (event, ctx) => {
@@ -649,7 +645,7 @@ export function createWorkAttributionExtension(
 		})
 		pi.on("session_shutdown", async (_event, ctx) => {
 			preparedInput = false
-			extensionInputs.clear()
+			clearQueued()
 			inputGeneration++
 			semanticAbort?.abort()
 			activeContext = undefined

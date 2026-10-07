@@ -54,6 +54,7 @@ export function createContext(
 		cwd: "/tmp",
 		scopedModels: [],
 		isIdle: vi.fn(),
+		hasPendingMessages: vi.fn(() => false),
 		getContextUsage: vi.fn().mockReturnValue(undefined),
 		modelRegistry: createModelRegistry(),
 		...overrides,

@@ -215,28 +215,54 @@ describe("queued input delivery", () => {
 	it.each([
 		"steer",
 		"followUp",
-	] as const)("does not mistake an identical user %s for an extension input", async (streamingBehavior) => {
+	] as const)("tells an identical user %s from a queued extension input in Pi's delivery order", async (streamingBehavior) => {
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
-		const ctx = createContext({ cwd: dir })
+		// Pi still holds the extension message when the user queues the same text.
+		const ctx = createContext({ cwd: dir, hasPendingMessages: vi.fn(() => true) })
 		const input = api.getHandler<InputEvent, InputEventResult>("input")
 		const deliver = api.getHandler<MessageStartEvent>("message_start")
 		await input({ type: "input", text: "Implement export", source: "interactive" }, ctx)
 		const original = getWorkSegment(ctx)
 		const text = "Explain the export step"
-		const extension = await input({ type: "input", text, source: "extension", streamingBehavior: "followUp" }, ctx)
+		expect(
+			await input({ type: "input", text, source: "extension", streamingBehavior: "followUp" }, ctx),
+		).toBeUndefined()
 		await input({ type: "input", text, source: "interactive", streamingBehavior }, ctx)
-		await deliver({ type: "message_start", message: { role: "user", content: text, timestamp: 1 } }, ctx)
+		const message = (timestamp: number): MessageStartEvent => ({
+			type: "message_start",
+			message: { role: "user", content: [{ type: "text", text }], timestamp },
+		})
+		// Pi delivers steering before follow-ups, and each queue in order.
+		if (streamingBehavior === "followUp") {
+			await deliver(message(1), ctx)
+			expect(getWorkSegment(ctx)).toEqual(original)
+		}
+		await deliver(message(2), ctx)
 		const userSegment = getWorkSegment(ctx)
 		expect(userSegment?.id).not.toBe(original?.id)
-		const message: MessageStartEvent["message"] = {
-			role: "user",
-			content: [{ type: "text", text: extension?.action === "transform" ? extension.text : text }],
-			timestamp: 2,
+		if (streamingBehavior === "steer") {
+			await deliver(message(3), ctx)
+			expect(getWorkSegment(ctx)).toEqual(userSegment)
 		}
-		await deliver({ type: "message_start", message }, ctx)
-		expect(getWorkSegment(ctx)).toEqual(userSegment)
-		expect(message.content).toEqual([{ type: "text", text }])
+	})
+
+	it("attributes a user message restored to the editor and queued again", async () => {
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const pending = vi.fn(() => true)
+		const ctx = createContext({ cwd: dir, hasPendingMessages: pending })
+		const input = api.getHandler<InputEvent>("input")
+		const deliver = api.getHandler<MessageStartEvent>("message_start")
+		await input({ type: "input", text: "Implement export", source: "interactive" }, ctx)
+		const original = getWorkSegment(ctx)
+		const text = "Explain the export step"
+		await input({ type: "input", text, source: "extension", streamingBehavior: "followUp" }, ctx)
+		// The user dequeues it into the editor; Pi's queue is now empty.
+		pending.mockReturnValue(false)
+		await input({ type: "input", text, source: "interactive", streamingBehavior: "followUp" }, ctx)
+		await deliver({ type: "message_start", message: { role: "user", content: text, timestamp: 1 } }, ctx)
+		expect(getWorkSegment(ctx)?.id).not.toBe(original?.id)
 	})
 
 	it("keeps extension follow-ups and harness nudges in the current input", async () => {
@@ -248,14 +274,10 @@ describe("queued input delivery", () => {
 		await input({ type: "input", text: "Implement export", source: "interactive" }, ctx)
 		const original = getWorkSegment(ctx)
 		const text = "Retry the export step"
-		const result = await input({ type: "input", text, source: "extension", streamingBehavior: "followUp" }, ctx)
-		const message: MessageStartEvent["message"] = {
-			role: "user",
-			content: result?.action === "transform" ? result.text : text,
-			timestamp: 1,
-		}
-		await deliver({ type: "message_start", message }, ctx)
-		expect(message.content).toBe(text)
+		expect(
+			await input({ type: "input", text, source: "extension", streamingBehavior: "followUp" }, ctx),
+		).toBeUndefined()
+		await deliver({ type: "message_start", message: { role: "user", content: text, timestamp: 1 } }, ctx)
 		await deliver(
 			{
 				type: "message_start",
@@ -320,4 +342,17 @@ describe("fresh-session guard after scope recovery", () => {
 		// Documented: "Restored sessions and existing work output prevent adopting another saved task."
 		expect(getWorkId(ctx)).not.toBe(other)
 	})
+})
+
+it("leaves an input unresolved without a warning when matching history exceeds its limits", async () => {
+	vi.spyOn(semantic, "workMatchingEnabled").mockReturnValue(true)
+	vi.spyOn(semantic, "loadWorkIntents").mockRejectedValue(
+		new semantic.WorkMatchingLimit("Too many works for semantic matching"),
+	)
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	const ctx = createContext({ cwd: dir, model: createModel("chat"), modelRegistry: createModelRegistry() })
+	await api.getHandler<InputEvent>("input")({ type: "input", text: "Explain closures", source: "interactive" }, ctx)
+	expect(getWorkSegment(ctx)).toMatchObject({ attribution: "unknown" })
+	expect(ctx.ui.notify).not.toHaveBeenCalled()
 })
