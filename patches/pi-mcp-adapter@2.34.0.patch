@@ -36,11 +36,20 @@
 #   - mcp-callback-server (+mcp-auth-flow): callbacks whose oauth state belongs
 #     to a recently completed flow replay the normal success page (HTTP 200)
 #     via a process-level tombstone (10 min TTL, capped at 100, lazily pruned)
-#     recorded both in the callback success branch and in completeAuth (so the
-#     manual paste path is covered too); unknown, superseded, or expired states
-#     get a neutral "Authorization No Longer Active" error page (HTTP 400)
-#     instead of the CSRF error page, with the heading string unchanged so host
-#     branding keeps mapping it.
+#     recorded only in completeAuth after a successful token exchange (a
+#     failed exchange no longer leaves a success-page tombstone); unknown,
+#     superseded, or expired states get a neutral "Authorization No Longer
+#     Active" error page (HTTP 400) instead of the CSRF error page, with the
+#     heading string unchanged so host branding keeps mapping it.
+#   - mcp-auth-flow: concurrent token exchanges of the same pending flow
+#     (callback listener racing a pasted redirect URL) are serialized via an
+#     in-flight map; the second caller awaits and shares the first result,
+#     and a paste for an already-completed state returns "authenticated"
+#     instead of throwing "No pending OAuth flow".
+#   - proxy-modes: a background auth watcher that fails with the callback
+#     timeout appends the actionable manual-auth instructions (URL and
+#     auth-complete paste command) to the failure status message.
+
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -362,18 +371,32 @@ index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547
          if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
              return true;
 diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
-index 0ae900470d923665153cdbc6028dd91f81c180b2..db78ed668626f01111e4b8bf6486e61b38eebcc6 100644
+index 0ae900470d923665153cdbc6028dd91f81c180b2..3e1d02e242e5f9bf5dd393839014ea3cd9a353df 100644
 --- a/mcp-auth-flow.ts
 +++ b/mcp-auth-flow.ts
-@@ -25,6 +25,7 @@ import {
+@@ -25,6 +25,8 @@ import {
    stopCallbackServer,
    stopCallbackServerIfIdle,
    releaseCallbackServer,
 +  markAuthStateCompleted,
++  isAuthStateRecentlyCompleted,
  } from "./mcp-callback-server.ts"
  import {
    getAuthForUrl,
-@@ -93,6 +94,12 @@ type PendingAuth = {
+@@ -52,6 +54,12 @@ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts"
+ /** Auth status for a server */
+ export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
+ 
++// Token exchanges currently in flight, keyed by pending-auth key. Serializes
++// concurrent completions of the same flow (e.g. the callback listener racing
++// a pasted redirect URL) so only one exchange runs and both callers observe
++// the same result.
++const exchangesInFlight = new Map<string, Promise<AuthStatus>>()
++
+ export interface McpOAuthRuntime {
+   readonly signal: AbortSignal
+ }
+@@ -93,6 +101,12 @@ type PendingAuth = {
    authorizationUrl: string
    manualRedirect: boolean
    manualCompletionController?: AbortController
@@ -386,7 +409,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..db78ed668626f01111e4b8bf6486e61b
    discovery: AuthDiscovery
    getHeaders: () => Headers
    authStorageOptions: AuthStorageOptions
-@@ -453,7 +460,7 @@ export async function startAuth(
+@@ -453,7 +467,7 @@ export async function startAuth(
    definition?: ServerEntry,
    options: AuthenticateOptions = {},
    operationAuthority?: OAuthAuthority,
@@ -395,7 +418,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..db78ed668626f01111e4b8bf6486e61b
    if (isServerDisabled(definition)) throw new Error(`MCP server "${serverName}" is disabled`)
    const authority = operationAuthority ?? captureOAuthAuthority(serverName)
    authority()
-@@ -501,13 +508,22 @@ export async function startAuth(
+@@ -501,13 +515,22 @@ export async function startAuth(
    const existingPendingAuth = runtimeState.pendingAuths.get(getPendingAuthKey(serverName, authStorageOptions))
    if (existingPendingAuth?.serverUrl === serverUrl) {
      existingPendingAuth.authority()
@@ -419,7 +442,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..db78ed668626f01111e4b8bf6486e61b
    if (!manualRedirect) {
      try {
        await ensureCallbackServer({
-@@ -540,6 +556,18 @@ export async function startAuth(
+@@ -540,6 +563,18 @@ export async function startAuth(
        }
        throw error
      }
@@ -438,7 +461,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..db78ed668626f01111e4b8bf6486e61b
    }
  
    let capturedUrl: URL | undefined
-@@ -601,13 +629,14 @@ export async function startAuth(
+@@ -601,13 +636,14 @@ export async function startAuth(
        authorizationUrl: capturedUrl.toString(),
        manualRedirect,
        ...(manualRedirect ? { manualCompletionController: new AbortController() } : {}),
@@ -454,7 +477,35 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..db78ed668626f01111e4b8bf6486e61b
    } catch (error) {
      authProvider.deactivate()
      try {
-@@ -954,6 +983,9 @@ export async function completeAuth(
+@@ -890,6 +926,13 @@ export async function completeAuthFromInput(
+     throw new Error("Paste the full OAuth callback URL, including its code and state parameters")
+   }
+   const parsed = parseAuthorizationRedirectInput(input, oauthState)
++  // Paste-after-completion: if the pasted state matches a flow that already
++  // exchanged its code (post-exchange tombstone), report success instead of
++  // failing with "No pending OAuth flow".
++  const pastedState = getSearchParamsFromInput(input.trim())?.get("state")
++  if (pastedState && isAuthStateRecentlyCompleted(pastedState)) {
++    return "authenticated"
++  }
+   return completeAuth(serverName, parsed, options)
+ }
+ 
+@@ -910,6 +953,13 @@ export async function completeAuth(
+   const signal = combineAbortSignals(runtime.signal, options.signal)
+   throwIfAborted(signal)
+   const key = getPendingAuthKey(serverName, fallbackAuthStorageOptions)
++  // Serialize concurrent exchanges of the same flow (listener vs paste race):
++  // the second caller awaits the first caller's in-flight exchange.
++  const inFlight = exchangesInFlight.get(key)
++  if (inFlight) {
++    return inFlight
++  }
++  const doCompleteAuth = async (): Promise<AuthStatus> => {
+   const pendingAuth = runtimeState.pendingAuths.get(key)
+   const authStorageOptions = pendingAuth?.authStorageOptions ?? fallbackAuthStorageOptions
+   if (!pendingAuth) {
+@@ -954,6 +1004,9 @@ export async function completeAuth(
      if (result !== "AUTHORIZED") {
        throw new UnauthorizedError("Failed to authorize")
      }
@@ -464,7 +515,22 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..db78ed668626f01111e4b8bf6486e61b
      return "authenticated"
    } catch (error) {
      caughtError = error
-@@ -1034,7 +1066,7 @@ export async function authenticate(
+@@ -971,6 +1024,14 @@ export async function completeAuth(
+       if (caughtError === undefined) pendingAuth.authority()
+     }
+   }
++  }
++  const exchange = doCompleteAuth()
++  exchangesInFlight.set(key, exchange)
++  try {
++    return await exchange
++  } finally {
++    exchangesInFlight.delete(key)
++  }
+ }
+ 
+ /**
+@@ -1034,7 +1095,7 @@ export async function authenticate(
        if (!pendingAuth) {
          throw new Error(`No pending OAuth flow for server: ${serverName}`)
        }
@@ -473,7 +539,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..db78ed668626f01111e4b8bf6486e61b
          throw new Error(
            `OAuth for ${serverName} uses a remote redirect URI. Complete it with auth-start/auth-complete or /mcp-auth.`,
          )
-@@ -1042,7 +1074,7 @@ export async function authenticate(
+@@ -1042,7 +1103,7 @@ export async function authenticate(
  
        // Register the localhost callback before opening the browser. Remote
        // pre-registered callbacks are completed by pasting their full URL.
@@ -483,7 +549,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..db78ed668626f01111e4b8bf6486e61b
          : waitForCallback(oauthState)
        void callbackPromise.catch(() => {})
 diff --git a/mcp-callback-server.ts b/mcp-callback-server.ts
-index 91b73cf0ebffa07cb7ea9a3fcd08e7c0fb3ec5c6..a0354dda5a3c8e49f4ec02ce7984ed02c81f0412 100644
+index 91b73cf0ebffa07cb7ea9a3fcd08e7c0fb3ec5c6..4b79b41a3f5524ffc570a9a222c0843c7392d1e7 100644
 --- a/mcp-callback-server.ts
 +++ b/mcp-callback-server.ts
 @@ -162,6 +162,24 @@ function htmlError(error: string): string {
@@ -537,7 +603,7 @@ index 91b73cf0ebffa07cb7ea9a3fcd08e7c0fb3ec5c6..a0354dda5a3c8e49f4ec02ce7984ed02
 +  }
 +}
 +
-+function isAuthStateRecentlyCompleted(state: string): boolean {
++export function isAuthStateRecentlyCompleted(state: string): boolean {
 +  const expiresAt = completedAuthStates.get(state)
 +  if (expiresAt === undefined) return false
 +  if (expiresAt <= Date.now()) {
@@ -583,14 +649,19 @@ index 91b73cf0ebffa07cb7ea9a3fcd08e7c0fb3ec5c6..a0354dda5a3c8e49f4ec02ce7984ed02
      return
    }
  
-@@ -277,6 +334,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
-   // Clear timeout and resolve the pending promise
+@@ -274,7 +331,11 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+     return
+   }
+ 
+-  // Clear timeout and resolve the pending promise
++  // Clear timeout and resolve the pending promise.
++  // NOTE: the completed-state tombstone is NOT recorded here — code delivery
++  // precedes the token exchange, and a failed exchange must not leave a
++  // tombstone serving "Authorization Successful". completeAuth() marks the
++  // state only after the exchange succeeds.
    clearTimeout(pending.timeout)
    pendingAuths.delete(state)
-+  markAuthStateCompleted(state)
    pending.resolve({ code, ...(iss !== null ? { iss } : {}) })
- 
-   res.writeHead(200, { "Content-Type": "text/html" })
 diff --git a/metadata-cache.ts b/metadata-cache.ts
 index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef31282e511d4f 100644
 --- a/metadata-cache.ts
@@ -660,10 +731,36 @@ index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef3128
 -  }
 -}
 diff --git a/proxy-modes.ts b/proxy-modes.ts
-index 49f1b4eccfbee9a14ef6e71db8d8392dcba6ed23..05bf69fcd5d6d84e180def9513228d44c81fa652 100644
+index 49f1b4eccfbee9a14ef6e71db8d8392dcba6ed23..cf860c2aa2a9bdc9b4fb8c96b4c4a8895a3d539c 100644
 --- a/proxy-modes.ts
 +++ b/proxy-modes.ts
-@@ -233,24 +233,27 @@ function getRedirectDetails(authorizationUrl: string): { port?: number; remote:
+@@ -152,6 +152,8 @@ function ensureBackgroundAuthWatcher(
+   serverName: string,
+   serverUrl: string,
+   definition: ServerEntry,
++  authorizationUrl: string,
++  loopbackCapture: boolean,
+ ): void {
+   let watchers = backgroundAuthWatchers.get(state);
+   if (!watchers) {
+@@ -189,11 +191,15 @@ function ensureBackgroundAuthWatcher(
+       if (isAbortError(statusError, state.owner.signal)) return;
+     }
+     if (state.owner.signal.aborted) return;
++    const message = error instanceof Error ? error.message : String(error);
++    const timeoutInstructions = message === "OAuth callback timeout - authorization took too long"
++      ? `\n\n${formatManualAuthInstructions(serverName, authorizationUrl, loopbackCapture)}`
++      : "";
+     emitAuthStatus(
+       state,
+       serverName,
+       "failed",
+-      `OAuth authentication failed for MCP server "${serverName}". Start authorization again or inspect trusted logs.`,
++      `OAuth authentication failed for MCP server "${serverName}". Start authorization again or inspect trusted logs.${timeoutInstructions}`,
+     );
+   }).finally(() => {
+     if (watchers?.get(serverName) === watcher) watchers.delete(serverName);
+@@ -233,24 +239,27 @@ function getRedirectDetails(authorizationUrl: string): { port?: number; remote:
    }
  }
  
@@ -699,7 +796,7 @@ index 49f1b4eccfbee9a14ef6e71db8d8392dcba6ed23..05bf69fcd5d6d84e180def9513228d44
      `mcp({ action: "auth-complete", server: "${serverName}", args: { redirectUrl: "PASTE_REDIRECT_URL_HERE" } })`,
      "",
      redirect.remote
-@@ -526,7 +529,7 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+@@ -526,7 +535,7 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
        };
      }
  
@@ -708,7 +805,7 @@ index 49f1b4eccfbee9a14ef6e71db8d8392dcba6ed23..05bf69fcd5d6d84e180def9513228d44
        ? ownedSignal
          ? await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, signal: ownedSignal, runtime: state.oauthRuntime })
          : await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, runtime: state.oauthRuntime })
-@@ -541,6 +544,12 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+@@ -541,17 +550,23 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
      }
  
      if (getRedirectDetails(authorizationUrl).remote) {
@@ -716,12 +813,16 @@ index 49f1b4eccfbee9a14ef6e71db8d8392dcba6ed23..05bf69fcd5d6d84e180def9513228d44
 +      // the local callback listener in the background; without it they stay
 +      // paste-only via auth-complete.
 +      if (loopbackCapture) {
-+        ensureBackgroundAuthWatcher(state, serverName, serverUrl, definition);
++        ensureBackgroundAuthWatcher(state, serverName, serverUrl, definition, authorizationUrl, loopbackCapture === true);
 +      }
        try {
          await state.openBrowser(authorizationUrl);
        } catch (error) {
-@@ -551,7 +560,7 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+         if (isAbortError(error, ownedSignal)) throw error;
+       }
+     } else {
+-      ensureBackgroundAuthWatcher(state, serverName, serverUrl, definition);
++      ensureBackgroundAuthWatcher(state, serverName, serverUrl, definition, authorizationUrl, loopbackCapture === true);
      }
  
      return {
