@@ -19,7 +19,7 @@ Teleport transfers conversation history but does not transfer the local accounti
 Each upload replaces one producer's inventory for one account and repository. It contains:
 
 - The Git provider, host, stable target repository ID, and optional repository name.
-- Stable PR/MR IDs, numbers, links, state and merge times.
+- Stable PR/MR IDs, numbers, links, state and merge or close times.
 - Exact request attempt UUIDs, verified billing-row UUIDs and request start times.
 - Allocation kind, referenced PR IDs and evidence method. An input whose native edits landed in the PR sends `native`; other session inputs send `session` and stay likely. Continued plans send `explicit`; `/work link` corrections send `user-correction`. Model guesses send `model` and stay likely.
 - Request counts, missing-price counts, history completeness and the latest applicable cost refresh time.
@@ -101,9 +101,15 @@ Failed attempts retain their payload and retry time, including `Retry-After`. An
 
 Uploads are limited to 2 MiB, 10,000 requests, 100 PRs and 8 billing IDs per request. An oversized inventory is held with an error; it is never silently truncated. The local queue is bounded to 24 MiB. No request, session, PR or user IDs are added to metric labels.
 
-Upload windowing and automatic server cleanup still need implementation before rollout. The reporting API can keep previously reported merged or closed PRs through `retainedPullRequestIds`; this client does not yet send that field. Trimming uploads before adding it would remove earlier claims.
+## Upload window and saved totals
 
-For attempts without billing IDs, the reporting API checks the exact request tag. A complete empty lookup settles the attempt at $0 once it is 24 hours old. A later bill updates that amount. Failed or incomplete lookups cannot settle an attempt.
+The client sends all open PRs and their work, plus work from the last 32 days. A merged or closed PR stays in uploads for 32 days after its provider-reported finish time, including its older contributing requests. Missing finish metadata keeps the work eligible. The local source inventory distinguishes requests deliberately left outside this window from records that went missing; missing evidence still holds an affected upload.
+
+The server preserves omitted finished PRs and freezes their verified subtotal when the 32-day window ends. It keeps request and billing claims for 90 days after merge or close, then retains only the small report for 13 calendar months from freezing. The dashboard therefore keeps the saved amount after the original billing rows disappear. Unknown prices and disputed ownership remain incomplete in the frozen report.
+
+Ownership corrections can update a frozen report while its detailed claims remain. Unchanged ownership keeps the saved amount; bills arriving after the freeze do not reprice it. Repeated uploads do not extend the expiry date. Once detailed claims expire, they are no longer available for exact ownership corrections.
+
+For attempts without billing IDs, the reporting API checks the exact request tag. A complete empty lookup settles the attempt at $0 once it is 24 hours old. A later bill updates that amount while the report is still active. Failed or incomplete lookups cannot settle an attempt.
 
 ## Health metrics
 
