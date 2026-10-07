@@ -278,7 +278,13 @@ function resolveProbeName(name: string, definition: ServerEntry): string {
 	try {
 		const urlStatus = inspectMcpOAuthTokensForUrl(name, definition.url)
 		if (urlStatus.status === "present") return name
-		if (urlStatus.status === "absent") {
+		if (urlStatus.status === "absent" || urlStatus.status === "unavailable") {
+			// "unavailable" is not a vector for skipping inspection: the adapter
+			// collapses a declined keychain consent (a legacy ACL item) to its
+			// generic status, but the per-process denial cache in SecurityToolEntry
+			// records the real cause — inspectMcpCredentialAccount rethrows the
+			// cached McpKeychainDeniedError so the probe surfaces the
+			// re-authenticate state instead of looping an anonymous connect.
 			const account = inspectMcpCredentialAccount(name)
 			if (account.status === "absent" || (account.status === "present" && !account.serverUrl)) return name
 			if (account.status === "present" && account.serverUrl === definition.url) return name

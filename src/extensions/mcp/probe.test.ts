@@ -88,6 +88,20 @@ vi.mock("./oauth-migration.js", () => ({
 	migrateLegacyOAuthCredentials: vi.fn(() => ({ migratedServerNames: [], warnings: [] })),
 }))
 
+const tokensForUrlResult = vi.hoisted(() => ({
+	forced: null as { status: "present" } | { status: "absent" } | { status: "unavailable" } | null,
+}))
+vi.mock("pi-mcp-adapter/oauth", async () => {
+	const actual = await vi.importActual<typeof import("pi-mcp-adapter/oauth")>("pi-mcp-adapter/oauth")
+	return {
+		...actual,
+		// Default passthrough; tests can force a status (e.g. "unavailable" — the
+		// shape a declined keychain consent looks like to the adapter).
+		inspectMcpOAuthTokensForUrl: (name: string, url: string) =>
+			tokensForUrlResult.forced ?? actual.inspectMcpOAuthTokensForUrl(name, url),
+	}
+})
+
 import { inspectMcpOAuthTokensForUrl, updateMcpOAuthTokensForUrl } from "pi-mcp-adapter/oauth"
 import { UpstreamMcpProbe } from "./probe.js"
 
@@ -121,6 +135,7 @@ beforeEach(() => {
 	mcpClient.state.tools = []
 	credentialAccount.value = { status: "absent" }
 	credentialAccount.error = undefined
+	tokensForUrlResult.forced = null
 	upstream.mcpAuth.mockReset()
 	upstream.options = undefined
 	upstream.registerMcpAuthCommand = true
@@ -694,6 +709,38 @@ describe("UpstreamMcpProbe", () => {
 				"macOS keychain consent was declined for the MCP credential 'sha256-x' — click Authenticate or run `kimchi mcp auth <server>` to store fresh credentials.",
 		})
 		expect(upstream.sessionStart).not.toHaveBeenCalled()
+		expect(upstream.logout).not.toHaveBeenCalled()
+	})
+
+	it("surfaces a declined consent the adapter's token lookup reports as unavailable", async () => {
+		// Verified live on macOS 26.6.2: pi-mcp-adapter's inspectMcpOAuthTokensForUrl
+		// swallows the typed denial from its keyring read and reports "unavailable".
+		tokensForUrlResult.forced = { status: "unavailable" }
+		credentialAccount.error = new McpKeychainDeniedError(
+			"macOS keychain consent was declined for the MCP credential 'sha256-x' — click Authenticate or run `kimchi mcp auth <server>` to store fresh credentials.",
+		)
+
+		const result = await new UpstreamMcpProbe().probeTools("denied-via-adapter", { url: "https://example.test/mcp" })
+
+		expect(result).toEqual({
+			tools: [],
+			needsAuth: true,
+			keychainDenied: true,
+			error:
+				"macOS keychain consent was declined for the MCP credential 'sha256-x' — click Authenticate or run `kimchi mcp auth <server>` to store fresh credentials.",
+		})
+		expect(upstream.sessionStart).not.toHaveBeenCalled()
+		expect(upstream.logout).not.toHaveBeenCalled()
+	})
+
+	it("uses the real server name when an unavailable token lookup is verified by the credential account", async () => {
+		tokensForUrlResult.forced = { status: "unavailable" }
+		const url = "https://example.test/mcp"
+		credentialAccount.value = { status: "present", serverUrl: url }
+
+		await new UpstreamMcpProbe().probeTools("unavailable-lookup-verified", { url })
+
+		expect(configuredServerNames()).toEqual(["unavailable-lookup-verified"])
 		expect(upstream.logout).not.toHaveBeenCalled()
 	})
 
