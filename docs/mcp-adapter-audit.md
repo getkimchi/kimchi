@@ -178,18 +178,23 @@ again — a prompt storm per unhealed legacy item.
 
 The fix has three layers:
 
-1. **Typed denial classification.** Exit 128 (and defensively 45/
-errSecAuthFailed) throws `McpKeychainDeniedError` with a re-authenticate
-message instead of collapsing to "unavailable" — `inspectMcpCredentialAccount`
-rethrows it like `McpKeychainUnavailableError`.
+1. **Typed denial classification.** Exit codes are the OSStatus as an unsigned
+byte: the denial is 128 (errSecUserCanceled), while 45 is errSecDuplicateItem
+(a write failure, deliberately not classified as a denial). Exit 128 throws
+`McpKeychainDeniedError` with a re-authenticate message instead of collapsing
+to "unavailable" — `inspectMcpCredentialAccount` rethrows it like
+`McpKeychainUnavailableError`.
 2. **Per-process denial backoff.** `SecurityToolEntry` caches the denial keyed
 by `service\0account`; a second read of the same item rethrows the cached
 error without invoking `/usr/bin/security` again (one dialog per item per
 process, even when denied). A successful write clears the cache entry
 (re-authentication's delete + add rewrites the ACL to trust `security`, so
-subsequent access is permanently silent). Writes are not short-circuited by the
-cache: an explicit re-auth must be allowed to reach the runner. The
-`resetSecurityToolCaches` export clears the map (used by tests).
+subsequent access is permanently silent), and a successful delete clears the
+cached denial alongside writes. A declined self-heal rewrite is tombstoned for
+the process: reads keep serving the credential and only an explicit re-auth
+clears it. Writes are not short-circuited by the cache: an explicit re-auth
+must be allowed to reach the runner. The `resetSecurityToolCaches` export
+clears the collections (used by tests).
 3. **Probe routing.** A probe whose credential inspection hits a denial returns
 `needsAuth: true` with `keychainDenied: true` and the denial message,
 short-circuiting before any anonymous connect or OAuth attempt (which would

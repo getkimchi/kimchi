@@ -53,6 +53,19 @@ describe("handleProbeMcpServer", () => {
 		expect(probe.probeTools).toHaveBeenCalledWith("fixture", server, { authenticate: true })
 	})
 
+	it("passes a keychainDenied result through unchanged so the flag survives the ACP wire", async () => {
+		const denied: ProbeResult = {
+			tools: [],
+			needsAuth: true,
+			keychainDenied: true,
+			error:
+				"macOS keychain consent was declined for the MCP credential 'sha256-x' — click Authenticate or run `kimchi mcp auth <server>` to store fresh credentials.",
+		}
+		const probe = createProbe(denied)
+
+		expect(await handleProbeMcpServer(probe, { server, serverName: "denied" })).toEqual(denied)
+	})
+
 	it("supports auth-free discovery and the default probe name", async () => {
 		const probe = createProbe(result)
 		await handleProbeMcpServer(probe, { server, skipAuth: true })

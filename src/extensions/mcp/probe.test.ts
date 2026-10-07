@@ -59,15 +59,6 @@ vi.mock("pi-mcp-adapter", () => ({
 }))
 
 const installKeyringRequireBridge = vi.hoisted(() => vi.fn())
-const McpKeychainDeniedError = vi.hoisted(
-	() =>
-		class McpKeychainDeniedError extends Error {
-			constructor(message: string) {
-				super(message)
-				this.name = "McpKeychainDeniedError"
-			}
-		},
-)
 const credentialAccount = vi.hoisted(() => ({
 	value: { status: "absent" } as
 		| { status: "present"; serverUrl?: string }
@@ -75,14 +66,17 @@ const credentialAccount = vi.hoisted(() => ({
 		| { status: "unavailable" },
 	error: undefined as Error | undefined,
 }))
-vi.mock("./keyring-require-bridge.js", () => ({
-	installKeyringRequireBridge,
-	inspectMcpCredentialAccount: () => {
-		if (credentialAccount.error) throw credentialAccount.error
-		return credentialAccount.value
-	},
-	McpKeychainDeniedError,
-}))
+vi.mock("./keyring-require-bridge.js", async () => {
+	const actual = await vi.importActual<typeof import("./keyring-require-bridge.js")>("./keyring-require-bridge.js")
+	return {
+		installKeyringRequireBridge,
+		inspectMcpCredentialAccount: () => {
+			if (credentialAccount.error) throw credentialAccount.error
+			return credentialAccount.value
+		},
+		McpKeychainDeniedError: actual.McpKeychainDeniedError,
+	}
+})
 
 vi.mock("./oauth-migration.js", () => ({
 	migrateLegacyOAuthCredentials: vi.fn(() => ({ migratedServerNames: [], warnings: [] })),
@@ -103,6 +97,7 @@ vi.mock("pi-mcp-adapter/oauth", async () => {
 })
 
 import { inspectMcpOAuthTokensForUrl, updateMcpOAuthTokensForUrl } from "pi-mcp-adapter/oauth"
+import { McpKeychainDeniedError } from "./keyring-require-bridge.js"
 import { UpstreamMcpProbe } from "./probe.js"
 
 const authStoreEnv = "PI_MCP_ADAPTER_TEST_AUTH_STORE"
@@ -693,9 +688,8 @@ describe("UpstreamMcpProbe", () => {
 	})
 
 	it("short-circuits with a needs-auth denial result when keychain consent is declined", async () => {
-		credentialAccount.error = new McpKeychainDeniedError(
-			"macOS keychain consent was declined for the MCP credential 'sha256-x' — click Authenticate or run `kimchi mcp auth <server>` to store fresh credentials.",
-		)
+		const expected = new McpKeychainDeniedError("sha256-x")
+		credentialAccount.error = expected
 
 		const result = await new UpstreamMcpProbe().probeTools("denied-server", { url: "https://example.test/mcp" })
 
@@ -705,8 +699,7 @@ describe("UpstreamMcpProbe", () => {
 			tools: [],
 			needsAuth: true,
 			keychainDenied: true,
-			error:
-				"macOS keychain consent was declined for the MCP credential 'sha256-x' — click Authenticate or run `kimchi mcp auth <server>` to store fresh credentials.",
+			error: expected.message,
 		})
 		expect(upstream.sessionStart).not.toHaveBeenCalled()
 		expect(upstream.logout).not.toHaveBeenCalled()
@@ -716,9 +709,8 @@ describe("UpstreamMcpProbe", () => {
 		// Verified live on macOS 26.6.2: pi-mcp-adapter's inspectMcpOAuthTokensForUrl
 		// swallows the typed denial from its keyring read and reports "unavailable".
 		tokensForUrlResult.forced = { status: "unavailable" }
-		credentialAccount.error = new McpKeychainDeniedError(
-			"macOS keychain consent was declined for the MCP credential 'sha256-x' — click Authenticate or run `kimchi mcp auth <server>` to store fresh credentials.",
-		)
+		const expected = new McpKeychainDeniedError("sha256-x")
+		credentialAccount.error = expected
 
 		const result = await new UpstreamMcpProbe().probeTools("denied-via-adapter", { url: "https://example.test/mcp" })
 
@@ -726,8 +718,7 @@ describe("UpstreamMcpProbe", () => {
 			tools: [],
 			needsAuth: true,
 			keychainDenied: true,
-			error:
-				"macOS keychain consent was declined for the MCP credential 'sha256-x' — click Authenticate or run `kimchi mcp auth <server>` to store fresh credentials.",
+			error: expected.message,
 		})
 		expect(upstream.sessionStart).not.toHaveBeenCalled()
 		expect(upstream.logout).not.toHaveBeenCalled()

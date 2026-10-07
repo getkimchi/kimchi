@@ -251,11 +251,16 @@ describe("SecurityToolEntry (macOS /usr/bin/security backend)", () => {
 		}
 	})
 
-	it("classifies exit 45 (errSecAuthFailed) as a consent denial too", () => {
-		const { runner } = fakeRunner(() => ({ status: 45, stdout: "", stderr: "unable to authenticate" }))
-		expect(capture(() => new SecurityToolEntry("svc", "acct", runner).getPassword())).toBeInstanceOf(
-			McpKeychainDeniedError,
-		)
+	it("classifies exit 45 (errSecDuplicateItem) as a write failure, not a consent denial", () => {
+		const { runner } = fakeRunner(() => ({
+			status: 45,
+			stdout: "",
+			stderr: "security: SecKeychainDuplicateItem: ... already exists",
+		}))
+		const error = capture(() => new SecurityToolEntry("svc", "acct", runner).getPassword())
+		expect(error).not.toBeInstanceOf(McpKeychainDeniedError)
+		expect(error).toBeInstanceOf(Error)
+		expect(String(error)).toContain("exit 45")
 	})
 
 	it("backs off a denied item: the second read throws without invoking the runner", () => {
@@ -299,6 +304,25 @@ describe("SecurityToolEntry (macOS /usr/bin/security backend)", () => {
 		entry.setPassword("fresh")
 		// The write succeeded, so the rewritten item must be read back normally.
 		expect(entry.getPassword()).toBe("pw")
+	})
+
+	it("a successful delete clears the cached denial tombstone", () => {
+		let denyReads = true
+		const { runner, calls } = fakeRunner((args) => {
+			if (args[0] === "find-generic-password") return denyReads ? DENIED : NOT_FOUND
+			return OK
+		})
+		const entry = new SecurityToolEntry("svc", "acct", runner)
+
+		expect(capture(() => entry.getPassword())).toBeInstanceOf(McpKeychainDeniedError)
+
+		// A deleted item can no longer be denied: the tombstone must be gone.
+		expect(entry.deleteCredential()).toBe(true)
+
+		denyReads = false
+		// The next read consults the runner again (not-found) instead of the stale denial.
+		expect(entry.getPassword()).toBeNull()
+		expect(calls.filter((args) => args[0] === "find-generic-password")).toHaveLength(2)
 	})
 
 	it("writes by recreating the item so its ACL trusts security, wrapping the secret in a b64 envelope", () => {
@@ -406,6 +430,52 @@ describe("SecurityToolEntry (macOS /usr/bin/security backend)", () => {
 		)
 		expect(new SecurityToolEntry(MCP_OAUTH_SERVICE, "acct", runner).getPassword()).toBe("pw")
 		expect(warn).toHaveBeenCalledWith(expect.stringContaining("keychain ACL self-heal failed"))
+	})
+
+	it("does not re-attempt the self-heal after its consent was declined", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const payload = JSON.stringify({ legacy: "ascii" })
+		const { runner, calls } = fakeRunner((args) => {
+			if (args[0] === "find-generic-password") return { ...OK, stdout: `${payload}\n` }
+			if (args[0] === "delete-generic-password") return DENIED
+			return OK
+		})
+		const entry = new SecurityToolEntry(MCP_OAUTH_SERVICE, "acct", runner)
+
+		expect(entry.getPassword()).toBe(payload)
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("keychain ACL self-heal failed"))
+		// The heal rewrote via delete + add; the declined delete aborted the add.
+		expect(writes(calls)).toHaveLength(1)
+
+		// The declined-self-heal tombstone suppresses the retry: the next read
+		// still serves the credential without invoking the write verbs again.
+		expect(entry.getPassword()).toBe(payload)
+		expect(writes(calls)).toHaveLength(1)
+	})
+
+	it("a successful write clears the declined self-heal marker", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const payload = JSON.stringify({ legacy: "ascii" })
+		let denyWrites = true
+		const { runner, calls } = fakeRunner((args) => {
+			if (args[0] === "find-generic-password") return { ...OK, stdout: `${payload}\n` }
+			return denyWrites ? DENIED : OK
+		})
+		const entry = new SecurityToolEntry(MCP_OAUTH_SERVICE, "acct", runner)
+
+		// Declined heal: the write denial is not cached, but the retry is suppressed.
+		expect(entry.getPassword()).toBe(payload)
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("keychain ACL self-heal failed"))
+		expect(writes(calls)).toHaveLength(1)
+
+		denyWrites = false
+		entry.setPassword("fresh")
+
+		// The re-auth write cleared the declined-self-heal marker, so the next read
+		// of the still plain-legacy item re-attempts the heal: delete invoked once
+		// more (writes: denied heal delete, re-auth delete + add, heal delete + add).
+		expect(entry.getPassword()).toBe(payload)
+		expect(writes(calls)).toHaveLength(5)
 	})
 
 	it("deletes entries and reports absence as false", () => {
