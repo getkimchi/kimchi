@@ -337,6 +337,32 @@ describe("request matching decisions", () => {
 		expect(report.unallocated.unknown.requestIds).toEqual(["earlier"])
 	})
 
+	it("keeps every request on an open PR unmerged, whatever its matching evidence", () => {
+		const open = pullRequest({ state: "open", mergeCommitSha: null, mergedAt: null, closedAt: null })
+		const report = calculatePullRequestCosts(
+			[
+				request("sure", "work-a", "session-a", time(10), {
+					segment: { id: "a", attribution: "explicit", reason: "work-command" },
+				}),
+				request("model", "work-a", "session-a", time(11), {
+					segment: { id: "b", attribution: "inferred", reason: "model-same" },
+				}),
+				request("session", "work-a", "session-a", time(12), {
+					segment: { id: "c", attribution: "session", reason: "matching-disabled" },
+				}),
+				commit("work-a", [open]),
+			],
+			[charge("sure", "1"), charge("model", "2"), charge("session", "4")],
+		)
+		expect(report.requests.map((row) => [row.requestId, row.allocation])).toEqual([
+			["model", "unmerged"],
+			["session", "unmerged"],
+			["sure", "unmerged"],
+		])
+		expect(report.pullRequests[0]).toMatchObject({ knownCostUsd: "0.000000000", inferredRequestIds: [] })
+		expect(report.unallocated.unmerged.totalCostUsd).toBe("7.000000000")
+	})
+
 	it("keeps inferred ownership visible next to an exact billed price", () => {
 		const segment = { id: "segment-a", attribution: "inferred", reason: "model-same" }
 		const scope = createWorkScopeSnapshot("/repo/.git").scope

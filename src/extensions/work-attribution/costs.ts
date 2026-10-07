@@ -597,9 +597,8 @@ export function calculatePullRequestCosts(
 					(owner.segment?.attribution === "session" && allocated.allocation === "pull-request")) &&
 				!exclusive &&
 				!link &&
-				(allocated.allocation === "pull-request" ||
-					allocated.allocation === "shared" ||
-					allocated.allocation === "unmerged")
+				// An open PR's spend stays unmerged whatever the matching evidence; it has no sure or likely split yet.
+				(allocated.allocation === "pull-request" || allocated.allocation === "shared")
 			)
 				allocated = { allocation: "inferred" }
 			if (!postMerge && link && (link.unresolved || linkedWorkIds.some((workId) => invalidWorkLinks.has(workId))))
