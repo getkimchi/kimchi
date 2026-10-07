@@ -265,6 +265,27 @@ describe("queued input delivery", () => {
 		expect(getWorkSegment(ctx)?.id).not.toBe(original?.id)
 	})
 
+	it("keeps an extension follow-up in the current input when the user queues a steer during its delivery", async () => {
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const ctx = createContext({ cwd: dir, hasPendingMessages: vi.fn(() => false) })
+		const input = api.getHandler<InputEvent>("input")
+		const deliver = api.getHandler<MessageStartEvent>("message_start")
+		await input({ type: "input", text: "Implement export", source: "interactive" }, ctx)
+		const original = getWorkSegment(ctx)
+		const text = "Retry the export step"
+		await input({ type: "input", text, source: "extension", streamingBehavior: "followUp" }, ctx)
+		// Pi has already dequeued the follow-up while another extension's message_start handler runs.
+		await input({ type: "input", text: "Also update the docs", source: "interactive", streamingBehavior: "steer" }, ctx)
+		await deliver({ type: "message_start", message: { role: "user", content: text, timestamp: 1 } }, ctx)
+		expect(getWorkSegment(ctx)).toEqual(original)
+		await deliver(
+			{ type: "message_start", message: { role: "user", content: "Also update the docs", timestamp: 2 } },
+			ctx,
+		)
+		expect(getWorkSegment(ctx)?.id).not.toBe(original?.id)
+	})
+
 	it("keeps extension follow-ups and harness nudges in the current input", async () => {
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)

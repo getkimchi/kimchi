@@ -304,9 +304,12 @@ export function createWorkAttributionExtension(
 		let preparedInput = false
 		// Mirrors Pi's queues: it matches a delivered message by text, steering first.
 		const queued: Record<"steer" | "followUp", { text: string; extension: boolean }[]> = { steer: [], followUp: [] }
+		// Pi dequeues a message before every message_start handler finishes; keep it until the run settles.
+		let delivering: { text: string; extension: boolean }[] = []
 		const clearQueued = () => {
 			queued.steer = []
 			queued.followUp = []
+			delivering = []
 		}
 		let stopReconciliation: (() => Promise<void>) | undefined
 		let activeContext: ExtensionContext | undefined
@@ -428,8 +431,12 @@ export function createWorkAttributionExtension(
 		pi.on("input", (event, ctx) => {
 			// Pi emits input before enqueueing; the running turn still owns its next request.
 			if (event.streamingBehavior) {
-				// An empty Pi queue means earlier entries were delivered or restored to the editor.
-				if (!ctx.hasPendingMessages()) clearQueued()
+				// An empty Pi queue means earlier entries are being delivered or were restored to the editor.
+				if (!ctx.hasPendingMessages()) {
+					delivering.push(...queued.steer, ...queued.followUp)
+					queued.steer = []
+					queued.followUp = []
+				}
 				queued[event.streamingBehavior].push({ text: event.text, extension: event.source === "extension" })
 				return
 			}
@@ -446,9 +453,16 @@ export function createWorkAttributionExtension(
 				return
 			}
 			const text = contentText(event.message.content, "")
-			const queue = queued.steer.some((entry) => entry.text === text) ? queued.steer : queued.followUp
-			const index = queue.findIndex((entry) => entry.text === text)
-			if (index >= 0 && queue.splice(index, 1)[0].extension) return
+			const queue = [queued.steer, queued.followUp, delivering].find((entries) =>
+				entries.some((entry) => entry.text === text),
+			)
+			if (
+				queue?.splice(
+					queue.findIndex((entry) => entry.text === text),
+					1,
+				)[0].extension
+			)
+				return
 			if (isHarnessSteer(text)) return
 			// Pi awaits message_start before sending the request that receives a queued message.
 			await attributeInput({ type: "input", text, source: "interactive" }, ctx)
@@ -502,10 +516,11 @@ export function createWorkAttributionExtension(
 					explicitSelection.delete(key)
 					useSegment(workMatchingEnabled() ? "unknown" : "session", previousScope ? "scope-changed" : "scope-recovered")
 				}
+				// A new work waits for its first verified capture; until then its requests stay unscoped.
 				const saveScope = (workId: string) => {
-					if (newWorksToScope.has(workId)) {
+					if (newWorksToScope.has(workId) && captured?.isCurrent()) {
 						newWorksToScope.delete(workId)
-						if (captured?.isCurrent()) saveNewWorkScope(workId, captured.scope)
+						saveNewWorkScope(workId, captured.scope)
 					}
 				}
 				saveScope(current)
@@ -548,7 +563,8 @@ export function createWorkAttributionExtension(
 					useSegment("unknown", "unresolved-reference")
 					return
 				}
-				if (!model || !workMatchingEnabled()) return
+				// Without a verified account and repository, matching stays unresolved.
+				if (!model || !workMatchingEnabled() || !captured) return
 				const intents = await loadWorkIntents(ctx.cwd, current, event.text, eligible())
 				if (!unchanged()) return
 				if (!intents.account?.isCurrent()) {

@@ -11,6 +11,7 @@ import * as config from "../../config.js"
 import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import { createWorkAttributionExtension, getWorkId, recordProviderRequest } from "../work-attribution.js"
 import { loadWorkIntents, rememberWorkIntent, workIntentPath } from "./semantic.js"
 import { flushWorkSummaries, readWorkRecords } from "./summary.js"
@@ -119,12 +120,31 @@ it("starts separate work after an account switch and preserves the first request
 	})
 })
 
-it.each([
-	"verification",
-	"scope-file",
-])("recovers from missing %s without relabelling earlier requests", async (missing) => {
+it("scopes a new work at its first verified input without relabelling earlier requests", async () => {
 	vi.mocked(settings.readConfigSetting).mockReturnValue(false)
-	if (missing === "verification") vi.mocked(organizations.verifyApiKey).mockRejectedValueOnce(new Error("Offline"))
+	vi.mocked(organizations.verifyApiKey).mockRejectedValueOnce(new Error("Offline"))
+	const ctx = createContext({ cwd })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	const input = api.getHandler<InputEvent>("input")
+	await input({ type: "input", source: "rpc", text: "Plan the export" }, ctx)
+	const first = recordProviderRequest(ctx)
+	const original = readWorkRecords(join(root, "agent")).find((row) => row.requestId === first.requestId)
+
+	await input({ type: "input", source: "rpc", text: "Implement the export" }, ctx)
+	const next = recordProviderRequest(ctx)
+	const records = readWorkRecords(join(root, "agent"))
+	expect(next.workId).toBe(first.workId)
+	expect(original?.scope).toBeNull()
+	expect(records.find((row) => row.requestId === first.requestId)).toEqual(original)
+	expect(records.find((row) => row.requestId === next.requestId)?.scope).toMatchObject({
+		account: { apiUrl: endpoint, organizationId: ORG, userId: USER },
+		repository: realpathSync(join(cwd, ".git")),
+	})
+})
+
+it("recovers from a missing scope file without relabelling earlier requests", async () => {
+	vi.mocked(settings.readConfigSetting).mockReturnValue(false)
 	const ctx = createContext({ cwd })
 	const api = createExtensionApi()
 	createWorkAttributionExtension()(api.api)
@@ -132,7 +152,7 @@ it.each([
 	await input({ type: "input", source: "rpc", text: "Plan the export" }, ctx)
 	const first = recordProviderRequest(ctx)
 	const scopePath = join(root, "agent", "work", first.workId, "scope.json")
-	if (missing === "scope-file") rmSync(scopePath)
+	rmSync(scopePath)
 	const original = readWorkRecords(join(root, "agent")).find((row) => row.requestId === first.requestId)
 
 	await input({ type: "input", source: "rpc", text: "Implement the export" }, ctx)
@@ -145,6 +165,17 @@ it.each([
 		account: { apiUrl: endpoint, organizationId: ORG, userId: USER },
 		repository: realpathSync(join(cwd, ".git")),
 	})
+})
+
+it("stays quiet on every prompt when matching is on in a folder without Git", async () => {
+	const model = createModel("chat", "selected")
+	const ctx = createContext({ cwd: root, model, modelRegistry: createModelRegistry([model]) })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	const input = api.getHandler<InputEvent>("input")
+	for (const text of ["What does this script do?", "How do I run it?"])
+		await input({ type: "input", source: "interactive", text }, ctx)
+	expect(ctx.ui.notify).not.toHaveBeenCalled()
 })
 
 it("keeps an explicit legacy plan choice unscoped instead of silently replacing it", async () => {
