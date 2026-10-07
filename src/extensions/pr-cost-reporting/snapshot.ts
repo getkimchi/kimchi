@@ -1,5 +1,6 @@
 import { isWorkId } from "../../shared/work-id.js"
 import type { PullRequestCostReport, RequestCostAllocation } from "../work-attribution/costs.js"
+import { requestWorkLinks } from "../work-attribution/links.js"
 import { isWorkScope, sameWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
 import type { WorkRecord } from "../work-attribution/summary.js"
 
@@ -9,8 +10,15 @@ export interface ReportingRepository {
 	id: string
 	name?: string
 }
+interface CorrectionReceipt {
+	id: string
+	revision: number
+	recordedAt: string
+	source: "work-command" | "producer-confirmation"
+}
 export interface SnapshotContent {
 	repository: ReportingRepository
+	windowedPullRequestIds?: string[]
 	pullRequests: {
 		id: string
 		number: number
@@ -23,6 +31,7 @@ export interface SnapshotContent {
 		requestId: string
 		billingRecordIds: string[]
 		startedAt: string
+		correction?: CorrectionReceipt
 		allocation: {
 			kind: "pull-request" | "shared" | "unlinked" | "unmerged" | "post-merge" | "unknown"
 			pullRequestIds: string[]
@@ -47,6 +56,8 @@ export interface WireSnapshot extends SnapshotContent {
 }
 export const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
 const UPLOAD_WINDOW_MS = 32 * 24 * 60 * 60 * 1000
+const DETAIL_WINDOW_MS = 90 * 24 * 60 * 60 * 1000
+const FINISHED_PR_GRACE_MS = 2 * 24 * 60 * 60 * 1000
 export const MAX_REVISION = 9223372036854775807n
 export function revision(value: unknown): value is string {
 	return typeof value === "string" && /^[1-9]\d{0,18}$/.test(value) && BigInt(value) <= MAX_REVISION
@@ -91,6 +102,7 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 			"pullRequests",
 			"requests",
 			"coverage",
+			"windowedPullRequestIds",
 		])
 	)
 		fail()
@@ -155,11 +167,20 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 			fail()
 		pulls.add(pr.id)
 	}
+	const windowed = snapshot.windowedPullRequestIds
+	if (
+		windowed !== undefined &&
+		(!Array.isArray(windowed) ||
+			windowed.length > 2000 ||
+			new Set(windowed).size !== windowed.length ||
+			windowed.some((id) => !providerId(id) || pulls.has(id)))
+	)
+		fail()
 	const seen = new Set<string>()
 	for (const request of requests) {
 		const allocation = request.allocation
 		if (
-			!onlyKeys(request, ["requestId", "billingRecordIds", "startedAt", "allocation"]) ||
+			!onlyKeys(request, ["requestId", "billingRecordIds", "startedAt", "allocation", "correction"]) ||
 			!allocation ||
 			!onlyKeys(allocation, ["kind", "pullRequestIds", "method"])
 		)
@@ -177,6 +198,19 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 			!Array.isArray(allocation.pullRequestIds) ||
 			new Set(allocation.pullRequestIds).size !== allocation.pullRequestIds.length ||
 			allocation.pullRequestIds.some((id) => !pulls.has(id))
+		)
+			fail()
+		const correction = request.correction
+		if (
+			correction !== undefined &&
+			(!correction ||
+				!onlyKeys(correction, ["id", "revision", "recordedAt", "source"]) ||
+				!isWorkId(correction.id) ||
+				!Number.isSafeInteger(correction.revision) ||
+				correction.revision < 1 ||
+				correction.revision > 2147483647 ||
+				!validTime(correction.recordedAt) ||
+				!["work-command", "producer-confirmation"].includes(correction.source))
 		)
 			fail()
 		const count = allocation.pullRequestIds.length
@@ -223,20 +257,87 @@ export function buildSnapshots(
 	let skippedRequests = 0
 	const original = new Map<string, WorkRecord[]>()
 	const links = new Map<string, WorkRecord>()
+	const conflictingLinkStatus = new Set<string>()
 	const conflicts = new Set<string>()
 	const cutoff = Date.now() - UPLOAD_WINDOW_MS
 	const workKey = (account: WorkAccount, workId: string) => JSON.stringify([accountKey(account), workId])
+	for (const row of records) {
+		if (row.type === "request" && typeof row.requestId === "string")
+			original.set(row.requestId, [...(original.get(row.requestId) ?? []), row])
+		if (row.type === "work_link" && typeof row.linkId === "string" && typeof row.revision === "number") {
+			const previous = links.get(row.linkId)
+			if (!previous || Number(previous.revision) < row.revision) {
+				links.set(row.linkId, row)
+				conflictingLinkStatus.delete(row.linkId)
+			} else if (previous.revision === row.revision && previous.status !== row.status) {
+				conflictingLinkStatus.add(row.linkId)
+			}
+		}
+	}
+	// Reuse the native proof validator. Revocations are explicit user decisions;
+	// validate their original scope and evidence before sending the receipt.
+	const verified = requestWorkLinks(
+		records.map((row) => (row.type === "work_link" && row.status === "revoked" ? { ...row, status: "active" } : row)),
+	)
+	const byRequest = new Map(report.requests.map((request) => [request.requestId, request]))
+	const corrections = new Map<string, CorrectionReceipt>()
+	for (const request of report.requests) {
+		const proof = verified.get(request.requestId)
+		if (!proof || proof.unresolved || [...proof.linkIds].some((id) => conflictingLinkStatus.has(id))) continue
+		const rows = [...proof.linkIds]
+			.flatMap((id) => {
+				const row = links.get(id)
+				return row ? [row] : []
+			})
+			.filter((row) => isWorkId(row.linkId) && Number.isSafeInteger(row.revision) && validTime(row.recordedAt))
+			.sort(
+				(a, b) =>
+					Date.parse(String(b.recordedAt)) - Date.parse(String(a.recordedAt)) ||
+					Number(b.revision) - Number(a.revision),
+			)
+		const row = rows[0]
+		if (!row || !validTime(row.recordedAt)) continue
+		const evidence = row.evidence
+		const manual =
+			row.status === "revoked" ||
+			(evidence && typeof evidence === "object" && "source" in evidence && evidence.source === "work-command")
+		corrections.set(request.requestId, {
+			id: String(row.linkId),
+			revision: Number(row.revision),
+			recordedAt: row.recordedAt,
+			source: manual ? "work-command" : "producer-confirmation",
+		})
+	}
 	const activeWorks = new Set<string>()
 	for (const pr of report.pullRequests) {
 		if (!pr.account) continue
 		const finishedAt = pr.pullRequest?.state === "merged" ? pr.pullRequest.mergedAt : pr.pullRequest?.closedAt
-		if (!finishedAt || Date.parse(finishedAt) >= cutoff)
+		if (!finishedAt || Date.parse(finishedAt) >= cutoff - FINISHED_PR_GRACE_MS)
 			for (const workId of pr.workIds) activeWorks.add(workKey(pr.account, workId))
 	}
 	for (const request of report.requests)
 		if (request.account && (!request.startedAt || Date.parse(request.startedAt) >= cutoff))
 			for (const workId of [...request.workIds, ...(request.linkedWorkIds ?? [])])
 				activeWorks.add(workKey(request.account, workId))
+	for (const request of report.requests) {
+		const receipt = corrections.get(request.requestId)
+		const account = request.account
+		if (!receipt || !account) continue
+		const candidates = report.pullRequests.filter(
+			(pr) => pr.account && sameWorkAccount(pr.account, account) && request.pullRequestIds.includes(pr.key),
+		)
+		const reportable = candidates.some((pr) => {
+			const finished = pr.pullRequest?.state === "merged" ? pr.pullRequest.mergedAt : pr.pullRequest?.closedAt
+			return (
+				finished &&
+				Date.now() < Date.parse(finished) + DETAIL_WINDOW_MS &&
+				(Date.parse(receipt.recordedAt) >= cutoff ||
+					Date.parse(receipt.recordedAt) >= Date.parse(finished) + UPLOAD_WINDOW_MS)
+			)
+		})
+		if (reportable)
+			for (const id of [...request.workIds, ...(request.linkedWorkIds ?? [])]) activeWorks.add(workKey(account, id))
+	}
 	const included = new Set(
 		report.requests
 			.filter((request) => {
@@ -253,14 +354,6 @@ export function buildSnapshots(
 	const unpriced = new Set(
 		report.requests.filter((request) => request.priceStatus !== "priced").map((request) => request.requestId),
 	)
-	for (const row of records) {
-		if (row.type === "request" && typeof row.requestId === "string")
-			original.set(row.requestId, [...(original.get(row.requestId) ?? []), row])
-		if (row.type === "work_link" && typeof row.linkId === "string" && typeof row.revision === "number") {
-			const previous = links.get(row.linkId)
-			if (!previous || Number(previous.revision) < row.revision) links.set(row.linkId, row)
-		}
-	}
 	for (const request of report.requests) {
 		if (!request.account || !isWorkId(request.requestId) || !request.startedAt) {
 			incomplete = true
@@ -365,6 +458,7 @@ export function buildSnapshots(
 				requestId: request.requestId,
 				billingRecordIds: bills,
 				startedAt: request.startedAt,
+				...(corrections.has(request.requestId) ? { correction: corrections.get(request.requestId) } : {}),
 				allocation: {
 					kind,
 					pullRequestIds: kind === "unknown" || kind === "unlinked" ? [] : [...new Set(pullRequestIds)].sort(),
@@ -389,11 +483,22 @@ export function buildSnapshots(
 			group.observedRequestIds = group.content.requests.map((request) => request.requestId).sort()
 			const retained = group.content.requests.filter((request) => included.has(request.requestId))
 			const pulls = new Set(retained.flatMap((request) => request.allocation.pullRequestIds))
+			// Revocations have no exclusive PR claim, but retain the affected PR's metadata.
+			for (const request of retained)
+				if (request.correction) {
+					const source = byRequest.get(request.requestId)
+					for (const pr of report.pullRequests)
+						if (pr.pullRequest?.id && source?.pullRequestIds.includes(pr.key)) pulls.add(pr.pullRequest.id)
+				}
+			const omitted: string[] = []
 			group.content.requests = retained
 			group.content.pullRequests = group.content.pullRequests.filter((pr) => {
 				const finishedAt = pr.state === "merged" ? pr.mergedAt : pr.closedAt
-				return pulls.has(pr.id) || !finishedAt || Date.parse(finishedAt) >= cutoff
+				const keep = pulls.has(pr.id) || !finishedAt || Date.parse(finishedAt) >= cutoff - FINISHED_PR_GRACE_MS
+				if (!keep && finishedAt && Date.now() < Date.parse(finishedAt) + DETAIL_WINDOW_MS) omitted.push(pr.id)
+				return keep
 			})
+			if (omitted.length) group.content.windowedPullRequestIds = omitted.sort()
 			group.content.coverage.observedRequests = retained.length
 			group.content.coverage.unpricedRequests = retained.filter(
 				(request) => unpriced.has(request.requestId) || !request.billingRecordIds.length,

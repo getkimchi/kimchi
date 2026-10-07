@@ -90,8 +90,8 @@ describe("allowlisted repository snapshots", () => {
 	it.each([
 		"merged",
 		"closed",
-	] as const)("omits a %s PR after 32 days without treating its evidence as lost", (state) => {
-		const finished = "2026-09-05T11:59:59Z"
+	] as const)("omits a %s PR after 32 days plus two days of clock grace without treating its evidence as lost", (state) => {
+		const finished = "2026-09-03T11:59:59Z"
 		const pr = {
 			...pull(),
 			state,
@@ -102,8 +102,26 @@ describe("allowlisted repository snapshots", () => {
 		const snapshot = build(rows).snapshots[0]
 		expect(snapshot.content.requests).toEqual([])
 		expect(snapshot.content.pullRequests).toEqual([])
+		expect(snapshot.content).toHaveProperty("windowedPullRequestIds", [pr.id])
 		expect(snapshot).toHaveProperty("observedRequestIds", [requestId])
 		expect(snapshot.content.coverage).toMatchObject({ observedRequests: 0, unpricedRequests: 0, historyComplete: true })
+	})
+	it.each([
+		"merged",
+		"closed",
+	] as const)("keeps a %s PR when the client clock is three hours ahead of its 32-day cutoff", (state) => {
+		const finished = "2026-09-05T12:00:00Z"
+		vi.setSystemTime(new Date("2026-10-07T15:00:00Z"))
+		const pr = {
+			...pull(),
+			state,
+			mergedAt: state === "merged" ? finished : null,
+			closedAt: state === "closed" ? finished : null,
+		}
+		const rows = records([pr], { startedAt: "2026-08-01T00:00:00Z", recordedAt: "2026-08-01T00:00:00Z" })
+		const content = build(rows).snapshots[0].content
+		expect(content.requests.map((request) => request.requestId)).toEqual([requestId])
+		expect(content.pullRequests.map((pull) => pull.id)).toEqual([pr.id])
 	})
 	it("uploads every request in recent work, including its older planning requests", () => {
 		const rows = records([], { startedAt: "2026-01-01T00:00:00Z" })
@@ -227,6 +245,28 @@ describe("allowlisted repository snapshots", () => {
 		Object.assign(value.requests[0], { prompt: "must never upload" })
 		expect(() => validateSnapshot(value)).toThrow()
 	})
+	it.each([
+		{ id: "not-a-uuid" },
+		{ revision: 0 },
+		{ revision: 2147483648 },
+		{ recordedAt: "yesterday" },
+		{ source: "model" },
+		{ localPath: "/private/plan.md" },
+	])("rejects an invalid or private correction receipt: %j", (fields) => {
+		const value = wire()
+		value.requests[0].correction = { id: billingId, revision: 1, recordedAt: at, source: "work-command" }
+		Object.assign(value.requests[0].correction, fields)
+		expect(() => validateSnapshot(value)).toThrow()
+	})
+	it.each([
+		["101"],
+		["102", "102"],
+		["not-a-provider-id"],
+	])("rejects an overlapping or invalid window marker: %j", (...ids) => {
+		const value = wire()
+		value.windowedPullRequestIds = ids
+		expect(() => validateSnapshot(value)).toThrow()
+	})
 	it("keeps refresh timestamps scoped to requests in the reported account and repository", () => {
 		const rows = records()
 		const report = calculatePullRequestCosts(rows, [{ requestId, billingRecordId: billingId, costUsd: "1", account }])
@@ -307,11 +347,73 @@ describe("local and reported confidence", () => {
 			evidence: { source, requestId, segmentId: billingId },
 		})
 		const result = build(rows)
+		expect(result.snapshots[0].content.requests[0]).toHaveProperty("correction", {
+			id: "55555555-5555-4555-8555-555555555555",
+			revision: 1,
+			recordedAt: at,
+			source: source === "work-command" ? "work-command" : "producer-confirmation",
+		})
 		expect(result.snapshots[0].content.requests[0].allocation).toEqual({
 			kind: "pull-request",
 			pullRequestIds: ["101"],
 			method: source === "work-command" ? "user-correction" : "explicit",
 		})
+	})
+	it.each(["active", "revoked"])("uploads an explicit %s correction after the normal window until day 90", (status) => {
+		const finished = "2026-08-28T12:00:00.000Z"
+		const rows: WorkRecord[] = records([{ ...pull(), mergedAt: finished }], {
+			startedAt: "2026-08-27T12:00:00.000Z",
+			recordedAt: "2026-08-27T12:00:00.000Z",
+			segment: { id: billingId, attribution: "session", reason: "test" },
+		}).map((row) => ({ ...row, workId: requestId }))
+		rows.push({
+			...rows[0],
+			type: "work_link",
+			recordedAt: at,
+			linkId: billingId,
+			revision: 2,
+			status,
+			sourceWorkId: requestId,
+			targetWorkId: requestId,
+			requestIds: [requestId],
+			evidence: { source: "work-command", segmentId: billingId },
+		})
+		const result = build(rows)
+		expect(result.snapshots[0].content.requests).toHaveLength(1)
+		expect(result.snapshots[0].content.requests[0]).toHaveProperty("correction", {
+			id: billingId,
+			revision: 2,
+			recordedAt: at,
+			source: "work-command",
+		})
+		expect(result.snapshots[0].content.pullRequests.map((pr) => pr.id)).toEqual(["101"])
+		expect(() =>
+			validateSnapshot({
+				schemaVersion: 1,
+				producerId: requestId,
+				revision: "2",
+				generatedAt: at,
+				...result.snapshots[0].content,
+			}),
+		).not.toThrow()
+		vi.setSystemTime(new Date("2026-11-26T12:00:00.000Z"))
+		expect(build(rows).snapshots[0].content.requests).toEqual([])
+	})
+	it("does not send a correction when copies disagree about whether the same revision was revoked", () => {
+		const rows = records().map((row) => ({ ...row, workId: requestId }))
+		const link: WorkRecord = {
+			...rows[0],
+			type: "work_link",
+			linkId: billingId,
+			revision: 2,
+			sourceWorkId: requestId,
+			targetWorkId: requestId,
+			requestIds: [requestId],
+			evidence: { source: "work-command" },
+		}
+		const result = build([...rows, { ...link, status: "active" }, { ...link, status: "revoked" }])
+		expect(result.snapshots[0].content.requests[0].allocation.kind).toBe("unknown")
+		expect(result.snapshots[0].content.requests[0].correction).toBeUndefined()
 	})
 	// The server counts only native, explicit and user-correction methods as confirmed (explicit) PR spend.
 	const confirmedMethods = ["native", "explicit", "user-correction"]

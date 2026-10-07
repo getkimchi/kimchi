@@ -2,9 +2,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "../__mocks__/context.js"
 import * as pullRequests from "../pull-request-status/pull-requests.js"
 import * as health from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
+import { flushWorkSummaries } from "../work-attribution/summary.js"
+import { appendWorkRecord } from "../work-attribution.js"
 import { queueSnapshots, readReportingState, setReportingEnabled } from "./queue.js"
 import { buildSnapshots, type RepositorySnapshot, type WireSnapshot } from "./snapshot.js"
 import { deliverSnapshots, reconcileReporting } from "./worker.js"
@@ -52,6 +55,8 @@ beforeEach(async () => {
 	await queueSnapshots(directory, [content])
 })
 afterEach(async () => {
+	await flushWorkSummaries()
+	vi.unstubAllEnvs()
 	vi.unstubAllGlobals()
 	vi.restoreAllMocks()
 	await rm(directory, { recursive: true, force: true })
@@ -581,6 +586,24 @@ describe("repository identity for work without a PR", () => {
 })
 
 describe("journals with a torn final append", () => {
+	it("keeps reporting after the crashed session appends another record", async () => {
+		await rm(join(directory, "pr-cost-reporting", "state.json"))
+		await seedLinked()
+		vi.stubEnv("PI_CODING_AGENT_DIR", directory)
+		await writeFile(join(directory, "work-attribution", "crashed.jsonl"), '{"type":"request","requestId":"0b8f')
+		appendWorkRecord(
+			createContext({ cwd: "/project", sessionManager: { getSessionId: () => "crashed" } }),
+			{ type: "work" },
+			"55555555-5555-4555-8555-555555555555",
+		)
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		const sent = http.mock.calls.filter(([url]) => String(url).endsWith("/pr-cost-snapshots"))
+		expect(sent).toHaveLength(1)
+		expect(
+			JSON.parse(String(sent[0][1]?.body)).requests.map((request: { requestId: string }) => request.requestId),
+		).toEqual([requestId])
+		expect((await readReportingState(directory)).error).toBeUndefined()
+	})
 	it("keeps reporting recorded work when another session's journal ends with a partial line", async () => {
 		await rm(join(directory, "pr-cost-reporting", "state.json"))
 		await seedLinked()

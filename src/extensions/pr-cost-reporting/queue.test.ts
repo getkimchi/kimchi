@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import * as files from "node:fs/promises"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -14,7 +15,7 @@ import {
 	setReportingEnabled,
 	takeReportingNotice,
 } from "./queue.js"
-import { buildSnapshots, type RepositorySnapshot } from "./snapshot.js"
+import { accountKey, buildSnapshots, type RepositorySnapshot, repositoryKey } from "./snapshot.js"
 
 const account = {
 	apiUrl: "https://api.example",
@@ -50,6 +51,52 @@ afterEach(async () => {
 })
 
 describe("durable reporting queue", () => {
+	it.each([
+		true,
+		false,
+	])("reopens an old queue without resetting its explicit choice or request history (%s)", async (enabled) => {
+		const previous = snapshot([requestId])
+		const key = `${accountKey(account)}:${repositoryKey(previous.content.repository)}`
+		const producerId = "55555555-5555-4555-8555-555555555555"
+		const legacy = {
+			version: 1,
+			enabled,
+			producerId,
+			entries: {
+				[key]: {
+					account,
+					repository: previous.content.repository,
+					revision: "7",
+					requestHashes: [createHash("sha256").update(requestId).digest("hex")],
+					pending: {
+						...previous.content,
+						schemaVersion: 1,
+						producerId,
+						revision: "7",
+						generatedAt: "2026-10-04T12:00:00Z",
+					},
+					pendingDigest: "old-digest",
+					attempts: 2,
+					retryAt: 100,
+				},
+			},
+		}
+		await files.mkdir(join(directory, "pr-cost-reporting"), { recursive: true })
+		await writeFile(join(directory, "pr-cost-reporting/state.json"), JSON.stringify(legacy))
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", String(!enabled))
+		expect(await readReportingState(directory)).toEqual(legacy)
+		await setReportingEnabled(directory, true)
+		const next = await queueSnapshots(directory, [snapshot([requestId, otherRequestId])], true)
+		expect(next.producerId).toBe(producerId)
+		expect(next.entries[key].revision).toBe("8")
+		expect(next.entries[key].requestHashes).toHaveLength(2)
+		await acknowledgeSnapshot(directory, key, "7", {
+			status: "accepted",
+			revision: "7",
+			receivedAt: "2026-10-07T12:00:00Z",
+		})
+		expect((await readReportingState(directory)).entries[key].pending?.revision).toBe("8")
+	})
 	it("allows deliberate window expiry while still holding a missing source request", async () => {
 		const initial = await queueSnapshots(directory, [snapshot([requestId, otherRequestId])], true)
 		const [key] = Object.keys(initial.entries)

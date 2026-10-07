@@ -24,6 +24,8 @@ Each upload replaces one producer's inventory for one account and repository. It
 - Allocation kind, referenced PR IDs and evidence method. An input whose native edits landed in the PR sends `native`; other session inputs send `session` and stay likely. Continued plans send `explicit`; `/work link` corrections send `user-correction`. Model guesses send `model` and stay likely.
 - Request counts, missing-price counts, history completeness and the latest applicable cost refresh time.
 
+Two optional fields explain later updates. `windowedPullRequestIds` lists finished PRs deliberately left out of this upload. A request's `correction` contains the validated link's UUID, revision, time and source (`work-command` or `producer-confirmation`). The source distinguishes an explicit `/work link` or `/work unlink` from a verified saved-plan or artifact confirmation.
+
 Kimchi does not upload prompts, plans, messages, local paths, work IDs, session IDs, commit hashes, credential fingerprints or prices. The backend reads its own billing rows. A request without a confirmed price remains in the inventory; it is not reported as free. Authentication determines the contributor; the body has no user field.
 
 An upload with one request still waiting for billing looks like this:
@@ -103,13 +105,30 @@ Uploads are limited to 2 MiB, 10,000 requests, 100 PRs and 8 billing IDs per req
 
 ## Upload window and saved totals
 
-The client sends all open PRs and their work, plus work from the last 32 days. A merged or closed PR stays in uploads for 32 days after its provider-reported finish time, including its older contributing requests. Missing finish metadata keeps the work eligible. The local source inventory distinguishes requests deliberately left outside this window from records that went missing; missing evidence still holds an affected upload.
+The client sends all open PRs and their work, plus work from the last 32 days. A merged or closed PR stays in uploads for 32 days plus two days of clock-skew grace after its provider-reported finish time, including its older contributing requests. Missing finish metadata keeps the work eligible. The local source inventory distinguishes requests deliberately left outside this window from records that went missing; missing evidence still holds an affected upload.
 
-The server preserves omitted finished PRs and freezes their verified subtotal when the 32-day window ends. It keeps request and billing claims for 90 days after merge or close, then retains only the small report for 13 calendar months from freezing. The dashboard therefore keeps the saved amount after the original billing rows disappear. Unknown prices and disputed ownership remain incomplete in the frozen report.
+The client names intentionally omitted finished PRs in `windowedPullRequestIds`. The server keeps those PRs and their claims, including when its clock has not reached day 32 yet. Omitting a PR without naming it withdraws its uploaded claims; it does not silently change an already frozen assignment.
 
-Ownership corrections can update a frozen report while its detailed claims remain. Unchanged ownership keeps the saved amount; bills arriving after the freeze do not reprice it. Repeated uploads do not extend the expiry date. Once detailed claims expire, they are no longer available for exact ownership corrections.
+At day 32 the server saves a frozen subtotal. It keeps detailed claims for 90 days after merge or close, then retains only the small report for 13 calendar months from the original freeze date. Missing prices and disputed ownership stay incomplete. Expiring one PR's details does not mark the rest of the repository's recorded history incomplete.
 
-For attempts without billing IDs, the reporting API checks the exact request tag. A complete empty lookup settles the attempt at $0 once it is 24 hours old. A later bill updates that amount while the report is still active. Failed or incomplete lookups cannot settle an attempt.
+Until day 90, an explicit `/work link`, `/work unlink` or verified producer confirmation can correct frozen ownership. The server saves the changed total before acknowledging an accepted correction and records `correctedAt`; `frozenAt` and archive expiry stay unchanged. Replayed corrections and ordinary uploads cannot move frozen costs. The dashboard shows both dates.
+
+For attempts without billing IDs, the server checks the exact request tag. A complete empty lookup settles the attempt at $0 once it is 24 hours old. Missing and zero prices are checked again about once a day after freezing, until day 90, so late bills can still count. The saved check time survives server restarts. Failed lookups preserve the last verified price and cannot settle an attempt. After day 90 the saved total and any missing prices remain as they are.
+
+```mermaid
+flowchart TD
+    Update[Update for a finished PR] --> Age{Before day 90?}
+    Age -- No --> Final[Keep saved total and original expiry]
+    Age -- Yes --> Change{What changed?}
+    Change -- Explicit correction --> Correct[Update ownership and total; save correction date]
+    Change -- Late bill --> Price[Refresh price when daily check is due]
+    Change -- Named window omission --> Keep[Keep saved claims and total]
+    Change -- Ordinary or stale upload --> Preserve[Keep frozen ownership]
+    Correct --> Dates[Keep original freeze date and expiry]
+    Price --> Dates
+```
+
+The backend keeps organization-wide size limits. An upload from a contributor using over half an allowance is rejected with that contributor's ID; the rejected upload leaves existing reports readable.
 
 ## Health metrics
 
