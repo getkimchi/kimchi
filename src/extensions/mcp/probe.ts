@@ -12,7 +12,11 @@ import { Client, type ListToolsResult } from "@modelcontextprotocol/client"
 import { createMcpAdapter } from "pi-mcp-adapter"
 import { inspectMcpOAuthTokensForUrl } from "pi-mcp-adapter/oauth"
 import type { ServerEntry } from "pi-mcp-adapter/types"
-import { inspectMcpCredentialAccount, installKeyringRequireBridge } from "./keyring-require-bridge.js"
+import {
+	inspectMcpCredentialAccount,
+	installKeyringRequireBridge,
+	McpKeychainDeniedError,
+} from "./keyring-require-bridge.js"
 import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
 
 type SdkTool = ListToolsResult["tools"][number]
@@ -24,6 +28,13 @@ export interface ProbeResult {
 	tools: ProbeTool[]
 	needsAuth: boolean
 	error: string | null
+	/**
+	 * Set when credential inspection failed because the user declined the macOS
+	 * keychain consent dialog for a legacy item. Distinct from a generic error:
+	 * it drives the "re-authenticate to renew the stored login token" affordance
+	 * (Studio connector cards) instead of reading as an unavailable keychain.
+	 */
+	keychainDenied?: boolean
 }
 
 export interface McpProbeOptions {
@@ -273,6 +284,11 @@ function resolveProbeName(name: string, definition: ServerEntry): string {
 			if (account.status === "present" && account.serverUrl === definition.url) return name
 		}
 	} catch (error) {
+		// A declined keychain consent is a user state, not an inspection failure:
+		// let it propagate (the caller short-circuits with a needs-auth result)
+		// instead of collapsing it to "unavailable" and re-prompting on the next
+		// probe.
+		if (error instanceof McpKeychainDeniedError) throw error
 		// Credential inspection is best-effort, but credential preservation is
 		// fail-closed: an unverified URL must never reuse the durable account name.
 		console.warn(
@@ -356,7 +372,20 @@ export class UpstreamMcpProbe implements McpProbe {
 			const { warnings } = migrateLegacyOAuthCredentials({ mcpServers: { [name]: definition } }, { cwd })
 			for (const warning of warnings) console.warn(warning)
 		}
-		const probeName = resolveProbeName(name, definition)
+		let probeName: string
+		try {
+			probeName = resolveProbeName(name, definition)
+		} catch (error) {
+			if (error instanceof McpKeychainDeniedError) {
+				// Fail closed exactly like an unverifiable credential: never reuse the
+				// durable account name (no anonymous connect either — it would just
+				// re-prompt the dialog or drift into an unwanted OAuth attempt). The
+				// per-process denial backoff in SecurityToolEntry already makes repeat
+				// probes of this server keychain-I/O-free.
+				return { tools: [], needsAuth: true, keychainDenied: true, error: error.message }
+			}
+			throw error
+		}
 		const throwaway = probeName !== name
 		const serverUrl = definition.url
 		const hasHeaders = Boolean(definition.headers && Object.keys(definition.headers).length > 0)

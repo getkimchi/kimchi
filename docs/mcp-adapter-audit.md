@@ -164,6 +164,51 @@ E2E processes. The
 CRUD (`/usr/bin/security` on macOS, `@napi-rs/keyring` elsewhere) and is run by
 release and canary workflows on each target OS.
 
+#### Consent-denial semantics and per-process backoff (2026-10-07)
+
+Validated on macOS 26.6.2, the consent dialog for a legacy ACL item behaves
+like this: **Allow with the login password persists per item only while the
+item's ACL trusts a specific signature; clicking Deny makes `/usr/bin/security`
+exit 128 with empty stderr; there is no OS-level backoff** (two denials = two
+dialogs). Before this fix the shipped code classified only not-found (44) and
+interaction-not-allowed (36), so a denial surfaced as a generic error, the
+probe reported the server unavailable, and the next auto-probe (Studio's
+connectors page probes on mount and on config change) spawned the dialog
+again — a prompt storm per unhealed legacy item.
+
+The fix has three layers:
+
+1. **Typed denial classification.** Exit 128 (and defensively 45/
+errSecAuthFailed) throws `McpKeychainDeniedError` with a re-authenticate
+message instead of collapsing to "unavailable" — `inspectMcpCredentialAccount`
+rethrows it like `McpKeychainUnavailableError`.
+2. **Per-process denial backoff.** `SecurityToolEntry` caches the denial keyed
+by `service\0account`; a second read of the same item rethrows the cached
+error without invoking `/usr/bin/security` again (one dialog per item per
+process, even when denied). A successful write clears the cache entry
+(re-authentication's delete + add rewrites the ACL to trust `security`, so
+subsequent access is permanently silent). Writes are not short-circuited by the
+cache: an explicit re-auth must be allowed to reach the runner. The
+`resetSecurityToolCaches` export clears the map (used by tests).
+3. **Probe routing.** A probe whose credential inspection hits a denial returns
+`needsAuth: true` with `keychainDenied: true` and the denial message,
+short-circuiting before any anonymous connect or OAuth attempt (which would
+re-prompt). Studio connector cards can render this as "macOS blocked access to
+the stored login token. Click Authenticate to renew." rather than a Kimchi
+failure.
+
+Writes additionally pin `add-generic-password -T /usr/bin/security` so the
+rewritten item's ACL explicitly trusts the tool even if macOS's default
+partitioning changes (today's items read silently without it — the same
+remediation Claude Code shipped for the identical bug).
+
+User-facing guidance: after upgrading from a release whose harness predates
+the `/usr/bin/security` backend (≤ v1.1.x), each previously-authenticated MCP
+server shows **one** consent dialog; choose Allow once (or click Authenticate to
+re-store credentials) per server, and the prompts stop permanently. Denying the
+dialog also stops the prompts for that session — the connector card then shows
+the re-authentication hint instead of looping.
+
 On Linux, revoked session keyrings are recovered through `keyctl session -`.
 Compiled builds configure the adapter's existing runtime/helper overrides to
 launch the Kimchi executable with the internal `mcp-keyring-helper` command.
