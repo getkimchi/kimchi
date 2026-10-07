@@ -7,6 +7,7 @@ import { parse as parseYaml } from "yaml"
 import * as summaries from "../work-attribution/summary.js"
 import {
 	lookupBranchPullRequest,
+	lookupFailureReason,
 	readWorkPullRequestUpdates,
 	reconcileWorkPullRequests,
 	type WorkPullRequestUpdate,
@@ -1225,5 +1226,45 @@ describe("unchanged lookup results", () => {
 		const rows = saved().length
 		for (let pass = 0; pass < 5; pass++) await lookup()
 		expect(saved()).toHaveLength(rows)
+	})
+})
+
+describe("lookup failure reasons", () => {
+	it.each([
+		["an authentication failure", () => new Response(null, { status: 401 }), undefined],
+		["a server error", () => new Response(null, { status: 503 }), "retry"],
+		["a rate limit", () => new Response(null, { status: 429, headers: { "retry-after": "60" } }), "retry"],
+		[
+			"a network failure",
+			() => {
+				throw new TypeError("fetch failed")
+			},
+			"retry",
+		],
+		["an invalid response", () => new Response("not json"), "retry"],
+	] as const)("saves %s with its reason", async (name, reply, reason) => {
+		// Rate limits pause a whole host; give every case its own.
+		const host = `${name.replaceAll(" ", "-")}.example`
+		seed()
+		remote(`https://${host}/team/repo.git`)
+		vi.stubEnv("GH_HOST", host)
+		http.mockImplementation(async () => reply())
+		await lookup()
+		expect(saved().at(-1).prLookup).toEqual({
+			status: "error",
+			checkedAt: expect.any(String),
+			error: expect.any(String),
+			...(reason ? { reason } : {}),
+		})
+		expect(readWorkPullRequestUpdates(agentDir)[0].prLookup?.reason).toBe(reason)
+	})
+	it("marks a repository without GitHub or GitLab as unsupported in work and branch lookups", async () => {
+		seed()
+		remote("https://bitbucket.org/team/repo.git")
+		http.mockImplementation(async () => new Response(null, { status: 404 }))
+		await lookup()
+		expect(saved().at(-1).prLookup).toMatchObject({ status: "error", reason: "unsupported" })
+		const failure = await lookupBranchPullRequest(repository, new AbortController().signal).catch((error) => error)
+		expect(lookupFailureReason(failure)).toBe("unsupported")
 	})
 })

@@ -11,7 +11,12 @@ import {
 	type WorkStateRequest,
 } from "../work-attribution.js"
 import { mergePullRequestLinks } from "./links.js"
-import { lookupBranchPullRequest, type WorkPullRequest, type WorkPullRequestUpdate } from "./pull-requests.js"
+import {
+	lookupBranchPullRequest,
+	lookupFailureReason,
+	type WorkPullRequest,
+	type WorkPullRequestUpdate,
+} from "./pull-requests.js"
 
 function requestStatus(pr: WorkPullRequest): string {
 	return `${pr.provider === "gitlab" ? "MR: !" : "PR: #"}${pr.number} ${pr.state}`
@@ -63,26 +68,36 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 			if (row.pullRequests.length) linked.add(key)
 			links.push(...row.pullRequests)
 		}
+		const latest = [...commits.entries()]
+		const messages = (quiet: boolean) => [
+			...new Set(
+				latest.flatMap(([, row]) =>
+					row.prLookup?.error && (quiet || !row.prLookup.reason) ? [row.prLookup.error] : [],
+				),
+			),
+		]
 		return {
-			rows,
 			links: mergePullRequestLinks(links),
-			pending: commits.size - linked.size,
-			errors: [...new Set([...commits.values()].flatMap((row) => (row.prLookup?.error ? [row.prLookup.error] : [])))],
+			// A repository without GitHub or GitLab never gets a PR; it is not waiting for one.
+			pending: latest.filter(([key, row]) => !linked.has(key) && row.prLookup?.reason !== "unsupported").length,
+			// Only actionable failures reach the footer and warnings; /work also lists retries.
+			errors: messages(false),
+			lookupErrors: messages(true),
 		}
 	}
 	function renderWork(): void {
-		const { rows, links, pending, errors } = details()
+		const { links, pending, errors } = details()
 		if (errors.length) footer("PR/MR: check /work")
 		else if (links.length === 1 && !pending) footer(requestStatus(links[0]), links[0].url)
 		else if (links.length) footer(`PRs/MRs: ${links.length} linked${pending ? `, ${pending} waiting` : ""}`)
-		else footer(rows.length ? "PR/MR: waiting" : undefined)
+		else footer(pending ? "PR/MR: waiting" : undefined)
 	}
 	function receive(update: WorkPullRequestUpdate): void {
 		const rows = updates.get(update.workId) ?? new Map<string, WorkPullRequestUpdate>()
 		rows.set(JSON.stringify([update.repository, update.sha, update.sessionId, update.worktree]), update)
 		updates.set(update.workId, rows)
 		// A snapshot can deliver an older failure before another contributor's newer success.
-		if (update.prLookup?.error)
+		if (update.prLookup?.error && !update.prLookup.reason)
 			queueMicrotask(() => {
 				if (workId === update.workId) for (const error of details().errors) warnOnce(error)
 			})
@@ -117,6 +132,10 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 			})
 			.catch((error) => {
 				if (!current()) return
+				// A retryable outage keeps the last result; a repository without GitHub or GitLab has none.
+				const reason = lookupFailureReason(error)
+				if (reason === "retry") return
+				if (reason === "unsupported") return footer()
 				footer("PR/MR: unavailable")
 				warnOnce(error)
 			})
@@ -164,11 +183,11 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		if (!started || !tracking || !candidate || typeof candidate !== "object" || Array.isArray(candidate)) return
 		const request = candidate as WorkDetailsRequest
 		if (typeof request.workId !== "string" || !Array.isArray(request.lines)) return
-		const { links, pending, errors } = details(request.workId)
+		const { links, pending, lookupErrors } = details(request.workId)
 		request.lines.push(
 			...links.map((pr) => `${pr.provider === "gitlab" ? "MR !" : "PR #"}${pr.number} ${pr.state}: ${pr.url}`),
 			...(pending ? [`PR/MR lookup: ${pending} commit${pending === 1 ? "" : "s"} waiting`] : []),
-			...errors.map((error) => `PR/MR lookup: ${error}`),
+			...lookupErrors.map((error) => `PR/MR lookup: ${error}`),
 		)
 	})
 	pi.on("session_start", (_event, ctx) => {

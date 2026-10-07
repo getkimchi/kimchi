@@ -34,6 +34,8 @@ export interface WorkPullRequestLookup {
 	status: "pending" | "linked" | "error"
 	checkedAt: string
 	error?: string
+	/** An error the user cannot act on: a retryable outage, or a repository without a supported provider. */
+	reason?: "retry" | "unsupported"
 }
 export interface WorkPullRequestUpdate {
 	workId: string
@@ -67,14 +69,19 @@ function discoveryState(directory: string): DiscoveryState {
 	return state
 }
 
-class LookupError extends Error {
+/** `retry` and `unsupported` failures are expected; they never need the user's attention. */
+export class LookupError extends Error {
 	constructor(
 		message: string,
-		readonly missing = false,
-		readonly invalid = false,
+		readonly kind?: "missing" | "invalid" | "retry" | "unsupported",
 	) {
 		super(message)
 	}
+}
+export function lookupFailureReason(error: unknown): WorkPullRequestLookup["reason"] {
+	if (!(error instanceof LookupError)) return undefined
+	if (error.kind === "retry" || error.kind === "invalid") return "retry"
+	return error.kind === "unsupported" ? "unsupported" : undefined
 }
 function object(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -96,7 +103,7 @@ function httpsURL(value: unknown): URL {
 			if (url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash) return url
 		} catch {}
 	}
-	throw new LookupError("The Git provider returned an invalid URL.", false, true)
+	throw new LookupError("The Git provider returned an invalid URL.", "invalid")
 }
 function repositoryPath(value: unknown, provider?: Repository["provider"]): value is string {
 	if (typeof value !== "string") return false
@@ -116,10 +123,10 @@ function pullRequest(
 	checkedAt: string,
 ): WorkPullRequest {
 	const { host, provider } = repository
-	if (!object(value)) throw new LookupError(`${label(repository)} returned an invalid pull request.`, false, true)
+	if (!object(value)) throw new LookupError(`${label(repository)} returned an invalid pull request.`, "invalid")
 	const validStates = provider === "gitlab" ? ["opened", "locked", "closed", "merged"] : ["open", "closed"]
 	if (typeof value.state !== "string" || !validStates.includes(value.state))
-		throw new LookupError(`${label(repository)} returned an invalid pull request state.`, false, true)
+		throw new LookupError(`${label(repository)} returned an invalid pull request state.`, "invalid")
 	const number = provider === "gitlab" ? value.iid : value.number
 	const headSha = provider === "gitlab" ? value.sha : object(value.head) ? value.head.sha : undefined
 	const mergedAt = provider === "gitlab" ? (value.merged_at ?? null) : value.merged_at
@@ -144,7 +151,7 @@ function pullRequest(
 		!nullableTimestamp(mergedAt) ||
 		!nullableTimestamp(closedAt)
 	)
-		throw new LookupError(`${label(repository)} returned an invalid pull request.`, false, true)
+		throw new LookupError(`${label(repository)} returned an invalid pull request.`, "invalid")
 	const url = httpsURL(provider === "gitlab" ? value.web_url : value.html_url)
 	const id = providerId(value.id)
 	const repositoryId = providerId(
@@ -158,7 +165,7 @@ function pullRequest(
 		url.pathname,
 	)
 	if (url.host !== host || !path || Number(path[2]) !== number || !repositoryPath(path[1], provider))
-		throw new LookupError(`${label(repository)} returned a pull request from an unexpected repository.`, false, true)
+		throw new LookupError(`${label(repository)} returned a pull request from an unexpected repository.`, "invalid")
 	return {
 		provider,
 		...(id ? { id } : {}),
@@ -219,6 +226,7 @@ function lookupResult(commit: WorkPullRequestUpdate): string {
 	return JSON.stringify([
 		commit.prLookup?.status,
 		commit.prLookup?.error,
+		commit.prLookup?.reason,
 		commit.pullRequests
 			.map(({ checkedAt: _checkedAt, ...pr }) => pr)
 			.sort((a, b) => pullRequestKey(a).localeCompare(pullRequestKey(b))),
@@ -267,6 +275,7 @@ function readCommits(agentDir: string, state: DiscoveryState): void {
 					status,
 					checkedAt: lookup.checkedAt,
 					...(typeof lookup.error === "string" ? { error: lookup.error } : {}),
+					...(lookup.reason === "retry" || lookup.reason === "unsupported" ? { reason: lookup.reason } : {}),
 				}
 		}
 		commit.pullRequests = mergePullRequests(existing?.pullRequests ?? [], storedPullRequests(row.pullRequests))
@@ -320,7 +329,7 @@ function command(
 ): Promise<string | undefined> {
 	signal.throwIfAborted()
 	const remaining = deadline - Date.now()
-	if (remaining <= 0) throw new LookupError("Git provider lookup timed out. Kimchi will retry.")
+	if (remaining <= 0) throw new LookupError("Git provider lookup timed out. Kimchi will retry.", "retry")
 	return new Promise((done, reject) => {
 		execFile(
 			command,
@@ -450,9 +459,9 @@ async function requestJSON(
 	const origin = api(repository).origin
 	sameOrigin(initialURL, origin)
 	if ((cooldowns.get(origin) ?? 0) > Date.now())
-		throw new LookupError(`${label(repository)} rate limit reached. Kimchi will retry after the limit resets.`)
+		throw new LookupError(`${label(repository)} rate limit reached. Kimchi will retry after the limit resets.`, "retry")
 	const remaining = Math.min(COMMAND_TIMEOUT_MS, deadline - Date.now())
-	if (remaining <= 0) throw new LookupError(`${label(repository)} lookup timed out. Kimchi will retry.`)
+	if (remaining <= 0) throw new LookupError(`${label(repository)} lookup timed out. Kimchi will retry.`, "retry")
 	const controller = new AbortController()
 	const timeout = setTimeout(() => controller.abort(), remaining)
 	const requestSignal = AbortSignal.any([signal, controller.signal])
@@ -485,7 +494,10 @@ async function requestJSON(
 				url = new URL(location, url)
 				sameOrigin(url, origin)
 				if (limitedUntil)
-					throw new LookupError(`${label(repository)} rate limit reached. Kimchi will retry after the limit resets.`)
+					throw new LookupError(
+						`${label(repository)} rate limit reached. Kimchi will retry after the limit resets.`,
+						"retry",
+					)
 				continue
 			}
 			// Only a commit-association endpoint can report an unpublished commit.
@@ -503,7 +515,10 @@ async function requestJSON(
 			if (!response.ok && (!missingCommitSha || limitedUntil)) {
 				await response.body?.cancel()
 				if (limitedUntil)
-					throw new LookupError(`${label(repository)} rate limit reached. Kimchi will retry after the limit resets.`)
+					throw new LookupError(
+						`${label(repository)} rate limit reached. Kimchi will retry after the limit resets.`,
+						"retry",
+					)
 				if (response.status === 401)
 					throw new LookupError(`${label(repository)} authentication failed. Check the token for ${repository.host}.`)
 				if (response.status === 403)
@@ -513,9 +528,12 @@ async function requestJSON(
 				if (response.status === 404)
 					throw new LookupError(
 						`${label(repository)} could not find this repository, commit or pull request. It may require authentication.`,
-						true,
+						"missing",
 					)
-				throw new LookupError(`${label(repository)} lookup failed (HTTP ${response.status}). Kimchi will retry.`)
+				throw new LookupError(
+					`${label(repository)} lookup failed (HTTP ${response.status}). Kimchi will retry.`,
+					"retry",
+				)
 			}
 			if (Number(response.headers.get("content-length")) > MAX_RESPONSE_BYTES) {
 				await response.body?.cancel()
@@ -540,7 +558,7 @@ async function requestJSON(
 			try {
 				value = JSON.parse(Buffer.concat(chunks).toString("utf8"))
 			} catch {
-				throw new LookupError(`${label(repository)} returned invalid JSON.`, false, true)
+				throw new LookupError(`${label(repository)} returned invalid JSON.`, "invalid")
 			}
 			if (missingCommitSha) {
 				const message =
@@ -548,7 +566,7 @@ async function requestJSON(
 				if (!object(value) || value.message !== message)
 					throw new LookupError(
 						`${label(repository)} lookup failed (HTTP ${response.status}). Kimchi will retry.`,
-						response.status === 404,
+						response.status === 404 ? "missing" : "retry",
 					)
 				value = []
 			}
@@ -557,9 +575,10 @@ async function requestJSON(
 		throw new LookupError(`${label(repository)} returned too many redirects.`)
 	} catch (error) {
 		signal.throwIfAborted()
-		if (controller.signal.aborted) throw new LookupError(`${label(repository)} lookup timed out. Kimchi will retry.`)
+		if (controller.signal.aborted)
+			throw new LookupError(`${label(repository)} lookup timed out. Kimchi will retry.`, "retry")
 		if (error instanceof LookupError) throw error
-		throw new LookupError(`${label(repository)} lookup failed. Check network and repository access.`)
+		throw new LookupError(`${label(repository)} lookup failed. Check network and repository access.`, "retry")
 	} finally {
 		clearTimeout(timeout)
 		requestSignal.removeEventListener("abort", abortBody)
@@ -580,7 +599,7 @@ async function pages(
 		bytes += result.bytes
 		if (bytes > MAX_RESPONSE_BYTES) throw new LookupError(`${label(repository)} response exceeded the lookup limit.`)
 		if (!Array.isArray(result.value))
-			throw new LookupError(`${label(repository)} returned invalid pull request pages.`, false, true)
+			throw new LookupError(`${label(repository)} returned invalid pull request pages.`, "invalid")
 		values.push(...result.value)
 		const link = /<([^>]+)>;\s*rel="?next"?/.exec(result.headers.get("link") ?? "")?.[1]
 		const nextPage = result.headers.get("x-next-page")
@@ -634,15 +653,15 @@ function remoteRepository(value: string): Pick<Repository, "host" | "name"> {
 	try {
 		url = new URL(shorthand ? `https://${shorthand[1]}/${shorthand[2]}` : value)
 	} catch {
-		throw new LookupError("This repository has no supported GitHub or GitLab remote.")
+		throw new LookupError("This repository has no supported GitHub or GitLab remote.", "unsupported")
 	}
 	if ((url.protocol !== "https:" && url.protocol !== "ssh:") || url.search || url.hash)
-		throw new LookupError("This repository has no supported GitHub or GitLab remote.")
+		throw new LookupError("This repository has no supported GitHub or GitLab remote.", "unsupported")
 	const name = url.pathname
 		.replace(/^\//, "")
 		.replace(/\.git\/?$/, "")
 		.replace(/\/$/, "")
-	if (!repositoryPath(name)) throw new LookupError("This repository has an invalid Git remote path.")
+	if (!repositoryPath(name)) throw new LookupError("This repository has an invalid Git remote path.", "unsupported")
 	return { host: url.protocol === "ssh:" ? url.hostname : url.host, name }
 }
 async function repositoryIdentity(
@@ -652,7 +671,7 @@ async function repositoryIdentity(
 	tokens: Map<string, Promise<string | undefined>>,
 	branch?: string,
 ): Promise<Repository> {
-	if (!existsSync(path)) throw new LookupError("The local Git repository is unavailable.")
+	if (!existsSync(path)) throw new LookupError("The local Git repository is unavailable.", "unsupported")
 	const config = await command(
 		"git",
 		["-C", path, "config", "--get-regexp", "^(remote\\..*\\.url|branch\\..*\\.remote)$"],
@@ -672,7 +691,7 @@ async function repositoryIdentity(
 		(upstream && entries.get(`remote.${upstream}.url`)) ||
 		entries.get("remote.origin.url") ||
 		(remotes.length === 1 ? remotes[0][1] : undefined)
-	if (!selected) throw new LookupError("This repository has no unambiguous GitHub or GitLab remote.")
+	if (!selected) throw new LookupError("This repository has no unambiguous GitHub or GitLab remote.", "unsupported")
 	const remote = remoteRepository(selected)
 	const provider =
 		remote.host === "github.com"
@@ -695,10 +714,10 @@ async function repositoryIdentity(
 			const name = object(value) ? (candidate === "github" ? value.full_name : value.path_with_namespace) : undefined
 			const url = httpsURL(object(value) ? (candidate === "github" ? value.html_url : value.web_url) : undefined)
 			if (!repositoryPath(name, candidate) || url.host !== remote.host || url.pathname !== `/${name}`)
-				throw new LookupError(`${label(repository)} returned an invalid repository.`, false, true)
+				throw new LookupError(`${label(repository)} returned an invalid repository.`, "invalid")
 			const id = object(value) ? value.id : undefined
 			if (candidate === "gitlab" && (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0))
-				throw new LookupError("GitLab returned an invalid project ID.", false, true)
+				throw new LookupError("GitLab returned an invalid project ID.", "invalid")
 			return { ...repository, name, ...(typeof id === "number" ? { id } : {}) }
 		} catch (error) {
 			// Unknown self-hosts can probe both API shapes with the same saved identity.
@@ -707,12 +726,12 @@ async function repositoryIdentity(
 				provider ||
 				(repository.token && !saved) ||
 				!(error instanceof LookupError) ||
-				(!error.missing && !error.invalid)
+				(error.kind !== "missing" && error.kind !== "invalid")
 			)
 				throw error
 		}
 	}
-	throw new LookupError("This repository has no supported GitHub or GitLab API.")
+	throw new LookupError("This repository has no supported GitHub or GitLab API.", "unsupported")
 }
 
 export interface BranchPullRequest {
@@ -890,12 +909,14 @@ async function scan(
 				if (Date.now() >= deadline) break
 			}
 		}
-		failure = refreshFailure ?? (failure?.missing && refreshedKnown ? undefined : failure)
+		failure = refreshFailure ?? (failure?.kind === "missing" && refreshedKnown ? undefined : failure)
 		const pullRequests = mergePullRequests(known, found)
+		const reason = lookupFailureReason(failure)
 		const prLookup: WorkPullRequestLookup = {
 			status: failure ? "error" : pullRequests.length ? "linked" : "pending",
 			checkedAt: new Date().toISOString(),
 			...(failure ? { error: failure.message } : {}),
+			...(reason ? { reason } : {}),
 		}
 		for (const commit of commits) {
 			signal.throwIfAborted()

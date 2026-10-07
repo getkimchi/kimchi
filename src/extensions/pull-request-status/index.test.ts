@@ -348,3 +348,55 @@ describe("PR status extension", () => {
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: #7 open")
 	})
 })
+
+describe("expected lookup failures", () => {
+	it("keeps the branch footer steady and silent through outages and hides it without a supported remote", async () => {
+		const api = createExtensionApi()
+		pullRequestStatusExtension(api.api)
+		await start(api)
+		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: #7 open"))
+		for (const message of [
+			"GitHub lookup failed. Check network and repository access.",
+			"GitHub lookup failed (HTTP 503).",
+		]) {
+			vi.mocked(discovery.lookupBranchPullRequest).mockRejectedValueOnce(new discovery.LookupError(message, "retry"))
+			await vi.advanceTimersByTimeAsync(30_000)
+		}
+		await vi.waitFor(() => expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(3))
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: #7 open")
+		vi.mocked(discovery.lookupBranchPullRequest).mockRejectedValue(
+			new discovery.LookupError("This repository has no supported GitHub or GitLab remote.", "unsupported"),
+		)
+		await vi.advanceTimersByTimeAsync(30_000)
+		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", undefined))
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+	})
+	it("waits through retryable work lookups, ignores unsupported repositories and still lists both in /work", async () => {
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const status = createExtensionApi()
+		pullRequestStatusExtension({ ...status.api, events: api.api.events })
+		await start(api)
+		await start(status)
+		const update = vi.mocked(supervisor.subscribePullRequestReconciliation).mock.calls[0][0]?.onPullRequest
+		const commit = { ...contribution(getWorkId(ctx)), pullRequests: [] }
+		const checkedAt = new Date().toISOString()
+		update?.({
+			...commit,
+			sha: "b".repeat(40),
+			repository: join(directory, "bitbucket.git"),
+			prLookup: { status: "error", checkedAt, error: "No supported remote.", reason: "unsupported" },
+		})
+		await Promise.resolve()
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", undefined)
+		update?.({ ...commit, prLookup: { status: "error", checkedAt, error: "GitHub is offline.", reason: "retry" } })
+		await Promise.resolve()
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR/MR: waiting")
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		await api.getRegisteredCommand("work").handler("", { ...createCommandContext(), ...ctx })
+		const shown = vi.mocked(ctx.ui.notify).mock.calls.at(-1)?.[0]
+		expect(shown).toContain("PR/MR lookup: 1 commit waiting")
+		expect(shown).toContain("PR/MR lookup: GitHub is offline.")
+		expect(shown).toContain("PR/MR lookup: No supported remote.")
+	})
+})

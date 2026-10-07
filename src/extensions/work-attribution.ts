@@ -232,12 +232,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 			} catch (error) {
 				warnWorkAttribution(ctx, error)
 			}
-			if (!isChild && !stopReconciliation)
-				stopReconciliation = subscribeFileReconciliation({
-					onError(error) {
-						if (activeContext) warnWorkAttribution(activeContext, error)
-					},
-				})
+			if (!isChild && !stopReconciliation) stopReconciliation = subscribeFileReconciliation()
 			pi.registerTool(createCommitTrackingBashTool(ctx))
 			// Main sessions use tool-rendering's decorated tools; isolated children need these native fallbacks.
 			pi.registerTool({

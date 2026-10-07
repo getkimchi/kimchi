@@ -180,10 +180,8 @@ function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Pr
 }
 
 /** Work tracking only reconciles local Git history. */
-export function subscribeFileReconciliation(
-	subscriber: Pick<ReconciliationSubscriber, "onError"> = {},
-): () => Promise<void> {
-	return subscribeReconciliation({ ...subscriber, kind: "files" })
+export function subscribeFileReconciliation(): () => Promise<void> {
+	return subscribeReconciliation({ kind: "files" })
 }
 /** PR discovery is optional and owns its network subscription separately. */
 export function subscribePullRequestReconciliation(subscriber: {
