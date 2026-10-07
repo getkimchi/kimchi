@@ -1,8 +1,9 @@
 import { isWorkId } from "../../shared/work-id.js"
+import { plainURL } from "../../utils/url.js"
 import { type PullRequestCostReport, type RequestCostAllocation, time } from "../work-attribution/costs.js"
 import { requestWorkLinks } from "../work-attribution/links.js"
 import { isWorkScope, sameWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
-import type { WorkRecord } from "../work-attribution/summary.js"
+import { object, type WorkRecord } from "../work-attribution/summary.js"
 
 export interface ReportingRepository {
 	provider: "github" | "gitlab"
@@ -122,19 +123,15 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 		(coverage.lastCostRefreshAt !== undefined && !validTime(coverage.lastCostRefreshAt))
 	)
 		fail()
-	const host = new URL(`https://${repo.host}`)
+	const host = plainURL(`https://${repo.host}`)
 	if (
 		!onlyKeys(repo, ["provider", "host", "id", "name"]) ||
 		!onlyKeys(coverage, ["observedRequests", "unpricedRequests", "historyComplete", "lastCostRefreshAt"])
 	)
 		fail()
 	if (
-		host.host !== repo.host ||
+		host?.host !== repo.host ||
 		host.pathname !== "/" ||
-		host.username ||
-		host.password ||
-		host.search ||
-		host.hash ||
 		(repo.name !== undefined && (typeof repo.name !== "string" || repo.name.length > 256))
 	)
 		fail()
@@ -155,9 +152,7 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 			(pr.closedAt !== undefined && (pr.state !== "closed" || !validTime(pr.closedAt)))
 		)
 			fail()
-		const url = new URL(pr.url)
-		if (url.protocol !== "https:" || url.host !== repo.host || url.username || url.password || url.search || url.hash)
-			fail()
+		if (plainURL(pr.url)?.host !== repo.host) fail()
 		pulls.add(pr.id)
 	}
 	const windowed = snapshot.windowedPullRequestIds
@@ -229,7 +224,7 @@ function method(
 	if (request.linkIds?.length)
 		return request.linkIds.some((id) => {
 			const evidence = links.get(id)?.evidence
-			return evidence && typeof evidence === "object" && "source" in evidence && evidence.source === "work-command"
+			return object(evidence) && evidence.source === "work-command"
 		})
 			? "user-correction"
 			: "explicit"
@@ -293,9 +288,7 @@ export function buildSnapshots(
 		const row = rows[0]
 		if (!row || !validTime(row.recordedAt)) continue
 		const evidence = row.evidence
-		const manual =
-			row.status === "revoked" ||
-			(evidence && typeof evidence === "object" && "source" in evidence && evidence.source === "work-command")
+		const manual = row.status === "revoked" || (object(evidence) && evidence.source === "work-command")
 		corrections.set(request.requestId, {
 			id: String(row.linkId),
 			revision: Number(row.revision),

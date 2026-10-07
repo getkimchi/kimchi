@@ -2,6 +2,7 @@ import { watch } from "node:fs"
 import { verifyApiKey } from "../../api/organizations.js"
 import { loadConfig, resolveEndpoints } from "../../config.js"
 import { computeRetryDelayMs, fetchWithRetry, parseRetryAfterMs } from "../../utils/http.js"
+import { plainURL } from "../../utils/url.js"
 import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
@@ -58,19 +59,8 @@ function endpoint(cwd: string): string {
 	return resolveEndpoints({ cwd }).platformApiUrl.replace(/\/+$/, "")
 }
 function safeEndpoint(value: string): boolean {
-	try {
-		const url = new URL(value)
-		return (
-			(url.protocol === "https:" ||
-				(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) &&
-			!url.username &&
-			!url.password &&
-			!url.search &&
-			!url.hash
-		)
-	} catch {
-		return false
-	}
+	const url = plainURL(value, ["https:", "http:"])
+	return url?.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]"].includes(url?.hostname ?? "")
 }
 
 /** Delivery uses a fresh account verification and a credential fence for every bounded attempt. */

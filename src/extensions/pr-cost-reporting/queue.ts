@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from "node:crypto"
-import { mkdir, open, rename, rm } from "node:fs/promises"
+import { mkdir, open } from "node:fs/promises"
 import { join } from "node:path"
 import { lock } from "proper-lockfile"
+import { writeFileDurably } from "../../config/json.js"
 import { readTelemetryConfig } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { isWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
+import { object } from "../work-attribution/summary.js"
 import {
 	accountKey,
 	MAX_REVISION,
@@ -115,7 +117,7 @@ export async function readReportingState(agentDir: string): Promise<ReportingSta
 		})
 		return value
 	} catch (error) {
-		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+		if (object(error) && error.code === "ENOENT") {
 			trackPRCostMetric({ kind: "queueDepth", value: 0 })
 			return empty()
 		}
@@ -135,21 +137,14 @@ async function update(agentDir: string, mutate: (state: ReportingState) => void)
 			compromised = error
 		},
 	})
-	const temp = join(directory, `${randomUUID()}.tmp`)
 	try {
 		const state = await readReportingState(agentDir)
 		mutate(state)
 		const body = `${JSON.stringify(state)}\n`
 		if (Buffer.byteLength(body) > 24 * 1024 * 1024) throw new Error("PR reporting queue exceeds its local size limit")
-		const file = await open(temp, "wx", 0o600)
-		try {
-			await file.writeFile(body)
-			await file.sync()
-		} finally {
-			await file.close()
-		}
-		if (compromised) throw compromised
-		await rename(temp, statePath(agentDir))
+		await writeFileDurably(statePath(agentDir), body, () => {
+			if (compromised) throw compromised
+		})
 		const parent = await open(directory, "r")
 		try {
 			await parent.sync()
@@ -162,7 +157,6 @@ async function update(agentDir: string, mutate: (state: ReportingState) => void)
 		})
 		return state
 	} finally {
-		await rm(temp, { force: true })
 		if (!compromised) await release()
 	}
 }
