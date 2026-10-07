@@ -1011,6 +1011,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						goal: parsed.goal || (rawText ?? planText).trim(),
 						hasUI: ctx.hasUI,
 						isOneShot: pi.getFlag("ferment-oneshot") === true,
+						cwd: ctx.cwd,
 					})
 					tryWorkAttribution(() => setFermentWorkId(draft.id, getWorkId(ctx), fermentDir))
 					defaultFermentRuntime.setActive(draft)
@@ -1034,6 +1035,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					goal: parsed.goal,
 					hasUI: ctx.hasUI,
 					isOneShot: pi.getFlag("ferment-oneshot") === true,
+					cwd: ctx.cwd,
 				})
 				// Set the draft active before emitting STARTED so telemetry can capture
 				// the scoping baseline. Keep planning tools until activation succeeds.

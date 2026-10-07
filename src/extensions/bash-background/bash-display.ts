@@ -149,7 +149,10 @@ export const renderBashResult: NonNullable<ToolDefinition["renderResult"]> = (re
 }
 
 const renderBashOutput: NonNullable<ToolDefinition["renderResult"]> = (result, options, theme, ctx) => {
-	upstreamBash ??= createBashToolDefinition(process.cwd())
+	// Render-only reuse of upstream's result renderer; the creation cwd is not
+	// used for display, but prefer the session cwd when it's available so this
+	// never anchors to the harness process cwd (e.g. "/" in ACP).
+	upstreamBash ??= createBashToolDefinition(ctx.cwd ?? process.cwd())
 	const details = result.details as (BashToolDetails & { display?: ProcessDisplaySnapshot }) | undefined
 	const display = details?.display
 	ctx.state.bashDisplay = display

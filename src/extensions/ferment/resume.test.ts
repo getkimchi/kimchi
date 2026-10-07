@@ -146,6 +146,9 @@ afterEach(async () => {
 const hasUIContext = (): ExtensionCommandContext =>
 	({
 		hasUI: true,
+		// resumeFerment now requires an explicit session cwd; ferments create
+		// with process.cwd(), so the harness ctx cwd must match.
+		cwd: process.cwd(),
 		ui: { notify: vi.fn(), input: vi.fn(), select: vi.fn() },
 	}) as unknown as ExtensionCommandContext
 
@@ -153,7 +156,7 @@ const hasUIContext = (): ExtensionCommandContext =>
 
 describe("resumeFerment pending-proposal hydration", () => {
 	it("draft WITH persisted proposal re-arms plan review and skips the LLM scoping nudge", () => {
-		const ferment = h.eventStorage.create("Test Ferment")
+		const ferment = h.eventStorage.create("Test Ferment", undefined, process.cwd())
 		h.runtime.setActive(ferment)
 
 		// Persist a pending proposal to disk (simulating a prior session's
@@ -189,7 +192,7 @@ describe("resumeFerment pending-proposal hydration", () => {
 	})
 
 	it("draft with NO persisted proposal keeps existing behavior (resume nudge fires, no plan review)", () => {
-		const ferment = h.eventStorage.create("Untouched Draft")
+		const ferment = h.eventStorage.create("Untouched Draft", undefined, process.cwd())
 		h.runtime.setActive(ferment)
 
 		// No sidecar on disk.
@@ -211,7 +214,7 @@ describe("resumeFerment pending-proposal hydration", () => {
 	})
 
 	it("confirming the plan deletes the persisted sidecar file", () => {
-		const ferment = h.eventStorage.create("Confirm Delete")
+		const ferment = h.eventStorage.create("Confirm Delete", undefined, process.cwd())
 		h.runtime.setActive(ferment)
 
 		// Seed in-memory pending scope + persisted sidecar (as propose_ferment_scoping would).
@@ -235,7 +238,7 @@ describe("resumeFerment pending-proposal hydration", () => {
 	})
 
 	it("cancel path (deletePendingProposal) removes the sidecar", () => {
-		const ferment = h.eventStorage.create("Cancel Delete")
+		const ferment = h.eventStorage.create("Cancel Delete", undefined, process.cwd())
 		// Persist a sidecar, then exercise the cancel cleanup directly — the
 		// runPendingPlanReview cancel branch calls deletePendingProposal(review.fermentId),
 		// which is covered end-to-end by the TUI E2E; here we assert the store
@@ -252,7 +255,7 @@ describe("resumeFerment pending-proposal hydration", () => {
 
 describe("resumeFerment planned state", () => {
 	it("planned resume sends exactly one continuation nudge naming the activate_phase action", () => {
-		const ferment = h.eventStorage.create("Planned Resume")
+		const ferment = h.eventStorage.create("Planned Resume", undefined, process.cwd())
 		h.runtime.setActive(ferment)
 
 		const applyAndPersist = createApplyAndPersist(h.runtime)
@@ -270,7 +273,12 @@ describe("resumeFerment planned state", () => {
 		// A freshly scoped ferment lands in "planned" with all phases planned.
 		expect(scoped.ferment.status).toBe("planned")
 
-		resumeFerment(h.pi, ferment.id, { hasUI: false } as ExtensionCommandContext, h.runtime)
+		resumeFerment(
+			h.pi,
+			ferment.id,
+			{ hasUI: false, cwd: process.cwd() } as unknown as ExtensionCommandContext,
+			h.runtime,
+		)
 
 		// Resume contract: exactly one actionable hidden message.
 		expect(actionableHidden(h.sentMessages)).toHaveLength(1)
@@ -290,7 +298,7 @@ describe("resumeFerment planned state", () => {
 	})
 
 	it("continues a planned ferment whose final phase is complete", () => {
-		const ferment = h.eventStorage.create("Ready To Complete")
+		const ferment = h.eventStorage.create("Ready To Complete", undefined, process.cwd())
 		h.runtime.setActive(ferment)
 
 		const applyAndPersist = createApplyAndPersist(h.runtime)
@@ -315,7 +323,12 @@ describe("resumeFerment planned state", () => {
 		if (!phaseDone.ok) throw new Error(phaseDone.error.message)
 		expect(phaseDone.ferment.status).toBe("planned")
 
-		resumeFerment(h.pi, ferment.id, { hasUI: false } as ExtensionCommandContext, h.runtime)
+		resumeFerment(
+			h.pi,
+			ferment.id,
+			{ hasUI: false, cwd: process.cwd() } as unknown as ExtensionCommandContext,
+			h.runtime,
+		)
 
 		expect(actionableHidden(h.sentMessages)).toHaveLength(1)
 		const continuation = h.sentMessages.find((message) => message.customType === "ferment_continuation_nudge")
@@ -327,7 +340,7 @@ describe("resumeFerment planned state", () => {
 
 describe("resumeFerment running state", () => {
 	it("paused ferment that resumes to running sends one continuation nudge with the resume imperative and next action", () => {
-		const draft = h.eventStorage.create("Paused Then Running")
+		const draft = h.eventStorage.create("Paused Then Running", undefined, process.cwd())
 		h.runtime.setActive(draft)
 
 		// Scope and activate so the ferment can be paused/resumed meaningfully.
@@ -383,7 +396,7 @@ describe("resumeFerment running state", () => {
 
 describe("resumeFerment still-paused state", () => {
 	it("a failed resume attempt sends the paused notice and no actionable hidden message", () => {
-		const draft = h.eventStorage.create("Stays Paused")
+		const draft = h.eventStorage.create("Stays Paused", undefined, process.cwd())
 		h.runtime.setActive(draft)
 
 		const applyAndPersist = createApplyAndPersist(h.runtime)
@@ -444,7 +457,7 @@ describe("resumeFerment still-paused state", () => {
 
 describe("resumeFerment early-return states", () => {
 	it.each(["complete", "abandoned"] as const)("does not continue a %s ferment", (terminalStatus) => {
-		const draft = h.eventStorage.create(`${terminalStatus} Resume`)
+		const draft = h.eventStorage.create(` Resume`, undefined, process.cwd())
 		const applyAndPersist = createApplyAndPersist(h.runtime)
 
 		if (terminalStatus === "abandoned") {
@@ -482,7 +495,7 @@ describe("resumeFerment early-return states", () => {
 	})
 
 	it("sends a warning without continuing when the worktree check blocks resume", () => {
-		const ferment = h.eventStorage.create("Blocked Worktree Resume")
+		const ferment = h.eventStorage.create("Blocked Worktree Resume", undefined, process.cwd())
 		vi.spyOn(h.eventStorage, "get").mockReturnValue({
 			...ferment,
 			worktree: { ...ferment.worktree, path: join(tmpdir(), "different-worktree") },
@@ -498,9 +511,9 @@ describe("resumeFerment early-return states", () => {
 
 describe("resumeFerment scoping-stop budget reset", () => {
 	it("restores draft scoping telemetry without emitting another ferment.started", () => {
-		const draft = h.eventStorage.create("Telemetry Resume")
+		const draft = h.eventStorage.create("Telemetry Resume", undefined, process.cwd())
 
-		resumeFerment(h.pi, draft.id, { hasUI: false } as ExtensionCommandContext, h.runtime)
+		resumeFerment(h.pi, draft.id, { hasUI: false, cwd: process.cwd() } as unknown as ExtensionCommandContext, h.runtime)
 
 		const emit = vi.mocked(h.pi.events.emit)
 		expect(emit).toHaveBeenCalledWith(
@@ -517,7 +530,7 @@ describe("resumeFerment scoping-stop budget reset", () => {
 		// reached exhaustion stayed permanently `claimed` — no recovery nudge
 		// was ever sent again within the same session. resumeFerment must reset
 		// the budget just like session_start does.
-		const draft = h.eventStorage.create("Exhausted Then Resumed")
+		const draft = h.eventStorage.create("Exhausted Then Resumed", undefined, process.cwd())
 		h.runtime.setActive(draft)
 
 		// Exhaust the scoping-stop budget via the function under test.
@@ -529,7 +542,7 @@ describe("resumeFerment scoping-stop budget reset", () => {
 		})
 
 		// Same-session explicit resume — no session_start fires.
-		resumeFerment(h.pi, draft.id, { hasUI: false } as ExtensionCommandContext, h.runtime)
+		resumeFerment(h.pi, draft.id, { hasUI: false, cwd: process.cwd() } as unknown as ExtensionCommandContext, h.runtime)
 
 		// After resume, the same qualifying turn must schedule a nudge again.
 		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({ kind: "scheduled" })
@@ -540,7 +553,7 @@ describe("resumeFerment scoping-stop budget reset", () => {
 
 describe("saved Ferment work attribution", () => {
 	it.each(["block", "warn"])("adopts saved work only when the worktree %s permits continuation", (severity) => {
-		const ferment = h.eventStorage.create("Saved worktree")
+		const ferment = h.eventStorage.create("Saved worktree", undefined, process.cwd())
 		const savedWork = "11111111-1111-4111-8111-111111111111"
 		saveRuntimeState(ferment.id, { ...emptyState(), workId: savedWork }, { root: h.fermentsDir })
 		vi.spyOn(h.eventStorage, "get").mockReturnValue({
@@ -561,7 +574,11 @@ describe("saved Ferment work attribution", () => {
 	})
 
 	it("continues a saved Ferment when attribution persistence fails", () => {
-		const ferment = h.eventStorage.create("Saved work")
+		const ferment = h.eventStorage.create("Saved work", undefined, process.cwd())
+		vi.spyOn(h.eventStorage, "get").mockReturnValue({
+			...ferment,
+			worktree: { ...ferment.worktree, path: h.fermentsDir },
+		})
 		saveRuntimeState(
 			ferment.id,
 			{ ...emptyState(), workId: "11111111-1111-4111-8111-111111111111" },
@@ -580,7 +597,11 @@ describe("saved Ferment work attribution", () => {
 	})
 
 	it("restores saved work before continuing can schedule inference", () => {
-		const ferment = h.eventStorage.create("Saved work")
+		const ferment = h.eventStorage.create("Saved work", undefined, process.cwd())
+		vi.spyOn(h.eventStorage, "get").mockReturnValue({
+			...ferment,
+			worktree: { ...ferment.worktree, path: h.fermentsDir },
+		})
 		const original = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "original" } })
 		const workId = getWorkId(original)
 		saveRuntimeState(ferment.id, { ...emptyState(), workId }, { root: h.fermentsDir })
@@ -597,7 +618,11 @@ describe("saved Ferment work attribution", () => {
 	})
 
 	it("keeps unrelated requests on the current work after Leave paused until execution resumes", () => {
-		const ferment = h.eventStorage.create("Saved work")
+		const ferment = h.eventStorage.create("Saved work", undefined, process.cwd())
+		vi.spyOn(h.eventStorage, "get").mockReturnValue({
+			...ferment,
+			worktree: { ...ferment.worktree, path: h.fermentsDir },
+		})
 		const original = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "original" } })
 		const savedWork = getWorkId(original)
 		saveRuntimeState(ferment.id, { ...emptyState(), workId: savedWork }, { root: h.fermentsDir })
@@ -605,7 +630,7 @@ describe("saved Ferment work attribution", () => {
 		const resumed = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "resumed" } })
 		const currentWork = setWorkId(resumed)
 
-		expect(loadFermentSilently(h.pi, ferment.id, h.runtime)?.id).toBe(ferment.id)
+		expect(loadFermentSilently(h.pi, ferment.id, h.runtime, h.fermentsDir)?.id).toBe(ferment.id)
 		expect(recordProviderRequest(resumed).workId).toBe(currentWork)
 		expect(h.pi.appendEntry).not.toHaveBeenCalledWith("work_identity", { workId: savedWork })
 		expect(actionableHidden(h.sentMessages)).toHaveLength(0)
@@ -617,7 +642,7 @@ describe("saved Ferment work attribution", () => {
 		"planned",
 		"paused",
 	])("adopts saved work through /ferment resume after Leave paused (%s)", async (status) => {
-		const ferment = h.eventStorage.create("Saved work")
+		const ferment = h.eventStorage.create("Saved work", undefined, process.cwd())
 		const apply = createApplyAndPersist(h.runtime)
 		expect(
 			apply(ferment.id, {
@@ -634,10 +659,18 @@ describe("saved Ferment work attribution", () => {
 		const original = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "original" } })
 		const savedWork = getWorkId(original)
 		saveRuntimeState(ferment.id, { ...emptyState(), workId: savedWork }, { root: h.fermentsDir })
+		// Anchor the worktree to the test ctx cwd (like creation with ctx.cwd
+		// would in production) while preserving live status reads for the
+		// command controller's lifecycle checks.
+		const realGet = h.eventStorage.get.bind(h.eventStorage)
+		vi.spyOn(h.eventStorage, "get").mockImplementation((id) => {
+			const live = realGet(id)
+			return live ? { ...live, worktree: { ...live.worktree, path: h.fermentsDir } } : live
+		})
 		clearAllStepStarts()
 		const ctx = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "resumed" } })
 		const currentWork = setWorkId(ctx)
-		loadFermentSilently(h.pi, ferment.id, h.runtime)
+		loadFermentSilently(h.pi, ferment.id, h.runtime, h.fermentsDir)
 		expect(recordProviderRequest(ctx).workId).toBe(currentWork)
 		vi.mocked(h.pi.sendMessage).mockImplementation((_message, options) => {
 			if (options?.triggerTurn) expect(getWorkId(ctx)).toBe(savedWork)
@@ -651,7 +684,11 @@ describe("saved Ferment work attribution", () => {
 	})
 
 	it.each([undefined, "invalid"])("keeps current identity for legacy or malformed metadata %s", (workId) => {
-		const ferment = h.eventStorage.create("Old plan")
+		const ferment = h.eventStorage.create("Old plan", undefined, process.cwd())
+		vi.spyOn(h.eventStorage, "get").mockReturnValue({
+			...ferment,
+			worktree: { ...ferment.worktree, path: h.fermentsDir },
+		})
 		saveRuntimeState(ferment.id, { ...emptyState(), workId }, { root: h.fermentsDir })
 		const ctx = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "legacy" } })
 		const current = getWorkId(ctx)

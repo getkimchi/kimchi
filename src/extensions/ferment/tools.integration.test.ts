@@ -246,7 +246,7 @@ const passingFermentGates = () => [
 // Helper: create a deliberate host-owned draft, matching /ferment and one-shot
 // bootstrap behavior.
 async function createFerment(name: string, description?: string): Promise<string> {
-	const created = h.runtime.getStorage().create(name, description)
+	const created = h.runtime.getStorage().create(name, description, process.cwd())
 	setActive(created)
 	return created.id
 }

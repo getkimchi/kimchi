@@ -72,7 +72,7 @@ describe("registerFermentEvents", () => {
 		}
 		try {
 			vi.stubEnv("KIMCHI_FERMENT_LOCK_DIR", join(storageDir, "locks"))
-			const draft = storage.create("Manual Boundary Resume")
+			const draft = storage.create("Manual Boundary Resume", undefined, process.cwd())
 			const applyAndPersist = createApplyAndPersist(runtime)
 			const scoped = applyAndPersist(draft.id, {
 				type: "scope",
@@ -104,7 +104,9 @@ describe("registerFermentEvents", () => {
 			registerFermentEvents(pi, runtime)
 			const sessionStart = handlers.get("session_start")
 			if (!sessionStart) throw new Error("session_start handler was not registered")
-			const ctx = createContext({ ui: { select: vi.fn().mockResolvedValue("Resume") } })
+			// cwd must match the process.cwd()-stamped worktree; checkWorktree
+			// (via resumeFerment) compares the ferment's anchor against ctx.cwd.
+			const ctx = createContext({ cwd: process.cwd(), ui: { select: vi.fn().mockResolvedValue("Resume") } })
 
 			await sessionStart({}, ctx)
 			await vi.runAllTimersAsync()
@@ -449,7 +451,7 @@ describe("registerFermentEvents", () => {
 
 	it("uses the buffered proposal title when draft confirmation happens at turn end", async () => {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-events-title-test-")))
-		const draft = storage.create("Draft Raw Intent")
+		const draft = storage.create("Draft Raw Intent", undefined, process.cwd())
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
 			getStorage: () => storage,
@@ -612,7 +614,7 @@ describe("registerFermentEvents", () => {
 describe("turn_end connection error recovery", () => {
 	it('pauses a running ferment and notifies the user when stopReason is "error"', async () => {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-error-turn-end-")))
-		const ferment = storage.create("Connection Error Ferment")
+		const ferment = storage.create("Connection Error Ferment", undefined, process.cwd())
 		// Scope + activate so the ferment is in "running" state with an active phase.
 		storage.mutateWithEvents(ferment.id, (current) => {
 			if (!current) throw new Error("missing ferment")
@@ -674,7 +676,7 @@ describe("turn_end connection error recovery", () => {
 
 	it("distinguishes retryable network errors from non-retryable provider errors", async () => {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-retryable-")))
-		const ferment = storage.create("Retryable Error Ferment")
+		const ferment = storage.create("Retryable Error Ferment", undefined, process.cwd())
 		storage.mutateWithEvents(ferment.id, (current) => {
 			if (!current) throw new Error("missing ferment")
 			const now = new Date().toISOString()
@@ -786,7 +788,7 @@ describe("turn_end connection error recovery", () => {
 
 function setupScopedRunningFerment(prefix: string, name: string) {
 	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), prefix)))
-	const ferment = storage.create(name)
+	const ferment = storage.create(name, undefined, process.cwd())
 	storage.mutateWithEvents(ferment.id, (current) => {
 		if (!current) throw new Error("missing ferment")
 		const now = new Date().toISOString()
@@ -817,7 +819,7 @@ function setupScopedRunningFerment(prefix: string, name: string) {
 
 function createDraftFerment(prefix: string, name: string) {
 	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), prefix)))
-	const ferment = storage.create(name)
+	const ferment = storage.create(name, undefined, process.cwd())
 	return { storage, ferment }
 }
 
@@ -1461,7 +1463,7 @@ describe("recoverStuckFerments lockfile awareness", () => {
 
 	function createStorageWithRunningFerment(): { storage: FermentEventStore; id: string } {
 		const storage = new FermentEventStore(storageDir)
-		const ferment = storage.create("Test")
+		const ferment = storage.create("Test", undefined, process.cwd())
 		const phaseId = "phase-1"
 
 		storage.mutateWithEvents(ferment.id, (current) => {

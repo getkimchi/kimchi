@@ -11,8 +11,7 @@ export interface WorktreeCheck {
 	message?: string
 }
 
-export function checkWorktree(f: Ferment): WorktreeCheck {
-	const cwd = process.cwd()
+export function checkWorktree(f: Ferment, cwd: string): WorktreeCheck {
 	// Path containment: cwd must equal worktree.path OR start with worktree.path + "/".
 	// String prefix alone gives a false positive for "/foo/projectextra" vs "/foo/project".
 	const wtPath = f.worktree.path

@@ -71,7 +71,7 @@ describe("ferment nudges", () => {
 			isAutomatedContinuationEnabled: () => false,
 		}
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("Injected Store")
+		const draft = storage.create("Injected Store", undefined, process.cwd())
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
@@ -160,7 +160,7 @@ describe("maybeInjectLifecycleObligationGuard", () => {
 			isAutomatedContinuationEnabled: () => true,
 		}
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("Complete Nudge")
+		const draft = storage.create("Complete Nudge", undefined, process.cwd())
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",

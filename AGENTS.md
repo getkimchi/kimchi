@@ -21,6 +21,7 @@ You are editing the kimchi coding harness. This repo extends the pi-mono SDK (`@
 - **Auto-formatting**: `lint:fix` runs automatically after file edits (PostToolUse hook) — don't run manually
 - **Pre-commit**: `.husky/pre-commit` runs `pnpm run lint` — CI runs full `check` (lint + typecheck)
 - **README changes**: Run `./scripts/copy-resources.js --dev` after editing to propagate to dist/
+- **Never use `process.cwd()` for session-relative paths**: the ACP server is a long-lived process whose cwd is unrelated to the session (it is `/`), so `process.cwd()` silently resolves agent files under the wrong root. Always take the cwd from `ExtensionContext`/`ExtensionCommandContext` (`ctx.cwd`) and thread it through — tool factories, tool `execute` delegates (the 5th `ctx` parameter), command handlers, and anything that anchors paths to the project (e.g. ferment worktrees). Make the cwd a **required** parameter rather than defaulting to `process.cwd()` — an optional fallback silently reintroduces the bug; being forced to pass something is what makes new call sites think about which cwd is correct. Defaults are only acceptable at the outermost entry points where a session context genuinely doesn't exist yet (TUI startup, per-session init that resolves the cwd itself). If upstream pi's per-tool `cwd` parameter is needed at all, it must be the session cwd too, never the process cwd.
 
 ## Shared TUI components
 

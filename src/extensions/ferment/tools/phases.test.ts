@@ -39,7 +39,7 @@ function createHarness(options: { phases?: number; verification?: string } = {})
 		setActiveTools: vi.fn(),
 		events: { emit: vi.fn() },
 	} as unknown as ExtensionAPI
-	const ferment = storage.create("Phase Test")
+	const ferment = storage.create("Phase Test", undefined, process.cwd())
 	const phaseCount = options.phases ?? 2
 	const scope = applyAndPersist(ferment.id, {
 		type: "scope",

@@ -110,6 +110,10 @@ function createHarness() {
 	} as unknown as ExtensionAPI
 	const ctx = {
 		...createContext({ hasUI: false }),
+		// Match the worktree anchor used by storage.create(): ferments created
+		// without an explicit cwd stamp process.cwd(); checkWorktree compares
+		// against ctx.cwd, so the harness cwd must agree with it.
+		cwd: process.cwd(),
 		abort: vi.fn(),
 		waitForIdle: vi.fn().mockResolvedValue(undefined),
 	} as unknown as ExtensionCommandContext
@@ -119,7 +123,7 @@ function createHarness() {
 type CommandHarness = ReturnType<typeof createHarness>
 
 function createPlannedFerment(h: CommandHarness, name: string): Ferment {
-	const ferment = h.storage.create(name)
+	const ferment = h.storage.create(name, undefined, process.cwd())
 	const scoped = createApplyAndPersist(h.runtime)(ferment.id, {
 		type: "scope",
 		goal: "Goal",
@@ -146,7 +150,7 @@ function createPausedFerment(h: CommandHarness, name: string): Ferment {
 }
 
 function createCompleteFerment(h: CommandHarness, name: string): Ferment {
-	const ferment = h.storage.create(name)
+	const ferment = h.storage.create(name, undefined, process.cwd())
 	const scoped = createApplyAndPersist(h.runtime)(ferment.id, {
 		type: "scope",
 		goal: "Goal",
@@ -327,7 +331,7 @@ describe("FermentCommandController", () => {
 	it("returns a structured handled result for headless list output", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
-		h.storage.create("Existing")
+		h.storage.create("Existing", undefined, process.cwd())
 
 		const result = await controller.execute({ type: "list" }, { raw: "list", pi: h.pi, ctx: h.ctx, runtime: h.runtime })
 
@@ -368,7 +372,7 @@ describe("FermentCommandController", () => {
 	it("/ferment exit preserves draft ferments and clears active mode", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
-		const ferment = h.storage.create("Draft Exit")
+		const ferment = h.storage.create("Draft Exit", undefined, process.cwd())
 		h.runtime.setActive(ferment)
 		vi.mocked(h.runtime.setActive).mockClear()
 
@@ -510,8 +514,8 @@ describe("FermentCommandController", () => {
 	it("/ferment exit clears only the exited ferment's pending review and scoping state", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
-		const active = h.storage.create("Exit Pending State")
-		const other = h.storage.create("Other Pending State")
+		const active = h.storage.create("Exit Pending State", undefined, process.cwd())
+		const other = h.storage.create("Other Pending State", undefined, process.cwd())
 		h.runtime.setActive(active)
 		setPendingPlanReview({
 			fermentId: active.id,
@@ -612,7 +616,7 @@ describe("FermentCommandController", () => {
 	it("uses the multi-line editor for free-form goal revisions", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
-		const active = h.storage.create("Revise Goal")
+		const active = h.storage.create("Revise Goal", undefined, process.cwd())
 		h.runtime.setActive(active)
 		const ctx = createContext({
 			ui: {
@@ -636,7 +640,7 @@ describe("FermentCommandController", () => {
 	it("reports export write failures without throwing", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
-		const active = h.storage.create("Export Test")
+		const active = h.storage.create("Export Test", undefined, process.cwd())
 		h.runtime.getActive = vi.fn(() => active)
 		writeFileSyncMock.mockImplementation(() => {
 			throw new Error("permission denied")
@@ -828,7 +832,7 @@ describe("registerFermentCommands", () => {
 
 	it("completes /ferment target subcommands from stored ferments", () => {
 		const h = createHarness()
-		const ferment = h.storage.create("Auth Rewrite")
+		const ferment = h.storage.create("Auth Rewrite", undefined, process.cwd())
 
 		const completions = getFermentArgumentCompletions("switch auth", h.runtime)
 
@@ -844,8 +848,8 @@ describe("registerFermentCommands", () => {
 
 	it("/ferment switch clears only the previous active pending plan review", async () => {
 		const h = createHarness()
-		const previous = h.storage.create("Previous Review")
-		const target = h.storage.create("Target Review")
+		const previous = h.storage.create("Previous Review", undefined, process.cwd())
+		const target = h.storage.create("Target Review", undefined, process.cwd())
 		h.runtime.setActive(previous)
 		setPendingPlanReview({
 			fermentId: previous.id,
@@ -876,7 +880,7 @@ describe("registerFermentCommands", () => {
 	it("/ferment switch resumes a paused ferment across a manual phase boundary", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
-		const draft = h.storage.create("Boundary Switch")
+		const draft = h.storage.create("Boundary Switch", undefined, process.cwd())
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
@@ -951,7 +955,7 @@ describe("registerFermentCommands", () => {
 
 	it("/ferment manual and /ferment auto use the same continuation policy controls", async () => {
 		const h = createHarness()
-		const ferment = h.storage.create("Nested Policy Ferment")
+		const ferment = h.storage.create("Nested Policy Ferment", undefined, process.cwd())
 		h.runtime.setActive(ferment)
 
 		const commands = new Map<string, RegisteredCommand>()
@@ -978,7 +982,7 @@ describe("registerFermentCommands", () => {
 	it("/ferment manual kicks a newly planned ferment into the first phase", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
-		const ferment = h.storage.create("Planned Manual Ferment")
+		const ferment = h.storage.create("Planned Manual Ferment", undefined, process.cwd())
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
@@ -1012,7 +1016,7 @@ describe("registerFermentCommands", () => {
 	it("/ferment manual still stops at a later phase boundary", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
-		const ferment = h.storage.create("Manual Policy Boundary")
+		const ferment = h.storage.create("Manual Policy Boundary", undefined, process.cwd())
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
@@ -1063,7 +1067,7 @@ describe("registerFermentCommands", () => {
 	it("/ferment auto on a paused ferment sets automated policy without resuming lifecycle", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
-		const ferment = h.storage.create("Paused Ferment")
+		const ferment = h.storage.create("Paused Ferment", undefined, process.cwd())
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
@@ -1111,7 +1115,7 @@ describe("registerFermentCommands", () => {
 	it("/ferment mode is no longer a command", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
-		const ferment = h.storage.create("Legacy Mode Command")
+		const ferment = h.storage.create("Legacy Mode Command", undefined, process.cwd())
 		h.runtime.setActive(ferment)
 
 		const result = await controller.execute(
@@ -1128,7 +1132,7 @@ describe("registerFermentCommands", () => {
 
 	it("/ferment progress renders the headless status", async () => {
 		const h = createHarness()
-		const ferment = h.storage.create("Progress Ferment")
+		const ferment = h.storage.create("Progress Ferment", undefined, process.cwd())
 		h.runtime.setActive(ferment)
 
 		const commands = new Map<string, RegisteredCommand>()
@@ -1309,7 +1313,7 @@ describe("registerFermentCommands", () => {
 	it("/ferment auto at a phase boundary only changes continuation policy", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
-		const ferment = h.storage.create("Boundary Ferment")
+		const ferment = h.storage.create("Boundary Ferment", undefined, process.cwd())
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
@@ -1358,7 +1362,7 @@ describe("registerFermentCommands", () => {
 	it("/ferment list Continue on the active ferment kicks continuation", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
-		const ferment = h.storage.create("Active List Continue")
+		const ferment = h.storage.create("Active List Continue", undefined, process.cwd())
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
@@ -1409,7 +1413,7 @@ describe("registerFermentCommands", () => {
 	it("/ferment list Continue explicitly crosses a manual phase boundary", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
-		const ferment = h.storage.create("Boundary List Continue")
+		const ferment = h.storage.create("Boundary List Continue", undefined, process.cwd())
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
@@ -1486,7 +1490,7 @@ describe("registerFermentCommands", () => {
 	it("/ferment pause transitions running ferment to paused status", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
-		const ferment = h.storage.create("Running Ferment")
+		const ferment = h.storage.create("Running Ferment", undefined, process.cwd())
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
@@ -1556,7 +1560,7 @@ describe("registerFermentCommands", () => {
 	it("/ferment pause is a no-op when already paused", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
-		const ferment = h.storage.create("Already Paused Ferment")
+		const ferment = h.storage.create("Already Paused Ferment", undefined, process.cwd())
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
@@ -1658,7 +1662,7 @@ describe("registerFermentCommands", () => {
 
 	it("/ferment resume does not reset an exhausted draft scoping-stop budget when there is nothing to resume", async () => {
 		const h = createHarness()
-		const draft = h.storage.create("Exhausted Draft")
+		const draft = h.storage.create("Exhausted Draft", undefined, process.cwd())
 		h.runtime.setActive(draft)
 
 		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({ kind: "scheduled" })
@@ -1691,7 +1695,7 @@ describe("registerFermentCommands", () => {
 	it("implements pause → /ferment auto → /ferment resume with policy separated from lifecycle", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
-		const ferment = h.storage.create("Lifecycle Ferment")
+		const ferment = h.storage.create("Lifecycle Ferment", undefined, process.cwd())
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
@@ -1767,7 +1771,7 @@ describe("registerFermentCommands", () => {
 	it("/ferment resume in manual policy kicks work inside the active phase", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
-		const ferment = h.storage.create("Manual Resume Ferment")
+		const ferment = h.storage.create("Manual Resume Ferment", undefined, process.cwd())
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
@@ -1839,7 +1843,7 @@ describe("registerFermentCommands", () => {
 	it("/ferment resume in manual policy does not cross a phase boundary", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
-		const ferment = h.storage.create("Manual Boundary Resume")
+		const ferment = h.storage.create("Manual Boundary Resume", undefined, process.cwd())
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
@@ -1901,7 +1905,7 @@ describe("registerFermentCommands", () => {
 	it("/ferment resume in manual policy asks before crossing a phase boundary", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
-		const ferment = h.storage.create("Manual Boundary Prompt")
+		const ferment = h.storage.create("Manual Boundary Prompt", undefined, process.cwd())
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",

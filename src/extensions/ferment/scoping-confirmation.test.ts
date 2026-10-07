@@ -19,7 +19,7 @@ describe("confirmPendingScope", () => {
 
 	it("applies pending scope exactly once and clears the pending buffer", () => {
 		const { runtime, storage } = createRuntime()
-		const ferment = storage.create("Confirm")
+		const ferment = storage.create("Confirm", undefined, process.cwd())
 		runtime.setPendingScope(ferment.id, {
 			title: "Confirmed Title",
 			goal: "Goal",
@@ -46,7 +46,7 @@ describe("confirmPendingScope", () => {
 	it("does not send a hidden continuation nudge after confirmed manual scoping", () => {
 		const { runtime, storage } = createRuntime()
 		const pi = { appendEntry: vi.fn(), sendMessage: vi.fn() }
-		const ferment = storage.create("Confirm And Continue")
+		const ferment = storage.create("Confirm And Continue", undefined, process.cwd())
 		runtime.setPendingScope(ferment.id, {
 			title: "Confirmed Title",
 			goal: "Goal",
@@ -67,7 +67,7 @@ describe("confirmPendingScope", () => {
 	it("emits a visible rename acknowledgement when the confirmed title changes", () => {
 		const { runtime, storage } = createRuntime()
 		const pi = { appendEntry: vi.fn(), sendMessage: vi.fn() }
-		const ferment = storage.create("Draft OAuth Task")
+		const ferment = storage.create("Draft OAuth Task", undefined, process.cwd())
 		runtime.setPendingScope(ferment.id, {
 			title: "Google OAuth Login",
 			goal: "Goal",
@@ -94,7 +94,7 @@ describe("confirmPendingScope", () => {
 
 	it("preserves the draft name when the confirmed title is blank", () => {
 		const { runtime, storage } = createRuntime()
-		const ferment = storage.create("Draft Name")
+		const ferment = storage.create("Draft Name", undefined, process.cwd())
 		runtime.setPendingScope(ferment.id, {
 			title: '  ""  ',
 			goal: "Goal",
@@ -111,7 +111,7 @@ describe("confirmPendingScope", () => {
 
 	it("uses explicit phases from propose_ferment_scoping and preserves pending user answers", () => {
 		const { runtime, storage } = createRuntime()
-		const ferment = storage.create("Explicit")
+		const ferment = storage.create("Explicit", undefined, process.cwd())
 		runtime.setPendingScope(ferment.id, {
 			goal: "User goal",
 			successCriteria: ["User criteria"],
@@ -139,7 +139,7 @@ describe("confirmPendingScope", () => {
 		expect(missing.ok).toBe(false)
 		if (!missing.ok) expect(missing.error.code).toBe("MISSING_PENDING_SCOPE")
 
-		const ferment = storage.create("No Phases")
+		const ferment = storage.create("No Phases", undefined, process.cwd())
 		runtime.setPendingScope(ferment.id, { goal: "Goal", successCriteria: ["Works"], constraints: [] })
 		const empty = confirmPendingScope(runtime, ferment.id, undefined, "turn_end")
 
@@ -151,7 +151,7 @@ describe("confirmPendingScope", () => {
 
 	it("forwards assumptions from pendingScope into the persisted ferment", () => {
 		const { runtime, storage } = createRuntime()
-		const ferment = storage.create("With Assumptions")
+		const ferment = storage.create("With Assumptions", undefined, process.cwd())
 		runtime.setPendingScope(ferment.id, {
 			goal: "Goal",
 			successCriteria: ["Works"],
@@ -170,7 +170,7 @@ describe("confirmPendingScope", () => {
 
 	it("accepts propose_ferment_scoping as a valid source and applies pending scope", () => {
 		const { runtime, storage } = createRuntime()
-		const ferment = storage.create("Scoping Source Test")
+		const ferment = storage.create("Scoping Source Test", undefined, process.cwd())
 		runtime.setPendingScope(ferment.id, {
 			goal: "Build auth",
 			successCriteria: ["Tests pass"],
@@ -191,7 +191,7 @@ describe("confirmPendingScope", () => {
 
 	it("omits assumptions in persisted ferment when pendingScope.assumptions is undefined", () => {
 		const { runtime, storage } = createRuntime()
-		const ferment = storage.create("No Assumptions")
+		const ferment = storage.create("No Assumptions", undefined, process.cwd())
 		runtime.setPendingScope(ferment.id, {
 			goal: "Goal",
 			successCriteria: ["Works"],
@@ -209,7 +209,7 @@ describe("confirmPendingScope", () => {
 
 	it("emits SCOPING_COMPLETE with proposeIterations from pending scope", () => {
 		const { runtime, storage } = createRuntime()
-		const ferment = storage.create("Propose Iterations Test")
+		const ferment = storage.create("Propose Iterations Test", undefined, process.cwd())
 		const emitted: Array<{ channel: string; data: unknown }> = []
 		// Wire a minimal event bus so confirmPendingScope → applyAndPersist → emitFermentDomainEvent works.
 		runtime.events = {
