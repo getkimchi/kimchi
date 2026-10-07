@@ -15,13 +15,13 @@ You are editing the kimchi coding harness. This repo extends the pi-mono SDK (`@
 - **NEVER modify `patches/` files directly** — patches apply at install; changes here don't affect runtime
 - **NEVER touch `src/core/export-html/` HTML templates** — bundled JS is auto-generated from source
 - **Test files**: Co-locate as `*.test.ts` alongside source (NOT in a separate test/ folder)
+- **Never use `process.cwd()` for session-relative paths**: the ACP server is a long-lived process whose cwd is unrelated to any session. Always use `ExtensionContext`/`ExtensionCommandContext` (`ctx.cwd`), thread it through tool factories/delegates and anything that anchors to the project, and make it a **required** parameter — an optional fallback to `process.cwd()` silently reintroduces the bug. Defaults are only acceptable at outermost entry points where no session context exists yet (TUI startup).
 
 ## Development patterns
 
 - **Auto-formatting**: `lint:fix` runs automatically after file edits (PostToolUse hook) — don't run manually
 - **Pre-commit**: `.husky/pre-commit` runs `pnpm run lint` — CI runs full `check` (lint + typecheck)
 - **README changes**: Run `./scripts/copy-resources.js --dev` after editing to propagate to dist/
-- **Never use `process.cwd()` for session-relative paths**: the ACP server is a long-lived process whose cwd is unrelated to any session. Always use `ExtensionContext`/`ExtensionCommandContext` (`ctx.cwd`), thread it through tool factories/delegates and anything that anchors to the project, and make it a **required** parameter — an optional fallback to `process.cwd()` silently reintroduces the bug. Defaults are only acceptable at outermost entry points where no session context exists yet (TUI startup).
 
 ## Shared TUI components
 
