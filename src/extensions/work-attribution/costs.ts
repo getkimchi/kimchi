@@ -1,9 +1,10 @@
 import { pullRequestKey } from "../pull-request-status/links.js"
+import { providerId, repositoryPath, SHA } from "../pull-request-status/provider-records.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import type { WorkSegment } from "../work-attribution.js"
 import { requestWorkLinks } from "./links.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
-import type { WorkRecord } from "./summary.js"
+import { object, type WorkRecord } from "./summary.js"
 
 /** Billing rows must already be joined to the exact request and scoped to its billing account. */
 export interface RequestCostObservation {
@@ -76,7 +77,6 @@ export interface PullRequestCostReport {
 }
 
 const NANOS_PER_USD = 1_000_000_000n
-const SHA = /^(?:[a-f\d]{40}|[a-f\d]{64})$/i
 
 export function decimalNanos(value: unknown): bigint | undefined {
 	if (typeof value !== "string") return undefined
@@ -101,10 +101,6 @@ function time(value: unknown): number | undefined {
 	return new Date(`${day}T00:00:00Z`).toISOString().startsWith(day) ? parsed : undefined
 }
 
-function object(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
 function add(map: Map<string, Set<string>>, key: string, value: string): void {
 	const values = map.get(key) ?? new Set<string>()
 	values.add(value)
@@ -126,18 +122,12 @@ function storedPullRequest(row: unknown): { identity: PullIdentity; pullRequest:
 		!Number.isSafeInteger(row.number) ||
 		row.number < 1 ||
 		typeof row.url !== "string" ||
-		(row.id !== undefined && (typeof row.id !== "string" || !/^[1-9]\d*$/.test(row.id))) ||
-		(row.repositoryId !== undefined && (typeof row.repositoryId !== "string" || !/^[1-9]\d*$/.test(row.repositoryId)))
+		(row.id !== undefined && (typeof row.id !== "string" || !providerId(row.id))) ||
+		(row.repositoryId !== undefined && (typeof row.repositoryId !== "string" || !providerId(row.repositoryId)))
 	)
 		return undefined
 	const repository = provider === "github" ? row.repository.toLowerCase() : row.repository
-	const segments = repository.split("/")
-	if (
-		segments.length < 2 ||
-		(provider === "github" && segments.length !== 2) ||
-		segments.some((segment) => !/^[\w.-]+$/.test(segment) || segment === "." || segment === "..")
-	)
-		return undefined
+	if (!repositoryPath(repository, provider)) return undefined
 	const host = row.host.toLowerCase()
 	const path = `/${repository}/${provider === "github" ? "pull" : "-/merge_requests"}/${row.number}`
 	try {

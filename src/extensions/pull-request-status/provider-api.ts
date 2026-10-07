@@ -5,7 +5,8 @@ import { tmpdir } from "node:os"
 import { isAbsolute, join } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { readGitToken } from "../../config.js"
-import { httpsURL, LookupError, label, object, type Repository, repositoryPath } from "./provider-records.js"
+import { object } from "../work-attribution/summary.js"
+import { httpsURL, LookupError, label, type Repository, repositoryPath } from "./provider-records.js"
 
 const COMMAND_TIMEOUT_MS = 5000
 

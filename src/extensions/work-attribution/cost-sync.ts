@@ -10,7 +10,7 @@ import { isWorkId } from "../../shared/work-id.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { calculatePullRequestCosts, decimalNanos, type RequestCostObservation } from "./costs.js"
 import { isWorkAccount, type WorkAccount } from "./scope.js"
-import { readWorkRecords, type WorkRecord } from "./summary.js"
+import { object, readWorkRecords, type WorkRecord } from "./summary.js"
 
 export interface BillingSource {
 	apiUrl: string
@@ -135,14 +135,17 @@ function costFingerprint(rows: unknown[], lookup: BillingLookup): string {
 	return JSON.stringify([result, [...new Set(rows.map((row) => JSON.stringify(row)))].sort()])
 }
 
-function object(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-}
 function httpUrl(value: unknown): value is string {
 	if (typeof value !== "string") return false
 	try {
 		const url = new URL(value)
-		return /^https?:$/.test(url.protocol) && !url.username && !url.password && !url.search && !url.hash
+		return (
+			(url.protocol === "https:" || url.protocol === "http:") &&
+			!url.username &&
+			!url.password &&
+			!url.search &&
+			!url.hash
+		)
 	} catch {
 		return false
 	}

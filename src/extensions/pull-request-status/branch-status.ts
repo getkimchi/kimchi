@@ -1,6 +1,8 @@
 /** The checked-out branch and its PR or MR, shown before a work records a commit. */
+
+import { object } from "../work-attribution/summary.js"
 import { api, command, pages, repositoryIdentity, requestJSON } from "./provider-api.js"
-import { LookupError, label, object, pullRequest } from "./provider-records.js"
+import { LookupError, label, pullRequest } from "./provider-records.js"
 import { PASS_BUDGET_MS, type WorkPullRequest } from "./pull-requests.js"
 
 export interface BranchPullRequest {
