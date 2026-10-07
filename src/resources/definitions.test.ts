@@ -95,6 +95,16 @@ describe("resource definitions", () => {
 		})
 	})
 
+	it("registers Rewind as an opt-in experimental feature", () => {
+		expect(getResourceDefinitions().find((resource) => resource.id === "extensions.rewind")).toMatchObject({
+			kind: "extensions",
+			experimental: true,
+			label: "Rewind",
+			defaultEnabled: false,
+			restartRequired: true,
+		})
+	})
+
 	it("registers Kimchi Workflows as a default-off built-in extension", () => {
 		const resource = getResourceDefinitions().find((candidate) => candidate.id === "extensions.workflows")
 

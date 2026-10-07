@@ -61,14 +61,15 @@
 		"@types/proper-lockfile": "^4.1.4",
 		"@types/ssh2": "^1.15.5",
 		"@xterm/headless": "^6.0.0",
-		"chokidar": "^5.0.0",
 		"better-sqlite3": "link:shims/better-sqlite3",
+		"chokidar": "^5.0.0",
 		"diff": "^9.0.0",
 		"mem0ai": "3.1.8",
 		"micromatch": "^4.0.8",
 		"natural": "link:shims/natural",
 		"open": "^10.2.0",
 		"pi-mcp-adapter": "2.34.0",
+		"pi-rewind-hook": "1.8.7",
 		"proper-lockfile": "^4.1.2",
 		"shell-quote": "1.8.4",
 		"shiki": "^4.0.2",
@@ -141,7 +142,8 @@
 			"@earendil-works/pi-ai@0.85.1": "patches/@earendil-works__pi-ai@0.85.1.patch",
 			"@earendil-works/pi-tui@0.85.1": "patches/@earendil-works__pi-tui@0.85.1.patch",
 			"@earendil-works/pi-coding-agent@0.85.1": "patches/@earendil-works__pi-coding-agent@0.85.1.patch",
-			"pi-mcp-adapter@2.34.0": "patches/pi-mcp-adapter@2.34.0.patch"
+			"pi-mcp-adapter@2.34.0": "patches/pi-mcp-adapter@2.34.0.patch",
+			"pi-rewind-hook@1.8.7": "patches/pi-rewind-hook@1.8.7.patch"
 		},
 		"supportedArchitectures": {
 			"os": [

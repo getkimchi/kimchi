@@ -14,6 +14,7 @@ export function createExtensionApi(): {
 	appendEntry: ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>
 	getCommands: ReturnType<typeof vi.fn<ExtensionAPI["getCommands"]>>
 	setModel: ReturnType<typeof vi.fn<ExtensionAPI["setModel"]>>
+	exec: ReturnType<typeof vi.fn<ExtensionAPI["exec"]>>
 	registerEntryRenderer: ReturnType<typeof vi.fn<ExtensionAPI["registerEntryRenderer"]>>
 	getEntryRenderer(customType: string): Parameters<ExtensionAPI["registerEntryRenderer"]>[1]
 	emitEvent: ReturnType<typeof vi.fn>
@@ -42,6 +43,7 @@ export function createExtensionApi(): {
 		appendedEntries.push({ type, payload })
 	})
 	const setModel = vi.fn<ExtensionAPI["setModel"]>(async () => true)
+	const exec = vi.fn<ExtensionAPI["exec"]>()
 	const getCommands = vi.fn<ExtensionAPI["getCommands"]>(() => [])
 	const registerCommand = vi.fn<ExtensionAPI["registerCommand"]>()
 	const registerFlag = vi.fn<ExtensionAPI["registerFlag"]>()
@@ -81,6 +83,7 @@ export function createExtensionApi(): {
 			sendMessage,
 			appendEntry,
 			setModel,
+			exec,
 			registerEntryRenderer,
 			registerShortcut,
 			registerMessageRenderer,
@@ -107,6 +110,7 @@ export function createExtensionApi(): {
 		},
 		sendMessage,
 		setModel,
+		exec,
 		registerEntryRenderer,
 		getEntryRenderer(customType: string): Parameters<ExtensionAPI["registerEntryRenderer"]>[1] {
 			const call = registerEntryRenderer.mock.calls.find(([type]) => type === customType)

@@ -1,0 +1,31 @@
+# Patch: Bind each prompt's start snapshot to its own user entry in pi-rewind-hook 1.8.7
+#
+# Tracking: https://github.com/nicobailon/pi-rewind-hook/pull/19
+# Changes:
+#   - index.ts: stop binding a prompt's start snapshot in turn_start. pi appends the
+#     prompt's user entry only after turn_start, so the binding picked the previous
+#     prompt's entry: /rewind to the latest prompt could not restore files, and older
+#     prompts restored the files from before the next one. turn_end and agent_end
+#     already bind the snapshot once the entry exists.
+# Removal: delete when the pinned pi-rewind-hook release includes #19.
+#
+diff --git a/index.ts b/index.ts
+index 7bdd1e11a89a9de00616ed368fac3c9c724a0148..875cac43561065fec6dd24a86614a3931fc241e4 100644
+--- a/index.ts
++++ b/index.ts
+@@ -1629,14 +1629,13 @@ export default function rewindExtension(pi: ExtensionAPI) {
+     try {
+       const { treeSha } = await captureWorktreeTree();
+       const commitSha = await ensureSnapshotForTree(treeSha);
++      // pi appends the prompt's user entry after turn_start, so turn_end binds this snapshot to it.
+       promptCollector = {
+         snapshots: [],
+         bindings: [],
+         promptText: activePromptText ?? undefined,
+         pendingUserCommitSha: commitSha,
+       };
+-
+-      bindPendingPromptUser(ctx.sessionManager.getBranch() as SessionLikeEntry[], promptCollector);
+     } catch (error) {
+       promptCollector = null;
+       notify(ctx, `Rewind: failed to capture start snapshot (${error instanceof Error ? error.message : String(error)})`, "warning");
