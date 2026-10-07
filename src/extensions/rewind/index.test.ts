@@ -1,5 +1,5 @@
 import type { UserMessage } from "@earendil-works/pi-ai"
-import type { CustomEntry, SessionEntry, SessionMessageEntry } from "@earendil-works/pi-coding-agent"
+import type { CustomEntry, ExtensionContext, SessionEntry, SessionMessageEntry } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { createCommandContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -25,12 +25,17 @@ const marker: CustomEntry = {
 
 function setup(
 	branch: SessionEntry[],
-	options: { idle?: boolean; choose?: (options: string[]) => string | undefined } = {},
+	options: {
+		idle?: boolean
+		mode?: ExtensionContext["mode"]
+		choose?: (options: string[]) => string | undefined
+	} = {},
 ) {
 	const pi = createExtensionApi()
 	rewindExtension(pi.api)
 	const select = vi.fn(async (_title: string, choices: string[]) => options.choose?.(choices))
 	const ctx = createCommandContext({
+		mode: options.mode ?? "tui",
 		isIdle: vi.fn(() => options.idle ?? true),
 		sessionManager: { getBranch: () => branch },
 		ui: { select },
@@ -92,6 +97,16 @@ describe("rewind extension", () => {
 
 		expect(select).not.toHaveBeenCalled()
 		expect(ctx.ui.notify).toHaveBeenCalledWith("Nothing to rewind to yet.", "info")
+	})
+
+	it("points ACP clients to the terminal UI instead of rewinding", async () => {
+		const { ctx, select, run } = setup([userPrompt("u1", "Add a cart module")], { mode: "rpc" })
+
+		await run()
+
+		expect(select).not.toHaveBeenCalled()
+		expect(ctx.navigateTree).not.toHaveBeenCalled()
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Rewind is available in the terminal UI.", "info")
 	})
 
 	it("waits for the agent to finish instead of rewinding mid-turn", async () => {

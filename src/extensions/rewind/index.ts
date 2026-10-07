@@ -22,6 +22,12 @@ export default function rewindExtension(pi: ExtensionAPI): void {
 }
 
 async function rewindToPrompt(ctx: ExtensionCommandContext): Promise<void> {
+	// ACP clients have no session tree to move back in.
+	if (ctx.mode !== "tui") {
+		ctx.ui.notify("Rewind is available in the terminal UI.", "info")
+		return
+	}
+
 	if (!ctx.isIdle()) {
 		ctx.ui.notify("Rewind is available once the agent finishes. Press Esc to stop it first.", "warning")
 		return

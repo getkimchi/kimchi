@@ -4,6 +4,8 @@ Rewind restores project files together with the conversation. It bundles [pi-rew
 
 Enable `extensions.rewind` under `/resources` → **Experimental**, then restart Kimchi. It is disabled by default. Outside a git repository nothing is captured, and `/rewind` only moves the conversation.
 
+Rewind is TUI-only. ACP clients have no session tree to navigate, so `/rewind` there only points to the terminal UI.
+
 ## Snapshots
 
 At the start of each prompt and after each assistant turn, pi-rewind-hook snapshots the git worktree through a private index and keeps the commits under `refs/pi-rewind/store`. The user's index, branches, stash and `git status` are untouched. Each snapshot is bound to its session entry in the session journal, so snapshots follow `/tree`, `/fork`, resume and compaction.
