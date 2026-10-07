@@ -430,7 +430,7 @@ test("work and request IDs are durable before the first reply, and commits belon
 })
 
 for (const reference of ["path", "paste"]) {
-	test(`a new worktree continues a retained plan by ${reference} after its original worktree is deleted`, async ({
+	test(`a new worktree continues a retained plan by ${reference} with an unowned output after its original worktree is deleted`, async ({
 		terminal,
 	}) => {
 		await runKimchiSession(
@@ -511,9 +511,9 @@ for (const reference of ["path", "paste"]) {
 				expect(existsSync(planPath)).toBe(false)
 				launchKimchi(terminal, { ...fixture, workDir: implementingTree }, [], fixture.seedEnv)
 				await waitForText(terminal, PROMPT_READY, { full: false })
-				if (reference === "path") terminal.submit(`Implement ${snapshotPath}`)
+				if (reference === "path") terminal.submit(`Implement ${snapshotPath} and write docs/adr/new.md`)
 				else {
-					terminal.write(`\x1b[200~Implement this plan:\n${plan}\x1b[201~`)
+					terminal.write(`\x1b[200~Implement this plan:\n${plan}\nAlso write docs/adr/new.md\x1b[201~`)
 					terminal.keyPress(Key.Enter)
 				}
 				await waitForText(terminal, "Continuing the saved attribution plan.")

@@ -266,6 +266,60 @@ async function recordedPlan(kind: "path" | "snapshot" | "paste" | "artifact", al
 }
 
 it.each([
+	"interactive",
+	"rpc",
+] as const)("continues an exact plan with an unowned output before the first %s request and write", async (source) => {
+	const flow = await recordedPlan("path")
+	const output = "docs/new-directory/output.md"
+	await flow.input({ type: "input", source, text: `${flow.text} and write ${output}` }, flow.implementer)
+	const requestId = await flow.dispatch(flow.implementer)
+	await createTrackedWriteTool(flow.implementer, "write-output").execute("write-output", {
+		path: output,
+		content: "# Implementation output\n",
+	})
+
+	expect(getWorkId(flow.implementer)).toBe(flow.workId)
+	const rows = readWorkRecords(flow.agentDir)
+	expect(rows).toContainEqual(expect.objectContaining({ type: "request", requestId, workId: flow.workId }))
+	expect(rows).toContainEqual(
+		expect.objectContaining({
+			type: "work_link",
+			sourceWorkId: flow.workId,
+			targetWorkId: flow.workId,
+			requestIds: [flow.research, flow.producer].sort(),
+		}),
+	)
+	expect(rows).toContainEqual(
+		expect.objectContaining({ type: "file_transition", toolCallId: "write-output", path: output, workId: flow.workId }),
+	)
+})
+
+it.each([
+	"unchanged",
+	"changed",
+	"deleted",
+])("skips plan continuation when its named output has another owner (%s file)", async (state) => {
+	const flow = await recordedPlan("path")
+	const output = "docs/other-work/output.md"
+	const other = createContext({ cwd: flow.cwd, sessionManager: { getSessionId: () => "other-owner" } })
+	await createTrackedWriteTool(other, "other-output").execute("other-output", {
+		path: output,
+		content: "# Other work\n",
+	})
+	if (state === "changed") writeFileSync(join(flow.cwd, output), "# Changed by hand\n")
+	if (state === "deleted") rmSync(join(flow.cwd, "docs/other-work"), { recursive: true })
+	const original = getWorkId(flow.implementer)
+	await flow.input({ type: "input", source: "rpc", text: `${flow.text} and write ${output}` }, flow.implementer)
+	const requestId = await flow.dispatch(flow.implementer)
+
+	expect(getWorkId(flow.implementer)).toBe(original)
+	expect(original).not.toBe(flow.workId)
+	const rows = readWorkRecords(flow.agentDir)
+	expect(rows).toContainEqual(expect.objectContaining({ type: "request", requestId, workId: original }))
+	expect(rows.filter((row) => row.type === "work_link")).toEqual([])
+})
+
+it.each([
 	"path",
 	"snapshot",
 	"paste",

@@ -19,7 +19,7 @@ afterEach(async () => {
 	await fixture?.stop()
 })
 
-it("links a plan pasted into Studio before dispatching its first request", async () => {
+it("links a plan pasted into Studio with an unowned output before dispatching its first request", async () => {
 	const held = new Promise<void>((resolve) => {
 		releaseReply = resolve
 	})
@@ -48,7 +48,11 @@ it("links a plan pasted into Studio before dispatching its first request", async
 		}),
 	)
 	const session = await newSession(active, active.workDir)
-	const running = prompt(active, session, `Implement this plan:\n\n\`\`\`markdown\n${content}\`\`\``)
+	const running = prompt(
+		active,
+		session,
+		`Implement this plan:\n\n\`\`\`markdown\n${content}\`\`\`\nAlso write docs/adr/new.md`,
+	)
 	try {
 		const chats = () => active.fake.requests.filter((row) => row.url.startsWith("/openai/v1/chat/completions"))
 		await expect.poll(() => chats().length, { timeout: 10_000 }).toBe(1)

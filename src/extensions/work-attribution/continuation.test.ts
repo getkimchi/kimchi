@@ -107,12 +107,14 @@ describe("continuing saved work", () => {
 					: content.split("\n")[0]
 		expect(await findWorkContinuation({ cwd }, prompt)).toBeUndefined()
 	})
-	it("does not choose between conflicting pasted plans or an unknown outside path", async () => {
+	it("ignores an unowned output but does not choose between conflicting plan owners", async () => {
 		const first = savePlanMarkdown({ cwd, name: "first", planText: "# First\n", workId: planningWork })
 		const second = savePlanMarkdown({ cwd, name: "second", planText: "# Second\n", workId: otherWork })
 		const content = readFileSync(first.path, "utf8")
 		expect(await findWorkContinuation({ cwd }, `${content}\n${readFileSync(second.path, "utf8")}`)).toBeUndefined()
-		expect(await findWorkContinuation({ cwd }, `${content}\nAlso follow missing.md`)).toBeUndefined()
+		expect(await findWorkContinuation({ cwd }, `${content}\nAlso write missing.md`)).toMatchObject({
+			workId: planningWork,
+		})
 		expect(await findWorkContinuation({ cwd }, `${content}\nAlso follow ${second.path}`)).toBeUndefined()
 	})
 	it("resolves a scoped native plan without requiring file-transition evidence", async () => {
@@ -122,6 +124,34 @@ describe("continuing saved work", () => {
 			workId: planningWork,
 			source: "saved-plan",
 			evidence: { path: saved.path },
+		})
+	})
+	it("does not select a modified native plan from its work marker alone", async () => {
+		const saved = savePlanMarkdown({ cwd, name: "feature", planText: "# Plan", workId: planningWork })
+		writeFileSync(saved.path, `${readFileSync(saved.path, "utf8")}\nUnrecorded changes.`)
+		expect(await findWorkContinuation({ cwd }, `Implement ${saved.path} and write missing.md`)).toBeUndefined()
+	})
+	it.each([
+		"src/new.ts",
+		"data/new.json",
+		"build/Makefile",
+		"Makefile",
+		"Dockerfile",
+		"`LICENSE`",
+	])("does not ignore a competing owner of the named output %s", async (output) => {
+		const saved = savePlanMarkdown({ cwd, name: "feature", planText: "# Plan", workId: planningWork })
+		const prompt = `Implement ${saved.path} and write ${output}`
+		expect(await findWorkContinuation({ cwd }, prompt)).toMatchObject({ workId: planningWork })
+		transitions.push(artifact({ path: output.replaceAll("`", ""), workId: otherWork }))
+		expect(await findWorkContinuation({ cwd }, prompt)).toBeUndefined()
+	})
+	it("keeps a named output on its existing work even if its contents changed", async () => {
+		const saved = savePlanMarkdown({ cwd, name: "feature", planText: "# Plan", workId: planningWork })
+		vi.mocked(readAttributedFileState).mockResolvedValue({ ...after, blob: "changed" })
+		expect(
+			await findWorkContinuation({ cwd }, `Implement ${saved.path} and update docs/adr/decision.md`),
+		).toMatchObject({
+			workId: planningWork,
 		})
 	})
 	it.each([

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -220,18 +221,27 @@ it("keeps the existing work and request available when private metadata is damag
 	)
 })
 
-it.each(["saved", "unresolved"])("keeps %s explicit plan references ahead of semantic inference", async (kind) => {
+it.each([
+	"saved",
+	"unowned-output",
+	"conflicting",
+])("keeps %s explicit plan references ahead of semantic inference", async (kind) => {
 	await rememberWorkIntent(cwd, planned, first)
 	const saved = savePlanMarkdown({ cwd, workId: planned, name: "export", planText: "# CSV export" })
+	const other = savePlanMarkdown({ cwd, workId: randomUUID(), name: "other", planText: "# Other plan" })
 	const ctx = createContext({ cwd, model, modelRegistry })
 	const current = getWorkId(ctx)
 	const api = createExtensionApi()
 	createWorkAttributionExtension()(api.api)
 	await api.getHandler<InputEvent>("input")(
-		{ type: "input", source: "rpc", text: `Implement ${saved.path}${kind === "unresolved" ? " and missing.md" : ""}` },
+		{
+			type: "input",
+			source: "rpc",
+			text: `Implement ${saved.path}${kind === "unowned-output" ? " and missing.md" : kind === "conflicting" ? ` and ${other.path}` : ""}`,
+		},
 		ctx,
 	)
-	expect(getWorkId(ctx)).toBe(kind === "saved" ? planned : current)
+	expect(getWorkId(ctx)).toBe(kind === "conflicting" ? current : planned)
 	expect(classifyWorkIntent).not.toHaveBeenCalled()
 })
 
