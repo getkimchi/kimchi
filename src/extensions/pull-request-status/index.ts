@@ -33,6 +33,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	let timer: ReturnType<typeof setInterval> | undefined
 	let branchName: string | undefined
 	let branchRun: { controller: AbortController; promise: Promise<void> } | undefined
+	let shellRefreshAt = 0
 	const updates = new Map<string, Map<string, WorkPullRequestUpdate>>()
 	const warnings = new Set<string>()
 	function contextKey(ctx: ExtensionContext): string {
@@ -194,8 +195,11 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		started = true
 		synchronize(ctx)
 	})
-	pi.on("tool_execution_end", (_event, ctx) => {
-		if (!tracking) synchronize(ctx)
+	pi.on("tool_execution_end", (event, ctx) => {
+		// Only shell commands switch branches or open PRs; the interval poll covers the rest.
+		if (tracking || event.toolName !== "bash" || Date.now() - shellRefreshAt < RECONCILIATION_INTERVAL_MS) return
+		shellRefreshAt = Date.now()
+		synchronize(ctx)
 	})
 	pi.on("session_shutdown", async () => {
 		started = false

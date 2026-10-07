@@ -197,6 +197,25 @@ describe("PR status extension", () => {
 		expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(2)
 	})
 
+	it("refreshes a standalone branch after shell commands at most once per interval", async () => {
+		const api = createExtensionApi()
+		pullRequestStatusExtension(api.api)
+		await start(api)
+		await vi.waitFor(() => expect(discovery.lookupBranchPullRequest).toHaveBeenCalledOnce())
+		const finish = (toolName: string, call: number) =>
+			api.getHandler("tool_execution_end")(
+				{ type: "tool_execution_end", toolCallId: `t${call}`, toolName, result: {}, isError: false },
+				ctx,
+			)
+		for (let call = 0; call < 20; call++) await finish("read", call)
+		expect(discovery.lookupBranchPullRequest).toHaveBeenCalledOnce()
+		await finish("bash", 20)
+		await vi.waitFor(() => expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(2))
+		for (let call = 21; call < 30; call++) await finish("bash", call)
+		await new Promise((resolve) => setImmediate(resolve))
+		expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(2)
+	})
+
 	it("shows GitLab merge requests without work tracking and keeps their URL separate from text", async () => {
 		vi.mocked(discovery.lookupBranchPullRequest).mockResolvedValue({ branch: "feature", pullRequest: mr })
 		const api = createExtensionApi()

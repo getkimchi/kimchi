@@ -133,6 +133,12 @@ function saved(sessionId = "writer") {
 		.split("\n")
 		.map((line) => JSON.parse(line))
 }
+/** By default, moves the clock past the shortest delay before a commit is checked again. */
+function later(ms = 31_000): void {
+	const now = Date.now() + ms
+	vi.useFakeTimers({ toFake: ["Date"] })
+	vi.setSystemTime(now)
+}
 function commitCalls(): URL[] {
 	return http.mock.calls.map(([url]) => url).filter((url) => url.pathname.includes("/commits/"))
 }
@@ -979,6 +985,23 @@ describe("durable work pull request discovery", () => {
 		await first
 		expect(saved()).toHaveLength(1)
 	})
+	it("checks an aging commit less often and stops for a pending one after the upload window", async () => {
+		const day = 24 * 60 * 60 * 1000
+		seed({ recordedAt: new Date(Date.now() - day).toISOString() })
+		seed({ sha: "b".repeat(40), recordedAt: new Date(Date.now() - 60 * day).toISOString() })
+		await lookup()
+		expect(commitCalls()).toHaveLength(2)
+		later()
+		await lookup()
+		expect(commitCalls()).toHaveLength(2)
+		later(2 * 60 * 60 * 1000)
+		await lookup()
+		expect(commitCalls().map((url) => url.pathname)).toEqual([
+			`/repos/team/repo/commits/${sha}/pulls`,
+			`/repos/team/repo/commits/${"b".repeat(40)}/pulls`,
+			`/repos/team/repo/commits/${sha}/pulls`,
+		])
+	})
 	it("moves a slow commit behind other commits on the next bounded pass", async () => {
 		seed()
 		const otherSha = "b".repeat(40)
@@ -1257,6 +1280,47 @@ describe("lookup failure reasons", () => {
 			...(reason ? { reason } : {}),
 		})
 		expect(readWorkPullRequestUpdates(agentDir)[0].prLookup?.reason).toBe(reason)
+	})
+	it.each([
+		["requires sign-in", () => new Response(null, { status: 401 })],
+		["is forbidden", () => new Response("<html>Access denied</html>", { status: 403 })],
+		["redirects to SSO", () => new Response(null, { status: 302, headers: { location: "https://sso.corp.example/" } })],
+		[
+			"is unreachable",
+			() => {
+				throw new TypeError("fetch failed")
+			},
+		],
+	] as const)("treats an unconfigured host whose API %s as unsupported", async (name, reply) => {
+		remote(`https://${name.replaceAll(" ", "-")}.corp.example/team/repo.git`)
+		http.mockImplementation(async () => reply())
+		const failure = await lookupBranchPullRequest(repository, new AbortController().signal).catch((error) => error)
+		expect(lookupFailureReason(failure)).toBe("unsupported")
+	})
+	it("keeps a self-hosted GitLab's own 404 actionable without GITLAB_HOST", async () => {
+		remote("https://gitlab.corp.example/team/repo.git")
+		vi.stubEnv("GITLAB_TOKEN", "gitlab-com-token")
+		http.mockImplementation(async () => Response.json({ message: "404 Project Not Found" }, { status: 404 }))
+		const failure = await lookupBranchPullRequest(repository, new AbortController().signal).catch((error) => error)
+		expect({ message: failure.message, reason: lookupFailureReason(failure) }).toEqual({
+			message: expect.stringContaining("GitLab could not find this repository"),
+			reason: undefined,
+		})
+	})
+	it("resolves an SSH host alias before choosing the provider", async () => {
+		seed()
+		remote("git@github-work:team/repo.git")
+		// Rate limits pause a whole host; use one no other case touches.
+		vi.stubEnv("GH_HOST", "alias.github.example")
+		cli.auth.mockImplementation(async (command, args) =>
+			command === "ssh" && args.join(" ") === "-G github-work"
+				? "user git\nhostname alias.github.example\nport 22\n"
+				: undefined,
+		)
+		replies(() => [pull(7, { html_url: "https://alias.github.example/team/repo/pull/7" })])
+		await lookup()
+		expect(saved().at(-1).prLookup.status).toBe("linked")
+		expect(commitCalls()[0].host).toBe("alias.github.example")
 	})
 	it("marks a repository without GitHub or GitLab as unsupported in work and branch lookups", async () => {
 		seed()

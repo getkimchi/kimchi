@@ -12,6 +12,7 @@ const PASS_BUDGET_MS = 10_000
 const COMMAND_TIMEOUT_MS = 5000
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 const MTIME_SLACK_MS = 2000
+const DAY_MS = 24 * 60 * 60 * 1000
 const SHA = /^(?:[a-f\d]{40}|[a-f\d]{64})$/i
 
 export interface WorkPullRequest {
@@ -44,6 +45,8 @@ export interface WorkPullRequestUpdate {
 	repository: string
 	worktree: string
 	sha: string
+	/** When Kimchi first recorded this commit; lookups slow down as it ages. */
+	recordedAt?: string
 	prLookup?: WorkPullRequestLookup
 	pullRequests: WorkPullRequest[]
 }
@@ -62,6 +65,7 @@ interface Repository {
 }
 const states = new Map<string, DiscoveryState>()
 const cooldowns = new Map<string, number>()
+const sshHosts = new Map<string, string>()
 
 function discoveryState(directory: string): DiscoveryState {
 	const state = states.get(directory) ?? { commits: new Map<string, WorkPullRequestUpdate>() }
@@ -74,6 +78,8 @@ export class LookupError extends Error {
 	constructor(
 		message: string,
 		readonly kind?: "missing" | "invalid" | "retry" | "unsupported",
+		/** The provider's own API error format, which proves an unconfigured host runs that provider. */
+		readonly fromProvider = false,
 	) {
 		super(message)
 	}
@@ -232,6 +238,18 @@ function lookupResult(commit: WorkPullRequestUpdate): string {
 			.sort((a, b) => pullRequestKey(a).localeCompare(pullRequestKey(b))),
 	])
 }
+/** Checks slow down in proportion to a commit's age: new pushes link on the next pass, old commits at most daily, and pending ones stop after the upload window. */
+function lookupDue(commits: WorkPullRequestUpdate[], now = Date.now()): boolean {
+	let latest: WorkPullRequestLookup | undefined
+	for (const { prLookup } of commits) {
+		if (!prLookup) return true
+		if (!latest || Date.parse(prLookup.checkedAt) > Date.parse(latest.checkedAt)) latest = prLookup
+	}
+	if (!latest) return true
+	const age = now - Math.min(...commits.map((commit) => Date.parse(commit.recordedAt ?? "") || now))
+	if (latest.status === "pending" && age > 32 * DAY_MS) return false
+	return now - Date.parse(latest.checkedAt) >= Math.min(DAY_MS, age / 16)
+}
 function commitKey(row: WorkPullRequestUpdate): string {
 	return JSON.stringify([row.workId, row.sessionId, row.repository, row.worktree, row.sha])
 }
@@ -262,6 +280,9 @@ function readCommits(agentDir: string, state: DiscoveryState): void {
 		}
 		const key = commitKey(commit)
 		const existing = state.commits.get(key)
+		commit.recordedAt = existing?.recordedAt
+		if (timestamp(row.recordedAt) && !(Date.parse(commit.recordedAt ?? "") <= Date.parse(row.recordedAt)))
+			commit.recordedAt = row.recordedAt
 		const lookup = row.prLookup
 		commit.prLookup = existing?.prLookup
 		if (
@@ -512,26 +533,10 @@ async function requestJSON(
 								url.pathname,
 							)?.[1]
 						: undefined
-			if (!response.ok && (!missingCommitSha || limitedUntil)) {
+			if (!response.ok && limitedUntil) {
 				await response.body?.cancel()
-				if (limitedUntil)
-					throw new LookupError(
-						`${label(repository)} rate limit reached. Kimchi will retry after the limit resets.`,
-						"retry",
-					)
-				if (response.status === 401)
-					throw new LookupError(`${label(repository)} authentication failed. Check the token for ${repository.host}.`)
-				if (response.status === 403)
-					throw new LookupError(
-						`${label(repository)} denied access. Check repository permissions for ${repository.host}.`,
-					)
-				if (response.status === 404)
-					throw new LookupError(
-						`${label(repository)} could not find this repository, commit or pull request. It may require authentication.`,
-						"missing",
-					)
 				throw new LookupError(
-					`${label(repository)} lookup failed (HTTP ${response.status}). Kimchi will retry.`,
+					`${label(repository)} rate limit reached. Kimchi will retry after the limit resets.`,
 					"retry",
 				)
 			}
@@ -558,7 +563,39 @@ async function requestJSON(
 			try {
 				value = JSON.parse(Buffer.concat(chunks).toString("utf8"))
 			} catch {
-				throw new LookupError(`${label(repository)} returned invalid JSON.`, "invalid")
+				if (response.ok || missingCommitSha)
+					throw new LookupError(`${label(repository)} returned invalid JSON.`, "invalid")
+			}
+			if (!response.ok && !missingCommitSha) {
+				// GitHub errors link their documentation; GitLab messages start with the HTTP status.
+				const fromProvider =
+					object(value) &&
+					(repository.provider === "github"
+						? typeof value.documentation_url === "string"
+						: typeof value.message === "string" && value.message.startsWith(`${response.status} `))
+				if (response.status === 401)
+					throw new LookupError(
+						`${label(repository)} authentication failed. Check the token for ${repository.host}.`,
+						undefined,
+						fromProvider,
+					)
+				if (response.status === 403)
+					throw new LookupError(
+						`${label(repository)} denied access. Check repository permissions for ${repository.host}.`,
+						undefined,
+						fromProvider,
+					)
+				if (response.status === 404)
+					throw new LookupError(
+						`${label(repository)} could not find this repository, commit or pull request. It may require authentication.`,
+						"missing",
+						fromProvider,
+					)
+				throw new LookupError(
+					`${label(repository)} lookup failed (HTTP ${response.status}). Kimchi will retry.`,
+					"retry",
+					fromProvider,
+				)
 			}
 			if (missingCommitSha) {
 				const message =
@@ -647,7 +684,7 @@ async function pages(
 	}
 	throw new LookupError("The Git provider returned too many pages.")
 }
-function remoteRepository(value: string): Pick<Repository, "host" | "name"> {
+function remoteRepository(value: string): Pick<Repository, "host" | "name"> & { ssh: boolean } {
 	const shorthand = /^[\w.-]+@([\w.-]+):(.+)$/.exec(value)
 	let url: URL
 	try {
@@ -662,7 +699,22 @@ function remoteRepository(value: string): Pick<Repository, "host" | "name"> {
 		.replace(/\.git\/?$/, "")
 		.replace(/\/$/, "")
 	if (!repositoryPath(name)) throw new LookupError("This repository has an invalid Git remote path.", "unsupported")
-	return { host: url.protocol === "ssh:" ? url.hostname : url.host, name }
+	const ssh = Boolean(shorthand) || url.protocol === "ssh:"
+	return { host: ssh ? url.hostname : url.host, name, ssh }
+}
+function providerFor(host: string): Repository["provider"] | undefined {
+	if (host === "github.com" || host === configuredHost(process.env.GH_HOST)) return "github"
+	if (host === "gitlab.com" || host === gitlabHost()) return "gitlab"
+}
+/** Resolves a ~/.ssh/config alias such as `github-work` without connecting. */
+async function sshHostName(alias: string, signal: AbortSignal, deadline: number): Promise<string> {
+	const cached = sshHosts.get(alias)
+	if (cached || alias.startsWith("-")) return cached ?? alias
+	const host = /^hostname ([\w.-]+)$/m.exec(
+		(await command("ssh", ["-G", alias], undefined, signal, deadline)) ?? "",
+	)?.[1]
+	if (host) sshHosts.set(alias, host)
+	return host ?? alias
 }
 async function repositoryIdentity(
 	path: string,
@@ -692,17 +744,9 @@ async function repositoryIdentity(
 		entries.get("remote.origin.url") ||
 		(remotes.length === 1 ? remotes[0][1] : undefined)
 	if (!selected) throw new LookupError("This repository has no unambiguous GitHub or GitLab remote.", "unsupported")
-	const remote = remoteRepository(selected)
-	const provider =
-		remote.host === "github.com"
-			? "github"
-			: remote.host === "gitlab.com"
-				? "gitlab"
-				: configuredHost(process.env.GH_HOST) === remote.host
-					? "github"
-					: gitlabHost() === remote.host
-						? "gitlab"
-						: undefined
+	const { ssh, ...remote } = remoteRepository(selected)
+	if (ssh && !providerFor(remote.host)) remote.host = await sshHostName(remote.host, signal, deadline)
+	const provider = providerFor(remote.host)
 	const candidates: Repository["provider"][] = provider ? [provider] : ["github", "gitlab"]
 	const saved = provider ? undefined : readGitToken(remote.host)
 	for (const candidate of candidates) {
@@ -720,15 +764,10 @@ async function repositoryIdentity(
 				throw new LookupError("GitLab returned an invalid project ID.", "invalid")
 			return { ...repository, name, ...(typeof id === "number" ? { id } : {}) }
 		} catch (error) {
-			// Unknown self-hosts can probe both API shapes with the same saved identity.
+			// Unknown self-hosts can probe both API shapes with the same saved identity. Only the provider's own
+			// error identifies the host; sign-in pages, redirects and network failures mean an unsupported remote.
 			// A rejected CLI identity must never fall through to another account/provider.
-			if (
-				provider ||
-				(repository.token && !saved) ||
-				!(error instanceof LookupError) ||
-				(error.kind !== "missing" && error.kind !== "invalid")
-			)
-				throw error
+			if (provider || (repository.token && !saved) || !(error instanceof LookupError) || error.fromProvider) throw error
 		}
 	}
 	throw new LookupError("This repository has no supported GitHub or GitLab API.", "unsupported")
@@ -846,6 +885,7 @@ async function scan(
 			)
 		)
 			continue
+		if (!lookupDue(commits)) continue
 		const first = commits[0]
 		let found: WorkPullRequest[] = []
 		let failure: LookupError | undefined
