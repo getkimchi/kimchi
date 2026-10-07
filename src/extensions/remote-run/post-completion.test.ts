@@ -263,26 +263,37 @@ describe("handleRemoteCompletion", () => {
 	})
 
 	it("Open in IDE honours the configured web app URL (region/env override)", async () => {
-		vi.mocked(resolveEndpoints).mockReturnValueOnce({
+		// mockReturnValue + restore (not *Once): the override must hold no matter
+		// how many times the flow calls resolveEndpoints — a *Once value would be
+		// consumed by any earlier call and the test would fail for a misleading
+		// reason. Restored explicitly: clearAllMocks keeps implementations.
+		const mockedResolveEndpoints = vi.mocked(resolveEndpoints)
+		mockedResolveEndpoints.mockReturnValue({
 			webAppUrl: "https://console.dev.example.com",
 		} as ReturnType<typeof resolveEndpoints>)
-		const pi = makePi()
-		const ctx = makeCtx()
-		// Second select is undefined (menu dismissed) — we only care about the opened URL.
-		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Open in IDE")
+		try {
+			const pi = makePi()
+			const ctx = makeCtx()
+			// Second select is undefined (menu dismissed) — we only care about the opened URL.
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Open in IDE")
 
-		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
-			agentId: "agent-1",
-			remoteSession: {
-				workspaceId: "ws-1",
-				sessionName: "acp-x",
-				wsUrl: "wss://worker.example.com/ws-1/remote",
-				host: "worker.example.com",
-				cwd: "/home/sandbox/acp-x",
-			},
-		})
+			await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
+				agentId: "agent-1",
+				remoteSession: {
+					workspaceId: "ws-1",
+					sessionName: "acp-x",
+					wsUrl: "wss://worker.example.com/ws-1/remote",
+					host: "worker.example.com",
+					cwd: "/home/sandbox/acp-x",
+				},
+			})
 
-		expect(mockOpen).toHaveBeenCalledWith("https://console.dev.example.com/remote-sessions/acp-x/ide")
+			expect(mockOpen).toHaveBeenCalledWith("https://console.dev.example.com/remote-sessions/acp-x/ide")
+		} finally {
+			mockedResolveEndpoints.mockReturnValue({
+				webAppUrl: "https://app.kimchi.dev",
+			} as ReturnType<typeof resolveEndpoints>)
+		}
 	})
 
 	describe("syncRemoteChanges", () => {
