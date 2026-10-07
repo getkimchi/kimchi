@@ -9,10 +9,6 @@ function fermentAt(worktreePath: string): Ferment {
 }
 
 describe("checkWorktree cwd parameter", () => {
-	// Regression: checkWorktree previously hardcoded process.cwd(). Under ACP the
-	// harness is a long-lived process whose cwd is unrelated to the session
-	// (e.g. "/"), so /ferment switch/resume spuriously blocked with
-	// "You are in /, but this ferment was created in ...".
 	it("passes when the supplied cwd is the ferment worktree", () => {
 		expect(checkWorktree(fermentAt("/tmp/proj"), "/tmp/proj").severity).toBe("ok")
 	})

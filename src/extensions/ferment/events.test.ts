@@ -104,8 +104,7 @@ describe("registerFermentEvents", () => {
 			registerFermentEvents(pi, runtime)
 			const sessionStart = handlers.get("session_start")
 			if (!sessionStart) throw new Error("session_start handler was not registered")
-			// cwd must match the process.cwd()-stamped worktree; checkWorktree
-			// (via resumeFerment) compares the ferment's anchor against ctx.cwd.
+			// Must match the worktree anchor of storage.create()-made ferments.
 			const ctx = createContext({ cwd: process.cwd(), ui: { select: vi.fn().mockResolvedValue("Resume") } })
 
 			await sessionStart({}, ctx)

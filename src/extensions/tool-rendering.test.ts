@@ -319,11 +319,8 @@ describe("grep result rendering", () => {
 })
 
 describe("registered workspace tools resolve against the session cwd", () => {
-	// Regression: tool-rendering re-registers pi's built-in read/grep/find/ls/bash
-	// to attach TUI renderers, but originally dropped the ctx argument when
-	// delegating to the wrapped tool. In ACP the harness process runs with
-	// process.cwd() === "/" (or wherever the client spawned it), so relative
-	// paths resolved against "/" instead of the session cwd.
+	// The re-registered wrappers must forward the per-call ctx so relative paths
+	// resolve against the session cwd, not the harness process cwd.
 	let mockApi: ReturnType<typeof createExtensionApi>
 	let sessionCwd: string
 	beforeAll(() => {

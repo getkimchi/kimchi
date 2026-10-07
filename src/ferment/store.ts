@@ -371,8 +371,8 @@ export class FermentStorage {
 
 	/** Accepts a name. Caller should already have shortened it if desired.
 	 *  `description` may be undefined but must be given explicitly so `cwd`
-	 *  cannot be positionally skipped: under ACP the harness process cwd is
-	 *  "/", so the ferment must always anchor to the caller's session cwd. */
+	 *  cannot be positionally skipped — `cwd` is the session cwd the ferment
+	 *  anchors to. */
 	create(name: string, description: string | undefined, cwd: string): Ferment {
 		let shortName = name.trim()
 		// De-duplicate: if name collides, append a counter

@@ -110,9 +110,7 @@ function createHarness() {
 	} as unknown as ExtensionAPI
 	const ctx = {
 		...createContext({ hasUI: false }),
-		// Match the worktree anchor used by storage.create(): ferments created
-		// without an explicit cwd stamp process.cwd(); checkWorktree compares
-		// against ctx.cwd, so the harness cwd must agree with it.
+		// Must match the worktree anchor of storage.create()-made ferments.
 		cwd: process.cwd(),
 		abort: vi.fn(),
 		waitForIdle: vi.fn().mockResolvedValue(undefined),

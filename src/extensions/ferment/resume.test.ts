@@ -146,8 +146,6 @@ afterEach(async () => {
 const hasUIContext = (): ExtensionCommandContext =>
 	({
 		hasUI: true,
-		// resumeFerment now requires an explicit session cwd; ferments create
-		// with process.cwd(), so the harness ctx cwd must match.
 		cwd: process.cwd(),
 		ui: { notify: vi.fn(), input: vi.fn(), select: vi.fn() },
 	}) as unknown as ExtensionCommandContext
@@ -659,9 +657,7 @@ describe("saved Ferment work attribution", () => {
 		const original = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "original" } })
 		const savedWork = getWorkId(original)
 		saveRuntimeState(ferment.id, { ...emptyState(), workId: savedWork }, { root: h.fermentsDir })
-		// Anchor the worktree to the test ctx cwd (like creation with ctx.cwd
-		// would in production) while preserving live status reads for the
-		// command controller's lifecycle checks.
+		// Anchor the worktree to the test ctx cwd while preserving live status reads.
 		const realGet = h.eventStorage.get.bind(h.eventStorage)
 		vi.spyOn(h.eventStorage, "get").mockImplementation((id) => {
 			const live = realGet(id)

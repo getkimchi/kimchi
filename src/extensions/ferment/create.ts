@@ -7,9 +7,7 @@ export interface CreateFermentOptions {
 	goal: string
 	hasUI: boolean
 	isOneShot: boolean
-	/** Session cwd the ferment's worktree anchors to. Required: under ACP the
-	 *  harness process cwd is "/", falling back to it silently breaks worktree
-	 *  tracking — pass ctx.cwd. */
+	/** Session cwd the ferment's worktree anchors to (ctx.cwd). */
 	cwd: string
 }
 

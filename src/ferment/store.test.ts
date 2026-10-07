@@ -47,13 +47,10 @@ describe("FermentStorage v4", () => {
 			expect(f.description).toBe("Rewrite to OAuth2")
 		})
 
-		// ACP regression: when the explicit session cwd is passed, the ferment
-		// anchors its worktree there — not at the harness process cwd (which is
-		// "/" under ACP), so checkWorktree comparisons against ctx.cwd hold.
 		it("anchors the worktree to the explicitly passed cwd", () => {
 			const projectDir = mkdtempSync(join(tmpdir(), "ferment-anchor-"))
 			try {
-				const f = storage.create("ACP-anchored", undefined, projectDir)
+				const f = storage.create("cwd-anchored", undefined, projectDir)
 				expect(f.worktree.path).toBe(projectDir)
 			} finally {
 				rmSync(projectDir, { recursive: true, force: true })
