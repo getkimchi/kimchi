@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { appendFileSync, mkdtempSync, rmSync } from "node:fs"
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
@@ -10,7 +10,7 @@ import { appendWorkRecord, getWorkId, recordProviderRequest, workLedgerPath } fr
 import { calculatePullRequestCosts } from "./costs.js"
 import { confirmWorkContinuation, correctWorkLink, reconcileWorkContinuations } from "./links.js"
 import * as scope from "./scope.js"
-import { flushWorkSummaries, readWorkRecords } from "./summary.js"
+import { flushWorkSummaries, readWorkRecords, TORN_TAIL } from "./summary.js"
 
 let dir: string
 beforeEach(() => {
@@ -131,4 +131,43 @@ it("control: without the automatic confirmation the same unlink/link sequence re
 		{ requestId: flow.producer, billingRecordId: flow.producer, costUsd: "0.125", account: flow.original.account },
 	])
 	expect(report.requests.find((request) => request.requestId === flow.producer)?.linkedWorkIds).toEqual([target])
+})
+
+it("never removes journal bytes when appending after a torn tail", async () => {
+	const flow = planned()
+	const path = workLedgerPath(flow.planner)
+	appendFileSync(path, '{"partial":"interrupted')
+	const before = readFileSync(path, "utf8")
+	const requestId = recordProviderRequest(flow.planner).requestId
+	// Another process may already have appended here; truncating would erase its record.
+	expect(readFileSync(path, "utf8").startsWith(before)).toBe(true)
+	const invalid = vi.fn()
+	expect(readWorkRecords(dir, undefined, undefined, invalid)).toContainEqual(
+		expect.objectContaining({ type: "request", requestId }),
+	)
+	expect(invalid).not.toHaveBeenCalled()
+})
+
+it("keeps both records when two writers mark the same torn tail", () => {
+	const flow = planned()
+	const before = readWorkRecords(dir)
+	const record = (requestId: string) => JSON.stringify({ ...before[0], requestId })
+	// Both writers saw the unterminated tail before either append landed.
+	appendFileSync(
+		workLedgerPath(flow.planner),
+		`{"partial":"interrupted\n${TORN_TAIL}\n${record("first")}\n\n${TORN_TAIL}\n${record("second")}\n`,
+	)
+	const invalid = vi.fn()
+	const rows = readWorkRecords(dir, undefined, undefined, invalid)
+	expect(rows.map((row) => row.requestId)).toEqual([...before.map((row) => row.requestId), "first", "second"])
+	expect(invalid).not.toHaveBeenCalled()
+})
+
+it("still fails closed on an unmarked damaged line inside a journal", () => {
+	const flow = planned()
+	appendFileSync(workLedgerPath(flow.planner), '{"partial":"interrupted\n')
+	recordProviderRequest(flow.planner)
+	const invalid = vi.fn()
+	readWorkRecords(dir, undefined, undefined, invalid)
+	expect(invalid).toHaveBeenCalledOnce()
 })

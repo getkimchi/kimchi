@@ -157,6 +157,8 @@ function parseRecord(line: string, records: WorkRecord[]): void {
 		/* interrupted append */
 	}
 }
+/** Written after an interrupted append so readers skip only that unparseable line. */
+export const TORN_TAIL = '{"type":"torn_tail"}'
 export function readWorkRecords(
 	agentDir: string,
 	modifiedSince?: number,
@@ -178,20 +180,28 @@ export function readWorkRecords(
 				const path = join(source, file.name)
 				if (modifiedSince !== undefined && statSync(path).mtimeMs < modifiedSince) continue
 				const lines = readFileSync(path, "utf8").split("\n")
+				let torn = false
 				for (const [index, line] of lines.entries()) {
 					checkBudget()
 					if (!line.trim()) continue
+					if (line === TORN_TAIL) {
+						torn = false
+						continue
+					}
+					if (torn) onInvalidRecord?.()
+					torn = false
 					let value: unknown
 					try {
 						value = JSON.parse(line)
 					} catch {
-						// A writer may still be appending, or may have stopped before its final newline.
-						if (index < lines.length - 1) onInvalidRecord?.()
+						// The final line may still be in progress; the next append marks an earlier one.
+						torn = index < lines.length - 1
 						continue
 					}
 					if (record(value)) records.push(value)
 					else onInvalidRecord?.()
 				}
+				if (torn) onInvalidRecord?.()
 			} catch (error) {
 				// An incomplete scan must not advance recovery past a journal we could not read.
 				throw new Error(`Could not read work ledger ${file.name}`, { cause: error })
