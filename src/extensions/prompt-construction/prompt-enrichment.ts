@@ -254,17 +254,20 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			string,
 			{ replacement?: string; deprecatedAt?: string; sunsetAt?: string; isPast?: boolean; note?: string }
 		>()
+		// Gate on whichever date exists: curated deprecations carry
+		// deprecated_at, vendor retirement-only records carry sunset_at.
+		// Unparseable dates count as absent — ?? would keep a NaN from
+		// Date.parse and fire the warning immediately.
+		const parseMs = (value: string | undefined): number | undefined => {
+			if (!value) return undefined
+			const ms = Date.parse(value)
+			return Number.isNaN(ms) ? undefined : ms
+		}
 		for (const w of registry.warnings) {
 			if (w.kind !== "deprecated_model") continue
-			// Gate on whichever date exists: curated deprecations carry
-			// deprecated_at, vendor retirement-only records carry sunset_at.
-			// Unparseable dates count as absent — ?? would keep a NaN from
-			// Date.parse and fire the warning immediately.
-			const parseMs = (value: string | undefined): number | undefined => {
-				if (!value) return undefined
-				const ms = Date.parse(value)
-				return Number.isNaN(ms) ? undefined : ms
-			}
+			// Prefer deprecated_at over sunset_at: the window warns at
+			// announcement, which is when the deprecation copy cites —
+			// sunset-only records fall back to the retirement date.
 			const effectiveMs = parseMs(w.deprecatedAt) ?? parseMs(w.sunsetAt)
 			if (effectiveMs !== undefined && effectiveMs > notifyCutoff) continue
 			deprecatedWarnings.set(w.modelId, {
@@ -300,7 +303,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				const info = deprecatedWarnings.get(modelId)
 				if (!info) return undefined
 				const { replacement } = info
-				const notePart = info.note ? ` Docs: ${info.note}` : ""
+				const notePart = info.note ? ` Details: ${info.note}` : ""
 				const switchPart =
 					replacement && registry.getAll().some((m) => m.id === replacement)
 						? `Switch to "${replacement}" using your client's model selector (/model in the terminal).`

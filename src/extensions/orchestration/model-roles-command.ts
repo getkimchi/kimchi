@@ -372,30 +372,26 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 			availableModelRefs.sort()
 
 			const apiSlugSet = new Set(apiModels.map((m) => m.slug))
-			const deprecatedSlugs = new Set(
-				apiModels
-					.filter((m) => {
-						const state = deriveDeprecationState(m)
-						return state === "announced" || state === "past"
-					})
-					.map((m) => m.slug),
-			)
-			// slugs the proxy translates to a configured replacement → tag names it.
-			const servesVia = new Map(
-				apiModels
-					.filter((m) => deriveDeprecationState(m) === "past" && m.replacement_model)
-					.map((m) => [m.slug, m.replacement_model as string]),
-			)
-			// sunset-only records (vendor retirement date, no announced
-			// deprecation) → tag cites the retirement date.
-			const retiringDates = new Map(
-				apiModels
-					.filter(
-						(m) =>
-							m.deprecated_at === undefined && m.sunset_at !== undefined && deriveDeprecationState(m) === "announced",
-					)
-					.map((m) => [m.slug, (m.sunset_at as string).slice(0, 10)]),
-			)
+			// One pass over the catalog derives all three deprecation signals:
+			//  - deprecatedSlugs: announced or past-deprecation slugs
+			//  - servesVia: slugs the proxy translates to a configured replacement → tag names it
+			//  - retiringDates: sunset-only records (vendor retirement date, no announced
+			//    deprecation) → tag cites the retirement date
+			const deprecatedSlugs = new Set<string>()
+			const servesVia = new Map<string, string>()
+			const retiringDates = new Map<string, string>()
+			for (const m of apiModels) {
+				const state = deriveDeprecationState(m)
+				if (state === "announced" || state === "past") {
+					deprecatedSlugs.add(m.slug)
+				}
+				if (state === "past" && m.replacement_model) {
+					servesVia.set(m.slug, m.replacement_model)
+				}
+				if (state === "announced" && m.deprecated_at === undefined && m.sunset_at) {
+					retiringDates.set(m.slug, m.sunset_at.slice(0, 10))
+				}
+			}
 			const refSuffix = (ref: string): string => {
 				const tags = modelRefTags(ref, apiSlugSet, deprecatedSlugs, servesVia, retiringDates)
 				return tags.length > 0 ? ` (${tags.join(", ")})` : ""

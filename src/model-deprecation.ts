@@ -5,7 +5,7 @@
  *   - deprecated_at  — model enters the announcement window; still served.
  *   - sunset_at      — hard retirement date; model is removed from serving.
  *   - replacement_model — drop-in replacement the proxy routes to transparently.
- *   - alternatives   — human-facing migration hints (slug, reason, priority).
+ *   - alternatives   — human-facing migration hints (slug, reason).
  *   - deprecation_note — URL with deprecation details.
  *
  * Deprecation is a signalling boundary; sunset is the serving boundary: the
@@ -26,10 +26,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
+/** Mirrors the metadata API's ModelAlternative contract ({slug, reason}). */
 export interface ModelAlternative {
 	slug: string
 	reason?: string
-	priority?: number
 }
 
 export interface ModelDeprecationInfo {
@@ -44,8 +44,7 @@ export type DeprecationState = "none" | "announced" | "past" | "sunset"
 
 /**
  * Best replacement target for a deprecated model: the explicit replacement,
- * falling back to the first listed alternative. Alternatives are used in
- * feed order — the informational `priority` field is not interpreted here.
+ * falling back to the first listed alternative — used in feed order.
  */
 export function pickReplacementSlug(info: ModelDeprecationInfo): string | undefined {
 	return info.replacement_model ?? info.alternatives?.[0]?.slug
