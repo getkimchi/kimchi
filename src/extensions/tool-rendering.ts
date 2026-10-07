@@ -4439,8 +4439,9 @@ export default function (pi: ExtensionAPI) {
 		parameters: writeTool.parameters,
 		async execute(toolCallId, params, signal, onUpdate, _ctx) {
 			const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
-			const fullPath = fp ? resolve(cwd, fp) : ""
-			const existedBefore = !!fullPath && fileExistsForTool(cwd, fp)
+			const sessionCwd = _ctx.cwd ?? cwd
+			const fullPath = fp ? resolve(sessionCwd, fp) : ""
+			const existedBefore = !!fullPath && fileExistsForTool(sessionCwd, fp)
 			WRITE_EXISTED_BEFORE.set(toolCallId, existedBefore)
 			let old: string | null = null
 			try {
@@ -4572,7 +4573,8 @@ export default function (pi: ExtensionAPI) {
 			const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
 			const trackedTool = createTrackedEditTool(_ctx, toolCallId)
 			const operations = getEditOperations(params)
-			const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, cwd) : null
+			const localizedDiffs =
+				operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, _ctx.cwd ?? cwd) : null
 			const result = await trackedTool.execute(toolCallId, params, signal, onUpdate)
 			if (operations.length === 0) return result
 			const { diffs, summary, totalLines, totalHunks } = summarizeEditOperations(operations)

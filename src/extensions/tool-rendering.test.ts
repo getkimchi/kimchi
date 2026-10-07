@@ -1,9 +1,9 @@
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { initTheme, type Theme, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent"
 import { ProcessTerminal, Text, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui"
-import { beforeAll, describe, expect, it, vi } from "vitest"
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createToolRenderContext } from "./__mocks__/tool-render-context.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
@@ -325,9 +325,15 @@ describe("registered workspace tools resolve against the session cwd", () => {
 	// process.cwd() === "/" (or wherever the client spawned it), so relative
 	// paths resolved against "/" instead of the session cwd.
 	let mockApi: ReturnType<typeof createExtensionApi>
+	let sessionCwd: string
 	beforeAll(() => {
 		mockApi = createExtensionApi()
 		toolRenderingExtension(mockApi.api)
+		sessionCwd = mkdtempSync(join(tmpdir(), "kimchi-tool-cwd-"))
+		writeFileSync(join(sessionCwd, "probe.txt"), "needle-in-session-cwd")
+	})
+	afterAll(() => {
+		rmSync(sessionCwd, { recursive: true, force: true })
 	})
 
 	function registeredDef(name: string) {
@@ -340,26 +346,53 @@ describe("registered workspace tools resolve against the session cwd", () => {
 		return def as { execute: (...args: any[]) => Promise<any> }
 	}
 
+	const execute = (name: string, params: unknown) =>
+		registeredDef(name).execute(`tc-${name}`, params, undefined, undefined, {
+			cwd: sessionCwd,
+			sessionManager: { getSessionId: () => "test-session", getSessionFile: () => null },
+			model: undefined,
+			thinkingLevel: undefined,
+		})
+	const resultText = (result: { content: Array<{ type: string; text?: string }> }) =>
+		result.content.find((block) => block.type === "text")?.text ?? ""
+
 	it("read uses the ExtensionContext cwd over the process cwd", async () => {
-		const sessionCwd = mkdtempSync(join(tmpdir(), "kimchi-tool-cwd-"))
-		writeFileSync(join(sessionCwd, "probe.txt"), "from session cwd")
-		const read = registeredDef("read")
-		const result = await read.execute("tc1", { path: "probe.txt" }, undefined, undefined, { cwd: sessionCwd })
-		const text = result.content.find((block: { type: string }) => block.type === "text")?.text ?? ""
-		expect(text).toContain("from session cwd")
+		const result = await execute("read", { path: "probe.txt" })
+		expect(resultText(result)).toContain("needle-in-session-cwd")
 		expect(result.isError ?? false).toBe(false)
 	})
 
 	it("grep uses the ExtensionContext cwd over the process cwd", async () => {
-		const sessionCwd = mkdtempSync(join(tmpdir(), "kimchi-tool-cwd-"))
-		writeFileSync(join(sessionCwd, "probe.txt"), "needle-in-session-cwd")
-		const grep = registeredDef("grep")
-		const result = await grep.execute("tc2", { pattern: "needle-in-session-cwd" }, undefined, undefined, {
-			cwd: sessionCwd,
-		})
-		const text = result.content.find((block: { type: string }) => block.type === "text")?.text ?? ""
-		expect(text).toContain("probe.txt")
-		expect(text).not.toContain(GREP_NO_MATCHES_SENTINEL)
+		const result = await execute("grep", { pattern: "needle-in-session-cwd" })
+		expect(resultText(result)).toContain("probe.txt")
+		expect(resultText(result)).not.toContain(GREP_NO_MATCHES_SENTINEL)
+	})
+
+	it("find uses the ExtensionContext cwd over the process cwd", async () => {
+		const result = await execute("find", { pattern: "probe.txt" })
+		expect(resultText(result)).toContain("probe.txt")
+	})
+
+	it("ls uses the ExtensionContext cwd over the process cwd", async () => {
+		const result = await execute("ls", {})
+		expect(resultText(result)).toContain("probe.txt")
+	})
+
+	it("bash runs in the ExtensionContext cwd", async () => {
+		const result = await execute("bash", { command: "pwd" })
+		// macOS temp dirs live under /private/...; compare realpaths.
+		expect(realpathSync(resultText(result).trim())).toBe(realpathSync(sessionCwd))
+	})
+
+	it("write creates the file under the ExtensionContext cwd and reports pre-existing files", async () => {
+		const overwrite = await execute("write", { path: "probe.txt", content: "rewritten" })
+		expect(readFileSync(join(sessionCwd, "probe.txt"), "utf8")).toBe("rewritten")
+		// The file existed before, so the result carries the edit-style diff, not "new file".
+		expect((overwrite.details as { _type?: string } | undefined)?._type).toBe("diff")
+
+		const created = await execute("write", { path: "created-by-write.txt", content: "hello" })
+		expect(readFileSync(join(sessionCwd, "created-by-write.txt"), "utf8")).toBe("hello")
+		expect((created.details as { _type?: string } | undefined)?._type).toBe("new")
 	})
 })
 
