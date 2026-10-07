@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { initTheme, type Theme, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent"
 import { ProcessTerminal, Text, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it, vi } from "vitest"
@@ -312,6 +315,51 @@ describe("grep result rendering", () => {
 		})
 		expect(text).toContain("1 matches")
 		expect(text).not.toContain("no matches")
+	})
+})
+
+describe("registered workspace tools resolve against the session cwd", () => {
+	// Regression: tool-rendering re-registers pi's built-in read/grep/find/ls/bash
+	// to attach TUI renderers, but originally dropped the ctx argument when
+	// delegating to the wrapped tool. In ACP the harness process runs with
+	// process.cwd() === "/" (or wherever the client spawned it), so relative
+	// paths resolved against "/" instead of the session cwd.
+	let mockApi: ReturnType<typeof createExtensionApi>
+	beforeAll(() => {
+		mockApi = createExtensionApi()
+		toolRenderingExtension(mockApi.api)
+	})
+
+	function registeredDef(name: string) {
+		// biome-ignore lint/suspicious/noExplicitAny: registerTool is a vi mock in the shared double
+		const def = ((mockApi.api as any).registerTool as any).mock.calls
+			.map((call: unknown[]) => call[0])
+			.find((tool: { name?: string }) => tool?.name === name)
+		expect(def, `${name} tool definition registered`).toBeDefined()
+		// biome-ignore lint/suspicious/noExplicitAny: minimal definition shape under test
+		return def as { execute: (...args: any[]) => Promise<any> }
+	}
+
+	it("read uses the ExtensionContext cwd over the process cwd", async () => {
+		const sessionCwd = mkdtempSync(join(tmpdir(), "kimchi-tool-cwd-"))
+		writeFileSync(join(sessionCwd, "probe.txt"), "from session cwd")
+		const read = registeredDef("read")
+		const result = await read.execute("tc1", { path: "probe.txt" }, undefined, undefined, { cwd: sessionCwd })
+		const text = result.content.find((block: { type: string }) => block.type === "text")?.text ?? ""
+		expect(text).toContain("from session cwd")
+		expect(result.isError ?? false).toBe(false)
+	})
+
+	it("grep uses the ExtensionContext cwd over the process cwd", async () => {
+		const sessionCwd = mkdtempSync(join(tmpdir(), "kimchi-tool-cwd-"))
+		writeFileSync(join(sessionCwd, "probe.txt"), "needle-in-session-cwd")
+		const grep = registeredDef("grep")
+		const result = await grep.execute("tc2", { pattern: "needle-in-session-cwd" }, undefined, undefined, {
+			cwd: sessionCwd,
+		})
+		const text = result.content.find((block: { type: string }) => block.type === "text")?.text ?? ""
+		expect(text).toContain("probe.txt")
+		expect(text).not.toContain(GREP_NO_MATCHES_SENTINEL)
 	})
 })
 
