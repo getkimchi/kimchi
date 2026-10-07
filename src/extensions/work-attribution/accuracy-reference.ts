@@ -6,6 +6,7 @@ import {
 } from "./accuracy.js"
 import { decimalNanos, type RequestCostAllocation } from "./costs.js"
 import { sameWorkAccount, type WorkAccount } from "./scope.js"
+import { object } from "./summary.js"
 
 type Unallocated = "inferred" | "shared" | "unlinked" | "unmerged" | "post-merge" | "unknown"
 type ExpectedOwnership =
@@ -52,10 +53,6 @@ export interface IndependentAccuracyResult {
 }
 
 const UNALLOCATED: Unallocated[] = ["inferred", "shared", "unlinked", "unmerged", "post-merge", "unknown"]
-
-function object(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-}
 
 /** Validate the version here; each reference entry is checked separately to expose all gaps. */
 export function isAttributionReference(value: unknown): value is { version: 1; requests: unknown[] } {

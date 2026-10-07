@@ -1,5 +1,6 @@
 import { decimalNanos, type RequestCostAllocation } from "./costs.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
+import { object } from "./summary.js"
 
 /** A human-supplied expectation for one request; a null expectation means intentionally unassigned. */
 export interface AttributionLabel {
@@ -82,13 +83,9 @@ function isExpectedPullRequestId(value: string): boolean {
 	return isAccuracyPullRequestKey(value) || EXPECTED_PULL_REQUEST_ID.test(value)
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
 /** Checks supplied evidence, without reading credentials or verifying an account over the network. */
 export function isAccuracyAccount(value: unknown): value is WorkAccount {
-	if (!isObject(value) || !isWorkAccount(value) || value.apiUrl.trim() !== value.apiUrl) return false
+	if (!object(value) || !isWorkAccount(value) || value.apiUrl.trim() !== value.apiUrl) return false
 	try {
 		const url = new URL(value.apiUrl)
 		return (
@@ -146,9 +143,9 @@ export function compareAttributionAccuracy(
 	// Stage 1 — label shape, in label input order; extra properties are tolerated.
 	const shaped: AttributionLabel[] = []
 	for (const entry of labels) {
-		const requestId = isObject(entry) && typeof entry.requestId === "string" && entry.requestId ? entry.requestId : null
-		const expected = isObject(entry) ? entry.expectedPullRequestId : undefined
-		const account = isObject(entry) ? entry.expectedAccount : undefined
+		const requestId = object(entry) && typeof entry.requestId === "string" && entry.requestId ? entry.requestId : null
+		const expected = object(entry) ? entry.expectedPullRequestId : undefined
+		const account = object(entry) ? entry.expectedAccount : undefined
 		if (
 			requestId &&
 			(typeof expected === "string" || expected === null) &&
@@ -195,7 +192,7 @@ export function compareAttributionAccuracy(
 	const duplicated = new Set<string>()
 	const invalid = new Set<string>()
 	requests.forEach((row, index) => {
-		const requestId = isObject(row) && typeof row.requestId === "string" && row.requestId ? row.requestId : null
+		const requestId = object(row) && typeof row.requestId === "string" && row.requestId ? row.requestId : null
 		if (requestId === null) {
 			rowProblems.push({
 				kind: "invalid-report-row",

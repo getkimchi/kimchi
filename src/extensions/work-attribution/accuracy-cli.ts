@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url"
 import { type AttributionAccuracyResult, type AttributionLabel, compareAttributionAccuracy } from "./accuracy.js"
 import { compareIndependentAttribution, isAttributionReference } from "./accuracy-reference.js"
 import type { RequestCostAllocation } from "./costs.js"
+import { object } from "./summary.js"
 
 /** Everything the script entry needs to print and exit; runCli itself performs no process I/O. */
 export interface CliOutcome {
@@ -15,10 +16,6 @@ const USAGE = "Usage: pnpm exec tsx src/extensions/work-attribution/accuracy-cli
 const OVERLAP_NOTE =
 	"Wrong assignment divides wrong spending by assigned spending. Correct coverage divides correct spending by spending expected on a PR."
 const INCOMPLETE_NOTE = "Percentages: full percentages unavailable (comparison incomplete)"
-
-function isObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-}
 
 function readJson(path: string): { ok: true; value: unknown } | { ok: false; message: string } {
 	let raw: string
@@ -59,7 +56,7 @@ export function runCli(argv: readonly string[]): CliOutcome {
 
 	const report = readJson(reportPath)
 	if (!report.ok) return rejected(report.message)
-	if (!isObject(report.value) || !Array.isArray(report.value.requests))
+	if (!object(report.value) || !Array.isArray(report.value.requests))
 		return rejected(`Invalid report ${reportPath}: expected a non-null, non-array object with a "requests" array`)
 
 	const labels = readJson(labelsPath)
