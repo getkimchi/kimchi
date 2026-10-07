@@ -422,7 +422,12 @@ export function createWorkAttributionExtension(
 		pi.on("input", (event, ctx) => {
 			// Pi emits input before enqueueing; the running turn still owns its next request.
 			if (event.streamingBehavior) {
-				if (event.source === "extension") extensionInputs.add(event.text)
+				if (event.source === "extension") {
+					// Input hooks have no message ID. Carry a nonce through Pi's queue instead of matching user text.
+					const nonce = randomUUID()
+					extensionInputs.add(nonce)
+					return { action: "transform", text: `${event.text}\n<!-- kimchi-extension-input:${nonce} -->` }
+				}
 				return
 			}
 			return attributeInput(event, ctx)
@@ -438,7 +443,18 @@ export function createWorkAttributionExtension(
 				return
 			}
 			const text = contentText(event.message.content, "")
-			if (extensionInputs.delete(text) || isHarnessSteer(text)) return
+			const marker = /\n<!-- kimchi-extension-input:([a-f0-9-]+) -->$/.exec(text)
+			if (marker && extensionInputs.delete(marker[1])) {
+				// message_start is awaited before persistence, rendering and the provider request.
+				event.message.content =
+					typeof event.message.content === "string"
+						? event.message.content.replace(marker[0], "")
+						: event.message.content.map((part) =>
+								part.type === "text" ? { ...part, text: part.text.replace(marker[0], "") } : part,
+							)
+				return
+			}
+			if (isHarnessSteer(text)) return
 			// Pi awaits message_start before sending the request that receives a queued message.
 			await attributeInput({ type: "input", text, source: "interactive" }, ctx)
 		})

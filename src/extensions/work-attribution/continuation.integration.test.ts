@@ -1,5 +1,14 @@
 import { execFileSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { BeforeProviderHeadersEvent, InputEvent } from "@earendil-works/pi-coding-agent"
@@ -291,6 +300,31 @@ it.each([
 	)
 	expect(rows).toContainEqual(
 		expect.objectContaining({ type: "file_transition", toolCallId: "write-output", path: output, workId: flow.workId }),
+	)
+})
+
+it("continues 'Implement plan.md and write docs/adr/new.md' before the output exists", async () => {
+	const flow = await recordedPlan("path")
+	await createTrackedWriteTool(flow.planner, "write-plan").execute("write-plan", {
+		path: "plan.md",
+		content: readFileSync(flow.text.slice("Implement ".length), "utf8"),
+	})
+	expect(existsSync(join(flow.cwd, "docs/adr/new.md"))).toBe(false)
+	await flow.input(
+		{ type: "input", source: "interactive", text: "Implement plan.md and write docs/adr/new.md" },
+		flow.implementer,
+	)
+	const requestId = await flow.dispatch(flow.implementer)
+	await createTrackedWriteTool(flow.implementer, "new-adr").execute("new-adr", {
+		path: "docs/adr/new.md",
+		content: "# ADR\n",
+	})
+	expect(getWorkId(flow.implementer)).toBe(flow.workId)
+	expect(readWorkRecords(flow.agentDir)).toContainEqual(
+		expect.objectContaining({ type: "request", requestId, workId: flow.workId }),
+	)
+	expect(readWorkRecords(flow.agentDir)).toContainEqual(
+		expect.objectContaining({ type: "file_transition", toolCallId: "new-adr", workId: flow.workId }),
 	)
 })
 

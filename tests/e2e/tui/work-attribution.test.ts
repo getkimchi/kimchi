@@ -25,6 +25,71 @@ const readLedger = (directory: string) =>
 				.map((line) => JSON.parse(line)),
 		)
 
+test("a user steer stays distinct from an identical extension follow-up", async ({ terminal }) => {
+	let release = () => {}
+	const held = new Promise<void>((resolve) => {
+		release = resolve
+	})
+	try {
+		await runKimchiSession(
+			terminal,
+			{
+				artifactName: "work-extension-input-identity",
+				account,
+				gitInit: true,
+				models,
+				seedHome(homeDir, workDir) {
+					writeFileSync(join(workDir, "README.md"), "# Example\n")
+					const extensions = join(homeDir, ".config/kimchi/harness/extensions")
+					mkdirSync(extensions, { recursive: true })
+					writeFileSync(
+						join(extensions, "queue-note.js"),
+						`export default (pi) => {
+					pi.registerCommand("queue-note", { handler: async (_args, ctx) => {
+						await pi.sendUserMessage("Explain exports", { deliverAs: "followUp" });
+						ctx.ui.notify("Extension note queued", "info");
+					} });
+				}`,
+					)
+				},
+				responses: [
+					{
+						holdUntil: held,
+						toolCalls: [{ function: { name: "read", arguments: JSON.stringify({ path: "README.md" }) } }],
+					},
+					{ stream: ["User steer handled."] },
+					{ stream: ["Extension note handled."] },
+				],
+			},
+			async (fixture, trace) => {
+				const chats = () =>
+					fixture.fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+				const rows = () => readLedger(join(fixture.agentDir, "work-attribution"))
+				terminal.submit("Read README.md")
+				const deadline = Date.now() + 15_000
+				while (!chats().length && Date.now() < deadline) await sleep(50)
+				expect(chats().length).toBe(1)
+				terminal.submit("/queue-note")
+				await waitForText(terminal, "Extension note queued")
+				terminal.submit("Explain exports")
+				await waitForText(terminal, "Steering:")
+				release()
+				await waitForText(terminal, "Extension note handled.")
+				const requests = chats().map((request) =>
+					rows().find((row) => row.requestId === request.headers["x-request-id"]),
+				)
+				expect(requests.length).toBe(3)
+				expect(requests[1].segment.id).not.toBe(requests[0].segment.id)
+				expect(requests[2].segment.id).toBe(requests[1].segment.id)
+				expect(JSON.stringify(chats().map((request) => request.body))).not.toContain("kimchi-extension-input:")
+				trace.step("the user owns a new input; the extension keeps it, with no nonce in provider messages")
+			},
+		)
+	} finally {
+		release()
+	}
+})
+
 for (const mode of ["steer", "followUp"] as const) {
 	test(`a queued ${mode} keeps the running input's work until delivery`, async ({ terminal }) => {
 		let release = () => {}

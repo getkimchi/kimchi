@@ -5,6 +5,7 @@ import { join } from "node:path"
 import {
 	type BeforeProviderHeadersEvent,
 	type InputEvent,
+	type InputEventResult,
 	type MessageStartEvent,
 	SessionManager,
 	type SessionStartEvent,
@@ -195,19 +196,66 @@ describe("queued input delivery", () => {
 			segment: { attribution: "explicit" },
 		})
 		expect(getWorkSegment(ctx)?.id).not.toBe(original.segment?.id)
+		await api.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "queued-edit", name: "edit" }],
+				},
+			},
+			ctx,
+		)
+		expect(getToolRequest(ctx, "queued-edit")).toMatchObject({
+			workId: planned,
+			requestId: headers.headers["X-Request-Id"],
+		})
+	})
+
+	it.each([
+		"steer",
+		"followUp",
+	] as const)("does not mistake an identical user %s for an extension input", async (streamingBehavior) => {
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const ctx = createContext({ cwd: dir })
+		const input = api.getHandler<InputEvent, InputEventResult>("input")
+		const deliver = api.getHandler<MessageStartEvent>("message_start")
+		await input({ type: "input", text: "Implement export", source: "interactive" }, ctx)
+		const original = getWorkSegment(ctx)
+		const text = "Explain the export step"
+		const extension = await input({ type: "input", text, source: "extension", streamingBehavior: "followUp" }, ctx)
+		await input({ type: "input", text, source: "interactive", streamingBehavior }, ctx)
+		await deliver({ type: "message_start", message: { role: "user", content: text, timestamp: 1 } }, ctx)
+		const userSegment = getWorkSegment(ctx)
+		expect(userSegment?.id).not.toBe(original?.id)
+		const message: MessageStartEvent["message"] = {
+			role: "user",
+			content: [{ type: "text", text: extension?.action === "transform" ? extension.text : text }],
+			timestamp: 2,
+		}
+		await deliver({ type: "message_start", message }, ctx)
+		expect(getWorkSegment(ctx)).toEqual(userSegment)
+		expect(message.content).toEqual([{ type: "text", text }])
 	})
 
 	it("keeps extension follow-ups and harness nudges in the current input", async () => {
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
 		const ctx = createContext({ cwd: dir })
-		const input = api.getHandler<InputEvent>("input")
+		const input = api.getHandler<InputEvent, InputEventResult>("input")
 		const deliver = api.getHandler<MessageStartEvent>("message_start")
 		await input({ type: "input", text: "Implement export", source: "interactive" }, ctx)
 		const original = getWorkSegment(ctx)
 		const text = "Retry the export step"
-		await input({ type: "input", text, source: "extension", streamingBehavior: "followUp" }, ctx)
-		await deliver({ type: "message_start", message: { role: "user", content: text, timestamp: 1 } }, ctx)
+		const result = await input({ type: "input", text, source: "extension", streamingBehavior: "followUp" }, ctx)
+		const message: MessageStartEvent["message"] = {
+			role: "user",
+			content: result?.action === "transform" ? result.text : text,
+			timestamp: 1,
+		}
+		await deliver({ type: "message_start", message }, ctx)
+		expect(message.content).toBe(text)
 		await deliver(
 			{
 				type: "message_start",
