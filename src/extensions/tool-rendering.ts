@@ -4437,9 +4437,9 @@ export default function (pi: ExtensionAPI) {
 		label: "write",
 		description: writeTool.description,
 		parameters: writeTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, _ctx) {
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
-			const sessionCwd = _ctx.cwd ?? cwd
+			const sessionCwd = ctx.cwd ?? cwd
 			const fullPath = fp ? resolve(sessionCwd, fp) : ""
 			const existedBefore = !!fullPath && fileExistsForTool(sessionCwd, fp)
 			WRITE_EXISTED_BEFORE.set(toolCallId, existedBefore)
@@ -4449,7 +4449,7 @@ export default function (pi: ExtensionAPI) {
 			} catch {
 				old = null
 			}
-			const result = await createTrackedWriteTool(_ctx, toolCallId).execute(toolCallId, params, signal, onUpdate)
+			const result = await createTrackedWriteTool(ctx, toolCallId).execute(toolCallId, params, signal, onUpdate)
 			const content = params.content ?? ""
 			if (old !== null && old !== content) {
 				const diff = parseDiff(old, content)
@@ -4569,12 +4569,12 @@ export default function (pi: ExtensionAPI) {
 		label: "edit",
 		description: editTool.description,
 		parameters: editTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, _ctx) {
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
-			const trackedTool = createTrackedEditTool(_ctx, toolCallId)
+			const trackedTool = createTrackedEditTool(ctx, toolCallId)
 			const operations = getEditOperations(params)
 			const localizedDiffs =
-				operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, _ctx.cwd ?? cwd) : null
+				operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, ctx.cwd ?? cwd) : null
 			const result = await trackedTool.execute(toolCallId, params, signal, onUpdate)
 			if (operations.length === 0) return result
 			const { diffs, summary, totalLines, totalHunks } = summarizeEditOperations(operations)

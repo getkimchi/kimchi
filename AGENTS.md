@@ -15,7 +15,7 @@ You are editing the kimchi coding harness. This repo extends the pi-mono SDK (`@
 - **NEVER modify `patches/` files directly** — patches apply at install; changes here don't affect runtime
 - **NEVER touch `src/core/export-html/` HTML templates** — bundled JS is auto-generated from source
 - **Test files**: Co-locate as `*.test.ts` alongside source (NOT in a separate test/ folder)
-- **Never use `process.cwd()` for session-relative paths**: the ACP server is a long-lived process whose cwd is unrelated to any session. Always use `ExtensionContext`/`ExtensionCommandContext` (`ctx.cwd`), thread it through tool factories/delegates and anything that anchors to the project, and make it a **required** parameter — an optional fallback to `process.cwd()` silently reintroduces the bug. Defaults are only acceptable at outermost entry points where no session context exists yet (TUI startup).
+- **Use `ctx.cwd` instead of `process.cwd()`** for session-relative paths — the ACP server is a long-lived process whose cwd is unrelated to any session. Thread `ExtensionContext`/`ExtensionCommandContext` through tool factories, delegates, and anything anchoring to the project, and pass the cwd as a required parameter (an optional fallback silently reintroduces the bug).
 
 ## Development patterns
 
