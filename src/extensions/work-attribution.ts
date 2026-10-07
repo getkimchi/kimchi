@@ -639,7 +639,7 @@ export function createWorkAttributionExtension(
 			if (event.source === "extension") return
 			// Optional model matching never interrupts the user; its failures leave the input unresolved.
 			let matching = false
-			let matchingFailed = false
+			let matchingOutcome: "failed" | "limited" | undefined
 			try {
 				bind(ctx)
 				const key = workLedgerPath(ctx)
@@ -827,9 +827,10 @@ export function createWorkAttributionExtension(
 			} catch (error) {
 				if (error instanceof WorkMatchingLimit) {
 					matchingLimit = error.message
+					matchingOutcome = "limited"
 					debugWorkAttribution("Work matching skipped:", error)
 				} else {
-					matchingFailed = true
+					matchingOutcome = "failed"
 					if (matching) debugWorkAttribution("Work matching skipped:", error)
 					else warnWorkAttribution(ctx, error)
 				}
@@ -837,7 +838,7 @@ export function createWorkAttributionExtension(
 				if (generation === inputGeneration)
 					trackPRCostMetric({
 						kind: "matching",
-						outcome: matchingFailed ? "failed" : (getWorkSegment(ctx)?.attribution ?? "unknown"),
+						outcome: matchingOutcome ?? getWorkSegment(ctx)?.attribution ?? "unknown",
 					})
 			}
 		}

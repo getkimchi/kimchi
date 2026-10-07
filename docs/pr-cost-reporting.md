@@ -2,7 +2,7 @@
 
 PR cost reporting follows the SaaS telemetry setting by default. When SaaS uploads are on, Kimchi reports existing work automatically, including requests made before a PR exists. An explicit `/pr-reporting on` or `off` overrides that default and survives restart. Existing saved choices are preserved.
 
-The first interactive main session shows one notice that PR costs are reported, with `/pr-reporting off` to disable it. The notice is saved per installation and does not repeat after restart. It is skipped when reporting is off or the user already made an explicit choice.
+The first interactive main session shows one notice that PR costs are reported, with `/pr-reporting off` to disable it. Studio shows it as a notification. The notice is saved per installation and does not repeat after restart. It is skipped when reporting is off or the user already made an explicit choice.
 
 - `/pr-reporting on` enables uploads for the verified account and requests an immediate update.
 - `/pr-reporting status` shows whether reporting follows the SaaS default or an explicit choice, plus queued repositories, acknowledgements and delivery problems.
@@ -21,7 +21,7 @@ Each upload replaces one producer's inventory for one account and repository. It
 - The Git provider, host, stable target repository ID, and optional repository name.
 - Stable PR/MR IDs, numbers, links, state and merge or close times.
 - Exact request attempt UUIDs, verified billing-row UUIDs and request start times.
-- Allocation kind, referenced PR IDs and evidence method. An input whose native edits landed in the PR sends `native`; other session inputs send `session` and stay likely. Continued plans send `explicit`; `/work link` corrections send `user-correction`. Model guesses send `model` and stay likely.
+- Allocation kind, referenced PR IDs and evidence method. An `unknown` request names the PRs it may belong to, so only those totals stay incomplete. An input whose native edits landed in the PR sends `native`; other session inputs send `session` and stay likely. Continued plans send `explicit`; `/work link` corrections send `user-correction`. Model guesses send `model` and stay likely.
 - Request counts, missing-price counts, history completeness and the latest applicable cost refresh time.
 
 Two optional fields explain later updates. `windowedPullRequestIds` lists finished PRs deliberately left out of this upload. A request's `correction` contains the validated link's UUID, revision, time and source (`work-command` or `producer-confirmation`). The source distinguishes an explicit `/work link` or `/work unlink` from a verified saved-plan or artifact confirmation.
@@ -81,7 +81,7 @@ GitHub IDs come from the PR's `id` and target `base.repo.id`. GitLab IDs come fr
 
 The inventory comes from the original journals through the same billing validation and calculator used by local cost summaries. It does not concatenate per-work `costs.json` files. Two works contributing to one PR do not duplicate requests. Cross-repository shared requests are reported as unknown in each repository; the backend handles duplicate billing evidence across snapshots. A request that starts after several PRs merged keeps all candidate IDs as a shared claim. The backend compares its start time with each merge time and places it outside those PR totals.
 
-Records without their original account or repository are skipped; Kimchi never attaches them to today's login. Independent valid repositories can still report with `historyComplete: false`. Missing earlier requests or conflicting provider metadata hold the affected repository. A GitLab MR with no merge time leaves its requests unknown while other MRs keep reporting. An unparseable final journal line without a newline is ignored as an interrupted append; complete malformed records and unreadable journals still hold the scan. These cases appear in `/pr-reporting status`. `historyComplete` describes the captured inventory, not activity before tracking was installed or while it was disabled.
+Records without their original account or repository are skipped; Kimchi never attaches them to today's login. Independent valid repositories can still report with `historyComplete: false`. Such records older than the 32-day upload window and outside open work would not be uploaded anyway, so they do not affect completeness. Missing earlier requests or conflicting provider metadata hold the affected repository. A GitLab MR with no merge time leaves its requests unknown while other MRs keep reporting. An unparseable final journal line without a newline is ignored as an interrupted append; complete malformed records and unreadable journals still hold the scan. These cases appear in `/pr-reporting status`. `historyComplete` describes the captured inventory, not activity before tracking was installed or while it was disabled.
 
 ## Local state and retries
 
@@ -99,7 +99,7 @@ The existing reconciliation worker runs reporting after local cost lookup. Each 
 
 Repository lookups share that budget. Successful identities are cached for five minutes; failed lookups wait at least 30 seconds before retry. Unchecked repositories go first, and each pass reserves time to queue and deliver the repositories it already knows. A slow or unavailable provider does not discard that progress.
 
-Failed attempts retain their payload and retry time, including `Retry-After`. An unavailable or older backend therefore leaves a visible pending report. Nothing is sent to a different account to clear that queue.
+Failed attempts retain their payload and retry time, including `Retry-After`. A rejection that retrying cannot fix, such as HTTP 404 from a backend without this endpoint, waits one hour, then up to six hours; timeouts, rate limits and server errors retry within a minute. An unavailable or older backend therefore leaves a visible pending report. Nothing is sent to a different account to clear that queue.
 
 Uploads are limited to 2 MiB, 10,000 requests, 100 PRs and 8 billing IDs per request. An oversized inventory is held with an error; it is never silently truncated. The local queue is bounded to 24 MiB. No request, session, PR or user IDs are added to metric labels.
 
@@ -134,7 +134,7 @@ The backend keeps organization-wide size limits. An upload from a contributor us
 
 The existing telemetry setting controls these metrics separately from `/pr-reporting`. They use the normal telemetry flush; there is no extra history scan or model call.
 
-- `kimchi.pr_cost.matching.count` counts one final outcome per input: `explicit`, `inferred`, `session`, `unknown` or `failed`.
+- `kimchi.pr_cost.matching.count` counts one final outcome per input: `explicit`, `inferred`, `session`, `unknown`, `limited` (too much history to compare) or `failed`.
 - `kimchi.pr_cost.delivery.count` counts delivery attempts, including account verification: `success`, `failed` or `canceled`.
 - `kimchi.pr_cost.pricing.unpriced` records the unpriced request count from the latest local cost report.
 - `kimchi.pr_cost.queue.depth` records repository snapshots waiting for acknowledgement, including zero after the queue clears.

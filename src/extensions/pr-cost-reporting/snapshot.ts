@@ -212,7 +212,9 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 				? count !== 1
 				: allocation.kind === "shared"
 					? count < 2
-					: !["unknown", "unlinked"].includes(allocation.kind) || count !== 0
+					: allocation.kind === "unlinked"
+						? count !== 0
+						: allocation.kind !== "unknown"
 		)
 			fail()
 		seen.add(request.requestId)
@@ -347,10 +349,24 @@ export function buildSnapshots(
 	const unpriced = new Set(
 		report.requests.filter((request) => request.priceStatus !== "priced").map((request) => request.requestId),
 	)
+	// A verified no-charge attempt is priced at zero and has no billing records to send.
+	const noCharge = new Set(
+		report.requests
+			.filter((request) => request.priceStatus === "priced" && !request.billingRecordIds.length)
+			.map((request) => request.requestId),
+	)
+	const activeWorkIds = new Set([...activeWorks].map((key) => JSON.parse(key)[1]))
 	for (const request of report.requests) {
 		if (!request.account || !isWorkId(request.requestId) || !request.startedAt) {
-			incomplete = true
-			skippedRequests++
+			// Older history outside open work, such as requests recorded before scopes existed, is never uploaded.
+			const uploadable =
+				!request.startedAt ||
+				Date.parse(request.startedAt) >= cutoff ||
+				[...request.workIds, ...(request.linkedWorkIds ?? [])].some((workId) => activeWorkIds.has(workId))
+			if (uploadable) {
+				incomplete = true
+				skippedRequests++
+			}
 			continue
 		}
 		const account = request.account
@@ -454,11 +470,10 @@ export function buildSnapshots(
 				...(corrections.has(request.requestId) ? { correction: corrections.get(request.requestId) } : {}),
 				allocation: {
 					kind,
-					pullRequestIds: kind === "unknown" || kind === "unlinked" ? [] : [...new Set(pullRequestIds)].sort(),
+					pullRequestIds: kind === "unlinked" ? [] : [...new Set(pullRequestIds)].sort(),
 					method: method(request, links),
 				},
 			})
-			group.content.coverage.observedRequests++
 			const refreshed = billingAccountVerified ? costRefreshes.get(request.requestId) : undefined
 			if (
 				refreshed &&
@@ -466,7 +481,6 @@ export function buildSnapshots(
 					Date.parse(refreshed) > Date.parse(group.content.coverage.lastCostRefreshAt))
 			)
 				group.content.coverage.lastCostRefreshAt = refreshed
-			if (request.priceStatus !== "priced" || !bills.length) group.content.coverage.unpricedRequests++
 		}
 	}
 	const snapshots = [...groups.entries()]
@@ -494,7 +508,8 @@ export function buildSnapshots(
 			if (omitted.length) group.content.windowedPullRequestIds = omitted.sort()
 			group.content.coverage.observedRequests = retained.length
 			group.content.coverage.unpricedRequests = retained.filter(
-				(request) => unpriced.has(request.requestId) || !request.billingRecordIds.length,
+				(request) =>
+					unpriced.has(request.requestId) || (!request.billingRecordIds.length && !noCharge.has(request.requestId)),
 			).length
 			if (!retained.length) group.content.coverage.lastCostRefreshAt = undefined
 			group.content.requests.sort((a, b) => a.requestId.localeCompare(b.requestId))

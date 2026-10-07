@@ -15,6 +15,12 @@ vi.mock("../work-attribution/reconcile-supervisor.js", () => ({
 	subscribeReportingReconciliation: vi.fn(),
 	requestWorkReconciliation: vi.fn(),
 }))
+const mode = vi.hoisted(() => ({ acp: false }))
+vi.mock("../../modes/acp/state.js", () => ({
+	get IS_ACP_MODE() {
+		return mode.acp
+	},
+}))
 let directory: string
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "kimchi-reporting-extension-"))
@@ -62,6 +68,23 @@ describe("optional PR reporting", () => {
 		expect(notices).toEqual([expect.stringContaining("/pr-reporting off")])
 		// Consecutive info notifications replace one another in the TUI.
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
+	})
+	it("shows the default-on notice as a notification in Studio", async () => {
+		mode.acp = true
+		try {
+			const ctx = createContext()
+			const api = createExtensionApi()
+			api.api.events.on(WORK_STATE_REQUEST_EVENT, (value) => {
+				Object.assign(value as WorkStateRequest, { tracking: true, current: { workId: "test-work", ctx } })
+			})
+			reportingExtension(api.api)
+			await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+			await api.getHandler("session_shutdown")({}, ctx)
+			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/pr-reporting off"), "info")
+			expect(api.getAppendedEntries("pr-cost-reporting-notice")).toEqual([])
+		} finally {
+			mode.acp = false
+		}
 	})
 	it("lets the turn finish while reporting state is still being read", async () => {
 		await setReportingEnabled(directory, true)

@@ -1,5 +1,6 @@
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
+import { IS_ACP_MODE } from "../../modes/acp/state.js"
 import {
 	requestWorkReconciliation,
 	subscribeReportingReconciliation,
@@ -23,11 +24,13 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 			const state = await readReportingState(getAgentDir())
 			const ctx = context
 			if (ctx?.hasUI && state.enabled && state.followsTelemetry && !state.defaultNoticeShown)
-				if (await takeReportingNotice(getAgentDir()))
-					pi.appendEntry(
-						"pr-cost-reporting-notice",
-						"PR costs are reported to your account (repository/PR details and request/billing IDs). Turn off with /pr-reporting off.",
-					)
+				if (await takeReportingNotice(getAgentDir())) {
+					const notice =
+						"PR costs are reported to your account (repository/PR details and request/billing IDs). Turn off with /pr-reporting off."
+					// Studio shows notifications but not custom entries.
+					if (IS_ACP_MODE) ctx.ui.notify(notice, "info")
+					else pi.appendEntry("pr-cost-reporting-notice", notice)
+				}
 			return state.enabled
 		} catch {
 			return false

@@ -4,7 +4,7 @@ import { nowNano } from "./helpers.js"
 import { _getTelemetryCtx } from "./index.js"
 
 type PRCostMetric =
-	| { kind: "matching"; outcome: WorkSegment["attribution"] | "failed" }
+	| { kind: "matching"; outcome: WorkSegment["attribution"] | "failed" | "limited" }
 	| { kind: "delivery"; outcome: "success" | "failed" | "canceled" }
 	| { kind: "unpriced" | "queueDepth"; value: number }
 	| { kind: "reconciliation" }

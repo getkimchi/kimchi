@@ -425,6 +425,33 @@ describe("account-fenced reporting delivery", () => {
 		await deliver()
 		expect(http).not.toHaveBeenCalled()
 	})
+	it.each([404, 400, 403])("backs off for hours after a permanent HTTP %s rejection", async (status) => {
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: new Response(null, { status }),
+		)
+		const delays: number[] = []
+		for (let attempt = 0; attempt < 4; attempt++) {
+			const before = Date.now()
+			await deliver()
+			const entry = Object.values((await readReportingState(directory)).entries)[0]
+			delays.push(Math.round((entry.retryAt - before) / 60_000))
+			vi.spyOn(Date, "now").mockReturnValue(entry.retryAt + 1)
+		}
+		expect(delays).toEqual([60, 120, 240, 360])
+	})
+	it.each([408, 503])("keeps retrying HTTP %s within a minute", async (status) => {
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: new Response(null, { status }),
+		)
+		await deliver()
+		expect(Object.values((await readReportingState(directory)).entries)[0].retryAt).toBeLessThanOrEqual(
+			Date.now() + 60_000,
+		)
+	})
 	it("honors a Retry-After longer than one day", async () => {
 		http.mockImplementation(async (input) =>
 			String(input).endsWith("api-keys:verify")

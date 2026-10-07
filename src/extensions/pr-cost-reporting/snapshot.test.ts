@@ -175,11 +175,73 @@ describe("allowlisted repository snapshots", () => {
 		expect(content.requests[0].billingRecordIds).toEqual([])
 		expect(content.coverage).toMatchObject({ observedRequests: 1, unpricedRequests: 1 })
 	})
-	it("exports cross-repository shared work as unknown in both repositories", () => {
+	it("exports cross-repository shared work as unknown with each repository's candidate", () => {
 		const result = build(records([pull(), pull(2, "example/other", "43")]))
-		expect(result.snapshots).toHaveLength(2)
-		for (const snapshot of result.snapshots)
-			expect(snapshot.content.requests[0].allocation).toEqual({ kind: "unknown", pullRequestIds: [], method: "native" })
+		expect(
+			result.snapshots.map(({ content }) => [content.repository.id, content.requests[0].allocation.pullRequestIds]),
+		).toEqual([
+			["42", ["101"]],
+			["43", ["102"]],
+		])
+		for (const { content } of result.snapshots) {
+			expect(content.requests[0].allocation.kind).toBe("unknown")
+			expect(() =>
+				validateSnapshot({ schemaVersion: 1, producerId: requestId, revision: "1", generatedAt: at, ...content }),
+			).not.toThrow()
+		}
+	})
+	it("keeps a PR complete beside an unknown request that cannot belong to it", () => {
+		const unresolved = "55555555-5555-4555-8555-555555555555"
+		const other: WorkRecord = {
+			...records()[0],
+			workId: "other-work",
+			sessionId: "other-session",
+			requestId: unresolved,
+			segment: { id: "segment", attribution: "unknown", reason: "model-uncertain" },
+		}
+		const rows = [...records(), other]
+		const report = calculatePullRequestCosts(
+			rows,
+			[{ requestId, billingRecordId: billingId, costUsd: "1.25", account }],
+			new Set(),
+			new Map([[unresolved, account]]),
+		)
+		const repositories = new Map([
+			["/private/repo/.git", { provider: "github" as const, host: "github.com", id: "42" }],
+		])
+		const content = buildSnapshots(rows, report, repositories, true).snapshots[0].content
+		// The server leaves only an unknown request's candidate PRs incomplete.
+		expect(content.requests.find((row) => row.requestId === unresolved)?.allocation).toMatchObject({
+			kind: "unknown",
+			pullRequestIds: [],
+		})
+		expect(report.pullRequests[0].totalCostUsd).toBe("1.250000000")
+	})
+	it("ignores unscoped history older than the upload window", () => {
+		const legacy: WorkRecord = {
+			version: 1,
+			type: "request",
+			workId: "legacy-work",
+			sessionId: "legacy-session",
+			requestId: "55555555-5555-4555-8555-555555555555",
+			recordedAt: "2026-03-01T00:00:00Z",
+		}
+		const result = build([legacy, ...records()])
+		expect(result).toMatchObject({ skippedRequests: 0, incomplete: false })
+		expect(result.snapshots[0].content.coverage.historyComplete).toBe(true)
+	})
+	it("reports a verified no-charge attempt as priced", () => {
+		const unbilled = "55555555-5555-4555-8555-555555555555"
+		const rows = [...records(), { ...records()[0], requestId: unbilled }]
+		const report = calculatePullRequestCosts(
+			rows,
+			[{ requestId, billingRecordId: billingId, costUsd: "1.5", account }],
+			new Set(),
+			new Map([[unbilled, account]]),
+		)
+		const content = buildSnapshots(rows, report, new Map(), true).snapshots[0].content
+		expect(report.pullRequests[0].totalCostUsd).toBe("1.500000000")
+		expect(content.coverage).toMatchObject({ observedRequests: 2, unpricedRequests: 0 })
 	})
 	it.each([1, 2, 3])("retains all %s post-merge PR candidates in a valid snapshot", (count) => {
 		const rows = records(
