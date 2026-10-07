@@ -256,7 +256,9 @@ describe("handleRemoteCompletion", () => {
 			},
 		})
 
-		expect(mockOpen).toHaveBeenCalledWith("https://app.kimchi.dev/remote-sessions/acp-x/ide")
+		expect(mockOpen).toHaveBeenCalledWith(
+			"https://app.kimchi.dev/remote-sessions/ws-1/ide?sidebarClosed=true&direct=true",
+		)
 		// Non-terminal: the menu was re-offered, and the sync path still ran after.
 		expect(ctx.ui.select).toHaveBeenCalledTimes(2)
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
@@ -288,7 +290,9 @@ describe("handleRemoteCompletion", () => {
 				},
 			})
 
-			expect(mockOpen).toHaveBeenCalledWith("https://console.dev.example.com/remote-sessions/acp-x/ide")
+			expect(mockOpen).toHaveBeenCalledWith(
+				"https://console.dev.example.com/remote-sessions/ws-1/ide?sidebarClosed=true&direct=true",
+			)
 		} finally {
 			mockedResolveEndpoints.mockReturnValue({
 				webAppUrl: "https://app.kimchi.dev",
@@ -726,7 +730,9 @@ describe("handleRemoteCompletion — PR intent", () => {
 			gitWorkflow: GIT,
 		})
 
-		expect(mockOpen).toHaveBeenCalledWith("https://app.kimchi.dev/remote-sessions/acp-x/ide")
+		expect(mockOpen).toHaveBeenCalledWith(
+			"https://app.kimchi.dev/remote-sessions/ws-1/ide?sidebarClosed=true&direct=true",
+		)
 		expect(mockDeleteRemoteSession).toHaveBeenCalled()
 	})
 

@@ -72,11 +72,15 @@ const OPEN_IN_IDE = "Open in IDE"
 
 /** Web-IDE deep link for the remote session: the session must be opened
  *  through the console web app (which initializes it in the UI), never at
- *  the worker host directly. The console base is region- and env-aware via
- *  resolveEndpoints (KIMCHI_WEB_APP_URL override). */
+ *  the worker host directly. The route token is the WORKSPACE id — the
+ *  console's "remote session" is the workspace (the platform API is keyed
+ *  by workspace id only); sessionName is worker-local and unresolvable by
+ *  the console. The base is region- and env-aware via resolveEndpoints
+ *  (KIMCHI_WEB_APP_URL override). */
 function buildIdeUrl(remoteSession: RemoteSessionMeta): string {
 	const webAppBase = resolveEndpoints().webAppUrl.replace(/\/+$/, "")
-	return `${webAppBase}/remote-sessions/${encodeURIComponent(remoteSession.sessionName)}/ide`
+	// sidebarClosed/direct: the console opens the IDE view directly, sidebar hidden.
+	return `${webAppBase}/remote-sessions/${encodeURIComponent(remoteSession.workspaceId)}/ide?sidebarClosed=true&direct=true`
 }
 
 /** Non-terminal inspection action: opens the sandbox's web IDE in the local
