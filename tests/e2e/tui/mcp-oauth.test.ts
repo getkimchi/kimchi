@@ -3,7 +3,7 @@ import { dirname, join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runMcpKimchiSession, runRestartableMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
-import { MCP_FIXTURE_OAUTH_ACCESS_TOKEN, mcpToolResult } from "./support/mcp-fixture.js"
+import { MCP_FIXTURE_OAUTH_ACCESS_TOKEN, mcpToolResult, oauthBrowserDriverScript } from "./support/mcp-fixture.js"
 import { gatewayMcpCall, modelReply, toolResultText } from "./support/mcp-model-script.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -396,17 +396,7 @@ test("replays the success page for a completed OAuth state and serves an error p
 				// alive.
 				const browserPath = join(agentDir, "mcp-oauth-browser", "open")
 				const eventPath = join(agentDir, "mcp-fixture-fixture.jsonl")
-				writeFileSync(
-					browserPath,
-					`#!/usr/bin/env node
-import { appendFileSync } from "node:fs"
-const eventPath = ${JSON.stringify(eventPath)}
-const target = process.argv.find((argument) => argument.startsWith("http://") || argument.startsWith("https://"))
-if (!target) throw new Error("OAuth browser driver did not receive an HTTP URL")
-appendFileSync(eventPath, JSON.stringify({ type: "oauth_browser_opened", at: new Date().toISOString(), pid: process.pid, scenario: "oauth", target }) + "\\n")
-`,
-					"utf8",
-				)
+				writeFileSync(browserPath, oauthBrowserDriverScript(eventPath, { autoComplete: false }), "utf8")
 				chmodSync(browserPath, 0o755)
 			},
 		},
