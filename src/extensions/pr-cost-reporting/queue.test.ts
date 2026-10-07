@@ -50,6 +50,29 @@ afterEach(async () => {
 })
 
 describe("durable reporting queue", () => {
+	it("allows deliberate window expiry while still holding a missing source request", async () => {
+		const initial = await queueSnapshots(directory, [snapshot([requestId, otherRequestId])], true)
+		const [key] = Object.keys(initial.entries)
+		await acknowledgeSnapshot(directory, key, "1", {
+			status: "accepted",
+			revision: "1",
+			receivedAt: new Date().toISOString(),
+		})
+		const missing = await queueSnapshots(directory, [snapshot([otherRequestId])], true)
+		expect(missing.entries[key].held).toBe(true)
+		const expired = snapshot([otherRequestId])
+		expired.observedRequestIds = [requestId, otherRequestId]
+		const queued = await queueSnapshots(directory, [expired], true)
+		expect(queued.entries[key].held).toBeUndefined()
+		expect(queued.entries[key].pending?.requests.map((request) => request.requestId)).toEqual([otherRequestId])
+		expect(queued.entries[key].requestHashes).toHaveLength(2)
+		await acknowledgeSnapshot(directory, key, "2", {
+			status: "accepted",
+			revision: "2",
+			receivedAt: new Date().toISOString(),
+		})
+		expect((await readReportingState(directory)).entries[key].requestHashes).toHaveLength(1)
+	})
 	it("claims the default-on notice once across concurrent sessions", async () => {
 		expect((await Promise.all([takeReportingNotice(directory), takeReportingNotice(directory)])).sort()).toEqual([
 			false,

@@ -11,7 +11,14 @@ export interface ReportingRepository {
 }
 export interface SnapshotContent {
 	repository: ReportingRepository
-	pullRequests: { id: string; number: number; url: string; state: "open" | "closed" | "merged"; mergedAt?: string }[]
+	pullRequests: {
+		id: string
+		number: number
+		url: string
+		state: "open" | "closed" | "merged"
+		mergedAt?: string
+		closedAt?: string
+	}[]
 	requests: {
 		requestId: string
 		billingRecordIds: string[]
@@ -27,6 +34,8 @@ export interface SnapshotContent {
 export interface RepositorySnapshot {
 	account: WorkAccount
 	content: SnapshotContent
+	/** Complete local inventory before windowing. Lets the queue distinguish expiry from lost evidence. */
+	observedRequestIds?: string[]
 	/** Missing provider evidence holds prior claims for this group; never enters the wire body. */
 	incomplete?: boolean
 }
@@ -37,6 +46,7 @@ export interface WireSnapshot extends SnapshotContent {
 	generatedAt: string
 }
 export const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
+const UPLOAD_WINDOW_MS = 32 * 24 * 60 * 60 * 1000
 export const MAX_REVISION = 9223372036854775807n
 export function revision(value: unknown): value is string {
 	return typeof value === "string" && /^[1-9]\d{0,18}$/.test(value) && BigInt(value) <= MAX_REVISION
@@ -125,7 +135,7 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 		fail()
 	const pulls = new Set<string>()
 	for (const pr of pullRequests) {
-		if (!onlyKeys(pr, ["id", "number", "url", "state", "mergedAt"])) fail()
+		if (!onlyKeys(pr, ["id", "number", "url", "state", "mergedAt", "closedAt"])) fail()
 		if (
 			!providerId(pr.id) ||
 			pulls.has(pr.id) ||
@@ -136,7 +146,8 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 			typeof pr.url !== "string" ||
 			pr.url.length > 2048 ||
 			(pr.state === "merged") !== (pr.mergedAt !== undefined) ||
-			(pr.mergedAt !== undefined && !validTime(pr.mergedAt))
+			(pr.mergedAt !== undefined && !validTime(pr.mergedAt)) ||
+			(pr.closedAt !== undefined && (pr.state !== "closed" || !validTime(pr.closedAt)))
 		)
 			fail()
 		const url = new URL(pr.url)
@@ -213,6 +224,35 @@ export function buildSnapshots(
 	const original = new Map<string, WorkRecord[]>()
 	const links = new Map<string, WorkRecord>()
 	const conflicts = new Set<string>()
+	const cutoff = Date.now() - UPLOAD_WINDOW_MS
+	const workKey = (account: WorkAccount, workId: string) => JSON.stringify([accountKey(account), workId])
+	const activeWorks = new Set<string>()
+	for (const pr of report.pullRequests) {
+		if (!pr.account) continue
+		const finishedAt = pr.pullRequest?.state === "merged" ? pr.pullRequest.mergedAt : pr.pullRequest?.closedAt
+		if (!finishedAt || Date.parse(finishedAt) >= cutoff)
+			for (const workId of pr.workIds) activeWorks.add(workKey(pr.account, workId))
+	}
+	for (const request of report.requests)
+		if (request.account && (!request.startedAt || Date.parse(request.startedAt) >= cutoff))
+			for (const workId of [...request.workIds, ...(request.linkedWorkIds ?? [])])
+				activeWorks.add(workKey(request.account, workId))
+	const included = new Set(
+		report.requests
+			.filter((request) => {
+				const account = request.account
+				return (
+					account &&
+					[...request.workIds, ...(request.linkedWorkIds ?? [])].some((workId) =>
+						activeWorks.has(workKey(account, workId)),
+					)
+				)
+			})
+			.map((request) => request.requestId),
+	)
+	const unpriced = new Set(
+		report.requests.filter((request) => request.priceStatus !== "priced").map((request) => request.requestId),
+	)
 	for (const row of records) {
 		if (row.type === "request" && typeof row.requestId === "string")
 			original.set(row.requestId, [...(original.get(row.requestId) ?? []), row])
@@ -297,6 +337,7 @@ export function buildSnapshots(
 					url: pr.url,
 					state: pr.state,
 					...(pr.mergedAt ? { mergedAt: pr.mergedAt } : {}),
+					...(pr.state === "closed" && pr.closedAt ? { closedAt: pr.closedAt } : {}),
 				}
 				const existing = group.content.pullRequests.find((other) => other.id === pr.id)
 				if (existing && JSON.stringify(existing) !== JSON.stringify(metadata)) {
@@ -345,6 +386,19 @@ export function buildSnapshots(
 		.filter(([key]) => !conflicts.has(key))
 		.sort(([a], [b]) => a.localeCompare(b))
 		.map(([, group]) => {
+			group.observedRequestIds = group.content.requests.map((request) => request.requestId).sort()
+			const retained = group.content.requests.filter((request) => included.has(request.requestId))
+			const pulls = new Set(retained.flatMap((request) => request.allocation.pullRequestIds))
+			group.content.requests = retained
+			group.content.pullRequests = group.content.pullRequests.filter((pr) => {
+				const finishedAt = pr.state === "merged" ? pr.mergedAt : pr.closedAt
+				return pulls.has(pr.id) || !finishedAt || Date.parse(finishedAt) >= cutoff
+			})
+			group.content.coverage.observedRequests = retained.length
+			group.content.coverage.unpricedRequests = retained.filter(
+				(request) => unpriced.has(request.requestId) || !request.billingRecordIds.length,
+			).length
+			if (!retained.length) group.content.coverage.lastCostRefreshAt = undefined
 			group.content.requests.sort((a, b) => a.requestId.localeCompare(b.requestId))
 			group.content.pullRequests.sort((a, b) => a.id.localeCompare(b.id))
 			if (incomplete) group.content.coverage.historyComplete = false

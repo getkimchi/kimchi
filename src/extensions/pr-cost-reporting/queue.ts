@@ -234,7 +234,9 @@ export function queueSnapshots(
 			if (snapshot.incomplete) continue
 			const key = accountKey(snapshot.account)
 			const members = reported.get(key) ?? new Set<string>()
-			for (const request of snapshot.content.requests) members.add(requestHash(request.requestId))
+			for (const requestId of snapshot.observedRequestIds ??
+				snapshot.content.requests.map((request) => request.requestId))
+				if (isWorkId(requestId)) members.add(requestHash(requestId))
 			reported.set(key, members)
 		}
 		let held = 0

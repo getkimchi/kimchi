@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import { calculatePullRequestCosts } from "../work-attribution/costs.js"
 import type { WorkRecord } from "../work-attribution/summary.js"
 import { buildSnapshots, validateSnapshot, type WireSnapshot } from "./snapshot.js"
@@ -11,7 +12,12 @@ const account = {
 const requestId = "33333333-3333-4333-8333-333333333333"
 const billingId = "44444444-4444-4444-8444-444444444444"
 const at = "2026-10-04T12:00:00.000Z"
-const pull = (number = 1, repository = "example/repo", repositoryId = "42") => ({
+beforeEach(() => {
+	vi.useFakeTimers({ toFake: ["Date"] })
+	vi.setSystemTime(new Date("2026-10-07T12:00:00Z"))
+})
+afterEach(() => vi.useRealTimers())
+const pull = (number = 1, repository = "example/repo", repositoryId = "42"): WorkPullRequest => ({
 	provider: "github",
 	id: String(100 + number),
 	repositoryId,
@@ -69,6 +75,63 @@ function wire(): WireSnapshot {
 }
 
 describe("allowlisted repository snapshots", () => {
+	it.each([
+		"open",
+		"merged",
+		"closed",
+	] as const)("uploads old work while a PR is %s or within its 32-day grace", (state) => {
+		const pr = { ...pull(), state, mergedAt: state === "merged" ? at : null, closedAt: state === "closed" ? at : null }
+		const rows = records([pr], { startedAt: "2026-01-01T00:00:00Z", recordedAt: "2026-01-01T00:00:00Z" })
+		const content = build(rows).snapshots[0].content
+		expect(content.requests).toHaveLength(1)
+		expect(content.pullRequests[0]).toMatchObject({ id: pr.id, state })
+		if (state === "closed") expect(content.pullRequests[0]).toHaveProperty("closedAt", at)
+	})
+	it.each([
+		"merged",
+		"closed",
+	] as const)("omits a %s PR after 32 days without treating its evidence as lost", (state) => {
+		const finished = "2026-09-05T11:59:59Z"
+		const pr = {
+			...pull(),
+			state,
+			mergedAt: state === "merged" ? finished : null,
+			closedAt: state === "closed" ? finished : null,
+		}
+		const rows = records([pr], { startedAt: "2026-08-01T00:00:00Z", recordedAt: "2026-08-01T00:00:00Z" })
+		const snapshot = build(rows).snapshots[0]
+		expect(snapshot.content.requests).toEqual([])
+		expect(snapshot.content.pullRequests).toEqual([])
+		expect(snapshot).toHaveProperty("observedRequestIds", [requestId])
+		expect(snapshot.content.coverage).toMatchObject({ observedRequests: 0, unpricedRequests: 0, historyComplete: true })
+	})
+	it("uploads every request in recent work, including its older planning requests", () => {
+		const rows = records([], { startedAt: "2026-01-01T00:00:00Z" })
+		rows.push({ ...rows[0], requestId: billingId, startedAt: at })
+		const report = calculatePullRequestCosts(rows, [])
+		const result = buildSnapshots(
+			rows,
+			report,
+			new Map([["/private/repo/.git", { provider: "github", host: "github.com", id: "42" }]]),
+			true,
+		)
+		expect(result.snapshots[0].content.requests).toHaveLength(2)
+	})
+	it("drops old unlinked work but keeps a closed PR with an unknown close time", () => {
+		const rows = records([], { startedAt: "2026-01-01T00:00:00Z" })
+		const report = calculatePullRequestCosts(rows, [])
+		const result = buildSnapshots(
+			rows,
+			report,
+			new Map([["/private/repo/.git", { provider: "github", host: "github.com", id: "42" }]]),
+			true,
+		)
+		expect(result.snapshots[0].content.requests).toEqual([])
+		expect(
+			build(records([{ ...pull(), state: "closed", mergedAt: null }], { startedAt: "2026-01-01T00:00:00Z" }))
+				.snapshots[0].content.requests,
+		).toHaveLength(1)
+	})
 	it("contains provider and billing evidence only, without prices or private local data", () => {
 		const content = build().snapshots[0].content
 		expect(content.requests[0]).toEqual({
