@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createContext } from "../__mocks__/context.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
-import { appendWorkRecord, getWorkId, recordProviderRequest } from "../work-attribution.js"
+import { appendWorkRecord, getWorkId, recordProviderRequest, workLedgerPath } from "../work-attribution.js"
 import { calculatePullRequestCosts } from "./costs.js"
 import { confirmWorkContinuation, correctWorkLink, reconcileWorkContinuations } from "./links.js"
 import * as scope from "./scope.js"
@@ -91,6 +91,25 @@ it("still repairs history after an unrelated session ledger kept a torn final ap
 
 it("control: the same receipt repairs when no torn line exists", async () => {
 	const flow = planned()
+	const consumer = createContext({ cwd: dir, sessionManager: { getSessionId: () => "consumer" } })
+	appendWorkRecord(
+		consumer,
+		{ type: "work", continuation: { source: flow.continuation.source, evidence: flow.continuation.evidence } },
+		flow.workId,
+	)
+	await reconcileWorkContinuations(dir, new AbortController().signal, () => {}, {})
+	expect(readWorkRecords(dir).filter((row) => row.type === "work_link")).toHaveLength(1)
+})
+
+it.each([16, 80_000])("repairs history after appending past a torn %i-byte tail", async (bytes) => {
+	const flow = planned()
+	const before = readWorkRecords(dir)
+	appendFileSync(workLedgerPath(flow.planner), `{"partial":"${"x".repeat(bytes)}`)
+	const requestId = recordProviderRequest(flow.planner).requestId
+	const invalid = vi.fn()
+	const rows = readWorkRecords(dir, undefined, undefined, invalid)
+	expect(invalid).not.toHaveBeenCalled()
+	expect(rows).toEqual([...before, expect.objectContaining({ type: "request", requestId })])
 	const consumer = createContext({ cwd: dir, sessionManager: { getSessionId: () => "consumer" } })
 	appendWorkRecord(
 		consumer,

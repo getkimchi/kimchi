@@ -4,6 +4,7 @@ import {
 	existsSync,
 	fstatSync,
 	fsyncSync,
+	ftruncateSync,
 	mkdirSync,
 	openSync,
 	readFileSync,
@@ -187,8 +188,9 @@ export function appendWorkRecord(
 		const size = fstatSync(fd).size
 		const last = Buffer.alloc(1)
 		if (size) readSync(fd, last, 0, 1, size - 1)
-		const prefix = size && last[0] !== 10 ? "\n" : ""
-		writeFileSync(fd, `${prefix}${JSON.stringify(record)}\n`)
+		// Only newline-terminated records survived the previous append completely.
+		if (size && last[0] !== 10) ftruncateSync(fd, readFileSync(fd).lastIndexOf(10) + 1)
+		writeFileSync(fd, `${JSON.stringify(record)}\n`)
 		fsyncSync(fd)
 	} finally {
 		closeSync(fd)
