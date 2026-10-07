@@ -399,6 +399,51 @@ describe("local and reported confidence", () => {
 		vi.setSystemTime(new Date("2026-11-26T12:00:00.000Z"))
 		expect(build(rows).snapshots[0].content.requests).toEqual([])
 	})
+	it.each([
+		"active",
+		"revoked",
+	])("uploads an explicit %s correction from another work after the normal window until day 90", (status) => {
+		const planning = "66666666-6666-4666-8666-666666666666"
+		const implementing = "77777777-7777-4777-8777-777777777777"
+		const finished = "2026-08-28T12:00:00.000Z"
+		const [plan, commit] = records([{ ...pull(), mergedAt: finished }], {
+			startedAt: "2026-08-27T12:00:00.000Z",
+			recordedAt: "2026-08-27T12:00:00.000Z",
+			segment: { id: billingId, attribution: "unknown", reason: "unresolved-reference" },
+		})
+		const rows: WorkRecord[] = [
+			{ ...plan, workId: planning },
+			{
+				...plan,
+				workId: implementing,
+				requestId: "88888888-8888-4888-8888-888888888888",
+				segment: { id: implementing, attribution: "explicit", reason: "work-command" },
+			},
+			{ ...commit, workId: implementing },
+			{
+				...plan,
+				type: "work_link",
+				workId: implementing,
+				recordedAt: at,
+				linkId: "99999999-9999-4999-8999-999999999999",
+				revision: 2,
+				status,
+				sourceWorkId: planning,
+				targetWorkId: implementing,
+				requestIds: [requestId],
+				evidence: { source: "work-command", segmentId: billingId },
+			},
+		]
+		const content = build(rows).snapshots[0].content
+		expect(content.requests.find((request) => request.requestId === requestId)).toHaveProperty("correction", {
+			id: "99999999-9999-4999-8999-999999999999",
+			revision: 2,
+			recordedAt: at,
+			source: "work-command",
+		})
+		expect(content.pullRequests.map((pr) => pr.id)).toEqual(["101"])
+		expect(content.windowedPullRequestIds).toBeUndefined()
+	})
 	it("does not send a correction when copies disagree about whether the same revision was revoked", () => {
 		const rows = records().map((row) => ({ ...row, workId: requestId }))
 		const link: WorkRecord = {

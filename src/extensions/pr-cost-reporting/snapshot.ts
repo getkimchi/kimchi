@@ -1,5 +1,5 @@
 import { isWorkId } from "../../shared/work-id.js"
-import type { PullRequestCostReport, RequestCostAllocation } from "../work-attribution/costs.js"
+import { type PullRequestCostReport, type RequestCostAllocation, time } from "../work-attribution/costs.js"
 import { requestWorkLinks } from "../work-attribution/links.js"
 import { isWorkScope, sameWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
 import type { WorkRecord } from "../work-attribution/summary.js"
@@ -68,16 +68,9 @@ export function repositoryKey(repository: ReportingRepository): string {
 export function accountKey(account: WorkAccount): string {
 	return JSON.stringify([account.apiUrl, account.organizationId, account.userId])
 }
+/** Protobuf timestamps start at year 1. */
 export function validTime(value: unknown): value is string {
-	if (
-		typeof value !== "string" ||
-		!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) ||
-		Number(value.slice(0, 4)) < 1 ||
-		!Number.isFinite(Date.parse(value))
-	)
-		return false
-	const day = value.slice(0, 10)
-	return new Date(`${day}T00:00:00Z`).toISOString().startsWith(day)
+	return typeof value === "string" && Number(value.slice(0, 4)) >= 1 && time(value) !== undefined
 }
 function providerId(value: unknown): value is string {
 	return typeof value === "string" && /^[1-9]\d{0,19}$/.test(value)
