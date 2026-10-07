@@ -2,6 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { EventBus, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import type { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
+import type { WorkContext } from "../work-attribution.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import {
 	clearAllPendingPlanReviews,
@@ -94,7 +95,12 @@ export interface FermentRuntime {
 	nowIso(): string
 	markHumanInput(): void
 	getLastHumanInputAt(): Date | undefined
-	captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry, multiModelEnabled?: boolean): void
+	captureJudgeContext(
+		model?: Model<Api>,
+		registry?: ModelRegistry,
+		multiModelEnabled?: boolean,
+		context?: WorkContext,
+	): void
 	bumpStepStart(fermentId: string, phaseId: string, stepId: string): number
 	clearStepStart(fermentId: string, phaseId: string, stepId: string): void
 	clearAllStepStarts(): void

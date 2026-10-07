@@ -5,6 +5,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { applyCommand } from "../../ferment/state-machine.js"
+import { createContext } from "../__mocks__/context.js"
+import { flushWorkSummaries } from "../work-attribution/summary.js"
 import fermentExtension from "./index.js"
 import { resetAllFermentStopNudgeCounts } from "./nudge.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -21,8 +23,11 @@ describe("stale-ctx crash on ferment oneshot transition", () => {
 
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "ferment-stale-ctx-"))
+		vi.stubEnv("PI_CODING_AGENT_DIR", join(tmpDir, "agent"))
 	})
-	afterEach(() => {
+	afterEach(async () => {
+		await flushWorkSummaries()
+		vi.unstubAllEnvs()
 		clearActiveFermentId()
 		setContinuationPolicy("manual")
 		resetAllFermentStopNudgeCounts()
@@ -128,7 +133,7 @@ describe("stale-ctx crash on ferment oneshot transition", () => {
 					usage: { totalTokens: 100 },
 				},
 			},
-			{ isIdle: () => true },
+			createContext({ isIdle: vi.fn(() => true) }),
 		)
 
 		expect(appendEntry).toHaveBeenCalled()

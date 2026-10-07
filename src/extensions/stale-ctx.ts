@@ -8,7 +8,11 @@
 //
 // Reference: node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/runner.js
 //            (`invalidate(message = "This extension ctx is stale...")`)
-const STALE_CTX_MESSAGE_PREFIX = "This extension ctx is stale"
+//
+// Exported so every consumer (guards AND test fixtures simulating the throw)
+// shares one spelling: if upstream rewords the message, this constant is the
+// single place to update.
+export const STALE_CTX_MESSAGE_PREFIX = "This extension ctx is stale"
 
 export function isStaleCtxError(err: unknown): boolean {
 	return err instanceof Error && err.message.startsWith(STALE_CTX_MESSAGE_PREFIX)

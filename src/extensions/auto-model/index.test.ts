@@ -1,3 +1,6 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type {
 	ExtensionFactory,
@@ -11,15 +14,14 @@ import { populateCliArgs } from "../../cli-args.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 
-// The marker lives in settings.json; keep it in memory so each test starts
-// with "not yet applied" and can assert whether it was written.
-const autoDefaultStubs = vi.hoisted(() => ({ applied: false }))
+// The retired-marker cleanup reads settings.json under the real agent config
+// dir; point it at a per-test temp dir so tests never touch the developer's
+// own settings.json. settingsPath additionally backs the file-backed
+// read/writeConfigSetting stubs below.
+const configStubs = vi.hoisted(() => ({ agentConfigDir: "", settingsPath: "" }))
 vi.mock(import("../../config.js"), async (importOriginal) => ({
 	...(await importOriginal()),
-	readAutoDefaultApplied: () => autoDefaultStubs.applied,
-	writeAutoDefaultApplied: () => {
-		autoDefaultStubs.applied = true
-	},
+	getAgentConfigDir: () => configStubs.agentConfigDir,
 }))
 
 // The fresh-session default gate reads the persisted default model through the
@@ -32,6 +34,45 @@ vi.mock("../../settings-watcher.js", () => ({
 	getSettingsManager: () => settingsStubs,
 }))
 
+// The gated-org overwrite writes the developer's real settings.json in
+// production — HARNESS_SETTINGS_PATH is baked from homedir() at module load,
+// so the path itself cannot be redirected in-process. Back the stubs with the
+// per-test temp settings.json instead: reads and writes hit real JSON on disk
+// through the production helpers (readJson/writeJson/getConfigSetting), so
+// tests observe the actual file transition instead of recorded mock calls.
+// Only the redundant-write skip (config[key] === value) is re-implemented.
+const settingsFileStubs = vi.hoisted(() => ({
+	readConfigSetting: vi.fn(),
+	writeConfigSetting: vi.fn(),
+}))
+vi.mock(import("../../config/settings.js"), async (importOriginal) => {
+	const actual = await importOriginal()
+	const { readJson, writeJson } = await import("../../config/json.js")
+	settingsFileStubs.readConfigSetting.mockImplementation(
+		<T>(key: string, satisfies: (value: unknown) => value is T, fallback?: T): T | undefined => {
+			try {
+				return actual.getConfigSetting(readJson(configStubs.settingsPath), key, satisfies, fallback)
+			} catch {
+				// Malformed temp file: same fallback as production.
+				return fallback ?? undefined
+			}
+		},
+	)
+	settingsFileStubs.writeConfigSetting.mockImplementation((key: string, value: unknown) => {
+		const config = readJson(configStubs.settingsPath)
+		// Mirror the production skip: never rewrite an unchanged value.
+		if (config[key] === value) return
+		config[key] = value
+		writeJson(configStubs.settingsPath, config)
+	})
+	return {
+		...actual,
+		readConfigSetting: settingsFileStubs.readConfigSetting,
+		writeConfigSetting: settingsFileStubs.writeConfigSetting,
+	}
+})
+
+import { getProcessMultiModelEnabled, setProcessMultiModelEnabled } from "../kimchi-process.js"
 import autoModelExtension, {
 	_resetAutoModelNoticeCache,
 	createAutoModelRoutingExtension,
@@ -97,7 +138,16 @@ function ctx(overrides: Parameters<typeof createContext>[0] = {}) {
 	})
 }
 
+let tempDir: string
+
+beforeEach(() => {
+	tempDir = mkdtempSync(join(tmpdir(), "kimchi-auto-model-test-"))
+	configStubs.agentConfigDir = tempDir
+	configStubs.settingsPath = join(tempDir, "settings.json")
+})
+
 afterEach(() => {
+	rmSync(tempDir, { recursive: true, force: true })
 	clearAutoRoutingState(SESSION_ID)
 	_resetAutoModelNoticeCache()
 })
@@ -334,8 +384,8 @@ describe("createAutoModelRoutingExtension", () => {
 
 describe("catalog-driven Auto default (main session)", () => {
 	beforeEach(() => {
-		autoDefaultStubs.applied = false
 		settingsStubs.getDefaultModel.mockReturnValue(undefined)
+		settingsStubs.getDefaultProvider.mockReturnValue(undefined)
 	})
 
 	function auto(): Model<Api> {
@@ -364,7 +414,29 @@ describe("catalog-driven Auto default (main session)", () => {
 		await start()
 
 		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
-		expect(autoDefaultStubs.applied).toBe(true)
+	})
+
+	it("does not notify when the fresh session already comes up on Auto", async () => {
+		// Auto is always the default now, so a fresh session starting on Auto
+		// must be silent — the notice is only for switching away from another
+		// model at startup.
+		settingsStubs.getDefaultModel.mockReturnValue("auto")
+		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const c = createContext({
+			model: auto(),
+			modelRegistry: { find: () => auto() },
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
+
+		expect(extension.setModel).not.toHaveBeenCalled()
+		expect(c.ui.notify).not.toHaveBeenCalledWith(
+			"New sessions start on Auto (the default). To pick a different model for this session, use your client's model selector (/model in the terminal).",
+			"info",
+		)
 	})
 
 	it("notifies on the install", async () => {
@@ -379,26 +451,72 @@ describe("catalog-driven Auto default (main session)", () => {
 
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
 
-		expect(c.ui.notify).toHaveBeenCalledWith("Auto is now the default model.", "info")
+		expect(c.ui.notify).toHaveBeenCalledWith(
+			"New sessions start on Auto (the default). To pick a different model for this session, use your client's model selector (/model in the terminal).",
+			"info",
+		)
 	})
 
-	it("leaves a switched-away install alone once the default has been applied", async () => {
-		autoDefaultStubs.applied = true
+	it("rolls a switched-away model back to Auto on the next fresh session", async () => {
+		// Auto was installed, the user deliberately switched to a concrete model,
+		// and that switch persisted as the saved default. The next fresh session
+		// still comes up on Auto — for entitled accounts Auto is the default,
+		// not a one-time install.
 		settingsStubs.getDefaultModel.mockReturnValue("kimi-k2.6")
 		const { setModel, start } = runSessionStart(autoModelExtension)
 
 		await start()
 
-		expect(setModel).not.toHaveBeenCalled()
+		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
 	})
 
-	it("treats a persisted Auto default as restorable, not a fresh install", async () => {
+	it("restores Auto when the current model drifted from the saved Auto default", async () => {
 		settingsStubs.getDefaultModel.mockReturnValue("auto")
 		const { setModel, start } = runSessionStart(autoModelExtension)
 
 		await start()
 
 		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
+	})
+
+	it("drops the retired autoDefaultApplied marker from settings.json", async () => {
+		writeFileSync(join(tempDir, "settings.json"), JSON.stringify({ theme: "x", autoDefaultApplied: true }))
+		const { start } = runSessionStart(autoModelExtension)
+
+		await start()
+
+		expect(JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf-8"))).toEqual({ theme: "x" })
+	})
+
+	it("leaves settings.json untouched when the retired marker is absent", async () => {
+		writeFileSync(join(tempDir, "settings.json"), JSON.stringify({ theme: "x" }))
+		const { start } = runSessionStart(autoModelExtension)
+
+		await start()
+
+		expect(JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf-8"))).toEqual({ theme: "x" })
+	})
+
+	it("rolls a session on another provider's model (e.g. Claude) back to Auto", async () => {
+		// The rollback is provider-agnostic: a manual switch to a model on a
+		// different provider still ends at Auto on the next fresh session.
+		settingsStubs.getDefaultModel.mockReturnValue("claude-sonnet-4-5")
+		settingsStubs.getDefaultProvider.mockReturnValue("anthropic")
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const c = createContext({
+			model: model("claude-sonnet-4-5", { provider: "anthropic" }),
+			modelRegistry: { find: () => auto() },
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
+
+		expect(extension.setModel).toHaveBeenCalledWith(auto(), { persist: true })
+		expect(c.ui.notify).toHaveBeenCalledWith(
+			"New sessions start on Auto (the default). To pick a different model for this session, use your client's model selector (/model in the terminal).",
+			"info",
+		)
 	})
 
 	it("does not install when the catalog does not advertise auto", async () => {
@@ -409,7 +527,6 @@ describe("catalog-driven Auto default (main session)", () => {
 		await start()
 
 		expect(setModel).not.toHaveBeenCalled()
-		expect(autoDefaultStubs.applied).toBe(false)
 	})
 
 	it("leaves the model alone when the launch choice is explicit", async () => {
@@ -422,11 +539,235 @@ describe("catalog-driven Auto default (main session)", () => {
 	})
 })
 
-describe("main-session CLI model selection", () => {
+describe("catalog-driven gated default — orgs without auto", () => {
+	const DEEPSEEK = "deepseek-v4-flash"
+
 	beforeEach(() => {
-		autoDefaultStubs.applied = false
+		populateCliArgs([])
+		settingsStubs.getDefaultModel.mockReturnValue(undefined)
+		settingsStubs.getDefaultProvider.mockReturnValue(undefined)
+		settingsFileStubs.writeConfigSetting.mockClear()
+		settingsFileStubs.readConfigSetting.mockClear()
+		// Pre-branch cohort: settings.json carries multiModel=true (the seeded
+		// factory default), so the gated migration is still owed. Greenfield
+		// scenarios remove the file per test.
+		seedSettings({ multiModel: true })
 	})
 
+	function seedSettings(settings: Record<string, unknown>) {
+		writeFileSync(configStubs.settingsPath, JSON.stringify(settings))
+	}
+
+	function readSettings(): Record<string, unknown> {
+		return JSON.parse(readFileSync(configStubs.settingsPath, "utf-8"))
+	}
+
+	/** Registry serving exactly the given kimchi-dev ids (no `auto` unless listed). */
+	function registryServing(ids: string[]) {
+		return {
+			find: (_p: string, mid: string) => (ids.includes(mid) ? model(mid, { name: `Model ${mid}` }) : undefined),
+		}
+	}
+
+	function runSessionStart(ctxOverride: Parameters<typeof createContext>[0] = {}) {
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const c = createContext({
+			model: model("kimi-k3"),
+			modelRegistry: registryServing([DEEPSEEK]),
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+			...ctxOverride,
+		})
+		return {
+			...extension,
+			ctx: c,
+			start: () =>
+				extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c),
+		}
+	}
+
+	it("installs the served flash model as the persisted default and disables multi-model", async () => {
+		// Pre-state: the session comes up multi-model-enabled (the seeded
+		// global default) — the assertions below must be the outcome of
+		// start(), not residual state.
+		setProcessMultiModelEnabled(SESSION_ID, true)
+		expect(readSettings()).toMatchObject({ multiModel: true })
+		const { setModel, ctx, start } = runSessionStart()
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(model(DEEPSEEK, { name: `Model ${DEEPSEEK}` }), { persist: true })
+		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(false)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			`New sessions start on Model ${DEEPSEEK} (the default). To pick a different model for this session, use your client's model selector (/model in the terminal).`,
+			"info",
+		)
+	})
+
+	it("overwrites settings.json multiModel to false for gated organizations", async () => {
+		// Pre-state: a real settings.json on disk carrying multiModel=true
+		expect(readSettings()).toMatchObject({ multiModel: true })
+		const { start } = runSessionStart()
+
+		await start()
+
+		// Exactly one write in the whole start() run, and the file on disk
+		// really transitioned — nothing outside the gated-overwrite block
+		// could have driven multiModel to false. (The negative-control tests
+		// in this suite pin that non-gated start() paths never write at all.)
+		expect(settingsFileStubs.writeConfigSetting).toHaveBeenCalledTimes(1)
+		expect(settingsFileStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
+		expect(readSettings()).toMatchObject({ multiModel: false })
+	})
+
+	it("still installs the gated default when the settings.json write fails", async () => {
+		// readJson throws on a corrupt settings.json and writeJson on a
+		// read-only one; the bookkeeping overwrite must never take down
+		// session start.
+		expect(readSettings()).toMatchObject({ multiModel: true })
+		settingsFileStubs.writeConfigSetting.mockImplementationOnce(() => {
+			throw new Error("read-only settings.json")
+		})
+		const { setModel, start } = runSessionStart()
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(model(DEEPSEEK, { name: `Model ${DEEPSEEK}` }), { persist: true })
+	})
+
+	it("installs the gated default on a first run with no current model", async () => {
+		// Greenfield gated org: no persisted default and NO settings.json at
+		// all — the seeded-default overwrite runs below, so something must be
+		// installed on top of it or the user ends up on nothing.
+		rmSync(configStubs.settingsPath, { force: true })
+		expect(existsSync(configStubs.settingsPath)).toBe(false)
+		setProcessMultiModelEnabled(SESSION_ID, true)
+		const { setModel, start } = runSessionStart({ model: undefined })
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(model(DEEPSEEK, { name: `Model ${DEEPSEEK}` }), { persist: true })
+		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(false)
+		expect(readSettings()).toMatchObject({ multiModel: false })
+	})
+
+	it("falls back to deepseek-v4-flash-0731 when the canonical slug is unserved", async () => {
+		expect(readSettings()).toMatchObject({ multiModel: true })
+		const { setModel, start } = runSessionStart({
+			modelRegistry: registryServing(["deepseek-v4-flash-0731"]),
+		})
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(model("deepseek-v4-flash-0731", { name: "Model deepseek-v4-flash-0731" }), {
+			persist: true,
+		})
+	})
+
+	it("is a silent no-op when the fresh session already comes up on the gated default", async () => {
+		const { setModel, ctx, start } = runSessionStart({
+			model: model(DEEPSEEK),
+		})
+
+		// Pre-state: the session came up multi-model-enabled and settings.json
+		// still carries multiModel=true, so the disabled state asserted below
+		// is provably the outcome of start().
+		setProcessMultiModelEnabled(SESSION_ID, true)
+		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(true)
+		expect(readSettings()).toMatchObject({ multiModel: true })
+
+		await start()
+
+		expect(setModel).not.toHaveBeenCalled()
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		// The seeded-default overwrite still applies; multi-model is off either way.
+		expect(settingsFileStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
+		expect(readSettings()).toMatchObject({ multiModel: false })
+		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(false)
+	})
+
+	it("does not gate organizations that the catalog serves auto to", async () => {
+		expect(readSettings()).toMatchObject({ multiModel: true })
+		const { setModel, start } = runSessionStart({
+			modelRegistry: registryServing(["auto", DEEPSEEK]),
+		})
+
+		await start()
+
+		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
+		// On disk the seed is untouched: entitled orgs keep their multi-model flag.
+		expect(readSettings()).toMatchObject({ multiModel: true })
+		// Pre-existing behaviour: fresh sessions roll back to Auto.
+		expect(setModel).toHaveBeenCalledWith(model("auto", { name: "Model auto" }), { persist: true })
+	})
+
+	it("leaves multi-model alone when neither auto nor a flash candidate is served", async () => {
+		expect(readSettings()).toMatchObject({ multiModel: true })
+		const { setModel, start } = runSessionStart({
+			modelRegistry: registryServing(["kimi-k3"]),
+		})
+
+		await start()
+
+		expect(setModel).not.toHaveBeenCalled()
+		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
+		// On disk the seeded settings.json is untouched.
+		expect(readSettings()).toMatchObject({ multiModel: true })
+	})
+
+	it("respects a deliberate default after the migration — no rollback, no notice", async () => {
+		// Post-migration state: the seed wrote multiModel=false and the user
+		// deliberately switched their default to kimi-k3 afterwards. The gated
+		// default is a one-time migration of the multi-model default, not an
+		// ever-re-forced default — only Auto rolls back on fresh sessions.
+		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
+		settingsStubs.getDefaultModel.mockReturnValue("kimi-k3")
+		seedSettings({ multiModel: false })
+		expect(readSettings()).toMatchObject({ multiModel: false })
+		const { setModel, ctx, start } = runSessionStart()
+
+		await start()
+
+		expect(setModel).not.toHaveBeenCalled()
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		// The completed-migration overwrite was a redundant write: the value
+		// was already false, so the file is unchanged.
+		expect(readSettings()).toMatchObject({ multiModel: false })
+	})
+
+	it("migrates a user whose saved default came up as multi-model (multiModel still true)", async () => {
+		// Pre-branch cohort: a concrete defaultModel was persisted (e.g. by
+		// login) but multiModel stayed at the factory default (seeded in
+		// beforeEach), so the session defaulted into multi-model. These are
+		// the users the migration is for.
+		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
+		settingsStubs.getDefaultModel.mockReturnValue("routine")
+		expect(readSettings()).toMatchObject({ multiModel: true })
+		const { setModel, start } = runSessionStart()
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(model(DEEPSEEK, { name: `Model ${DEEPSEEK}` }), { persist: true })
+	})
+
+	it("respects an explicit --multi-model launch choice in a gated org", async () => {
+		populateCliArgs(["--multi-model"])
+		// Pre-state: the beforeEach seed carries multiModel=true, so the seed
+		// overwrite below is a real transition caused by start().
+		expect(readSettings()).toMatchObject({ multiModel: true })
+		const { setModel, start } = runSessionStart()
+
+		await start()
+
+		// Session-level choice wins: no install. The seeded default is still
+		// overwritten — it is not a user choice.
+		expect(setModel).not.toHaveBeenCalled()
+		expect(settingsFileStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
+		expect(readSettings()).toMatchObject({ multiModel: false })
+	})
+})
+
+describe("main-session CLI model selection", () => {
 	it("records an explicit Auto CLI selection once through Pi's normal model path", async () => {
 		populateCliArgs(["--model", "kimchi-dev/auto"])
 		const extension = createExtensionApi()
@@ -457,6 +798,7 @@ describe("main-session CLI model selection", () => {
 		const c = createContext({
 			model: model("kimi-k2.5"),
 			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+			modelRegistry: { find: () => undefined },
 		})
 
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
@@ -525,6 +867,7 @@ describe("main-session CLI model selection", () => {
 		const c = createContext({
 			model: model("kimi-k2.5"),
 			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+			modelRegistry: { find: () => undefined },
 		})
 
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)

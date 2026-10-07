@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { AgentOutcomeKind, AgentRecord, SubagentType } from "./agents/personas/types.js"
-import { markHarnessSteer } from "./steer-marker.js"
+import { sendSteer } from "./steer-events.js"
 import { getCurrentPhase } from "./tags.js"
 
 const IMPLEMENTATION_TOOLS = new Set(["edit", "write"])
@@ -321,14 +321,14 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 			return { block: true, reason: result.reason }
 		}
 
-		pi.sendMessage(
-			{
-				customType: STEER_MESSAGE_TYPE,
-				content: [{ type: "text", text: markHarnessSteer(result.steer) }],
-				display: false,
-			},
-			{ deliverAs: "steer" },
-		)
+		// sendSteer no-ops (returns false) when the kill switch is on; the
+		// call is never blocked either way.
+		sendSteer(pi, ctx, {
+			kind: "review_write_guard",
+			reason: "steer",
+			customType: STEER_MESSAGE_TYPE,
+			text: result.steer,
+		})
 		return { block: false }
 	})
 

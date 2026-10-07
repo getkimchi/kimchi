@@ -1,13 +1,16 @@
-import { mkdtempSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import { createContext } from "../../__mocks__/context.js"
+import { flushWorkSummaries } from "../../work-attribution/summary.js"
+import { getWorkId } from "../../work-attribution.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
-import { captureJudgeContext } from "../state.js"
+import { loadRuntimeState } from "../runtime-state-store.js"
+import { captureJudgeContext, setRuntimeStatePersistRoot } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
 import { FERMENT_TOOLS } from "../tool-names.js"
 import {
@@ -148,6 +151,19 @@ const passingFermentGates = () => [
 		evidence: "phase-1 step-1 used 'smoke'",
 	},
 ]
+
+let attributionDir: string
+beforeEach(() => {
+	attributionDir = mkdtempSync(join(tmpdir(), "plan-attribution-"))
+	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
+	setRuntimeStatePersistRoot(attributionDir)
+})
+afterEach(async () => {
+	await flushWorkSummaries()
+	setRuntimeStatePersistRoot(undefined)
+	vi.unstubAllEnvs()
+	rmSync(attributionDir, { recursive: true, force: true })
+})
 
 beforeEach(() => {
 	vi.restoreAllMocks()
@@ -549,10 +565,17 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		expect(component).toBeDefined()
 	})
 
-	it("creates a new draft ferment when ferment_id is omitted and no active ferment exists", async () => {
+	it.each(["healthy", "identity", "append"])("saves a draft plan with attribution state: %s", async (stage) => {
 		const { h, execute } = createProposeHarness()
 		expect(h.runtime.getActive()).toBeUndefined()
 		const beforeCount = h.storage.list().length
+		const ctx = createContext({ hasUI: false, cwd: attributionDir })
+		const originalWorkId = stage === "append" ? getWorkId(ctx) : undefined
+		if (stage !== "healthy") {
+			const path = join(attributionDir, "work-attribution")
+			rmSync(path, { recursive: true, force: true })
+			writeFileSync(path, "blocked")
+		}
 
 		const result = await execute(
 			"tool-call-1",
@@ -566,7 +589,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			createContext({ hasUI: false }),
+			ctx,
 		)
 
 		expect(okText(result)).toContain("Plan saved")
@@ -575,6 +598,10 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		expect(active).toBeDefined()
 		expect(active?.name).toBe("Bootstrap Ferment")
 		expect(active?.status).toBe("planned")
+		if (!active) throw new Error("Expected active Ferment")
+		expect(existsSync(join(attributionDir, ".kimchi", "plans"))).toBe(true)
+		if (stage !== "identity")
+			expect(loadRuntimeState(active.id, attributionDir).workId).toBe(originalWorkId ?? getWorkId(ctx))
 	})
 
 	it("creates a new draft ferment when an unknown ferment_id is provided and no active ferment exists", async () => {

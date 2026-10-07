@@ -39,6 +39,7 @@ export const AVAILABLE_EXT_NOTIFICATIONS = {
 	pi_notify: `_${CAPABILITIES_KEY}/pi_notify`,
 	queue_dropped: `_${CAPABILITIES_KEY}/queue_dropped`,
 	project_trust_update: `_${CAPABILITIES_KEY}/project_trust_update`,
+	agent_activity: `_${CAPABILITIES_KEY}/agent_activity`,
 } as const
 
 export type AcpExtMethod = keyof typeof AVAILABLE_EXT_METHODS

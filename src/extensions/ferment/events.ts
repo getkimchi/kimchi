@@ -341,6 +341,12 @@ export function registerFermentEvents(
 		if (isAgentWorker()) {
 			return
 		}
+		runtime.captureJudgeContext(
+			getEffectiveModel(ctx),
+			ctx.modelRegistry,
+			getMultiModelEnabled(ctx.sessionManager),
+			ctx,
+		)
 		clearAllLifecycleGuards()
 		runtime.setContinuationPolicy(ctx?.hasUI ? "manual" : "automated")
 		runtime.clearAllStepStarts()
@@ -522,12 +528,22 @@ export function registerFermentEvents(
 	})
 
 	pi.on("model_select", (_event, ctx) => {
-		runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry)
+		runtime.captureJudgeContext(
+			getEffectiveModel(ctx),
+			ctx.modelRegistry,
+			getMultiModelEnabled(ctx.sessionManager),
+			ctx,
+		)
 	})
 
 	pi.on("turn_end", async (event, ctx) => {
 		if (isAgentWorker()) return
-		runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry)
+		runtime.captureJudgeContext(
+			getEffectiveModel(ctx),
+			ctx.modelRegistry,
+			getMultiModelEnabled(ctx.sessionManager),
+			ctx,
+		)
 		if (event.message.role !== "assistant") return
 		const content = getAssistantContentParts(event.message.content)
 		const activeId = runtime.getActiveId()

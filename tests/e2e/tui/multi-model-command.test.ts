@@ -76,7 +76,10 @@ test("multi-model is listed in the model picker and command suggestions", async 
 			const picker = viewText(terminal)
 			expect(picker).toContain("auto")
 			expect(picker).toContain("multi-model")
-			trace.step("picker lists both Auto and multi-model")
+			// Harness-side deprecation label: the virtual selection cannot
+			// carry a backend marker, so the harness renders one.
+			expect(picker).toContain("[Deprecated]")
+			trace.step("picker lists both Auto and the deprecated multi-model row")
 			terminal.keyEscape()
 			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			terminal.write("/multi")

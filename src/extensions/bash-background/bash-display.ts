@@ -5,6 +5,7 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
 import { stripTerminalSequences, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { ToolText, toolHeader, withBranch } from "../tool-rendering.js"
 import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry.js"
 import { getSessionRegistry } from "./session-registry.js"
 
@@ -87,20 +88,16 @@ export const renderBashCall: NonNullable<ToolDefinition["renderCall"]> = (args, 
 	invalidate() {},
 	render(width) {
 		if (hiddenControl(ctx)) return []
-		const purpose = safeBashText(stringArg(args, "description")).replace(/\s+/g, " ")
-		const command = safeBashText(stringArg(args, "command"))
-		const handle = stringArg(args, "handle") ? `Command ${safeBashText(stringArg(args, "handle"))}` : ""
-		const lines = [
-			theme.bold(theme.fg("toolTitle", `Bash${purpose ? ` · ${purpose}` : ""}`)) +
-				theme.fg("text", handle ? ` · ${handle}` : ""),
-		]
-		if (command)
-			lines.push(
-				...(ctx.expanded ? wrapTextWithAnsi(command, Math.max(1, width)) : [command.replace(/\s+/g, " ")]).map((line) =>
-					theme.fg("mdCode", line),
-				),
-			)
-		return lines.map((line) => truncateToWidth(line, Math.max(1, width), "…"))
+		const display: ProcessDisplaySnapshot | undefined = ctx.state.bashDisplay
+		const purpose = safeBashText(stringArg(args, "description") || display?.description || "").replace(/\s+/g, " ")
+		const command = safeBashText(stringArg(args, "command") || display?.command || "")
+		const summary = purpose || (ctx.expanded ? "" : truncateToWidth(command.replace(/\s+/g, " "), 72, "…"))
+		const color = display ? bashStatusColor(display) : ctx.isError ? "error" : ctx.isPartial ? "accent" : "success"
+		const dot = `${theme.fg(color, "●")} `
+		const handle = safeBashText(stringArg(args, "handle"))
+		const lines = [toolHeader("Bash", summary || (handle ? `Command ${handle}` : ""), theme, dot)]
+		if (command && ctx.expanded) lines.push(withBranch(theme.fg("mdCode", command), theme, false, true))
+		return new ToolText(lines.join("\n")).render(Math.max(1, width))
 	},
 })
 
@@ -155,6 +152,7 @@ const renderBashOutput: NonNullable<ToolDefinition["renderResult"]> = (result, o
 	upstreamBash ??= createBashToolDefinition(process.cwd())
 	const details = result.details as (BashToolDetails & { display?: ProcessDisplaySnapshot }) | undefined
 	const display = details?.display
+	ctx.state.bashDisplay = display
 	const terminal = display && display.state !== "running"
 	// Keep upstream full-result rendering, expansion, truncation warnings and spill-file references.
 	// Pass a fresh component because our live preview has a different component shape.
@@ -177,38 +175,30 @@ const renderBashOutput: NonNullable<ToolDefinition["renderResult"]> = (result, o
 					{ ...ctx, args: { command: stringArg(ctx.args, "command") }, lastComponent: undefined },
 				)
 			: undefined
-	if (!display && complete) return complete
 	return {
 		invalidate() {
 			complete?.invalidate()
 		},
 		render(width) {
 			const w = Math.max(1, width)
-			if (!display) return []
+			const completedLines = complete?.render(Math.max(1, w - 3)) ?? []
+			if (!display) return new ToolText(withBranch(completedLines.join("\n").trim(), theme)).render(w)
 			const captured = !options.isPartial && display.state === "running"
 			const status = captured
 				? bashStatus(display).replace("Running", "Still running at check-in")
 				: bashStatus(display)
-			const lines = [
-				`${theme.bold(theme.fg("toolTitle", bashTitle(display)))} · ${theme.fg(bashStatusColor(display), status)}`,
-				theme.fg("text", `Command ${display.handle}`),
-			]
-			if (stringArg(ctx.args, "handle"))
-				lines.push(
-					...wrapTextWithAnsi(safeBashText(display.command), w)
-						.slice(0, options.expanded ? undefined : 1)
-						.map((line) => theme.fg("mdCode", line)),
-				)
-			if (terminal && complete) return [...lines.map((line) => truncateToWidth(line, w, "…")), ...complete.render(w)]
-			const output = wrapTextWithAnsi(safeBashText(display.output).trimEnd() || "No output yet", w)
+			const lines = [theme.fg(bashStatusColor(display), status)]
+			if (options.expanded) lines.push(theme.fg("text", `Command ${safeBashText(display.handle)}`))
+			if (terminal && complete)
+				return new ToolText(withBranch([...lines, ...completedLines].join("\n"), theme)).render(w)
+			const output = wrapTextWithAnsi(safeBashText(display.output).trimEnd() || "No output yet", Math.max(1, w - 3))
 			const tail = output.slice(-(options.expanded ? 20 : 3))
 			lines.push(...tail.map((line) => theme.fg("toolOutput", line)))
-			if (display.omittedBytes > 0 || output.length > tail.length)
-				lines.push(theme.fg("warning", "Older output omitted"))
+			const omitted = display.omittedBytes > 0 || output.length > tail.length
 			lines.push(
-				`${theme.fg("text", bashOutputAge(display))} · ${captured ? theme.fg("warning", "Snapshot at check-in · ") : ""}${theme.bold(theme.fg("accent", "/processes"))}${theme.fg("text", " to inspect")}`,
+				`${options.expanded ? `${theme.fg("text", bashOutputAge(display))} · ` : ""}${omitted ? theme.fg("warning", "Older output omitted · ") : ""}${theme.bold(theme.fg("accent", "/processes"))}${theme.fg("text", " to inspect")}`,
 			)
-			return lines.map((line) => truncateToWidth(line, w, "…"))
+			return new ToolText(withBranch(lines.join("\n"), theme)).render(w)
 		},
 	}
 }

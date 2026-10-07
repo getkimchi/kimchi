@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it } from "vitest"
-import { createDialogChrome } from "./dialog-chrome.js"
+import { createModalChrome } from "./modal-chrome.js"
 
 /**
  * Tags each styled span so tests can assert *which* theme color a row used,
@@ -23,9 +23,9 @@ function stripTags(s: string): string {
 
 const WIDTH = 40
 
-describe("createDialogChrome", () => {
+describe("createModalChrome", () => {
 	it("pads every row to the same visible width", () => {
-		const { emptyRow, contentRow, measuredRow, topBorder, bottomBorder } = createDialogChrome(makeTheme(), WIDTH)
+		const { emptyRow, contentRow, measuredRow, topBorder, bottomBorder } = createModalChrome(makeTheme(), WIDTH)
 		const rows = [topBorder("Title"), emptyRow, contentRow("<dim>hi</dim>", "hi"), measuredRow("hi"), bottomBorder]
 
 		for (const row of rows) {
@@ -34,7 +34,7 @@ describe("createDialogChrome", () => {
 	})
 
 	it("centers the title within the top border", () => {
-		const { topBorder } = createDialogChrome(makeTheme(), WIDTH)
+		const { topBorder } = createModalChrome(makeTheme(), WIDTH)
 
 		const plain = stripTags(topBorder("Rate response"))
 
@@ -48,7 +48,7 @@ describe("createDialogChrome", () => {
 	})
 
 	it("pads from the unstyled length so markup does not consume columns", () => {
-		const { contentRow } = createDialogChrome(makeTheme(), WIDTH)
+		const { contentRow } = createModalChrome(makeTheme(), WIDTH)
 
 		// Same visible text, one styled and one not, must align identically
 		// once the markup is stripped back out.
@@ -59,13 +59,13 @@ describe("createDialogChrome", () => {
 	})
 
 	it("accepts a numeric raw length as well as the raw string", () => {
-		const { contentRow } = createDialogChrome(makeTheme(), WIDTH)
+		const { contentRow } = createModalChrome(makeTheme(), WIDTH)
 
 		expect(contentRow("<dim>abc</dim>", 3)).toBe(contentRow("<dim>abc</dim>", "abc"))
 	})
 
 	it("measures child renders itself instead of being told the width", () => {
-		const { measuredRow, contentRow } = createDialogChrome(makeTheme(), WIDTH)
+		const { measuredRow, contentRow } = createModalChrome(makeTheme(), WIDTH)
 
 		// measuredRow derives the length that contentRow has to be given.
 		// `→` is double-width-adjacent, so this also pins the measurement to
@@ -74,17 +74,24 @@ describe("createDialogChrome", () => {
 	})
 
 	it("reports the interior width available to content", () => {
-		const { contentWidth } = createDialogChrome(makeTheme(), WIDTH)
+		const { contentWidth } = createModalChrome(makeTheme(), WIDTH)
 
 		// Two border columns plus two padding columns on each side.
 		expect(contentWidth).toBe(WIDTH - 6)
 	})
+
+	it("reports the column where interior content starts", () => {
+		const { contentLeft } = createModalChrome(makeTheme(), WIDTH)
+
+		// One border column plus two padding columns.
+		expect(contentLeft).toBe(3)
+	})
 })
 
-describe("createDialogChrome at degenerate widths", () => {
+describe("createModalChrome at degenerate widths", () => {
 	it("never emits negative padding or throws when the frame is too narrow", () => {
 		for (const width of [0, 1, 2, 3, 6]) {
-			const { emptyRow, contentRow, measuredRow, topBorder, bottomBorder, contentWidth } = createDialogChrome(
+			const { emptyRow, contentRow, measuredRow, topBorder, bottomBorder, contentWidth } = createModalChrome(
 				makeTheme(),
 				width,
 			)
@@ -100,7 +107,7 @@ describe("createDialogChrome at degenerate widths", () => {
 	})
 
 	it("clamps overlong content instead of padding backwards", () => {
-		const { contentRow } = createDialogChrome(makeTheme(), 10)
+		const { contentRow } = createModalChrome(makeTheme(), 10)
 
 		// Content wider than the interior: padding clamps to zero rather than
 		// producing a `" ".repeat(negative)` RangeError.

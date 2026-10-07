@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
+import { AgentSession, type ExtensionAPI, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import {
 	getParsedCliArgs,
@@ -132,9 +132,11 @@ import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-
 import settingsTrustSyncExtension from "./extensions/settings-trust-sync.js"
 import shellProfileMigrationExtension from "./extensions/shell-profile-migration.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
+import skillsManagerExtension from "./extensions/skills-manager/index.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import statusExtension from "./extensions/status/index.js"
+import { steerAbortTrackerExtension } from "./extensions/steer-events.js"
 import stripImagesExtension from "./extensions/strip-images.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
@@ -155,6 +157,7 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
+import { createWorkAttributionExtension } from "./extensions/work-attribution.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import { installGlobalFetchInstrumentation } from "./http/instrument-fetch.js"
 import {
@@ -691,6 +694,12 @@ try {
 			packageInstallGuardExtension,
 			sessionNameExtension(),
 			shutdownMarkerExtension,
+			// skill_view must always be present: the skills catalog in the system
+			// prompt directs the model to load skills through it. skill_manage
+			// (the write side) stays disabled — #235 turned it off because its
+			// autonomous skill-authoring guidance proved noisy in practice;
+			// re-enable only deliberately via registerSkillManageTool.
+			(pi: ExtensionAPI) => skillsManagerExtension(pi, { registerSkillManageTool: false }),
 			statsExtension,
 			statusExtension,
 			budgetCommandExtension,
@@ -731,6 +740,9 @@ try {
 			bashHooksAdapterExtension,
 			bashToolGuardExtension,
 			bashTimeoutGuidanceExtension,
+			// steer:aborted — emits when the user Esc-aborts the turn immediately
+			// following a harness steer (the "user vetoed the nudge" signal).
+			steerAbortTrackerExtension,
 			hiddenToolGuidanceExtension,
 			...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
 			ideAdapterExtension,
@@ -808,6 +820,7 @@ try {
 			traceIdExtension,
 			contextAssemblyExtension,
 			cacheSummaryExtension,
+			createWorkAttributionExtension(),
 			requestTimingExtension,
 			llmResponseLogExtension,
 			activityExtension,

@@ -270,7 +270,7 @@ describe("prompt enrichment environment context", () => {
 
 			expect(result.systemPrompt).not.toContain(`- OS release: ${release()}`)
 			expect(result.systemPrompt).toContain(`- OS version: ${osVersion()}`)
-			expect(result.systemPrompt).toContain(`- Raw platform: ${platform()}`)
+			expect(result.systemPrompt).toContain(`- Platform: ${platform()}`)
 			expect(result.systemPrompt).toContain(`- CPU architecture: ${arch()}`)
 			expect(result.systemPrompt).toContain("- Shell: /bin/test-shell")
 		} finally {
@@ -345,8 +345,8 @@ describe("prompt enrichment skills", () => {
 			createContext({ cwd, hasUI: false }),
 		)) as { systemPrompt: string }
 
-		expect(result.systemPrompt).toContain("<available_skills>")
-		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
+		expect(result.systemPrompt).toContain("## Skills")
+		expect(result.systemPrompt).toContain("- **typescript-safety**")
 		expect(result.systemPrompt).toContain("Use safe TypeScript patterns before editing TypeScript files.")
 	})
 
@@ -360,7 +360,7 @@ describe("prompt enrichment skills", () => {
 
 		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
 
-		expect(result.systemPrompt).not.toContain("<name>typescript-safety</name>")
+		expect(result.systemPrompt).not.toContain("- **typescript-safety**")
 	})
 
 	it("contributes ancestor .kimchi/skills through resources_discover", async () => {
@@ -1106,6 +1106,7 @@ describe("orchestrator default remap on session_start", () => {
 			apiKey: "test-key",
 			agentConfigDir: agentDir,
 			region: "us",
+			selfHostedUrl: undefined,
 			llmEndpoint: "",
 			customLlmEndpoint: undefined,
 			maxToolResultChars: 0,
@@ -1323,6 +1324,7 @@ describe("continuation nudge turn_end handler", () => {
 			apiKey: "",
 			agentConfigDir: "",
 			region: "us",
+			selfHostedUrl: undefined,
 			llmEndpoint: "",
 			customLlmEndpoint: undefined,
 			maxToolResultChars: 0,
