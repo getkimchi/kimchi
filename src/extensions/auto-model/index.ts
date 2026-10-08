@@ -14,6 +14,7 @@ import { getParsedCliArgs, MULTI_MODEL_ID } from "../../cli-args.js"
 import { writeJson } from "../../config/json.js"
 import { writeConfigSetting } from "../../config/settings.js"
 import { getAgentConfigDir } from "../../config.js"
+import { readModelDeprecations } from "../../model-deprecation.js"
 import { getSettingsManager } from "../../settings-watcher.js"
 import { getGlobalDefault, setMultiModelEnabled } from "../multi-model.js"
 import { syncAutoCapabilities } from "./capabilities.js"
@@ -121,6 +122,27 @@ function dropRetiredAutoDefaultMarker(): void {
 }
 
 /**
+ * Remove defaultModel/defaultProvider from settings.json. Used when the saved
+ * default resolves against nothing in the catalog and there is no catalog
+ * model to fall forward to: the dead pointer is dropped and multi-model stays
+ * disabled (its removal is planned — it is never re-enabled here). Idempotent;
+ * a missing or unreadable file is left alone, and the write must never take
+ * down session start (same guard as the seeded-default writes).
+ */
+function clearPersistedDefault(): void {
+	const path = resolve(getAgentConfigDir(), "settings.json")
+	try {
+		const settings: unknown = JSON.parse(readFileSync(path, "utf-8"))
+		if (settings !== null && typeof settings === "object" && !Array.isArray(settings)) {
+			const { defaultModel: _model, defaultProvider: _provider, ...rest } = settings as Record<string, unknown>
+			writeJson(path, rest)
+		}
+	} catch {
+		// Nothing to clear.
+	}
+}
+
+/**
  * Whether a default model is saved in settings.json, concrete or virtual.
  *
  * Used to keep a saved default from being wrapped in multi-model mode. It
@@ -130,6 +152,28 @@ function dropRetiredAutoDefaultMarker(): void {
  */
 function hasPersistedDefault(): boolean {
 	return !!getSettingsManager()?.getDefaultModel()
+}
+
+/**
+ * Metadata-declared successor for a dead catalog model: the deprecation
+ * sidecar's `replacement_model`, then `alternatives` in order, each validated
+ * against the live registry — a successor that is itself unserved is skipped.
+ * The sidecar is a union-merge that keeps entries for models already removed
+ * from the catalog, so the successor stays known after the model disappears.
+ * Returns the first served candidate plus the deprecation note, if any.
+ */
+function findMetadataSuccessor(
+	deadId: string,
+	modelRegistry: Pick<ExtensionContext["modelRegistry"], "find">,
+): { model: Model<Api>; note?: string } | undefined {
+	const info = readModelDeprecations(resolve(getAgentConfigDir(), "models.json")).get(deadId)
+	if (!info) return undefined
+	const slugs = [info.replacement_model, ...(info.alternatives?.map((alternative) => alternative.slug) ?? [])]
+	for (const slug of slugs) {
+		const candidate = slug ? modelRegistry.find(AUTO_MODEL_PROVIDER, slug) : undefined
+		if (candidate) return { model: candidate, note: info.deprecation_note }
+	}
+	return undefined
 }
 
 /** Whether the saved default itself is a routed virtual model (provider + auto* id). */
@@ -317,6 +361,37 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			// gated default is still owed (the configured default is still
 			// multi-model — the factory default — or there is no default at all).
 			const gatedDefaultOwed = !hasPersistedDefault() || getGlobalDefault()
+
+			// Self-heal dead defaults. A persisted default the catalog no longer
+			// serves (sunset, org de-list, rename) never resolves: upstream's
+			// findInitialModel silently falls back to some provider default on
+			// EVERY launch and leaves settings.json pointing at the dead entry
+			// forever, with only a generic restore-failure notice. Instead, heal
+			// once per fresh launch: re-derive the default with the metadata-declared
+			// successor (sidecar, validated live) or the same catalog policy as
+			// seeding (heir = Auto when served, else the first served flash
+			// candidate, else the first served catalog model), persist it, and say
+			// why. When not even the catalog can inherit, clear the dead pointer —
+			// multi-model is NEVER re-enabled; once off it stays off (its removal
+			// is planned). Detection runs on catalog membership only, so a
+			// deprecated-but-served default is never healed away while the proxy
+			// still translates it.
+			const settingsManager = getSettingsManager()
+			const persistedProvider = settingsManager?.getDefaultProvider()
+			const persistedModelId = settingsManager?.getDefaultModel()
+			// Heal candidates are kimchi-dev models, and the multi-model / routed
+			// virtual sentinels are policy states (the migration and the Auto
+			// rollback own them), not dead pointers — only a concrete kimchi-dev
+			// default the catalog no longer serves is dead.
+			const deadDefault =
+				persistedProvider === AUTO_MODEL_PROVIDER &&
+				persistedModelId !== undefined &&
+				persistedModelId !== MULTI_MODEL_ID &&
+				!persistedDefaultIsRoutedAuto() &&
+				ctx.modelRegistry.find(persistedProvider, persistedModelId) === undefined
+					? { provider: persistedProvider, id: persistedModelId }
+					: undefined
+
 			if (options.handleCliModelSelection && gatedDefault) {
 				// Bookkeeping only: readJson throws on a corrupt settings.json and
 				// writeJson throws on a read-only one; a seeded-default write must
@@ -351,6 +426,49 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 						`New sessions start on ${displayName} (the default). To pick a different model for this session, use your client's model selector (/model in the terminal).`,
 						"info",
 					)
+				}
+
+				if (deadDefault) {
+					// Heir priority: the metadata-declared successor (validated live)
+					// beats the policy heirs — Auto, the gated flash candidate — and
+					// finally the first served catalog model, which is exactly what
+					// upstream's findInitialModel would silently pick on every launch;
+					// the heal just makes that pick stable, persisted, and announced.
+					const successor = findMetadataSuccessor(deadDefault.id, ctx.modelRegistry)
+					const firstServed = ctx.modelRegistry.getAvailable().find((m) => m.provider === AUTO_MODEL_PROVIDER)
+					const heir = successor?.model ?? autoModel ?? gatedDefault ?? firstServed
+					resetLastNotified(sessionId)
+					if (heir) {
+						await pi.setModel(heir, { persist: true })
+						setMultiModelEnabled(sessionId, false)
+						try {
+							writeConfigSetting("multiModel", false)
+						} catch {
+							// Bookkeeping only, same guard as the seeded write: the
+							// in-memory heal still applies; the file stays stale until
+							// it is writable again.
+						}
+						const displayName = heir === autoModel ? AUTO_MODEL_NAME : heir.name
+						const note = successor?.note ? ` Details: ${successor.note}` : ""
+						// Mode-neutral copy: this notice is also relayed to ACP clients
+						// (Zed, Studio), where /model is not an available interaction.
+						ctx.ui.notify(
+							`Default model "${deadDefault.id}" is no longer served and has been replaced. New sessions start on ${displayName} (the new default).${note} To pick a different model for this session, use your client's model selector (/model in the terminal).`,
+							"info",
+						)
+					} else {
+						// Zero catalog models to inherit: drop the dead pointer so
+						// upstream's per-launch fallback stops resolving against it.
+						// multi-model is not re-enabled — the org runs on the client's
+						// own fallback surface until a model is served again.
+						clearPersistedDefault()
+						setMultiModelEnabled(sessionId, false)
+						ctx.ui.notify(
+							`Default model "${deadDefault.id}" is no longer served and has been cleared. To pick a model for this session, use your client's model selector (/model in the terminal).`,
+							"info",
+						)
+					}
+					return
 				}
 
 				if (!autoModel && gatedDefault) {

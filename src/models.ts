@@ -150,16 +150,33 @@ export interface ModelMetadata {
 	replacement_model?: string
 	alternatives?: ModelAlternative[]
 	deprecation_note?: string
+	/** The proxy's routing decision for this slug: "translate" when requests
+	 *  are rewritten to replacement_model, absent when served as-is. Only set
+	 *  on listed entries; models the proxy would reject are never listed. */
+	serving_action?: "translate" | (string & {})
 }
 
 interface ModelsMetadataResponse {
 	models: ModelMetadata[]
 }
 
+/**
+ * Selector ordering: serverless first, then the rest; within each group,
+ * active models first — entries with any deprecation signal (announced or
+ * past deprecated, or a vendor retirement / sunset-only record) keep working
+ * but are visually de-emphasized so new selection flows onto the active
+ * catalog. Within each of the four groups models are sorted alphabetically
+ * by slug: the raw catalog order interleaves families arbitrarily, which
+ * made /scoped-models' unticked section unreadable.
+ */
 function sortModels(models: ModelMetadata[]): ModelMetadata[] {
+	const bySlug = (list: ModelMetadata[]) => [...list].sort((a, b) => a.slug.localeCompare(b.slug))
+	const isActive = (m: ModelMetadata) => deriveDeprecationState(m, Date.now(), m.slug) === "none"
+	const nonDeprecated = (list: ModelMetadata[]) => bySlug(list.filter(isActive))
+	const deprecated = (list: ModelMetadata[]) => bySlug(list.filter((m) => !isActive(m)))
 	const serverless = models.filter((m) => m.is_serverless)
 	const rest = models.filter((m) => !m.is_serverless)
-	return [...serverless, ...rest]
+	return [...nonDeprecated(serverless), ...deprecated(serverless), ...nonDeprecated(rest), ...deprecated(rest)]
 }
 
 async function fetchAvailableModels(apiKey: string, options: FetchModelsOptions = {}): Promise<ModelMetadata[]> {
@@ -619,9 +636,14 @@ export async function discoverModelsConfig(
 		console.warn("[model-deprecation] failed to persist sidecar:", err)
 	}
 
+	// Deprecation is a signalling boundary, sunset is the serving boundary:
+	// the proxy keeps routing deprecated models (translating to a configured
+	// replacement or passing through) until sunset_at, so models in the
+	// deprecated window stay in models.json and the /model selector. Only
+	// past-sunset entries are dropped.
 	const activeModels = fetched.filter((m) => {
 		const state = deriveDeprecationState(m)
-		return (state === "none" || state === "announced") && m.limits.max_output_tokens > 0
+		return state !== "sunset" && m.limits.max_output_tokens > 0
 	})
 	if (activeModels.length === 0 && fetched.length > 0) {
 		if (options.requireActiveModels) {
