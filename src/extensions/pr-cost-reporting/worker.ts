@@ -21,9 +21,12 @@ import { buildSnapshots, type ReportingRepository, validateSnapshot } from "./sn
 const PASS_MS = 5000
 const RESPONSE_BYTES = 64 * 1024
 const REPOSITORY_CACHE_MS = 5 * 60_000
-/** A rejection that retrying cannot fix, such as an endpoint not deployed yet, waits one to six hours. */
-function rejectionDelay(status: number | undefined, attempts: number): number {
-	if (!status || status < 400 || status >= 500 || status === 408 || status === 429) return 0
+/**
+ * A rejection that retrying cannot fix, such as an endpoint not deployed yet or a full storage
+ * allowance (429 without Retry-After), waits one to six hours.
+ */
+function rejectionDelay(status: number | undefined, attempts: number, retryAfter: boolean): number {
+	if (!status || status < 400 || status >= 500 || status === 408 || (status === 429 && retryAfter)) return 0
 	return Math.min(6 * 60 * 60_000, 60 * 60_000 * 2 ** attempts)
 }
 const repositoryCache = new Map<string, { checkedAt: number; value?: ReportingRepository }>()
@@ -107,6 +110,7 @@ export async function deliverSnapshots(
 			if (!key || !safeEndpoint(apiUrl) || apiUrl !== entry.account.apiUrl) continue
 			attempts++
 			let retryMs = computeRetryDelayMs(entry.attempts + 1)
+			let retryAfter = false
 			let errorMessage = "PR reporting request unavailable"
 			let rejected: number | undefined
 			const assertCurrent = () => {
@@ -127,7 +131,9 @@ export async function deliverSnapshots(
 					throw new Error("PR reporting snapshot changed")
 				const response = await fetch(input, { ...init, redirect: "error", signal: combined })
 				assertCurrent()
-				retryMs = Math.max(retryMs, Math.min(parseRetryAfterMs(response) ?? 0, Number.MAX_SAFE_INTEGER - Date.now()))
+				const after = parseRetryAfterMs(response)
+				retryAfter = after !== null
+				retryMs = Math.max(retryMs, Math.min(after ?? 0, Number.MAX_SAFE_INTEGER - Date.now()))
 				if (!response.ok) {
 					errorMessage = `PR reporting returned HTTP ${response.status}`
 					rejected = response.status
@@ -170,7 +176,7 @@ export async function deliverSnapshots(
 			} catch {
 				trackPRCostMetric({ kind: "delivery", outcome: combined.aborted ? "canceled" : "failed" })
 				if (signal.aborted) return
-				const delay = Math.max(30_000, retryMs, rejectionDelay(rejected, entry.attempts))
+				const delay = Math.max(30_000, retryMs, rejectionDelay(rejected, entry.attempts, retryAfter))
 				await deferSnapshot(agentDir, id, snapshot.revision, Date.now() + delay, errorMessage)
 			}
 		}

@@ -58,6 +58,8 @@ export interface WireSnapshot extends SnapshotContent {
 export const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
 const UPLOAD_WINDOW_MS = 32 * 24 * 60 * 60 * 1000
 const DETAIL_WINDOW_MS = 90 * 24 * 60 * 60 * 1000
+/** The server stops accepting corrections five minutes before a PR's details expire. */
+const CORRECTION_MARGIN_MS = 5 * 60_000
 const FINISHED_PR_GRACE_MS = 2 * 24 * 60 * 60 * 1000
 export const MAX_REVISION = 9223372036854775807n
 export function revision(value: unknown): value is string {
@@ -228,15 +230,10 @@ function method(
 		})
 			? "user-correction"
 			: "explicit"
-	// An open PR's spend stays unmerged, but a model match is still only a guess.
-	if (
-		request.allocation === "inferred" ||
-		(request.allocation === "unmerged" && request.segment?.attribution === "inferred")
-	)
-		return request.segment?.attribution === "inferred" ? "model" : "session"
-	if (request.segment?.attribution === "session" && request.allocation !== "pull-request") return "session"
 	if (request.segment?.attribution === "explicit") return "explicit"
-	return "native"
+	// Only a confirmed PR allocation rests on recorded evidence; anything else is a model guess or session grouping.
+	if (request.allocation === "pull-request") return "native"
+	return request.segment?.attribution === "inferred" ? "model" : "session"
 }
 
 /** Construct fields individually: local identities, paths, prompts and prices never cross this boundary. */
@@ -255,8 +252,11 @@ export function buildSnapshots(
 	const conflictingLinkStatus = new Set<string>()
 	const conflicts = new Set<string>()
 	const cutoff = Date.now() - UPLOAD_WINDOW_MS
-	const workKey = (account: WorkAccount, workId: string) => JSON.stringify([accountKey(account), workId])
+	// Works with repository evidence. Questions asked outside Git have neither scope nor commits.
+	const repositoryWorks = new Set<string>()
 	for (const row of records) {
+		if ((row.type === "request" && isWorkScope(row.scope)) || row.type === "commit")
+			repositoryWorks.add(String(row.workId))
 		if (row.type === "request" && typeof row.requestId === "string")
 			original.set(row.requestId, [...(original.get(row.requestId) ?? []), row])
 		if (row.type === "work_link" && typeof row.linkId === "string" && typeof row.revision === "number") {
@@ -292,6 +292,19 @@ export function buildSnapshots(
 			)
 		const row = rows[0]
 		if (!row || !validTime(row.recordedAt)) continue
+		// A correction for PRs whose details the server is about to delete can no longer apply.
+		const account = request.account
+		const candidates = report.pullRequests.filter(
+			(pr) => account && pr.account && sameWorkAccount(pr.account, account) && request.pullRequestIds.includes(pr.key),
+		)
+		if (
+			candidates.length &&
+			candidates.every((pr) => {
+				const finished = pr.pullRequest?.state === "merged" ? pr.pullRequest.mergedAt : pr.pullRequest?.closedAt
+				return finished && Date.now() >= Date.parse(finished) + DETAIL_WINDOW_MS - CORRECTION_MARGIN_MS
+			})
+		)
+			continue
 		const evidence = row.evidence
 		const manual = row.status === "revoked" || (object(evidence) && evidence.source === "work-command")
 		corrections.set(request.requestId, {
@@ -301,45 +314,41 @@ export function buildSnapshots(
 			source: manual ? "work-command" : "producer-confirmation",
 		})
 	}
-	const activeWorks = new Set<string>()
-	for (const pr of report.pullRequests) {
-		if (!pr.account) continue
-		const finishedAt = pr.pullRequest?.state === "merged" ? pr.pullRequest.mergedAt : pr.pullRequest?.closedAt
-		if (!finishedAt || Date.parse(finishedAt) >= cutoff - FINISHED_PR_GRACE_MS)
-			for (const workId of pr.workIds) activeWorks.add(workKey(pr.account, workId))
-	}
-	for (const request of report.requests)
-		if (request.account && (!request.startedAt || Date.parse(request.startedAt) >= cutoff))
-			for (const workId of [...request.workIds, ...(request.linkedWorkIds ?? [])])
-				activeWorks.add(workKey(request.account, workId))
-	for (const request of report.requests) {
-		const receipt = corrections.get(request.requestId)
-		const account = request.account
-		if (!receipt || !account) continue
-		const candidates = report.pullRequests.filter(
-			(pr) => pr.account && sameWorkAccount(pr.account, account) && request.pullRequestIds.includes(pr.key),
-		)
-		const reportable = candidates.some((pr) => {
-			const finished = pr.pullRequest?.state === "merged" ? pr.pullRequest.mergedAt : pr.pullRequest?.closedAt
-			return (
-				finished &&
-				Date.now() < Date.parse(finished) + DETAIL_WINDOW_MS &&
-				(Date.parse(receipt.recordedAt) >= cutoff ||
-					Date.parse(receipt.recordedAt) >= Date.parse(finished) + UPLOAD_WINDOW_MS)
-			)
-		})
-		if (reportable)
-			for (const id of [...request.workIds, ...(request.linkedWorkIds ?? [])]) activeWorks.add(workKey(account, id))
-	}
+	// Send recent attempts, attempts of open or recently finished PRs and corrections the server can still apply.
+	// Older finished history stays on the server through exact windowed PR IDs, so long-lived works stay small.
+	const recentPulls = new Set(
+		report.pullRequests
+			.filter((pr) => {
+				const finishedAt = pr.pullRequest?.state === "merged" ? pr.pullRequest.mergedAt : pr.pullRequest?.closedAt
+				return !finishedAt || Date.parse(finishedAt) >= cutoff - FINISHED_PR_GRACE_MS
+			})
+			.map((pr) => pr.key),
+	)
+	const current = (request: RequestCostAllocation) =>
+		!request.startedAt ||
+		Date.parse(request.startedAt) >= cutoff ||
+		request.pullRequestIds.some((key) => recentPulls.has(key))
 	const included = new Set(
 		report.requests
 			.filter((request) => {
 				const account = request.account
+				const receipt = corrections.get(request.requestId)
+				if (!account) return false
+				if (current(request)) return true
 				return (
-					account &&
-					[...request.workIds, ...(request.linkedWorkIds ?? [])].some((workId) =>
-						activeWorks.has(workKey(account, workId)),
-					)
+					receipt !== undefined &&
+					report.pullRequests.some((pr) => {
+						if (!pr.account || !sameWorkAccount(pr.account, account) || !request.pullRequestIds.includes(pr.key))
+							return false
+						const finished = pr.pullRequest?.state === "merged" ? pr.pullRequest.mergedAt : pr.pullRequest?.closedAt
+						return (
+							finished !== null &&
+							finished !== undefined &&
+							Date.now() < Date.parse(finished) + DETAIL_WINDOW_MS - CORRECTION_MARGIN_MS &&
+							(Date.parse(receipt.recordedAt) >= cutoff ||
+								Date.parse(receipt.recordedAt) >= Date.parse(finished) + UPLOAD_WINDOW_MS)
+						)
+					})
 				)
 			})
 			.map((request) => request.requestId),
@@ -353,15 +362,14 @@ export function buildSnapshots(
 			.filter((request) => request.priceStatus === "priced" && !request.billingRecordIds.length)
 			.map((request) => request.requestId),
 	)
-	const activeWorkIds = new Set([...activeWorks].map((key) => JSON.parse(key)[1]))
 	for (const request of report.requests) {
 		if (!request.account || !isWorkId(request.requestId) || !request.startedAt) {
-			// Older history outside open work, such as requests recorded before scopes existed, is never uploaded.
-			const uploadable =
-				!request.startedAt ||
-				Date.parse(request.startedAt) >= cutoff ||
-				[...request.workIds, ...(request.linkedWorkIds ?? [])].some((workId) => activeWorkIds.has(workId))
-			if (uploadable) {
+			// Unscoped attempts of repository work that would be sent leave its history incomplete.
+			// Questions asked outside Git and older history never count.
+			if (
+				current(request) &&
+				[...request.workIds, ...(request.linkedWorkIds ?? [])].some((workId) => repositoryWorks.has(workId))
+			) {
 				incomplete = true
 				skippedRequests++
 			}

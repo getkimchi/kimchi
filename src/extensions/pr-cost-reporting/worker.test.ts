@@ -255,7 +255,8 @@ describe("account-fenced reporting delivery", () => {
 		const sourcePath = join(directory, "work-attribution", "source.jsonl")
 		await writeFile(
 			sourcePath,
-			`${await readFile(sourcePath, "utf8")}${JSON.stringify({ version: 1, type: "request", workId: "66666666-6666-4666-8666-666666666666", sessionId: "legacy-session", requestId: "77777777-7777-4777-8777-777777777777", recordedAt: "2026-10-01T10:00:00Z" })}\n`,
+			// The legacy work has repository evidence, so its unscoped request leaves that history incomplete.
+			`${await readFile(sourcePath, "utf8")}${JSON.stringify({ version: 1, type: "request", workId: "66666666-6666-4666-8666-666666666666", sessionId: "legacy-session", requestId: "77777777-7777-4777-8777-777777777777", recordedAt: "2026-10-01T10:00:00Z" })}\n${JSON.stringify({ version: 1, type: "commit", workId: "66666666-6666-4666-8666-666666666666", sessionId: "legacy-session", sha: "c".repeat(40), repository: "/project/.git", worktree: "/project", recordedAt: "2026-10-01T10:00:00Z", pullRequests: [] })}\n`,
 		)
 		let sent: Record<string, unknown> | undefined
 		http.mockImplementation(async (input, init) => {
@@ -425,7 +426,8 @@ describe("account-fenced reporting delivery", () => {
 		await deliver()
 		expect(http).not.toHaveBeenCalled()
 	})
-	it.each([404, 400, 403])("backs off for hours after a permanent HTTP %s rejection", async (status) => {
+	// A 429 without Retry-After is a storage limit, which retrying within minutes cannot fix.
+	it.each([404, 400, 403, 429])("backs off for hours after a permanent HTTP %s rejection", async (status) => {
 		http.mockImplementation(async (input) =>
 			String(input).endsWith("api-keys:verify")
 				? Response.json({ organizationId: org, userId: user })

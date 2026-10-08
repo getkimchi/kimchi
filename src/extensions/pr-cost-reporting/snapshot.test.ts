@@ -123,7 +123,7 @@ describe("allowlisted repository snapshots", () => {
 		expect(content.requests.map((request) => request.requestId)).toEqual([requestId])
 		expect(content.pullRequests.map((pull) => pull.id)).toEqual([pr.id])
 	})
-	it("uploads every request in recent work, including its older planning requests", () => {
+	it("uploads a long-lived work's recent requests without its older unlinked history", () => {
 		const rows = records([], { startedAt: "2026-01-01T00:00:00Z" })
 		rows.push({ ...rows[0], requestId: billingId, startedAt: at })
 		const report = calculatePullRequestCosts(rows, [])
@@ -133,7 +133,7 @@ describe("allowlisted repository snapshots", () => {
 			new Map([["/private/repo/.git", { provider: "github", host: "github.com", id: "42" }]]),
 			true,
 		)
-		expect(result.snapshots[0].content.requests).toHaveLength(2)
+		expect(result.snapshots[0].content.requests.map((request) => request.requestId)).toEqual([billingId])
 	})
 	it("drops old unlinked work but keeps a closed PR with an unknown close time", () => {
 		const rows = records([], { startedAt: "2026-01-01T00:00:00Z" })
@@ -256,7 +256,7 @@ describe("allowlisted repository snapshots", () => {
 		expect(content.requests[0].allocation).toEqual({
 			kind: count === 1 ? "post-merge" : "shared",
 			pullRequestIds: Array.from({ length: count }, (_, index) => String(101 + index)),
-			method: "native",
+			method: "session",
 		})
 		expect(content.requests[0].billingRecordIds).toEqual([billingId])
 		expect(() =>
@@ -605,5 +605,131 @@ describe("conflicting PR metadata", () => {
 			snapshots = buildSnapshots(rows, report, new Map(), true).snapshots
 		}).not.toThrow()
 		expect(snapshots.map((snapshot) => snapshot.content.repository.id).sort()).toEqual(["42", "43"])
+	})
+})
+
+describe("per-request upload window and evidence labels", () => {
+	const work = "55555555-5555-4555-8555-555555555551"
+	const planned = "33333333-3333-4333-8333-333333333331"
+	const later = "33333333-3333-4333-8333-333333333332"
+	const segment = "66666666-6666-4666-8666-666666666661"
+	const scope = { account, repository: "/private/repo/.git" }
+	const merged = (id: string, mergedAt: string | null, number = 1): WorkPullRequest => ({
+		...pull(number),
+		id,
+		state: mergedAt ? "merged" : "open",
+		mergedAt,
+		checkedAt: mergedAt ?? at,
+	})
+	const request = (requestId: string, startedAt: string, attribution = "session", reason = "test"): WorkRecord => ({
+		version: 1,
+		type: "request",
+		workId: work,
+		sessionId: "session",
+		requestId,
+		startedAt,
+		recordedAt: startedAt,
+		scope,
+		segment: { id: segment, attribution, reason },
+	})
+	const commit = (pullRequests: WorkPullRequest[], sha = "b"): WorkRecord => ({
+		version: 1,
+		type: "commit",
+		workId: work,
+		sessionId: "session",
+		sha: sha.repeat(40),
+		repository: "/private/repo/.git",
+		worktree: "/private/repo",
+		recordedAt: "2026-07-01T00:00:00.000Z",
+		pullRequests,
+	})
+	const correction = (recordedAt: string): WorkRecord => ({
+		version: 1,
+		type: "work_link",
+		workId: work,
+		sessionId: "session",
+		recordedAt,
+		linkId: "77777777-7777-4777-8777-777777777771",
+		revision: 1,
+		status: "active",
+		sourceWorkId: work,
+		targetWorkId: work,
+		requestIds: [planned],
+		scope,
+		evidence: { source: "work-command", segmentId: segment },
+	})
+	const bill = (requestId: string, n: number, billed = account) => ({
+		requestId,
+		billingRecordId: `44444444-4444-4444-8444-44444444444${n}`,
+		costUsd: "1",
+		account: billed,
+	})
+	const snapshot = (rows: WorkRecord[], bills: ReturnType<typeof bill>[]) =>
+		buildSnapshots(rows, calculatePullRequestCosts(rows, bills), new Map(), true)
+
+	it("sends a long-lived work's recent requests without its finished history", () => {
+		const rows = [
+			request(planned, "2026-08-01T00:00:00.000Z"),
+			commit([merged("101", "2026-08-02T00:00:00.000Z")]),
+			request(later, "2026-10-06T00:00:00.000Z"),
+		]
+		const { content } = snapshot(rows, [bill(planned, 1), bill(later, 2)]).snapshots[0]
+		expect(content.requests.map((row) => row.requestId)).toEqual([later])
+	})
+	it.each([
+		["past day 90", "2026-07-08T12:00:00.000Z"],
+		["within the server's last five minutes", "2026-07-09T12:03:00.000Z"],
+	])("never sends a correction receipt %s", (_case, mergedAt) => {
+		const rows = [
+			request(planned, "2026-07-08T11:00:00.000Z"),
+			commit([merged("101", mergedAt)]),
+			correction("2026-10-01T12:00:00.000Z"),
+			request(later, "2026-10-06T12:00:00.000Z"),
+		]
+		const requests = snapshot(rows, [bill(planned, 1), bill(later, 2)]).snapshots.flatMap(
+			(item) => item.content.requests,
+		)
+		expect(requests.every((row) => row.correction === undefined)).toBe(true)
+	})
+	it.each([
+		["a model match whose bill has not arrived yet", false, "2026-10-06T10:00:00.000Z", "inferred", "model"],
+		["a model match that started after the merge", true, "2026-10-06T14:00:00.000Z", "inferred", "model"],
+		["an unresolved input", true, "2026-10-06T10:00:00.000Z", "unknown", "session"],
+	])("labels %s without claiming recorded evidence", (_case, priced, startedAt, attribution, method) => {
+		const rows = [request(planned, startedAt, attribution), commit([merged("101", "2026-10-06T12:00:00.000Z")])]
+		const { content } = snapshot(rows, priced ? [bill(planned, 1)] : []).snapshots[0]
+		expect(content.requests[0].allocation).toMatchObject({ pullRequestIds: ["101"], method })
+	})
+	it("keeps repository history complete beside a question asked outside Git", () => {
+		const rows = [
+			request(planned, "2026-10-06T10:00:00.000Z"),
+			commit([merged("101", "2026-10-06T12:00:00.000Z")]),
+			{
+				version: 1,
+				type: "request",
+				workId: "55555555-5555-4555-8555-555555555559",
+				sessionId: "home-directory",
+				requestId: later,
+				startedAt: "2026-10-07T09:00:00.000Z",
+				recordedAt: "2026-10-07T09:00:00.000Z",
+				segment: { id: segment, attribution: "session", reason: "matching-disabled" },
+			} satisfies WorkRecord,
+		]
+		const built = snapshot(rows, [bill(planned, 1), bill(later, 2)])
+		expect(built).toMatchObject({ incomplete: false, skippedRequests: 0 })
+		expect(built.snapshots[0].content.coverage.historyComplete).toBe(true)
+	})
+	it("never sends another account's billing IDs for a post-merge request", () => {
+		const other = { ...account, organizationId: "99999999-9999-4999-8999-999999999999" }
+		const rows = [
+			request(planned, "2026-10-06T10:00:00.000Z"),
+			request(later, "2026-10-06T14:00:00.000Z"),
+			commit([merged("101", "2026-10-06T12:00:00.000Z")]),
+		]
+		const { content } = snapshot(rows, [bill(planned, 1), bill(later, 3, other)]).snapshots[0]
+		expect(content.requests.find((row) => row.requestId === later)).toMatchObject({
+			allocation: { kind: "post-merge" },
+			billingRecordIds: [],
+		})
 	})
 })
