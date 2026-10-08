@@ -168,7 +168,7 @@ const NO_DAEMON_STEER =
 function backgroundSuggestion(): string {
 	const daemon = isExperimentalFeaturesEnabled()
 	return (
-		"Use the bash tool with a long timeout (e.g. timeout=1800) and checkin_interval (e.g. 60) for long-running commands, then drive them via bash_control. " +
+		"Use the bash tool for long-running commands: if one is still running after its initial handoff (~15s), you get a handle and it continues by default — reviews and the exit result arrive automatically, so do not poll; drive stops via bash_control stop_handles. " +
 		"Do not background processes with `&`, `nohup`, or `disown` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs. " +
 		(daemon
 			? `Managed background (bash + bash_control) is killed when the session ends; ${DAEMON_STEER}`
@@ -193,13 +193,15 @@ Execute a bash command for operations without a dedicated tool: build commands, 
 
 DO NOT use bash for: reading files (use \`read\`), editing files (use \`edit\`), writing files (use \`write\`), searching file contents (use \`grep\`), finding files by pattern (use \`find\`), or listing directories (use \`ls\`) — dedicated tools are faster and unlock LSP context.
 
-DO NOT pipe output through \`tail\` or \`head\` to hide it — this buffers all output until the process ends, preventing real-time progress monitoring. Instead, let the bash tool stream output directly and set a realistic timeout. For long-running commands (builds, tests, training), set a long timeout (e.g. timeout=1800) and checkin_interval (e.g. 60), then drive the process via bash_control.
+DO NOT pipe output through \`tail\` or \`head\` to hide it — this buffers all output until the process ends, preventing real-time progress monitoring. Instead, let the bash tool stream output directly. For long-running commands (builds, tests, training), just run them: if the command is still running at its brief initial handoff (~2s), you receive a process handle and it continues by default while other tools stay available. Each process's exit result is delivered automatically — do not poll; do independent work while it runs, but avoid commands or edits that could conflict with it (same files, package managers, ports, generated output). Call bash_control to inspect the cohort (wait: false), to stop specific handles (stop_handles), or with wait: true when you genuinely have no other work until something changes — an explicit wait returns at the first exit or a bounded checkpoint (five minutes by default, ten minutes at most), giving you a prompt to reassess before waiting again. Run away processes cannot escape: every background process is bounded by a harness-owned safety limit, not by any timeout you set.
 
-DO NOT background processes with \`&\`, \`nohup\`, or \`disown\` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs. Instead, set a long timeout on the bash command so it runs in the bash tool's background mode with proper process management. Managed background (timeout/checkin_interval + bash_control) is killed when the session ends — use the \`daemon\` tool instead when, and only when, a process must keep running after your session ends (e.g. a server someone connects to afterwards).
+DO NOT background processes with \`&\`, \`nohup\`, or \`disown\` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs. Managed background (bash + bash_control) is killed when the session ends — use the \`daemon\` tool instead when, and only when, a process must keep running after your session ends (e.g. a server someone connects to afterwards).
 
-Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.
+Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file.
 
 Each command runs in a fresh shell rooted at the session working directory; \`cd\` does NOT persist between bash tool calls. Use absolute paths, or chain \`cd <dir> && <command>\` within a single call.
+
+When you need to install a tool or library, prefer pre-built packages (apt, brew, pip, npm, cargo install) over compiling from source — only build from source when no package exists or you need a specific build configuration. Compiling from source is slow, wastes wall-clock, and often produces the same result a package manager would.
 `.trim()
 
 /**
@@ -217,8 +219,8 @@ Each command runs in a fresh shell rooted at the session working directory; \`cd
 export function bashToolDescription(): string {
 	if (isExperimentalFeaturesEnabled()) return BASH_TOOL_DESCRIPTION
 	return BASH_TOOL_DESCRIPTION.replace(
-		"Managed background (timeout/checkin_interval + bash_control) is killed when the session ends — use the `daemon` tool instead when, and only when, a process must keep running after your session ends (e.g. a server someone connects to afterwards).",
-		"Managed background (timeout/checkin_interval + bash_control) is killed when the session ends.",
+		"Managed background (bash + bash_control) is killed when the session ends — use the `daemon` tool instead when, and only when, a process must keep running after your session ends (e.g. a server someone connects to afterwards).",
+		"Managed background (bash + bash_control) is killed when the session ends.",
 	)
 }
 

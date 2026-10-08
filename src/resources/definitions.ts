@@ -1,4 +1,3 @@
-import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../extensions/bash-timeout-constants.js"
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../extensions/claude-code-skills/definition.js"
 import { FERMENT_V2_RESOURCE_ID } from "../extensions/ferment-v2/constants.js"
 import { MEMORY_RESOURCE_ID } from "../extensions/memory/config.js"
@@ -63,13 +62,6 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		label: "Bash-tool guard",
 		description:
 			"Warn when the LLM uses `bash` (cat/sed/echo) for tasks that have a dedicated read/edit/write tool, and remind it that `cd` does not persist between bash calls. Disabling stops runtime guard messages; the core prompt continues to prefer dedicated tools.",
-		defaultEnabled: true,
-	},
-	{
-		id: "extensions.bash-default-timeout",
-		kind: "extensions",
-		label: "Bash default timeout",
-		description: `Apply a ${DEFAULT_BASH_TIMEOUT_SECONDS}s default timeout to every bash command when none is supplied, so misbehaving commands cannot hang a session indefinitely.`,
 		defaultEnabled: true,
 	},
 	{

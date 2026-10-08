@@ -5,7 +5,16 @@ import { testTheme as theme } from "../__mocks__/theme.js"
 import { createToolRenderContext } from "../__mocks__/tool-render-context.js"
 import { bashStatus, bashStatusColor, renderBashCall, renderBashResult, safeBashText } from "./bash-display.js"
 import { createProcessRegistry, type ProcessDisplaySnapshot } from "./process-registry.js"
-import { getSessionRegistry, setSessionRegistry } from "./session-registry.js"
+import { createReviewCoordinator } from "./review-coordinator.js"
+import { getSessionState, setSessionState } from "./session-registry.js"
+
+function makeState(registry: ReturnType<typeof createProcessRegistry>) {
+	return {
+		registry,
+		coordinator: createReviewCoordinator({ registry }),
+		limitSeconds: 60,
+	}
+}
 
 const display: ProcessDisplaySnapshot = {
 	handle: "c1",
@@ -26,8 +35,8 @@ const display: ProcessDisplaySnapshot = {
 
 beforeAll(() => initTheme("default"))
 afterEach(async () => {
-	await getSessionRegistry()?.shutdown()
-	setSessionRegistry(undefined)
+	await getSessionState()?.registry.shutdown()
+	setSessionState(undefined)
 })
 describe("Bash display", () => {
 	it.each([false, true])("renders no empty foreground result row (partial: %s)", (isPartial) => {
@@ -152,7 +161,7 @@ describe("Bash display", () => {
 	})
 
 	it("folds repeated historical check-ins into the original row, retaining final expansion and errors", () => {
-		setSessionRegistry(createProcessRegistry())
+		setSessionState(makeState(createProcessRegistry()))
 		const initial = { content: [], details: { display } }
 		const options = { expanded: true, isPartial: false }
 		const ctx = createToolRenderContext({ args: { command: display.command } })
@@ -200,13 +209,13 @@ describe("Bash display", () => {
 		)
 		expect(call.render(100).join("\n")).toContain("Bash")
 		expect(error.render(100).join("\n")).toContain("Error: unknown handle")
-		setSessionRegistry(createProcessRegistry())
+		setSessionState(makeState(createProcessRegistry()))
 		expect(renderBashCall(control.args, theme, control).render(100).join("\n")).toContain("Bash")
 	})
 
 	it("keeps the original card live between check-ins and preserves settlement after removal", async () => {
 		const registry = createProcessRegistry()
-		setSessionRegistry(registry)
+		setSessionState(makeState(registry))
 		let emit!: (data: Buffer) => void
 		let exit!: (result: { exitCode: number }) => void
 		const handle = registry.spawn(
@@ -222,7 +231,7 @@ describe("Bash display", () => {
 			"demo",
 			"/tmp",
 			undefined,
-			{ intervalSeconds: 15, deadlineMs: Date.now() + 60000 },
+			{ limitSeconds: 60 },
 		)
 		const initial = { content: [], details: { display: registry.displaySnapshot(handle) } }
 		const options = { expanded: true, isPartial: false }

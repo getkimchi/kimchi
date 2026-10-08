@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { extractTimeoutSeconds, isBashTimeoutResult } from "./bash-timeout-guidance.js"
+import { isBashLimitResult } from "./bash-timeout-guidance.js"
 
 function makeToolResult(
 	overrides: Partial<{
@@ -28,37 +28,32 @@ function makeToolResult(
 	}
 }
 
-describe("extractTimeoutSeconds", () => {
-	it("extracts the timeout value from the error message", () => {
-		expect(extractTimeoutSeconds("some output\n\nCommand timed out after 300 seconds")).toBe(300)
+describe("isBashLimitResult", () => {
+	it("returns true for a bash result containing a harness safety-limit error", () => {
+		const event = makeToolResult({
+			toolName: "bash",
+			isError: true,
+			content: [{ type: "text", text: "Progress: 50%\n\nProcess killed by the harness safety limit (3600s)" }],
+		})
+		expect(isBashLimitResult(event)).toBe(true)
 	})
 
-	it("returns undefined when there is no timeout message", () => {
-		expect(extractTimeoutSeconds("Command exited with code 1")).toBeUndefined()
-	})
-
-	it("returns undefined for empty text", () => {
-		expect(extractTimeoutSeconds("")).toBeUndefined()
-	})
-})
-
-describe("isBashTimeoutResult", () => {
-	it("returns true for a bash result containing a timeout error", () => {
+	it("returns true for a legacy timeout error (subagent clamps)", () => {
 		const event = makeToolResult({
 			toolName: "bash",
 			isError: true,
 			content: [{ type: "text", text: "Progress: 50%\n\nCommand timed out after 600 seconds" }],
 		})
-		expect(isBashTimeoutResult(event)).toBe(true)
+		expect(isBashLimitResult(event)).toBe(true)
 	})
 
 	it("returns false when the result is not an error", () => {
 		const event = makeToolResult({
 			toolName: "bash",
 			isError: false,
-			content: [{ type: "text", text: "Command timed out after 600 seconds" }],
+			content: [{ type: "text", text: "Process killed by the harness safety limit (3600s)" }],
 		})
-		expect(isBashTimeoutResult(event)).toBe(false)
+		expect(isBashLimitResult(event)).toBe(false)
 	})
 
 	it("returns false for a non-timeout error", () => {
@@ -67,7 +62,7 @@ describe("isBashTimeoutResult", () => {
 			isError: true,
 			content: [{ type: "text", text: "Command exited with code 1" }],
 		})
-		expect(isBashTimeoutResult(event)).toBe(false)
+		expect(isBashLimitResult(event)).toBe(false)
 	})
 
 	it("returns false for non-bash tool results", () => {
@@ -76,6 +71,6 @@ describe("isBashTimeoutResult", () => {
 			isError: true,
 			content: [{ type: "text", text: "Command timed out after 600 seconds" }],
 		})
-		expect(isBashTimeoutResult(event)).toBe(false)
+		expect(isBashLimitResult(event)).toBe(false)
 	})
 })

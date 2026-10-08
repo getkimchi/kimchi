@@ -547,14 +547,14 @@ describe("tool exposure at session start", () => {
 		expect(harness.active.has("bash_control"), "bash_control hidden before any background handle").toBe(false)
 
 		// A bash result carrying a background handle reveals bash_control
-		// (the gate handler observes the handle; reveal happens in the same seam).
+		// (the cohort tracker observes the handoff; reveal happens in the same seam).
 		await harness.fireEvent("tool_result", {
 			toolName: "bash",
 			toolCallId: "c1",
 			input: { command: "long build" },
 			content: [{ type: "text", text: "still running" }],
 			isError: false,
-			details: { handle: "h1", checkin: true, exited: false },
+			details: { handle: "h1", handoff: true, exited: false },
 		})
 
 		expect(harness.active.has("bash_control"), "bash_control visible after the first background handle").toBe(true)
@@ -567,7 +567,7 @@ describe("tool exposure at session start", () => {
 			input: { command: "another long build" },
 			content: [{ type: "text", text: "still running" }],
 			isError: false,
-			details: { handle: "h2", checkin: true, exited: false },
+			details: { handle: "h2", handoff: true, exited: false },
 		})
 		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
 	})

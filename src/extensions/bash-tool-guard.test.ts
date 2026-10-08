@@ -257,10 +257,10 @@ describe("classifyBashCommand — backgrounding patterns", () => {
 		expect(result?.category).toBe("background")
 	})
 
-	it("suggestion mentions timeout and bash_control", () => {
+	it("suggestion mentions bash_control", () => {
 		const result = classifyBashCommand("nohup python3 run.py &")
-		expect(result?.suggestion).toMatch(/timeout/)
 		expect(result?.suggestion).toMatch(/bash_control/)
+		expect(result?.suggestion).toMatch(/stop_handles/)
 	})
 
 	it("does not flag `&&` (logical AND)", () => {
@@ -872,9 +872,32 @@ describe("BASH_TOOL_DESCRIPTION", () => {
 		expect(bashToolDescription()).toContain("background")
 	})
 
-	it("suggests using long timeout and checkin_interval for long-running commands", () => {
-		expect(bashToolDescription()).toMatch(/timeout=1800/)
-		expect(bashToolDescription()).toMatch(/checkin_interval/)
+	it("explains the cohort contract without model timing knobs", () => {
+		expect(bashToolDescription()).not.toMatch(/timeout=1800/)
+		expect(bashToolDescription()).not.toMatch(/checkin_interval/)
+		expect(bashToolDescription()).toContain("harness-owned safety limit")
+		expect(bashToolDescription()).toContain("do not poll")
+	})
+
+	it("tells the model other tools stay available while a process runs", () => {
+		expect(bashToolDescription()).toContain("other tools stay available")
+	})
+
+	it("steers the model toward independent work instead of polling bash_control", () => {
+		expect(bashToolDescription()).toContain("do independent work")
+		expect(bashToolDescription()).toContain("do not poll")
+	})
+
+	it("warns against commands that could conflict with a running process", () => {
+		expect(bashToolDescription()).toContain("avoid commands or edits that could conflict")
+	})
+
+	it("tells the model to prefer pre-built packages over compiling from source", () => {
+		expect(bashToolDescription()).toContain("prefer pre-built packages")
+		expect(bashToolDescription()).toContain("over compiling from source")
+		expect(bashToolDescription()).toContain("apt")
+		expect(bashToolDescription()).toContain("brew")
+		expect(bashToolDescription()).toContain("pip")
 	})
 })
 
@@ -889,9 +912,7 @@ describe("toolDescriptionOverride", () => {
 		const override = toolDescriptionOverride("bash")
 		if (!override) throw new Error("expected bash description override")
 		expect(override).not.toContain("`daemon`")
-		expect(override).toContain(
-			"Managed background (timeout/checkin_interval + bash_control) is killed when the session ends.",
-		)
+		expect(override).toContain("Managed background (bash + bash_control) is killed when the session ends.")
 	})
 
 	it("returns undefined for non-bash tools", () => {

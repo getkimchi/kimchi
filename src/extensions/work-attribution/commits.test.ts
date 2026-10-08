@@ -9,7 +9,17 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createBackgroundBashToolDefinition } from "../bash-background/bash-background-tool.js"
 import bashBackgroundExtension from "../bash-background/index.js"
 import { createProcessRegistry } from "../bash-background/process-registry.js"
-import { getSessionRegistry, setSessionRegistry } from "../bash-background/session-registry.js"
+import { createReviewCoordinator } from "../bash-background/review-coordinator.js"
+import { getSessionState, setSessionState } from "../bash-background/session-registry.js"
+
+function bashState(registry: ReturnType<typeof createProcessRegistry>) {
+	return {
+		registry,
+		coordinator: createReviewCoordinator({ registry, handoffSeconds: 0.01 }),
+		limitSeconds: 60,
+	}
+}
+
 import * as attribution from "../work-attribution.js"
 import { createCommitTrackingBashTool, createCommitTrackingOperations, type ObservedCommit } from "./commits.js"
 import { flushWorkSummaries } from "./summary.js"
@@ -223,8 +233,8 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 				"original-work",
 			)
 		} finally {
-			await getSessionRegistry()?.shutdown()
-			setSessionRegistry(undefined)
+			await getSessionState()?.registry.shutdown()
+			setSessionState(undefined)
 		}
 	})
 
@@ -235,7 +245,7 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 		const record = vi.spyOn(attribution, "appendWorkRecord").mockImplementation(() => {})
 		const registry = createProcessRegistry()
 		try {
-			const result = await createBackgroundBashToolDefinition(repository, { registry }).execute(
+			const result = await createBackgroundBashToolDefinition(repository, { state: bashState(registry) }).execute(
 				"background-commit",
 				{ command: "sleep 0.3; git commit --allow-empty -m delayed", timeout: 10, checkin_interval: 0.01 },
 				undefined,
@@ -295,7 +305,7 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 		try {
 			const tool =
 				mode === "background"
-					? createBackgroundBashToolDefinition(repository, { registry })
+					? createBackgroundBashToolDefinition(repository, { state: bashState(registry) })
 					: createCommitTrackingBashTool(ctx)
 			const result = await tool.execute(
 				"without-attribution",
@@ -304,7 +314,9 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 				undefined,
 				ctx,
 			)
-			expect(result.content).toEqual(expect.arrayContaining([expect.objectContaining({ text: "bash-still-works" })]))
+			expect(result.content).toEqual(
+				expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("bash-still-works") })]),
+			)
 			expect(debug).toHaveBeenCalledWith(
 				expect.stringContaining("Could not initialize Git attribution"),
 				expect.objectContaining({ message: "ledger unavailable" }),

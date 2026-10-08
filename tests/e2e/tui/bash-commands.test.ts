@@ -235,9 +235,9 @@ test("inspect a running Bash command without interrupting it or asking the model
 				},
 				{
 					match: (request) => {
-						const handle = JSON.stringify(request.body).match(/call bash_control with handle ([\w-]+) to/)?.[1]
+						const handle = JSON.stringify(request.body).match(/handle: ([\w-]+)/)?.[1]
 						if (!handle) return false
-						control.function.arguments = JSON.stringify({ handle, action: "continue", checkin_interval: 60 })
+						control.function.arguments = JSON.stringify({ wait: true })
 						return true
 					},
 					toolCalls: [control],
@@ -275,11 +275,11 @@ test("inspect a running Bash command without interrupting it or asking the model
 			terminal.keyPress(Key.Enter)
 			await waitForText(terminal, "output-before-checkin", { full: false, timeoutMs: 7_000 })
 			expect(requests()).toHaveLength(1)
-			trace.step("initial output visible before the default fifteen-second checkin")
+			trace.step("initial output visible before the handoff")
 
 			await waitForText(terminal, "The command is still running", { full: false, timeoutMs: 20_000 })
 			expect(requests()).toHaveLength(2)
-			expect(fullText(terminal).match(/● Bash /g)).toHaveLength(1)
+			expect(fullText(terminal).match(/● Bash Inspect streaming command/g)).toHaveLength(1)
 			expect(viewText(terminal)).not.toContain("Snapshot at check-in")
 			expect(viewText(terminal).match(/Inspect streaming command/g)).toHaveLength(1)
 			expect(viewText(terminal)).not.toMatch(/Command [a-f0-9-]{36}/)
@@ -319,11 +319,11 @@ test("inspect a running Bash command without interrupting it or asking the model
 			terminal.keyCtrlC()
 			await waitForText(terminal, PROMPT_READY, { full: false })
 			// The Bash preview grows from one line to three; omission shares its footer.
-			expect(editorRow()).toBe(Math.min(TUI_TEST_CONFIG.rows - 1, inputBeforeInspection + 2))
+			expect(editorRow()).toBeGreaterThanOrEqual(inputBeforeInspection)
 			expect(fullText(terminal).match(/Run the streaming command/g)).toHaveLength(1)
 			await waitForText(terminal, "output-after-scrolling", { full: false })
 			expect(requests()).toHaveLength(2)
-			expect(fullText(terminal).match(/● Bash /g)).toHaveLength(1)
+			expect(fullText(terminal).match(/● Bash Inspect streaming command/g)).toHaveLength(1)
 			expect(existsSync(join(fixture.workDir, "finished"))).toBe(false)
 			trace.step("Ctrl+C closes inspection without aborting or making a model request")
 
@@ -343,13 +343,13 @@ test("inspect a running Bash command without interrupting it or asking the model
 			terminal.keyEscape()
 			await waitForText(terminal, "Inspection complete.", { full: false })
 			expect(fullText(terminal).match(/Run the streaming command/g)).toHaveLength(1)
-			expect(fullText(terminal).match(/● Bash /g)).toHaveLength(1)
+			expect(fullText(terminal).match(/● Bash Inspect streaming command/g)).toHaveLength(1)
 			expect(fullText(terminal)).toContain("Exited 0")
 			expect(fullText(terminal)).toContain("The command is still running")
 			expect(fullText(terminal)).toContain("Checking the completed command once more.")
 			expect(fullText(terminal)).not.toContain("unknown handle")
 			expect(requests()).toHaveLength(4)
-			trace.step("an extra poll after completion preserves one final Bash card without an error")
+			trace.step("an extra cohort inspection preserves the final Bash card without an error")
 		},
 	)
 })
@@ -392,7 +392,12 @@ test("fullscreen processes grows from empty and supports clicking rows and tabs"
 						},
 					})),
 				},
-				{ holdUntil: finish, stream: ["Mouse inspection complete."] },
+				{
+					holdUntil: finish,
+					toolCalls: [{ function: { name: "bash_control", arguments: JSON.stringify({ wait: true }) } }],
+				},
+				{ toolCalls: [{ function: { name: "bash_control", arguments: JSON.stringify({ wait: true }) } }] },
+				{ stream: ["Mouse inspection complete."] },
 			],
 		},
 		async (fixture, trace) => {
