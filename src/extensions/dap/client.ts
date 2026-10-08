@@ -427,6 +427,22 @@ async function startMessageReader(client: DapClient, stateTarget?: DapClient): P
 						case "terminated": {
 							const body = message.body as TerminatedEvent
 							state.terminated = true
+							// The debuggee is gone — stop waiters will never see a `stopped`
+							// event. Reject them with a "terminated"-classified error so
+							// callers waiting for the next stop (continue/step) treat
+							// program exit as termination instead of hanging until their
+							// timeout. Without this, a run-to-completion after the final
+							// breakpoint deadlocks the session layer.
+							const termErr = new Error("DAP session terminated")
+							while (state.stoppedWaiters.length > 0) {
+								const waiter = state.stoppedWaiters.shift()
+								if (!waiter) continue
+								try {
+									waiter.reject(termErr)
+								} catch {
+									// Waiter already settled — ignore.
+								}
+							}
 							while (state.terminatedWaiters.length > 0) {
 								const waiter = state.terminatedWaiters.shift()
 								if (!waiter) continue
@@ -662,6 +678,14 @@ async function startChildSession(parent: DapClient, configuration: Record<string
 	// Wait for the child's `initialized` event (per-connection) before sending
 	// configurationDone, matching the DAP ordering: initialized → configurationDone.
 	await Promise.race([child.initializedPromise, new Promise((r) => setTimeout(r, 5000))])
+	// Replay any breakpoints the session layer already sent to the parent —
+	// they targeted a parent that has no debuggee, and the debuggee only
+	// starts running at the child's configurationDone below, so re-applying
+	// them here lands them before execution begins (mirrors how VS Code
+	// re-applies breakpoints to child debug sessions).
+	if (parent.replayBreakpoints) {
+		await parent.replayBreakpoints(child)
+	}
 	try {
 		await sendRequest(child, "configurationDone", {}, 10_000)
 	} catch {
@@ -707,7 +731,12 @@ export class DapClientRegistry {
 
 		const existing = this.clients.get(key)
 		if (existing) {
-			return existing
+			// A terminated client's adapter process is gone (SIGKILLed by
+			// terminate, or exited on its own) — serving it back would hang or
+			// ECONNRESET every later session on the same (command, cwd). Evict
+			// the stale entry and spawn a fresh adapter below.
+			if (!existing.terminated) return existing
+			this.clients.delete(key)
 		}
 
 		const existingLock = this.clientLocks.get(key)

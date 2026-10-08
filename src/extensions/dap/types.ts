@@ -272,6 +272,14 @@ export interface DapClient {
 	 *  connection — the parent manager has no debuggee, so routing breakpoints
 	 *  there would silently no-op. sendRequest rejects with this error. */
 	childSetupError?: Error
+	/** Optional hook, set by the session layer, that replays its tracked
+	 *  breakpoints onto a freshly-created child connection during the
+	 *  `startDebugging` handshake — after the child's `initialized` event but
+	 *  BEFORE its `configurationDone`, so the debuggee starts with breakpoints
+	 *  already in place. Without this, breakpoints sent to the parent before
+	 *  `startDebugging` arrives (a common ordering — the request lags launch by
+	 *  hundreds of ms) are lost: the parent has no debuggee. */
+	replayBreakpoints?: (child: DapClient) => Promise<void>
 }
 
 /** How the DAP client talks to the adapter subprocess.

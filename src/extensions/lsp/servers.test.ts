@@ -8,6 +8,7 @@ vi.mock("node:fs", () => ({
 		existsSync: vi.fn(),
 		statSync: vi.fn(),
 		readFileSync: vi.fn(),
+		readdirSync: vi.fn(),
 	},
 }))
 
@@ -27,6 +28,7 @@ const mockExistsSync = vi.mocked(fs.existsSync)
 const mockSpawnSync = vi.mocked(spawnSync)
 const mockStatSync = vi.mocked(fs.statSync)
 const mockReadFileSync = vi.mocked(fs.readFileSync)
+const mockReaddirSync = vi.mocked(fs.readdirSync)
 
 // Suppress Bun global so exists() uses the spawnSync path
 beforeEach(() => {
@@ -34,6 +36,10 @@ beforeEach(() => {
 	mockSpawnSync.mockReset()
 	mockStatSync.mockReset()
 	mockReadFileSync.mockReset()
+	mockReaddirSync.mockReset()
+	// Default: no subdirectories — the bounded downward marker scan finds
+	// nothing. Tests for nested-module detection override via setTree().
+	mockReaddirSync.mockReturnValue([] as never)
 	// biome-ignore lint/suspicious/noExplicitAny: suppress Bun global for deterministic Node-path testing
 	;(globalThis as any).Bun = undefined
 })
@@ -42,6 +48,28 @@ function setFiles(files: string[]) {
 	mockExistsSync.mockImplementation(((p: unknown) => {
 		const rel = String(p).replace(/^\/project\//, "")
 		return files.includes(rel)
+	}) as never)
+}
+
+/** Like setFiles, but also implements readdirSync so the bounded downward
+ *  marker scan can walk the virtual directory tree derived from `files`. */
+function setTree(files: string[]) {
+	setFiles(files)
+	mockReaddirSync.mockImplementation(((p: unknown) => {
+		const rel = String(p).replace(/^\/project\/?/, "")
+		const prefix = rel ? `${rel}/` : ""
+		const children = new Map<string, boolean>()
+		for (const f of files) {
+			if (!f.startsWith(prefix)) continue
+			const rest = f.slice(prefix.length)
+			if (!rest) continue
+			const [name, ...tail] = rest.split("/")
+			if (name) children.set(name, children.get(name) || tail.length > 0)
+		}
+		return [...children].map(([name, isDir]) => ({
+			name,
+			isDirectory: () => isDir,
+		}))
 	}) as never)
 }
 
@@ -87,6 +115,50 @@ describe("detectServers", () => {
 		setBinaries(["gopls", "typescript-language-server"])
 		expect(detectServers("/project")).toHaveLength(2)
 	})
+
+	it("returns pyright when pyproject.toml present and binary on PATH", () => {
+		setFiles(["pyproject.toml"])
+		setBinaries(["pyright-langserver"])
+		const result = detectServers("/project")
+		expect(result).toHaveLength(1)
+		expect(result[0].name).toBe("pyright")
+	})
+
+	it("does not return pyright in a TS-only project", () => {
+		setFiles(["package.json"])
+		setBinaries(["pyright-langserver", "typescript-language-server"])
+		expect(detectServers("/project").find((s) => s.name === "pyright")).toBeUndefined()
+	})
+})
+
+describe("detectServers — nested-module monorepos", () => {
+	it("activates gopls at a repo root whose go.mod lives two levels down", () => {
+		setTree(["cli/cai/go.mod"])
+		setBinaries(["gopls"])
+		const result = detectServers("/project")
+		expect(result).toHaveLength(1)
+		expect(result[0].name).toBe("gopls")
+	})
+
+	it("activates typescript-language-server at a repo root with a nested frontend/package.json", () => {
+		setTree(["frontend/package.json"])
+		setBinaries(["typescript-language-server"])
+		const result = detectServers("/project")
+		expect(result).toHaveLength(1)
+		expect(result[0].name).toBe("typescript-language-server")
+	})
+
+	it("does not detect markers deeper than two levels", () => {
+		setTree(["a/b/c/go.mod"])
+		setBinaries(["gopls"])
+		expect(detectServers("/project")).toHaveLength(0)
+	})
+
+	it("skips node_modules and dot-directories in the downward scan", () => {
+		setTree(["node_modules/dep/go.mod", ".devbox/go/pkg/mod/go.mod", ".git/hooks/go.mod"])
+		setBinaries(["gopls"])
+		expect(detectServers("/project")).toHaveLength(0)
+	})
 })
 
 describe("detectMissingCandidates", () => {
@@ -111,6 +183,14 @@ describe("detectMissingCandidates", () => {
 		const result = detectMissingCandidates("/project")
 		expect(result).toHaveLength(1)
 		expect(result[0].name).toBe("typescript-language-server")
+	})
+
+	it("returns pyright when pyproject.toml present but binary not on PATH", () => {
+		setFiles(["pyproject.toml"])
+		setBinaries([])
+		const result = detectMissingCandidates("/project")
+		expect(result).toHaveLength(1)
+		expect(result[0].name).toBe("pyright")
 	})
 
 	it("returns empty when no markers are present", () => {

@@ -92,6 +92,26 @@ export class DapSession {
 		this.cwd = opts.cwd
 		this.client = opts.client
 		this.timeoutMs = opts.timeoutMs ?? 30_000
+		// js-debug nested sessions: breakpoints sent before `startDebugging`
+		// arrives go to the parent (manager) connection, which has no debuggee.
+		// Register a replay hook so the child handshake re-applies every
+		// tracked breakpoint to the real debuggee session before it starts.
+		this.client.replayBreakpoints = async (child) => {
+			for (const [file, bps] of this.breakpoints) {
+				if (bps.length === 0) continue
+				await sendRequest(
+					child,
+					"setBreakpoints",
+					{
+						source: { path: file },
+						breakpoints: bps.map((b) => ({ line: b.line, condition: b.condition })),
+						lines: bps.map((b) => b.line),
+						sourceModified: false,
+					},
+					this.timeoutMs,
+				)
+			}
+		}
 	}
 
 	// ---------------------------------------------------------------------------

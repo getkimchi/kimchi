@@ -214,8 +214,15 @@ describe("DAP integration — Node.js (js-debug)", () => {
 		30_000,
 	)
 
+	// Real-adapter integration test, run via the dedicated script (the file is
+	// excluded from the main parallel `pnpm run test` — see vitest.config.ts).
+	// js-debug delivers the debuggee's final stdout AFTER the terminated event;
+	// the trace drain (2s in the shared-session path, 10s when the tool launched
+	// the session) plus retries absorb the flush lag. CI never installs js-debug,
+	// so this test skips there.
 	it.skipIf(!HAS_JS_DEBUG)(
 		"debug_trace_calls returns structured call records",
+		{ timeout: 30_000, retry: 2 },
 		async () => {
 			const result = await debugTraceCalls(deps, {
 				program: traceFixturePath,
@@ -227,7 +234,6 @@ describe("DAP integration — Node.js (js-debug)", () => {
 			const addCall = result.calls.find((c) => c.fn === "add")
 			expect(addCall).toBeDefined()
 		},
-		30_000,
 	)
 })
 

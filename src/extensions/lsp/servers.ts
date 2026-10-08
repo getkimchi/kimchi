@@ -26,6 +26,17 @@ const SERVERS: ServerConfig[] = [
 		extensions: ["go"],
 		installHint: "go install golang.org/x/tools/gopls@latest",
 	},
+	{
+		name: "pyright",
+		command: "pyright-langserver",
+		args: ["--stdio"],
+		extensions: ["py", "pyw"],
+		// pyright never emits $/progress startup cycles — waiting would stall
+		// on the fixed timeout at every startup (same reason as the TS7 native
+		// server). It's ready to serve as soon as the initialize reply lands.
+		skipProjectLoadWait: true,
+		installHint: "npm i -g pyright",
+	},
 ]
 
 /**
@@ -76,7 +87,7 @@ export function detectServers(cwd: string): ServerConfig[] {
 			continue
 		}
 		const markers = ROOT_MARKERS[s.name] ?? []
-		if (findMarkerUp(cwd, markers) && exists(s.command)) servers.push(s)
+		if (markerPresent(cwd, markers) && exists(s.command)) servers.push(s)
 	}
 	return servers
 }
@@ -90,7 +101,7 @@ export function detectServers(cwd: string): ServerConfig[] {
  * lands on the clean failed-to-start path rather than going silent.
  */
 function detectTsServers(cwd: string): ServerConfig[] {
-	if (!findMarkerUp(cwd, ROOT_MARKERS["typescript-language-server"])) return []
+	if (!markerPresent(cwd, ROOT_MARKERS["typescript-language-server"])) return []
 	const nativePath = resolveTsNativeServerPath(cwd)
 	if (nativePath) return [tsNativeConfig(nativePath)]
 	return exists(TYPESCRIPT_LANGUAGE_SERVER.command) ? [TYPESCRIPT_LANGUAGE_SERVER] : []
@@ -108,7 +119,7 @@ export function detectMissingCandidates(cwd: string): ServerConfig[] {
 	const missing: ServerConfig[] = []
 	for (const s of SERVERS) {
 		const markers = ROOT_MARKERS[s.name] ?? []
-		if (!findMarkerUp(cwd, markers)) continue
+		if (!markerPresent(cwd, markers)) continue
 		if (s === TYPESCRIPT_LANGUAGE_SERVER) {
 			// TypeScript is only "missing" when neither the classic server nor
 			// the TypeScript 7 native fallback could be activated.
@@ -218,6 +229,48 @@ const ROOT_MARKERS: Record<string, string[]> = {
 	gopls: ["go.mod"],
 	"typescript-language-server": ["tsconfig.json", "package.json"],
 	"typescript-native": ["tsconfig.json", "package.json"],
+	pyright: ["pyproject.toml", "setup.py", "requirements.txt", "Pipfile"],
+}
+
+/** Directories the bounded downward marker scan never descends into —
+ *  vendored/build trees that routinely contain third-party module markers
+ *  (e.g. .devbox/go/pkg/mod with dozens of go.mod files). Dot-directories
+ *  are skipped separately. */
+const SKIP_DIRS = new Set(["node_modules", "vendor", "dist", "build", "out", "target"])
+
+/**
+ * Bounded downward marker scan for nested-module monorepos — repos whose
+ * go.mod/package.json live only in subdirectories (e.g. apis/grpc, cli/cai).
+ * Depth ≤ 2 from cwd, skipping dot-dirs and SKIP_DIRS. Called only as a
+ * fallback when the upward walk (findMarkerUp) finds nothing, so flat repos
+ * and repos with root markers keep their existing detection semantics.
+ */
+function findMarkerDown(cwd: string, markers: string[], depth: number): boolean {
+	if (depth <= 0) return false
+	const dir = path.resolve(cwd)
+	let entries: fs.Dirent[]
+	try {
+		entries = fs.readdirSync(dir, { withFileTypes: true })
+	} catch {
+		return false
+	}
+	for (const entry of entries) {
+		if (!entry.isDirectory()) continue
+		if (entry.name.startsWith(".") || SKIP_DIRS.has(entry.name)) continue
+		const child = path.join(dir, entry.name)
+		if (markers.some((m) => fs.existsSync(path.join(child, m)))) return true
+		if (findMarkerDown(child, markers, depth - 1)) return true
+	}
+	return false
+}
+
+/**
+ * Marker present for the session cwd: primary upward walk from cwd, plus a
+ * bounded downward fallback for nested-module monorepos. Exported so the
+ * DAP adapter registry (dap/adapters.ts) shares the exact same semantics.
+ */
+export function markerPresent(cwd: string, markers: string[]): boolean {
+	return findMarkerUp(cwd, markers) || findMarkerDown(cwd, markers, 2)
 }
 
 /**

@@ -26,6 +26,17 @@ export default defineConfig({
 			// plain vitest; skip them here so a bare `vitest run` from the root
 			// cannot trip over them.
 			"tests/e2e/**",
+			// DAP real-adapter integration tests run through their dedicated script
+			// (`pnpm run test:dap-integration`) — they spawn real debug adapters
+			// (dlv, js-debug, debugpy) whose subprocesses are starved under the
+			// parallel worker load of a full run: js-debug flushes the debuggee's
+			// final stdout several seconds after the terminated event, which no
+			// reasonable drain window can absorb while every core is busy. CI
+			// machines don't install the adapters, so the suite skips there anyway.
+			// The glob is rooted with ** so it matches both an explicit filter
+			// (path relative to the config root) and a `--dir src` crawl (paths
+			// relative to the crawl root).
+			"**/extensions/dap/integration.test.ts",
 		],
 		// Per-file isolated home: os.homedir() reads USERPROFILE on Windows and
 		// ignores HOME, so per-test HOME stubs alone don't protect the real profile.
