@@ -45,6 +45,36 @@ describe("credential-staleness registry", () => {
 		markCredentialStale(undefined, "kimchi-dev")
 		expect(isCredentialStale(undefined, "other-provider")).toBe(false)
 	})
+
+	// Kimchi-managed providers share one credential, so their marks and
+	// lookups normalize onto the base entry (see the source header).
+	it("maps kimchi-managed sub-providers onto the base kimchi-dev entry when marking", () => {
+		markCredentialStale(undefined, "kimchi-dev/moonshot")
+		expect(isCredentialStale(undefined, "kimchi-dev")).toBe(true)
+		expect(isCredentialStale(undefined, "kimchi-dev/moonshot")).toBe(true)
+	})
+
+	it("lookup via a sub-provider sees a mark made via the base", () => {
+		markCredentialStale(undefined, "kimchi-dev")
+		expect(isCredentialStale(undefined, "kimchi-dev/anthropic")).toBe(true)
+	})
+
+	it("maps the experimental provider onto the base kimchi-dev entry", () => {
+		markCredentialStale("dead-key", "kimchi-experimental")
+		expect(isCredentialStale("dead-key", "kimchi-dev")).toBe(true)
+	})
+
+	it("clearing via a kimchi-managed sub-provider clears the base mark", () => {
+		markCredentialStale(undefined, "kimchi-dev/moonshot")
+		clearCredentialStale("kimchi-dev/moonshot")
+		expect(isCredentialStale(undefined, "kimchi-dev")).toBe(false)
+	})
+
+	it("leaves non-kimchi providers on their own entries", () => {
+		markCredentialStale(undefined, "openai")
+		expect(isCredentialStale(undefined, "openai")).toBe(true)
+		expect(isCredentialStale(undefined, "kimchi-dev")).toBe(false)
+	})
 })
 
 describe("isAuthRejectedMessage", () => {

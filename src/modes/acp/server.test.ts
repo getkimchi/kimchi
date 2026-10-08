@@ -5628,6 +5628,32 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		expect(isCredentialStale(undefined, "kimchi-dev")).toBe(true)
 	})
 
+	// Regression (Studio 401 loop): gateway models carry kimchi-dev/*
+	// sub-providers — the mark must reach the base entry auth_status reads.
+	it("marks the base provider stale when a kimchi-dev/* sub-provider model dies on a 401", async () => {
+		resetCredentialStalenessForTests()
+		const fake = new FakeAgentSession("session-401-subprovider")
+		fake.model = {
+			provider: "kimchi-dev/moonshot",
+			id: "kimi-k3",
+			name: "Kimi K3",
+			input: ["text"],
+			contextWindow: 200_000,
+		}
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantErrorEvent("Request failed with status code 401: Unauthorized"))
+			fake.emit(agentEnd())
+		}
+
+		await agent
+			.prompt({ sessionId: "session-401-subprovider", prompt: [{ type: "text", text: "hello" }] })
+			.catch(() => {})
+		expect(isCredentialStale(undefined, "kimchi-dev")).toBe(true)
+	})
+
 	it("does not mark staleness on non-auth terminal errors (500)", async () => {
 		resetCredentialStalenessForTests()
 		const fake = new FakeAgentSession("session-500-no-mark")

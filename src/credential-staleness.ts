@@ -8,8 +8,23 @@
 // handleAuthStatus — ext-methods/auth-status.ts. Same process serves
 // auth_status and makes the requests, so in-memory is enough.
 //
-// Dependency-free on purpose: flow.ts imports models.ts, models.ts imports
-// this — importing either back would cycle.
+// Kimchi-managed providers (kimchi-dev and its kimchi-dev/* sub-providers,
+// kimchi-experimental) share one credential — the account key the gateway
+// authenticates with — so their marks, clears, and lookups all normalize
+// onto the base kimchi-dev entry. Without that, a gateway model's turn 401
+// marks only its sub-provider entry while auth_status reads the base and
+// keeps answering authenticated.
+//
+// Depends only on kimchi-provider.js (itself dependency-free): flow.ts
+// imports models.ts, models.ts imports this — importing either back would
+// cycle.
+
+import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
+
+/** Kimchi-managed provider ids collapse to the shared base entry. */
+function baseProvider(providerId: string): string {
+	return isKimchiProvider(providerId) ? KIMCHI_PROVIDER_ID : providerId
+}
 
 /**
  * True when error text unambiguously means credential rejection. pi exposes
@@ -44,7 +59,7 @@ function providerEntry(providerId: string): ProviderStaleness {
 
 /** Mark a rejection: by apiKey when known, else provider-wide. */
 export function markCredentialStale(apiKey: string | undefined, providerId: string): void {
-	const entry = providerEntry(providerId)
+	const entry = providerEntry(baseProvider(providerId))
 	if (apiKey !== undefined && apiKey.length > 0) {
 		entry.staleKeys.add(apiKey)
 	} else {
@@ -54,7 +69,7 @@ export function markCredentialStale(apiKey: string | undefined, providerId: stri
 
 /** Authenticated success (refresh, fresh login) means credentials work again. */
 export function clearCredentialStale(providerId: string): void {
-	stalenessByProvider.delete(providerId)
+	stalenessByProvider.delete(baseProvider(providerId))
 }
 
 /**
@@ -63,7 +78,7 @@ export function clearCredentialStale(providerId: string): void {
  * stale until clearCredentialStale runs (refresh / re-login).
  */
 export function isCredentialStale(apiKey: string | undefined, providerId: string): boolean {
-	const entry = stalenessByProvider.get(providerId)
+	const entry = stalenessByProvider.get(baseProvider(providerId))
 	if (!entry) return false
 	if (apiKey !== undefined && apiKey.length > 0) {
 		return entry.staleKeys.has(apiKey) || entry.providerStale
