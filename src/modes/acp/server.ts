@@ -83,6 +83,7 @@ import {
 	splitModelDisplayName,
 } from "../../extensions/auto-model/constants.js"
 import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/state.js"
+import { getRawErrorMessage } from "../../extensions/error-preservation.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
@@ -1419,7 +1420,14 @@ export class KimchiAcpAgent implements Agent {
 				// pi auto-retries is superseded by the retry's message_end, which
 				// lands here and clears the flag.
 				if (msg.stopReason === "error") {
-					turn.lastAssistantError = { stopReason: "error", errorMessage: msg.errorMessage }
+					// Capture the preserved raw text, not the display placeholder: the
+					// interactive-error-surface extension may have mutated errorMessage
+					// to "Retrying…" in an earlier message_end handler. The placeholder
+					// must not become the terminal turn error: it would reach the
+					// JSON-RPC error message, defeat classifyLLMGatewayError (so
+					// data.kind/retryAtMs are lost), and pollute the persisted log the
+					// Studio error restore reads.
+					turn.lastAssistantError = { stopReason: "error", errorMessage: getRawErrorMessage(msg) ?? msg.errorMessage }
 				} else if (msg.stopReason !== "aborted") {
 					turn.lastAssistantError = undefined
 				}
