@@ -131,6 +131,7 @@ export function pullRequest(
 	}
 }
 
+/** Saved links that still pass provider validation; malformed entries are skipped. */
 export function storedPullRequests(value: unknown): WorkPullRequest[] {
 	if (!Array.isArray(value)) return []
 	return value.flatMap((item) => {

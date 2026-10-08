@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { expect, Key, test } from "@microsoft/tui-test"
 import { check } from "proper-lockfile"
-import { fullText, waitForText } from "./support/assertions.js"
+import { fullText, viewText, waitForText } from "./support/assertions.js"
 import { type FakeResponseRequest, isWorkMatchingRequest } from "./support/fake-openai-server.js"
 import { launchKimchi, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
@@ -280,6 +280,11 @@ test("the next message recovers account tracking after its saved scope is lost",
 			expect(existsSync(missing)).toBe(false)
 			terminal.submit("/work")
 			await waitForText(terminal, `Work ID: ${next.workId}`, { full: false })
+			// The work panel selects the new current work and still lists the original work.
+			expect(viewText(terminal)).toContain(`→ ● ${next.workId.slice(0, 8)}`)
+			expect(viewText(terminal)).toContain(`    ${original.workId.slice(0, 8)}`)
+			terminal.keyEscape()
+			await waitForText(terminal, PROMPT_READY, { full: false })
 			trace.step("the next message uses newly scoped work without assigning today's identity to old history")
 		},
 	)

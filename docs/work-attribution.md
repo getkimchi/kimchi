@@ -51,6 +51,16 @@ flowchart LR
 3. **Continue in a fresh session.** Name the saved file, for example `Implement docs/adr/search.md`, or paste a native plan with its work-ID header. Pasted text must match a retained version. If you enabled model matching, a separate call to the selected model can also recognize a paraphrased task. Without matching evidence, the new session keeps its own work ID, even on the same branch.
 4. **Implement and commit.** Kimchi adds requests, edits and linked commits to the work's summary. A native plan still works after its original worktree is deleted: use its retained path or paste its saved text.
 
+## Browse works with `/work`
+
+In the terminal, `/work` opens a list of works. The current work comes first, marked `●`, followed by up to 29 works with activity in the last 35 days, newest first. Each row names the work by its saved plan's title, or else by repository and branch, with a short work ID. It also shows the work's priced spend and PR state, for example `$0.0623 · PR #731 open` or `$0.0123 known so far · 2 PRs`.
+
+Amounts in the list are rounded; the details keep exact values. `known so far` means some requests still have no price, including requests made since the last cost check. A work whose requests have no price yet shows `cost unknown`, never `$0`. The header adds up the listed works; a request saved by several connected works counts once.
+
+The selected row shows what `/work` prints, plus its repository, branch, last activity and request count. Only the current work has live PR lookup lines; other works show their saved PR links. Enter prints the selected work's details into the conversation, and Esc closes the list. The list reads only local files, so it never waits for the network.
+
+ACP, RPC and print mode keep printing the current work's details as text. So do `/work new`, `/work <plan path>`, `/work matching on|off` and `/work link|unlink`.
+
 ## How Kimchi matches things
 
 ### 1. Choose the work ID before the request

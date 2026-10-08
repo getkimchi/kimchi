@@ -1,9 +1,16 @@
+import type { WorkPullRequest } from "./pull-requests.js"
+
 interface PullRequestObservation {
 	provider?: unknown
 	host?: unknown
 	id?: unknown
 	url?: unknown
 	checkedAt?: unknown
+}
+
+/** `PR #7 open` or `MR !7 merged`, as `/work` and the footer name a link; the footer drops the state when space runs out. */
+export function pullRequestLabel(pr: Pick<WorkPullRequest, "provider" | "number" | "state">): string {
+	return `${pr.provider === "gitlab" ? "MR !" : "PR #"}${pr.number} ${pr.state}`
 }
 
 export function pullRequestKey(pr: PullRequestObservation): string {

@@ -30,7 +30,8 @@ import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../sha
 import { isWorkId } from "../shared/work-id.js"
 import { isHarnessSteer } from "./steer-marker.js"
 import { trackPRCostMetric } from "./telemetry/pr-cost.js"
-import { type BillingSource, captureBillingSource, requestTagSelector } from "./work-attribution/billing-source.js"
+import { readWorkBrowser } from "./work-attribution/browser.js"
+import { WorkBrowserPanel } from "./work-attribution/browser-panel.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
 import { findWorkContinuation, hasWorkReference, type WorkContinuation } from "./work-attribution/continuation.js"
 import { workCostDetails } from "./work-attribution/cost-details.js"
@@ -971,6 +972,16 @@ export function createWorkAttributionExtension(
 						details.lines.push(
 							`Work matching stopped: ${matchingLimit}. New inputs stay unresolved in the current work.`,
 						)
+					// The terminal browses recent works; other modes and every subcommand print text.
+					if (!value && ctx.mode === "tui") {
+						const browser = await readWorkBrowser(getAgentDir(), details)
+						const selected = await ctx.ui.custom<string | undefined>(
+							(_tui, theme, _keybindings, done) => new WorkBrowserPanel(browser, theme, done),
+						)
+						const row = browser.rows.find((candidate) => candidate.workId === selected)
+						if (row) notify(ctx, row.details)
+						return
+					}
 					details.lines.push(...workCostDetails(getAgentDir(), details.workId))
 					notify(ctx, [`Work ID: ${details.workId}`, ...details.lines].join("\n"))
 				} catch (error) {
