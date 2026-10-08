@@ -32,8 +32,8 @@ describe("parseOrgPolicy", () => {
 	it("parses both fields from the gateway's camelCase JSON", () => {
 		expect(
 			parseOrgPolicy({
-				maxPermissionMode: "KIMCHI_PERMISSION_MODE_AUTO",
-				usageReporting: "KIMCHI_USAGE_REPORTING_FORCE_ON",
+				kimchiMaxPermissionMode: "KIMCHI_PERMISSION_MODE_AUTO",
+				kimchiUsageReporting: "KIMCHI_USAGE_REPORTING_FORCE_ON",
 			}),
 		).toEqual({ maxPermissionMode: "AUTO", usageReporting: "FORCE_ON" })
 	})
@@ -41,10 +41,14 @@ describe("parseOrgPolicy", () => {
 	it("accepts snake_case field names (UseProtoNames gateways)", () => {
 		expect(
 			parseOrgPolicy({
-				max_permission_mode: "KIMCHI_PERMISSION_MODE_PLAN",
-				usage_reporting: "KIMCHI_USAGE_REPORTING_USER_CHOICE",
+				kimchi_max_permission_mode: "KIMCHI_PERMISSION_MODE_PLAN",
+				kimchi_usage_reporting: "KIMCHI_USAGE_REPORTING_USER_CHOICE",
 			}),
 		).toEqual({ maxPermissionMode: "PLAN", usageReporting: "USER_CHOICE" })
+	})
+
+	it("returns undefined when the settings object is absent", () => {
+		expect(parseOrgPolicy(undefined)).toBeUndefined()
 	})
 
 	it("returns undefined when no field is set", () => {
@@ -56,16 +60,23 @@ describe("parseOrgPolicy", () => {
 
 	it("drops unknown enum values", () => {
 		expect(
-			parseOrgPolicy({ maxPermissionMode: "KIMCHI_PERMISSION_MODE_HYPERSPEED", usageReporting: "WHATEVER" }),
+			parseOrgPolicy({
+				kimchiMaxPermissionMode: "KIMCHI_PERMISSION_MODE_HYPERSPEED",
+				kimchiUsageReporting: "WHATEVER",
+			}),
 		).toBeUndefined()
-		expect(parseOrgPolicy({ maxPermissionMode: "AUTO" })).toBeUndefined()
+		expect(parseOrgPolicy({ kimchiMaxPermissionMode: "AUTO" })).toBeUndefined()
 	})
 
 	it("keeps the valid field when the other is malformed", () => {
-		expect(parseOrgPolicy({ maxPermissionMode: "KIMCHI_PERMISSION_MODE_PLAN", usageReporting: 7 })).toEqual({
-			maxPermissionMode: "PLAN",
-		})
-		expect(parseOrgPolicy({ maxPermissionMode: true, usageReporting: "KIMCHI_USAGE_REPORTING_USER_CHOICE" })).toEqual({
+		expect(parseOrgPolicy({ kimchiMaxPermissionMode: "KIMCHI_PERMISSION_MODE_PLAN", kimchiUsageReporting: 7 })).toEqual(
+			{
+				maxPermissionMode: "PLAN",
+			},
+		)
+		expect(
+			parseOrgPolicy({ kimchiMaxPermissionMode: true, kimchiUsageReporting: "KIMCHI_USAGE_REPORTING_USER_CHOICE" }),
+		).toEqual({
 			usageReporting: "USER_CHOICE",
 		})
 	})
@@ -75,7 +86,7 @@ describe("fetchOrgPolicy", () => {
 	it("returns the resolved policy from the gateway's camelCase JSON", async () => {
 		const fetchImpl = routeFetch(
 			{ organizationId: "org-1" },
-			{ settings: {}, kimchiPolicy: { maxPermissionMode: "KIMCHI_PERMISSION_MODE_PLAN" } },
+			{ settings: { kimchiMaxPermissionMode: "KIMCHI_PERMISSION_MODE_PLAN" } },
 		)
 		await expect(fetchOrgPolicy("key", { fetch: fetchImpl })).resolves.toEqual({
 			kind: "policy",
@@ -87,7 +98,7 @@ describe("fetchOrgPolicy", () => {
 	it("accepts snake_case resolve responses", async () => {
 		const fetchImpl = routeFetch(
 			{ organizationId: "org-1" },
-			{ settings: {}, kimchi_policy: { max_permission_mode: "KIMCHI_PERMISSION_MODE_YOLO" } },
+			{ settings: { kimchi_max_permission_mode: "KIMCHI_PERMISSION_MODE_YOLO" } },
 		)
 		await expect(fetchOrgPolicy("key", { fetch: fetchImpl })).resolves.toEqual({
 			kind: "policy",

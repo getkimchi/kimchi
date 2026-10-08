@@ -33,26 +33,31 @@ function parseEnumName<T extends string>(raw: unknown, prefix: string, known: Re
 }
 
 /**
- * Parse the harness policy from a settings:resolve response body. The gateway
- * marshals proto3 JSON with camelCase field names by default (kimchiPolicy /
- * maxPermissionMode); snake_case is accepted too so self-hosted gateways
+ * Parse the harness policy from a settings:resolve response. The policy is
+ * carried as two fields on the Settings message (kimchi_max_permission_mode /
+ * kimchi_usage_reporting); the gateway marshals proto3 JSON with camelCase
+ * names by default, and snake_case is accepted too so self-hosted gateways
  * configured with UseProtoNames keep working. Unknown or malformed enum
  * values are dropped rather than rejected, so a policy set by a newer
  * platform version degrades to "no restriction" instead of failing.
  */
-export function parseOrgPolicy(raw: unknown): OrgPolicy | undefined {
-	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined
-	const source = raw as Record<string, unknown>
+export function parseOrgPolicy(settings: unknown): OrgPolicy | undefined {
+	if (settings === null || typeof settings !== "object" || Array.isArray(settings)) return undefined
+	const source = settings as Record<string, unknown>
 	const policy: OrgPolicy = {}
 
-	const mode =
-		parseEnumName(source.maxPermissionMode, "KIMCHI_PERMISSION_MODE_", PERMISSION_MODES) ??
-		parseEnumName(source.max_permission_mode, "KIMCHI_PERMISSION_MODE_", PERMISSION_MODES)
+	const mode = parseEnumName(
+		source.kimchiMaxPermissionMode ?? source.kimchi_max_permission_mode,
+		"KIMCHI_PERMISSION_MODE_",
+		PERMISSION_MODES,
+	)
 	if (mode) policy.maxPermissionMode = mode
 
-	const reporting =
-		parseEnumName(source.usageReporting, "KIMCHI_USAGE_REPORTING_", USAGE_REPORTING) ??
-		parseEnumName(source.usage_reporting, "KIMCHI_USAGE_REPORTING_", USAGE_REPORTING)
+	const reporting = parseEnumName(
+		source.kimchiUsageReporting ?? source.kimchi_usage_reporting,
+		"KIMCHI_USAGE_REPORTING_",
+		USAGE_REPORTING,
+	)
 	if (reporting) policy.usageReporting = reporting
 
 	if (policy.maxPermissionMode === undefined && policy.usageReporting === undefined) return undefined
@@ -141,11 +146,10 @@ export async function fetchOrgPolicy(
 	if (data === null || typeof data !== "object") return { kind: "unreachable" }
 
 	const fields = data as Record<string, unknown>
-	const rawPolicy = fields.kimchiPolicy ?? fields.kimchi_policy
 
 	return {
 		kind: "policy",
 		orgId,
-		policy: parseOrgPolicy(rawPolicy),
+		policy: parseOrgPolicy(fields.settings),
 	}
 }
