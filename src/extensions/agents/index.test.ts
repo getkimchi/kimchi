@@ -662,7 +662,7 @@ describe("Agent tool multi-mode model guard", () => {
 		)
 	})
 
-	it("defaults to background when run_in_background is omitted", async () => {
+	it("defaults to background when run_in_background is omitted in TUI sessions", async () => {
 		const pi = makeMockPi()
 		agentsExtension(pi)
 
@@ -672,9 +672,13 @@ describe("Agent tool multi-mode model guard", () => {
 		const registry = makeMockModelRegistry([
 			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
 		])
-		// Simulate an interactive session: background-by-default only applies
-		// when there is a UI loop to consume completion notifications.
-		const ctx = { ...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object), hasUI: true }
+		// Background-by-default is TUI-only; other surfaces fail safe to
+		// foreground regardless of hasUI.
+		const ctx = {
+			...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object),
+			hasUI: true,
+			mode: "tui",
+		}
 		const tool = getRegisteredAgentTool(pi)
 
 		const result = await tool.execute(
