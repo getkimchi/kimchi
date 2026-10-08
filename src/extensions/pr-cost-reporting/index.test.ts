@@ -3,10 +3,12 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { INFRA_BREAKER_THRESHOLD_ENV } from "../../upstream-retry-patch.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import * as supervisor from "../work-attribution/reconcile-supervisor.js"
 import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } from "../work-attribution.js"
+import { CI_VARIABLES } from "./automation.js"
 import reportingExtension from "./index.js"
 import * as queue from "./queue.js"
 import { queueSnapshots, readReportingState, setReportingEnabled } from "./queue.js"
@@ -28,6 +30,8 @@ beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "kimchi-reporting-extension-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", directory)
 	vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+	// CI runners set these; each test opts into automation explicitly.
+	for (const name of [...CI_VARIABLES, "KIMCHI_PR_COST_REPORTING", INFRA_BREAKER_THRESHOLD_ENV]) vi.stubEnv(name, "")
 	vi.mocked(supervisor.subscribeReportingReconciliation).mockReturnValue(async () => {})
 })
 afterEach(() => {

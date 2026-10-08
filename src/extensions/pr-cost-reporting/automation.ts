@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { INFRA_BREAKER_THRESHOLD_ENV, resolveInfrastructureBreakerThreshold } from "../../upstream-retry-patch.js"
 
-const CI_VARIABLES = [
+export const CI_VARIABLES = [
 	"CI",
 	"GITHUB_ACTIONS",
 	"GITLAB_CI",
