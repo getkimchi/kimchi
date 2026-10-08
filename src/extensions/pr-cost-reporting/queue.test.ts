@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import { calculatePullRequestCosts } from "../work-attribution/costs.js"
 import type { WorkRecord } from "../work-attribution/summary.js"
+import { machineFingerprint } from "./machine.js"
 import {
 	acknowledgeSnapshot,
 	deferSnapshot,
@@ -40,9 +41,11 @@ const snapshot = (requestIds: string[] = []): RepositorySnapshot => ({
 })
 let directory: string
 vi.mock("node:fs/promises", async (original) => ({ ...(await original<typeof files>()) }))
+vi.mock("./machine.js", () => ({ machineFingerprint: vi.fn() }))
 beforeEach(async () => {
 	directory = await mkdtemp(join(tmpdir(), "kimchi-reporting-"))
 	vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+	vi.mocked(machineFingerprint).mockResolvedValue(undefined)
 })
 afterEach(async () => {
 	vi.restoreAllMocks()
@@ -429,6 +432,47 @@ describe("durable reporting queue", () => {
 		const state = await readReportingState(directory)
 		expect(Object.keys(state.entries)).toHaveLength(2)
 		expect(state.entries[key].pending?.revision).toBe("9")
+	})
+})
+
+describe("producer identity across machines", () => {
+	const original = "a".repeat(64)
+	const copy = "b".repeat(64)
+	async function savedOn(machine: string | undefined) {
+		vi.mocked(machineFingerprint).mockResolvedValue(machine)
+		await setReportingEnabled(directory, true)
+		const saved = await queueSnapshots(directory, [snapshot([requestId])])
+		expect(saved.machine).toBe(machine)
+		return saved
+	}
+
+	it("starts a new producer when the state was copied from another machine", async () => {
+		const saved = await savedOn(original)
+		vi.mocked(machineFingerprint).mockResolvedValue(copy)
+		const copied = await readReportingState(directory)
+		expect(copied.producerId).not.toBe(saved.producerId)
+		expect(copied.entries).toEqual({})
+		const next = await queueSnapshots(directory, [snapshot([requestId])])
+		expect(next.machine).toBe(copy)
+		expect(Object.values(next.entries).map((entry) => [entry.revision, entry.pending?.producerId])).toEqual([
+			["1", next.producerId],
+		])
+		expect((await readReportingState(directory)).producerId).toBe(next.producerId)
+	})
+
+	it("keeps the producer on the same machine and records the machine for older state", async () => {
+		const legacy = await savedOn(undefined)
+		vi.mocked(machineFingerprint).mockResolvedValue(original)
+		expect(await readReportingState(directory)).toEqual(legacy)
+		const next = await queueSnapshots(directory, [snapshot([requestId, otherRequestId])])
+		expect([next.producerId, next.machine]).toEqual([legacy.producerId, original])
+		expect(Object.values(next.entries)[0].revision).toBe("2")
+	})
+
+	it("keeps the producer when the machine cannot be identified", async () => {
+		const saved = await savedOn(original)
+		vi.mocked(machineFingerprint).mockResolvedValue(undefined)
+		expect(await readReportingState(directory)).toEqual(saved)
 	})
 })
 

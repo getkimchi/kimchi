@@ -8,6 +8,7 @@ import { isWorkId } from "../../shared/work-id.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { isWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
 import { object, SHA256_HEX } from "../work-attribution/summary.js"
+import { machineFingerprint } from "./machine.js"
 import {
 	accountKey,
 	MAX_REVISION,
@@ -47,6 +48,8 @@ export interface ReportingState {
 	followsTelemetry?: true
 	defaultNoticeShown?: true
 	producerId: string
+	/** Hashed machine ID that owns producerId; a home copied to another machine starts a new producer. */
+	machine?: string
 	entries: Record<string, PendingRepository>
 	error?: string
 }
@@ -82,6 +85,7 @@ export async function readReportingState(agentDir: string): Promise<ReportingSta
 			(value.followsTelemetry !== undefined && value.followsTelemetry !== true) ||
 			(value.defaultNoticeShown !== undefined && value.defaultNoticeShown !== true) ||
 			!isWorkId(value.producerId) ||
+			(value.machine !== undefined && !SHA256_HEX.test(value.machine)) ||
 			!value.entries ||
 			typeof value.entries !== "object" ||
 			Array.isArray(value.entries)
@@ -111,6 +115,13 @@ export async function readReportingState(agentDir: string): Promise<ReportingSta
 			}
 		}
 		if (value.followsTelemetry) value.enabled = readTelemetryConfig().enabled
+		const machine = await machineFingerprint()
+		// Two machines sharing a producer would keep replacing each other's claims; the server deduplicates bills across producers.
+		if (machine && value.machine && value.machine !== machine) {
+			value.producerId = randomUUID()
+			value.machine = machine
+			value.entries = {}
+		}
 		trackPRCostMetric({
 			kind: "queueDepth",
 			value: Object.values(value.entries).filter((entry) => entry.pending).length,
@@ -139,6 +150,7 @@ async function update(agentDir: string, mutate: (state: ReportingState) => void)
 	})
 	try {
 		const state = await readReportingState(agentDir)
+		state.machine ??= await machineFingerprint()
 		mutate(state)
 		const body = `${JSON.stringify(state)}\n`
 		if (Buffer.byteLength(body) > 24 * 1024 * 1024) throw new Error("PR reporting queue exceeds its local size limit")
