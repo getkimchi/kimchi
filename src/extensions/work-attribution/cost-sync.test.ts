@@ -860,7 +860,7 @@ describe("automatic exact work cost lookup", () => {
 		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toHaveLength(35)
 	})
 	it("enforces the wall deadline before another HTTP call even before the timer fires", async () => {
-		const { workId } = tagged("a")
+		const { workId, requestId } = tagged("a")
 		tagged("b")
 		const now = Date.now()
 		vi.spyOn(Date, "now").mockReturnValue(now)
@@ -872,7 +872,8 @@ describe("automatic exact work cost lookup", () => {
 		expect(fetchMock).toHaveBeenCalledOnce()
 		// The key check succeeded, but no billing page arrived: nothing is journaled.
 		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual([])
-		expect(report(workId).requests[0]).toMatchObject({
+		// The saved report also lists the connected work's request on the same PR.
+		expect(report(workId).requests.find((row: { requestId: string }) => row.requestId === requestId)).toMatchObject({
 			priceStatus: "missing",
 			totalCostUsd: null,
 			billingLookup: {
