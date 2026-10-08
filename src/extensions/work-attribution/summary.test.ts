@@ -116,6 +116,26 @@ describe("readable work summaries", () => {
 			expect(invalid).toHaveBeenCalledTimes(invalidCount)
 		}
 	})
+	it("reports damage and complete records of unknown types as separate problems", () => {
+		const row = { version: 1, type: "work", workId: randomUUID(), sessionId: "writer" }
+		// A newer Kimchi sharing this history can add record types that this version cannot interpret.
+		const newer = { ...row, type: "work_checkpoint", sessionId: "newer", requestIds: [randomUUID()] }
+		const ledger = join(dir, "work-attribution", "mixed.jsonl")
+		fs.mkdirSync(dirname(ledger), { recursive: true })
+		const lines = [row, newer, { ...newer, workId: "not-a-work-id" }, { ...row, type: "request" }].map((value) =>
+			JSON.stringify(value),
+		)
+		fs.writeFileSync(ledger, `${lines.join("\n")}\n{broken\n${JSON.stringify(row)}\n`)
+		const problems = vi.fn()
+		expect(readWorkRecords(dir, undefined, () => {}, problems)).toEqual([row, row])
+		// Both kinds reach the callback, so readers that need complete history still see an unknown type.
+		expect(problems.mock.calls).toEqual([
+			[{ kind: "unknown-type", path: ledger, line: 2, record: newer }],
+			[{ kind: "invalid", path: ledger, line: 3 }],
+			[{ kind: "invalid", path: ledger, line: 4 }],
+			[{ kind: "invalid", path: ledger, line: 5 }],
+		])
+	})
 	it("skips a record cut at any position, including inside a \\u escape", () => {
 		const row = { version: 1, type: "work", workId: randomUUID(), sessionId: "writer" }
 		const complete = JSON.stringify(row)

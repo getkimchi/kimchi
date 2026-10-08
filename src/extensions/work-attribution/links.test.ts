@@ -603,7 +603,9 @@ for (const mode of ["pin", "live", "history"] as const) {
 				: mode === "live"
 					? confirmWorkContinuation(flow.ctx, continuation, flow.originalScope)
 					: repair()
-		await expect(Promise.resolve().then(invoke)).rejects.toThrow("Incomplete work history")
+		await expect(Promise.resolve().then(invoke)).rejects.toThrow(
+			`Incomplete work history contains invalid records in ${damaged}:1`,
+		)
 		expect(links()).toEqual([])
 		// Repairing the source, including an empty journal, permits a fresh complete scan.
 		fs.writeFileSync(damaged, "\n \t\r\n")
@@ -620,6 +622,48 @@ for (const mode of ["pin", "live", "history"] as const) {
 			},
 		])
 		expect(report.requests.find((row) => row.requestId === flow.producer)?.totalCostUsd).toBe("0.125000000")
+	})
+
+	it.each([
+		"other work",
+		"continued work",
+		"continued work's request",
+	])(`${mode} handles an unknown record type that names the %s`, async (named) => {
+		const flow = acceptedContinuation()
+		const sibling = acceptedContinuation("plan", "sibling")
+		await flushWorkSummaries()
+		// A newer Kimchi sharing this history wrote a record type that this version cannot interpret.
+		const newer = join(dir, "work-attribution", "newer.jsonl")
+		const record = {
+			version: 1,
+			type: "work_checkpoint",
+			workId: { "other work": sibling.workId, "continued work": flow.workId }[named] ?? randomUUID(),
+			sessionId: "newer",
+			...(named === "continued work's request" ? { requests: { [flow.research]: "moved" } } : {}),
+		}
+		fs.writeFileSync(newer, `${JSON.stringify(record)}\n`)
+		const { requestId: _requestId, ...evidence } = flow.continuation.evidence
+		const continuation = { ...flow.continuation, workId: flow.workId, evidence }
+		const invoke = () =>
+			mode === "pin"
+				? pinWorkContinuation(continuation)
+				: mode === "live"
+					? confirmWorkContinuation(flow.ctx, continuation, flow.originalScope)
+					: repair()
+		if (named === "other work") {
+			const pinned = await invoke()
+			if (mode === "pin") expect(pinned).toMatchObject({ evidence: { requestId: flow.producer } })
+			else expect(links()).toMatchObject([{ workId: flow.workId }])
+		} else if (mode === "history") {
+			// Only the named work waits; the other receipt is still confirmed in the same pass.
+			await repair()
+			expect(links()).toMatchObject([{ workId: sibling.workId }])
+		} else {
+			await expect(Promise.resolve().then(invoke)).rejects.toThrow(
+				`Work history contains unknown record types in ${newer}:1`,
+			)
+			expect(links()).toEqual([])
+		}
 	})
 
 	it.each([

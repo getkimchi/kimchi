@@ -23,21 +23,33 @@ interface SummaryEntry {
 	sessionId: string
 	[key: string]: unknown
 }
+const WORK_RECORD_TYPES = [
+	"work",
+	"work_link",
+	"request",
+	"request_dispatch",
+	"request_response",
+	"request_cost",
+	"plan",
+	"commit",
+	"file_transition",
+	"file_observation",
+] as const
+const KNOWN_RECORD_TYPES: ReadonlySet<unknown> = new Set(WORK_RECORD_TYPES)
 export interface WorkRecord extends SummaryEntry {
 	version: 1
-	type:
-		| "work"
-		| "work_link"
-		| "request"
-		| "request_dispatch"
-		| "request_response"
-		| "request_cost"
-		| "plan"
-		| "commit"
-		| "file_transition"
-		| "file_observation"
+	type: (typeof WORK_RECORD_TYPES)[number]
 	workId: string
 }
+/**
+ * A journal line that readWorkRecords did not return. "invalid" is damage: an unparseable line or a record that fails
+ * validation. "unknown-type" is a complete version-1 record of a type this version does not know, usually written by a
+ * newer Kimchi sharing this history. Readers that need complete history, such as PR cost reporting, must treat both
+ * kinds as incomplete history.
+ */
+export type WorkRecordProblem =
+	| { kind: "invalid"; path: string; line: number }
+	| { kind: "unknown-type"; path: string; line: number; record: Record<string, unknown> }
 interface WorkSummary {
 	version: 1
 	workId: string
@@ -102,6 +114,16 @@ function record(value: unknown): value is WorkRecord {
 		default:
 			return false
 	}
+}
+function unknownType(value: unknown): value is Record<string, unknown> {
+	return (
+		object(value) &&
+		value.version === 1 &&
+		isWorkId(value.workId) &&
+		typeof value.sessionId === "string" &&
+		typeof value.type === "string" &&
+		!KNOWN_RECORD_TYPES.has(value.type)
+	)
 }
 function validSummary(value: unknown, workId: string): value is WorkSummary {
 	return (
@@ -199,7 +221,7 @@ export function readWorkRecords(
 	agentDir: string,
 	modifiedSince?: number,
 	checkBudget: () => void = () => {},
-	onInvalidRecord?: () => void,
+	onRecordProblem?: (problem: WorkRecordProblem) => void,
 ): WorkRecord[] {
 	checkBudget()
 	const directory = join(agentDir, "work-attribution")
@@ -228,11 +250,17 @@ export function readWorkRecords(
 					} catch {
 						// The final line may still be in progress. A cut-off record that later appends moved past was
 						// interrupted; anything else, including a cut-off final record, is damage.
-						if (index < lines.length - 1 && !(index < last && truncated(line))) onInvalidRecord?.()
+						if (index < lines.length - 1 && !(index < last && truncated(line)))
+							onRecordProblem?.({ kind: "invalid", path, line: index + 1 })
 						continue
 					}
 					if (record(value)) records.push(value)
-					else onInvalidRecord?.()
+					else
+						onRecordProblem?.(
+							unknownType(value)
+								? { kind: "unknown-type", path, line: index + 1, record: value }
+								: { kind: "invalid", path, line: index + 1 },
+						)
 				}
 			} catch (error) {
 				// An incomplete scan must not advance recovery past a journal we could not read.

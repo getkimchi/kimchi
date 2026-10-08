@@ -14,7 +14,7 @@ import {
 	sameWorkScope,
 	type WorkScope,
 } from "./scope.js"
-import { readWorkRecords, SHA256_HEX, type WorkRecord } from "./summary.js"
+import { object, readWorkRecords, SHA256_HEX, type WorkRecord, type WorkRecordProblem } from "./summary.js"
 
 interface RequestLink {
 	workIds: Set<string>
@@ -137,15 +137,6 @@ export function requestWorkLinks(records: readonly WorkRecord[]): Map<string, Re
 	return result
 }
 
-function continuationRecords(agentDir: string, checkBudget?: () => void): WorkRecord[] {
-	let invalid = false
-	const records = readWorkRecords(agentDir, undefined, checkBudget, () => {
-		invalid = true
-	})
-	if (invalid) throw new Error("Incomplete work history contains invalid records")
-	return records
-}
-
 /** Lookups over one journal snapshot, so checking a receipt never rescans the whole history. */
 interface ContinuationIndex {
 	/** Request IDs named by any correction or confirmation, whatever its revision or status. */
@@ -197,6 +188,62 @@ function indexContinuationRecords(
 	return index
 }
 
+/** One complete journal snapshot for continuation checks. */
+interface ContinuationHistory {
+	records: WorkRecord[]
+	index: ContinuationIndex
+	/** Complete records of types this version does not know, with every UUID each one names. */
+	unknown: { problem: WorkRecordProblem; ids: Set<string> }[]
+}
+
+/** Every UUID a record names: an unknown record type may concern any of those works or requests. */
+function namedIds(value: unknown, ids = new Set<string>()): Set<string> {
+	if (isWorkId(value)) ids.add(value)
+	else if (Array.isArray(value)) for (const item of value) namedIds(item, ids)
+	else if (object(value))
+		for (const [key, item] of Object.entries(value)) {
+			if (isWorkId(key)) ids.add(key)
+			namedIds(item, ids)
+		}
+	return ids
+}
+
+/** Names each affected journal once, with its first problem line, so it can be found and repaired. */
+function journals(problems: readonly WorkRecordProblem[]): string {
+	const lines = new Map<string, number>()
+	for (const { path, line } of problems) if (!lines.has(path)) lines.set(path, line)
+	const named = [...lines].map(([path, line]) => `${path}:${line}`)
+	return named.length > 3 ? `${named.slice(0, 3).join(", ")} and ${named.length - 3} more` : named.join(", ")
+}
+
+/** Damage anywhere could hide a revocation, so it blocks every confirmation until the journal is repaired. */
+function readContinuationHistory(agentDir: string, checkBudget?: () => void): ContinuationHistory {
+	const invalid: WorkRecordProblem[] = []
+	const unknown: ContinuationHistory["unknown"] = []
+	const records = readWorkRecords(agentDir, undefined, checkBudget, (problem) => {
+		if (problem.kind === "invalid") invalid.push(problem)
+		else unknown.push({ problem, ids: namedIds(problem.record) })
+	})
+	if (invalid.length) throw new Error(`Incomplete work history contains invalid records in ${journals(invalid)}`)
+	return { records, index: indexContinuationRecords(records, checkBudget), unknown }
+}
+
+/** Unknown record types naming this work or one of its requests; this version cannot tell what they change. */
+function unknownRecords(history: ContinuationHistory, workId: string): WorkRecordProblem[] {
+	return history.unknown
+		.filter(({ ids }) =>
+			[...ids].some((id) => id === workId || history.index.requests.get(id)?.some((row) => row.workId === workId)),
+		)
+		.map(({ problem }) => problem)
+}
+
+/** A newer record type blocks only the work it concerns; unrelated works stay decidable. */
+function workIndex(history: ContinuationHistory, workId: string): ContinuationIndex {
+	const unknown = unknownRecords(history, workId)
+	if (unknown.length) throw new Error(`Work history contains unknown record types in ${journals(unknown)}`)
+	return history.index
+}
+
 function continuationProducers(
 	continuation: WorkContinuation,
 	index: ContinuationIndex,
@@ -235,7 +282,10 @@ function continuationProducers(
 
 /** Keep a known producer's identity even if its source journal is unavailable during a later pass. */
 export function pinWorkContinuation(continuation: WorkContinuation): WorkContinuation {
-	const producers = continuationProducers(continuation, indexContinuationRecords(continuationRecords(getAgentDir())))
+	const producers = continuationProducers(
+		continuation,
+		workIndex(readContinuationHistory(getAgentDir()), continuation.workId),
+	)
 	const ids = new Set(producers.map((row) => row.requestId))
 	const requestId = producers[0]?.requestId
 	if (!isWorkId(requestId) || !producers.every((row) => isWorkId(row.requestId)) || ids.size !== 1) return continuation
@@ -329,7 +379,11 @@ function continuationLink(
 /** Confirm the producer's input after a verified continuation; never override an existing correction. */
 export function confirmWorkContinuation(ctx: WorkContext, continuation: WorkContinuation, scope: WorkScope): void {
 	if (getWorkId(ctx) !== continuation.workId) return
-	const link = continuationLink(continuation, scope, indexContinuationRecords(continuationRecords(getAgentDir())))
+	const link = continuationLink(
+		continuation,
+		scope,
+		workIndex(readContinuationHistory(getAgentDir()), continuation.workId),
+	)
 	if (link) appendWorkRecord(ctx, link, continuation.workId)
 }
 
@@ -356,13 +410,19 @@ export async function reconcileWorkContinuations(
 		assertLease()
 		if (Date.now() > deadline) throw new Error("Work continuation reconciliation time limit exceeded")
 	}
-	const records = continuationRecords(agentDir, checkBudget)
-	const index = indexContinuationRecords(records, checkBudget)
+	const history = readContinuationHistory(agentDir, checkBudget)
+	const { index } = history
 	const candidates = new Map<string, { row: WorkRecord; continuation: WorkContinuation }>()
-	for (const row of records) {
+	for (const row of history.records) {
 		const continuation = acceptedContinuation(row)
-		// A linked producer is already confirmed or corrected, and its link would be refused anyway.
-		if (continuation && typeof row.cwd === "string" && !index.linked.has(continuation.evidence.requestId))
+		// A linked producer is already confirmed or corrected, and its link would be refused anyway. A work named by
+		// an unknown record type waits without holding back the other receipts.
+		if (
+			continuation &&
+			typeof row.cwd === "string" &&
+			!index.linked.has(continuation.evidence.requestId) &&
+			!unknownRecords(history, row.workId).length
+		)
 			candidates.set(JSON.stringify([row.workId, row.sessionId, continuation]), { row, continuation })
 	}
 	const keys = [...candidates.keys()].sort()

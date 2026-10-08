@@ -379,16 +379,18 @@ it("leaves an input unresolved without a warning when matching history exceeds i
 	expect(ctx.ui.notify).not.toHaveBeenCalled()
 })
 
-describe("one torn ledger line during live plan continuation", () => {
-	it("adopts the plan without surfacing an attribution failure for an unrelated torn append", async () => {
-		const planned = "11111111-1111-4111-8111-111111111111"
+describe("journal problems during live plan continuation", () => {
+	const planned = "11111111-1111-4111-8111-111111111111"
+	/** Writes one other journal, then continues a saved plan of the planned work in a fresh session. */
+	async function continuePlan(name: string, content: string) {
 		vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue({
 			workId: planned,
 			source: "saved-plan",
 			evidence: { path: "/plans/plan.md", contentHash: "a".repeat(64) },
 		})
+		const journal = join(dir, "work-attribution", name)
 		mkdirSync(join(dir, "work-attribution"), { recursive: true })
-		writeFileSync(join(dir, "work-attribution", "crashed.jsonl"), '{"type":"request","requestId":"0b8f')
+		writeFileSync(journal, content)
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
 		const ctx = createContext({ cwd: dir })
@@ -397,6 +399,31 @@ describe("one torn ledger line during live plan continuation", () => {
 			ctx,
 		)
 		expect(getWorkId(ctx)).toBe(planned)
+		return { ctx, journal }
+	}
+	const newer = (workId: string) =>
+		`${JSON.stringify({ version: 1, type: "work_checkpoint", workId, sessionId: "newer" })}\n`
+
+	it("adopts the plan without surfacing an attribution failure for an unrelated torn append", async () => {
+		const { ctx } = await continuePlan("crashed.jsonl", '{"type":"request","requestId":"0b8f')
 		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("Incomplete work history"), "warning")
+	})
+
+	it("adopts the plan without a warning when an unknown record type names only another work", async () => {
+		const { ctx } = await continuePlan("newer.jsonl", newer("22222222-2222-4222-8222-222222222222"))
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.anything(), "warning")
+	})
+
+	it.each([
+		["a damaged line", "damaged.jsonl", '{"type":"request"}}\n', "Incomplete work history contains invalid records"],
+		[
+			"an unknown record type for this work",
+			"newer.jsonl",
+			newer(planned),
+			"Work history contains unknown record types",
+		],
+	])("adopts the plan and names the journal with %s in its warning", async (_kind, name, content, problem) => {
+		const { ctx, journal } = await continuePlan(name, content)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(`Work attribution unavailable: ${problem} in ${journal}:1`, "warning")
 	})
 })
