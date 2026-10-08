@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process"
+import { createHash } from "node:crypto"
 import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs"
 import { realpath } from "node:fs/promises"
 import { dirname, join } from "node:path"
@@ -121,6 +122,14 @@ export function isWorkAccount(value: unknown): value is WorkAccount {
 
 export function sameWorkAccount(left: WorkAccount, right: WorkAccount): boolean {
 	return left.apiUrl === right.apiUrl && left.organizationId === right.organizationId && left.userId === right.userId
+}
+
+/** Identifies the configured API key and endpoint without keeping the key. */
+export function workCredential(cwd: string): string {
+	const apiUrl = resolveEndpoints({ cwd }).platformApiUrl.replace(/\/+$/, "")
+	return createHash("sha256")
+		.update(JSON.stringify([apiUrl, loadConfig({ cwd }).apiKey ?? ""]))
+		.digest("hex")
 }
 
 /** A short auth cache avoids verifying the same key for every retained intent. */

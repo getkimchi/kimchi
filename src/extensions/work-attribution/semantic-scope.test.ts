@@ -143,6 +143,27 @@ it("scopes a new work at its first verified input without relabelling earlier re
 	})
 })
 
+it("starts separate work when the account changes before a new work's first verified input", async () => {
+	vi.mocked(settings.readConfigSetting).mockReturnValue(false)
+	vi.mocked(organizations.verifyApiKey).mockRejectedValueOnce(new Error("Offline"))
+	const ctx = createContext({ cwd })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	const input = api.getHandler<InputEvent>("input")
+	await input({ type: "input", source: "rpc", text: "Plan the export" }, ctx)
+	const first = recordProviderRequest(ctx)
+	// The user switches to another organization's key before the next prompt.
+	key = randomUUID()
+	identity = { organizationId: CURRENT, userId: USER }
+	await input({ type: "input", source: "rpc", text: "Implement something for this account" }, ctx)
+	const next = recordProviderRequest(ctx)
+	expect(next.workId).not.toBe(first.workId)
+	expect(existsSync(join(root, "agent", "work", first.workId, "scope.json"))).toBe(false)
+	expect(readWorkRecords(join(root, "agent")).find((row) => row.requestId === next.requestId)?.scope).toMatchObject({
+		account: { organizationId: CURRENT },
+	})
+})
+
 it("recovers from a missing scope file without relabelling earlier requests", async () => {
 	vi.mocked(settings.readConfigSetting).mockReturnValue(false)
 	const ctx = createContext({ cwd })

@@ -129,7 +129,7 @@ Segments distinguish an explicit plan or work choice, a model inference, ordinar
 
 Automatic continuation also requires the same verified account and Git repository. New work saves the API endpoint, organization, user and Git common-directory identity in `scope.json`; requests retain that scope. Another worktree of the same repository can continue it. Switching account or repository starts separate work. Missing account verification, a non-Git directory or an older work without scope prevents automatic adoption; matching then stays unresolved without a warning. `/work <plan path>` remains an explicit local choice; older records are never assigned today's account just because they were reopened.
 
-If account verification is unavailable for a new work's first input, the work keeps waiting for its scope and saves it at the next verified message. Requests made before that stay unscoped. If an existing work's scope file is missing or damaged, the next message starts newly scoped work. An explicit `/work` choice remains selected, with missing scope still unknown. Earlier request records stay unchanged; Kimchi does not fill their missing account data with the current login.
+If account verification is unavailable for a new work's first input, the work keeps waiting for its scope and saves it at the next verified message under the same API key and endpoint; a changed key starts new work instead. Requests made before that stay unscoped. If an existing work's scope file is missing or damaged, the next message starts newly scoped work. An explicit `/work` choice remains selected, with missing scope still unknown. Earlier request records stay unchanged; Kimchi does not fill their missing account data with the current login.
 
 #### Correct earlier requests
 

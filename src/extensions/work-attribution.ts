@@ -42,6 +42,7 @@ import {
 	readWorkScope,
 	sameWorkScope,
 	saveNewWorkScope,
+	workCredential,
 	workRepository,
 } from "./work-attribution/scope.js"
 import {
@@ -104,7 +105,8 @@ export interface WorkDetailsRequest {
 const WORK_IDENTITY_ENTRY = "work_identity"
 const identities = new Map<string, string>()
 const activeSegments = new Map<string, WorkSegment>()
-const newWorksToScope = new Set<string>()
+/** New works waiting for their first verified scope, with the credential of their first input. */
+const newWorksToScope = new Map<string, string | undefined>()
 const workOutputs = new Map<string, Set<string>>()
 /** Earlier startup hooks can allocate a fresh ledger before the extension binds it. */
 const freshSessionLedgers = new Set<string>()
@@ -174,7 +176,7 @@ export function setWorkId(
 	if (!isWorkId(workId)) throw new Error("Invalid work UUID")
 	if (!existingWorkId) {
 		markNewWork(workId)
-		newWorksToScope.add(workId)
+		newWorksToScope.set(workId, undefined)
 	}
 	const key = workLedgerPath(ctx)
 	const segment = identities.get(key) === workId ? activeSegments.get(key) : undefined
@@ -506,7 +508,15 @@ export function createWorkAttributionExtension(
 				)
 					return
 				const previousScope = readWorkScope(current)
-				const missingOriginalScope = !previousScope && !newWorksToScope.has(current) && !explicitSelection.has(key)
+				// A pending work keeps waiting only under the credential of its first input.
+				const credential = workCredential(cwd)
+				const pending = (workId: string) => {
+					if (!newWorksToScope.has(workId)) return false
+					const started = newWorksToScope.get(workId) ?? credential
+					newWorksToScope.set(workId, started)
+					return started === credential
+				}
+				const missingOriginalScope = !previousScope && !pending(current) && !explicitSelection.has(key)
 				if (
 					captured?.isCurrent() &&
 					(missingOriginalScope || (previousScope && !sameWorkScope(previousScope, captured.scope)))
@@ -518,7 +528,7 @@ export function createWorkAttributionExtension(
 				}
 				// A new work waits for its first verified capture; until then its requests stay unscoped.
 				const saveScope = (workId: string) => {
-					if (newWorksToScope.has(workId) && captured?.isCurrent()) {
+					if (pending(workId) && captured?.isCurrent()) {
 						newWorksToScope.delete(workId)
 						saveNewWorkScope(workId, captured.scope)
 					}
@@ -609,7 +619,7 @@ export function createWorkAttributionExtension(
 					account: intents.account.account,
 				}
 				if (workId !== current) {
-					if (decision.decision === "new") newWorksToScope.add(workId)
+					if (decision.decision === "new") newWorksToScope.set(workId, credential)
 					setWorkId(ctx, workId, pi, { source: "semantic", evidence })
 					notifyWorkChanged()
 					notify(ctx, `Work matching ${decision.decision === "new" ? "started new" : "continued"} work: ${workId}`)
