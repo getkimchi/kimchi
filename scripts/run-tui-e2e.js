@@ -15,9 +15,13 @@ if (process.argv[2] === "replay") {
 	await replayTrace(process.argv[3])
 }
 
-// --debug is ours (readable .tui-e2e.log artifacts); strip before forwarding. --trace is native.
-const debugEnabled = process.argv.includes("--debug")
-const args = process.argv.slice(2).filter((arg) => arg !== "--debug")
+// --debug/--shard/--dry-run are ours; strip before forwarding. --trace is native.
+const argv = process.argv.slice(2)
+const debugEnabled = argv.includes("--debug")
+const dryRun = argv.includes("--dry-run")
+const shard = parseShard(argv) // { index, total } | null; CI matrix sharding
+const shardTokens = new Set(shard ? shard.tokens : [])
+const args = argv.filter((arg) => arg !== "--debug" && arg !== "--dry-run" && !shardTokens.has(arg))
 const traceEnabled = args.includes("--trace") || args.includes("-t")
 const env = {
 	...process.env,
@@ -31,7 +35,16 @@ const env = {
 
 // No filter: run each non-quarantined file separately (one filter matching many files runs only one).
 const hasTestFilter = args.some((arg) => !arg.startsWith("-"))
-const status = hasTestFilter ? runTui(args) : runEach(testsToRun())
+const stems = hasTestFilter ? [] : testsToRun(shard)
+if (dryRun) {
+	if (hasTestFilter) {
+		process.stderr.write("[tui-e2e] --dry-run with an explicit file filter: nothing to shard\n")
+	} else {
+		process.stdout.write(`${stems.join("\n")}\n`)
+	}
+	process.exit(0)
+}
+const status = hasTestFilter ? runTui(args) : runEach(stems)
 
 if (traceEnabled) {
 	process.stderr.write(`[tui-e2e] traces written to ${traceFolder}\n`)
@@ -63,15 +76,22 @@ function runEach(stems) {
 	return status
 }
 
-// Every *.test.ts minus quarantined ones; exits 0 if all are quarantined.
-function testsToRun() {
+// Every *.test.ts minus quarantined ones, split by shard; exits 0 if all are quarantined.
+function testsToRun(shard) {
 	const skipped = new Set(SKIPPED_TUI_TESTS.map((s) => s.test))
 	for (const s of SKIPPED_TUI_TESTS) process.stderr.write(`[tui-e2e] SKIP ${s.test} — ${s.reason}\n`)
 	const all = readdirSync(tuiCwd)
 		.filter((name) => name.endsWith(".test.ts"))
 		.map((name) => name.replace(/\.test\.ts$/, ""))
 		.sort()
-	const toRun = all.filter((name) => !skipped.has(name))
+	const unskipped = all.filter((name) => !skipped.has(name))
+	// Deterministic round-robin over the sorted list keeps shards stable between runs.
+	const toRun = shard ? unskipped.filter((_, i) => i % shard.total === shard.index - 1) : unskipped
+	if (shard) {
+		process.stderr.write(
+			`[tui-e2e] shard ${shard.index}/${shard.total}: ${toRun.length} of ${unskipped.length} files\n`,
+		)
+	}
 	if (toRun.length === 0) {
 		process.stderr.write("[tui-e2e] all tests are quarantined; nothing to run\n")
 		process.exit(0)
@@ -98,6 +118,34 @@ function matchTrace(file) {
 	if (matches.length === 1) return { path: resolve(traceFolder, matches[0]) }
 	if (matches.length > 1) return { matches }
 	return {}
+}
+
+// "--shard k/N" or "--shard=k/N" → { index: k, total: N, tokens: argv entries to strip }.
+function parseShard(argv) {
+	let raw
+	let tokens
+	const i = argv.indexOf("--shard")
+	if (i !== -1) {
+		raw = argv[i + 1]
+		tokens = ["--shard", raw]
+	} else {
+		const eq = argv.find((arg) => arg.startsWith("--shard="))
+		if (!eq) return null
+		raw = eq.slice("--shard=".length)
+		tokens = [eq]
+	}
+	const match = /^(\d+)\/(\d+)$/.exec(raw ?? "")
+	if (!match) {
+		process.stderr.write(`[tui-e2e] invalid --shard '${raw}', expected <index>/<total> (e.g. 1/4)\n`)
+		process.exit(1)
+	}
+	const index = Number(match[1])
+	const total = Number(match[2])
+	if (total < 1 || index < 1 || index > total) {
+		process.stderr.write(`[tui-e2e] --shard out of range: ${index}/${total}\n`)
+		process.exit(1)
+	}
+	return { index, total, tokens }
 }
 
 async function replayTrace(file) {
