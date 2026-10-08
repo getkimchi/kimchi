@@ -21,6 +21,9 @@ patchedDependencies:
   pi-mcp-adapter@2.34.0:
     hash: 1420b1c4452e4acb67844e104304b089b73eb5a7eb8cab55226d14e0eff88ea7
     path: patches/pi-mcp-adapter@2.34.0.patch
+  pi-rewind-hook@1.8.7:
+    hash: b2d5692a54042f70fdd8f307aa677e43ff4bd7e982496494e7b6c876df38a5ab
+    path: patches/pi-rewind-hook@1.8.7.patch
   playwright-core@1.59.1:
     hash: 1f27acbc8250451c9eea2efa9b19956afcb881a2b7a69ad4550cf8e59f15e102
     path: patches/playwright-core@1.59.1.patch
@@ -95,6 +98,9 @@ importers:
       pi-mcp-adapter:
         specifier: 2.34.0
         version: 2.34.0(patch_hash=1420b1c4452e4acb67844e104304b089b73eb5a7eb8cab55226d14e0eff88ea7)(@earendil-works/pi-ai@0.85.1(patch_hash=99288f84b8edd20e74893fb83ca49de935fc0c93de9a0643de705feaaffac550)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815))(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(typebox@1.3.7)(zod@4.4.3)
+      pi-rewind-hook:
+        specifier: 1.8.7
+        version: 1.8.7(patch_hash=b2d5692a54042f70fdd8f307aa677e43ff4bd7e982496494e7b6c876df38a5ab)(@earendil-works/pi-coding-agent@0.85.1(patch_hash=c0588a612b197bb03ffac5a8fff0047babe535da625ebb917961872c53fadf1c)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))
       proper-lockfile:
         specifier: ^4.1.2
         version: 4.1.2
@@ -2867,6 +2873,11 @@ packages:
         optional: true
       typebox:
         optional: true
+
+  pi-rewind-hook@1.8.7:
+    resolution: {integrity: sha512-5d+X5waUwtfOS9xqQpAnFt34lUSwPGhoekA4C/XisUhZDWYdQ11g8BO4OwCRTFZppmoai37ce/xy9MO7M82kbA==}
+    peerDependencies:
+      '@earendil-works/pi-coding-agent': '*'
 
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
@@ -5980,6 +5991,10 @@ snapshots:
       - '@modelcontextprotocol/sdk'
       - react
       - react-dom
+
+  pi-rewind-hook@1.8.7(patch_hash=b2d5692a54042f70fdd8f307aa677e43ff4bd7e982496494e7b6c876df38a5ab)(@earendil-works/pi-coding-agent@0.85.1(patch_hash=c0588a612b197bb03ffac5a8fff0047babe535da625ebb917961872c53fadf1c)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)):
+    dependencies:
+      '@earendil-works/pi-coding-agent': 0.85.1(patch_hash=c0588a612b197bb03ffac5a8fff0047babe535da625ebb917961872c53fadf1c)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
 
   picocolors@1.1.1: {}
 

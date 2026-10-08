@@ -130,6 +130,15 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		defaultEnabled: false,
 		restartRequired: true,
 	},
+	{
+		id: "extensions.rewind",
+		kind: "extensions",
+		experimental: true,
+		label: "Rewind",
+		description: "Enable /rewind and file restore in /tree and /fork (snapshots the git worktree on every agent turn).",
+		defaultEnabled: false,
+		restartRequired: true,
+	},
 ]
 
 export const RESOURCE_KINDS: readonly ResourceKind[] = ["hooks", "tools", "extensions", "plugins"]

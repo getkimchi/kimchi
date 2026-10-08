@@ -422,6 +422,18 @@ Once teleported, you're in the **PTY overlay** — a fullscreen tabbed terminal.
 
 For full documentation see [docs.kimchi.dev/docs/coding-remote-sessions](https://docs.kimchi.dev/docs/coding-remote-sessions).
 
+## Rewind
+
+Rewind restores project files together with the conversation. It snapshots the git worktree on every agent turn with [pi-rewind-hook](https://github.com/nicobailon/pi-rewind-hook) and adds a `/rewind` command. See the [Rewind guide](docs/rewind.md) for what is captured, snapshot retention, and the temporary upstream patch.
+
+Enable **Rewind** under `/resources` → **Experimental**, then restart Kimchi. It is disabled by default, and files are only restored in git repositories.
+
+| Command | Description |
+|---------|-------------|
+| `/rewind` | Go back to just before an earlier prompt, with the prompt back in the editor, and optionally restore the files from that point |
+| `/tree` | Navigate the session tree and choose whether to keep the current files or restore the files from that point |
+| `/fork` | Fork the session with the conversation only, the files and conversation, or the files only |
+
 ## Configuration
 
 ### Authentication

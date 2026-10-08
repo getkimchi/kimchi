@@ -10,9 +10,9 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { type Mocked, vi } from "vitest"
 
-export function createCommandContext(): ExtensionCommandContext {
+export function createCommandContext(overrides?: Parameters<typeof createContext>[0]): ExtensionCommandContext {
 	return {
-		...createContext(),
+		...createContext(overrides),
 		getSystemPromptOptions: vi.fn(() => ({ cwd: "/tmp" })),
 		waitForIdle: vi.fn(async () => {}),
 		newSession: vi.fn(async () => ({ cancelled: false })),
