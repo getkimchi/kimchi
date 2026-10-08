@@ -101,7 +101,17 @@ vi.mock("./manager/agent-manager.js", () => {
 				_records: records,
 				spawn: vi.fn((_pi, _ctx, type, _prompt, options) => {
 					const id = `mock-${records.size}`
-					records.set(id, { id, type, status: "running", ...options })
+					// Foreground execution races record.promise against a detach
+					// promise; a resolved promise keeps the mock's foreground path
+					// moving. Background tests never read it.
+					records.set(id, {
+						id,
+						type,
+						status: "running",
+						...options,
+						promise: Promise.resolve(),
+						lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					})
 					return id
 				}),
 				getRecord: vi.fn((id: string) => records.get(id)),
@@ -685,6 +695,78 @@ describe("Agent tool multi-mode model guard", () => {
 		)
 		const text = result.content[0]?.text ?? ""
 		expect(text).toContain("background")
+	})
+
+	it("defaults to foreground in ACP/rpc sessions even with hasUI true", async () => {
+		// Regression: ACP sets hasUI true, which landed it in the interactive
+		// background-by-default bucket — but ACP clients only see in-turn
+		// tool-call updates, so a backgrounded agent silently outlived the turn.
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		const ctx = {
+			...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object),
+			hasUI: true,
+			mode: "rpc",
+		}
+		const tool = getRegisteredAgentTool(pi)
+
+		await tool.execute(
+			"call-acp-default-fg",
+			{ prompt: "do work", description: "test", subagent_type: "general-purpose" },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
+		expect(managerInstance.spawn).toHaveBeenCalledWith(
+			pi,
+			ctx,
+			"General-Purpose",
+			expect.any(String),
+			expect.objectContaining({ isBackground: false }),
+		)
+	})
+
+	it("still honors an explicit run_in_background: true in ACP/rpc sessions", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		const ctx = {
+			...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object),
+			hasUI: true,
+			mode: "rpc",
+		}
+		const tool = getRegisteredAgentTool(pi)
+
+		await tool.execute(
+			"call-acp-explicit-bg",
+			{ prompt: "do work", description: "test", subagent_type: "general-purpose", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(managerInstance.spawn).toHaveBeenCalledWith(
+			pi,
+			ctx,
+			"General-Purpose",
+			expect.any(String),
+			expect.objectContaining({ isBackground: true }),
+		)
 	})
 })
 

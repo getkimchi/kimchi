@@ -1564,7 +1564,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				run_in_background: Type.Optional(
 					Type.Boolean({
 						description:
-							"Default: true in interactive sessions (false in headless runs). Run the agent in the background and return its ID immediately; you will be notified on completion. Set to false only when the next step in your workflow cannot proceed without the agent's result.",
+							"Default: true in interactive sessions (false in headless and ACP runs). Run the agent in the background and return its ID immediately; you will be notified on completion. Set to false only when the next step in your workflow cannot proceed without the agent's result.",
 					}),
 				),
 				isolated: Type.Optional(
@@ -1701,12 +1701,15 @@ ${AGENT_TOOL_GUIDELINES}`,
 				const customConfig = getAgentConfig(subagentType)
 
 				// Background-by-default only applies with a UI loop that can consume
-				// completion notifications; headless/one-shot runs keep foreground so
-				// spawned work cannot outlive the process.
+				// completion notifications. Headless/one-shot runs keep foreground so
+				// spawned work cannot outlive the process; ACP (mode "rpc") also keeps
+				// the foreground default — clients only see in-turn tool-call updates,
+				// so a backgrounded agent would silently outlive the turn. An explicit
+				// run_in_background: true still opts in.
 				const resolvedConfig = resolveAgentInvocationConfig(
 					customConfig,
 					params as Parameters<typeof resolveAgentInvocationConfig>[1],
-					ctx.hasUI,
+					ctx.hasUI && ctx.mode !== "rpc",
 				)
 
 				let model = ctx.model
