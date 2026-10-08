@@ -23,6 +23,8 @@ export interface CumulativeState {
 		delivery: Partial<Record<"success" | "failed" | "canceled", number>>
 		unpriced?: number
 		queueDepth?: number
+		snapshotRequests?: number
+		snapshotBytes?: number
 		reconciliationStartedAt?: number
 	}
 }
@@ -97,6 +99,8 @@ export function collectMetrics(state: CumulativeState): MetricData[] {
 		for (const [name, value] of Object.entries({
 			"pricing.unpriced": state.prCost.unpriced,
 			"queue.depth": state.prCost.queueDepth,
+			"snapshot.requests": state.prCost.snapshotRequests,
+			"snapshot.bytes": state.prCost.snapshotBytes,
 			"reconciliation.age":
 				state.prCost.reconciliationStartedAt === undefined
 					? undefined

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
+import * as health from "../telemetry/pr-cost.js"
 import { calculatePullRequestCosts } from "../work-attribution/costs.js"
 import type { WorkRecord } from "../work-attribution/summary.js"
 import { machineFingerprint } from "./machine.js"
@@ -25,6 +26,7 @@ const account = {
 }
 const requestId = "33333333-3333-4333-8333-333333333333"
 const otherRequestId = "44444444-4444-4444-8444-444444444444"
+const billing = "77777777-7777-4777-8777-777777777777"
 const snapshot = (requestIds: string[] = []): RepositorySnapshot => ({
 	account,
 	content: {
@@ -539,5 +541,23 @@ describe("unusable provider metadata for one PR", () => {
 		expect(next.entries[key].pending?.requests.map((row) => row.requestId).sort()).toEqual(
 			[requestId, otherRequestId].sort(),
 		)
+	})
+})
+
+describe("snapshot size health", () => {
+	it("reports the largest snapshot queued in a pass", async () => {
+		await setReportingEnabled(directory, true)
+		const metric = vi.spyOn(health, "trackPRCostMetric").mockImplementation(() => {})
+		const other = snapshot([requestId, otherRequestId, billing])
+		other.content.repository = { ...other.content.repository, id: "43" }
+		const state = await queueSnapshots(directory, [snapshot([requestId]), other])
+		const bytes = Math.max(
+			...Object.values(state.entries).map((entry) => Buffer.byteLength(JSON.stringify(entry.pending))),
+		)
+		expect(metric).toHaveBeenCalledWith({ kind: "snapshotRequests", value: 3 })
+		expect(metric).toHaveBeenCalledWith({ kind: "snapshotBytes", value: bytes })
+		metric.mockClear()
+		await queueSnapshots(directory, [snapshot([requestId]), other])
+		expect(metric.mock.calls.filter(([value]) => value.kind.startsWith("snapshot"))).toEqual([])
 	})
 })

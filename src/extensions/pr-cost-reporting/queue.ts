@@ -209,12 +209,13 @@ export function recordReportingError(agentDir: string, error: string): Promise<R
 }
 
 /** Replaces a repository's entire inventory. The fsynced rename completes before delivery can begin. */
-export function queueSnapshots(
+export async function queueSnapshots(
 	agentDir: string,
 	snapshots: RepositorySnapshot[],
 	completeInventory = false,
 ): Promise<ReportingState> {
-	return update(agentDir, (state) => {
+	let largest: { requests: number; bytes: number } | undefined
+	const state = await update(agentDir, (state) => {
 		if (!state.enabled) return
 		const invalid = new Set<string>()
 		const current = new Map<string, RepositorySnapshot>()
@@ -307,6 +308,10 @@ export function queueSnapshots(
 				...(entry?.lastAcknowledgedAt ? { lastAcknowledgedAt: entry.lastAcknowledgedAt } : {}),
 			}
 			state.entries[key] = entry
+			largest = {
+				requests: Math.max(largest?.requests ?? 0, pending.requests.length),
+				bytes: Math.max(largest?.bytes ?? 0, Buffer.byteLength(JSON.stringify(pending))),
+			}
 		}
 		state.error =
 			[
@@ -318,6 +323,11 @@ export function queueSnapshots(
 					: []),
 			].join(". ") || undefined
 	})
+	if (largest) {
+		trackPRCostMetric({ kind: "snapshotRequests", value: largest.requests })
+		trackPRCostMetric({ kind: "snapshotBytes", value: largest.bytes })
+	}
+	return state
 }
 
 export function acknowledgeSnapshot(

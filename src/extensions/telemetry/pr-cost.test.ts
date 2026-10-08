@@ -87,3 +87,31 @@ it("ignores invalid gauge values and works without a telemetry instance", () => 
 	fixture.context = undefined
 	expect(() => trackPRCostMetric({ kind: "matching", outcome: "explicit" })).not.toThrow()
 })
+
+it("reports the largest queued snapshot's requests and bytes as client-only gauges", () => {
+	trackPRCostMetric({ kind: "snapshotRequests", value: 32_000 })
+	trackPRCostMetric({ kind: "snapshotBytes", value: 8 * 1024 * 1024 })
+	trackPRCostMetric({ kind: "snapshotRequests", value: 120 })
+	for (const value of [-1, 1.5, Number.NaN]) trackPRCostMetric({ kind: "snapshotBytes", value })
+	const state = fixture.context?.cumulative
+	if (!state) throw new Error("Missing test accumulator")
+	const gauges = collectMetrics(state).filter((metric) => metric.name.startsWith("kimchi.pr_cost.snapshot."))
+	expect(gauges).toEqual([
+		{
+			name: "kimchi.pr_cost.snapshot.requests",
+			type: "Gauge",
+			value: 120,
+			attrs: {},
+			scope: "aggregate",
+			startTimeUnixNano: expect.any(String),
+		},
+		{
+			name: "kimchi.pr_cost.snapshot.bytes",
+			type: "Gauge",
+			value: 8 * 1024 * 1024,
+			attrs: {},
+			scope: "aggregate",
+			startTimeUnixNano: expect.any(String),
+		},
+	])
+})
