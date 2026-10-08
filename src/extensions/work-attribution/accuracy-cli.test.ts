@@ -86,7 +86,7 @@ const EXPECTED_AMOUNTS = [
 const EXPECTED_PERCENTAGES = ["Correct coverage: 26.666666666%", "Wrong assignment: 83.333333333%"]
 const OVERLAP_NOTE =
 	"Wrong assignment divides wrong spending by assigned spending. Correct coverage divides correct spending by spending expected on a PR."
-const USAGE = "Usage: pnpm exec tsx src/extensions/work-attribution/accuracy-cli.ts <report.json> <labels.json>"
+const USAGE = "Usage: pnpm exec tsx src/extensions/work-attribution/accuracy-cli.ts <report.json> <reference.json>"
 
 type CliSpawnError = Error & { code: number | string | undefined; stdout: string; stderr: string }
 

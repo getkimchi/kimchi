@@ -11,7 +11,7 @@ export interface CliOutcome {
 	stderr: string[]
 }
 
-const USAGE = "Usage: pnpm exec tsx src/extensions/work-attribution/accuracy-cli.ts <report.json> <labels.json>"
+const USAGE = "Usage: pnpm exec tsx src/extensions/work-attribution/accuracy-cli.ts <report.json> <reference.json>"
 const OVERLAP_NOTE =
 	"Wrong assignment divides wrong spending by assigned spending. Correct coverage divides correct spending by spending expected on a PR."
 const INCOMPLETE_NOTE = "Percentages: full percentages unavailable (comparison incomplete)"
