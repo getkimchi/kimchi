@@ -22,7 +22,7 @@ import {
 function requestStatus(pr: WorkPullRequest): string {
 	return `${pr.provider === "gitlab" ? "MR: !" : "PR: #"}${pr.number} ${pr.state}`
 }
-/** A tracked work without commits shows its branch's PR; the provider is asked again only on a branch change. */
+/** A branch's PR is asked for again only after a branch change or this long. */
 const BRANCH_REFRESH_MS = 5 * 60_000
 
 export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
@@ -162,6 +162,14 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		})
 		branchRun = { controller, promise }
 	}
+	/** Records the current branch and reports whether its PR should be looked up. */
+	function branchLookupDue(branch: string | undefined): boolean {
+		if (branch === branchName && Date.now() - branchCheckedAt < BRANCH_REFRESH_MS) return false
+		if (branch !== branchName) branchPull = undefined
+		branchName = branch
+		branchCheckedAt = Date.now()
+		return true
+	}
 	function pollBranchForWork(): void {
 		const { links, pending, errors } = details()
 		if (links.length || pending || errors.length) return
@@ -170,10 +178,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 			(ctx, signal, current) =>
 				currentBranch(ctx.cwd, signal, Date.now() + 2000)
 					.then(async (branch) => {
-						if (!current() || (branch === branchName && Date.now() - branchCheckedAt < BRANCH_REFRESH_MS)) return
-						if (branch !== branchName) branchPull = undefined
-						branchName = branch
-						branchCheckedAt = Date.now()
+						if (!current() || !branchLookupDue(branch)) return
 						const result = branch ? await lookupBranchPullRequest(ctx.cwd, signal) : undefined
 						if (current()) branchPull = result?.pullRequest
 					})
@@ -192,12 +197,13 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		startBranchRun(
 			() => !tracking,
 			(ctx, signal, current) =>
-				lookupBranchPullRequest(ctx.cwd, signal, (branch) => {
-					if (!current()) return
-					if (branchName !== branch) footer()
-					branchName = branch
-				})
-					.then((result) => {
+				currentBranch(ctx.cwd, signal, Date.now() + 2000)
+					.then(async (branch) => {
+						if (!current()) return
+						// Clear the previous branch's link before waiting for its replacement.
+						if (branch !== branchName) footer()
+						if (!branchLookupDue(branch)) return
+						const result = branch ? await lookupBranchPullRequest(ctx.cwd, signal) : undefined
 						if (!current()) return
 						const pr = result?.pullRequest
 						footer(pr ? requestStatus(pr) : undefined, pr?.url)

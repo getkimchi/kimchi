@@ -438,10 +438,8 @@ describe("repository and branch selection", () => {
 	it.each(providers)("shows the current %s branch without creating attribution records", async (provider) => {
 		useProvider(provider)
 		replies(() => (provider === "github" ? [pull()] : [mr()]))
-		const onBranch = vi.fn()
-		const result = await lookupBranchPullRequest(repository, new AbortController().signal, onBranch)
+		const result = await lookupBranchPullRequest(repository, new AbortController().signal)
 		expect(result).toMatchObject({ branch: "feature", pullRequest: { provider, number: 7, state: "open" } })
-		expect(onBranch).toHaveBeenCalledWith("feature")
 		expect(existsSync(agentDir)).toBe(false)
 	})
 	it("resolves the renamed repository before using an exact numeric branch filter", async () => {

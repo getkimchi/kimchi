@@ -54,6 +54,18 @@ async function start(api: ReturnType<typeof createExtensionApi>) {
 			await handler({ type: "session_shutdown", reason: "quit" }, ctx)
 	})
 }
+/** Without work tracking, the footer shows the PR of the checked-out branch. */
+async function startStandalone(): Promise<ReturnType<typeof createExtensionApi>> {
+	vi.mocked(discovery.currentBranch).mockResolvedValue("feature")
+	const api = createExtensionApi()
+	pullRequestStatusExtension(api.api)
+	await start(api)
+	return api
+}
+/** Only setInterval is faked; the branch refresh interval compares Date.now(). */
+function afterBranchRefresh(): void {
+	vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000)
+}
 function contribution(workId: string): discovery.WorkPullRequestUpdate {
 	return {
 		workId,
@@ -81,6 +93,7 @@ afterEach(async () => {
 	await flushWorkSummaries()
 	vi.useRealTimers()
 	vi.clearAllMocks()
+	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
 	rmSync(directory, { recursive: true, force: true })
 })
@@ -215,22 +228,35 @@ describe("PR status extension", () => {
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PRs/MRs: 1 linked, 1 waiting")
 	})
 	it("checks the current branch without work tracking and writes no work records", async () => {
-		const api = createExtensionApi()
-		pullRequestStatusExtension(api.api)
-		await start(api)
+		await startStandalone()
 		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-pr", "PR: #7 open"))
 		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-pr-url", pr.url)
 		expect(supervisor.subscribeFileReconciliation).not.toHaveBeenCalled()
 		expect(supervisor.subscribePullRequestReconciliation).not.toHaveBeenCalled()
 		expect(existsSync(join(directory, "work-attribution"))).toBe(false)
 		await vi.advanceTimersByTimeAsync(30_000)
-		expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(2)
+		expect(discovery.currentBranch).toHaveBeenCalledTimes(2)
 	})
 
-	it("refreshes a standalone branch after shell commands at most once per interval", async () => {
-		const api = createExtensionApi()
-		pullRequestStatusExtension(api.api)
-		await start(api)
+	it("asks the provider about a standalone branch again only after a branch change or five minutes", async () => {
+		await startStandalone()
+		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: #7 open"))
+		await vi.advanceTimersByTimeAsync(4 * 60_000)
+		// The branch is still checked locally every 30 seconds.
+		expect(discovery.currentBranch).toHaveBeenCalledTimes(9)
+		expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(1)
+		afterBranchRefresh()
+		await vi.advanceTimersByTimeAsync(30_000)
+		await vi.waitFor(() => expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(2))
+		vi.mocked(discovery.currentBranch).mockResolvedValue("other")
+		vi.mocked(discovery.lookupBranchPullRequest).mockResolvedValue({ branch: "other", pullRequest: undefined })
+		await vi.advanceTimersByTimeAsync(30_000)
+		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", undefined))
+		expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(3)
+	})
+
+	it("checks a standalone branch after shell commands at most once per interval", async () => {
+		const api = await startStandalone()
 		await vi.waitFor(() => expect(discovery.lookupBranchPullRequest).toHaveBeenCalledOnce())
 		const finish = (toolName: string, call: number) =>
 			api.getHandler("tool_execution_end")(
@@ -238,19 +264,20 @@ describe("PR status extension", () => {
 				ctx,
 			)
 		for (let call = 0; call < 20; call++) await finish("read", call)
-		expect(discovery.lookupBranchPullRequest).toHaveBeenCalledOnce()
+		expect(discovery.currentBranch).toHaveBeenCalledOnce()
+		// A shell command can switch branches; the provider is asked again because this one did.
+		vi.mocked(discovery.currentBranch).mockResolvedValue("other")
 		await finish("bash", 20)
 		await vi.waitFor(() => expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(2))
 		for (let call = 21; call < 30; call++) await finish("bash", call)
 		await new Promise((resolve) => setImmediate(resolve))
+		expect(discovery.currentBranch).toHaveBeenCalledTimes(2)
 		expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(2)
 	})
 
 	it("shows GitLab merge requests without work tracking and keeps their URL separate from text", async () => {
 		vi.mocked(discovery.lookupBranchPullRequest).mockResolvedValue({ branch: "feature", pullRequest: mr })
-		const api = createExtensionApi()
-		pullRequestStatusExtension(api.api)
-		await start(api)
+		await startStandalone()
 		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-pr", "MR: !7 open"))
 		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-pr-url", mr.url)
 		expect(existsSync(join(directory, "work-attribution"))).toBe(false)
@@ -273,12 +300,12 @@ describe("PR status extension", () => {
 
 	it("keeps a branch without a PR quiet and reports auth errors without suggesting an absent command", async () => {
 		vi.mocked(discovery.lookupBranchPullRequest).mockResolvedValue({ branch: "feature" })
-		const api = createExtensionApi()
-		pullRequestStatusExtension(api.api)
-		await start(api)
-		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", undefined))
+		await startStandalone()
+		await vi.waitFor(() => expect(discovery.lookupBranchPullRequest).toHaveBeenCalledOnce())
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", undefined)
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
 		vi.mocked(discovery.lookupBranchPullRequest).mockRejectedValue(new Error("Run gh auth login"))
+		afterBranchRefresh()
 		await vi.advanceTimersByTimeAsync(30_000)
 		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR/MR: unavailable"))
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("gh auth login"), "warning")
@@ -287,23 +314,22 @@ describe("PR status extension", () => {
 	})
 
 	it("clears the previous branch link before waiting for its replacement and never overlaps polls", async () => {
-		const api = createExtensionApi()
-		pullRequestStatusExtension(api.api)
-		await start(api)
+		await startStandalone()
 		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: #7 open"))
 		let finish!: (result: discovery.BranchPullRequest) => void
 		const pending = new Promise<discovery.BranchPullRequest>((resolve) => {
 			finish = resolve
 		})
-		vi.mocked(discovery.lookupBranchPullRequest).mockImplementation(async (_cwd, _signal, onBranch) => {
-			onBranch?.("other")
-			return pending
-		})
+		vi.mocked(discovery.currentBranch).mockResolvedValue("other")
+		vi.mocked(discovery.lookupBranchPullRequest).mockReturnValue(pending)
 		try {
 			await vi.advanceTimersByTimeAsync(30_000)
-			expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-pr-url", undefined)
-			expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", undefined)
+			expect(vi.mocked(ctx.ui.setStatus).mock.calls.slice(-2)).toEqual([
+				["work-pr-url", undefined],
+				["work-pr", undefined],
+			])
 			await vi.advanceTimersByTimeAsync(60_000)
+			expect(discovery.currentBranch).toHaveBeenCalledTimes(2)
 			expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(2)
 		} finally {
 			finish({ branch: "other", pullRequest: { ...pr, number: 8, url: "https://github.com/example/repo/pull/8" } })
@@ -317,9 +343,8 @@ describe("PR status extension", () => {
 			finish = resolve
 		})
 		vi.mocked(discovery.lookupBranchPullRequest).mockReturnValueOnce(pending)
-		const api = createExtensionApi()
-		pullRequestStatusExtension(api.api)
-		await start(api)
+		const api = await startStandalone()
+		await vi.waitFor(() => expect(discovery.lookupBranchPullRequest).toHaveBeenCalledOnce())
 		const signal = vi.mocked(discovery.lookupBranchPullRequest).mock.calls[0][1]
 		const second = createContext({ cwd: join(directory, "second"), sessionManager: { getSessionId: () => "second" } })
 		vi.mocked(discovery.lookupBranchPullRequest).mockResolvedValue({
@@ -334,9 +359,7 @@ describe("PR status extension", () => {
 	})
 
 	it("writes the footer again for each new session even when its value is unchanged", async () => {
-		const api = createExtensionApi()
-		pullRequestStatusExtension(api.api)
-		await start(api)
+		const api = await startStandalone()
 		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: #7 open"))
 		vi.mocked(discovery.lookupBranchPullRequest).mockResolvedValue({ branch: "feature" })
 		const second = createContext({ cwd: join(directory, "second"), sessionManager: { getSessionId: () => "second" } })
@@ -356,9 +379,8 @@ describe("PR status extension", () => {
 			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
 			return undefined
 		})
-		const api = createExtensionApi()
-		pullRequestStatusExtension(api.api)
-		await start(api)
+		const api = await startStandalone()
+		await vi.waitFor(() => expect(discovery.lookupBranchPullRequest).toHaveBeenCalledOnce())
 		const signal = vi.mocked(discovery.lookupBranchPullRequest).mock.calls[0][1]
 		await api.getHandler("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
 		expect(signal.aborted).toBe(true)
@@ -373,9 +395,8 @@ describe("PR status extension", () => {
 			finish = resolve
 		})
 		vi.mocked(discovery.lookupBranchPullRequest).mockReturnValueOnce(pending)
-		const status = createExtensionApi()
-		pullRequestStatusExtension(status.api)
-		await start(status)
+		const status = await startStandalone()
+		await vi.waitFor(() => expect(discovery.lookupBranchPullRequest).toHaveBeenCalledOnce())
 		const signal = vi.mocked(discovery.lookupBranchPullRequest).mock.calls[0][1]
 		const work = createExtensionApi()
 		createWorkAttributionExtension()({ ...work.api, events: status.api.events })
@@ -541,15 +562,14 @@ describe("PR status with the real reconciliation supervisor", () => {
 
 describe("expected lookup failures", () => {
 	it("keeps the branch footer steady and silent through outages and hides it without a supported remote", async () => {
-		const api = createExtensionApi()
-		pullRequestStatusExtension(api.api)
-		await start(api)
+		await startStandalone()
 		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: #7 open"))
 		for (const message of [
 			"GitHub lookup failed. Check network and repository access.",
 			"GitHub lookup failed (HTTP 503).",
 		]) {
 			vi.mocked(discovery.lookupBranchPullRequest).mockRejectedValueOnce(new discovery.LookupError(message, "retry"))
+			afterBranchRefresh()
 			await vi.advanceTimersByTimeAsync(30_000)
 		}
 		await vi.waitFor(() => expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(3))
@@ -557,6 +577,7 @@ describe("expected lookup failures", () => {
 		vi.mocked(discovery.lookupBranchPullRequest).mockRejectedValue(
 			new discovery.LookupError("This repository has no supported GitHub or GitLab remote.", "unsupported"),
 		)
+		afterBranchRefresh()
 		await vi.advanceTimersByTimeAsync(30_000)
 		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", undefined))
 		expect(ctx.ui.notify).not.toHaveBeenCalled()

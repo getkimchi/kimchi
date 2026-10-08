@@ -868,11 +868,9 @@ export async function currentBranch(cwd: string, signal: AbortSignal, deadline: 
 export async function lookupBranchPullRequest(
 	cwd: string,
 	signal: AbortSignal,
-	onBranch?: (branch: string | undefined) => void,
 ): Promise<BranchPullRequest | undefined> {
 	const deadline = Date.now() + PASS_BUDGET_MS
 	const branch = await currentBranch(cwd, signal, deadline)
-	onBranch?.(branch)
 	if (!branch) return undefined
 	let pull: WorkPullRequest | undefined
 	let failure: unknown
