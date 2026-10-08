@@ -1,12 +1,12 @@
 import { watch } from "node:fs"
 import { verifyApiKey } from "../../api/organizations.js"
-import { loadConfig, resolveEndpoints } from "../../config.js"
-import { computeRetryDelayMs, fetchWithRetry, parseRetryAfterMs } from "../../utils/http.js"
+import { loadConfig } from "../../config.js"
+import { boundedResponse, computeRetryDelayMs, fetchWithRetry, parseRetryAfterMs } from "../../utils/http.js"
 import { plainURL } from "../../utils/url.js"
 import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
-import { isWorkAccount, isWorkScope, sameWorkAccount } from "../work-attribution/scope.js"
+import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../work-attribution/scope.js"
 import {
 	acknowledgeSnapshot,
 	deferSnapshot,
@@ -31,36 +31,6 @@ function rejectionDelay(status: number | undefined, attempts: number, retryAfter
 }
 const repositoryCache = new Map<string, { checkedAt: number; value?: ReportingRepository }>()
 
-/** Verify and acknowledgement responses are small; neither response text nor headers enter durable state. */
-async function boundedResponse(response: Response, signal: AbortSignal): Promise<Response> {
-	const reader = response.body?.getReader()
-	if (!reader) return response
-	let abort: (() => void) | undefined
-	const cancelled = new Promise<never>((_resolve, reject) => {
-		abort = () => reject(signal.reason)
-		signal.addEventListener("abort", abort, { once: true })
-	})
-	const chunks: Uint8Array[] = []
-	let size = 0
-	try {
-		while (true) {
-			signal.throwIfAborted()
-			const chunk = await Promise.race([reader.read(), cancelled])
-			if (chunk.done) break
-			size += chunk.value.length
-			if (size > RESPONSE_BYTES) throw new Error("PR reporting response exceeds the size limit")
-			chunks.push(chunk.value)
-		}
-		return new Response(Buffer.concat(chunks), { status: response.status, headers: response.headers })
-	} finally {
-		if (abort) signal.removeEventListener("abort", abort)
-		void reader.cancel().catch(() => {})
-	}
-}
-
-function endpoint(cwd: string): string {
-	return resolveEndpoints({ cwd }).platformApiUrl.replace(/\/+$/, "")
-}
 function safeEndpoint(value: string): boolean {
 	const url = plainURL(value, ["https:", "http:"])
 	return url?.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]"].includes(url?.hostname ?? "")
@@ -90,7 +60,7 @@ export async function deliverSnapshots(
 		const state = await readReportingState(agentDir)
 		if (!state.enabled) return
 		const configuredKey = loadConfig({ cwd }).apiKey
-		const configuredEndpoint = endpoint(cwd)
+		const configuredEndpoint = platformApiUrl(cwd)
 		if (
 			Object.values(state.entries).some(
 				(entry) => entry.pending && (!configuredKey || entry.account.apiUrl !== configuredEndpoint),
@@ -106,7 +76,7 @@ export async function deliverSnapshots(
 			if (combined.aborted || attempts >= 3) break
 			const snapshot = entry.pending
 			const key = loadConfig({ cwd }).apiKey
-			const apiUrl = endpoint(cwd)
+			const apiUrl = platformApiUrl(cwd)
 			if (!key || !safeEndpoint(apiUrl) || apiUrl !== entry.account.apiUrl) continue
 			attempts++
 			let retryMs = computeRetryDelayMs(entry.attempts + 1)
@@ -116,7 +86,7 @@ export async function deliverSnapshots(
 			const assertCurrent = () => {
 				assertLease()
 				combined.throwIfAborted()
-				if (loadConfig({ cwd }).apiKey !== key || endpoint(cwd) !== apiUrl)
+				if (loadConfig({ cwd }).apiKey !== key || platformApiUrl(cwd) !== apiUrl)
 					throw new Error("PR reporting credentials changed")
 			}
 			const fetchBounded: typeof fetch = async (input, init) => {
@@ -138,7 +108,13 @@ export async function deliverSnapshots(
 					errorMessage = `PR reporting returned HTTP ${response.status}`
 					rejected = response.status
 				}
-				const bounded = await boundedResponse(response, combined)
+				// Verify and acknowledgement responses are small; neither response text nor headers enter durable state.
+				const bounded = await boundedResponse(
+					response,
+					RESPONSE_BYTES,
+					combined,
+					"PR reporting response exceeds the size limit",
+				)
 				assertCurrent()
 				return bounded
 			}

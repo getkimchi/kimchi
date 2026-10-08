@@ -7,7 +7,7 @@ import { readTelemetryConfig } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { isWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
-import { object } from "../work-attribution/summary.js"
+import { object, SHA256_HEX } from "../work-attribution/summary.js"
 import {
 	accountKey,
 	MAX_REVISION,
@@ -96,7 +96,7 @@ export async function readReportingState(agentDir: string): Promise<ReportingSta
 				entry.attempts < 0 ||
 				!Number.isFinite(entry.retryAt) ||
 				!Array.isArray(entry.requestHashes) ||
-				entry.requestHashes.some((hash) => typeof hash !== "string" || !/^[a-f\d]{64}$/.test(hash)) ||
+				entry.requestHashes.some((hash) => typeof hash !== "string" || !SHA256_HEX.test(hash)) ||
 				key !== `${accountKey(entry.account)}:${repositoryKey(entry.repository)}`
 			)
 				throw new Error("Invalid PR reporting state")
