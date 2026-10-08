@@ -4,8 +4,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
+import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import { getWorkId, setWorkId } from "../work-attribution.js"
 import { createWorkCommitTrackingOperations } from "./commits.js"
+import { calculatePullRequestCosts } from "./costs.js"
 import { observeToolFiles } from "./file-observations.js"
 import { flushWorkSummaries, readWorkRecords } from "./summary.js"
 
@@ -89,6 +91,94 @@ it("reports an incomplete scan instead of treating a truncated dirty tree as com
 		writeFileSync(join(cwd, "source.ts"), "changed\n")
 	})
 	expect(observations()[0]).toMatchObject({ complete: false, reason: "incomplete-snapshot", files: [] })
+})
+
+it.each([
+	[
+		"symlink",
+		() => {
+			symlinkSync("source.ts", join(cwd, "link"))
+			git("add", "link")
+		},
+	],
+	[
+		"submodule",
+		() => {
+			mkdirSync(join(cwd, "vendor"))
+			git("update-index", "--add", "--cacheinfo", `160000,${git("rev-parse", "HEAD")},vendor`)
+		},
+	],
+])("records nothing for a read-only Bash call beside a committed %s", async (_case, stage) => {
+	stage()
+	git("commit", "-qm", "unsupported entry")
+	await observeToolFiles(createContext({ cwd }), "ls", "bash", async () => "listing")
+	expect(observations()).toEqual([])
+})
+
+it("keeps an input's native-edit proof after its read-only Bash call beside a committed symlink", async () => {
+	symlinkSync("source.ts", join(cwd, "link"))
+	git("add", "link")
+	git("commit", "-qm", "link")
+	const ctx = createContext({ cwd })
+	const workId = getWorkId(ctx)
+	await observeToolFiles(ctx, "ls", "bash", async () => "listing", { workId, requestId: "implement" })
+	const { scope } = createWorkScopeSnapshot(join(cwd, ".git"))
+	const owner = { workId, sessionId: "test-session", repository: join(cwd, ".git"), worktree: cwd }
+	const file = (blob: string) => ({ blob: blob.repeat(40), mode: "100644" })
+	const report = calculatePullRequestCosts(
+		[
+			{
+				...owner,
+				version: 1,
+				type: "request",
+				requestId: "implement",
+				recordedAt: "2026-10-02T10:10:00.000Z",
+				scope,
+				segment: { id: "input", attribution: "session", reason: "matching-disabled" },
+			},
+			{
+				...owner,
+				version: 1,
+				type: "file_transition",
+				requestId: "implement",
+				transitionId: "edit",
+				toolCallId: "edit",
+				path: "source.ts",
+				baseline: "c".repeat(40),
+				baselineFile: file("d"),
+				before: file("d"),
+				after: file("e"),
+				cursor: { bytes: 0, digest: "f".repeat(64) },
+			},
+			{
+				...owner,
+				version: 1,
+				type: "commit",
+				sha: "a".repeat(40),
+				source: "native-file-transition",
+				fileMatches: [{ path: "source.ts", worktree: cwd, method: "file-chain", transitionIds: ["edit"] }],
+				pullRequests: [
+					{
+						provider: "github",
+						host: "github.com",
+						repository: "example/repository",
+						number: 1,
+						url: "https://github.com/example/repository/pull/1",
+						state: "merged",
+						headSha: "a".repeat(40),
+						mergeCommitSha: "b".repeat(40),
+						mergedAt: "2026-10-02T10:30:00.000Z",
+						closedAt: "2026-10-02T10:30:00.000Z",
+						checkedAt: "2026-10-02T10:40:00.000Z",
+					},
+				],
+			},
+			...observations(),
+		],
+		[{ requestId: "implement", billingRecordId: "bill", costUsd: "1", account: scope.account }],
+	)
+	expect(report.requests).toMatchObject([{ requestId: "implement", allocation: "pull-request" }])
+	expect(report.pullRequests[0].explicit.knownCostUsd).toBe("1.000000000")
 })
 
 it("pins a delayed Bash operation to its original work before execution starts", async () => {

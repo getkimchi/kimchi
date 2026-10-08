@@ -52,7 +52,8 @@ async function snapshot(cwd: string): Promise<Snapshot | undefined> {
 			const match = /^(\d{6}) ([a-f\d]+) ([0-3])\t(.+)$/s.exec(entry)
 			if (!match) return result
 			const [, mode, blob, stage, path] = match
-			result.files.set(path, stage === "0" && (mode === "100644" || mode === "100755") ? { mode, blob } : undefined)
+			// Clean symlinks and submodules keep their index state; only a dirty one is unknown.
+			result.files.set(path, stage === "0" ? { mode, blob } : undefined)
 		}
 		const status = (await git(result.worktree, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], signal))
 			.split("\0")
