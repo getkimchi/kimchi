@@ -174,13 +174,20 @@ describe("cleanupStrayMcpOAuthEntries", () => {
 })
 
 describe("cleanupStrayMcpOAuthEntriesBestEffort", () => {
+	const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")
+
 	beforeEach(() => {
 		resetStrayCleanupGuardForTests()
+		// The best-effort entry point is darwin-only; stub the platform so the
+		// warning behavior is covered on Linux CI runners too (the "does nothing
+		// off darwin" test below overrides this with its own linux stub).
+		Object.defineProperty(process, "platform", { value: "darwin", configurable: true })
 	})
 
 	afterEach(() => {
 		resetStrayCleanupGuardForTests()
 		vi.restoreAllMocks()
+		Object.defineProperty(process, "platform", { ...originalPlatform, configurable: true })
 	})
 
 	it("runs only once per process", () => {
@@ -194,7 +201,6 @@ describe("cleanupStrayMcpOAuthEntriesBestEffort", () => {
 	})
 
 	it("does nothing off darwin", () => {
-		const platform = Object.getOwnPropertyDescriptor(process, "platform")
 		Object.defineProperty(process, "platform", { value: "linux", configurable: true })
 		try {
 			const dump = entry(SERVICE, "Bearer")
@@ -202,7 +208,7 @@ describe("cleanupStrayMcpOAuthEntriesBestEffort", () => {
 			cleanupStrayMcpOAuthEntriesBestEffort(runner)
 			expect(runner.attempted).toEqual([])
 		} finally {
-			Object.defineProperty(process, "platform", { ...platform, configurable: true })
+			Object.defineProperty(process, "platform", { ...originalPlatform, configurable: true })
 		}
 	})
 
