@@ -18,6 +18,10 @@
 
 import type { ClassifierFailureCode, PermissionMode, PermissionModeState, RiskScore, RuleSource } from "./types.js"
 
+export type { ModeChangeReason } from "./types.js"
+
+import type { ModeChangeReason } from "./types.js"
+
 export const PERMISSION_EVENTS = {
 	MODE_CHANGED: "permissions:mode_changed",
 	BEFORE_PROMPT: "permissions:before_prompt",
@@ -44,17 +48,6 @@ export type PermissionEventChannel = (typeof PERMISSION_EVENTS)[keyof typeof PER
 // ---------------------------------------------------------------------------
 // Mode change
 // ---------------------------------------------------------------------------
-
-export type ModeChangeReason =
-	| "user_shift_tab"
-	| "ferment_elevation"
-	| "ferment_restore"
-	| "plan_approval"
-	| "questionnaire_promotion"
-	| "cloud_spawn_failed" // revert to plan mode when a cloud-agent spawn fails
-	| "command"
-	| "session_start"
-	| "controller" // ACP/IDE SessionPermissionFlagController setMode callback
 
 export interface PermissionModeChangedPayload {
 	from: PermissionModeState

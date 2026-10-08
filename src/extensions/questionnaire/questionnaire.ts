@@ -22,6 +22,7 @@ import { type Static, Type } from "typebox"
 import { withBlocked } from "../herdr-events.js"
 import { shouldSuppressInteractiveTools } from "../print-mode.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { withRawInputCapture } from "../shared-input.js"
 import { withWorkingHidden } from "../ui.js"
 import { promptQuestionnaireFallback, type QuestionnaireResult } from "./questionnaire-fallback.js"
 import { createQuestionForm } from "./questionnaire-form.js"
@@ -248,8 +249,13 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				ctx.mode !== "tui"
 					? promptQuestionnaireFallback(ctx.ui, questions)
 					: withWorkingHidden(ctx, () =>
-							ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
-								createQuestionForm(tui, theme, questions, { title: params.header }, done),
+							// The form navigates with Shift+Tab, which is also the global
+							// permission-mode cycle shortcut — claim raw input so global
+							// listeners defer while the form has focus.
+							withRawInputCapture(() =>
+								ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
+									createQuestionForm(tui, theme, questions, { title: params.header }, done),
+								),
 							),
 						),
 			)
