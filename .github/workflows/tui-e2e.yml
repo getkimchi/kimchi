@@ -29,48 +29,77 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  tui-e2e:
+  # Build the binary and proxy-helper once; shards download them below.
+  build:
     runs-on: ubuntu-latest
-    # Files run serially; allow setup/build plus the roughly 20-minute suite
-    # (25 minutes of headroom for CI variance).
-    timeout-minutes: 25
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
 
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup
         with:
-          node-version: "22.19.0"
-          cache: pnpm
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.0"
+          bun: "true"
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: tools/proxy-helper/go.mod
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          cache-dependency-path: tools/proxy-helper/go.sum
 
       - name: Build proxy-helper
-        run: make -C tools/proxy-helper build
+        run: make copy-for-dev # Builds the binary and copies it to bin/ where the tests expect it
+        working-directory: tools/proxy-helper
 
-      - name: Run TUI E2E tests
-        run: KIMCHI_PROXY_HELPER=$(pwd)/bin/proxy-helper pnpm run test:e2e:tui
+      - name: Build binary
+        run: pnpm run build:binary
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kimchi-dist
+          path: |
+            dist/**
+            bin/proxy-helper
+          retention-days: 1
+
+  tui-e2e:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      # Run all shards even when one fails, so a single run reports every failure.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    # Per-shard slice of the roughly 20-minute serial suite, plus headroom
+    # for setup and CI variance.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kimchi-dist
+          path: .
+
+      - name: Restore executable bits
+        run: chmod +x dist/bin/kimchi bin/proxy-helper
+
+      - name: Run TUI E2E tests (shard ${{ matrix.shard }}/4)
+        run: KIMCHI_PROXY_HELPER=$(pwd)/bin/proxy-helper node scripts/run-tui-e2e.js --shard ${{ matrix.shard }}/4
 
       - name: Upload TUI E2E artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: tui-e2e-artifacts
+          name: tui-e2e-artifacts-${{ matrix.shard }}
           path: |
             *.tui-e2e.log
             **/tui-traces/**
