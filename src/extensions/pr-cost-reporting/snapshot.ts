@@ -1,5 +1,6 @@
 import { isWorkId } from "../../shared/work-id.js"
 import { plainURL } from "../../utils/url.js"
+import { providerId } from "../pull-request-status/pull-requests.js"
 import { type PullRequestCostReport, type RequestCostAllocation, time } from "../work-attribution/costs.js"
 import { requestWorkLinks } from "../work-attribution/links.js"
 import { isWorkScope, sameWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
@@ -74,9 +75,6 @@ export function accountKey(account: WorkAccount): string {
 /** Protobuf timestamps start at year 1. */
 export function validTime(value: unknown): value is string {
 	return typeof value === "string" && Number(value.slice(0, 4)) >= 1 && time(value) !== undefined
-}
-function providerId(value: unknown): value is string {
-	return typeof value === "string" && /^[1-9]\d{0,19}$/.test(value)
 }
 function onlyKeys(value: object, allowed: string[]): boolean {
 	return Object.keys(value).every((key) => allowed.includes(key))

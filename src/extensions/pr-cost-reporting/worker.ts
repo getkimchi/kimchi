@@ -16,7 +16,7 @@ import {
 	reportingDirectory,
 	type SnapshotAck,
 } from "./queue.js"
-import { buildSnapshots, type ReportingRepository, validateSnapshot } from "./snapshot.js"
+import { buildSnapshots, type ReportingRepository } from "./snapshot.js"
 
 const PASS_MS = 5000
 const RESPONSE_BYTES = 64 * 1024
@@ -143,7 +143,6 @@ export async function deliverSnapshots(
 				return bounded
 			}
 			try {
-				validateSnapshot(snapshot)
 				const verified = {
 					apiUrl,
 					...(await verifyApiKey(key, {

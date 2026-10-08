@@ -209,7 +209,6 @@ export function queueSnapshots(
 		for (const snapshot of snapshots) {
 			const key = `${accountKey(snapshot.account)}:${repositoryKey(snapshot.content.repository)}`
 			try {
-				if (!isWorkAccount(snapshot.account)) throw new Error("Missing account")
 				const next = BigInt(state.entries[key]?.revision ?? "0") + 1n
 				validateSnapshot({
 					schemaVersion: 1,
@@ -277,7 +276,6 @@ export function queueSnapshots(
 				generatedAt: new Date().toISOString(),
 				...snapshot.content,
 			}
-			validateSnapshot(pending)
 			entry = {
 				account: snapshot.account,
 				repository: snapshot.content.repository,

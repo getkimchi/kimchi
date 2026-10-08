@@ -176,10 +176,6 @@ function storedPullRequest(row: unknown): { identity: PullIdentity; pullRequest:
 		identity,
 		pullRequest: {
 			...identity,
-			...(typeof row.id === "string" && /^[1-9]\d{0,19}$/.test(row.id) ? { id: row.id } : {}),
-			...(typeof row.repositoryId === "string" && /^[1-9]\d{0,19}$/.test(row.repositoryId)
-				? { repositoryId: row.repositoryId }
-				: {}),
 			state: row.state,
 			headSha: row.headSha,
 			mergeCommitSha: row.mergeCommitSha,
