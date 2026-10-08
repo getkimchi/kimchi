@@ -46,7 +46,7 @@ const backgroundTasks = new Set<Promise<unknown>>()
 const recoveredDirectories = new Set<string>()
 /** Work IDs generated in this process: they cannot have older history to scan. */
 const newWork = new Set<string>()
-function warn(error: unknown): void {
+function logDebug(error: unknown): void {
 	debugWorkAttribution("Work summary unavailable:", error)
 }
 function object(value: unknown): value is Record<string, unknown> {
@@ -342,7 +342,7 @@ function refresh(agentDir: string, workId: string, records: WorkRecord[], comple
 	})().then(
 		() => true,
 		(error: unknown) => {
-			warn(error)
+			logDebug(error)
 			return false
 		},
 	)
@@ -401,7 +401,7 @@ export function recoverWorkSummaries(): void {
 	trackAttributionTask(
 		recover(agentDir).catch((error) => {
 			recoveredDirectories.delete(agentDir)
-			warn(error)
+			logDebug(error)
 		}),
 	)
 }
