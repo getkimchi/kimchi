@@ -116,6 +116,50 @@ describe("isReadOnlyBashCommand", () => {
 		expect(isReadOnlyBashCommand("rg foo")).toBe(true)
 	})
 
+	it("allows no-op and probe builtins", () => {
+		expect(isReadOnlyBashCommand("true")).toBe(true)
+		expect(isReadOnlyBashCommand("false")).toBe(true)
+		expect(isReadOnlyBashCommand("sleep 5")).toBe(true)
+		expect(isReadOnlyBashCommand("test -f foo.txt")).toBe(true)
+		expect(isReadOnlyBashCommand("[ -d src ]")).toBe(true)
+	})
+
+	it("allows hash/checksum tools", () => {
+		expect(isReadOnlyBashCommand("md5 foo.txt")).toBe(true)
+		expect(isReadOnlyBashCommand("md5sum foo.txt")).toBe(true)
+		expect(isReadOnlyBashCommand("shasum -a 256 foo.txt")).toBe(true)
+		expect(isReadOnlyBashCommand("sha256sum foo.txt")).toBe(true)
+		expect(isReadOnlyBashCommand("cksum foo.txt")).toBe(true)
+		expect(isReadOnlyBashCommand("b3sum foo.txt")).toBe(true)
+	})
+
+	it("allows additional read-only display tools", () => {
+		expect(isReadOnlyBashCommand("comm a.txt b.txt")).toBe(true)
+		expect(isReadOnlyBashCommand("tac foo.txt")).toBe(true)
+		expect(isReadOnlyBashCommand("nl foo.txt")).toBe(true)
+		expect(isReadOnlyBashCommand("od -c foo.txt")).toBe(true)
+		expect(isReadOnlyBashCommand("hexdump -C foo.bin")).toBe(true)
+		expect(isReadOnlyBashCommand("strings foo.bin")).toBe(true)
+	})
+
+	it("does not allow env (executes its arguments)", () => {
+		expect(isReadOnlyBashCommand("env rm -rf /tmp/x")).toBe(false)
+		expect(isReadOnlyBashCommand("env")).toBe(false)
+	})
+
+	// xxd is deliberately excluded: `xxd [infile [outfile]]` writes to a
+	// positional outfile (and `xxd -r` writes arbitrary decoded bytes), which
+	// bypasses the redirect guards. od/hexdump cover hex-dump needs.
+	it("does not allow xxd (writes to a positional outfile)", () => {
+		expect(isReadOnlyBashCommand("xxd foo.bin")).toBe(false)
+		expect(isReadOnlyBashCommand("xxd in.hex out.bin")).toBe(false)
+		expect(isReadOnlyBashCommand("xxd -r payload.hex /tmp/target")).toBe(false)
+	})
+
+	it("still guards redirects with the widened list", () => {
+		expect(isReadOnlyBashCommand("md5 foo.txt > out.txt")).toBe(false)
+	})
+
 	it("allows cd and directory stack commands", () => {
 		expect(isReadOnlyBashCommand("cd /tmp")).toBe(true)
 		expect(isReadOnlyBashCommand("cd /Users/rat/code && git status")).toBe(true)
