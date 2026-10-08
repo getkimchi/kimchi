@@ -14,7 +14,7 @@ import {
 	sameWorkScope,
 	type WorkScope,
 } from "./scope.js"
-import { readWorkRecords, type WorkRecord } from "./summary.js"
+import { readWorkRecords, SHA256_HEX, type WorkRecord } from "./summary.js"
 
 interface RequestLink {
 	workIds: Set<string>
@@ -154,7 +154,7 @@ function continuationProducers(
 	if (
 		source === "named-artifact"
 			? !isWorkId(evidence.transitionId)
-			: typeof evidence.contentHash !== "string" || !/^[a-f0-9]{64}$/.test(evidence.contentHash)
+			: typeof evidence.contentHash !== "string" || !SHA256_HEX.test(evidence.contentHash)
 	)
 		return []
 	const producers = records.filter((row) => {
