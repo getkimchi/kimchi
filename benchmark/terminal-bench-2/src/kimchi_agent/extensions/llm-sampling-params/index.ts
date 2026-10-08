@@ -84,7 +84,9 @@ export default function llmSamplingParamsExtension(pi: ExtensionAPI): void {
 		perModelParams = parsedPerModel as Record<string, SamplingParameters>
 	} catch (err) {
 		// Fail fast during startup so misconfiguration is obvious.
-		throw new Error(`llm-sampling-params extension failed to load: ${err instanceof Error ? err.message : String(err)}`)
+		throw new Error(
+			`llm-sampling-params extension failed to load: ${err instanceof Error ? err.message : String(err)}`,
+		)
 	}
 
 	pi.on("before_provider_request", (event: BeforeProviderRequestEvent, ctx: ExtensionContext) => {
