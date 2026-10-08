@@ -7,7 +7,7 @@ import { object } from "./summary.js"
 export interface AttributionLabel {
 	requestId: string
 	expectedPullRequestId: string | null
-	/** Supplied by the independent receipt; omitted only in the limited legacy label mode. */
+	/** Supplied by the independent receipt; omitted in the legacy label mode or when a receipt has no valid account. */
 	expectedAccount?: WorkAccount
 }
 
@@ -52,6 +52,8 @@ export interface AttributionAccuracyResult {
 	}
 	metrics: { correctCoveragePercent: string | null; wrongAssignmentPercent: string | null }
 	requestMetrics: { correctCoveragePercent: string | null; wrongAssignmentPercent: string | null }
+	/** Usable report rows by request ID; a repeated ID leaves out every copy. */
+	rows: ReadonlyMap<string, Record<string, unknown>>
 	complete: boolean
 	problems: AttributionAccuracyProblem[]
 }
@@ -130,21 +132,23 @@ interface Survivor extends AttributionLabel {
 	nanos: bigint
 }
 
-export interface AttributionAccuracyOptions {
+export interface AttributionAccuracyOptions<Label> {
+	/** Further evidence repeated labels must share to be identical duplicates rather than conflicting labels. */
+	sameEvidence?: (left: Label, right: Label) => boolean
 	/** Independent price that weights the buckets, and so the dollar metrics, instead of the report's price. */
 	priceOf?: (requestId: string) => bigint | undefined
 }
 
 /** Compare human attribution labels against what a saved cost report actually allocated. Never mutates its inputs. */
-export function compareAttributionAccuracy(
+export function compareAttributionAccuracy<Label>(
 	requests: readonly unknown[],
-	labels: readonly unknown[],
-	{ priceOf }: AttributionAccuracyOptions = {},
+	labels: readonly Label[],
+	{ sameEvidence, priceOf }: AttributionAccuracyOptions<Label> = {},
 ): AttributionAccuracyResult {
 	const problems: AttributionAccuracyProblem[] = []
 
 	// Stage 1 — label shape, in label input order; extra properties are tolerated.
-	const shaped: AttributionLabel[] = []
+	const shaped: (AttributionLabel & { entry: Label })[] = []
 	for (const entry of labels) {
 		const requestId = object(entry) && typeof entry.requestId === "string" && entry.requestId ? entry.requestId : null
 		const expected = object(entry) ? entry.expectedPullRequestId : undefined
@@ -154,7 +158,12 @@ export function compareAttributionAccuracy(
 			(typeof expected === "string" || expected === null) &&
 			(account === undefined || isAccuracyAccount(account))
 		)
-			shaped.push({ requestId, expectedPullRequestId: expected, ...(account ? { expectedAccount: account } : {}) })
+			shaped.push({
+				requestId,
+				expectedPullRequestId: expected,
+				...(account ? { expectedAccount: account } : {}),
+				entry,
+			})
 		else
 			problems.push({
 				kind: "invalid-label",
@@ -164,7 +173,7 @@ export function compareAttributionAccuracy(
 	}
 
 	// Stage 2 — duplicate/conflict groups, ordered by first occurrence; duplicates are defects, never dedupe hints.
-	const grouped = new Map<string, AttributionLabel[]>()
+	const grouped = new Map<string, typeof shaped>()
 	for (const label of shaped) {
 		const expectations = grouped.get(label.requestId)
 		if (expectations) expectations.push(label)
@@ -180,7 +189,8 @@ export function compareAttributionAccuracy(
 				expectation.expectedPullRequestId === first.expectedPullRequestId &&
 				(expectation.expectedAccount && first.expectedAccount
 					? sameWorkAccount(expectation.expectedAccount, first.expectedAccount)
-					: expectation.expectedAccount === first.expectedAccount),
+					: expectation.expectedAccount === first.expectedAccount) &&
+				(sameEvidence?.(expectation.entry, first.entry) ?? true),
 		)
 		problems.push({
 			kind: identical ? "duplicate-label" : "conflicting-labels",
@@ -381,6 +391,7 @@ export function compareAttributionAccuracy(
 			correctCoveragePercent: rate(BigInt(correct.requestIds.length), BigInt(reference.requestIds.length)),
 			wrongAssignmentPercent: rate(BigInt(wrong.requestIds.length), BigInt(assigned.requestIds.length)),
 		},
+		rows,
 		complete,
 		problems,
 	}

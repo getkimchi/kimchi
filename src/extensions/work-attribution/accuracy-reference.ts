@@ -143,59 +143,30 @@ export function compareIndependentAttribution(
 
 	const unique = new Map<string, ReferenceRequest>()
 	const duplicates = new Set<string>()
-	const grouped = new Map<string, ReferenceRequest[]>()
 	for (const entry of entries) {
-		const group = grouped.get(entry.requestId) ?? []
-		group.push(entry)
-		grouped.set(entry.requestId, group)
 		if (unique.has(entry.requestId) || duplicates.has(entry.requestId)) {
 			duplicates.add(entry.requestId)
 			unique.delete(entry.requestId)
 		} else unique.set(entry.requestId, entry)
 	}
-	const labels = entries
-		.filter((entry) => entry.account)
-		.map(({ requestId, account, expected }) => ({
-			requestId,
-			expectedAccount: account,
-			expectedPullRequestId: expected.kind === "pull-request" ? expected.pullRequestId : null,
-		}))
-	// Weight assignment quality by independent receipts, while keeping observed coverage unchanged.
-	const comparison = compareAttributionAccuracy(report.requests, labels, {
-		priceOf: (requestId) => unique.get(requestId)?.nanos,
-	})
-	problems.push(
-		...comparison.problems.filter(
-			(problem) => problem.kind !== "duplicate-label" && problem.kind !== "conflicting-labels",
-		),
+	// An entry without account evidence is still a label; its unverified-reference-account problem keeps this incomplete.
+	const comparison = compareAttributionAccuracy(
+		report.requests,
+		entries.map((entry) => ({
+			...entry,
+			expectedAccount: entry.account,
+			expectedPullRequestId: entry.expected.kind === "pull-request" ? entry.expected.pullRequestId : null,
+		})),
+		{
+			// Repeated entries must also agree on the receipt and the complete ownership label.
+			sameEvidence: (left, right) =>
+				left.nanos === right.nanos && JSON.stringify(left.expected) === JSON.stringify(right.expected),
+			// Weight assignment quality by independent receipts, while keeping observed coverage unchanged.
+			priceOf: (requestId) => unique.get(requestId)?.nanos,
+		},
 	)
-	for (const [requestId, group] of grouped) {
-		if (group.length < 2) continue
-		const first = group[0]
-		const identical = group.every(
-			(entry) =>
-				entry.nanos === first.nanos &&
-				JSON.stringify(entry.expected) === JSON.stringify(first.expected) &&
-				(entry.account && first.account
-					? sameWorkAccount(entry.account, first.account)
-					: entry.account === first.account),
-		)
-		problems.push({
-			kind: identical ? "duplicate-label" : "conflicting-labels",
-			requestId,
-			detail: "repeated reference entries are excluded from scoring",
-		})
-	}
-
-	const rows = new Map<string, Record<string, unknown>>()
-	const repeatedRows = new Set<string>()
-	for (const row of report.requests) {
-		if (!object(row) || typeof row.requestId !== "string") continue
-		if (rows.has(row.requestId) || repeatedRows.has(row.requestId)) {
-			rows.delete(row.requestId)
-			repeatedRows.add(row.requestId)
-		} else rows.set(row.requestId, row)
-	}
+	problems.push(...comparison.problems)
+	const { rows } = comparison
 
 	const expectedPRs = new Map<string, ExpectedTotal & PullIdentity>()
 	const expectedUnallocated = new Map(UNALLOCATED.map((kind) => [kind, empty()]))

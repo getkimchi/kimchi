@@ -671,6 +671,8 @@ describe("account-scoped independent accuracy", () => {
 		const result = compare(report, { ...reference, requests: [{ ...reference.requests[0], account }] })
 		expect(result.code).toBe(2)
 		expect(result.stdout.join("\n")).toContain("[unverified-reference-account] r1")
+		// The human label still counts; only its receipt lacks account evidence.
+		expect(result.stdout.join("\n")).not.toContain("[unlabelled-request]")
 		expect(result.stdout).toContain("Sum of absolute PR errors: unavailable (comparison incomplete)")
 	})
 
@@ -704,6 +706,17 @@ describe("account-scoped independent accuracy", () => {
 		const result = compare(report, reference)
 		expect(result.code).toBe(2)
 		expect(result.stdout.join("\n")).toContain("[conflicting-labels] r1")
+	})
+
+	it("excludes a request from scoring when a repeated entry lacks account evidence", () => {
+		const { report, reference } = fixture()
+		const result = compareIndependentAttribution(report, {
+			version: 1,
+			requests: [reference.requests[0], { ...reference.requests[0], account: null }],
+		})
+		expect(result.complete).toBe(false)
+		expect(result.problems).toContainEqual(expect.objectContaining({ kind: "conflicting-labels", requestId: "r1" }))
+		expect(result.comparison.correct.requestIds).toEqual([])
 	})
 })
 
