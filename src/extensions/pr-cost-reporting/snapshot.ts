@@ -40,8 +40,16 @@ export interface SnapshotContent {
 			method: "native" | "explicit" | "user-correction" | "model" | "session"
 		}
 	}[]
-	coverage: { observedRequests: number; unpricedRequests: number; historyComplete: boolean; lastCostRefreshAt?: string }
+	coverage: {
+		observedRequests: number
+		unpricedRequests: number
+		historyComplete: boolean
+		lastCostRefreshAt?: string
+		/** Requests left out to fit the upload limits; only present when some were. */
+		trimmedRequests?: number
+	}
 }
+type SnapshotRequest = SnapshotContent["requests"][number]
 export interface RepositorySnapshot {
 	account: WorkAccount
 	content: SnapshotContent
@@ -56,7 +64,13 @@ export interface WireSnapshot extends SnapshotContent {
 	revision: string
 	generatedAt: string
 }
-export const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
+export interface SnapshotLimits {
+	requests: number
+	pullRequests: number
+	bytes: number
+}
+/** The server's per-snapshot limits. A larger inventory is trimmed rather than held. */
+export const SNAPSHOT_LIMITS: SnapshotLimits = { requests: 32_000, pullRequests: 250, bytes: 8 * 1024 * 1024 }
 const UPLOAD_WINDOW_MS = 32 * 24 * 60 * 60 * 1000
 const DETAIL_WINDOW_MS = 90 * 24 * 60 * 60 * 1000
 /** The server stops accepting corrections five minutes before a PR's details expire. */
@@ -112,21 +126,31 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 		repo.host.length > 253 ||
 		!Array.isArray(pullRequests) ||
 		!Array.isArray(requests) ||
-		requests.length > 10000 ||
-		pullRequests.length > 100 ||
+		requests.length > SNAPSHOT_LIMITS.requests ||
+		pullRequests.length > SNAPSHOT_LIMITS.pullRequests ||
 		!coverage ||
 		coverage.observedRequests !== requests.length ||
 		!Number.isSafeInteger(coverage.unpricedRequests) ||
 		coverage.unpricedRequests < 0 ||
 		coverage.unpricedRequests > requests.length ||
 		typeof coverage.historyComplete !== "boolean" ||
-		(coverage.lastCostRefreshAt !== undefined && !validTime(coverage.lastCostRefreshAt))
+		(coverage.lastCostRefreshAt !== undefined && !validTime(coverage.lastCostRefreshAt)) ||
+		(coverage.trimmedRequests !== undefined &&
+			(!Number.isSafeInteger(coverage.trimmedRequests) ||
+				coverage.trimmedRequests < 0 ||
+				(coverage.trimmedRequests > 0 && coverage.historyComplete)))
 	)
 		fail()
 	const host = plainURL(`https://${repo.host}`)
 	if (
 		!onlyKeys(repo, ["provider", "host", "id", "name"]) ||
-		!onlyKeys(coverage, ["observedRequests", "unpricedRequests", "historyComplete", "lastCostRefreshAt"])
+		!onlyKeys(coverage, [
+			"observedRequests",
+			"unpricedRequests",
+			"historyComplete",
+			"lastCostRefreshAt",
+			"trimmedRequests",
+		])
 	)
 		fail()
 	if (
@@ -214,7 +238,160 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 			fail()
 		seen.add(request.requestId)
 	}
-	if (Buffer.byteLength(JSON.stringify(snapshot)) > MAX_SNAPSHOT_BYTES) fail()
+	if (Buffer.byteLength(JSON.stringify(snapshot)) > SNAPSHOT_LIMITS.bytes) fail()
+}
+
+/** Serialized size with the longest envelope, so a later revision cannot cross the byte limit. */
+export function wireBytes(content: SnapshotContent): number {
+	return Buffer.byteLength(
+		JSON.stringify({
+			schemaVersion: 1,
+			producerId: "00000000-0000-4000-8000-000000000000",
+			revision: String(MAX_REVISION),
+			generatedAt: new Date(0).toISOString(),
+			...content,
+		}),
+	)
+}
+
+/**
+ * Leaves out the requests the server can best do without until the snapshot fits: unlinked and
+ * candidate-less unknown requests first, then requests of finished PRs (earliest finish first), and
+ * requests of open PRs only after everything else. Correction receipts are never left out. A PR left
+ * without requests is removed rather than named as windowed, because the server would restore its
+ * old claims into the same snapshot. Returns undefined when the kept requests alone exceed the limits.
+ */
+export function fitSnapshot(
+	content: SnapshotContent,
+	limits: SnapshotLimits,
+	unpriced: (request: SnapshotRequest) => boolean,
+): { content: SnapshotContent; trimmed: number } | undefined {
+	if (
+		content.requests.length <= limits.requests &&
+		content.pullRequests.length <= limits.pullRequests &&
+		wireBytes(content) <= limits.bytes
+	)
+		return { content, trimmed: 0 }
+	const size = (value: unknown) => Buffer.byteLength(JSON.stringify(value))
+	const total = content.requests.length
+	// Everything but the two lists; the final counts never have more digits than these.
+	const base = wireBytes({
+		...content,
+		pullRequests: [],
+		requests: [],
+		coverage: {
+			...content.coverage,
+			observedRequests: total,
+			unpricedRequests: total,
+			historyComplete: false,
+			trimmedRequests: total,
+		},
+	})
+	const finishedAt = new Map<string, number | undefined>()
+	for (const pr of content.pullRequests) {
+		const finished = pr.state === "merged" ? pr.mergedAt : pr.state === "closed" ? pr.closedAt : undefined
+		finishedAt.set(pr.id, finished === undefined ? undefined : Date.parse(finished))
+	}
+	const pullSize = new Map(content.pullRequests.map((pr) => [pr.id, size(pr)]))
+	const requestSize = new Map(content.requests.map((request) => [request.requestId, size(request)]))
+	const references = new Map<string, number>()
+	const byPull = new Map<string, SnapshotRequest[]>()
+	const locked = new Set<string>()
+	for (const request of content.requests)
+		for (const id of request.allocation.pullRequestIds) {
+			references.set(id, (references.get(id) ?? 0) + 1)
+			const list = byPull.get(id)
+			if (list) list.push(request)
+			else byPull.set(id, [request])
+			if (request.correction) locked.add(id)
+		}
+	let requestCount = total
+	let requestBytes = [...requestSize.values()].reduce((sum, value) => sum + value, 0)
+	let pullCount = content.pullRequests.length
+	let pullBytes = [...pullSize.values()].reduce((sum, value) => sum + value, 0)
+	const bytes = () => base + requestBytes + Math.max(0, requestCount - 1) + pullBytes + Math.max(0, pullCount - 1)
+	const dropped = new Set<string>()
+	const removed = new Set<string>()
+	const drop = (request: SnapshotRequest) => {
+		if (dropped.has(request.requestId)) return
+		dropped.add(request.requestId)
+		requestCount--
+		requestBytes -= requestSize.get(request.requestId) ?? 0
+		for (const id of request.allocation.pullRequestIds) {
+			const left = (references.get(id) ?? 0) - 1
+			references.set(id, left)
+			if (left) continue
+			removed.add(id)
+			pullCount--
+			pullBytes -= pullSize.get(id) ?? 0
+		}
+	}
+	// Only whole PRs satisfy the PR limit. Removing them first also frees requests and bytes.
+	if (pullCount > limits.pullRequests) {
+		const latest = new Map(
+			[...byPull].map(([id, list]) => [
+				id,
+				list.reduce((max, request) => Math.max(max, Date.parse(request.startedAt)), 0),
+			]),
+		)
+		// Finished PRs by finish time, then open PRs with the oldest latest activity. A PR without
+		// requests stays: buildSnapshots keeps one only for a revocation receipt.
+		const removable = content.pullRequests
+			.filter((pr) => !locked.has(pr.id) && byPull.has(pr.id))
+			.map((pr) => ({ id: pr.id, finished: finishedAt.get(pr.id) }))
+			.sort(
+				(a, b) =>
+					Number(a.finished === undefined) - Number(b.finished === undefined) ||
+					(a.finished ?? latest.get(a.id) ?? 0) - (b.finished ?? latest.get(b.id) ?? 0) ||
+					a.id.localeCompare(b.id),
+			)
+		for (const { id } of removable) {
+			if (pullCount <= limits.pullRequests) break
+			for (const request of byPull.get(id) ?? []) drop(request)
+		}
+	}
+	const rank = new Map<string, [number, number, number]>()
+	for (const request of content.requests) {
+		const ids = request.allocation.pullRequestIds
+		const started = Date.parse(request.startedAt)
+		const finished = ids.map((id) => finishedAt.get(id))
+		rank.set(
+			request.requestId,
+			!ids.length
+				? [0, 0, started]
+				: finished.some((value) => value === undefined)
+					? [2, 0, started]
+					: [1, Math.max(...finished.map(Number)), started],
+		)
+	}
+	const order = content.requests
+		.filter((request) => !request.correction && !dropped.has(request.requestId))
+		.sort((a, b) => {
+			const [x, y] = [rank.get(a.requestId) ?? [0, 0, 0], rank.get(b.requestId) ?? [0, 0, 0]]
+			return x[0] - y[0] || x[1] - y[1] || x[2] - y[2] || a.requestId.localeCompare(b.requestId)
+		})
+	for (const request of order) {
+		if (requestCount <= limits.requests && bytes() <= limits.bytes) break
+		drop(request)
+	}
+	if (requestCount > limits.requests || pullCount > limits.pullRequests || bytes() > limits.bytes) return undefined
+	const requests = content.requests.filter((request) => !dropped.has(request.requestId))
+	return {
+		trimmed: dropped.size,
+		content: {
+			...content,
+			pullRequests: content.pullRequests.filter((pr) => !removed.has(pr.id)),
+			requests,
+			coverage: {
+				...content.coverage,
+				observedRequests: requests.length,
+				unpricedRequests: requests.filter(unpriced).length,
+				historyComplete: false,
+				...(requests.length ? {} : { lastCostRefreshAt: undefined }),
+				trimmedRequests: dropped.size,
+			},
+		},
+	}
 }
 
 function method(
@@ -241,6 +418,8 @@ export function buildSnapshots(
 	repositories: Map<string, ReportingRepository>,
 	historyComplete: boolean,
 	costRefreshes = new Map<string, string>(),
+	/** Stricter limits a repository's server rejection taught, by account and repository key. */
+	limits = new Map<string, SnapshotLimits>(),
 ): { snapshots: RepositorySnapshot[]; incomplete: boolean; skippedRequests: number } {
 	const groups = new Map<string, RepositorySnapshot>()
 	let incomplete = !historyComplete
@@ -487,10 +666,12 @@ export function buildSnapshots(
 				group.content.coverage.lastCostRefreshAt = refreshed
 		}
 	}
+	const isUnpriced = (request: SnapshotRequest) =>
+		unpriced.has(request.requestId) || (!request.billingRecordIds.length && !noCharge.has(request.requestId))
 	const snapshots = [...groups.entries()]
 		.filter(([key]) => !conflicts.has(key))
 		.sort(([a], [b]) => a.localeCompare(b))
-		.map(([, group]) => {
+		.map(([key, group]) => {
 			group.observedRequestIds = group.content.requests.map((request) => request.requestId).sort()
 			const retained = group.content.requests.filter((request) => included.has(request.requestId))
 			const pulls = new Set(retained.flatMap((request) => request.allocation.pullRequestIds))
@@ -511,14 +692,18 @@ export function buildSnapshots(
 			})
 			if (omitted.length) group.content.windowedPullRequestIds = omitted.sort()
 			group.content.coverage.observedRequests = retained.length
-			group.content.coverage.unpricedRequests = retained.filter(
-				(request) =>
-					unpriced.has(request.requestId) || (!request.billingRecordIds.length && !noCharge.has(request.requestId)),
-			).length
+			group.content.coverage.unpricedRequests = retained.filter(isUnpriced).length
 			if (!retained.length) group.content.coverage.lastCostRefreshAt = undefined
 			group.content.requests.sort((a, b) => a.requestId.localeCompare(b.requestId))
 			group.content.pullRequests.sort((a, b) => a.id.localeCompare(b.id))
 			if (incomplete) group.content.coverage.historyComplete = false
+			// A learned limit that corrections alone exceed falls back to the normal limits; a snapshot
+			// that cannot fit even those stays whole and the queue holds it with a visible error.
+			const learned = limits.get(key)
+			const fitted =
+				(learned && fitSnapshot(group.content, learned, isUnpriced)) ||
+				fitSnapshot(group.content, SNAPSHOT_LIMITS, isUnpriced)
+			if (fitted) group.content = fitted.content
 			return group
 		})
 	return { snapshots, incomplete, skippedRequests }

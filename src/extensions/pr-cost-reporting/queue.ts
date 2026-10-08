@@ -312,7 +312,9 @@ export function queueSnapshots(
 			[
 				...(held ? [`PR reporting held ${held} repository snapshot(s) because earlier evidence is missing`] : []),
 				...(invalid.size
-					? [`PR reporting held ${invalid.size} invalid snapshot(s) or snapshots exceeding upload limits`]
+					? [
+							`PR reporting held ${invalid.size} snapshot(s) that are invalid or exceed the upload limits after trimming`,
+						]
 					: []),
 			].join(". ") || undefined
 	})

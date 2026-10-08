@@ -2,7 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import { calculatePullRequestCosts } from "../work-attribution/costs.js"
 import type { WorkRecord } from "../work-attribution/summary.js"
-import { buildSnapshots, validateSnapshot, type WireSnapshot } from "./snapshot.js"
+import {
+	accountKey,
+	buildSnapshots,
+	fitSnapshot,
+	repositoryKey,
+	SNAPSHOT_LIMITS,
+	type SnapshotContent,
+	validateSnapshot,
+	type WireSnapshot,
+	wireBytes,
+} from "./snapshot.js"
 
 const account = {
 	apiUrl: "https://api.example",
@@ -295,20 +305,50 @@ describe("allowlisted repository snapshots", () => {
 		const report = calculatePullRequestCosts(rows, [{ requestId, billingRecordId: billingId, costUsd: "1" }])
 		expect(buildSnapshots(rows, report, new Map(), true).snapshots[0].content.requests[0].billingRecordIds).toEqual([])
 	})
-	it.each(["requests", "pullRequests", "bills", "bytes"])("rejects %s limits without truncating", (field) => {
+	it("matches the server's per-snapshot limits", () => {
+		expect(SNAPSHOT_LIMITS).toEqual({ requests: 32_000, pullRequests: 250, bytes: 8 * 1024 * 1024 })
+	})
+	it.each([
+		"requests",
+		"pullRequests",
+		"bills",
+		"bytes",
+	])("rejects a payload past the %s limit at the boundary", (field) => {
 		const value = wire()
+		const bills = Array.from(
+			{ length: 8 },
+			(_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+		)
 		if (field === "requests") {
-			value.requests = Array.from({ length: 10001 }, () => value.requests[0])
-			value.coverage.observedRequests = 10001
+			value.requests = Array.from({ length: 32_001 }, () => value.requests[0])
+			value.coverage.observedRequests = 32_001
 		}
-		if (field === "pullRequests") value.pullRequests = Array.from({ length: 101 }, () => value.pullRequests[0])
-		if (field === "bills")
-			value.requests[0].billingRecordIds = Array.from(
-				{ length: 9 },
-				(_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
-			)
-		if (field === "bytes") Object.assign(value, { privateText: "x".repeat(2 * 1024 * 1024) })
+		if (field === "pullRequests") value.pullRequests = Array.from({ length: 251 }, () => value.pullRequests[0])
+		if (field === "bills") value.requests[0].billingRecordIds = [...bills, "00000000-0000-4000-8000-000000000009"]
+		if (field === "bytes") {
+			// Within every count limit, but 30,000 requests with eight bills each exceed 8 MiB.
+			value.requests = Array.from({ length: 30_000 }, (_, index) => ({
+				requestId: `10000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+				billingRecordIds: bills,
+				startedAt: at,
+				allocation: { kind: "unlinked", pullRequestIds: [], method: "session" },
+			}))
+			value.coverage = { observedRequests: 30_000, unpricedRequests: 0, historyComplete: true }
+			expect(Buffer.byteLength(JSON.stringify(value))).toBeGreaterThan(SNAPSHOT_LIMITS.bytes)
+		}
 		expect(() => validateSnapshot(value)).toThrow()
+	})
+	it.each([
+		[0, true, true],
+		[3, false, true],
+		[3, true, false],
+		[-1, false, false],
+		[1.5, false, false],
+	])("accepts %s trimmed requests with complete history=%s: %s", (trimmed, historyComplete, valid) => {
+		const value = wire()
+		value.coverage = { ...value.coverage, historyComplete, trimmedRequests: trimmed }
+		if (valid) expect(() => validateSnapshot(value)).not.toThrow()
+		else expect(() => validateSnapshot(value)).toThrow()
 	})
 	it("rejects unexpected fields in a recovered pending payload", () => {
 		const value = wire()
@@ -731,5 +771,128 @@ describe("per-request upload window and evidence labels", () => {
 			allocation: { kind: "post-merge" },
 			billingRecordIds: [],
 		})
+	})
+})
+
+describe("trimming a snapshot to the upload limits", () => {
+	const id = (n: number) => `55555555-5555-4555-8555-${String(n).padStart(12, "0")}`
+	const pr = (number: number, mergedAt?: string) => ({
+		id: String(200 + number),
+		number,
+		url: `https://github.com/example/repo/pull/${number}`,
+		...(mergedAt ? { state: "merged" as const, mergedAt } : { state: "open" as const }),
+	})
+	const request = (n: number, startedAt: string, pullRequestIds: string[], correction = false) => ({
+		requestId: id(n),
+		billingRecordIds: [],
+		startedAt,
+		...(correction
+			? { correction: { id: billingId, revision: 1, recordedAt: at, source: "work-command" as const } }
+			: {}),
+		allocation: {
+			kind: pullRequestIds.length ? ("pull-request" as const) : ("unlinked" as const),
+			pullRequestIds,
+			method: "native" as const,
+		},
+	})
+	const content = (): SnapshotContent => ({
+		repository: { provider: "github", host: "github.com", id: "42" },
+		pullRequests: [pr(1), pr(2, "2026-10-01T00:00:00.000Z"), pr(3, "2026-10-03T00:00:00.000Z")],
+		requests: [
+			request(1, "2026-10-05T10:00:00.000Z", []),
+			request(2, "2026-10-05T09:00:00.000Z", []),
+			request(3, "2026-09-30T00:00:00.000Z", ["202"]),
+			request(4, "2026-10-02T00:00:00.000Z", ["203"]),
+			request(5, "2026-09-01T00:00:00.000Z", ["201"]),
+			request(6, "2026-08-01T00:00:00.000Z", [], true),
+		],
+		coverage: { observedRequests: 6, unpricedRequests: 6, historyComplete: true },
+	})
+	const trim = (
+		limits: Partial<typeof SNAPSHOT_LIMITS>,
+		unpriced: (row: SnapshotContent["requests"][number]) => boolean = () => true,
+	) => fitSnapshot(content(), { ...SNAPSHOT_LIMITS, ...limits }, unpriced)
+
+	it("leaves a snapshot within the limits untouched", () => {
+		const original = content()
+		expect(fitSnapshot(original, SNAPSHOT_LIMITS, () => true)).toEqual({ content: original, trimmed: 0 })
+	})
+	it.each([
+		[5, [1, 3, 4, 5, 6], ["201", "202", "203"]],
+		[4, [3, 4, 5, 6], ["201", "202", "203"]],
+		[3, [4, 5, 6], ["201", "203"]],
+		[2, [5, 6], ["201"]],
+		[1, [6], []],
+	])("keeps %s requests: unlinked work first, then the earliest finished PR, open PRs last, corrections never", (requests, ids, pulls) => {
+		const result = trim({ requests })
+		expect(result?.content.requests.map((row) => row.requestId)).toEqual(ids.map(id))
+		expect(result?.content.pullRequests.map((row) => row.id)).toEqual(pulls)
+		expect(result?.content.coverage).toEqual({
+			observedRequests: ids.length,
+			unpricedRequests: ids.length,
+			historyComplete: false,
+			trimmedRequests: 6 - ids.length,
+		})
+		expect(result?.trimmed).toBe(6 - ids.length)
+		expect(result?.content.windowedPullRequestIds).toBeUndefined()
+		if (result)
+			expect(() =>
+				validateSnapshot({
+					schemaVersion: 1,
+					producerId: requestId,
+					revision: "2",
+					generatedAt: at,
+					...result.content,
+				}),
+			).not.toThrow()
+	})
+	it("holds instead of dropping an explicit correction", () => {
+		expect(trim({ requests: 0 })).toBeUndefined()
+	})
+	it("meets the PR limit by removing whole finished PRs before open ones, without touching unrelated requests", () => {
+		const result = trim({ pullRequests: 1 })
+		expect(result?.content.pullRequests.map((row) => row.id)).toEqual(["201"])
+		expect(result?.content.requests.map((row) => row.requestId)).toEqual([1, 2, 5, 6].map(id))
+		expect(result?.trimmed).toBe(2)
+	})
+	it("keeps a PR retained only for a revocation receipt", () => {
+		const value = content()
+		value.pullRequests.push(pr(4, "2026-09-02T00:00:00.000Z"))
+		const result = fitSnapshot(value, { ...SNAPSHOT_LIMITS, pullRequests: 3 }, () => true)
+		expect(result?.content.pullRequests.map((row) => row.id)).toEqual(["201", "203", "204"])
+	})
+	it("meets the byte limit, counting the longest envelope a later revision can have", () => {
+		const bytes = wireBytes(content()) - 1
+		const result = trim({ bytes })
+		expect(result?.trimmed).toBe(1)
+		expect(result?.content.requests.map((row) => row.requestId)).not.toContain(id(2))
+		expect(wireBytes(result?.content ?? content())).toBeLessThanOrEqual(bytes)
+		expect(trim({ bytes: 100 })).toBeUndefined()
+	})
+	it("recounts missing prices among the kept requests", () => {
+		expect(trim({ requests: 2 }, (row) => row.requestId === id(5))?.content.coverage.unpricedRequests).toBe(1)
+	})
+	it("applies a smaller limit the server taught while keeping the full inventory for membership checks", () => {
+		const later = "55555555-5555-4555-8555-555555555555"
+		const rows = records()
+		rows.push({
+			...rows[0],
+			requestId: later,
+			startedAt: "2026-10-04T12:30:00.000Z",
+			recordedAt: "2026-10-04T12:30:00.000Z",
+		})
+		const key = `${accountKey(account)}:${repositoryKey({ provider: "github", host: "github.com", id: "42" })}`
+		const [snapshot] = buildSnapshots(
+			rows,
+			calculatePullRequestCosts(rows, []),
+			new Map(),
+			true,
+			new Map(),
+			new Map([[key, { ...SNAPSHOT_LIMITS, requests: 1 }]]),
+		).snapshots
+		expect(snapshot.content.requests.map((row) => row.requestId)).toEqual([later])
+		expect(snapshot.content.pullRequests.map((row) => row.id)).toEqual(["101"])
+		expect(snapshot.content.coverage).toMatchObject({ observedRequests: 1, historyComplete: false, trimmedRequests: 1 })
+		expect(snapshot.observedRequestIds).toEqual([later, requestId].sort())
 	})
 })
