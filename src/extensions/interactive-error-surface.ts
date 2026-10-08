@@ -3,11 +3,17 @@ import { InteractiveMode } from "@earendil-works/pi-coding-agent"
 import { classifyLLMGatewayError } from "../llm-gateway-error.js"
 import { formatSanitizedErrorMessage } from "../sanitized-error-message.js"
 import { RATE_LIMIT_MAX_WAIT_MS, rateLimitWaitMs } from "../upstream-retry-patch.js"
+import { parseBudgetCapRejection } from "./alias-budget/budget-cap-error.js"
+import { getBudgetRetryVerdict } from "./alias-budget/budget-correction-store.js"
+import { AUTO_MODEL_PROVIDER } from "./auto-model/constants.js"
 import { preserveRawErrorMessage } from "./error-preservation.js"
 
 interface PendingProviderError {
 	readonly rawMessage: string
 	willRetry: boolean
+	/** Model id of the rejected request, set only for budget-cap rejections
+	 *  so agent_end can consult the request-scoped correction eligibility. */
+	model?: string
 }
 
 let lastPendingProviderError: PendingProviderError | undefined
@@ -95,7 +101,7 @@ export function applyInteractiveErrorSurfacePatch(): void {
  * state.
  */
 export default function interactiveErrorSurfaceExtension(pi: ExtensionAPI): void {
-	pi.on("message_end", (event) => {
+	pi.on("message_end", (event, ctx) => {
 		const message = event.message
 		if (message.role !== "assistant") return
 		if (message.stopReason !== "error") {
@@ -103,6 +109,34 @@ export default function interactiveErrorSurfaceExtension(pi: ExtensionAPI): void
 			return
 		}
 		if (typeof message.errorMessage !== "string") return
+
+		// Request-scoped budget-cap correction: the alias-budget adapter recorded
+		// this exact oversized budget on the wire for this session, it has not
+		// been corrected yet, and a retry can run — so the retry classifier will
+		// schedule one corrective attempt. Present it like any other retried
+		// per-attempt error — a retry placeholder now, not a terminal failure.
+		// When correction is unavailable (already-corrected attempt rejected
+		// again, budget mismatch, retries disabled), this does not match and the
+		// error falls through to the terminal path below.
+		if (message.provider === AUTO_MODEL_PROVIDER && typeof message.model === "string" && message.model.length > 0) {
+			const sessionId = ctx.sessionManager.getSessionId()
+			if (getBudgetRetryVerdict(sessionId, message.model, message.errorMessage) === true) {
+				// Preserve the raw provider error so the retry classifier sees the
+				// rejection, not the placeholder (same contract as the retryable
+				// path below).
+				preserveRawErrorMessage(message)
+				lastPendingProviderError = { rawMessage: message.errorMessage, willRetry: true, model: message.model }
+				message.errorMessage = RETRYING_PLACEHOLDER
+				return
+			}
+			// A budget rejection that will NOT be corrected is terminal — drop any
+			// pending state an earlier rejected attempt left so agent_end does not
+			// re-render an exhaustion notice for it.
+			if (parseBudgetCapRejection(message.errorMessage)) {
+				lastPendingProviderError = undefined
+			}
+		}
+
 		const classified = classifyLLMGatewayError(message.errorMessage)
 		if (!classified) return
 
@@ -148,14 +182,28 @@ export default function interactiveErrorSurfaceExtension(pi: ExtensionAPI): void
 	pi.on("agent_end", (event, ctx) => {
 		const willRetry = (event as { willRetry?: boolean }).willRetry === true
 		if (!willRetry && lastPendingProviderError) {
+			const pending = lastPendingProviderError
+			// The retry patch records this session's verdict before message_end
+			// extension handlers run. When a corrective attempt is incoming, a
+			// terminal exhaustion notice here would surface a failure before the
+			// corrected attempt resolves. Keep the pending state; the corrected
+			// turn's own message_end/agent_end renders the real outcome (success
+			// clears it, a second rejection sanitizes in place).
+			const sessionId = ctx.sessionManager.getSessionId()
+			const correctionIncoming =
+				pending.model && getBudgetRetryVerdict(sessionId, pending.model, pending.rawMessage) === true
+			if (correctionIncoming) {
+				pending.willRetry = true
+				return
+			}
 			// Retries exhausted — render the sanitized message directly.
 			// We can't rely on the upstream auto_retry_end → showError path
 			// because the finalError may have been mutated to the placeholder.
 			// Rendering here ensures the sanitized message reaches the user.
-			const sanitized = formatSanitizedErrorMessage(lastPendingProviderError.rawMessage, "interactive", {
+			const sanitized = formatSanitizedErrorMessage(pending.rawMessage, "interactive", {
 				exhausted: true,
 			})
-			ctx?.ui?.notify?.(sanitized, "error")
+			ctx.ui.notify(sanitized, "error")
 			lastPendingProviderError = undefined
 		} else if (lastPendingProviderError) {
 			lastPendingProviderError.willRetry = willRetry

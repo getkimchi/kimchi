@@ -1,5 +1,11 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "./__mocks__/context.js"
+import {
+	__resetBudgetCorrectionStoreForTests,
+	recordBudgetRetryVerdict,
+	recordOutgoingBudget,
+} from "./alias-budget/budget-correction-store.js"
 import { getRawErrorMessage } from "./error-preservation.js"
 import {
 	__getPendingProviderError,
@@ -22,10 +28,10 @@ function createHarness() {
 	} as unknown as ExtensionAPI
 	interactiveErrorSurfaceExtension(pi)
 	return {
-		emitMessageEnd(message: Record<string, unknown>) {
-			handlers.message_end?.({ type: "message_end", message })
+		emitMessageEnd(message: Record<string, unknown>, ctx: ExtensionContext = createContext()) {
+			handlers.message_end?.({ type: "message_end", message }, ctx)
 		},
-		emitAgentEnd(payload: Record<string, unknown>, ctx?: { ui?: { notify: ReturnType<typeof vi.fn> } }) {
+		emitAgentEnd(payload: Record<string, unknown>, ctx: ExtensionContext = createContext()) {
 			handlers.agent_end?.({ type: "agent_end", ...payload }, ctx)
 		},
 	}
@@ -157,7 +163,7 @@ describe("interactiveErrorSurfaceExtension (pending-state tracking)", () => {
 		expect(__getPendingProviderError()?.willRetry).toBe(true)
 
 		// Exhaustion: agent_end with willRetry:false renders sanitized via notify.
-		emitAgentEnd({ willRetry: false }, { ui: { notify } })
+		emitAgentEnd({ willRetry: false }, createContext({ ui: { notify } }))
 		expect(__getPendingProviderError()).toBeUndefined()
 		expect(notify).toHaveBeenCalledWith(
 			expect.stringContaining("The model provider is temporarily unavailable"),
@@ -182,7 +188,7 @@ describe("interactiveErrorSurfaceExtension (pending-state tracking)", () => {
 		// The per-attempt placeholder mutation still applies; the notice overwrites it later.
 		expect(message.errorMessage).toBe("Retrying…")
 
-		emitAgentEnd({ willRetry: false }, { ui: { notify } })
+		emitAgentEnd({ willRetry: false }, createContext({ ui: { notify } }))
 		expect(notify).not.toHaveBeenCalled()
 	})
 
@@ -198,7 +204,7 @@ describe("interactiveErrorSurfaceExtension (pending-state tracking)", () => {
 		const { emitMessageEnd, emitAgentEnd } = createHarness()
 		const notify = vi.fn()
 		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: "BadRequestError: bad request, code 400" })
-		emitAgentEnd({ willRetry: false }, { ui: { notify } })
+		emitAgentEnd({ willRetry: false }, createContext({ ui: { notify } }))
 		expect(notify).not.toHaveBeenCalled()
 	})
 
@@ -211,6 +217,70 @@ describe("interactiveErrorSurfaceExtension (pending-state tracking)", () => {
 	it("ignores user-role messages", () => {
 		const { emitMessageEnd } = createHarness()
 		emitMessageEnd({ role: "user", stopReason: "error", errorMessage: VLLM_RAW })
+		expect(__getPendingProviderError()).toBeUndefined()
+	})
+})
+
+describe("interactiveErrorSurfaceExtension (budget-cap corrective retry presentation)", () => {
+	const RAW_REJECTION =
+		"litellm.BadRequestError: OpenAIException - max_completion_tokens is too large: 512000.This model supports at most 262144 completion tokens."
+	const SESSION = createContext({ sessionManager: { getSessionId: () => "s-present" } })
+	beforeEach(() => {
+		__resetInteractiveErrorSurfaceState()
+		__resetBudgetCorrectionStoreForTests()
+	})
+	function rejectionMessage(provider = "kimchi-dev") {
+		return { role: "assistant", stopReason: "error", provider, model: "auto", errorMessage: RAW_REJECTION }
+	}
+	function primeOutgoing(eligible: boolean) {
+		recordOutgoingBudget("s-present", "auto", 512_000, false)
+		recordBudgetRetryVerdict("s-present", "auto", RAW_REJECTION, eligible)
+	}
+	it("presents the session's eligible rejection as retrying", () => {
+		primeOutgoing(true)
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		const message = rejectionMessage()
+		emitMessageEnd(message, SESSION)
+		expect(message.errorMessage).toBe("Retrying…")
+		expect(getRawErrorMessage(message)).toBe(RAW_REJECTION)
+		const notify = vi.fn()
+		emitAgentEnd({}, createContext({ sessionManager: SESSION.sessionManager, ui: { notify } }))
+		expect(notify).not.toHaveBeenCalled()
+		expect(__getPendingProviderError()?.willRetry).toBe(true)
+	})
+	it("presents the session's refused rejection as terminal", () => {
+		primeOutgoing(false)
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		const message = rejectionMessage()
+		emitMessageEnd(message, SESSION)
+		expect(message.errorMessage).toContain("The request could not be completed")
+		expect(__getPendingProviderError()).toBeUndefined()
+		const notify = vi.fn()
+		emitAgentEnd({}, createContext({ sessionManager: SESSION.sessionManager, ui: { notify } }))
+		expect(notify).not.toHaveBeenCalled()
+	})
+	it("presents a rejection without a session verdict as terminal", () => {
+		recordOutgoingBudget("s-present", "auto", 512_000, false)
+		const { emitMessageEnd } = createHarness()
+		const message = rejectionMessage()
+		emitMessageEnd(message, SESSION)
+		expect(message.errorMessage).toContain("The request could not be completed")
+	})
+	it("ignores an eligible verdict for another provider", () => {
+		primeOutgoing(true)
+		const { emitMessageEnd } = createHarness()
+		const message = rejectionMessage("anthropic")
+		emitMessageEnd(message, SESSION)
+		expect(message.errorMessage).toContain("The request could not be completed")
+	})
+	it("surfaces failure if eligibility is revoked before agent_end", () => {
+		primeOutgoing(true)
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		emitMessageEnd(rejectionMessage(), SESSION)
+		recordBudgetRetryVerdict("s-present", "auto", RAW_REJECTION, false)
+		const notify = vi.fn()
+		emitAgentEnd({}, createContext({ sessionManager: SESSION.sessionManager, ui: { notify } }))
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("The request could not be completed"), "error")
 		expect(__getPendingProviderError()).toBeUndefined()
 	})
 })

@@ -19,6 +19,7 @@ import {
 import { readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
+import budgetCorrectionExtension from "../../alias-budget/budget-correction-extension.js"
 import { isAutoRoutedModel } from "../../auto-model/constants.js"
 import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
 import { getEffectiveModel } from "../../auto-model/state.js"
@@ -495,6 +496,9 @@ ${skillLines}`
 		...autoExtensionFactories,
 		bashExtension,
 		infrastructureBreakerExtension,
+		// Corrective-recovery lifecycle cleanup for child sessions (the retry
+		// classifier and stream adapter are process-wide prototype patches).
+		budgetCorrectionExtension,
 	]
 	// Personas that request DAP debugger tools (e.g. Debugger) need the dap
 	// extension registered in the child session: repo-native extensions wired
