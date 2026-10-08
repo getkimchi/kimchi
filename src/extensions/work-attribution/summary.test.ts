@@ -94,7 +94,7 @@ describe("readable work summaries", () => {
 		readWorkRecords(dir, undefined, () => {}, invalid)
 		expect(invalid).toHaveBeenCalledTimes(2)
 	})
-	it.each(["", "transitions"])("skips only an unfinished last append in %s journals", (source) => {
+	it.each(["", "transitions"])("skips only interrupted appends in %s journals", (source) => {
 		const row = { version: 1, type: "work", workId: randomUUID(), sessionId: "writer" }
 		const complete = JSON.stringify(row)
 		const directory = join(dir, "work-attribution", source)
@@ -103,8 +103,11 @@ describe("readable work summaries", () => {
 		for (const [suffix, invalidCount, rows] of [
 			['{"type":"request"', 0, [row]],
 			['{"type":"request"\n', 1, [row]],
+			// Released writers start a new line after a cut-off record and append the next one.
 			['{"type":"request"}', 1, [row]],
-			[`{"type":"request"\n${complete}`, 1, [row, row]],
+			[`{"type":"request"\n${complete}`, 0, [row, row]],
+			[`{"type":"request","workId":"12\n${complete}`, 0, [row, row]],
+			[`{"type":"request"}x\n${complete}`, 1, [row, row]],
 			[complete, 0, [row, row]],
 		] as const) {
 			fs.writeFileSync(ledger, `${complete}\n${suffix}`)

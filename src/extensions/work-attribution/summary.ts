@@ -157,8 +157,33 @@ function parseRecord(line: string, records: WorkRecord[]): void {
 		/* interrupted append */
 	}
 }
-/** Written after an interrupted append so readers skip only that unparseable line. */
-export const TORN_TAIL = '{"type":"torn_tail"}'
+/** An interrupted append leaves a record cut off mid-value; any other unparseable line is damage. */
+function truncated(line: string): boolean {
+	const closing: string[] = []
+	let inString = false
+	let escaped = false
+	for (const char of line) {
+		if (escaped) escaped = false
+		else if (inString) {
+			if (char === "\\") escaped = true
+			else if (char === '"') inString = false
+		} else if (char === '"') inString = true
+		else if (char === "{" || char === "[") closing.push(char === "{" ? "}" : "]")
+		else if ((char === "}" || char === "]") && closing.pop() !== char) return false
+	}
+	if (!closing.length) return false
+	// Close an open string, or drop a partial number or literal in a value position, then complete the value.
+	const start = inString ? `${escaped ? line.slice(0, -1) : line}"` : line.replace(/(?<=[:[,])[\w.+-]+$/, "")
+	const end = closing.reverse().join("")
+	return ["", "null", ":null", '"":null'].some((value) => {
+		try {
+			JSON.parse(`${start}${value}${end}`)
+			return true
+		} catch {
+			return false
+		}
+	})
+}
 export function readWorkRecords(
 	agentDir: string,
 	modifiedSince?: number,
@@ -180,28 +205,23 @@ export function readWorkRecords(
 				const path = join(source, file.name)
 				if (modifiedSince !== undefined && statSync(path).mtimeMs < modifiedSince) continue
 				const lines = readFileSync(path, "utf8").split("\n")
-				let torn = false
+				let last = lines.length - 1
+				while (last > 0 && !lines[last].trim()) last--
 				for (const [index, line] of lines.entries()) {
 					checkBudget()
 					if (!line.trim()) continue
-					if (line === TORN_TAIL) {
-						torn = false
-						continue
-					}
-					if (torn) onInvalidRecord?.()
-					torn = false
 					let value: unknown
 					try {
 						value = JSON.parse(line)
 					} catch {
-						// The final line may still be in progress; the next append marks an earlier one.
-						torn = index < lines.length - 1
+						// The final line may still be in progress. A cut-off record that later appends moved past was
+						// interrupted; anything else, including a cut-off final record, is damage.
+						if (index < lines.length - 1 && !(index < last && truncated(line))) onInvalidRecord?.()
 						continue
 					}
 					if (record(value)) records.push(value)
 					else onInvalidRecord?.()
 				}
-				if (torn) onInvalidRecord?.()
 			} catch (error) {
 				// An incomplete scan must not advance recovery past a journal we could not read.
 				throw new Error(`Could not read work ledger ${file.name}`, { cause: error })

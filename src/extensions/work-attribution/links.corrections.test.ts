@@ -10,7 +10,7 @@ import { appendWorkRecord, getWorkId, recordProviderRequest, workLedgerPath } fr
 import { calculatePullRequestCosts } from "./costs.js"
 import { confirmWorkContinuation, correctWorkLink, reconcileWorkContinuations } from "./links.js"
 import * as scope from "./scope.js"
-import { flushWorkSummaries, readWorkRecords, TORN_TAIL } from "./summary.js"
+import { flushWorkSummaries, readWorkRecords } from "./summary.js"
 
 let dir: string
 beforeEach(() => {
@@ -148,24 +148,21 @@ it("never removes journal bytes when appending after a torn tail", async () => {
 	expect(invalid).not.toHaveBeenCalled()
 })
 
-it("keeps both records when two writers mark the same torn tail", () => {
+it("keeps both records when two writers append after the same torn tail", () => {
 	const flow = planned()
 	const before = readWorkRecords(dir)
 	const record = (requestId: string) => JSON.stringify({ ...before[0], requestId })
 	// Both writers saw the unterminated tail before either append landed.
-	appendFileSync(
-		workLedgerPath(flow.planner),
-		`{"partial":"interrupted\n${TORN_TAIL}\n${record("first")}\n\n${TORN_TAIL}\n${record("second")}\n`,
-	)
+	appendFileSync(workLedgerPath(flow.planner), `{"partial":"interrupted\n${record("first")}\n\n${record("second")}\n`)
 	const invalid = vi.fn()
 	const rows = readWorkRecords(dir, undefined, undefined, invalid)
 	expect(rows.map((row) => row.requestId)).toEqual([...before.map((row) => row.requestId), "first", "second"])
 	expect(invalid).not.toHaveBeenCalled()
 })
 
-it("still fails closed on an unmarked damaged line inside a journal", () => {
+it("still fails closed on a damaged line that is not a cut-off record", () => {
 	const flow = planned()
-	appendFileSync(workLedgerPath(flow.planner), '{"partial":"interrupted\n')
+	appendFileSync(workLedgerPath(flow.planner), '{"partial":"interrupted"}}\n')
 	recordProviderRequest(flow.planner)
 	const invalid = vi.fn()
 	readWorkRecords(dir, undefined, undefined, invalid)

@@ -67,7 +67,6 @@ import {
 	object,
 	readWorkRecords,
 	recoverWorkSummaries,
-	TORN_TAIL,
 	updateWorkSummary,
 } from "./work-attribution/summary.js"
 
@@ -188,9 +187,9 @@ export function appendWorkRecord(
 		const size = fstatSync(fd).size
 		const last = Buffer.alloc(1)
 		if (size) readSync(fd, last, 0, 1, size - 1)
-		// An unterminated tail is an interrupted append. Mark it instead of truncating: another
-		// process may be appending, and readers must still reject unmarked damage.
-		const repair = size && last[0] !== 10 ? `\n${TORN_TAIL}\n` : ""
+		// An unterminated tail is an interrupted append. Start a new line instead of truncating:
+		// another process may be appending, and readers skip only that cut-off record.
+		const repair = size && last[0] !== 10 ? "\n" : ""
 		writeFileSync(fd, `${repair}${JSON.stringify(record)}\n`)
 		fsyncSync(fd)
 	} finally {
