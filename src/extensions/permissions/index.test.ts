@@ -3292,10 +3292,12 @@ describe("permission mode session-log persistence", () => {
 			terminalHandler?.("\x1b[Z")
 		}
 		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+		const expectedReason = source === "command" ? "command" : source === "controller" ? "controller" : "user_shift_tab"
 		expect(getPersistedPermissionMode(ctx.sessionManager)).toEqual({
 			mode: "plan",
 			source: "runtime",
 			initiatedBy: "user",
+			reason: expectedReason,
 		})
 
 		await harness.fire("session_shutdown", {}, ctx)
@@ -3347,6 +3349,7 @@ describe("permission mode session-log persistence", () => {
 			mode: "plan",
 			source: "runtime",
 			initiatedBy: "user",
+			reason: "ferment_restore",
 		})
 	})
 
@@ -3424,7 +3427,7 @@ describe("permission mode session-log persistence", () => {
 		expect(modeEntries).toHaveLength(1)
 		expect(modeEntries[0]).toEqual([
 			PERMISSION_MODE_SESSION_ENTRY_TYPE,
-			{ mode: "plan", source: "runtime", initiatedBy: "user" },
+			{ mode: "plan", source: "runtime", initiatedBy: "user", reason: "command" },
 		])
 	})
 
@@ -3451,7 +3454,7 @@ describe("permission mode session-log persistence", () => {
 		const calls = (harness.pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls as [string, PermissionModeState][]
 		const modeEntries = calls.filter(([type]) => type === PERMISSION_MODE_SESSION_ENTRY_TYPE)
 		expect(modeEntries).toEqual([
-			[PERMISSION_MODE_SESSION_ENTRY_TYPE, { mode: "plan", source: "runtime", initiatedBy: "user" }],
+			[PERMISSION_MODE_SESSION_ENTRY_TYPE, { mode: "plan", source: "runtime", initiatedBy: "user", reason: "command" }],
 		])
 	})
 
@@ -3549,9 +3552,18 @@ describe("permission mode session-log persistence", () => {
 		const calls = (harness.pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls as [string, PermissionModeState][]
 		const modeEntries = calls.filter(([type]) => type === PERMISSION_MODE_SESSION_ENTRY_TYPE)
 		expect(modeEntries).toEqual([
-			[PERMISSION_MODE_SESSION_ENTRY_TYPE, { mode: "plan", source: "runtime", initiatedBy: "user" }],
-			[PERMISSION_MODE_SESSION_ENTRY_TYPE, { mode: "auto", source: "runtime", initiatedBy: "user" }],
-			[PERMISSION_MODE_SESSION_ENTRY_TYPE, { mode: "yolo", source: "runtime", initiatedBy: "user" }],
+			[
+				PERMISSION_MODE_SESSION_ENTRY_TYPE,
+				{ mode: "plan", source: "runtime", initiatedBy: "user", reason: "user_shift_tab" },
+			],
+			[
+				PERMISSION_MODE_SESSION_ENTRY_TYPE,
+				{ mode: "auto", source: "runtime", initiatedBy: "user", reason: "user_shift_tab" },
+			],
+			[
+				PERMISSION_MODE_SESSION_ENTRY_TYPE,
+				{ mode: "yolo", source: "runtime", initiatedBy: "user", reason: "user_shift_tab" },
+			],
 		])
 	})
 
@@ -3577,8 +3589,48 @@ describe("permission mode session-log persistence", () => {
 		const calls = (harness.pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls as [string, PermissionModeState][]
 		const modeEntries = calls.filter(([type]) => type === PERMISSION_MODE_SESSION_ENTRY_TYPE)
 		expect(modeEntries).toEqual([
-			[PERMISSION_MODE_SESSION_ENTRY_TYPE, { mode: "plan", source: "runtime", initiatedBy: "user" }],
+			[
+				PERMISSION_MODE_SESSION_ENTRY_TYPE,
+				{ mode: "plan", source: "runtime", initiatedBy: "user", reason: "user_shift_tab" },
+			],
 		])
+	})
+
+	it("shift+tab does not cycle modes while raw input capture is active (e.g. questionnaire open)", async () => {
+		// Regression: the global shift+tab mode-cycle listener previously fired
+		// even when a Shift+Tab-navigating form (questionnaire) had focus,
+		// because pi-tui dispatches onTerminalInput before the focused
+		// component. Session forensics then showed a mode flip 'by itself'.
+		let terminalHandler: ((data: string) => { consume?: boolean } | undefined) | undefined
+		const ctx = createMockContext([], TEST_SESSION_ID, {
+			sessionEntries: [],
+			uiContext: {
+				onTerminalInput: vi.fn((handler) => {
+					terminalHandler = handler as typeof terminalHandler
+					return () => {
+						terminalHandler = undefined
+					}
+				}),
+			},
+		})
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+
+		await harness.fire("session_start", {}, ctx)
+		const before = getPermissionMode(TEST_SESSION_ID)
+
+		const { claimRawInputCapture } = await import("../shared-input.js")
+		const release = claimRawInputCapture()
+		try {
+			const result = terminalHandler?.("\x1b[Z")
+			expect(result).toBeUndefined() // deferred, not consumed
+			expect(getPermissionMode(TEST_SESSION_ID)).toEqual(before)
+		} finally {
+			release()
+		}
+
+		// After release, cycling works again.
+		terminalHandler?.("\x1b[Z")
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "runtime", initiatedBy: "user" })
 	})
 
 	it("ferment activation persists yolo at before_agent_start", async () => {
@@ -3710,7 +3762,10 @@ describe("permission mode session-log persistence", () => {
 
 		expect(modeEntries()).toEqual([
 			[PERMISSION_MODE_SESSION_ENTRY_TYPE, { mode: "yolo", source: "runtime", initiatedBy: "ferment" }],
-			[PERMISSION_MODE_SESSION_ENTRY_TYPE, { mode: "default", source: "config", initiatedBy: "user" }],
+			[
+				PERMISSION_MODE_SESSION_ENTRY_TYPE,
+				{ mode: "default", source: "config", initiatedBy: "user", reason: "ferment_restore" },
+			],
 		])
 	})
 

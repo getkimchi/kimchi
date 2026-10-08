@@ -17,6 +17,7 @@ import { findModelByRef } from "../model-catalog/ref-utils.js"
 import { withSuppressedModelSelectGuard } from "../model-switch.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createQuestionForm, type Question, type QuestionFormResult, YES_NO_OPTIONS } from "../questionnaire/index.js"
+import { withRawInputCapture } from "../shared-input.js"
 import {
 	deleteModelMetadata,
 	getModelMetadata,
@@ -190,8 +191,10 @@ export async function collectModelMetadata(
 		},
 	]
 
-	const result = await ctx.ui.custom<QuestionFormResult>((tui, theme, _kb, done) =>
-		createQuestionForm(tui, theme, questions, { title: ref }, done),
+	const result = await withRawInputCapture(() =>
+		ctx.ui.custom<QuestionFormResult>((tui, theme, _kb, done) =>
+			createQuestionForm(tui, theme, questions, { title: ref }, done),
+		),
 	)
 	if (result.cancelled) return undefined
 

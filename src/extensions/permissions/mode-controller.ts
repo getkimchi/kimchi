@@ -115,10 +115,11 @@ export function persistPermissionModeIfChanged(
 	sessionManager: Pick<SessionManager, "getEntries">,
 	appendEntry: (customType: string, data: PermissionModeState) => void,
 	mode: PermissionModeState,
+	reason?: PermissionModeState["reason"],
 ): boolean {
 	const lastLogged = getPersistedPermissionMode(sessionManager)
 	if (lastLogged?.mode === mode.mode && lastLogged.initiatedBy === mode.initiatedBy) return false
-	appendEntry(PERMISSION_MODE_SESSION_ENTRY_TYPE, mode)
+	appendEntry(PERMISSION_MODE_SESSION_ENTRY_TYPE, reason ? { ...mode, reason } : mode)
 	return true
 }
 

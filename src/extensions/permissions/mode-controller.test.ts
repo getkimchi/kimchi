@@ -154,6 +154,20 @@ describe("persistPermissionModeIfChanged", () => {
 		expect(appended).toEqual([{ mode: "plan", source: "runtime", initiatedBy: "user" }])
 	})
 
+	it("records the change reason on the persisted entry when provided", () => {
+		const sessionManager = makeSessionManager(["default"])
+		const appended: PermissionModeState[] = []
+		const written = persistPermissionModeIfChanged(
+			sessionManager,
+			(_type, data) => appended.push(data),
+			{ mode: "plan", source: "runtime", initiatedBy: "user" },
+			"user_shift_tab",
+		)
+
+		expect(written).toBe(true)
+		expect(appended).toEqual([{ mode: "plan", source: "runtime", initiatedBy: "user", reason: "user_shift_tab" }])
+	})
+
 	it("does not append when mode matches last persisted", () => {
 		const sessionManager = makeSessionManager(["plan"])
 		const appended: PermissionModeState[] = []

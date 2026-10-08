@@ -70,7 +70,7 @@ import {
 	setPermissionMode,
 } from "./mode-controller.js"
 import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
-import { type ModeChangeReason, PERMISSION_EVENTS, type PermissionDecision } from "./permissions-events.js"
+import { PERMISSION_EVENTS, type PermissionDecision } from "./permissions-events.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
 import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import {
@@ -91,7 +91,7 @@ import {
 	splitCompoundCommand,
 } from "./taxonomy.js"
 import { emitOutcomeDecision, emitToolDecision, ruleSourceDetail } from "./tool-decision-emitter.js"
-import type { PermissionMode, PermissionModeState, RiskScore, Rule, RuleSource } from "./types.js"
+import type { ModeChangeReason, PermissionMode, PermissionModeState, RiskScore, Rule, RuleSource } from "./types.js"
 
 /**
  * Check whether a file path is within .kimchi/plans/ relative to cwd.
@@ -305,8 +305,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	 * Persist the current permission mode to the session log if it diverges from
 	 * the last logged value, or if there is no logged value yet.
 	 */
-	function maybePersistPermissionMode(ctx: ExtensionContext): void {
-		persistPermissionModeIfChanged(ctx.sessionManager, pi.appendEntry, getRuntimePermissionMode())
+	function maybePersistPermissionMode(ctx: ExtensionContext, reason?: ModeChangeReason): void {
+		persistPermissionModeIfChanged(ctx.sessionManager, pi.appendEntry, getRuntimePermissionMode(), reason)
 	}
 
 	function allRules(): Rule[] {
@@ -401,7 +401,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		updateStatus(ctx)
 		maybeShowYoloWarning(ctx)
 		appliedPermissionMode = next
-		if (reason !== "session_start" && next.initiatedBy === "user") maybePersistPermissionMode(ctx)
+		if (reason !== "session_start" && next.initiatedBy === "user") maybePersistPermissionMode(ctx, reason)
 		pi.events.emit(PERMISSION_EVENTS.MODE_CHANGED, { from, to: next, reason })
 	}
 
