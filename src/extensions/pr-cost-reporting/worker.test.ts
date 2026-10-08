@@ -763,6 +763,16 @@ describe("server limits", () => {
 	})
 })
 
+describe("sessions that never upload", () => {
+	it("captures and queues the inventory without uploading when this session must not upload", async () => {
+		await rm(join(directory, "pr-cost-reporting", "state.json"))
+		await seedLinked()
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {}, false)
+		expect(http).not.toHaveBeenCalled()
+		expect((await entryFor("42"))?.pending?.requests.map((request) => request.requestId)).toEqual([requestId])
+	})
+})
+
 describe("repository identity for work without a PR", () => {
 	it("delivers a known repository while another lookup times out, then retries that lookup after cooldown", async () => {
 		await seedLinked()

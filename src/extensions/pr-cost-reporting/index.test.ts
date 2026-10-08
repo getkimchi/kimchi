@@ -10,11 +10,13 @@ import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } f
 import reportingExtension from "./index.js"
 import * as queue from "./queue.js"
 import { queueSnapshots, readReportingState, setReportingEnabled } from "./queue.js"
+import { reconcileReporting } from "./worker.js"
 
 vi.mock("../work-attribution/reconcile-supervisor.js", () => ({
 	subscribeReportingReconciliation: vi.fn(),
 	requestWorkReconciliation: vi.fn(),
 }))
+vi.mock("./worker.js", () => ({ reconcileReporting: vi.fn() }))
 const mode = vi.hoisted(() => ({ acp: false }))
 vi.mock("../../modes/acp/state.js", () => ({
 	get IS_ACP_MODE() {
@@ -186,6 +188,49 @@ describe("optional PR reporting", () => {
 		expect(stop).toHaveBeenCalledOnce()
 		await api.getHandler("agent_end")({}, ctx)
 		expect(supervisor.requestWorkReconciliation).toHaveBeenCalledTimes(2)
+	})
+	it.each([
+		["tui", true],
+		["rpc", true],
+		["print", false],
+		["json", false],
+	] as const)("keeps attributing in a %s session and uploads only when interactive", async (mode, deliver) => {
+		const ctx = createContext({ mode })
+		const api = createExtensionApi()
+		api.api.events.on(WORK_STATE_REQUEST_EVENT, (value) => {
+			Object.assign(value as WorkStateRequest, { tracking: true, current: { workId: "test-work", ctx } })
+		})
+		reportingExtension(api.api)
+		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+		const [[report]] = vi.mocked(supervisor.subscribeReportingReconciliation).mock.calls
+		const signal = new AbortController().signal
+		await report(directory, signal, () => {})
+		expect(reconcileReporting).toHaveBeenCalledWith(directory, ctx.cwd, signal, expect.any(Function), deliver)
+		const commandCtx = { ...createCommandContext(), mode }
+		await api.getRegisteredCommand("pr-reporting").handler("status", commandCtx)
+		const [[text]] = vi.mocked(commandCtx.ui.notify).mock.calls
+		if (deliver) expect(text).not.toContain("Uploads are skipped")
+		else
+			expect(text).toContain(
+				`Uploads are skipped in this session: non-interactive ${mode === "json" ? "JSON" : "print"} mode. Local attribution continues.`,
+			)
+		await api.getHandler("session_shutdown")({}, ctx)
+	})
+	it("shows that a CI session does not upload while reporting stays on", async () => {
+		vi.stubEnv("GITHUB_ACTIONS", "true")
+		const api = createExtensionApi()
+		reportingExtension(api.api)
+		const commandCtx = createCommandContext()
+		await api.getRegisteredCommand("pr-reporting").handler("status", commandCtx)
+		expect(commandCtx.ui.notify).toHaveBeenCalledWith(
+			[
+				"PR reporting: on (SaaS default)",
+				"Uploads are skipped in this session: CI environment (GITHUB_ACTIONS). Local attribution continues.",
+				"Queued repositories: 0",
+				"Acknowledged repositories: 0",
+			].join("\n"),
+			"info",
+		)
 	})
 	it.each([false, true])("warns once that a repository is partially reported (Studio=%s)", async (acp) => {
 		mode.acp = acp

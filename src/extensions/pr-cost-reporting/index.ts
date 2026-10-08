@@ -6,6 +6,7 @@ import {
 	subscribeReportingReconciliation,
 } from "../work-attribution/reconcile-supervisor.js"
 import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } from "../work-attribution.js"
+import { uploadSkipReason } from "./automation.js"
 import {
 	dueLimitNotices,
 	readReportingState,
@@ -22,6 +23,8 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 		typeof entry.data === "string" ? new Text(theme.fg("dim", entry.data), 1, 0) : undefined,
 	)
 	let context: ExtensionContext | undefined
+	/** CI, print, JSON and benchmark runs keep local attribution but never upload. */
+	let skipReason: string | undefined
 	let started = false
 	let activeKey = ""
 	let stop: (() => Promise<void>) | undefined
@@ -60,7 +63,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 		activeKey = key
 		if (request.tracking && request.current) {
 			stop ??= subscribeReportingReconciliation(async (agentDir, signal, assertLease) => {
-				if (context) await reconcileReporting(agentDir, context.cwd, signal, assertLease)
+				if (context) await reconcileReporting(agentDir, context.cwd, signal, assertLease, !skipReason)
 			})
 		} else if (stop) {
 			draining = Promise.all([draining, stop()]).then(() => {})
@@ -70,6 +73,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 	pi.events.on(WORK_CHANGED_EVENT, () => synchronize())
 	pi.on("session_start", async (_event, ctx) => {
 		started = true
+		skipReason = uploadSkipReason(ctx.mode)
 		synchronize(ctx)
 		// Studio drops notifications for a session it has not registered yet, so it gets the notice after a turn.
 		if (stop) await reportingEnabled(!IS_ACP_MODE)
@@ -109,7 +113,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 						"info",
 					)
 				} else {
-					const status = statusText(await readReportingState(getAgentDir()), undefined)
+					const status = statusText(await readReportingState(getAgentDir()), uploadSkipReason(ctx.mode))
 					ctx.ui.notify(status.text, status.warning ? "warning" : "info")
 				}
 			} catch {

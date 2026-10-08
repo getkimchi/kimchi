@@ -230,12 +230,16 @@ export async function deliverSnapshots(
 	}
 }
 
-/** Runs after local pricing, under the existing reconciliation lease. */
+/**
+ * Runs after local pricing, under the existing reconciliation lease. Without `deliver` (automation)
+ * the inventory is still captured and queued for a later interactive session; nothing is uploaded.
+ */
 export async function reconcileReporting(
 	agentDir: string,
 	cwd: string,
 	signal: AbortSignal,
 	assertLease: () => void,
+	deliver = true,
 ): Promise<void> {
 	const state = await readReportingState(agentDir)
 	if (!state.enabled) return
@@ -307,7 +311,7 @@ export async function reconcileReporting(
 				`${queued.error ? `${queued.error}. ` : ""}PR reporting skipped ${built.skippedRequests} request(s) without original account or repository evidence; history coverage is incomplete`,
 			)
 		check()
-		await deliverSnapshots(agentDir, cwd, signal, assertLease, deadline)
+		if (deliver) await deliverSnapshots(agentDir, cwd, signal, assertLease, deadline)
 	} catch {
 		if (!signal.aborted)
 			await recordReportingError(
