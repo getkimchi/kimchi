@@ -90,7 +90,15 @@ export function deriveDeprecationState(
 	const sunsetAt = parseIsoDate(m.sunset_at, "sunset_at", slug)
 	const deprecatedAt = parseIsoDate(m.deprecated_at, "deprecated_at", slug)
 	if (sunsetAt !== undefined && sunsetAt <= today) return "sunset"
-	if (deprecatedAt !== undefined) return deprecatedAt > today ? "announced" : "past"
+	// LiteLLM-derived deprecation dates for Anthropic models are provider
+	// floors ("not sooner than"), not retirements, and they stay stale in the
+	// catalogue for weeks (claude-sonnet-4-5 showed a past date while the
+	// model was still active). Don't let a deprecated_at date steer routing
+	// or warnings for Claude models; only a sunset_at (vendor retirement)
+	// should.
+	if (deprecatedAt !== undefined && !slug?.startsWith("claude-")) {
+		return deprecatedAt > today ? "announced" : "past"
+	}
 	// Sunset-only record (vendor retirement date, no announced deprecation):
 	// a dated removal is a deprecation signal in itself.
 	if (sunsetAt !== undefined) return "announced"
