@@ -13,7 +13,7 @@ import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import open from "open"
-import { loadConfig } from "../../config.js"
+import { loadConfig, resolveEndpoints } from "../../config.js"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
 import { deleteRemoteSession, type RemoteSessionMeta } from "../agents/manager/remote-agent-runner.js"
 import type { PersistedGitWorkflow } from "../agents/remote-run-persistence.js"
@@ -70,10 +70,17 @@ const PUSH_CUSTOM_PROMPT = "What should the remote agent do? (run first, then yo
 const DONE = "Done"
 const OPEN_IN_IDE = "Open in IDE"
 
-/** Web-IDE deep link for the sandbox: same host as the WS tunnel over https,
- *  with the workspace dir carried in the fragment. */
+/** Web-IDE deep link for the remote session: the session must be opened
+ *  through the console web app (which initializes it in the UI), never at
+ *  the worker host directly. The route token is the WORKSPACE id — the
+ *  console's "remote session" is the workspace (the platform API is keyed
+ *  by workspace id only); sessionName is worker-local and unresolvable by
+ *  the console. The base is region- and env-aware via resolveEndpoints
+ *  (KIMCHI_WEB_APP_URL override). */
 function buildIdeUrl(remoteSession: RemoteSessionMeta): string {
-	return `https://${new URL(remoteSession.wsUrl).hostname}/public/ide/#${remoteSession.cwd}`
+	const webAppBase = resolveEndpoints().webAppUrl.replace(/\/+$/, "")
+	// sidebarClosed/direct: the console opens the IDE view directly, sidebar hidden.
+	return `${webAppBase}/remote-sessions/${encodeURIComponent(remoteSession.workspaceId)}/ide?sidebarClosed=true&direct=true`
 }
 
 /** Non-terminal inspection action: opens the sandbox's web IDE in the local
