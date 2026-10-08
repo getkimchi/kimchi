@@ -27,7 +27,29 @@
 #   - mcp-auth-flow: manual (remote https) OAuth redirect flows also start an
 #     opportunistic loopback listener on the default callback port/path and
 #     race it against the manual paste prompt; graceful fallback to
-#     paste-only when the listener cannot bind.
+#     paste-only when the listener cannot bind. startAuth reports whether the
+#     capture is armed, and non-interactive callers (no onAuthorizationInput,
+#     e.g. ACP/Studio) may proceed without a manual paste when it is.
+#   - proxy-modes: auth-start registers the background auth watcher for
+#     remote https redirects when the loopback capture is armed, and the
+#     auth-start instructions reflect automatic completion.
+#   - mcp-callback-server (+mcp-auth-flow): callbacks whose oauth state belongs
+#     to a recently completed flow replay the normal success page (HTTP 200)
+#     via a process-level tombstone (10 min TTL, capped at 100, lazily pruned)
+#     recorded only in completeAuth after a successful token exchange (a
+#     failed exchange no longer leaves a success-page tombstone); unknown,
+#     superseded, or expired states get a neutral "Authorization No Longer
+#     Active" error page (HTTP 400) instead of the CSRF error page, with the
+#     heading string unchanged so host branding keeps mapping it.
+#   - mcp-auth-flow: concurrent token exchanges of the same pending flow
+#     (callback listener racing a pasted redirect URL) are serialized via an
+#     in-flight map; the second caller awaits and shares the first result,
+#     and a paste for an already-completed state returns "authenticated"
+#     instead of throwing "No pending OAuth flow".
+#   - proxy-modes: a background auth watcher that fails with the callback
+#     timeout appends the actionable manual-auth instructions (URL and
+#     auth-complete paste command) to the failure status message.
+
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -349,10 +371,32 @@ index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547
          if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
              return true;
 diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
-index 0ae900470d923665153cdbc6028dd91f81c180b2..25183b69f3d3506cfc2c5d76716a3c64c16479a6 100644
+index 0ae900470d923665153cdbc6028dd91f81c180b2..3e1d02e242e5f9bf5dd393839014ea3cd9a353df 100644
 --- a/mcp-auth-flow.ts
 +++ b/mcp-auth-flow.ts
-@@ -93,6 +93,12 @@ type PendingAuth = {
+@@ -25,6 +25,8 @@ import {
+   stopCallbackServer,
+   stopCallbackServerIfIdle,
+   releaseCallbackServer,
++  markAuthStateCompleted,
++  isAuthStateRecentlyCompleted,
+ } from "./mcp-callback-server.ts"
+ import {
+   getAuthForUrl,
+@@ -52,6 +54,12 @@ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts"
+ /** Auth status for a server */
+ export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
+ 
++// Token exchanges currently in flight, keyed by pending-auth key. Serializes
++// concurrent completions of the same flow (e.g. the callback listener racing
++// a pasted redirect URL) so only one exchange runs and both callers observe
++// the same result.
++const exchangesInFlight = new Map<string, Promise<AuthStatus>>()
++
+ export interface McpOAuthRuntime {
+   readonly signal: AbortSignal
+ }
+@@ -93,6 +101,12 @@ type PendingAuth = {
    authorizationUrl: string
    manualRedirect: boolean
    manualCompletionController?: AbortController
@@ -365,7 +409,24 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..25183b69f3d3506cfc2c5d76716a3c64
    discovery: AuthDiscovery
    getHeaders: () => Headers
    authStorageOptions: AuthStorageOptions
-@@ -508,6 +514,15 @@ export async function startAuth(
+@@ -453,7 +467,7 @@ export async function startAuth(
+   definition?: ServerEntry,
+   options: AuthenticateOptions = {},
+   operationAuthority?: OAuthAuthority,
+-): Promise<{ authorizationUrl: string }> {
++): Promise<{ authorizationUrl: string; loopbackCapture?: boolean }> {
+   if (isServerDisabled(definition)) throw new Error(`MCP server "${serverName}" is disabled`)
+   const authority = operationAuthority ?? captureOAuthAuthority(serverName)
+   authority()
+@@ -501,13 +515,22 @@ export async function startAuth(
+   const existingPendingAuth = runtimeState.pendingAuths.get(getPendingAuthKey(serverName, authStorageOptions))
+   if (existingPendingAuth?.serverUrl === serverUrl) {
+     existingPendingAuth.authority()
+-    return { authorizationUrl: existingPendingAuth.authorizationUrl }
++    return { authorizationUrl: existingPendingAuth.authorizationUrl, ...(existingPendingAuth.loopbackCapture ? { loopbackCapture: true } : {}) }
+   }
+ 
+   const redirectTarget = config.redirectUri !== undefined ? parseOAuthRedirectUri(config.redirectUri) : undefined
    const manualRedirect = redirectTarget?.mode === "manual"
    const oauthState = generateState()
  
@@ -381,7 +442,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..25183b69f3d3506cfc2c5d76716a3c64
    if (!manualRedirect) {
      try {
        await ensureCallbackServer({
-@@ -540,6 +555,18 @@ export async function startAuth(
+@@ -540,6 +563,18 @@ export async function startAuth(
        }
        throw error
      }
@@ -400,7 +461,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..25183b69f3d3506cfc2c5d76716a3c64
    }
  
    let capturedUrl: URL | undefined
-@@ -601,6 +628,7 @@ export async function startAuth(
+@@ -601,13 +636,14 @@ export async function startAuth(
        authorizationUrl: capturedUrl.toString(),
        manualRedirect,
        ...(manualRedirect ? { manualCompletionController: new AbortController() } : {}),
@@ -408,7 +469,77 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..25183b69f3d3506cfc2c5d76716a3c64
        discovery,
        getHeaders,
        authStorageOptions,
-@@ -1042,7 +1070,7 @@ export async function authenticate(
+       authority,
+     }, oauthState, signal, generation)
+     authority()
+-    return { authorizationUrl: capturedUrl.toString() }
++    return { authorizationUrl: capturedUrl.toString(), ...(loopbackCapture ? { loopbackCapture: true } : {}) }
+   } catch (error) {
+     authProvider.deactivate()
+     try {
+@@ -890,6 +926,13 @@ export async function completeAuthFromInput(
+     throw new Error("Paste the full OAuth callback URL, including its code and state parameters")
+   }
+   const parsed = parseAuthorizationRedirectInput(input, oauthState)
++  // Paste-after-completion: if the pasted state matches a flow that already
++  // exchanged its code (post-exchange tombstone), report success instead of
++  // failing with "No pending OAuth flow".
++  const pastedState = getSearchParamsFromInput(input.trim())?.get("state")
++  if (pastedState && isAuthStateRecentlyCompleted(pastedState)) {
++    return "authenticated"
++  }
+   return completeAuth(serverName, parsed, options)
+ }
+ 
+@@ -910,6 +953,13 @@ export async function completeAuth(
+   const signal = combineAbortSignals(runtime.signal, options.signal)
+   throwIfAborted(signal)
+   const key = getPendingAuthKey(serverName, fallbackAuthStorageOptions)
++  // Serialize concurrent exchanges of the same flow (listener vs paste race):
++  // the second caller awaits the first caller's in-flight exchange.
++  const inFlight = exchangesInFlight.get(key)
++  if (inFlight) {
++    return inFlight
++  }
++  const doCompleteAuth = async (): Promise<AuthStatus> => {
+   const pendingAuth = runtimeState.pendingAuths.get(key)
+   const authStorageOptions = pendingAuth?.authStorageOptions ?? fallbackAuthStorageOptions
+   if (!pendingAuth) {
+@@ -954,6 +1004,9 @@ export async function completeAuth(
+     if (result !== "AUTHORIZED") {
+       throw new UnauthorizedError("Failed to authorize")
+     }
++    if (oauthState) {
++      markAuthStateCompleted(oauthState)
++    }
+     return "authenticated"
+   } catch (error) {
+     caughtError = error
+@@ -971,6 +1024,14 @@ export async function completeAuth(
+       if (caughtError === undefined) pendingAuth.authority()
+     }
+   }
++  }
++  const exchange = doCompleteAuth()
++  exchangesInFlight.set(key, exchange)
++  try {
++    return await exchange
++  } finally {
++    exchangesInFlight.delete(key)
++  }
+ }
+ 
+ /**
+@@ -1034,7 +1095,7 @@ export async function authenticate(
+       if (!pendingAuth) {
+         throw new Error(`No pending OAuth flow for server: ${serverName}`)
+       }
+-      if (pendingAuth.manualRedirect && !options.onAuthorizationInput) {
++      if (pendingAuth.manualRedirect && !pendingAuth.loopbackCapture && !options.onAuthorizationInput) {
+         throw new Error(
+           `OAuth for ${serverName} uses a remote redirect URI. Complete it with auth-start/auth-complete or /mcp-auth.`,
+         )
+@@ -1042,7 +1103,7 @@ export async function authenticate(
  
        // Register the localhost callback before opening the browser. Remote
        // pre-registered callbacks are completed by pasting their full URL.
@@ -417,6 +548,120 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..25183b69f3d3506cfc2c5d76716a3c64
          ? waitForManualCompletionCancellation(pendingAuth.manualCompletionController!.signal)
          : waitForCallback(oauthState)
        void callbackPromise.catch(() => {})
+diff --git a/mcp-callback-server.ts b/mcp-callback-server.ts
+index 91b73cf0ebffa07cb7ea9a3fcd08e7c0fb3ec5c6..4b79b41a3f5524ffc570a9a222c0843c7392d1e7 100644
+--- a/mcp-callback-server.ts
++++ b/mcp-callback-server.ts
+@@ -162,6 +162,24 @@ function htmlError(error: string): string {
+   })
+ }
+ 
++// Inactive-callback page; part of the loopback-capture patch (getkimchi/kimchi#1284).
++// Served only when a callback carries a state that belongs to no active flow and
++// has no completion tombstone: expired, superseded, or bogus. States that belong
++// to a recently completed flow instead replay the success page (see
++// markAuthStateCompleted). Rejecting the code with HTTP 400 stays; the copy is
++// neutral, since the CSRF framing alarms users for a benign, expected landing.
++// Fold into the same upstream proposal.
++function htmlAuthInactive(): string {
++  const app = escapeHtml(getAppName())
++  return page({
++    title: `${app} — Authorization No Longer Active`,
++    heading: "Authorization No Longer Active",
++    body: `This authorization link is no longer valid. It may have expired or been superseded by a newer attempt — start authorization again from <span class="app">${app}</span>.`,
++    icon: CROSS_ICON,
++    tone: "bad",
++  })
++}
++
+ /** Result of a successful OAuth callback */
+ export interface OAuthCallbackResult {
+   code: string
+@@ -188,6 +206,49 @@ const reservedAuthStates = new Set<string>()
+ /** Timeout for callback completion (5 minutes) */
+ const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000
+ 
++// Completed-state tombstones: an oauth state whose flow finished replays the
++// success page when the same callback URL fires again (browser double-fire,
++// tab restore, losing side of the paste race). Process-level with a lazy TTL,
++// so entries survive listener restarts and no timer keeps the process alive.
++const COMPLETED_STATE_TTL_MS = 10 * 60 * 1000
++const COMPLETED_STATES_MAX = 100
++const completedAuthStates = new Map<string, number>() // oauth state -> expiresAt (ms epoch)
++
++/** Marks an oauth state as recently completed so replayed callbacks show the success page. */
++export function markAuthStateCompleted(oauthState: string): void {
++  const now = Date.now()
++  for (const [state, expiresAt] of completedAuthStates) {
++    if (expiresAt <= now) completedAuthStates.delete(state)
++  }
++  completedAuthStates.set(oauthState, now + COMPLETED_STATE_TTL_MS)
++  while (completedAuthStates.size > COMPLETED_STATES_MAX) {
++    const oldest = completedAuthStates.keys().next().value
++    if (oldest === undefined) break
++    completedAuthStates.delete(oldest)
++  }
++}
++
++export function isAuthStateRecentlyCompleted(state: string): boolean {
++  const expiresAt = completedAuthStates.get(state)
++  if (expiresAt === undefined) return false
++  if (expiresAt <= Date.now()) {
++    completedAuthStates.delete(state)
++    return false
++  }
++  return true
++}
++
++/** A no-pending callback either replays the success page (completed state) or gets the inactive error page. */
++function serveCompletedOrInactive(res: ServerResponse, state: string): void {
++  if (isAuthStateRecentlyCompleted(state)) {
++    res.writeHead(200, { "Content-Type": "text/html" })
++    res.end(htmlSuccess())
++    return
++  }
++  res.writeHead(400, { "Content-Type": "text/html" })
++  res.end(htmlAuthInactive())
++}
++
+ interface EnsureCallbackServerOptions {
+   strictPort?: boolean
+   port?: number
+@@ -233,9 +294,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+   // Handle OAuth errors only for a state that belongs to an active flow.
+   if (error) {
+     if (!pending && !isReserved) {
+-      const errorMsg = "Invalid or expired state parameter - potential CSRF attack"
+-      res.writeHead(400, { "Content-Type": "text/html" })
+-      res.end(htmlError(errorMsg))
++      serveCompletedOrInactive(res, state)
+       return
+     }
+ 
+@@ -255,9 +314,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+ 
+   // Validate state parameter
+   if (!pending && !isReserved) {
+-    const errorMsg = "Invalid or expired state parameter - potential CSRF attack"
+-    res.writeHead(400, { "Content-Type": "text/html" })
+-    res.end(htmlError(errorMsg))
++    serveCompletedOrInactive(res, state)
+     return
+   }
+ 
+@@ -274,7 +331,11 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+     return
+   }
+ 
+-  // Clear timeout and resolve the pending promise
++  // Clear timeout and resolve the pending promise.
++  // NOTE: the completed-state tombstone is NOT recorded here — code delivery
++  // precedes the token exchange, and a failed exchange must not leave a
++  // tombstone serving "Authorization Successful". completeAuth() marks the
++  // state only after the exchange succeeds.
+   clearTimeout(pending.timeout)
+   pendingAuths.delete(state)
+   pending.resolve({ code, ...(iss !== null ? { iss } : {}) })
 diff --git a/metadata-cache.ts b/metadata-cache.ts
 index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef31282e511d4f 100644
 --- a/metadata-cache.ts
@@ -485,6 +730,107 @@ index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef3128
 -    return undefined;
 -  }
 -}
+diff --git a/proxy-modes.ts b/proxy-modes.ts
+index 49f1b4eccfbee9a14ef6e71db8d8392dcba6ed23..cf860c2aa2a9bdc9b4fb8c96b4c4a8895a3d539c 100644
+--- a/proxy-modes.ts
++++ b/proxy-modes.ts
+@@ -152,6 +152,8 @@ function ensureBackgroundAuthWatcher(
+   serverName: string,
+   serverUrl: string,
+   definition: ServerEntry,
++  authorizationUrl: string,
++  loopbackCapture: boolean,
+ ): void {
+   let watchers = backgroundAuthWatchers.get(state);
+   if (!watchers) {
+@@ -189,11 +191,15 @@ function ensureBackgroundAuthWatcher(
+       if (isAbortError(statusError, state.owner.signal)) return;
+     }
+     if (state.owner.signal.aborted) return;
++    const message = error instanceof Error ? error.message : String(error);
++    const timeoutInstructions = message === "OAuth callback timeout - authorization took too long"
++      ? `\n\n${formatManualAuthInstructions(serverName, authorizationUrl, loopbackCapture)}`
++      : "";
+     emitAuthStatus(
+       state,
+       serverName,
+       "failed",
+-      `OAuth authentication failed for MCP server "${serverName}". Start authorization again or inspect trusted logs.`,
++      `OAuth authentication failed for MCP server "${serverName}". Start authorization again or inspect trusted logs.${timeoutInstructions}`,
+     );
+   }).finally(() => {
+     if (watchers?.get(serverName) === watcher) watchers.delete(serverName);
+@@ -233,24 +239,27 @@ function getRedirectDetails(authorizationUrl: string): { port?: number; remote:
+   }
+ }
+ 
+-function formatManualAuthInstructions(serverName: string, authorizationUrl: string): string {
++function formatManualAuthInstructions(serverName: string, authorizationUrl: string, loopbackCapture = false): string {
+   const redirect = getRedirectDetails(authorizationUrl);
++  const watchingLocal = !redirect.remote || loopbackCapture;
+   const redirectNote = redirect.remote
+-    ? "The provider uses a pre-registered HTTPS callback. Copy its full URL from the browser address bar, even if the destination page reports an error."
++    ? loopbackCapture
++      ? "The provider uses a pre-registered HTTPS callback that bounces to the loopback listener, so authentication can complete automatically. If the browser instead shows an error page, copy its full URL from the address bar and send it back so the OAuth state can be checked."
++      : "The provider uses a pre-registered HTTPS callback. Copy its full URL from the browser address bar, even if the destination page reports an error."
+     : `The adapter is watching${redirect.port ? ` local port ${redirect.port}` : " the local callback"} and will report when authentication completes.`;
+ 
+   return [
+     `MCP OAuth required for "${serverName}".`,
+     "",
+-    redirect.remote
+-      ? "The adapter is attempting to open this authorization URL in your local browser:"
+-      : "The adapter is attempting to open this authorization URL and watching for its callback:",
++    watchingLocal
++      ? "The adapter is attempting to open this authorization URL and watching for its callback:"
++      : "The adapter is attempting to open this authorization URL in your local browser:",
+     "",
+     authorizationUrl,
+     "",
+-    redirect.remote
+-      ? "After approving, copy the full callback URL from your browser address bar and send it back with:"
+-      : "If the browser does not open or the callback is not detected, open the URL above and complete manually with:",
++    watchingLocal
++      ? "If the browser does not open or the callback is not detected, open the URL above and complete manually with:"
++      : "After approving, copy the full callback URL from your browser address bar and send it back with:",
+     `mcp({ action: "auth-complete", server: "${serverName}", args: { redirectUrl: "PASTE_REDIRECT_URL_HERE" } })`,
+     "",
+     redirect.remote
+@@ -526,7 +535,7 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+       };
+     }
+ 
+-    const { authorizationUrl } = state.authStorageOptions
++    const { authorizationUrl, loopbackCapture } = state.authStorageOptions
+       ? ownedSignal
+         ? await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, signal: ownedSignal, runtime: state.oauthRuntime })
+         : await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, runtime: state.oauthRuntime })
+@@ -541,17 +550,23 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+     }
+ 
+     if (getRedirectDetails(authorizationUrl).remote) {
++      // Remote https redirects with an armed loopback capture complete through
++      // the local callback listener in the background; without it they stay
++      // paste-only via auth-complete.
++      if (loopbackCapture) {
++        ensureBackgroundAuthWatcher(state, serverName, serverUrl, definition, authorizationUrl, loopbackCapture === true);
++      }
+       try {
+         await state.openBrowser(authorizationUrl);
+       } catch (error) {
+         if (isAbortError(error, ownedSignal)) throw error;
+       }
+     } else {
+-      ensureBackgroundAuthWatcher(state, serverName, serverUrl, definition);
++      ensureBackgroundAuthWatcher(state, serverName, serverUrl, definition, authorizationUrl, loopbackCapture === true);
+     }
+ 
+     return {
+-      content: [{ type: "text" as const, text: formatManualAuthInstructions(serverName, authorizationUrl) }],
++      content: [{ type: "text" as const, text: formatManualAuthInstructions(serverName, authorizationUrl, loopbackCapture === true) }],
+       details: { mode: "auth-start", server: serverName, authorizationUrl },
+     };
+   } catch (error) {
 diff --git a/server-manager.ts b/server-manager.ts
 index 3213c908a86c4baf483af3470bb6d5ea0c32028d..c1af597f0cd0c1d0c1d99f7620e63b5003c04954 100644
 --- a/server-manager.ts

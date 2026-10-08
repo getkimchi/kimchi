@@ -51,6 +51,23 @@ describe("MCP OAuth callback branding", () => {
 		expect(html).not.toContain('<script>alert("x")</script>')
 	})
 
+	it("brands the inactive-callback page as an error rather than a success or CSRF failure", () => {
+		const html = brandMcpOAuthCallbackHtml(adapterPage("Authorization No Longer Active"))
+
+		expect(html).toContain('class="bg-svg"')
+		expect(html).toContain("<title>MCP Authorization No Longer Active</title>")
+		expect(html).toContain("<h1>MCP Authorization No Longer Active</h1>")
+		expect(html).toContain("This authorization link is no longer valid.")
+		expect(html).toContain("start authorization again from Kimchi")
+		// Error-template accent color; the success template never uses it.
+		expect(html).toContain("#ef4444")
+		expect(html).not.toContain("MCP Authorization Successful")
+		expect(html).not.toContain("MCP Authorization Failed")
+		expect(html).not.toContain("CSRF")
+		expect(html).not.toContain("window.close")
+		expect(html).not.toContain('class="badge ok"')
+	})
+
 	it("brands the adapter manual-completion page without losing its instructions", () => {
 		const html = brandMcpOAuthCallbackHtml(adapterPage("Authorization Received"))
 

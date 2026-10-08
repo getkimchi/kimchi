@@ -8,6 +8,7 @@ const KIMCHI_APP_MARKER = '<span class="app">kimchi</span>'
 const SUCCESS_HEADING = "<h1>Authorization Successful</h1>"
 const MANUAL_SUCCESS_HEADING = "<h1>Authorization Received</h1>"
 const ERROR_HEADING = "<h1>Authorization Failed</h1>"
+const INACTIVE_HEADING = "<h1>Authorization No Longer Active</h1>"
 const AUTO_CLOSE_SCRIPT = "<script>setTimeout(() => window.close(), 2000);</script>"
 const INSTALL_MARKER = Symbol.for("kimchi.mcp.oauth-callback-branding")
 
@@ -40,6 +41,7 @@ const BRANDED_ADAPTER_RESULT_ERRORS = new Set(["input_required_needs_ui", "nativ
 const SUCCESS_PAGE = { title: "MCP Authorization Successful", heading: "MCP Authorization Successful" }
 const MANUAL_SUCCESS_PAGE = { title: "MCP Authorization Received", heading: "MCP Authorization Received" }
 const ERROR_PAGE = { title: "MCP Authorization Failed", heading: "MCP Authorization Failed" }
+const INACTIVE_PAGE = { title: "MCP Authorization No Longer Active", heading: "MCP Authorization No Longer Active" }
 
 function isKimchiAdapterPage(html: string): boolean {
 	return html.includes(ADAPTER_PAGE_MARKER) && html.includes(KIMCHI_APP_MARKER)
@@ -102,6 +104,18 @@ export function brandMcpOAuthCallbackHtml(html: string): string {
 		return oauthSuccessHtml(
 			"Copy the full callback URL from your browser address bar and paste it back into Kimchi with auth-complete.",
 			MANUAL_SUCCESS_PAGE,
+		)
+	}
+
+	// Unknown/expired/superseded states: the adapter serves its inactive page with
+	// HTTP 400; brand it as a plain error page without auto-close. Completed-state
+	// replays never reach this branch — they replay the byte-identical success page
+	// handled above.
+	if (html.includes(INACTIVE_HEADING)) {
+		return oauthErrorHtml(
+			"This authorization link is no longer valid. It may have expired or been superseded by a newer attempt — start authorization again from Kimchi.",
+			undefined,
+			INACTIVE_PAGE,
 		)
 	}
 
