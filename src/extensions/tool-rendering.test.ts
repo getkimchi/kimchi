@@ -381,6 +381,15 @@ describe("registered workspace tools resolve against the session cwd", () => {
 		expect(realpathSync(resultText(result).trim())).toBe(realpathSync(sessionCwd))
 	})
 
+	it("edit modifies the file under the ExtensionContext cwd", async () => {
+		const result = await execute("edit", {
+			path: "probe.txt",
+			edits: [{ oldText: "needle-in-session-cwd", newText: "edited-in-session-cwd" }],
+		})
+		expect(result.isError ?? false).toBe(false)
+		expect(readFileSync(join(sessionCwd, "probe.txt"), "utf8")).toBe("edited-in-session-cwd")
+	})
+
 	it("write creates the file under the ExtensionContext cwd and reports pre-existing files", async () => {
 		const overwrite = await execute("write", { path: "probe.txt", content: "rewritten" })
 		expect(readFileSync(join(sessionCwd, "probe.txt"), "utf8")).toBe("rewritten")

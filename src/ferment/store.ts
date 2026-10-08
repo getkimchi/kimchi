@@ -105,7 +105,7 @@ export function resolveFermentsDir(cwd?: string): string {
 
 // ─── Git worktree capture ─────────────────────────────────────────────────────
 
-export function captureWorktree(cwd?: string): import("./types.js").FermentWorktree {
+export function captureWorktree(cwd: string): import("./types.js").FermentWorktree {
 	const path = detectProjectRoot(cwd) ?? process.cwd()
 	let branch: string | undefined
 	let commit: string | undefined
