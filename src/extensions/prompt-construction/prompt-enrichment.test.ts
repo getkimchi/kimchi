@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
+import type { Api, AssistantMessage, Model, ToolResultMessage } from "@earendil-works/pi-ai"
 import { type ExtensionAPI, loadSkillsFromDir, type ToolInfo } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import * as config from "../../config.js"
@@ -25,6 +25,16 @@ import { createToolVisibility } from "./tool-visibility.js"
 
 function makeUser(text: string): OrchestratorMessages[number] {
 	return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() }
+}
+
+/** Backend-routed virtual model before any request resolves the pick — its
+ *  advertised window does not reflect the routed pool. */
+function routedVirtualModel(): Partial<Model<Api>> {
+	return { provider: "kimchi-dev", id: "auto", name: "Auto", contextWindow: 1_048_576 }
+}
+
+function concreteModel(id: string, contextWindow: number): Partial<Model<Api>> {
+	return { provider: "kimchi-dev", id, name: id, contextWindow }
 }
 
 function makeAssistant(content: AssistantMessage["content"] = [{ type: "text", text: "Done." }]): AssistantMessage {
@@ -348,6 +358,47 @@ describe("prompt enrichment skills", () => {
 		expect(result.systemPrompt).toContain("## Skills")
 		expect(result.systemPrompt).toContain("- **typescript-safety**")
 		expect(result.systemPrompt).toContain("Use safe TypeScript patterns before editing TypeScript files.")
+	})
+
+	it("uses the floor skills budget for unresolved auto-routed models", async () => {
+		const cwd = join(dir, "project")
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers([])
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		// 30 entries with ~200-char descriptions overflow the 5k floor but would
+		// easily fit a 1M-window model's scaled budget.
+		const skills = Array.from({ length: 30 }, (_, i) => ({
+			name: `skill-${i}`,
+			description: `${i} ${"word ".repeat(40).trim()}`,
+			filePath: join(cwd, `skill-${i}`, "SKILL.md"),
+		}))
+		const result = (await beforeAgentStart(
+			{ systemPromptOptions: { skills } },
+			createContext({ cwd, hasUI: false, model: routedVirtualModel() }),
+		)) as { systemPrompt: string }
+
+		// The unresolved virtual model's advertised window must not scale the
+		// budget — the catalog stays at the floor with name-only degradation.
+		expect(result.systemPrompt).toContain("skills are listed name-only to fit the catalog budget")
+	})
+
+	it("scales the skills budget with a concrete model's context window", async () => {
+		const cwd = join(dir, "project")
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers([])
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const skills = Array.from({ length: 30 }, (_, i) => ({
+			name: `skill-${i}`,
+			description: `${i} ${"word ".repeat(40).trim()}`,
+			filePath: join(cwd, `skill-${i}`, "SKILL.md"),
+		}))
+		const result = (await beforeAgentStart(
+			{ systemPromptOptions: { skills } },
+			createContext({ cwd, hasUI: false, model: concreteModel("big-context", 1_048_576) }),
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).not.toContain("name-only")
+		expect(result.systemPrompt.match(/^- \*\*skill-\d+\*\* — /gm)?.length).toBe(30)
 	})
 
 	it("no longer discovers skills itself when systemPromptOptions.skills is absent", async () => {
