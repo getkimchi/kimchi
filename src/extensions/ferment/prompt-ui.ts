@@ -104,9 +104,6 @@ export async function promptForm(ctx: ExtensionContext, spec: PromptFormSpec): P
 
 	if (ctx.mode === "tui") {
 		const customResult = await withWorkingHidden(ui, () =>
-			// The form navigates with Shift+Tab, which is also the global
-			// permission-mode cycle shortcut — claim raw input so global
-			// listeners defer while the form has focus.
 			withRawInputCapture(
 				() =>
 					ui.custom?.<PromptFormResult | null>((tui, theme, _keybindings, done) =>

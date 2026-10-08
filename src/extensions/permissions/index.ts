@@ -70,7 +70,7 @@ import {
 	setPermissionMode,
 } from "./mode-controller.js"
 import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
-import { type ModeChangeReason, PERMISSION_EVENTS, type PermissionDecision } from "./permissions-events.js"
+import { PERMISSION_EVENTS, type PermissionDecision } from "./permissions-events.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
 import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import {
@@ -91,7 +91,7 @@ import {
 	splitCompoundCommand,
 } from "./taxonomy.js"
 import { emitOutcomeDecision, emitToolDecision, ruleSourceDetail } from "./tool-decision-emitter.js"
-import type { PermissionMode, PermissionModeState, RiskScore, Rule, RuleSource } from "./types.js"
+import type { ModeChangeReason, PermissionMode, PermissionModeState, RiskScore, Rule, RuleSource } from "./types.js"
 
 /**
  * Check whether a file path is within .kimchi/plans/ relative to cwd.

@@ -16,11 +16,14 @@
  * returning `{ block: true, reason }`.
  */
 
-import type { ClassifierFailureCode, PermissionMode, PermissionModeState, RiskScore, RuleSource } from "./types.js"
-
-export type { ModeChangeReason } from "./types.js"
-
-import type { ModeChangeReason } from "./types.js"
+import type {
+	ClassifierFailureCode,
+	ModeChangeReason,
+	PermissionMode,
+	PermissionModeState,
+	RiskScore,
+	RuleSource,
+} from "./types.js"
 
 export const PERMISSION_EVENTS = {
 	MODE_CHANGED: "permissions:mode_changed",

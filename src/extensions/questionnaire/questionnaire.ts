@@ -249,9 +249,6 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				ctx.mode !== "tui"
 					? promptQuestionnaireFallback(ctx.ui, questions)
 					: withWorkingHidden(ctx, () =>
-							// The form navigates with Shift+Tab, which is also the global
-							// permission-mode cycle shortcut — claim raw input so global
-							// listeners defer while the form has focus.
 							withRawInputCapture(() =>
 								ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
 									createQuestionForm(tui, theme, questions, { title: params.header }, done),
