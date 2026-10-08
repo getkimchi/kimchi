@@ -108,9 +108,14 @@ export function sameWorkAccount(left: WorkAccount, right: WorkAccount): boolean 
 	return left.apiUrl === right.apiUrl && left.organizationId === right.organizationId && left.userId === right.userId
 }
 
+/** The configured platform API without a trailing slash, as accounts and reports compare it. */
+export function platformApiUrl(cwd: string): string {
+	return resolveEndpoints({ cwd }).platformApiUrl.replace(/\/+$/, "")
+}
+
 /** Identifies the configured API key and endpoint without keeping the key. */
 export function workCredential(cwd: string): string {
-	const apiUrl = resolveEndpoints({ cwd }).platformApiUrl.replace(/\/+$/, "")
+	const apiUrl = platformApiUrl(cwd)
 	return createHash("sha256")
 		.update(JSON.stringify([apiUrl, loadConfig({ cwd }).apiKey ?? ""]))
 		.digest("hex")
@@ -119,10 +124,9 @@ export function workCredential(cwd: string): string {
 /** A short auth cache avoids verifying the same key for every retained intent. */
 export async function captureWorkAccount(cwd: string): Promise<WorkAccountSnapshot | undefined> {
 	const key = loadConfig({ cwd }).apiKey
-	const apiUrl = resolveEndpoints({ cwd }).platformApiUrl.replace(/\/+$/, "")
+	const apiUrl = platformApiUrl(cwd)
 	if (!key) return
-	const isCurrent = () =>
-		loadConfig({ cwd }).apiKey === key && resolveEndpoints({ cwd }).platformApiUrl.replace(/\/+$/, "") === apiUrl
+	const isCurrent = () => loadConfig({ cwd }).apiKey === key && platformApiUrl(cwd) === apiUrl
 	try {
 		if (!cached || cached.key !== key || cached.apiUrl !== apiUrl || cached.expiresAt <= Date.now()) {
 			cached = {
