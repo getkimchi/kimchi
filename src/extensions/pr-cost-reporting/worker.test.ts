@@ -8,7 +8,7 @@ import * as health from "../telemetry/pr-cost.js"
 import { readWorkCostReport, requestTagSelector } from "../work-attribution/cost-sync.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
-import { queueSnapshots, readReportingState, setReportingEnabled } from "./queue.js"
+import { queueSnapshots, readReportingState, setReportingEnabled, UPLOAD_INTERVAL_MS } from "./queue.js"
 import { buildSnapshots, type RepositorySnapshot, type WireSnapshot } from "./snapshot.js"
 import { deliverSnapshots, reconcileReporting } from "./worker.js"
 
@@ -516,6 +516,70 @@ describe("account-fenced reporting delivery", () => {
 		const state = await readReportingState(directory)
 		expect(Object.values(state.entries)[0].pending?.requests).toHaveLength(1)
 		expect(http).not.toHaveBeenCalled()
+	})
+})
+
+const second = "55555555-5555-4555-8555-555555555551"
+const third = "55555555-5555-4555-8555-555555555552"
+const posts = () =>
+	http.mock.calls
+		.filter(([url]) => String(url).endsWith("/pr-cost-snapshots"))
+		.map(([, init]): WireSnapshot => JSON.parse(String(init?.body)))
+const respond = (reply: (payload: WireSnapshot) => Response) =>
+	http.mockImplementation(async (input, init) =>
+		String(input).endsWith("api-keys:verify")
+			? Response.json({ organizationId: org, userId: user })
+			: reply(JSON.parse(String(init?.body))),
+	)
+const accepted = (payload: WireSnapshot) =>
+	Response.json({ status: "accepted", revision: payload.revision, receivedAt: new Date().toISOString() })
+const inventory = (requestIds: string[], repositoryId = "42"): RepositorySnapshot => ({
+	account: content.account,
+	content: {
+		...content.content,
+		repository: { ...content.content.repository, id: repositoryId },
+		requests: requestIds.map((id) => ({ ...content.content.requests[0], requestId: id })),
+		coverage: { observedRequests: requestIds.length, unpricedRequests: requestIds.length, historyComplete: true },
+	},
+})
+
+describe("upload window", () => {
+	it("uploads rapid ordinary changes once per five-minute window, sending the newest", async () => {
+		respond(accepted)
+		await deliver()
+		await queueSnapshots(directory, [inventory([requestId, second])])
+		await deliver()
+		await queueSnapshots(directory, [inventory([requestId, second, third])])
+		await deliver()
+		expect(posts().map((payload) => payload.revision)).toEqual(["1"])
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + UPLOAD_INTERVAL_MS)
+		await deliver()
+		expect(posts().map((payload) => [payload.revision, payload.requests.length])).toEqual([
+			["1", 1],
+			["3", 3],
+		])
+	})
+	it("sends a PR opening at once inside the window", async () => {
+		respond(accepted)
+		await deliver()
+		const linked = inventory([requestId])
+		linked.content.pullRequests = [
+			{ id: "101", number: 1, url: "https://github.com/example/repo/pull/1", state: "open" },
+		]
+		linked.content.requests[0].allocation = { kind: "pull-request", pullRequestIds: ["101"], method: "native" }
+		await queueSnapshots(directory, [linked])
+		await deliver()
+		expect(posts().map((payload) => payload.revision)).toEqual(["1", "2"])
+	})
+	it("sends the next snapshot at once after /pr-reporting on", async () => {
+		respond(accepted)
+		await deliver()
+		await queueSnapshots(directory, [inventory([requestId, second])])
+		await deliver()
+		expect(posts()).toHaveLength(1)
+		await setReportingEnabled(directory, true)
+		await deliver()
+		expect(posts().map((payload) => payload.revision)).toEqual(["1", "2"])
 	})
 })
 

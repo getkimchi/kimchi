@@ -16,6 +16,7 @@ import {
 	type RepositorySnapshot,
 	repositoryKey,
 	revision,
+	type SnapshotContent,
 	validateSnapshot,
 	validTime,
 	type WireSnapshot,
@@ -26,6 +27,8 @@ export interface SnapshotAck {
 	revision: string
 	receivedAt: string
 }
+/** Ordinary changes upload at most once in this window per repository. */
+export const UPLOAD_INTERVAL_MS = 5 * 60_000
 export interface PendingRepository {
 	account: WorkAccount
 	repository: ReportingRepository
@@ -40,6 +43,12 @@ export interface PendingRepository {
 	retryAt: number
 	lastError?: string
 	lastAcknowledgedAt?: string
+	/** Start of the last upload attempt; ordinary changes wait UPLOAD_INTERVAL_MS after it. */
+	uploadedAt?: number
+	/** The pending snapshot changes a PR state, carries a new explicit correction or withdraws claims. */
+	urgent?: true
+	/** PR states and explicit corrections the server acknowledged; a change to them uploads at once. */
+	markers?: string[]
 }
 export interface ReportingState {
 	version: 1
@@ -58,6 +67,23 @@ export function reportingDirectory(agentDir: string): string {
 }
 const statePath = (agentDir: string) => join(reportingDirectory(agentDir), "state.json")
 const requestHash = (requestId: string) => createHash("sha256").update(requestId).digest("hex")
+function validEntryExtras(entry: PendingRepository): boolean {
+	return (
+		(entry.uploadedAt === undefined || Number.isFinite(entry.uploadedAt)) &&
+		(entry.urgent === undefined || entry.urgent === true) &&
+		(entry.markers === undefined ||
+			(Array.isArray(entry.markers) &&
+				entry.markers.every((marker) => typeof marker === "string" && marker.length <= 256)))
+	)
+}
+/** What the server must hear about at once: PR states and explicit `/work` corrections. */
+export function snapshotMarkers(content: SnapshotContent): string[] {
+	const markers = new Set(content.pullRequests.map((pr) => `pull-request:${pr.id}:${pr.state}`))
+	for (const request of content.requests)
+		if (request.correction?.source === "work-command")
+			markers.add(`correction:${request.correction.id}:${request.correction.revision}`)
+	return [...markers].sort()
+}
 function empty(): ReportingState {
 	return {
 		version: 1,
@@ -101,7 +127,8 @@ export async function readReportingState(agentDir: string): Promise<ReportingSta
 				!Number.isFinite(entry.retryAt) ||
 				!Array.isArray(entry.requestHashes) ||
 				entry.requestHashes.some((hash) => typeof hash !== "string" || !SHA256_HEX.test(hash)) ||
-				key !== `${accountKey(entry.account)}:${repositoryKey(entry.repository)}`
+				key !== `${accountKey(entry.account)}:${repositoryKey(entry.repository)}` ||
+				!validEntryExtras(entry)
 			)
 				throw new Error("Invalid PR reporting state")
 			if (entry.pending) {
@@ -173,22 +200,25 @@ async function update(agentDir: string, mutate: (state: ReportingState) => void)
 	}
 }
 
+/** An explicit choice also restarts delivery: the next snapshot of every repository goes out at once. */
 export function setReportingEnabled(agentDir: string, enabled: boolean): Promise<ReportingState> {
 	return update(agentDir, (state) => {
 		state.enabled = enabled
 		state.followsTelemetry = undefined
 		state.error = undefined
-		if (!enabled)
-			for (const entry of Object.values(state.entries)) {
-				// The discarded replacement may have arrived even if its acknowledgement did not.
-				if (entry.pending) entry.acceptedDigest = undefined
-				entry.pending = undefined
-				entry.pendingDigest = undefined
-				entry.lastError = undefined
-				entry.held = undefined
-				entry.attempts = 0
-				entry.retryAt = 0
-			}
+		for (const entry of Object.values(state.entries)) {
+			entry.uploadedAt = undefined
+			entry.attempts = 0
+			entry.retryAt = 0
+			if (enabled) continue
+			// The discarded replacement may have arrived even if its acknowledgement did not.
+			if (entry.pending) entry.acceptedDigest = undefined
+			entry.pending = undefined
+			entry.pendingDigest = undefined
+			entry.urgent = undefined
+			entry.lastError = undefined
+			entry.held = undefined
+		}
 	})
 }
 /** Claim the installation notice under the queue lock so concurrent sessions show it once. */
@@ -208,7 +238,10 @@ export function recordReportingError(agentDir: string, error: string): Promise<R
 	})
 }
 
-/** Replaces a repository's entire inventory. The fsynced rename completes before delivery can begin. */
+/**
+ * Replaces a repository's entire inventory. The fsynced rename completes before delivery can begin.
+ * Every change replaces the pending snapshot; whether it may skip the upload window is decided here.
+ */
 export async function queueSnapshots(
 	agentDir: string,
 	snapshots: RepositorySnapshot[],
@@ -246,7 +279,8 @@ export async function queueSnapshots(
 			reported.set(key, members)
 		}
 		let held = 0
-		for (const [key, entry] of Object.entries(state.entries))
+		const withdrawals = new Set<string>()
+		for (const [key, entry] of Object.entries(state.entries)) {
 			if (!current.has(key)) {
 				if (
 					!invalid.has(key) &&
@@ -261,14 +295,17 @@ export async function queueSnapshots(
 							coverage: { observedRequests: 0, unpricedRequests: 0, historyComplete: completeInventory },
 						},
 					})
+					withdrawals.add(key)
 				} else {
 					entry.held = true
 					held++
 				}
 			}
+		}
+		const changes: [string, RepositorySnapshot, string][] = []
 		for (const [key, snapshot] of current) {
 			const digest = createHash("sha256").update(JSON.stringify(snapshot.content)).digest("hex")
-			let entry = state.entries[key]
+			const entry = state.entries[key]
 			if (
 				entry &&
 				(snapshot.incomplete ||
@@ -280,6 +317,19 @@ export async function queueSnapshots(
 			}
 			if (entry) entry.held = undefined
 			if (entry?.pendingDigest === digest || (!entry?.pending && entry?.acceptedDigest === digest)) continue
+			changes.push([key, snapshot, digest])
+		}
+		// An explicit correction can move requests to another repository; when one first appears, every
+		// changed repository of that account goes out at once, not only the one that carries the receipt.
+		const corrected = new Set<string>()
+		for (const [key, snapshot] of changes) {
+			const entry = state.entries[key]
+			const seen = new Set([...(entry?.markers ?? []), ...(entry?.pending ? snapshotMarkers(entry.pending) : [])])
+			if (snapshotMarkers(snapshot.content).some((marker) => marker.startsWith("correction:") && !seen.has(marker)))
+				corrected.add(accountKey(snapshot.account))
+		}
+		for (const [key, snapshot, digest] of changes) {
+			const entry = state.entries[key]
 			const next = BigInt(entry?.revision ?? "0") + 1n
 			if (next > MAX_REVISION) throw new Error("PR reporting revision limit reached")
 			const pending: WireSnapshot = {
@@ -289,25 +339,31 @@ export async function queueSnapshots(
 				generatedAt: new Date().toISOString(),
 				...snapshot.content,
 			}
-			entry = {
+			// Unacknowledged PR states and corrections stay urgent through replacements until the server has them.
+			const acknowledged = new Set(entry?.markers)
+			const urgent =
+				entry?.urgent ||
+				withdrawals.has(key) ||
+				corrected.has(accountKey(snapshot.account)) ||
+				snapshotMarkers(snapshot.content).some((marker) => !acknowledged.has(marker))
+			state.entries[key] = {
+				...entry,
 				account: snapshot.account,
 				repository: snapshot.content.repository,
 				revision: String(next),
 				requestHashes: [
 					...new Set([
 						...(entry?.requestHashes ?? []),
-						...snapshot.content.requests.map((request) => requestHash(request.requestId)),
+						...snapshot.content.requests.map((request) => request.requestId).map(requestHash),
 					]),
 				].sort(),
-				...(entry?.acceptedDigest ? { acceptedDigest: entry.acceptedDigest } : {}),
+				held: undefined,
 				pendingDigest: digest,
 				pending,
+				urgent: urgent || undefined,
 				attempts: entry?.attempts ?? 0,
 				retryAt: entry?.retryAt ?? 0,
-				...(entry?.lastError ? { lastError: entry.lastError } : {}),
-				...(entry?.lastAcknowledgedAt ? { lastAcknowledgedAt: entry.lastAcknowledgedAt } : {}),
 			}
-			state.entries[key] = entry
 			largest = {
 				requests: Math.max(largest?.requests ?? 0, pending.requests.length),
 				bytes: Math.max(largest?.bytes ?? 0, Buffer.byteLength(JSON.stringify(pending))),
@@ -352,13 +408,16 @@ export function acknowledgeSnapshot(
 			entry.requestHashes = entry.pending.requests.map((request) => requestHash(request.requestId)).sort()
 			entry.acceptedDigest = entry.pendingDigest
 			entry.lastAcknowledgedAt = ack.receivedAt
+			entry.markers = snapshotMarkers(entry.pending)
 		} else entry.acceptedDigest = undefined
 		entry.revision = ack.revision
 		entry.pending = undefined
 		entry.pendingDigest = undefined
+		entry.urgent = undefined
 		entry.lastError = undefined
 		entry.attempts = 0
 		entry.retryAt = 0
+		entry.uploadedAt = Date.now()
 	})
 }
 export function deferSnapshot(
@@ -374,5 +433,6 @@ export function deferSnapshot(
 		entry.attempts++
 		entry.retryAt = retryAt
 		entry.lastError = message
+		entry.uploadedAt = Date.now()
 	})
 }

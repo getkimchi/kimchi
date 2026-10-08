@@ -15,6 +15,7 @@ import {
 	recordReportingError,
 	reportingDirectory,
 	type SnapshotAck,
+	UPLOAD_INTERVAL_MS,
 } from "./queue.js"
 import { buildSnapshots, type ReportingRepository } from "./snapshot.js"
 
@@ -70,11 +71,24 @@ export async function deliverSnapshots(
 				agentDir,
 				`${state.error ? `${state.error}. ` : ""}Some queued reports are waiting for their original account endpoint and credentials`,
 			)
+		const now = Date.now()
+		const due = Object.entries(state.entries)
+			.filter(
+				([, entry]) =>
+					entry.pending &&
+					!entry.held &&
+					entry.retryAt <= now &&
+					(entry.urgent ||
+						entry.uploadedAt === undefined ||
+						entry.uploadedAt > now ||
+						now - entry.uploadedAt >= UPLOAD_INTERVAL_MS),
+			)
+			.sort(([, a], [, b]) => Number(!a.urgent) - Number(!b.urgent) || a.retryAt - b.retryAt)
 		let attempts = 0
-		for (const [id, entry] of Object.entries(state.entries).sort(([, a], [, b]) => a.retryAt - b.retryAt)) {
-			if (!entry.pending || entry.held || entry.retryAt > Date.now()) continue
-			if (combined.aborted || attempts >= 3) break
+		for (const [id, entry] of due) {
 			const snapshot = entry.pending
+			if (!snapshot) continue
+			if (combined.aborted || attempts >= 3) break
 			const key = loadConfig({ cwd }).apiKey
 			const apiUrl = platformApiUrl(cwd)
 			if (!key || !safeEndpoint(apiUrl) || apiUrl !== entry.account.apiUrl) continue

@@ -561,3 +561,108 @@ describe("snapshot size health", () => {
 		expect(metric.mock.calls.filter(([value]) => value.kind.startsWith("snapshot"))).toEqual([])
 	})
 })
+
+describe("upload window", () => {
+	const key = `${accountKey(account)}:${repositoryKey(snapshot().content.repository)}`
+	const at = "2026-10-04T12:00:00.000Z"
+	const pull = (state: "open" | "merged" | "closed", requestIds = [requestId]) => {
+		const value = snapshot(requestIds)
+		value.content.pullRequests = [
+			{
+				id: "101",
+				number: 1,
+				url: "https://github.com/example/repo/pull/1",
+				state,
+				...(state === "merged" ? { mergedAt: at } : {}),
+				...(state === "closed" ? { closedAt: at } : {}),
+			},
+		]
+		value.content.requests[0].allocation = { kind: "pull-request", pullRequestIds: ["101"], method: "native" }
+		return value
+	}
+	const corrected = (source: "work-command" | "producer-confirmation", revision = 1) => {
+		const value = snapshot([requestId])
+		value.content.requests[0].correction = { id: otherRequestId, revision, recordedAt: at, source }
+		return value
+	}
+	const queue = async (...values: RepositorySnapshot[]) => (await queueSnapshots(directory, values, true)).entries
+	const accept = async (id = key) => {
+		const entry = (await readReportingState(directory)).entries[id]
+		await acknowledgeSnapshot(directory, id, entry.revision, {
+			status: "accepted",
+			revision: entry.revision,
+			receivedAt: new Date().toISOString(),
+		})
+	}
+
+	it("lets a PR opening, merge or close skip the window, but not ordinary changes", async () => {
+		await setReportingEnabled(directory, true)
+		expect((await queue(snapshot([requestId])))[key].urgent).toBeUndefined()
+		await accept()
+		expect((await queue(pull("open")))[key].urgent).toBe(true)
+		await accept()
+		expect((await readReportingState(directory)).entries[key].markers).toEqual(["pull-request:101:open"])
+		expect((await queue(pull("open", [requestId, otherRequestId])))[key].urgent).toBeUndefined()
+		// A merge stays urgent through later replacements until the server acknowledges it.
+		expect((await queue(pull("merged", [requestId, otherRequestId])))[key].urgent).toBe(true)
+		expect((await queue(pull("merged")))[key].urgent).toBe(true)
+		await accept()
+		expect((await queue(pull("merged", [requestId, otherRequestId])))[key].urgent).toBeUndefined()
+		expect((await queue(pull("closed", [requestId, otherRequestId])))[key].urgent).toBe(true)
+	})
+	it("lets an explicit /work correction skip the window, but not a producer confirmation", async () => {
+		await setReportingEnabled(directory, true)
+		await queue(snapshot([requestId]))
+		await accept()
+		expect((await queue(corrected("producer-confirmation")))[key].urgent).toBeUndefined()
+		expect((await queue(corrected("work-command")))[key].urgent).toBe(true)
+		await accept()
+		expect((await queue(corrected("work-command", 2)))[key].urgent).toBe(true)
+	})
+	it("sends a withdrawal and the receiving repository of a correction at once", async () => {
+		await setReportingEnabled(directory, true)
+		const other = snapshot([otherRequestId])
+		other.content.repository = { ...other.content.repository, id: "43" }
+		const otherKey = `${accountKey(account)}:${repositoryKey(other.content.repository)}`
+		await queue(snapshot([requestId]), other)
+		await accept()
+		await accept(otherKey)
+		// /work link moves the request to repository 43; repository 42 is withdrawn.
+		const moved = snapshot([otherRequestId, requestId])
+		moved.content.repository = other.content.repository
+		moved.content.requests[1].correction = { id: billing, revision: 1, recordedAt: at, source: "work-command" }
+		const entries = await queue(moved)
+		expect([entries[key].pending?.requests, entries[key].urgent]).toEqual([[], true])
+		expect(entries[otherKey].urgent).toBe(true)
+	})
+	it("sends other changed repositories of the account at once only when a correction first appears", async () => {
+		await setReportingEnabled(directory, true)
+		const other = (requestIds: string[]) => {
+			const value = snapshot(requestIds)
+			value.content.repository = { ...value.content.repository, id: "43" }
+			return value
+		}
+		const otherKey = `${accountKey(account)}:${repositoryKey(other([]).content.repository)}`
+		const third = "66666666-6666-4666-8666-666666666666"
+		await queue(snapshot([requestId]), other([otherRequestId]))
+		await accept()
+		await accept(otherKey)
+		const correction = corrected("work-command")
+		expect((await queue(correction, other([otherRequestId, third])))[otherKey].urgent).toBe(true)
+		await accept(otherKey)
+		// The receipt is still unacknowledged, yet a later ordinary change elsewhere waits for its window.
+		expect((await queue(correction, other([otherRequestId])))[otherKey].urgent).toBeUndefined()
+	})
+	it("restarts the window and the retry deadline after /pr-reporting on", async () => {
+		await setReportingEnabled(directory, true)
+		await queue(snapshot([requestId]))
+		await deferSnapshot(directory, key, "1", Date.now() + 3_600_000, "PR reporting returned HTTP 404")
+		expect((await readReportingState(directory)).entries[key]).toMatchObject({
+			attempts: 1,
+			uploadedAt: expect.any(Number),
+		})
+		const state = await setReportingEnabled(directory, true)
+		expect(state.entries[key]).toMatchObject({ attempts: 0, retryAt: 0, pending: { revision: "1" } })
+		expect(state.entries[key].uploadedAt).toBeUndefined()
+	})
+})
