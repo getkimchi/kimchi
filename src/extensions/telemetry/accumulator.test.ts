@@ -15,6 +15,7 @@ describe("createCumulativeState", () => {
 		expect(state.tokensByModel).toEqual({})
 		expect(state.costByModel).toEqual({})
 		expect(state.commitCount).toBe(0)
+		expect(state.prCount).toBe(0)
 		expect(state.locByLanguage).toEqual({})
 		expect(state.editDecisions).toEqual({})
 		expect(state.toolUsage).toEqual({})
@@ -67,16 +68,17 @@ describe("handleBashCumulativeMetrics", () => {
 		expect(state.commitCount).toBe(0)
 	})
 
-	it("does not count a Bash command as a confirmed pull request", () => {
+	it("detects gh pr create", () => {
 		const state = createCumulativeState()
 		handleBashCumulativeMetrics(state, { command: "gh pr create --title 'my pr'" })
-		expect(collectMetrics(state).some((metric) => metric.name === "claude_code.pull_request.count")).toBe(false)
+		expect(state.prCount).toBe(1)
 	})
 
 	it("does not increment for unrelated commands", () => {
 		const state = createCumulativeState()
 		handleBashCumulativeMetrics(state, { command: "ls -la" })
 		expect(state.commitCount).toBe(0)
+		expect(state.prCount).toBe(0)
 	})
 
 	it("does not detect git commit in strings that only contain commit keyword elsewhere", () => {
@@ -184,6 +186,16 @@ describe("collectMetrics", () => {
 		const state = createCumulativeState()
 		const metrics = collectMetrics(state)
 		expect(metrics.find((m) => m.name === "claude_code.commit.count")).toBeUndefined()
+	})
+
+	it("produces pull request count metric", () => {
+		const state = createCumulativeState()
+		state.prCount = 2
+		const metrics = collectMetrics(state)
+		const m = metrics.find((m) => m.name === "claude_code.pull_request.count")
+		expect(m).toBeDefined()
+		expect(m?.value).toBe(2)
+		expect(m?.attrs.decision).toBe("gh_pr_create")
 	})
 
 	it("produces lines_of_code metrics for added and removed", () => {
