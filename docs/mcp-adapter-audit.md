@@ -214,6 +214,24 @@ re-store credentials) per server, and the prompts stop permanently. Denying the
 dialog also stops the prompts for that session — the connector card then shows
 the re-authentication hint instead of looping.
 
+#### Stray OAuth keychain entry cleanup
+
+At extension install and MCP probe (macOS, once per process, login keychain
+only), kimchi deletes entries under `dev.kimchi.mcp.oauth` whose account
+doesn't match its documented key shapes (`sha256-…` or chunk pieces) — heals
+the `acct="Bearer"` stray-entry damage class from the 2026-10 investigation.
+Deleting a foreign-ACL item pops the login-password consent dialog, and a
+denial (shared `isConsentDenied` classification, exit 128 = errSecUserCanceled)
+aborts the sweep after at most one prompt. A blast-radius cap (more than two
+strays) refuses automatic deletion and names them for manual removal instead.
+Aborted or refused strays are reported in a warning with the manual path:
+Keychain Access → search `dev.kimchi.mcp.oauth` → delete by hand. The legacy
+shared service (`pi-mcp-adapter.oauth`) is never scanned.
+
+Relevant code:
+
+- [`src/extensions/mcp/stray-oauth-entry-cleanup.ts`](../src/extensions/mcp/stray-oauth-entry-cleanup.ts)
+
 On Linux, revoked session keyrings are recovered through `keyctl session -`.
 Compiled builds configure the adapter's existing runtime/helper overrides to
 launch the Kimchi executable with the internal `mcp-keyring-helper` command.

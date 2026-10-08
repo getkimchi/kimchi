@@ -128,7 +128,7 @@ export interface SecurityToolResult {
 
 export type SecurityToolRunner = (args: string[], stdin?: string) => SecurityToolResult
 
-const defaultSecurityRunner: SecurityToolRunner = (args, stdin) => {
+export const defaultSecurityRunner: SecurityToolRunner = (args, stdin) => {
 	// A generous bound turns an abandoned keychain consent dialog (possible on
 	// the first read of a legacy ACL item) into a diagnosable error instead of
 	// an indefinite hang. The in-process SecItem path blocked the same way.
@@ -193,11 +193,11 @@ function isUserInteractionNotAllowed(result: SecurityToolResult): boolean {
 	)
 }
 
-function isKeychainItemNotFound(result: SecurityToolResult): boolean {
+export function isKeychainItemNotFound(result: SecurityToolResult): boolean {
 	return result.stderr.includes(KEYCHAIN_NOT_FOUND_MARKER) || result.status === SECURITY_EXIT_ITEM_NOT_FOUND
 }
 
-function isConsentDenied(result: SecurityToolResult): boolean {
+export function isConsentDenied(result: SecurityToolResult): boolean {
 	// The dialog denial (errSecUserCanceled) exits 128 with empty stderr on macOS
 	// 26.6.2, so there is no stable message substring to check first; the exit
 	// code is the classifier.

@@ -18,6 +18,7 @@ import {
 	McpKeychainDeniedError,
 } from "./keyring-require-bridge.js"
 import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
+import { cleanupStrayMcpOAuthEntriesBestEffort } from "./stray-oauth-entry-cleanup.js"
 
 type SdkTool = ListToolsResult["tools"][number]
 
@@ -321,6 +322,7 @@ export class UpstreamMcpProbe implements McpProbe {
 	async probeTools(name: string, definition: ServerEntry, options: McpProbeOptions = {}): Promise<ProbeResult> {
 		options.signal?.throwIfAborted()
 		installKeyringRequireBridge()
+		cleanupStrayMcpOAuthEntriesBestEffort()
 		installProbeToolMetadataCapture()
 		const capturedTools = new Map<string, ProbeTool>()
 		// URL-only servers can advertise OAuth during connection. Reserve time

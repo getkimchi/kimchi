@@ -75,6 +75,9 @@ vi.mock("./keyring-require-bridge.js", async () => {
 			return credentialAccount.value
 		},
 		McpKeychainDeniedError: actual.McpKeychainDeniedError,
+		// Consumed as the default runner by stray-oauth-entry-cleanup (imported via
+		// probe.js); a quiet no-op dump keeps the cleanup out of probe tests.
+		defaultSecurityRunner: () => ({ stdout: "", stderr: "", status: 0, error: undefined }),
 	}
 })
 
