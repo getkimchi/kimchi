@@ -175,7 +175,7 @@ Once a link is known, Kimchi also checks that PR or MR by number to refresh its 
 
 The footer shows `PR/MR: waiting`, a link such as `PR: #7 open` or `MR: !7 merged`, or `PR/MR: check /work` when lookup fails. Before the current work records a commit, it shows the current branch's PR as `Branch PR: #7 open` for orientation; its cost is tracked once Kimchi records a commit for it. Kimchi asks GitHub or GitLab about the branch again only after a branch change or five minutes, and lookup failures for this status stay quiet. The number is a terminal hyperlink; use your terminal's link gesture, usually Cmd-click or Ctrl-click. `/work` lists the current work's links, states, waiting commits and errors. ACP clients receive plain status text and the URL separately; how they display them depends on the client.
 
-Each commit keeps two extra fields:
+Each commit keeps two extra fields, `prLookup` and `pullRequests[]`. The rows after `pullRequests[]` describe the fields of each saved link:
 
 | Field | Meaning |
 | --- | --- |
