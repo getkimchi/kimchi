@@ -13,23 +13,51 @@ import { knownTransitionRepositories, reconcileRepositoryTransitions } from "./f
 
 export const RECONCILIATION_INTERVAL_MS = 30_000
 const PASS_BUDGET_MS = 3000
+type ChannelKind = "pull-requests" | "costs"
+/** Optional work with its own cancellation; unsubscribing waits only for that channel's pass. */
+interface Channel {
+	controller: AbortController
+	running?: Promise<void>
+}
 interface Supervisor {
 	subscribers: Set<ReconciliationSubscriber>
 	controller: AbortController
 	timer?: ReturnType<typeof setInterval>
 	running?: Promise<void>
 	nextRepository?: string
-	pullRequestController?: AbortController
-	pullRequestRunning?: Promise<void>
-	costController?: AbortController
-	costRunning?: Promise<void>
+	channels: Map<ChannelKind, Channel>
 }
 interface ReconciliationSubscriber {
-	kind: "files" | "pull-requests" | "costs"
+	kind: "files" | ChannelKind
 	onPullRequest?: (update: WorkPullRequestUpdate) => void
 	onError?: (error: unknown) => void
 }
 const supervisors = new Map<string, Supervisor>()
+
+async function runChannel(
+	owner: Supervisor,
+	kind: ChannelKind,
+	leaseSignal: AbortSignal,
+	assertLease: () => void,
+	run: (signal: AbortSignal, assertLease: () => void) => Promise<void>,
+	onError: (error: unknown) => void,
+): Promise<void> {
+	const channel = owner.channels.get(kind)
+	if (!channel || channel.controller.signal.aborted) return
+	const signal = AbortSignal.any([leaseSignal, channel.controller.signal])
+	const pending = run(signal, () => {
+		assertLease()
+		signal.throwIfAborted()
+	}).catch((error) => {
+		if (!signal.aborted) onError(error)
+	})
+	channel.running = pending
+	try {
+		await pending
+	} finally {
+		if (channel.running === pending) channel.running = undefined
+	}
+}
 
 async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 	const directory = join(agentDir, "work-attribution")
@@ -85,41 +113,25 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 		}
 		// Network lookup has its own deadline. A slow local repository must not starve it,
 		// and Bash-only commits have no transition repository to visit above.
-		const controller = owner.pullRequestController
-		if (controller && !controller.signal.aborted) {
-			const prSignal = AbortSignal.any([signal, controller.signal])
-			const assertPullRequestLease = () => {
-				assertLease()
-				prSignal.throwIfAborted()
-			}
-			const pending = reconcileWorkPullRequests(agentDir, prSignal, assertPullRequestLease, (update) => {
-				for (const subscriber of owner.subscribers) subscriber.onPullRequest?.(update)
-			}).catch((error) => {
-				if (!prSignal.aborted) reportError(owner, error)
-			})
-			owner.pullRequestRunning = pending
-			try {
-				await pending
-			} finally {
-				if (owner.pullRequestRunning === pending) owner.pullRequestRunning = undefined
-			}
-		}
-		const costController = owner.costController
-		if (costController && !costController.signal.aborted) {
-			const costSignal = AbortSignal.any([signal, costController.signal])
-			const pending = reconcileWorkCosts(agentDir, costSignal, () => {
-				assertLease()
-				costSignal.throwIfAborted()
-			}).catch((error) => {
-				if (!costSignal.aborted) debug("Could not reconcile costs: %o", error)
-			})
-			owner.costRunning = pending
-			try {
-				await pending
-			} finally {
-				if (owner.costRunning === pending) owner.costRunning = undefined
-			}
-		}
+		await runChannel(
+			owner,
+			"pull-requests",
+			signal,
+			assertLease,
+			(channelSignal, assertChannel) =>
+				reconcileWorkPullRequests(agentDir, channelSignal, assertChannel, (update) => {
+					for (const subscriber of owner.subscribers) subscriber.onPullRequest?.(update)
+				}),
+			(error) => reportError(owner, error),
+		)
+		await runChannel(
+			owner,
+			"costs",
+			signal,
+			assertLease,
+			(channelSignal, assertChannel) => reconcileWorkCosts(agentDir, channelSignal, assertChannel),
+			(error) => debug("Could not reconcile costs: %o", error),
+		)
 	} finally {
 		if (!compromised) await release()
 	}
@@ -140,7 +152,7 @@ function tick(agentDir: string, owner: Supervisor): void {
 	// Every process can display durable results, even while another process owns
 	// the lease for Git and GitHub queries.
 	try {
-		if (owner.pullRequestController && !owner.pullRequestController.signal.aborted)
+		if (owner.channels.has("pull-requests"))
 			for (const update of readWorkPullRequestUpdates(agentDir))
 				for (const subscriber of owner.subscribers) subscriber.onPullRequest?.(update)
 	} catch (error) {
@@ -161,7 +173,7 @@ function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Pr
 	const agentDir = resolve(getAgentDir())
 	let owner = supervisors.get(agentDir)
 	if (!owner || owner.controller.signal.aborted) {
-		owner = { subscribers: new Set(), controller: new AbortController() }
+		owner = { subscribers: new Set(), controller: new AbortController(), channels: new Map() }
 		supervisors.set(agentDir, owner)
 		const current = owner
 		current.timer = setInterval(() => tick(agentDir, current), RECONCILIATION_INTERVAL_MS)
@@ -169,13 +181,8 @@ function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Pr
 	}
 	const subscription = { ...subscriber }
 	owner.subscribers.add(subscription)
-	if (
-		subscriber.kind === "pull-requests" &&
-		(!owner.pullRequestController || owner.pullRequestController.signal.aborted)
-	)
-		owner.pullRequestController = new AbortController()
-	if (subscriber.kind === "costs" && (!owner.costController || owner.costController.signal.aborted))
-		owner.costController = new AbortController()
+	if (subscriber.kind !== "files" && !owner.channels.has(subscriber.kind))
+		owner.channels.set(subscriber.kind, { controller: new AbortController() })
 	tick(agentDir, owner)
 	const current = owner
 	let stopped = false
@@ -183,20 +190,15 @@ function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Pr
 		if (stopped) return
 		stopped = true
 		current.subscribers.delete(subscription)
-		let pendingPullRequests: Promise<void> | undefined
-		let pendingCosts: Promise<void> | undefined
-		if (![...current.subscribers].some((entry) => entry.kind === "pull-requests")) {
-			current.pullRequestController?.abort()
-			current.pullRequestController = undefined
-			pendingPullRequests = current.pullRequestRunning
-		}
-		if (![...current.subscribers].some((entry) => entry.kind === "costs")) {
-			current.costController?.abort()
-			current.costController = undefined
-			pendingCosts = current.costRunning
-		}
+		const pending: (Promise<void> | undefined)[] = []
+		for (const [kind, channel] of current.channels)
+			if (![...current.subscribers].some((entry) => entry.kind === kind)) {
+				channel.controller.abort()
+				current.channels.delete(kind)
+				pending.push(channel.running)
+			}
 		if (current.subscribers.size) {
-			await Promise.all([pendingPullRequests, pendingCosts])
+			await Promise.all(pending)
 			return
 		}
 		clearInterval(current.timer)

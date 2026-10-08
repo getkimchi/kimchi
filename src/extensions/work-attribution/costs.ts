@@ -1,3 +1,4 @@
+import { plainURL } from "../../utils/url.js"
 import { pullRequestKey } from "../pull-request-status/links.js"
 import { providerId, repositoryPath, SHA } from "../pull-request-status/provider-records.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
@@ -130,21 +131,9 @@ function storedPullRequest(row: unknown): { identity: PullIdentity; pullRequest:
 	if (!repositoryPath(repository, provider)) return undefined
 	const host = row.host.toLowerCase()
 	const path = `/${repository}/${provider === "github" ? "pull" : "-/merge_requests"}/${row.number}`
-	try {
-		const url = new URL(row.url)
-		if (
-			url.protocol !== "https:" ||
-			url.host !== host ||
-			url.username ||
-			url.password ||
-			url.search ||
-			url.hash ||
-			(provider === "github" ? url.pathname.toLowerCase() : url.pathname) !== path
-		)
-			return undefined
-	} catch {
+	const url = plainURL(row.url)
+	if (url?.host !== host || (provider === "github" ? url.pathname.toLowerCase() : url.pathname) !== path)
 		return undefined
-	}
 	const identity: PullIdentity = {
 		provider,
 		host,

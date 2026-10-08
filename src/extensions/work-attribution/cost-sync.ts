@@ -1,12 +1,13 @@
-import { createHash, randomUUID } from "node:crypto"
+import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
-import { mkdir, open, rename, rm } from "node:fs/promises"
+import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations.js"
-import { writeFileAtomic } from "../../config/json.js"
+import { writeFileAtomic, writeFileDurably } from "../../config/json.js"
 import { loadConfig, resolveEndpoints } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
+import { plainURL } from "../../utils/url.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { calculatePullRequestCosts, decimalNanos, type RequestCostObservation, time, usd } from "./costs.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
@@ -142,19 +143,7 @@ function costFingerprint(rows: unknown[], lookup: BillingLookup): string {
 }
 
 function httpUrl(value: unknown): value is string {
-	if (typeof value !== "string") return false
-	try {
-		const url = new URL(value)
-		return (
-			(url.protocol === "https:" || url.protocol === "http:") &&
-			!url.username &&
-			!url.password &&
-			!url.search &&
-			!url.hash
-		)
-	} catch {
-		return false
-	}
+	return plainURL(value, ["https:", "http:"]) !== undefined
 }
 function fingerprint(key: string): string {
 	return createHash("sha256").update(key).digest("hex")
@@ -630,20 +619,7 @@ async function publishReports(agentDir: string, assertLease: () => void, snapsho
 		try {
 			if (readFileSync(join(directory, "costs.json"), "utf8") === content) continue
 		} catch {}
-		const temporary = join(directory, `.costs-${randomUUID()}.tmp`)
-		try {
-			const file = await open(temporary, "wx", 0o600)
-			try {
-				await file.writeFile(content)
-				await file.sync()
-			} finally {
-				await file.close()
-			}
-			assertLease()
-			await rename(temporary, join(directory, "costs.json"))
-		} finally {
-			await rm(temporary, { force: true })
-		}
+		await writeFileDurably(join(directory, "costs.json"), content, assertLease)
 	}
 }
 
