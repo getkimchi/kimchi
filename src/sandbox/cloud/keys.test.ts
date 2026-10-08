@@ -4,18 +4,20 @@ import { RemoteAuthError, RemoteNetworkError } from "./types.js"
 
 const BASE = "https://api.example.com"
 
+function jsonResponse(body: unknown) {
+	return new Response(JSON.stringify(body), {
+		status: 200,
+		headers: { "Content-Type": "application/json" },
+	})
+}
+
 describe("verifyApiKey", () => {
-	it("POSTs to api-keys:verify and returns organizationId", async () => {
-		const mockFetch = vi.fn().mockResolvedValueOnce(
-			new Response(JSON.stringify({ organizationId: "org-42" }), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			}),
-		)
+	it("POSTs to workspace-tokens:verifyKey and returns organizationId + userId", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(jsonResponse({ organizationId: "org-42", userId: "user-7" }))
 
-		const orgId = await verifyApiKey("key1", { endpoint: BASE, fetch: mockFetch })
+		const verified = await verifyApiKey("key1", { endpoint: BASE, fetch: mockFetch })
 
-		expect(orgId).toBe("org-42")
+		expect(verified).toEqual({ organizationId: "org-42", userId: "user-7" })
 		expect(mockFetch).toHaveBeenCalledTimes(1)
 		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/ai-optimizer/v1beta/workspace-tokens:verifyKey`)
 		expect(mockFetch.mock.calls[0][1]).toMatchObject({
@@ -27,18 +29,18 @@ describe("verifyApiKey", () => {
 		})
 	})
 
+	it("throws RemoteNetworkError when userId is missing", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(jsonResponse({ organizationId: "org-42" }))
+		await expect(verifyApiKey("key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteNetworkError)
+	})
+
 	it("throws RemoteAuthError on 401", async () => {
 		const mockFetch = vi.fn().mockResolvedValueOnce(new Response(null, { status: 401 }))
 		await expect(verifyApiKey("bad", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteAuthError)
 	})
 
 	it("throws RemoteNetworkError when organizationId is missing", async () => {
-		const mockFetch = vi.fn().mockResolvedValueOnce(
-			new Response(JSON.stringify({}), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			}),
-		)
+		const mockFetch = vi.fn().mockResolvedValueOnce(jsonResponse({ userId: "user-7" }))
 		await expect(verifyApiKey("key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 })

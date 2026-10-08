@@ -58,11 +58,14 @@ export async function resolveWorkspaceRef(
 	ref: string | undefined,
 	opts: ResolveOpts,
 ): Promise<ResolvedWorkspace> {
-	// Verify once up front; the orgId is shared with the workspace list and the
-	// quota fetch below (both skip their own verifyKey round-trip when given it).
+	// Verify once up front; the ids are shared with the workspace list and the
+	// quota fetch below (both skip their own verifyKey round-trip when given them).
 	let orgId: string
+	let userId: string
 	try {
-		orgId = await verifyApiKey(ctx.apiKey, { endpoint: ctx.endpoint })
+		const verified = await verifyApiKey(ctx.apiKey, { endpoint: ctx.endpoint })
+		orgId = verified.organizationId
+		userId = verified.userId
 	} catch (err) {
 		refuse(ctx, `Could not verify API key: ${err instanceof Error ? err.message : String(err)}`)
 	}
@@ -80,7 +83,7 @@ export async function resolveWorkspaceRef(
 	// avoid clobbering the server-stored description on the next PUT.
 	let workspaces: Workspace[]
 	try {
-		workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId })
+		workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId, userId })
 	} catch (err) {
 		refuse(ctx, `Could not list workspaces: ${err instanceof Error ? err.message : String(err)}`)
 	}

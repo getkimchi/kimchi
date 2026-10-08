@@ -7,7 +7,7 @@ const ORG_ID = "org-516442fe-054a-49e2-ac2d-9dc9b104c3d2"
 const QUOTA_URL = `${BASE}/ai-optimizer/v1beta/organizations/${ORG_ID}/quotas:usage`
 
 function verifyResponse() {
-	return new Response(JSON.stringify({ organizationId: ORG_ID }), {
+	return new Response(JSON.stringify({ organizationId: ORG_ID, userId: "user-1" }), {
 		status: 200,
 		headers: { "Content-Type": "application/json" },
 	})

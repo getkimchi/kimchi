@@ -5,9 +5,10 @@ import { deleteWorkspace, listWorkspaces } from "./workspaces.js"
 
 const BASE = "https://api.example.com"
 const ORG_ID = "org-516442fe-054a-49e2-ac2d-9dc9b104c3d2"
+const USER_ID = "user-1"
 
 function verifyResponse() {
-	return new Response(JSON.stringify({ organizationId: ORG_ID }), {
+	return new Response(JSON.stringify({ organizationId: ORG_ID, userId: USER_ID }), {
 		status: 200,
 		headers: { "Content-Type": "application/json" },
 	})
@@ -17,6 +18,7 @@ function listUrl(cursor?: string) {
 	const params = new URLSearchParams()
 	params.set("page.limit", "200")
 	params.set("clientType", HARNESS_CLIENT_TYPE)
+	params.set("creatorId", USER_ID)
 	if (cursor) params.set("page.cursor", cursor)
 	return `${BASE}/ai-optimizer/v1beta/organizations/${ORG_ID}/workspaces?${params.toString()}`
 }
@@ -75,7 +77,7 @@ describe("listWorkspaces", () => {
 		})
 	})
 
-	it("skips key verification when a pre-resolved orgId is provided", async () => {
+	it("skips key verification when pre-resolved orgId + userId are provided", async () => {
 		const mockFetch = vi.fn().mockResolvedValueOnce(
 			new Response(JSON.stringify({ items: [workspaceFixture({ id: "ws-1", description: "feature-x" })] }), {
 				status: 200,
@@ -83,13 +85,33 @@ describe("listWorkspaces", () => {
 			}),
 		)
 
-		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch, orgId: ORG_ID })
+		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch, orgId: ORG_ID, userId: USER_ID })
 
 		// A single fetch: the list URL — no verifyKey round-trip first.
 		expect(mockFetch).toHaveBeenCalledTimes(1)
 		expect(mockFetch.mock.calls[0][0]).toBe(listUrl())
 		expect(result).toHaveLength(1)
 		expect(result[0]).toMatchObject({ id: "ws-1", name: "feature-x" })
+	})
+
+	it("still verifies when only orgId is pre-resolved — userId is needed for the creator filter", async () => {
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValueOnce(verifyResponse())
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ items: [workspaceFixture({ id: "ws-1" })] }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			)
+
+		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch, orgId: ORG_ID })
+
+		// verifyKey first (resolves userId), then the creator-filtered list.
+		expect(mockFetch).toHaveBeenCalledTimes(2)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/ai-optimizer/v1beta/workspace-tokens:verifyKey`)
+		expect(mockFetch.mock.calls[1][0]).toBe(listUrl())
+		expect(result).toHaveLength(1)
 	})
 
 	it("follows cursor across multiple pages", async () => {

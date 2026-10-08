@@ -115,10 +115,20 @@ export interface AuthenticateOptions {
 	spec?: WorkspaceSpecConfig
 }
 
+/** Identity resolved by verifying an API key (`workspace-tokens:verifyKey`). */
+export interface VerifiedKey {
+	/** Organization the key is scoped to. */
+	organizationId: string
+	/** The key owner's user id — the value the workspaces API filters on as `creatorId`. */
+	userId: string
+}
+
 export interface ListWorkspacesOptions extends AuthenticateOptions {
 	signal?: AbortSignal
-	/** Pre-resolved organization id — skips the verifyKey round-trip. */
+	/** Pre-resolved organization id. Passing orgId + userId together skips the verifyKey round-trip. */
 	orgId?: string
+	/** Pre-resolved user id — the listing is creator-filtered to this workspace owner. */
+	userId?: string
 }
 
 export interface GetQuotaUsageOptions extends AuthenticateOptions {

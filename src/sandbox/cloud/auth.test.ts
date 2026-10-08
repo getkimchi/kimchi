@@ -9,7 +9,7 @@ function mockAuthFlow(uri: string) {
 		vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ organizationId: "org-1" }), {
+				new Response(JSON.stringify({ organizationId: "org-1", userId: "user-1" }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				}),
@@ -41,7 +41,7 @@ describe("authenticateWorkspace", () => {
 		const mockFetch = vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ organizationId: "org-516442fe-054a-49e2-ac2d-9dc9b104c3d2" }), {
+				new Response(JSON.stringify({ organizationId: "org-516442fe-054a-49e2-ac2d-9dc9b104c3d2", userId: "user-1" }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				}),
@@ -198,7 +198,7 @@ describe("authenticateWorkspace", () => {
 		const mockFetch = vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ organizationId: "org-1" }), {
+				new Response(JSON.stringify({ organizationId: "org-1", userId: "user-1" }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				}),
@@ -213,7 +213,7 @@ describe("authenticateWorkspace", () => {
 		const mockFetch = vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ organizationId: "org-1" }), {
+				new Response(JSON.stringify({ organizationId: "org-1", userId: "user-1" }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				}),
@@ -255,7 +255,7 @@ describe("authenticateWorkspace", () => {
 		const mockFetch = vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ organizationId: "org-1" }), {
+				new Response(JSON.stringify({ organizationId: "org-1", userId: "user-1" }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				}),
@@ -275,7 +275,7 @@ describe("authenticateWorkspace", () => {
 		const mockFetch = vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ organizationId: "org-1" }), {
+				new Response(JSON.stringify({ organizationId: "org-1", userId: "user-1" }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				}),
@@ -304,7 +304,7 @@ describe("authenticateWorkspace", () => {
 		const mockFetch = vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ organizationId: "org-1" }), {
+				new Response(JSON.stringify({ organizationId: "org-1", userId: "user-1" }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				}),
@@ -344,7 +344,7 @@ describe("authenticateWorkspace", () => {
 		const mockFetch = vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ organizationId: "org-1" }), {
+				new Response(JSON.stringify({ organizationId: "org-1", userId: "user-1" }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				}),
@@ -376,7 +376,7 @@ describe("authenticateWorkspace", () => {
 		const mockFetch = vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ organizationId: "org-1" }), {
+				new Response(JSON.stringify({ organizationId: "org-1", userId: "user-1" }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				}),
@@ -408,7 +408,7 @@ describe("authenticateWorkspace", () => {
 		const mockFetch = vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ organizationId: "org-1" }), {
+				new Response(JSON.stringify({ organizationId: "org-1", userId: "user-1" }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				}),
@@ -432,7 +432,7 @@ describe("authenticateWorkspaceProbe", () => {
 		const mockFetch = vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ organizationId: "org-1" }), {
+				new Response(JSON.stringify({ organizationId: "org-1", userId: "user-1" }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				}),
@@ -478,7 +478,7 @@ describe("authenticateWorkspaceProbe", () => {
 		const mockFetch = vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ organizationId: "org-1" }), {
+				new Response(JSON.stringify({ organizationId: "org-1", userId: "user-1" }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				}),
@@ -505,7 +505,7 @@ describe("authenticateWorkspaceProbe", () => {
 		const mockFetch = vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ organizationId: "org-1" }), {
+				new Response(JSON.stringify({ organizationId: "org-1", userId: "user-1" }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				}),
