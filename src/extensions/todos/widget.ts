@@ -18,7 +18,9 @@ const TODO_WIDGET_KEY = "kimchi-todos"
 const TODO_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
 const TODO_STATUS_KEY = "todos"
 const TODO_LIST_HINT_TEXT = "F7 or /todos to collapse"
-
+const MAX_TODO_WIDGET_LINES = 14
+const TODO_WIDGET_BODY_LINES = 10
+const MAX_ROLLED_CONTEXT_ROWS = 2
 /** Default auto-collapse threshold: lists with more items than this render
  *  ambiently as a single status line until the user expands them. Mirrors the
  *  opencode-todolist plugin's `collapseThreshold` setting. */
@@ -52,6 +54,10 @@ interface TodoWidgetState {
 	/** User override (mouse click): keep only the one-line header, even at or
 	 *  below the auto-collapse threshold. Cleared by any explicit expand. */
 	listCollapsed: boolean
+	/** Index into the full body row list for the scrollable viewport. */
+	scrollOffset: number
+	/** True once the user scrolls; disables auto-follow of the active todo. */
+	userScrolled: boolean
 	collapsed: boolean
 	registered: boolean
 	registrationId: number
@@ -110,6 +116,8 @@ function createTodoWidgetState(): TodoWidgetState {
 		expanded: false,
 		listExpanded: false,
 		listCollapsed: false,
+		scrollOffset: 0,
+		userScrolled: false,
 		collapsed: false,
 		registered: false,
 		registrationId: 0,
@@ -267,6 +275,21 @@ function buildFullTodoBodyRows(theme: Theme, groups: WidgetScopeGroup[]): TodoBo
 	return rows
 }
 
+/** Prefer starting near the first in-progress (else first non-completed) todo,
+ *  with a couple of completed rows of context above it. All-completed lists
+ *  pin to the end (caller clamps against the real viewport size). */
+function autoScrollOffset(rows: TodoBodyRow[]): number {
+	const firstRunning = rows.findIndex((row) => row.kind === "todo" && row.status === "in_progress")
+	if (firstRunning !== -1) return Math.max(0, firstRunning - MAX_ROLLED_CONTEXT_ROWS)
+	const firstActive = rows.findIndex((row) => row.kind === "todo" && row.status !== "completed")
+	if (firstActive === -1) return rows.length
+	return Math.max(0, firstActive - MAX_ROLLED_CONTEXT_ROWS)
+}
+
+function clampScrollOffset(offset: number, rowCount: number, viewport: number): number {
+	return Math.max(0, Math.min(offset, Math.max(0, rowCount - viewport)))
+}
+
 /** Collect all non-empty scopes from the store, grouped by kind.
  *  Returns ferment scopes first (sorted by phaseId), then step scopes,
  *  then global. This lets the widget show the full ferment hierarchy
@@ -376,13 +399,54 @@ export function buildTodoLines(theme: Theme, sessionId: string): string[] {
 	return lines
 }
 
-/** Body rows for the expanded strip. Explicit expand shows every row
- *  (scrollable viewport is a follow-up change). */
-function buildTodoBodyLines(theme: Theme, groups: WidgetScopeGroup[]): string[] {
-	return buildFullTodoBodyRows(theme, groups).map((row) => row.text)
+/** Body rows for the expanded strip. Long lists render in a fixed-height
+ *  scrollable viewport with `↑ N more` / `↓ N more` marker rows (mouse wheel
+ *  in fullscreen); `/todos expand all` still dumps every row.
+ *
+ *  Writes `state.scrollOffset` when the viewport is capped so a later wheel
+ *  event can continue from the window that was just painted. */
+function buildTodoBodyLines(
+	theme: Theme,
+	groups: WidgetScopeGroup[],
+	state: Pick<TodoWidgetState, "expanded" | "scrollOffset" | "userScrolled">,
+): { lines: string[]; scrollable: boolean } {
+	const rows = buildFullTodoBodyRows(theme, groups)
+
+	if (state.expanded) return { lines: rows.map((row) => row.text), scrollable: false }
+
+	// Fits under the cap with the one-line header and the hint line.
+	if (rows.length + 3 <= MAX_TODO_WIDGET_LINES) {
+		return { lines: rows.map((row) => row.text), scrollable: false }
+	}
+
+	const showUpBudget = 1
+	const showDownBudget = 1
+	const maxContent =
+		TODO_WIDGET_BODY_LINES - showUpBudget - showDownBudget > 0
+			? TODO_WIDGET_BODY_LINES - showUpBudget - showDownBudget
+			: TODO_WIDGET_BODY_LINES
+
+	let offset = state.userScrolled ? state.scrollOffset : autoScrollOffset(rows)
+	offset = clampScrollOffset(offset, rows.length, maxContent)
+	const hiddenAfter = Math.max(0, rows.length - offset - maxContent)
+	const showUp = offset > 0
+	const showDown = hiddenAfter > 0
+	const contentSlots = TODO_WIDGET_BODY_LINES - (showUp ? 1 : 0) - (showDown ? 1 : 0)
+	offset = clampScrollOffset(offset, rows.length, contentSlots)
+	state.scrollOffset = offset
+
+	const visible = rows.slice(offset, offset + contentSlots)
+	const remainingAfter = Math.max(0, rows.length - offset - visible.length)
+	const lines: string[] = []
+	if (offset > 0) lines.push(theme.fg("dim", `↑ ${offset} more`))
+	for (const row of visible) lines.push(row.text)
+	if (remainingAfter > 0) lines.push(theme.fg("dim", `↓ ${remainingAfter} more`))
+	return { lines, scrollable: showUp || showDown }
 }
 
 function headerScopeLabel(groups: WidgetScopeGroup[]): string | undefined {
+	// Single-scope lists put the scope name (including Global) in the header;
+	// multi-scope keeps per-group labels in the body only.
 	if (groups.length !== 1) return undefined
 	return formatScopeLabel(groups[0].scope)
 }
@@ -396,7 +460,6 @@ function buildTodoWidgetLines(theme: Theme, state: TodoWidgetState, sessionId: s
 
 	const counts = countTodosInGroups(groups)
 	const scopeLabel = headerScopeLabel(groups)
-
 	if (
 		isTodoBodyCollapsed({
 			expanded: state.expanded,
@@ -408,8 +471,9 @@ function buildTodoWidgetLines(theme: Theme, state: TodoWidgetState, sessionId: s
 		return [buildTodoHeaderLine(theme, counts, true, { scopeLabel })]
 	}
 
-	const body = buildTodoBodyLines(theme, groups)
-	return [buildTodoHeaderLine(theme, counts, false, { scopeLabel }), ...body, "", theme.fg("dim", TODO_LIST_HINT_TEXT)]
+	const body = buildTodoBodyLines(theme, groups, state)
+	const hint = body.scrollable ? `scroll · ${TODO_LIST_HINT_TEXT}` : TODO_LIST_HINT_TEXT
+	return [buildTodoHeaderLine(theme, counts, false, { scopeLabel }), ...body.lines, "", theme.fg("dim", hint)]
 }
 
 export function resetTodoWidgetState(ctx: ExtensionContext): void {
@@ -472,8 +536,31 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 			},
 			// Mouse only reaches widgets in fullscreen mode (`--tui-mode fullscreen`),
 			// where the alt-screen renderer captures it. Left click mirrors
-			// F7/`/todos` (collapse ↔ expand). Right-click falls through for paste.
+			// F7/`/todos` (collapse ↔ expand). Wheel scrolls the list body when
+			// expanded; right-click falls through for paste.
 			handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+				if (event.type === "wheel") {
+					const counts = countAllActiveTodos(sessionId)
+					const groups = collectWidgetScopes(sessionId)
+					if (
+						isTodoBodyCollapsed({
+							expanded: state.expanded,
+							listExpanded: state.listExpanded,
+							listCollapsed: state.listCollapsed,
+							total: counts.total,
+						})
+					) {
+						return undefined
+					}
+					const rows = buildFullTodoBodyRows(theme, groups)
+					if (rows.length + 3 <= MAX_TODO_WIDGET_LINES) return undefined
+					const delta = event.wheelDelta ?? 0
+					if (delta === 0) return undefined
+					state.userScrolled = true
+					state.scrollOffset = clampScrollOffset(state.scrollOffset + delta, rows.length, TODO_WIDGET_BODY_LINES - 2)
+					requestTodoRender(ctx)
+					return { handled: true }
+				}
 				if (event.type !== "click" || event.button !== "left") return undefined
 				// Swallow the trailing clicks of a double-click so it toggles once.
 				if (event.clickCount !== undefined && event.clickCount > 1) return { handled: true }
@@ -507,6 +594,7 @@ export function openTodoWidget(ctx: ExtensionContext): void {
 	const state = getTodoWidgetState(ctx)
 	state.listExpanded = true
 	state.listCollapsed = false
+	state.userScrolled = false
 	showTodoWidget(ctx)
 }
 
@@ -516,6 +604,8 @@ export function expandTodoWidget(ctx: ExtensionContext): void {
 	state.expanded = true
 	state.listExpanded = true
 	state.listCollapsed = false
+	state.userScrolled = false
+	state.scrollOffset = 0
 	showTodoWidget(ctx)
 }
 
@@ -526,6 +616,8 @@ export function clearTodoWidget(ctx: ExtensionContext): void {
 	state.expanded = false
 	state.listExpanded = false
 	state.listCollapsed = false
+	state.userScrolled = false
+	state.scrollOffset = 0
 	requestTodoRender(ctx)
 }
 
