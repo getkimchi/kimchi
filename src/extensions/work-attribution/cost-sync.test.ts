@@ -67,7 +67,8 @@ afterEach(async () => {
 	rmSync(dir, { recursive: true, force: true })
 })
 
-function tracked(sessionId: string, requestId: string, fields: Record<string, unknown> = {}) {
+/** A work with one request and, unless `numbers` is empty, a commit in those merged PRs. */
+function tracked(sessionId: string, requestId: string, fields: Record<string, unknown> = {}, numbers = [1]) {
 	const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
 	const workId = getWorkId(ctx)
 	const source = captureBillingSource(new Headers({ Authorization: `Bearer ${currentKey}` }), GATEWAY, dir)
@@ -78,27 +79,26 @@ function tracked(sessionId: string, requestId: string, fields: Record<string, un
 		scope: { account: { apiUrl: API, organizationId: ORG, userId: PROMPT }, repository: join(dir, ".git") },
 		...fields,
 	})
-	appendWorkRecord(ctx, {
-		type: "commit",
-		sha: "a".repeat(40),
-		repository: join(dir, ".git"),
-		worktree: dir,
-		pullRequests: [
-			{
+	if (numbers.length)
+		appendWorkRecord(ctx, {
+			type: "commit",
+			sha: "a".repeat(40),
+			repository: join(dir, ".git"),
+			worktree: dir,
+			pullRequests: numbers.map((number) => ({
 				provider: "github",
 				host: "github.com",
 				repository: "example/repo",
-				number: 1,
-				url: "https://github.com/example/repo/pull/1",
+				number,
+				url: `https://github.com/example/repo/pull/${number}`,
 				state: "merged",
 				headSha: "a".repeat(40),
 				mergeCommitSha: "b".repeat(40),
 				mergedAt: "2026-10-01T09:00:00Z",
 				closedAt: "2026-10-01T09:00:00Z",
 				checkedAt: "2026-10-01T10:00:00Z",
-			},
-		],
-	})
+			})),
+		})
 	return { ctx, workId, source }
 }
 function report(workId: string) {
@@ -107,8 +107,13 @@ function report(workId: string) {
 function sync() {
 	return reconcileWorkCosts(dir, new AbortController().signal)
 }
-function tagged(sessionId = "tagged", requestId: string = randomUUID(), fields: Record<string, unknown> = {}) {
-	const result = tracked(sessionId, requestId, fields)
+function tagged(
+	sessionId = "tagged",
+	requestId: string = randomUUID(),
+	fields: Record<string, unknown> = {},
+	numbers = [1],
+) {
+	const result = tracked(sessionId, requestId, fields, numbers)
 	const dispatchedAt = "2026-10-01T08:00:00.000Z"
 	const selector = requestTagSelector(requestId, dispatchedAt)
 	appendWorkRecord(result.ctx, {
@@ -143,6 +148,41 @@ describe("automatic exact work cost lookup", () => {
 				[first.requestId, second.requestId].sort(),
 			)
 		}
+	})
+
+	it("saves every transitively connected work's requests and PR totals in each work's report", async () => {
+		// The first and last works share no PR; the middle work's commit is in both PRs.
+		const works = [tagged("first"), tagged("middle", randomUUID(), {}, [1, 2]), tagged("last", randomUUID(), {}, [2])]
+		await sync()
+		for (const { workId } of works) {
+			const { requests, pullRequests } = report(workId)
+			expect(requests.map((row: { requestId: string }) => row.requestId)).toEqual(
+				works.map(({ requestId }) => requestId).sort(),
+			)
+			expect(pullRequests.map((row: { pullRequest: { number: number } }) => row.pullRequest.number)).toEqual([1, 2])
+		}
+	})
+
+	it("connects works through a correction link when the linked work has no PR", async () => {
+		const requestId = randomUUID()
+		const source = tagged("source", requestId)
+		const target = tagged("target", randomUUID(), {}, [])
+		appendWorkRecord(target.ctx, {
+			type: "work_link",
+			linkId: randomUUID(),
+			revision: 1,
+			sourceWorkId: source.workId,
+			targetWorkId: target.workId,
+			requestIds: [requestId],
+			scope: { account: { apiUrl: API, organizationId: ORG, userId: PROMPT }, repository: join(dir, ".git") },
+			status: "active",
+			evidence: { source: "work-command" },
+		})
+		await sync()
+		for (const { workId } of [source, target])
+			expect(report(workId).requests.map((row: { requestId: string }) => row.requestId)).toEqual(
+				[requestId, target.requestId].sort(),
+			)
 	})
 
 	it("prices only the work's own requests in /work while its PR total includes connected works", async () => {
