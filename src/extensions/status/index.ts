@@ -1,78 +1,62 @@
-import { existsSync, readFileSync } from "node:fs"
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { MCP_STATUS_EVENT, type McpStatusSnapshot } from "pi-mcp-adapter"
 import { getMe } from "../../api/me.js"
-import { getOrganization, type Organization, verifyApiKey } from "../../api/organizations.js"
-import { type ApiKeySource, getApiKeySource, getEnvironmentApiKey, getSavedApiKey, loadConfig } from "../../config.js"
-import { isKimchiProvider } from "../../kimchi-provider.js"
-import { getVersion } from "../../utils.js"
-import { isAutoRoutedModel } from "../auto-model/constants.js"
-import { resolveEffectiveModel } from "../auto-model/state.js"
-import { getKimchiAuthPath } from "../login/flow.js"
+import { getOrganization, verifyApiKey } from "../../api/organizations.js"
+import { getEnvironmentApiKey, loadConfig } from "../../config.js"
+import { registerStatusProvider, unregisterStatusProvider } from "../../modes/acp/status-provider-registry.js"
 import { createStatusPanelComponent } from "./panel.js"
+import { buildStatusSnapshot, type Identity, type StatusSnapshot } from "./snapshot.js"
 
 export const STATUS_COMMAND_DESCRIPTION = "Show version, login, session, model, and MCP status"
-
-/** Connected = tools available; cached counts as usable. */
-const MCP_CONNECTED_STATUSES = new Set(["connected", "cached"])
-const MCP_DISABLED_STATUS = "disabled"
-/**
- * The failed bucket: "failed" and "needs-auth" are the two error states;
- * "not-connected" is a server that is present but unusable, so it counts here
- * too rather than disappearing from the summary.
- */
-const MCP_FAILED_STATUSES = new Set(["failed", "needs-auth", "not-connected"])
-
-/** Summary counts for the MCP row of the Status panel. */
-export interface McpCounts {
-	connected: number
-	disabled: number
-	failed: number
-}
-
-interface StatusRowsDeps {
-	version: string
-	loginMethod: string
-	organization: Organization | undefined
-	email: string | undefined
-	sessionName: string | undefined
-	sessionId: string | undefined
-	cwd: string
-	modelRef: string
-	isAuto: boolean
-	/** Concrete model id the Auto router last resolved for this session, if any. */
-	resolvedModelId?: string
-	mcp: McpCounts | undefined
-}
 
 /** Column width for the `Label:` value gutter. */
 const LABEL_WIDTH = 16
 
+/** TUI display strings for the machine-readable login method enum. */
+function loginMethodDisplay(login: StatusSnapshot["login"]): string {
+	switch (login.method) {
+		case "kimchi_account":
+			return "Kimchi account"
+		case "api_key_env":
+			return "Kimchi API key (KIMCHI_API_KEY environment)"
+		case "api_key_env_override":
+			return "Kimchi API key (KIMCHI_API_KEY environment, overrides saved key)"
+		case "third_party":
+			return `Third-party provider (${(login.thirdPartyProviders ?? []).join(", ")})`
+		case "none":
+			return "Not logged in"
+	}
+}
+
 /**
- * Two blocks separated by a blank row: identity (version, login, org, email)
- * then session (name, id, cwd, model, MCP). Labels are padded to a fixed
- * gutter; the MCP row points at `/mcp` for details.
+ * Pure formatter of the session status snapshot. Two blocks separated by a
+ * blank row: identity (version, login, org, email) then session (name, id,
+ * cwd, model, MCP). Labels are padded to a fixed gutter; the MCP row points
+ * at `/mcp` for details.
  */
-export function buildStatusRows(deps: StatusRowsDeps): string[] {
+export function buildStatusRows(snapshot: StatusSnapshot): string[] {
 	const row = (label: string, value: string): string => `${label.padEnd(LABEL_WIDTH)}${value}`
 
-	const identityRows = [row("Version:", deps.version), row("Login method:", deps.loginMethod)]
-	if (deps.organization) {
-		identityRows.push(row("Organization:", `${deps.organization.name} (${deps.organization.id})`))
+	const identityRows = [row("Version:", snapshot.version), row("Login method:", loginMethodDisplay(snapshot.login))]
+	if (snapshot.organization) {
+		identityRows.push(row("Organization:", `${snapshot.organization.name} (${snapshot.organization.id})`))
 	}
-	if (deps.email) identityRows.push(row("Email:", deps.email))
+	if (snapshot.email) identityRows.push(row("Email:", snapshot.email))
 
+	const modelValue = snapshot.model
+		? `${snapshot.model.provider}/${snapshot.model.id}${snapshot.model.isAuto ? ` (${snapshot.model.resolvedModelId ?? "auto"})` : ""}`
+		: "(no model selected)"
 	const sessionRows = [
-		row("Session name:", deps.sessionName ?? "(unnamed — use /name to add a name)"),
-		row("Session ID:", deps.sessionId ?? "unknown"),
-		row("cwd:", deps.cwd),
-		row("Model:", `${deps.modelRef}${deps.isAuto ? ` (${deps.resolvedModelId ?? "auto"})` : ""}`),
+		row("Session name:", snapshot.session.name ?? "(unnamed — use /name to add a name)"),
+		row("Session ID:", snapshot.session.id),
+		row("cwd:", snapshot.session.cwd),
+		row("Model:", modelValue),
 	]
-	if (deps.mcp) {
+	if (snapshot.mcp) {
 		sessionRows.push(
 			row(
 				"MCP servers:",
-				`${deps.mcp.connected} connected, ${deps.mcp.disabled} disabled, ${deps.mcp.failed} failed · /mcp`,
+				`${snapshot.mcp.connected} connected, ${snapshot.mcp.disabled} disabled, ${snapshot.mcp.failed} failed · /mcp`,
 			),
 		)
 	} else {
@@ -81,113 +65,8 @@ export function buildStatusRows(deps: StatusRowsDeps): string[] {
 	return [...identityRows, "", ...sessionRows]
 }
 
-/**
- * Count statuses into the connected/disabled/failed buckets. The status union
- * is closed (see McpServerRuntimeStatus), so connected+disabled+failed always
- * sum to the server total.
- */
-export function summarizeMcpSnapshot(snapshot: McpStatusSnapshot): McpCounts {
-	let connected = 0
-	let disabled = 0
-	let failed = 0
-	for (const server of snapshot.servers) {
-		if (server.status === MCP_DISABLED_STATUS || server.disabled) disabled++
-		else if (MCP_CONNECTED_STATUSES.has(server.status)) connected++
-		else if (MCP_FAILED_STATUSES.has(server.status)) failed++
-	}
-	return { connected, disabled, failed }
-}
-
-/** Third-party providers from pi's auth.json — kimchi providers excluded. */
-function thirdPartyProviders(authPath: string): string[] {
-	if (!existsSync(authPath)) return []
-	try {
-		const creds = JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, unknown>
-		return Object.keys(creds).filter((provider) => !isKimchiProvider(provider))
-	} catch {
-		return []
-	}
-}
-
-/**
- * Browser login and the pasted-key flow both persist the same platform key in
- * config.json, so "Kimchi account" is indistinguishable from a saved key; only
- * an env-only key is recognisably an API-key session.
- *
- * configApiKey must be the key persisted in config files only (see
- * getSavedApiKey) — not loadConfig().apiKey, which already has the env
- * override merged in and would make every env session look like "Kimchi
- * account". A differing KIMCHI_API_KEY overrides the saved key for actual
- * requests (see getApiKeyMismatchWarning in config.ts), so it is surfaced first.
- *
- * Precedence: env override (KIMCHI_API_KEY set and differs from saved key) →
- * Kimchi account (config key present) →
- * Kimchi API key (KIMCHI_API_KEY environment, only when no config key) →
- * third-party provider → not logged in.
- */
-export function resolveLoginMethod(deps: {
-	envApiKey: string | undefined
-	configApiKey: string | undefined
-	apiKeySource: ApiKeySource
-	authPath: string
-}): string {
-	if (deps.envApiKey && deps.configApiKey && deps.envApiKey !== deps.configApiKey)
-		return "Kimchi API key (KIMCHI_API_KEY environment, overrides saved key)"
-	if (deps.configApiKey) return "Kimchi account"
-	if (deps.apiKeySource === "environment" && deps.envApiKey) return "Kimchi API key (KIMCHI_API_KEY environment)"
-	const others = thirdPartyProviders(deps.authPath)
-	if (others.length > 0) return `Third-party provider (${others.join(", ")})`
-	return "Not logged in"
-}
-
-/** Account identity fetched in the background for the key currently in use. */
-interface Identity {
-	apiKey: string
-	email?: string
-	organization?: Organization
-}
-
-/** Data the extension collects between `/status` invocations. */
-export interface StatusSources {
-	identity?: Pick<Identity, "email" | "organization">
-	mcp?: McpStatusSnapshot
-}
-
 function isMcpStatusSnapshot(data: unknown): data is McpStatusSnapshot {
 	return typeof data === "object" && data !== null && Array.isArray((data as { servers?: unknown }).servers)
-}
-
-export function gatherStatusRows(ctx: ExtensionContext, sources: StatusSources = {}): string[] {
-	const envApiKey = getEnvironmentApiKey()
-
-	const model = ctx.model
-	const modelRef = model ? `${model.provider}/${model.id}` : "(no model selected)"
-	// Auto is a virtual model: the backend stamps the concrete pick per response
-	// (tracked in auto-model/state.ts). Surface the last resolved pick; the row
-	// falls back to "(auto)" until one lands.
-	const effective = isAutoRoutedModel(model)
-		? resolveEffectiveModel(model, ctx.sessionManager.getSessionId())
-		: undefined
-	const resolvedModelId = effective && model && effective.id !== model.id ? effective.id : undefined
-
-	return buildStatusRows({
-		version: getVersion(),
-		loginMethod: resolveLoginMethod({
-			envApiKey,
-			configApiKey: getSavedApiKey(),
-			apiKeySource: getApiKeySource(),
-			authPath: getKimchiAuthPath(),
-		}),
-		organization: sources.identity?.organization,
-		email: sources.identity?.email,
-		sessionName: ctx.sessionManager.getSessionName(),
-		sessionId: ctx.sessionManager.getSessionId(),
-		cwd: ctx.cwd,
-		modelRef,
-		isAuto: isAutoRoutedModel(model),
-		resolvedModelId,
-		mcp: sources.mcp ? summarizeMcpSnapshot(sources.mcp) : undefined,
-	})
 }
 
 export default function statusExtension(pi: ExtensionAPI): void {
@@ -225,8 +104,20 @@ export default function statusExtension(pi: ExtensionAPI): void {
 			.catch(() => {})
 	}
 
-	pi.on("session_start", () => {
+	pi.on("session_start", (_event, ctx) => {
 		refreshIdentity()
+		// Expose this session's snapshot to the session-external ACP ext-method
+		// dispatch. Gathering stays here (one place) while
+		// `_kimchi.dev/session_status` reaches it through the registry.
+		registerStatusProvider(ctx.sessionManager.getSessionId(), () => {
+			// refreshIdentity picks up a key changed mid-session, same as the
+			// /status handler below; fields land on the next fetch.
+			refreshIdentity()
+			return buildStatusSnapshot(ctx, { identity, mcp: mcpSnapshot })
+		})
+	})
+	pi.on("session_shutdown", (_event, ctx) => {
+		unregisterStatusProvider(ctx.sessionManager.getSessionId())
 	})
 	pi.events.on(MCP_STATUS_EVENT, (data) => {
 		if (isMcpStatusSnapshot(data)) mcpSnapshot = data
@@ -238,7 +129,7 @@ export default function statusExtension(pi: ExtensionAPI): void {
 			if (!ctx.hasUI) return
 			// Pick up a key that changed mid-session; rows land on the next open.
 			refreshIdentity()
-			const rows = gatherStatusRows(ctx, { identity, mcp: mcpSnapshot })
+			const rows = buildStatusRows(buildStatusSnapshot(ctx, { identity, mcp: mcpSnapshot }))
 			if (ctx.mode === "tui") {
 				await ctx.ui.custom<void>((_tui, theme, _kb, done) => createStatusPanelComponent(theme, rows, done))
 				return

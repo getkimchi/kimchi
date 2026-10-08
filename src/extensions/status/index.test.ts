@@ -7,15 +7,12 @@ import { MCP_STATUS_EVENT } from "pi-mcp-adapter"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { getMe } from "../../api/me.js"
 import { getOrganization, verifyApiKey } from "../../api/organizations.js"
+import { getStatusProvider, unregisterStatusProvider } from "../../modes/acp/status-provider-registry.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "../auto-model/state.js"
-import statusExtension, {
-	buildStatusRows,
-	gatherStatusRows,
-	resolveLoginMethod,
-	summarizeMcpSnapshot,
-} from "./index.js"
+import statusExtension, { buildStatusRows } from "./index.js"
+import { buildStatusSnapshot, resolveLoginMethod, type StatusSnapshot, summarizeMcpSnapshot } from "./snapshot.js"
 
 const configState = vi.hoisted(() => ({
 	savedKey: undefined as string | undefined,
@@ -29,7 +26,7 @@ vi.mock("../../config.js", () => ({
 	getSavedApiKey: () => configState.savedKey,
 	getApiKeySource: () => (configState.envKey ? "environment" : "config"),
 }))
-// Deterministic, empty auth store for the gatherStatusRows path.
+// Deterministic, empty auth store for the buildStatusSnapshot path.
 vi.mock("../login/flow.js", () => ({ getKimchiAuthPath: () => "/does/not/exist/auth.json" }))
 vi.mock("../../api/me.js", () => ({ getMe: vi.fn() }))
 vi.mock("../../api/organizations.js", () => ({ getOrganization: vi.fn(), verifyApiKey: vi.fn() }))
@@ -50,17 +47,14 @@ function model(id: string): Model<string> {
 	}
 }
 
-function baseDeps(overrides: Partial<Parameters<typeof buildStatusRows>[0]> = {}) {
+function baseSnapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapshot {
 	return {
 		version: "1.2.3",
-		loginMethod: "Kimchi account",
+		login: { method: "kimchi_account" },
 		organization: undefined,
 		email: "you@example.com",
-		sessionName: "my-session",
-		sessionId: "b3611b12-9c93-4b2a-92d8-29c866db68b8",
-		cwd: "/tmp/project",
-		modelRef: "kimchi-dev/kimi-k3",
-		isAuto: false,
+		session: { name: "my-session", id: "b3611b12-9c93-4b2a-92d8-29c866db68b8", cwd: "/tmp/project" },
+		model: { provider: "kimchi-dev", id: "kimi-k3", isAuto: false },
 		mcp: { connected: 3, disabled: 10, failed: 1 },
 		...overrides,
 	}
@@ -68,7 +62,7 @@ function baseDeps(overrides: Partial<Parameters<typeof buildStatusRows>[0]> = {}
 
 describe("buildStatusRows", () => {
 	it("renders the confirmed layout: version → login → blank → session block", () => {
-		expect(buildStatusRows(baseDeps())).toEqual([
+		expect(buildStatusRows(baseSnapshot())).toEqual([
 			"Version:        1.2.3",
 			"Login method:   Kimchi account",
 			"Email:          you@example.com",
@@ -81,8 +75,34 @@ describe("buildStatusRows", () => {
 		])
 	})
 
+	it.each([
+		{ login: { method: "kimchi_account" as const }, expected: "Kimchi account" },
+		{
+			login: { method: "api_key_env" as const },
+			expected: "Kimchi API key (KIMCHI_API_KEY environment)",
+		},
+		{
+			login: { method: "api_key_env_override" as const },
+			expected: "Kimchi API key (KIMCHI_API_KEY environment, overrides saved key)",
+		},
+		{
+			login: { method: "third_party" as const, thirdPartyProviders: ["anthropic"] },
+			expected: "Third-party provider (anthropic)",
+		},
+		{ login: { method: "none" as const }, expected: "Not logged in" },
+	])("maps the $login.method enum to its display string", ({ login, expected }) => {
+		expect(buildStatusRows(baseSnapshot({ login }))[1]).toBe(`Login method:   ${expected}`)
+	})
+
+	it("joins multiple third-party providers in the display string", () => {
+		const rows = buildStatusRows(
+			baseSnapshot({ login: { method: "third_party", thirdPartyProviders: ["anthropic", "openai"] } }),
+		)
+		expect(rows[1]).toBe("Login method:   Third-party provider (anthropic, openai)")
+	})
+
 	it("omits the Email row when no email is available", () => {
-		const rows = buildStatusRows(baseDeps({ email: undefined }))
+		const rows = buildStatusRows(baseSnapshot({ email: undefined }))
 		expect(rows.some((r) => r.startsWith("Email:"))).toBe(false)
 		expect(rows[1]).toBe("Login method:   Kimchi account")
 		expect(rows[2]).toBe("")
@@ -90,7 +110,7 @@ describe("buildStatusRows", () => {
 
 	it("renders the Organization row between login method and email when present", () => {
 		const rows = buildStatusRows(
-			baseDeps({ organization: { id: "516442fe-054a-49e2-ac2d-9dc9b104c3d2", name: "CAST AI" } }),
+			baseSnapshot({ organization: { id: "516442fe-054a-49e2-ac2d-9dc9b104c3d2", name: "CAST AI" } }),
 		)
 		expect(rows.slice(0, 4)).toEqual([
 			"Version:        1.2.3",
@@ -101,36 +121,45 @@ describe("buildStatusRows", () => {
 	})
 
 	it("omits the Organization row when unknown", () => {
-		const rows = buildStatusRows(baseDeps({ organization: undefined }))
+		const rows = buildStatusRows(baseSnapshot({ organization: undefined }))
 		expect(rows.some((r) => r.startsWith("Organization:"))).toBe(false)
 	})
 
 	it("shows the /name hint for unnamed sessions", () => {
-		const rows = buildStatusRows(baseDeps({ sessionName: undefined }))
+		const snapshot = baseSnapshot()
+		snapshot.session = { id: snapshot.session.id, cwd: snapshot.session.cwd }
+		const rows = buildStatusRows(snapshot)
 		expect(rows.find((r) => r.startsWith("Session name:"))).toBe("Session name:   (unnamed — use /name to add a name)")
+	})
+
+	it("renders (no model selected) when the snapshot has no model", () => {
+		const rows = buildStatusRows(baseSnapshot({ model: null }))
+		expect(rows.find((r) => r.startsWith("Model:"))).toBe("Model:          (no model selected)")
 	})
 
 	it("appends (auto) only for auto-routed models", () => {
 		expect(
-			buildStatusRows(baseDeps({ modelRef: "kimchi-dev/auto", isAuto: true })).find((r) => r.startsWith("Model:")),
+			buildStatusRows(baseSnapshot({ model: { provider: "kimchi-dev", id: "auto", isAuto: true } })).find((r) =>
+				r.startsWith("Model:"),
+			),
 		).toBe("Model:          kimchi-dev/auto (auto)")
 	})
 
 	it("shows the concrete routed model id in place of (auto) once a pick lands", () => {
 		expect(
-			buildStatusRows(baseDeps({ modelRef: "kimchi-dev/auto", isAuto: true, resolvedModelId: "kimi-k3" })).find((r) =>
-				r.startsWith("Model:"),
-			),
+			buildStatusRows(
+				baseSnapshot({ model: { provider: "kimchi-dev", id: "auto", isAuto: true, resolvedModelId: "kimi-k3" } }),
+			).find((r) => r.startsWith("Model:")),
 		).toBe("Model:          kimchi-dev/auto (kimi-k3)")
 	})
 
 	it("marks MCP as unavailable when no snapshot has been received", () => {
-		const rows = buildStatusRows(baseDeps({ mcp: undefined }))
+		const rows = buildStatusRows(baseSnapshot({ mcp: undefined }))
 		expect(rows.find((r) => r.startsWith("MCP servers:"))).toBe("MCP servers:    unavailable · /mcp")
 	})
 })
 
-describe("gatherStatusRows", () => {
+describe("buildStatusSnapshot", () => {
 	afterEach(() => clearAutoRoutingState("test-session"))
 
 	function autoSessionContext() {
@@ -140,26 +169,70 @@ describe("gatherStatusRows", () => {
 		})
 	}
 
+	it("populates version, session, and camelCase model fields from the live session", () => {
+		const snapshot = buildStatusSnapshot(autoSessionContext())
+
+		expect(snapshot.version).toBe("9.9.9-test")
+		expect(snapshot.session).toEqual({ name: "my-session", id: "test-session", cwd: "/tmp" })
+		expect(snapshot.model).toEqual({ provider: "kimchi-dev", id: "auto", isAuto: true })
+		// Not logged in by default in this mocked store.
+		expect(snapshot.login).toEqual({ method: "none" })
+	})
+
+	it("omits session name, identity, and mcp when unknown", () => {
+		const ctx = createContext({ sessionManager: { getSessionName: () => undefined } })
+		const snapshot = buildStatusSnapshot(ctx)
+
+		expect(snapshot.session.name).toBeUndefined()
+		expect(snapshot.email).toBeUndefined()
+		expect(snapshot.organization).toBeUndefined()
+		expect(snapshot.mcp).toBeUndefined()
+	})
+
+	it("reports model as null when no model is selected", () => {
+		const snapshot = buildStatusSnapshot(createContext({ sessionManager: { getSessionName: () => undefined } }))
+
+		expect(snapshot.model).toBeNull()
+	})
+
+	it("re-reads credential state per call", () => {
+		const ctx = autoSessionContext()
+		expect(buildStatusSnapshot(ctx).login).toEqual({ method: "none" })
+
+		configState.savedKey = "saved-key"
+		expect(buildStatusSnapshot(ctx).login).toEqual({ method: "kimchi_account" })
+		configState.savedKey = undefined
+	})
+
+	it("includes identity email and organization from the background fetch state", () => {
+		const snapshot = buildStatusSnapshot(autoSessionContext(), {
+			identity: { email: "you@example.com", organization: { id: "org-1", name: "CAST AI" } },
+		})
+
+		expect(snapshot.email).toBe("you@example.com")
+		expect(snapshot.organization).toEqual({ id: "org-1", name: "CAST AI" })
+	})
+
 	it("shows the concrete model auto resolved to for this session", () => {
 		setAutoRoutingState("test-session", { status: "resolved", model: model("kimi-k3"), requestedId: "auto" })
 
-		const rows = gatherStatusRows(autoSessionContext())
+		const snapshot = buildStatusSnapshot(autoSessionContext())
 
-		expect(rows.find((r) => r.startsWith("Model:"))).toBe("Model:          kimchi-dev/auto (kimi-k3)")
+		expect(snapshot.model).toEqual({ provider: "kimchi-dev", id: "auto", isAuto: true, resolvedModelId: "kimi-k3" })
 	})
 
-	it("falls back to (auto) while no concrete pick has resolved", () => {
-		const rows = gatherStatusRows(autoSessionContext())
+	it("leaves resolvedModelId absent while no concrete pick has resolved", () => {
+		const snapshot = buildStatusSnapshot(autoSessionContext())
 
-		expect(rows.find((r) => r.startsWith("Model:"))).toBe("Model:          kimchi-dev/auto (auto)")
+		expect(snapshot.model?.resolvedModelId).toBeUndefined()
 	})
 
-	it("falls back to (auto) when the resolved pick was for a different virtual model", () => {
+	it("leaves resolvedModelId absent when the resolved pick was for a different virtual model", () => {
 		setAutoRoutingState("test-session", { status: "resolved", model: model("kimi-k3"), requestedId: "auto-beta" })
 
-		const rows = gatherStatusRows(autoSessionContext())
+		const snapshot = buildStatusSnapshot(autoSessionContext())
 
-		expect(rows.find((r) => r.startsWith("Model:"))).toBe("Model:          kimchi-dev/auto (auto)")
+		expect(snapshot.model?.resolvedModelId).toBeUndefined()
 	})
 })
 
@@ -229,13 +302,13 @@ describe("resolveLoginMethod", () => {
 	it("reports an env override when KIMCHI_API_KEY differs from the saved config key (env takes precedence)", () => {
 		expect(
 			resolveLoginMethod({ envApiKey: "k", configApiKey: "c", apiKeySource: "environment", authPath: authPath() }),
-		).toBe("Kimchi API key (KIMCHI_API_KEY environment, overrides saved key)")
+		).toEqual({ method: "api_key_env_override" })
 	})
 
 	it("reports a Kimchi account when the env key matches the saved config key", () => {
 		expect(
 			resolveLoginMethod({ envApiKey: "k", configApiKey: "k", apiKeySource: "environment", authPath: authPath() }),
-		).toBe("Kimchi account")
+		).toEqual({ method: "kimchi_account" })
 	})
 
 	it("reports the environment API key when KIMCHI_API_KEY is the only credential", () => {
@@ -246,13 +319,13 @@ describe("resolveLoginMethod", () => {
 				apiKeySource: "environment",
 				authPath: authPath(),
 			}),
-		).toBe("Kimchi API key (KIMCHI_API_KEY environment)")
+		).toEqual({ method: "api_key_env" })
 	})
 
 	it("reports a Kimchi account when the saved config key exists and no env override", () => {
 		expect(
 			resolveLoginMethod({ envApiKey: undefined, configApiKey: "c", apiKeySource: "config", authPath: authPath() }),
-		).toBe("Kimchi account")
+		).toEqual({ method: "kimchi_account" })
 	})
 
 	it("lists third-party providers when no Kimchi credential exists", () => {
@@ -270,10 +343,10 @@ describe("resolveLoginMethod", () => {
 				apiKeySource: "config",
 				authPath: authPath(),
 			}),
-		).toBe("Third-party provider (anthropic)")
+		).toEqual({ method: "third_party", thirdPartyProviders: ["anthropic"] })
 	})
 
-	it("reports Not logged in when nothing is configured", () => {
+	it("reports none when nothing is configured", () => {
 		expect(
 			resolveLoginMethod({
 				envApiKey: undefined,
@@ -281,7 +354,7 @@ describe("resolveLoginMethod", () => {
 				apiKeySource: "config",
 				authPath: authPath(),
 			}),
-		).toBe("Not logged in")
+		).toEqual({ method: "none" })
 	})
 
 	it("falls back gracefully when auth.json is corrupt", () => {
@@ -293,7 +366,7 @@ describe("resolveLoginMethod", () => {
 				apiKeySource: "config",
 				authPath: authPath(),
 			}),
-		).toBe("Not logged in")
+		).toEqual({ method: "none" })
 	})
 })
 
@@ -308,6 +381,7 @@ function setup() {
 		ctx,
 		emitEvent,
 		startSession: () => getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx),
+		shutdownSession: () => getHandler("session_shutdown")({ type: "session_shutdown" }, ctx),
 		runStatus: async () => {
 			await command.handler("", ctx)
 			const lastCall = vi.mocked(ctx.ui.notify).mock.lastCall
@@ -330,6 +404,10 @@ describe("status command handler", () => {
 		vi.mocked(verifyApiKey).mockReset()
 		vi.mocked(getOrganization).mockReset()
 	})
+	afterEach(() => {
+		// The registry is module-global; leave no gather closures behind.
+		unregisterStatusProvider("test-session")
+	})
 
 	it("notifies the exact layout block in RPC mode", async () => {
 		const { ctx, runStatus } = setup()
@@ -338,7 +416,7 @@ describe("status command handler", () => {
 		const rows = await runStatus()
 
 		expect(ctx.ui.custom).not.toHaveBeenCalled()
-		// No key in config and an empty auth store → "Not logged in"; no
+		// No key in config and an empty auth store → login.method "none"; no
 		// identity fetched; no MCP snapshot received.
 		expect(rows).toEqual([
 			"Version:        9.9.9-test",
@@ -479,6 +557,51 @@ describe("status command handler", () => {
 
 		expect(await runStatus()).toContain("MCP servers:    1 connected, 0 disabled, 0 failed · /mcp")
 	})
+
+	it("registers a per-session snapshot provider on session start", async () => {
+		configState.savedKey = "key-1"
+		mockIdentity()
+		const { startSession } = setup()
+
+		await startSession()
+
+		const provider = getStatusProvider("test-session")
+		expect(provider).toBeDefined()
+
+		const snapshot = provider?.()
+		expect(snapshot).toMatchObject({
+			version: "9.9.9-test",
+			login: { method: "kimchi_account" },
+			session: { id: "test-session", cwd: "/tmp/project" },
+			model: null,
+		})
+		// Absent-until-landed identity/mcp freshness is covered by the refresh test below.
+	})
+
+	it("triggers the non-blocking identity refresh when the registered provider is called", async () => {
+		mockIdentity()
+		const { startSession } = setup()
+		await startSession()
+		expect(getMe).not.toHaveBeenCalled()
+
+		configState.savedKey = "key-after-login"
+		getStatusProvider("test-session")?.()
+
+		expect(getMe).toHaveBeenCalledWith("key-after-login")
+		await vi.waitFor(() => {
+			expect(getStatusProvider("test-session")?.().email).toBe("you@example.com")
+		})
+	})
+
+	it("unregisters the provider on session shutdown", async () => {
+		const { startSession, shutdownSession } = setup()
+		await startSession()
+		expect(getStatusProvider("test-session")).toBeDefined()
+
+		shutdownSession()
+
+		expect(getStatusProvider("test-session")).toBeUndefined()
+	})
 })
 
 describe("status command handler errors", () => {
@@ -488,6 +611,9 @@ describe("status command handler errors", () => {
 		vi.mocked(getMe).mockReset()
 		vi.mocked(verifyApiKey).mockReset()
 		vi.mocked(getOrganization).mockReset()
+	})
+	afterEach(() => {
+		unregisterStatusProvider("test-session")
 	})
 
 	it("omits email and organization rows when the identity fetches fail", async () => {

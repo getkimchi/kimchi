@@ -160,6 +160,7 @@ import {
 	userMessageText,
 } from "./server.js"
 import { getAcpClientInfo, resetAcpClientInfo } from "./state.js"
+import { registerStatusProvider, unregisterStatusProvider } from "./status-provider-registry.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import { waitFor as sharedWaitFor } from "./test-utils.js"
 
@@ -10165,6 +10166,48 @@ describe("extMethod dispatch", () => {
 				outcome: "imported",
 			},
 		])
+	})
+
+	it("dispatches session_status to the session's registered snapshot provider", async () => {
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+		})
+		await agent.initialize({ protocolVersion: 1 })
+		registerStatusProvider("sess-1", () => ({
+			version: "1.2.3",
+			login: { method: "none" },
+			session: { id: "sess-1", cwd: "/tmp" },
+			model: null,
+		}))
+		try {
+			const result = await agent.extMethod(AVAILABLE_EXT_METHODS.session_status, { sessionId: "sess-1" })
+			expect(result).toMatchObject({
+				version: "1.2.3",
+				login: { method: "none" },
+				session: { id: "sess-1", cwd: "/tmp" },
+				model: null,
+			})
+		} finally {
+			unregisterStatusProvider("sess-1")
+		}
+
+		await expect(agent.extMethod(AVAILABLE_EXT_METHODS.session_status, { sessionId: "unknown" })).rejects.toThrow(
+			/Invalid params: unknown sessionId unknown/,
+		)
+	})
+
+	it("advertises session_status in the initialize capabilities _meta", async () => {
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+		})
+
+		const response = await agent.initialize({ protocolVersion: 1 })
+
+		expect(response.agentCapabilities?._meta?.[CAPABILITIES_KEY]).toMatchObject({
+			session_status: true,
+		})
 	})
 
 	it("rejects unknown extension methods as method-not-found", async () => {
