@@ -120,17 +120,21 @@ function tagged(sessionId = "tagged", requestId: string = randomUUID(), fields: 
 	})
 	return { ...result, requestId, selector }
 }
+/** Bills `requestId` USD 1 and every other request USD 2. */
+function billOneThenTwo(requestId: string) {
+	fetchMock.mockImplementation(async (input) => {
+		const url = new URL(String(input))
+		if (url.pathname.endsWith("api-keys:verify")) return Response.json({ organizationId: ORG, userId: PROMPT })
+		const first = url.searchParams.get("tags") === `kimchi-request:${requestId}`
+		return Response.json({ items: [{ id: first ? ROW : ORG, totalPrice: first ? "1" : "2" }] })
+	})
+}
 
 describe("automatic exact work cost lookup", () => {
 	it("saves every request contributing to a PR total across works", async () => {
 		const first = tagged("first")
 		const second = tagged("second")
-		fetchMock.mockImplementation(async (input) => {
-			const url = new URL(String(input))
-			if (url.pathname.endsWith("api-keys:verify")) return Response.json({ organizationId: ORG, userId: PROMPT })
-			const isFirst = url.searchParams.get("tags") === `kimchi-request:${first.requestId}`
-			return Response.json({ items: [{ id: isFirst ? ROW : ORG, totalPrice: isFirst ? "1" : "2" }] })
-		})
+		billOneThenTwo(first.requestId)
 		await sync()
 		for (const { workId } of [first, second]) {
 			const saved = report(workId)
@@ -139,6 +143,18 @@ describe("automatic exact work cost lookup", () => {
 				[first.requestId, second.requestId].sort(),
 			)
 		}
+	})
+
+	it("prices only the work's own requests in /work while its PR total includes connected works", async () => {
+		const first = tagged("first")
+		tagged("second")
+		billOneThenTwo(first.requestId)
+		await sync()
+		const lines = workCostDetails(dir, first.workId)
+		expect(lines).toContain("Cost: $3.000000000 USD — https://github.com/example/repo/pull/1")
+		expect(lines).toContain(
+			"Prices: 1/1 requests priced, $1.000000000 USD. PR assignments: 0 unresolved, 0 inferred, 0 shared.",
+		)
 	})
 
 	it("saves only the selected work's unrelated requests in its aggregate buckets", async () => {
@@ -380,12 +396,7 @@ describe("automatic exact work cost lookup", () => {
 			evidence: { source: "work-command" },
 		}
 		appendWorkRecord(implementation.ctx, link)
-		fetchMock.mockImplementation(async (input) => {
-			const url = new URL(String(input))
-			if (url.pathname.endsWith("api-keys:verify")) return Response.json({ organizationId: ORG, userId: PROMPT })
-			const planned = url.searchParams.get("tags") === `kimchi-request:${requestId}`
-			return Response.json({ items: [{ id: planned ? ROW : ORG, totalPrice: planned ? "1" : "2" }] })
-		})
+		billOneThenTwo(requestId)
 		await sync()
 		expect(report(implementation.workId).requests).toHaveLength(2)
 		expect(report(implementation.workId).pullRequests[0].totalCostUsd).toBe("3.000000000")
@@ -396,6 +407,13 @@ describe("automatic exact work cost lookup", () => {
 			linkedWorkIds: [implementation.workId],
 			totalCostUsd: "1.000000000",
 		})
+		// The linked request counts for both works; the plan does not count the implementation's own request.
+		expect(workCostDetails(dir, plan.workId)).toContain(
+			"Prices: 1/1 requests priced, $1.000000000 USD. PR assignments: 0 unresolved, 0 inferred, 0 shared.",
+		)
+		expect(workCostDetails(dir, implementation.workId)).toContain(
+			"Prices: 2/2 requests priced, $3.000000000 USD. PR assignments: 0 unresolved, 0 inferred, 0 shared.",
+		)
 		appendWorkRecord(implementation.ctx, { ...link, revision: 2, status: "revoked" })
 		await sync()
 		const revoked = report(implementation.workId)
