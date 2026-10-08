@@ -263,6 +263,14 @@ describe("allowlisted repository snapshots", () => {
 			validateSnapshot({ schemaVersion: 1, producerId: requestId, revision: "1", generatedAt: at, ...content }),
 		).not.toThrow()
 	})
+	it.each(["open", "merged"] as const)("uploads a model-matched request on a %s PR as a model guess", (state) => {
+		const pr = { ...pull(), state, mergedAt: state === "merged" ? pull().mergedAt : null }
+		const rows = records([pr], { segment: { id: "segment", attribution: "inferred", reason: "model-same" } })
+		const report = calculatePullRequestCosts(rows, [{ requestId, billingRecordId: billingId, costUsd: "1", account }])
+		expect(buildSnapshots(rows, report, new Map(), true).snapshots[0].content.requests[0].allocation).toMatchObject({
+			method: "model",
+		})
+	})
 	it("keeps semantic and session assignments visibly inferred", () => {
 		for (const [attribution, expected] of [
 			["inferred", "model"],

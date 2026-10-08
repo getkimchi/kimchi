@@ -69,7 +69,7 @@ describe("optional PR reporting", () => {
 		// Consecutive info notifications replace one another in the TUI.
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
 	})
-	it("shows the default-on notice as a notification in Studio", async () => {
+	it("shows the default-on notice in Studio after the first turn, once the client knows the session", async () => {
 		mode.acp = true
 		try {
 			const ctx = createContext()
@@ -79,6 +79,10 @@ describe("optional PR reporting", () => {
 			})
 			reportingExtension(api.api)
 			await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+			// Studio drops notifications for a session it has not registered yet.
+			expect(ctx.ui.notify).not.toHaveBeenCalled()
+			expect((await readReportingState(directory)).defaultNoticeShown).toBeUndefined()
+			await api.getHandler("agent_end")({}, ctx)
 			await api.getHandler("session_shutdown")({}, ctx)
 			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/pr-reporting off"), "info")
 			expect(api.getAppendedEntries("pr-cost-reporting-notice")).toEqual([])

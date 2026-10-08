@@ -19,17 +19,17 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 	let activeKey = ""
 	let stop: (() => Promise<void>) | undefined
 	let draining = Promise.resolve()
-	async function reportingEnabled(): Promise<boolean> {
+	async function reportingEnabled(showNotice = true): Promise<boolean> {
 		try {
 			const state = await readReportingState(getAgentDir())
 			const ctx = context
-			if (ctx?.hasUI && state.enabled && state.followsTelemetry && !state.defaultNoticeShown)
+			if (showNotice && ctx?.hasUI && state.enabled && state.followsTelemetry && !state.defaultNoticeShown)
 				if (await takeReportingNotice(getAgentDir())) {
-					const notice =
+					const text =
 						"PR costs are reported to your account (repository/PR details and request/billing IDs). Turn off with /pr-reporting off."
 					// Studio shows notifications but not custom entries.
-					if (IS_ACP_MODE) ctx.ui.notify(notice, "info")
-					else pi.appendEntry("pr-cost-reporting-notice", notice)
+					if (IS_ACP_MODE) ctx.ui.notify(text, "info")
+					else pi.appendEntry("pr-cost-reporting-notice", text)
 				}
 			return state.enabled
 		} catch {
@@ -61,7 +61,8 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		started = true
 		synchronize(ctx)
-		if (stop) await reportingEnabled()
+		// Studio drops notifications for a session it has not registered yet, so it gets the notice after a turn.
+		if (stop) await reportingEnabled(!IS_ACP_MODE)
 	})
 	pi.on("agent_end", () => {
 		// Disk reads must not hold turn completion or the dialogs waiting for idle.

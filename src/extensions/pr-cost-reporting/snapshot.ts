@@ -228,7 +228,12 @@ function method(
 		})
 			? "user-correction"
 			: "explicit"
-	if (request.allocation === "inferred") return request.segment?.attribution === "inferred" ? "model" : "session"
+	// An open PR's spend stays unmerged, but a model match is still only a guess.
+	if (
+		request.allocation === "inferred" ||
+		(request.allocation === "unmerged" && request.segment?.attribution === "inferred")
+	)
+		return request.segment?.attribution === "inferred" ? "model" : "session"
 	if (request.segment?.attribution === "session" && request.allocation !== "pull-request") return "session"
 	if (request.segment?.attribution === "explicit") return "explicit"
 	return "native"
