@@ -9,6 +9,7 @@ import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import { getWorkId, setWorkId } from "../work-attribution.js"
 import { createWorkCommitTrackingOperations } from "./commits.js"
 import { calculatePullRequestCosts } from "./costs.js"
+import * as diagnostics from "./diagnostics.js"
 import { observeToolFiles } from "./file-observations.js"
 import { flushWorkSummaries, readWorkRecords } from "./summary.js"
 
@@ -80,6 +81,18 @@ it("keeps the tool's error after recording writes made before cancellation", asy
 		),
 	).rejects.toBe(failure)
 	expect(observations()[0]).toMatchObject({ source: "mcp", complete: true, files: [{ path: "source.ts" }] })
+})
+
+it("keeps a failed observation write off the terminal", async () => {
+	const ctx = createContext({ cwd })
+	const workId = getWorkId(ctx)
+	rmSync(join(cwd, ".agent", "work-attribution"), { recursive: true })
+	writeFileSync(join(cwd, ".agent", "work-attribution"), "blocked")
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+	const debug = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
+	await observeToolFiles(ctx, "write", "bash", async () => writeFileSync(join(cwd, "new.ts"), "new\n"), { workId })
+	expect(warn).not.toHaveBeenCalled()
+	expect(debug).toHaveBeenCalledWith("Could not record tool file observations:", expect.any(Error))
 })
 
 it("does not start tracking when MCP runs without an attributed model tool call", async () => {

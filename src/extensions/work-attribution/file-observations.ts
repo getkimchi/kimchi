@@ -4,6 +4,7 @@ import { realpath } from "node:fs/promises"
 import { isAbsolute } from "node:path"
 import { promisify } from "node:util"
 import { appendWorkRecord, getToolRequest, getWorkId, pinWorkContext, type WorkContext } from "../work-attribution.js"
+import { debugWorkAttribution } from "./diagnostics.js"
 import { type FileState, readAttributedFileStates } from "./file-transitions.js"
 
 const execFileAsync = promisify(execFile)
@@ -133,7 +134,7 @@ export async function observeToolFiles<T>(
 						workId,
 					)
 			} catch (error) {
-				console.warn("[work-attribution] Could not record tool file observations:", error)
+				debugWorkAttribution("Could not record tool file observations:", error)
 			}
 		}
 	}
