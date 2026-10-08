@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import * as pullRequests from "../pull-request-status/pull-requests.js"
 import * as health from "../telemetry/pr-cost.js"
-import { readWorkCostReport } from "../work-attribution/cost-sync.js"
+import { readWorkCostReport, requestTagSelector } from "../work-attribution/cost-sync.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { queueSnapshots, readReportingState, setReportingEnabled } from "./queue.js"
@@ -83,7 +83,14 @@ async function seedLinked(priced = true) {
 			startedAt: at,
 			scope: { account: content.account, repository: "/private/repo/.git" },
 		},
-		{ ...common, type: "request_response", requestId, billingSource: source, response: { promptId: requestId } },
+		{
+			...common,
+			type: "request_dispatch",
+			requestId,
+			dispatchedAt: at,
+			billingSource: source,
+			billingSelector: requestTagSelector(requestId, at),
+		},
 		...(priced
 			? [
 					{
@@ -91,8 +98,8 @@ async function seedLinked(priced = true) {
 						type: "request_cost",
 						requestId,
 						billingSource: source,
-						promptId: requestId,
-						billingRows: [{ id: "44444444-4444-4444-8444-444444444444", promptId: requestId, costUsd: "0.123456789" }],
+						billingSelector: requestTagSelector(requestId, at),
+						billingRows: [{ id: "44444444-4444-4444-8444-444444444444", costUsd: "0.123456789" }],
 						billingLookup: { status: "priced", checkedAt: at, organizationId: org, userId: user },
 					},
 				]

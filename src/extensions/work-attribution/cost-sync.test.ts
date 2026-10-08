@@ -225,7 +225,7 @@ describe("automatic exact work cost lookup", () => {
 	})
 
 	it("reads reporting inventory from validated source records instead of editable per-work caches", async () => {
-		const { workId } = tracked()
+		const { workId } = tagged()
 		await sync()
 		writeFileSync(join(dir, "work", workId, "costs.json"), '{"requests":[],"pullRequests":[]}')
 		const source = readWorkCostReport(dir)
