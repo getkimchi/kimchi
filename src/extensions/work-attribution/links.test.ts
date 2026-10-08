@@ -448,6 +448,54 @@ it.each([
 	expect(links()).toEqual([])
 })
 
+for (const mode of ["live", "repair"] as const) {
+	it.each([
+		["confirms", null],
+		["refuses", "88888888-8888-4888-8888-888888888888"],
+	] as const)(`${mode} %s a plan whose work has an earlier request with %s scope`, async (outcome, organizationId) => {
+		const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => "planner" } })
+		const workId = getWorkId(ctx)
+		const originalScope = createWorkScopeSnapshot(join(dir, ".git")).scope
+		// The first input ran before account verification finished, so its request kept no scope.
+		const early = recordProviderRequest({
+			...ctx,
+			segment: { id: randomUUID(), attribution: "session", reason: "matching-disabled" },
+		})
+		scope.saveNewWorkScope(workId, originalScope)
+		if (organizationId)
+			appendWorkRecord(ctx, {
+				type: "request",
+				requestId: randomUUID(),
+				scope: { ...originalScope, account: { ...originalScope.account, organizationId } },
+			})
+		const segment = { id: randomUUID(), attribution: "session", reason: "matching-disabled" } as const
+		const producer = recordProviderRequest({ ...ctx, segment }).requestId
+		const plan = savePlanMarkdown({ cwd: dir, name: "export", planText: "# Export\n", workId })
+		appendWorkRecord(ctx, { type: "plan", ...plan, requestId: producer })
+		expect(readWorkRecords(dir).find((row) => row.requestId === early.requestId)?.scope).toBeNull()
+		const accepted: Pick<WorkContinuation, "source" | "evidence"> = {
+			source: "saved-plan",
+			evidence: {
+				path: plan.path,
+				contentHash: plan.contentHash,
+				requestId: producer,
+				segmentId: randomUUID(),
+				...originalScope,
+			},
+		}
+		if (mode === "live") confirmWorkContinuation(ctx, { workId, ...accepted }, originalScope)
+		else {
+			const consumer = createContext({ cwd: dir, sessionManager: { getSessionId: () => "consumer" } })
+			appendWorkRecord(consumer, { type: "work", continuation: accepted }, workId)
+			await repair()
+		}
+		const resolved = requestWorkLinks(readWorkRecords(dir)).get(producer)
+		if (outcome === "refuses") expect(resolved).toBeUndefined()
+		else expect(resolved).toMatchObject({ workIds: new Set([workId]), unresolved: false })
+		expect(links()).toMatchObject(outcome === "refuses" ? [] : [{ requestIds: [producer] }])
+	})
+}
+
 it.each(["session", "inferred"] as const)("confirms the restored %s planning input only", async (attribution) => {
 	const flow = acceptedContinuation()
 	const requests = readWorkRecords(dir).filter((row) => row.type === "request")

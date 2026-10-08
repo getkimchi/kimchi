@@ -267,7 +267,8 @@ function continuationLink(
 			if (row.type === "work_link" && Array.isArray(row.requestIds))
 				return row.requestIds.some((id) => selected.has(id))
 			if (row.type !== "request") return false
-			if (row.workId === workId && (!isWorkScope(row.scope) || !sameWorkScope(row.scope, scope))) return true
+			// Requests before a new work's delayed first scope stay unscoped; only another scope conflicts.
+			if (row.workId === workId && isWorkScope(row.scope) && !sameWorkScope(row.scope, scope)) return true
 			return (
 				selected.has(String(row.requestId)) &&
 				(row.workId !== workId ||
