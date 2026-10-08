@@ -8,7 +8,7 @@ pnpm exec tsx src/extensions/work-attribution/accuracy-cli.ts report.json refere
 
 The command reads these two files and prints the differences. It makes no network or model calls, reads no credentials and writes nothing. Keep real receipts and labels outside the repository.
 
-By default, Kimchi saves the report at `~/.config/kimchi/harness/work/<workId>/costs.json`. It contains request rows, PR totals and all six unallocated buckets. When several works contribute to the same PR, each saved report includes their contributing requests and connected PR totals. Prepare reference entries for every request in that file. Do not add per-work reports together: connected works can contain the same requests.
+By default, Kimchi saves the report at `~/.config/kimchi/harness/work/<workId>/costs.json`. It contains request rows, PR totals and all six unallocated buckets for that work and every work connected to it. Works are connected when they contribute to the same PR or when a work link, such as a `/work link` correction, moves requests between them. Connections are transitive: if work A shares a PR with work B, and B shares another PR with work C, A's report also includes C's requests and PR totals. Prepare reference entries for every request in that file. Do not add per-work reports together: connected works repeat the same requests.
 
 ## Prepare the reference before inspecting matcher output
 
@@ -107,6 +107,6 @@ The command still accepts the previous array format:
 ]
 ```
 
-This mode checks request ownership and label coverage using the report's own prices. Its output says that accounts, prices and aggregates were not independently checked. Exit 0 means the nonempty comparison is complete and assignments match the labels; wrong or missed assignments return 3, including zero-cost requests. Empty or incomplete comparisons return 2. Use a version 1 reference to also check accounts, prices and full PR totals.
+This mode checks request ownership and label coverage using the report's own prices. Its output says that accounts, prices and aggregates were not independently checked. It also ignores likely (`inferred`) assignments and does not score PR headlines, so it can exit 0 while a PR total includes likely spend labelled `null`. Exit 0 means the nonempty comparison is complete and sure assignments match the labels; wrong or missed assignments return 3, including zero-cost requests. Empty or incomplete comparisons return 2. Use a version 1 reference to also check accounts, prices, likely assignments and full PR totals.
 
 The label-only output includes observed, labelled, priced and scored request counts, known report spending, and scored spending. A USD 10 report with only USD 1 labelled is incomplete, including when the unlabelled requests were free.
