@@ -116,6 +116,28 @@ describe("readable work summaries", () => {
 			expect(invalid).toHaveBeenCalledTimes(invalidCount)
 		}
 	})
+	it("skips a record cut at any position, including inside a \\u escape", () => {
+		const row = { version: 1, type: "work", workId: randomUUID(), sessionId: "writer" }
+		const complete = JSON.stringify(row)
+		// Provider and Git errors keep terminal colours, which JSON writes as \u001b escapes.
+		const cut = JSON.stringify({
+			...row,
+			type: "commit",
+			sha: "a".repeat(40),
+			prLookup: { status: "error", error: '\u001b[31mGitHub said "no"\u001b[0m\tC:\\repo\n', attempts: [1, -1.5e3] },
+			complete: false,
+		})
+		const escapes = [...cut.matchAll(/\\u001b/g)].map((match) => match.index)
+		expect(escapes).toHaveLength(2)
+		const ledger = join(dir, "work-attribution", "interrupted.jsonl")
+		fs.mkdirSync(dirname(ledger), { recursive: true })
+		for (let end = 1; end < cut.length; end++) {
+			fs.writeFileSync(ledger, `${complete}\n${cut.slice(0, end)}\n${complete}\n`)
+			const invalid = vi.fn()
+			expect(readWorkRecords(dir, undefined, () => {}, invalid)).toEqual([row, row])
+			expect({ end, invalid: invalid.mock.calls.length }).toEqual({ end, invalid: 0 })
+		}
+	})
 
 	it("retains PR links and their newest state through failed lookups and source replay", async () => {
 		const ctx = context()

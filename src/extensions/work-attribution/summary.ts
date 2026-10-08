@@ -161,19 +161,29 @@ function parseRecord(line: string, records: WorkRecord[]): void {
 function truncated(line: string): boolean {
 	const closing: string[] = []
 	let inString = false
-	let escaped = false
-	for (const char of line) {
-		if (escaped) escaped = false
-		else if (inString) {
-			if (char === "\\") escaped = true
+	// Where an escape sequence such as \n or \u001b began, and how many \u hex digits it still needs.
+	let escapeStart = -1
+	let hexDigits = 0
+	for (let index = 0; index < line.length; index++) {
+		const char = line[index]
+		if (escapeStart >= 0) {
+			if (hexDigits) {
+				if (--hexDigits === 0) escapeStart = -1
+			} else if (char === "u") hexDigits = 4
+			else escapeStart = -1
+		} else if (inString) {
+			if (char === "\\") escapeStart = index
 			else if (char === '"') inString = false
 		} else if (char === '"') inString = true
 		else if (char === "{" || char === "[") closing.push(char === "{" ? "}" : "]")
 		else if ((char === "}" || char === "]") && closing.pop() !== char) return false
 	}
 	if (!closing.length) return false
-	// Close an open string, or drop a partial number or literal in a value position, then complete the value.
-	const start = inString ? `${escaped ? line.slice(0, -1) : line}"` : line.replace(/(?<=[:[,])[\w.+-]+$/, "")
+	// Close an open string before any partial escape, or drop a partial number or literal in a value position,
+	// then complete the value.
+	const start = inString
+		? `${escapeStart >= 0 ? line.slice(0, escapeStart) : line}"`
+		: line.replace(/(?<=[:[,])[\w.+-]+$/, "")
 	const end = closing.reverse().join("")
 	return ["", "null", ":null", '"":null'].some((value) => {
 		try {
