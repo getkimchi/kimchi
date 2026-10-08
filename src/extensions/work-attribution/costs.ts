@@ -1,7 +1,7 @@
 import { pullRequestKey } from "../pull-request-status/links.js"
 import { providerId, repositoryPath, SHA } from "../pull-request-status/provider-records.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
-import type { WorkSegment } from "../work-attribution.js"
+import { isWorkSegment, type WorkSegment } from "../work-attribution.js"
 import { requestWorkLinks } from "./links.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
 import { object, type WorkRecord } from "./summary.js"
@@ -84,11 +84,11 @@ export function decimalNanos(value: unknown): bigint | undefined {
 	return match ? BigInt(match[1]) * NANOS_PER_USD + BigInt((match[2] ?? "").padEnd(9, "0")) : undefined
 }
 
-function usd(nanos: bigint): string {
+export function usd(nanos: bigint): string {
 	return `${nanos / NANOS_PER_USD}.${(nanos % NANOS_PER_USD).toString().padStart(9, "0")}`
 }
 
-function time(value: unknown): number | undefined {
+export function time(value: unknown): number | undefined {
 	if (
 		typeof value !== "string" ||
 		!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
@@ -193,19 +193,6 @@ interface RequestOwnership {
 	unresolvedMatch?: boolean
 	account?: WorkAccount
 	unverifiedAccount?: boolean
-}
-
-function requestSegment(value: unknown): WorkSegment | undefined {
-	if (!object(value) || typeof value.id !== "string" || !value.id || typeof value.reason !== "string" || !value.reason)
-		return
-	if (
-		value.attribution !== "explicit" &&
-		value.attribution !== "inferred" &&
-		value.attribution !== "session" &&
-		value.attribution !== "unknown"
-	)
-		return
-	return { id: value.id, attribution: value.attribution, reason: value.reason }
 }
 
 function commitIdentity(row: WorkRecord): string | undefined {
@@ -501,7 +488,7 @@ export function calculatePullRequestCosts(
 				sessionIds: new Set<string>(),
 			}
 			if (row.segment !== undefined) {
-				let segment = requestSegment(row.segment)
+				let segment = isWorkSegment(row.segment) ? row.segment : undefined
 				if (segment && row.purpose === "work-matching")
 					segment = { ...segment, attribution: "session", reason: "work-matching" }
 				owner.unresolvedMatch ||=
@@ -587,6 +574,16 @@ export function calculatePullRequestCosts(
 			) {
 				pullRequestIds = [exclusive]
 				allocated = allocation(owner, pullRequestIds, pulls, invalidWorkLinks)
+			} else if (allocated.allocation === "shared") {
+				// Without proof of one target, a request cannot add to a PR that had already merged when it started.
+				const unmergedAtStart = pullRequestIds.filter((key) => {
+					const mergedAt = pulls.get(key)?.pullRequest?.mergedAt
+					return !mergedAt || owner.startedAt === undefined || owner.startedAt <= Date.parse(mergedAt)
+				})
+				if (unmergedAtStart.length < pullRequestIds.length) {
+					pullRequestIds = unmergedAtStart
+					allocated = allocation(owner, pullRequestIds, pulls, invalidWorkLinks)
+				}
 			}
 			const postMerge = allocated.allocation === "post-merge"
 			if (!postMerge && owner.unresolvedMatch && !exclusive && !link)
@@ -605,18 +602,15 @@ export function calculatePullRequestCosts(
 				allocated = { allocation: "unknown", reason: "work-link-unresolved" }
 			const accounts = billingAccounts.get(requestId) ?? []
 			const workAccount = owner.account
-			if (
-				!postMerge &&
-				(owner.unverifiedAccount ||
-					(workAccount && (!accounts.length || accounts.some((account) => !isWorkAccount(account)))))
-			)
-				allocated = { allocation: "unknown", reason: "work-account-unverified" }
-			else if (
-				!postMerge &&
-				workAccount &&
-				accounts.some((account) => account && !sameWorkAccount(workAccount, account))
-			)
-				allocated = { allocation: "unknown", reason: "work-account-mismatch" }
+			const reason: RequestCostAllocation["reason"] =
+				owner.unverifiedAccount ||
+				(workAccount && (!accounts.length || accounts.some((account) => !isWorkAccount(account))))
+					? "work-account-unverified"
+					: workAccount && accounts.some((account) => account && !sameWorkAccount(workAccount, account))
+						? "work-account-mismatch"
+						: undefined
+			// Post-merge spend keeps its bucket, but a bill from another account is never its own.
+			if (reason) allocated = postMerge ? { ...allocated, reason } : { allocation: "unknown", reason }
 			const { nanos, ...price } = priceFor(requestId)
 			if (incompleteRequestIds.has(requestId) && price.priceStatus === "priced") price.priceStatus = "missing"
 			amounts.set(requestId, nanos)

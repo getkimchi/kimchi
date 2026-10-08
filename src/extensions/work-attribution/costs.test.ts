@@ -1291,6 +1291,42 @@ describe("requests started after a PR merged", () => {
 	})
 })
 
+describe("one work across a merged PR and its follow-up", () => {
+	it.each([
+		["is still open", { state: "open" as const, mergedAt: null, closedAt: null }],
+		["merged later", { mergedAt: time(50), closedAt: time(50) }],
+	])("keeps the merged PR complete when the follow-up %s", (_case, followUp) => {
+		const edit = nativeEdit("first")
+		const report = calculatePullRequestCosts(
+			[
+				request("first"),
+				edit,
+				contribution(edit),
+				request("follow-up", "work-a", "session-a", time(35)),
+				commit("work-a", [{ ...secondPull(), ...followUp }], "session-a", { sha: "c".repeat(40) }),
+			],
+			[charge("first", "1"), charge("follow-up", "2")],
+		)
+		const [first, second] = [1, 2].map((number) =>
+			report.pullRequests.find((row) => row.pullRequest?.number === number),
+		)
+		expect(first).toMatchObject({ sharedRequestIds: [], totalCostUsd: "1.000000000" })
+		expect(report.requests.find((row) => row.requestId === "follow-up")?.pullRequestIds).toEqual([second?.key])
+	})
+
+	it("keeps a post-merge request's bucket but marks a bill from another account", () => {
+		const other = { ...testScope.account, userId: "50000000-0000-4000-8000-000000000005" }
+		const report = calculatePullRequestCosts(
+			[request("before"), request("late", "work-a", "session-a", time(35)), commit()],
+			[charge("before", "1"), { ...charge("late", "2"), account: other }],
+		)
+		expect(report.requests.find((row) => row.requestId === "late")).toMatchObject({
+			allocation: "post-merge",
+			reason: "work-account-mismatch",
+		})
+	})
+})
+
 describe("work-matching side calls", () => {
 	it("keeps a merged PR total complete when matching calls ran before the input's decision", () => {
 		const report = calculatePullRequestCosts(

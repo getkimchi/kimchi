@@ -8,8 +8,8 @@ import { writeFileAtomic } from "../../config/json.js"
 import { loadConfig, resolveEndpoints } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { appendWorkRecord } from "../work-attribution.js"
-import { calculatePullRequestCosts, decimalNanos, type RequestCostObservation } from "./costs.js"
-import { isWorkAccount, type WorkAccount } from "./scope.js"
+import { calculatePullRequestCosts, decimalNanos, type RequestCostObservation, time, usd } from "./costs.js"
+import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
 import { object, readWorkRecords, type WorkRecord } from "./summary.js"
 
 export interface BillingSource {
@@ -22,15 +22,21 @@ export type BillingSelector =
 	| { type: "tag"; tag: string; startTime: string; endTime: string }
 	| { type: "prompt"; promptId: string }
 
+/** The exact tag finds the bill; starting early tolerates a fast local clock within the API's 33-day range. */
+const LOOKUP_LEAD_MS = 12 * 60 * 60_000
 /** Billing timestamps describe completed reports, so retain a broad fixed window. */
-export function requestTagSelector(requestId: string, dispatchedAt: string): BillingSelector | undefined {
+export function requestTagSelector(
+	requestId: string,
+	dispatchedAt: string,
+	leadMs = LOOKUP_LEAD_MS,
+): BillingSelector | undefined {
 	if (!isWorkId(requestId) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(dispatchedAt)) return undefined
 	const timestamp = Date.parse(dispatchedAt)
 	if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== dispatchedAt) return undefined
 	return {
 		type: "tag",
 		tag: `kimchi-request:${requestId}`,
-		startTime: new Date(timestamp - 5 * 60_000).toISOString(),
+		startTime: new Date(timestamp - leadMs).toISOString(),
 		endTime: new Date(timestamp + 32 * 24 * 60 * 60_000).toISOString(),
 	}
 }
@@ -257,19 +263,23 @@ function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
 		if (row.type === "request_dispatch") {
 			if (typeof row.billingTagSkipped === "string") item.tagSkipped = row.billingTagSkipped
 			if (row.billingSelector === undefined) continue
+			const { dispatchedAt } = row
+			const saved = row.billingSelector
+			// Selectors saved before the wider window began five minutes before dispatch.
 			const expected =
-				typeof row.dispatchedAt === "string" ? requestTagSelector(item.requestId, row.dispatchedAt) : undefined
+				typeof dispatchedAt === "string"
+					? [LOOKUP_LEAD_MS, 5 * 60_000].map((lead) => requestTagSelector(item.requestId, dispatchedAt, lead))
+					: []
 			if (
-				!expected ||
-				!selector(row.billingSelector) ||
-				!sameSelector(expected, row.billingSelector) ||
+				!selector(saved) ||
+				!expected.some((value) => value && sameSelector(value, saved)) ||
 				!source(row.billingSource)
 			) {
 				item.invalid = true
 				continue
 			}
-			if (item.selector && !sameSelector(item.selector, row.billingSelector)) item.invalid = true
-			item.selector = row.billingSelector
+			if (item.selector && !sameSelector(item.selector, saved)) item.invalid = true
+			item.selector = saved
 		} else if (object(row.response) && isWorkId(row.response.promptId)) {
 			if (item.promptId && item.promptId !== row.response.promptId) item.invalid = true
 			item.promptId = row.response.promptId
@@ -482,16 +492,7 @@ function billingMetadata(item: Record<string, unknown>): Partial<BillingRow> {
 	}
 	if (item.createTime != null) {
 		const value = item.createTime
-		const parts =
-			typeof value === "string" ? /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/.exec(value) : null
-		const timestamp = typeof value === "string" ? Date.parse(value) : NaN
-		if (
-			typeof value === "string" &&
-			parts &&
-			Number.isFinite(timestamp) &&
-			new Date(timestamp).toISOString() === `${parts[1]}.${(parts[2] ?? "").padEnd(3, "0").slice(0, 3)}Z`
-		)
-			result.createTime = value
+		if (typeof value === "string" && time(value) !== undefined) result.createTime = value
 		else unavailable.push("createTime")
 	}
 	if (unavailable.length) result.metadataUnavailable = unavailable.sort()
@@ -854,6 +855,7 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 		const value: unknown = JSON.parse(readFileSync(join(agentDir, "work", workId, "costs.json"), "utf8"))
 		if (!object(value) || !Array.isArray(value.pullRequests)) return ["Cost: unknown; waiting for billing"]
 		const lines: string[] = []
+		const requests = Array.isArray(value.requests) ? value.requests.filter(object) : []
 		for (const row of value.pullRequests) {
 			if (!object(row)) continue
 			if (value.pullRequests.some((other) => object(other) && other !== row && other.key === row.key))
@@ -863,15 +865,29 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 						: "Account: unknown",
 				)
 			const label = object(row.pullRequest) ? row.pullRequest.url : row.key
-			if (typeof row.totalCostUsd === "string") lines.push(`Cost: $${row.totalCostUsd} USD — ${label}`)
+			// An unmerged PR's spend stays outside sure and likely totals until it merges.
+			const state = object(row.pullRequest) && row.pullRequest.state !== "merged" ? row.pullRequest.state : undefined
+			if (state) {
+				const spent = requests
+					.filter(
+						(request) =>
+							request.allocation === "unmerged" &&
+							Array.isArray(request.pullRequestIds) &&
+							request.pullRequestIds.includes(row.key) &&
+							(isWorkAccount(request.account) && isWorkAccount(row.account)
+								? sameWorkAccount(request.account, row.account)
+								: request.account === row.account),
+					)
+					.reduce((sum, request) => sum + (decimalNanos(request.knownCostUsd) ?? 0n), 0n)
+				lines.push(`Cost so far: $${usd(spent)} USD (${state}) — ${label}`)
+			} else if (typeof row.totalCostUsd === "string") lines.push(`Cost: $${row.totalCostUsd} USD — ${label}`)
 			else lines.push(`Cost: unknown; $${row.knownCostUsd} USD confirmed so far — ${label}`)
-			if (object(row.explicit) && object(row.inferred))
+			if (!state && object(row.explicit) && object(row.inferred))
 				lines.push(
 					`Sure: $${row.explicit.knownCostUsd} USD; likely: $${row.inferred.knownCostUsd} USD${row.totalCostUsd === null ? " known so far" : ""}.`,
 				)
 		}
 		if (Array.isArray(value.requests)) {
-			const requests = value.requests.filter(object)
 			const priced = requests.filter((row) => row.priceStatus === "priced").length
 			const unresolved = requests.filter((row) => row.allocation === "unknown").length
 			const inferred = requests.filter((row) => row.allocation === "inferred").length

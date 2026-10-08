@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -13,7 +13,8 @@ import {
 	requestTagSelector,
 	workCostDetails,
 } from "./cost-sync.js"
-import { flushWorkSummaries, readWorkRecords, recoverWorkSummaries } from "./summary.js"
+import { calculatePullRequestCosts } from "./costs.js"
+import { flushWorkSummaries, readWorkRecords, recoverWorkSummaries, type WorkRecord } from "./summary.js"
 
 vi.mock("../../config.js", async (original) => ({ ...(await original<typeof config>()) }))
 
@@ -138,6 +139,54 @@ describe("automatic exact work cost lookup", () => {
 		const lines = workCostDetails(dir, workId)
 		expect(lines).toContain(`Account: ${ORG} / ${PROMPT} (${API})`)
 		expect(lines).toContain("Account: unknown")
+	})
+
+	it("shows an open PR's spend so far instead of a zero confirmed total", () => {
+		const workId = randomUUID()
+		const account = { apiUrl: API, organizationId: ORG, userId: PROMPT }
+		const pullRequest = {
+			provider: "github",
+			host: "github.com",
+			repository: "example/repo",
+			number: 1,
+			url: "https://github.com/example/repo/pull/1",
+			state: "open",
+			headSha: "a".repeat(40),
+			mergeCommitSha: null,
+			mergedAt: null,
+			closedAt: null,
+			checkedAt: "2026-10-01T10:00:00Z",
+		}
+		const records: WorkRecord[] = [
+			{
+				version: 1,
+				type: "request",
+				workId,
+				sessionId: "session",
+				requestId: "open",
+				recordedAt: "2026-10-01T08:00:00Z",
+				scope: { account, repository: join(dir, ".git") },
+			},
+			{
+				version: 1,
+				type: "commit",
+				workId,
+				sessionId: "session",
+				sha: "a".repeat(40),
+				repository: join(dir, ".git"),
+				worktree: dir,
+				recordedAt: "2026-10-01T09:00:00Z",
+				pullRequests: [pullRequest],
+			},
+		]
+		const costs = calculatePullRequestCosts(records, [
+			{ requestId: "open", billingRecordId: ROW, costUsd: "0.5", account },
+		])
+		mkdirSync(join(dir, "work", workId), { recursive: true })
+		writeFileSync(join(dir, "work", workId, "costs.json"), JSON.stringify({ version: 1, workId, ...costs }))
+		const lines = workCostDetails(dir, workId)
+		expect(lines).toContain("Cost so far: $0.500000000 USD (open) — https://github.com/example/repo/pull/1")
+		expect(lines.join("\n")).not.toContain("Sure:")
 	})
 
 	it("keeps a legacy request's exact price without assigning today's account to its work", async () => {
@@ -567,7 +616,7 @@ describe("automatic exact work cost lookup", () => {
 		const query = new URL(String(fetchMock.mock.calls[1][0])).searchParams
 		expect(Object.fromEntries(query)).toEqual({
 			tags: `kimchi-request:${requestId}`,
-			startTime: "2026-10-01T07:55:00.000Z",
+			startTime: "2026-09-30T20:00:00.000Z",
 			endTime: "2026-11-02T08:00:00.000Z",
 			inferUserFromApiKey: "true",
 			"page.limit": "100",
@@ -604,10 +653,40 @@ describe("automatic exact work cost lookup", () => {
 			urls.every(
 				(url) =>
 					url.searchParams.get("tags") === `kimchi-request:${requestId}` &&
-					url.searchParams.get("startTime") === "2026-10-01T07:55:00.000Z",
+					url.searchParams.get("startTime") === "2026-09-30T20:00:00.000Z",
 			),
 		).toBe(true)
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.300000000")
+	})
+	it("keeps pricing a request dispatched with the earlier five-minute window", async () => {
+		const { workId, requestId, ctx, source } = tagged()
+		const dispatchedAt = "2026-10-01T09:00:00.000Z"
+		const earlier = randomUUID()
+		tracked("tagged", earlier, PROMPT, false)
+		appendWorkRecord(ctx, {
+			type: "request_dispatch",
+			requestId: earlier,
+			dispatchedAt,
+			billingSource: source,
+			billingSelector: requestTagSelector(earlier, dispatchedAt, 5 * 60_000),
+		})
+		fetchMock.mockImplementation(async (input) => {
+			const url = new URL(String(input))
+			if (url.pathname.endsWith("api-keys:verify")) return Response.json({ organizationId: ORG, userId: PROMPT })
+			const tag = url.searchParams.get("tags")
+			return Response.json({ items: [{ id: tag === `kimchi-request:${earlier}` ? ORG : ROW, totalPrice: "0.1" }] })
+		})
+		await sync()
+		const urls = fetchMock.mock.calls.map(([url]) => new URL(String(url))).filter((url) => url.searchParams.has("tags"))
+		expect(urls.map((url) => [url.searchParams.get("tags"), url.searchParams.get("startTime")])).toEqual(
+			expect.arrayContaining([
+				[`kimchi-request:${requestId}`, "2026-09-30T20:00:00.000Z"],
+				[`kimchi-request:${earlier}`, "2026-10-01T08:55:00.000Z"],
+			]),
+		)
+		expect(report(workId).requests.find((row: { requestId: string }) => row.requestId === earlier)).toMatchObject({
+			priceStatus: "priced",
+		})
 	})
 	it.each(["owner", "tag", "window"])("rejects conflicting captured tag %s evidence", async (conflict) => {
 		const { workId, requestId, ctx, source, selector } = tagged()

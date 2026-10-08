@@ -117,7 +117,8 @@ describe("installGlobalFetchInstrumentation", () => {
 			expect(new Headers(baseCalls[0].init?.headers).get("authorization")).toBe("Bearer keep")
 			expect(headers["X-Request-Id"]).toBe("must-not-repeat")
 			expect(observe).not.toHaveBeenCalled()
-			expect(warning).toHaveBeenCalledOnce()
+			// Diagnostics go to the opt-in debug log, never to stderr.
+			expect(warning).not.toHaveBeenCalled()
 		} finally {
 			warning.mockRestore()
 		}
@@ -161,7 +162,7 @@ describe("installGlobalFetchInstrumentation", () => {
 			).text(),
 		).toBe("ok")
 		expect(observe).toHaveBeenCalledOnce()
-		expect(warning).toHaveBeenCalledOnce()
+		expect(warning).not.toHaveBeenCalled()
 		warning.mockRestore()
 	})
 	it("adds the default user-agent and preserves a caller-supplied one", async () => {

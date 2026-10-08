@@ -555,7 +555,8 @@ describe("local work attribution", () => {
 			ctx,
 		)
 		expect(getToolRequest(ctx, "write")).toBeUndefined()
-		expect(warning).toHaveBeenCalledWith("[work-attribution] Request identity unavailable:", expect.any(Error))
+		// The failure goes to the opt-in debug log, never to stderr under Studio or `kimchi -p`.
+		expect(warning).not.toHaveBeenCalled()
 	})
 	it("saves billing response IDs with the request's original work, session and start time", async () => {
 		let sessionId = "billing-origin"

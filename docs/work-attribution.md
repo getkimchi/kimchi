@@ -441,7 +441,7 @@ Each PR total in `costs.json` has an `account` alongside its canonical `key`. Co
 
 The gateway accepts ten combined tags across the body and headers. Kimchi preserves existing tags and skips its billing tag when the request is full, uses the reserved tag already, or has a body it cannot safely inspect. The skip reason stays in the request record. A captured `X-Prompt-Id` can provide a fallback when the backend supports an exact prompt-ID query; otherwise the price remains unknown. Old untagged streaming requests cannot be recovered from timestamps alone.
 
-The lookup window stays fixed from five minutes before dispatch to 32 days after it. This fits the API's time-range limit and includes delayed reports; the UUID tag still supplies the exact match. A charge outside that window or no longer retained by the backend stays unknown.
+The lookup window stays fixed from 12 hours before dispatch, which tolerates a fast local clock, to 32 days after it. This fits the API's time-range limit and includes delayed reports; the UUID tag still supplies the exact match. A charge outside that window or no longer retained by the backend stays unknown.
 
 When the API supplies them, each billing row also retains token counters, price components, model/provider details and the report time. Original and recommended prices are comparisons, not extra charges. Missing fields stay absent; `metadataUnavailable` names optional fields rejected as malformed. Prompt previews and arbitrary response fields are not stored.
 

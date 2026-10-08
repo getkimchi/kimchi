@@ -12,6 +12,7 @@
  * installGlobalFetchInstrumentation call — see the options doc.
  */
 
+import { debugWorkAttribution } from "../extensions/work-attribution/diagnostics.js"
 import { requestUrl, rewrapResponseWithBody, wrapFetchWithIdleTimeout } from "./stream-idle-timeout.js"
 
 type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -107,7 +108,7 @@ export function installGlobalFetchInstrumentation(options: GlobalFetchInstrument
 				onModelRequest?.(headers, requestUrl(input) ?? "", requestMetadata(input, init))
 			} catch (error) {
 				headers.delete("x-request-id")
-				console.warn("[work-attribution] Request identity unavailable:", error)
+				debugWorkAttribution("Request identity unavailable:", error)
 			}
 		}
 		const requestId = headers.get("x-request-id")
@@ -116,7 +117,7 @@ export function installGlobalFetchInstrumentation(options: GlobalFetchInstrument
 			try {
 				onModelResponse?.(requestId, response)
 			} catch (error) {
-				console.warn("[work-attribution] Response metadata unavailable:", error)
+				debugWorkAttribution("Response metadata unavailable:", error)
 			}
 		}
 		const hook = onModelCompletionSettled
