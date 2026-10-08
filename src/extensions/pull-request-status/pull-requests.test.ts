@@ -1002,6 +1002,23 @@ describe("durable work pull request discovery", () => {
 			`/repos/team/repo/commits/${sha}/pulls`,
 		])
 	})
+	it("retries an actionable failure saved by an earlier process once before backing off", async () => {
+		const day = 24 * 60 * 60 * 1000
+		seed({
+			recordedAt: new Date(Date.now() - 20 * day).toISOString(),
+			prLookup: {
+				status: "error",
+				checkedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+				error: "GitHub authentication failed. Check the token for github.com.",
+			},
+		})
+		await lookup()
+		expect(commitCalls()).toHaveLength(1)
+		expect(updates.at(-1)?.prLookup).toMatchObject({ status: "pending" })
+		later()
+		await lookup()
+		expect(commitCalls()).toHaveLength(1)
+	})
 	it("moves a slow commit behind other commits on the next bounded pass", async () => {
 		seed()
 		const otherSha = "b".repeat(40)

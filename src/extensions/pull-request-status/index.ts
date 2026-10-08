@@ -36,6 +36,8 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	let shellRefreshAt = 0
 	const updates = new Map<string, Map<string, WorkPullRequestUpdate>>()
 	const warnings = new Set<string>()
+	// Failures saved before this session started stay in the footer and /work without a new warning.
+	const startedAt = Date.now()
 	function contextKey(ctx: ExtensionContext): string {
 		return JSON.stringify([ctx.cwd, ctx.sessionManager.getSessionId()])
 	}
@@ -70,10 +72,19 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 			links.push(...row.pullRequests)
 		}
 		const latest = [...commits.entries()]
+		// A later successful lookup in the same repository supersedes an older failure, such as an expired token.
+		const succeeded = new Map<string, number>()
+		for (const [, row] of latest)
+			if (row.prLookup && !row.prLookup.error)
+				succeeded.set(row.repository, Math.max(succeeded.get(row.repository) ?? 0, Date.parse(row.prLookup.checkedAt)))
 		const messages = (quiet: boolean) => [
 			...new Set(
 				latest.flatMap(([, row]) =>
-					row.prLookup?.error && (quiet || !row.prLookup.reason) ? [row.prLookup.error] : [],
+					row.prLookup?.error &&
+					(quiet || !row.prLookup.reason) &&
+					Date.parse(row.prLookup.checkedAt) > (succeeded.get(row.repository) ?? 0)
+						? [row.prLookup.error]
+						: [],
 				),
 			),
 		]
@@ -98,10 +109,13 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		rows.set(JSON.stringify([update.repository, update.sha, update.sessionId, update.worktree]), update)
 		updates.set(update.workId, rows)
 		// A snapshot can deliver an older failure before another contributor's newer success.
-		if (update.prLookup?.error && !update.prLookup.reason)
+		const { prLookup } = update
+		if (prLookup?.error && !prLookup.reason && Date.parse(prLookup.checkedAt) >= startedAt) {
+			const { error } = prLookup
 			queueMicrotask(() => {
-				if (workId === update.workId) for (const error of details().errors) warnOnce(error)
+				if (workId === update.workId && details().errors.includes(error)) warnOnce(error)
 			})
+		}
 		if (started && tracking) renderWork()
 	}
 	function releaseWork(): void {

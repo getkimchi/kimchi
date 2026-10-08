@@ -184,6 +184,32 @@ describe("PR status extension", () => {
 		update?.(linked)
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", undefined)
 	})
+	it("keeps a failure saved before this session quiet and drops it after a later success", async () => {
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const status = createExtensionApi()
+		pullRequestStatusExtension({ ...status.api, events: api.api.events })
+		await start(api)
+		await start(status)
+		const update = vi.mocked(supervisor.subscribePullRequestReconciliation).mock.calls[0][0]?.onPullRequest
+		const commit = contribution(getWorkId(ctx))
+		update?.({
+			...commit,
+			sha: "c".repeat(40),
+			pullRequests: [],
+			prLookup: {
+				status: "error",
+				checkedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+				error: "GitHub authentication failed. Check the token for github.com.",
+			},
+		})
+		await Promise.resolve()
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR/MR: check /work")
+		update?.({ ...commit, prLookup: { status: "linked", checkedAt: new Date().toISOString() } })
+		await Promise.resolve()
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PRs/MRs: 1 linked, 1 waiting")
+	})
 	it("checks the current branch without work tracking and writes no work records", async () => {
 		const api = createExtensionApi()
 		pullRequestStatusExtension(api.api)

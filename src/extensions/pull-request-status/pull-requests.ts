@@ -13,6 +13,8 @@ const COMMAND_TIMEOUT_MS = 5000
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 const MTIME_SLACK_MS = 2000
 const DAY_MS = 24 * 60 * 60 * 1000
+/** Failures saved before this process started are retried once, so a fixed token need not wait out the backoff. */
+const PROCESS_STARTED = Date.now()
 const SHA = /^(?:[a-f\d]{40}|[a-f\d]{64})$/i
 
 export interface WorkPullRequest {
@@ -246,6 +248,7 @@ function lookupDue(commits: WorkPullRequestUpdate[], now = Date.now()): boolean 
 		if (!latest || Date.parse(prLookup.checkedAt) > Date.parse(latest.checkedAt)) latest = prLookup
 	}
 	if (!latest) return true
+	if (latest.error && !latest.reason && Date.parse(latest.checkedAt) < PROCESS_STARTED) return true
 	const age = now - Math.min(...commits.map((commit) => Date.parse(commit.recordedAt ?? "") || now))
 	if (latest.status === "pending" && age > 32 * DAY_MS) return false
 	return now - Date.parse(latest.checkedAt) >= Math.min(DAY_MS, age / 16)
@@ -493,7 +496,7 @@ async function requestJSON(
 	requestSignal.addEventListener("abort", abortBody, { once: true })
 	try {
 		let url = initialURL
-		for (let redirects = 0; redirects <= 3; redirects++) {
+		for (let redirects = 0; ; redirects++) {
 			sameOrigin(url, origin)
 			const response = await fetch(url, {
 				method: "GET",
@@ -611,7 +614,6 @@ async function requestJSON(
 			}
 			return { value, headers: response.headers, url, bytes }
 		}
-		throw new LookupError(`${label(repository)} returned too many redirects.`)
 	} catch (error) {
 		signal.throwIfAborted()
 		if (controller.signal.aborted)
