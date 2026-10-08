@@ -313,7 +313,6 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 					return
 				const { workId, source, evidence } = found
 				setWorkId(ctx, workId, pi, { source, evidence })
-				notifyWorkChanged()
 				const message =
 					source === "recent-branch"
 						? `Continuing recent work on branch ${evidence.branch}: ${workId}`
@@ -394,8 +393,9 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 						branchEligible.delete(workLedgerPath(ctx))
 						explicitSelection.add(workLedgerPath(ctx))
 						pi.appendEntry(WORK_IDENTITY_ENTRY, { workId: getWorkId(ctx), explicit: true })
+						// bind() announced the previous work; announce the one selected here.
+						notifyWorkChanged()
 					}
-					notifyWorkChanged()
 					const details: WorkDetailsRequest = { workId: getWorkId(ctx), lines: [] }
 					pi.events.emit(WORK_DETAILS_REQUEST_EVENT, details)
 					notify(ctx, [`Work ID: ${details.workId}`, ...details.lines].join("\n"))
