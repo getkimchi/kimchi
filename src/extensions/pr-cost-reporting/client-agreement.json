@@ -1,0 +1,223 @@
+{
+	"actorId": "22222222-2222-4222-8222-222222222222",
+	"snapshots": [
+		{
+			"schemaVersion": 1,
+			"producerId": "40000000-0000-4000-8000-000000000001",
+			"revision": "1",
+			"generatedAt": "2026-10-07T12:00:00.000Z",
+			"repository": {
+				"provider": "github",
+				"host": "github.com",
+				"id": "42",
+				"name": "example/a"
+			},
+			"pullRequests": [
+				{
+					"id": "101",
+					"number": 101,
+					"url": "https://github.com/example/a/pull/101",
+					"state": "merged",
+					"mergedAt": "2026-10-04T13:00:00.000Z"
+				},
+				{
+					"id": "102",
+					"number": 102,
+					"url": "https://github.com/example/a/pull/102",
+					"state": "merged",
+					"mergedAt": "2026-10-04T13:00:00.000Z"
+				},
+				{
+					"id": "103",
+					"number": 103,
+					"url": "https://github.com/example/a/pull/103",
+					"state": "merged",
+					"mergedAt": "2026-10-04T13:00:00.000Z"
+				},
+				{
+					"id": "104",
+					"number": 104,
+					"url": "https://github.com/example/a/pull/104",
+					"state": "merged",
+					"mergedAt": "2026-10-04T13:00:00.000Z"
+				}
+			],
+			"requests": [
+				{
+					"requestId": "20000000-0000-4000-8000-000000000001",
+					"billingRecordIds": ["30000000-0000-4000-8000-000000000001"],
+					"startedAt": "2026-10-04T12:00:00.000Z",
+					"allocation": {
+						"kind": "pull-request",
+						"pullRequestIds": ["101"],
+						"method": "explicit"
+					}
+				},
+				{
+					"requestId": "20000000-0000-4000-8000-000000000002",
+					"billingRecordIds": ["30000000-0000-4000-8000-000000000002"],
+					"startedAt": "2026-10-04T12:00:00.000Z",
+					"allocation": {
+						"kind": "pull-request",
+						"pullRequestIds": ["102"],
+						"method": "model"
+					}
+				},
+				{
+					"requestId": "20000000-0000-4000-8000-000000000003",
+					"billingRecordIds": ["30000000-0000-4000-8000-000000000003"],
+					"startedAt": "2026-10-04T12:00:00.000Z",
+					"allocation": {
+						"kind": "unknown",
+						"pullRequestIds": [],
+						"method": "native"
+					}
+				},
+				{
+					"requestId": "20000000-0000-4000-8000-000000000004",
+					"billingRecordIds": [],
+					"startedAt": "2026-10-04T12:00:00.000Z",
+					"allocation": {
+						"kind": "unknown",
+						"pullRequestIds": ["103"],
+						"method": "explicit"
+					}
+				},
+				{
+					"requestId": "20000000-0000-4000-8000-000000000005",
+					"billingRecordIds": ["30000000-0000-4000-8000-000000000005"],
+					"startedAt": "2026-10-04T12:00:00.000Z",
+					"allocation": {
+						"kind": "unknown",
+						"pullRequestIds": ["104"],
+						"method": "explicit"
+					}
+				},
+				{
+					"requestId": "20000000-0000-4000-8000-000000000006",
+					"billingRecordIds": [],
+					"startedAt": "2026-10-04T12:00:00.000Z",
+					"allocation": {
+						"kind": "pull-request",
+						"pullRequestIds": ["101"],
+						"method": "explicit"
+					}
+				},
+				{
+					"requestId": "20000000-0000-4000-8000-000000000007",
+					"billingRecordIds": ["30000000-0000-4000-8000-000000000007"],
+					"startedAt": "2026-10-04T14:00:00.000Z",
+					"allocation": {
+						"kind": "post-merge",
+						"pullRequestIds": ["101"],
+						"method": "explicit"
+					}
+				}
+			],
+			"coverage": {
+				"observedRequests": 7,
+				"unpricedRequests": 1,
+				"historyComplete": true
+			}
+		},
+		{
+			"schemaVersion": 1,
+			"producerId": "40000000-0000-4000-8000-000000000002",
+			"revision": "1",
+			"generatedAt": "2026-10-07T12:00:00.000Z",
+			"repository": {
+				"provider": "github",
+				"host": "github.com",
+				"id": "43",
+				"name": "example/b"
+			},
+			"pullRequests": [
+				{
+					"id": "201",
+					"number": 201,
+					"url": "https://github.com/example/b/pull/201",
+					"state": "merged",
+					"mergedAt": "2026-10-04T13:00:00.000Z"
+				}
+			],
+			"requests": [
+				{
+					"requestId": "20000000-0000-4000-8000-000000000005",
+					"billingRecordIds": ["30000000-0000-4000-8000-000000000005"],
+					"startedAt": "2026-10-04T12:00:00.000Z",
+					"allocation": {
+						"kind": "unknown",
+						"pullRequestIds": ["201"],
+						"method": "explicit"
+					}
+				}
+			],
+			"coverage": {
+				"observedRequests": 1,
+				"unpricedRequests": 0,
+				"historyComplete": true
+			}
+		}
+	],
+	"bills": [
+		{
+			"id": "30000000-0000-4000-8000-000000000001",
+			"ownerId": "22222222-2222-4222-8222-222222222222",
+			"totalPrice": "1.25"
+		},
+		{
+			"id": "30000000-0000-4000-8000-000000000002",
+			"ownerId": "22222222-2222-4222-8222-222222222222",
+			"totalPrice": "2"
+		},
+		{
+			"id": "30000000-0000-4000-8000-000000000003",
+			"ownerId": "22222222-2222-4222-8222-222222222222",
+			"totalPrice": "3"
+		},
+		{
+			"id": "30000000-0000-4000-8000-000000000005",
+			"ownerId": "22222222-2222-4222-8222-222222222222",
+			"totalPrice": "5"
+		},
+		{
+			"id": "30000000-0000-4000-8000-000000000007",
+			"ownerId": "22222222-2222-4222-8222-222222222222",
+			"totalPrice": "7"
+		}
+	],
+	"noChargeRequestIds": ["20000000-0000-4000-8000-000000000006"],
+	"organizationKnownCostUsd": "18.250000000",
+	"pullRequests": [
+		{
+			"repositoryId": "42",
+			"id": "101",
+			"knownCostUsd": "1.250000000",
+			"complete": true
+		},
+		{
+			"repositoryId": "42",
+			"id": "102",
+			"knownCostUsd": "2.000000000",
+			"complete": true
+		},
+		{
+			"repositoryId": "42",
+			"id": "103",
+			"knownCostUsd": "0.000000000",
+			"complete": false
+		},
+		{
+			"repositoryId": "42",
+			"id": "104",
+			"knownCostUsd": "0.000000000",
+			"complete": false
+		},
+		{
+			"repositoryId": "43",
+			"id": "201",
+			"knownCostUsd": "0.000000000",
+			"complete": false
+		}
+	]
+}
