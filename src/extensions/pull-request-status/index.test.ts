@@ -1,7 +1,9 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs"
+import { randomUUID } from "node:crypto"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
+import { check } from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -331,6 +333,24 @@ describe("PR status extension", () => {
 		expect(second.ui.setStatus).not.toHaveBeenCalledWith("work-pr-url", pr.url)
 	})
 
+	it("writes the footer again for each new session even when its value is unchanged", async () => {
+		const api = createExtensionApi()
+		pullRequestStatusExtension(api.api)
+		await start(api)
+		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: #7 open"))
+		vi.mocked(discovery.lookupBranchPullRequest).mockResolvedValue({ branch: "feature" })
+		const second = createContext({ cwd: join(directory, "second"), sessionManager: { getSessionId: () => "second" } })
+		const sessionStart = api.getHandler<SessionStartEvent>("session_start")
+		await sessionStart({ type: "session_start", reason: "new" }, second)
+		await vi.waitFor(() => expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(2))
+		await sessionStart({ type: "session_start", reason: "resume" }, ctx)
+		// The empty footer matches the last value written to the second session, but this one still shows PR #7.
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls.slice(-2)).toEqual([
+			["work-pr-url", undefined],
+			["work-pr", undefined],
+		])
+	})
+
 	it("aborts and drains a standalone lookup on shutdown", async () => {
 		vi.mocked(discovery.lookupBranchPullRequest).mockImplementation(async (_cwd, signal) => {
 			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
@@ -455,6 +475,67 @@ describe("branch PR for tracked work without commits", () => {
 		await Promise.resolve()
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
 		expect(ctx.ui.setStatus).not.toHaveBeenCalledWith("work-pr", expect.stringContaining("Branch"))
+	})
+})
+
+describe("PR status with the real reconciliation supervisor", () => {
+	it("does not rewrite the footer for other works' updates or an unchanged status", async () => {
+		const actual = await vi.importActual<typeof supervisor>("../work-attribution/reconcile-supervisor.js")
+		const delivered: discovery.WorkPullRequestUpdate[] = []
+		vi.mocked(supervisor.subscribePullRequestReconciliation).mockImplementationOnce((subscriber) =>
+			actual.subscribePullRequestReconciliation({
+				...subscriber,
+				onPullRequest: (update) => {
+					delivered.push(update)
+					subscriber.onPullRequest(update)
+				},
+			}),
+		)
+		const work = createExtensionApi()
+		createWorkAttributionExtension()(work.api)
+		const status = createExtensionApi()
+		pullRequestStatusExtension({ ...status.api, events: work.api.events })
+		await start(work)
+		// Merged links are settled, so no pass asks the provider; every tick still delivers every commit.
+		const otherWorks = [randomUUID(), randomUUID(), randomUUID()]
+		const rows = Array.from({ length: 101 }, (_, index) => {
+			const sha = (index + 1).toString(16).padStart(40, "0")
+			const url = `https://github.com/example/repo/pull/${index + 1}`
+			return {
+				...contribution(index ? otherWorks[index % otherWorks.length] : getWorkId(ctx)),
+				version: 1,
+				type: "commit",
+				sessionId: "history",
+				sha,
+				recordedAt: pr.checkedAt,
+				pullRequests: [
+					{ ...pr, url, number: index + 1, state: "merged", headSha: sha, mergeCommitSha: sha, mergedAt: pr.checkedAt },
+				],
+			}
+		})
+		mkdirSync(join(directory, "work-attribution"), { recursive: true })
+		writeFileSync(
+			join(directory, "work-attribution", "history.jsonl"),
+			`${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
+		)
+		// Each tick delivers all 101 commits, and so does the lease owner's pass it starts.
+		const pass = async (deliveries: number) => {
+			await vi.waitFor(() => expect(delivered).toHaveLength(deliveries), { timeout: 10_000 })
+			await vi.waitFor(async () => expect(await check(join(directory, "work-attribution"))).toBe(false), {
+				timeout: 10_000,
+			})
+		}
+		await start(status)
+		await pass(2 * rows.length)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toEqual([
+			["work-pr-url", undefined],
+			["work-pr", undefined],
+			["work-pr-url", "https://github.com/example/repo/pull/1"],
+			["work-pr", "PR: #1 merged"],
+		])
+		await vi.advanceTimersByTimeAsync(30_000)
+		await pass(4 * rows.length)
+		expect(ctx.ui.setStatus).toHaveBeenCalledTimes(4)
 	})
 })
 

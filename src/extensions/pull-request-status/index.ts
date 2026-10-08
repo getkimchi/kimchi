@@ -39,6 +39,8 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	let branchCheckedAt = 0
 	let branchRun: { controller: AbortController; promise: Promise<void> } | undefined
 	let shellRefreshAt = 0
+	/** The footer last written to this context; ACP sends a notification for every write. */
+	let shown: string | undefined
 	const updates = new Map<string, Map<string, WorkPullRequestUpdate>>()
 	const warnings = new Set<string>()
 	// Failures saved before this session started stay in the footer and /work without a new warning.
@@ -48,6 +50,9 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	}
 	function footer(text?: string, url?: string): void {
 		if (!context?.hasUI) return
+		const value = JSON.stringify([text, url])
+		if (value === shown) return
+		shown = value
 		// ACP keeps readable text; only the terminal footer adds OSC hyperlinks.
 		context.ui.setStatus("work-pr-url", url)
 		context.ui.setStatus("work-pr", text)
@@ -123,7 +128,8 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 				if (workId === update.workId && details().errors.includes(error)) warnOnce(error)
 			})
 		}
-		if (started && tracking) renderWork()
+		// Every reconciliation pass delivers all recorded commits; only the current work's rows change its footer.
+		if (started && tracking && update.workId === workId) renderWork()
 	}
 	function releaseWork(): void {
 		const stop = stopReconciliation
@@ -208,6 +214,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		tracking = Boolean(request.tracking)
 		workId = request.current?.workId
 		if (changed) {
+			shown = undefined
 			footer()
 			branchName = undefined
 			branchPull = undefined
