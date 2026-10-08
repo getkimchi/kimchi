@@ -285,7 +285,7 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		// Path images are appended after pasted/attached ones so existing
 		// marker numbering is unchanged.
 		const extractPaths = isInteractiveTui || modelSupportsImages(ctx.model)
-		const freshMatches = extractPaths ? extractTypedImagePaths(event.text, ctx.cwd ?? process.cwd()) : []
+		const freshMatches = extractPaths ? extractTypedImagePaths(event.text, ctx.cwd) : []
 		const pathMatches: PathAttachment[] = (
 			suppressedPaths ? freshMatches.filter((m) => !suppressedPaths.has(m.resolvedPath)) : freshMatches
 		).map((match) => ({

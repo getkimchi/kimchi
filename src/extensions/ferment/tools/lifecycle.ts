@@ -926,7 +926,7 @@ export async function completeFerment(
 	// only measures HOW WELL the work was done.
 	const ferment = fSnapshot
 	const phaseReviews = readLatestPhaseReviews(ferment.id)
-	const totalDiff = ferment.worktree.commit ? gatherPhaseEvidence(ferment.worktree.commit) : undefined
+	const totalDiff = ferment.worktree.commit ? gatherPhaseEvidence(ferment.worktree.commit, ctx.cwd) : undefined
 	// Hoisted before the judge input so the grader call below can include the
 	// journey's own prior refusal (retries carry it as delta context).
 	const FERMENT_GRADE_KEY = "__ferment__"
@@ -934,6 +934,7 @@ export async function completeFerment(
 		judgeJourneyGradeViaSubagent(
 			{
 				fermentName: ferment.name,
+				cwd: ctx.cwd,
 				goal: ferment.goal ?? "",
 				charter: ferment.charter,
 				successCriteria: renderSuccessCriteria(ferment.successCriteria, ""),
