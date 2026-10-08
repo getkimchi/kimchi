@@ -553,6 +553,22 @@ describe("permissions plan-mode tool visibility", () => {
 		})
 	})
 
+	it("plan-mode bash block names the active mode and warns about mid-turn changes", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const result = await harness.fire(
+			"tool_call",
+			{ ...createMockEvent(), input: { command: "echo x > out.txt" } },
+			createMockContext([]),
+		)
+
+		expect(result).toEqual(expect.objectContaining({ block: true }))
+		const reason = (result as { reason?: string }).reason ?? ""
+		expect(reason).toContain("Plan mode is currently ACTIVE")
+		expect(reason).toContain("may have changed since this turn started")
+	})
+
 	it("hides and blocks propose_ferment_scoping under explicit --plan", async () => {
 		const harness = createPermissionsHarness(["read", "bash", FERMENT_TOOLS.PROPOSE_SCOPING], { plan: true })
 

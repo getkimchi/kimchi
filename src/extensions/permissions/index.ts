@@ -1188,7 +1188,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						emitToolDecision(pi, event, mode, "reject", "plan_gate")
 						return {
 							block: true,
-							reason: `Plan mode: bash command "${command}" is not in the read-only allowlist. Use /permissions mode default (or auto) to run writes.`,
+							reason: `Plan mode is currently ACTIVE: bash command "${command}" is not in the read-only allowlist. The session mode may have changed since this turn started (e.g. Shift+Tab) — check the mode indicator, and do NOT keep re-verifying with read-only commands. Use /permissions mode default (or auto) to run writes.`,
 						}
 					}
 					emitToolDecision(pi, event, mode, "accept", "plan_readonly")
@@ -1198,7 +1198,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					emitToolDecision(pi, event, mode, "reject", "plan_gate")
 					return {
 						block: true,
-						reason: `Plan mode: tool ${toolName} is not available. Use /permissions mode default to enable writes.`,
+						reason: `Plan mode is currently ACTIVE: tool ${toolName} is not available. The session mode may have changed since this turn started — check the mode indicator. Use /permissions mode default to enable writes.`,
 					}
 				}
 				emitToolDecision(pi, event, mode, "accept", "plan_readonly")
