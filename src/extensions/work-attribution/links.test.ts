@@ -761,6 +761,23 @@ it("recovers a large receipt set over bounded passes without permanently skippin
 	expect(links()).toHaveLength(26)
 })
 
+it("reads each journal once and no retained plan in an idle pass over confirmed receipts", async () => {
+	for (let index = 0; index < 30; index++) acceptedContinuation("plan", `planner-${index}`)
+	const progress = {}
+	await repair(progress)
+	await repair(progress)
+	expect(links()).toHaveLength(30)
+	await flushWorkSummaries()
+	const read = vi.spyOn(fs, "readFileSync")
+	await repair(progress)
+	const paths = read.mock.calls.map(([path]) => String(path))
+	const journals = paths.filter((path) => path.endsWith(".jsonl"))
+	expect(journals).toHaveLength(60)
+	expect(new Set(journals).size).toBe(60)
+	expect(paths.filter((path) => path.endsWith(".md"))).toEqual([])
+	expect(links()).toHaveLength(30)
+})
+
 it("keeps a concurrent revocation authoritative when its append follows the repair snapshot", async () => {
 	const flow = acceptedContinuation()
 	await flushWorkSummaries()

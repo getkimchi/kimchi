@@ -18,6 +18,7 @@ const RECOVERY_VERSION = 5
 const RECOVERY_MTIME_SLACK_MS = 2000
 /** Background reads yield to the event loop after each chunk of this size. */
 const READ_CHUNK_BYTES = 1_048_576
+const BUDGET_CHECK_LINES = 1024
 interface SummaryEntry {
 	sessionId: string
 	[key: string]: unknown
@@ -218,7 +219,8 @@ export function readWorkRecords(
 				let last = lines.length - 1
 				while (last > 0 && !lines[last].trim()) last--
 				for (const [index, line] of lines.entries()) {
-					checkBudget()
+					// The first check follows each file read; later ones skip lines, as a clock read per line adds up.
+					if (index % BUDGET_CHECK_LINES === 0) checkBudget()
 					if (!line.trim()) continue
 					let value: unknown
 					try {
