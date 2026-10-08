@@ -49,7 +49,7 @@ test("session start on an announced-deprecated model warns with retirement date 
 			// The notification wraps at the terminal width — assert contiguous
 			// fragments so line breaks can't split a longer expected string.
 			await waitForText(terminal, 'Switch to "fake-new"', { timeoutMs: INPUT_TIMEOUT_MS })
-			await waitForText(terminal, "via /model", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "(/model in the terminal)", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("replacement hint visible")
 			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("prompt ready")
@@ -83,7 +83,8 @@ test("session start on an announced-deprecated model without a replacement uses 
 			trace.step("deprecation date visible")
 			// The notification wraps at the terminal width — assert contiguous
 			// fragments so line breaks can't split a longer expected string.
-			await waitForText(terminal, "Pick a replacement via /model.", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "Pick a replacement", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "(/model in the terminal)", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("fallback deprecation warning visible")
 			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("prompt ready")
