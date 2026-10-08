@@ -782,7 +782,7 @@ export interface BranchPullRequest {
 	branch: string
 	pullRequest?: WorkPullRequest
 }
-async function currentBranch(cwd: string, signal: AbortSignal, deadline: number): Promise<string | undefined> {
+export async function currentBranch(cwd: string, signal: AbortSignal, deadline: number): Promise<string | undefined> {
 	return command(
 		"git",
 		["-C", cwd, "symbolic-ref", "--quiet", "--short", "HEAD"],

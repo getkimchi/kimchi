@@ -18,6 +18,7 @@ vi.mock("../work-attribution/reconcile-supervisor.js", () => ({
 }))
 vi.mock("./pull-requests.js", async (original) => ({
 	...(await original<typeof discovery>()),
+	currentBranch: vi.fn(),
 	lookupBranchPullRequest: vi.fn(),
 }))
 
@@ -69,6 +70,7 @@ beforeEach(() => {
 	ctx = createContext({ cwd: directory })
 	vi.mocked(supervisor.subscribeFileReconciliation).mockReturnValue(async () => {})
 	vi.mocked(supervisor.subscribePullRequestReconciliation).mockReturnValue(async () => {})
+	vi.mocked(discovery.currentBranch).mockResolvedValue(undefined)
 	vi.mocked(discovery.lookupBranchPullRequest).mockResolvedValue({ branch: "feature", pullRequest: pr })
 	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
 })
@@ -391,6 +393,68 @@ describe("PR status extension", () => {
 		update(contribution(restored))
 		setWorkId(ctx, restored, work.api)
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR: #7 open")
+	})
+})
+
+describe("branch PR for tracked work without commits", () => {
+	async function startTracked() {
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const status = createExtensionApi()
+		pullRequestStatusExtension({ ...status.api, events: api.api.events })
+		await start(api)
+		await start(status)
+		return vi.mocked(supervisor.subscribePullRequestReconciliation).mock.calls[0][0]?.onPullRequest
+	}
+
+	it("shows the branch PR and asks the provider again only after a branch change or five minutes", async () => {
+		vi.mocked(discovery.currentBranch).mockResolvedValue("feature")
+		await startTracked()
+		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "Branch PR: #7 open"))
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-pr-url", pr.url)
+		await vi.advanceTimersByTimeAsync(4 * 60_000)
+		expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(1)
+		const now = Date.now()
+		vi.spyOn(Date, "now").mockReturnValue(now + 5 * 60_000)
+		await vi.advanceTimersByTimeAsync(30_000)
+		await vi.waitFor(() => expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(2))
+		vi.mocked(discovery.currentBranch).mockResolvedValue("other")
+		vi.mocked(discovery.lookupBranchPullRequest).mockResolvedValue({ branch: "other", pullRequest: undefined })
+		await vi.advanceTimersByTimeAsync(30_000)
+		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", undefined))
+		expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(3)
+	})
+
+	it("replaces the branch PR with the work's own status once it records a commit", async () => {
+		vi.mocked(discovery.currentBranch).mockResolvedValue("feature")
+		const update = await startTracked()
+		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "Branch PR: #7 open"))
+		update?.({
+			workId: getWorkId(ctx),
+			sessionId: ctx.sessionManager.getSessionId(),
+			cwd: directory,
+			repository: join(directory, ".git"),
+			worktree: directory,
+			sha: "b".repeat(40),
+			pullRequests: [],
+		})
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR/MR: waiting")
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10 * 60_000)
+		await vi.advanceTimersByTimeAsync(60_000)
+		expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(1)
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR/MR: waiting")
+	})
+
+	it("stays quiet when the branch lookup fails", async () => {
+		vi.mocked(discovery.currentBranch).mockResolvedValue("feature")
+		vi.mocked(discovery.lookupBranchPullRequest).mockRejectedValue(
+			new discovery.LookupError("GitHub authentication failed."),
+		)
+		await startTracked()
+		await vi.waitFor(() => expect(discovery.lookupBranchPullRequest).toHaveBeenCalledTimes(1))
+		await Promise.resolve()
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		expect(ctx.ui.setStatus).not.toHaveBeenCalledWith("work-pr", expect.stringContaining("Branch"))
 	})
 })
 

@@ -12,6 +12,7 @@ import {
 } from "../work-attribution.js"
 import { mergePullRequestLinks } from "./links.js"
 import {
+	currentBranch,
 	lookupBranchPullRequest,
 	lookupFailureReason,
 	type WorkPullRequest,
@@ -21,6 +22,8 @@ import {
 function requestStatus(pr: WorkPullRequest): string {
 	return `${pr.provider === "gitlab" ? "MR: !" : "PR: #"}${pr.number} ${pr.state}`
 }
+/** A tracked work without commits shows its branch's PR; the provider is asked again only on a branch change. */
+const BRANCH_REFRESH_MS = 5 * 60_000
 
 export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	let context: ExtensionContext | undefined
@@ -32,6 +35,8 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	let draining = Promise.resolve()
 	let timer: ReturnType<typeof setInterval> | undefined
 	let branchName: string | undefined
+	let branchPull: WorkPullRequest | undefined
+	let branchCheckedAt = 0
 	let branchRun: { controller: AbortController; promise: Promise<void> } | undefined
 	let shellRefreshAt = 0
 	const updates = new Map<string, Map<string, WorkPullRequestUpdate>>()
@@ -102,7 +107,9 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		if (errors.length) footer("PR/MR: check /work")
 		else if (links.length === 1 && !pending) footer(requestStatus(links[0]), links[0].url)
 		else if (links.length) footer(`PRs/MRs: ${links.length} linked${pending ? `, ${pending} waiting` : ""}`)
-		else footer(pending ? "PR/MR: waiting" : undefined)
+		else if (pending) footer("PR/MR: waiting")
+		// Orientation only: the branch PR's cost is tracked once this work records a commit.
+		else footer(branchPull && `Branch ${requestStatus(branchPull)}`, branchPull?.url)
 	}
 	function receive(update: WorkPullRequestUpdate): void {
 		const rows = updates.get(update.workId) ?? new Map<string, WorkPullRequestUpdate>()
@@ -128,8 +135,38 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		timer = undefined
 		branchRun?.controller.abort()
 	}
+	function pollBranchForWork(): void {
+		if (!started || !tracking || !context || branchRun) return
+		const { links, pending, errors } = details()
+		if (links.length || pending || errors.length) return
+		const ctx = context
+		const key = contextKey(ctx)
+		const controller = new AbortController()
+		const current = () =>
+			started && tracking && !controller.signal.aborted && context === ctx && contextKey(ctx) === key
+		const promise = currentBranch(ctx.cwd, controller.signal, Date.now() + 2000)
+			.then(async (branch) => {
+				if (!current() || (branch === branchName && Date.now() - branchCheckedAt < BRANCH_REFRESH_MS)) return
+				if (branch !== branchName) branchPull = undefined
+				branchName = branch
+				branchCheckedAt = Date.now()
+				const result = branch ? await lookupBranchPullRequest(ctx.cwd, controller.signal) : undefined
+				if (current()) branchPull = result?.pullRequest
+			})
+			// The work's own commit lookups report failures; this orientation-only status stays quiet.
+			.catch(() => {})
+			.finally(() => {
+				branchRun = undefined
+				if (current()) renderWork()
+			})
+		branchRun = { controller, promise }
+	}
 	function pollBranch(): void {
-		if (!started || tracking || !context || branchRun) return
+		if (tracking) {
+			pollBranchForWork()
+			return
+		}
+		if (!started || !context || branchRun) return
 		const ctx = context
 		const key = contextKey(ctx)
 		const controller = new AbortController()
@@ -173,25 +210,25 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		if (changed) {
 			footer()
 			branchName = undefined
+			branchPull = undefined
+			branchCheckedAt = 0
 			branchRun?.controller.abort()
 		}
 		if (tracking) {
-			stopBranch()
 			// The tracking factory may be registered before its session_start callback runs.
 			if (!workId) {
+				stopBranch()
 				releaseWork()
 				return
 			}
 			stopReconciliation ??= subscribePullRequestReconciliation({ onPullRequest: receive, onError: warnOnce })
 			renderWork()
-		} else {
-			releaseWork()
-			if (!timer) {
-				timer = setInterval(pollBranch, RECONCILIATION_INTERVAL_MS)
-				timer.unref()
-			}
-			pollBranch()
+		} else releaseWork()
+		if (!timer) {
+			timer = setInterval(pollBranch, RECONCILIATION_INTERVAL_MS)
+			timer.unref()
 		}
+		pollBranch()
 	}
 	pi.events.on(WORK_CHANGED_EVENT, () => synchronize())
 	pi.events.on(WORK_DETAILS_REQUEST_EVENT, (candidate) => {
