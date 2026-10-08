@@ -19,9 +19,7 @@ export interface BillingSource {
 	/** One-way fingerprint of the credential actually sent; never the credential itself. */
 	credentialHash: string
 }
-export type BillingSelector =
-	| { type: "tag"; tag: string; startTime: string; endTime: string }
-	| { type: "prompt"; promptId: string }
+export type BillingSelector = { type: "tag"; tag: string; startTime: string; endTime: string }
 
 /** The exact tag finds the bill; starting early tolerates a fast local clock within the API's 33-day range. */
 const LOOKUP_LEAD_MS = 12 * 60 * 60_000
@@ -43,7 +41,6 @@ export function requestTagSelector(
 }
 interface BillingRow {
 	id: string
-	promptId?: string
 	costUsd: string | null
 	/** Optional API observations, not estimates. Absent values remain unknown. */
 	promptTokens?: string
@@ -89,7 +86,6 @@ interface RequestBilling {
 	request: WorkRecord
 	requestId: string
 	source?: BillingSource
-	promptId?: string
 	selector?: BillingSelector
 	tagSkipped?: string
 	invalid: boolean
@@ -204,9 +200,8 @@ export function captureBillingSource(headers: Headers, url: string, cwd: string)
 }
 
 function selector(value: unknown): value is BillingSelector {
-	if (!object(value)) return false
-	if (value.type === "prompt") return isWorkId(value.promptId)
 	return (
+		object(value) &&
 		value.type === "tag" &&
 		typeof value.tag === "string" &&
 		typeof value.startTime === "string" &&
@@ -214,13 +209,7 @@ function selector(value: unknown): value is BillingSelector {
 	)
 }
 function sameSelector(left: BillingSelector, right: BillingSelector): boolean {
-	if (left.type === "prompt") return right.type === "prompt" && left.promptId === right.promptId
-	return (
-		right.type === "tag" &&
-		left.tag === right.tag &&
-		left.startTime === right.startTime &&
-		left.endTime === right.endTime
-	)
+	return left.tag === right.tag && left.startTime === right.startTime && left.endTime === right.endTime
 }
 function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
 	const requests = new Map<string, RequestBilling>()
@@ -269,17 +258,12 @@ function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
 			}
 			if (item.selector && !sameSelector(item.selector, saved)) item.invalid = true
 			item.selector = saved
-		} else if (object(row.response) && isWorkId(row.response.promptId)) {
-			if (item.promptId && item.promptId !== row.response.promptId) item.invalid = true
-			item.promptId = row.response.promptId
 		}
 	}
 	const owners = new Map<string, RequestBilling>()
 	for (const item of requests.values()) {
-		if (!item.selector && item.promptId) item.selector = { type: "prompt", promptId: item.promptId }
 		if (!item.source || !item.selector) continue
-		const identity = item.selector.type === "tag" ? item.selector.tag : item.selector.promptId
-		const key = JSON.stringify([item.source.apiUrl, item.source.credentialHash, item.selector.type, identity])
+		const key = JSON.stringify([item.source.apiUrl, item.source.credentialHash, item.selector.tag])
 		const other = owners.get(key)
 		if (other) {
 			other.invalid = true
@@ -290,17 +274,15 @@ function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
 	for (const row of records) {
 		if (row.type !== "request_cost") continue
 		const item = requests.get(String(row.requestId))
-		if (!item) continue
-		// Earlier ledgers stored only promptId. New ones retain the exact dispatched selector.
-		const savedSelector = row.billingSelector ?? { type: "prompt", promptId: row.promptId }
+		// Rows without a tag selector came from the removed prompt-ID lookup and prove nothing.
+		if (!item || !selector(row.billingSelector)) continue
 		if (
 			!storedLookup(row.billingLookup) ||
 			!item.source ||
 			!source(row.billingSource) ||
 			!sameSource(item.source, row.billingSource) ||
 			!item.selector ||
-			!selector(savedSelector) ||
-			!sameSelector(item.selector, savedSelector) ||
+			!sameSelector(item.selector, row.billingSelector) ||
 			row.sessionId !== item.request.sessionId ||
 			row.workId !== item.request.workId ||
 			!Array.isArray(row.billingRows)
@@ -339,12 +321,7 @@ function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
 		)
 			item.substantiveLookup = lookup
 		for (const bill of row.billingRows) {
-			if (
-				!object(bill) ||
-				!isWorkId(bill.id) ||
-				(item.selector.type === "prompt" && bill.promptId !== item.selector.promptId) ||
-				(bill.costUsd !== null && typeof bill.costUsd !== "string")
-			) {
+			if (!object(bill) || !isWorkId(bill.id) || (bill.costUsd !== null && typeof bill.costUsd !== "string")) {
 				item.invalid = true
 				continue
 			}
@@ -455,7 +432,7 @@ function billingMetadata(item: Record<string, unknown>): Partial<BillingRow> {
 		if (typeof value === "string" && value.length <= 200 && !/\p{Cc}/u.test(value)) result[field] = value
 		else unavailable.push(field)
 	}
-	for (const field of ["promptId", "sessionId", "parentSessionId"] as const) {
+	for (const field of ["sessionId", "parentSessionId"] as const) {
 		const value = item[field]
 		if (value == null || value === "") continue
 		if (isWorkId(value)) result[field] = value
@@ -503,11 +480,9 @@ async function lookupRows(
 	let expectedCount: number | undefined
 	for (let page = 0; page < MAX_PAGES; page++) {
 		const params = new URLSearchParams({ inferUserFromApiKey: "true", "page.limit": String(PAGE_SIZE) })
-		if (requestSelector.type === "tag") {
-			params.set("tags", requestSelector.tag)
-			params.set("startTime", requestSelector.startTime)
-			params.set("endTime", requestSelector.endTime)
-		} else params.set("promptId", requestSelector.promptId)
+		params.set("tags", requestSelector.tag)
+		params.set("startTime", requestSelector.startTime)
+		params.set("endTime", requestSelector.endTime)
 		if (cursor) params.set("page.cursor", cursor)
 		const response = await fetchBounded(
 			`${apiUrl}/ai-optimizer/v1beta/organizations/${encodeURIComponent(organizationId)}/llm-requests?${params}`,
@@ -534,19 +509,12 @@ async function lookupRows(
 			if (!object(item) || !isWorkId(item.id)) throw new Error("Billing response has no valid row identity")
 			if (userId && item.castaiApiKeyOwnerId !== undefined && item.castaiApiKeyOwnerId !== userId)
 				throw new Error("Billing response belongs to another API key owner")
-			if (requestSelector.type === "prompt" && item.promptId !== requestSelector.promptId)
-				throw new Error("Billing response has no matching prompt identity")
 			if (item.totalPrice !== null && item.totalPrice !== undefined && typeof item.totalPrice !== "string")
 				throw new Error("Billing response has no exact decimal price")
 			const costUsd = item.totalPrice ?? null
 			if (costUsd !== null && decimalNanos(costUsd) === undefined)
 				throw new Error("Billing response has an invalid decimal price")
-			rows.push({
-				id: item.id,
-				...(requestSelector.type === "prompt" ? { promptId: requestSelector.promptId } : {}),
-				costUsd,
-				...billingMetadata(item),
-			})
+			rows.push({ id: item.id, costUsd, ...billingMetadata(item) })
 			billingIds.add(item.id)
 		}
 		if (body.nextPageCursor === undefined || body.nextPageCursor === "") {
@@ -668,13 +636,10 @@ export async function reconcileWorkCosts(
 			// Without an exact identity there is no network work to retry. The report derives
 			// this state from source records instead of appending the same event every tick.
 			if (item.invalid || !item.source || !item.selector) continue
-			const startedAt =
-				item.selector.type === "tag"
-					? Date.parse(item.selector.endTime) - 32 * DAY_MS
-					: Date.parse(String(item.request.startedAt ?? item.request.recordedAt))
+			const startedAt = Date.parse(item.selector.endTime) - 32 * DAY_MS
 			const lastCheck = checkedAt(item)
 			// One final lookup may catch up after a closed client; subsequent launches reuse it.
-			if (Number.isFinite(startedAt) && lastCheck >= startedAt + 32 * DAY_MS) continue
+			if (lastCheck >= startedAt + 32 * DAY_MS) continue
 			const age = Date.now() - startedAt
 			const refresh =
 				item.lookup?.status === "no-charge"
@@ -797,7 +762,6 @@ export async function reconcileWorkCosts(
 					type: "request_cost",
 					requestId: item.requestId,
 					billingSource: item.source,
-					promptId: item.promptId,
 					billingSelector: item.selector,
 					billingRows: rows,
 					billingLookup: lookup,

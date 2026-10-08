@@ -48,7 +48,7 @@ beforeEach(() => {
 	fetchMock.mockImplementation(async (input) =>
 		String(input).endsWith("api-keys:verify")
 			? Response.json({ organizationId: ORG, userId: PROMPT })
-			: Response.json({ items: [{ id: ROW, promptId: PROMPT, totalPrice: "0.123456789" }], nextPageCursor: "" }),
+			: Response.json({ items: [{ id: ROW, totalPrice: "0.123456789" }], nextPageCursor: "" }),
 	)
 	vi.stubGlobal("fetch", fetchMock)
 })
@@ -61,13 +61,7 @@ afterEach(async () => {
 	rmSync(dir, { recursive: true, force: true })
 })
 
-function tracked(
-	sessionId = "session",
-	requestId = "request",
-	promptId = PROMPT,
-	response = true,
-	fields: Record<string, unknown> = {},
-) {
+function tracked(sessionId: string, requestId: string, fields: Record<string, unknown> = {}) {
 	const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
 	const workId = getWorkId(ctx)
 	const source = captureBillingSource(new Headers({ Authorization: `Bearer ${currentKey}` }), GATEWAY, dir)
@@ -78,8 +72,6 @@ function tracked(
 		scope: { account: { apiUrl: API, organizationId: ORG, userId: PROMPT }, repository: join(dir, ".git") },
 		...fields,
 	})
-	if (response)
-		appendWorkRecord(ctx, { type: "request_response", requestId, billingSource: source, response: { promptId } })
 	appendWorkRecord(ctx, {
 		type: "commit",
 		sha: "a".repeat(40),
@@ -109,9 +101,8 @@ function report(workId: string) {
 function sync() {
 	return reconcileWorkCosts(dir, new AbortController().signal)
 }
-function tagged(response = false) {
-	const requestId = randomUUID()
-	const result = tracked("tagged", requestId, PROMPT, response)
+function tagged(sessionId = "tagged", requestId: string = randomUUID(), fields: Record<string, unknown> = {}) {
+	const result = tracked(sessionId, requestId, fields)
 	const dispatchedAt = "2026-10-01T08:00:00.000Z"
 	const selector = requestTagSelector(requestId, dispatchedAt)
 	appendWorkRecord(result.ctx, {
@@ -126,7 +117,7 @@ function tagged(response = false) {
 
 describe("automatic exact work cost lookup", () => {
 	it("labels separate accounts when a work view contains the same PR more than once", async () => {
-		const { workId } = tracked()
+		const { workId } = tagged()
 		await sync()
 		const saved = report(workId)
 		saved.pullRequests.push({
@@ -190,7 +181,7 @@ describe("automatic exact work cost lookup", () => {
 	})
 
 	it("keeps a legacy request's exact price without assigning today's account to its work", async () => {
-		const { workId } = tracked("legacy", "request", PROMPT, true, { scope: undefined })
+		const { workId } = tagged("legacy", randomUUID(), { scope: undefined })
 		await sync()
 		expect(report(workId).requests[0]).toMatchObject({
 			account: null,
@@ -214,19 +205,19 @@ describe("automatic exact work cost lookup", () => {
 		const second = { ...first }
 		if (kind === "organization") second.organizationId = ROW
 		if (kind === "user") second.userId = ROW
+		const requestIds = [randomUUID(), randomUUID()]
 		const works = [first, second].map((account, index) => {
 			currentKey = `test-only-account-${index}`
-			const requestId = `request-${index}`
-			const promptId = index === 0 ? PROMPT : ROW
-			const saved = tracked(`session-${index}`, requestId, promptId, true, {
+			const requestId = requestIds[index]
+			const saved = tagged(`session-${index}`, requestId, {
 				scope: { account, repository: join(dir, ".git") },
 			})
 			appendWorkRecord(saved.ctx, {
 				type: "request_cost",
 				requestId,
 				billingSource: saved.source,
-				billingSelector: { type: "prompt", promptId },
-				billingRows: [{ id: index === 0 ? ROW : ORG, promptId, costUsd: String(index + 1) }],
+				billingSelector: saved.selector,
+				billingRows: [{ id: index === 0 ? ROW : ORG, costUsd: String(index + 1) }],
 				billingLookup: {
 					status: "priced",
 					checkedAt: new Date().toISOString(),
@@ -243,7 +234,7 @@ describe("automatic exact work cost lookup", () => {
 			expect(saved.pullRequests).toHaveLength(1)
 			expect(saved.pullRequests[0]).toMatchObject({
 				account: index === 0 ? first : second,
-				requestIds: kind === "same-account" ? ["request-0", "request-1"] : [`request-${index}`],
+				requestIds: kind === "same-account" ? [...requestIds].sort() : [requestIds[index]],
 				workIds: kind === "same-account" ? [...works].sort() : [workId],
 				totalCostUsd: kind === "same-account" ? "3.000000000" : `${index + 1}.000000000`,
 			})
@@ -256,7 +247,7 @@ describe("automatic exact work cost lookup", () => {
 
 	it("shows inferred PR ownership separately from an exact price", async () => {
 		const account = { apiUrl: API, organizationId: ORG, userId: PROMPT }
-		const { workId } = tracked("inferred", "request", PROMPT, true, {
+		const { workId } = tagged("inferred", randomUUID(), {
 			scope: { account, repository: join(dir, ".git") },
 			segment: { id: "input", attribution: "inferred", reason: "model-continue" },
 		})
@@ -275,7 +266,7 @@ describe("automatic exact work cost lookup", () => {
 	})
 
 	it("shows price coverage and unresolved ownership separately in work details", async () => {
-		const { ctx, workId } = tracked("details", "priced", PROMPT, true, {
+		const { ctx, workId } = tagged("details", randomUUID(), {
 			segment: { id: "uncertain", attribution: "unknown", reason: "model-uncertain" },
 		})
 		appendWorkRecord(ctx, { type: "request", requestId: "not-billed", startedAt: "2026-10-01T08:00:00Z" })
@@ -287,8 +278,8 @@ describe("automatic exact work cost lookup", () => {
 	it("refreshes both work views after a correction and revocation without duplicating bills", async () => {
 		const scope = { account: { apiUrl: API, organizationId: ORG, userId: PROMPT }, repository: join(dir, ".git") }
 		const requestId = randomUUID()
-		const plan = tracked("planning", requestId, PROMPT, true, { scope })
-		const implementation = tracked("implementation", randomUUID(), ORG, true, { scope })
+		const plan = tagged("planning", requestId, { scope })
+		const implementation = tagged("implementation", randomUUID(), { scope })
 		const link = {
 			type: "work_link",
 			linkId: randomUUID(),
@@ -304,10 +295,8 @@ describe("automatic exact work cost lookup", () => {
 		fetchMock.mockImplementation(async (input) => {
 			const url = new URL(String(input))
 			if (url.pathname.endsWith("api-keys:verify")) return Response.json({ organizationId: ORG, userId: PROMPT })
-			const promptId = url.searchParams.get("promptId")
-			return Response.json({
-				items: [{ id: promptId === PROMPT ? ROW : ORG, promptId, totalPrice: promptId === PROMPT ? "1" : "2" }],
-			})
+			const planned = url.searchParams.get("tags") === `kimchi-request:${requestId}`
+			return Response.json({ items: [{ id: planned ? ROW : ORG, totalPrice: planned ? "1" : "2" }] })
 		})
 		await sync()
 		expect(report(implementation.workId).requests).toHaveLength(2)
@@ -341,7 +330,7 @@ describe("automatic exact work cost lookup", () => {
 		if (change === "organization") account.organizationId = ROW
 		if (change === "user") account.userId = ROW
 		if (change === "endpoint") account.apiUrl = "https://other.example/api"
-		const { workId } = tracked("session", "request", PROMPT, true, {
+		const { workId, requestId } = tagged("session", randomUUID(), {
 			scope: { account, repository: join(dir, ".git") },
 		})
 		fetchMock.mockResolvedValueOnce(
@@ -360,7 +349,7 @@ describe("automatic exact work cost lookup", () => {
 			)
 			expect(costs.pullRequests[0]).toMatchObject({
 				requestIds: [],
-				unknownRequestIds: ["request"],
+				unknownRequestIds: [requestId],
 				totalCostUsd: null,
 			})
 		}
@@ -371,7 +360,6 @@ describe("automatic exact work cost lookup", () => {
 	it("retains safe billed metadata through source records, work.json and recovery", async () => {
 		const { workId } = tagged()
 		const metadata = {
-			promptId: PROMPT,
 			sessionId: ROW,
 			parentSessionId: ORG,
 			createTime: "2026-10-01T08:00:01.123456789Z",
@@ -411,6 +399,7 @@ describe("automatic exact work cost lookup", () => {
 						totalPrice: "0.123456789",
 						...metadata,
 						completionTokens: 7,
+						promptId: PROMPT,
 						promptPreview: "DO_NOT_SAVE",
 						authorization: "DO_NOT_SAVE",
 						apiKeyAlias: "DO_NOT_SAVE",
@@ -503,19 +492,19 @@ describe("automatic exact work cost lookup", () => {
 		expect(JSON.stringify(readWorkRecords(dir))).not.toContain("DO_NOT_SAVE")
 	})
 	it("enriches legacy billed rows without changing price totals or losing earlier evidence", async () => {
-		const { workId } = tracked()
+		const { workId } = tagged()
 		await sync()
 		const now = Date.now()
 		vi.spyOn(Date, "now").mockReturnValue(now + 6 * 60_000)
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
-		const enriched = { id: ROW, promptId: PROMPT, totalPrice: "0.123456789", promptTokens: "100", cacheReadPrice: "0" }
+		const enriched = { id: ROW, totalPrice: "0.123456789", promptTokens: "100", cacheReadPrice: "0" }
 		fetchMock.mockResolvedValueOnce(Response.json({ items: [enriched, enriched], totalCount: 1 }))
 		await sync()
 		await flushWorkSummaries()
 		const rows = JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8")).requests[0].billingRows
 		expect(rows).toEqual([
-			{ id: ROW, promptId: PROMPT, costUsd: "0.123456789" },
-			{ id: ROW, promptId: PROMPT, costUsd: "0.123456789", promptTokens: "100", cacheReadPrice: "0" },
+			{ id: ROW, costUsd: "0.123456789" },
+			{ id: ROW, costUsd: "0.123456789", promptTokens: "100", cacheReadPrice: "0" },
 		])
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
 		vi.mocked(Date.now).mockReturnValue(now + 12 * 60_000)
@@ -608,7 +597,15 @@ describe("automatic exact work cost lookup", () => {
 		false,
 		true,
 	])("uses the captured exact tag with deployed price rows (response present: %s)", async (response) => {
-		const { workId, requestId } = tagged(response)
+		const { workId, requestId, ctx, source } = tagged()
+		// The captured prompt ID is diagnostic only; the tag alone selects the bill.
+		if (response)
+			appendWorkRecord(ctx, {
+				type: "request_response",
+				requestId,
+				billingSource: source,
+				response: { promptId: PROMPT },
+			})
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
 		fetchMock.mockResolvedValueOnce(Response.json({ items: [{ id: ROW, totalPrice: "0.000068350" }], totalCount: 1 }))
 		await sync()
@@ -662,7 +659,7 @@ describe("automatic exact work cost lookup", () => {
 		const { workId, requestId, ctx, source } = tagged()
 		const dispatchedAt = "2026-10-01T09:00:00.000Z"
 		const earlier = randomUUID()
-		tracked("tagged", earlier, PROMPT, false)
+		tracked("tagged", earlier)
 		appendWorkRecord(ctx, {
 			type: "request_dispatch",
 			requestId: earlier,
@@ -713,13 +710,12 @@ describe("automatic exact work cost lookup", () => {
 		"organization",
 	])("keeps retrying current-account billing behind many unchanged %s mismatches", async (mismatch) => {
 		for (let i = 0; i < 30; i++) {
-			const promptId = randomUUID()
-			const { ctx, source } = tracked(`old-${i}`, `old-${i}`, promptId)
+			const { ctx, source, requestId, selector } = tagged(`old-${i}`)
 			appendWorkRecord(ctx, {
 				type: "request_cost",
-				requestId: `old-${i}`,
+				requestId,
 				billingSource: source,
-				promptId,
+				billingSelector: selector,
 				billingRows: [],
 				billingLookup: {
 					status: "account-changed",
@@ -733,21 +729,21 @@ describe("automatic exact work cost lookup", () => {
 			})
 		}
 		if (mismatch === "key") currentKey = "test-only-new-account"
-		const { workId } = tracked("live", "live")
+		const { workId, requestId } = tagged("live")
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
 		fetchMock.mockResolvedValueOnce(Response.json({ items: [] }))
 		await sync()
-		const before = readWorkRecords(dir).filter((row) => row.type === "request_cost" && row.requestId !== "live")
+		const before = readWorkRecords(dir).filter((row) => row.type === "request_cost" && row.requestId !== requestId)
 		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000)
 		await sync()
 		expect(fetchMock).toHaveBeenCalledTimes(4)
 		expect(report(workId).requests[0].totalCostUsd).toBe("0.123456789")
-		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost" && row.requestId !== "live")).toEqual(
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost" && row.requestId !== requestId)).toEqual(
 			before,
 		)
 	})
 	it("bounds processed requests when all share one cached failed account verification", async () => {
-		for (let i = 0; i < 35; i++) tracked(`session-${i}`, `request-${i}`, randomUUID())
+		for (let i = 0; i < 35; i++) tagged(`session-${i}`)
 		fetchMock.mockImplementation(async () => new Response(null, { status: 503 }))
 		await sync()
 		expect(fetchMock).toHaveBeenCalledOnce()
@@ -757,8 +753,8 @@ describe("automatic exact work cost lookup", () => {
 		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toHaveLength(35)
 	})
 	it("enforces the wall deadline before another HTTP call even before the timer fires", async () => {
-		const { workId } = tracked("a", "a")
-		tracked("b", "b", randomUUID())
+		const { workId } = tagged("a")
+		tagged("b")
 		const now = Date.now()
 		vi.spyOn(Date, "now").mockReturnValue(now)
 		fetchMock.mockImplementation(async () => {
@@ -971,20 +967,18 @@ describe("automatic exact work cost lookup", () => {
 		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
 	})
 	it.each([2, -1, 1.5, "2"])("keeps an incomplete or invalid reported count (%s) unknown", async (totalCount) => {
-		const { workId } = tracked()
+		const { workId } = tagged()
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
-		fetchMock.mockResolvedValueOnce(
-			Response.json({ items: [{ id: ROW, promptId: PROMPT, totalPrice: "1.25" }], totalCount }),
-		)
+		fetchMock.mockResolvedValueOnce(Response.json({ items: [{ id: ROW, totalPrice: "1.25" }], totalCount }))
 		await sync()
 		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
 	})
 	it("rejects response metadata owned by another work or session", async () => {
-		const { workId, source } = tracked()
+		const { workId, source, requestId } = tagged()
 		const other = createContext({ cwd: dir, sessionManager: { getSessionId: () => "unrelated-session" } })
 		appendWorkRecord(other, {
 			type: "request_response",
-			requestId: "request",
+			requestId,
 			billingSource: source,
 			response: { promptId: PROMPT },
 		})
@@ -993,9 +987,9 @@ describe("automatic exact work cost lookup", () => {
 		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
 	})
 	it("accepts a later valid price after a malformed decimal without preserving the rejected amount", async () => {
-		const { workId } = tracked()
+		const { workId } = tagged()
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
-		fetchMock.mockResolvedValueOnce(Response.json({ items: [{ id: ROW, promptId: PROMPT, totalPrice: "NaN" }] }))
+		fetchMock.mockResolvedValueOnce(Response.json({ items: [{ id: ROW, totalPrice: "NaN" }] }))
 		await sync()
 		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
 		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000)
@@ -1004,7 +998,7 @@ describe("automatic exact work cost lookup", () => {
 		expect(JSON.stringify(readWorkRecords(dir))).not.toContain("NaN")
 	})
 	it("recovers exact prices into a damaged work summary from the source ledger", async () => {
-		const { workId } = tracked()
+		const { workId } = tagged()
 		await sync()
 		await flushWorkSummaries()
 		const path = join(dir, "work", workId, "work.json")
@@ -1015,7 +1009,7 @@ describe("automatic exact work cost lookup", () => {
 		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(before)
 	})
 	it("bounds requests per pass and visits the remaining requests on the next pass", async () => {
-		for (let i = 0; i < 35; i++) tracked(`session-${i}`, `request-${i}`, randomUUID())
+		for (let i = 0; i < 35; i++) tagged(`session-${i}`)
 		fetchMock.mockImplementation(async (input) =>
 			String(input).endsWith("api-keys:verify")
 				? Response.json({ organizationId: ORG, userId: PROMPT })
@@ -1026,13 +1020,12 @@ describe("automatic exact work cost lookup", () => {
 		await sync()
 		expect(fetchMock).toHaveBeenCalledTimes(37)
 		expect(
-			new Set(
-				fetchMock.mock.calls.map(([input]) => new URL(String(input)).searchParams.get("promptId")).filter(Boolean),
-			).size,
+			new Set(fetchMock.mock.calls.map(([input]) => new URL(String(input)).searchParams.get("tags")).filter(Boolean))
+				.size,
 		).toBe(35)
 	})
 	it("aborts a stalled response body and cancels its reader", async () => {
-		tracked()
+		tagged()
 		const controller = new AbortController()
 		const cancel = vi.fn()
 		fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({ cancel })))
@@ -1057,7 +1050,7 @@ describe("automatic exact work cost lookup", () => {
 		expect(report(workId).requests[0].totalCostUsd).toBeNull()
 	})
 	it("rebuilds a missing derived report from durable cost observations without refetching", async () => {
-		const { workId } = tracked()
+		const { workId } = tagged()
 		await sync()
 		const before = report(workId)
 		unlinkSync(join(dir, "work", workId, "costs.json"))
@@ -1067,20 +1060,20 @@ describe("automatic exact work cost lookup", () => {
 		expect(fetchMock).not.toHaveBeenCalled()
 	})
 	it("does not let a malformed cost observation claim a complete total", async () => {
-		const { ctx, workId, source } = tracked()
+		const { ctx, workId, source, requestId, selector } = tagged()
 		appendWorkRecord(ctx, {
 			type: "request_cost",
-			requestId: "request",
+			requestId,
 			billingSource: source,
-			promptId: PROMPT,
-			billingRows: [{ id: ROW, promptId: PROMPT, costUsd: "100" }],
+			billingSelector: selector,
+			billingRows: [{ id: ROW, costUsd: "100" }],
 			billingLookup: { status: "priced", checkedAt: new Date().toISOString() },
 		})
 		await sync()
 		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
 	})
 	it("remembers the original verified organization across failed or changed-account refreshes", async () => {
-		const { workId } = tracked()
+		const { workId } = tagged()
 		await sync()
 		const now = Date.now()
 		vi.spyOn(Date, "now").mockReturnValue(now + 6 * 60_000)
@@ -1093,17 +1086,17 @@ describe("automatic exact work cost lookup", () => {
 		expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("llm-requests"))).toHaveLength(1)
 	})
 	it("bounds looping pages and keeps the known subtotal unknown", async () => {
-		const { workId } = tracked()
+		const { workId } = tagged()
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
 		fetchMock.mockImplementation(async () =>
-			Response.json({ items: [{ id: ROW, promptId: PROMPT, totalPrice: "1" }], nextPageCursor: "same-page" }),
+			Response.json({ items: [{ id: ROW, totalPrice: "1" }], nextPageCursor: "same-page" }),
 		)
 		await sync()
 		expect(fetchMock).toHaveBeenCalledTimes(3)
 		expect(report(workId).pullRequests[0]).toMatchObject({ knownCostUsd: "1.000000000", totalCostUsd: null })
 	})
 	it("bounds oversized responses without persisting any response contents", async () => {
-		const { workId } = tracked()
+		const { workId } = tagged()
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
 		fetchMock.mockResolvedValueOnce(new Response("x".repeat(1_048_577)))
 		await sync()
@@ -1130,14 +1123,16 @@ describe("automatic exact work cost lookup", () => {
 			captureBillingSource(new Headers({ Authorization: `Bearer ${currentKey}` }), `${GATEWAY}?key=private`, dir),
 		).toEqual(source)
 	})
-	it("looks up the exact prompt under the verified organization and persists decimal prices", async () => {
-		const { workId } = tracked()
+	it("looks up the exact tag under the verified organization and persists decimal prices", async () => {
+		const { workId, requestId } = tagged()
 		await sync()
 		expect(fetchMock).toHaveBeenCalledTimes(2)
 		const lookup = new URL(String(fetchMock.mock.calls[1][0]))
 		expect(lookup.pathname).toBe(`/api/ai-optimizer/v1beta/organizations/${ORG}/llm-requests`)
 		expect(Object.fromEntries(lookup.searchParams)).toEqual({
-			promptId: PROMPT,
+			tags: `kimchi-request:${requestId}`,
+			startTime: "2026-09-30T20:00:00.000Z",
+			endTime: "2026-11-02T08:00:00.000Z",
 			inferUserFromApiKey: "true",
 			"page.limit": "100",
 		})
@@ -1147,25 +1142,19 @@ describe("automatic exact work cost lookup", () => {
 		await flushWorkSummaries()
 		const summary = JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8"))
 		expect(summary.requests).toHaveLength(1)
-		expect(summary.requests[0].billingRows).toEqual([{ id: ROW, promptId: PROMPT, costUsd: "0.123456789" }])
+		expect(summary.requests[0].billingRows).toEqual([{ id: ROW, costUsd: "0.123456789" }])
 		expect(JSON.stringify(readWorkRecords(dir))).not.toContain(currentKey)
 		expect(workCostDetails(dir, workId).join("\n")).toContain("$0.123456789")
 	})
 	it("allocates a PR across two works and counts repeated sync only once", async () => {
-		const first = tracked("planning", "plan")
-		const second = tracked("implementation", "implement", "44444444-2222-4333-8444-555555555555")
+		const first = tagged("planning")
+		const second = tagged("implementation")
 		fetchMock.mockImplementation(async (input) => {
 			const url = new URL(String(input))
 			if (url.pathname.endsWith("api-keys:verify")) return Response.json({ organizationId: ORG, userId: PROMPT })
-			const promptId = url.searchParams.get("promptId")
+			const planned = url.searchParams.get("tags") === `kimchi-request:${first.requestId}`
 			return Response.json({
-				items: [
-					{
-						id: promptId === PROMPT ? ROW : "55555555-2222-4333-8444-555555555555",
-						promptId,
-						totalPrice: "0.000000001",
-					},
-				],
+				items: [{ id: planned ? ROW : "55555555-2222-4333-8444-555555555555", totalPrice: "0.000000001" }],
 			})
 		})
 		await sync()
@@ -1173,20 +1162,20 @@ describe("automatic exact work cost lookup", () => {
 		for (const { workId } of [first, second])
 			expect(report(workId).pullRequests[0]).toMatchObject({
 				totalCostUsd: "0.000000002",
-				requestIds: ["implement", "plan"],
+				requestIds: [first.requestId, second.requestId].sort(),
 			})
 	})
 	it("follows all pages, deduplicates repeated billing rows, and sums distinct rows", async () => {
-		const { workId } = tracked()
+		const { workId } = tagged()
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
 		fetchMock.mockResolvedValueOnce(
-			Response.json({ items: [{ id: ROW, promptId: PROMPT, totalPrice: "1.000000001" }], nextPageCursor: "page two" }),
+			Response.json({ items: [{ id: ROW, totalPrice: "1.000000001" }], nextPageCursor: "page two" }),
 		)
 		fetchMock.mockResolvedValueOnce(
 			Response.json({
 				items: [
-					{ id: ROW, promptId: PROMPT, totalPrice: "1.000000001" },
-					{ id: "44444444-2222-4333-8444-555555555555", promptId: PROMPT, totalPrice: "2.000000002" },
+					{ id: ROW, totalPrice: "1.000000001" },
+					{ id: "44444444-2222-4333-8444-555555555555", totalPrice: "2.000000002" },
 				],
 			}),
 		)
@@ -1195,7 +1184,7 @@ describe("automatic exact work cost lookup", () => {
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("3.000000003")
 	})
 	it.each([401, 403, 404, 422, 503])("keeps HTTP %s lookups unknown and exposes the reason locally", async (status) => {
-		const { workId } = tracked()
+		const { workId } = tagged()
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
 		fetchMock.mockResolvedValueOnce(new Response("unavailable", { status }))
 		await sync()
@@ -1203,58 +1192,47 @@ describe("automatic exact work cost lookup", () => {
 		expect(workCostDetails(dir, workId).join("\n")).toContain("unknown")
 	})
 	it.each([
-		{ id: ROW, totalPrice: "1" },
-		{ id: ROW, promptId: "44444444-2222-4333-8444-555555555555", totalPrice: "1" },
-		{ id: "invalid", promptId: PROMPT, totalPrice: "1" },
-		{ id: ROW, promptId: PROMPT, totalPrice: 1.5 },
-		{ id: ROW, promptId: PROMPT, totalPrice: "NaN" },
-		{ id: ROW, promptId: PROMPT, totalPrice: "0.0000000001" },
-	])("rejects older or malformed billing evidence: %j", async (item) => {
-		const { workId } = tracked()
+		{ id: "invalid", totalPrice: "1" },
+		{ id: ROW, totalPrice: 1.5 },
+		{ id: ROW, totalPrice: "NaN" },
+		{ id: ROW, totalPrice: "0.0000000001" },
+	])("rejects malformed billing evidence: %j", async (item) => {
+		const { workId } = tagged()
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
 		fetchMock.mockResolvedValueOnce(Response.json({ items: [item] }))
 		await sync()
 		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
 	})
 	it("keeps missing billing pending and accepts a late explicit zero", async () => {
-		const { workId } = tracked()
+		const { workId } = tagged()
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
 		fetchMock.mockResolvedValueOnce(Response.json({ items: [] }))
 		await sync()
 		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
 		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000)
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
-		fetchMock.mockResolvedValueOnce(Response.json({ items: [{ id: ROW, promptId: PROMPT, totalPrice: "0" }] }))
+		fetchMock.mockResolvedValueOnce(Response.json({ items: [{ id: ROW, totalPrice: "0" }] }))
 		await sync()
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.000000000")
 	})
 	it("never queries another key for an old request", async () => {
-		const { workId } = tracked()
+		const { workId } = tagged()
 		currentKey = "test-only-another-account"
 		await sync()
 		expect(fetchMock).not.toHaveBeenCalled()
 		expect(report(workId).requests[0].billingLookup.status).toBe("account-changed")
 		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
 	})
-	it("does not trust prompt IDs reused by different request attempts", async () => {
-		const first = tracked("a", "attempt-a")
-		tracked("b", "attempt-b")
-		await sync()
-		expect(fetchMock).not.toHaveBeenCalled()
-		expect(report(first.workId).pullRequests[0].totalCostUsd).toBeNull()
-	})
 	it("keeps known rows as a subtotal when pagination stops early", async () => {
-		const { workId } = tracked()
+		const { workId } = tagged()
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
-		fetchMock.mockResolvedValueOnce(
-			Response.json({ items: [{ id: ROW, promptId: PROMPT, totalPrice: "1.25" }], nextPageCursor: "more" }),
-		)
+		fetchMock.mockResolvedValueOnce(Response.json({ items: [{ id: ROW, totalPrice: "1.25" }], nextPageCursor: "more" }))
 		fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }))
 		await sync()
 		expect(report(workId).pullRequests[0]).toMatchObject({ knownCostUsd: "1.250000000", totalCostUsd: null })
 	})
 	it("aborts an in-flight lookup without publishing a completed result", async () => {
-		const { workId } = tracked()
+		const { workId } = tagged()
 		const controller = new AbortController()
 		fetchMock.mockImplementation(
 			async (_input, init) =>
@@ -1369,6 +1347,48 @@ describe("empty billing settlement", () => {
 		)
 		await sync()
 		expect(report(workId).requests[0].totalCostUsd).toBeNull()
+	})
+	it("keeps a request without a tag unpriced and never settles it as no-charge", async () => {
+		// Two days old, with a captured prompt ID: the removed prompt-ID lookup settled this at a false $0.
+		const requestId = randomUUID()
+		const untagged = tracked("untagged", requestId, { startedAt: "2026-09-29T08:00:00Z" })
+		appendWorkRecord(untagged.ctx, {
+			type: "request_response",
+			requestId,
+			billingSource: untagged.source,
+			response: { promptId: PROMPT },
+		})
+		const lookup = { status: "no-charge", checkedAt: "2026-10-01T11:30:00.000Z", organizationId: ORG, userId: PROMPT }
+		appendWorkRecord(untagged.ctx, {
+			type: "request_cost",
+			requestId,
+			billingSource: untagged.source,
+			promptId: PROMPT,
+			billingSelector: { type: "prompt", promptId: PROMPT },
+			billingRows: [],
+			billingLookup: lookup,
+		})
+		// Older ledgers saved prompt-ID results without a selector; a tagged request is looked up again.
+		const control = tagged()
+		appendWorkRecord(control.ctx, {
+			type: "request_cost",
+			requestId: control.requestId,
+			billingSource: control.source,
+			promptId: PROMPT,
+			billingRows: [],
+			billingLookup: lookup,
+		})
+		await sync()
+		const lookups = fetchMock.mock.calls
+			.map(([input]) => new URL(String(input)))
+			.filter((url) => url.pathname.endsWith("/llm-requests"))
+		expect(lookups.map((url) => url.searchParams.get("tags"))).toEqual([`kimchi-request:${control.requestId}`])
+		expect(report(untagged.workId).requests[0]).toMatchObject({
+			totalCostUsd: null,
+			billingLookup: { status: "pending" },
+		})
+		expect(report(untagged.workId).pullRequests[0].totalCostUsd).toBeNull()
+		expect(report(control.workId).requests[0]).toMatchObject({ totalCostUsd: "0.123456789" })
 	})
 	it("keeps unchanged checks out of journals and preserves retry timing across reloads", async () => {
 		const { workId } = tagged()

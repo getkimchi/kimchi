@@ -340,7 +340,7 @@ The tag identifies the request; it does not decide which PR owns the cost. That 
 flowchart TD
     R["Saved request attempt"] --> T{"Request started after<br/>all linked PRs merged?"}
     T -->|Yes| L["Exclude from PR totals;<br/>retain its own price status"]
-    T -->|No| I{"Saved billing tag or supported prompt ID,<br/>and original account available?"}
+    T -->|No| I{"Saved billing tag and<br/>original account available?"}
     I -->|No| U["Keep price unknown"]
     I -->|Yes| B["Fetch exact billing rows for that request"]
     B -->|Invalid, incomplete or empty before 24 hours| P["Show known subtotal;<br/>keep full total unknown"]
@@ -439,7 +439,7 @@ The verified billing account must also match the request's saved work account. I
 
 Each PR total in `costs.json` has an `account` alongside its canonical `key`. Compare both fields when combining reports. `account: null` means the work account could not be established. If an older work contains several account groups for one PR, `/work` labels those groups separately.
 
-The gateway accepts ten combined tags across the body and headers. Kimchi preserves existing tags and skips its billing tag when the request is full, uses the reserved tag already, or has a body it cannot safely inspect. The skip reason stays in the request record. A captured `X-Prompt-Id` can provide a fallback when the backend supports an exact prompt-ID query; otherwise the price remains unknown. Old untagged streaming requests cannot be recovered from timestamps alone.
+The gateway accepts ten combined tags across the body and headers. Kimchi preserves existing tags and skips its billing tag when the request is full, uses the reserved tag already, or has a body it cannot safely inspect. The skip reason stays in the request record. A request without the tag stays unpriced (unknown); a captured `X-Prompt-Id` is diagnostic only and never selects a bill. Old untagged requests cannot be recovered from timestamps alone.
 
 The lookup window stays fixed from 12 hours before dispatch, which tolerates a fast local clock, to 32 days after it. This fits the API's time-range limit and includes delayed reports; the UUID tag still supplies the exact match. A charge outside that window or no longer retained by the backend stays unknown.
 
@@ -456,7 +456,7 @@ Cost per PR is listed in `/resources` like other built-in extensions and is on b
 ## What still needs work
 
 - **Shared costs:** planning and requests without complete exclusive edit evidence stay shared when the work spans several PRs.
-- **Missing request identity:** older untagged attempts and requests whose billing tag had to be skipped can remain unpriced.
+- **Missing request identity:** older untagged attempts and requests whose billing tag had to be skipped stay unpriced.
 - **Stable repository IDs:** recover stable provider IDs for older links that lack them.
 - **Historical repair:** old records without account or producer evidence stay unresolved. Automatic replay of newly available evidence is still separate work.
 - **Remote agents:** link their requests and returned commits to the local work. Remote sessions are outside this MVP.
@@ -465,7 +465,7 @@ Cost per PR is listed in `/resources` like other built-in extensions and is on b
 <summary>Current billing and remote-agent limits</summary>
 
 - With telemetry enabled, main requests send the stored Pi session ID as `X-Session-Id`. Session naming, permission classification and image-description calls do not explicitly send that header.
-- Cost lookup uses the saved request tag, or a supported exact prompt-ID lookup for older records. A failed attempt can still have a charge. Complete empty lookups settle under the 24-hour rule above. HTTP capture covers chat-completions, Responses and Anthropic messages. WebSocket requests need separate coverage.
+- Cost lookup uses only the saved request tag. A request without a tag stays unpriced (unknown). A failed attempt can still have a charge. Complete empty lookups settle under the 24-hour rule above. HTTP capture covers chat-completions, Responses and Anthropic messages. WebSocket requests need separate coverage.
 - Remote ACP requests carry a parent-session tag but no work ID. Returned commits bypass Bash tracing. Both are absent from the parent's work summary.
 
 </details>
