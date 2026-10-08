@@ -1,7 +1,10 @@
 // Regression tests for the "LSP file sync failed" code-frame dump observed in
 // worktree sessions: a server that fails to start (e.g. typescript-language-server
 // with no resolvable tsserver.js) must be reported once as a one-line message
-// and never re-spawned for the rest of the session.
+// and never re-spawned for the rest of the session. The message routes through
+// debuglog("kimchi:lsp") — a raw console write corrupts the interactive TUI
+// (stray text lands on the input editor), so every test also asserts the raw
+// console stays silent.
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -67,6 +70,15 @@ vi.mock("../steer-marker.js", () => ({
 	markHarnessSteer: vi.fn((content: string) => content),
 }))
 
+// Mock debuglog the same way work-attribution's tests do (#1362): capture the
+// debug logger so tests can assert routing, while keeping node:util's other
+// exports intact.
+const { debug } = vi.hoisted(() => ({ debug: vi.fn() }))
+vi.mock("node:util", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:util")>()),
+	debuglog: () => debug,
+}))
+
 import lspExtension from "../lsp.js"
 
 const INIT_FAILURE =
@@ -79,7 +91,9 @@ function makeSession(files?: string[]) {
 	}
 	const ext = createExtensionApi()
 	lspExtension(ext.api)
-	const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+	// Spy without silencing: the raw console must stay silent, so a regression
+	// both fails the assertion and shows up in the test output.
+	const consoleSpy = vi.spyOn(console, "error")
 	return { dir, ext, consoleSpy }
 }
 
@@ -89,6 +103,7 @@ function editToolResult(filePath: string) {
 
 describe("lsp file sync failure handling", () => {
 	beforeEach(() => {
+		debug.mockReset()
 		mocks.getOrCreateClient.mockReset().mockRejectedValue(new Error(INIT_FAILURE))
 		mocks.ensureFileOpen.mockReset().mockResolvedValue(undefined)
 		mocks.refreshFile.mockReset().mockResolvedValue(undefined)
@@ -119,14 +134,16 @@ describe("lsp file sync failure handling", () => {
 
 		// One spawn attempt total; the failure is remembered for the session.
 		expect(mocks.getOrCreateClient).toHaveBeenCalledTimes(1)
-		// The failure is logged exactly once, as a plain single-line message —
-		// never as an Error object (Bun would dump the bundled-source code frame).
-		expect(consoleSpy).toHaveBeenCalledTimes(1)
-		const logged = consoleSpy.mock.calls[0][0]
+		// The failure is logged exactly once via debuglog, as a plain single-line
+		// message — never as an Error object (Bun would dump the bundled-source
+		// code frame) and never to the raw console, which corrupts the TUI.
+		expect(debug).toHaveBeenCalledTimes(1)
+		const logged = debug.mock.calls[0][0]
 		expect(typeof logged).toBe("string")
 		expect(logged.startsWith("LSP: typescript-language-server failed to start: ")).toBe(true)
 		expect(logged.includes(INIT_FAILURE)).toBe(true)
 		expect(logged.includes("\n")).toBe(false)
+		expect(consoleSpy).not.toHaveBeenCalled()
 		// The status bar reflects the degraded server.
 		const setStatus = sessionCtx.ui.setStatus as ReturnType<typeof vi.fn>
 		expect(setStatus.mock.lastCall).toEqual(["lsp", "LSP: typescript-language-server failed to start"])
@@ -151,9 +168,10 @@ describe("lsp file sync failure handling", () => {
 		// different server processes), but only one console line for the whole
 		// session — the issue's "one human-readable line per session".
 		expect(mocks.getOrCreateClient).toHaveBeenCalledTimes(2)
-		expect(consoleSpy).toHaveBeenCalledTimes(1)
-		const logged = consoleSpy.mock.calls[0][0]
+		expect(debug).toHaveBeenCalledTimes(1)
+		const logged = debug.mock.calls[0][0]
 		expect(logged.startsWith("LSP: typescript-language-server failed to start: ")).toBe(true)
+		expect(consoleSpy).not.toHaveBeenCalled()
 	})
 
 	it("keeps the 'LSP file sync failed' label for mid-session sync failures", async () => {
@@ -167,10 +185,11 @@ describe("lsp file sync failure handling", () => {
 		await toolResult(editToolResult("foo.ts"), createContext({ cwd: dir }))
 		await toolResult(editToolResult("bar.ts"), createContext({ cwd: dir }))
 
-		expect(consoleSpy).toHaveBeenCalledTimes(1)
-		const logged = consoleSpy.mock.calls[0][0]
+		expect(debug).toHaveBeenCalledTimes(1)
+		const logged = debug.mock.calls[0][0]
 		expect(logged.startsWith("LSP file sync failed: ")).toBe(true)
 		expect(logged).toContain("sync boom")
+		expect(consoleSpy).not.toHaveBeenCalled()
 		// The status bar reports a mid-session failure, not a start failure.
 		const setStatus = sessionCtx.ui.setStatus as ReturnType<typeof vi.fn>
 		expect(setStatus.mock.lastCall).toEqual(["lsp", "LSP: typescript-language-server failed"])
@@ -181,7 +200,7 @@ describe("lsp file sync failure handling", () => {
 		const sessionCtx = createContext({ cwd: dir })
 		await ext.getHandler<unknown, unknown>("session_start")(null, sessionCtx)
 		// Marker present → eager start attempted and failed (rejection handled async).
-		await vi.waitFor(() => expect(consoleSpy).toHaveBeenCalledTimes(1))
+		await vi.waitFor(() => expect(debug).toHaveBeenCalledTimes(1))
 		expect(mocks.getOrCreateClient).toHaveBeenCalledTimes(1)
 
 		const toolResult = ext.getHandler<unknown, unknown>("tool_result")
@@ -189,7 +208,8 @@ describe("lsp file sync failure handling", () => {
 
 		// No respawn, no repeat log, no file sync attempted.
 		expect(mocks.getOrCreateClient).toHaveBeenCalledTimes(1)
-		expect(consoleSpy).toHaveBeenCalledTimes(1)
+		expect(debug).toHaveBeenCalledTimes(1)
+		expect(consoleSpy).not.toHaveBeenCalled()
 		expect(mocks.ensureFileOpen).not.toHaveBeenCalled()
 		expect(mocks.refreshFile).not.toHaveBeenCalled()
 	})
@@ -220,6 +240,7 @@ describe("lsp file sync failure handling", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0))
 
 		// No log line and no failure status from the stale rejection.
+		expect(debug).not.toHaveBeenCalled()
 		expect(consoleSpy).not.toHaveBeenCalled()
 		const setStatus2 = ctx2.ui.setStatus as ReturnType<typeof vi.fn>
 		expect(setStatus2.mock.calls.every(([, status]) => typeof status !== "string" || !status.includes("failed"))).toBe(
@@ -231,6 +252,7 @@ describe("lsp file sync failure handling", () => {
 		const toolResult = ext.getHandler<unknown, unknown>("tool_result")
 		await toolResult(editToolResult("foo.ts"), createContext({ cwd: dir }))
 		expect(mocks.refreshFile).toHaveBeenCalled()
+		expect(debug).not.toHaveBeenCalled()
 		expect(consoleSpy).not.toHaveBeenCalled()
 	})
 
@@ -241,13 +263,14 @@ describe("lsp file sync failure handling", () => {
 		await ext.getHandler<unknown, unknown>("session_start")(null, createContext({ cwd: dir }))
 		await toolResult(editToolResult("foo.ts"), createContext({ cwd: dir }))
 		expect(mocks.getOrCreateClient).toHaveBeenCalledTimes(1)
-		expect(consoleSpy).toHaveBeenCalledTimes(1)
+		expect(debug).toHaveBeenCalledTimes(1)
 
 		// session_start resets the failure cache — a new session retries once.
 		await ext.getHandler<unknown, unknown>("session_start")(null, createContext({ cwd: dir }))
 		await toolResult(editToolResult("foo.ts"), createContext({ cwd: dir }))
 		expect(mocks.getOrCreateClient).toHaveBeenCalledTimes(2)
-		expect(consoleSpy).toHaveBeenCalledTimes(2)
+		expect(debug).toHaveBeenCalledTimes(2)
+		expect(consoleSpy).not.toHaveBeenCalled()
 	})
 
 	it("lsp tools fail with an actionable message instead of respawning", async () => {
@@ -273,7 +296,8 @@ describe("lsp file sync failure handling", () => {
 
 		// The tool-path failure surfaces exactly like a file-sync failure: one
 		// log line and a status-bar indicator (previously it was silent).
-		expect(consoleSpy).toHaveBeenCalledTimes(1)
+		expect(debug).toHaveBeenCalledTimes(1)
+		expect(consoleSpy).not.toHaveBeenCalled()
 		const setStatus = sessionCtx.ui.setStatus as ReturnType<typeof vi.fn>
 		expect(setStatus.mock.lastCall).toEqual(["lsp", "LSP: typescript-language-server failed to start"])
 
@@ -289,7 +313,7 @@ describe("lsp file sync failure handling", () => {
 			),
 		).rejects.toThrow(/failed to start for this session/)
 		expect(mocks.getOrCreateClient).toHaveBeenCalledTimes(1)
-		expect(consoleSpy).toHaveBeenCalledTimes(1)
+		expect(debug).toHaveBeenCalledTimes(1)
 	})
 
 	it("marks a mid-session sync failure as 'failed' (not 'failed to start') and stops syncing", async () => {
@@ -307,12 +331,14 @@ describe("lsp file sync failure handling", () => {
 		// The status bar tells a mid-session crash apart from a start failure.
 		const setStatus = sessionCtx.ui.setStatus as ReturnType<typeof vi.fn>
 		expect(setStatus.mock.lastCall).toEqual(["lsp", "LSP: typescript-language-server failed"])
-		expect(consoleSpy).toHaveBeenCalledTimes(1)
+		expect(debug).toHaveBeenCalledTimes(1)
+		expect(consoleSpy).not.toHaveBeenCalled()
 
 		// Later edits skip the dead server without logging again…
 		await toolResult(editToolResult("foo.ts"), createContext({ cwd: dir }))
 		expect(mocks.getOrCreateClient).toHaveBeenCalledTimes(1)
-		expect(consoleSpy).toHaveBeenCalledTimes(1)
+		expect(debug).toHaveBeenCalledTimes(1)
+		expect(consoleSpy).not.toHaveBeenCalled()
 
 		// …and tools report the mid-session failure accurately.
 		const diagnosticTool = ext.getRegisteredTool("lsp_diagnostics")

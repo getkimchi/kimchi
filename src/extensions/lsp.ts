@@ -9,6 +9,7 @@
  */
 import fs from "node:fs"
 import path from "node:path"
+import { debuglog } from "node:util"
 import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isReadToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
@@ -45,6 +46,12 @@ export function clientCwd(filePath: string, sessionCwd: string): string {
 
 const LSP_DIAGNOSTICS_CUSTOM_TYPE = "lsp_diagnostics"
 const DIAG_WAIT_TIMEOUT_MS = 2000
+
+/** Diagnostic log for LSP failures — silent unless NODE_DEBUG=kimchi:lsp. A
+ *  raw `console.error` here writes bytes straight to the terminal cursor,
+ *  which lands on the input editor and shows up as stray error text in the
+ *  TUI. The user-visible failure signal is the status bar (see below). */
+const debug = debuglog("kimchi:lsp")
 
 /** Why a server+root is disabled for the session: the server never started
  *  ("start") or it started and then broke mid-session ("sync"). The status
@@ -145,7 +152,8 @@ export default function (pi: ExtensionAPI) {
 	 *  Error object itself would dump Bun's bundled-source code frame into
 	 *  the TUI). Every failing path — file sync and the lsp_* tool starts —
 	 *  records through here so tool-side failures get the same status
-	 *  visibility.
+	 *  visibility. Log output goes to `debuglog("kimchi:lsp")`, never the
+	 *  raw console.
 	 *
 	 *  `sessionFailures` must be the map captured by the session that
 	 *  initiated the async work. A rejection that arrives after
@@ -177,7 +185,7 @@ export default function (pi: ExtensionAPI) {
 		const msg = err instanceof Error ? err.message : String(err)
 		// Say whether the server never started (spawn/initialize failure, e.g.
 		// from an lsp_* tool) or broke mid-session while syncing a file.
-		console.error(phase === "sync" ? `LSP file sync failed: ${msg}` : `LSP: ${server.name} failed to start: ${msg}`)
+		debug(phase === "sync" ? `LSP file sync failed: ${msg}` : `LSP: ${server.name} failed to start: ${msg}`)
 	}
 
 	/** Like getOrCreateClient, but skips server+root pairs that already failed

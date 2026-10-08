@@ -1,6 +1,7 @@
 // extensions/dap/client.ts
 import { spawn } from "node:child_process"
 import net from "node:net"
+import { debuglog } from "node:util"
 import type { BunProcess } from "../lsp/types.js"
 import { resolveJsDebugScript } from "./adapters.js"
 import type {
@@ -15,6 +16,11 @@ import type {
 	StoppedEvent,
 	TerminatedEvent,
 } from "./types.js"
+
+/** Diagnostic log for non-fatal async failures — silent unless
+ *  NODE_DEBUG=kimchi:dap. Raw console writes corrupt the interactive TUI
+ *  (see logSwallow below). */
+const debug = debuglog("kimchi:dap")
 
 // =============================================================================
 // TCP transport (js-debug): spawn server, connect socket, wrap as BunProcess
@@ -929,9 +935,11 @@ export async function sendResponse(
 
 /** Non-fatal async failures (reverse-request replies, child-session setup) must
  *  be observable without crashing the reader loop — log instead of silently
- *  swallowing. */
-function logSwallow(label: string): (err: unknown) => void {
+ *  swallowing. Routed through debuglog (silent unless NODE_DEBUG=kimchi:dap):
+ *  a raw console write corrupts the interactive TUI. Exported for direct
+ *  routing tests. */
+export function logSwallow(label: string): (err: unknown) => void {
 	return (err: unknown) => {
-		console.error(`[dap] ${label} failed: ${err instanceof Error ? err.message : String(err)}`)
+		debug(`[dap] ${label} failed: ${err instanceof Error ? err.message : String(err)}`)
 	}
 }
