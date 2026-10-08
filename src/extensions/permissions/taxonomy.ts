@@ -137,6 +137,34 @@ const READ_ONLY_PROGRAMS = new Set([
 	"realpath",
 	"tr",
 	"cut",
+	// No-op / test builtins: no filesystem effect. Models probe shell
+	// health with `true` during debugging loops — pointless to gate.
+	"true",
+	"false",
+	"sleep",
+	"test",
+	"[",
+	// Hash/checksum readers: pure stdin-or-file → stdout, no write flags.
+	"md5",
+	"md5sum",
+	"sha1sum",
+	"sha224sum",
+	"sha256sum",
+	"sha384sum",
+	"sha512sum",
+	"shasum",
+	"cksum",
+	"b3sum",
+	// More read-only display/format tools.
+	"comm",
+	"tac",
+	"nl",
+	"od",
+	"xxd",
+	"hexdump",
+	"strings",
+	// NOT included: `env` executes its remaining arguments as a command
+	// (`env rm -rf /`), so allow-any-args would be a write hole.
 ])
 
 // Programs that look read-only but accept a flag that executes code or writes
