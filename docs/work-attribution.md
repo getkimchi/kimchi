@@ -137,7 +137,7 @@ If account verification is unavailable for a new work's first input, the work ke
 
 Continuing a verified plan or native artifact also checks its producing request. Kimchi confirms the requests from that input under the continued work, whether they were ordinary session work, inferred or unresolved. For example, `Plan docs/new-feature.md` starts as session work; continuing its saved plan later confirms the planning requests automatically. Other inputs in that conversation stay unchanged.
 
-This needs one recorded producer, the accepted retained plan version or native edit, and matching account/repository scope. Missing or conflicting producer records stay unresolved. An existing correction or revocation takes precedence. The resulting `workLinks` entry names the plan/artifact evidence, producing `requestId` and `segmentId`; no source rows are rewritten. Model guesses do not create these confirmations.
+This needs one recorded producer, the accepted retained plan version or native edit, and matching account/repository scope. Requests the work made before its delayed first scope stay unscoped and do not prevent this; a request saved under another account or repository does. Missing or conflicting producer records stay unresolved. An existing correction or revocation takes precedence. The resulting `workLinks` entry names the plan/artifact evidence, producing `requestId` and `segmentId`; no source rows are rewritten. Model guesses do not create these confirmations.
 
 Kimchi saves each accepted continuation, including a reference to the current work. Plan receipts retain a hash of the accepted bytes; receipts also retain the original account, repository and accepting input, plus the producing request when it is known. Editing a plan later does not change that receipt.
 
@@ -145,7 +145,7 @@ After restart and during ordinary background reconciliation, Kimchi retries acce
 
 Repair shares the existing reconciliation worker and lease. PR discovery and billing run first. Each repair pass checks its three-second budget while reading history and examines at most 25 receipts, rotating past slow or failed candidates. Failed or interrupted passes do not mark history complete.
 
-A crash can leave the last journal line unfinished. Readers skip that line while it has no final newline. The next append keeps the unfinished bytes, adds a repair marker line, then writes its record, so readers keep skipping exactly that line and another session can still continue a plan. Complete invalid records and unmarked malformed lines still block confirmation and historical repair until the source is repaired.
+A crash can leave the last journal line unfinished. Readers skip that line while it has no final newline. The next append starts a new line and leaves the unfinished bytes in place, because another process may be appending to the same journal. Readers skip a record that was cut off mid-value once later records follow it, including journals written by v1.7.1, so another session can still continue a plan. Other malformed lines and invalid complete records still block confirmation and historical repair until the journal is repaired.
 
 If planning and implementation already ended up in separate works, open the implementing work and run:
 
@@ -478,7 +478,7 @@ Cost per PR is listed in `/resources` like other built-in extensions and is on b
 - **Shared costs:** planning and requests without complete exclusive edit evidence stay shared when the work spans several PRs.
 - **Missing request identity:** older untagged attempts and requests whose billing tag had to be skipped stay unpriced.
 - **Stable repository IDs:** recover stable provider IDs for older links that lack them.
-- **Historical repair:** old records without account or producer evidence stay unresolved. Automatic replay of newly available evidence is still separate work.
+- **Historical repair:** accepted plan and artifact continuations are retried automatically, but plan receipts saved without an acceptance hash and records without account or producer evidence stay unresolved.
 - **Remote agents:** link their requests and returned commits to the local work. Remote sessions are outside this MVP.
 
 <details>
