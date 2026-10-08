@@ -141,67 +141,81 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		timer = undefined
 		branchRun?.controller.abort()
 	}
-	function pollBranchForWork(): void {
-		if (!started || !tracking || !context || branchRun) return
-		const { links, pending, errors } = details()
-		if (links.length || pending || errors.length) return
+	/**
+	 * Runs one branch check at a time. `current()` turns false once the check is aborted or its session or mode is
+	 * replaced; `settled` runs when the next check may start.
+	 */
+	function startBranchRun(
+		stillCurrent: () => boolean,
+		task: (ctx: ExtensionContext, signal: AbortSignal, current: () => boolean) => Promise<void>,
+		settled: (current: () => boolean, key: string) => void,
+	): void {
+		if (!started || !stillCurrent() || !context || branchRun) return
 		const ctx = context
 		const key = contextKey(ctx)
 		const controller = new AbortController()
 		const current = () =>
-			started && tracking && !controller.signal.aborted && context === ctx && contextKey(ctx) === key
-		const promise = currentBranch(ctx.cwd, controller.signal, Date.now() + 2000)
-			.then(async (branch) => {
-				if (!current() || (branch === branchName && Date.now() - branchCheckedAt < BRANCH_REFRESH_MS)) return
-				if (branch !== branchName) branchPull = undefined
-				branchName = branch
-				branchCheckedAt = Date.now()
-				const result = branch ? await lookupBranchPullRequest(ctx.cwd, controller.signal) : undefined
-				if (current()) branchPull = result?.pullRequest
-			})
-			// The work's own commit lookups report failures; this orientation-only status stays quiet.
-			.catch(() => {})
-			.finally(() => {
-				branchRun = undefined
-				if (current()) renderWork()
-			})
+			started && stillCurrent() && !controller.signal.aborted && context === ctx && contextKey(ctx) === key
+		const promise = task(ctx, controller.signal, current).finally(() => {
+			branchRun = undefined
+			settled(current, key)
+		})
 		branchRun = { controller, promise }
+	}
+	function pollBranchForWork(): void {
+		const { links, pending, errors } = details()
+		if (links.length || pending || errors.length) return
+		startBranchRun(
+			() => tracking,
+			(ctx, signal, current) =>
+				currentBranch(ctx.cwd, signal, Date.now() + 2000)
+					.then(async (branch) => {
+						if (!current() || (branch === branchName && Date.now() - branchCheckedAt < BRANCH_REFRESH_MS)) return
+						if (branch !== branchName) branchPull = undefined
+						branchName = branch
+						branchCheckedAt = Date.now()
+						const result = branch ? await lookupBranchPullRequest(ctx.cwd, signal) : undefined
+						if (current()) branchPull = result?.pullRequest
+					})
+					// The work's own commit lookups report failures; this orientation-only status stays quiet.
+					.catch(() => {}),
+			(current) => {
+				if (current()) renderWork()
+			},
+		)
 	}
 	function pollBranch(): void {
 		if (tracking) {
 			pollBranchForWork()
 			return
 		}
-		if (!started || !context || branchRun) return
-		const ctx = context
-		const key = contextKey(ctx)
-		const controller = new AbortController()
-		const current = () =>
-			started && !tracking && !controller.signal.aborted && context === ctx && contextKey(ctx) === key
-		const promise = lookupBranchPullRequest(ctx.cwd, controller.signal, (branch) => {
-			if (!current()) return
-			if (branchName !== branch) footer()
-			branchName = branch
-		})
-			.then((result) => {
-				if (!current()) return
-				const pr = result?.pullRequest
-				footer(pr ? requestStatus(pr) : undefined, pr?.url)
-			})
-			.catch((error) => {
-				if (!current()) return
-				// A retryable outage keeps the last result; a repository without GitHub or GitLab has none.
-				const reason = lookupFailureReason(error)
-				if (reason === "retry") return
-				if (reason === "unsupported") return footer()
-				footer("PR/MR: unavailable")
-				warnOnce(error)
-			})
-			.finally(() => {
-				branchRun = undefined
+		startBranchRun(
+			() => !tracking,
+			(ctx, signal, current) =>
+				lookupBranchPullRequest(ctx.cwd, signal, (branch) => {
+					if (!current()) return
+					if (branchName !== branch) footer()
+					branchName = branch
+				})
+					.then((result) => {
+						if (!current()) return
+						const pr = result?.pullRequest
+						footer(pr ? requestStatus(pr) : undefined, pr?.url)
+					})
+					.catch((error) => {
+						if (!current()) return
+						// A retryable outage keeps the last result; a repository without GitHub or GitLab has none.
+						const reason = lookupFailureReason(error)
+						if (reason === "retry") return
+						if (reason === "unsupported") return footer()
+						footer("PR/MR: unavailable")
+						warnOnce(error)
+					}),
+			// A lookup replaced by a new session hands over to that session's first check.
+			(_current, key) => {
 				if (started && !tracking && context && contextKey(context) !== key) pollBranch()
-			})
-		branchRun = { controller, promise }
+			},
+		)
 	}
 	function synchronize(ctx = context): void {
 		if (!started || !ctx) return
