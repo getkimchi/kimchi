@@ -3,8 +3,9 @@ import {
 	compareAttributionAccuracy,
 	isAccuracyAccount,
 	isAccuracyPullRequestKey,
+	text,
 } from "./accuracy.js"
-import { decimalNanos, type RequestCostAllocation } from "./costs.js"
+import { decimalNanos, type RequestCostAllocation, usd } from "./costs.js"
 import { sameWorkAccount, type WorkAccount } from "./scope.js"
 import { object } from "./summary.js"
 
@@ -96,15 +97,6 @@ function ownership(value: unknown): ExpectedOwnership | undefined {
 		return { kind: "no-pr", reason: value.reason ?? "unlinked" }
 	if (value.kind === "unknown") return { kind: "unknown" }
 	return undefined
-}
-
-function usd(nanos: bigint): string {
-	const absolute = nanos < 0n ? -nanos : nanos
-	return `${nanos < 0n ? "-" : ""}${absolute / 1_000_000_000n}.${(absolute % 1_000_000_000n).toString().padStart(9, "0")}`
-}
-
-function text(value: unknown): string {
-	return typeof value === "string" ? value : "<invalid>"
 }
 
 function empty(): ExpectedTotal {

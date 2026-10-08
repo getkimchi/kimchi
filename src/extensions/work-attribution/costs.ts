@@ -85,8 +85,10 @@ export function decimalNanos(value: unknown): bigint | undefined {
 	return match ? BigInt(match[1]) * NANOS_PER_USD + BigInt((match[2] ?? "").padEnd(9, "0")) : undefined
 }
 
+/** Render nanos as USD with nine decimals; a negative amount, such as a signed error, keeps its sign. */
 export function usd(nanos: bigint): string {
-	return `${nanos / NANOS_PER_USD}.${(nanos % NANOS_PER_USD).toString().padStart(9, "0")}`
+	const absolute = nanos < 0n ? -nanos : nanos
+	return `${nanos < 0n ? "-" : ""}${absolute / NANOS_PER_USD}.${(absolute % NANOS_PER_USD).toString().padStart(9, "0")}`
 }
 
 /** Sum calculated request amounts without imposing the API's per-bill size limit on their subtotal. */

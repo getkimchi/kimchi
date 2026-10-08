@@ -94,7 +94,7 @@ export function isAccuracyAccount(value: unknown): value is WorkAccount {
 }
 
 /** Render a rejected runtime value without coercing it — template literals throw on objects like { toString: null }. */
-function text(value: unknown): string {
+export function text(value: unknown): string {
 	return typeof value === "string" ? value : "<non-string>"
 }
 
