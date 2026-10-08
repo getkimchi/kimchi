@@ -567,12 +567,14 @@ async function requestJSON(
 					throw new LookupError(`${label(repository)} returned invalid JSON.`, "invalid")
 			}
 			if (!response.ok && !missingCommitSha) {
-				// GitHub errors link their documentation; GitLab messages start with the HTTP status.
+				// GitHub errors link their documentation; GitLab messages start with the HTTP status,
+				// and its token errors use OAuth's error fields.
 				const fromProvider =
 					object(value) &&
 					(repository.provider === "github"
 						? typeof value.documentation_url === "string"
-						: typeof value.message === "string" && value.message.startsWith(`${response.status} `))
+						: (typeof value.message === "string" && value.message.startsWith(`${response.status} `)) ||
+							(typeof value.error === "string" && typeof value.error_description === "string"))
 				if (response.status === 401)
 					throw new LookupError(
 						`${label(repository)} authentication failed. Check the token for ${repository.host}.`,
@@ -745,7 +747,11 @@ async function repositoryIdentity(
 		(remotes.length === 1 ? remotes[0][1] : undefined)
 	if (!selected) throw new LookupError("This repository has no unambiguous GitHub or GitLab remote.", "unsupported")
 	const { ssh, ...remote } = remoteRepository(selected)
-	if (ssh && !providerFor(remote.host)) remote.host = await sshHostName(remote.host, signal, deadline)
+	if (ssh && !providerFor(remote.host)) {
+		// Follow an alias only to a known provider; another SSH address need not serve the HTTPS API.
+		const resolved = await sshHostName(remote.host, signal, deadline)
+		if (providerFor(resolved)) remote.host = resolved
+	}
 	const provider = providerFor(remote.host)
 	const candidates: Repository["provider"][] = provider ? [provider] : ["github", "gitlab"]
 	const saved = provider ? undefined : readGitToken(remote.host)

@@ -1307,6 +1307,50 @@ describe("lookup failure reasons", () => {
 			reason: undefined,
 		})
 	})
+	it("keeps an expired saved GitLab token actionable on an unconfigured host", async () => {
+		remote("https://gitlab.tokens.example/team/repo.git")
+		cli.token.mockImplementation((host) => (host === "gitlab.tokens.example" ? "expired-token" : undefined))
+		http.mockImplementation(async (url) =>
+			url.pathname.startsWith("/api/v4/")
+				? Response.json(
+						{
+							error: "invalid_token",
+							error_description: "Token is expired. You can either do re-authorization or token refresh.",
+						},
+						{ status: 401 },
+					)
+				: Response.json({ error: "404 Not Found" }, { status: 404 }),
+		)
+		const failure = await lookupBranchPullRequest(repository, new AbortController().signal).catch((error) => error)
+		expect({ message: failure.message, reason: lookupFailureReason(failure) }).toEqual({
+			message: expect.stringContaining("GitLab authentication failed"),
+			reason: undefined,
+		})
+	})
+	it("keeps the remote's own host when SSH config sends it to another address", async () => {
+		seed()
+		remote("git@gitlab.ssh.example:team/repo.git")
+		cli.token.mockImplementation((host) => (host === "gitlab.ssh.example" ? "saved-token" : undefined))
+		cli.auth.mockImplementation(async (command, args) =>
+			command === "ssh" && args.join(" ") === "-G gitlab.ssh.example"
+				? "user git\nhostname 10.0.0.5\nport 22\n"
+				: undefined,
+		)
+		http.mockImplementation(async (url) => {
+			// The HTTPS API is served only under the web host; the SSH address has no matching certificate.
+			if (url.host !== "gitlab.ssh.example") throw new TypeError("fetch failed")
+			if (url.pathname.startsWith("/api/v3/")) return new Response("not found", { status: 404 })
+			if (!url.pathname.includes("/commits/"))
+				return Response.json({
+					id: 42,
+					path_with_namespace: "team/repo",
+					web_url: "https://gitlab.ssh.example/team/repo",
+				})
+			return Response.json([mr(7, { web_url: "https://gitlab.ssh.example/team/repo/-/merge_requests/7" })])
+		})
+		await lookup()
+		expect(saved().at(-1).prLookup).toMatchObject({ status: "linked" })
+	})
 	it("resolves an SSH host alias before choosing the provider", async () => {
 		seed()
 		remote("git@github-work:team/repo.git")
