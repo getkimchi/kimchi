@@ -16,7 +16,9 @@ import {
 	type RepositorySnapshot,
 	repositoryKey,
 	revision,
+	SNAPSHOT_LIMITS,
 	type SnapshotContent,
+	type SnapshotLimits,
 	validateSnapshot,
 	validTime,
 	type WireSnapshot,
@@ -27,8 +29,37 @@ export interface SnapshotAck {
 	revision: string
 	receivedAt: string
 }
+export const LIMIT_SCOPES = ["snapshot", "producer", "contributor", "organization", "frozen"] as const
+export const LIMIT_NAMES = [
+	"bytes",
+	"requests",
+	"pullRequests",
+	"snapshots",
+	"repositories",
+	"billingIds",
+	"reports",
+] as const
+/** Contributor, organization and archive limits apply to every repository of the account. */
+export const ACCOUNT_SCOPES: readonly string[] = ["contributor", "organization", "frozen"]
+/** A validated PR_COST_LIMIT rejection. Free-form server text never enters durable state. */
+export interface ServerLimit {
+	scope?: (typeof LIMIT_SCOPES)[number]
+	limit?: (typeof LIMIT_NAMES)[number]
+	current?: number
+	maximum?: number
+	/** When the server reported it. */
+	at: number
+}
+export interface AccountPause {
+	limit: ServerLimit
+	retryAt: number
+	attempts: number
+	noticeShown?: true
+}
 /** Ordinary changes upload at most once in this window per repository. */
 export const UPLOAD_INTERVAL_MS = 5 * 60_000
+/** A limit learned from the server is retried at the normal limits after a week. */
+const LEARNED_LIMIT_MS = 7 * 24 * 60 * 60_000
 export interface PendingRepository {
 	account: WorkAccount
 	repository: ReportingRepository
@@ -49,6 +80,16 @@ export interface PendingRepository {
 	urgent?: true
 	/** PR states and explicit corrections the server acknowledged; a change to them uploads at once. */
 	markers?: string[]
+	/** The last PR_COST_LIMIT rejection of this repository, until an upload is accepted. */
+	limit?: ServerLimit
+	/** Limit rejections in a row, counted apart from transient failures in `attempts`. */
+	limitAttempts?: number
+	/** Smaller snapshot limits learned from a snapshot-scope rejection, used until `until`. */
+	learned?: Partial<SnapshotLimits> & { until: number }
+	/** Requests left out of the latest queued snapshot to fit the limits. */
+	trimmed?: number
+	/** The one-time partial-report notice was shown for this repository. */
+	limitNoticeShown?: true
 }
 export interface ReportingState {
 	version: 1
@@ -60,6 +101,8 @@ export interface ReportingState {
 	/** Hashed machine ID that owns producerId; a home copied to another machine starts a new producer. */
 	machine?: string
 	entries: Record<string, PendingRepository>
+	/** Account-wide limit pauses, keyed by account. */
+	paused?: Record<string, AccountPause>
 	error?: string
 }
 export function reportingDirectory(agentDir: string): string {
@@ -67,13 +110,35 @@ export function reportingDirectory(agentDir: string): string {
 }
 const statePath = (agentDir: string) => join(reportingDirectory(agentDir), "state.json")
 const requestHash = (requestId: string) => createHash("sha256").update(requestId).digest("hex")
+const count = (value: unknown) => Number.isSafeInteger(value) && Number(value) >= 0
+function validLimit(value: unknown): value is ServerLimit {
+	return (
+		object(value) &&
+		(value.scope === undefined || LIMIT_SCOPES.some((scope) => scope === value.scope)) &&
+		(value.limit === undefined || LIMIT_NAMES.some((name) => name === value.limit)) &&
+		(value.current === undefined || count(value.current)) &&
+		(value.maximum === undefined || count(value.maximum)) &&
+		Number.isFinite(value.at)
+	)
+}
 function validEntryExtras(entry: PendingRepository): boolean {
+	const learned = entry.learned
 	return (
 		(entry.uploadedAt === undefined || Number.isFinite(entry.uploadedAt)) &&
 		(entry.urgent === undefined || entry.urgent === true) &&
 		(entry.markers === undefined ||
 			(Array.isArray(entry.markers) &&
-				entry.markers.every((marker) => typeof marker === "string" && marker.length <= 256)))
+				entry.markers.every((marker) => typeof marker === "string" && marker.length <= 256))) &&
+		(entry.limit === undefined || validLimit(entry.limit)) &&
+		(entry.limitAttempts === undefined || count(entry.limitAttempts)) &&
+		(learned === undefined ||
+			(object(learned) &&
+				Number.isFinite(learned.until) &&
+				[learned.requests, learned.pullRequests, learned.bytes].every(
+					(value) => value === undefined || (count(value) && value > 0),
+				))) &&
+		(entry.trimmed === undefined || count(entry.trimmed)) &&
+		(entry.limitNoticeShown === undefined || entry.limitNoticeShown === true)
 	)
 }
 /** What the server must hear about at once: PR states and explicit `/work` corrections. */
@@ -141,6 +206,19 @@ export async function readReportingState(agentDir: string): Promise<ReportingSta
 					throw new Error("Invalid PR reporting state")
 			}
 		}
+		if (
+			value.paused !== undefined &&
+			(!object(value.paused) ||
+				Object.values(value.paused).some(
+					(pause) =>
+						!object(pause) ||
+						!validLimit(pause.limit) ||
+						!Number.isFinite(pause.retryAt) ||
+						!count(pause.attempts) ||
+						(pause.noticeShown !== undefined && pause.noticeShown !== true),
+				))
+		)
+			throw new Error("Invalid PR reporting state")
 		if (value.followsTelemetry) value.enabled = readTelemetryConfig().enabled
 		const machine = await machineFingerprint()
 		// Two machines sharing a producer would keep replacing each other's claims; the server deduplicates bills across producers.
@@ -148,6 +226,7 @@ export async function readReportingState(agentDir: string): Promise<ReportingSta
 			value.producerId = randomUUID()
 			value.machine = machine
 			value.entries = {}
+			value.paused = undefined
 		}
 		trackPRCostMetric({
 			kind: "queueDepth",
@@ -206,10 +285,12 @@ export function setReportingEnabled(agentDir: string, enabled: boolean): Promise
 		state.enabled = enabled
 		state.followsTelemetry = undefined
 		state.error = undefined
+		state.paused = undefined
 		for (const entry of Object.values(state.entries)) {
 			entry.uploadedAt = undefined
 			entry.attempts = 0
 			entry.retryAt = 0
+			entry.limitAttempts = undefined
 			if (enabled) continue
 			// The discarded replacement may have arrived even if its acknowledgement did not.
 			if (entry.pending) entry.acceptedDigest = undefined
@@ -250,6 +331,7 @@ export async function queueSnapshots(
 	let largest: { requests: number; bytes: number } | undefined
 	const state = await update(agentDir, (state) => {
 		if (!state.enabled) return
+		const now = Date.now()
 		const invalid = new Set<string>()
 		const current = new Map<string, RepositorySnapshot>()
 		for (const snapshot of snapshots) {
@@ -281,6 +363,7 @@ export async function queueSnapshots(
 		let held = 0
 		const withdrawals = new Set<string>()
 		for (const [key, entry] of Object.entries(state.entries)) {
+			if (entry.learned && entry.learned.until <= now) entry.learned = undefined
 			if (!current.has(key)) {
 				if (
 					!invalid.has(key) &&
@@ -361,6 +444,7 @@ export async function queueSnapshots(
 				pendingDigest: digest,
 				pending,
 				urgent: urgent || undefined,
+				trimmed: snapshot.content.coverage.trimmedRequests || undefined,
 				attempts: entry?.attempts ?? 0,
 				retryAt: entry?.retryAt ?? 0,
 			}
@@ -409,6 +493,13 @@ export function acknowledgeSnapshot(
 			entry.acceptedDigest = entry.pendingDigest
 			entry.lastAcknowledgedAt = ack.receivedAt
 			entry.markers = snapshotMarkers(entry.pending)
+			entry.limit = undefined
+			entry.limitAttempts = undefined
+			// Only an upload that adds claims proves an account limit no longer blocks; withdrawals pass it.
+			if (state.paused && (entry.pending.requests.length || entry.pending.pullRequests.length)) {
+				delete state.paused[accountKey(entry.account)]
+				if (!Object.keys(state.paused).length) state.paused = undefined
+			}
 		} else entry.acceptedDigest = undefined
 		entry.revision = ack.revision
 		entry.pending = undefined
@@ -435,4 +526,107 @@ export function deferSnapshot(
 		entry.lastError = message
 		entry.uploadedAt = Date.now()
 	})
+}
+
+/** The server's measure of the rejected dimension scaled onto ours, so different encodings still converge. */
+function learnedLimit(pending: WireSnapshot, limit: ServerLimit): number | undefined {
+	if (limit.limit !== "requests" && limit.limit !== "pullRequests" && limit.limit !== "bytes") return undefined
+	const measured = {
+		requests: pending.requests.length,
+		pullRequests: pending.pullRequests.length,
+		bytes: Buffer.byteLength(JSON.stringify(pending)),
+	}[limit.limit]
+	const { current, maximum } = limit
+	const target =
+		current !== undefined && maximum !== undefined && current > maximum
+			? Math.floor((measured * maximum) / current)
+			: Math.floor(measured * 0.9)
+	const learned = Math.min(target, measured - 1)
+	return learned > 0 ? learned : undefined
+}
+
+/**
+ * A PR_COST_LIMIT rejection is quota, not an outage. Account-wide limits pause every repository of the
+ * account; a repository limit waits on its own counter, and a snapshot limit also teaches a smaller cap.
+ */
+export function limitSnapshot(
+	agentDir: string,
+	key: string,
+	sentRevision: string,
+	limit: ServerLimit,
+	retryAt: number,
+): Promise<ReportingState> {
+	return update(agentDir, (state) => {
+		const entry = state.entries[key]
+		if (!state.enabled || !entry?.pending || entry.pending.revision !== sentRevision) return
+		entry.uploadedAt = Date.now()
+		entry.lastError = undefined
+		if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) {
+			const account = accountKey(entry.account)
+			const previous = state.paused?.[account]
+			state.paused = {
+				...state.paused,
+				[account]: {
+					limit,
+					retryAt,
+					attempts: (previous?.attempts ?? 0) + 1,
+					...(previous?.noticeShown ? { noticeShown: true } : {}),
+				},
+			}
+			return
+		}
+		entry.limit = limit
+		entry.limitAttempts = (entry.limitAttempts ?? 0) + 1
+		entry.retryAt = retryAt
+		const learned = limit.scope === "snapshot" ? learnedLimit(entry.pending, limit) : undefined
+		if (learned && limit.limit)
+			entry.learned = {
+				...(entry.learned && entry.learned.until > limit.at ? entry.learned : {}),
+				[limit.limit]: learned,
+				until: limit.at + LEARNED_LIMIT_MS,
+			}
+	})
+}
+
+/** Limits a repository's server rejections taught, by entry key, for buildSnapshots. */
+export function learnedLimits(state: ReportingState, now = Date.now()): Map<string, SnapshotLimits> {
+	const limits = new Map<string, SnapshotLimits>()
+	for (const [key, entry] of Object.entries(state.entries)) {
+		const learned = entry.learned
+		if (!learned || learned.until <= now) continue
+		limits.set(key, {
+			requests: Math.min(SNAPSHOT_LIMITS.requests, learned.requests ?? Number.POSITIVE_INFINITY),
+			pullRequests: Math.min(SNAPSHOT_LIMITS.pullRequests, learned.pullRequests ?? Number.POSITIVE_INFINITY),
+			bytes: Math.min(SNAPSHOT_LIMITS.bytes, learned.bytes ?? Number.POSITIVE_INFINITY),
+		})
+	}
+	return limits
+}
+
+export interface LimitNotices {
+	repositories: ReportingRepository[]
+	pauses: ServerLimit[]
+}
+/** Repositories and accounts whose one-time limit notice is still due. */
+export function dueLimitNotices(state: ReportingState): LimitNotices {
+	if (!state.enabled) return { repositories: [], pauses: [] }
+	return {
+		repositories: Object.values(state.entries)
+			.filter((entry) => !entry.limitNoticeShown && (entry.trimmed || entry.limit))
+			.map((entry) => entry.repository),
+		pauses: Object.values(state.paused ?? {})
+			.filter((pause) => !pause.noticeShown)
+			.map((pause) => pause.limit),
+	}
+}
+/** Claim limit notices under the queue lock so concurrent sessions show each once. */
+export async function takeLimitNotices(agentDir: string): Promise<LimitNotices> {
+	let notices: LimitNotices = { repositories: [], pauses: [] }
+	await update(agentDir, (state) => {
+		notices = dueLimitNotices(state)
+		if (!state.enabled) return
+		for (const entry of Object.values(state.entries)) if (entry.trimmed || entry.limit) entry.limitNoticeShown = true
+		for (const pause of Object.values(state.paused ?? {})) pause.noticeShown = true
+	})
+	return notices
 }

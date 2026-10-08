@@ -9,7 +9,7 @@ import * as supervisor from "../work-attribution/reconcile-supervisor.js"
 import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } from "../work-attribution.js"
 import reportingExtension from "./index.js"
 import * as queue from "./queue.js"
-import { readReportingState, setReportingEnabled } from "./queue.js"
+import { queueSnapshots, readReportingState, setReportingEnabled } from "./queue.js"
 
 vi.mock("../work-attribution/reconcile-supervisor.js", () => ({
 	subscribeReportingReconciliation: vi.fn(),
@@ -186,5 +186,45 @@ describe("optional PR reporting", () => {
 		expect(stop).toHaveBeenCalledOnce()
 		await api.getHandler("agent_end")({}, ctx)
 		expect(supervisor.requestWorkReconciliation).toHaveBeenCalledTimes(2)
+	})
+	it.each([false, true])("warns once that a repository is partially reported (Studio=%s)", async (acp) => {
+		mode.acp = acp
+		try {
+			await setReportingEnabled(directory, true)
+			await queueSnapshots(directory, [
+				{
+					account: {
+						apiUrl: "https://api.example",
+						organizationId: "11111111-1111-4111-8111-111111111111",
+						userId: "22222222-2222-4222-8222-222222222222",
+					},
+					content: {
+						repository: { provider: "github", host: "github.com", id: "42", name: "owner/repo" },
+						pullRequests: [],
+						requests: [],
+						coverage: { observedRequests: 0, unpricedRequests: 0, historyComplete: false, trimmedRequests: 3 },
+					},
+				},
+			])
+			const text = "PR costs for owner/repo are partially reported: limit reached. See /pr-reporting status."
+			const ctx = createContext()
+			for (let launch = 0; launch < 2; launch++) {
+				const api = createExtensionApi()
+				api.api.events.on(WORK_STATE_REQUEST_EVENT, (value) => {
+					Object.assign(value as WorkStateRequest, { tracking: true, current: { workId: "test-work", ctx } })
+				})
+				reportingExtension(api.api)
+				await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+				// Studio drops notifications for a session it has not registered yet.
+				if (acp && launch === 0) expect(ctx.ui.notify).not.toHaveBeenCalled()
+				await api.getHandler("agent_end")({}, ctx)
+				await api.getHandler("session_shutdown")({}, ctx)
+			}
+			expect(vi.mocked(ctx.ui.notify).mock.calls.filter(([, level]) => level === "warning")).toEqual([
+				[text, "warning"],
+			])
+		} finally {
+			mode.acp = false
+		}
 	})
 })

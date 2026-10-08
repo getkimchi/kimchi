@@ -6,7 +6,14 @@ import {
 	subscribeReportingReconciliation,
 } from "../work-attribution/reconcile-supervisor.js"
 import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } from "../work-attribution.js"
-import { readReportingState, setReportingEnabled, takeReportingNotice } from "./queue.js"
+import {
+	dueLimitNotices,
+	readReportingState,
+	setReportingEnabled,
+	takeLimitNotices,
+	takeReportingNotice,
+} from "./queue.js"
+import { limitNoticeTexts, statusText } from "./status.js"
 import { reconcileReporting } from "./worker.js"
 
 export default function prCostReportingExtension(pi: ExtensionAPI): void {
@@ -31,6 +38,9 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 					if (IS_ACP_MODE) ctx.ui.notify(text, "info")
 					else pi.appendEntry("pr-cost-reporting-notice", text)
 				}
+			const due = dueLimitNotices(state)
+			if (showNotice && ctx?.hasUI && (due.repositories.length || due.pauses.length))
+				for (const text of limitNoticeTexts(await takeLimitNotices(getAgentDir()))) ctx.ui.notify(text, "warning")
 			return state.enabled
 		} catch {
 			return false
@@ -99,19 +109,8 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 						"info",
 					)
 				} else {
-					const state = await readReportingState(getAgentDir())
-					const entries = Object.values(state.entries)
-					const pending = entries.filter((entry) => entry.pending)
-					const errors = [...new Set([state.error, ...pending.map((entry) => entry.lastError)].filter(Boolean))]
-					ctx.ui.notify(
-						[
-							`PR reporting: ${state.enabled ? "on" : "off"} (${state.followsTelemetry ? "SaaS default" : "explicit choice"})`,
-							`Queued repositories: ${pending.length}`,
-							`Acknowledged repositories: ${entries.filter((entry) => entry.lastAcknowledgedAt).length}`,
-							...errors,
-						].join("\n"),
-						errors.length ? "warning" : "info",
-					)
+					const status = statusText(await readReportingState(getAgentDir()), undefined)
+					ctx.ui.notify(status.text, status.warning ? "warning" : "info")
 				}
 			} catch {
 				ctx.ui.notify("PR reporting state could not be saved or read. Existing reports were retained.", "warning")

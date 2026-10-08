@@ -1,34 +1,76 @@
 import { watch } from "node:fs"
 import { verifyApiKey } from "../../api/organizations.js"
 import { loadConfig } from "../../config.js"
-import { boundedResponse, computeRetryDelayMs, fetchWithRetry, parseRetryAfterMs } from "../../utils/http.js"
+import { boundedResponse, fetchWithRetry, parseRetryAfterMs } from "../../utils/http.js"
 import { plainURL } from "../../utils/url.js"
 import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
 import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../work-attribution/scope.js"
+import { object } from "../work-attribution/summary.js"
 import {
+	ACCOUNT_SCOPES,
 	acknowledgeSnapshot,
 	deferSnapshot,
+	LIMIT_NAMES,
+	LIMIT_SCOPES,
+	learnedLimits,
+	limitSnapshot,
 	queueSnapshots,
 	readReportingState,
 	recordReportingError,
 	reportingDirectory,
+	type ServerLimit,
 	type SnapshotAck,
 	UPLOAD_INTERVAL_MS,
 } from "./queue.js"
-import { buildSnapshots, type ReportingRepository } from "./snapshot.js"
+import { accountKey, buildSnapshots, type ReportingRepository } from "./snapshot.js"
 
 const PASS_MS = 5000
 const RESPONSE_BYTES = 64 * 1024
 const REPOSITORY_CACHE_MS = 5 * 60_000
+const MINUTE_MS = 60_000
+const HOUR_MS = 60 * MINUTE_MS
+/** A limit rejection waits about six hours; the server frees space on its own schedule. */
+export const LIMIT_RETRY_MS = 6 * HOUR_MS
+/** ±20%, so that clients rejected together do not come back together. */
+const jitter = (ms: number) => Math.round(ms * (0.8 + 0.4 * Math.random()))
 /**
- * A rejection that retrying cannot fix, such as an endpoint not deployed yet or a full storage
- * allowance (429 without Retry-After), waits one to six hours.
+ * Transient failures (timeouts, 408, 5xx and 429 without a limit) honor a bounded Retry-After, or back
+ * off from 30 seconds to 30 minutes. Other 4xx responses, such as an endpoint not deployed yet, cannot
+ * be fixed by retrying and wait one to six hours.
  */
-function rejectionDelay(status: number | undefined, attempts: number, retryAfter: boolean): number {
-	if (!status || status < 400 || status >= 500 || status === 408 || (status === 429 && retryAfter)) return 0
-	return Math.min(6 * 60 * 60_000, 60 * 60_000 * 2 ** attempts)
+export function retryDelay(status: number | undefined, attempts: number, retryAfterMs: number | null): number {
+	if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429)
+		return jitter(Math.min(LIMIT_RETRY_MS, HOUR_MS * 2 ** attempts))
+	if (retryAfterMs !== null) return Math.min(Math.max(retryAfterMs, 30_000), LIMIT_RETRY_MS)
+	return jitter(Math.min(30 * MINUTE_MS, 30_000 * 2 ** attempts))
+}
+/** Reads the PR_COST_LIMIT ErrorInfo of a 429 body; anything else is not a limit. */
+export function serverLimit(body: unknown, at = Date.now()): ServerLimit | undefined {
+	if (!object(body) || !Array.isArray(body.details)) return undefined
+	const info = body.details.find(
+		(detail) =>
+			object(detail) &&
+			detail["@type"] === "type.googleapis.com/google.rpc.ErrorInfo" &&
+			detail.reason === "PR_COST_LIMIT" &&
+			detail.domain === "ai-optimizer",
+	)
+	if (!object(info)) return undefined
+	const metadata = object(info.metadata) ? info.metadata : {}
+	const number = (value: unknown) =>
+		typeof value === "string" && /^\d{1,15}$/.test(value) ? { value: Number(value) } : undefined
+	const scope = LIMIT_SCOPES.find((value) => value === metadata.scope)
+	const limit = LIMIT_NAMES.find((value) => value === metadata.limit)
+	const current = number(metadata.current)
+	const maximum = number(metadata.maximum)
+	return {
+		...(scope ? { scope } : {}),
+		...(limit ? { limit } : {}),
+		...(current ? { current: current.value } : {}),
+		...(maximum ? { maximum: maximum.value } : {}),
+		at,
+	}
 }
 const repositoryCache = new Map<string, { checkedAt: number; value?: ReportingRepository }>()
 
@@ -72,6 +114,12 @@ export async function deliverSnapshots(
 				`${state.error ? `${state.error}. ` : ""}Some queued reports are waiting for their original account endpoint and credentials`,
 			)
 		const now = Date.now()
+		// Withdrawals free space, so an account-wide limit only holds snapshots that add claims.
+		const paused = new Set(
+			Object.entries(state.paused ?? {})
+				.filter(([, pause]) => pause.retryAt > now)
+				.map(([account]) => account),
+		)
 		const due = Object.entries(state.entries)
 			.filter(
 				([, entry]) =>
@@ -88,15 +136,16 @@ export async function deliverSnapshots(
 		for (const [id, entry] of due) {
 			const snapshot = entry.pending
 			if (!snapshot) continue
+			if (paused.has(accountKey(entry.account)) && (snapshot.requests.length || snapshot.pullRequests.length)) continue
 			if (combined.aborted || attempts >= 3) break
 			const key = loadConfig({ cwd }).apiKey
 			const apiUrl = platformApiUrl(cwd)
 			if (!key || !safeEndpoint(apiUrl) || apiUrl !== entry.account.apiUrl) continue
 			attempts++
-			let retryMs = computeRetryDelayMs(entry.attempts + 1)
-			let retryAfter = false
+			let status: number | undefined
+			let retryAfterMs: number | null = null
+			let limit: ServerLimit | undefined
 			let errorMessage = "PR reporting request unavailable"
-			let rejected: number | undefined
 			const assertCurrent = () => {
 				assertLease()
 				combined.throwIfAborted()
@@ -115,14 +164,10 @@ export async function deliverSnapshots(
 					throw new Error("PR reporting snapshot changed")
 				const response = await fetch(input, { ...init, redirect: "error", signal: combined })
 				assertCurrent()
-				const after = parseRetryAfterMs(response)
-				retryAfter = after !== null
-				retryMs = Math.max(retryMs, Math.min(after ?? 0, Number.MAX_SAFE_INTEGER - Date.now()))
-				if (!response.ok) {
-					errorMessage = `PR reporting returned HTTP ${response.status}`
-					rejected = response.status
-				}
-				// Verify and acknowledgement responses are small; neither response text nor headers enter durable state.
+				status = response.status
+				retryAfterMs = parseRetryAfterMs(response)
+				if (!response.ok) errorMessage = `PR reporting returned HTTP ${response.status}`
+				// Verify, acknowledgement and error bodies are small; neither response text nor headers enter durable state.
 				const bounded = await boundedResponse(
 					response,
 					RESPONSE_BYTES,
@@ -157,6 +202,7 @@ export async function deliverSnapshots(
 					{ fetchImpl: fetchBounded, signal: combined, retry: { maxRetries: 0 } },
 				)
 				assertCurrent()
+				if (response.status === 429) limit = serverLimit(await response.json().catch(() => undefined))
 				if (!response.ok) throw new Error(errorMessage)
 				const ack: SnapshotAck = await response.json()
 				assertCurrent()
@@ -165,8 +211,17 @@ export async function deliverSnapshots(
 			} catch {
 				trackPRCostMetric({ kind: "delivery", outcome: combined.aborted ? "canceled" : "failed" })
 				if (signal.aborted) return
-				const delay = Math.max(30_000, retryMs, rejectionDelay(rejected, entry.attempts, retryAfter))
-				await deferSnapshot(agentDir, id, snapshot.revision, Date.now() + delay, errorMessage)
+				if (limit) {
+					await limitSnapshot(agentDir, id, snapshot.revision, limit, Date.now() + jitter(LIMIT_RETRY_MS))
+					if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) paused.add(accountKey(entry.account))
+				} else
+					await deferSnapshot(
+						agentDir,
+						id,
+						snapshot.revision,
+						Date.now() + retryDelay(status, entry.attempts, retryAfterMs),
+						errorMessage,
+					)
 			}
 		}
 	} finally {
@@ -182,7 +237,8 @@ export async function reconcileReporting(
 	signal: AbortSignal,
 	assertLease: () => void,
 ): Promise<void> {
-	if (!(await readReportingState(agentDir)).enabled) return
+	const state = await readReportingState(agentDir)
+	if (!state.enabled) return
 	const deadline = Date.now() + PASS_MS
 	const bounded = AbortSignal.any([signal, AbortSignal.timeout(PASS_MS)])
 	const check = () => {
@@ -242,7 +298,7 @@ export async function reconcileReporting(
 				check()
 			}
 		}
-		const built = buildSnapshots(records, report, repositories, historyComplete, costRefreshes)
+		const built = buildSnapshots(records, report, repositories, historyComplete, costRefreshes, learnedLimits(state))
 		check()
 		const queued = await queueSnapshots(agentDir, built.snapshots, !built.incomplete)
 		if (built.skippedRequests)

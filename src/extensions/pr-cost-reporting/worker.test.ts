@@ -10,7 +10,8 @@ import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { queueSnapshots, readReportingState, setReportingEnabled, UPLOAD_INTERVAL_MS } from "./queue.js"
 import { buildSnapshots, type RepositorySnapshot, type WireSnapshot } from "./snapshot.js"
-import { deliverSnapshots, reconcileReporting } from "./worker.js"
+import { statusText } from "./status.js"
+import { deliverSnapshots, LIMIT_RETRY_MS, reconcileReporting, serverLimit } from "./worker.js"
 
 const config = vi.hoisted(() => ({ key: "test-key", endpoint: "https://api.example" }))
 vi.mock("../../config.js", () => ({
@@ -433,8 +434,9 @@ describe("account-fenced reporting delivery", () => {
 		await deliver()
 		expect(http).not.toHaveBeenCalled()
 	})
-	// A 429 without Retry-After is a storage limit, which retrying within minutes cannot fix.
-	it.each([404, 400, 403, 429])("backs off for hours after a permanent HTTP %s rejection", async (status) => {
+	// Other 4xx responses, such as an endpoint that is not deployed yet, cannot be fixed by retrying.
+	it.each([404, 400, 403])("backs off for hours after a permanent HTTP %s rejection", async (status) => {
+		vi.spyOn(Math, "random").mockReturnValue(0.5)
 		http.mockImplementation(async (input) =>
 			String(input).endsWith("api-keys:verify")
 				? Response.json({ organizationId: org, userId: user })
@@ -450,6 +452,21 @@ describe("account-fenced reporting delivery", () => {
 		}
 		expect(delays).toEqual([60, 120, 240, 360])
 	})
+	it.each([
+		[0, 48],
+		[0.999, 72],
+	])("spreads a rejection's retry by 20%% so rejected clients do not return together (random %s)", async (random, minutes) => {
+		vi.spyOn(Math, "random").mockReturnValue(random)
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: new Response(null, { status: 404 }),
+		)
+		const before = Date.now()
+		await deliver()
+		const entry = Object.values((await readReportingState(directory)).entries)[0]
+		expect(Math.round((entry.retryAt - before) / 60_000)).toBe(minutes)
+	})
 	it.each([408, 503])("keeps retrying HTTP %s within a minute", async (status) => {
 		http.mockImplementation(async (input) =>
 			String(input).endsWith("api-keys:verify")
@@ -461,16 +478,40 @@ describe("account-fenced reporting delivery", () => {
 			Date.now() + 60_000,
 		)
 	})
-	it("honors a Retry-After longer than one day", async () => {
+	it("retries a 429 without a PR_COST_LIMIT detail like an outage, backing off with jitter", async () => {
+		vi.spyOn(Math, "random").mockReturnValue(0.5)
 		http.mockImplementation(async (input) =>
 			String(input).endsWith("api-keys:verify")
 				? Response.json({ organizationId: org, userId: user })
-				: new Response(null, { status: 429, headers: { "Retry-After": "172800" } }),
+				: Response.json({ code: 8, message: "busy" }, { status: 429 }),
 		)
+		const delays: number[] = []
+		for (let attempt = 0; attempt < 4; attempt++) {
+			const before = Date.now()
+			await deliver()
+			const entry = Object.values((await readReportingState(directory)).entries)[0]
+			delays.push(Math.round((entry.retryAt - before) / 1000))
+			// Past both the retry deadline and this repository's upload window.
+			vi.spyOn(Date, "now").mockReturnValue(Math.max(entry.retryAt, (entry.uploadedAt ?? 0) + UPLOAD_INTERVAL_MS) + 1)
+		}
+		expect(delays).toEqual([30, 60, 120, 240])
+		expect(Object.values((await readReportingState(directory)).entries)[0]).toMatchObject({
+			attempts: 4,
+			lastError: "PR reporting returned HTTP 429",
+		})
+		expect(Object.values((await readReportingState(directory)).entries)[0].limit).toBeUndefined()
+	})
+	it("bounds a Retry-After longer than six hours", async () => {
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: new Response(null, { status: 503, headers: { "Retry-After": "172800" } }),
+		)
+		const before = Date.now()
 		await deliver()
-		expect(Object.values((await readReportingState(directory)).entries)[0].retryAt).toBeGreaterThan(
-			Date.now() + 172799000,
-		)
+		const { retryAt } = Object.values((await readReportingState(directory)).entries)[0]
+		expect(retryAt - before).toBeGreaterThanOrEqual(LIMIT_RETRY_MS)
+		expect(retryAt - Date.now()).toBeLessThanOrEqual(LIMIT_RETRY_MS)
 	})
 	it("cancels an in-flight upload when another instance opts out and discards its payload", async () => {
 		let sent: (() => void) | undefined
@@ -542,6 +583,8 @@ const inventory = (requestIds: string[], repositoryId = "42"): RepositorySnapsho
 		coverage: { observedRequests: requestIds.length, unpricedRequests: requestIds.length, historyComplete: true },
 	},
 })
+const entryFor = async (repositoryId: string) =>
+	Object.values((await readReportingState(directory)).entries).find((entry) => entry.repository.id === repositoryId)
 
 describe("upload window", () => {
 	it("uploads rapid ordinary changes once per five-minute window, sending the newest", async () => {
@@ -580,6 +623,143 @@ describe("upload window", () => {
 		await setReportingEnabled(directory, true)
 		await deliver()
 		expect(posts().map((payload) => payload.revision)).toEqual(["1", "2"])
+	})
+})
+
+const limitDetail = (scope: string, limit: string, current: string, maximum: string) => ({
+	"@type": "type.googleapis.com/google.rpc.ErrorInfo",
+	reason: "PR_COST_LIMIT",
+	domain: "ai-optimizer",
+	metadata: { scope, limit, current, maximum },
+})
+const limited = (scope: string, limit: string, current: string, maximum: string) =>
+	Response.json(
+		{
+			code: 8,
+			message: "PR cost reporting resource limit exceeded",
+			details: [limitDetail(scope, limit, current, maximum)],
+		},
+		{ status: 429 },
+	)
+
+describe("server limits", () => {
+	it("treats a producer limit as quota: about six hours on its own counter, while another repository uploads", async () => {
+		vi.spyOn(Math, "random").mockReturnValue(0.5)
+		await queueSnapshots(directory, [content, inventory([second], "43")])
+		respond((payload) =>
+			payload.repository.id === "42" ? limited("producer", "repositories", "101", "100") : accepted(payload),
+		)
+		const before = Date.now()
+		await deliver()
+		const entry = await entryFor("42")
+		expect(entry).toMatchObject({
+			attempts: 0,
+			limitAttempts: 1,
+			limit: { scope: "producer", limit: "repositories", current: 101, maximum: 100 },
+		})
+		expect((entry?.retryAt ?? 0) - before).toBeGreaterThanOrEqual(LIMIT_RETRY_MS)
+		expect((entry?.retryAt ?? 0) - Date.now()).toBeLessThanOrEqual(LIMIT_RETRY_MS)
+		expect((await entryFor("43"))?.pending).toBeUndefined()
+		const state = await readReportingState(directory)
+		expect(JSON.stringify(state)).not.toContain("resource limit exceeded")
+		expect(statusText(state, undefined).text).toContain(
+			"github.com repository 42: producer limit reached (repositories 101 of 100). Not reported; next try in about 6 h.",
+		)
+		http.mockClear()
+		await deliver()
+		expect(posts()).toEqual([])
+	})
+	it.each([
+		["organization", "this organization"],
+		["contributor", "your account in this organization"],
+		["frozen", "this organization"],
+	])("pauses the whole account for a %s limit but still sends a withdrawal", async (scope, owner) => {
+		await queueSnapshots(directory, [content, inventory([second], "43")])
+		respond((payload) => (payload.requests.length ? limited(scope, "requests", "50000", "50000") : accepted(payload)))
+		await deliver()
+		expect(posts()).toHaveLength(1)
+		const state = await readReportingState(directory)
+		expect(Object.values(state.paused ?? {})).toMatchObject([{ attempts: 1, limit: { scope, limit: "requests" } }])
+		expect(statusText(state, undefined).text).toContain(
+			`PR cost reporting paused for ${owner}: ${scope} limit reached (requests 50000 of 50000). Ask an admin to free space or wait; next try in about`,
+		)
+		// The request moves to repository 43, so repository 42 is withdrawn; the withdrawal frees space.
+		http.mockClear()
+		await queueSnapshots(directory, [inventory([second, requestId], "43")], true)
+		await deliver()
+		expect(posts().map((payload) => [payload.repository.id, payload.requests.length])).toEqual([["42", 0]])
+		expect((await readReportingState(directory)).paused).toBeDefined()
+	})
+	it("trims to a server snapshot limit and sends the smaller snapshot after the wait", async () => {
+		await rm(join(directory, "pr-cost-reporting", "state.json"))
+		await seedLinked()
+		const path = join(directory, "work-attribution", "source.jsonl")
+		const rows = (await readFile(path, "utf8"))
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line))
+		const later = "66666666-6666-4666-8666-666666666666"
+		rows.push({
+			...rows.find((row) => row.type === "request"),
+			requestId: later,
+			startedAt: "2026-10-04T12:30:00.000Z",
+			recordedAt: "2026-10-04T12:30:00.000Z",
+		})
+		await writeFile(path, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`)
+		let full = true
+		respond((payload) => (full ? limited("snapshot", "requests", "2", "1") : accepted(payload)))
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		expect(posts().map((payload) => payload.requests.length)).toEqual([2])
+		expect(await entryFor("42")).toMatchObject({
+			limit: { scope: "snapshot", limit: "requests" },
+			learned: { requests: 1 },
+		})
+		// The next pass queues the smaller snapshot at once, but it waits out the limit like any other.
+		await run()
+		const waiting = await entryFor("42")
+		expect(waiting).toMatchObject({ trimmed: 1, pending: { requests: [{ requestId: later }] } })
+		expect(posts()).toHaveLength(1)
+		full = false
+		vi.spyOn(Date, "now").mockReturnValue((waiting?.retryAt ?? 0) + 1)
+		await run()
+		expect(posts().at(-1)).toMatchObject({
+			requests: [{ requestId: later }],
+			coverage: { observedRequests: 1, historyComplete: false, trimmedRequests: 1 },
+		})
+		const sent = await entryFor("42")
+		expect(sent?.limit).toBeUndefined()
+		expect(sent?.learned?.requests).toBe(1)
+	})
+	it("retries an oversized 429 body as an outage without reading past 64 KiB", async () => {
+		respond(
+			() =>
+				new Response(
+					JSON.stringify({ details: [limitDetail("organization", "bytes", "1", "1")], padding: "x".repeat(70 * 1024) }),
+					{ status: 429 },
+				),
+		)
+		await deliver()
+		const entry = await entryFor("42")
+		expect(entry).toMatchObject({ attempts: 1, lastError: "PR reporting returned HTTP 429" })
+		expect(entry?.limit).toBeUndefined()
+		expect((await readReportingState(directory)).paused).toBeUndefined()
+		expect(entry?.retryAt).toBeLessThanOrEqual(Date.now() + 36_000)
+	})
+	it("reads only a PR_COST_LIMIT ErrorInfo from the ai-optimizer domain", () => {
+		const detail = limitDetail("producer", "snapshots", "100", "100")
+		expect(serverLimit({ details: [detail] }, 5)).toEqual({
+			scope: "producer",
+			limit: "snapshots",
+			current: 100,
+			maximum: 100,
+			at: 5,
+		})
+		expect(serverLimit({ details: [{ ...detail, domain: "elsewhere" }] }, 5)).toBeUndefined()
+		expect(serverLimit({ details: [{ ...detail, reason: "QUOTA" }] }, 5)).toBeUndefined()
+		expect(serverLimit({ code: 8, message: "busy" }, 5)).toBeUndefined()
+		// Unknown values never reach durable state; the rejection still counts as a limit.
+		expect(serverLimit({ details: [limitDetail("galaxy", "planets", "1.5", "-1")] }, 5)).toEqual({ at: 5 })
 	})
 })
 

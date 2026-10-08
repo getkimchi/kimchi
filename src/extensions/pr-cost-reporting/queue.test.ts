@@ -12,12 +12,16 @@ import { machineFingerprint } from "./machine.js"
 import {
 	acknowledgeSnapshot,
 	deferSnapshot,
+	dueLimitNotices,
+	learnedLimits,
+	limitSnapshot,
 	queueSnapshots,
 	readReportingState,
 	setReportingEnabled,
+	takeLimitNotices,
 	takeReportingNotice,
 } from "./queue.js"
-import { accountKey, buildSnapshots, type RepositorySnapshot, repositoryKey } from "./snapshot.js"
+import { accountKey, buildSnapshots, type RepositorySnapshot, repositoryKey, SNAPSHOT_LIMITS } from "./snapshot.js"
 
 const account = {
 	apiUrl: "https://api.example",
@@ -664,5 +668,143 @@ describe("upload window", () => {
 		const state = await setReportingEnabled(directory, true)
 		expect(state.entries[key]).toMatchObject({ attempts: 0, retryAt: 0, pending: { revision: "1" } })
 		expect(state.entries[key].uploadedAt).toBeUndefined()
+	})
+})
+
+describe("server limits", () => {
+	const key = `${accountKey(account)}:${repositoryKey(snapshot().content.repository)}`
+	const requests = (count: number) =>
+		Array.from({ length: count }, (_, index) => `66666666-6666-4666-8666-${String(index).padStart(12, "0")}`)
+
+	it("pauses every repository of the account for an organization limit and keeps the notice once per pause", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const limit = { scope: "organization" as const, limit: "requests" as const, current: 50000, maximum: 50000, at: 1 }
+		const first = await limitSnapshot(directory, key, "1", limit, 1000)
+		expect(first.paused).toEqual({ [accountKey(account)]: { limit, retryAt: 1000, attempts: 1 } })
+		expect(first.entries[key]).toMatchObject({ retryAt: 0, attempts: 0 })
+		expect(first.entries[key].limit).toBeUndefined()
+		expect(dueLimitNotices(first)).toEqual({ repositories: [], pauses: [limit] })
+		expect(await takeLimitNotices(directory)).toEqual({ repositories: [], pauses: [limit] })
+		const again = await limitSnapshot(directory, key, "1", { ...limit, at: 2 }, 2000)
+		expect(again.paused?.[accountKey(account)]).toMatchObject({ attempts: 2, retryAt: 2000, noticeShown: true })
+		expect(await takeLimitNotices(directory)).toEqual({ repositories: [], pauses: [] })
+	})
+	it("lifts a pause only when an upload that adds claims is accepted", async () => {
+		await setReportingEnabled(directory, true)
+		const other = snapshot([otherRequestId])
+		other.content.repository = { ...other.content.repository, id: "43" }
+		const otherKey = `${accountKey(account)}:${repositoryKey(other.content.repository)}`
+		await queueSnapshots(directory, [snapshot([requestId]), other], true)
+		await limitSnapshot(directory, key, "1", { scope: "contributor", at: 1 }, Date.now() + 3_600_000)
+		// Repository 43 is withdrawn: an empty snapshot frees space but proves nothing about the limit.
+		const withdrawn = snapshot([otherRequestId, requestId])
+		await queueSnapshots(directory, [withdrawn], true)
+		const ack = { status: "accepted" as const, receivedAt: new Date().toISOString() }
+		const state = await acknowledgeSnapshot(directory, otherKey, "2", { ...ack, revision: "2" })
+		expect(state.paused).toBeDefined()
+		expect((await acknowledgeSnapshot(directory, key, "2", { ...ack, revision: "2" })).paused).toBeUndefined()
+	})
+	it("waits on its own counter for a producer limit and clears it once an upload is accepted", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const limit = { scope: "producer" as const, limit: "repositories" as const, current: 101, maximum: 100, at: 1 }
+		const state = await limitSnapshot(directory, key, "1", limit, 5000)
+		expect(state.entries[key]).toMatchObject({ limit, limitAttempts: 1, attempts: 0, retryAt: 5000 })
+		expect(state.entries[key].learned).toBeUndefined()
+		expect(dueLimitNotices(state).repositories).toEqual([snapshot().content.repository])
+		const accepted = await acknowledgeSnapshot(directory, key, "1", {
+			status: "accepted",
+			revision: "1",
+			receivedAt: new Date().toISOString(),
+		})
+		expect(accepted.entries[key].limit).toBeUndefined()
+		expect(accepted.entries[key].limitAttempts).toBeUndefined()
+	})
+	it.each([
+		["requests", 12, 10, 6, { requests: 5 }],
+		["requests", undefined, undefined, 6, { requests: 5 }],
+		["pullRequests", 3, 2, 3, undefined],
+	] as const)("learns a smaller %s limit from a snapshot rejection (%s of %s)", async (name, current, maximum, size, learned) => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot(requests(size))])
+		const at = Date.now()
+		const limit = { scope: "snapshot" as const, limit: name, current, maximum, at }
+		const state = await limitSnapshot(directory, key, "1", limit, at + 1000)
+		if (!learned) {
+			// No PRs were sent, so a PR limit cannot be met by sending fewer.
+			expect(state.entries[key].learned).toBeUndefined()
+			return
+		}
+		expect(state.entries[key].learned).toEqual({ ...learned, until: at + 7 * 24 * 60 * 60_000 })
+		expect(learnedLimits(state, at).get(key)).toEqual({ ...SNAPSHOT_LIMITS, ...learned })
+		expect(learnedLimits(state, at + 7 * 24 * 60 * 60_000).size).toBe(0)
+	})
+	it("learns bytes from the server's measure, so a different encoding still converges", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot(requests(4))])
+		const pending = (await readReportingState(directory)).entries[key].pending
+		const bytes = Buffer.byteLength(JSON.stringify(pending))
+		const state = await limitSnapshot(
+			directory,
+			key,
+			"1",
+			{ scope: "snapshot", limit: "bytes", current: bytes * 2, maximum: bytes, at: 1 },
+			1000,
+		)
+		expect(state.entries[key].learned?.bytes).toBe(Math.floor(bytes / 2))
+	})
+	it("lets /pr-reporting on retry an account pause and a repository limit at once", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		await limitSnapshot(directory, key, "1", { scope: "producer", at: 1 }, Date.now() + 3_600_000)
+		await limitSnapshot(directory, key, "1", { scope: "organization", at: 1 }, Date.now() + 3_600_000)
+		const state = await setReportingEnabled(directory, true)
+		expect(state.paused).toBeUndefined()
+		expect(state.entries[key]).toMatchObject({ retryAt: 0, limit: { scope: "producer" } })
+		expect(state.entries[key].limitAttempts).toBeUndefined()
+	})
+	it("ignores a limit for a revision that was already replaced", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		await queueSnapshots(directory, [snapshot([requestId, otherRequestId])])
+		const state = await limitSnapshot(directory, key, "1", { scope: "producer", at: 1 }, 1000)
+		expect(state.entries[key].limit).toBeUndefined()
+	})
+	it("shows a repository's partial-report notice once across concurrent sessions", async () => {
+		await setReportingEnabled(directory, true)
+		const trimmed = snapshot([requestId])
+		trimmed.content.coverage = { ...trimmed.content.coverage, historyComplete: false, trimmedRequests: 4 }
+		const state = await queueSnapshots(directory, [trimmed])
+		expect(state.entries[key].trimmed).toBe(4)
+		const taken = await Promise.all([takeLimitNotices(directory), takeLimitNotices(directory)])
+		expect(taken.flatMap((notices) => notices.repositories)).toEqual([trimmed.content.repository])
+		expect((await queueSnapshots(directory, [snapshot([requestId, otherRequestId])])).entries[key]).toMatchObject({
+			limitNoticeShown: true,
+		})
+		expect((await readReportingState(directory)).entries[key].trimmed).toBeUndefined()
+	})
+	it.each([
+		["markers", "pull-request:101:open"],
+		["uploadedAt", "yesterday"],
+		["limit", { scope: "everywhere", at: 1 }],
+		["learned", { requests: 0, until: 1 }],
+		["urgent", false],
+	])("fails closed on an invalid %s field", async (field, value) => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const saved = JSON.parse(await readFile(path, "utf8"))
+		saved.entries[key][field] = value
+		await writeFile(path, JSON.stringify(saved))
+		await expect(readReportingState(directory)).rejects.toThrow("unreadable")
+	})
+	it("fails closed on an invalid account pause", async () => {
+		await setReportingEnabled(directory, true)
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const saved = JSON.parse(await readFile(path, "utf8"))
+		saved.paused = { [accountKey(account)]: { limit: { scope: "organization", at: 1 }, retryAt: 1, attempts: -1 } }
+		await writeFile(path, JSON.stringify(saved))
+		await expect(readReportingState(directory)).rejects.toThrow("unreadable")
 	})
 })
