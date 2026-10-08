@@ -237,7 +237,7 @@ function lookupResult(commit: WorkPullRequestUpdate): string {
 			.sort((a, b) => pullRequestKey(a).localeCompare(pullRequestKey(b))),
 	])
 }
-/** Checks slow down in proportion to a commit's age: new pushes link on the next pass, old commits at most daily, and pending ones stop after the upload window. */
+/** Checks slow down in proportion to a commit's age: new pushes link on the next pass, old commits at most daily, and ones without a PR stop after the upload window. */
 function lookupDue(commits: WorkPullRequestUpdate[], now = Date.now()): boolean {
 	let latest: WorkPullRequestLookup | undefined
 	for (const { prLookup } of commits) {
@@ -245,9 +245,10 @@ function lookupDue(commits: WorkPullRequestUpdate[], now = Date.now()): boolean 
 		if (!latest || Date.parse(prLookup.checkedAt) > Date.parse(latest.checkedAt)) latest = prLookup
 	}
 	if (!latest) return true
-	if (latest.error && !latest.reason && Date.parse(latest.checkedAt) < PROCESS_STARTED) return true
 	const age = now - Math.min(...commits.map((commit) => Date.parse(commit.recordedAt ?? "") || now))
-	if (latest.status === "pending" && age > 32 * DAY_MS) return false
+	// Whatever the last result, including an error or an unsupported remote. Known links keep refreshing.
+	if (age > 32 * DAY_MS && commits.every((commit) => !commit.pullRequests.length)) return false
+	if (latest.error && !latest.reason && Date.parse(latest.checkedAt) < PROCESS_STARTED) return true
 	return now - Date.parse(latest.checkedAt) >= Math.min(DAY_MS, age / 16)
 }
 function commitKey(row: WorkPullRequestUpdate): string {

@@ -985,22 +985,58 @@ describe("durable work pull request discovery", () => {
 		await first
 		expect(saved()).toHaveLength(1)
 	})
-	it("checks an aging commit less often and stops for a pending one after the upload window", async () => {
+	it.each([
+		["pending", () => {}, { status: "pending" }],
+		[
+			"unsupported",
+			() => {
+				remote("https://git.example.com/team/repo.git")
+				http.mockImplementation(async () => new Response("<html>Sign in</html>"))
+			},
+			{ status: "error", error: expect.stringContaining("no supported GitHub or GitLab API"), reason: "unsupported" },
+		],
+		[
+			"missing repository",
+			() =>
+				http.mockImplementation(async () =>
+					Response.json({ message: "Not Found", documentation_url: "https://docs.github.com/rest" }, { status: 404 }),
+				),
+			{ status: "error", error: expect.stringContaining("could not find this repository") },
+		],
+	] as const)("checks an aging commit less often and stops checking one without a PR after the upload window: %s", async (_result, respond, result) => {
 		const day = 24 * 60 * 60 * 1000
+		const old = join(directory, "old.git")
+		mkdirSync(old)
 		seed({ recordedAt: new Date(Date.now() - day).toISOString() })
-		seed({ sha: "b".repeat(40), recordedAt: new Date(Date.now() - 60 * day).toISOString() })
+		seed({ sha: "b".repeat(40), repository: old, recordedAt: new Date(Date.now() - 60 * day).toISOString() })
+		respond()
+		// Every check starts by reading its repository's remote, before any provider request.
+		const checked = () => cli.git.mock.calls.map(([args]) => (args[1] === old ? "old" : "recent"))
 		await lookup()
-		expect(commitCalls()).toHaveLength(2)
+		expect(checked()).toEqual(["recent", "old"])
+		expect(saved().at(-1).repository).toBe(old)
+		expect(saved().at(-1).prLookup).toEqual({ ...result, checkedAt: expect.any(String) })
 		later()
 		await lookup()
-		expect(commitCalls()).toHaveLength(2)
+		expect(checked()).toEqual(["recent", "old"])
 		later(2 * 60 * 60 * 1000)
 		await lookup()
-		expect(commitCalls().map((url) => url.pathname)).toEqual([
-			`/repos/team/repo/commits/${sha}/pulls`,
-			`/repos/team/repo/commits/${"b".repeat(40)}/pulls`,
-			`/repos/team/repo/commits/${sha}/pulls`,
-		])
+		later(day)
+		await lookup()
+		expect(checked()).toEqual(["recent", "old", "recent", "recent"])
+	})
+	it("keeps refreshing a known PR after the upload window", async () => {
+		const day = 24 * 60 * 60 * 1000
+		seed({
+			recordedAt: new Date(Date.now() - 60 * day).toISOString(),
+			prLookup: { status: "linked", checkedAt: new Date(Date.now() - 2 * day).toISOString() },
+			pullRequests: [stored()],
+		})
+		replies((url) => (url.pathname.includes("/commits/") ? [] : pull()))
+		await lookup()
+		later(day)
+		await lookup()
+		expect(http.mock.calls.filter(([url]) => url.pathname === "/repos/team/repo/pulls/7")).toHaveLength(2)
 	})
 	it("retries an actionable failure saved by an earlier process once before backing off", async () => {
 		const day = 24 * 60 * 60 * 1000

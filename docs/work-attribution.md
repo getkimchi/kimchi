@@ -144,7 +144,7 @@ New edit records reference a snapshot of the visible Git references and worktree
 
 ### 4. Find pull requests and merge requests
 
-Create the PR or MR through Kimchi, a browser or another tool. Kimchi checks for it at startup and every 30 seconds while open. An older commit is checked less often, at most daily; a commit still without a PR after 32 days is no longer checked. A failure saved by an earlier session is retried once at startup. GitHub and GitLab CLIs are optional: Kimchi reads the provider's API directly and can use their existing credentials.
+Create the PR or MR through Kimchi, a browser or another tool. Kimchi checks for it at startup and every 30 seconds while open. An older commit is checked less often, at most daily; a commit still without a PR after 32 days is no longer checked, even when its last lookup failed. Within those 32 days, a failure saved by an earlier session is retried once at startup. GitHub and GitLab CLIs are optional: Kimchi reads the provider's API directly and can use their existing credentials.
 
 With work tracking loaded, the match starts with a **repository and commit hash** already saved under a work ID. If work A contains commit `abc123` and the provider returns PR #7 for that commit, Kimchi saves the link under work A. GitLab uses the same flow with merge requests.
 
