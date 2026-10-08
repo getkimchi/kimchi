@@ -7589,7 +7589,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 		// Should be blocked in plan mode
 		expect(result).toBeDefined()
 		expect(result?.block).toBe(true)
-		expect(result?.reason).toContain("plan mode")
+		expect(result?.reason).toContain("Blocked: the session is in plan mode")
 
 		// Cleanup
 		await agent.unstable_closeSession({ sessionId })
@@ -7734,7 +7734,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 			mockCtx,
 		)) as { block: boolean; reason: string }
 		expect(writeBlockedResult?.block).toBe(true)
-		expect(writeBlockedResult?.reason).toContain("plan mode")
+		expect(writeBlockedResult?.reason).toContain("Blocked: the session is in plan mode")
 
 		// Clear notifications from entering plan mode
 		updates.length = 0

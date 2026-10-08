@@ -565,7 +565,7 @@ describe("permissions plan-mode tool visibility", () => {
 
 		expect(result).toEqual(expect.objectContaining({ block: true }))
 		const reason = (result as { reason?: string }).reason ?? ""
-		expect(reason).toContain("the session is in plan mode (read-only)")
+		expect(reason).toContain("Blocked: the session is in plan mode (read-only)")
 		expect(reason).toContain("Do not retry")
 	})
 
@@ -582,7 +582,7 @@ describe("permissions plan-mode tool visibility", () => {
 		)
 
 		expect(result).toEqual(expect.objectContaining({ block: true }))
-		expect(JSON.stringify(result)).toContain("plan mode")
+		expect(JSON.stringify(result)).toContain("Blocked: the session is in plan mode")
 	})
 
 	it("keeps todo tools visible and allowed under explicit --plan", async () => {
