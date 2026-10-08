@@ -12,6 +12,7 @@ import {
 	type WriteOperations,
 } from "@earendil-works/pi-coding-agent"
 import { isWorkId } from "../../shared/work-id.js"
+import { SHA } from "../pull-request-status/provider-records.js"
 import {
 	appendWorkRecord,
 	getToolRequest,
@@ -857,7 +858,7 @@ async function matchesCommittedHunks(
 	const texts: string[] = []
 	for (const state of [before, after, parent, committed]) {
 		checkBudget()
-		if (!/^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(state.blob)) return false
+		if (!SHA.test(state.blob)) return false
 		const info = await git(repository, ["cat-file", "--batch-check=%(objecttype) %(objectsize)"], {
 			input: Buffer.from(`${state.blob}\n`),
 			signal,
