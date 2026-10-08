@@ -280,6 +280,7 @@ function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
 			item.selector = saved
 		}
 	}
+	const evidence = new Map<RequestBilling, BillingLookup[]>()
 	for (const row of records) {
 		if (row.type !== "request_cost") continue
 		const item = requests.get(String(row.requestId))
@@ -320,15 +321,11 @@ function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
 			item.lookup = lookup
 			item.lastCost = row
 		}
-		// A timeout before any billing page adds no evidence. Retain its retry timing
-		// and diagnostics. Older generic timeout records may contain incomplete pages.
+		// Earlier versions journaled timeouts before any billing page; they add no evidence.
+		// Older generic timeout records may contain incomplete pages.
 		const beforePageTimeout =
 			lookup.status === "unavailable" && lookup.reason === BEFORE_PAGE_TIMEOUT_MESSAGE && row.billingRows.length === 0
-		if (
-			!beforePageTimeout &&
-			(!item.substantiveLookup || Date.parse(lookup.checkedAt) >= Date.parse(item.substantiveLookup.checkedAt))
-		)
-			item.substantiveLookup = lookup
+		if (!beforePageTimeout) evidence.set(item, [...(evidence.get(item) ?? []), lookup])
 		for (const bill of row.billingRows) {
 			if (!object(bill) || !isWorkId(bill.id) || (bill.costUsd !== null && typeof bill.costUsd !== "string")) {
 				item.invalid = true
@@ -345,6 +342,12 @@ function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
 			})
 		}
 	}
+	for (const [item, lookups] of evidence)
+		for (const lookup of lookups.sort((left, right) => Date.parse(left.checkedAt) - Date.parse(right.checkedAt))) {
+			// A changed key or account stops refreshes; it cannot withdraw a verified complete price.
+			if (lookup.status === "account-changed" && item.substantiveLookup?.status === "priced") continue
+			item.substantiveLookup = lookup
+		}
 	return requests
 }
 function displayedLookup(item: RequestBilling | undefined, poll: BillingPoll | undefined) {
@@ -755,24 +758,22 @@ export async function reconcileWorkCosts(
 			assertLease()
 			const previousLookup = item.lookup
 			// The journal must prove that the window closed, even when the final result is unchanged.
-			const final = Date.parse(lookup.checkedAt) >= endsAt
-			const unchanged =
-				!final &&
+			// A changed account never closes it for a verified price, which that change cannot withdraw.
+			const final =
+				Date.parse(lookup.checkedAt) >= endsAt &&
+				!(lookup.status === "account-changed" && item.substantiveLookup?.status === "priced")
+			const repeated =
 				previousLookup &&
-				Array.isArray(item.lastCost?.billingRows) &&
-				costFingerprint(rows, lookup) === costFingerprint(item.lastCost.billingRows, previousLookup)
+				((Array.isArray(item.lastCost?.billingRows) &&
+					costFingerprint(rows, lookup) === costFingerprint(item.lastCost.billingRows, previousLookup)) ||
+					(lookup.status === "account-changed" &&
+						previousLookup.status === lookup.status &&
+						previousLookup.reason === lookup.reason))
 			polls[item.requestId] = {
 				checkedAt: Date.parse(lookup.checkedAt),
-				lookupAt: unchanged ? previousLookup.checkedAt : lookup.checkedAt,
+				lookupAt: repeated && !final ? previousLookup.checkedAt : lookup.checkedAt,
 			}
-			if (
-				unchanged ||
-				(!final &&
-					lookup.status === "account-changed" &&
-					item.lookup?.status === lookup.status &&
-					item.lookup.reason === lookup.reason)
-			)
-				continue
+			if (repeated && !final) continue
 			const ctx = {
 				cwd: String(item.request.cwd ?? ""),
 				sessionManager: { getSessionId: () => item.request.sessionId },

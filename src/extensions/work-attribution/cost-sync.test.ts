@@ -533,16 +533,13 @@ describe("automatic exact work cost lookup", () => {
 		await sync()
 		await flushWorkSummaries()
 		const request = JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8")).requests[0]
-		// A failed key check returns no billing page: the journal keeps the confirmed price.
+		// A failed key check returns no billing page, and a changed key cannot withdraw a verified price.
 		expect(request.billingLookup).toMatchObject({
 			organizationId: ORG,
 			userId: PROMPT,
 			status: failure === "changed-key" ? "account-changed" : "priced",
 		})
-		expect(report(workId).pullRequests[0]).toMatchObject({
-			totalCostUsd: failure === "changed-key" ? null : "0.100000000",
-			knownCostUsd: "0.100000000",
-		})
+		expect(report(workId).pullRequests[0]).toMatchObject({ totalCostUsd: "0.100000000", knownCostUsd: "0.100000000" })
 		expect(fetchMock).toHaveBeenCalledTimes(failure === "changed-key" ? 2 : 3)
 	})
 	it("pins the gateway's X-API-Key account when both auth headers are present", () => {
@@ -987,7 +984,6 @@ describe("automatic exact work cost lookup", () => {
 		expect(workCostDetails(dir, workId)).toContain(`Last billing refresh failed for 1 request: ${reason}.`)
 	})
 	it.each([
-		"account",
 		"owner",
 		"malformed",
 		"empty",
@@ -998,19 +994,15 @@ describe("automatic exact work cost lookup", () => {
 		await sync()
 		let now = Date.now() + 6 * 60_000
 		vi.spyOn(Date, "now").mockImplementation(() => now)
-		if (failure === "account") currentKey = "changed-account"
-		else {
-			fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
-			const item = {
-				id: ROW,
-				totalPrice: failure === "malformed" ? "NaN" : "0.5",
-				castaiApiKeyOwnerId: failure === "owner" ? ROW : PROMPT,
-			}
-			fetchMock.mockResolvedValueOnce(Response.json({ items: failure === "empty" ? [] : [item] }))
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		const item = {
+			id: ROW,
+			totalPrice: failure === "malformed" ? "NaN" : "0.5",
+			castaiApiKeyOwnerId: failure === "owner" ? ROW : PROMPT,
 		}
+		fetchMock.mockResolvedValueOnce(Response.json({ items: failure === "empty" ? [] : [item] }))
 		await sync()
 		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
-		currentKey = "test-only-original-key"
 		now += 6 * 60_000
 		fetchMock.mockImplementationOnce(async () => {
 			now += 5001
@@ -1139,7 +1131,65 @@ describe("automatic exact work cost lookup", () => {
 		vi.mocked(Date.now).mockReturnValue(now + 7 * 60_000)
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: "44444444-2222-4333-8444-555555555555" }))
 		await sync()
-		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+		expect(report(workId).requests[0].billingLookup).toMatchObject({
+			status: "account-changed",
+			organizationId: ORG,
+			reason: "Original billing organization changed",
+		})
+		// The bill verified under the original organization still counts.
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toHaveLength(2)
+		expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("llm-requests"))).toHaveLength(1)
+	})
+	it("keeps a verified price through a key change while unpriced requests stay unknown", async () => {
+		const priced = tagged("priced")
+		const pending = tagged("pending")
+		fetchMock.mockImplementation(async (input) => {
+			const tag = new URL(String(input)).searchParams.get("tags")
+			if (!tag) return Response.json({ organizationId: ORG, userId: PROMPT })
+			return Response.json({
+				items: tag === `kimchi-request:${priced.requestId}` ? [{ id: ROW, totalPrice: "0.2" }] : [],
+			})
+		})
+		await sync()
+		currentKey = "test-only-rotated-key"
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6 * 60_000)
+		fetchMock.mockClear()
+		await sync()
+		expect(fetchMock).not.toHaveBeenCalled()
+		expect(report(priced.workId).requests[0]).toMatchObject({
+			priceStatus: "priced",
+			totalCostUsd: "0.200000000",
+			billingLookup: { status: "account-changed", reason: "Original credential or endpoint is no longer configured" },
+		})
+		expect(report(pending.workId).requests[0]).toMatchObject({
+			priceStatus: "missing",
+			totalCostUsd: null,
+			billingLookup: { status: "account-changed" },
+		})
+		// Once the original key is back, the verified request is refreshed again.
+		currentKey = "test-only-original-key"
+		vi.mocked(Date.now).mockReturnValue(Date.now() + 6 * 60_000)
+		await sync()
+		expect(report(priced.workId).requests[0].billingLookup.status).toBe("priced")
+	})
+	it("does not grow the journal for a verified price whose account changed after the window", async () => {
+		const { workId } = tagged()
+		await sync()
+		let now = Date.parse("2026-11-02T08:00:00.000Z") + 60_000
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		fetchMock.mockImplementation(async () => Response.json({ organizationId: ORG, userId: ROW }))
+		for (let hour = 0; hour < 5; hour++) {
+			await sync()
+			now += 60 * 60_000
+		}
+		const rows = readWorkRecords(dir).filter((row) => row.type === "request_cost")
+		expect(rows).toHaveLength(2)
+		expect(rows[1].billingLookup).toMatchObject({
+			status: "account-changed",
+			reason: "Original billing API key owner changed",
+		})
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
 		expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("llm-requests"))).toHaveLength(1)
 	})
 	it("bounds looping pages and keeps the known subtotal unknown", async () => {
