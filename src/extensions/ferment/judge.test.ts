@@ -44,6 +44,7 @@ describe("isGrade", () => {
 function makeInput(overrides: Partial<JudgeJourneyGradeInput> = {}): JudgeJourneyGradeInput {
 	return {
 		fermentName: "Test Ferment",
+		cwd: "/test",
 		goal: "Ship the feature.",
 		successCriteria: "Tests pass; lint clean.",
 		finalSummary: "Implemented retry logic with tests.",
@@ -427,6 +428,7 @@ describe("judgePhaseGrade", () => {
 	function makePhaseInput(overrides: Partial<JudgePhaseInput> = {}): JudgePhaseInput {
 		return {
 			fermentName: "Test Ferment",
+			cwd: "/test",
 			phaseName: "Phase 1",
 			phaseGoal: "Build retry plumbing.",
 			phaseSummary: "Implemented retry logic with tests.",
@@ -634,6 +636,7 @@ describe("judgePhaseGradeViaSubagent", () => {
 	function makePhaseInput(overrides: Partial<JudgePhaseInput> = {}): JudgePhaseInput {
 		return {
 			fermentName: "Test Ferment",
+			cwd: "/test",
 			phaseName: "Phase 1",
 			phaseGoal: "Build retry plumbing.",
 			phaseSummary: "Implemented retry logic with tests.",
@@ -1085,6 +1088,7 @@ describe("judge renders intent charter", () => {
 		await judgePhaseGrade(
 			{
 				fermentName: "F",
+				cwd: "/test",
 				phaseName: "P1",
 				phaseGoal: "g",
 				charter: { intent: "Recreate the Tahoe desktop" },
@@ -1106,6 +1110,7 @@ describe("judge renders intent charter", () => {
 		await judgePhaseGradeViaSubagent(
 			{
 				fermentName: "F",
+				cwd: "/test",
 				phaseName: "P1",
 				phaseGoal: "g",
 				charter: { intent: "Recreate the Tahoe desktop", demoScript: "Boot; look" },
@@ -1277,7 +1282,7 @@ describe("recommendation contract (producible-evidence whitelist)", () => {
 			return ok('{"grade":"B","rationale":"x","recommendations":["y"]}')
 		})
 		await judgePhaseGrade(
-			{ fermentName: "F", phaseName: "P1", phaseGoal: "g", phaseSummary: "done", gateVerdicts: [] },
+			{ fermentName: "F", cwd: "/test", phaseName: "P1", phaseGoal: "g", phaseSummary: "done", gateVerdicts: [] },
 			apiCall,
 		)
 		expect(system).not.toBe("")
@@ -1302,7 +1307,7 @@ describe("recommendation contract (producible-evidence whitelist)", () => {
 			return { text: '{"grade":"A","rationale":"x"}', status: "completed" }
 		})
 		await judgePhaseGradeViaSubagent(
-			{ fermentName: "F", phaseName: "P1", phaseGoal: "g", phaseSummary: "done", gateVerdicts: [] },
+			{ fermentName: "F", cwd: "/test", phaseName: "P1", phaseGoal: "g", phaseSummary: "done", gateVerdicts: [] },
 			spawn,
 		)
 		expect(prompt).not.toBe("")

@@ -37,7 +37,7 @@ function createHarness(): {
 		clearStepStart: clearStepStartSpy,
 	}
 	const applyAndPersist = createApplyAndPersist(runtime)
-	const draft = storage.create("Progress Overlay")
+	const draft = storage.create("Progress Overlay", undefined, process.cwd())
 	const scoped = applyAndPersist(draft.id, {
 		type: "scope",
 		goal: "Goal",
@@ -156,7 +156,7 @@ describe("progress overlay parallel rendering", () => {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-parallel-render-test-")))
 		const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("Parallel Render")
+		const draft = storage.create("Parallel Render", undefined, process.cwd())
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",

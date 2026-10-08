@@ -1564,7 +1564,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				run_in_background: Type.Optional(
 					Type.Boolean({
 						description:
-							"Default: true in interactive sessions (false in headless runs). Run the agent in the background and return its ID immediately; you will be notified on completion. Set to false only when the next step in your workflow cannot proceed without the agent's result.",
+							"Default: true in interactive sessions (false in headless and ACP runs). Run the agent in the background and return its ID immediately; you will be notified on completion. Set to false only when the next step in your workflow cannot proceed without the agent's result.",
 					}),
 				),
 				isolated: Type.Optional(
@@ -1700,13 +1700,16 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 				const customConfig = getAgentConfig(subagentType)
 
-				// Background-by-default only applies with a UI loop that can consume
-				// completion notifications; headless/one-shot runs keep foreground so
-				// spawned work cannot outlive the process.
+				// Background-by-default is a TUI-only behavior — the TUI is the only
+				// surface with a loop that presents background-agent lifecycle to the
+				// user. Every other surface (headless/one-shot, ACP/rpc, future
+				// transports) fails safe to foreground: a backgrounded agent there
+				// would silently outlive the turn. An explicit run_in_background:
+				// true still opts in.
 				const resolvedConfig = resolveAgentInvocationConfig(
 					customConfig,
 					params as Parameters<typeof resolveAgentInvocationConfig>[1],
-					ctx.hasUI,
+					ctx.mode === "tui",
 				)
 
 				let model = ctx.model

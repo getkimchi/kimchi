@@ -39,7 +39,7 @@ function createHarness(options: { phases?: number; verification?: string } = {})
 		setActiveTools: vi.fn(),
 		events: { emit: vi.fn() },
 	} as unknown as ExtensionAPI
-	const ferment = storage.create("Phase Test")
+	const ferment = storage.create("Phase Test", undefined, process.cwd())
 	const phaseCount = options.phases ?? 2
 	const scope = applyAndPersist(ferment.id, {
 		type: "scope",
@@ -115,7 +115,7 @@ describe("completePhase", () => {
 		expect(okText(result)).toContain('**Phase "Phase 1"** done')
 		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("completed")
 		expect(h.storage.get(h.fermentId)?.phases[0].grade?.grade).toBe("A")
-		expect(services.gatherEvidence).toHaveBeenCalledWith("abc123")
+		expect(services.gatherEvidence).toHaveBeenCalledWith("abc123", "/tmp")
 		expect(services.onPhaseCompleted).toHaveBeenCalledWith(h.runtime)
 	})
 
@@ -454,7 +454,7 @@ describe("registerPhaseTools", () => {
 		const result = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -481,7 +481,7 @@ describe("registerPhaseTools", () => {
 		const result1 = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "attempt 1", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 		const err1 = result1 as { content: { text: string }[]; isError?: boolean }
@@ -492,7 +492,7 @@ describe("registerPhaseTools", () => {
 		const result2 = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "attempt 2", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 		expect(okText(result2)).toContain('**Phase "Phase 1"** done')
@@ -517,7 +517,7 @@ describe("registerPhaseTools", () => {
 		const result = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -554,7 +554,7 @@ describe("registerPhaseTools", () => {
 		const result1 = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "attempt 1", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 		const err1 = result1 as { content: { text: string }[]; isError?: boolean }
@@ -565,7 +565,7 @@ describe("registerPhaseTools", () => {
 		const result2 = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "attempt 2", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 		const err2 = result2 as { content: { text: string }[]; isError?: boolean }
@@ -576,7 +576,7 @@ describe("registerPhaseTools", () => {
 		const result3 = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "attempt 3", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 		const err3 = result3 as { content: { text: string }[]; isError?: boolean }
@@ -587,7 +587,7 @@ describe("registerPhaseTools", () => {
 		const result4 = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "attempt 4", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 		expect(okText(result4)).toContain('**Phase "Phase 1"** done')
@@ -609,7 +609,7 @@ describe("registerPhaseTools", () => {
 		const result = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -637,7 +637,7 @@ describe("registerPhaseTools", () => {
 		await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -662,7 +662,7 @@ describe("registerPhaseTools", () => {
 		const first = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "attempt 1", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 		expect(errText(first)).toContain("grade C")
@@ -670,7 +670,7 @@ describe("registerPhaseTools", () => {
 		const second = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "attempt 2", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 		expect(okText(second)).toContain('**Phase "Phase 1"** done')
@@ -702,7 +702,7 @@ describe("registerPhaseTools", () => {
 		const result = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -730,7 +730,7 @@ describe("registerPhaseTools", () => {
 		const result = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -747,7 +747,7 @@ describe("registerPhaseTools", () => {
 		const result = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -775,7 +775,7 @@ describe("registerPhaseTools", () => {
 		const result = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 

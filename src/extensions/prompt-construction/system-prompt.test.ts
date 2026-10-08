@@ -319,7 +319,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("load it with the skill_view tool (name: <skill name>)")
 		})
 
-		it("caps skill descriptions at 500 characters", () => {
+		it("caps skill descriptions at 200 characters", () => {
 			const long = "word ".repeat(200).trim() // 999 chars
 			const skills = [createSkill({ name: "wordy", description: long })]
 			const result = buildSystemPrompt({
@@ -331,12 +331,12 @@ describe("buildSystemPrompt", () => {
 			const descriptionLine = result.split("\n").find((line) => line.startsWith("- **wordy**"))
 			expect(descriptionLine).toBeDefined()
 			// Word-boundary truncation keeps the line near the cap, not at 999 chars.
-			expect(descriptionLine?.length ?? 0).toBeLessThan(600)
+			expect(descriptionLine?.length ?? 0).toBeLessThan(300)
 			expect(descriptionLine?.endsWith("…")).toBe(true)
 		})
 
-		it("degrades over-budget catalog entries to name-only bullets", () => {
-			// ~30 full entries at ~500 chars each far exceed the block budget.
+		it("degrades over-budget catalog entries to name-only bullets without dropping them", () => {
+			// 30 entries at ~220 chars each exceed the 5k floor budget.
 			const skills = Array.from({ length: 30 }, (_, i) =>
 				createSkill({ name: `skill-${i}`, description: `${i} ${'"word "'.repeat(120).trim()}` }),
 			)
@@ -347,16 +347,20 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			const bullets = skillsCatalogBullets(result)
-			// Head of the catalog keeps full entries; the tail degrades to
-			// name-only, and the block itself stays bounded.
-			expect(bullets.length).toBeGreaterThan(2)
-			expect(bullets.length).toBeLessThan(30)
+			// The head keeps full entries; the tail degrades to name-only — but no
+			// visible skill is ever dropped, and the degradation is surfaced as a
+			// note the model (and the context-assembly journal) can see.
+			expect(bullets).toHaveLength(30)
 			expect(bullets.slice(0, 3).every((b) => b.includes("—"))).toBe(true)
 			expect(bullets.slice(-3).every((b) => !b.includes("—"))).toBe(true)
+			expect(result).toContain("skills are listed name-only to fit the catalog budget")
+			expect(result).toContain("use the skill_view tool to inspect them")
 		})
 
-		it("drops catalog entries that exceed the block budget even name-only", () => {
-			// A 6k-char advertised name fits neither as a full nor a name-only bullet.
+		it("counts oversized entries in the note instead of dropping them silently", () => {
+			// A 6k-char advertised name fits neither as a full nor as a name-only
+			// bullet — the entry is omitted, but the omission is counted and
+			// surfaced rather than silently dropped.
 			const skills = [
 				createSkill({ name: "normal", description: "short" }),
 				createSkill({ name: "huge".repeat(1500), description: "short" }),
@@ -368,6 +372,82 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			expect(skillsCatalogBullets(result)).toEqual(["- **normal** — short"])
+			expect(result).toContain("1 further entry omitted from the catalog")
+		})
+
+		it("bounds the name-only tail against pathological inventories", () => {
+			// 1000 short skills overflow both the full-bullet budget and the
+			// degraded-tail allowance; the overflow is counted and surfaced in the
+			// note rather than growing the block without limit.
+			const skills = Array.from({ length: 1000 }, (_, i) => createSkill({ name: `skill-${i}`, description: "d" }))
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				mode: "orchestrator",
+			})
+			const listed = skillsCatalogBullets(result).length
+			expect(listed).toBeGreaterThan(0)
+			expect(listed).toBeLessThan(1000)
+			expect(result).toContain(`${1000 - listed} further entries omitted from the catalog.`)
+		})
+
+		it("keeps SKILL.md paths on degraded read-catalog entries", () => {
+			// Read-routed sessions (no skill_view tool) must keep degraded entries
+			// addressable: the bullet carries the path, and the note points at it.
+			const skills = Array.from({ length: 30 }, (_, i) =>
+				createSkill({ name: `skill-${i}`, description: `${i} ${'"word "'.repeat(40).trim()}` }),
+			)
+			const result = buildSystemPrompt({
+				tools: tools.filter((t) => t.name !== "skill_view"),
+				env: testEnv,
+				skills,
+				mode: "orchestrator",
+			})
+			const bullets = skillsCatalogBullets(result)
+			expect(bullets).toHaveLength(30)
+			// Full bullets carry descriptions; degraded ones carry just the path.
+			expect(bullets.slice(0, 3).every((b) => b.includes(" — "))).toBe(true)
+			expect(bullets.slice(-3).every((b) => b.includes("(`/skills/skill-"))).toBe(true)
+			expect(result).toContain("read the listed SKILL.md paths to inspect them")
+		})
+
+		it("scales the catalog budget with the model's context window", () => {
+			// 30 entries at ~220 chars each (200-char capped descriptions): a full
+			// render needs ~6.6k chars, which the 5k floor budget cannot fit but a
+			// 1M-token window's ~1% budget can.
+			const skills = Array.from({ length: 30 }, (_, i) =>
+				createSkill({ name: `skill-${i}`, description: `${i} ${'"word "'.repeat(120).trim()}` }),
+			)
+			const floored = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				mode: "orchestrator",
+			})
+			const scaled = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				mode: "orchestrator",
+				contextWindow: 1_000_000,
+			})
+			const fullBullets = (result: string) => skillsCatalogBullets(result).filter((b) => b.includes("—"))
+			expect(fullBullets(floored).length).toBeLessThan(30)
+			expect(fullBullets(scaled)).toHaveLength(30)
+			expect(scaled).not.toContain("name-only")
+		})
+
+		it("omits the degradation note when every skill fits the budget", () => {
+			const skills = [createSkill({ name: "deploy", description: "Deploy the app to production" })]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				mode: "orchestrator",
+			})
+			expect(result).not.toContain("name-only")
+			expect(result).not.toContain("oversized")
 		})
 
 		it("injects environment info", () => {

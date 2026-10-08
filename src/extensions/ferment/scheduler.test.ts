@@ -31,7 +31,7 @@ function makeRuntime(policy: "automated" | "manual"): {
 	const tmpDir = mkdtempSync(join(tmpdir(), "ferment-scheduler-test-"))
 	tmpDirs.push(tmpDir)
 	const storage = new FermentEventStore(tmpDir)
-	const draft = storage.create("Scheduler Nudge Draft")
+	const draft = storage.create("Scheduler Nudge Draft", undefined, process.cwd())
 	const runtime: FermentRuntime = {
 		...createDefaultFermentRuntime(),
 		getStorage: () => storage,
@@ -58,7 +58,7 @@ function makePlannedRuntime(
 	const tmpDir = mkdtempSync(join(tmpdir(), "ferment-scheduler-test-"))
 	tmpDirs.push(tmpDir)
 	const storage = new FermentEventStore(tmpDir)
-	const draft = storage.create("Planned Nudge Ferment")
+	const draft = storage.create("Planned Nudge Ferment", undefined, process.cwd())
 	const runtime: FermentRuntime = {
 		...createDefaultFermentRuntime(),
 		getStorage: () => storage,

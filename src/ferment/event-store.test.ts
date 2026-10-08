@@ -66,7 +66,7 @@ describe("FermentEventStore", () => {
 
 	describe("create", () => {
 		it("creates ferment, writes one ferment_created event", () => {
-			const ferment = eventStore.create("Auth rewrite", "Rewrite to OAuth2")
+			const ferment = eventStore.create("Auth rewrite", "Rewrite to OAuth2", process.cwd())
 			expect(ferment.name).toBe("Auth rewrite")
 			expect(ferment.status).toBe("draft")
 
@@ -76,7 +76,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("get() returns the ferment after create", () => {
-			const created = eventStore.create("Read-back test")
+			const created = eventStore.create("Read-back test", undefined, process.cwd())
 			expect(eventStore.get(created.id)?.name).toBe("Read-back test")
 		})
 	})
@@ -85,7 +85,7 @@ describe("FermentEventStore", () => {
 
 	describe("writeWithEvents (production mutation path)", () => {
 		it("scope command emits per-field events + ferment_planned", () => {
-			const f = eventStore.create("Scope test")
+			const f = eventStore.create("Scope test", undefined, process.cwd())
 
 			exec(eventStore, f.id, {
 				type: "scope",
@@ -105,7 +105,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("scope command with a charter emits scoping_charter_set and round-trips via fold", () => {
-			const f = eventStore.create("Charter round-trip")
+			const f = eventStore.create("Charter round-trip", undefined, process.cwd())
 
 			exec(eventStore, f.id, {
 				type: "scope",
@@ -130,7 +130,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("scope command with assumptions emits scoping_assumptions_set and round-trips via fold", () => {
-			const f = eventStore.create("Assumptions round-trip")
+			const f = eventStore.create("Assumptions round-trip", undefined, process.cwd())
 
 			exec(eventStore, f.id, {
 				type: "scope",
@@ -151,7 +151,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("activate_phase emits ferment_running + phase_activated", () => {
-			const f = eventStore.create("Activate test")
+			const f = eventStore.create("Activate test", undefined, process.cwd())
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
@@ -169,7 +169,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("complete_phase clears active metadata and replays the next phase as activatable", () => {
-			const f = eventStore.create("Phase advance test")
+			const f = eventStore.create("Phase advance test", undefined, process.cwd())
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
@@ -198,7 +198,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("replaying fail_phase then activate_phase reactivates without stale terminal metadata", () => {
-			const f = eventStore.create("Phase retry replay test")
+			const f = eventStore.create("Phase retry replay test", undefined, process.cwd())
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
@@ -224,7 +224,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("complete_phase leaves the final terminal ferment planned until complete_ferment", () => {
-			const f = eventStore.create("Explicit complete test")
+			const f = eventStore.create("Explicit complete test", undefined, process.cwd())
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
@@ -247,7 +247,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("step lifecycle commands all emit corresponding events", () => {
-			const f = eventStore.create("Step lifecycle")
+			const f = eventStore.create("Step lifecycle", undefined, process.cwd())
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
@@ -280,7 +280,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("pause + resume each emit one status event", () => {
-			const f = eventStore.create("Pause test")
+			const f = eventStore.create("Pause test", undefined, process.cwd())
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
@@ -300,7 +300,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("resume replays to planned when paused between phases", () => {
-			const f = eventStore.create("Resume between phases")
+			const f = eventStore.create("Resume between phases", undefined, process.cwd())
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
@@ -330,7 +330,7 @@ describe("FermentEventStore", () => {
 		// fixes this. Test exercises the fold path (eventStore.get → foldEvents)
 		// rather than the snapshot, since the snapshot was always correct.
 		it("parallel-group activation reproduces multi-active-phase state via fold", () => {
-			const f = eventStore.create("Parallel fold test")
+			const f = eventStore.create("Parallel fold test", undefined, process.cwd())
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
@@ -369,7 +369,7 @@ describe("FermentEventStore", () => {
 		// completion to break the chain. The cursor-fold pattern avoids this by
 		// re-using applyFermentEvent for hash computation.
 		it("hash chain stays connected across complete_step with grade", () => {
-			const f = eventStore.create("Hash chain test")
+			const f = eventStore.create("Hash chain test", undefined, process.cwd())
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
@@ -408,7 +408,7 @@ describe("FermentEventStore", () => {
 		// through ferment_completed + ferment_graded; both events' hashes must
 		// reflect the actual cursor state, not a hand-built interim.
 		it("hash chain stays connected across complete_ferment with grade", () => {
-			const f = eventStore.create("Complete with grade")
+			const f = eventStore.create("Complete with grade", undefined, process.cwd())
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "g",
@@ -440,7 +440,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("round-trips JudgeGrade.recommendations through complete_ferment", () => {
-			const f = eventStore.create("Recs round-trip")
+			const f = eventStore.create("Recs round-trip", undefined, process.cwd())
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "g",
@@ -474,7 +474,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("round-trips JudgeGrade.recommendations through set_phase_grade", () => {
-			const f = eventStore.create("Phase recs round-trip")
+			const f = eventStore.create("Phase recs round-trip", undefined, process.cwd())
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "g",
@@ -510,7 +510,7 @@ describe("FermentEventStore", () => {
 		// the four state-bearing layers (state machine, mapper, fold, store)
 		// must collectively satisfy.
 		it("fold-vs-snapshot equivalence across a representative command sequence", () => {
-			const f = eventStore.create("Property sequence")
+			const f = eventStore.create("Property sequence", undefined, process.cwd())
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "g",
@@ -552,7 +552,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("folded ferment matches snapshot ferment after a sequence of commands", () => {
-			const f = eventStore.create("Fold equivalence")
+			const f = eventStore.create("Fold equivalence", undefined, process.cwd())
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
@@ -582,7 +582,7 @@ describe("FermentEventStore", () => {
 
 	describe("migrateLegacy", () => {
 		it("creates event log from legacy snapshot", () => {
-			const legacy = parentStorage.create("Legacy Ferment")
+			const legacy = parentStorage.create("Legacy Ferment", undefined, process.cwd())
 			parentStorage.setPhases(legacy.id, [
 				{ id: "p1", index: 1, name: "Setup", goal: "G1", status: "planned", steps: [] },
 				{ id: "p2", index: 2, name: "Build", goal: "G2", status: "planned", steps: [] },
@@ -613,7 +613,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("idempotent — calling migrateLegacy twice does not duplicate events", () => {
-			const legacy = parentStorage.create("Idempotent")
+			const legacy = parentStorage.create("Idempotent", undefined, process.cwd())
 			parentStorage.setPhases(legacy.id, [
 				{ id: "p1", index: 1, name: "P1", goal: "G1", status: "active", steps: [] } as Phase,
 			])
@@ -625,7 +625,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("synthesises a connected hash chain (each event's preStateHash matches prior postStateHash)", () => {
-			const legacy = parentStorage.create("Chain check")
+			const legacy = parentStorage.create("Chain check", undefined, process.cwd())
 			parentStorage.setPhases(legacy.id, [
 				{ id: "p1", index: 1, name: "P1", goal: "G1", status: "completed", summary: "ok", steps: [] } as Phase,
 			])
@@ -644,7 +644,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("migrated event log can be folded back to the original snapshot", () => {
-			const legacy = parentStorage.create("Round trip")
+			const legacy = parentStorage.create("Round trip", undefined, process.cwd())
 			parentStorage.setPhases(legacy.id, [
 				{ id: "p1", index: 1, name: "P1", goal: "G1", status: "planned", steps: [] } as Phase,
 			])
@@ -725,8 +725,8 @@ describe("FermentEventStore", () => {
 		})
 
 		it("list() returns ferments", () => {
-			eventStore.create("Alpha")
-			eventStore.create("Beta")
+			eventStore.create("Alpha", undefined, process.cwd())
+			eventStore.create("Beta", undefined, process.cwd())
 			const names = eventStore
 				.list()
 				.map((l) => l.name)
@@ -735,12 +735,12 @@ describe("FermentEventStore", () => {
 		})
 
 		it("resolve() works", () => {
-			const f = eventStore.create("Unique resolve")
+			const f = eventStore.create("Unique resolve", undefined, process.cwd())
 			expect(eventStore.resolve(f.id)?.id).toBe(f.id)
 		})
 
 		it("get() falls back to parent storage for ferments without event log", () => {
-			const legacy = parentStorage.create("Parent-only")
+			const legacy = parentStorage.create("Parent-only", undefined, process.cwd())
 			expect(eventStore.get(legacy.id)?.name).toBe("Parent-only")
 		})
 	})
@@ -753,7 +753,7 @@ describe("FermentEventStore", () => {
 	// and that successive writes don't leak the lock file.
 	describe("locking", () => {
 		it("releases the lock between successive writes", () => {
-			const f = eventStore.create("Lock test")
+			const f = eventStore.create("Lock test", undefined, process.cwd())
 			// If the lock weren't released, the second write would block until
 			// timeout and the test would hang — a clean run is the assertion.
 			exec(eventStore, f.id, {
@@ -774,7 +774,7 @@ describe("FermentEventStore", () => {
 		it("does not deadlock on nested mutations from the same process", () => {
 			// `lockSync` would deadlock if called recursively for the same path.
 			// withLock should not nest; create + writeWithEvents are independent calls.
-			const f = eventStore.create("Nested test")
+			const f = eventStore.create("Nested test", undefined, process.cwd())
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "g",
@@ -786,7 +786,7 @@ describe("FermentEventStore", () => {
 		})
 
 		it("derives each command from the latest state inside the lock", () => {
-			const f = eventStore.create("Fresh read test")
+			const f = eventStore.create("Fresh read test", undefined, process.cwd())
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "g",
@@ -827,7 +827,7 @@ describe("FermentEventStore", () => {
 	// reconstructed `Step` objects.
 	describe("phase_refined replay tolerance for deprecated keys", () => {
 		it("drops legacy workerModel and needsVision keys from refined steps when applyFermentEvent folds them", () => {
-			const baseFerment = eventStore.create("Legacy Replay")
+			const baseFerment = eventStore.create("Legacy Replay", undefined, process.cwd())
 			exec(eventStore, baseFerment.id, {
 				type: "scope",
 				goal: "g",

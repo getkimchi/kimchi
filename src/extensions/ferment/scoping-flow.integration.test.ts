@@ -101,7 +101,7 @@ const passingPlanGates = () => [
 describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 	it("TUI mode: single input → sendMessage with intent; propose_ferment_scoping → ready for review", async () => {
 		// Setup
-		const ferment = h.eventStorage.create("OAuth Integration")
+		const ferment = h.eventStorage.create("OAuth Integration", undefined, process.cwd())
 		h.runtime.setActive(ferment)
 
 		const selectMock = vi.fn().mockResolvedValue("Start execution  ✓")
@@ -193,7 +193,7 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 
 	it("headless mode with UI: single input → sendMessage with intent; propose_ferment_scoping → planned with one phase", async () => {
 		// Setup
-		const ferment = h.eventStorage.create("OAuth Integration")
+		const ferment = h.eventStorage.create("OAuth Integration", undefined, process.cwd())
 		h.runtime.setActive(ferment)
 
 		const selectMock = vi.fn().mockResolvedValue("Start execution  ✓")

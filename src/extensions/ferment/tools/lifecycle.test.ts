@@ -90,7 +90,7 @@ function createHarness() {
 		getActiveTools: vi.fn(() => []),
 		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
-	const ferment = storage.create("Lifecycle Test")
+	const ferment = storage.create("Lifecycle Test", undefined, process.cwd())
 	// Isolation: tests should set their own active ferment rather than inherit
 	// module-level state from earlier tests.
 	runtime.setActive(undefined)
@@ -730,7 +730,7 @@ describe("propose_ferment_scoping continuation policy reset", () => {
 	it("re-proposing for an existing draft does not reset its policy", async () => {
 		const h = createHarness()
 		h.runtime.setContinuationPolicy("automated")
-		const draft = h.storage.create("Existing Draft")
+		const draft = h.storage.create("Existing Draft", undefined, process.cwd())
 		h.runtime.setActive(draft)
 		const tools = new Map<string, RegisteredTool>()
 		const pi = {
@@ -1091,7 +1091,7 @@ describe("update_ferment_scope_field via registerLifecycleTools", () => {
 		registerLifecycleTools(pi, runtime)
 		// Create and scope a ferment so update_ferment_scope_field has something to revise.
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const ferment = storage.create("Update Scope Test")
+		const ferment = storage.create("Update Scope Test", undefined, process.cwd())
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Original goal",
