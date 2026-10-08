@@ -110,10 +110,30 @@ describe("detectServers", () => {
 		expect(detectServers("/project")).toHaveLength(0)
 	})
 
-	it("returns both servers when both markers and both binaries are present", () => {
+	it("activates at most one server in a polyglot root — registry order breaks exact ties", () => {
 		setFiles(["go.mod", "package.json"])
 		setBinaries(["gopls", "typescript-language-server"])
-		expect(detectServers("/project")).toHaveLength(2)
+		// No source files resolvable in the mock (no directories) — the tie
+		// falls through to registry order, where TypeScript comes first.
+		const result = detectServers("/project")
+		expect(result).toHaveLength(1)
+		expect(result[0].name).toBe("typescript-language-server")
+	})
+
+	it("the dominant language by source-file count wins a polyglot tie", () => {
+		setTree(["package.json", "pyproject.toml", "web/a.ts", "web/b.ts", "web/c.ts", "api/a.py", "api/b.py"])
+		setBinaries(["typescript-language-server", "pyright-langserver"])
+		const result = detectServers("/project")
+		expect(result).toHaveLength(1)
+		expect(result[0].name).toBe("typescript-language-server")
+	})
+
+	it("a root marker beats nested-module markers of other languages", () => {
+		setTree(["package.json", "tools/proxy-helper/go.mod"])
+		setBinaries(["typescript-language-server", "gopls"])
+		const result = detectServers("/project")
+		expect(result).toHaveLength(1)
+		expect(result[0].name).toBe("typescript-language-server")
 	})
 
 	it("returns pyright when pyproject.toml present and binary on PATH", () => {
