@@ -132,7 +132,7 @@ describe("automatic exact work cost lookup", () => {
 		expect(lines).toContain("Account: unknown")
 	})
 
-	it("shows an open PR's spend so far instead of a zero confirmed total", () => {
+	it("shows an open PR's spend so far and keeps it unknown until every request is priced", () => {
 		const workId = randomUUID()
 		const account = { apiUrl: API, organizationId: ORG, userId: PROMPT }
 		const pullRequest = {
@@ -170,11 +170,16 @@ describe("automatic exact work cost lookup", () => {
 				pullRequests: [pullRequest],
 			},
 		]
-		const costs = calculatePullRequestCosts(records, [
-			{ requestId: "open", billingRecordId: ROW, costUsd: "0.5", account },
-		])
-		mkdirSync(join(dir, "work", workId), { recursive: true })
-		writeFileSync(join(dir, "work", workId, "costs.json"), JSON.stringify({ version: 1, workId, ...costs }))
+		const save = (observations: Parameters<typeof calculatePullRequestCosts>[1]) => {
+			const costs = calculatePullRequestCosts(records, observations)
+			mkdirSync(join(dir, "work", workId), { recursive: true })
+			writeFileSync(join(dir, "work", workId, "costs.json"), JSON.stringify({ version: 1, workId, ...costs }))
+		}
+		save([])
+		expect(workCostDetails(dir, workId)).toContain(
+			"Cost so far: unknown; $0.000000000 USD confirmed (open) — https://github.com/example/repo/pull/1",
+		)
+		save([{ requestId: "open", billingRecordId: ROW, costUsd: "0.5", account }])
 		const lines = workCostDetails(dir, workId)
 		expect(lines).toContain("Cost so far: $0.500000000 USD (open) — https://github.com/example/repo/pull/1")
 		expect(lines.join("\n")).not.toContain("Sure:")

@@ -776,18 +776,28 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 			// An unmerged PR's spend stays outside sure and likely totals until it merges.
 			const state = object(row.pullRequest) && row.pullRequest.state !== "merged" ? row.pullRequest.state : undefined
 			if (state) {
-				const spent = requests
-					.filter(
-						(request) =>
-							request.allocation === "unmerged" &&
-							Array.isArray(request.pullRequestIds) &&
-							request.pullRequestIds.includes(row.key) &&
-							(isWorkAccount(request.account) && isWorkAccount(row.account)
-								? sameWorkAccount(request.account, row.account)
-								: request.account === row.account),
+				const counted = requests.filter(
+					(request) =>
+						request.allocation === "unmerged" &&
+						Array.isArray(request.pullRequestIds) &&
+						request.pullRequestIds.includes(row.key) &&
+						(isWorkAccount(request.account) && isWorkAccount(row.account)
+							? sameWorkAccount(request.account, row.account)
+							: request.account === row.account),
+				)
+				const spent = usd(counted.reduce((sum, request) => sum + (decimalNanos(request.knownCostUsd) ?? 0n), 0n))
+				// Unpriced, shared or unresolved requests may still belong to this PR.
+				const complete =
+					isWorkAccount(row.account) &&
+					counted.every((request) => request.priceStatus === "priced") &&
+					[row.sharedRequestIds, row.inferredRequestIds, row.unknownRequestIds].every(
+						(ids) => !Array.isArray(ids) || !ids.length,
 					)
-					.reduce((sum, request) => sum + (decimalNanos(request.knownCostUsd) ?? 0n), 0n)
-				lines.push(`Cost so far: $${usd(spent)} USD (${state}) — ${label}`)
+				lines.push(
+					complete
+						? `Cost so far: $${spent} USD (${state}) — ${label}`
+						: `Cost so far: unknown; $${spent} USD confirmed (${state}) — ${label}`,
+				)
 			} else if (typeof row.totalCostUsd === "string") lines.push(`Cost: $${row.totalCostUsd} USD — ${label}`)
 			else lines.push(`Cost: unknown; $${row.knownCostUsd} USD confirmed so far — ${label}`)
 			if (!state && object(row.explicit) && object(row.inferred))
