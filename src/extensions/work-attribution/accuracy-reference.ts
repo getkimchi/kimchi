@@ -168,7 +168,10 @@ export function compareIndependentAttribution(
 			expectedAccount: account,
 			expectedPullRequestId: expected.kind === "pull-request" ? expected.pullRequestId : null,
 		}))
-	const comparison = compareAttributionAccuracy(report.requests, labels)
+	// Weight assignment quality by independent receipts, while keeping observed coverage unchanged.
+	const comparison = compareAttributionAccuracy(report.requests, labels, {
+		priceOf: (requestId) => unique.get(requestId)?.nanos,
+	})
 	problems.push(
 		...comparison.problems.filter(
 			(problem) => problem.kind !== "duplicate-label" && problem.kind !== "conflicting-labels",
@@ -191,19 +194,6 @@ export function compareIndependentAttribution(
 			detail: "repeated reference entries are excluded from scoring",
 		})
 	}
-
-	// Weight assignment quality by independent receipts, while keeping observed coverage unchanged.
-	const weighted = compareAttributionAccuracy(
-		report.requests.map((row) => {
-			if (!object(row)) return row
-			const nanos = unique.get(row.requestId)?.nanos
-			return nanos !== undefined && row.priceStatus === "priced"
-				? { ...row, knownCostUsd: usd(nanos), totalCostUsd: usd(nanos) }
-				: row
-		}),
-		labels,
-	)
-	comparison.metrics = weighted.metrics
 
 	const rows = new Map<string, RequestCostAllocation>()
 	const repeatedRows = new Set<string>()

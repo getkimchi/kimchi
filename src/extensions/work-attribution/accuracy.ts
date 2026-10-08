@@ -121,10 +121,16 @@ interface Survivor extends AttributionLabel {
 	nanos: bigint
 }
 
+export interface AttributionAccuracyOptions {
+	/** Independent price that weights the buckets, and so the dollar metrics, instead of the report's price. */
+	priceOf?: (requestId: string) => bigint | undefined
+}
+
 /** Compare human attribution labels against what a saved cost report actually allocated. Never mutates its inputs. */
 export function compareAttributionAccuracy(
 	requests: readonly RequestCostAllocation[],
 	labels: readonly AttributionLabel[],
+	{ priceOf }: AttributionAccuracyOptions = {},
 ): AttributionAccuracyResult {
 	const problems: AttributionAccuracyProblem[] = []
 
@@ -307,7 +313,8 @@ export function compareAttributionAccuracy(
 		target.requestIds.push(requestId)
 		target.nanos += nanos
 	}
-	for (const { requestId, expectedPullRequestId, expectedAccount, row, nanos } of survivors) {
+	for (const { requestId, expectedPullRequestId, expectedAccount, row, nanos: reported } of survivors) {
+		const nanos = priceOf?.(requestId) ?? reported
 		const pullRequestIds = row.pullRequestIds
 		const confident =
 			row.allocation === "pull-request" &&
