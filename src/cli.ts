@@ -53,6 +53,9 @@ import { isBunBinary } from "./env.js"
 import { discoverEnvironmentModels, installEnvironmentModels } from "./environment-models.js"
 import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
+import { installAliasBudgetAdapter } from "./extensions/alias-budget/alias-budget-adapter.js"
+import budgetCorrectionExtension from "./extensions/alias-budget/budget-correction-extension.js"
+import { installBudgetCorrectionRetryPatch } from "./extensions/alias-budget/budget-retry-patch.js"
 import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import { installAutoModelAdapters } from "./extensions/auto-model/adapters.js"
@@ -197,7 +200,13 @@ import {
 import { captureSessionStart } from "./utils/session-metadata-store.js"
 import { getVersion } from "./utils.js"
 
+installAliasBudgetAdapter()
+// The infrastructure classifier must wrap _isRetryableError FIRST so the
+// budget-correction classifier (installed second, outermost) sees an eligible
+// rejection before the generic gateway classification can declare it terminal
+// (bad_request).
 installInfrastructureRetryPatch()
+installBudgetCorrectionRetryPatch()
 installModelTableRenderer()
 installCompactionRecoveryPatch()
 installInlineCompactPatch()
@@ -826,6 +835,7 @@ try {
 			activityExtension,
 			infrastructureErrorTracker.extension,
 			infrastructureBreakerExtension,
+			budgetCorrectionExtension,
 			interactiveErrorSurfaceExtension,
 			rateLimitNoticeExtension,
 		]
