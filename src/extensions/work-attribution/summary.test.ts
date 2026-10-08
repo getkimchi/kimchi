@@ -175,6 +175,39 @@ describe("readable work summaries", () => {
 		}
 		expect(summary(workId).requests[0]).toMatchObject({ billingLookup: newer, billingRows: [charge] })
 	})
+	it("lists each billing ID once with its latest observation, including after a replay", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const { requestId } = recordProviderRequest(ctx)
+		const id = randomUUID()
+		const other = randomUUID()
+		const pending = {
+			type: "request_cost",
+			requestId,
+			billingRows: [{ id, costUsd: null, createTime: "2026-10-08T10:00:01Z" }],
+			billingLookup: { status: "pending", checkedAt: "2026-10-08T10:00:30.000Z" },
+		}
+		const priced = {
+			type: "request_cost",
+			requestId,
+			billingRows: [{ id, costUsd: "0.000166000", createTime: "2026-10-08T10:00:01Z", model: "glm-5.3" }],
+			billingLookup: { status: "priced", checkedAt: "2026-10-08T10:05:30.000Z" },
+		}
+		appendWorkRecord(ctx, pending)
+		appendWorkRecord(ctx, priced)
+		// A delayed older observation neither duplicates nor replaces the later price.
+		appendWorkRecord(ctx, {
+			...pending,
+			billingRows: [...pending.billingRows, { id: other, costUsd: null }],
+		})
+		await flushWorkSummaries()
+		const expected = [priced.billingRows[0], { id: other, costUsd: null }]
+		expect(summary(workId).requests[0]).toMatchObject({ billingRows: expected, billingLookup: priced.billingLookup })
+		fs.unlinkSync(path(workId))
+		recoverWorkSummaries()
+		await flushWorkSummaries()
+		expect(summary(workId).requests[0].billingRows).toEqual(expected)
+	})
 	it.each([
 		"billingLookup",
 		"prLookup",

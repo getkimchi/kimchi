@@ -507,10 +507,7 @@ describe("automatic exact work cost lookup", () => {
 		await sync()
 		await flushWorkSummaries()
 		const rows = JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8")).requests[0].billingRows
-		expect(rows).toEqual([
-			{ id: ROW, costUsd: "0.123456789" },
-			{ id: ROW, costUsd: "0.123456789", promptTokens: "100", cacheReadPrice: "0" },
-		])
+		expect(rows).toEqual([{ id: ROW, costUsd: "0.123456789", promptTokens: "100", cacheReadPrice: "0" }])
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
 		vi.mocked(Date.now).mockReturnValue(now + 12 * 60_000)
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))

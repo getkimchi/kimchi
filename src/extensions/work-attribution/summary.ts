@@ -183,6 +183,9 @@ function latestObservation(previous: unknown, current: unknown): Record<string, 
 		return current
 	return Date.parse(current.checkedAt) >= Date.parse(previous.checkedAt) ? current : previous
 }
+function billingRowKey(row: unknown): string {
+	return object(row) && typeof row.id === "string" ? row.id : JSON.stringify(row)
+}
 /** Empty or failed lookups never remove an association already confirmed by GitHub. */
 function pullRequestLinks(...values: unknown[]): Record<string, unknown>[] {
 	return mergePullRequestLinks(...values.map((value) => (Array.isArray(value) ? value.filter(object) : [])))
@@ -286,8 +289,13 @@ async function merge(summary: WorkSummary, records: WorkRecord[]): Promise<void>
 		const key = recordKey(type, item)
 		const existing = entries.get(key)
 		if (type === "request_cost" && existing?.billingRows !== undefined && Array.isArray(item.billingRows)) {
-			const rows = Array.isArray(existing.billingRows) ? existing.billingRows : []
-			item.billingRows = [...new Map([...rows, ...item.billingRows].map((row) => [JSON.stringify(row), row])).values()]
+			// Each billing ID is listed once, as its latest observation describes it.
+			const newer = latestObservation(existing.billingLookup, item.billingLookup) === item.billingLookup
+			const rows = new Map<string, unknown>()
+			for (const row of Array.isArray(existing.billingRows) ? existing.billingRows : [])
+				rows.set(billingRowKey(row), row)
+			for (const row of item.billingRows) if (newer || !rows.has(billingRowKey(row))) rows.set(billingRowKey(row), row)
+			item.billingRows = [...rows.values()]
 		}
 		if (type === "request_cost" && (item.billingLookup !== undefined || existing?.billingLookup !== undefined))
 			item.billingLookup = latestObservation(existing?.billingLookup, item.billingLookup)
