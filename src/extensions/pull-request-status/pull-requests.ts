@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { isAbsolute, join, resolve } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { readGitToken } from "../../config.js"
+import { plainURL } from "../../utils/url.js"
 import { readWorkRecords } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { mergePullRequestLinks as mergePullRequests, pullRequestKey } from "./links.js"
@@ -105,12 +106,8 @@ function providerId(value: unknown): string | undefined {
 	if (typeof value === "string" && /^[1-9]\d{0,19}$/.test(value)) return value
 }
 function httpsURL(value: unknown): URL {
-	if (typeof value === "string") {
-		try {
-			const url = new URL(value)
-			if (url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash) return url
-		} catch {}
-	}
+	const url = plainURL(value)
+	if (url) return url
 	throw new LookupError("The Git provider returned an invalid URL.", "invalid")
 }
 function repositoryPath(value: unknown, provider?: Repository["provider"]): value is string {
