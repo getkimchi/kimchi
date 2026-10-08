@@ -30,8 +30,10 @@ import * as diagnostics from "./diagnostics.js"
 import {
 	createTrackedEditTool,
 	createTrackedWriteTool,
+	type FileState,
 	knownTransitionRepositories,
 	readAttributedFileState,
+	readAttributedFileStates,
 	reconcileFileTransitions,
 	reconcileRepositoryTransitions,
 } from "./file-transitions.js"
@@ -858,6 +860,37 @@ describe("manual commit reconciliation", () => {
 			expect(stored.equals(Buffer.from(content))).toBe(true)
 		}
 		expect(JSON.stringify(rows())).not.toContain("human-before")
+	})
+	it.each(["true", "false"])("reads many files like single-file inspections (core.filemode=%s)", async (filemode) => {
+		writeFileSync(
+			join(repo, ".gitattributes"),
+			"*.txt text eol=lf\n*.utf16 working-tree-encoding=UTF-16\n*.filtered filter=unexpected\n",
+		)
+		writeFileSync(join(repo, "tool.sh"), "#!/bin/sh\n")
+		chmodSync(join(repo, "tool.sh"), 0o755)
+		baseline()
+		git("config", "core.filemode", filemode)
+		git("config", "filter.unexpected.clean", "touch filter-ran; cat")
+		const odd = 'odd "name" \\ with\nnewline.txt'
+		const files = {
+			"file.txt": "first\r\ntwo\r\n",
+			"tool.sh": "#!/bin/sh\necho changed\n",
+			[odd]: "odd\n",
+			"text.utf16": "encoded\n",
+			"data.filtered": "filtered\n",
+			"big.log": "x".repeat(8 * 1024 * 1024 + 1),
+		}
+		for (const [path, content] of Object.entries(files)) writeFileSync(join(repo, path), content)
+		chmodSync(join(repo, "tool.sh"), 0o644)
+		symlinkSync("file.txt", join(repo, "link"))
+		const worktree = realpathSync(repo)
+		const paths = [...Object.keys(files), "link", "missing.txt"]
+		const expected = new Map<string, FileState | null | undefined>()
+		for (const path of paths) expected.set(path, await readAttributedFileState(join(worktree, path)))
+		expect(await readAttributedFileStates(worktree, paths)).toEqual(expected)
+		expect([...expected].filter(([, state]) => state).map(([path]) => path)).toEqual(["file.txt", "tool.sh", odd])
+		expect(expected.get("tool.sh")?.mode).toBe(filemode === "false" ? "100755" : "100644")
+		expect(existsSync(join(repo, "filter-ran"))).toBe(false)
 	})
 	it.each([1, 2])("preserves exact attribution when Git cannot retain snapshot %s", async (failure) => {
 		baseline()

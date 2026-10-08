@@ -1,3 +1,4 @@
+import * as childProcess from "node:child_process"
 import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -10,6 +11,8 @@ import { createWorkCommitTrackingOperations } from "./commits.js"
 import { calculatePullRequestCosts } from "./costs.js"
 import { observeToolFiles } from "./file-observations.js"
 import { flushWorkSummaries, readWorkRecords } from "./summary.js"
+
+vi.mock("node:child_process", { spy: true })
 
 let cwd: string
 function git(...args: string[]) {
@@ -29,6 +32,7 @@ beforeEach(() => {
 })
 afterEach(async () => {
 	await flushWorkSummaries()
+	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
 	rmSync(cwd, { recursive: true, force: true })
 })
@@ -83,6 +87,23 @@ it("does not start tracking when MCP runs without an attributed model tool call"
 		writeFileSync(join(cwd, "source.ts"), "untracked\n")
 	})
 	expect(readWorkRecords(join(cwd, ".agent"))).toEqual([])
+})
+
+it("reads many dirty files with the same Git processes as one", async () => {
+	const { execFile: execute } = await vi.importActual<typeof childProcess>("node:child_process")
+	const commands: string[] = []
+	vi.spyOn(childProcess, "execFile").mockImplementation(((...args: Parameters<typeof execute>) => {
+		if (Array.isArray(args[1])) commands.push(String(args[1][2]))
+		return execute(...args)
+	}) as typeof execute)
+	async function spawned(dirty: number) {
+		for (let i = 0; i < dirty; i++) writeFileSync(join(cwd, `${i}.txt`), "dirty\n")
+		commands.length = 0
+		await observeToolFiles(createContext({ cwd }), `read-${dirty}`, "bash", async () => "listing")
+		return [...commands]
+	}
+	const one = await spawned(1)
+	expect(await spawned(100)).toEqual(one)
 })
 
 it("reports an incomplete scan instead of treating a truncated dirty tree as complete", async () => {

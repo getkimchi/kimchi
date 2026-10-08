@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { realpath } from "node:fs/promises"
-import { isAbsolute, join } from "node:path"
+import { isAbsolute } from "node:path"
 import { promisify } from "node:util"
 import { appendWorkRecord, getToolRequest, getWorkId, pinWorkContext, type WorkContext } from "../work-attribution.js"
-import { type FileState, readAttributedFileState } from "./file-transitions.js"
+import { type FileState, readAttributedFileStates } from "./file-transitions.js"
 
 const execFileAsync = promisify(execFile)
 const SNAPSHOT_BUDGET_MS = 1000
@@ -65,10 +65,11 @@ async function snapshot(cwd: string): Promise<Snapshot | undefined> {
 		}
 		// ponytail: at most 128 dirty paths per snapshot; larger windows stay explicitly incomplete.
 		if (dirty.size > 128 || Date.now() > deadline) return result
-		for (const path of dirty) {
-			if (!path || isAbsolute(path) || path.split("/").includes("..") || Date.now() > deadline) return result
-			result.files.set(path, await readAttributedFileState(join(result.worktree, path), signal))
-		}
+		const paths = [...dirty]
+		if (paths.some((path) => !path || isAbsolute(path) || path.split("/").includes(".."))) return result
+		const states = await readAttributedFileStates(result.worktree, paths, signal)
+		if (!states) return result
+		for (const [path, state] of states) result.files.set(path, state)
 		result.complete = [...result.files.values()].every((state) => state !== undefined)
 		return result
 	} catch {

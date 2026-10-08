@@ -93,13 +93,22 @@ function digest(data: Buffer): string {
 function same(a: FileState | null, b: FileState | null): boolean {
 	return a?.blob === b?.blob && a?.mode === b?.mode
 }
+/** Paths whose filter or working-tree encoding would need Git conversions Kimchi does not run. */
+async function unsupportedAttributes(cwd: string, paths: string[], signal?: AbortSignal): Promise<Set<string>> {
+	const attrs = (
+		await git(cwd, ["check-attr", "--stdin", "-z", "filter", "working-tree-encoding"], {
+			input: Buffer.from(paths.map((path) => `${path}\0`).join("")),
+			signal,
+		})
+	).split("\0")
+	const unsupported = new Set<string>()
+	for (let i = 2; i < attrs.length; i += 3)
+		if (attrs[i] !== "unspecified" && attrs[i] !== "unset") unsupported.add(attrs[i - 2])
+	return unsupported
+}
 async function supportsGitAttributes(path: string, signal?: AbortSignal): Promise<boolean> {
 	// Attribute files may themselves have changed during the native write.
-	const attrs = (
-		await git(dirname(path), ["check-attr", "-z", "filter", "working-tree-encoding", "--", path], { signal })
-	).split("\0")
-	for (let i = 2; i < attrs.length; i += 3) if (attrs[i] !== "unspecified" && attrs[i] !== "unset") return false
-	return true
+	return !(await unsupportedAttributes(dirname(path), [path], signal)).size
 }
 /** `data` is the file content already read by the caller, so the hash matches what it checked. */
 async function diskState(
@@ -133,6 +142,54 @@ async function diskState(
 		}
 	}
 	return { blob: await git(parent, ["hash-object", "--stdin", `--path=${file}`], { input, signal }), mode }
+}
+/** diskState without retained blobs for many paths below one worktree, in a fixed number of Git processes. */
+async function diskStates(
+	worktree: string,
+	paths: string[],
+	signal?: AbortSignal,
+): Promise<Map<string, FileState | null | undefined>> {
+	const states = new Map<string, FileState | null | undefined>()
+	const files: { path: string; file: string; mode: string }[] = []
+	for (const path of paths) {
+		const file = join(worktree, path)
+		const stat = existsSync(file) ? lstatSync(file) : undefined
+		if (!stat) states.set(path, null)
+		else if (!stat.isFile() || stat.size > MAX_FILE_BYTES) states.set(path, undefined)
+		else files.push({ path, file, mode: stat.mode & 0o111 ? "100755" : "100644" })
+	}
+	if (!files.length) return states
+	const unsupported = await unsupportedAttributes(
+		worktree,
+		files.map(({ file }) => file),
+		signal,
+	)
+	for (const { path, file } of files) if (unsupported.has(file)) states.set(path, undefined)
+	const hashed = files.filter(({ file }) => !unsupported.has(file))
+	if (!hashed.length) return states
+	if (
+		(await git(worktree, ["config", "--type=bool", "--default=true", "--get", "core.filemode"], { signal })) === "false"
+	) {
+		const index = (
+			await git(worktree, ["ls-files", "--stage", "-z", "--", ...hashed.map(({ file }) => file)], { signal })
+		).split("\0")
+		for (const entry of hashed) {
+			// Like `ls-files -- <path>` for each path: the first entry at or below it.
+			const row = index.find((line) => {
+				const path = line.slice(line.indexOf("\t") + 1)
+				return path === entry.path || path.startsWith(`${entry.path}/`)
+			})
+			entry.mode = row?.split(" ")[0] || "100644"
+		}
+	}
+	// One path per line; C-style quotes keep quotes, backslashes and newlines in names intact.
+	const input = Buffer.from(
+		hashed.map(({ file }) => `"${file.replace(/["\\]/g, "\\$&").replaceAll("\n", "\\n")}"\n`).join(""),
+	)
+	const blobs = (await git(worktree, ["hash-object", "--stdin-paths"], { input, signal })).split("\n")
+	if (blobs.length !== hashed.length) throw new Error("Invalid Git hash response")
+	for (const [index, { path, mode }] of hashed.entries()) states.set(path, { blob: blobs[index], mode })
+	return states
 }
 async function treeState(
 	cwd: string,
@@ -483,6 +540,20 @@ export async function readAttributedFileState(
 	return tryWorkAttributionAsync(async () => {
 		try {
 			return await diskState(path, undefined, false, signal)
+		} catch (error) {
+			if (!signal?.aborted) throw error
+		}
+	})
+}
+/** readAttributedFileState for many worktree-relative paths, using a fixed number of Git processes. */
+export async function readAttributedFileStates(
+	worktree: string,
+	paths: string[],
+	signal?: AbortSignal,
+): Promise<Map<string, FileState | null | undefined> | undefined> {
+	return tryWorkAttributionAsync(async () => {
+		try {
+			return await diskStates(worktree, paths, signal)
 		} catch (error) {
 			if (!signal?.aborted) throw error
 		}
