@@ -626,70 +626,66 @@ export async function reconcileWorkCosts(
 			}
 			const rows: BillingRow[] = []
 			try {
-				{
-					const cwd = typeof item.request.cwd === "string" ? item.request.cwd : undefined
-					const credentialKey = JSON.stringify([cwd, item.source.gatewayUrl])
-					let credential = credentials.get(credentialKey)
-					if (!credential) {
-						const key = cwd ? loadConfig({ cwd }).apiKey : ""
-						credential = {
-							key,
-							source: cwd
-								? captureBillingSource(new Headers({ Authorization: `Bearer ${key}` }), item.source.gatewayUrl, cwd)
-								: undefined,
-						}
-						credentials.set(credentialKey, credential)
+				const cwd = typeof item.request.cwd === "string" ? item.request.cwd : undefined
+				const credentialKey = JSON.stringify([cwd, item.source.gatewayUrl])
+				let credential = credentials.get(credentialKey)
+				if (!credential) {
+					const key = cwd ? loadConfig({ cwd }).apiKey : ""
+					credential = {
+						key,
+						source: cwd
+							? captureBillingSource(new Headers({ Authorization: `Bearer ${key}` }), item.source.gatewayUrl, cwd)
+							: undefined,
 					}
-					const { key, source: current } = credential
-					// An unchanged key/endpoint mismatch has no work to retry. It must not
-					// consume the budget ahead of current-account or restored credentials.
-					if (item.lookup?.status === "account-changed" && (!current || !sameSource(current, item.source))) continue
-					processed++
-					// Cached auth failures settle in a microtask; let UI and cancellation run.
-					await setImmediate()
-					signal.throwIfAborted()
-					if (!current || !sameSource(current, item.source)) {
+					credentials.set(credentialKey, credential)
+				}
+				const { key, source: current } = credential
+				// An unchanged key/endpoint mismatch has no work to retry. It must not
+				// consume the budget ahead of current-account or restored credentials.
+				if (item.lookup?.status === "account-changed" && (!current || !sameSource(current, item.source))) continue
+				// Cached auth failures settle in a microtask; let UI and cancellation run.
+				await setImmediate()
+				signal.throwIfAborted()
+				if (!current || !sameSource(current, item.source)) {
+					lookup.status = "account-changed"
+					lookup.reason = "Original credential or endpoint is no longer configured"
+				} else {
+					const account = JSON.stringify([current.apiUrl, current.credentialHash])
+					let organization = organizations.get(account)
+					if (!organization) {
+						organization = verifyApiKey(key, {
+							endpoint: current.apiUrl,
+							fetch: fetchBounded,
+							signal: boundedSignal,
+							retry: { maxRetries: 0 },
+						}).then((identity) => {
+							if (!isWorkId(identity.organizationId) || (identity.userId !== undefined && !isWorkId(identity.userId)))
+								throw new Error("Billing account identity is invalid")
+							return identity
+						})
+						organizations.set(account, organization)
+					}
+					const { organizationId, userId } = await organization
+					lookup.organizationId = item.organizationId ?? organizationId
+					lookup.userId = item.userId ?? userId
+					if (item.organizationId && item.organizationId !== organizationId) {
 						lookup.status = "account-changed"
-						lookup.reason = "Original credential or endpoint is no longer configured"
+						lookup.reason = "Original billing organization changed"
+					} else if (item.userId && item.userId !== userId) {
+						lookup.status = "account-changed"
+						lookup.reason = "Original billing API key owner changed"
 					} else {
-						const account = JSON.stringify([current.apiUrl, current.credentialHash])
-						let organization = organizations.get(account)
-						if (!organization) {
-							organization = verifyApiKey(key, {
-								endpoint: current.apiUrl,
-								fetch: fetchBounded,
-								signal: boundedSignal,
-								retry: { maxRetries: 0 },
-							}).then((identity) => {
-								if (!isWorkId(identity.organizationId) || (identity.userId !== undefined && !isWorkId(identity.userId)))
-									throw new Error("Billing account identity is invalid")
-								return identity
-							})
-							organizations.set(account, organization)
-						}
-						const { organizationId, userId } = await organization
-						lookup.organizationId = item.organizationId ?? organizationId
-						lookup.userId = item.userId ?? userId
-						if (item.organizationId && item.organizationId !== organizationId) {
-							lookup.status = "account-changed"
-							lookup.reason = "Original billing organization changed"
-						} else if (item.userId && item.userId !== userId) {
-							lookup.status = "account-changed"
-							lookup.reason = "Original billing API key owner changed"
-						} else {
-							await lookupRows(
-								current.apiUrl,
-								lookup.organizationId,
-								lookup.userId,
-								item.selector,
-								key,
-								fetchBounded,
-								rows,
-							)
-							lookup.status = rows.length && rows.every((row) => row.costUsd !== null) ? "priced" : "pending"
-							if (!rows.length && !item.observations.length && age >= DAY_MS && lookup.userId)
-								lookup.status = "no-charge"
-						}
+						await lookupRows(
+							current.apiUrl,
+							lookup.organizationId,
+							lookup.userId,
+							item.selector,
+							key,
+							fetchBounded,
+							rows,
+						)
+						lookup.status = rows.length && rows.every((row) => row.costUsd !== null) ? "priced" : "pending"
+						if (!rows.length && !item.observations.length && age >= DAY_MS && lookup.userId) lookup.status = "no-charge"
 					}
 				}
 			} catch (error) {
@@ -716,14 +712,13 @@ export async function reconcileWorkCosts(
 				(lookup.status === "account-changed" &&
 					item.lookup?.status === lookup.status &&
 					item.lookup.reason === lookup.reason)
-			) {
-				processed--
+			)
 				continue
-			}
 			const ctx = {
 				cwd: String(item.request.cwd ?? ""),
 				sessionManager: { getSessionId: () => item.request.sessionId },
 			}
+			processed++
 			appendWorkRecord(
 				ctx,
 				{
