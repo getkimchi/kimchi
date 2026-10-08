@@ -1,5 +1,14 @@
 import type { ExecFileOptions } from "node:child_process"
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+	appendFileSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -1302,6 +1311,77 @@ describe("unchanged lookup results", () => {
 		const rows = saved().length
 		for (let pass = 0; pass < 5; pass++) await lookup()
 		expect(saved()).toHaveLength(rows)
+	})
+})
+
+describe("saved check times", () => {
+	const day = 24 * 60 * 60 * 1000
+	const checks = () => JSON.parse(readFileSync(join(agentDir, "work-attribution", "pr-checks.json"), "utf8"))
+	// An earlier rate-limit case pauses github.com for an hour; use a host no other case touches.
+	beforeEach(() => {
+		remote("https://checks.example/team/repo.git")
+		vi.stubEnv("GH_HOST", "checks.example")
+	})
+	/** A new process: the same journals and check cache, with fresh module state. */
+	async function restartedLookup(): Promise<void> {
+		vi.resetModules()
+		const restarted = await import("./pull-requests.js")
+		try {
+			await restarted.reconcileWorkPullRequests(agentDir, new AbortController().signal, () => {})
+		} finally {
+			await (await import("../work-attribution/summary.js")).flushWorkSummaries()
+		}
+	}
+	it("keeps the backoff of an unchanged result across a restart", async () => {
+		seed({ recordedAt: new Date().toISOString() })
+		await lookup()
+		later(day)
+		// Due a day later; the unchanged pending result is not appended.
+		await lookup()
+		expect(commitCalls()).toHaveLength(2)
+		later(60 * 60 * 1000)
+		// One hour later, this process and a new one both wait out the backoff of about 1.6 hours.
+		await lookup()
+		await restartedLookup()
+		expect(commitCalls()).toHaveLength(2)
+		expect(saved().filter((row) => row.type === "commit")).toHaveLength(1)
+		expect(checks()).toEqual({ [repository]: { [sha]: expect.any(String) } })
+	})
+	it("rewrites saved check times only after a change and forgets commits no longer recorded", async () => {
+		const other = "b".repeat(40)
+		const recordedAt = new Date(Date.now() - day).toISOString()
+		seed({ recordedAt })
+		seed({ sha: other, sessionId: "second", recordedAt }, true)
+		await lookup()
+		expect(checks()).toEqual({ [repository]: { [sha]: expect.any(String), [other]: expect.any(String) } })
+		const { ino } = statSync(join(agentDir, "work-attribution", "pr-checks.json"))
+		later()
+		// Neither commit is due again, so the cache stays the same file.
+		await lookup()
+		expect(statSync(join(agentDir, "work-attribution", "pr-checks.json")).ino).toBe(ino)
+		rmSync(join(agentDir, "work-attribution", "transitions"), { recursive: true })
+		rmSync(join(agentDir, "work-attribution", "second.jsonl"))
+		await restartedLookup()
+		expect(commitCalls()).toHaveLength(2)
+		expect(checks()).toEqual({ [repository]: { [sha]: expect.any(String) } })
+	})
+	it("drops a saved check time once it no longer delays a lookup", async () => {
+		seed({ recordedAt: new Date(Date.now() - day).toISOString() })
+		replies(() => [
+			pull(7, {
+				html_url: "https://checks.example/team/repo/pull/7",
+				state: "closed",
+				merged_at: "2026-10-02T12:00:00Z",
+				closed_at: "2026-10-02T12:00:00Z",
+			}),
+		])
+		await lookup()
+		expect(checks()).toEqual({ [repository]: { [sha]: expect.any(String) } })
+		// A merged link is settled and never checked again; its check time expires after the longest backoff.
+		later(day)
+		await lookup()
+		expect(commitCalls()).toHaveLength(1)
+		expect(checks()).toEqual({})
 	})
 })
 

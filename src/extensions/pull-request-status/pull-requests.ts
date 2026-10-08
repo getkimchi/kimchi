@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { open, rename, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { isAbsolute, join, resolve } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
@@ -17,6 +19,8 @@ const DAY_MS = 24 * 60 * 60 * 1000
 /** Failures saved before this process started are retried once, so a fixed token need not wait out the backoff. */
 const PROCESS_STARTED = Date.now()
 const SHA = /^(?:[a-f\d]{40}|[a-f\d]{64})$/i
+/** When each repository and SHA was last checked, including checks whose unchanged result was not appended. */
+const LOOKUP_CHECKS = "pr-checks.json"
 
 export interface WorkPullRequest {
 	provider?: "github" | "gitlab"
@@ -237,8 +241,12 @@ function lookupResult(commit: WorkPullRequestUpdate): string {
 			.sort((a, b) => pullRequestKey(a).localeCompare(pullRequestKey(b))),
 	])
 }
-/** Checks slow down in proportion to a commit's age: new pushes link on the next pass, old commits at most daily, and ones without a PR stop after the upload window. */
-function lookupDue(commits: WorkPullRequestUpdate[], now = Date.now()): boolean {
+/**
+ * Checks slow down in proportion to a commit's age: new pushes link on the next pass, old commits at most daily,
+ * and ones without a PR stop after the upload window. `lastChecked` comes from the check cache, because an
+ * unchanged result keeps the journal's older `checkedAt`.
+ */
+function lookupDue(commits: WorkPullRequestUpdate[], lastChecked = 0, now = Date.now()): boolean {
 	let latest: WorkPullRequestLookup | undefined
 	for (const { prLookup } of commits) {
 		if (!prLookup) return true
@@ -249,7 +257,71 @@ function lookupDue(commits: WorkPullRequestUpdate[], now = Date.now()): boolean 
 	// Whatever the last result, including an error or an unsupported remote. Known links keep refreshing.
 	if (age > 32 * DAY_MS && commits.every((commit) => !commit.pullRequests.length)) return false
 	if (latest.error && !latest.reason && Date.parse(latest.checkedAt) < PROCESS_STARTED) return true
-	return now - Date.parse(latest.checkedAt) >= Math.min(DAY_MS, age / 16)
+	return now - Math.max(Date.parse(latest.checkedAt), lastChecked) >= Math.min(DAY_MS, age / 16)
+}
+function groupKey(commit: Pick<WorkPullRequestUpdate, "repository" | "sha">): string {
+	return JSON.stringify([commit.repository, commit.sha])
+}
+interface LookupChecks {
+	saved?: string
+	checkedAt: Map<string, number>
+}
+/** The lease owner reads the check cache before each pass; another process may have written it. */
+function readLookupChecks(agentDir: string): LookupChecks {
+	const checks: LookupChecks = { checkedAt: new Map() }
+	let value: unknown
+	try {
+		checks.saved = readFileSync(join(agentDir, "work-attribution", LOOKUP_CHECKS), "utf8")
+		value = JSON.parse(checks.saved)
+	} catch {
+		// A missing or damaged cache only costs one more check per commit.
+		return checks
+	}
+	if (!object(value)) return checks
+	for (const [repository, commits] of Object.entries(value)) {
+		if (!object(commits)) continue
+		for (const [sha, checkedAt] of Object.entries(commits)) {
+			const time = timestamp(checkedAt) ? Date.parse(checkedAt) : Number.NaN
+			// A future time, for example after a clock change, must not postpone checks.
+			if (SHA.test(sha) && time <= Date.now()) checks.checkedAt.set(groupKey({ repository, sha }), time)
+		}
+	}
+	return checks
+}
+/** Durably saves at most once per pass, only after a change, and forgets commits no longer recorded. */
+async function saveLookupChecks(
+	agentDir: string,
+	groups: Map<string, WorkPullRequestUpdate[]>,
+	checks: LookupChecks,
+	assertLease: () => void,
+): Promise<void> {
+	const now = Date.now()
+	const value: Record<string, Record<string, string>> = {}
+	for (const key of [...checks.checkedAt.keys()].sort()) {
+		const time = checks.checkedAt.get(key) ?? 0
+		// The backoff never exceeds a day, so an older check no longer delays the next one.
+		if (!groups.has(key) || now - time >= DAY_MS) continue
+		const [repository, sha]: [string, string] = JSON.parse(key)
+		value[repository] ??= {}
+		value[repository][sha] = new Date(time).toISOString()
+	}
+	const contents = `${JSON.stringify(value)}\n`
+	if (contents === (checks.saved ?? "{}\n")) return
+	const directory = join(agentDir, "work-attribution")
+	const temporary = join(directory, `.${LOOKUP_CHECKS}-${randomUUID()}.tmp`)
+	try {
+		const file = await open(temporary, "wx", 0o600)
+		try {
+			await file.writeFile(contents)
+			await file.sync()
+		} finally {
+			await file.close()
+		}
+		assertLease()
+		await rename(temporary, join(directory, LOOKUP_CHECKS))
+	} finally {
+		await rm(temporary, { force: true })
+	}
 }
 function commitKey(row: WorkPullRequestUpdate): string {
 	return JSON.stringify([row.workId, row.sessionId, row.repository, row.worktree, row.sha])
@@ -861,11 +933,12 @@ async function scan(
 	const groups = new Map<string, WorkPullRequestUpdate[]>()
 	for (const commit of state.commits.values()) {
 		onUpdate?.(commit)
-		const key = JSON.stringify([commit.repository, commit.sha])
+		const key = groupKey(commit)
 		const group = groups.get(key) ?? []
 		group.push(commit)
 		groups.set(key, group)
 	}
+	const checks = readLookupChecks(agentDir)
 	const jobs = [...groups.entries()]
 	const start = Math.max(
 		0,
@@ -891,7 +964,7 @@ async function scan(
 			)
 		)
 			continue
-		if (!lookupDue(commits)) continue
+		if (!lookupDue(commits, checks.checkedAt.get(key))) continue
 		const first = commits[0]
 		let found: WorkPullRequest[] = []
 		let failure: LookupError | undefined
@@ -985,9 +1058,11 @@ async function scan(
 			state.commits.set(commitKey(commit), update)
 			onUpdate?.(update)
 		}
+		checks.checkedAt.set(key, Date.parse(prLookup.checkedAt))
 		// Keep the next job stable even if source records append during this pass.
 		if (jobs.length === 1) state.nextCommit = key
 	}
+	await saveLookupChecks(agentDir, groups, checks, assertLease)
 }
 
 /** Every process can display persisted results, including while another process owns discovery. */

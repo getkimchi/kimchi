@@ -144,7 +144,7 @@ New edit records reference a snapshot of the visible Git references and worktree
 
 ### 4. Find pull requests and merge requests
 
-Create the PR or MR through Kimchi, a browser or another tool. Kimchi checks for it at startup and every 30 seconds while open. An older commit is checked less often, at most daily; a commit still without a PR after 32 days is no longer checked, even when its last lookup failed. Within those 32 days, a failure saved by an earlier session is retried once at startup. GitHub and GitLab CLIs are optional: Kimchi reads the provider's API directly and can use their existing credentials.
+Create the PR or MR through Kimchi, a browser or another tool. Kimchi checks for it at startup and every 30 seconds while open. An older commit is checked less often, at most daily, and a restart keeps that schedule; a commit still without a PR after 32 days is no longer checked, even when its last lookup failed. Otherwise, a failure that needs your action and was saved by an earlier session is retried once at startup, so a fixed token takes effect without waiting. GitHub and GitLab CLIs are optional: Kimchi reads the provider's API directly and can use their existing credentials.
 
 With work tracking loaded, the match starts with a **repository and commit hash** already saved under a work ID. If work A contains commit `abc123` and the provider returns PR #7 for that commit, Kimchi saves the link under work A. GitLab uses the same flow with merge requests.
 
@@ -180,7 +180,7 @@ Each commit keeps two extra fields, `prLookup` and `pullRequests[]`. The rows af
 | Field | Meaning |
 | --- | --- |
 | `prLookup.status` | `pending` when no PR or MR was found, `linked` after a successful lookup with links, or `error` when the lookup failed. A new commit has no lookup result yet. |
-| `prLookup.checkedAt` / `error` | Time and error of the last saved lookup result. Unchanged checks do not append another record. |
+| `prLookup.checkedAt` / `error` | Time and error of the last saved lookup result. Unchanged checks do not append another record; `work-attribution/pr-checks.json` keeps their time. |
 | `pullRequests[]` | Confirmed GitHub or GitLab links. The existing field name stays the same for compatibility; later errors do not erase links. |
 | `provider` / `number` | `github` uses the PR number; `gitlab` uses the project's MR number (`iid`), not its global ID. Older links without `provider` mean GitHub. |
 | `id` / `repositoryId` | Stable provider IDs for the PR or MR and its target repository, when returned. These survive repository renames; older records can omit them. |
@@ -226,6 +226,7 @@ All paths below are inside the agent directory.
 | `work-attribution/<session-id>.jsonl` | Append-only history used to rebuild the summary. |
 | `work-attribution/transitions/*.jsonl` | Edit evidence: request/tool IDs, repository paths, Git blobs and file modes before and after each native edit/write change. |
 | `work-attribution/ref-tips/*.json` | Shared snapshots of the commit references and worktree heads visible when an edit was saved. `historyBoundaryId` identifies the snapshot. |
+| `work-attribution/pr-checks.json` | When each recorded repository and commit was last checked for a PR or MR, including checks whose unchanged result was not appended. A restart therefore keeps the lookup schedule. Kimchi replaces the file at most once per pass and only after a change. It drops entries for commits it no longer records and for checks more than a day old. Deleting it costs at most one extra check per commit. |
 
 - Each plan record has `path` for the editable file and `snapshotPath` for its retained version. If saving the retained copy fails, Kimchi warns and leaves the local plan usable.
 - Kimchi flushes source records before updating `work.json`. Writers merge under a lock and replace the summary atomically. Shutdown waits for queued summary writes.
