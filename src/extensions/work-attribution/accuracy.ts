@@ -1,4 +1,5 @@
-import { decimalNanos, type RequestCostAllocation } from "./costs.js"
+import { plainURL } from "../../utils/url.js"
+import { decimalNanos, type RequestCostAllocation, usd } from "./costs.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
 import { object } from "./summary.js"
 
@@ -55,7 +56,6 @@ export interface AttributionAccuracyResult {
 	problems: AttributionAccuracyProblem[]
 }
 
-const NANOS_PER_USD = 1_000_000_000n
 const PERCENT_SCALE = 100_000_000_000n
 const EXPECTED_PULL_REQUEST_ID = /^[a-z]+:.+\/.+#[1-9]\d*$/
 
@@ -85,29 +85,17 @@ function isExpectedPullRequestId(value: string): boolean {
 
 /** Checks supplied evidence, without reading credentials or verifying an account over the network. */
 export function isAccuracyAccount(value: unknown): value is WorkAccount {
-	if (!object(value) || !isWorkAccount(value) || value.apiUrl.trim() !== value.apiUrl) return false
-	try {
-		const url = new URL(value.apiUrl)
-		return (
-			(url.protocol === "https:" || url.protocol === "http:") &&
-			!url.username &&
-			!url.password &&
-			!url.search &&
-			!url.hash
-		)
-	} catch {
-		return false
-	}
+	return (
+		object(value) &&
+		isWorkAccount(value) &&
+		value.apiUrl.trim() === value.apiUrl &&
+		plainURL(value.apiUrl, ["https:", "http:"]) !== undefined
+	)
 }
 
 /** Render a rejected runtime value without coercing it — template literals throw on objects like { toString: null }. */
 function text(value: unknown): string {
 	return typeof value === "string" ? value : "<non-string>"
-}
-
-/** Exact integer rendering of a nanos amount at nine decimal places; never floats. */
-function usd(nanos: bigint): string {
-	return `${nanos / NANOS_PER_USD}.${(nanos % NANOS_PER_USD).toString().padStart(9, "0")}`
 }
 
 /** Truncated pure-integer share of the reference total, scaled by 100 and rendered at nine decimals. */
