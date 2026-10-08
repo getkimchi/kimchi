@@ -807,11 +807,13 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 		}
 		if (Array.isArray(value.requests)) {
 			const priced = requests.filter((row) => row.priceStatus === "priced").length
+			// Work without a PR has no cost line above, so its priced spend is shown here.
+			const known = usd(requests.reduce((sum, row) => sum + (decimalNanos(row.knownCostUsd) ?? 0n), 0n))
 			const unresolved = requests.filter((row) => row.allocation === "unknown").length
 			const inferred = requests.filter((row) => row.allocation === "inferred").length
 			const shared = requests.filter((row) => row.allocation === "shared").length
 			lines.push(
-				`Prices: ${priced}/${requests.length} requests priced. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
+				`Prices: ${priced}/${requests.length} requests priced, $${known} USD${priced < requests.length ? " known so far" : ""}. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
 			)
 		}
 		return [...lines, `Cost details: ${join(agentDir, "work", workId, "costs.json")}`]

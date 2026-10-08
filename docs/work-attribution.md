@@ -2,7 +2,7 @@
 
 Kimchi keeps a local record of the model requests, file edits, plans and commits that belong to the same work. A `workId` connects them, even when planning and implementation happen in different sessions or worktrees of the same repository.
 
-The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's home directory. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits, then looks up their request costs in the background. `/work` shows one total split into sure and likely spend, or an open PR's spend so far; `costs.json` keeps the calculation. Incomplete billing stays unknown. These files are not uploaded.
+The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's home directory. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits, then looks up their request costs in the background. `/work` shows one total split into sure and likely spend, or an open PR's spend so far, plus the work's priced spend; `costs.json` keeps the calculation. Incomplete billing stays unknown. These files are not uploaded.
 
 ## Where the files live
 

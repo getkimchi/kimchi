@@ -265,7 +265,7 @@ describe("automatic exact work cost lookup", () => {
 		})
 		expect(workCostDetails(dir, workId)).toContain("Cost: $0.123456789 USD — https://github.com/example/repo/pull/1")
 		expect(workCostDetails(dir, workId)).toContain(
-			"Prices: 1/1 requests priced. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
+			"Prices: 1/1 requests priced, $0.123456789 USD. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
 		)
 		expect(workCostDetails(dir, workId)).toContain("Sure: $0.000000000 USD; likely: $0.123456789 USD.")
 	})
@@ -277,7 +277,7 @@ describe("automatic exact work cost lookup", () => {
 		appendWorkRecord(ctx, { type: "request", requestId: "not-billed", startedAt: "2026-10-01T08:00:00Z" })
 		await sync()
 		expect(workCostDetails(dir, workId)).toContain(
-			"Prices: 1/2 requests priced. PR assignments: 2 unresolved, 0 inferred, 0 shared.",
+			"Prices: 1/2 requests priced, $0.123456789 USD known so far. PR assignments: 2 unresolved, 0 inferred, 0 shared.",
 		)
 	})
 	it("refreshes both work views after a correction and revocation without duplicating bills", async () => {
