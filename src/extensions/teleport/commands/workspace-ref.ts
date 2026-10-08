@@ -61,7 +61,7 @@ export async function resolveWorkspaceRef(
 	// Verify once up front; the ids are shared with the workspace list and the
 	// quota fetch below (both skip their own verifyKey round-trip when given them).
 	let orgId: string
-	let userId: string
+	let userId: string | undefined
 	try {
 		const verified = await verifyApiKey(ctx.apiKey, { endpoint: ctx.endpoint })
 		orgId = verified.organizationId

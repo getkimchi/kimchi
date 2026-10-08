@@ -17,13 +17,21 @@ export async function listWorkspaces(apiKey: string, options?: ListWorkspacesOpt
 	try {
 		// Callers that already verified the key (e.g. /remote-sessions, which
 		// caches both ids for its refresh loop) pass them through to skip the
-		// duplicate verifyKey round-trip.
+		// duplicate verifyKey round-trip. The pair is atomic: partial ids are
+		// discarded and a fresh verify supplies both from the same key.
 		let orgId = options?.orgId
 		let userId = options?.userId
 		if (!orgId || !userId) {
 			const verified = await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })
-			orgId ??= verified.organizationId
-			userId ??= verified.userId
+			orgId = verified.organizationId
+			userId = verified.userId
+		}
+		if (!userId) {
+			// creatorId is the only line of defense against listing teammates'
+			// workspaces — fail rather than silently degrade to an unfiltered list.
+			throw new RemoteNetworkError(
+				`Missing userId in verify response from ${endpoint} — cannot creator-filter the listing`,
+			)
 		}
 
 		const results: Workspace[] = []

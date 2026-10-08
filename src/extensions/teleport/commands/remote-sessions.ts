@@ -30,7 +30,7 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 	// rename/delete workspace) — also shared with listWorkspaces/getQuotaUsage
 	// below so both skip their own duplicate verifyKey round-trip.
 	let orgId: string
-	let userId: string
+	let userId: string | undefined
 	try {
 		const verified = await verifyApiKey(ctx.apiKey, { endpoint: ctx.endpoint })
 		orgId = verified.organizationId

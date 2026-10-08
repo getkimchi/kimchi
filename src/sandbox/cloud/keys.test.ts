@@ -29,9 +29,10 @@ describe("verifyApiKey", () => {
 		})
 	})
 
-	it("throws RemoteNetworkError when userId is missing", async () => {
+	it("returns an undefined userId when the verify response omits it (enforced at point of use)", async () => {
 		const mockFetch = vi.fn().mockResolvedValueOnce(jsonResponse({ organizationId: "org-42" }))
-		await expect(verifyApiKey("key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteNetworkError)
+		const verified = await verifyApiKey("key1", { endpoint: BASE, fetch: mockFetch })
+		expect(verified).toEqual({ organizationId: "org-42", userId: undefined })
 	})
 
 	it("throws RemoteAuthError on 401", async () => {

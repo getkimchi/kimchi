@@ -30,11 +30,10 @@ export async function verifyApiKey(apiKey: string, options?: AuthenticateOptions
 		throw new RemoteNetworkError(`Missing organizationId in verify response from ${endpoint}`)
 	}
 
-	// The key owner's user id — the value the workspaces API filters on as `creatorId`.
+	// The key owner's user id (the workspaces API `creatorId` filter value).
+	// Only listWorkspaces needs it and older control planes may omit it, so
+	// its absence is enforced at the point of use — not here, where a hard
+	// failure would also break auth/quota callers that discard the field.
 	const userId = data.userId
-	if (typeof userId !== "string" || userId.length === 0) {
-		throw new RemoteNetworkError(`Missing userId in verify response from ${endpoint}`)
-	}
-
-	return { organizationId, userId }
+	return { organizationId, userId: typeof userId === "string" && userId.length > 0 ? userId : undefined }
 }

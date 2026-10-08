@@ -114,6 +114,39 @@ describe("listWorkspaces", () => {
 		expect(result).toHaveLength(1)
 	})
 
+	it("discards a partial userId and re-resolves both ids from the key", async () => {
+		// Passing userId ALONE must not let it leak into the creator filter
+		// alongside the key's orgId — the pair is re-resolved atomically.
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValueOnce(verifyResponse())
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ items: [workspaceFixture({ id: "ws-1" })] }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			)
+
+		await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch, userId: "someone-else" })
+
+		expect(mockFetch).toHaveBeenCalledTimes(2)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/ai-optimizer/v1beta/workspace-tokens:verifyKey`)
+		// The filter carries the verified USER_ID, not the discarded partial.
+		expect(mockFetch.mock.calls[1][0]).toBe(listUrl())
+	})
+
+	it("throws RemoteNetworkError when the server omits userId (cannot creator-filter)", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(
+			new Response(JSON.stringify({ organizationId: ORG_ID }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
+		)
+		await expect(listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
+			RemoteNetworkError,
+		)
+	})
+
 	it("follows cursor across multiple pages", async () => {
 		const mockFetch = vi
 			.fn()
