@@ -296,16 +296,16 @@ export function recordProviderRequest(
 	return { requestId, workId }
 }
 /** Persist the identity of each HTTP dispatch, including retries inside provider SDKs. */
-export function prepareProviderRequest(headers: Headers, url?: string, metadata?: ModelRequestMetadata): void {
+export function prepareProviderRequest(headers: Headers, url: string, metadata: ModelRequestMetadata): void {
 	const logicalId = headers.get("x-request-id")
 	const request = logicalId && pendingRequests.get(logicalId)
 	if (!request) return
-	const billingSource = url ? captureBillingSource(headers, url, request.ctx.cwd) : undefined
+	const billingSource = captureBillingSource(headers, url, request.ctx.cwd)
 	const retry = request.dispatched
 	const requestId = retry ? randomUUID() : logicalId
 	const startedAt = retry ? new Date().toISOString() : request.startedAt
 	const dispatchedAt = new Date().toISOString()
-	const tagging = prepareBillingTag(headers, metadata?.bodyTags, requestId, (tag) => {
+	const tagging = prepareBillingTag(headers, metadata.bodyTags, requestId, (tag) => {
 		if (!tag.startsWith("kimchi-request:")) return false
 		const previous = pendingRequests.get(tag.slice("kimchi-request:".length))
 		return previous?.billingTag === tag && previous.logicalRequestId === request.logicalRequestId

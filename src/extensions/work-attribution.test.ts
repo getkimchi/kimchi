@@ -243,7 +243,7 @@ describe("local work attribution", () => {
 		}
 		vi.spyOn(costSync, "captureBillingSource").mockReturnValue(original)
 		const headers = new Headers({ "X-Request-Id": identity.requestId, Authorization: "Bearer test-key" })
-		prepareProviderRequest(headers, original.gatewayUrl)
+		prepareProviderRequest(headers, original.gatewayUrl, { bodyTags: [] })
 		vi.mocked(costSync.captureBillingSource).mockReturnValue({ ...original, credentialHash: "b".repeat(64) })
 		setWorkId(ctx)
 		recordProviderResponse(identity.requestId, {
@@ -450,9 +450,9 @@ describe("local work attribution", () => {
 		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(original, ctx)
 		const logicalId = original.headers["X-Request-Id"]
 		const originalWork = getWorkId(ctx)
-		prepareProviderRequest(wireHeaders(original.headers))
+		prepareProviderRequest(wireHeaders(original.headers), "", { bodyTags: [] })
 		const firstRetry = wireHeaders(original.headers)
-		prepareProviderRequest(firstRetry)
+		prepareProviderRequest(firstRetry, "", { bodyTags: [] })
 		const retryId = firstRetry.get("x-request-id")
 		expect(retryId).not.toBe(logicalId)
 		expect(getActiveRequest(ctx)?.requestId).toBe(retryId)
@@ -464,7 +464,7 @@ describe("local work attribution", () => {
 		for (const id of [logicalId, retryId]) {
 			if (!id) throw new Error("Expected request ID")
 			const wire = new Headers({ "X-Request-Id": id })
-			prepareProviderRequest(wire)
+			prepareProviderRequest(wire, "", { bodyTags: [] })
 			expect(wire.get("x-request-id")).not.toBe(id)
 			expect(records().find((row) => row.requestId === wire.get("x-request-id"))).toMatchObject({
 				workId: originalWork,
@@ -482,11 +482,11 @@ describe("local work attribution", () => {
 		createWorkAttributionExtension()(api.api)
 		const main: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
 		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(main, ctx)
-		prepareProviderRequest(wireHeaders(main.headers))
+		prepareProviderRequest(wireHeaders(main.headers), "", { bodyTags: [] })
 		const auxiliary = recordProviderRequest(ctx, { provider: "kimchi-dev", id: "classifier" })
-		prepareProviderRequest(new Headers({ "X-Request-Id": auxiliary.requestId }))
+		prepareProviderRequest(new Headers({ "X-Request-Id": auxiliary.requestId }), "", { bodyTags: [] })
 		const retry = new Headers({ "X-Request-Id": auxiliary.requestId })
-		prepareProviderRequest(retry)
+		prepareProviderRequest(retry, "", { bodyTags: [] })
 		expect(retry.get("x-request-id")).not.toBe(auxiliary.requestId)
 		await api.getHandler("message_end")(
 			{
@@ -505,12 +505,12 @@ describe("local work attribution", () => {
 		const model = { provider: "original", id: "original-model" }
 		const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
 		const original = recordProviderRequest(ctx, model)
-		prepareProviderRequest(new Headers({ "X-Request-Id": original.requestId }))
+		prepareProviderRequest(new Headers({ "X-Request-Id": original.requestId }), "", { bodyTags: [] })
 		sessionId = "next-session"
 		model.id = "next-model"
 		setWorkId(ctx)
 		const retry = new Headers({ "X-Request-Id": original.requestId })
-		prepareProviderRequest(retry)
+		prepareProviderRequest(retry, "", { bodyTags: [] })
 		expect(records().find((row) => row.requestId === retry.get("x-request-id"))).toMatchObject({
 			parentRequestId: original.requestId,
 			sessionId: "first-session",
