@@ -156,8 +156,8 @@ describe("accuracy readiness regressions", () => {
  * Row order (0-based): 0 correct, 1 wrong, 2 shared, 3 unmerged, 4 null-labeled confident, 5 unlabeled,
  * 6 unpriced, 7 duprow original, 8 duprow duplicate, 9 unusable non-object row.
  */
-function mixedFixture(): { requests: RequestCostAllocation[]; labels: AttributionLabel[] } {
-	const requests: RequestCostAllocation[] = [
+function mixedFixture(): { requests: unknown[]; labels: AttributionLabel[] } {
+	const requests: unknown[] = [
 		row("req-correct", { allocation: "pull-request", pullRequestIds: [PR1], knownCostUsd: "1.000000000" }),
 		row("req-wrong", { allocation: "pull-request", pullRequestIds: [PR9], knownCostUsd: "2.000000000" }),
 		row("req-shared", { allocation: "shared", pullRequestIds: [PR1], knownCostUsd: "0.500000000" }),
@@ -174,7 +174,7 @@ function mixedFixture(): { requests: RequestCostAllocation[]; labels: Attributio
 		row("req-duprow", { allocation: "pull-request", pullRequestIds: [PR1], knownCostUsd: "1.000000000" }),
 		row("req-duprow", { allocation: "pull-request", pullRequestIds: [PR1], knownCostUsd: "5.000000000" }),
 		// Deliberately unusable runtime row; the function must flag it, never crash.
-		"garbage-row" as unknown as RequestCostAllocation,
+		"garbage-row",
 	]
 	const labels: AttributionLabel[] = [
 		label("req-dup", null),
@@ -391,7 +391,7 @@ describe("compareAttributionAccuracy", () => {
 			{ requestId: "req-x", expectedPullRequestId: 7 },
 			// Extra properties are tolerated: this entry is shape-valid and must not be flagged.
 			{ requestId: "req-ok", expectedPullRequestId: null, source: "manual" },
-		] as unknown as AttributionLabel[]
+		]
 		const result = compareAttributionAccuracy(requests, labels)
 		expect(result.complete).toBe(false)
 		expect(result.metrics).toEqual(noPercentages)
@@ -530,11 +530,7 @@ describe("compareAttributionAccuracy", () => {
 
 		const requests = [row("req-a", { allocation: "pull-request", pullRequestIds: [PR1], knownCostUsd: "1.000000000" })]
 		// Deliberately malformed runtime input must not be rewritten either.
-		const malformed = [
-			null,
-			{ requestId: "req-a", expectedPullRequestId: PR1 },
-			"nope",
-		] as unknown as AttributionLabel[]
+		const malformed = [null, { requestId: "req-a", expectedPullRequestId: PR1 }, "nope"]
 		const requestsSnapshot = JSON.parse(JSON.stringify(requests))
 		const malformedSnapshot = JSON.parse(JSON.stringify(malformed))
 		compareAttributionAccuracy(requests, malformed)
@@ -569,16 +565,16 @@ describe("compareAttributionAccuracy", () => {
 
 	it("flags object-valued unpriced fields as unpriced-request instead of crashing", () => {
 		const requests = [
-			// Deliberately type-invalid runtime input (cast); the row must be flagged, never crash.
+			// Deliberately type-invalid runtime input; the row must be flagged, never crash.
 			{
 				...row("r1", { allocation: "pull-request", pullRequestIds: [PR1] }),
 				knownCostUsd: { toString: null },
-			} as unknown as RequestCostAllocation,
+			},
 			// Same defect class: the detail also interpolates the raw priceStatus.
 			{
 				...row("r2", { allocation: "pull-request", pullRequestIds: [PR1], knownCostUsd: "1.000000000" }),
 				priceStatus: { toString: null },
-			} as unknown as RequestCostAllocation,
+			},
 			// Control: a fully valid priced row, confidently on its expected PR.
 			row("r3", { allocation: "pull-request", pullRequestIds: [PR1], knownCostUsd: "0.500000000" }),
 		]

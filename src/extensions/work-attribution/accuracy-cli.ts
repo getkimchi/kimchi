@@ -1,8 +1,7 @@
 import { readFileSync, realpathSync } from "node:fs"
 import { fileURLToPath } from "node:url"
-import { type AttributionAccuracyResult, type AttributionLabel, compareAttributionAccuracy } from "./accuracy.js"
+import { type AttributionAccuracyResult, compareAttributionAccuracy } from "./accuracy.js"
 import { compareIndependentAttribution, isAttributionReference } from "./accuracy-reference.js"
-import type { RequestCostAllocation } from "./costs.js"
 import { object } from "./summary.js"
 
 /** Everything the script entry needs to print and exit; runCli itself performs no process I/O. */
@@ -74,7 +73,7 @@ export function runCli(argv: readonly string[]): CliOutcome {
 	if (isAttributionReference(labels.value)) {
 		const result = compareIndependentAttribution(
 			{
-				requests: report.value.requests as RequestCostAllocation[],
+				requests: report.value.requests,
 				pullRequests: report.value.pullRequests,
 				unallocated: report.value.unallocated,
 			},
@@ -102,10 +101,7 @@ export function runCli(argv: readonly string[]): CliOutcome {
 		return { code: !result.complete ? 2 : result.matches ? 0 : 3, stdout, stderr: [] }
 	}
 
-	const result = compareAttributionAccuracy(
-		report.value.requests as RequestCostAllocation[],
-		labels.value as AttributionLabel[],
-	)
+	const result = compareAttributionAccuracy(report.value.requests, labels.value)
 
 	const stdout: string[] = [
 		"Work-attribution accuracy comparison",

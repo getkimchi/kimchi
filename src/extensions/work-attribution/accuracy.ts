@@ -1,5 +1,5 @@
 import { plainURL } from "../../utils/url.js"
-import { decimalNanos, type RequestCostAllocation, usd } from "./costs.js"
+import { decimalNanos, usd } from "./costs.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
 import { object } from "./summary.js"
 
@@ -57,6 +57,15 @@ export interface AttributionAccuracyResult {
 }
 
 const PERCENT_SCALE = 100_000_000_000n
+const ALLOCATIONS: readonly unknown[] = [
+	"pull-request",
+	"inferred",
+	"shared",
+	"unlinked",
+	"unmerged",
+	"post-merge",
+	"unknown",
+]
 const EXPECTED_PULL_REQUEST_ID = /^[a-z]+:.+\/.+#[1-9]\d*$/
 
 /** Accept provider IDs and complete keys from older URL-only records. */
@@ -117,7 +126,7 @@ function bucket(totals: Totals): AttributionAccuracyBucket {
 }
 
 interface Survivor extends AttributionLabel {
-	row: RequestCostAllocation
+	row: Record<string, unknown>
 	nanos: bigint
 }
 
@@ -128,8 +137,8 @@ export interface AttributionAccuracyOptions {
 
 /** Compare human attribution labels against what a saved cost report actually allocated. Never mutates its inputs. */
 export function compareAttributionAccuracy(
-	requests: readonly RequestCostAllocation[],
-	labels: readonly AttributionLabel[],
+	requests: readonly unknown[],
+	labels: readonly unknown[],
 	{ priceOf }: AttributionAccuracyOptions = {},
 ): AttributionAccuracyResult {
 	const problems: AttributionAccuracyProblem[] = []
@@ -181,13 +190,12 @@ export function compareAttributionAccuracy(
 	}
 
 	// Stage 4 — report rows, global scan in row order; its problems are reported after stage 3's.
-	const rows = new Map<string, RequestCostAllocation>()
+	const rows = new Map<string, Record<string, unknown>>()
 	const rowProblems: AttributionAccuracyProblem[] = []
 	const duplicated = new Set<string>()
 	const invalid = new Set<string>()
 	requests.forEach((row, index) => {
-		const requestId = object(row) && typeof row.requestId === "string" && row.requestId ? row.requestId : null
-		if (requestId === null) {
+		if (!object(row) || typeof row.requestId !== "string" || !row.requestId) {
 			rowProblems.push({
 				kind: "invalid-report-row",
 				requestId: null,
@@ -195,6 +203,7 @@ export function compareAttributionAccuracy(
 			})
 			return
 		}
+		const requestId = row.requestId
 		if (rows.has(requestId) || duplicated.has(requestId)) {
 			duplicated.add(requestId)
 			rows.delete(requestId)
@@ -219,9 +228,7 @@ export function compareAttributionAccuracy(
 			})
 		}
 		if (
-			!["pull-request", "inferred", "shared", "unlinked", "unmerged", "post-merge", "unknown"].includes(
-				row.allocation,
-			) ||
+			!ALLOCATIONS.includes(row.allocation) ||
 			!Array.isArray(row.pullRequestIds) ||
 			!row.pullRequestIds.every((id) => typeof id === "string" && isExpectedPullRequestId(id)) ||
 			new Set(row.pullRequestIds).size !== row.pullRequestIds.length ||

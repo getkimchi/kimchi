@@ -5,7 +5,7 @@ import {
 	isAccuracyPullRequestKey,
 	text,
 } from "./accuracy.js"
-import { decimalNanos, type RequestCostAllocation, usd } from "./costs.js"
+import { decimalNanos, usd } from "./costs.js"
 import { sameWorkAccount, type WorkAccount } from "./scope.js"
 import { object } from "./summary.js"
 
@@ -109,7 +109,7 @@ function groupKey(key: string, account: WorkAccount): string {
 
 /** Independent inventory and receipts are supplied by the caller, never reconstructed from the report. */
 export function compareIndependentAttribution(
-	report: { requests: readonly RequestCostAllocation[]; pullRequests?: unknown; unallocated?: unknown },
+	report: { requests: readonly unknown[]; pullRequests?: unknown; unallocated?: unknown },
 	reference: { version: 1; requests: readonly unknown[] },
 ): IndependentAccuracyResult {
 	const problems: Issue[] = []
@@ -187,7 +187,7 @@ export function compareIndependentAttribution(
 		})
 	}
 
-	const rows = new Map<string, RequestCostAllocation>()
+	const rows = new Map<string, Record<string, unknown>>()
 	const repeatedRows = new Set<string>()
 	for (const row of report.requests) {
 		if (!object(row) || typeof row.requestId !== "string") continue
@@ -265,11 +265,11 @@ export function compareIndependentAttribution(
 		PullIdentity & { explicit: ExpectedTotal; inferred: ExpectedTotal; inferredRequestIds: string[] }
 	>()
 	const inferredTotal = expectedUnallocated.get("inferred")
-	for (const row of rows.values()) {
+	for (const [requestId, row] of rows) {
 		if (row.allocation !== "pull-request" && row.allocation !== "inferred") continue
 		const nanos = decimalNanos(row.knownCostUsd)
 		if (row.allocation === "inferred" && inferredTotal) {
-			inferredTotal.requestIds.push(row.requestId)
+			inferredTotal.requestIds.push(requestId)
 			inferredTotal.nanos += nanos ?? 0n
 			inferredTotal.priced &&= row.priceStatus === "priced" && nanos !== undefined
 		}
@@ -280,7 +280,7 @@ export function compareIndependentAttribution(
 		) {
 			problems.push({
 				kind: "invalid-report-row",
-				requestId: row.requestId,
+				requestId,
 				detail: "assigned request needs complete, unique PR keys",
 			})
 			continue
@@ -295,11 +295,11 @@ export function compareIndependentAttribution(
 				inferred: empty(),
 				inferredRequestIds: [],
 			}
-			if (row.allocation === "inferred") group.inferredRequestIds.push(row.requestId)
+			if (row.allocation === "inferred") group.inferredRequestIds.push(requestId)
 			if (row.pullRequestIds.length === 1) {
 				const portion = group[row.allocation === "pull-request" ? "explicit" : "inferred"]
-				const price = unique.get(row.requestId)?.nanos
-				portion.requestIds.push(row.requestId)
+				const price = unique.get(requestId)?.nanos
+				portion.requestIds.push(requestId)
 				portion.nanos += price ?? 0n
 				portion.priced &&= row.priceStatus === "priced" && price !== undefined
 			}
