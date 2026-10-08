@@ -18,6 +18,7 @@ describe("GENERAL_TIPS", () => {
 		expect(messages).toContain("Use `/agents` to manage agents or display running agents sessions")
 		expect(messages).toContain("Use `/processes` to inspect running Bash scripts and output.")
 		expect(messages).toContain("Tag requests in Analytics: `/tags add key:value` (e.g. project:myapp).")
+		expect(messages).toContain("Run `/work` to see your work's cost and PRs.")
 		expect(messages).toContain("Resume the latest session with `kimchi --continue`.")
 		expect(messages).toContain("Name a branch with `/branch <name>`; resume it with `-r <id>`.")
 		expect(messages).toContain("Use `kimchi --verbose` when output looks off.")
