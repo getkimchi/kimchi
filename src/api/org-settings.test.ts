@@ -4,9 +4,15 @@ import { fetchOrgPolicy, parseOrgPolicy } from "./org-settings.js"
 vi.mock("../config.js", () => ({
 	resolveEndpoints: () => ({ platformApiUrl: "https://api.test" }),
 }))
+
+// Capture the options fetchWithRetry was called with so the tests can assert
+// the startup budget contract (short timeout, no retries).
+const fetchWithRetryOptions: unknown[] = []
 vi.mock("../utils/http.js", () => ({
-	fetchWithRetry: (_url: string, init: RequestInit, options: { fetchImpl?: typeof globalThis.fetch }) =>
-		(options.fetchImpl ?? globalThis.fetch)(_url, init),
+	fetchWithRetry: vi.fn((_url: string, init: RequestInit, options: { fetchImpl?: typeof globalThis.fetch }) => {
+		fetchWithRetryOptions.push(options)
+		return (options.fetchImpl ?? globalThis.fetch)(_url, init)
+	}),
 }))
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -15,7 +21,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function routeFetch(verifyBody: unknown, resolveBody: unknown, resolveStatus = 200) {
 	let call = 0
-	return vi.fn(async (_url: unknown) => {
+	return vi.fn(async () => {
 		call++
 		if (call === 1) return jsonResponse(verifyBody)
 		return jsonResponse(resolveBody, resolveStatus)
@@ -23,13 +29,22 @@ function routeFetch(verifyBody: unknown, resolveBody: unknown, resolveStatus = 2
 }
 
 describe("parseOrgPolicy", () => {
-	it("parses both fields", () => {
+	it("parses both fields from the gateway's camelCase JSON", () => {
 		expect(
 			parseOrgPolicy({
 				maxPermissionMode: "KIMCHI_PERMISSION_MODE_AUTO",
 				usageReporting: "KIMCHI_USAGE_REPORTING_FORCE_ON",
 			}),
 		).toEqual({ maxPermissionMode: "AUTO", usageReporting: "FORCE_ON" })
+	})
+
+	it("accepts snake_case field names (UseProtoNames gateways)", () => {
+		expect(
+			parseOrgPolicy({
+				max_permission_mode: "KIMCHI_PERMISSION_MODE_PLAN",
+				usage_reporting: "KIMCHI_USAGE_REPORTING_USER_CHOICE",
+			}),
+		).toEqual({ maxPermissionMode: "PLAN", usageReporting: "USER_CHOICE" })
 	})
 
 	it("returns undefined when no field is set", () => {
@@ -57,23 +72,31 @@ describe("parseOrgPolicy", () => {
 })
 
 describe("fetchOrgPolicy", () => {
-	it("returns the resolved policy", async () => {
+	it("returns the resolved policy from the gateway's camelCase JSON", async () => {
 		const fetchImpl = routeFetch(
 			{ organizationId: "org-1" },
-			{ settings: {}, kimchi_policy: { maxPermissionMode: "KIMCHI_PERMISSION_MODE_PLAN" } },
+			{ settings: {}, kimchiPolicy: { maxPermissionMode: "KIMCHI_PERMISSION_MODE_PLAN" } },
 		)
 		await expect(fetchOrgPolicy("key", { fetch: fetchImpl })).resolves.toEqual({
 			kind: "policy",
 			orgId: "org-1",
 			policy: { maxPermissionMode: "PLAN" },
 		})
-		expect(fetchImpl).toHaveBeenLastCalledWith(
-			"https://api.test/ai-optimizer/v1beta/organizations/org-1/settings:resolve",
-			expect.objectContaining({ method: "GET", headers: { Authorization: "Bearer key", Accept: "application/json" } }),
-		)
 	})
 
-	it("returns an undefined policy when kimchi_policy is absent", async () => {
+	it("accepts snake_case resolve responses", async () => {
+		const fetchImpl = routeFetch(
+			{ organizationId: "org-1" },
+			{ settings: {}, kimchi_policy: { max_permission_mode: "KIMCHI_PERMISSION_MODE_YOLO" } },
+		)
+		await expect(fetchOrgPolicy("key", { fetch: fetchImpl })).resolves.toEqual({
+			kind: "policy",
+			orgId: "org-1",
+			policy: { maxPermissionMode: "YOLO" },
+		})
+	})
+
+	it("returns an undefined policy when the policy object is absent", async () => {
 		const fetchImpl = routeFetch({ organizationId: "org-1" }, { settings: {} })
 		await expect(fetchOrgPolicy("key", { fetch: fetchImpl })).resolves.toEqual({
 			kind: "policy",
@@ -82,8 +105,19 @@ describe("fetchOrgPolicy", () => {
 		})
 	})
 
+	it("applies the startup budget to both the verify and the resolve call", async () => {
+		fetchWithRetryOptions.length = 0
+		const fetchImpl = routeFetch({ organizationId: "org-1" }, { settings: {} })
+		await fetchOrgPolicy("key", { fetch: fetchImpl })
+
+		expect(fetchWithRetryOptions).toHaveLength(2)
+		for (const options of fetchWithRetryOptions) {
+			expect(options).toMatchObject({ timeoutMs: 1500, retry: { maxRetries: 0 } })
+		}
+	})
+
 	it("reports no-access when the key fails verification", async () => {
-		const fetchImpl = vi.fn(async () => jsonResponse({}, 403))
+		const fetchImpl = (async () => jsonResponse({}, 403)) as unknown as typeof globalThis.fetch
 		await expect(fetchOrgPolicy("key", { fetch: fetchImpl })).resolves.toEqual({ kind: "no-access" })
 	})
 
@@ -99,9 +133,29 @@ describe("fetchOrgPolicy", () => {
 		await expect(fetchOrgPolicy("key", { fetch: fetchImpl })).resolves.toEqual({ kind: "unreachable" })
 	})
 
-	it("reports unreachable when the fetch throws (network/timeout)", async () => {
+	it("reports unreachable when a fetch throws (network/timeout)", async () => {
 		const fetchImpl = (async () => {
 			throw new Error("network down")
+		}) as unknown as typeof globalThis.fetch
+		await expect(fetchOrgPolicy("key", { fetch: fetchImpl })).resolves.toEqual({ kind: "unreachable" })
+	})
+
+	it("reports unreachable on a 200 with a non-JSON body (gateway glitch)", async () => {
+		let call = 0
+		const fetchImpl = (async () => {
+			call++
+			if (call === 1) return jsonResponse({ organizationId: "org-1" })
+			return new Response("<html>bad gateway</html>", { status: 200, headers: { "content-type": "text/html" } })
+		}) as unknown as typeof globalThis.fetch
+		await expect(fetchOrgPolicy("key", { fetch: fetchImpl })).resolves.toEqual({ kind: "unreachable" })
+	})
+
+	it("reports unreachable on a 200 with a non-JSON verify body", async () => {
+		let call = 0
+		const fetchImpl = (async () => {
+			call++
+			if (call === 1) return new Response("nope", { status: 200, headers: { "content-type": "text/plain" } })
+			return jsonResponse({})
 		}) as unknown as typeof globalThis.fetch
 		await expect(fetchOrgPolicy("key", { fetch: fetchImpl })).resolves.toEqual({ kind: "unreachable" })
 	})

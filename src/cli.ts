@@ -41,11 +41,10 @@ import {
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
 	getApiKeyMismatchWarning,
-	getEnvironmentApiKey,
 	loadConfig,
 	RETRY_DEFAULTS,
-	readApiKeyFromConfigFile,
 	readTelemetryConfig,
+	resolveEffectiveApiKey,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
 	writeMigrationState,
@@ -260,7 +259,7 @@ const infrastructureErrorTracker = createInfrastructureErrorTracker()
 // reporting) before telemetry and session setup so both read the same view.
 // Blocking only on the first run per API key (cache miss, capped at 1.5s);
 // afterwards the cached policy applies and refreshes in the background.
-await initOrgPolicy(getEnvironmentApiKey() ?? readApiKeyFromConfigFile() ?? "")
+await initOrgPolicy(resolveEffectiveApiKey() ?? "")
 
 // --- Telemetry ---
 const telemetryConfig = readTelemetryConfig()

@@ -11,9 +11,10 @@ import { fetchOrgPolicy, type OrgPolicy } from "./api/org-settings.js"
  * - The effective org policy is fetched once per API key and cached in
  *   ~/.config/kimchi/org-policy.json.
  * - On startup with a cache matching the current key, the cached policy is
- *   applied immediately and refreshed in the background (takes effect on the
- *   next launch). Without a usable cache the fetch blocks startup briefly
- *   (capped at 1.5s) so the session starts under the right policy.
+ *   applied for the whole session and refreshed in the background; the
+ *   refresh only updates the cache file so a policy change takes effect on
+ *   the next launch. Without a usable cache the fetch blocks startup briefly
+ *   (capped at ~1.5s per call) so the session starts under the right policy.
  * - Fetch outcomes: a resolved policy (including "no policy") overwrites the
  *   cache; auth failures (401/403/404) clear it (fail open); network errors
  *   keep the last known good policy.
@@ -35,13 +36,36 @@ export function getOrgPolicy(): OrgPolicy | undefined {
 	return currentPolicy
 }
 
-/** The organization the cached policy was fetched for. */
+/** The organization the session policy was resolved for. */
 export function getOrgPolicyOrgId(): string | undefined {
 	return currentOrgId
 }
 
 function keyFingerprint(apiKey: string): string {
 	return createHash("sha256").update(apiKey).digest("hex")
+}
+
+const KNOWN_PERMISSION_MODES = new Set(["PLAN", "DEFAULT", "AUTO", "YOLO"])
+const KNOWN_USAGE_REPORTING = new Set(["USER_CHOICE", "FORCE_ON", "FORCE_OFF"])
+
+/**
+ * Validate a policy read from the cache file: a corrupted or future-format
+ * cache must not impose bogus restrictions, so unknown values are dropped.
+ */
+function validateCachedPolicy(raw: unknown): OrgPolicy | undefined {
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined
+	const source = raw as Record<string, unknown>
+
+	const policy: OrgPolicy = {}
+	if (typeof source.maxPermissionMode === "string" && KNOWN_PERMISSION_MODES.has(source.maxPermissionMode)) {
+		policy.maxPermissionMode = source.maxPermissionMode as OrgPolicy["maxPermissionMode"]
+	}
+	if (typeof source.usageReporting === "string" && KNOWN_USAGE_REPORTING.has(source.usageReporting)) {
+		policy.usageReporting = source.usageReporting as OrgPolicy["usageReporting"]
+	}
+
+	if (policy.maxPermissionMode === undefined && policy.usageReporting === undefined) return undefined
+	return policy
 }
 
 function readCache(cachePath: string): OrgPolicyCacheFile | undefined {
@@ -55,7 +79,7 @@ function readCache(cachePath: string): OrgPolicyCacheFile | undefined {
 			keyFingerprint: candidate.keyFingerprint,
 			orgId: candidate.orgId,
 			fetchedAt: typeof candidate.fetchedAt === "number" ? candidate.fetchedAt : 0,
-			policy: candidate.policy,
+			policy: validateCachedPolicy(candidate.policy),
 		}
 	} catch {
 		return undefined
@@ -79,13 +103,22 @@ function clearCache(cachePath: string): void {
 	}
 }
 
-async function refresh(apiKey: string, cachePath: string, fetchImpl?: typeof globalThis.fetch): Promise<void> {
+async function refresh(
+	apiKey: string,
+	cachePath: string,
+	fetchImpl: typeof globalThis.fetch | undefined,
+	updateHolder: boolean,
+): Promise<void> {
 	const outcome = await fetchOrgPolicy(apiKey, { fetch: fetchImpl })
 
 	switch (outcome.kind) {
 		case "policy": {
-			currentPolicy = outcome.policy
-			currentOrgId = outcome.orgId
+			// Background refreshes only update the cache: a session keeps the
+			// policy it started with, and the new one applies next launch.
+			if (updateHolder) {
+				currentPolicy = outcome.policy
+				currentOrgId = outcome.orgId
+			}
 			writeCache(cachePath, {
 				keyFingerprint: keyFingerprint(apiKey),
 				orgId: outcome.orgId,
@@ -95,8 +128,10 @@ async function refresh(apiKey: string, cachePath: string, fetchImpl?: typeof glo
 			break
 		}
 		case "no-access": {
-			currentPolicy = undefined
-			currentOrgId = undefined
+			if (updateHolder) {
+				currentPolicy = undefined
+				currentOrgId = undefined
+			}
 			clearCache(cachePath)
 			break
 		}
@@ -108,14 +143,18 @@ async function refresh(apiKey: string, cachePath: string, fetchImpl?: typeof glo
 }
 
 /**
- * Initialize the org policy for this session. With a cache matching the
- * current API key the cached policy is applied synchronously and refreshed in
- * the background; otherwise the fetch runs (and is awaited) so the session
- * starts under the correct policy. An empty API key clears all state without
- * any network access.
+ * Initialize the org policy for this session:
  *
- * Returns the promise backing the (possibly background) refresh, mainly for
- * tests.
+ * - With a cache matching the current API key, the cached policy is applied
+ *   to the in-memory holder and a background refresh updates only the cache
+ *   file (the refreshed policy takes effect on the next launch).
+ * - Without a usable cache, the fetch runs and is awaited so the session
+ *   starts under the correct policy, then populates holder and cache.
+ * - An empty API key means the session has no policy: the holder is cleared,
+ *   but the cache file is kept so the next keyed run still starts warm.
+ *
+ * The returned promise resolves once the (possibly background) refresh has
+ * settled; mainly useful for tests. An empty API key resolves immediately.
  */
 export async function initOrgPolicy(
 	apiKey: string,
@@ -126,8 +165,7 @@ export async function initOrgPolicy(
 	if (!apiKey) {
 		currentPolicy = undefined
 		currentOrgId = undefined
-		clearCache(cachePath)
-		return Promise.resolve()
+		return
 	}
 
 	const fingerprint = keyFingerprint(apiKey)
@@ -135,13 +173,12 @@ export async function initOrgPolicy(
 	if (cached?.keyFingerprint === fingerprint) {
 		currentPolicy = cached.policy
 		currentOrgId = cached.orgId
-		// Refresh in the background: a policy change applies on the next
-		// launch. Errors are swallowed by design (fail open).
-		void refresh(apiKey, cachePath, options?.fetch).catch(() => {})
+		// Background refresh: errors are swallowed by design (fail open).
+		void refresh(apiKey, cachePath, options?.fetch, false).catch(() => {})
 		return
 	}
 
-	await refresh(apiKey, cachePath, options?.fetch)
+	await refresh(apiKey, cachePath, options?.fetch, true)
 }
 
 /** Reset the in-memory holder. Test-only. */

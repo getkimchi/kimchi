@@ -33,24 +33,39 @@ function parseEnumName<T extends string>(raw: unknown, prefix: string, known: Re
 }
 
 /**
- * Parse the kimchi_policy object from a settings:resolve response. Unknown or
- * malformed enum values are dropped rather than rejected, so a policy set by
- * a newer platform version degrades to "no restriction" instead of failing.
+ * Parse the harness policy from a settings:resolve response body. The gateway
+ * marshals proto3 JSON with camelCase field names by default (kimchiPolicy /
+ * maxPermissionMode); snake_case is accepted too so self-hosted gateways
+ * configured with UseProtoNames keep working. Unknown or malformed enum
+ * values are dropped rather than rejected, so a policy set by a newer
+ * platform version degrades to "no restriction" instead of failing.
  */
 export function parseOrgPolicy(raw: unknown): OrgPolicy | undefined {
 	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined
 	const source = raw as Record<string, unknown>
 	const policy: OrgPolicy = {}
 
-	const maxPermissionMode = parseEnumName(source.maxPermissionMode, "KIMCHI_PERMISSION_MODE_", PERMISSION_MODES)
-	if (maxPermissionMode) policy.maxPermissionMode = maxPermissionMode
+	const mode =
+		parseEnumName(source.maxPermissionMode, "KIMCHI_PERMISSION_MODE_", PERMISSION_MODES) ??
+		parseEnumName(source.max_permission_mode, "KIMCHI_PERMISSION_MODE_", PERMISSION_MODES)
+	if (mode) policy.maxPermissionMode = mode
 
-	const usageReporting = parseEnumName(source.usageReporting, "KIMCHI_USAGE_REPORTING_", USAGE_REPORTING)
-	if (usageReporting) policy.usageReporting = usageReporting
+	const reporting =
+		parseEnumName(source.usageReporting, "KIMCHI_USAGE_REPORTING_", USAGE_REPORTING) ??
+		parseEnumName(source.usage_reporting, "KIMCHI_USAGE_REPORTING_", USAGE_REPORTING)
+	if (reporting) policy.usageReporting = reporting
 
 	if (policy.maxPermissionMode === undefined && policy.usageReporting === undefined) return undefined
 	return policy
 }
+
+/**
+ * The startup budget for policy fetches: both the key verification and the
+ * resolve call run with a short timeout and no retries so a cold cache adds
+ * at most a couple of seconds to startup. The fetchWithRetry default (10
+ * retries, up to 60s backoff) would stall boot.
+ */
+const STARTUP_FETCH_OPTIONS = { timeoutMs: 1500, retry: { maxRetries: 0 } } as const
 
 /**
  * Fetch the effective harness policy for the given API key by resolving
@@ -64,20 +79,38 @@ export async function fetchOrgPolicy(
 	const endpoint = resolveEndpoints().platformApiUrl
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 
-	let orgId: string
+	// Verify the key first so the org is authoritative for it. This mirrors
+	// verifyApiKey from organizations.ts but with the startup budget applied —
+	// that helper's defaults (10 retries) are fine for background callers but
+	// not for the blocking startup path.
+	const verifyUrl = `${endpoint}/ai-optimizer/v1beta/api-keys:verify`
+	let verifyResp: Response
 	try {
-		// Reuses the verify call so the org is authoritative for this key.
-		const { verifyApiKey } = await import("./organizations.js")
-		orgId = (await verifyApiKey(apiKey, { fetch: fetchImpl })).organizationId
-	} catch (err) {
-		// verifyApiKey reports HTTP failures as "... failed with HTTP <status>"
-		// and propagates network/timeout errors as anything else. Only a
-		// definitive rejection (bad key, unknown org) clears the cached policy;
-		// transient errors keep the last known good one.
-		const status = /HTTP (\d{3})/.exec(err instanceof Error ? err.message : "")?.[1]
-		if (status === "401" || status === "403" || status === "404") return { kind: "no-access" }
+		verifyResp = await fetchWithRetry(
+			verifyUrl,
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${apiKey}`,
+					Accept: "application/json",
+				},
+			},
+			{ ...STARTUP_FETCH_OPTIONS, fetchImpl },
+		)
+	} catch {
 		return { kind: "unreachable" }
 	}
+
+	if (!verifyResp.ok) {
+		if (verifyResp.status === 401 || verifyResp.status === 403 || verifyResp.status === 404)
+			return { kind: "no-access" }
+		return { kind: "unreachable" }
+	}
+
+	const verifyBody: unknown = await verifyResp.json().catch(() => null)
+	if (verifyBody === null || typeof verifyBody !== "object") return { kind: "unreachable" }
+	const orgId = (verifyBody as Record<string, unknown>).organizationId
+	if (typeof orgId !== "string" || orgId.length === 0) return { kind: "unreachable" }
 
 	const url = `${endpoint}/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/settings:resolve`
 	let resp: Response
@@ -91,9 +124,7 @@ export async function fetchOrgPolicy(
 					Accept: "application/json",
 				},
 			},
-			// Startup path: fail fast and keep whatever is cached. The default
-			// retry budget (10 attempts, up to 60s backoff) would stall boot.
-			{ fetchImpl, timeoutMs: 1500, retry: { maxRetries: 0 } },
+			{ ...STARTUP_FETCH_OPTIONS, fetchImpl },
 		)
 	} catch {
 		return { kind: "unreachable" }
@@ -104,12 +135,17 @@ export async function fetchOrgPolicy(
 		return { kind: "unreachable" }
 	}
 
+	// A 200 with a non-JSON body is a transient gateway glitch, not a
+	// definitive "no policy": keep the last known good policy.
 	const data: unknown = await resp.json().catch(() => null)
-	if (data === null || typeof data !== "object") return { kind: "no-access" }
+	if (data === null || typeof data !== "object") return { kind: "unreachable" }
+
+	const fields = data as Record<string, unknown>
+	const rawPolicy = fields.kimchiPolicy ?? fields.kimchi_policy
 
 	return {
 		kind: "policy",
 		orgId,
-		policy: parseOrgPolicy((data as Record<string, unknown>).kimchi_policy),
+		policy: parseOrgPolicy(rawPolicy),
 	}
 }

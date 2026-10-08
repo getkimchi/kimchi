@@ -20,12 +20,6 @@ function readCacheFile(path: string): Record<string, unknown> {
 	return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
 }
 
-function fakeFetch(): typeof globalThis.fetch {
-	return vi.fn(async () => {
-		throw new Error("network calls must go through the mocked fetchOrgPolicy")
-	}) as unknown as typeof globalThis.fetch
-}
-
 vi.mock("./api/org-settings.js", () => ({
 	fetchOrgPolicy: vi.fn(),
 }))
@@ -46,7 +40,7 @@ describe("initOrgPolicy", () => {
 		const cachePath = cachePathFor({})
 		resolveWithPolicy("org-1", { maxPermissionMode: "PLAN", usageReporting: "FORCE_ON" })
 
-		await initOrgPolicy("key-1", { cachePath, fetch: fakeFetch() })
+		await initOrgPolicy("key-1", { cachePath })
 
 		expect(getOrgPolicy()).toEqual({ maxPermissionMode: "PLAN", usageReporting: "FORCE_ON" })
 		expect(getOrgPolicyOrgId()).toBe("org-1")
@@ -68,14 +62,14 @@ describe("initOrgPolicy", () => {
 		// Different key: cache miss, fetch returns "no policy at all".
 		resolveWithPolicy("org-1", undefined)
 
-		await initOrgPolicy("key-2", { cachePath, fetch: fakeFetch() })
+		await initOrgPolicy("key-2", { cachePath })
 
 		expect(getOrgPolicy()).toBeUndefined()
 		const cached = readCacheFile(cachePath)
 		expect(cached.policy).toBeUndefined()
 	})
 
-	it("applies the cached policy for the same key and refreshes in the background", async () => {
+	it("keeps the session policy stable while the background refresh updates only the cache", async () => {
 		const cachePath = cachePathFor({})
 		const { createHash } = await import("node:crypto")
 		const fingerprint = createHash("sha256").update("key-1").digest("hex")
@@ -84,68 +78,81 @@ describe("initOrgPolicy", () => {
 			`${JSON.stringify({ keyFingerprint: fingerprint, orgId: "org-1", fetchedAt: 1, policy: { maxPermissionMode: "PLAN" } })}\n`,
 		)
 
-		// Background refresh returns a stricter policy; it must land in the cache.
+		// The background refresh returns a stricter policy: it must land in the
+		// cache but NOT change the in-session holder.
 		resolveWithPolicy("org-1", { maxPermissionMode: "DEFAULT", usageReporting: "FORCE_OFF" })
 
-		const promise = initOrgPolicy("key-1", { cachePath, fetch: fakeFetch() })
+		await initOrgPolicy("key-1", { cachePath })
 
-		// The cached value applies synchronously, before the refresh completes.
+		// The cached value applies for the whole session...
 		expect(getOrgPolicy()).toEqual({ maxPermissionMode: "PLAN" })
 
-		await promise
-		expect(getOrgPolicy()).toEqual({ maxPermissionMode: "DEFAULT", usageReporting: "FORCE_OFF" })
-		expect(readCacheFile(cachePath).policy).toEqual({ maxPermissionMode: "DEFAULT", usageReporting: "FORCE_OFF" })
-
-		// The awaited promise resolves before the background refresh finishes;
-		// drain it (it is the first mock call in this test) so it cannot leak
-		// into the next test.
+		// ...and the refresh has settled into the cache file only.
 		await vi.waitFor(() => expect(mockedFetchOrgPolicy.mock.calls.length).toBeGreaterThanOrEqual(1))
+		expect(getOrgPolicy()).toEqual({ maxPermissionMode: "PLAN" })
+		expect(readCacheFile(cachePath).policy).toEqual({ maxPermissionMode: "DEFAULT", usageReporting: "FORCE_OFF" })
 	})
 
-	it("clears state and cache on auth failure", async () => {
+	it("drops corrupted cached policy values instead of imposing them", async () => {
+		const cachePath = cachePathFor({})
+		const { createHash } = await import("node:crypto")
+		const fingerprint = createHash("sha256").update("key-1").digest("hex")
+		writeFileSync(
+			cachePath,
+			`${JSON.stringify({ keyFingerprint: fingerprint, orgId: "org-1", fetchedAt: 1, policy: { maxPermissionMode: "GODMODE", usageReporting: "SURE" } })}\n`,
+		)
+
+		await initOrgPolicy("key-1", { cachePath })
+
+		expect(getOrgPolicy()).toBeUndefined()
+	})
+
+	it("clears the cache on auth failure; the session keeps its policy until relaunch", async () => {
 		const cachePath = cachePathFor({})
 		resolveWithPolicy("org-1", { maxPermissionMode: "PLAN" })
-		await initOrgPolicy("key-1", { cachePath, fetch: fakeFetch() })
+		await initOrgPolicy("key-1", { cachePath })
 		expect(getOrgPolicy()).toEqual({ maxPermissionMode: "PLAN" })
 
+		// The key stopped verifying: the cache is cleared (next launch starts
+		// unrestricted), but this session keeps the policy it started with.
 		mockedFetchOrgPolicy.mockResolvedValue({ kind: "no-access" })
-		await initOrgPolicy("key-1", { cachePath, fetch: fakeFetch() })
+		await initOrgPolicy("key-1", { cachePath })
 
 		// Drain the background refresh launched by the cache hit above.
 		await vi.waitFor(() => expect(mockedFetchOrgPolicy.mock.calls.length).toBeGreaterThanOrEqual(2))
 
-		expect(getOrgPolicy()).toBeUndefined()
-		expect(getOrgPolicyOrgId()).toBeUndefined()
+		expect(getOrgPolicy()).toEqual({ maxPermissionMode: "PLAN" })
+		expect(getOrgPolicyOrgId()).toBe("org-1")
 		expect(() => readCacheFile(cachePath)).toThrow()
 	})
 
 	it("keeps the last known good policy when the platform is unreachable", async () => {
 		const cachePath = cachePathFor({})
 		resolveWithPolicy("org-1", { maxPermissionMode: "PLAN" })
-		await initOrgPolicy("key-1", { cachePath, fetch: fakeFetch() })
+		await initOrgPolicy("key-1", { cachePath })
 
 		mockedFetchOrgPolicy.mockResolvedValue({ kind: "unreachable" })
-		await initOrgPolicy("key-1", { cachePath, fetch: fakeFetch() })
+		await initOrgPolicy("key-1", { cachePath })
+
+		// Drain the background refresh launched by the cache hit above.
+		await vi.waitFor(() => expect(mockedFetchOrgPolicy.mock.calls.length).toBeGreaterThanOrEqual(2))
 
 		expect(getOrgPolicy()).toEqual({ maxPermissionMode: "PLAN" })
 		expect(readCacheFile(cachePath).policy).toEqual({ maxPermissionMode: "PLAN" })
-
-		// The cache-miss path above is followed by a background refresh (the
-		// cache now matches); drain it so it cannot leak into the next test.
-		await vi.waitFor(() => expect(mockedFetchOrgPolicy.mock.calls.length).toBeGreaterThanOrEqual(2))
 	})
 
-	it("does nothing without an API key", async () => {
+	it("clears the holder without an API key but keeps the cache file warm", async () => {
 		const cachePath = cachePathFor({})
 		resolveWithPolicy("org-1", { maxPermissionMode: "PLAN" })
-		await initOrgPolicy("key-1", { cachePath, fetch: fakeFetch() })
+		await initOrgPolicy("key-1", { cachePath })
 
 		const callsBefore = mockedFetchOrgPolicy.mock.calls.length
-		await initOrgPolicy("", { cachePath, fetch: fakeFetch() })
+		await initOrgPolicy("", { cachePath })
 
 		expect(mockedFetchOrgPolicy.mock.calls.length).toBe(callsBefore)
 		expect(getOrgPolicy()).toBeUndefined()
-		expect(() => readCacheFile(cachePath)).toThrow()
+		// The cache survives so the next keyed run starts warm.
+		expect(readCacheFile(cachePath).policy).toEqual({ maxPermissionMode: "PLAN" })
 	})
 })
 
@@ -155,7 +162,7 @@ describe("cache file cleanup", () => {
 		const cachePath = join(dir, "org-policy.json")
 		resolveWithPolicy("org-1", undefined)
 
-		await expect(initOrgPolicy("key-1", { cachePath, fetch: fakeFetch() })).resolves.toBeUndefined()
+		await expect(initOrgPolicy("key-1", { cachePath })).resolves.toBeUndefined()
 		expect(getOrgPolicy()).toBeUndefined()
 
 		rmSync(dir, { recursive: true, force: true })
