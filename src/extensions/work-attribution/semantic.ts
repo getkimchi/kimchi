@@ -25,6 +25,7 @@ import {
 	type WorkAccountSnapshot,
 	workRepository,
 } from "./scope.js"
+import { object } from "./summary.js"
 
 /** Matching stops rather than compare a partial history; the input simply stays unresolved. */
 export class WorkMatchingLimit extends Error {}
@@ -325,15 +326,7 @@ export async function classifyWorkIntent(
 					.map((part) => part.text)
 					.join(""),
 			)
-			if (
-				value &&
-				typeof value === "object" &&
-				!Array.isArray(value) &&
-				Object.keys(value).length === 1 &&
-				"decision" in value &&
-				typeof value.decision === "string"
-			)
-				return value.decision
+			if (object(value) && Object.keys(value).length === 1 && typeof value.decision === "string") return value.decision
 		}
 		if (input.current) {
 			const decision = await ask({ ...input, candidates: [] }, WORK_CURRENT_PROMPT)

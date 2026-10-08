@@ -56,6 +56,7 @@ import {
 import {
 	flushWorkSummaries,
 	markNewWork,
+	object,
 	readWorkRecords,
 	recoverWorkSummaries,
 	updateWorkSummary,
@@ -68,15 +69,11 @@ export interface WorkSegment {
 }
 export function isWorkSegment(value: unknown): value is WorkSegment {
 	return (
-		!!value &&
-		typeof value === "object" &&
-		"id" in value &&
+		object(value) &&
 		typeof value.id === "string" &&
 		!!value.id &&
-		"reason" in value &&
 		typeof value.reason === "string" &&
 		!!value.reason &&
-		"attribution" in value &&
 		(value.attribution === "explicit" ||
 			value.attribution === "inferred" ||
 			value.attribution === "session" ||
@@ -259,9 +256,7 @@ function hasWorkOutput(ctx: ExtensionContext, workId: string): boolean {
 		if (
 			entry.type === "custom" &&
 			entry.customType === WORK_IDENTITY_ENTRY &&
-			typeof entry.data === "object" &&
-			entry.data !== null &&
-			"workId" in entry.data &&
+			object(entry.data) &&
 			isWorkId(entry.data.workId) &&
 			entry.data.workId !== workId
 		)
@@ -394,9 +389,7 @@ export function createWorkAttributionExtension(
 				if (
 					entry.type === "custom" &&
 					entry.customType === WORK_IDENTITY_ENTRY &&
-					typeof entry.data === "object" &&
-					entry.data !== null &&
-					"workId" in entry.data &&
+					object(entry.data) &&
 					isWorkId(entry.data.workId)
 				) {
 					copiedWorkId = entry.data.workId
@@ -597,9 +590,6 @@ export function createWorkAttributionExtension(
 					!unchanged() ||
 					!workMatchingEnabled() ||
 					!intents.account.isCurrent() ||
-					ctx.model?.provider !== model.provider ||
-					ctx.model?.id !== model.id ||
-					ctx.model?.baseUrl !== model.baseUrl ||
 					(decision.decision === "continue" && !eligible())
 				)
 					return

@@ -1,10 +1,10 @@
-import { randomUUID } from "node:crypto"
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
-import { mkdir, open, readFile, rename, rm } from "node:fs/promises"
+import { mkdir, readFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { lock } from "proper-lockfile"
+import { writeFileDurably } from "../../config/json.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { mergePullRequestLinks } from "../pull-request-status/links.js"
 import { debugWorkAttribution } from "./diagnostics.js"
@@ -50,7 +50,7 @@ const newWork = new Set<string>()
 function logDebug(error: unknown): void {
 	debugWorkAttribution("Work summary unavailable:", error)
 }
-function object(value: unknown): value is Record<string, unknown> {
+export function object(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 function entry(value: unknown, fields: string[]): value is SummaryEntry {
@@ -287,21 +287,8 @@ async function merge(summary: WorkSummary, records: WorkRecord[]): Promise<void>
 	summary.fileTransitions = [...transitions.values()]
 	summary.continuations = [...continuations.values()]
 }
-async function publish(directory: string, summary: WorkSummary, assertLease: () => void): Promise<void> {
-	const temporary = join(directory, `.work-${randomUUID()}.tmp`)
-	try {
-		const file = await open(temporary, "wx", 0o600)
-		try {
-			await file.writeFile(`${JSON.stringify(summary, null, 2)}\n`)
-			await file.sync()
-		} finally {
-			await file.close()
-		}
-		assertLease()
-		await rename(temporary, join(directory, "work.json"))
-	} finally {
-		await rm(temporary, { force: true })
-	}
+function publish(directory: string, summary: WorkSummary, assertLease: () => void): Promise<void> {
+	return writeFileDurably(join(directory, "work.json"), `${JSON.stringify(summary, null, 2)}\n`, assertLease)
 }
 async function update(
 	agentDir: string,

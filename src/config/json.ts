@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto"
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
-import { dirname, resolve } from "node:path"
+import { open, rename, rm } from "node:fs/promises"
+import { basename, dirname, join, resolve } from "node:path"
 
 /**
  * The `.jsonc` sibling tried when a `.json` path is absent. Single source of
@@ -173,6 +175,27 @@ export async function writeJsonAsync(path: string, data: unknown): Promise<void>
 			reject(err)
 		}
 	})
+}
+
+/**
+ * Crash-safe replacement: syncs a private temporary file, lets the caller confirm
+ * it still owns the write, then renames it over `path`.
+ */
+export async function writeFileDurably(path: string, data: string, beforeRename = () => {}): Promise<void> {
+	const temporary = join(dirname(path), `.${basename(path)}-${randomUUID()}.tmp`)
+	try {
+		const file = await open(temporary, "wx", 0o600)
+		try {
+			await file.writeFile(data)
+			await file.sync()
+		} finally {
+			await file.close()
+		}
+		beforeRename()
+		await rename(temporary, path)
+	} finally {
+		await rm(temporary, { force: true })
+	}
 }
 
 /** Atomic raw write, used by the OpenClaw .env writer. */

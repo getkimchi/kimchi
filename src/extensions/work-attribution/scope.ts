@@ -8,6 +8,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations.js"
 import { loadConfig, resolveEndpoints } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
+import { object } from "./summary.js"
 
 export interface WorkAccount {
 	apiUrl: string
@@ -46,15 +47,7 @@ export function sameWorkScope(left: WorkScope, right: WorkScope): boolean {
 }
 
 export function isWorkScope(value: unknown): value is WorkScope {
-	return (
-		!!value &&
-		typeof value === "object" &&
-		"account" in value &&
-		isWorkAccount(value.account) &&
-		"repository" in value &&
-		typeof value.repository === "string" &&
-		value.repository.length > 0
-	)
+	return object(value) && isWorkAccount(value.account) && typeof value.repository === "string" && !!value.repository
 }
 
 export async function captureWorkScope(cwd: string): Promise<WorkScopeSnapshot | undefined> {
@@ -108,16 +101,7 @@ export function saveNewWorkScope(workId: string, scope: WorkScope): void {
 let cached: { key: string; apiUrl: string; expiresAt: number; identity: Promise<VerifyApiKeyResponse> } | undefined
 
 export function isWorkAccount(value: unknown): value is WorkAccount {
-	return (
-		!!value &&
-		typeof value === "object" &&
-		"apiUrl" in value &&
-		typeof value.apiUrl === "string" &&
-		"organizationId" in value &&
-		isWorkId(value.organizationId) &&
-		"userId" in value &&
-		isWorkId(value.userId)
-	)
+	return object(value) && typeof value.apiUrl === "string" && isWorkId(value.organizationId) && isWorkId(value.userId)
 }
 
 export function sameWorkAccount(left: WorkAccount, right: WorkAccount): boolean {
