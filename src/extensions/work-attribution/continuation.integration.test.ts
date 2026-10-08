@@ -26,6 +26,7 @@ import { calculatePullRequestCosts } from "./costs.js"
 import { createTrackedWriteTool } from "./file-transitions.js"
 import { correctWorkLink, reconcileWorkContinuations } from "./links.js"
 import * as scope from "./scope.js"
+import * as summary from "./summary.js"
 import { flushWorkSummaries, readWorkRecords, recoverWorkSummaries, type WorkRecord } from "./summary.js"
 
 let root: string | undefined
@@ -200,6 +201,25 @@ it.each(["interactive", "rpc"] as const)("adopts a pasted plan before the first 
 			sessionId: "pasted-session",
 			source: "pasted-plan",
 			evidence: expect.objectContaining({ path: saved.snapshotPath, contentHash: saved.contentHash }),
+		}),
+	)
+})
+
+it("reads work history once to pin and confirm a plan continuation", async () => {
+	const flow = await recordedPlan("path")
+	const reads = vi.spyOn(summary, "readWorkRecords")
+	await flow.input({ type: "input", source: "interactive", text: flow.text }, flow.implementer)
+	expect(reads).toHaveBeenCalledOnce()
+	expect(getWorkId(flow.implementer)).toBe(flow.workId)
+	const rows = readWorkRecords(flow.agentDir)
+	expect(rows.filter((row) => row.type === "work_link")).toMatchObject([
+		{ requestIds: [flow.research, flow.producer].sort() },
+	])
+	expect(rows).toContainEqual(
+		expect.objectContaining({
+			type: "work",
+			sessionId: "consumer",
+			continuation: expect.objectContaining({ evidence: expect.objectContaining({ requestId: flow.producer }) }),
 		}),
 	)
 })

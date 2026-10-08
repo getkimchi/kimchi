@@ -189,7 +189,7 @@ function indexContinuationRecords(
 }
 
 /** One complete journal snapshot for continuation checks. */
-interface ContinuationHistory {
+export interface ContinuationHistory {
 	records: WorkRecord[]
 	index: ContinuationIndex
 	/** Complete records of types this version does not know, with every UUID each one names. */
@@ -217,7 +217,7 @@ function journals(problems: readonly WorkRecordProblem[]): string {
 }
 
 /** Damage anywhere could hide a revocation, so it blocks every confirmation until the journal is repaired. */
-function readContinuationHistory(agentDir: string, checkBudget?: () => void): ContinuationHistory {
+export function readContinuationHistory(agentDir: string, checkBudget?: () => void): ContinuationHistory {
 	const invalid: WorkRecordProblem[] = []
 	const unknown: ContinuationHistory["unknown"] = []
 	const records = readWorkRecords(agentDir, undefined, checkBudget, (problem) => {
@@ -281,10 +281,10 @@ function continuationProducers(
 }
 
 /** Keep a known producer's identity even if its source journal is unavailable during a later pass. */
-export function pinWorkContinuation(continuation: WorkContinuation): WorkContinuation {
+export function pinWorkContinuation(continuation: WorkContinuation, history?: ContinuationHistory): WorkContinuation {
 	const producers = continuationProducers(
 		continuation,
-		workIndex(readContinuationHistory(getAgentDir()), continuation.workId),
+		workIndex(history ?? readContinuationHistory(getAgentDir()), continuation.workId),
 	)
 	const ids = new Set(producers.map((row) => row.requestId))
 	const requestId = producers[0]?.requestId
@@ -377,12 +377,17 @@ function continuationLink(
 }
 
 /** Confirm the producer's input after a verified continuation; never override an existing correction. */
-export function confirmWorkContinuation(ctx: WorkContext, continuation: WorkContinuation, scope: WorkScope): void {
+export function confirmWorkContinuation(
+	ctx: WorkContext,
+	continuation: WorkContinuation,
+	scope: WorkScope,
+	history?: ContinuationHistory,
+): void {
 	if (getWorkId(ctx) !== continuation.workId) return
 	const link = continuationLink(
 		continuation,
 		scope,
-		workIndex(readContinuationHistory(getAgentDir()), continuation.workId),
+		workIndex(history ?? readContinuationHistory(getAgentDir()), continuation.workId),
 	)
 	if (link) appendWorkRecord(ctx, link, continuation.workId)
 }
