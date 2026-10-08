@@ -7,11 +7,12 @@ import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations
 import { writeFileAtomic, writeFileDurably } from "../../config/json.js"
 import { loadConfig, resolveEndpoints } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
+import { boundedResponse } from "../../utils/http.js"
 import { plainURL } from "../../utils/url.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { calculatePullRequestCosts, decimalNanos, type RequestCostObservation, time, usd } from "./costs.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
-import { object, readWorkRecords, type WorkRecord } from "./summary.js"
+import { object, readWorkRecords, SHA256_HEX, type WorkRecord } from "./summary.js"
 
 export interface BillingSource {
 	apiUrl: string
@@ -150,7 +151,7 @@ function source(value: unknown): value is BillingSource {
 		httpUrl(value.apiUrl) &&
 		httpUrl(value.gatewayUrl) &&
 		typeof value.credentialHash === "string" &&
-		/^[a-f\d]{64}$/.test(value.credentialHash)
+		SHA256_HEX.test(value.credentialHash)
 	)
 }
 function sameSource(left: BillingSource, right: BillingSource): boolean {
@@ -260,17 +261,6 @@ function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
 			item.selector = saved
 		}
 	}
-	const owners = new Map<string, RequestBilling>()
-	for (const item of requests.values()) {
-		if (!item.source || !item.selector) continue
-		const key = JSON.stringify([item.source.apiUrl, item.source.credentialHash, item.selector.tag])
-		const other = owners.get(key)
-		if (other) {
-			other.invalid = true
-			item.invalid = true
-		}
-		owners.set(key, item)
-	}
 	for (const row of records) {
 		if (row.type !== "request_cost") continue
 		const item = requests.get(String(row.requestId))
@@ -351,35 +341,13 @@ function displayedLookup(item: RequestBilling | undefined) {
 }
 
 /** Bounded response body; do not copy server errors, prompts or unrelated fields to the ledger. */
-async function boundedResponse(response: Response, signal: AbortSignal): Promise<Response> {
+async function billingResponse(response: Response, signal: AbortSignal): Promise<Response> {
 	if (!response.ok) {
 		await response.body?.cancel()
 		throw new Error(`Billing API returned HTTP ${response.status}`)
 	}
-	const reader = response.body?.getReader()
-	if (!reader) throw new Error("Billing API returned no body")
-	const chunks: Uint8Array[] = []
-	let size = 0
-	const cancel = () => {
-		void reader.cancel().catch(() => {})
-	}
-	signal.addEventListener("abort", cancel, { once: true })
-	try {
-		for (;;) {
-			signal.throwIfAborted()
-			const { done, value } = await reader.read()
-			signal.throwIfAborted()
-			if (done) break
-			size += value.byteLength
-			if (size > MAX_BODY_BYTES) throw new Error("Billing response exceeded the size limit")
-			chunks.push(value)
-		}
-		return new Response(Buffer.concat(chunks))
-	} finally {
-		signal.removeEventListener("abort", cancel)
-		await reader.cancel().catch(() => {})
-		reader.releaseLock()
-	}
+	if (!response.body) throw new Error("Billing API returned no body")
+	return boundedResponse(response, MAX_BODY_BYTES, signal, "Billing response exceeded the size limit")
 }
 
 /** Keep only safe, typed billing facts. Bad optional metadata does not erase a valid charge. */
@@ -616,7 +584,7 @@ export async function reconcileWorkCosts(
 		if (Date.now() >= deadline) throw new Error(BEFORE_PAGE_TIMEOUT_MESSAGE)
 		if (++calls > MAX_CALLS) throw new Error("Billing lookup request limit exceeded")
 		const response = await fetch(input, { ...init, signal: boundedSignal, redirect: "error" })
-		return boundedResponse(response, boundedSignal)
+		return billingResponse(response, boundedSignal)
 	}
 	const organizations = new Map<string, Promise<VerifyApiKeyResponse>>()
 	const credentials = new Map<string, { key: string; source?: BillingSource }>()

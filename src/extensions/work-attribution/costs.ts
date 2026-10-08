@@ -5,7 +5,7 @@ import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import { isWorkSegment, type WorkSegment } from "../work-attribution.js"
 import { requestWorkLinks } from "./links.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
-import { object, type WorkRecord } from "./summary.js"
+import { object, SHA256_HEX, type WorkRecord } from "./summary.js"
 
 /** Billing rows must already be joined to the exact request and scoped to its billing account. */
 export interface RequestCostObservation {
@@ -224,7 +224,7 @@ function transitionFingerprint(row: WorkRecord): string | undefined {
 		!Number.isSafeInteger(row.cursor.bytes) ||
 		row.cursor.bytes < 0 ||
 		typeof row.cursor.digest !== "string" ||
-		!/^[a-f\d]{64}$/i.test(row.cursor.digest)
+		!SHA256_HEX.test(row.cursor.digest)
 	)
 		return undefined
 	return JSON.stringify([

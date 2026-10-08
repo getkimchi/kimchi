@@ -110,3 +110,35 @@ export async function fetchWithRetry(
 
 	throw lastError
 }
+
+/** Reads at most `limit` bytes, keeping status and headers; abort or an oversized body stops the stream. */
+export async function boundedResponse(
+	response: Response,
+	limit: number,
+	signal: AbortSignal,
+	message: string,
+): Promise<Response> {
+	const reader = response.body?.getReader()
+	if (!reader) return response
+	let abort: (() => void) | undefined
+	const aborted = new Promise<never>((_resolve, reject) => {
+		abort = () => reject(signal.reason)
+		signal.addEventListener("abort", abort, { once: true })
+	})
+	const chunks: Uint8Array[] = []
+	let size = 0
+	try {
+		for (;;) {
+			signal.throwIfAborted()
+			const chunk = await Promise.race([reader.read(), aborted])
+			if (chunk.done) break
+			size += chunk.value.byteLength
+			if (size > limit) throw new Error(message)
+			chunks.push(chunk.value)
+		}
+		return new Response(Buffer.concat(chunks), { status: response.status, headers: response.headers })
+	} finally {
+		if (abort) signal.removeEventListener("abort", abort)
+		void reader.cancel().catch(() => {})
+	}
+}

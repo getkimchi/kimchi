@@ -62,6 +62,8 @@ function logDebug(error: unknown): void {
 export function object(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 }
+/** Hex SHA-256 digests that Kimchi writes for hashes, fingerprints and boundaries. */
+export const SHA256_HEX = /^[a-f\d]{64}$/
 function entry(value: unknown, fields: string[]): value is SummaryEntry {
 	return (
 		object(value) && typeof value.sessionId === "string" && fields.every((field) => typeof value[field] === "string")
