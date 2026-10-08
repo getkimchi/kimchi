@@ -9,7 +9,7 @@ import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import { appendWorkRecord, getWorkId, recordProviderRequest } from "../work-attribution.js"
 import { confirmWorkContinuation, correctWorkLink, requestWorkLinks } from "./links.js"
 import * as scope from "./scope.js"
-import { flushWorkSummaries, readWorkRecords } from "./summary.js"
+import { flushWorkSummaries, readWorkRecords, type WorkRecord } from "./summary.js"
 
 let dir: string
 beforeEach(() => {
@@ -40,6 +40,43 @@ it.each(["session", "inferred"] as const)("confirms the %s input that produced a
 		expect(links.get(request.requestId)).toMatchObject({ workIds: new Set([workId]), unresolved: false })
 	}
 	expect(links.has(unrelated.requestId)).toBe(false)
+})
+
+it.each([
+	["accepts", null],
+	["rejects", "88888888-8888-4888-8888-888888888888"],
+] as const)("%s a link into a work whose other request has %s scope", (outcome, organizationId) => {
+	const source = "11111111-1111-4111-8111-111111111111"
+	const target = "22222222-2222-4222-8222-222222222222"
+	const workScope = createWorkScopeSnapshot(join(dir, ".git")).scope
+	const request = (requestId: string, workId: string, scope: unknown = workScope) =>
+		({ version: 1, type: "request", workId, sessionId: workId, requestId, scope }) as WorkRecord
+	const moved = randomUUID()
+	const links = requestWorkLinks([
+		request(moved, source),
+		// A new work's first input stays unscoped when its account check was unavailable.
+		request(
+			randomUUID(),
+			target,
+			organizationId && { ...workScope, account: { ...workScope.account, organizationId } },
+		),
+		request(randomUUID(), target),
+		{
+			version: 1,
+			type: "work_link",
+			workId: target,
+			sessionId: target,
+			linkId: randomUUID(),
+			revision: 1,
+			sourceWorkId: source,
+			targetWorkId: target,
+			requestIds: [moved],
+			scope: workScope,
+			status: "active",
+			evidence: { source: "work-command" },
+		} as WorkRecord,
+	])
+	expect(links.get(moved)).toMatchObject({ workIds: new Set([target]), unresolved: outcome === "rejects" })
 })
 
 it.each([

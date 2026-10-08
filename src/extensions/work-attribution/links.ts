@@ -95,8 +95,9 @@ export function requestWorkLinks(records: readonly WorkRecord[]): Map<string, Re
 					selectedIds.includes(evidence.requestId) &&
 					"segmentId" in evidence &&
 					isWorkId(evidence.segmentId))) &&
-			targetRequests.length > 0 &&
-			targetRequests.every((row) => isWorkScope(row.scope) && sameWorkScope(row.scope, scope))
+			// Requests before a new work's delayed first scope stay unscoped; only another scope conflicts.
+			targetRequests.some((row) => isWorkScope(row.scope)) &&
+			targetRequests.every((row) => !isWorkScope(row.scope) || sameWorkScope(row.scope, scope))
 		for (const requestId of ids) {
 			const value = result.get(requestId) ?? { workIds: new Set(), linkIds: new Set(), unresolved: false }
 			for (const row of valid ? latest : rows)

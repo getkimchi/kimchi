@@ -215,7 +215,8 @@ it("keeps the existing work and request available when private metadata is damag
 	await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(request, ctx)
 	expect(getWorkId(ctx)).toBe(current)
 	expect(classifyWorkIntent).not.toHaveBeenCalled()
-	expect(ctx.ui.notify).toHaveBeenCalledWith("Work attribution unavailable: Invalid local work intent", "warning")
+	// Optional matching failures stay in the debug log, so damaged metadata cannot warn on every prompt.
+	expect(ctx.ui.notify).not.toHaveBeenCalled()
 	expect(readWorkRecords(join(root, "agent"))).toContainEqual(
 		expect.objectContaining({ type: "request", workId: current, requestId: request.headers["X-Request-Id"] }),
 	)

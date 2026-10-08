@@ -479,6 +479,8 @@ export function createWorkAttributionExtension(
 			const generation = ++inputGeneration
 			semanticAbort?.abort()
 			if (event.source === "extension") return
+			// Optional model matching never interrupts the user; its failures leave the input unresolved.
+			let matching = false
 			try {
 				bind(ctx)
 				const key = workLedgerPath(ctx)
@@ -575,6 +577,7 @@ export function createWorkAttributionExtension(
 				}
 				// Without a verified account and repository, matching stays unresolved.
 				if (!model || !workMatchingEnabled() || !captured) return
+				matching = true
 				const intents = await loadWorkIntents(ctx.cwd, current, event.text, eligible())
 				if (!unchanged()) return
 				if (!intents.account?.isCurrent()) {
@@ -619,7 +622,10 @@ export function createWorkAttributionExtension(
 					account: intents.account.account,
 				}
 				if (workId !== current) {
-					if (decision.decision === "new") newWorksToScope.set(workId, credential)
+					if (decision.decision === "new") {
+						newWorksToScope.set(workId, credential)
+						markNewWork(workId)
+					}
 					setWorkId(ctx, workId, pi, { source: "semantic", evidence })
 					notifyWorkChanged()
 					notify(ctx, `Work matching ${decision.decision === "new" ? "started new" : "continued"} work: ${workId}`)
@@ -631,7 +637,7 @@ export function createWorkAttributionExtension(
 				)
 				await rememberWorkIntent(ctx.cwd, workId, event.text, intents.repository, intents.account)
 			} catch (error) {
-				if (error instanceof WorkMatchingLimit) debugWorkAttribution("Work matching skipped:", error)
+				if (matching || error instanceof WorkMatchingLimit) debugWorkAttribution("Work matching skipped:", error)
 				else warnWorkAttribution(ctx, error)
 			}
 		}

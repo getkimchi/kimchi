@@ -13,6 +13,7 @@ import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import { createWorkAttributionExtension, getWorkId, recordProviderRequest } from "../work-attribution.js"
+import * as scope from "./scope.js"
 import { loadWorkIntents, rememberWorkIntent, workIntentPath } from "./semantic.js"
 import { flushWorkSummaries, readWorkRecords } from "./summary.js"
 
@@ -161,6 +162,20 @@ it("starts separate work when the account changes before a new work's first veri
 	expect(existsSync(join(root, "agent", "work", first.workId, "scope.json"))).toBe(false)
 	expect(readWorkRecords(join(root, "agent")).find((row) => row.requestId === next.requestId)?.scope).toMatchObject({
 		account: { organizationId: CURRENT },
+	})
+})
+
+it("keeps a Git failure during optional matching off the screen and the input unresolved", async () => {
+	vi.spyOn(scope, "workRepository").mockRejectedValue(new Error("Command failed: git rev-parse (timed out)"))
+	const ctx = createContext({ cwd, model: createModel("chat", "selected") })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	await api.getHandler<InputEvent>("input")({ type: "input", source: "interactive", text: "Add a CSV export" }, ctx)
+	expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("git rev-parse"), "warning")
+	const { requestId } = recordProviderRequest(ctx)
+	expect(readWorkRecords(join(root, "agent")).find((row) => row.requestId === requestId)?.segment).toMatchObject({
+		attribution: "unknown",
+		reason: "matching-unresolved",
 	})
 })
 
