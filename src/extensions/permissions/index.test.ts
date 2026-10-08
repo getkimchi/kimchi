@@ -553,6 +553,22 @@ describe("permissions plan-mode tool visibility", () => {
 		})
 	})
 
+	it("plan-mode bash block states the session state and tells the model not to retry", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const result = await harness.fire(
+			"tool_call",
+			{ ...createMockEvent(), input: { command: "echo x > out.txt" } },
+			createMockContext([]),
+		)
+
+		expect(result).toEqual(expect.objectContaining({ block: true }))
+		const reason = (result as { reason?: string }).reason ?? ""
+		expect(reason).toContain("Blocked: the session is in plan mode (read-only)")
+		expect(reason).toContain("Do not retry")
+	})
+
 	it("hides and blocks propose_ferment_scoping under explicit --plan", async () => {
 		const harness = createPermissionsHarness(["read", "bash", FERMENT_TOOLS.PROPOSE_SCOPING], { plan: true })
 
@@ -566,7 +582,7 @@ describe("permissions plan-mode tool visibility", () => {
 		)
 
 		expect(result).toEqual(expect.objectContaining({ block: true }))
-		expect(JSON.stringify(result)).toContain("Plan mode")
+		expect(JSON.stringify(result)).toContain("Blocked: the session is in plan mode")
 	})
 
 	it("keeps todo tools visible and allowed under explicit --plan", async () => {
