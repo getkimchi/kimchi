@@ -426,25 +426,48 @@ function recordKey(type: WorkRecord["type"], row: SummaryEntry): string {
 			return JSON.stringify(row.transitionId)
 	}
 }
-async function merge(summary: WorkSummary, records: WorkRecord[]): Promise<void> {
-	const sessions = new Set(summary.sessions)
-	const links = new Map(summary.workLinks.map((row) => [recordKey("work_link", row), row]))
-	const requests = new Map(summary.requests.map((row) => [JSON.stringify(row.requestId), row]))
-	const plans = new Map(summary.plans.map((row) => [planKey(row), row]))
-	const commits = new Map(summary.commits.map((row) => [commitKey(row), row]))
-	const transitions = new Map(summary.fileTransitions.map((row) => [JSON.stringify(row.transitionId), row]))
-	const observations = new Map(summary.fileObservations.map((row) => [JSON.stringify(row.observationId), row]))
-	const continuations = new Map(summary.continuations.map((row) => [continuationKey(row), row]))
+/** Rows by key. A store that reads saved rows on demand can stand in for a Map. */
+interface RowMap {
+	get(key: string): SummaryEntry | undefined
+	has(key: string): boolean
+	set(key: string, row: SummaryEntry): unknown
+}
+/** One work's rows while records merge: sessions in first-seen order, each collection by row key. */
+interface SummaryRows<T extends RowMap = RowMap> {
+	sessions: Set<string>
+	workLinks: T
+	requests: T
+	plans: T
+	commits: T
+	fileTransitions: T
+	fileObservations: T
+	continuations: T
+}
+function summaryRows(summary: WorkSummary): SummaryRows<Map<string, SummaryEntry>> {
+	return {
+		sessions: new Set(summary.sessions),
+		workLinks: new Map(summary.workLinks.map((row) => [recordKey("work_link", row), row])),
+		requests: new Map(summary.requests.map((row) => [JSON.stringify(row.requestId), row])),
+		plans: new Map(summary.plans.map((row) => [planKey(row), row])),
+		commits: new Map(summary.commits.map((row) => [commitKey(row), row])),
+		fileTransitions: new Map(summary.fileTransitions.map((row) => [JSON.stringify(row.transitionId), row])),
+		fileObservations: new Map(summary.fileObservations.map((row) => [JSON.stringify(row.observationId), row])),
+		continuations: new Map(summary.continuations.map((row) => [continuationKey(row), row])),
+	}
+}
+/** Merge rules for one batch of records, applied row by row. */
+async function merge(summary: SummaryRows, records: WorkRecord[]): Promise<void> {
+	const { sessions, continuations } = summary
 	const entriesByType = {
-		work_link: links,
-		request: requests,
-		request_dispatch: requests,
-		request_response: requests,
-		request_cost: requests,
-		plan: plans,
-		commit: commits,
-		file_transition: transitions,
-		file_observation: observations,
+		work_link: summary.workLinks,
+		request: summary.requests,
+		request_dispatch: summary.requests,
+		request_response: summary.requests,
+		request_cost: summary.requests,
+		plan: summary.plans,
+		commit: summary.commits,
+		file_transition: summary.fileTransitions,
+		file_observation: summary.fileObservations,
 	}
 	for (let index = 0; index < records.length; index++) {
 		if (index % MERGE_BATCH_SIZE === 0) await setImmediate()
@@ -498,14 +521,6 @@ async function merge(summary: WorkSummary, records: WorkRecord[]): Promise<void>
 			if (transitionIds.length) existing.transitionIds = transitionIds
 		} else entries.set(key, item)
 	}
-	summary.sessions = [...sessions]
-	summary.workLinks = [...links.values()]
-	summary.requests = [...requests.values()]
-	summary.plans = [...plans.values()]
-	summary.commits = [...commits.values()]
-	summary.fileTransitions = [...transitions.values()]
-	summary.fileObservations = [...observations.values()]
-	summary.continuations = [...continuations.values()]
 }
 function publish(directory: string, summary: WorkSummary, assertLease: () => void): Promise<void> {
 	return writeFileDurably(join(directory, "work.json"), `${JSON.stringify(summary, null, 2)}\n`, assertLease)
@@ -534,7 +549,19 @@ async function update(
 		continuations: [],
 	}
 	const history = !summary && !complete ? readWorkRecords(agentDir).filter((row) => row.workId === workId) : []
-	await merge(value, history.concat(records))
+	const rows = summaryRows(value)
+	await merge(rows, history.concat(records))
+	value.sessions = [...rows.sessions]
+	for (const collection of [
+		"workLinks",
+		"requests",
+		"plans",
+		"commits",
+		"fileTransitions",
+		"fileObservations",
+		"continuations",
+	] as const)
+		value[collection] = [...rows[collection].values()]
 	if (published === JSON.stringify(value)) return
 	assertLease()
 	await publish(directory, value, assertLease)
