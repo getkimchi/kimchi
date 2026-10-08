@@ -111,8 +111,10 @@ const SLOW_REFRESH_MS = 60 * 60_000
 
 interface BillingPoll {
 	checkedAt: number
-	/** Ignore scheduling state if its source observation has changed or disappeared. */
+	/** Ignore scheduling state if its source observation has changed or disappeared; empty before any. */
 	lookupAt: string
+	/** The last refresh failed before any billing page arrived, so it added no evidence. */
+	failure?: { checkedAt: string; reason: string }
 }
 
 function readBillingPolls(path: string): Record<string, BillingPoll> {
@@ -127,11 +129,28 @@ function readBillingPolls(path: string): Record<string, BillingPoll> {
 					Number.isFinite(entry.checkedAt) &&
 					entry.checkedAt <= Date.now() &&
 					typeof entry.lookupAt === "string"
-				)
-					polls[id] = { checkedAt: entry.checkedAt, lookupAt: entry.lookupAt }
+				) {
+					const { failure } = entry
+					polls[id] = {
+						checkedAt: entry.checkedAt,
+						lookupAt: entry.lookupAt,
+						...(object(failure) &&
+						typeof failure.checkedAt === "string" &&
+						Number.isFinite(Date.parse(failure.checkedAt)) &&
+						typeof failure.reason === "string"
+							? { failure: { checkedAt: failure.checkedAt, reason: failure.reason } }
+							: {}),
+					}
+				}
 			}
 	} catch {}
 	return polls
+}
+
+/** Scheduling state applies only to the journal observation it was written for. */
+function currentPoll(polls: Record<string, BillingPoll>, item: RequestBilling): BillingPoll | undefined {
+	const poll = polls[item.requestId]
+	return poll?.lookupAt === (item.lookup?.checkedAt ?? "") ? poll : undefined
 }
 
 function costFingerprint(rows: unknown[], lookup: BillingLookup): string {
@@ -328,7 +347,7 @@ function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
 	}
 	return requests
 }
-function displayedLookup(item: RequestBilling | undefined) {
+function displayedLookup(item: RequestBilling | undefined, poll: BillingPoll | undefined) {
 	if (item?.invalid) return { status: "invalid", reason: "Conflicting billing evidence" }
 	if (!item?.source || !item.selector)
 		return {
@@ -336,6 +355,15 @@ function displayedLookup(item: RequestBilling | undefined) {
 			reason: item?.tagSkipped
 				? `Billing tag skipped: ${item.tagSkipped}`
 				: "No captured billing source or request selector",
+		}
+	// A refresh without any billing page leaves the journal unchanged; still show that it failed.
+	if (poll?.failure)
+		return {
+			status: "unavailable",
+			checkedAt: poll.failure.checkedAt,
+			...(item.organizationId ? { organizationId: item.organizationId } : {}),
+			...(item.userId ? { userId: item.userId } : {}),
+			reason: poll.failure.reason,
 		}
 	return item.lookup ?? { status: "pending" }
 }
@@ -441,6 +469,7 @@ async function lookupRows(
 	apiKey: string,
 	fetchBounded: typeof fetch,
 	rows: BillingRow[],
+	onPage: () => void,
 ): Promise<void> {
 	let cursor = ""
 	const cursors = new Set<string>()
@@ -465,6 +494,8 @@ async function lookupRows(
 		const body: unknown = await response.json()
 		if (!object(body) || !Array.isArray(body.items) || body.items.length > PAGE_SIZE)
 			throw new Error("Invalid billing response")
+		// From here on a failure concerns billing evidence: a page has arrived.
+		onPage()
 		if (body.totalCount !== undefined) {
 			if (typeof body.totalCount !== "number" || !Number.isSafeInteger(body.totalCount) || body.totalCount < 0)
 				throw new Error("Invalid billing result count")
@@ -536,7 +567,12 @@ export function readWorkCostReport(agentDir: string, records = readWorkRecords(a
 	return { records, requests, report }
 }
 
-async function publishReports(agentDir: string, assertLease: () => void, snapshot?: WorkRecord[]): Promise<void> {
+async function publishReports(
+	agentDir: string,
+	assertLease: () => void,
+	polls: Record<string, BillingPoll>,
+	snapshot?: WorkRecord[],
+): Promise<void> {
 	const { records, requests, report } = readWorkCostReport(agentDir, snapshot)
 	const workIds = new Set(records.map((row) => row.workId))
 	for (const workId of workIds) {
@@ -549,7 +585,10 @@ async function publishReports(agentDir: string, assertLease: () => void, snapsho
 			pullRequests: report.pullRequests.filter((row) => row.workIds.includes(workId)),
 			requests: report.requests
 				.filter((row) => row.workIds.includes(workId) || row.linkedWorkIds?.includes(workId))
-				.map((row) => ({ ...row, billingLookup: displayedLookup(requests.get(row.requestId)) })),
+				.map((row) => {
+					const item = requests.get(row.requestId)
+					return { ...row, billingLookup: displayedLookup(item, item && currentPoll(polls, item)) }
+				}),
 		}
 		const content = `${JSON.stringify(value, null, 2)}\n`
 		try {
@@ -589,12 +628,8 @@ export async function reconcileWorkCosts(
 	const organizations = new Map<string, Promise<VerifyApiKeyResponse>>()
 	const credentials = new Map<string, { key: string; source?: BillingSource }>()
 	try {
-		const checkedAt = (item: RequestBilling) => {
-			const poll = polls[item.requestId]
-			return poll && item.lookup && poll.lookupAt === item.lookup.checkedAt
-				? poll.checkedAt
-				: Date.parse(item.lookup?.checkedAt ?? "")
-		}
+		const checkedAt = (item: RequestBilling) =>
+			currentPoll(polls, item)?.checkedAt ?? Date.parse(item.lookup?.checkedAt ?? "")
 		const ordered = [...requests.values()].sort((left, right) => (checkedAt(left) || 0) - (checkedAt(right) || 0))
 		for (const item of ordered) {
 			signal.throwIfAborted()
@@ -604,19 +639,25 @@ export async function reconcileWorkCosts(
 			// Without an exact identity there is no network work to retry. The report derives
 			// this state from source records instead of appending the same event every tick.
 			if (item.invalid || !item.source || !item.selector) continue
-			const startedAt = Date.parse(item.selector.endTime) - 32 * DAY_MS
+			const endsAt = Date.parse(item.selector.endTime)
+			// The window closes only once a lookup at or after its end reached the billing API.
+			if (Date.parse(item.substantiveLookup?.checkedAt ?? "") >= endsAt) continue
 			const lastCheck = checkedAt(item)
-			// One final lookup may catch up after a closed client; subsequent launches reuse it.
-			if (lastCheck >= startedAt + 32 * DAY_MS) continue
-			const age = Date.now() - startedAt
+			const age = Date.now() - (endsAt - 32 * DAY_MS)
+			// One final lookup may catch up after a closed client; a final lookup without any
+			// billing page is retried on the slow schedule.
 			const refresh =
-				item.lookup?.status === "no-charge"
-					? SLOW_REFRESH_MS
-					: item.lookup?.status === "priced"
-						? PRICED_REFRESH_MS
-						: item.lookup?.status === "pending" && age >= DAY_MS
+				Date.now() >= endsAt
+					? lastCheck < endsAt
+						? 0
+						: SLOW_REFRESH_MS
+					: item.lookup?.status === "no-charge"
+						? SLOW_REFRESH_MS
+						: item.lookup?.status === "priced"
 							? PRICED_REFRESH_MS
-							: PENDING_REFRESH_MS
+							: item.lookup?.status === "pending" && age >= DAY_MS
+								? PRICED_REFRESH_MS
+								: PENDING_REFRESH_MS
 			if (Date.now() - lastCheck < refresh) continue
 			const lookup: BillingLookup = {
 				status: "pending",
@@ -625,6 +666,7 @@ export async function reconcileWorkCosts(
 				userId: item.userId,
 			}
 			const rows: BillingRow[] = []
+			let pageReceived = false
 			try {
 				const cwd = typeof item.request.cwd === "string" ? item.request.cwd : undefined
 				const credentialKey = JSON.stringify([cwd, item.source.gatewayUrl])
@@ -683,6 +725,9 @@ export async function reconcileWorkCosts(
 							key,
 							fetchBounded,
 							rows,
+							() => {
+								pageReceived = true
+							},
 						)
 						lookup.status = rows.length && rows.every((row) => row.costUsd !== null) ? "priced" : "pending"
 						if (!rows.length && !item.observations.length && age >= DAY_MS && lookup.userId) lookup.status = "no-charge"
@@ -696,10 +741,23 @@ export async function reconcileWorkCosts(
 					error instanceof Error && /^(Billing |Invalid billing)/.test(error.message)
 						? error.message
 						: "Billing lookup unavailable"
+				// Offline, DNS/TLS, key checks, HTTP errors and deadlines before the first page add
+				// no evidence: keep the last confirmed result and only remember the failure.
+				if (!pageReceived) {
+					polls[item.requestId] = {
+						checkedAt: Date.parse(lookup.checkedAt),
+						lookupAt: item.lookup?.checkedAt ?? "",
+						failure: { checkedAt: lookup.checkedAt, reason: lookup.reason },
+					}
+					continue
+				}
 			}
 			assertLease()
 			const previousLookup = item.lookup
+			// The journal must prove that the window closed, even when the final result is unchanged.
+			const final = Date.parse(lookup.checkedAt) >= endsAt
 			const unchanged =
+				!final &&
 				previousLookup &&
 				Array.isArray(item.lastCost?.billingRows) &&
 				costFingerprint(rows, lookup) === costFingerprint(item.lastCost.billingRows, previousLookup)
@@ -709,7 +767,8 @@ export async function reconcileWorkCosts(
 			}
 			if (
 				unchanged ||
-				(lookup.status === "account-changed" &&
+				(!final &&
+					lookup.status === "account-changed" &&
 					item.lookup?.status === lookup.status &&
 					item.lookup.reason === lookup.reason)
 			)
@@ -744,6 +803,7 @@ export async function reconcileWorkCosts(
 				signal.throwIfAborted()
 				assertLease()
 			},
+			polls,
 			changed ? undefined : records,
 		)
 	} finally {
@@ -810,6 +870,17 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 			lines.push(
 				`Prices: ${priced}/${requests.length} requests priced, $${known} USD${priced < requests.length ? " known so far" : ""}. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
 			)
+			const failed = requests.flatMap((row) =>
+				object(row.billingLookup) && row.billingLookup.status === "unavailable" ? [row.billingLookup] : [],
+			)
+			if (failed.length) {
+				const latest = failed.reduce((left, right) =>
+					String(right.checkedAt ?? "") > String(left.checkedAt ?? "") ? right : left,
+				)
+				lines.push(
+					`Last billing refresh failed for ${failed.length} request${failed.length === 1 ? "" : "s"}${typeof latest.reason === "string" ? `: ${latest.reason}` : ""}.`,
+				)
+			}
 		}
 		return [...lines, `Cost details: ${join(agentDir, "work", workId, "costs.json")}`]
 	} catch {

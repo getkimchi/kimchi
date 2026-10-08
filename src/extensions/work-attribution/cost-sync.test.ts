@@ -533,12 +533,16 @@ describe("automatic exact work cost lookup", () => {
 		await sync()
 		await flushWorkSummaries()
 		const request = JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8")).requests[0]
+		// A failed key check returns no billing page: the journal keeps the confirmed price.
 		expect(request.billingLookup).toMatchObject({
 			organizationId: ORG,
 			userId: PROMPT,
-			status: failure === "changed-key" ? "account-changed" : "unavailable",
+			status: failure === "changed-key" ? "account-changed" : "priced",
 		})
-		expect(report(workId).pullRequests[0]).toMatchObject({ totalCostUsd: null, knownCostUsd: "0.100000000" })
+		expect(report(workId).pullRequests[0]).toMatchObject({
+			totalCostUsd: failure === "changed-key" ? null : "0.100000000",
+			knownCostUsd: "0.100000000",
+		})
 		expect(fetchMock).toHaveBeenCalledTimes(failure === "changed-key" ? 2 : 3)
 	})
 	it("pins the gateway's X-API-Key account when both auth headers are present", () => {
@@ -744,14 +748,30 @@ describe("automatic exact work cost lookup", () => {
 			before,
 		)
 	})
-	it("bounds processed requests when all share one cached failed account verification", async () => {
-		for (let i = 0; i < 35; i++) tagged(`session-${i}`)
+	it("keeps one cached failed account verification out of every journal and retries on schedule", async () => {
+		const works = Array.from({ length: 35 }, (_, i) => tagged(`session-${i}`).workId)
 		fetchMock.mockImplementation(async () => new Response(null, { status: 503 }))
 		await sync()
 		expect(fetchMock).toHaveBeenCalledOnce()
-		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toHaveLength(30)
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual([])
+		for (const workId of works)
+			expect(report(workId).requests[0].billingLookup).toMatchObject({
+				status: "unavailable",
+				reason: "Billing API returned HTTP 503",
+			})
+		await sync()
+		expect(fetchMock).toHaveBeenCalledOnce()
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 30_000)
 		await sync()
 		expect(fetchMock).toHaveBeenCalledTimes(2)
+	})
+	it("bounds appended rows per pass and visits the remaining requests on the next pass", async () => {
+		for (let i = 0; i < 35; i++) tagged(`session-${i}`)
+		currentKey = "test-only-new-account"
+		await sync()
+		expect(fetchMock).not.toHaveBeenCalled()
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toHaveLength(30)
+		await sync()
 		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toHaveLength(35)
 	})
 	it("enforces the wall deadline before another HTTP call even before the timer fires", async () => {
@@ -765,7 +785,8 @@ describe("automatic exact work cost lookup", () => {
 		})
 		await sync()
 		expect(fetchMock).toHaveBeenCalledOnce()
-		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toHaveLength(1)
+		// The key check succeeded, but no billing page arrived: nothing is journaled.
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual([])
 		expect(report(workId).requests[0]).toMatchObject({
 			priceStatus: "missing",
 			totalCostUsd: null,
@@ -788,33 +809,33 @@ describe("automatic exact work cost lookup", () => {
 		})
 		await sync()
 		const observations = readWorkRecords(dir).filter((row) => row.type === "request_cost")
-		expect(observations).toHaveLength(2)
-		expect(observations[0]).toEqual(original)
-		expect(observations[1]).toMatchObject({
-			billingRows: [],
-			billingLookup: {
-				status: "unavailable",
-				checkedAt: refreshStarted,
-				reason: "Billing lookup time limit exceeded before receiving any billing page",
-			},
-		})
+		expect(observations).toEqual([original])
 		expect(report(workId).requests[0]).toMatchObject({
 			priceStatus: "priced",
 			totalCostUsd: "0.123456789",
-			billingLookup: observations[1].billingLookup,
+			billingLookup: {
+				status: "unavailable",
+				checkedAt: refreshStarted,
+				organizationId: ORG,
+				userId: PROMPT,
+				reason: "Billing lookup time limit exceeded before receiving any billing page",
+			},
 		})
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
+		expect(workCostDetails(dir, workId)).toContain(
+			"Last billing refresh failed for 1 request: Billing lookup time limit exceeded before receiving any billing page.",
+		)
 		fetchMock.mockClear()
 		await sync()
 		expect(fetchMock).not.toHaveBeenCalled()
 		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual(observations)
-		now += 30_000
+		// No evidence arrived, so the confirmed price keeps its own refresh schedule.
+		now += 5 * 60_000
 		await sync()
 		expect(fetchMock).toHaveBeenCalledTimes(2)
-		expect(report(workId).requests[0].billingLookup).toMatchObject({
-			status: "priced",
-			checkedAt: new Date(now).toISOString(),
-		})
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual(observations)
+		expect(report(workId).requests[0].billingLookup).toEqual(original?.billingLookup)
+		expect(workCostDetails(dir, workId).join("\n")).not.toContain("Last billing refresh failed")
 	})
 	it("keeps a legacy timeout unknown through a new empty timeout until a complete lookup succeeds", async () => {
 		const { workId, requestId, ctx, source, selector } = tagged()
@@ -925,8 +946,47 @@ describe("automatic exact work cost lookup", () => {
 		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
 	})
 	it.each([
-		"http",
-		"auth",
+		["offline", new TypeError("fetch failed"), "Billing lookup unavailable"],
+		[
+			"DNS",
+			new TypeError("fetch failed", {
+				cause: Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" }),
+			}),
+			"Billing lookup unavailable",
+		],
+		[
+			"TLS",
+			new TypeError("fetch failed", { cause: Object.assign(new Error("certificate"), { code: "CERT_HAS_EXPIRED" }) }),
+			"Billing lookup unavailable",
+		],
+		["key check", new Response(null, { status: 401 }), "Billing API returned HTTP 401"],
+		["rate limit", new Response(null, { status: 429 }), "Billing API returned HTTP 429"],
+		["server error", new Response(null, { status: 503 }), "Billing API returned HTTP 503"],
+		["non-JSON page", new Response("<html>proxy</html>"), "Billing lookup unavailable"],
+	] as const)("keeps a confirmed price without a journal row after a %s failure before the first page", async (kind, failure, reason) => {
+		const { workId } = tagged()
+		await sync()
+		const journal = readWorkRecords(dir)
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6 * 60_000)
+		// A failed key check fails the first call; the others fail the first billing page.
+		const reply = () => (failure instanceof Response ? Promise.resolve(failure) : Promise.reject(failure))
+		if (kind === "offline" || kind === "DNS" || kind === "TLS" || kind === "key check")
+			fetchMock.mockImplementationOnce(reply)
+		else {
+			fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+			fetchMock.mockImplementationOnce(reply)
+		}
+		await sync()
+		expect(readWorkRecords(dir)).toEqual(journal)
+		expect(report(workId).requests[0]).toMatchObject({
+			priceStatus: "priced",
+			totalCostUsd: "0.123456789",
+			billingLookup: { status: "unavailable", reason },
+		})
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
+		expect(workCostDetails(dir, workId)).toContain(`Last billing refresh failed for 1 request: ${reason}.`)
+	})
+	it.each([
 		"account",
 		"owner",
 		"malformed",
@@ -939,7 +999,6 @@ describe("automatic exact work cost lookup", () => {
 		let now = Date.now() + 6 * 60_000
 		vi.spyOn(Date, "now").mockImplementation(() => now)
 		if (failure === "account") currentKey = "changed-account"
-		else if (failure === "auth") fetchMock.mockResolvedValueOnce(new Response(null, { status: 401 }))
 		else {
 			fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
 			const item = {
@@ -947,11 +1006,7 @@ describe("automatic exact work cost lookup", () => {
 				totalPrice: failure === "malformed" ? "NaN" : "0.5",
 				castaiApiKeyOwnerId: failure === "owner" ? ROW : PROMPT,
 			}
-			fetchMock.mockResolvedValueOnce(
-				failure === "http"
-					? new Response(null, { status: 503 })
-					: Response.json({ items: failure === "empty" ? [] : [item] }),
-			)
+			fetchMock.mockResolvedValueOnce(Response.json({ items: failure === "empty" ? [] : [item] }))
 		}
 		await sync()
 		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
@@ -1312,6 +1367,71 @@ describe("billing refresh after the request tag window closes", () => {
 			now += 5 * 60_000 + 1000
 		}
 		expect(costRows()).toHaveLength(1)
+	})
+	it("retries a final check made offline and keeps the confirmed total until it succeeds", async () => {
+		const { workId } = tagged()
+		await sync()
+		const journal = readWorkRecords(dir)
+		// The tag window ends 32 days after the 08:00 dispatch.
+		const end = Date.parse("2026-11-02T08:00:00.000Z")
+		let now = end + 60_000
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		let online = false
+		fetchMock.mockReset()
+		fetchMock.mockImplementation(async (input) => {
+			if (!online) throw new TypeError("fetch failed")
+			return String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: ORG, userId: PROMPT })
+				: Response.json({ items: [{ id: ROW, totalPrice: "0.123456789" }] })
+		})
+		await sync()
+		expect(fetchMock).toHaveBeenCalledOnce()
+		expect(readWorkRecords(dir)).toEqual(journal)
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
+		// A failed final check is retried on the slow schedule, not on every pass.
+		now += 30 * 60_000
+		await sync()
+		expect(fetchMock).toHaveBeenCalledOnce()
+		online = true
+		now += 30 * 60_000
+		await sync()
+		expect(fetchMock).toHaveBeenCalledTimes(3)
+		expect(costRows().at(-1)?.billingLookup).toMatchObject({ status: "priced", checkedAt: new Date(now).toISOString() })
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
+		expect(workCostDetails(dir, workId).join("\n")).not.toContain("Last billing refresh failed")
+		// The journal now proves that the window closed.
+		now += 2 * 24 * 60 * 60_000
+		await sync()
+		expect(fetchMock).toHaveBeenCalledTimes(3)
+		expect(costRows()).toHaveLength(2)
+	})
+	it("keeps an offline period out of the journal for every priced request in the window", async () => {
+		const works = [tagged("first").workId, tagged("second").workId, tagged("third").workId]
+		const bills = new Map<string, string>()
+		let online = true
+		fetchMock.mockImplementation(async (input) => {
+			if (!online) throw new TypeError("fetch failed")
+			const tag = new URL(String(input)).searchParams.get("tags")
+			if (!tag) return Response.json({ organizationId: ORG, userId: PROMPT })
+			const id = bills.get(tag) ?? randomUUID()
+			bills.set(tag, id)
+			return Response.json({ items: [{ id, totalPrice: "0.123456789" }] })
+		})
+		await sync()
+		const journal = readWorkRecords(dir)
+		// The three works contribute to one PR.
+		expect(report(works[0]).pullRequests[0].totalCostUsd).toBe("0.370370367")
+		let now = Date.now()
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		online = false
+		for (let pass = 0; pass < 40; pass++) {
+			if (pass === 20) online = true
+			now += 60_000
+			await sync()
+			for (const workId of works) expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.370370367")
+		}
+		expect(fetchMock.mock.calls.length).toBeGreaterThan(6)
+		expect(readWorkRecords(dir)).toEqual(journal)
 	})
 })
 
