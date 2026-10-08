@@ -138,7 +138,6 @@ describe("isReadOnlyBashCommand", () => {
 		expect(isReadOnlyBashCommand("tac foo.txt")).toBe(true)
 		expect(isReadOnlyBashCommand("nl foo.txt")).toBe(true)
 		expect(isReadOnlyBashCommand("od -c foo.txt")).toBe(true)
-		expect(isReadOnlyBashCommand("xxd foo.bin")).toBe(true)
 		expect(isReadOnlyBashCommand("hexdump -C foo.bin")).toBe(true)
 		expect(isReadOnlyBashCommand("strings foo.bin")).toBe(true)
 	})
@@ -148,9 +147,17 @@ describe("isReadOnlyBashCommand", () => {
 		expect(isReadOnlyBashCommand("env")).toBe(false)
 	})
 
+	// xxd is deliberately excluded: `xxd [infile [outfile]]` writes to a
+	// positional outfile (and `xxd -r` writes arbitrary decoded bytes), which
+	// bypasses the redirect guards. od/hexdump cover hex-dump needs.
+	it("does not allow xxd (writes to a positional outfile)", () => {
+		expect(isReadOnlyBashCommand("xxd foo.bin")).toBe(false)
+		expect(isReadOnlyBashCommand("xxd in.hex out.bin")).toBe(false)
+		expect(isReadOnlyBashCommand("xxd -r payload.hex /tmp/target")).toBe(false)
+	})
+
 	it("still guards redirects with the widened list", () => {
 		expect(isReadOnlyBashCommand("md5 foo.txt > out.txt")).toBe(false)
-		expect(isReadOnlyBashCommand("xxd foo.bin > out.bin")).toBe(false)
 	})
 
 	it("allows cd and directory stack commands", () => {

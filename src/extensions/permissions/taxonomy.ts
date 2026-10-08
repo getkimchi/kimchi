@@ -156,7 +156,6 @@ const READ_ONLY_PROGRAMS = new Set([
 	"tac",
 	"nl",
 	"od",
-	"xxd",
 	"hexdump",
 	"strings",
 ])
