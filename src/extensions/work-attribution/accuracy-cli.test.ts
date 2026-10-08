@@ -10,7 +10,7 @@ import { createContext } from "../__mocks__/context.js"
 import { appendWorkRecord, getWorkId } from "../work-attribution.js"
 import type { AttributionLabel } from "./accuracy.js"
 import { runCli } from "./accuracy-cli.js"
-import { captureBillingSource, reconcileWorkCosts } from "./cost-sync.js"
+import { captureBillingSource, reconcileWorkCosts, requestTagSelector } from "./cost-sync.js"
 import { calculatePullRequestCosts, type RequestCostAllocation } from "./costs.js"
 import { flushWorkSummaries } from "./summary.js"
 
@@ -332,7 +332,7 @@ describe("scoring a saved costs.json", () => {
 				String(input).endsWith("api-keys:verify")
 					? Response.json({ organizationId, userId })
 					: Response.json({
-							items: [{ id: "22222222-2222-4333-8444-555555555555", promptId: userId, totalPrice: "0.123456789" }],
+							items: [{ id: "22222222-2222-4333-8444-555555555555", totalPrice: "0.123456789" }],
 							nextPageCursor: "",
 						}),
 			),
@@ -349,21 +349,24 @@ describe("scoring a saved costs.json", () => {
 	it("certifies a correct costs.json written by the cost reconciler against a matching reference", async () => {
 		const ctx = createContext({ cwd: agentDir, sessionManager: { getSessionId: () => "session" } })
 		const workId = getWorkId(ctx)
+		const requestId = "44444444-2222-4333-8444-555555555555"
+		const dispatchedAt = "2026-10-01T08:00:00.000Z"
 		appendWorkRecord(ctx, {
 			type: "request",
-			requestId: "request",
-			startedAt: "2026-10-01T08:00:00Z",
+			requestId,
+			startedAt: dispatchedAt,
 			scope: { account: { apiUrl: api, organizationId, userId }, repository: join(agentDir, ".git") },
 		})
 		appendWorkRecord(ctx, {
-			type: "request_response",
-			requestId: "request",
+			type: "request_dispatch",
+			requestId,
+			dispatchedAt,
 			billingSource: captureBillingSource(
 				new Headers({ Authorization: "Bearer test-only-key" }),
 				"https://gateway.example/openai/v1/chat/completions",
 				agentDir,
 			),
-			response: { promptId: userId },
+			billingSelector: requestTagSelector(requestId, dispatchedAt),
 		})
 		appendWorkRecord(ctx, {
 			type: "commit",
@@ -393,7 +396,7 @@ describe("scoring a saved costs.json", () => {
 			version: 1,
 			requests: [
 				{
-					requestId: "request",
+					requestId,
 					account: { apiUrl: api, organizationId, userId },
 					costUsd: "0.123456789",
 					expected: { kind: "pull-request", pullRequestId },

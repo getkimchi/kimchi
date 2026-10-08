@@ -123,24 +123,21 @@ function tagged(sessionId = "tagged", requestId: string = randomUUID(), fields: 
 
 describe("automatic exact work cost lookup", () => {
 	it("saves every request contributing to a PR total across works", async () => {
-		const first = tracked("first", "first-request")
-		const second = tracked("second", "second-request", ORG)
+		const first = tagged("first")
+		const second = tagged("second")
 		fetchMock.mockImplementation(async (input) => {
 			const url = new URL(String(input))
 			if (url.pathname.endsWith("api-keys:verify")) return Response.json({ organizationId: ORG, userId: PROMPT })
-			const promptId = url.searchParams.get("promptId")
-			return Response.json({
-				items: [{ id: promptId === PROMPT ? ROW : ORG, promptId, totalPrice: promptId === PROMPT ? "1" : "2" }],
-			})
+			const isFirst = url.searchParams.get("tags") === `kimchi-request:${first.requestId}`
+			return Response.json({ items: [{ id: isFirst ? ROW : ORG, totalPrice: isFirst ? "1" : "2" }] })
 		})
 		await sync()
 		for (const { workId } of [first, second]) {
 			const saved = report(workId)
 			expect(saved.pullRequests[0].totalCostUsd).toBe("3.000000000")
-			expect(saved.requests.map((row: { requestId: string }) => row.requestId)).toEqual([
-				"first-request",
-				"second-request",
-			])
+			expect(saved.requests.map((row: { requestId: string }) => row.requestId)).toEqual(
+				[first.requestId, second.requestId].sort(),
+			)
 		}
 	})
 
@@ -828,7 +825,10 @@ describe("automatic exact work cost lookup", () => {
 		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000)
 		await sync()
 		expect(fetchMock).toHaveBeenCalledTimes(4)
-		expect(report(workId).requests[0].totalCostUsd).toBe("0.123456789")
+		// The saved report also lists connected works' requests on the same PR.
+		expect(report(workId).requests.find((row: { requestId: string }) => row.requestId === requestId).totalCostUsd).toBe(
+			"0.123456789",
+		)
 		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost" && row.requestId !== requestId)).toEqual(
 			before,
 		)
@@ -1979,12 +1979,14 @@ describe("empty billing settlement", () => {
 			.map(([input]) => new URL(String(input)))
 			.filter((url) => url.pathname.endsWith("/llm-requests"))
 		expect(lookups.map((url) => url.searchParams.get("tags"))).toEqual([`kimchi-request:${control.requestId}`])
-		expect(report(untagged.workId).requests[0]).toMatchObject({
+		const saved = (workId: string, id: string) =>
+			report(workId).requests.find((row: { requestId: string }) => row.requestId === id)
+		expect(saved(untagged.workId, requestId)).toMatchObject({
 			totalCostUsd: null,
 			billingLookup: { status: "pending" },
 		})
 		expect(report(untagged.workId).pullRequests[0].totalCostUsd).toBeNull()
-		expect(report(control.workId).requests[0]).toMatchObject({ totalCostUsd: "0.123456789" })
+		expect(saved(control.workId, control.requestId)).toMatchObject({ totalCostUsd: "0.123456789" })
 	})
 	it("keeps unchanged checks out of journals and preserves retry timing across reloads", async () => {
 		const { workId } = tagged()
