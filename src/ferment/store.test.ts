@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -26,7 +26,7 @@ describe("FermentStorage v4", () => {
 
 	describe("create", () => {
 		it("creates at draft status with empty phases", () => {
-			const f = storage.create("Auth rewrite")
+			const f = storage.create("Auth rewrite", undefined, process.cwd())
 			expect(f.name).toBe("Auth rewrite")
 			expect(f.status).toBe("draft")
 			expect(f).not.toHaveProperty("mode")
@@ -37,21 +37,31 @@ describe("FermentStorage v4", () => {
 		})
 
 		it("does not serialize mode for new ferments", () => {
-			const f = storage.create("Mode-less")
+			const f = storage.create("Mode-less", undefined, process.cwd())
 			const raw = JSON.parse(readFileSync(join(tempDir, `${f.id}.json`), "utf-8")) as Record<string, unknown>
 			expect(raw).not.toHaveProperty("mode")
 		})
 
 		it("accepts description", () => {
-			const f = storage.create("Auth rewrite", "Rewrite to OAuth2")
+			const f = storage.create("Auth rewrite", "Rewrite to OAuth2", process.cwd())
 			expect(f.description).toBe("Rewrite to OAuth2")
 		})
 
+		it("anchors the worktree to the explicitly passed cwd", () => {
+			const projectDir = mkdtempSync(join(tmpdir(), "ferment-anchor-"))
+			try {
+				const f = storage.create("cwd-anchored", undefined, projectDir)
+				expect(f.worktree.path).toBe(projectDir)
+			} finally {
+				rmSync(projectDir, { recursive: true, force: true })
+			}
+		})
+
 		it("auto-renames duplicates with counter", () => {
-			storage.create("Auth rewrite")
-			const f2 = storage.create("Auth rewrite")
+			storage.create("Auth rewrite", undefined, process.cwd())
+			const f2 = storage.create("Auth rewrite", undefined, process.cwd())
 			expect(f2.name).toBe("Auth rewrite (1)")
-			const f3 = storage.create("Auth rewrite")
+			const f3 = storage.create("Auth rewrite", undefined, process.cwd())
 			expect(f3.name).toBe("Auth rewrite (2)")
 		})
 	})
@@ -62,7 +72,7 @@ describe("FermentStorage v4", () => {
 		})
 
 		it("returns a ferment by id", () => {
-			const f = storage.create("OAuth migration")
+			const f = storage.create("OAuth migration", undefined, process.cwd())
 			expect(storage.get(f.id)?.name).toBe("OAuth migration")
 		})
 	})
@@ -73,8 +83,8 @@ describe("FermentStorage v4", () => {
 		})
 
 		it("returns sorted by createdAt desc", () => {
-			storage.create("Zebra")
-			storage.create("Alpha")
+			storage.create("Zebra", undefined, process.cwd())
+			storage.create("Alpha", undefined, process.cwd())
 			const list = storage.list()
 			expect(list.length).toBe(2)
 			// Both may have identical timestamp — just assert they exist
@@ -85,23 +95,23 @@ describe("FermentStorage v4", () => {
 
 	describe("resolve", () => {
 		it("resolves by exact id", () => {
-			const f = storage.create("Resolvable")
+			const f = storage.create("Resolvable", undefined, process.cwd())
 			expect(storage.resolve(f.id)?.name).toBe("Resolvable")
 		})
 
 		it("resolves by exact name", () => {
-			const f = storage.create("Exact Name")
+			const f = storage.create("Exact Name", undefined, process.cwd())
 			expect(storage.resolve("Exact Name")?.id).toBe(f.id)
 		})
 
 		it("resolves case-insensitive prefix when unambiguous", () => {
-			const f = storage.create("UniquePrefix")
+			const f = storage.create("UniquePrefix", undefined, process.cwd())
 			expect(storage.resolve("unique")?.id).toBe(f.id)
 		})
 
 		it("throws when ambiguous prefix", () => {
-			storage.create("Alpha One")
-			storage.create("Alpha Two")
+			storage.create("Alpha One", undefined, process.cwd())
+			storage.create("Alpha Two", undefined, process.cwd())
 			expect(() => storage.resolve("alpha")).toThrow(FermentError)
 		})
 
@@ -112,7 +122,7 @@ describe("FermentStorage v4", () => {
 
 	describe("delete", () => {
 		it("removes an existing ferment", () => {
-			const f = storage.create("To delete")
+			const f = storage.create("To delete", undefined, process.cwd())
 			expect(storage.delete(f.id)).toBe(true)
 			expect(storage.get(f.id)).toBeUndefined()
 		})
@@ -124,7 +134,7 @@ describe("FermentStorage v4", () => {
 
 	describe("updateStatus", () => {
 		it("updates status and updatedAt", () => {
-			const f = storage.create("X")
+			const f = storage.create("X", undefined, process.cwd())
 			const ts = Date.now()
 			const updated = storage.updateStatus(f.id, "planned")
 			expect(updated?.status).toBe("planned")
@@ -141,7 +151,7 @@ describe("FermentStorage v4", () => {
 
 	describe("updateGoal", () => {
 		it("sets goal and successCriteria", () => {
-			const f = storage.create("Build Tetris")
+			const f = storage.create("Build Tetris", undefined, process.cwd())
 			const updated = storage.updateGoal(f.id, "A game", "Can play 1 round")
 			expect(updated?.goal).toBe("A game")
 			expect(updated?.successCriteria).toEqual(["Can play 1 round"])
@@ -150,7 +160,7 @@ describe("FermentStorage v4", () => {
 
 	describe("setPhases", () => {
 		it("overwrites all phases", () => {
-			const f = storage.create("Build Tetris")
+			const f = storage.create("Build Tetris", undefined, process.cwd())
 			const phases: Phase[] = [
 				{ id: "p1", index: 1, name: "Phase 1", goal: "G1", status: "planned", steps: [] },
 				{ id: "p2", index: 2, name: "Phase 2", goal: "G2", status: "planned", steps: [] },
@@ -167,7 +177,7 @@ describe("FermentStorage v4", () => {
 
 	describe("activatePhase", () => {
 		it("activates a planned phase", () => {
-			const f = storage.create("X")
+			const f = storage.create("X", undefined, process.cwd())
 			storage.setPhases(f.id, [
 				{ id: "p1", index: 1, name: "Phase 1", goal: "G1", status: "planned", steps: [] },
 				{ id: "p2", index: 2, name: "Phase 2", goal: "G2", status: "planned", steps: [] },
@@ -179,7 +189,7 @@ describe("FermentStorage v4", () => {
 		})
 
 		it("deactivates any previously active phase", () => {
-			const f = storage.create("X")
+			const f = storage.create("X", undefined, process.cwd())
 			storage.setPhases(f.id, [
 				{ id: "p1", index: 1, name: "Phase 1", goal: "G1", status: "active", steps: [] },
 				{ id: "p2", index: 2, name: "Phase 2", goal: "G2", status: "planned", steps: [] },
@@ -192,7 +202,7 @@ describe("FermentStorage v4", () => {
 
 	describe("completePhase", () => {
 		it("marks a phase completed with summary", () => {
-			const f = storage.create("X")
+			const f = storage.create("X", undefined, process.cwd())
 			storage.setPhases(f.id, [{ id: "p1", index: 1, name: "Phase 1", goal: "G1", status: "active", steps: [] }])
 			const updated = storage.completePhase(f.id, "p1", "Done!")
 			expect(updated?.phases[0]?.status).toBe("completed")
@@ -203,7 +213,7 @@ describe("FermentStorage v4", () => {
 
 	describe("setPhaseGrade", () => {
 		it("persists recommendations and survives a reload", () => {
-			const f = storage.create("Graded")
+			const f = storage.create("Graded", undefined, process.cwd())
 			storage.setPhases(f.id, [{ id: "p1", index: 1, name: "Phase 1", goal: "G1", status: "completed", steps: [] }])
 			const recs = ["Add edge-case test for empty input.", "Wire retry into production call site."]
 			const grade = {
@@ -225,7 +235,7 @@ describe("FermentStorage v4", () => {
 
 	describe("setFermentGrade", () => {
 		it("persists recommendations and survives a reload", () => {
-			const f = storage.create("Graded Ferment")
+			const f = storage.create("Graded Ferment", undefined, process.cwd())
 			const recs = ["Fix the N+1 query in listUsers.", "Add cancellation to the fetch loop."]
 			const grade = {
 				grade: "C" as const,
@@ -246,7 +256,7 @@ describe("FermentStorage v4", () => {
 
 	describe("skipPhase", () => {
 		it("marks a phase skipped", () => {
-			const f = storage.create("X")
+			const f = storage.create("X", undefined, process.cwd())
 			storage.setPhases(f.id, [{ id: "p1", index: 1, name: "Phase 1", goal: "G1", status: "planned", steps: [] }])
 			const updated = storage.skipPhase(f.id, "p1", "Out of scope")
 			expect(updated?.phases[0]?.status).toBe("skipped")
@@ -256,7 +266,7 @@ describe("FermentStorage v4", () => {
 
 	describe("refinePhase", () => {
 		it("populates steps with indices", () => {
-			const f = storage.create("X")
+			const f = storage.create("X", undefined, process.cwd())
 			storage.setPhases(f.id, [{ id: "p1", index: 1, name: "Phase 1", goal: "G1", status: "active", steps: [] }])
 			const steps: Step[] = [
 				{ id: "s1", index: 0, description: "Create file", status: "pending" },
@@ -275,7 +285,7 @@ describe("FermentStorage v4", () => {
 		let f: any
 
 		beforeEach(() => {
-			f = storage.create("Build Tetris")
+			f = storage.create("Build Tetris", undefined, process.cwd())
 			storage.setPhases(f.id, [{ id: "p1", index: 1, name: "Phase 1", goal: "G1", status: "active", steps: [] }])
 			const steps: Step[] = [
 				{ id: "s1", index: 1, description: "Create file", status: "pending" },
@@ -326,13 +336,13 @@ describe("FermentStorage v4", () => {
 
 	describe("addDecision", () => {
 		it("adds with auto id", () => {
-			const f = storage.create("X")
+			const f = storage.create("X", undefined, process.cwd())
 			const d = storage.addDecision(f.id, "Use Canvas", "Canvas is faster than DOM")
 			expect(d?.decisions).toEqual([expect.objectContaining({ id: "D001", title: "Use Canvas" })])
 		})
 
 		it("links to phase and step", () => {
-			const f = storage.create("X")
+			const f = storage.create("X", undefined, process.cwd())
 			const d = storage.addDecision(f.id, "T", "D", "p1", "s1")
 			expect(d?.decisions[0]?.phaseId).toBe("p1")
 			expect(d?.decisions[0]?.stepId).toBe("s1")
@@ -341,7 +351,7 @@ describe("FermentStorage v4", () => {
 
 	describe("addMemory", () => {
 		it("adds with auto id", () => {
-			const f = storage.create("X")
+			const f = storage.create("X", undefined, process.cwd())
 			const m = storage.addMemory(f.id, "gotcha", "Watch for race conditions")
 			expect(m?.memories).toEqual([expect.objectContaining({ id: "M001", category: "gotcha" })])
 		})
@@ -349,7 +359,7 @@ describe("FermentStorage v4", () => {
 
 	describe("atomic writes", () => {
 		it("survives a fresh storage instance", () => {
-			const f = storage.create("Persistent")
+			const f = storage.create("Persistent", undefined, process.cwd())
 			const fresh = new FermentStorage(tempDir)
 			expect(fresh.get(f.id)?.name).toBe("Persistent")
 		})

@@ -16,13 +16,13 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import {
 	AssistantMessageComponent,
-	createBashTool,
-	createEditTool,
-	createFindTool,
-	createGrepTool,
-	createLsTool,
-	createReadTool,
-	createWriteTool,
+	createBashToolDefinition,
+	createEditToolDefinition,
+	createFindToolDefinition,
+	createGrepToolDefinition,
+	createLsToolDefinition,
+	createReadToolDefinition,
+	createWriteToolDefinition,
 	getMarkdownTheme,
 	ToolExecutionComponent,
 	UserMessageComponent,
@@ -4164,14 +4164,14 @@ export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd()
 	const sp = (path: string) => shortPath(cwd, path)
 
-	const readTool = createReadTool(cwd)
+	const readTool = createReadToolDefinition(cwd)
 	pi.registerTool({
 		name: "read",
 		label: "read",
 		description: readTool.description,
 		parameters: readTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return readTool.execute(toolCallId, params, signal, onUpdate)
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			return readTool.execute(toolCallId, params, signal, onUpdate, ctx)
 		},
 		renderCall(args, theme, ctx) {
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
@@ -4219,14 +4219,14 @@ export default function (pi: ExtensionAPI) {
 		},
 	})
 
-	const bashTool = createBashTool(cwd)
+	const bashTool = createBashToolDefinition(cwd)
 	pi.registerTool({
 		name: "bash",
 		label: "bash",
 		description: bashTool.description,
 		parameters: bashTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return bashTool.execute(toolCallId, params, signal, onUpdate)
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			return bashTool.execute(toolCallId, params, signal, onUpdate, ctx)
 		},
 		renderCall(args, theme, ctx) {
 			const command = args.command
@@ -4284,14 +4284,14 @@ export default function (pi: ExtensionAPI) {
 		},
 	})
 
-	const grepTool = createGrepTool(cwd)
+	const grepTool = createGrepToolDefinition(cwd)
 	pi.registerTool({
 		name: "grep",
 		label: "grep",
 		description: grepTool.description,
 		parameters: grepTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return grepTool.execute(toolCallId, params, signal, onUpdate)
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			return grepTool.execute(toolCallId, params, signal, onUpdate, ctx)
 		},
 		renderCall(args, theme, ctx) {
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
@@ -4332,14 +4332,14 @@ export default function (pi: ExtensionAPI) {
 		},
 	})
 
-	const findTool = createFindTool(cwd)
+	const findTool = createFindToolDefinition(cwd)
 	pi.registerTool({
 		name: "find",
 		label: "find",
 		description: findTool.description,
 		parameters: findTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return findTool.execute(toolCallId, params, signal, onUpdate)
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			return findTool.execute(toolCallId, params, signal, onUpdate, ctx)
 		},
 		renderCall(args, theme, ctx) {
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
@@ -4381,14 +4381,14 @@ export default function (pi: ExtensionAPI) {
 		},
 	})
 
-	const lsTool = createLsTool(cwd)
+	const lsTool = createLsToolDefinition(cwd)
 	pi.registerTool({
 		name: "ls",
 		label: "ls",
 		description: lsTool.description,
 		parameters: lsTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return lsTool.execute(toolCallId, params, signal, onUpdate)
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			return lsTool.execute(toolCallId, params, signal, onUpdate, ctx)
 		},
 		renderCall(args, theme, ctx) {
 			const summary = stableCallSummary(ctx, "_callSummary", () => sp(args.path ?? "."))
@@ -4431,16 +4431,17 @@ export default function (pi: ExtensionAPI) {
 		},
 	})
 
-	const writeTool = createWriteTool(cwd)
+	const writeTool = createWriteToolDefinition(cwd)
 	pi.registerTool({
 		name: "write",
 		label: "write",
 		description: writeTool.description,
 		parameters: writeTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, _ctx) {
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
-			const fullPath = fp ? resolve(cwd, fp) : ""
-			const existedBefore = !!fullPath && fileExistsForTool(cwd, fp)
+			const sessionCwd = ctx.cwd
+			const fullPath = fp ? resolve(sessionCwd, fp) : ""
+			const existedBefore = !!fullPath && fileExistsForTool(sessionCwd, fp)
 			WRITE_EXISTED_BEFORE.set(toolCallId, existedBefore)
 			let old: string | null = null
 			try {
@@ -4448,7 +4449,7 @@ export default function (pi: ExtensionAPI) {
 			} catch {
 				old = null
 			}
-			const result = await createTrackedWriteTool(_ctx, toolCallId).execute(toolCallId, params, signal, onUpdate)
+			const result = await createTrackedWriteTool(ctx, toolCallId).execute(toolCallId, params, signal, onUpdate)
 			const content = params.content ?? ""
 			if (old !== null && old !== content) {
 				const diff = parseDiff(old, content)
@@ -4562,17 +4563,17 @@ export default function (pi: ExtensionAPI) {
 		},
 	})
 
-	const editTool = createEditTool(cwd)
+	const editTool = createEditToolDefinition(cwd)
 	pi.registerTool({
 		name: "edit",
 		label: "edit",
 		description: editTool.description,
 		parameters: editTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, _ctx) {
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
-			const trackedTool = createTrackedEditTool(_ctx, toolCallId)
+			const trackedTool = createTrackedEditTool(ctx, toolCallId)
 			const operations = getEditOperations(params)
-			const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, cwd) : null
+			const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, ctx.cwd) : null
 			const result = await trackedTool.execute(toolCallId, params, signal, onUpdate)
 			if (operations.length === 0) return result
 			const { diffs, summary, totalLines, totalHunks } = summarizeEditOperations(operations)

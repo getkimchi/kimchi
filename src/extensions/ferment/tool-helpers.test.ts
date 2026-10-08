@@ -65,7 +65,7 @@ describe("createApplyAndPersist", () => {
 	it("uses the injected storage and updates active state on success", () => {
 		const { runtime, storage, setActive } = createRuntime()
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const ferment = storage.create("Injected Store")
+		const ferment = storage.create("Injected Store", undefined, process.cwd())
 
 		const outcome = applyAndPersist(ferment.id, {
 			type: "scope",
@@ -85,7 +85,7 @@ describe("createApplyAndPersist", () => {
 		const onLifecycleTransitionApplied = vi.fn()
 		runtime.onLifecycleTransitionApplied = onLifecycleTransitionApplied
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const ferment = storage.create("Transition Notification")
+		const ferment = storage.create("Transition Notification", undefined, process.cwd())
 
 		const outcome = applyAndPersist(ferment.id, {
 			type: "scope",
@@ -115,7 +115,7 @@ describe("createApplyAndPersist", () => {
 	it("grants a fresh retry budget when an exhausted obligation recurs after lifecycle progress", () => {
 		const { runtime, storage } = createRuntime()
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const planned = scopeDraft(applyAndPersist, storage.create("Recurring Recovery"))
+		const planned = scopeDraft(applyAndPersist, storage.create("Recurring Recovery", undefined, process.cwd()))
 		const phase = planned.phases[0]
 		const step = phase.steps[0]
 		const activated = applyAndPersist(planned.id, { type: "activate_phase", phaseId: phase.id })
@@ -157,7 +157,7 @@ describe("createApplyAndPersist", () => {
 		const { runtime, storage } = createRuntime()
 		const mutateSpy = vi.spyOn(storage, "mutateWithEvents")
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const ferment = storage.create("Event Backed")
+		const ferment = storage.create("Event Backed", undefined, process.cwd())
 
 		const outcome = applyAndPersist(ferment.id, {
 			type: "scope",
@@ -175,7 +175,7 @@ describe("createApplyAndPersist", () => {
 		const { runtime, storage } = createRuntime()
 		runtime.nowIso = () => "2026-05-11T12:34:56.000Z"
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const ferment = storage.create("Clocked")
+		const ferment = storage.create("Clocked", undefined, process.cwd())
 
 		const outcome = applyAndPersist(ferment.id, {
 			type: "scope",
@@ -192,7 +192,7 @@ describe("createApplyAndPersist", () => {
 	it("rejects non-resume commands while paused", () => {
 		const { runtime, storage } = createRuntime()
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const planned = scopeDraft(applyAndPersist, storage.create("Paused"))
+		const planned = scopeDraft(applyAndPersist, storage.create("Paused", undefined, process.cwd()))
 		const pauseOutcome = applyAndPersist(planned.id, { type: "pause" })
 		if (!pauseOutcome.ok) throw new Error(pauseOutcome.error.message)
 
@@ -209,7 +209,7 @@ describe("createApplyAndPersist", () => {
 	it("allows resume while paused", () => {
 		const { runtime, storage } = createRuntime()
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const planned = scopeDraft(applyAndPersist, storage.create("Resume"))
+		const planned = scopeDraft(applyAndPersist, storage.create("Resume", undefined, process.cwd()))
 		const pauseOutcome = applyAndPersist(planned.id, { type: "pause" })
 		if (!pauseOutcome.ok) throw new Error(pauseOutcome.error.message)
 
@@ -228,7 +228,7 @@ describe("createApplyAndPersist", () => {
 		const renderSpy = vi.spyOn(sharedStatusLine, "requestSharedStatusLineRender").mockImplementation(() => {})
 		const { runtime, storage } = createRuntime()
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const ferment = scopeDraft(applyAndPersist, storage.create("Render On Mutate"))
+		const ferment = scopeDraft(applyAndPersist, storage.create("Render On Mutate", undefined, process.cwd()))
 		renderSpy.mockClear()
 
 		// Successful mutation triggers a render request.

@@ -7,11 +7,13 @@ export interface CreateFermentOptions {
 	goal: string
 	hasUI: boolean
 	isOneShot: boolean
+	/** Session cwd the ferment's worktree anchors to (ctx.cwd). */
+	cwd: string
 }
 
 /** Create a ferment and reset the session policy to the appropriate default for it. */
 export function createFerment(runtime: FermentRuntime, options: CreateFermentOptions): Ferment {
-	const ferment = runtime.getStorage().create(options.name, options.goal)
+	const ferment = runtime.getStorage().create(options.name, options.goal, options.cwd)
 	runtime.setContinuationPolicy(continuationPolicyForNewFerment(options.hasUI, options.isOneShot))
 	return ferment
 }

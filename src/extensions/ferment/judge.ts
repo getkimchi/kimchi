@@ -288,6 +288,8 @@ export interface JourneyDiff {
 
 export interface JudgeJourneyGradeInput {
 	fermentName: string
+	/** Session cwd rendered into the prompt so the grader knows the workspace. */
+	cwd: string
 	goal: string
 	/** Intent charter rendered into the grading prompt when present — the
 	 *  original, un-narrowed user intent the grade answers to. */
@@ -549,6 +551,8 @@ export async function judgeJourneyGrade(
 
 export interface JudgePhaseInput {
 	fermentName: string
+	/** Session cwd rendered into the prompt so the grader knows the workspace. */
+	cwd: string
 	phaseName: string
 	phaseGoal: string
 	/** Intent charter rendered into the grading prompt when present — the
@@ -1066,7 +1070,7 @@ function buildPhaseGraderPrompt(input: JudgePhaseInput): string {
 		parts.push(input.evidence.slice(0, 4000))
 	}
 	parts.push("")
-	parts.push(`Working directory: ${process.cwd()}`)
+	parts.push(`Working directory: ${input.cwd}`)
 	parts.push("")
 	parts.push(RECOMMENDATION_CONTRACT)
 	if (input.stepVerificationRuns && input.stepVerificationRuns.trim().length > 0) {
@@ -1151,7 +1155,7 @@ function buildJourneyGraderPrompt(input: JudgeJourneyGradeInput): string {
 	}
 	parts.push("")
 	parts.push(...renderEvidenceTrustPolicy(input.stepVerificationRuns))
-	parts.push(`Working directory: ${process.cwd()}`)
+	parts.push(`Working directory: ${input.cwd}`)
 	parts.push("")
 	parts.push(RECOMMENDATION_CONTRACT)
 	parts.push("")

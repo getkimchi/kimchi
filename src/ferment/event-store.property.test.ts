@@ -172,7 +172,7 @@ function runRandomSequence(seed: number, length: number): RunStats {
 	const rng = makeRng(seed)
 	const stats: RunStats = { commandsApplied: 0, rejections: 0 }
 
-	const ferment = eventStore.create("Property", "auto-generated")
+	const ferment = eventStore.create("Property", "auto-generated", process.cwd())
 
 	// Bump events.jsonl mtime so eventStore.get() prefers the fold path on every
 	// read — `shouldUseEvents` returns true iff eventsMtime >= snapMtime.

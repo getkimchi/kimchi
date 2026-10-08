@@ -149,7 +149,8 @@ export const renderBashResult: NonNullable<ToolDefinition["renderResult"]> = (re
 }
 
 const renderBashOutput: NonNullable<ToolDefinition["renderResult"]> = (result, options, theme, ctx) => {
-	upstreamBash ??= createBashToolDefinition(process.cwd())
+	// Render-only; the session cwd is used, matching what the agent executed against.
+	upstreamBash ??= createBashToolDefinition(ctx.cwd)
 	const details = result.details as (BashToolDetails & { display?: ProcessDisplaySnapshot }) | undefined
 	const display = details?.display
 	ctx.state.bashDisplay = display

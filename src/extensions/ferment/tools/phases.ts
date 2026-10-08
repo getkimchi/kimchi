@@ -76,8 +76,8 @@ type CompletePhaseArgs = Static<typeof CompletePhaseParams>
 type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
 
 export interface PhaseHandlerServices {
-	captureGitHead(): string | undefined
-	gatherEvidence(ref: string): PhaseEvidence | undefined
+	captureGitHead(cwd: string): string | undefined
+	gatherEvidence(ref: string, cwd: string): PhaseEvidence | undefined
 	/** Run the project's own automated checks (tests, lint, typecheck). Returns
 	 *  a result describing what was discovered + what passed/failed. Stubbed in
 	 *  unit tests; the default delegates to `runProjectChecks` against the
@@ -104,7 +104,7 @@ export interface PhaseHandlerServices {
 
 export interface PhaseExecutionContext {
 	pi: ExtensionAPI
-	ctx?: ExtensionContext
+	ctx: ExtensionContext
 }
 
 export const defaultPhaseHandlerServices: PhaseHandlerServices = {
@@ -327,7 +327,7 @@ export async function completePhase(
 	// longer consumed by a judge — it's persisted so post-mortem analysis
 	// can correlate gate verdicts with the actual diff.
 	const startRef = runtime.getPhaseStartRef(params.ferment_id, phase.id)
-	const evidence = startRef ? services.gatherEvidence(startRef) : undefined
+	const evidence = startRef ? services.gatherEvidence(startRef, ctx.cwd) : undefined
 
 	// Step 2d: combine flags. Project-check flags come from disk truth;
 	// gate flags come from the agent's own structured verdicts. Both feed
@@ -426,7 +426,7 @@ export async function completePhase(
 				{
 					ferment: f,
 					pi,
-					ctx: ctx ?? ({} as ExtensionContext),
+					ctx,
 					runtime,
 					recordJudgeDecision: createJudgeDecisionRecorder(runtime),
 				},
@@ -481,7 +481,7 @@ export async function completePhase(
 		verifyCommandCount++
 		const verified = await services.runVerification({
 			command: step.verification.command,
-			ctx: ctx ?? ({} as ExtensionContext),
+			ctx,
 		})
 		if (verified.exitCode !== 0) {
 			const errTail = (verified.stderr || verified.stdout).trim()
@@ -518,6 +518,7 @@ export async function completePhase(
 	// Judge-unavailable outcomes are advisory — they do NOT refuse advancement.
 	const judgeInput: JudgePhaseInput = {
 		fermentName: f.name,
+		cwd: ctx.cwd,
 		phaseName: phase.name,
 		phaseGoal: phase.goal,
 		charter: f.charter,
@@ -662,7 +663,7 @@ export async function completePhase(
 		phase,
 		projectChecksLine,
 		warnSection,
-		ctx ?? ({} as ExtensionContext),
+		ctx,
 	)
 	if (manualBoundary) return manualBoundary
 
@@ -745,7 +746,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				}
 
 				// Capture git HEAD per phase so the grader can diff each one independently.
-				const headRef = phaseServices.captureGitHead()
+				const headRef = phaseServices.captureGitHead(ctx.cwd)
 				if (headRef) {
 					for (const p of outcome.ferment.phases) {
 						if (p.groupIndex === target.groupIndex && p.status === "active") {
@@ -791,7 +792,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			}
 
 			// Capture git HEAD so the phase grader can diff against it later.
-			const headRef = phaseServices.captureGitHead()
+			const headRef = phaseServices.captureGitHead(ctx.cwd)
 			if (headRef) runtime.setPhaseStartRef(params.ferment_id, target.id, headRef)
 
 			const fresh = outcome.ferment

@@ -269,6 +269,7 @@ export async function startFermentForIntent({
 			goal: rawIntent,
 			hasUI: ctx.hasUI,
 			isOneShot: pi.getFlag("ferment-oneshot") === true,
+			cwd: ctx.cwd,
 		})
 		setActiveFermentAndApplyProfile(pi, runtime, f)
 		emitFermentCreated(pi.events, f)
@@ -799,7 +800,7 @@ export class FermentCommandController {
 				ctx.ui.notify("No active ferment to resume.")
 				return { handled: true }
 			}
-			const wtCheck = checkWorktree(active)
+			const wtCheck = checkWorktree(active, ctx.cwd)
 			if (wtCheck.severity === "block") {
 				ctx.ui.notify(wtCheck.message ?? "Cannot resume from this worktree.", "warning")
 				return { handled: true }
@@ -878,7 +879,7 @@ export class FermentCommandController {
 					return { handled: true }
 				}
 
-				const wtCheck = checkWorktree(f)
+				const wtCheck = checkWorktree(f, ctx.cwd)
 				if (wtCheck.severity === "block" && !command.force) {
 					ctx.ui.notify(`${wtCheck.message}\n\nUse /ferment switch --force "${target}" to override.`)
 					return { handled: true }
@@ -1054,6 +1055,7 @@ export class FermentCommandController {
 					goal: resolvedIntent,
 					hasUI: ctx.hasUI,
 					isOneShot: true,
+					cwd: ctx.cwd,
 				})
 				const updated = f
 				setActiveFermentAndApplyProfile(pi, runtime, updated)
@@ -1124,6 +1126,7 @@ export class FermentCommandController {
 				goal: rawName,
 				hasUI: ctx.hasUI,
 				isOneShot: pi.getFlag("ferment-oneshot") === true,
+				cwd: ctx.cwd,
 			})
 			setActiveFermentAndApplyProfile(pi, runtime, f)
 			emitFermentCreated(pi.events, f)
