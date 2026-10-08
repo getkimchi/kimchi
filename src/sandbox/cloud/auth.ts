@@ -19,7 +19,7 @@ async function authenticateVia(
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 
 	try {
-		const orgId = await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })
+		const orgId = (await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })).organizationId
 		const workspace = await resolveWorkspace(orgId, fetchImpl)
 		const { token, expireTime } = await exchangeWorkspaceToken(apiKey, workspaceId, {
 			...options,
@@ -44,7 +44,7 @@ async function authenticateVia(
 
 /**
  * Four-step authentication flow:
- * 1. Verify API key → organizationId.
+ * 1. Verify API key → organizationId + userId.
  * 2. Create or update workspace → get WebSocket URI.
  * 3. Resume workspace (wakes a hibernated sandbox pod) → no-op when running.
  * 4. Exchange for workspace token → get JWT for WebSocket auth.
