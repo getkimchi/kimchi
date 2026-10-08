@@ -3,6 +3,7 @@ import type { Component, TUI } from "@earendil-works/pi-tui"
 import type { ScopingQuestionType } from "../../ferment/types.js"
 import { type Answer, createQuestionForm, type Question, type QuestionType } from "../questionnaire/index.js"
 import { setTipWidgetLocation } from "../tips/index.js"
+import { withTodoCrowding } from "../todos/widget.js"
 import { pauseWorkingAnimation, resumeWorkingAnimation } from "../ui.js"
 
 type PromptUi = Pick<ExtensionUIContext, "select" | "input" | "editor" | "custom" | "setWorkingVisible">
@@ -102,12 +103,14 @@ export async function promptForm(ctx: ExtensionContext, spec: PromptFormSpec): P
 	if (questions.length === 0) return undefined
 
 	if (ctx.mode === "tui") {
-		const customResult = await withWorkingHidden(
-			ui,
-			() =>
-				ui.custom?.<PromptFormResult | null>((tui, theme, _keybindings, done) =>
-					createPromptFormComponent(tui, theme, questions, spec.title, spec.description, done),
-				) ?? Promise.resolve(undefined),
+		const customResult = await withTodoCrowding("questionnaire", () =>
+			withWorkingHidden(
+				ui,
+				() =>
+					ui.custom?.<PromptFormResult | null>((tui, theme, _keybindings, done) =>
+						createPromptFormComponent(tui, theme, questions, spec.title, spec.description, done),
+					) ?? Promise.resolve(undefined),
+			),
 		)
 		if (customResult !== undefined) return customResult ?? undefined
 	}

@@ -112,10 +112,10 @@ function parseTodoArgs(args: string): TodoUiLine {
 function notifyUsage(theme: Theme): string[] {
 	return [
 		theme.fg("warning", "Todo usage:"),
-		`  /${TODOS_COMMAND}                    Toggle todo overlay`,
-		`  /${TODOS_COMMAND} expand             Expand todo overlay`,
-		`  /${TODOS_COMMAND} expand all         Expand todo overlay without capping`,
-		`  /${TODOS_COMMAND} collapse           Collapse todo overlay`,
+		`  /${TODOS_COMMAND}                    Collapse/expand todo list`,
+		`  /${TODOS_COMMAND} expand             Expand todo list`,
+		`  /${TODOS_COMMAND} expand all         Expand todo list without capping`,
+		`  /${TODOS_COMMAND} collapse           Hide todo overlay`,
 		`  /${TODOS_COMMAND} add <text>          Add a todo item`,
 		`  /${TODOS_COMMAND} done <n>            Mark an item completed`,
 		`  /${TODOS_COMMAND} pending <n>         Mark an item pending`,

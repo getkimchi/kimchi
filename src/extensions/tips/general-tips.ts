@@ -29,12 +29,7 @@ export const GENERAL_TIPS = [
 	{
 		id: "todos-overlay",
 		scope: "general",
-		message: "Todos: `/todos` or `F7`; expand tools with `ctrl+o`.",
-	},
-	{
-		id: "bash-processes",
-		scope: "general",
-		message: "Use `/processes` to inspect running Bash scripts and output.",
+		message: "Press `F7` to show or hide todos.",
 	},
 	{
 		id: "add-tags",
