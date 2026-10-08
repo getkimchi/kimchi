@@ -633,7 +633,12 @@ export async function reconcileWorkCosts(
 	try {
 		const checkedAt = (item: RequestBilling) =>
 			currentPoll(polls, item)?.checkedAt ?? Date.parse(item.lookup?.checkedAt ?? "")
-		const ordered = [...requests.values()].sort((left, right) => (checkedAt(left) || 0) - (checkedAt(right) || 0))
+		// Unknown prices come first; rechecks of settled results wait for any spare budget.
+		const settled = (item: RequestBilling) =>
+			item.lookup?.status === "priced" || item.lookup?.status === "no-charge" ? 1 : 0
+		const ordered = [...requests.values()].sort(
+			(left, right) => settled(left) - settled(right) || (checkedAt(left) || 0) - (checkedAt(right) || 0),
+		)
 		for (const item of ordered) {
 			signal.throwIfAborted()
 			assertLease()
@@ -654,13 +659,12 @@ export async function reconcileWorkCosts(
 					? lastCheck < endsAt
 						? 0
 						: SLOW_REFRESH_MS
-					: item.lookup?.status === "no-charge"
-						? SLOW_REFRESH_MS
-						: item.lookup?.status === "priced"
+					: item.lookup?.status === "priced" || item.lookup?.status === "no-charge"
+						? // Settled results change rarely: recheck them less often as they age.
+							Math.max(PRICED_REFRESH_MS, Math.min(DAY_MS, age / 16))
+						: item.lookup?.status === "pending" && age >= DAY_MS
 							? PRICED_REFRESH_MS
-							: item.lookup?.status === "pending" && age >= DAY_MS
-								? PRICED_REFRESH_MS
-								: PENDING_REFRESH_MS
+							: PENDING_REFRESH_MS
 			if (Date.now() - lastCheck < refresh) continue
 			const lookup: BillingLookup = {
 				status: "pending",

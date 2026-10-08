@@ -23,6 +23,8 @@ const GATEWAY = "https://gateway.example/openai/v1/chat/completions"
 const PROMPT = "11111111-2222-4333-8444-555555555555"
 const ROW = "22222222-2222-4333-8444-555555555555"
 const ORG = "33333333-2222-4333-8444-555555555555"
+/** Past the priced recheck interval for a request dispatched four hours before the test clock. */
+const RECHECK_MS = 20 * 60_000
 let dir: string
 let currentKey: string
 const fetchMock = vi.fn<typeof fetch>()
@@ -500,7 +502,7 @@ describe("automatic exact work cost lookup", () => {
 		const { workId } = tagged()
 		await sync()
 		const now = Date.now()
-		vi.spyOn(Date, "now").mockReturnValue(now + 6 * 60_000)
+		vi.spyOn(Date, "now").mockReturnValue(now + RECHECK_MS)
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
 		const enriched = { id: ROW, totalPrice: "0.123456789", promptTokens: "100", cacheReadPrice: "0" }
 		fetchMock.mockResolvedValueOnce(Response.json({ items: [enriched, enriched], totalCount: 1 }))
@@ -509,7 +511,7 @@ describe("automatic exact work cost lookup", () => {
 		const rows = JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8")).requests[0].billingRows
 		expect(rows).toEqual([{ id: ROW, costUsd: "0.123456789", promptTokens: "100", cacheReadPrice: "0" }])
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
-		vi.mocked(Date.now).mockReturnValue(now + 12 * 60_000)
+		vi.mocked(Date.now).mockReturnValue(now + 2 * RECHECK_MS)
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
 		fetchMock.mockResolvedValueOnce(Response.json({ items: [enriched], totalCount: 1 }))
 		await sync()
@@ -527,7 +529,7 @@ describe("automatic exact work cost lookup", () => {
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
 		fetchMock.mockResolvedValueOnce(Response.json({ items: [{ id: ROW, totalPrice: "0.1" }] }))
 		await sync()
-		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6 * 60_000)
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + RECHECK_MS)
 		if (failure === "changed-key") currentKey = "another-key"
 		else fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }))
 		await sync()
@@ -797,7 +799,7 @@ describe("automatic exact work cost lookup", () => {
 		const { workId } = tagged()
 		await sync()
 		const original = readWorkRecords(dir).find((row) => row.type === "request_cost")
-		let now = Date.now() + 6 * 60_000
+		let now = Date.now() + RECHECK_MS
 		const refreshStarted = new Date(now).toISOString()
 		vi.spyOn(Date, "now").mockImplementation(() => now)
 		fetchMock.mockImplementationOnce(async () => {
@@ -827,7 +829,7 @@ describe("automatic exact work cost lookup", () => {
 		expect(fetchMock).not.toHaveBeenCalled()
 		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual(observations)
 		// No evidence arrived, so the confirmed price keeps its own refresh schedule.
-		now += 5 * 60_000
+		now += RECHECK_MS
 		await sync()
 		expect(fetchMock).toHaveBeenCalledTimes(2)
 		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual(observations)
@@ -887,7 +889,7 @@ describe("automatic exact work cost lookup", () => {
 	it("keeps a partial refresh incomplete when the next page exhausts the pass budget", async () => {
 		const { workId } = tagged()
 		await sync()
-		let now = Date.now() + 6 * 60_000
+		let now = Date.now() + RECHECK_MS
 		vi.spyOn(Date, "now").mockImplementation(() => now)
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
 		fetchMock.mockImplementationOnce(async () => {
@@ -908,7 +910,7 @@ describe("automatic exact work cost lookup", () => {
 	it("keeps an empty page incomplete when its continuation exhausts the pass budget", async () => {
 		const { workId } = tagged()
 		await sync()
-		let now = Date.now() + 6 * 60_000
+		let now = Date.now() + RECHECK_MS
 		const refreshStarted = new Date(now).toISOString()
 		vi.spyOn(Date, "now").mockImplementation(() => now)
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
@@ -964,7 +966,7 @@ describe("automatic exact work cost lookup", () => {
 		const { workId } = tagged()
 		await sync()
 		const journal = readWorkRecords(dir)
-		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6 * 60_000)
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + RECHECK_MS)
 		// A failed key check fails the first call; the others fail the first billing page.
 		const reply = () => (failure instanceof Response ? Promise.resolve(failure) : Promise.reject(failure))
 		if (kind === "offline" || kind === "DNS" || kind === "TLS" || kind === "key check")
@@ -992,7 +994,7 @@ describe("automatic exact work cost lookup", () => {
 		const { workId } = tagged()
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
 		await sync()
-		let now = Date.now() + 6 * 60_000
+		let now = Date.now() + RECHECK_MS
 		vi.spyOn(Date, "now").mockImplementation(() => now)
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
 		const item = {
@@ -1003,7 +1005,7 @@ describe("automatic exact work cost lookup", () => {
 		fetchMock.mockResolvedValueOnce(Response.json({ items: failure === "empty" ? [] : [item] }))
 		await sync()
 		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
-		now += 6 * 60_000
+		now += RECHECK_MS
 		fetchMock.mockImplementationOnce(async () => {
 			now += 5001
 			return Response.json({ organizationId: ORG, userId: PROMPT })
@@ -1125,10 +1127,10 @@ describe("automatic exact work cost lookup", () => {
 		const { workId } = tagged()
 		await sync()
 		const now = Date.now()
-		vi.spyOn(Date, "now").mockReturnValue(now + 6 * 60_000)
+		vi.spyOn(Date, "now").mockReturnValue(now + RECHECK_MS)
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: "44444444-2222-4333-8444-555555555555" }))
 		await sync()
-		vi.mocked(Date.now).mockReturnValue(now + 7 * 60_000)
+		vi.mocked(Date.now).mockReturnValue(now + RECHECK_MS + 60_000)
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: "44444444-2222-4333-8444-555555555555" }))
 		await sync()
 		expect(report(workId).requests[0].billingLookup).toMatchObject({
@@ -1153,7 +1155,7 @@ describe("automatic exact work cost lookup", () => {
 		})
 		await sync()
 		currentKey = "test-only-rotated-key"
-		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6 * 60_000)
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + RECHECK_MS)
 		fetchMock.mockClear()
 		await sync()
 		expect(fetchMock).not.toHaveBeenCalled()
@@ -1485,6 +1487,137 @@ describe("billing refresh after the request tag window closes", () => {
 	})
 })
 
+/**
+ * Writes one session journal directly; appending through the extension would also rebuild
+ * a work summary per row. Each request has a stable billing row, so repeated lookups are unchanged.
+ */
+function seedJournal(
+	requests: { requestId: string; dispatchedAt: string; lookup?: "priced" | "pending"; checkedAt?: string }[],
+) {
+	const sessionId = randomUUID()
+	const workId = randomUUID()
+	const source = captureBillingSource(new Headers({ Authorization: `Bearer ${currentKey}` }), GATEWAY, dir)
+	const base = { version: 1, sessionId, workId, cwd: dir }
+	const lines = requests.flatMap(({ requestId, dispatchedAt, lookup, checkedAt }) => {
+		const selector = requestTagSelector(requestId, dispatchedAt)
+		const rows: Record<string, unknown>[] = [
+			{ ...base, type: "request", requestId, startedAt: dispatchedAt, recordedAt: dispatchedAt },
+			{
+				...base,
+				type: "request_dispatch",
+				requestId,
+				dispatchedAt,
+				billingSource: source,
+				billingSelector: selector,
+				recordedAt: dispatchedAt,
+			},
+		]
+		if (lookup)
+			rows.push({
+				...base,
+				type: "request_cost",
+				requestId,
+				billingSource: source,
+				billingSelector: selector,
+				billingRows: lookup === "priced" ? [{ id: billingId(requestId), costUsd: "0.000100000" }] : [],
+				billingLookup: { status: lookup, checkedAt, organizationId: ORG, userId: PROMPT },
+				recordedAt: checkedAt,
+			})
+		return rows
+	})
+	mkdirSync(join(dir, "work-attribution"), { recursive: true })
+	writeFileSync(
+		join(dir, "work-attribution", `${sessionId}.jsonl`),
+		`${lines.map((row) => JSON.stringify(row)).join("\n")}\n`,
+	)
+}
+const billingIds = new Map<string, string>()
+function billingId(requestId: string): string {
+	const id = billingIds.get(requestId) ?? randomUUID()
+	billingIds.set(requestId, id)
+	return id
+}
+const lookedUp = () =>
+	fetchMock.mock.calls.flatMap(([input]) => {
+		const tag = new URL(String(input)).searchParams.get("tags")
+		return tag ? [tag.slice("kimchi-request:".length)] : []
+	})
+
+describe("billing poll scheduling", () => {
+	beforeEach(() => {
+		fetchMock.mockImplementation(async (input) => {
+			const tag = new URL(String(input)).searchParams.get("tags")
+			if (!tag) return Response.json({ organizationId: ORG, userId: PROMPT })
+			const requestId = tag.slice("kimchi-request:".length)
+			return Response.json({ items: [{ id: billingId(requestId), totalPrice: "0.000100000" }] })
+		})
+	})
+	it("looks up a due pending price before rechecking 1,000 known prices", async () => {
+		const now = Date.parse("2026-10-08T12:00:00.000Z")
+		vi.setSystemTime(now)
+		const pending = randomUUID()
+		seedJournal([
+			...Array.from({ length: 1000 }, () => ({
+				requestId: randomUUID(),
+				dispatchedAt: "2026-10-08T10:00:00.000Z",
+				lookup: "priced" as const,
+				checkedAt: new Date(now - 10 * 60_000).toISOString(),
+			})),
+			{
+				requestId: pending,
+				dispatchedAt: new Date(now - 40_000).toISOString(),
+				lookup: "pending",
+				checkedAt: new Date(now - 31_000).toISOString(),
+			},
+		])
+		await sync()
+		expect(fetchMock).toHaveBeenCalledTimes(30)
+		expect(lookedUp()[0]).toBe(pending)
+		expect(readWorkCostReport(dir).requests.get(pending)?.lookup?.status).toBe("priced")
+	})
+	it("rechecks 300 known prices older than a day at most once an hour", async () => {
+		let now = Date.parse("2026-10-08T12:00:00.000Z")
+		vi.setSystemTime(now)
+		seedJournal(
+			Array.from({ length: 300 }, () => ({
+				requestId: randomUUID(),
+				dispatchedAt: "2026-10-07T10:00:00.000Z",
+				lookup: "priced" as const,
+				checkedAt: new Date(now - 6 * 60 * 60_000).toISOString(),
+			})),
+		)
+		const journal = readWorkRecords(dir)
+		for (let pass = 0; pass < 120; pass++) {
+			await sync()
+			now += 30_000
+			vi.setSystemTime(now)
+		}
+		// Each request is checked once in the hour: 300 lookups plus one key check per busy pass.
+		expect(lookedUp()).toHaveLength(300)
+		expect(new Set(lookedUp()).size).toBe(300)
+		expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(300 + Math.ceil(300 / 29))
+		expect(readWorkRecords(dir)).toEqual(journal)
+	})
+	it("keeps the final check at the end of the window for a priced request on a daily recheck", async () => {
+		const requestId = randomUUID()
+		// Dispatched 31.5 days ago and last checked 12 hours ago: the next daily recheck would fall after the window.
+		const dispatchedAt = "2026-09-01T00:00:00.000Z"
+		const end = Date.parse("2026-10-03T00:00:00.000Z")
+		vi.setSystemTime(end - 60_000)
+		seedJournal([
+			{ requestId, dispatchedAt, lookup: "priced", checkedAt: new Date(end - 12 * 60 * 60_000).toISOString() },
+		])
+		await sync()
+		expect(fetchMock).not.toHaveBeenCalled()
+		vi.setSystemTime(end + 60_000)
+		await sync()
+		expect(lookedUp()).toEqual([requestId])
+		expect(readWorkCostReport(dir).requests.get(requestId)?.substantiveLookup?.checkedAt).toBe(
+			new Date(end + 60_000).toISOString(),
+		)
+	})
+})
+
 describe("empty billing settlement", () => {
 	it("settles a complete empty lookup after 24 hours and accepts a later bill", async () => {
 		const { workId, requestId } = tagged()
@@ -1568,7 +1701,7 @@ describe("empty billing settlement", () => {
 		vi.spyOn(Date, "now").mockImplementation(() => now)
 		await sync()
 		const before = readWorkRecords(dir).filter((row) => row.type === "request_cost")
-		now += 6 * 60_000
+		now += 2 * 60 * 60_000
 		await sync()
 		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual(before)
 		fetchMock.mockClear()
