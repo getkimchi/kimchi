@@ -1,5 +1,12 @@
 // extensions/lsp/client.ts
 import { debuglog } from "node:util"
+import {
+	EFFECTIVE_IDLE_EVICT_MS,
+	LSP_EVICT_GRACE_MS,
+	LSP_REAPER_SWEEP_MS,
+	MAX_CHAINS,
+	OPEN_DOCS_MAX,
+} from "./lifecycle-constants.js"
 import { resolveTsserverPath } from "./servers.js"
 import type {
 	BunProcess,
@@ -223,6 +230,19 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 	const existingLock = clientLocks.get(key)
 	if (existingLock) return existingLock
 
+	// Cap concurrent chains. A real server plus its spawned children (two
+	// tsserver processes + typings installer) is a GB-class allocation — the
+	// verified cross-root multiplier. Before spawning chain #MAX_CHAINS+1,
+	// evict the least-recently-active idle chain. Clients with in-flight
+	// requests or diagnostic waiters are never evicted; if every chain is
+	// busy we exceed the cap temporarily rather than breaking active work.
+	if (clients.size >= MAX_CHAINS) {
+		const evictable = [...clients.values()]
+			.filter((c) => c.pendingRequests.size === 0 && c.diagnosticWaiters.size === 0)
+			.sort((a, b) => a.lastActivity - b.lastActivity)[0]
+		if (evictable) evictClient(evictable)
+	}
+
 	const clientPromise = (async () => {
 		// Bun global available at runtime but not typed — use globalThis cast
 		// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
@@ -264,6 +284,7 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 			resolveProjectLoaded,
 		}
 		clients.set(key, client)
+		ensureReaperRunning()
 
 		// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
 		;(proc as any).exited.then(() => {
@@ -328,6 +349,10 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 }
 
 export function shutdownAll(): void {
+	if (reaperTimer) {
+		clearInterval(reaperTimer)
+		reaperTimer = undefined
+	}
 	const all = Array.from(clients.values())
 	clients.clear()
 	const err = new Error("LSP shutdown")
@@ -337,6 +362,64 @@ export function shutdownAll(): void {
 		sendRequest(client, "shutdown", null).catch(() => {})
 		client.proc.kill()
 	}
+}
+
+/**
+ * Evict a single client: drop it from the registry, reject its pending
+ * requests, ask the server politely to shut down, then SIGTERM after a
+ * grace period. Backstopped by the server's stdio-EOF self-termination
+ * (verified 2026-10-09: a SIGKILLed harness's chain dies within ~10s even
+ * when nothing sends shutdown).
+ */
+// =============================================================================
+// Idle Reaper
+// =============================================================================
+
+let reaperTimer: ReturnType<typeof setInterval> | undefined
+
+/**
+ * Reap every chain idle for at least `idleMs`, using `evict` (defaults to
+ * evictClient). Returns the number of reaped chains. Exported for tests —
+ * the time source and threshold are parameters so the sweep logic is
+ * exercised without wall-clock waits.
+ *
+ * Chains with in-flight requests or diagnostic waiters are never reaped:
+ * killing mid-request breaks an active operation to save memory that an
+ * active chain would immediately re-allocate.
+ */
+export function reapIdleClients(now: number, idleMs: number, evict: (client: LspClient) => void = evictClient): number {
+	let reaped = 0
+	for (const client of [...clients.values()]) {
+		if (client.pendingRequests.size > 0 || client.diagnosticWaiters.size > 0) continue
+		if (now - client.lastActivity < idleMs) continue
+		evict(client)
+		reaped++
+	}
+	return reaped
+}
+
+/**
+ * Start the sweep on first client creation. unref'd: the reaper must never
+ * keep a host process (ACP server, headless run) alive to manage children.
+ * Cleared by shutdownAll so a new session starts with no stale interval.
+ */
+function ensureReaperRunning(): void {
+	if (reaperTimer) return
+	reaperTimer = setInterval(() => reapIdleClients(Date.now(), EFFECTIVE_IDLE_EVICT_MS), LSP_REAPER_SWEEP_MS)
+	reaperTimer.unref?.()
+}
+
+export function evictClient(client: LspClient, graceMs = LSP_EVICT_GRACE_MS): void {
+	clients.delete(client.name)
+	clientLocks.delete(client.name)
+	const err = new Error("LSP client evicted")
+	for (const pending of client.pendingRequests.values()) pending.reject(err)
+	client.pendingRequests.clear()
+	sendRequest(client, "shutdown", null).catch(() => {})
+	const timer = setTimeout(() => client.proc.kill(), graceMs)
+	// The kill timer must never keep a host process (ACP server, headless
+	// run) alive just to terminate a child.
+	timer.unref?.()
 }
 
 // =============================================================================
@@ -428,6 +511,7 @@ export async function ensureFileOpen(client: LspClient, filePath: string): Promi
 			textDocument: { uri, languageId, version: 1, text: content },
 		})
 		client.openFiles.set(uri, { version: 1, languageId })
+		evictLRUOpenDocuments(client)
 		client.lastActivity = Date.now()
 	})()
 
@@ -453,6 +537,12 @@ export async function refreshFile(client: LspClient, filePath: string): Promise<
 		client.pendingDiagBaseline.set(uri, client.diagnosticsVersion)
 		client.diagnostics.delete(uri)
 		const info = client.openFiles.get(uri)
+		// Bump recency: open-and-refresh both re-insert at the Map tail, so the
+		// first key is always the least-recently-used document.
+		if (info) {
+			client.openFiles.delete(uri)
+			client.openFiles.set(uri, info)
+		}
 
 		if (!info) {
 			await ensureFileOpen(client, filePath)
@@ -493,6 +583,26 @@ export async function refreshFile(client: LspClient, filePath: string): Promise<
 
 export function getAllClients(): LspClient[] {
 	return Array.from(clients.values())
+}
+
+/**
+ * Bound the per-client open-document set. Documents were historically never
+ * closed (didClose was never sent), so every synced file stayed pinned in
+ * the server for the session's life. Map insertion order doubles as recency
+ * — ensuresFileOpen and refreshFile both (re-)insert at the tail, so the
+ * first key is the least-recently-used document. Eviction beyond
+ * OPEN_DOCS_MAX drops the oldest entry plus its cached diagnostics and
+ * notifies the server with didClose so it can release the file.
+ */
+function evictLRUOpenDocuments(client: LspClient): void {
+	while (client.openFiles.size > OPEN_DOCS_MAX) {
+		const oldest = client.openFiles.keys().next().value
+		if (oldest === undefined) return
+		client.openFiles.delete(oldest)
+		client.diagnostics.delete(oldest)
+		client.pendingDiagBaseline.delete(oldest)
+		sendNotification(client, "textDocument/didClose", { textDocument: { uri: oldest } }).catch(() => {})
+	}
 }
 
 // =============================================================================

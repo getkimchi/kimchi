@@ -7,7 +7,6 @@
  *
  * Usage: kimchi -e extensions/lsp.ts
  */
-import fs from "node:fs"
 import path from "node:path"
 import { debuglog } from "node:util"
 import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
@@ -155,20 +154,15 @@ export default function (pi: ExtensionAPI) {
 	 *  visibility. Log output goes to `debuglog("kimchi:lsp")`, never the
 	 *  raw console.
 	 *
-	 *  `sessionFailures` must be the map captured by the session that
-	 *  initiated the async work. A rejection that arrives after
-	 *  session_reset (e.g. a slow eager start from session N) finds the map
-	 *  replaced and is dropped — recording it into the new session's cache
-	 *  would wrongly suppress that server for the rest of the new session. */
+	 *  Every failing path — file sync and the lsp_* tool starts — records
+	 *  through here so tool-side failures get the same status visibility. */
 	function noteClientFailure(
 		server: ServerConfig,
 		root: string,
 		err: unknown,
 		phase: FailurePhase,
 		statusUi: ExtensionUIContext | undefined,
-		sessionFailures: Map<string, FailurePhase> = failedClients,
 	): void {
-		if (sessionFailures !== failedClients) return // stale cross-session rejection
 		const key = clientKey(server, root)
 		if (failedClients.has(key)) return
 		failedClients.set(key, phase)
@@ -251,17 +245,11 @@ export default function (pi: ExtensionAPI) {
 			return
 		}
 
-		// Eagerly start servers that have a project marker directly in sessionCwd.
-		// Capture this session's failure map: a rejection that lands after the
-		// next session_start must be dropped, not recorded into the new session.
-		const sessionFailures = failedClients
-		const goMarkers = ["go.mod"]
-		const tsMarkers = ["tsconfig.json", "package.json"]
-		for (const server of activeServers) {
-			const markers = server.name === "gopls" ? goMarkers : tsMarkers
-			if (!markers.some((m) => fs.existsSync(path.join(cwd, m)))) continue
-			getOrCreateClient(server, cwd).catch((err) => noteClientFailure(server, cwd, err, "start", ui, sessionFailures))
-		}
+		// Servers are NOT started here. An eager boot costs a 4-process,
+		// ~400MB chain before any agent action (measured 2026-10-09), and
+		// several sessions starting at once used to boot all their chains in
+		// parallel. Chains now spawn on the first edit-sync or explicit
+		// lsp_* tool call and are reaped when idle (see lifecycle-constants).
 	})
 
 	pi.on("session_shutdown", async () => {
@@ -290,7 +278,17 @@ export default function (pi: ExtensionAPI) {
 		const filePath = event.input.path
 		if (typeof filePath !== "string") return
 
+		// Reads never touch LSP. Opening every browsed file was the chain
+		// growth vector — one didOpen per read, never closed, with zero
+		// payoff (the read branch fetched no diagnostics). Chains now spawn
+		// and documents open only on edits and explicit lsp_* tool calls.
+		if (isReadToolResult(event)) return
+
 		const resolved = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath)
+		// Never spawn a chain for files outside the session workspace: they
+		// resolve to a different project root, and one edit there used to
+		// boot a whole second server (measured: a 1.4-2.9GB chain in ~6s).
+		if (!inWorkspace(resolved, cwd)) return
 		const server = serverForFile(resolved, activeServers)
 		if (!server) return
 		// Resolve the project root the same way the lsp_* tools do (a nested
@@ -323,10 +321,7 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const client = await getOrCreateClient(server, root)
 			phase = "sync"
-			if (isReadToolResult(event)) {
-				// File was only read, not modified — just ensure LSP has it open
-				await ensureFileOpen(client, resolved)
-			} else {
+			{
 				await refreshFile(client, resolved)
 				const uri = fileToUri(resolved)
 				// Diagnostics arrive via push (publishDiagnostics) on most servers
@@ -408,6 +403,9 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "No LSP server available for this file type." }], details: null }
 			}
 
+			const outside = outsideWorkspaceResult(filePath, cwd)
+			if (outside) return outside
+
 			const client = await startClient(server, findRoot(filePath, server.name, cwd))
 			await refreshFile(client, filePath)
 
@@ -458,6 +456,9 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "No LSP server available for this file type." }], details: null }
 			}
 
+			const outside = outsideWorkspaceResult(filePath, cwd)
+			if (outside) return outside
+
 			const client = await startClient(server, findRoot(filePath, server.name, cwd))
 			await ensureFileOpen(client, filePath)
 
@@ -501,6 +502,9 @@ export default function (pi: ExtensionAPI) {
 			if (!server) {
 				return { content: [{ type: "text", text: "No LSP server available for this file type." }], details: null }
 			}
+
+			const outside = outsideWorkspaceResult(filePath, cwd)
+			if (outside) return outside
 
 			const client = await startClient(server, findRoot(filePath, server.name, cwd))
 			await ensureFileOpen(client, filePath)
@@ -549,6 +553,9 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "No LSP server available for this file type." }], details: null }
 			}
 
+			const outside = outsideWorkspaceResult(filePath, cwd)
+			if (outside) return outside
+
 			const client = await startClient(server, findRoot(filePath, server.name, cwd))
 			await ensureFileOpen(client, filePath)
 
@@ -592,6 +599,9 @@ export default function (pi: ExtensionAPI) {
 			if (!server) {
 				return { content: [{ type: "text", text: "No LSP server available for this file type." }], details: null }
 			}
+
+			const outside = outsideWorkspaceResult(filePath, cwd)
+			if (outside) return outside
 
 			const client = await startClient(server, findRoot(filePath, server.name, cwd))
 			await ensureFileOpen(client, filePath)
@@ -642,6 +652,23 @@ export default function (pi: ExtensionAPI) {
 // =============================================================================
 // Helpers
 // =============================================================================
+
+const OUTSIDE_WORKSPACE_TEXT =
+	"File is outside the session workspace — LSP is disabled for it to avoid spawning a separate language-server chain outside the project. Start a session rooted at that file's project for LSP there."
+
+/** True when filePath is the session cwd or nested inside it. */
+function inWorkspace(filePath: string, sessionCwd: string): boolean {
+	return filePath === sessionCwd || filePath.startsWith(sessionCwd + path.sep)
+}
+
+/** Guard result shared by the five lsp_* tools: null when the file is in-workspace. */
+function outsideWorkspaceResult(
+	filePath: string,
+	sessionCwd: string,
+): { content: Array<{ type: "text"; text: string }>; details: null } | null {
+	if (inWorkspace(filePath, sessionCwd)) return null
+	return { content: [{ type: "text", text: OUTSIDE_WORKSPACE_TEXT }], details: null }
+}
 
 function lspRenderCall(label: string) {
 	return (args: Record<string, unknown>, theme: Theme, context: { lastComponent: unknown }): Container => {

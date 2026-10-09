@@ -595,7 +595,7 @@ describe("tool_result handler", () => {
 		expect(clientMod.getOrCreateClient).not.toHaveBeenCalled()
 	})
 
-	it("calls ensureFileOpen for a read event", async () => {
+	it("ignores read events entirely — reads never spawn servers or open documents", async () => {
 		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
 		vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_SERVER)
 		const fakeClient = makeClient()
@@ -604,7 +604,34 @@ describe("tool_result handler", () => {
 		lspExtension(pi)
 		await pi.fireSessionStart()
 		await pi.fireToolResult({ toolName: "read", isError: false, input: { path: "/project/a.ts" } })
-		expect(clientMod.ensureFileOpen).toHaveBeenCalledWith(fakeClient, "/project/a.ts")
+		// Reading browsed files used to didOpen each one into the server — the
+		// chain growth vector (one pinned doc per read, never closed). Reads
+		// must not create clients or open documents.
+		expect(clientMod.getOrCreateClient).not.toHaveBeenCalled()
+		expect(clientMod.ensureFileOpen).not.toHaveBeenCalled()
+		expect(clientMod.refreshFile).not.toHaveBeenCalled()
+	})
+
+	it("all lsp_* tools refuse out-of-workspace files without spawning a chain", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_SERVER)
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+
+		const calls: Array<[string, Record<string, unknown>]> = [
+			["lsp_diagnostics", { file_path: "/elsewhere/foo.ts" }],
+			["lsp_hover", { file_path: "/elsewhere/foo.ts", line: 0, character: 0 }],
+			["lsp_definition", { file_path: "/elsewhere/foo.ts", line: 0, character: 0 }],
+			["lsp_references", { file_path: "/elsewhere/foo.ts", line: 0, character: 0 }],
+			["lsp_rename", { file_path: "/elsewhere/foo.ts", line: 0, character: 0, new_name: "x" }],
+		]
+		for (const [name, params] of calls) {
+			const result = await callTool(pi, name, params)
+			expect(result.content[0].text).toContain("outside the session workspace")
+		}
+		// No server was ever started for the out-of-workspace path.
+		expect(clientMod.getOrCreateClient).not.toHaveBeenCalled()
 	})
 
 	it("calls refreshFile for an edit event", async () => {
