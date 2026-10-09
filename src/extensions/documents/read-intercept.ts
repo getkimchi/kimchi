@@ -24,7 +24,7 @@ export function installReadInterception(pi: ExtensionAPI): void {
 		// magic bytes decide. A `.txt` file that happens to be caught by the
 		// extension pass fell through isDocumentPath already.
 		try {
-			const cwd = ctx?.cwd ?? process.cwd()
+			const cwd = ctx.cwd
 			const { doc, data } = await loadExtracted(path, cwd, { tool: "read" })
 			// A single-unit document is fully covered by one render; a big
 			// document gets the first 20 units plus a continuation pointer.
@@ -37,7 +37,7 @@ export function installReadInterception(pi: ExtensionAPI): void {
 				data,
 				doc,
 				selected: selection.indices,
-				supportsImages: modelSupportsImages(ctx?.model),
+				supportsImages: modelSupportsImages(ctx.model),
 			})
 			const note = scanned.note ? `\n\nNote: ${scanned.note}.` : ""
 			const marker =

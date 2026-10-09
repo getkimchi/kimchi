@@ -82,6 +82,7 @@ export async function extractPdf(data: Uint8Array): Promise<ExtractedDocument> {
 		})
 		return { format: "pdf", unitKind: "page", units, outline, notes }
 	} finally {
+		// unpdf's PDFDocumentProxy type omits destroy (present at runtime).
 		const destroyable = pdf as unknown as { destroy?: () => Promise<void> }
 		await destroyable.destroy?.().catch(() => {})
 	}

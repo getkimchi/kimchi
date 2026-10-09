@@ -51,8 +51,10 @@ export async function extractDocument(
 			reject(new DocumentError("timeout", `Extraction exceeded ${timeoutMs}ms.`, detection.format))
 		}, timeoutMs)
 	})
-	// The timeout losing the race must not hold the process open.
-	timer?.unref?.()
+	// The timeout losing the race must not hold the process open. The executor
+	// above assigns the timer synchronously, but TS can't narrow the closure
+	// capture — hence the optional chain on the variable itself.
+	timer?.unref()
 
 	try {
 		const extract = async (): Promise<ExtractedDocument> => {

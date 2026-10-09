@@ -78,7 +78,7 @@ function textResult(text: string, details: ReadDocumentDetails | null = null, im
 export async function loadExtracted(
 	path: string,
 	cwd: string,
-	deps: ReadDocumentDeps & { tool?: "read" | "read_document" | "at-file" | "doctor" },
+	deps: ReadDocumentDeps & { tool?: "read" | "read_document" | "at-file" | "doctor"; formulas?: boolean },
 ): Promise<{ absolute: string; data: Uint8Array; doc: ExtractedDocument }> {
 	const absolute = resolveUserPath(path, cwd)
 	if (!deps.readFileData) {
@@ -93,6 +93,7 @@ export async function loadExtracted(
 	const doc = await extractDocument(absolute, data, {
 		env: deps.env,
 		tool: deps.tool ?? "read_document",
+		formulas: deps.formulas,
 	})
 	return { absolute, data, doc }
 }
@@ -146,14 +147,11 @@ export function createReadDocumentTool(deps: ReadDocumentDeps = {}): ToolDefinit
 		parameters: ReadDocumentSchema,
 		execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
 			try {
-				const cwd = ctx?.cwd ?? process.cwd()
+				const cwd = ctx.cwd
 				const { doc, data } = await loadExtracted(params.path, cwd, { ...deps, tool: "read_document" })
-				// Re-extract with formulas when requested (cheap; keeps cache-free determinism).
 				let renderedDoc = doc
 				if (params.formulas && (doc.format === "xlsx" || doc.format === "xls" || doc.format === "ods")) {
-					const absolute = resolveUserPath(params.path, cwd)
-					const data = deps.readFileData ? await deps.readFileData(absolute) : new Uint8Array(await readFile(absolute))
-					renderedDoc = await extractDocument(absolute, data, { env: deps.env, tool: "read_document", formulas: true })
+					renderedDoc = (await loadExtracted(params.path, cwd, { ...deps, tool: "read_document", formulas: true })).doc
 				}
 				const selection = selectUnits(renderedDoc, params)
 				if (selection.error) return textResult(selection.error, { errorCode: "invalid-selection" })
