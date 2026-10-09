@@ -6,6 +6,8 @@ import { PRICED_TAG_LIMIT } from "./request-tags.js"
 import { isWorkAccount, sameWorkAccount } from "./scope.js"
 import { object } from "./summary.js"
 
+// The cost lines /work shows, read from the work's saved costs.json.
+
 /** A saved report also lists connected works' requests; a work's own are its requests and those linked into it. */
 export function ownRequests(rows: readonly Record<string, unknown>[], workId: string): Record<string, unknown>[] {
 	return rows.filter((row) =>
