@@ -1304,12 +1304,15 @@ describe("automatic exact work cost lookup", () => {
 		fetchMock.mockClear()
 		await sync()
 		expect(fetchMock).not.toHaveBeenCalled()
-		expect(report(priced.workId).requests[0]).toMatchObject({
+		// Both works share the PR, so each saved report lists both requests.
+		const saved = (workId: string, requestId: string) =>
+			report(workId).requests.find((row: { requestId: string }) => row.requestId === requestId)
+		expect(saved(priced.workId, priced.requestId)).toMatchObject({
 			priceStatus: "priced",
 			totalCostUsd: "0.200000000",
 			billingLookup: { status: "account-changed", reason: "Original credential or endpoint is no longer configured" },
 		})
-		expect(report(pending.workId).requests[0]).toMatchObject({
+		expect(saved(pending.workId, pending.requestId)).toMatchObject({
 			priceStatus: "missing",
 			totalCostUsd: null,
 			billingLookup: { status: "account-changed" },
@@ -1318,7 +1321,7 @@ describe("automatic exact work cost lookup", () => {
 		currentKey = "test-only-original-key"
 		vi.mocked(Date.now).mockReturnValue(Date.now() + 6 * 60_000)
 		await sync()
-		expect(report(priced.workId).requests[0].billingLookup.status).toBe("priced")
+		expect(saved(priced.workId, priced.requestId).billingLookup.status).toBe("priced")
 	})
 	it("does not grow the journal for a verified price whose account changed after the window", async () => {
 		const { workId } = tagged()
