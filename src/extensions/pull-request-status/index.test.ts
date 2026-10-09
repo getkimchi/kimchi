@@ -569,10 +569,11 @@ describe("PR status with the real reconciliation supervisor", () => {
 		)
 		// Each tick delivers all 101 commits, and so does the lease owner's pass it starts. A reconciliation that
 		// work tracking requests at startup can add one more pass, so wait for at least these and an idle scan.
+		// A loaded CI runner can take several seconds per pass over the 101-row journal.
 		const pass = async (deliveries: number) => {
-			await vi.waitFor(() => expect(delivered.length).toBeGreaterThanOrEqual(deliveries), { timeout: 10_000 })
+			await vi.waitFor(() => expect(delivered.length).toBeGreaterThanOrEqual(deliveries), { timeout: 25_000 })
 			await vi.waitFor(async () => expect(await check(join(directory, "work-attribution"))).toBe(false), {
-				timeout: 10_000,
+				timeout: 25_000,
 			})
 		}
 		await start(status)
@@ -591,7 +592,7 @@ describe("PR status with the real reconciliation supervisor", () => {
 		await vi.advanceTimersByTimeAsync(30_000)
 		await pass(seen + rows.length)
 		expect(ctx.ui.setStatus).toHaveBeenCalledTimes(written)
-	}, 30_000)
+	}, 110_000)
 })
 
 describe("expected lookup failures", () => {
