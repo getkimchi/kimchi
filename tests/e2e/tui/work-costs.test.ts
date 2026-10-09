@@ -126,7 +126,7 @@ test("an open PR's pending cost becomes a sure and likely total once it is bille
 			},
 		},
 		async (_fixture, trace) => {
-			await waitForText(terminal, "PR: #731 open", { full: false, timeoutMs: 10_000 })
+			await waitForText(terminal, "PR #731 open", { full: false, timeoutMs: 10_000 })
 			await waitForCosts(costsPath, (costs) => costs.requests?.length === 1)
 			terminal.submit("/work")
 			await waitForText(terminal, "Cost so far: unknown; $0.000000000 USD confirmed (open)")
