@@ -139,6 +139,15 @@ jobs:
         shell: pwsh
         run: .\dist\bin\kimchi.exe mcp keyring-check --json
 
+      - name: Documents doctor
+        if: ${{ matrix.os != 'windows' }}
+        run: ./dist/bin/kimchi documents doctor --json
+
+      - name: Documents doctor on Windows
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: .\dist\bin\kimchi.exe documents doctor --json
+
       - name: Verify binary architecture
         if: ${{ matrix.os != 'windows' }}
         run: |
