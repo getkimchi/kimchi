@@ -98,7 +98,7 @@ function compare(report: unknown, reference: unknown) {
 	return runCli([reportPath, referencePath])
 }
 
-describe("sure and likely report totals", () => {
+describe("confirmed and inferred report totals", () => {
 	function reportFor(pullRequest: WorkPullRequest = MERGED_PR) {
 		const records: WorkRecord[] = [
 			...(["explicit", "session"] as const).map((attribution, index) => ({
@@ -145,7 +145,7 @@ describe("sure and likely report totals", () => {
 		],
 	}
 
-	it("counts likely spend once in the headline while keeping confirmed coverage separate", () => {
+	it("counts inferred spend once in the headline while keeping confirmed coverage separate", () => {
 		const report = reportFor()
 		expect(report.pullRequests[0]).toMatchObject({
 			totalCostUsd: "0.300000003",

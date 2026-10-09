@@ -60,7 +60,7 @@ The report must contain the full `requests`, `pullRequests` and `unallocated` fi
 1. Request coverage in both directions, including requests that were never captured.
 2. Each request's account and charge against its independent receipt.
 3. Request ownership, including the complete shared PR set.
-4. Each PR's total, sure and likely portions, and contributing request IDs, plus its shared, inferred and unknown references.
+4. Each PR's total, confirmed and inferred portions, and contributing request IDs, plus its shared, inferred and unknown references.
 5. The inferred, shared, unlinked, unmerged, post-merge and unknown aggregate buckets.
 
 PR totals use the account and the complete PR key together. Two users billed for the same PR get separate output lines; a charge under the wrong account is a disagreement. Two totals for the same account and PR are malformed evidence.
@@ -69,9 +69,9 @@ With priced, exclusively labelled requests and no shared labels, a PR's expected
 
 When no independently labelled request belongs exclusively to a PR, the command checks final totals against the report's provider state. An open or closed PR keeps an unknown final total; a merged PR with only post-merge requests has a confirmed zero exclusive total. Provider state itself is not independently verified by the offline command.
 
-A likely (`inferred`) request with one candidate PR contributes once to that PR's headline total. `explicit` holds sure spending and `inferred` holds likely spending. Both portions must list their own requests and match the independent receipt amounts; a correct headline cannot hide a wrong split. A likely request with several candidates stays outside each headline because its price has no agreed split.
+An inferred request with one candidate PR contributes once to that PR's headline total. `explicit` holds confirmed spending and `inferred` holds inferred spending. Both portions must list their own requests and match the independent receipt amounts; a correct headline cannot hide a wrong split. An inferred request with several candidates stays outside each headline because its price has no agreed split.
 
-The `unallocated.inferred` bucket lists all likely requests, including those already counted in a headline. It is a confidence view, not an extra charge. Each candidate also lists the request in `inferredRequestIds`. The check verifies those lists without treating them as human ownership labels: if a human assigns a likely request to one PR, its dollars can match while confirmed assignment coverage still counts it as missed. That comparison exits with code 3 and reports the ownership difference.
+The `unallocated.inferred` bucket lists all inferred requests, including those already counted in a headline. It is a confidence view, not an extra charge. Each candidate also lists the request in `inferredRequestIds`. The check verifies those lists without treating them as human ownership labels: if a human assigns an inferred request to one PR, its dollars can match while confirmed assignment coverage still counts it as missed. That comparison exits with code 3 and reports the ownership difference.
 
 Amounts use integer arithmetic. The check shows each PR's signed error and the sum of absolute PR errors. Overcharging one PR by USD 1 and undercharging another by USD 1 yields USD 2 of absolute error, not zero. Missing evidence makes full errors unavailable; unknown prices are never displayed as zero-dollar expectations.
 
@@ -107,6 +107,6 @@ The command still accepts the previous array format:
 ]
 ```
 
-This mode checks request ownership and label coverage using the report's own prices. Its output says that accounts, prices and aggregates were not independently checked. It also ignores likely (`inferred`) assignments and does not score PR headlines, so it can exit 0 while a PR total includes likely spend labelled `null`. Exit 0 means the nonempty comparison is complete and sure assignments match the labels; wrong or missed assignments return 3, including zero-cost requests. Empty or incomplete comparisons return 2. Use a version 1 reference to also check accounts, prices, likely assignments and full PR totals.
+This mode checks request ownership and label coverage using the report's own prices. Its output says that accounts, prices and aggregates were not independently checked. It also ignores inferred assignments and does not score PR headlines, so it can exit 0 while a PR total includes inferred spend labelled `null`. Exit 0 means the nonempty comparison is complete and confirmed assignments match the labels; wrong or missed assignments return 3, including zero-cost requests. Empty or incomplete comparisons return 2. Use a version 1 reference to also check accounts, prices, inferred assignments and full PR totals.
 
 The label-only output includes observed, labelled, priced and scored request counts, known report spending, and scored spending. A USD 10 report with only USD 1 labelled is incomplete, including when the unlabelled requests were free.
