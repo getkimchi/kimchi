@@ -518,8 +518,9 @@ const IDENTITY_BUDGET_MS = 10_000
 export async function lookupRepositoryIdentity(
 	cwd: string,
 	signal: AbortSignal,
+	tokens: Parameters<typeof repositoryIdentity>[3] = new Map(),
 ): Promise<{ provider: "github" | "gitlab"; host: string; name: string; id: string }> {
-	const repository = await repositoryIdentity(cwd, signal, Date.now() + IDENTITY_BUDGET_MS, new Map())
+	const repository = await repositoryIdentity(cwd, signal, Date.now() + IDENTITY_BUDGET_MS, tokens)
 	const id = providerId(repository.id)
 	if (!id) throw new LookupError("The Git provider returned no stable repository ID.", "invalid")
 	return { provider: repository.provider, host: repository.host, name: repository.name, id }

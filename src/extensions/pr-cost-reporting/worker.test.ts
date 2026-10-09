@@ -874,7 +874,7 @@ describe("repository identity for work without a PR", () => {
 			Object.values((await readReportingState(directory)).entries).some((entry) => entry.repository.id === "99"),
 		).toBe(true)
 	})
-	it("refreshes cached repository identity after five minutes", async () => {
+	it("keeps a repository identity for a day, then refreshes it", async () => {
 		await seedLinked()
 		const path = join(directory, "work-attribution", "source.jsonl")
 		const rows = (await readFile(path, "utf8"))
@@ -892,8 +892,13 @@ describe("repository identity for work without a PR", () => {
 		await run()
 		await run()
 		expect(lookup).toHaveBeenCalledOnce()
-		const next = Date.now() + 5 * 60_000
-		vi.spyOn(Date, "now").mockReturnValue(next)
+		const clock = vi.spyOn(Date, "now")
+		const start = Date.now()
+		// Passes run every 30 seconds; an hour of them asks the provider nothing.
+		clock.mockReturnValue(start + 60 * 60_000)
+		await run()
+		expect(lookup).toHaveBeenCalledOnce()
+		clock.mockReturnValue(start + 24 * 60 * 60_000)
 		lookup.mockResolvedValue({ provider: "github", host: "github.com", name: "team/moved", id: "99" })
 		await run()
 		expect(lookup).toHaveBeenCalledTimes(2)
