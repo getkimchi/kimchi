@@ -148,14 +148,14 @@ Over ACP the surface is custom ext-methods (`_kimchi.dev/…`, advertised in `_m
 | --- | --- | --- |
 | `list_resources` | — | every resource with its effective state (the /resources machinery) |
 | `set_resource_enabled` | `{ resourceId, enabled }` | persistent override; response carries `restartRequired`. Unknown ids rejected |
-| `memory_status` | `{ sessionId }` | `{ featureEnabled, sessionOverride, sessionActive, stores, pendingJobs, … }` |
+| `memory_status` | `{ sessionId }` | `{ featureEnabled, sessionOverride, sessionActive, stores, pendingJobs, … }` — `sessionActive` is the conjunction of both layers (false whenever the feature is off) |
 | `set_memory_enabled` | `{ sessionId, enabled }` | flips the session toggle; rejected when the feature is off |
 | `memory_list` | `{ scope?, project?, limit?, offset?, cwd? }` | paginated facts, newest first (default limit 50) |
 | `memory_search` | `{ query, scope?, project?, cwd? }` | ranked hits with scores |
 | `memory_delete` | `{ ids: string[] }` | across all stores; unknown ids come back in `notFound` |
 | `memory_reset` | `{ scope, project?, confirm: true }` | destructive — `confirm: true` required (the client owns its confirmation UI); `local` is not a valid reset scope |
 
-Scope params follow the shared grammar (`local` resolves via the optional `cwd`, defaulting to the server process cwd; `project` pairs with an explicit project id). The session toggle is keyed by the session's manager (`src/extensions/memory/session-toggle.ts`) — the same identity the extension reads — so `set_memory_enabled` lands exactly in the session the client named.
+Scope params follow the shared grammar: `local` (and the default) resolve via the client-supplied `cwd`; without one the local scope degrades to personal-only — the same semantics as the grammar outside a repository. The ACP server's own process cwd is never used (it is a long-lived process unrelated to any session). `project` pairs with an explicit project id, and `memory_reset` accepts no `cwd` — its target is fully determined by scope and project. The session toggle is keyed by the session's manager (`src/extensions/memory/session-toggle.ts`) — the same identity the extension reads — so `set_memory_enabled` lands exactly in the session the client named.
 
 ## Verification
 

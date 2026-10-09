@@ -28,30 +28,35 @@ import {
 	adminDeleteFacts,
 	adminListFacts,
 	adminOverview,
+	adminResetScope,
 	adminSearchFacts,
-	runAdminCommand,
+	DEFAULT_LIST_LIMIT,
 	scopeFilterFromParams,
 } from "../../../extensions/memory/admin.js"
 import { MEMORY_RESOURCE_ID } from "../../../extensions/memory/config.js"
 import { getSessionMemoryOverride, setSessionMemoryOverride } from "../../../extensions/memory/session-toggle.js"
 import { isResourceEnabled } from "../../../resources/store.js"
 
-/** Test seams + the cwd fallback for scope resolution. */
+/** Store seams — the only non-client inputs the handlers take. */
 export type MemoryMethodOptions = {
 	/** Store seams — defaults to the real on-disk backend. */
 	deps?: AdminDeps
 	/**
-	 * cwd for local/project scope resolution when the client passes none.
-	 * Defaults to the server process cwd; outside a repository the local
-	 * scope degrades to personal-only.
+	 * Test-seam cwd for local/project scope resolution when the client passes
+	 * none. Production never sets it: without a client cwd the local scope
+	 * degrades to personal-only — the long-lived server's own cwd is
+	 * unrelated to any session and must never anchor scope resolution.
 	 */
 	cwd?: string
 }
 
-const DEFAULT_LIST_LIMIT = 50
-
-function resolveCwd(options: MemoryMethodOptions): string {
-	return options.cwd ?? process.cwd()
+/** The cwd a client-supplied param carries, falling back to the test seam. Client-only — never the server process cwd. */
+function resolveClientCwd(params: Record<string, unknown>, options: MemoryMethodOptions): string | undefined {
+	const cwd = params.cwd
+	if (cwd !== undefined && typeof cwd !== "string") {
+		throw RequestError.invalidParams(undefined, "cwd must be a string")
+	}
+	return cwd ?? options.cwd
 }
 
 function requireSessionId(params: Record<string, unknown>): string {
@@ -76,10 +81,12 @@ function requireSession(
 
 /**
  * Resolve the scope params shared by the store ops via the admin grammar's
- * own mapping — one scope implementation, every surface.
+ * own mapping — one scope implementation, every surface. The client's cwd
+ * param anchors local/project resolution; without one, local degrades to
+ * personal-only (never the server process cwd).
  */
 function requireScopeFilter(params: Record<string, unknown>, options: MemoryMethodOptions) {
-	const scope = scopeFilterFromParams(params, { cwd: resolveCwd(options) })
+	const scope = scopeFilterFromParams(params, { cwd: resolveClientCwd(params, options) })
 	if ("error" in scope) {
 		throw RequestError.invalidParams(undefined, scope.error)
 	}
@@ -90,8 +97,11 @@ function requireScopeFilter(params: Record<string, unknown>, options: MemoryMeth
  * Handler for the `_kimchi.dev/memory_status` ACP extension method.
  *
  * Reports both control layers plus the store overview: the feature resource
- * state (persistent, restart-required), the session's toggle override and
- * effective state, and the structured overview data (stores, pending jobs).
+ * state (persistent, restart-required), the session's toggle override, and
+ * the effective per-session state — the conjunction of the two layers, so
+ * a client reading sessionActive alone is never told memory is on when no
+ * memory runtime is loaded. The structured overview data (stores, pending
+ * jobs) completes the picture.
  */
 export async function handleMemoryStatus(
 	getSession: (sessionId: string) => AgentSession | undefined,
@@ -101,10 +111,11 @@ export async function handleMemoryStatus(
 	const { session } = requireSession(getSession, params)
 	const override = getSessionMemoryOverride(session.sessionManager)
 	const overview = await adminOverview(options.deps)
+	const featureEnabled = isResourceEnabled(MEMORY_RESOURCE_ID)
 	return {
-		featureEnabled: isResourceEnabled(MEMORY_RESOURCE_ID),
+		featureEnabled,
 		sessionOverride: override ?? null,
-		sessionActive: override ?? true,
+		sessionActive: featureEnabled ? (override ?? true) : false,
 		...overview,
 	}
 }
@@ -224,15 +235,19 @@ export async function handleMemoryDelete(
 /**
  * Handler for the `_kimchi.dev/memory_reset` ACP extension method.
  *
- * Destructive: wipes the named scope through the same reset path the /memory
- * command uses (capture lock held, wipe semantics unchanged). The client owns
- * its confirmation UI — the call itself must carry `confirm: true`, mirroring
- * `--yes` on the CLI. `local` is not a valid reset scope (the grammar rejects
- * it too: wiping "wherever I am" is too easy to run by accident).
+ * Destructive: wipes the named scope through the structured reset path the
+ * /memory command uses (capture lock held, wipe semantics unchanged). The
+ * client owns its confirmation UI — the call itself must carry `confirm:
+ * true`, mirroring `--yes` on the CLI. `local` is not a valid reset scope
+ * (the grammar rejects it too: wiping "wherever I am" is too easy to run
+ * by accident), and `cwd` is not accepted — the wipe target is fully
+ * determined by scope and project.
  *
- * @throws RequestError.invalidParams when `confirm` is not true, the scope is
- *   missing/invalid, or the reset ran into a client-side problem (e.g. no
- *   such store). Environmental failures surface as internalError.
+ * @throws RequestError.invalidParams when `confirm` is not true, the scope
+ *   is missing/invalid, or the reset hit a client-side problem (no such
+ *   store).
+ * @throws RequestError.internalError when the reset failed for an
+ *   environmental reason (capture-lock contention, backend/fs errors).
  */
 export async function handleMemoryReset(
 	options: MemoryMethodOptions,
@@ -254,27 +269,37 @@ export async function handleMemoryReset(
 	if (scope === "project" && typeof params.project !== "string") {
 		throw RequestError.invalidParams(undefined, 'scope "project" requires the project id (owner/name)')
 	}
-	if (params.cwd !== undefined && typeof params.cwd !== "string") {
-		throw RequestError.invalidParams(undefined, "cwd must be a string")
+	if (params.cwd !== undefined) {
+		throw RequestError.invalidParams(
+			undefined,
+			"cwd is not accepted — the reset target is fully determined by scope and project",
+		)
 	}
 
-	// Threaded through the shared grammar so the reset path (lock, wipe,
-	// markers) stays single-sourced in admin.ts.
-	const args = ["reset", "--scope", scope]
-	if (typeof params.project === "string") args.push("--project", params.project)
-	args.push("--yes")
-	const result = await runAdminCommand(args, {
-		cwd: typeof params.cwd === "string" ? params.cwd : resolveCwd(options),
-		deps: options.deps,
-	})
-	if (result.code !== 0) {
-		// The dominant failure is a client-side one (no such store, bad
-		// project id); lock/fs failures flatten here too — both carry the
-		// rendered reason.
-		throw RequestError.invalidParams(undefined, result.text)
+	const scopeFilter = scopeFilterFromParams({ scope, project: params.project }, {})
+	if ("error" in scopeFilter) {
+		throw RequestError.invalidParams(undefined, scopeFilter.error)
 	}
-	const data = JSON.parse(result.json) as Record<string, unknown>
-	return { ok: true, ...data }
+	let outcome: Awaited<ReturnType<typeof adminResetScope>>
+	try {
+		// confirm:true is already the caller's explicit confirmation — yes
+		// skips the interactive gate inside the shared path.
+		outcome = await adminResetScope(scopeFilter, { yes: true, deps: options.deps })
+	} catch (error) {
+		// Environmental (lock/backend/fs) — classified distinctly from params
+		// problems, per the module's error taxonomy.
+		const detail = error instanceof Error ? error.message : String(error)
+		throw RequestError.internalError(undefined, `memory reset failed: ${detail}`)
+	}
+	if (!outcome.ok) {
+		if (outcome.reason !== "no-such-store") {
+			// yes:true skips the confirm gate, so the other failure reasons are
+			// unreachable here — surface as internal rather than guessing.
+			throw RequestError.internalError(undefined, `unexpected reset outcome: ${outcome.reason}`)
+		}
+		throw RequestError.invalidParams(undefined, `No memory store for ${outcome.scopeId} — nothing to reset.`)
+	}
+	return { ...outcome }
 }
 
 function resolvePageParams(params: Record<string, unknown>): { limit: number | "all"; offset: number } {

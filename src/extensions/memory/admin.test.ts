@@ -8,6 +8,7 @@ import {
 	type AdminMemoryItem,
 	type AdminRunOptions,
 	adminOverview,
+	adminResetScope,
 	listStores,
 	parseAdminArgs,
 	runAdminCommand,
@@ -68,14 +69,15 @@ function harness(stores: Record<string, AdminMemoryItem[]>, cwd = NO_REPO_CWD) {
 	const run = (args: string[], extra?: Pick<AdminRunOptions, "memoryState" | "confirm">) =>
 		runAdminCommand(args, {
 			cwd,
-			deps: {
-				memoryRoot: root,
-				createBackend: (dbPath) => Promise.resolve(backends.get(dbPath)?.backend ?? makeFakeBackend([]).backend),
-				acquireLock: () => Promise.resolve(() => Promise.resolve()),
-			},
+			deps,
 			...extra,
 		})
-	return { root, backends, run }
+	const deps = {
+		memoryRoot: root,
+		createBackend: (dbPath: string) => Promise.resolve(backends.get(dbPath)?.backend ?? makeFakeBackend([]).backend),
+		acquireLock: () => Promise.resolve(() => Promise.resolve()),
+	}
+	return { root, backends, deps, run }
 }
 
 const roots: string[] = []
@@ -251,6 +253,28 @@ describe("scopeFilterFromParams", () => {
 		})
 		expect(scopeFilterFromParams({ project: "owner/name" }, { cwd: NO_REPO_CWD })).toMatchObject({
 			error: expect.stringContaining("--project requires --scope project"),
+		})
+	})
+
+	it("without a cwd there is no anchor: local (and the default) degrade to personal-only", () => {
+		// The ACP server's process cwd must never be probed — no cwd means
+		// personal-only, the grammar's outside-a-repository semantics.
+		expect(scopeFilterFromParams({}, {})).toEqual({ kind: "local", scopeId: undefined })
+		expect(scopeFilterFromParams({ scope: "local" }, {})).toEqual({ kind: "local", scopeId: undefined })
+	})
+
+	it("without a cwd, cwd-dependent combinations fail fast instead of probing", () => {
+		expect(scopeFilterFromParams({ project: "owner/name" }, {})).toEqual({
+			error: "--project requires --scope project",
+		})
+		expect(scopeFilterFromParams({ scope: "project" }, {})).toEqual({
+			error: "--scope project requires --project <owner/name> (or run inside a git repository)",
+		})
+		// Explicit scopes that need no cwd keep working.
+		expect(scopeFilterFromParams({ scope: "personal" }, {})).toEqual({ kind: "personal" })
+		expect(scopeFilterFromParams({ scope: "project", project: "owner/name" }, {})).toEqual({
+			kind: "project",
+			scopeId: "owner/name",
 		})
 	})
 })
@@ -521,6 +545,53 @@ describe("runAdminCommand — reset", () => {
 		expect(readdirSync(h.root).sort()).toEqual(["capture.lock", "capture.lock.lock"])
 		expect(existsSync(join(h.root, "personal"))).toBe(false)
 		expect(existsSync(join(h.root, "projects"))).toBe(false)
+	})
+})
+
+// --- adminResetScope (structured reset for the ACP memory_reset ext-method) ------
+
+describe("adminResetScope", () => {
+	it("resets a personal store with yes and returns the structured outcome", async () => {
+		const h = trackedHarness({
+			personal: [fact("p1", "personal fact")],
+			"a/b": [fact("q1", "project fact")],
+		})
+		const outcome = await adminResetScope({ kind: "personal" }, { yes: true, deps: h.deps })
+		expect(outcome).toEqual({ ok: true, scope: "personal", facts: 1 })
+		const personalBackend = [...h.backends.entries()].find(([path]) => path.includes("personal"))?.[1]
+		const projectBackend = [...h.backends.entries()].find(([path]) => path.includes("projects"))?.[1]
+		expect(personalBackend?.isDeletedAll()).toBe(true)
+		expect(projectBackend?.isDeletedAll()).toBe(false)
+	})
+
+	it("a missing store is a client-side outcome, not a throw", async () => {
+		const h = trackedHarness({ personal: [fact("p1", "a fact")] })
+		const outcome = await adminResetScope({ kind: "project", scopeId: "no/such" }, { yes: true, deps: h.deps })
+		expect(outcome).toEqual({ ok: false, reason: "no-such-store", scopeId: "no/such" })
+	})
+
+	it("a declined confirmation cancels; no gate at all requires one", async () => {
+		const h = trackedHarness({ personal: [fact("p1", "a fact")] })
+		const declined = await adminResetScope({ kind: "personal" }, { confirm: async () => false, deps: h.deps })
+		expect(declined).toEqual({ ok: false, reason: "cancelled" })
+		const ungated = await adminResetScope({ kind: "personal" }, { deps: h.deps })
+		expect(ungated).toEqual({ ok: false, reason: "confirmation-required" })
+	})
+
+	it("environmental failures throw so callers can classify them distinctly", async () => {
+		const h = trackedHarness({ personal: [fact("p1", "a fact")] })
+		await expect(
+			adminResetScope(
+				{ kind: "personal" },
+				{
+					yes: true,
+					deps: {
+						...h.deps,
+						acquireLock: () => Promise.reject(new Error("lock busy")),
+					},
+				},
+			),
+		).rejects.toThrow("lock busy")
 	})
 })
 

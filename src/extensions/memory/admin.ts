@@ -94,6 +94,8 @@ export const USAGE = `usage: memory [list|search|delete|reset|enable|disable]
 const KNOWN_SUBCOMMANDS = new Set(["list", "search", "delete", "reset", "enable", "disable"])
 const DEFAULT_LIST_LIMIT = 50
 
+export { DEFAULT_LIST_LIMIT }
+
 interface ParsedFlags {
 	values: Record<string, string>
 	bools: Set<string>
@@ -145,27 +147,50 @@ function localScope(cwd: string): ScopeFilter {
  */
 const LOCAL_UNRESOLVED: ScopeFilter = { kind: "local", scopeId: undefined }
 
+/** Shared scope-grammar errors — single-sourced for the flag parser and the ext-method param mapping. */
+const PROJECT_REQUIRES_SCOPE = "--project requires --scope project"
+const PROJECT_WITHOUT_ID = "--scope project requires --project <owner/name> (or run inside a git repository)"
+
 /**
  * Map ACP ext-method { scope, project } params onto the admin ScopeFilter —
  * the same semantics as the flag grammar (personal | project | all | local;
  * `project` pairs with an explicit project id; the default and `local`
- * resolve via the caller's cwd). Type mismatches and invalid values come
- * back as { error } for the handler to surface as invalid params.
+ * resolve via the caller-supplied cwd). Type mismatches and invalid values
+ * come back as { error } for the handler to surface as invalid params.
+ *
+ * Without a cwd there is no anchor: local (and the default) degrade to
+ * personal-only — the same semantics as the grammar outside a repository.
+ * The ACP server's own process cwd must never be the fallback; it is a
+ * long-lived process whose cwd is unrelated to any session.
  */
 export function scopeFilterFromParams(
 	params: { scope?: unknown; project?: unknown },
-	opts: { cwd: string },
+	opts: { cwd?: string },
 ): ScopeFilter | { error: string } {
 	const { scope, project } = params
 	if (scope !== undefined && typeof scope !== "string") return { error: "scope must be a string" }
 	if (project !== undefined && typeof project !== "string") return { error: "project must be a string" }
+	if (opts.cwd === undefined) {
+		// No anchor. Explicit personal/all and an explicit project id need
+		// none; everything else that would probe a cwd fails fast instead.
+		if (scope === undefined || scope === "local") {
+			return project !== undefined ? { error: PROJECT_REQUIRES_SCOPE } : LOCAL_UNRESOLVED
+		}
+		if (scope === "project" && project === undefined) return { error: PROJECT_WITHOUT_ID }
+	}
 	const values: Record<string, string> = {}
 	if (scope !== undefined) values.scope = scope
 	if (project !== undefined) values.project = project
-	return parseScopeFilter({ values, bools: new Set<string>(), positionals: [] }, opts, {
-		reset: false,
-		usesScope: true,
-	})
+	// The cwd is only read on the paths the no-anchor shortcut above already
+	// excluded, so the placeholder never reaches resolveProjectScope.
+	return parseScopeFilter(
+		{ values, bools: new Set<string>(), positionals: [] },
+		{ cwd: opts.cwd ?? "" },
+		{
+			reset: false,
+			usesScope: true,
+		},
+	)
 }
 
 function parseScopeFilter(
@@ -177,7 +202,7 @@ function parseScopeFilter(
 	// --project names an explicit target and pairs with --scope project only —
 	// every other scope silently discarded it before.
 	if (flags.values.project !== undefined && raw !== "project") {
-		return { error: "--project requires --scope project" }
+		return { error: PROJECT_REQUIRES_SCOPE }
 	}
 	if (raw === undefined) {
 		if (reset) return { error: `reset requires --scope (all, personal, or project)` }
@@ -202,9 +227,7 @@ function parseScopeFilter(
 	}
 	const resolved = resolveProjectScope(opts.cwd)
 	if (!resolved) {
-		return {
-			error: "--scope project requires --project <owner/name> (or run inside a git repository)",
-		}
+		return { error: PROJECT_WITHOUT_ID }
 	}
 	return { kind: "project", scopeId: resolved.id }
 }
@@ -689,18 +712,33 @@ async function opDelete(parsed: { ids: string[] }, deps: ResolvedDeps): Promise<
 	return result({ text: lines.join("\n"), data, code: notFound.length > 0 ? 1 : 0 })
 }
 
-async function opReset(
-	parsed: { scope: ScopeFilter; yes: boolean },
-	options: AdminRunOptions,
-	deps: ResolvedDeps,
-): Promise<Omit<AdminResult, "useJson">> {
-	const cancelled: Omit<AdminResult, "useJson"> = {
-		text: "Cancelled.",
-		json: JSON.stringify({ cancelled: true }, null, 2),
-		code: 1,
-	}
+/** One structured reset outcome — the data half for non-grammar surfaces (the ACP memory_reset ext-method). */
+export type AdminResetOutcome =
+	| { ok: true; scope: string; facts: number; stores?: number; pendingJobs?: number }
+	/** Client-side failures — the caller renders them or surfaces them as params problems. */
+	| { ok: false; reason: "cancelled" | "confirmation-required" }
+	| { ok: false; reason: "no-such-store"; scopeId: string }
 
-	if (parsed.scope.kind === "all") {
+export interface AdminResetOptions {
+	/** Skip the confirm gate (the grammar's --yes; the ACP method's confirm:true). */
+	yes?: boolean
+	/** Pre-destructive confirm — return false to abort. Ignored when yes. */
+	confirm?: (message: string) => Promise<boolean>
+	/** Test seams. */
+	deps?: AdminDeps
+}
+
+/**
+ * Structured reset: the same stats → confirm → lock → wipe path the grammar
+ * op runs, as data instead of rendered text. Client-side failures (no such
+ * store, a declined or missing confirmation) come back as { ok: false } —
+ * the caller renders them or surfaces them as params problems; environmental
+ * failures (lock, backend, fs) throw so callers can classify them distinctly
+ * (internalError over ACP, never invalidParams).
+ */
+export async function adminResetScope(scope: ScopeFilter, options: AdminResetOptions = {}): Promise<AdminResetOutcome> {
+	const deps = resolveDeps(options.deps)
+	if (scope.kind === "all") {
 		const stores = listStores(deps.memoryRoot)
 		const storeCounts = await Promise.all(
 			stores.map(async (store) => {
@@ -710,20 +748,14 @@ async function opReset(
 		)
 		const facts = storeCounts.reduce((a, b) => a + b, 0)
 		const pendingJobs = countDirEntries(join(deps.memoryRoot, "pending"))
-		if (!parsed.yes && !options.confirm) {
-			return {
-				text: "error: reset --scope all requires --yes or an interactive confirmation",
-				json: JSON.stringify({ error: "confirmation required" }, null, 2),
-				code: 1,
-			}
-		}
+		if (!options.yes && !options.confirm) return { ok: false, reason: "confirmation-required" }
 		if (
-			!parsed.yes &&
+			!options.yes &&
 			!(await options.confirm?.(
 				`Wipe ALL memory? This permanently deletes ${stores.length} store(s), ${facts} fact(s), and ${pendingJobs} pending capture job(s).`,
 			))
 		) {
-			return cancelled
+			return { ok: false, reason: "cancelled" }
 		}
 		const release = await deps.acquireLock(deps.memoryRoot)
 		try {
@@ -739,35 +771,26 @@ async function opReset(
 		} finally {
 			await release()
 		}
-		return result({
-			text: `Wiped the memory root: ${stores.length} store(s), ${facts} fact(s), ${pendingJobs} pending job(s) removed.`,
-			data: { scope: "all", stores: stores.length, facts, pendingJobs },
-		})
+		return { ok: true, scope: "all", facts, stores: stores.length, pendingJobs }
 	}
 
-	const scopeId = parsed.scope.kind === "personal" ? "personal" : parsed.scope.scopeId
-	const store = listStores(deps.memoryRoot).find((s) => s.scopeId === scopeId)
-	if (!store) {
-		return result({
-			text: `No memory store for ${scopeId} — nothing to reset.`,
-			data: { scope: scopeId, error: "no such store" },
-			code: 1,
-		})
+	if (scope.kind === "local") {
+		// Both reset surfaces reject local before reaching here (the grammar
+		// and the ACP handler's scope validation) — an internal invariant, not
+		// a user-facing failure mode.
+		throw new Error("adminResetScope: local is not a valid reset target")
 	}
+	const scopeId = scope.kind === "personal" ? "personal" : scope.scopeId
+	const store = listStores(deps.memoryRoot).find((s) => s.scopeId === scopeId)
+	if (!store) return { ok: false, reason: "no-such-store", scopeId }
 	const backend = await deps.createBackend(store.dbPath)
 	const facts = (await backend.getAll()).length
-	if (!parsed.yes && !options.confirm) {
-		return {
-			text: "error: reset requires --yes or an interactive confirmation",
-			json: JSON.stringify({ error: "confirmation required" }, null, 2),
-			code: 1,
-		}
-	}
+	if (!options.yes && !options.confirm) return { ok: false, reason: "confirmation-required" }
 	if (
-		!parsed.yes &&
+		!options.yes &&
 		!(await options.confirm?.(`Reset the ${scopeId} store? This permanently deletes ${facts} fact(s).`))
 	) {
-		return cancelled
+		return { ok: false, reason: "cancelled" }
 	}
 	const release = await deps.acquireLock(deps.memoryRoot)
 	try {
@@ -775,8 +798,44 @@ async function opReset(
 	} finally {
 		await release()
 	}
-	return result({
-		text: `Reset ${scopeId}: deleted ${facts} fact(s).`,
-		data: { scope: scopeId, facts },
-	})
+	return { ok: true, scope: scopeId, facts }
+}
+
+async function opReset(
+	parsed: { scope: ScopeFilter; yes: boolean },
+	options: AdminRunOptions,
+	deps: ResolvedDeps,
+): Promise<Omit<AdminResult, "useJson">> {
+	const outcome = await adminResetScope(parsed.scope, { yes: parsed.yes, confirm: options.confirm, deps })
+	if (outcome.ok) {
+		return outcome.stores !== undefined
+			? result({
+					text: `Wiped the memory root: ${outcome.stores} store(s), ${outcome.facts} fact(s), ${outcome.pendingJobs} pending job(s) removed.`,
+					data: {
+						scope: outcome.scope,
+						stores: outcome.stores,
+						facts: outcome.facts,
+						pendingJobs: outcome.pendingJobs,
+					},
+				})
+			: result({
+					text: `Reset ${outcome.scope}: deleted ${outcome.facts} fact(s).`,
+					data: { scope: outcome.scope, facts: outcome.facts },
+				})
+	}
+	if (outcome.reason === "cancelled") {
+		return { text: "Cancelled.", json: JSON.stringify({ cancelled: true }, null, 2), code: 1 }
+	}
+	if (outcome.reason === "no-such-store") {
+		return result({
+			text: `No memory store for ${outcome.scopeId} — nothing to reset.`,
+			data: { scope: outcome.scopeId, error: "no such store" },
+			code: 1,
+		})
+	}
+	return {
+		text: "error: reset requires --yes or an interactive confirmation",
+		json: JSON.stringify({ error: "confirmation required" }, null, 2),
+		code: 1,
+	}
 }

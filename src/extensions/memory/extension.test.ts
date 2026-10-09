@@ -565,4 +565,40 @@ describe("memory extension", () => {
 		// Only the turn-1 digest ran — the tool did not search.
 		expect(search).toHaveBeenCalledTimes(1)
 	})
+
+	it("the /memory command's toggle gates the very next agent start (identity seam)", async () => {
+		const admin = await import("./admin.js")
+		// Route the command through the REAL admin core for this test — the
+		// file-wide runAdminCommand mock would otherwise swallow the set_enabled
+		// execution, and the point is the full path: command → handle → shared
+		// toggle → runtime read.
+		const real = await vi.importActual<typeof import("./admin.js")>("./admin.js")
+		vi.mocked(admin.runAdminCommand).mockImplementation(real.runAdminCommand)
+		try {
+			const search = vi.fn(async () => [{ memory: "fact", score: 0.7 }])
+			const { api, getHandler, getRegisteredCommand } = createExtensionApi()
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) })(api)
+			const start = getHandler<BeforeAgentStartEvent, { systemPrompt?: string } | undefined>("before_agent_start")
+			const command = getRegisteredCommand("memory")
+			// ONE context object across both surfaces — the WeakMap key must be
+			// the same sessionManager instance for the command's write and the
+			// runtime's read (the session-toggle module's documented identity
+			// assumption).
+			const ctx = createCommandContext()
+
+			const on = await start(startEvent("turn 1"), ctx)
+			expect(on?.systemPrompt).toContain("fact")
+
+			await command.handler("disable", ctx)
+			expect(await start(startEvent("turn 2"), ctx)).toBeUndefined()
+
+			await command.handler("enable", ctx)
+			const back = await start(startEvent("turn 3"), ctx)
+			expect(back?.systemPrompt).toContain("fact")
+		} finally {
+			// Drop the real-implementation bridge so later tests keep the
+			// file-wide mock semantics.
+			vi.mocked(admin.runAdminCommand).mockReset()
+		}
+	})
 })

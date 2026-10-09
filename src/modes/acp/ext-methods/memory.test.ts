@@ -3,6 +3,7 @@
 // backends in a temp memory root (the admin.test.ts harness pattern); the
 // feature-resource state is isolated through a temp KIMCHI_CODING_AGENT_DIR.
 
+import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -10,6 +11,7 @@ import type { RequestError } from "@agentclientprotocol/sdk"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { AdminBackend, AdminMemoryItem } from "../../../extensions/memory/admin.js"
+import { resolveProjectScope } from "../../../extensions/memory/scope.js"
 import { getSessionMemoryOverride, setSessionMemoryOverride } from "../../../extensions/memory/session-toggle.js"
 import { BaseFakeAgentSession, makeAcpConn, makeAcpSessionFactory } from "../__mocks__/fake-agent-session.js"
 import { AVAILABLE_EXT_METHODS } from "../capabilities.js"
@@ -50,6 +52,16 @@ class FakeAgentSession extends BaseFakeAgentSession {}
 // --- fixtures -------------------------------------------------------------------
 
 const NO_REPO_CWD = join(tmpdir(), "kimchi-acp-memory-norepo")
+
+/** A throwaway git repository cwd for local-scope resolution (the admin.test.ts pattern). */
+function makeRepo(remote?: string): string {
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-acp-memory-repo-"))
+	roots.push(dir)
+	const run = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8", stdio: "pipe" })
+	run(["init", "--quiet"])
+	if (remote) run(["remote", "add", "origin", remote])
+	return dir
+}
 
 /** A minimal session carrying the sessionManager identity the handlers key on. */
 function makeSession(): { session: AgentSession; manager: object } {
@@ -162,8 +174,12 @@ describe("handleMemoryStatus", () => {
 		const { options } = harness({})
 		const result = (await handleMemoryStatus((id) => (id === "s1" ? session : undefined), options, {
 			sessionId: "s1",
-		})) as { featureEnabled: boolean }
+		})) as { featureEnabled: boolean; sessionActive: boolean; sessionOverride: boolean | null }
 		expect(result.featureEnabled).toBe(false)
+		// The conjunction: no memory runtime is loaded, so the session is not
+		// active even though no override exists.
+		expect(result.sessionActive).toBe(false)
+		expect(result.sessionOverride).toBeNull()
 	})
 
 	it("rejects an unknown or missing session", async () => {
@@ -270,6 +286,37 @@ describe("handleMemoryList", () => {
 			facts: Array<{ memory: string }>
 		}
 		expect(project.facts.map((f) => f.memory)).toEqual(["project fact"])
+	})
+
+	it("a client-supplied cwd anchors the local scope; without one it stays personal-only", async () => {
+		const repo = makeRepo("https://github.com/cur/proj.git")
+		const stores: Record<string, AdminMemoryItem[]> = {
+			personal: [fact("p1", "personal fact")],
+			"cur/proj": [fact("q1", "client cwd project fact")],
+		}
+		// Whatever project the server process's cwd resolves to (the test
+		// runner's own repo) — the old process.cwd() fallback would leak this
+		// store into an unanchored local listing.
+		const processScopeId = resolveProjectScope(process.cwd())?.id
+		if (processScopeId) stores[processScopeId] = [fact("x1", "server cwd project fact")]
+		const { options } = harness(stores)
+
+		// With the client cwd: personal + that project — the workspace-equivalent view.
+		const withCwd = (await handleMemoryList({ deps: options.deps }, { cwd: repo })) as {
+			facts: Array<{ memory: string }>
+		}
+		expect(withCwd.facts.map((f) => f.memory).sort()).toEqual(["client cwd project fact", "personal fact"])
+
+		// Without any cwd: personal-only — never the server process cwd's project.
+		const without = (await handleMemoryList({ deps: options.deps }, {})) as {
+			facts: Array<{ memory: string }>
+		}
+		expect(without.facts.map((f) => f.memory)).toEqual(["personal fact"])
+
+		// A mistyped cwd is rejected.
+		const err = await thrownRequestErrorAsync(() => handleMemoryList({ deps: options.deps }, { cwd: 42 }))
+		expect(err.code).toBe(-32602)
+		expect(err.message).toContain("cwd")
 	})
 
 	it("rejects invalid scope combinations and pagination params", async () => {
@@ -410,6 +457,27 @@ describe("handleMemoryReset", () => {
 		)
 		expect(err.code).toBe(-32602)
 		expect(err.message).toContain("No memory store for no/such")
+	})
+
+	it("rejects the cwd param — the wipe target is fully determined by scope and project", async () => {
+		const { options } = harness({ personal: [fact("p1", "a fact")] })
+		const err = await thrownRequestErrorAsync(() =>
+			handleMemoryReset(options, { scope: "personal", cwd: "/tmp", confirm: true }),
+		)
+		expect(err.code).toBe(-32602)
+		expect(err.message).toContain("cwd is not accepted")
+	})
+
+	it("environmental failures surface as internalError, not invalidParams", async () => {
+		const { options } = harness({ personal: [fact("p1", "a fact")] })
+		const err = await thrownRequestErrorAsync(() =>
+			handleMemoryReset(
+				{ deps: { ...options.deps, acquireLock: () => Promise.reject(new Error("lock busy")) } },
+				{ scope: "personal", confirm: true },
+			),
+		)
+		expect(err.code).toBe(-32603)
+		expect(err.message).toContain("lock busy")
 	})
 })
 
