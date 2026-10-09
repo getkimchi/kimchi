@@ -709,7 +709,6 @@ describe("server limits", () => {
 	it.each([
 		["organization", "this organization"],
 		["contributor", "your account in this organization"],
-		["frozen", "this organization"],
 	])("pauses the whole account for a %s limit but still sends a withdrawal", async (scope, owner) => {
 		await queueSnapshots(directory, [content, inventory([second], "43")])
 		respond((payload) => (payload.requests.length ? limited(scope, "requests", "50000", "50000") : accepted(payload)))
@@ -726,6 +725,19 @@ describe("server limits", () => {
 		await deliver()
 		expect(posts().map((payload) => [payload.repository.id, payload.requests.length])).toEqual([["42", 0]])
 		expect((await readReportingState(directory)).paused).toBeDefined()
+	})
+	it("does not pause the account for a limit the server reports only on queries", async () => {
+		await queueSnapshots(directory, [content, inventory([second], "43")])
+		respond((payload) =>
+			payload.repository.id === "42" ? limited("frozen", "reports", "250001", "250000") : accepted(payload),
+		)
+		await deliver()
+		// Frozen totals never reject an upload; an unknown scope waits on this repository alone.
+		const state = await readReportingState(directory)
+		expect(state.paused).toBeUndefined()
+		expect(await entryFor("42")).toMatchObject({ limit: { current: 250001, maximum: 250000 } })
+		expect((await entryFor("42"))?.limit?.scope).toBeUndefined()
+		expect((await entryFor("43"))?.pending).toBeUndefined()
 	})
 	it("trims to a server snapshot limit and sends the smaller snapshot after the wait", async () => {
 		await rm(join(directory, "pr-cost-reporting", "state.json"))

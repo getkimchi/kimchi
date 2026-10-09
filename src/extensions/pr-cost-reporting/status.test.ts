@@ -122,8 +122,8 @@ describe("one-time limit notices", () => {
 					{ provider: "gitlab", host: "gitlab.example", id: "7" },
 				],
 				pauses: [
-					{ scope: "organization", at: now },
-					{ scope: "frozen", at: now },
+					{ scope: "organization", limit: "requests", at: now },
+					{ scope: "organization", limit: "bytes", at: now },
 					{ scope: "contributor", at: now },
 				],
 			}),

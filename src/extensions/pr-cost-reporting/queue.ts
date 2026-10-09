@@ -30,7 +30,8 @@ export interface SnapshotAck {
 	receivedAt: string
 }
 
-export const LIMIT_SCOPES = ["snapshot", "producer", "contributor", "organization", "frozen"] as const
+/** Scopes and limit names an upload rejection can carry; the server's frozen limits only bound its queries. */
+export const LIMIT_SCOPES = ["snapshot", "producer", "contributor", "organization"] as const
 export const LIMIT_NAMES = [
 	"bytes",
 	"requests",
@@ -39,10 +40,9 @@ export const LIMIT_NAMES = [
 	"snapshots",
 	"repositories",
 	"billingIds",
-	"reports",
 ] as const
-/** Contributor, organization and archive limits apply to every repository of the account. */
-export const ACCOUNT_SCOPES: readonly string[] = ["contributor", "organization", "frozen"]
+/** Contributor and organization limits apply to every repository of the account. */
+export const ACCOUNT_SCOPES: readonly string[] = ["contributor", "organization"]
 
 /** A validated PR_COST_LIMIT rejection. Free-form server text never enters durable state. */
 export interface ServerLimit {
