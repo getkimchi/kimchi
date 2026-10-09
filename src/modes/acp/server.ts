@@ -137,6 +137,15 @@ import { handleAuthStatus } from "./ext-methods/auth-status.js"
 import { handleImportApply } from "./ext-methods/import-apply.js"
 import { importDiscover } from "./ext-methods/import-discover.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
+import {
+	handleMemoryDelete,
+	handleMemoryList,
+	handleMemoryReset,
+	handleMemorySearch,
+	handleMemoryStatus,
+	handleSetMemoryEnabled,
+} from "./ext-methods/memory.js"
+import { handleListResources, handleSetResourceEnabled } from "./ext-methods/resources.js"
 import { handleSetOnboardingFlag } from "./ext-methods/set-onboarding-flag.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { handleSteering } from "./ext-methods/steering.js"
@@ -1149,6 +1158,35 @@ export class KimchiAcpAgent implements Agent {
 				// capability), then live-refresh affected sessions. See
 				// handleSetPathTrust.
 				return this.handleSetPathTrust(params)
+			case AVAILABLE_EXT_METHODS.list_resources:
+				// Sessionless read: every known resource with its effective state
+				// — the /resources machinery for client-built settings UIs.
+				return handleListResources()
+			case AVAILABLE_EXT_METHODS.set_resource_enabled:
+				// Sessionless write: the persistent resource override; the response
+				// carries restartRequired so the client can surface the hint.
+				return handleSetResourceEnabled({}, params)
+			case AVAILABLE_EXT_METHODS.memory_status:
+				// Session-scoped: the session's memory toggle state plus the
+				// sessionless store overview (adminOverview).
+				return handleMemoryStatus((sessionId) => this.sessions.get(sessionId)?.session, {}, params)
+			case AVAILABLE_EXT_METHODS.set_memory_enabled:
+				// Session-scoped: flip the session's runtime memory toggle — the
+				// memory extension reads it at its next agent start.
+				return handleSetMemoryEnabled((sessionId) => this.sessions.get(sessionId)?.session, params)
+			case AVAILABLE_EXT_METHODS.memory_list:
+				// Sessionless store op: paginated facts across the selected scopes.
+				return handleMemoryList({}, params)
+			case AVAILABLE_EXT_METHODS.memory_search:
+				// Sessionless store op: ranked search across the selected scopes.
+				return handleMemorySearch({}, params)
+			case AVAILABLE_EXT_METHODS.memory_delete:
+				// Sessionless store op: delete facts by id across all stores.
+				return handleMemoryDelete({}, params)
+			case AVAILABLE_EXT_METHODS.memory_reset:
+				// Sessionless store op: wipe a scope — the client-confirmed
+				// destructive op (the required confirm param mirrors --yes).
+				return handleMemoryReset({}, params)
 			default:
 				throw RequestError.methodNotFound(method)
 		}

@@ -69,9 +69,10 @@ export type AdminCommand =
 	| { op: "search"; query: string; scope: ScopeFilter; json: boolean }
 	| { op: "delete"; ids: string[] }
 	| { op: "reset"; scope: ScopeFilter; yes: boolean }
+	| { op: "set_enabled"; enabled: boolean }
 	| { op: "usage-error"; message: string }
 
-export const USAGE = `usage: memory [list|search|delete|reset]
+export const USAGE = `usage: memory [list|search|delete|reset|enable|disable]
 
   (no arguments)   overview: storage path, per-store stats, pending jobs
   list    [--scope local|personal|project|all] [--project <owner/name>]
@@ -79,6 +80,10 @@ export const USAGE = `usage: memory [list|search|delete|reset]
   search  <query> [--scope ...] [--json]
   delete  <id> [<id>...]
   reset   --scope all|personal|project [--project <owner/name>] [--yes]
+  enable | disable
+          Toggle memory for the current interactive session only. Resets on
+          restart; the persistent feature switch is
+          "kimchi resources enable|disable extensions.memory".
 
   The default scope for list and search is local: the personal store plus
   the current project (personal only outside a repository). --scope all
@@ -86,7 +91,7 @@ export const USAGE = `usage: memory [list|search|delete|reset]
 
 // --- grammar ------------------------------------------------------------------
 
-const KNOWN_SUBCOMMANDS = new Set(["list", "search", "delete", "reset"])
+const KNOWN_SUBCOMMANDS = new Set(["list", "search", "delete", "reset", "enable", "disable"])
 const DEFAULT_LIST_LIMIT = 50
 
 interface ParsedFlags {
@@ -140,6 +145,29 @@ function localScope(cwd: string): ScopeFilter {
  */
 const LOCAL_UNRESOLVED: ScopeFilter = { kind: "local", scopeId: undefined }
 
+/**
+ * Map ACP ext-method { scope, project } params onto the admin ScopeFilter —
+ * the same semantics as the flag grammar (personal | project | all | local;
+ * `project` pairs with an explicit project id; the default and `local`
+ * resolve via the caller's cwd). Type mismatches and invalid values come
+ * back as { error } for the handler to surface as invalid params.
+ */
+export function scopeFilterFromParams(
+	params: { scope?: unknown; project?: unknown },
+	opts: { cwd: string },
+): ScopeFilter | { error: string } {
+	const { scope, project } = params
+	if (scope !== undefined && typeof scope !== "string") return { error: "scope must be a string" }
+	if (project !== undefined && typeof project !== "string") return { error: "project must be a string" }
+	const values: Record<string, string> = {}
+	if (scope !== undefined) values.scope = scope
+	if (project !== undefined) values.project = project
+	return parseScopeFilter({ values, bools: new Set<string>(), positionals: [] }, opts, {
+		reset: false,
+		usesScope: true,
+	})
+}
+
 function parseScopeFilter(
 	flags: ParsedFlags,
 	opts: { cwd: string },
@@ -191,6 +219,16 @@ export function parseAdminArgs(args: string[], opts: { cwd: string }): AdminComm
 	const rest = sub === "" ? args : args.slice(1)
 	const flags = parseFlagTokens(rest)
 	if ("error" in flags) return { op: "usage-error", message: flags.error }
+	// The toggle is session-scoped by definition — no flags, no positionals,
+	// no scope to disambiguate (the persistent switch is the /resources
+	// feature toggle). Checked before the scope parse so `enable --scope x`
+	// reports the toggle rule, not a scope error.
+	if (sub === "enable" || sub === "disable") {
+		if (rest.length > 0) {
+			return { op: "usage-error", message: `${sub} takes no arguments — it toggles the current session's memory only` }
+		}
+		return { op: "set_enabled", enabled: sub === "enable" }
+	}
 	// Only list and search consume the parsed scope — overview and delete get
 	// the unresolved local marker instead of paying the git probe.
 	const scope = parseScopeFilter(flags, opts, {
@@ -384,11 +422,25 @@ function renderFactLines(page: AdminFact[]): string[] {
 
 // --- operations ------------------------------------------------------------------
 
+/**
+ * The session-scoped memory toggle behind the set_enabled op. Wired by
+ * interactive surfaces (the in-session /memory command, backed by the shared
+ * session-toggle module); the CLI passes no handle — enable/disable have no
+ * session to act on there.
+ */
+export interface MemoryStateHandle {
+	/** The session's override: undefined = default (enabled). */
+	read(): boolean | undefined
+	setSession(enabled: boolean): void
+}
+
 export interface AdminRunOptions {
 	/** cwd for `--scope project` resolution. */
 	cwd: string
 	/** Pre-destructive confirm for reset — return false to abort. `--yes` skips it. */
 	confirm?: (message: string) => Promise<boolean>
+	/** Session-scoped memory toggle for enable|disable (interactive surfaces only). */
+	memoryState?: MemoryStateHandle
 	/** Test seams. */
 	deps?: AdminDeps
 }
@@ -409,12 +461,12 @@ export async function runAdminCommand(args: string[], options: AdminRunOptions):
 	}
 	const deps = resolveDeps(options.deps)
 	// The --json flag selects the rendering at the surface; the ops always
-	// produce both.
-	const useJson = parsed.op !== "delete" && parsed.op !== "reset" ? parsed.json : false
+	// produce both. Only the read ops carry a json flag.
+	const useJson = parsed.op === "overview" || parsed.op === "list" || parsed.op === "search" ? parsed.json : false
 	try {
 		switch (parsed.op) {
 			case "overview":
-				return withMode(await opOverview(deps), useJson)
+				return withMode(await opOverview(deps, options.memoryState), useJson)
 			case "list":
 				return withMode(await opList(parsed, deps), useJson)
 			case "search":
@@ -423,6 +475,8 @@ export async function runAdminCommand(args: string[], options: AdminRunOptions):
 				return withMode(await opDelete(parsed, deps), false)
 			case "reset":
 				return withMode(await opReset(parsed, options, deps), false)
+			case "set_enabled":
+				return withMode(opSetEnabled(parsed, options), false)
 		}
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err)
@@ -502,11 +556,21 @@ export async function adminDeleteFacts(
 	return { deleted, notFound }
 }
 
-async function opOverview(deps: ResolvedDeps): Promise<Omit<AdminResult, "useJson">> {
-	const stores = listStores(deps.memoryRoot)
+/** Structured overview: per-store stats plus pending-capture counters. */
+export interface MemoryOverview {
+	root: string
+	stores: Array<{ scope: string; facts: number; sizeBytes: number }>
+	pendingJobs: number
+	ledgerEntries: number
+}
+
+/** Structured overview data — the data half of the overview rendering, shared with the ACP memory_status ext-method. */
+export async function adminOverview(deps?: AdminDeps): Promise<MemoryOverview> {
+	const resolved = resolveDeps(deps)
+	const stores = listStores(resolved.memoryRoot)
 	const entries = await Promise.all(
 		stores.map(async (store) => {
-			const backend = await deps.createBackend(store.dbPath)
+			const backend = await resolved.createBackend(store.dbPath)
 			return {
 				scope: store.scopeId,
 				facts: (await backend.getAll()).length,
@@ -514,24 +578,58 @@ async function opOverview(deps: ResolvedDeps): Promise<Omit<AdminResult, "useJso
 			}
 		}),
 	)
-	const pendingJobs = countDirEntries(join(deps.memoryRoot, "pending"))
-	const ledgerEntries = ledgerEntryCount(join(deps.memoryRoot, "captured-hashes.json"))
-	const data = { root: deps.memoryRoot, stores: entries, pendingJobs, ledgerEntries }
+	return {
+		root: resolved.memoryRoot,
+		stores: entries,
+		pendingJobs: countDirEntries(join(resolved.memoryRoot, "pending")),
+		ledgerEntries: ledgerEntryCount(join(resolved.memoryRoot, "captured-hashes.json")),
+	}
+}
 
-	const lines = [`Memory storage: ${deps.memoryRoot}`, ""]
-	if (entries.length === 0) {
+async function opOverview(deps: ResolvedDeps, memoryState?: MemoryStateHandle): Promise<Omit<AdminResult, "useJson">> {
+	const data = await adminOverview(deps)
+
+	const lines: string[] = []
+	if (memoryState) {
+		lines.push(memoryState.read() === false ? "Memory: disabled (this session)" : "Memory: enabled")
+	}
+	lines.push(`Memory storage: ${data.root}`, "")
+	if (data.stores.length === 0) {
 		lines.push("No memories stored yet.")
 	} else {
-		const scopeWidth = Math.max(5, ...entries.map((e) => e.scope.length))
+		const scopeWidth = Math.max(5, ...data.stores.map((e) => e.scope.length))
 		lines.push(`  ${"scope".padEnd(scopeWidth)}  facts    size`)
-		for (const entry of entries) {
+		for (const entry of data.stores) {
 			lines.push(
 				`  ${entry.scope.padEnd(scopeWidth)}  ${String(entry.facts).padEnd(8)}  ${formatSize(entry.sizeBytes)}`,
 			)
 		}
 	}
-	lines.push("", `Pending capture jobs: ${pendingJobs}`, `Captured-message ledger entries: ${ledgerEntries}`, "", USAGE)
+	lines.push(
+		"",
+		`Pending capture jobs: ${data.pendingJobs}`,
+		`Captured-message ledger entries: ${data.ledgerEntries}`,
+		"",
+		USAGE,
+	)
 	return result({ text: lines.join("\n"), data })
+}
+
+function opSetEnabled(parsed: { enabled: boolean }, options: AdminRunOptions): Omit<AdminResult, "useJson"> {
+	if (!options.memoryState) {
+		const message =
+			'error: enable/disable toggle the current interactive session\'s memory — run /memory inside a session, or use "kimchi resources enable|disable extensions.memory" for the persistent feature switch'
+		return {
+			text: message,
+			json: JSON.stringify({ error: "enable/disable require an interactive session" }, null, 2),
+			code: 1,
+		}
+	}
+	options.memoryState.setSession(parsed.enabled)
+	return result({
+		text: parsed.enabled ? "Memory enabled." : "Memory disabled for this session — resets on restart.",
+		data: { enabled: parsed.enabled, sessionOverride: options.memoryState.read() },
+	})
 }
 
 async function opList(

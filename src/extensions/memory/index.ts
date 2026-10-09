@@ -20,7 +20,8 @@
  *     did not surface.
  *   - In-session management: the `/memory` command (same grammar as the
  *     `kimchi memory` CLI subcommand — admin.ts) lists, searches, deletes,
- *     and resets. Deletion is user-only; the model never gets a write tool.
+ *     resets, and flips the session-scoped runtime toggle (enable|disable).
+ *     Deletion is user-only; the model never gets a write tool.
  *   - Progressive recall (turns 2+): each new user prompt plus the tail of
  *     the last assistant response (the model may drive the conversation) is
  *     a drift signal; a free lexical-coverage gate decides when a retrieval
@@ -33,8 +34,10 @@
  * Failures degrade to no-memory: store/search errors log once and leave
  * the session untouched. Memory must never break a session.
  *
- * Opt-in via the extensions.memory resource: `kimchi resources enable
- * extensions.memory` (persistent) or KIMCHI_ENABLE_RESOURCES (transient).
+ *   - Session-scoped toggle: `/memory enable|disable` (or the ACP
+ *     `set_memory_enabled` ext-method) flip a per-session runtime switch —
+ *     session-toggle.ts is the shared channel. The persistent feature switch
+ *     stays the extensions.memory resource (/resources, restart required).
  */
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { markHarnessSteer } from "../steer-marker.js"
@@ -64,6 +67,7 @@ import {
 import { MemoryPanel, type MemoryPanelFact } from "./memory-panel.js"
 import { migrateAgentMemory } from "./migrate-agent-memory.js"
 import { createScopedSearcher } from "./scoped-searcher.js"
+import { getSessionMemoryOverride, setSessionMemoryOverride } from "./session-toggle.js"
 import { createMemorySearchTool } from "./tools.js"
 
 /** What one search call returns after the value gate. */
@@ -185,25 +189,44 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		})
 		if (!isEnabled()) return
 
-		wireMemoryCapture(pi)
+		// Session-scoped memory toggle: the /memory command (this surface) and
+		// the ACP set_memory_enabled ext-method write the shared override keyed
+		// by the sessionManager instance; this runtime reads it at each agent
+		// start. lastActive drives flip detection — a flip resets the digest and
+		// the delivery ledger so the next start recomputes cleanly. The key is
+		// captured at the first agent start (the factory itself has no ctx);
+		// before that the default (active) applies.
+		let sessionKey: object | undefined
+		let lastActive: boolean | undefined
+		const memoryActive = (): boolean =>
+			sessionKey === undefined ? true : (getSessionMemoryOverride(sessionKey) ?? true)
+
+		wireMemoryCapture(pi, memoryActive)
 
 		// In-session management — the same grammar as `kimchi memory` (admin.ts).
 		// list|search open the interactive MemoryPanel (page through facts,
-		// delete by selection); everything else renders as a read-only widget
-		// (single-line results as notifications); resets confirm through the
-		// native dialog.
+		// delete by selection) in TUI mode; everything else — including rpc/ACP
+		// contexts, where custom components have no equivalent — renders as
+		// read-only output (single-line results as notifications); resets
+		// confirm through the native dialog.
 		pi.registerCommand("memory", {
-			description: "Manage persistent memory (list, search, delete, reset)",
+			description: "Manage persistent memory (list, search, delete, reset, enable, disable)",
 			handler: async (args, ctx) => {
 				const tokens = args?.trim().split(/\s+/).filter(Boolean) ?? []
 				const parsed = parseAdminArgs(tokens, { cwd: ctx.cwd })
-				if ((parsed.op === "list" || parsed.op === "search") && !parsed.json && ctx.hasUI) {
+				if ((parsed.op === "list" || parsed.op === "search") && !parsed.json && ctx.mode === "tui") {
 					await openMemoryPanel(parsed, ctx)
 					return
 				}
 				const result = await runAdminCommand(tokens, {
 					cwd: ctx.cwd,
 					confirm: async (message) => ctx.ui.confirm("Memory reset", message),
+					memoryState: {
+						read: () => getSessionMemoryOverride(ctx.sessionManager),
+						setSession: (enabled) => {
+							setSessionMemoryOverride(ctx.sessionManager, enabled)
+						},
+					},
 				})
 				const output = result.useJson ? result.json : result.text
 				if (!ctx.hasUI) {
@@ -339,6 +362,27 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			clearMemoryView(ctx)
 			// Capture the session cwd once — scopes retrieval to the project store.
 			sessionCwd ??= ctx.cwd
+			// Session-scoped toggle: capture the key once, then re-read the shared
+			// override every start (the /memory command or the ACP
+			// set_memory_enabled ext-method may flip it between turns). A flip
+			// resets the digest, the delivery ledger, and the incremental mark so
+			// the next start recomputes cleanly; while disabled the session runs
+			// with no memory contribution at all (no digest, no notice, no
+			// capture, no recall) — earlier turns keep what they already sent
+			// (accepted cache break; deliberate user action).
+			sessionKey ??= ctx.sessionManager
+			const active = memoryActive()
+			if (active !== lastActive) {
+				if (lastActive !== undefined) {
+					digest = undefined
+					deliveredKeys.clear()
+					deliveredFacts.length = 0
+					incrementalState = createIncrementalCaptureState()
+				}
+				lastActive = active
+			}
+			if (!active) return
+
 			// One-time migration from the legacy agent-memory system (per-agent
 			// MEMORY.md) into the personal store — awaited so migrated content is
 			// searchable from this session's first digest. Steady state is a single
@@ -458,6 +502,9 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					if (!s) return []
 					return s.search(query)
 				},
+				// The session toggle gates the tool too — a disabled memory reports
+				// its state instead of a misleading "no memories" result.
+				isEnabled: memoryActive,
 			}),
 		)
 	}

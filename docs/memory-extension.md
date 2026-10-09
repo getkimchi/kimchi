@@ -70,6 +70,7 @@ Memory never breaks a session:
 | --- | --- |
 | Store/search throws | logged once, session continues without memory |
 | Search hangs | 10s timeout on the turn-1 digest and recall searches, then no-memory |
+| Session toggle disabled | no memory contribution from the next agent start — the tool reports the disabled state instead of searching |
 | Worker spawn fails (ENOENT) | logged, session continues |
 | Gateway call fails | retried per the shared retry contract, then the window's hashes stay unmarked for the next spawn |
 | Duplicate guard (`getAll`) fails | logged, adds proceed without dedupe |
@@ -124,6 +125,7 @@ kimchi memory list [--scope local|personal|project|all] [--project <owner/name>]
 kimchi memory search <query>        [--scope ...] [--json]
 kimchi memory delete <id> [...]
 kimchi memory reset --scope all|personal|project [--project <owner/name>] [--yes]
+kimchi memory enable | disable      (in-session /memory only — see the session toggle)
 ```
 
 - `list` and `search` default to the local scope — the personal store plus the current project's (personal only outside a repository), the same scoping retrieval uses; `--scope all` sees every store, `--scope local` spells the default out, and `--project` pairs with `--scope project` only (every other scope rejects it).
@@ -131,7 +133,29 @@ kimchi memory reset --scope all|personal|project [--project <owner/name>] [--yes
 - `delete` resolves ids across all stores, so no `--scope` is needed.
 - `reset --scope personal` or `--scope project` wipes that store via mem0 `deleteAll` (the hash ledger is kept — already-captured sessions never re-capture). `--scope all` wipes the whole memory root — stores, history, ledger, pending — under the capture lock, keeping only the lock artifacts. Interactive confirmation unless `--yes`.
 - Deletion is user-only: the model has no write tool, and the enabled notice points users at `/memory` when they ask to forget or review something.
-- In-session, `list` and `search` open an interactive browser: page through facts with ↑↓/j/k (PgUp/PgDn, g/G), delete the selected fact with `d`, quit with q/Esc/Ctrl+C — no need to copy ids for a separate delete. Other output renders as a read-only widget capped at the TUI's widget height; single-line results appear as notifications, and the view clears when you resume chatting.
+- In-session, `list` and `search` open an interactive browser: page through facts with ↑↓/j/k (PgUp/PgDn, g/G), delete the selected fact with `d`, quit with q/Esc/Ctrl+C — no need to copy ids for a separate delete. Other output renders as a read-only widget capped at the TUI's widget height; single-line results appear as notifications, and the view clears when you resume chatting. Over rpc (ACP) the browser is skipped — output renders as text through the UI bridge.
+
+## Session toggle and ACP control
+
+Memory has two control layers:
+
+1. **The feature switch** — the `extensions.memory` resource (`kimchi resources enable|disable extensions.memory`, or the ACP `set_resource_enabled` ext-method). Persistent, per-machine, and restart-required: it gates whether the memory extension is loaded at all.
+2. **The session toggle** — `/memory enable` and `/memory disable` inside a session. Runtime state only: it flips memory for the *current session* (capture, digest injection, turn recall, and the `memory_search` tool) from that session's next agent start, and resets on restart. No flags, no scope — there is no persistent variant (that is the feature switch). The in-session overview shows the state ("Memory: disabled (this session)"); the `memory_search` tool answers with a "currently disabled" message instead of a misleading miss. A mid-session flip is a deliberate prefix change: earlier turns keep what was already injected (an accepted cache break), and the digest/ledger recompute on re-enable.
+
+Over ACP the surface is custom ext-methods (`_kimchi.dev/…`, advertised in `_meta["kimchi.dev"]`), so IDE clients build their own memory UI instead of driving the TUI-oriented slash command. The store ops are sessionless — they manage the on-disk stores regardless of the feature switch; the state ops resolve a session:
+
+| Method | Params | Notes |
+| --- | --- | --- |
+| `list_resources` | — | every resource with its effective state (the /resources machinery) |
+| `set_resource_enabled` | `{ resourceId, enabled }` | persistent override; response carries `restartRequired`. Unknown ids rejected |
+| `memory_status` | `{ sessionId }` | `{ featureEnabled, sessionOverride, sessionActive, stores, pendingJobs, … }` |
+| `set_memory_enabled` | `{ sessionId, enabled }` | flips the session toggle; rejected when the feature is off |
+| `memory_list` | `{ scope?, project?, limit?, offset?, cwd? }` | paginated facts, newest first (default limit 50) |
+| `memory_search` | `{ query, scope?, project?, cwd? }` | ranked hits with scores |
+| `memory_delete` | `{ ids: string[] }` | across all stores; unknown ids come back in `notFound` |
+| `memory_reset` | `{ scope, project?, confirm: true }` | destructive — `confirm: true` required (the client owns its confirmation UI); `local` is not a valid reset scope |
+
+Scope params follow the shared grammar (`local` resolves via the optional `cwd`, defaulting to the server process cwd; `project` pairs with an explicit project id). The session toggle is keyed by the session's manager (`src/extensions/memory/session-toggle.ts`) — the same identity the extension reads — so `set_memory_enabled` lands exactly in the session the client named.
 
 ## Verification
 

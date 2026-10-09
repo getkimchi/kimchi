@@ -21,12 +21,14 @@ import type { CaptureMessage } from "./capture-worker.js"
 import { digestDbPath, MEMORY_CAPTURE_ASSISTANT_MAX_CHARS, MEMORY_CAPTURE_INCREMENTAL_MESSAGES } from "./config.js"
 import { resolveProjectScope } from "./scope.js"
 
-export function wireMemoryCapture(pi: ExtensionAPI): void {
+export function wireMemoryCapture(pi: ExtensionAPI, isActive?: () => boolean): void {
 	if (captureDisabled()) return
 	pi.on("session_before_compact", (event, ctx) => {
+		if (isActive && !isActive()) return
 		captureMessages(extractMessages(event.branchEntries), ctx.cwd)
 	})
 	pi.on("session_shutdown", (_event, ctx) => {
+		if (isActive && !isActive()) return
 		captureMessages(extractMessages(ctx.sessionManager.getEntries()), ctx.cwd)
 	})
 }
