@@ -9,6 +9,12 @@ import { type FileState, readAttributedFileStates } from "./file-transitions.js"
 
 const execFileAsync = promisify(execFile)
 const SNAPSHOT_BUDGET_MS = 1000
+/** An index listing of about 600,000 paths; above it a scan is incomplete. */
+const INDEX_LISTING_BYTES = 64 * 1024 * 1024
+/** Changed paths kept per observation; cost allocation only needs to know that something changed. */
+const MAX_OBSERVED_PATHS = 128
+/** Requests that already recorded an incomplete scan; one is enough to keep their spend from being sure. */
+const incompleteRequests = new Set<string>()
 interface Snapshot {
 	repository: string
 	worktree: string
@@ -16,17 +22,11 @@ interface Snapshot {
 	complete: boolean
 }
 
-async function git(cwd: string, args: string[], signal: AbortSignal): Promise<string> {
+async function git(cwd: string, args: string[], signal: AbortSignal, maxBuffer = 8 * 1024 * 1024): Promise<string> {
 	const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0" }
 	for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"]) delete env[key]
-	return (
-		await execFileAsync("git", ["-C", cwd, ...args], {
-			env,
-			timeout: SNAPSHOT_BUDGET_MS,
-			signal,
-			maxBuffer: 8 * 1024 * 1024,
-		})
-	).stdout
+	return (await execFileAsync("git", ["-C", cwd, ...args], { env, timeout: SNAPSHOT_BUDGET_MS, signal, maxBuffer }))
+		.stdout
 }
 
 /** Clean files come from the index; only dirty paths need a disk read. Never read ignored files. */
@@ -47,7 +47,12 @@ async function snapshot(cwd: string): Promise<Snapshot | undefined> {
 			files: new Map(),
 			complete: false,
 		}
-		const index = await git(result.worktree, ["ls-files", "--stage", "-z"], signal)
+		// The index listing and the dirty set are independent, so both Git processes run at once.
+		const [index, porcelain] = await Promise.all([
+			git(result.worktree, ["ls-files", "--stage", "-z"], signal, INDEX_LISTING_BYTES),
+			// Without rename detection a rename is its old and new path, the same two paths as before, and cheaper.
+			git(result.worktree, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"], signal),
+		])
 		for (const entry of index.split("\0")) {
 			if (!entry) continue
 			const match = /^(\d{6}) ([a-f\d]+) ([0-3])\t(.+)$/s.exec(entry)
@@ -56,14 +61,12 @@ async function snapshot(cwd: string): Promise<Snapshot | undefined> {
 			// Clean symlinks and submodules keep their index state; only a dirty one is unknown.
 			result.files.set(path, stage === "0" ? { mode, blob } : undefined)
 		}
-		const status = (await git(result.worktree, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], signal))
-			.split("\0")
-			.filter(Boolean)
-		const dirty = new Set<string>()
-		for (let i = 0; i < status.length; i++) {
-			dirty.add(status[i].slice(3))
-			if (/[RC]/.test(status[i].slice(0, 2))) dirty.add(status[++i])
-		}
+		const dirty = new Set(
+			porcelain
+				.split("\0")
+				.filter(Boolean)
+				.map((line) => line.slice(3)),
+		)
 		// ponytail: at most 128 dirty paths per snapshot; larger windows stay explicitly incomplete.
 		if (dirty.size > 128 || Date.now() > deadline) return result
 		const paths = [...dirty]
@@ -115,7 +118,11 @@ export async function observeToolFiles<T>(
 							files.push({ path, before: previous, after: current })
 					}
 				}
-				if (files.length || !complete)
+				// One incomplete scan per request already keeps its spend from being sure.
+				const requestId = origin?.requestId
+				const repeated = !files.length && !complete && requestId !== undefined && incompleteRequests.has(requestId)
+				if (!complete && requestId !== undefined) incompleteRequests.add(requestId)
+				if ((files.length || !complete) && !repeated)
 					appendWorkRecord(
 						pinned,
 						{
@@ -128,7 +135,8 @@ export async function observeToolFiles<T>(
 							worktree: before.worktree,
 							startedAt,
 							complete,
-							files,
+							files: files.slice(0, MAX_OBSERVED_PATHS),
+							...(files.length > MAX_OBSERVED_PATHS ? { changedPaths: files.length, truncated: true } : {}),
 							...(!complete ? { reason: "incomplete-snapshot" } : {}),
 						},
 						workId,
