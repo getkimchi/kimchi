@@ -15,15 +15,16 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
 
 ---
 
-## @modelcontextprotocol/client@2.0.0 (mid-version, additive) — OAuth Accept headers, retargeted
+## @modelcontextprotocol/client@2.0.0 (mid-version, additive) — OAuth Accept headers
 
 Not an upgrade: a new patch for the v2 client package while the pin stayed put.
-This RETARGETS the Accept-header fix: e2e verification against a spec-strict
-fixture (`tests/e2e/tui/mcp-oauth-strict-accept.test.ts`, fixture `strictAccept`
-mode answering 406 without `text/event-stream`) showed the harness MCP OAuth
-engine is `@modelcontextprotocol/client@2.0.0`, not the legacy sdk 1.29.0 — the
-original sdk patch left the strict-gateway login failing with HTTP 406 on all
-three metadata/DCR endpoints.
+This is the package that performs the harness's MCP OAuth flows at runtime (a
+pi-mcp-adapter dependency), verified by the spec-strict gateway e2e
+(`tests/e2e/tui/mcp-oauth-strict-accept.test.ts`, fixture `strictAccept` mode
+answering 406 without `text/event-stream`): with this patch the strict-gateway
+login completes; on master it fails with HTTP 406 on the metadata/DCR
+endpoints. The sdk 1.29.0 patch below covers entry points that still import
+the legacy 1.x package; the harness's own MCP OAuth path uses this one.
 
 ### `@modelcontextprotocol/client` (new patch)
 
@@ -33,15 +34,6 @@ three metadata/DCR endpoints.
   send `Accept: application/json, text/event-stream`. The token POST
   (`executeTokenRequest`) is deliberately unchanged, matching the sdk patch's
   residual-risk note.
-
-### Retained from the earlier draft
-
-- `pi-mcp-adapter` hunks kept: `mcp-auth-flow.ts` DCR clientInfo version
-  ("2.11.0" → "2.34.0") and `mcp-oauth-provider.ts` configured-discovery Accept
-  header (only runs when `authServerMetadataUrl` is configured).
-- `@modelcontextprotocol/sdk@1.29.0` patch kept: covers any entry point that
-  still runs OAuth through the legacy 1.x package, but it is NOT the harness's
-  MCP OAuth path — proven inert for it by the strict-accept e2e.
 
 ---
 
