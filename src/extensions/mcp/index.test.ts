@@ -60,7 +60,9 @@ vi.mock("pi-mcp-adapter", () => ({
 	}),
 }))
 
-vi.mock("../../cli-args.js", () => ({
+// The real work-attribution chain reads other CLI helpers, so only the parsed arguments are replaced.
+vi.mock("../../cli-args.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../cli-args.js")>()),
 	getParsedCliArgs: () => ({
 		options: {
 			"mcp-config": cliState.mcpConfig,
