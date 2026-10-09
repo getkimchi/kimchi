@@ -192,8 +192,9 @@ describe("automatic exact work cost lookup", () => {
 		await sync()
 		const lines = workCostDetails(dir, first.workId)
 		expect(lines).toContain("Cost: $3.000000000 USD — https://github.com/example/repo/pull/1")
+		// Without an input record, the request counts as inferred.
 		expect(lines).toContain(
-			"Prices: 1/1 requests priced, $1.000000000 USD. PR assignments: 0 unresolved, 0 inferred, 0 shared.",
+			"Prices: 1/1 requests priced, $1.000000000 USD. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
 		)
 	})
 
@@ -478,8 +479,9 @@ describe("automatic exact work cost lookup", () => {
 		expect(workCostDetails(dir, plan.workId)).toContain(
 			"Prices: 1/1 requests priced, $1.000000000 USD. PR assignments: 0 unresolved, 0 inferred, 0 shared.",
 		)
+		// The implementation's own request has no input record; the linked one is confirmed by the link.
 		expect(workCostDetails(dir, implementation.workId)).toContain(
-			"Prices: 2/2 requests priced, $3.000000000 USD. PR assignments: 0 unresolved, 0 inferred, 0 shared.",
+			"Prices: 2/2 requests priced, $3.000000000 USD. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
 		)
 		appendWorkRecord(implementation.ctx, { ...link, revision: 2, status: "revoked" })
 		await sync()

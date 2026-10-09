@@ -358,6 +358,8 @@ describe("scoring a saved costs.json", () => {
 			requestId,
 			startedAt: dispatchedAt,
 			scope: { account: { apiUrl: api, organizationId, userId }, repository: join(agentDir, ".git") },
+			// The user selected this work with /work, so its request is confirmed spend.
+			segment: { id: "selected-input", attribution: "explicit", reason: "work-command" },
 		})
 		appendWorkRecord(ctx, {
 			type: "request_dispatch",
