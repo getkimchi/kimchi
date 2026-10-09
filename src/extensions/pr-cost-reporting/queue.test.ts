@@ -323,6 +323,19 @@ describe("durable reporting queue", () => {
 		expect(state.error).toContain("until queued reports leave room in the local queue")
 		expect((await files.stat(join(directory, "pr-cost-reporting", "state.json"))).size).toBeLessThan(24 * 1024 * 1024)
 	}, 60_000)
+	it("reports an invalid replacement once, as invalid", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const invalid = snapshot([requestId])
+		invalid.content.requests[0].billingRecordIds = Array.from(
+			{ length: 9 },
+			(_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+		)
+		await queueSnapshots(directory, [invalid])
+		expect((await readReportingState(directory)).error).toBe(
+			"PR reporting held 1 snapshot(s) that are invalid or exceed the upload limits after trimming",
+		)
+	})
 	it("keeps the retry deadline when new source evidence replaces a rate-limited snapshot", async () => {
 		await setReportingEnabled(directory, true)
 		await queueSnapshots(directory, [snapshot()])

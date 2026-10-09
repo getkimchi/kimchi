@@ -394,7 +394,8 @@ export async function queueSnapshots(
 					withdrawals.add(key)
 				} else {
 					entry.held = true
-					held++
+					// An invalid replacement is reported as invalid, not also as missing evidence.
+					if (!invalid.has(key)) held++
 				}
 			}
 		}
