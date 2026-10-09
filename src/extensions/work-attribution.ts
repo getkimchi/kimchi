@@ -968,12 +968,15 @@ export function createWorkAttributionExtension(
 					}
 					const details: WorkDetailsRequest = { workId: getWorkId(ctx), lines: [] }
 					pi.events.emit(WORK_DETAILS_REQUEST_EVENT, details)
-					if (matchingLimit && workMatchingEnabled())
-						details.lines.push(
-							`Work matching stopped: ${matchingLimit}. New inputs stay unresolved in the current work.`,
-						)
+					const stopped =
+						matchingLimit && workMatchingEnabled()
+							? `Work matching stopped: ${matchingLimit}. New inputs stay unresolved in the current work.`
+							: undefined
+					if (stopped) details.lines.push(stopped)
 					// The terminal browses recent works; other modes and every subcommand print text.
 					if (!value && ctx.mode === "tui") {
+						// The browser lists works, so say here that matching stopped.
+						if (stopped) notify(ctx, stopped)
 						const browser = await readWorkBrowser(getAgentDir(), details)
 						const selected = await ctx.ui.custom<string | undefined>(
 							(_tui, theme, _keybindings, done) => new WorkBrowserPanel(browser, theme, done),
