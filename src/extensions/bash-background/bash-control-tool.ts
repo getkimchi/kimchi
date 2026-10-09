@@ -8,23 +8,28 @@
  *  - `stop_handles`: kill these handles (one or many) and include each
  *    final result in the consolidated response. Unknown handles are
  *    reported individually without discarding valid actions. All
- *    unlisted live handles KEEP RUNNING.
- *  - `wait: false`: apply stops and return immediately — an inspection
- *    of every tracked process: terminal results that are available are
- *    delivered, and each running process reports runtime, output age,
- *    checkpoint streak, and remaining safety budget.
+ *    unlisted live handles KEEP RUNNING. Independent of the inspection
+ *    filter; a stop-only call needs no `wait`.
+ *  - `wait: false` (the default when `wait` is omitted): apply stops and
+ *    return immediately — an inspection of every tracked process by
+ *    default, or of only the `handles` selected for the inspection:
+ *    terminal results that are available are delivered, and each running
+ *    process reports runtime, output age, checkpoint streak, and remaining
+ *    safety budget. Unselected processes are untouched (their output
+ *    cursors do not advance).
  *  - `wait: true`: apply stops, then block until the first process exit
  *    in the cohort (joiners included) or a bounded checkpoint —
  *    `waitSeconds` seconds when provided, 300s (five minutes) by
  *    default, capped at 600s (ten minutes). At most one cohort wait may
  *    be active per session; a second concurrent wait is rejected with a
- *    clear error.
+ *    clear error. `handles` is rejected with `wait: true` — a
+ *    cohort-wide wait must never be silently narrowed.
  *
  * Inputs are validated (and durations capped) at execution time too, so
  * direct calls and replay paths that bypass schema validation cannot
  * mutate state with invalid parameters. `waitSeconds` with `wait: false`
- * is rejected before any stop is applied — a duration that cannot affect
- * the operation is never silently accepted.
+ * or omitted is rejected before any stop is applied — a duration that
+ * cannot affect the operation is never silently accepted.
  *
  * Aborting a wait cancels only the wait — it never kills the cohort.
  * Batch results mark each process failure explicitly instead of throwing,
@@ -58,10 +63,19 @@ const bashControlSchema = Type.Object({
 				"Handles of background bash processes to stop now. All unlisted live handles continue running. Their final results are included in this call's response.",
 		}),
 	),
-	wait: Type.Boolean({
-		description:
-			"true: after applying any stops, block until the first cohort process exit or a bounded checkpoint, and return one consolidated snapshot. Use only when you have no independent work to do. false: apply stops and return an immediate inspection of every tracked process; processes continue by default and their exit results arrive automatically.",
-	}),
+	wait: Type.Optional(
+		Type.Boolean({
+			description:
+				"true: after applying any stops, block until the first cohort process exit or a bounded checkpoint, and return one consolidated snapshot. Use only when you have no independent work to do. false (the default when omitted): apply stops and return an immediate inspection; processes continue by default and their exit results arrive automatically.",
+		}),
+	),
+	handles: Type.Optional(
+		Type.Array(Type.String(), {
+			minItems: 1,
+			description:
+				"Optional. Restricts an immediate inspection (wait: false or omitted) to these handles: only the selected processes are reported — terminal results collected for them, running evidence, and new output. Unselected processes keep running and their output cursors are untouched. Omit to inspect the whole cohort. Unknown handles are reported individually. Cannot be combined with wait: true; independent of stop_handles.",
+		}),
+	),
 	waitSeconds: Type.Optional(
 		Type.Number({
 			description: `Optional wait duration in seconds for wait: true. Omitted: ${DEFAULT_WAIT_SECONDS}s (five minutes). Requests above ${MAX_WAIT_SECONDS}s are capped at ${MAX_WAIT_SECONDS}s. The wait returns earlier when a process exits. This duration never extends any process's runtime limit.`,
@@ -102,37 +116,58 @@ export const BASH_CONTROL_TOOL_DESCRIPTION = `Control background bash processes 
 
 Background processes continue by default: each process's final exit result is delivered to you automatically. You do NOT need to call this tool to keep a process alive or to collect its output.
 
-- \`wait: false\`: inspect every tracked process now — running runtime, output age, and new output — without stopping anything. Use it before dependent work when you need current status.
+- \`wait: false\` (the default when omitted): apply stops and inspect processes immediately — running runtime, output age, and new output — without stopping anything else. Use it before dependent work when you need current status.
+- \`handles\`: optional list restricting an immediate inspection to those processes only — only their new output and evidence is returned, and only their output cursors advance. Omit it to inspect every tracked process. Unknown handles are reported individually.
 - \`wait: true\`: block until the first cohort exit or a bounded checkpoint (${DEFAULT_WAIT_SECONDS}s by default, at most ${MAX_WAIT_SECONDS}s; set an earlier one with \`waitSeconds\`), then receive one consolidated snapshot with evidence. Use this ONLY when you have no independent work to do — never to poll a single process. Only one wait can be active at a time.
-- \`stop_handles\`: stop the named processes now and get their final results in one response. Every unlisted handle keeps running.
+- \`stop_handles\`: stop the named processes now and get their final results in one response. Every unlisted handle keeps running. Independent of \`handles\`; a stop-only call needs no \`wait\`.
 
 At a checkpoint, compare each process's runtime with its expected duration and decide: wait again, investigate, or stop. A checkpoint does not prove a hang — silence alone does not establish a stall.`
 
 interface NormalizedParams {
 	stopHandles: string[]
 	wait: boolean
+	/** Inspection filter: only these handles are reported (undefined = whole cohort). */
+	handlesFilter: string[] | undefined
 	/** Raw requested wait duration exactly as supplied (validated at execution time). */
 	rawWaitSeconds: unknown
 }
 
 /**
- * Normalize stop handles (drop empty values, deduplicate preserving first
- * occurrence order) and read `wait`. The raw `waitSeconds` value is
- * preserved as-is — schema validation normally guarantees a number, but
- * direct calls from resumed sessions and ACP replays bypass it, so every
- * shape decision happens at execution-time validation, before any
- * mutation. Only `undefined` means "omitted"; `null` and every other
- * non-number shape are supplied invalid values and are rejected.
+ * Normalize stop handles and the inspection filter (drop empty values,
+ * deduplicate preserving first occurrence order) and read `wait` (omitted
+ * = false — a stop has no duration to choose, so a stop-only call never
+ * needs `wait`). The raw `waitSeconds` value is preserved as-is — schema
+ * validation normally guarantees a number, but direct calls from resumed
+ * sessions and ACP replays bypass it, so every shape decision happens at
+ * execution-time validation, before any mutation. Only `undefined` means
+ * "omitted"; `null` and every other non-number shape are supplied invalid
+ * values and are rejected. Handles already listed in `stop_handles` are
+ * dropped from the filter: their outcome is reported by the stop loop,
+ * and a filtered inspection must not repeat it.
  */
 function normalizeParams(params: BashControlInput): NormalizedParams {
 	const stopHandles: string[] = []
 	for (const handle of params.stop_handles ?? []) {
 		if (typeof handle === "string" && handle.length > 0 && !stopHandles.includes(handle)) stopHandles.push(handle)
 	}
+	let handlesFilter: string[] | undefined
+	if (Array.isArray(params.handles)) {
+		handlesFilter = []
+		for (const handle of params.handles) {
+			if (
+				typeof handle === "string" &&
+				handle.length > 0 &&
+				!stopHandles.includes(handle) &&
+				!handlesFilter.includes(handle)
+			) {
+				handlesFilter.push(handle)
+			}
+		}
+	}
 	const rawWaitSeconds: unknown = params.waitSeconds
-	// wait is required by the schema; `=== true` keeps direct (unvalidated)
-	// execute calls deterministic too.
-	return { stopHandles, wait: params.wait === true, rawWaitSeconds }
+	// `=== true` keeps direct (unvalidated) execute calls deterministic too
+	// and makes an omitted `wait` an immediate inspection.
+	return { stopHandles, wait: params.wait === true, handlesFilter, rawWaitSeconds }
 }
 
 function errorResult(
@@ -145,6 +180,15 @@ function errorResult(
 	return { content: [{ type: "text", text: `Error: ${message}` }], details: { reason } }
 }
 
+/** Report for a handle that is neither live nor holding a retained outcome. */
+function unknownHandleText(handle: string): string {
+	return (
+		`Unknown handle '${handle}' in this session. ` +
+		"No live process or pending exit result is associated with it — it may never have existed here, " +
+		"or its outcome was already delivered earlier in this conversation."
+	)
+}
+
 /** Format one terminal result block for `handle` and remove it everywhere. */
 async function collectTerminalResult(
 	state: BashSessionState,
@@ -154,10 +198,7 @@ async function collectTerminalResult(
 	const { registry, coordinator } = state
 	const entry = registry.getEntry(handle)
 	if (!entry) {
-		return {
-			text: `${prefix ?? ""}Unknown handle '${handle}'. The process already exited and was removed (its result was delivered when it exited).`,
-			resolved: false,
-		}
+		return { text: `${prefix ?? ""}${unknownHandleText(handle)}`, resolved: false }
 	}
 	// Atomically claim collection BEFORE awaiting anything: parallel control
 	// calls (and racing unattended-exit notifications) must not both capture
@@ -211,8 +252,12 @@ interface CohortSnapshot {
 	terminalBlocks: string[]
 	/** Running-evidence blocks (identity, runtime, output, streaks). */
 	runningBlocks: string[]
+	/** Per-handle unknown reports (filtered inspection only). */
+	unknownBlocks: string[]
 	exitedHandles: string[]
 	runningHandles: string[]
+	/** True when the snapshot was restricted to a supplied handles filter. */
+	filtered: boolean
 }
 
 /**
@@ -220,17 +265,28 @@ interface CohortSnapshot {
  * responses: sweeps terminal entries (delivering their results exactly
  * once through this response), captures running snapshots with evidence,
  * and advances delivered cursors only for output actually included here.
+ *
+ * `handlesFilter` restricts an immediate inspection to the selected
+ * handles: only their terminal results are collected, only they receive
+ * running evidence, and only their output cursors advance — unselected
+ * processes are untouched (their exits are still delivered
+ * automatically). Filter entries that match no live process and hold no
+ * retained outcome are reported individually as unknown handles.
  */
 async function collectCohortSnapshot(
 	state: BashSessionState,
-	opts: { settlementCheckpoint?: boolean } = {},
+	opts: { settlementCheckpoint?: boolean; handlesFilter?: string[] } = {},
 ): Promise<CohortSnapshot> {
 	const { registry, coordinator } = state
+	const filter = opts.handlesFilter
+	const selected = (handle: string) => filter === undefined || filter.includes(handle)
 	const snapshot: CohortSnapshot = {
 		terminalBlocks: [],
 		runningBlocks: [],
+		unknownBlocks: [],
 		exitedHandles: [],
 		runningHandles: [],
+		filtered: filter !== undefined,
 	}
 
 	// Terminal sweep: every cohort handle that reached a terminal state —
@@ -238,6 +294,7 @@ async function collectCohortSnapshot(
 	// window (safety limit, a parallel stop, …). First collector wins, so
 	// terminal results are delivered exactly once.
 	for (const handle of [...coordinator.handles()]) {
+		if (!selected(handle)) continue
 		const entry = registry.getEntry(handle)
 		if (!entry || entry.state === "running") continue
 		const result = await collectTerminalResult(state, handle)
@@ -254,6 +311,7 @@ async function collectCohortSnapshot(
 	const countThisCheckpoint = opts.settlementCheckpoint === true
 	const pendingMarks: Array<[string, number]> = []
 	for (const handle of coordinator.handles()) {
+		if (!selected(handle)) continue
 		const entry = registry.getEntry(handle)
 		if (entry?.state !== "running") continue
 		snapshot.runningHandles.push(handle)
@@ -277,6 +335,17 @@ async function collectCohortSnapshot(
 		)
 	}
 	for (const [handle, cursor] of pendingMarks) registry.markDelivered(handle, cursor)
+	// Unknown filter entries: no registry entry, not in the cohort, and no
+	// retained outcome — reported individually so the model knows the handle
+	// is not inspectable (stops already reported their own outcomes above,
+	// so stop-listed handles were dropped from the filter at normalization).
+	if (filter) {
+		const cohort = new Set(coordinator.handles())
+		for (const handle of filter) {
+			if (cohort.has(handle) || registry.getEntry(handle)) continue
+			snapshot.unknownBlocks.push(unknownHandleText(handle))
+		}
+	}
 	return snapshot
 }
 
@@ -289,6 +358,7 @@ function snapshotBlocks(mode: SnapshotMode, snapshot: CohortSnapshot): string[] 
 		blocks.push(`Cohort event: process exited (${mode.handle}).`)
 	}
 	blocks.push(...snapshot.terminalBlocks)
+	blocks.push(...snapshot.unknownBlocks)
 	if (snapshot.runningHandles.length > 0) {
 		if (mode.kind === "inspection") blocks.push(inspectionHeaderText(snapshot.runningHandles.length))
 		else if (mode.kind === "exit") blocks.push(`Still running (${snapshot.runningHandles.length}):`)
@@ -297,8 +367,16 @@ function snapshotBlocks(mode: SnapshotMode, snapshot: CohortSnapshot): string[] 
 	if (mode.kind === "checkpoint" && snapshot.runningHandles.length > 0) {
 		blocks.push(checkpointGuidanceText())
 	}
-	if (snapshot.exitedHandles.length === 0 && snapshot.runningHandles.length === 0) {
-		blocks.push("No background processes remain running.")
+	if (
+		snapshot.exitedHandles.length === 0 &&
+		snapshot.runningHandles.length === 0 &&
+		snapshot.unknownBlocks.length === 0
+	) {
+		blocks.push(
+			snapshot.filtered
+				? "No background processes matched the requested handles."
+				: "No background processes remain running.",
+		)
 	}
 	return blocks
 }
@@ -321,7 +399,7 @@ export function createBashControlToolDefinition(
 		content: { type: "text"; text: string }[]
 		details: BashControlDetails
 	}> {
-		const { stopHandles, wait, rawWaitSeconds } = normalizeParams(params)
+		const { stopHandles, wait, handlesFilter, rawWaitSeconds } = normalizeParams(params)
 
 		// ── Operation-wide validation BEFORE any mutation (stops included). ──
 		// Only `undefined` means "omitted"; every other shape — including
@@ -332,6 +410,12 @@ export function createBashControlToolDefinition(
 		if (hasWaitSeconds && !wait) {
 			return errorResult(
 				"waitSeconds applies only to wait: true — a duration cannot affect an immediate inspection. Pass wait: true or omit waitSeconds.",
+				"invalid-params",
+			)
+		}
+		if (handlesFilter !== undefined && wait) {
+			return errorResult(
+				"handles applies only to an immediate inspection (wait: false or omitted) — a cohort-wide wait must not be silently narrowed. Pass wait: false or omit handles.",
 				"invalid-params",
 			)
 		}
@@ -364,9 +448,13 @@ export function createBashControlToolDefinition(
 			if (result.resolved) exitedHandles.push(handle)
 		}
 
-		// ── wait: false → immediate inspection (stops applied above). ──
+		// ── wait: false (or omitted) → immediate inspection (stops applied above). ──
+		// `handles` restricts the inspection to the selected handles; omission
+		// inspects the whole cohort. `stop_handles` stays independent of the
+		// filter: stops always apply, and stop-listed handles are dropped from
+		// the filter at normalization so their outcome is never repeated.
 		if (!wait) {
-			const snapshot = await collectCohortSnapshot(state)
+			const snapshot = await collectCohortSnapshot(state, { handlesFilter })
 			blocks.push(...snapshotBlocks({ kind: "inspection" }, snapshot))
 			exitedHandles.push(...snapshot.exitedHandles)
 			// An inspection response reports fresh evidence: reset the
