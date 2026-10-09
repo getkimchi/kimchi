@@ -134,6 +134,8 @@ import { emitAgentActivityUpdate } from "./activity-updates.js"
 import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { composeAvailableCommands, createCommandsRefresher, discoverSkillCommandsMap } from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
+import { handleCompact } from "./ext-methods/compact.js"
+import { handleCompactAbort } from "./ext-methods/compact-abort.js"
 import { handleImportApply } from "./ext-methods/import-apply.js"
 import { importDiscover } from "./ext-methods/import-discover.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
@@ -955,6 +957,18 @@ export class KimchiAcpAgent implements Agent {
 		if (entry.turn) {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
 		}
+		// Compaction runs outside the main agent loop (its lifecycle streams via
+		// the agent_activity notification, not the turn's session updates), so a
+		// prompt accepted mid-compaction would only die deep inside
+		// session.prompt() with an internal-looking "Cannot submit a prompt …"
+		// throw. Gate here instead: an immediate, clearly worded rejection the
+		// client can retry after the compaction_end activity notification.
+		if (entry.session.isCompacting) {
+			throw RequestError.invalidRequest(
+				undefined,
+				"compaction is in progress for this session — wait for the compaction_end activity notification and retry",
+			)
+		}
 		const supportsImages = modelSupportsImages(entry.session.model)
 		// Warn about unsupported block types (audio, embeddedContext) once per
 		// type. Dropped images do NOT join this dedupe — they additionally surface
@@ -1187,6 +1201,19 @@ export class KimchiAcpAgent implements Agent {
 				// Sessionless store op: wipe a scope — the client-confirmed
 				// destructive op (the required confirm param mirrors --yes).
 				return handleMemoryReset({}, params)
+			case AVAILABLE_EXT_METHODS.compact:
+				// Session-scoped manual compaction. turnActive mirrors the turn
+				// bookkeeping prompt() uses: upstream compact() would silently abort
+				// the running turn, so the handler requires an idle session.
+				return handleCompact((sessionId) => {
+					const entry = this.sessions.get(sessionId)
+					if (!entry) return undefined
+					return { session: entry.session, turnActive: entry.turn !== undefined && !entry.turn.cancelled }
+				}, params)
+			case AVAILABLE_EXT_METHODS.compact_abort:
+				// Compaction-specific abort (not the whole-turn kill switch): stops
+				// only the summarization; idempotent when nothing is compacting.
+				return handleCompactAbort((sessionId) => this.sessions.get(sessionId)?.session, params)
 			default:
 				throw RequestError.methodNotFound(method)
 		}
