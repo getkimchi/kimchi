@@ -108,9 +108,9 @@ async function unsupportedAttributes(cwd: string, paths: string[], signal?: Abor
 		if (attrs[i] !== "unspecified" && attrs[i] !== "unset") unsupported.add(attrs[i - 2])
 	return unsupported
 }
-async function supportsGitAttributes(path: string, signal?: AbortSignal): Promise<boolean> {
+async function supportsGitAttributes(path: string): Promise<boolean> {
 	// Attribute files may themselves have changed during the native write.
-	return !(await unsupportedAttributes(dirname(path), [path], signal)).size
+	return !(await unsupportedAttributes(dirname(path), [path])).size
 }
 /** Retained snapshots older than this are removed; commits are matched long before. */
 const SNAPSHOT_RETENTION_MS = 30 * 24 * 60 * 60_000
@@ -139,24 +139,17 @@ async function pruneSnapshots(): Promise<void> {
  * `data` is the file content already read by the caller, so the hash matches what it checked. With `retainIn`, the
  * repository's Git directory, a small text snapshot is kept for later hunk matching.
  */
-async function diskState(
-	path: string,
-	data?: Buffer,
-	retainIn?: string,
-	signal?: AbortSignal,
-): Promise<FileState | null | undefined> {
+async function diskState(path: string, data?: Buffer, retainIn?: string): Promise<FileState | null | undefined> {
 	if (!existsSync(path)) return null
 	const stat = lstatSync(path)
 	if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return undefined
 	// Git resolves a symlinked directory to the repository it points into, as repositoryFile does.
 	const parent = realpathSync(dirname(path))
 	const file = join(parent, basename(path))
-	if (!(await supportsGitAttributes(file, signal))) return undefined
+	if (!(await supportsGitAttributes(file))) return undefined
 	let mode = stat.mode & 0o111 ? "100755" : "100644"
-	if (
-		(await git(parent, ["config", "--type=bool", "--default=true", "--get", "core.filemode"], { signal })) === "false"
-	) {
-		mode = (await git(parent, ["ls-files", "--stage", "--", file], { signal })).split(" ")[0] || "100644"
+	if ((await git(parent, ["config", "--type=bool", "--default=true", "--get", "core.filemode"])) === "false") {
+		mode = (await git(parent, ["ls-files", "--stage", "--", file])).split(" ")[0] || "100644"
 	}
 	const input = data ?? readFileSync(path)
 	const retain = retainIn !== undefined && input.length <= MAX_HUNK_BYTES && isUtf8(input) && !input.includes(0)
@@ -168,17 +161,16 @@ async function diskState(
 			return {
 				blob: await git(parent, ["hash-object", "-w", "--stdin", `--path=${file}`], {
 					input,
-					signal,
 					env: { GIT_OBJECT_DIRECTORY: objects },
 				}),
 				mode,
 			}
 		} catch {
 			// Snapshot storage is optional; a dry hash still supports whole-file attribution.
-			if (!(await supportsGitAttributes(file, signal))) return undefined
+			if (!(await supportsGitAttributes(file))) return undefined
 		}
 	}
-	return { blob: await git(parent, ["hash-object", "--stdin", `--path=${file}`], { input, signal }), mode }
+	return { blob: await git(parent, ["hash-object", "--stdin", `--path=${file}`], { input }), mode }
 }
 /** diskState without retained blobs for many paths below one worktree, in a fixed number of Git processes. */
 async function diskStates(
@@ -574,17 +566,8 @@ export async function readRepositoryTransitions(cwd: string): Promise<
 	})
 }
 /** The same normalization used when native tools captured the edit. Unsupported attributes stay unknown. */
-export async function readAttributedFileState(
-	path: string,
-	signal?: AbortSignal,
-): Promise<FileState | null | undefined> {
-	return tryWorkAttributionAsync(async () => {
-		try {
-			return await diskState(path, undefined, undefined, signal)
-		} catch (error) {
-			if (!signal?.aborted) throw error
-		}
-	})
+export async function readAttributedFileState(path: string): Promise<FileState | null | undefined> {
+	return tryWorkAttributionAsync(() => diskState(path))
 }
 /** readAttributedFileState for many worktree-relative paths, using a fixed number of Git processes. */
 export async function readAttributedFileStates(
