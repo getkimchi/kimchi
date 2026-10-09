@@ -1,3 +1,4 @@
+import * as fs from "node:fs"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -14,6 +15,7 @@ import { statusText } from "./status.js"
 import { deliverSnapshots, LIMIT_RETRY_MS, reconcileReporting, serverLimit } from "./worker.js"
 
 const config = vi.hoisted(() => ({ key: "test-key", endpoint: "https://api.example" }))
+vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 vi.mock("../../config.js", () => ({
 	loadConfig: () => ({ apiKey: config.key }),
 	resolveEndpoints: () => ({ platformApiUrl: config.endpoint }),
@@ -550,13 +552,23 @@ describe("account-fenced reporting delivery", () => {
 		expect(Object.values(state.entries)[0].pending).toBeDefined()
 		expect(JSON.stringify(state)).not.toContain("secret")
 	})
-	it("does not withdraw previous claims when a ledger cannot be read", async () => {
+	it("still delivers when the opt-out watcher cannot start", async () => {
+		vi.spyOn(fs, "watch").mockImplementation(() => {
+			throw Object.assign(new Error("inotify watch limit reached"), { code: "ENOSPC" })
+		})
+		respond(accepted)
+		await deliverSnapshots(directory, "/project", new AbortController().signal, () => {})
+		expect(posts()).toHaveLength(1)
+		expect(Object.values((await readReportingState(directory)).entries)[0].pending).toBeUndefined()
+	})
+	it("delivers the queued report but withdraws nothing when a ledger cannot be read", async () => {
 		await mkdir(join(directory, "work-attribution"), { recursive: true })
 		await writeFile(join(directory, "work-attribution", "source.jsonl"), "{broken\n")
+		respond(accepted)
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		const state = await readReportingState(directory)
-		expect(Object.values(state.entries)[0].pending?.requests).toHaveLength(1)
-		expect(http).not.toHaveBeenCalled()
+		// The report queued from the last complete capture still goes out; the unreadable ledger queues nothing new.
+		expect(posts().map((payload) => [payload.revision, payload.requests.length])).toEqual([["1", 1]])
+		expect((await readReportingState(directory)).error).toContain("could not capture a complete inventory")
 	})
 })
 

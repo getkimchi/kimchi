@@ -93,14 +93,19 @@ export async function deliverSnapshots(
 	const timer = setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now()))
 	timer.unref()
 	const combined = AbortSignal.any([signal, controller.signal])
-	const watcher = watch(reportingDirectory(agentDir), { persistent: false }, () => {
-		void readReportingState(agentDir).then(
-			(state) => {
-				if (!state.enabled) controller.abort()
-			},
-			() => controller.abort(),
-		)
-	})
+	// Seeing an opt-out from another process mid-upload is an optimisation: each upload rereads the state anyway.
+	// Without a watcher, for example when inotify watches run out, delivery still works.
+	let watcher: ReturnType<typeof watch> | undefined
+	try {
+		watcher = watch(reportingDirectory(agentDir), { persistent: false }, () => {
+			void readReportingState(agentDir).then(
+				(state) => {
+					if (!state.enabled) controller.abort()
+				},
+				() => controller.abort(),
+			)
+		})
+	} catch {}
 	try {
 		const state = await readReportingState(agentDir)
 		if (!state.enabled) return
@@ -227,7 +232,7 @@ export async function deliverSnapshots(
 			}
 		}
 	} finally {
-		watcher.close()
+		watcher?.close()
 		clearTimeout(timer)
 	}
 }
@@ -316,13 +321,18 @@ export async function reconcileReporting(
 				agentDir,
 				`${queued.error ? `${queued.error}. ` : ""}PR reporting skipped ${built.skippedRequests} request(s) without original account or repository evidence; history coverage is incomplete`,
 			)
-		check()
-		if (deliver) await deliverSnapshots(agentDir, cwd, signal, assertLease, deadline)
 	} catch {
 		if (!signal.aborted)
 			await recordReportingError(
 				agentDir,
 				"PR reporting could not capture a complete inventory; previous reports were retained",
 			)
+	}
+	// Reports already queued go out with their own time even when this pass could not capture a new inventory.
+	if (!deliver || signal.aborted) return
+	try {
+		await deliverSnapshots(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
+	} catch {
+		if (!signal.aborted) await recordReportingError(agentDir, "PR reporting could not deliver queued reports")
 	}
 }
