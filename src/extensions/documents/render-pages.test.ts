@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { extractDocument } from "./extract.js"
 import { makeScannedPdf, makeSimplePdf } from "./fixtures/builders.js"
 import {
-	loadCanvas,
+	loadPdfium,
 	maybeRenderScannedPages,
 	noTextLayerPages,
 	PAGE_RENDER_SCALE,
@@ -19,9 +19,9 @@ describe("render-pages (Phase 1.6)", () => {
 	})
 
 	it("renders image-only pages to PNG", async () => {
-		const { canvas, error } = await loadCanvas()
-		if (!canvas) {
-			// All 5 release targets ship prebuilt canvas; reaching here means an
+		const { pdfium, error } = await loadPdfium()
+		if (!pdfium) {
+			// All 5 release targets ship the same WASM; reaching here means an
 			// exotic environment — the degradation path is covered below.
 			expect(error).toBeTruthy()
 			return
@@ -37,23 +37,23 @@ describe("render-pages (Phase 1.6)", () => {
 		expect(PAGE_RENDER_SCALE).toBeGreaterThanOrEqual(150 / 72)
 	})
 
-	it("degrades to a note (never throws) when canvas fails to load", async () => {
-		const failing = async (): Promise<typeof import("@napi-rs/canvas")> => {
-			throw new Error("injected canvas failure")
+	it("degrades to a note (never throws) when pdfium fails to load", async () => {
+		const failing = async () => {
+			throw new Error("injected pdfium failure")
 		}
 		const { images, unavailableNote } = await renderPdfPages(await makeScannedPdf(), [1], {
-			canvasImport: failing,
+			pdfiumImport: failing,
 		})
 		expect(images.size).toBe(0)
-		expect(unavailableNote).toContain("injected canvas failure")
+		expect(unavailableNote).toContain("injected pdfium failure")
 	})
 })
 
 describe("maybeRenderScannedPages — vision gate", () => {
 	it("attaches base64 PNG blocks when the model accepts images", async () => {
 		const doc = await extractDocument("scan.pdf", await makeScannedPdf(), { tool: "read_document" })
-		const { canvas } = await loadCanvas()
-		if (!canvas) return
+		const { pdfium } = await loadPdfium()
+		if (!pdfium) return
 		const result = await maybeRenderScannedPages({
 			data: await makeScannedPdf(),
 			doc,
@@ -79,13 +79,13 @@ describe("maybeRenderScannedPages — vision gate", () => {
 		expect(doc.notes.join(" ")).toContain("no text layer")
 	})
 
-	it("surfaces a note (never throws) when canvas is mandatory but unavailable", async () => {
+	it("surfaces a note (never throws) when pdfium is mandatory but unavailable", async () => {
 		const doc = await extractDocument("scan.pdf", await makeScannedPdf(), { tool: "read_document" })
 		const result = await maybeRenderScannedPages({
 			data: await makeScannedPdf(),
 			doc,
 			supportsImages: true,
-			canvasImport: async () => {
+			pdfiumImport: async () => {
 				throw new Error("injected")
 			},
 		})

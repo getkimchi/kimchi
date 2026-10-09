@@ -102,6 +102,14 @@ if (!isDev) {
 		cpSync(src, join(pdfjsDest, assetDir), { recursive: true })
 	}
 
+	// Stage the pdfium WASM — same story as pdfjs assets: packaged installs
+	// read it via share/kimchi/pdfium/pdfium.wasm (pdfium-wasm.ts).
+	const pdfiumWasmSrc = join(projectRoot, "node_modules", "@hyzyla", "pdfium", "dist", "pdfium.wasm")
+	const pdfiumDest = join(projectRoot, "dist", "share", "kimchi", "pdfium")
+	if (!existsSync(pdfiumWasmSrc)) throw new Error(`pdfium.wasm missing: ${pdfiumWasmSrc}`)
+	mkdirSync(pdfiumDest, { recursive: true })
+	cpSync(pdfiumWasmSrc, join(pdfiumDest, "pdfium.wasm"))
+
 	// Copy custom OAuth page templates
 	const oauthSrc = join(projectRoot, "resources", "oauth")
 	const oauthDest = join(projectRoot, "dist", "share", "kimchi", "oauth")

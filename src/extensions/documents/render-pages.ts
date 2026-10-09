@@ -6,108 +6,132 @@
  * scanned receipts and photo-PDFs become readable without an OCR engine.
  * Vision models do the reading; we just ship the pixels.
  *
- * Degradation is a first-class behavior, both by plan and by test:
- *   - `@napi-rs/canvas` (native) fails to load → no images, existing
- *     "no text layer" warning stands. Same for text-only models: the vision
- *     gate is checked by the callers, wrong-model delivery never happens.
+ * Rendering engine: @hyzyla/pdfium — Google PDFium (Chromium's engine)
+ * compiled to a ~4 MB WASM sandbox. Chosen over a native canvas binding:
+ * the sandbox keeps hostile-document parser bugs off our process memory,
+ * one artifact covers every OS/arch we ship, and the bytes are ~22 MB
+ * lighter than embedding skia. PNG encoding happens in pure JS
+ * (png-encode.ts) — PDFium hands out raw BGRA bitmaps.
  *
- * The canvas import is lazy and literal (`import("@napi-rs/canvas")`):
- * canvas's js-binding.js resolves its platform .node file through
- * literal per-branch requires that Bun's bundler can follow per target
- * (the clipboard template-string lesson does not apply here).
+ * Degradation is a first-class behavior, both by plan and by test:
+ *   - the pdfium WASM fails to load → no images, the existing "no text
+ *     layer" warning stands. Same for text-only models: the vision gate is
+ *     checked by the callers, wrong-model delivery never happens.
+ *
+ * The module lazy-imports @hyzyla/pdfium on first use and caches the
+ * outcome; callers can inject a loader for tests without the cache.
  */
 
-import { getDocumentProxy, renderPageAsImage } from "unpdf"
-import type { ExtractedDocument } from "./model.js"
-import { resolvePdfjsAssets } from "./pdfjs-assets.js"
+import { readPdfiumWasm } from "./pdfium-wasm.js"
+import { encodePngFromBgra } from "./png-encode.js"
 
-/** 150 DPI ≈ scale 2.0833 at PDF.js's 72-DPI viewport — readable receipts,
+/** 150 DPI ≈ scale 2.0833 at PDF's 72-DPI page units — readable receipts,
  *  bounded pixels (Letter → 1275×1650 before PNG encoding). */
 export const PAGE_RENDER_SCALE = 150 / 72
 
-type CanvasModule = typeof import("@napi-rs/canvas")
+/** We render pages but the largest image surface PDFium will rasterize for
+ *  us is capped as a resource guard (matches pdf.js's default;-slightly
+ *  smaller than unpdf's maxImageSize, at 150 DPI ≈ A0-ish page). */
+const MAX_IMAGE_PIXELS = 4096 * 4096
 
-export interface CanvasLoad {
-	canvas: CanvasModule | null
-	/** Human-readable reason when canvas is null (doctor/telemetry detail — no content). */
+type PdfiumModule = typeof import("@hyzyla/pdfium")
+type PdfiumLibraryInstance = Awaited<ReturnType<PdfiumModule["PDFiumLibrary"]["init"]>>
+
+export interface PdfiumLoad {
+	pdfium: PdfiumLibraryInstance | null
+	/** Human-readable reason when pdfium is null (doctor/telemetry detail — no content). */
 	error: string | null
 }
 
-let cachedCanvas: CanvasLoad | undefined
+let cachedPdfium: PdfiumLoad | undefined
 
-const defaultCanvasImport = async (): Promise<CanvasModule> => import("@napi-rs/canvas")
+/** Optional wasm-binary override for the bundled-binary path: when the build
+ *  stages pdfium.wasm itself, pass its bytes via wasmBinaryProvider so we do
+ *  not depend on the node_modules layout surviving compilation. */
+let wasmBinaryProvider: (() => Promise<Uint8Array> | Uint8Array) | undefined
 
-/** Load @napi-rs/canvas once per process; failure is cached and non-fatal. */
-export async function loadCanvas(canvasImport: () => Promise<CanvasModule> = defaultCanvasImport): Promise<CanvasLoad> {
-	if (cachedCanvas) return cachedCanvas
-	try {
-		const canvas = await canvasImport()
-		cachedCanvas = { canvas, error: null }
-	} catch (err) {
-		cachedCanvas = { canvas: null, error: err instanceof Error ? err.message : String(err) }
-	}
-	return cachedCanvas
+/** Test seam: point the loader at alternate WASM bytes (unused in dev). */
+export function __setPdfiumWasmProviderForTests(provider: typeof wasmBinaryProvider): void {
+	wasmBinaryProvider = provider
+	cachedPdfium = undefined
 }
 
-/** Test seam: reset the loader cache (used with canvasImport injection). */
-export function __resetCanvasCacheForTests(): void {
-	cachedCanvas = undefined
+const defaultPdfiumImport = async (wasmBinary?: Uint8Array): Promise<PdfiumLibraryInstance> => {
+	// We read the wasm ourselves and hand the bytes over: packaged binaries
+	// resolve it via share/kimchi/pdfium/ (see pdfium-wasm.ts) — the library's
+	// own locateFile path does not survive bun's bundling (no node_modules).
+	const bytes = wasmBinary ?? (await readPdfiumWasm())
+	const mod = (await import("@hyzyla/pdfium")) as PdfiumModule
+	return mod.PDFiumLibrary.init({ wasmBinary: toArrayBuffer(bytes) })
+}
+
+/** The emscripten loader wants a raw ArrayBuffer — slicing guarantees one
+ *  (and defensibly copies when handed a view into a larger buffer). */
+function toArrayBuffer(u8: Uint8Array): ArrayBuffer {
+	if (u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength) return u8.buffer as ArrayBuffer
+	return u8.slice().buffer
+}
+
+/** Load @hyzyla/pdfium once per process; failure is cached and non-fatal. */
+export async function loadPdfium(
+	pdfiumImport: (wasmBinary?: Uint8Array) => Promise<PdfiumLibraryInstance> = defaultPdfiumImport,
+): Promise<PdfiumLoad> {
+	if (cachedPdfium) return cachedPdfium
+	try {
+		const wasmBinary = wasmBinaryProvider ? await wasmBinaryProvider() : undefined
+		const pdfium = await pdfiumImport(wasmBinary)
+		cachedPdfium = { pdfium, error: null }
+	} catch (err) {
+		cachedPdfium = { pdfium: null, error: err instanceof Error ? err.message : String(err) }
+	}
+	return cachedPdfium
+}
+
+/** Test seam: reset the loader cache (used with pdfiumImport injection). */
+export function __resetPdfiumCacheForTests(): void {
+	cachedPdfium = undefined
 }
 
 export interface PageRenderResult {
 	/** Map from 1-based page number to PNG bytes. */
 	images: Map<number, Uint8Array>
-	/** Set when rendering was impossible at all (canvas failed to load). */
+	/** Set when rendering was impossible at all (pdfium failed to load). */
 	unavailableNote?: string
 }
 
 /**
  * Render the given 1-based pages of a PDF to PNG. Pages outside numPages are
  * skipped (callers pass pages they already extracted, so this is defensive).
- * A canvas load failure returns an empty map plus a note — never throws.
+ * A pdfium load failure returns an empty map plus a note — never throws.
  */
 export async function renderPdfPages(
 	data: Uint8Array,
 	pages: readonly number[],
-	options: { canvasImport?: () => Promise<CanvasModule> } = {},
+	options: { pdfiumImport?: (wasmBinary?: Uint8Array) => Promise<PdfiumLibraryInstance> } = {},
 ): Promise<PageRenderResult> {
-	const { canvas, error } = options.canvasImport ? await maybeLoadInjected(options.canvasImport) : await loadCanvas()
-	if (!canvas) {
+	const { pdfium, error } = options.pdfiumImport ? await maybeLoadInjected(options.pdfiumImport) : await loadPdfium()
+	if (!pdfium) {
 		return {
 			images: new Map(),
-			unavailableNote: `page images unavailable (canvas: ${error ?? "load failed"})`,
+			unavailableNote: `page images unavailable (pdfium: ${error ?? "load failed"})`,
 		}
 	}
-	const assets = resolvePdfjsAssets()
-	// Defensive copy: pdf.js destroy() detaches the underlying ArrayBuffer
-	// (transferable into its loopback port). Extractors destroy their proxy,
-	// so re-opening the same bytes later would clone a detached buffer and
-	// die with DataCloneError (observed under Bun's structuredClone and
-	// intermittently in Node/vitest)
-	const pdf = await getDocumentProxy(data.slice(), {
-		useSystemFonts: false,
-		disableFontFace: true,
-		maxImageSize: 16_777_216,
-		cMapUrl: assets.cMapUrl,
-		cMapPacked: assets.cMapPacked,
-		standardFontDataUrl: assets.standardFontDataUrl,
-		verbosity: 0,
-	})
+	const doc = await pdfium.loadDocument(data)
 	try {
 		const images = new Map<number, Uint8Array>()
-		// unpdf's createIsomorphicCanvasFactory consumes the loaded module —
-		// passing the same import keeps a single module instance alive and lets
-		// tests inject the failing-loader path end to end.
-		const canvasImport = options.canvasImport ?? (async () => canvas)
 		for (const page of pages) {
-			if (page < 1 || page > pdf.numPages) continue
-			const png = await renderPageAsImage(pdf, page, { scale: PAGE_RENDER_SCALE, canvasImport })
-			images.set(page, new Uint8Array(png))
+			if (page < 1 || page > doc.getPageCount()) continue
+			const rendered = await doc.getPage(page - 1).render({ scale: PAGE_RENDER_SCALE })
+			if (rendered.width * rendered.height > MAX_IMAGE_PIXELS) continue
+			images.set(page, encodePngFromBgra(rendered.width, rendered.height, rendered.data))
 		}
 		return { images }
 	} finally {
-		const destroyable = pdf as unknown as { destroy?: () => Promise<void> }
-		await destroyable.destroy?.().catch(() => {})
+		try {
+			doc.destroy()
+		} catch {
+			// best-effort: wasm heap cleanup
+		}
 	}
 }
 
@@ -132,18 +156,20 @@ export interface ScannedPageImage {
 }
 
 /** Failure injection path for tests: never touches the production cache. */
-async function maybeLoadInjected(canvasImport: () => Promise<CanvasModule>): Promise<CanvasLoad> {
+async function maybeLoadInjected(
+	pdfiumImport: (wasmBinary?: Uint8Array) => Promise<PdfiumLibraryInstance>,
+): Promise<PdfiumLoad> {
 	try {
-		return { canvas: await canvasImport(), error: null }
+		return { pdfium: await pdfiumImport(), error: null }
 	} catch (err) {
-		return { canvas: null, error: err instanceof Error ? err.message : String(err) }
+		return { pdfium: null, error: err instanceof Error ? err.message : String(err) }
 	}
 }
 
 export interface ScannedPagesOutcome {
 	images: ScannedPageImage[]
 	/** One-line note for the text body when images couldn't be produced
-	 *  (e.g. canvas failed to load). Undefined when nothing went wrong. */
+	 *  (e.g. pdfium failed to load). Undefined when nothing went wrong. */
 	note?: string
 }
 
@@ -157,17 +183,17 @@ export interface ScannedPagesOutcome {
  */
 export async function maybeRenderScannedPages(args: {
 	data: Uint8Array
-	doc: ExtractedDocument
+	doc: ExtractedDocumentPublic
 	selected?: number[]
 	supportsImages: boolean
-	/** Test seam: inject a failing/strict canvas loader. */
-	canvasImport?: () => Promise<CanvasModule>
+	/** Test seam: inject a failing/strict pdfium loader. */
+	pdfiumImport?: (wasmBinary?: Uint8Array) => Promise<PdfiumLibraryInstance>
 }): Promise<ScannedPagesOutcome> {
 	const pages = noTextLayerPages(args.doc)
 	if (!args.supportsImages || pages.length === 0) return { images: [] }
 	const wanted = args.selected ? pages.filter((p) => args.selected?.includes(p)) : pages
 	if (wanted.length === 0) return { images: [] }
-	const { images, unavailableNote } = await renderPdfPages(args.data, wanted, { canvasImport: args.canvasImport })
+	const { images, unavailableNote } = await renderPdfPages(args.data, wanted, { pdfiumImport: args.pdfiumImport })
 	if (images.size === 0) {
 		return { images: [], note: unavailableNote ?? "page images unavailable" }
 	}
@@ -178,4 +204,11 @@ export async function maybeRenderScannedPages(args: {
 	}))
 	const note = unavailableNote
 	return { images: blocks, note }
+}
+
+/** Structural subset of ExtractedDocument this file needs — keeps the import
+ *  surface small for the binary-build assembly in tests. */
+type ExtractedDocumentPublic = {
+	format: string
+	units: ReadonlyArray<{ index: number; markdown: string }>
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import * as XLSX from "xlsx"
 import { makeScannedPdf, makeSimplePdf, makeSimplePptx } from "./fixtures/builders.js"
 import { createReadDocumentTool, selectUnits, stripLocators } from "./read-tool.js"
-import { loadCanvas } from "./render-pages.js"
+import { loadPdfium } from "./render-pages.js"
 
 function depsFor(fixtures: Record<string, Uint8Array>) {
 	return {
@@ -100,7 +100,7 @@ describe("read_document tool", () => {
 	})
 
 	it("attaches page images for a scanned PDF when the model accepts images", async () => {
-		if (!(await loadCanvas()).canvas) return // exotic env; degradation is covered in render-pages.test
+		if (!(await loadPdfium()).pdfium) return // exotic env; degradation is covered in render-pages.test
 		const t = createReadDocumentTool(depsFor({ "/w/s.pdf": await makeScannedPdf() }))
 		const res = await t.execute(
 			"c1",

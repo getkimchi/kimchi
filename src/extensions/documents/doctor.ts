@@ -15,7 +15,7 @@ import { makeScannedPdf, makeSimpleDocx, makeSimplePdf, makeSimplePptx } from ".
 import { isDocumentError } from "./model.js"
 import { listZipEntries } from "./ooxml/package.js"
 import { resolvePdfjsAssets } from "./pdfjs-assets.js"
-import { loadCanvas, maybeRenderScannedPages } from "./render-pages.js"
+import { loadPdfium, maybeRenderScannedPages } from "./render-pages.js"
 
 export interface DoctorCheck {
 	name: string
@@ -112,14 +112,14 @@ export async function runDoctor(deps: { goldens?: Partial<DoctorGoldens> } = {})
 		push("read-xlsx", false, (err as Error).message)
 	}
 
-	// 3. Page images (Phase 1.6): canvas availability is REPORTED, and when
-	// canvas loads, a scanned page is rendered through the full pipeline.
+	// 3. Page images (Phase 1.6): pdfium availability is REPORTED, and when
+	// the WASM loads, a scanned page is rendered through the full pipeline.
 	// Non-fatal by design — doctor must stay green on targets or environments
-	// where the native addon fails (scanned pages degrade to warnings there).
+	// where the engine fails to boot (scanned pages degrade to warnings there).
 	{
-		const { canvas, error } = await loadCanvas()
-		push("canvas", true, canvas ? "available" : `unavailable: ${error ?? "load failed"}`)
-		if (canvas) {
+		const { pdfium, error } = await loadPdfium()
+		push("pdfium", true, pdfium ? "available" : `unavailable: ${error ?? "load failed"}`)
+		if (pdfium) {
 			try {
 				const data = await makeScannedPdf()
 				const doc = await extractDocument("scan.pdf", data, { tool: "doctor" })
