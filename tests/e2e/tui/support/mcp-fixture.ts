@@ -34,9 +34,10 @@ interface McpFixtureEventDetails {
 	sse_session_initialized: { sessionId: string }
 	sse_session_closed: { sessionId: string }
 	sse_message: { sessionId: string }
-	oauth_resource_metadata_requested: { path: string }
-	oauth_server_metadata_requested: Record<string, never>
-	oauth_client_registered: { redirectUris?: string[] }
+	oauth_resource_metadata_requested: { path: string; accept?: string }
+	oauth_server_metadata_requested: { accept?: string }
+	oauth_client_registered: { redirectUris?: string[]; accept?: string }
+	oauth_strict_accept_rejected: { path: string; accept?: string }
 	oauth_authorization_denied: { redirectUri: string }
 	oauth_authorized: { redirectUri: string; state: string; codeChallengeMethod: string }
 	oauth_token_issued: { grantType: string; expiresIn: number; pkceVerified?: boolean }
@@ -155,6 +156,8 @@ export interface McpServerFixtureOptions {
 	toolPrefix?: McpSettings["toolPrefix"]
 	autoAuth?: boolean
 	oauthPreauthorized?: boolean
+	/** Spec-strict gateway mode: OAuth metadata/DCR endpoints 406 unless Accept advertises text/event-stream. */
+	strictAccept?: boolean
 	behavior?: McpFixtureBehavior
 }
 
@@ -391,6 +394,7 @@ export async function createMcpFixture(agentDir: string, options: McpFixtureOpti
 			...fixtureBehaviorEnv(options.behavior),
 			...(oauth ? { KIMCHI_MCP_FIXTURE_OAUTH: "1" } : {}),
 			...(oauth && options.oauthPreauthorized ? { KIMCHI_MCP_FIXTURE_OAUTH_PREAUTHORIZED: "1" } : {}),
+			...(oauth && options.strictAccept ? { KIMCHI_MCP_FIXTURE_STRICT_ACCEPT: "1" } : {}),
 			...(oauth && options.oauth?.grantType ? { KIMCHI_MCP_FIXTURE_OAUTH_GRANT_TYPE: options.oauth.grantType } : {}),
 			...(oauth && options.oauth?.clientId ? { KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_ID: options.oauth.clientId } : {}),
 			...(oauth && options.oauth?.clientSecret
