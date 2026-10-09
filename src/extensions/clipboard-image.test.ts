@@ -179,9 +179,8 @@ describe("clipboard-image extension", () => {
 	})
 
 	beforeEach(() => {
-		// Reset module-level state (clipboardHasImage) before each test.
-		// session_shutdown no longer clears it, so we drive a session_start with an
-		// empty-clipboard mock which causes checkClipboard to set clipboardHasImage=false.
+		// session_start clears clipboardHasImage before the indicator paint. A Darwin
+		// start/shutdown drops a stale proactive hint without reading the clipboard.
 		Object.defineProperty(process, "platform", { value: "darwin" })
 		mockGetNativeClipboard.mockReturnValue({
 			clipboard: { hasImage: () => false, availableFormats: () => [] },
@@ -288,6 +287,9 @@ describe("clipboard-image extension", () => {
 		})
 
 		it("indicator shows clipboard hint (not 📎) immediately after images are submitted", async () => {
+			// Proactive hint is Windows-only. Darwin no longer polls, so this
+			// assertion cannot run on the default platform.
+			Object.defineProperty(process, "platform", { value: "win32" })
 			mockGetNativeClipboard.mockReturnValue({
 				clipboard: { hasImage: () => true, availableFormats: () => [] },
 				error: null,
@@ -304,6 +306,30 @@ describe("clipboard-image extension", () => {
 			const calls = mockSetPendingImageIndicator.mock.calls
 			const lastCall = calls[calls.length - 1][0]
 			expect(lastCall).toBe("Image in clipboard · ctrl+v to paste")
+			getHandler<unknown, void>(pi, "session_shutdown")(void 0, ctx)
+		})
+
+		it("leaves no clipboard hint after a Darwin submission when the pasteboard has an image", async () => {
+			Object.defineProperty(process, "platform", { value: "darwin" })
+			const hasImage = vi.fn(() => true)
+			const availableFormats = vi.fn(() => ["public.png", "public.file-url"])
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage, availableFormats },
+				error: null,
+			})
+
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			startSession(pi, ctx)
+
+			const images: ImageContent[] = [{ type: "image", mimeType: "image/png", data: "abc123" }]
+			await callInput(pi, ctx, { text: "look at this", images, source: "interactive" })
+
+			expect(mockSetPendingImageIndicator.mock.calls.at(-1)?.[0]).toBeNull()
+			expect(hasImage).not.toHaveBeenCalled()
+			expect(availableFormats).not.toHaveBeenCalled()
+			expect(mockExecFile).not.toHaveBeenCalled()
 		})
 
 		it("indicator clears to null after images are submitted when clipboard is empty", async () => {
@@ -502,6 +528,113 @@ describe("clipboard-image extension", () => {
 			const last = mockSetPendingImageIndicator.mock.calls.at(-1)?.[0]
 			expect(last).toContain("📎 1 image")
 			expect(last).not.toContain("text-only")
+		})
+
+		it("pastes and submits one Darwin image without advertising a clipboard hint", async () => {
+			Object.defineProperty(process, "platform", { value: "darwin" })
+			const hasImage = vi.fn(() => true)
+			const availableFormats = vi.fn(() => ["public.png", "public.file-url"])
+			const getImageBinary = vi.fn(async () => [1, 2, 3, 4])
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage, availableFormats, getImageBinary },
+				error: null,
+			})
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			startSession(pi, ctx)
+
+			mockReadClipboardImage.mockResolvedValue({
+				bytes: Buffer.from([1, 2, 3, 4]),
+				mimeType: "image/png",
+			})
+			pasteHandler?.()
+			await settle()
+
+			expect(mockReadClipboardImage).toHaveBeenCalledTimes(1)
+			expect(mockSetPendingImageIndicator).toHaveBeenCalledWith(expect.stringContaining("📎 1 image"))
+
+			const result = (await callInput(pi, ctx, { text: "look", images: [], source: "interactive" })) as {
+				text: string
+				images: ImageContent[]
+			}
+			expect(result.text).toBe("[Image #1] look")
+			expect(result.images).toEqual([
+				{ type: "image", data: Buffer.from([1, 2, 3, 4]).toString("base64"), mimeType: "image/png" },
+			])
+			expect(mockSetPendingImageIndicator).toHaveBeenLastCalledWith(null)
+			expect(hasImage).not.toHaveBeenCalled()
+			expect(availableFormats).not.toHaveBeenCalled()
+			expect(getImageBinary).not.toHaveBeenCalled()
+			expect(mockExecFile).not.toHaveBeenCalled()
+
+			await vi.advanceTimersByTimeAsync(5_000)
+			expect(mockReadClipboardImage).toHaveBeenCalledTimes(1)
+			expect(hasImage).not.toHaveBeenCalled()
+		})
+
+		it("notifies when Darwin paste finds no image and does not start polling", async () => {
+			const hasImage = vi.fn(() => false)
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage, availableFormats: () => ["public.file-url"] },
+				error: null,
+			})
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			startSession(pi, ctx)
+
+			mockReadClipboardImage.mockResolvedValue(null)
+			pasteHandler?.()
+			await settle()
+
+			expect(ctx.ui.notify).toHaveBeenCalledWith("No image found on clipboard", "info")
+			expect(mockSetPendingImageIndicator).not.toHaveBeenCalledWith(expect.stringContaining("📎"))
+			await vi.advanceTimersByTimeAsync(5_000)
+			expect(mockReadClipboardImage).toHaveBeenCalledTimes(1)
+			expect(mockGetNativeClipboard).toHaveBeenCalledTimes(1)
+			expect(hasImage).not.toHaveBeenCalled()
+			expect(mockExecFile).not.toHaveBeenCalled()
+		})
+
+		it("notifies when clipboard image support is unavailable and does not poll", async () => {
+			mockGetNativeClipboard.mockReturnValue({ clipboard: null, error: "no addon" })
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			startSession(pi, ctx)
+
+			pasteHandler?.()
+			await settle()
+
+			expect(ctx.ui.notify).toHaveBeenCalledWith("Clipboard image support is not available: no addon", "warning")
+			expect(mockReadClipboardImage).not.toHaveBeenCalled()
+			await vi.advanceTimersByTimeAsync(5_000)
+			expect(mockGetNativeClipboard).toHaveBeenCalledTimes(1)
+			expect(mockReadClipboardImage).not.toHaveBeenCalled()
+			expect(mockExecFile).not.toHaveBeenCalled()
+		})
+
+		it("notifies when the clipboard read fails and does not retry", async () => {
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage: () => true, availableFormats: () => ["public.png", "public.file-url"] },
+				error: null,
+			})
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			startSession(pi, ctx)
+
+			mockReadClipboardImage.mockRejectedValue(new Error("pasteboard unavailable"))
+			pasteHandler?.()
+			await settle()
+
+			expect(ctx.ui.notify).toHaveBeenCalledWith("Clipboard image support is not available", "warning")
+			expect(mockSetPendingImageIndicator).not.toHaveBeenCalledWith(expect.stringContaining("📎"))
+			await vi.advanceTimersByTimeAsync(5_000)
+			expect(mockReadClipboardImage).toHaveBeenCalledTimes(1)
+			expect(mockGetNativeClipboard).toHaveBeenCalledTimes(1)
+			expect(mockExecFile).not.toHaveBeenCalled()
 		})
 
 		it("pasted images flow through the gate and survive cancel exactly once", async () => {
@@ -914,6 +1047,178 @@ describe("clipboard-image extension", () => {
 			fireAgentEnd(harness)
 			await vi.advanceTimersByTimeAsync(1)
 			expect(harness.custom).not.toHaveBeenCalled()
+		})
+	})
+
+	describe("clipboard polling", () => {
+		const POLL_MS = 1_000
+
+		function screenshotClipboard() {
+			const hasImage = vi.fn(() => true)
+			const availableFormats = vi.fn(() => ["public.png", "public.file-url"])
+			const getImageBinary = vi.fn(async () => [1, 2, 3])
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage, availableFormats, getImageBinary },
+				error: null,
+			})
+			return { hasImage, availableFormats, getImageBinary }
+		}
+
+		function expectNoProbe(spies: ReturnType<typeof screenshotClipboard>): void {
+			expect(spies.hasImage).not.toHaveBeenCalled()
+			expect(spies.availableFormats).not.toHaveBeenCalled()
+			expect(spies.getImageBinary).not.toHaveBeenCalled()
+			expect(mockGetNativeClipboard).not.toHaveBeenCalled()
+			expect(mockReadClipboardImage).not.toHaveBeenCalled()
+			expect(mockExecFile).not.toHaveBeenCalled()
+		}
+
+		it("does not probe, read, or spawn while a Darwin TUI session idles", async () => {
+			Object.defineProperty(process, "platform", { value: "darwin" })
+			const spies = screenshotClipboard()
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx({ mode: "tui" })
+			startSession(pi, ctx)
+
+			await vi.advanceTimersByTimeAsync(POLL_MS * 5)
+			await settle()
+
+			expectNoProbe(spies)
+			expect(mockSetPendingImageIndicator).not.toHaveBeenCalledWith("Image in clipboard · ctrl+v to paste")
+			expect(mockSetPendingImageIndicator).toHaveBeenLastCalledWith(null)
+		})
+
+		it("does not probe across idle or repeated Darwin ACP sessions", async () => {
+			// ACP binds this extension with ctx.mode "rpc" (see bindAcpExtensions).
+			Object.defineProperty(process, "platform", { value: "darwin" })
+			const spies = screenshotClipboard()
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx({ mode: "rpc" })
+			startSession(pi, ctx)
+			await vi.advanceTimersByTimeAsync(POLL_MS * 5)
+			expectNoProbe(spies)
+
+			for (let i = 0; i < 3; i++) {
+				startSession(pi, ctx)
+				getHandler<unknown, void>(pi, "session_shutdown")(void 0, ctx)
+			}
+			startSession(pi, ctx)
+			await vi.advanceTimersByTimeAsync(POLL_MS * 5)
+			await settle()
+			expectNoProbe(spies)
+			getHandler<unknown, void>(pi, "session_shutdown")(void 0, ctx)
+		})
+
+		it("polls on Windows until shutdown and does not stack intervals", async () => {
+			Object.defineProperty(process, "platform", { value: "win32" })
+			let present = false
+			const hasImage = vi.fn(() => present)
+			const availableFormats = vi.fn(() => [] as string[])
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage, availableFormats },
+				error: null,
+			})
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			try {
+				startSession(pi, ctx)
+				expect(hasImage).toHaveBeenCalledTimes(1)
+				expect(mockSetPendingImageIndicator).toHaveBeenLastCalledWith(null)
+
+				present = true
+				await vi.advanceTimersByTimeAsync(POLL_MS)
+				expect(hasImage).toHaveBeenCalledTimes(2)
+				expect(mockSetPendingImageIndicator).toHaveBeenLastCalledWith("Image in clipboard · ctrl+v to paste")
+
+				hasImage.mockClear()
+				startSession(pi, ctx)
+				expect(hasImage).toHaveBeenCalledTimes(1)
+				await vi.advanceTimersByTimeAsync(POLL_MS * 2)
+				// One replacement interval: the initial probe plus two ticks, not two intervals' worth.
+				expect(hasImage).toHaveBeenCalledTimes(3)
+
+				const callsAtShutdown = hasImage.mock.calls.length
+				getHandler<unknown, void>(pi, "session_shutdown")(void 0, ctx)
+				await vi.advanceTimersByTimeAsync(POLL_MS * 5)
+				expect(hasImage).toHaveBeenCalledTimes(callsAtShutdown)
+				expect(mockExecFile).not.toHaveBeenCalled()
+			} finally {
+				getHandler<unknown, void>(pi, "session_shutdown")(void 0, ctx)
+			}
+		})
+
+		it("shows the Windows hint for image formats hasImage() misses", () => {
+			Object.defineProperty(process, "platform", { value: "win32" })
+			const hasImage = vi.fn(() => false)
+			const availableFormats = vi.fn(() => ["image/jpeg"])
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage, availableFormats },
+				error: null,
+			})
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			startSession(pi, ctx)
+			expect(hasImage).toHaveBeenCalledTimes(1)
+			expect(availableFormats).toHaveBeenCalledTimes(1)
+			expect(mockSetPendingImageIndicator).toHaveBeenLastCalledWith("Image in clipboard · ctrl+v to paste")
+			expect(mockExecFile).not.toHaveBeenCalled()
+			getHandler<unknown, void>(pi, "session_shutdown")(void 0, ctx)
+		})
+
+		it("stays on-demand on Linux", async () => {
+			Object.defineProperty(process, "platform", { value: "linux" })
+			const spies = screenshotClipboard()
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			startSession(pi, makeMockCtx())
+			await vi.advanceTimersByTimeAsync(POLL_MS * 5)
+			expectNoProbe(spies)
+			expect(mockSetPendingImageIndicator).toHaveBeenLastCalledWith(null)
+		})
+
+		it("clears a stale proactive hint and pending image when the next session starts", async () => {
+			Object.defineProperty(process, "platform", { value: "win32" })
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage: () => true, availableFormats: () => ["image/png"] },
+				error: null,
+			})
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const first = makeMockCtx()
+			startSession(pi, first)
+			expect(mockSetPendingImageIndicator).toHaveBeenLastCalledWith("Image in clipboard · ctrl+v to paste")
+
+			mockReadClipboardImage.mockResolvedValue({
+				bytes: Buffer.from([1, 2, 3]),
+				mimeType: "image/png",
+			})
+			pasteHandler?.()
+			await settle()
+			expect(mockSetPendingImageIndicator).toHaveBeenLastCalledWith(expect.stringContaining("📎 1 image"))
+
+			Object.defineProperty(process, "platform", { value: "darwin" })
+			mockGetNativeClipboard.mockClear()
+			mockReadClipboardImage.mockClear()
+			mockExecFile.mockClear()
+			const spies = screenshotClipboard()
+			const second = makeMockCtx()
+			startSession(pi, second)
+			expect(mockSetPendingImageIndicator).toHaveBeenLastCalledWith(null)
+			expectNoProbe(spies)
+
+			await expect(callInput(pi, second, { text: "hello", images: [], source: "interactive" })).resolves.toBeUndefined()
+			const submitted = await callInput(pi, second, {
+				text: "next",
+				images: [{ type: "image", mimeType: "image/png", data: "zzz" }],
+				source: "interactive",
+			})
+			expect(submitted).toMatchObject({ action: "transform", text: "[Image #1] next" })
+			expect(mockSetPendingImageIndicator).toHaveBeenLastCalledWith(null)
+			expect(spies.hasImage).not.toHaveBeenCalled()
 		})
 	})
 })
