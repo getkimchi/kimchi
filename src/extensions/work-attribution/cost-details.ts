@@ -74,7 +74,7 @@ function spendTotals(rows: Record<string, unknown>[]): SpendTotals {
 	return { total, priced, knownCostUsd: usd(nanos) }
 }
 
-/** Totals for the work a saved report belongs to. Its requests may include connected works'; PR rows count them all. */
+/** Requests sent without a billing tag, by reason. */
 function untaggedTotals(rows: Record<string, unknown>[]): { untagged?: Record<string, number> } {
 	const untagged: Record<string, number> = {}
 	for (const row of rows)
@@ -83,6 +83,7 @@ function untaggedTotals(rows: Record<string, unknown>[]): { untagged?: Record<st
 	return Object.keys(untagged).length ? { untagged } : {}
 }
 
+/** Requests whose last billing refresh failed before any page, with the newest reason. */
 function failedRefreshTotals(rows: Record<string, unknown>[]): { failedRefresh?: { count: number; reason?: string } } {
 	const failed = rows.flatMap((row) =>
 		object(row.billingLookup) && row.billingLookup.status === "unavailable" ? [row.billingLookup] : [],
@@ -96,6 +97,7 @@ function failedRefreshTotals(rows: Record<string, unknown>[]): { failedRefresh?:
 	}
 }
 
+/** Totals for the work a saved report belongs to. Its requests may include connected works'; PR rows count them all. */
 export function workCostTotals(report: unknown): WorkCostTotals | undefined {
 	if (
 		!object(report) ||

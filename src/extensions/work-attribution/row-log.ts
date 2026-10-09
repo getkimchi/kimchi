@@ -494,10 +494,9 @@ async function nextGeneration(folder: string, collection: Collection, current = 
 async function removeStrays(folder: string, head: WorkHead): Promise<void> {
 	for (const name of await readdir(join(folder, ROWS)).catch(() => [])) {
 		const match = /^(\w+)\.(\d+)\.jsonl$/.exec(name)
-		const stray =
-			match && isCollection(match[1]) ? head.logs[match[1]]?.generation !== Number(match[2]) : /^\..*\.tmp$/.test(name)
 		// A reader may still hold an old generation open. Windows then refuses, and a later update retries.
-		if (stray) await rm(join(folder, ROWS, name), { force: true }).catch(() => {})
+		if (match && isCollection(match[1]) && head.logs[match[1]]?.generation !== Number(match[2]))
+			await rm(join(folder, ROWS, name), { force: true }).catch(() => {})
 	}
 }
 
