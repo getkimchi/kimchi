@@ -92,14 +92,16 @@ async function diskState(path: string, data?: Buffer): Promise<FileState | null 
 	if (!existsSync(path)) return null
 	const stat = lstatSync(path)
 	if (!stat.isFile() || stat.size > MAX_FILE_BYTES) throw new Error("Unsupported file for work attribution")
-	if (!(await supportsGitAttributes(path))) return undefined
-	const parent = dirname(path)
+	// Git resolves a symlinked directory to the repository it points into, as repositoryFile does.
+	const parent = realpathSync(dirname(path))
+	const file = join(parent, basename(path))
+	if (!(await supportsGitAttributes(file))) return undefined
 	let mode = stat.mode & 0o111 ? "100755" : "100644"
 	if ((await git(parent, ["config", "--type=bool", "--default=true", "--get", "core.filemode"])) === "false") {
-		mode = (await git(parent, ["ls-files", "--stage", "--", path])).split(" ")[0] || "100644"
+		mode = (await git(parent, ["ls-files", "--stage", "--", file])).split(" ")[0] || "100644"
 	}
 	const input = data ?? readFileSync(path)
-	return { blob: await git(parent, ["hash-object", "--stdin", `--path=${path}`], { input }), mode }
+	return { blob: await git(parent, ["hash-object", "--stdin", `--path=${file}`], { input }), mode }
 }
 async function treeState(
 	cwd: string,

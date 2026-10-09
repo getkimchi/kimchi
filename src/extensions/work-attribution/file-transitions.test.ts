@@ -9,6 +9,7 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs"
 import * as asyncFs from "node:fs/promises"
@@ -1076,5 +1077,38 @@ describe("manual commit reconciliation", () => {
 		expect(readFileSync(join(repo, "file.txt"), "utf8")).toBe("first\ntwo\n")
 		expect(readFileSync(join(repo, "new.txt"), "utf8")).toBe("new")
 		expect(warn).toHaveBeenCalled()
+	})
+})
+
+describe("symlinked directories", () => {
+	it("records a write through a directory that links into another repository", async () => {
+		const other = join(root, "other")
+		mkdirSync(join(other, "skills"), { recursive: true })
+		execFileSync("git", ["-C", other, "init", "-q"])
+		execFileSync("git", [
+			"-C",
+			other,
+			"-c",
+			"user.name=Test",
+			"-c",
+			"user.email=test@example.test",
+			"commit",
+			"-q",
+			"--allow-empty",
+			"-m",
+			"base",
+		])
+		symlinkSync(join(other, "skills"), join(repo, "skills"))
+		const warn = vi.spyOn(diagnostics, "debugWorkAttribution")
+
+		await write("skills/SKILL.md", "# Skill\n")
+
+		// Git resolves the linked directory into the other repository; the paths it receives must agree.
+		expect(warn).not.toHaveBeenCalledWith("Attribution unavailable:", expect.anything())
+		expect(rows().find((row) => row.type === "file_transition")).toMatchObject({
+			repository: realpathSync(join(other, ".git")),
+			worktree: realpathSync(other),
+			path: "skills/SKILL.md",
+		})
 	})
 })
