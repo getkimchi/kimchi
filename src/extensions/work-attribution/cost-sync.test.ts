@@ -2128,6 +2128,13 @@ describe("idle cost passes", () => {
 		expect(report(workId)).toEqual(saved)
 		expect(calculate).not.toHaveBeenCalled()
 		expect(reports(write.mock.calls)).toHaveLength(1)
+		// So are the deleted totals that /work reads.
+		const totals = join(dir, "work", workId, "cost-totals.json")
+		const shown = workCostDetails(dir, workId)
+		unlinkSync(totals)
+		await sync()
+		expect(workCostDetails(dir, workId)).toEqual(shown)
+		expect(calculate).not.toHaveBeenCalled()
 		// Any append changes the journals' fingerprint.
 		appendWorkRecord(ctx, { type: "request_response", requestId, billingSource: source, response: { status: 200 } })
 		await sync()

@@ -515,10 +515,12 @@ export async function reconcileWorkCosts(
 		const currentPolls = JSON.stringify(polls)
 		if (currentPolls !== previousPolls) writeFileAtomic(pollingPath, `${currentPolls}\n`)
 		const failures = refreshFailures(latest, polls)
-		// Unchanged inputs give unchanged reports; only a deleted report needs writing again.
+		// Unchanged inputs give unchanged reports; only a deleted report or totals file needs writing again.
 		if (
 			latest.published === failures &&
-			latest.workIds.every((workId) => existsSync(join(agentDir, "work", workId, "costs.json")))
+			latest.workIds.every((workId) =>
+				["costs.json", "cost-totals.json"].every((name) => existsSync(join(agentDir, "work", workId, name))),
+			)
 		)
 			return
 		const complete = await publishReports(agentDir, latest, polls, () => {
