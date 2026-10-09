@@ -155,7 +155,15 @@ Over ACP the surface is custom ext-methods (`_kimchi.dev/…`, advertised in `_m
 | `memory_delete` | `{ ids: string[] }` | across all stores; unknown ids come back in `notFound` |
 | `memory_reset` | `{ scope, project?, confirm: true }` | destructive — `confirm: true` required (the client owns its confirmation UI); `local` is not a valid reset scope |
 
-Scope params follow the shared grammar: `local` (and the default) resolve via the client-supplied `cwd`; without one the local scope degrades to personal-only — the same semantics as the grammar outside a repository. The ACP server's own process cwd is never used (it is a long-lived process unrelated to any session). `project` pairs with an explicit project id, and `memory_reset` accepts no `cwd` — its target is fully determined by scope and project. The session toggle is keyed by the session's manager (`src/extensions/memory/session-toggle.ts`) — the same identity the extension reads — so `set_memory_enabled` lands exactly in the session the client named.
+The store ops share these params, which follow the admin grammar's scope semantics:
+
+| Param | Values | Notes |
+| --- | --- | --- |
+| `scope` | `local` (default) \| `personal` \| `project` \| `all` | `local` is the personal store plus the `cwd`'s project (personal-only outside a repository) |
+| `project` | `owner/name` | pairs with `scope: "project"` only; rejected with any other scope |
+| `cwd` | non-empty string | anchors `local`/default resolution; without one, local degrades to personal-only — never the ACP server's process cwd (a long-lived process unrelated to any session) |
+
+`memory_reset` takes `scope` and `project` but no `cwd` — its target is fully determined by scope and project. The session toggle is keyed by the session's manager (`src/extensions/memory/session-toggle.ts`) — the same identity the extension reads — so `set_memory_enabled` lands exactly in the session the client named.
 
 ## Verification
 

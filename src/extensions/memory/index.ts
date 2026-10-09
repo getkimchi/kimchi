@@ -370,6 +370,13 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			// with no memory contribution at all (no digest, no notice, no
 			// capture, no recall) — earlier turns keep what they already sent
 			// (accepted cache break; deliberate user action).
+			//
+			// The key is the sessionManager OBJECT, not a session id string: the
+			// /memory command (this runtime) and the ACP server
+			// (set_memory_enabled) both hold the same instance for one session
+			// runtime, so object identity is the one key both sides already share
+			// without agreeing on an id accessor — and the WeakMap entry dies with
+			// the session (see session-toggle.ts).
 			sessionKey ??= ctx.sessionManager
 			const active = memoryActive()
 			if (active !== lastActive) {

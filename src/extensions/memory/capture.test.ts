@@ -113,7 +113,7 @@ describe("wireMemoryCapture — capture kill-switch", () => {
 	it("KIMCHI_MEMORY_CAPTURE=off: no handlers registered, no job files, no spawns", () => {
 		process.env.KIMCHI_MEMORY_CAPTURE = "off"
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api)
+		wireMemoryCapture(api, () => true)
 		// The gate returns before registering: no handlers exist at all.
 		expect(() => getHandler("session_shutdown")).toThrow()
 		expect(() => getHandler("session_before_compact")).toThrow()
@@ -126,7 +126,7 @@ describe("wireMemoryCapture — capture kill-switch", () => {
 	it("default (unset) keeps normal capture", () => {
 		delete process.env.KIMCHI_MEMORY_CAPTURE
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api)
+		wireMemoryCapture(api, () => true)
 		const shutdown = getHandler("session_shutdown")
 		const child = new EventEmitter() as unknown as ChildProcess
 		child.unref = vi.fn()
@@ -1222,7 +1222,7 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 
 	it("session_shutdown writes a deterministic job file and spawns the worker", () => {
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api)
+		wireMemoryCapture(api, () => true)
 		const shutdown = getHandler("session_shutdown")
 		const child = new EventEmitter() as unknown as ChildProcess
 		child.unref = vi.fn()

@@ -69,7 +69,7 @@ export type AdminCommand =
 	| { op: "search"; query: string; scope: ScopeFilter; json: boolean }
 	| { op: "delete"; ids: string[] }
 	| { op: "reset"; scope: ScopeFilter; yes: boolean }
-	| { op: "set_enabled"; enabled: boolean }
+	| { op: "set-enabled"; enabled: boolean }
 	| { op: "usage-error"; message: string }
 
 export const USAGE = `usage: memory [list|search|delete|reset|enable|disable]
@@ -250,7 +250,7 @@ export function parseAdminArgs(args: string[], opts: { cwd: string }): AdminComm
 		if (rest.length > 0) {
 			return { op: "usage-error", message: `${sub} takes no arguments — it toggles the current session's memory only` }
 		}
-		return { op: "set_enabled", enabled: sub === "enable" }
+		return { op: "set-enabled", enabled: sub === "enable" }
 	}
 	// Only list and search consume the parsed scope — overview and delete get
 	// the unresolved local marker instead of paying the git probe.
@@ -446,7 +446,7 @@ function renderFactLines(page: AdminFact[]): string[] {
 // --- operations ------------------------------------------------------------------
 
 /**
- * The session-scoped memory toggle behind the set_enabled op. Wired by
+ * The session-scoped memory toggle behind the set-enabled op. Wired by
  * interactive surfaces (the in-session /memory command, backed by the shared
  * session-toggle module); the CLI passes no handle — enable/disable have no
  * session to act on there.
@@ -498,7 +498,7 @@ export async function runAdminCommand(args: string[], options: AdminRunOptions):
 				return withMode(await opDelete(parsed, deps), false)
 			case "reset":
 				return withMode(await opReset(parsed, options, deps), false)
-			case "set_enabled":
+			case "set-enabled":
 				return withMode(opSetEnabled(parsed, options), false)
 		}
 	} catch (err) {

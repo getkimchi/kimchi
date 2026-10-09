@@ -206,8 +206,8 @@ describe("parseAdminArgs", () => {
 	})
 
 	it("bare enable/disable parse as the session-scoped toggle", () => {
-		expect(parseAdminArgs(["enable"], { cwd: NO_REPO_CWD })).toEqual({ op: "set_enabled", enabled: true })
-		expect(parseAdminArgs(["disable"], { cwd: NO_REPO_CWD })).toEqual({ op: "set_enabled", enabled: false })
+		expect(parseAdminArgs(["enable"], { cwd: NO_REPO_CWD })).toEqual({ op: "set-enabled", enabled: true })
+		expect(parseAdminArgs(["disable"], { cwd: NO_REPO_CWD })).toEqual({ op: "set-enabled", enabled: false })
 	})
 
 	it("the toggle takes no arguments or flags", () => {
@@ -617,9 +617,9 @@ describe("runAdminCommand — overview and usage errors", () => {
 	})
 })
 
-// --- set_enabled (session-scoped toggle) ----------------------------------------
+// --- set-enabled (session-scoped toggle) ----------------------------------------
 
-describe("runAdminCommand — set_enabled", () => {
+describe("runAdminCommand — set-enabled", () => {
 	it("disable flips the session override and says it resets on restart", async () => {
 		const h = trackedHarness({})
 		let override: boolean | undefined

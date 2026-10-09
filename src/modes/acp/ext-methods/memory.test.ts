@@ -313,10 +313,13 @@ describe("handleMemoryList", () => {
 		}
 		expect(without.facts.map((f) => f.memory)).toEqual(["personal fact"])
 
-		// A mistyped cwd is rejected.
+		// A mistyped or empty cwd is rejected.
 		const err = await thrownRequestErrorAsync(() => handleMemoryList({ deps: options.deps }, { cwd: 42 }))
 		expect(err.code).toBe(-32602)
 		expect(err.message).toContain("cwd")
+		const empty = await thrownRequestErrorAsync(() => handleMemoryList({ deps: options.deps }, { cwd: "" }))
+		expect(empty.code).toBe(-32602)
+		expect(empty.message).toContain("non-empty")
 	})
 
 	it("rejects invalid scope combinations and pagination params", async () => {

@@ -53,8 +53,8 @@ export type MemoryMethodOptions = {
 /** The cwd a client-supplied param carries, falling back to the test seam. Client-only — never the server process cwd. */
 function resolveClientCwd(params: Record<string, unknown>, options: MemoryMethodOptions): string | undefined {
 	const cwd = params.cwd
-	if (cwd !== undefined && typeof cwd !== "string") {
-		throw RequestError.invalidParams(undefined, "cwd must be a string")
+	if (cwd !== undefined && (typeof cwd !== "string" || cwd.length === 0)) {
+		throw RequestError.invalidParams(undefined, "cwd must be a non-empty string")
 	}
 	return cwd ?? options.cwd
 }
@@ -173,6 +173,10 @@ export async function handleMemoryList(
 		offset,
 		limit,
 		scope,
+		// The admin core's AdminFact calls the field `scopeId` (its own naming
+		// for the store identifier); the wire API calls it `scope`, matching the
+		// request param and every other method's response. Rename at the seam so
+		// the client sees one consistent field name.
 		facts: page.map(({ scopeId, ...item }) => ({ scope: scopeId, ...item })),
 	}
 }
@@ -292,12 +296,12 @@ export async function handleMemoryReset(
 		throw RequestError.internalError(undefined, `memory reset failed: ${detail}`)
 	}
 	if (!outcome.ok) {
-		if (outcome.reason !== "no-such-store") {
-			// yes:true skips the confirm gate, so the other failure reasons are
-			// unreachable here — surface as internal rather than guessing.
-			throw RequestError.internalError(undefined, `unexpected reset outcome: ${outcome.reason}`)
+		if (outcome.reason === "no-such-store") {
+			throw RequestError.invalidParams(undefined, `No memory store for ${outcome.scopeId} — nothing to reset.`)
 		}
-		throw RequestError.invalidParams(undefined, `No memory store for ${outcome.scopeId} — nothing to reset.`)
+		// yes:true skips the confirm gate, so the other failure reasons are
+		// unreachable here — surface as internal rather than guessing.
+		throw RequestError.internalError(undefined, `unexpected reset outcome: ${outcome.reason}`)
 	}
 	return { ...outcome }
 }

@@ -8,8 +8,8 @@ import { Type } from "typebox"
 
 export interface MemorySearchDeps {
 	search: (query: string) => Promise<Array<{ memory?: string; score?: number; scope?: "personal" | "project" }>>
-	/** Session-toggle gate — when provided and false, the tool reports the disabled state instead of searching. */
-	isEnabled?: () => boolean
+	/** Session-toggle gate — when false, the tool reports the disabled state instead of searching. */
+	isEnabled: () => boolean
 }
 
 const MemorySearchSchema = Type.Object({
@@ -30,7 +30,7 @@ export function createMemorySearchTool(deps: MemorySearchDeps): ToolDefinition<t
 			"Search the user's persistent local memory (facts, preferences, and decisions from previous sessions). Use when the user references something from earlier conversations, asks 'what do you know about…', when a preference would change how you act, or when a question asks about a specific item, event, or date that the recalled digest did not surface. Capture is automatic at session end — this tool is read-only; there is nothing to write.",
 		parameters: MemorySearchSchema,
 		execute: async (_toolCallId, params) => {
-			if (deps.isEnabled && !deps.isEnabled()) {
+			if (!deps.isEnabled()) {
 				return textResult(
 					"Memory is currently disabled for this session — the user can turn it back on with /memory enable.",
 				)

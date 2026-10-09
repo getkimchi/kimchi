@@ -569,7 +569,7 @@ describe("memory extension", () => {
 	it("the /memory command's toggle gates the very next agent start (identity seam)", async () => {
 		const admin = await import("./admin.js")
 		// Route the command through the REAL admin core for this test — the
-		// file-wide runAdminCommand mock would otherwise swallow the set_enabled
+		// file-wide runAdminCommand mock would otherwise swallow the set-enabled
 		// execution, and the point is the full path: command → handle → shared
 		// toggle → runtime read.
 		const real = await vi.importActual<typeof import("./admin.js")>("./admin.js")
