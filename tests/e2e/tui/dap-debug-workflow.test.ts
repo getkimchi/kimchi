@@ -205,11 +205,20 @@ testWithJsDebug(
 
 				terminal.submit("capture state at app.js line 2")
 				trace.step("submitted prompt")
-				await waitForTurnToSettle(fixture.fake.requests)
-				trace.step("settled")
+				// waitForTurnToSettle is the wrong tool here: it returns after the
+				// request count is stable for 1.2s, but the real debug_state_at runs
+				// js-debug for ~10-30s without any provider traffic — the settle
+				// returns while the tool is still executing and the assertion below
+				// races it. Wait directly for the tool RESULT to reach the model:
+				// the program's stdout rides inside the next request body.
+				await waitForText(terminal, "Debug State At", { full: false })
+				const deadline = Date.now() + 90_000
+				while (!anyRequestContains(fixture, "result=5")) {
+					if (Date.now() > deadline) break
+					await new Promise((resolve) => setTimeout(resolve, 250))
+				}
+				trace.step("tool result reached the model")
 
-				const view = viewText(terminal)
-				expect(view).toContain("Debug State At")
 				// The program ran to completion after the breakpoint — its stdout is
 				// part of the captured state, which must reach the model as the tool
 				// result (visible tool output is collapsed in the TUI).
