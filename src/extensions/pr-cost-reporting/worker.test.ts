@@ -572,6 +572,19 @@ describe("account-fenced reporting delivery", () => {
 		expect(posts()).toHaveLength(1)
 		expect(Object.values((await readReportingState(directory)).entries)[0].pending).toBeUndefined()
 	})
+	it("treats a record type this version does not know as incomplete history", async () => {
+		await rm(join(directory, "pr-cost-reporting", "state.json"))
+		await seedLinked()
+		// A newer Kimchi sharing this history may write records this version cannot price or attribute.
+		await writeFile(
+			join(directory, "work-attribution", "newer.jsonl"),
+			`${JSON.stringify({ version: 1, type: "future_record", workId: "55555555-5555-4555-8555-555555555555", sessionId: "newer", recordedAt: "2026-10-04T12:00:00.000Z" })}\n`,
+		)
+		respond(accepted)
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(posts()).toEqual([])
+		expect((await readReportingState(directory)).error).toContain("could not capture a complete inventory")
+	})
 	it("delivers the queued report but withdraws nothing when a ledger cannot be read", async () => {
 		await mkdir(join(directory, "work-attribution"), { recursive: true })
 		await writeFile(join(directory, "work-attribution", "source.jsonl"), "{broken\n")
