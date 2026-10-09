@@ -671,7 +671,8 @@ describe("expected lookup failures", () => {
 		await api.getRegisteredCommand("work").handler("", { ...createCommandContext(), ...ctx })
 		const shown = vi.mocked(ctx.ui.notify).mock.calls.at(-1)?.[0]
 		expect(shown).toContain("PR/MR lookup: 2 commits without a PR after 32 days, no longer checked")
-		expect(shown).not.toContain("waiting")
+		// Later PRs add other /work lines, such as costs still waiting for billing; only lookup lines matter here.
+		expect(shown).not.toMatch(/PR\/MR lookup: \d+ commits? waiting/)
 		expect(shown).not.toContain("could not find")
 		// A newer commit of the same work still waits.
 		update({ ...commit, sha: "d".repeat(40), prLookup: { status: "pending", checkedAt } })
