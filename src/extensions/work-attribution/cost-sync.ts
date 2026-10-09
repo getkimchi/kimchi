@@ -6,6 +6,7 @@ import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations
 import { writeFileAtomic, writeFileDurably } from "../../config/json.js"
 import { loadConfig } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
+import { readE2eSeam } from "../e2e-seam.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { BEFORE_PAGE_TIMEOUT_MESSAGE, type BillingRow, billingResponse, lookupRows } from "./billing-api.js"
@@ -198,6 +199,14 @@ function group<K, T>(groups: Map<K, T[]>, key: K, value: T): void {
 	else groups.set(key, [value])
 }
 
+/** A long work's full report is large; it is refreshed at most this often, and `/work` reads the totals instead. */
+const REPORT_REFRESH_MS = 5 * 60_000
+/** When this process last refreshed each work's full report. Its first pass refreshes every report. */
+const reportRefreshes = new Map<string, number>()
+function reportRefreshMs(): number {
+	const value = Number(readE2eSeam("KIMCHI_E2E_COST_REPORT_REFRESH_MS") ?? Number.NaN)
+	return Number.isSafeInteger(value) && value >= 0 ? value : REPORT_REFRESH_MS
+}
 async function writeChanged(path: string, content: string, assertLease: () => void): Promise<void> {
 	try {
 		if (readFileSync(path, "utf8") === content) return
@@ -209,7 +218,7 @@ async function publishReports(
 	{ displays, report, workIds }: CostState,
 	polls: Record<string, BillingPoll>,
 	assertLease: () => void,
-): Promise<void> {
+): Promise<boolean> {
 	trackPRCostMetric({
 		kind: "unpriced",
 		value: report.requests.filter((request) => request.priceStatus !== "priced").length,
@@ -270,6 +279,8 @@ async function publishReports(
 		contents.set(included, found)
 		return found
 	}
+	// A full report left for a later pass keeps this calculation unpublished, so that pass still writes it.
+	let deferred = false
 	for (const workId of workIds) {
 		assertLease()
 		const directory = join(agentDir, "work", workId)
@@ -282,8 +293,17 @@ async function publishReports(
 			`${JSON.stringify(workCostTotals(value), null, 2)}\n`,
 			assertLease,
 		)
-		await writeChanged(join(directory, "costs.json"), `${JSON.stringify(value, null, 2)}\n`, assertLease)
+		// The accuracy CLI and lab read the full report. A missing one is rebuilt at once.
+		const path = join(directory, "costs.json")
+		const now = Date.now()
+		if (now - (reportRefreshes.get(workId) ?? Number.NEGATIVE_INFINITY) < reportRefreshMs() && existsSync(path)) {
+			deferred = true
+			continue
+		}
+		await writeChanged(path, `${JSON.stringify(value, null, 2)}\n`, assertLease)
+		reportRefreshes.set(workId, now)
 	}
+	return !deferred
 }
 
 /** Called by the shared supervisor's lease holder; model inference never waits for this pass. */
@@ -501,11 +521,11 @@ export async function reconcileWorkCosts(
 			latest.workIds.every((workId) => existsSync(join(agentDir, "work", workId, "costs.json")))
 		)
 			return
-		await publishReports(agentDir, latest, polls, () => {
+		const complete = await publishReports(agentDir, latest, polls, () => {
 			signal.throwIfAborted()
 			assertLease()
 		})
-		latest.published = failures
+		if (complete) latest.published = failures
 	} finally {
 		clearTimeout(timeout)
 	}

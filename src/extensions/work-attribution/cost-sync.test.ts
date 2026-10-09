@@ -54,6 +54,8 @@ beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "kimchi-cost-sync-"))
 	currentKey = "test-only-original-key"
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
+	// These cases read the full report after every pass; one case below keeps the five-minute refresh.
+	vi.stubEnv("KIMCHI_E2E_COST_REPORT_REFRESH_MS", "0")
 	const originalConfig = config.loadConfig()
 	const endpoints = config.resolveEndpoints()
 	vi.spyOn(config, "loadConfig").mockImplementation(() => ({ ...originalConfig, apiKey: currentKey }))
@@ -1665,6 +1667,37 @@ describe("automatic exact work cost lookup", () => {
 		fetchMock.mockResolvedValueOnce(Response.json({ items: [item] }))
 		await sync()
 		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+	})
+	it("refreshes the full report at most every five minutes while /work shows each new price", async () => {
+		vi.stubEnv("KIMCHI_E2E_COST_REPORT_REFRESH_MS", undefined)
+		const { workId } = tagged()
+		const path = join(dir, "work", workId, "costs.json")
+		let price: string | undefined
+		fetchMock.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: ORG, userId: PROMPT })
+				: Response.json({ items: price ? [{ id: ROW, totalPrice: price }] : [] }),
+		)
+		await sync()
+		// A process's first pass writes every report.
+		const pending = readFileSync(path, "utf8")
+		expect(JSON.parse(pending).pullRequests[0].totalCostUsd).toBeNull()
+		price = "0.5"
+		const now = Date.now()
+		const clock = vi.spyOn(Date, "now")
+		for (const minutes of [1, 4]) {
+			clock.mockReturnValue(now + minutes * 60_000)
+			await sync()
+			expect(readFileSync(path, "utf8")).toBe(pending)
+			expect(workCostDetails(dir, workId)).toContain("Cost: $0.500000000 USD — https://github.com/example/repo/pull/1")
+		}
+		clock.mockReturnValue(now + 5 * 60_000)
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.500000000")
+		// A deleted report is rebuilt on the next pass.
+		unlinkSync(path)
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.500000000")
 	})
 	it("keeps missing billing pending and accepts a late explicit zero", async () => {
 		const { workId } = tagged()
