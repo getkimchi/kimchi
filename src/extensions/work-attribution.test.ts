@@ -7,8 +7,8 @@ import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { complete, getModel } from "@earendil-works/pi-ai/compat"
 import {
 	type BeforeProviderHeadersEvent,
-	type ExtensionUIContext,
 	createLocalBashOperations,
+	type ExtensionUIContext,
 	findCutPoint,
 	type InputEvent,
 	type SessionBeforeCompactEvent,
