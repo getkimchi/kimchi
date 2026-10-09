@@ -2,7 +2,7 @@ import { isUtf8 } from "node:buffer"
 import { execFile } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { constants, existsSync, lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs"
-import { access, mkdir, open, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { access, mkdir, open, readdir, readFile, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative } from "node:path"
 import {
 	createEditTool,
