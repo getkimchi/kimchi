@@ -18,6 +18,9 @@ patchedDependencies:
   '@earendil-works/pi-tui@0.85.1':
     hash: 07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815
     path: patches/@earendil-works__pi-tui@0.85.1.patch
+  '@modelcontextprotocol/client@2.0.0':
+    hash: 3cab6c66d27972d626f9d7a8286863d356c658f07fe1c80e1affd0051f569d9e
+    path: patches/@modelcontextprotocol__client@2.0.0.patch
   '@modelcontextprotocol/sdk@1.29.0':
     hash: b2e77309dd9a02d7f71c740b1e8469142c87f407898766e4f90abb8315e0dfb6
     path: patches/@modelcontextprotocol__sdk@1.29.0.patch
@@ -52,7 +55,7 @@ importers:
         version: 0.0.9(@earendil-works/pi-coding-agent@0.85.1(patch_hash=c0588a612b197bb03ffac5a8fff0047babe535da625ebb917961872c53fadf1c)(@modelcontextprotocol/sdk@1.29.0(patch_hash=b2e77309dd9a02d7f71c740b1e8469142c87f407898766e4f90abb8315e0dfb6)(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))
       '@modelcontextprotocol/client':
         specifier: 2.0.0
-        version: 2.0.0
+        version: 2.0.0(patch_hash=3cab6c66d27972d626f9d7a8286863d356c658f07fe1c80e1affd0051f569d9e)
       '@modelcontextprotocol/ext-apps':
         specifier: ^1.7.1
         version: 1.7.1(@modelcontextprotocol/sdk@1.29.0(patch_hash=b2e77309dd9a02d7f71c740b1e8469142c87f407898766e4f90abb8315e0dfb6)(supports-color@10.2.2)(zod@4.4.3))(zod@4.4.3)
@@ -4219,7 +4222,7 @@ snapshots:
 
   '@mixmark-io/domino@2.2.0': {}
 
-  '@modelcontextprotocol/client@2.0.0':
+  '@modelcontextprotocol/client@2.0.0(patch_hash=3cab6c66d27972d626f9d7a8286863d356c658f07fe1c80e1affd0051f569d9e)':
     dependencies:
       '@modelcontextprotocol/core': 2.0.0
       cross-spawn: 7.0.6
@@ -5930,7 +5933,7 @@ snapshots:
 
   pi-mcp-adapter@2.34.0(patch_hash=9624d3c2277891945c81cf6bc19674f09f3611bc84454182c0f451901c4e2300)(@earendil-works/pi-ai@0.85.1(patch_hash=99288f84b8edd20e74893fb83ca49de935fc0c93de9a0643de705feaaffac550)(@modelcontextprotocol/sdk@1.29.0(patch_hash=b2e77309dd9a02d7f71c740b1e8469142c87f407898766e4f90abb8315e0dfb6)(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=07cf32aedb949d8917687274cd0fdb4a9395d75f1e471144f021130f130f0815))(@modelcontextprotocol/sdk@1.29.0(patch_hash=b2e77309dd9a02d7f71c740b1e8469142c87f407898766e4f90abb8315e0dfb6)(supports-color@10.2.2)(zod@4.4.3))(typebox@1.3.7)(zod@4.4.3):
     dependencies:
-      '@modelcontextprotocol/client': 2.0.0
+      '@modelcontextprotocol/client': 2.0.0(patch_hash=3cab6c66d27972d626f9d7a8286863d356c658f07fe1c80e1affd0051f569d9e)
       '@modelcontextprotocol/core': 2.0.0
       '@modelcontextprotocol/ext-apps': 1.7.1(@modelcontextprotocol/sdk@1.29.0(patch_hash=b2e77309dd9a02d7f71c740b1e8469142c87f407898766e4f90abb8315e0dfb6)(supports-color@10.2.2)(zod@4.4.3))(zod@4.4.3)
       '@napi-rs/keyring': 1.3.0

@@ -1,0 +1,86 @@
+# Patch: OAuth Accept headers for spec-strict gateways (@modelcontextprotocol/client 2.0.0)
+#
+# Tracking:
+#   - Spec-strict MCP gateways (e.g. agentgateway v1.5.0) answer 406 when the
+#     Accept header lacks text/event-stream; upstream issue pending at
+#     https://github.com/modelcontextprotocol/typescript-sdk (remove when
+#     upstream sends "Accept: application/json, text/event-stream" on metadata
+#     discovery and dynamic client registration)
+#   - This is the v2 client package pi-mcp-adapter actually uses for MCP OAuth
+#     at runtime; the parallel patch against the legacy
+#     @modelcontextprotocol/sdk 1.29.0 covers entry points that still import
+#     the 1.x package.
+# Changes:
+#   - dist/index.{mjs,cjs} tryMetadataDiscovery: add Accept
+#     "application/json, text/event-stream" (covers RFC 9728 protected-resource
+#     metadata).
+#   - dist/index.{mjs,cjs} discoverAuthorizationServerMetadata: widen Accept
+#     from "application/json" (RFC 8414/OIDC authorization-server metadata).
+#   - dist/index.{mjs,cjs} registerClient (DCR POST): add Accept
+#     "application/json, text/event-stream" (previously no Accept header).
+#     The token POST (executeTokenRequest) is deliberately unchanged — it is a
+#     plain form POST that worked against the affected gateway.
+#   - Trap for rebasers: patch both the mjs and cjs mirrors; line numbers
+#     differ between them.
+diff --git a/dist/index.cjs b/dist/index.cjs
+index 635f1c0134274c89e7efbcae2adf3d9ecba575ee..19aa7b612ee239d70e02301c515947f77483223d 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -956,7 +956,7 @@ function buildWellKnownPath(wellKnownPrefix, pathname = "", options = {}) {
+ * Tries to discover OAuth metadata at a specific URL
+ */
+ async function tryMetadataDiscovery(url, protocolVersion, fetchFn = fetch) {
+-	return await fetchWithCorsRetry(url, { "MCP-Protocol-Version": protocolVersion }, fetchFn);
++	return await fetchWithCorsRetry(url, { "MCP-Protocol-Version": protocolVersion, Accept: "application/json, text/event-stream" }, fetchFn);
+ }
+ /**
+ * Determines if fallback to root discovery should be attempted
+@@ -1074,7 +1074,7 @@ function buildDiscoveryUrls(authorizationServerUrl) {
+ async function discoverAuthorizationServerMetadata(authorizationServerUrl, { fetchFn = fetch, protocolVersion = _modelcontextprotocol_core_internal.LATEST_PROTOCOL_VERSION, skipIssuerValidation = false } = {}) {
+ 	const headers = {
+ 		"MCP-Protocol-Version": protocolVersion,
+-		Accept: "application/json"
++		Accept: "application/json, text/event-stream"
+ 	};
+ 	const urlsToTry = buildDiscoveryUrls(authorizationServerUrl);
+ 	for (const { url: endpointUrl, type } of urlsToTry) {
+@@ -1343,7 +1343,7 @@ async function registerClient(authorizationServerUrl, { metadata, clientMetadata
+ 	};
+ 	const response = await (fetchFn ?? fetch)(registrationUrl, {
+ 		method: "POST",
+-		headers: { "Content-Type": "application/json" },
++		headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+ 		body: JSON.stringify(submittedMetadata)
+ 	});
+ 	if (!response.ok) throw new RegistrationRejectedError({
+diff --git a/dist/index.mjs b/dist/index.mjs
+index f02ce3ca394e826fc27c9848dbe9a214bf6ba7a9..c070496439990161d6e02e672973b5f85ded3bd2 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -953,7 +953,7 @@ function buildWellKnownPath(wellKnownPrefix, pathname = "", options = {}) {
+ * Tries to discover OAuth metadata at a specific URL
+ */
+ async function tryMetadataDiscovery(url, protocolVersion, fetchFn = fetch) {
+-	return await fetchWithCorsRetry(url, { "MCP-Protocol-Version": protocolVersion }, fetchFn);
++	return await fetchWithCorsRetry(url, { "MCP-Protocol-Version": protocolVersion, Accept: "application/json, text/event-stream" }, fetchFn);
+ }
+ /**
+ * Determines if fallback to root discovery should be attempted
+@@ -1071,7 +1071,7 @@ function buildDiscoveryUrls(authorizationServerUrl) {
+ async function discoverAuthorizationServerMetadata(authorizationServerUrl, { fetchFn = fetch, protocolVersion = LATEST_PROTOCOL_VERSION, skipIssuerValidation = false } = {}) {
+ 	const headers = {
+ 		"MCP-Protocol-Version": protocolVersion,
+-		Accept: "application/json"
++		Accept: "application/json, text/event-stream"
+ 	};
+ 	const urlsToTry = buildDiscoveryUrls(authorizationServerUrl);
+ 	for (const { url: endpointUrl, type } of urlsToTry) {
+@@ -1340,7 +1340,7 @@ async function registerClient(authorizationServerUrl, { metadata, clientMetadata
+ 	};
+ 	const response = await (fetchFn ?? fetch)(registrationUrl, {
+ 		method: "POST",
+-		headers: { "Content-Type": "application/json" },
++		headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+ 		body: JSON.stringify(submittedMetadata)
+ 	});
+ 	if (!response.ok) throw new RegistrationRejectedError({

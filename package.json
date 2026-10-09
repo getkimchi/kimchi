@@ -142,7 +142,8 @@
 			"@earendil-works/pi-tui@0.85.1": "patches/@earendil-works__pi-tui@0.85.1.patch",
 			"@earendil-works/pi-coding-agent@0.85.1": "patches/@earendil-works__pi-coding-agent@0.85.1.patch",
 			"pi-mcp-adapter@2.34.0": "patches/pi-mcp-adapter@2.34.0.patch",
-			"@modelcontextprotocol/sdk@1.29.0": "patches/@modelcontextprotocol__sdk@1.29.0.patch"
+			"@modelcontextprotocol/sdk@1.29.0": "patches/@modelcontextprotocol__sdk@1.29.0.patch",
+			"@modelcontextprotocol/client@2.0.0": "patches/@modelcontextprotocol__client@2.0.0.patch"
 		},
 		"supportedArchitectures": {
 			"os": [

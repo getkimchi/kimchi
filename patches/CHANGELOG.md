@@ -15,6 +15,36 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
 
 ---
 
+## @modelcontextprotocol/client@2.0.0 (mid-version, additive) — OAuth Accept headers, retargeted
+
+Not an upgrade: a new patch for the v2 client package while the pin stayed put.
+This RETARGETS the Accept-header fix: e2e verification against a spec-strict
+fixture (`tests/e2e/tui/mcp-oauth-strict-accept.test.ts`, fixture `strictAccept`
+mode answering 406 without `text/event-stream`) showed the harness MCP OAuth
+engine is `@modelcontextprotocol/client@2.0.0`, not the legacy sdk 1.29.0 — the
+original sdk patch left the strict-gateway login failing with HTTP 406 on all
+three metadata/DCR endpoints.
+
+### `@modelcontextprotocol/client` (new patch)
+
+- **NEW — `dist/index.{mjs,cjs}`.** `tryMetadataDiscovery` (protected-resource
+  metadata, previously no Accept header), `discoverAuthorizationServerMetadata`
+  (was json-only), and `registerClient` / DCR (previously no Accept header) now
+  send `Accept: application/json, text/event-stream`. The token POST
+  (`executeTokenRequest`) is deliberately unchanged, matching the sdk patch's
+  residual-risk note.
+
+### Retained from the earlier draft
+
+- `pi-mcp-adapter` hunks kept: `mcp-auth-flow.ts` DCR clientInfo version
+  ("2.11.0" → "2.34.0") and `mcp-oauth-provider.ts` configured-discovery Accept
+  header (only runs when `authServerMetadataUrl` is configured).
+- `@modelcontextprotocol/sdk@1.29.0` patch kept: covers any entry point that
+  still runs OAuth through the legacy 1.x package, but it is NOT the harness's
+  MCP OAuth path — proven inert for it by the strict-accept e2e.
+
+---
+
 ## pi-mcp-adapter@2.34.0 / @modelcontextprotocol/sdk@1.29.0 (mid-version, additive) — OAuth Accept headers + DCR version
 
 Not an upgrade: new hunks added to the adapter patch and a new SDK patch while both
