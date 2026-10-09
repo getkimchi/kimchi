@@ -21,8 +21,8 @@ import {
 } from "../work-attribution.js"
 import { debugWorkAttribution } from "./diagnostics.js"
 import { observeToolFiles } from "./file-observations.js"
-import { readWorkRows } from "./row-log.js"
 import { COST_PER_PR_RESOURCE_ID } from "./resource.js"
+import { readWorkRows } from "./row-log.js"
 
 const GIT_LOOKUP_TIMEOUT_MS = 2000
 
