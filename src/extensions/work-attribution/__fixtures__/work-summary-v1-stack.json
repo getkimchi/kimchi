@@ -1,0 +1,315 @@
+{
+	"version": 1,
+	"workId": "7a203360-39a9-4d6e-8ac7-984c97c0e314",
+	"sessions": ["01a10dc0-7ea4-74d8-9b87-9a5026c7b05c", "02b20dc0-7ea4-74d8-9b87-9a5026c7b05c"],
+	"workLinks": [
+		{
+			"linkId": "88888888-2222-4333-8444-555555555555",
+			"revision": 1,
+			"sourceWorkId": "6f102360-39a9-4d6e-8ac7-984c97c0e313",
+			"targetWorkId": "7a203360-39a9-4d6e-8ac7-984c97c0e314",
+			"requestIds": ["00000001-1111-4111-8111-111111111111"],
+			"scope": {
+				"account": {
+					"apiUrl": "https://api.example.ai/v1",
+					"organizationId": "33333333-2222-4333-8444-555555555555",
+					"userId": "44444444-2222-4333-8444-555555555555"
+				},
+				"repository": "/src/example/.git"
+			},
+			"status": "active",
+			"evidence": {
+				"source": "work-command"
+			},
+			"sessionId": "02b20dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"cwd": "/src/example",
+			"recordedAt": "2026-10-02T09:00:00.000Z"
+		}
+	],
+	"requests": [
+		{
+			"requestId": "00000001-3333-4333-8333-333333333333",
+			"sessionId": "01a10dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"cwd": "/src/example",
+			"startedAt": "2026-10-01T10:00:00.000Z",
+			"provider": "kimchi-dev",
+			"model": "glm-5.3",
+			"modelSource": "context",
+			"segment": {
+				"id": "00000001-4444-4444-8444-444444444444",
+				"attribution": "explicit",
+				"reason": "work-command"
+			},
+			"scope": {
+				"account": {
+					"apiUrl": "https://api.example.ai/v1",
+					"organizationId": "33333333-2222-4333-8444-555555555555",
+					"userId": "44444444-2222-4333-8444-555555555555"
+				},
+				"repository": "/src/example/.git"
+			},
+			"recordedAt": "2026-10-01T10:01:00.000Z",
+			"dispatchedAt": "2026-10-01T10:00:00.003Z",
+			"billingSource": {
+				"apiUrl": "https://api.example.ai/v1",
+				"gatewayUrl": "https://llm.example.ai/openai/v1/chat/completions",
+				"credentialHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+			},
+			"billingSelector": {
+				"type": "tag",
+				"tag": "kimchi-request:00000001-3333-4333-8333-333333333333",
+				"startTime": "2026-09-30T22:00:00.003Z",
+				"endTime": "2026-11-01T10:00:00.003Z"
+			},
+			"response": {
+				"status": 200,
+				"receivedAt": "2026-10-01T10:00:01.000Z",
+				"traceId": "ffffffffffffffffffffffffffffffff"
+			},
+			"billingRows": [
+				{
+					"id": "00000001-5555-4555-8555-555555555555",
+					"costUsd": "0.012345678",
+					"promptTokens": "1200",
+					"completionTokens": "40",
+					"model": "glm-5.3"
+				}
+			],
+			"billingLookup": {
+				"status": "priced",
+				"checkedAt": "2026-10-01T10:01:00.000Z",
+				"organizationId": "33333333-2222-4333-8444-555555555555",
+				"userId": "44444444-2222-4333-8444-555555555555"
+			}
+		},
+		{
+			"requestId": "00000002-3333-4333-8333-333333333333",
+			"sessionId": "01a10dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"cwd": "/src/example",
+			"startedAt": "2026-10-02T10:00:00.000Z",
+			"provider": "kimchi-dev",
+			"model": "glm-5.3",
+			"modelSource": "context",
+			"segment": {
+				"id": "00000002-4444-4444-8444-444444444444",
+				"attribution": "explicit",
+				"reason": "work-command"
+			},
+			"scope": {
+				"account": {
+					"apiUrl": "https://api.example.ai/v1",
+					"organizationId": "33333333-2222-4333-8444-555555555555",
+					"userId": "44444444-2222-4333-8444-555555555555"
+				},
+				"repository": "/src/example/.git"
+			},
+			"recordedAt": "2026-10-02T10:01:00.000Z",
+			"dispatchedAt": "2026-10-02T10:00:00.003Z",
+			"billingSource": {
+				"apiUrl": "https://api.example.ai/v1",
+				"gatewayUrl": "https://llm.example.ai/openai/v1/chat/completions",
+				"credentialHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+			},
+			"billingSelector": {
+				"type": "tag",
+				"tag": "kimchi-request:00000002-3333-4333-8333-333333333333",
+				"startTime": "2026-09-30T22:00:00.003Z",
+				"endTime": "2026-11-02T10:00:00.003Z"
+			},
+			"response": {
+				"status": 200,
+				"receivedAt": "2026-10-02T10:00:01.000Z",
+				"traceId": "ffffffffffffffffffffffffffffffff"
+			},
+			"billingRows": [
+				{
+					"id": "00000002-5555-4555-8555-555555555555",
+					"costUsd": "0.012345678",
+					"promptTokens": "1200",
+					"completionTokens": "40",
+					"model": "glm-5.3"
+				}
+			],
+			"billingLookup": {
+				"status": "priced",
+				"checkedAt": "2026-10-02T10:01:00.000Z",
+				"organizationId": "33333333-2222-4333-8444-555555555555",
+				"userId": "44444444-2222-4333-8444-555555555555"
+			}
+		},
+		{
+			"requestId": "00000003-3333-4333-8333-333333333333",
+			"sessionId": "02b20dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"cwd": "/src/example",
+			"startedAt": "2026-10-03T10:00:00.000Z",
+			"provider": "kimchi-dev",
+			"model": "glm-5.3",
+			"modelSource": "context",
+			"segment": {
+				"id": "00000003-4444-4444-8444-444444444444",
+				"attribution": "explicit",
+				"reason": "work-command"
+			},
+			"scope": {
+				"account": {
+					"apiUrl": "https://api.example.ai/v1",
+					"organizationId": "33333333-2222-4333-8444-555555555555",
+					"userId": "44444444-2222-4333-8444-555555555555"
+				},
+				"repository": "/src/example/.git"
+			},
+			"recordedAt": "2026-10-03T10:01:00.000Z",
+			"dispatchedAt": "2026-10-03T10:00:00.003Z",
+			"billingSource": {
+				"apiUrl": "https://api.example.ai/v1",
+				"gatewayUrl": "https://llm.example.ai/openai/v1/chat/completions",
+				"credentialHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+			},
+			"billingSelector": {
+				"type": "tag",
+				"tag": "kimchi-request:00000003-3333-4333-8333-333333333333",
+				"startTime": "2026-09-30T22:00:00.003Z",
+				"endTime": "2026-11-03T10:00:00.003Z"
+			},
+			"response": {
+				"status": 200,
+				"receivedAt": "2026-10-03T10:00:01.000Z",
+				"traceId": "ffffffffffffffffffffffffffffffff"
+			},
+			"billingRows": [
+				{
+					"id": "00000003-5555-4555-8555-555555555555",
+					"costUsd": "0.012345678",
+					"promptTokens": "1200",
+					"completionTokens": "40",
+					"model": "glm-5.3"
+				}
+			],
+			"billingLookup": {
+				"status": "priced",
+				"checkedAt": "2026-10-03T10:01:00.000Z",
+				"organizationId": "33333333-2222-4333-8444-555555555555",
+				"userId": "44444444-2222-4333-8444-555555555555"
+			}
+		}
+	],
+	"plans": [
+		{
+			"sessionId": "01a10dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"path": "/src/example/.kimchi/plans/search.md",
+			"snapshotPath": "/home/user/.config/kimchi/harness/work/7a203360-39a9-4d6e-8ac7-984c97c0e314/plans/search-3d4e5f.md",
+			"contentHash": "9999999999999999999999999999999999999999999999999999999999999999",
+			"requestId": "00000001-3333-4333-8333-333333333333",
+			"cwd": "/src/example",
+			"recordedAt": "2026-10-01T09:00:00.000Z"
+		}
+	],
+	"commits": [
+		{
+			"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			"repository": "/src/example/.git",
+			"worktree": "/src/example",
+			"sessionId": "01a10dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"cwd": "/src/example",
+			"recordedAt": "2026-10-02T11:00:00.000Z",
+			"source": "bash-git-trace-commits",
+			"toolCallId": "call_9",
+			"requestId": "00000002-3333-4333-8333-333333333333",
+			"paths": ["src/search.ts"],
+			"transitionIds": ["00000003-2222-4222-8222-222222222222"],
+			"fileMatches": [
+				{
+					"path": "src/search.ts",
+					"worktree": "/src/example",
+					"method": "file-hunks",
+					"transitionIds": ["00000003-2222-4222-8222-222222222222"]
+				}
+			],
+			"pullRequests": [
+				{
+					"provider": "github",
+					"host": "github.com",
+					"id": "5731",
+					"repositoryId": "901",
+					"repository": "example/kimchi",
+					"number": 731,
+					"url": "https://github.com/example/kimchi/pull/731",
+					"state": "open",
+					"headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+					"mergeCommitSha": null,
+					"mergedAt": null,
+					"closedAt": null,
+					"checkedAt": "2026-10-03T12:00:00Z"
+				}
+			],
+			"prLookup": {
+				"status": "linked",
+				"checkedAt": "2026-10-03T12:00:00Z"
+			}
+		}
+	],
+	"fileTransitions": [
+		{
+			"transitionId": "00000003-2222-4222-8222-222222222222",
+			"toolCallId": "call_3",
+			"requestId": "00000003-1111-4111-8111-111111111111",
+			"repository": "/src/example/.git",
+			"worktree": "/src/example",
+			"path": "src/file3.ts",
+			"baseline": null,
+			"baselineFile": null,
+			"branch": "feat/search",
+			"before": null,
+			"after": {
+				"blob": "3333333333333333333333333333333333333333",
+				"mode": "100644"
+			},
+			"cursor": {
+				"bytes": 0,
+				"digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+			},
+			"historyBoundaryId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+			"sessionId": "01a10dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"cwd": "/src/example",
+			"recordedAt": "2026-09-03T10:05:00.000Z"
+		}
+	],
+	"fileObservations": [
+		{
+			"observationId": "99999999-2222-4333-8444-555555555555",
+			"source": "bash",
+			"toolCallId": "call_8",
+			"requestId": "00000002-3333-4333-8333-333333333333",
+			"repository": "/src/example/.git",
+			"worktree": "/src/example",
+			"startedAt": "2026-10-02T10:30:00.000Z",
+			"complete": true,
+			"files": [
+				{
+					"path": "README.md",
+					"before": null,
+					"after": {
+						"blob": "1111111111111111111111111111111111111111",
+						"mode": "100644"
+					}
+				}
+			],
+			"sessionId": "01a10dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"cwd": "/src/example",
+			"recordedAt": "2026-10-02T10:30:01.000Z"
+		}
+	],
+	"continuations": [
+		{
+			"sessionId": "02b20dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"cwd": "/src/example",
+			"recordedAt": "2026-10-03T08:00:00.000Z",
+			"source": "pasted-plan",
+			"evidence": {
+				"path": "/home/user/.config/kimchi/harness/work/7a203360-39a9-4d6e-8ac7-984c97c0e314/plans/search-3d4e5f.md",
+				"contentHash": "9999999999999999999999999999999999999999999999999999999999999999",
+				"segmentId": "00000003-4444-4444-8444-444444444444"
+			}
+		}
+	]
+}

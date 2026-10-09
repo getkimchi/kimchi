@@ -19,6 +19,7 @@ import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
+import { savedWorkSummary } from "../__mocks__/work-summary.js"
 import { appendWorkRecord, createWorkAttributionExtension, getWorkId, getWorkSegment } from "../work-attribution.js"
 import { createCommitTrackingBashTool } from "./commits.js"
 import { findWorkContinuation } from "./continuation.js"
@@ -92,13 +93,12 @@ it.each([0, 7])("records a candidate observation for an ADR written by Bash befo
 		}),
 	)
 	await flushWorkSummaries()
-	const summaryPath = join(agentDir, "work", workId, "work.json")
-	const saved = JSON.parse(readFileSync(summaryPath, "utf8"))
+	const saved = savedWorkSummary(agentDir, workId)
 	expect(saved.fileObservations).toContainEqual(expect.objectContaining({ toolCallId, source: "bash" }))
-	rmSync(summaryPath)
+	rmSync(join(agentDir, "work", workId, "work.json"))
 	recoverWorkSummaries()
 	await flushWorkSummaries()
-	expect(JSON.parse(readFileSync(summaryPath, "utf8")).fileObservations).toEqual(saved.fileObservations)
+	expect(savedWorkSummary(agentDir, workId).fileObservations).toEqual(saved.fileObservations)
 	expect(await findWorkContinuation({ cwd }, `Implement ${path}`, captured)).toEqual({ owned: false })
 })
 
@@ -213,7 +213,7 @@ it.each(["interactive", "rpc"] as const)("adopts a pasted plan before the first 
 		expect.objectContaining({ type: "request", requestId: request.headers["X-Request-Id"], workId }),
 	)
 	await flushWorkSummaries()
-	const summary = JSON.parse(readFileSync(join(agentDir, "work", workId, "work.json"), "utf8"))
+	const summary = savedWorkSummary(agentDir, workId)
 	expect(summary.continuations).toContainEqual(
 		expect.objectContaining({
 			sessionId: "pasted-session",

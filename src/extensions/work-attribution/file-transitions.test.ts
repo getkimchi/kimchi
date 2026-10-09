@@ -24,6 +24,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { savedWorkSummary } from "../__mocks__/work-summary.js"
 import toolRenderingExtension from "../tool-rendering.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { createCommitTrackingBashTool } from "./commits.js"
@@ -510,8 +511,8 @@ describe("manual commit reconciliation", () => {
 			}),
 		])
 		await flushWorkSummaries()
-		const summary = JSON.parse(readFileSync(join(root, "agent", "work", workId, "work.json"), "utf8"))
-		expect(summary.commits.map((row: { sessionId: string }) => row.sessionId).sort()).toEqual(["first", "second"])
+		const summary = savedWorkSummary(join(root, "agent"), workId)
+		expect(summary.commits.map((row) => row.sessionId).sort()).toEqual(["first", "second"])
 	})
 
 	it("retains both sessions when same-work edits compose into one committed file", async () => {
@@ -537,8 +538,8 @@ describe("manual commit reconciliation", () => {
 			expect(match.transitionIds).toEqual(expected)
 		}
 		await flushWorkSummaries()
-		const summary = JSON.parse(readFileSync(join(root, "agent", "work", workId, "work.json"), "utf8"))
-		expect(summary.commits.map((row: { sessionId: string }) => row.sessionId).sort()).toEqual(["first", "second"])
+		const summary = savedWorkSummary(join(root, "agent"), workId)
+		expect(summary.commits.map((row) => row.sessionId).sort()).toEqual(["first", "second"])
 	})
 
 	it("rechecks completed commits when additional transition evidence becomes available", async () => {

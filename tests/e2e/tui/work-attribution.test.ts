@@ -8,6 +8,7 @@ import { check } from "proper-lockfile"
 import { fullText, viewText, waitForText } from "./support/assertions.js"
 import { type FakeResponseRequest, isWorkMatchingRequest } from "./support/fake-openai-server.js"
 import { launchKimchi, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { readWorkSummary } from "./support/work-summary.js"
 
 test.use(TUI_TEST_CONFIG)
 const models = [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }]
@@ -234,16 +235,13 @@ async function waitForSummary(
 	workId: string,
 	minimum: Partial<Record<"sessions" | "requests" | "plans" | "commits" | "workLinks", number>>,
 ) {
-	const path = join(agentDir, "work", workId, "work.json")
 	const deadline = Date.now() + 15_000
 	while (Date.now() < deadline) {
-		try {
-			const summary = JSON.parse(readFileSync(path, "utf8"))
-			if (Object.entries(minimum).every(([key, count]) => summary[key]?.length >= count)) return summary
-		} catch {}
+		const summary = readWorkSummary(agentDir, workId)
+		if (summary && Object.entries(minimum).every(([key, count]) => summary[key]?.length >= count)) return summary
 		await sleep(50)
 	}
-	throw new Error(`Work summary did not become ready: ${path}`)
+	throw new Error(`Work summary did not become ready: ${join(agentDir, "work", workId, "work.json")}`)
 }
 
 test("the next message recovers account tracking after its saved scope is lost", async ({ terminal }) => {

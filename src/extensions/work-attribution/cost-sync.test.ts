@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as json from "../../config/json.js"
 import * as config from "../../config.js"
 import { createContext } from "../__mocks__/context.js"
+import { savedWorkSummary } from "../__mocks__/work-summary.js"
 import { appendWorkRecord, getWorkId } from "../work-attribution.js"
 import { captureBillingSource, requestTagSelector } from "./billing-source.js"
 import { workCostDetails } from "./cost-details.js"
@@ -598,12 +599,11 @@ describe("automatic exact work cost lookup", () => {
 		const expected = { id: ROW, costUsd: "0.123456789", ...metadata }
 		expect(readWorkRecords(dir).find((row) => row.type === "request_cost")?.billingRows).toEqual([expected])
 		await flushWorkSummaries()
-		const path = join(dir, "work", workId, "work.json")
-		expect(JSON.parse(readFileSync(path, "utf8")).requests[0].billingRows).toEqual([expected])
-		writeFileSync(path, "damaged")
+		expect(savedWorkSummary(dir, workId).requests[0].billingRows).toEqual([expected])
+		writeFileSync(join(dir, "work", workId, "work.json"), "damaged")
 		recoverWorkSummaries()
 		await flushWorkSummaries()
-		expect(JSON.parse(readFileSync(path, "utf8")).requests[0].billingRows).toEqual([expected])
+		expect(savedWorkSummary(dir, workId).requests[0].billingRows).toEqual([expected])
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
 		expect(JSON.stringify(readWorkRecords(dir))).not.toContain("DO_NOT_SAVE")
 	})
@@ -686,7 +686,7 @@ describe("automatic exact work cost lookup", () => {
 		fetchMock.mockResolvedValueOnce(Response.json({ items: [enriched, enriched], totalCount: 1 }))
 		await sync()
 		await flushWorkSummaries()
-		const rows = JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8")).requests[0].billingRows
+		const rows = savedWorkSummary(dir, workId).requests[0].billingRows
 		expect(rows).toEqual([{ id: ROW, costUsd: "0.123456789", promptTokens: "100", cacheReadPrice: "0" }])
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
 		vi.mocked(Date.now).mockReturnValue(now + 2 * RECHECK_MS)
@@ -694,9 +694,7 @@ describe("automatic exact work cost lookup", () => {
 		fetchMock.mockResolvedValueOnce(Response.json({ items: [enriched], totalCount: 1 }))
 		await sync()
 		await flushWorkSummaries()
-		expect(JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8")).requests[0].billingRows).toEqual(
-			rows,
-		)
+		expect(savedWorkSummary(dir, workId).requests[0].billingRows).toEqual(rows)
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
 	})
 	it.each([
@@ -712,7 +710,7 @@ describe("automatic exact work cost lookup", () => {
 		else fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }))
 		await sync()
 		await flushWorkSummaries()
-		const request = JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8")).requests[0]
+		const request = savedWorkSummary(dir, workId).requests[0]
 		// A failed key check returns no billing page, and a changed key cannot withdraw a verified price.
 		expect(request.billingLookup).toMatchObject({
 			organizationId: ORG,
@@ -1234,12 +1232,11 @@ describe("automatic exact work cost lookup", () => {
 		const { workId } = tagged()
 		await sync()
 		await flushWorkSummaries()
-		const path = join(dir, "work", workId, "work.json")
-		const before = JSON.parse(readFileSync(path, "utf8"))
-		writeFileSync(path, "broken")
+		const before = savedWorkSummary(dir, workId)
+		writeFileSync(join(dir, "work", workId, "work.json"), "broken")
 		recoverWorkSummaries()
 		await flushWorkSummaries()
-		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(before)
+		expect(savedWorkSummary(dir, workId)).toEqual(before)
 	})
 	it("bounds requests per pass and visits the remaining requests on the next pass", async () => {
 		for (let i = 0; i < 35; i++) tagged(`session-${i}`)
@@ -1454,7 +1451,7 @@ describe("automatic exact work cost lookup", () => {
 		expect(fetchMock.mock.calls[1][1]?.body).toBeUndefined()
 		expect(report(workId).pullRequests[0]).toMatchObject({ knownCostUsd: "0.123456789", totalCostUsd: "0.123456789" })
 		await flushWorkSummaries()
-		const summary = JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8"))
+		const summary = savedWorkSummary(dir, workId)
 		expect(summary.requests).toHaveLength(1)
 		expect(summary.requests[0].billingRows).toEqual([{ id: ROW, costUsd: "0.123456789" }])
 		expect(JSON.stringify(readWorkRecords(dir))).not.toContain(currentKey)

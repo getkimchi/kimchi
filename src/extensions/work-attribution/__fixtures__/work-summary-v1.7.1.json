@@ -1,0 +1,127 @@
+{
+	"version": 1,
+	"workId": "6f102360-39a9-4d6e-8ac7-984c97c0e313",
+	"sessions": ["01a10dc0-7ea4-74d8-9b87-9a5026c7b05c", "02b20dc0-7ea4-74d8-9b87-9a5026c7b05c"],
+	"requests": [
+		{
+			"requestId": "00000001-1111-4111-8111-111111111111",
+			"sessionId": "01a10dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"cwd": "/src/example",
+			"provider": "kimchi-dev",
+			"model": "glm-5.3",
+			"modelSource": "context",
+			"recordedAt": "2026-09-01T10:00:00.000Z"
+		},
+		{
+			"requestId": "00000002-1111-4111-8111-111111111111",
+			"sessionId": "01a10dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"cwd": "/src/example",
+			"provider": "kimchi-dev",
+			"model": "glm-5.3",
+			"modelSource": "context",
+			"recordedAt": "2026-09-02T10:00:00.000Z"
+		},
+		{
+			"requestId": "00000003-1111-4111-8111-111111111111",
+			"sessionId": "02b20dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"cwd": "/src/example",
+			"provider": "kimchi-dev",
+			"model": "glm-5.3",
+			"modelSource": "context",
+			"recordedAt": "2026-09-03T10:00:00.000Z"
+		}
+	],
+	"plans": [
+		{
+			"sessionId": "01a10dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"path": "/src/example/.kimchi/plans/search.md",
+			"snapshotPath": "/home/user/.config/kimchi/harness/work/6f102360-39a9-4d6e-8ac7-984c97c0e313/plans/search-0a1b2c.md",
+			"cwd": "/src/example",
+			"recordedAt": "2026-09-01T09:00:00.000Z"
+		}
+	],
+	"commits": [
+		{
+			"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"repository": "/src/example/.git",
+			"worktree": "/src/example",
+			"sessionId": "01a10dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"cwd": "/src/example",
+			"recordedAt": "2026-09-02T11:00:00.000Z",
+			"source": "bash-git-trace-commits",
+			"paths": ["src/file1.ts"],
+			"transitionIds": ["00000001-2222-4222-8222-222222222222"],
+			"fileMatches": [
+				{
+					"path": "src/file1.ts",
+					"worktree": "/src/example",
+					"method": "file-chain",
+					"transitionIds": ["00000001-2222-4222-8222-222222222222"]
+				}
+			]
+		}
+	],
+	"fileTransitions": [
+		{
+			"transitionId": "00000001-2222-4222-8222-222222222222",
+			"toolCallId": "call_1",
+			"requestId": "00000001-1111-4111-8111-111111111111",
+			"repository": "/src/example/.git",
+			"worktree": "/src/example",
+			"path": "src/file1.ts",
+			"baseline": null,
+			"baselineFile": null,
+			"branch": "feat/search",
+			"before": null,
+			"after": {
+				"blob": "1111111111111111111111111111111111111111",
+				"mode": "100644"
+			},
+			"cursor": {
+				"bytes": 0,
+				"digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+			},
+			"historyBoundaryId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+			"sessionId": "01a10dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"cwd": "/src/example",
+			"recordedAt": "2026-09-01T10:05:00.000Z"
+		},
+		{
+			"transitionId": "00000002-2222-4222-8222-222222222222",
+			"toolCallId": "call_2",
+			"requestId": "00000002-1111-4111-8111-111111111111",
+			"repository": "/src/example/.git",
+			"worktree": "/src/example",
+			"path": "src/file2.ts",
+			"baseline": null,
+			"baselineFile": null,
+			"branch": "main",
+			"before": null,
+			"after": {
+				"blob": "2222222222222222222222222222222222222222",
+				"mode": "100644"
+			},
+			"cursor": {
+				"bytes": 0,
+				"digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+			},
+			"historyBoundaryId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+			"sessionId": "02b20dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"cwd": "/src/example",
+			"recordedAt": "2026-09-02T10:05:00.000Z"
+		}
+	],
+	"continuations": [
+		{
+			"sessionId": "02b20dc0-7ea4-74d8-9b87-9a5026c7b05c",
+			"cwd": "/src/example",
+			"recordedAt": "2026-09-03T08:00:00.000Z",
+			"source": "recent-branch",
+			"evidence": {
+				"path": "/src/example/src/file1.ts",
+				"transitionId": "00000001-2222-4222-8222-222222222222",
+				"branch": "feat/search"
+			}
+		}
+	]
+}
