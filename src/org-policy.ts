@@ -45,26 +45,41 @@ function keyFingerprint(apiKey: string): string {
 	return createHash("sha256").update(apiKey).digest("hex")
 }
 
-const KNOWN_PERMISSION_MODES = new Set(["PLAN", "DEFAULT", "AUTO", "YOLO"])
 const KNOWN_USAGE_REPORTING = new Set(["USER_CHOICE", "FORCE_ON", "FORCE_OFF"])
 
 /**
  * Validate a policy read from the cache file: a corrupted or future-format
  * cache must not impose bogus restrictions, so unknown values are dropped.
+ * A cached allowed-modes set must enable at least one mode, mirroring the
+ * platform-side constraint.
  */
 function validateCachedPolicy(raw: unknown): OrgPolicy | undefined {
 	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined
 	const source = raw as Record<string, unknown>
 
 	const policy: OrgPolicy = {}
-	if (typeof source.maxPermissionMode === "string" && KNOWN_PERMISSION_MODES.has(source.maxPermissionMode)) {
-		policy.maxPermissionMode = source.maxPermissionMode as OrgPolicy["maxPermissionMode"]
+	const modes = source.allowedPermissionModes
+	if (modes !== null && typeof modes === "object" && !Array.isArray(modes)) {
+		const modeFields = modes as Record<string, unknown>
+		if (
+			modeFields.plan === true ||
+			modeFields.default === true ||
+			modeFields.auto === true ||
+			modeFields.yolo === true
+		) {
+			policy.allowedPermissionModes = {
+				plan: modeFields.plan === true,
+				default: modeFields.default === true,
+				auto: modeFields.auto === true,
+				yolo: modeFields.yolo === true,
+			}
+		}
 	}
 	if (typeof source.usageReporting === "string" && KNOWN_USAGE_REPORTING.has(source.usageReporting)) {
 		policy.usageReporting = source.usageReporting as OrgPolicy["usageReporting"]
 	}
 
-	if (policy.maxPermissionMode === undefined && policy.usageReporting === undefined) return undefined
+	if (!policy.allowedPermissionModes && policy.usageReporting === undefined) return undefined
 	return policy
 }
 

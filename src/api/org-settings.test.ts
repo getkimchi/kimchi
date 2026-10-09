@@ -29,22 +29,28 @@ function routeFetch(verifyBody: unknown, resolveBody: unknown, resolveStatus = 2
 }
 
 describe("parseOrgPolicy", () => {
-	it("parses both fields from the gateway's camelCase JSON", () => {
+	it("parses the enabled modes from the gateway's camelCase JSON", () => {
 		expect(
 			parseOrgPolicy({
-				kimchiMaxPermissionMode: "KIMCHI_PERMISSION_MODE_AUTO",
+				kimchiAllowedPermissionModes: { plan: true, auto: true },
 				kimchiUsageReporting: "KIMCHI_USAGE_REPORTING_FORCE_ON",
 			}),
-		).toEqual({ maxPermissionMode: "AUTO", usageReporting: "FORCE_ON" })
+		).toEqual({
+			allowedPermissionModes: { plan: true, default: false, auto: true, yolo: false },
+			usageReporting: "FORCE_ON",
+		})
 	})
 
 	it("accepts snake_case field names (UseProtoNames gateways)", () => {
 		expect(
 			parseOrgPolicy({
-				kimchi_max_permission_mode: "KIMCHI_PERMISSION_MODE_PLAN",
+				kimchi_allowed_permission_modes: { plan: true, default_mode: true },
 				kimchi_usage_reporting: "KIMCHI_USAGE_REPORTING_USER_CHOICE",
 			}),
-		).toEqual({ maxPermissionMode: "PLAN", usageReporting: "USER_CHOICE" })
+		).toEqual({
+			allowedPermissionModes: { plan: true, default: true, auto: false, yolo: false },
+			usageReporting: "USER_CHOICE",
+		})
 	})
 
 	it("returns undefined when the settings object is absent", () => {
@@ -58,24 +64,27 @@ describe("parseOrgPolicy", () => {
 		expect(parseOrgPolicy([])).toBeUndefined()
 	})
 
-	it("drops unknown enum values", () => {
-		expect(
-			parseOrgPolicy({
-				kimchiMaxPermissionMode: "KIMCHI_PERMISSION_MODE_HYPERSPEED",
-				kimchiUsageReporting: "WHATEVER",
-			}),
-		).toBeUndefined()
-		expect(parseOrgPolicy({ kimchiMaxPermissionMode: "AUTO" })).toBeUndefined()
+	it("treats an allowed-modes object with no true mode as unset", () => {
+		expect(parseOrgPolicy({ kimchiAllowedPermissionModes: {} })).toBeUndefined()
+		expect(parseOrgPolicy({ kimchiAllowedPermissionModes: { plan: "yes", auto: 1 } })).toBeUndefined()
+	})
+
+	it("drops unknown usage-reporting values", () => {
+		expect(parseOrgPolicy({ kimchiAllowedPermissionModes: { yolo: true }, kimchiUsageReporting: "WHATEVER" })).toEqual({
+			allowedPermissionModes: { plan: false, default: false, auto: false, yolo: true },
+		})
+		expect(parseOrgPolicy({ kimchiUsageReporting: "FORCE_ON" })).toBeUndefined()
 	})
 
 	it("keeps the valid field when the other is malformed", () => {
-		expect(parseOrgPolicy({ kimchiMaxPermissionMode: "KIMCHI_PERMISSION_MODE_PLAN", kimchiUsageReporting: 7 })).toEqual(
-			{
-				maxPermissionMode: "PLAN",
-			},
-		)
+		expect(parseOrgPolicy({ kimchiAllowedPermissionModes: { plan: true }, kimchiUsageReporting: 7 })).toEqual({
+			allowedPermissionModes: { plan: true, default: false, auto: false, yolo: false },
+		})
 		expect(
-			parseOrgPolicy({ kimchiMaxPermissionMode: true, kimchiUsageReporting: "KIMCHI_USAGE_REPORTING_USER_CHOICE" }),
+			parseOrgPolicy({
+				kimchiAllowedPermissionModes: true,
+				kimchiUsageReporting: "KIMCHI_USAGE_REPORTING_USER_CHOICE",
+			}),
 		).toEqual({
 			usageReporting: "USER_CHOICE",
 		})
@@ -86,24 +95,24 @@ describe("fetchOrgPolicy", () => {
 	it("returns the resolved policy from the gateway's camelCase JSON", async () => {
 		const fetchImpl = routeFetch(
 			{ organizationId: "org-1" },
-			{ settings: { kimchiMaxPermissionMode: "KIMCHI_PERMISSION_MODE_PLAN" } },
+			{ settings: { kimchiAllowedPermissionModes: { plan: true } } },
 		)
 		await expect(fetchOrgPolicy("key", { fetch: fetchImpl })).resolves.toEqual({
 			kind: "policy",
 			orgId: "org-1",
-			policy: { maxPermissionMode: "PLAN" },
+			policy: { allowedPermissionModes: { plan: true, default: false, auto: false, yolo: false } },
 		})
 	})
 
 	it("accepts snake_case resolve responses", async () => {
 		const fetchImpl = routeFetch(
 			{ organizationId: "org-1" },
-			{ settings: { kimchi_max_permission_mode: "KIMCHI_PERMISSION_MODE_YOLO" } },
+			{ settings: { kimchi_allowed_permission_modes: { yolo: true } } },
 		)
 		await expect(fetchOrgPolicy("key", { fetch: fetchImpl })).resolves.toEqual({
 			kind: "policy",
 			orgId: "org-1",
-			policy: { maxPermissionMode: "YOLO" },
+			policy: { allowedPermissionModes: { plan: false, default: false, auto: false, yolo: true } },
 		})
 	})
 

@@ -2,13 +2,26 @@ import { resolveEndpoints } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
 
 /**
+ * The harness permission modes users may run, one toggle per mode. A set
+ * value means exactly the enabled modes may run; the platform guarantees at
+ * least one is enabled.
+ */
+export interface AllowedPermissionModes {
+	plan: boolean
+	default: boolean
+	auto: boolean
+	yolo: boolean
+}
+
+/**
  * Organization policy for the Kimchi harness, resolved by the platform from
  * org → team → API key (finer scope wins, per field). Both fields are
- * optional: an absent field means no restriction applies.
+ * optional: an absent field means no restriction applies (all modes allowed,
+ * user's choice on reporting).
  */
 export interface OrgPolicy {
-	/** The most permissive permission mode users may run. */
-	maxPermissionMode?: "PLAN" | "DEFAULT" | "AUTO" | "YOLO"
+	/** The permission modes users may run. */
+	allowedPermissionModes?: AllowedPermissionModes
 	/** Usage reporting (telemetry) control. */
 	usageReporting?: "USER_CHOICE" | "FORCE_ON" | "FORCE_OFF"
 }
@@ -20,7 +33,6 @@ export type OrgPolicyFetchOutcome =
 	/** Network/timeout/server error — keep any previously known policy. */
 	| { kind: "unreachable" }
 
-const PERMISSION_MODES = new Set(["PLAN", "DEFAULT", "AUTO", "YOLO"] as const)
 const USAGE_REPORTING = new Set(["USER_CHOICE", "FORCE_ON", "FORCE_OFF"] as const)
 
 function parseEnumName<T extends string>(raw: unknown, prefix: string, known: ReadonlySet<T>): T | undefined {
@@ -33,25 +45,41 @@ function parseEnumName<T extends string>(raw: unknown, prefix: string, known: Re
 }
 
 /**
+ * Parse the allowed-modes toggle set. protojson omits false bools, so only the
+ * enabled modes appear in the object; a present object with no true mode is
+ * invalid on the platform side and treated as unset here. Non-boolean
+ * values are ignored (degrade to disabled for that mode).
+ */
+function parseAllowedModes(raw: unknown): AllowedPermissionModes | undefined {
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined
+	const source = raw as Record<string, unknown>
+	const modes: AllowedPermissionModes = {
+		plan: source.plan === true,
+		default: source.defaultMode === true || source.default_mode === true,
+		auto: source.auto === true,
+		yolo: source.yolo === true,
+	}
+	if (!modes.plan && !modes.default && !modes.auto && !modes.yolo) return undefined
+	return modes
+}
+
+/**
  * Parse the harness policy from a settings:resolve response. The policy is
- * carried as two fields on the Settings message (kimchi_max_permission_mode /
- * kimchi_usage_reporting); the gateway marshals proto3 JSON with camelCase
- * names by default, and snake_case is accepted too so self-hosted gateways
- * configured with UseProtoNames keep working. Unknown or malformed enum
- * values are dropped rather than rejected, so a policy set by a newer
- * platform version degrades to "no restriction" instead of failing.
+ * carried as two fields on the Settings message
+ * (kimchi_allowed_permission_modes / kimchi_usage_reporting); the gateway
+ * marshals proto3 JSON with camelCase names by default, and snake_case is
+ * accepted too so self-hosted gateways configured with UseProtoNames keep
+ * working. Unknown or malformed values are dropped rather than rejected, so
+ * a policy set by a newer platform version degrades to "no restriction"
+ * instead of failing.
  */
 export function parseOrgPolicy(settings: unknown): OrgPolicy | undefined {
 	if (settings === null || typeof settings !== "object" || Array.isArray(settings)) return undefined
 	const source = settings as Record<string, unknown>
 	const policy: OrgPolicy = {}
 
-	const mode = parseEnumName(
-		source.kimchiMaxPermissionMode ?? source.kimchi_max_permission_mode,
-		"KIMCHI_PERMISSION_MODE_",
-		PERMISSION_MODES,
-	)
-	if (mode) policy.maxPermissionMode = mode
+	const modes = parseAllowedModes(source.kimchiAllowedPermissionModes ?? source.kimchi_allowed_permission_modes)
+	if (modes) policy.allowedPermissionModes = modes
 
 	const reporting = parseEnumName(
 		source.kimchiUsageReporting ?? source.kimchi_usage_reporting,
@@ -60,7 +88,7 @@ export function parseOrgPolicy(settings: unknown): OrgPolicy | undefined {
 	)
 	if (reporting) policy.usageReporting = reporting
 
-	if (policy.maxPermissionMode === undefined && policy.usageReporting === undefined) return undefined
+	if (!policy.allowedPermissionModes && policy.usageReporting === undefined) return undefined
 	return policy
 }
 
