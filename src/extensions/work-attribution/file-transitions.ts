@@ -23,7 +23,6 @@ import {
 	type WorkContext,
 	workLedgerPath,
 } from "../work-attribution.js"
-import { debugWorkAttribution } from "./diagnostics.js"
 import { MAX_HUNK_BYTES, matchesFileHunks } from "./file-hunks.js"
 import { fileMatchStrength, SHA256_HEX } from "./summary.js"
 
@@ -112,28 +111,12 @@ async function supportsGitAttributes(path: string): Promise<boolean> {
 	// Attribute files may themselves have changed during the native write.
 	return !(await unsupportedAttributes(dirname(path), [path])).size
 }
-/** Retained snapshots older than this are removed; commits are matched long before. */
-const SNAPSHOT_RETENTION_MS = 30 * 24 * 60 * 60_000
-let snapshotsPrunedAt = 0
 /**
  * Retained snapshots live in Kimchi's own object store for each repository, never as unreachable loose objects in
  * the user's repository, where Git's automatic gc would keep repacking them and warn.
  */
 function snapshotObjects(repository: string): string {
 	return join(getAgentDir(), "work-attribution", "objects", createHash("sha256").update(repository).digest("hex"))
-}
-/** At most daily per process, delete retained snapshots past their retention; a missing one only skips hunk matching. */
-async function pruneSnapshots(): Promise<void> {
-	if (Date.now() - snapshotsPrunedAt < 24 * 60 * 60_000) return
-	snapshotsPrunedAt = Date.now()
-	const root = join(getAgentDir(), "work-attribution", "objects")
-	for (const store of await readdir(root).catch(() => [] as string[]))
-		for (const fanout of await readdir(join(root, store)).catch(() => [] as string[]))
-			for (const object of await readdir(join(root, store, fanout)).catch(() => [] as string[])) {
-				const path = join(root, store, fanout, object)
-				const info = await stat(path).catch(() => undefined)
-				if (info?.isFile() && Date.now() - info.mtimeMs > SNAPSHOT_RETENTION_MS) await rm(path, { force: true })
-			}
 }
 /**
  * `data` is the file content already read by the caller, so the hash matches what it checked. With `retainIn`, the
@@ -157,7 +140,6 @@ async function diskState(path: string, data?: Buffer, retainIn?: string): Promis
 		try {
 			const objects = snapshotObjects(retainIn)
 			await mkdir(objects, { recursive: true, mode: 0o700 })
-			void pruneSnapshots().catch((error) => debugWorkAttribution("Could not prune edit snapshots:", error))
 			return {
 				blob: await git(parent, ["hash-object", "-w", "--stdin", `--path=${file}`], {
 					input,
