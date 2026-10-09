@@ -44,6 +44,7 @@ import {
 	loadConfig,
 	RETRY_DEFAULTS,
 	readTelemetryConfig,
+	resolveEffectiveApiKey,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
 	writeMigrationState,
@@ -180,6 +181,7 @@ import {
 	readOllamaModelsFromConfig,
 	resolveOllamaHost,
 } from "./ollama.js"
+import { initOrgPolicy } from "./org-policy.js"
 import { syncPiAuth } from "./pi-auth.js"
 import resourcesExtension from "./resources/extension.js"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
@@ -252,6 +254,13 @@ if (originalArgs[0] === "memory-import") {
 // Observes provider transport failures in-process (via message_end) so the
 // exit path can reclassify a failed run as infrastructure (exit 74).
 const infrastructureErrorTracker = createInfrastructureErrorTracker()
+
+// --- Org policy ---
+// Resolve the organization's harness policy (permission modes, usage
+// reporting) before telemetry and session setup so both read the same view.
+// Blocking only on the first run per API key (cache miss, capped at 1.5s);
+// afterwards the cached policy applies and refreshes in the background.
+await initOrgPolicy(resolveEffectiveApiKey() ?? "")
 
 // --- Telemetry ---
 const telemetryConfig = readTelemetryConfig()

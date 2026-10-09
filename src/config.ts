@@ -239,6 +239,22 @@ export interface KimchiConfig {
 }
 
 /**
+ * Resolve the API key the same way loadConfig does — environment variable,
+ * then the trusted project .kimchi/config.json, then the global config —
+ * without loadConfig's migration or re-login side effects. Used by
+ * pre-session platform calls such as the org-policy fetch.
+ */
+export function resolveEffectiveApiKey(cwd: string = process.cwd()): string | undefined {
+	const env = getEnvironmentApiKey()
+	if (env) return env
+	if (isProjectScopeAllowed(cwd)) {
+		const project = readApiKeyFromConfigFile(resolve(cwd, ".kimchi", "config.json"))
+		if (project) return project
+	}
+	return readApiKeyFromConfigFile()
+}
+
+/**
  * Read the Cast AI API key from the kimchi CLI config file.
  * Returns undefined if the file doesn't exist or the field is missing.
  */
