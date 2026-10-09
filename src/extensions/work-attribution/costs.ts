@@ -462,13 +462,34 @@ export function calculatePullRequestCosts(
 	const pulls = new Map<string, PullObservation>()
 	const commitPulls = new Map<string, Set<string>>()
 	const identitiesByUrl = new Map<string, Set<string>>()
+	// When each work first recorded each commit; a rewritten commit counts from its original.
+	const commitRecorded = new Map<string, number>()
+	const commitOrigins = new Map<string, string>()
 	for (const row of records) {
-		if (row.type !== "commit" || !Array.isArray(row.pullRequests)) continue
+		if (row.type !== "commit") continue
+		const commit = JSON.stringify([row.workId, row.repository, row.sha])
+		const recordedAt = time(row.recordedAt)
+		if (recordedAt !== undefined && recordedAt < (commitRecorded.get(commit) ?? Number.POSITIVE_INFINITY))
+			commitRecorded.set(commit, recordedAt)
+		if (typeof row.rewrittenFrom === "string")
+			commitOrigins.set(commit, JSON.stringify([row.workId, row.repository, row.rewrittenFrom]))
+		if (!Array.isArray(row.pullRequests)) continue
 		for (const value of row.pullRequests) {
 			const identity = storedPullRequest(value)?.identity
 			if (identity?.id) add(identitiesByUrl, identity.url, pullRequestKey(identity))
 		}
 	}
+	const firstRecorded = (commit: string) => {
+		let earliest = commitRecorded.get(commit) ?? Number.POSITIVE_INFINITY
+		const seen = new Set([commit])
+		for (let origin = commitOrigins.get(commit); origin && !seen.has(origin); origin = commitOrigins.get(origin)) {
+			seen.add(origin)
+			earliest = Math.min(earliest, commitRecorded.get(origin) ?? Number.POSITIVE_INFINITY)
+		}
+		return earliest
+	}
+	/** Keyed by work and PR: when that work first recorded a commit linked to the PR. */
+	const firstLinked = new Map<string, number>()
 	for (const row of records) {
 		if (row.type === "request_response") continue
 		if (row.type === "request" && typeof row.requestId === "string" && row.requestId) {
@@ -518,6 +539,9 @@ export function calculatePullRequestCosts(
 			if (commitKey !== undefined) add(commitPulls, commitKey, key)
 			add(workPulls, row.workId, key)
 			add(pullWorks, key, row.workId)
+			const linked = JSON.stringify([row.workId, key])
+			const recordedAt = firstRecorded(JSON.stringify([row.workId, row.repository, row.sha]))
+			if (recordedAt < (firstLinked.get(linked) ?? Number.POSITIVE_INFINITY)) firstLinked.set(linked, recordedAt)
 			if (!pull) {
 				if (!pulls.has(key)) pulls.set(key, { checkedAt: Number.NEGATIVE_INFINITY, pullRequest: null })
 				continue
@@ -532,6 +556,24 @@ export function calculatePullRequestCosts(
 				else if (JSON.stringify(pull) < JSON.stringify(other)) previous.pullRequest = pull
 			}
 		}
+	}
+	/**
+	 * A request that started before one candidate PR merged is not shared with a follow-up PR
+	 * whose first linked commit in the request's works came after that merge.
+	 */
+	const followUpPulls = (keys: string[], startedAt: number | undefined, workIds: string[]) => {
+		const followUps = new Set<string>()
+		for (const merged of keys) {
+			const mergedAt = time(pulls.get(merged)?.pullRequest?.mergedAt)
+			if (mergedAt === undefined || startedAt === undefined || startedAt > mergedAt) continue
+			for (const key of keys) {
+				const linkedAt = Math.min(
+					...workIds.map((workId) => firstLinked.get(JSON.stringify([workId, key])) ?? Number.POSITIVE_INFINITY),
+				)
+				if (key !== merged && Number.isFinite(linkedAt) && linkedAt > mergedAt) followUps.add(key)
+			}
+		}
+		return followUps
 	}
 	const exclusivePulls = exclusiveRequestPulls(records, ownership, commitPulls)
 	const links = requestWorkLinks(records)
@@ -572,6 +614,13 @@ export function calculatePullRequestCosts(
 				if (unmergedAtStart.length < pullRequestIds.length) {
 					pullRequestIds = unmergedAtStart
 					allocated = allocation(owner, pullRequestIds, pulls, invalidWorkLinks)
+				}
+				const followUps = followUpPulls(pullRequestIds, owner.startedAt, allocationWorks)
+				if (allocated.allocation === "shared" && followUps.size && followUps.size < pullRequestIds.length) {
+					pullRequestIds = pullRequestIds.filter((key) => !followUps.has(key))
+					allocated = allocation(owner, pullRequestIds, pulls, invalidWorkLinks)
+					// Timing narrows the candidates but never proves the remaining PR sure.
+					if (allocated.allocation === "pull-request") allocated = { allocation: "inferred" }
 				}
 			}
 			const postMerge = allocated.allocation === "post-merge"

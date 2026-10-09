@@ -1314,6 +1314,69 @@ describe("one work across a merged PR and its follow-up", () => {
 		expect(report.requests.find((row) => row.requestId === "follow-up")?.pullRequestIds).toEqual([second?.key])
 	})
 
+	describe("planning before the first merge", () => {
+		// The review's fixture: planning without edits, then implementation that landed natively in PR 1.
+		const segment = (id: string, attribution = "session", reason = "new-task") => ({ id, attribution, reason })
+		const plan = (attribution?: string, reason?: string) =>
+			request("plan", "work-a", "session-a", time(5), { segment: segment("input-plan", attribution, reason) })
+		const implement = request("implement", "work-a", "session-a", time(10), { segment: segment("input-implement") })
+		const edit = nativeEdit("implement", { path: "a.ts" })
+		const firstCommit = contribution(edit)
+		const followUp = request("follow-up", "work-a", "session-a", time(35), { segment: segment("input-follow-up") })
+		const followUpCommit = (fields: Record<string, unknown> = {}) =>
+			commit(
+				"work-a",
+				[{ ...secondPull(), state: "open", mergeCommitSha: null, mergedAt: null, closedAt: null }],
+				"session-a",
+				{ sha: "c".repeat(40), recordedAt: time(36), ...fields },
+			)
+		const prices = [charge("plan", "2"), charge("implement", "1"), charge("follow-up", "4")]
+		const first = (report: ReturnType<typeof calculatePullRequestCosts>) =>
+			report.pullRequests.find((row) => row.pullRequest?.number === 1)
+		const allocated = (report: ReturnType<typeof calculatePullRequestCosts>, requestId: string) =>
+			report.requests.find((row) => row.requestId === requestId)
+
+		it("keeps the first PR's complete total after a follow-up PR opens from the same work", () => {
+			const before = calculatePullRequestCosts([plan(), implement, edit, firstCommit], prices)
+			const after = calculatePullRequestCosts(
+				[plan(), implement, edit, firstCommit, followUp, followUpCommit()],
+				prices,
+			)
+			for (const report of [before, after])
+				expect(first(report)).toMatchObject({
+					totalCostUsd: "3.000000000",
+					explicit: { requestIds: ["implement"], totalCostUsd: "1.000000000" },
+					inferred: { requestIds: ["plan"], totalCostUsd: "2.000000000" },
+					sharedRequestIds: [],
+				})
+			expect(allocated(after, "plan")).toMatchObject({ allocation: "inferred", pullRequestIds: [first(after)?.key] })
+			expect(allocated(after, "follow-up")).toMatchObject({ allocation: "unmerged" })
+			expect(after.unallocated.shared.requestIds).toEqual([])
+		})
+		it("never makes an explicitly planned request sure through follow-up timing", () => {
+			const records = [plan("explicit", "saved-plan"), implement, edit, firstCommit]
+			expect(allocated(calculatePullRequestCosts(records, prices), "plan")?.allocation).toBe("pull-request")
+			const after = calculatePullRequestCosts([...records, followUp, followUpCommit()], prices)
+			expect(allocated(after, "plan")?.allocation).toBe("inferred")
+			expect(first(after)).toMatchObject({
+				totalCostUsd: "3.000000000",
+				explicit: { requestIds: ["implement"] },
+				inferred: { requestIds: ["plan"] },
+			})
+		})
+		it.each([
+			["a commit recorded before the merge", followUpCommit({ recordedAt: time(25) })],
+			["a rebased commit whose original came before the merge", followUpCommit({ rewrittenFrom: "d".repeat(40) })],
+		])("keeps planning shared with a PR that has %s", (_case, secondCommit) => {
+			const original = commit("work-a", [], "session-a", { sha: "d".repeat(40), recordedAt: time(25) })
+			const report = calculatePullRequestCosts(
+				[plan(), implement, edit, firstCommit, original, followUp, secondCommit],
+				prices,
+			)
+			expect(allocated(report, "plan")).toMatchObject({ allocation: "shared" })
+			expect(first(report)).toMatchObject({ totalCostUsd: null, sharedRequestIds: ["plan"] })
+		})
+	})
 	it("keeps a post-merge request's bucket but marks a bill from another account", () => {
 		const other = { ...testScope.account, userId: "50000000-0000-4000-8000-000000000005" }
 		const report = calculatePullRequestCosts(
