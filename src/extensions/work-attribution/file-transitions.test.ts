@@ -25,6 +25,7 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import toolRenderingExtension from "../tool-rendering.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { createCommitTrackingBashTool } from "./commits.js"
+import * as diagnostics from "./diagnostics.js"
 import {
 	createTrackedEditTool,
 	createTrackedWriteTool,
@@ -897,7 +898,7 @@ describe("manual commit reconciliation", () => {
 		const tool = createTrackedWriteTool(context(), "pinned")
 		rmSync(join(root, "agent", "work-attribution"), { recursive: true })
 		writeFileSync(join(root, "agent", "work-attribution"), "blocked")
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const warn = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		await tool.execute("pinned", { path: "file.txt", content: "changed" })
 		expect(readFileSync(join(repo, "file.txt"), "utf8")).toBe("changed")
 		expect(warn).toHaveBeenCalled()
@@ -1069,7 +1070,7 @@ describe("manual commit reconciliation", () => {
 		baseline()
 		writeFileSync(join(root, "blocked"), "file")
 		vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "blocked"))
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const warn = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		await edit("one", "first")
 		await write("new.txt", "new")
 		expect(readFileSync(join(repo, "file.txt"), "utf8")).toBe("first\ntwo\n")

@@ -6,6 +6,8 @@
  * clears once an agent turn resumes — management output is transient, not
  * permanent UI.
  */
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { viewText, waitForText } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
@@ -27,7 +29,7 @@ test("/memory overview renders store stats as a widget that clears when the agen
 				])
 			},
 		},
-		async (_fixture, trace) => {
+		async (fixture, trace) => {
 			terminal.write("/memory")
 			await waitForText(terminal, "/memory")
 			terminal.submit("")
@@ -40,6 +42,12 @@ test("/memory overview renders store stats as a widget that clears when the agen
 			terminal.submit("hello there")
 			await waitForText(terminal, "The overview widget cleared — the agent resumed.")
 			expect(viewText(terminal)).not.toContain("Memory storage:")
+			// The fake provider rejects embeddings. Even third-party error logs must
+			// stay off the terminal while the agent continues without memory.
+			expect(viewText(terminal)).not.toContain("Error embedding text")
+			expect(readFileSync(join(fixture.agentDir, "logs", "tui.log"), "utf8")).toContain(
+				"Error embedding text with Langchain Embedder",
+			)
 			trace.step("widget cleared when the agent resumed")
 		},
 	)

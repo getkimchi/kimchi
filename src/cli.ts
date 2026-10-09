@@ -121,6 +121,7 @@ import powershellGateExtension from "./extensions/powershell-gate.js"
 import { setPrintGate } from "./extensions/print-mode.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
+import pullRequestStatusExtension from "./extensions/pull-request-status/index.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
@@ -187,6 +188,7 @@ import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
+import { installTuiConsoleLogging } from "./tui-console.js"
 import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
 import { installCompactionRecoveryPatch, installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
 import {
@@ -608,6 +610,7 @@ try {
 		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
 		const terminalStartupOutputAllowed = isTerminalUiMode(rawArgs, terminalIo)
 		if (terminalStartupOutputAllowed) {
+			installTuiConsoleLogging()
 			await probeTerminalBackground()
 			await probeKittyKeyboardSupport()
 		}
@@ -825,6 +828,7 @@ try {
 			contextAssemblyExtension,
 			cacheSummaryExtension,
 			createWorkAttributionExtension(),
+			pullRequestStatusExtension,
 			requestTimingExtension,
 			llmResponseLogExtension,
 			activityExtension,

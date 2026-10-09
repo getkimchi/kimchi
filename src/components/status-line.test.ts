@@ -1,6 +1,6 @@
 import type { Model } from "@earendil-works/pi-ai"
 import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
-import { visibleWidth } from "@earendil-works/pi-tui"
+import { hyperlink, visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { StatusLineElementId } from "../config/status-line-config.js"
 import * as AGENTS from "../extensions/agents/index.js"
@@ -58,6 +58,7 @@ function createMockTheme(): Theme {
 		mode: "light",
 		preproc: vi.fn(),
 		extensions: {},
+		underline: vi.fn((s: string) => `\x1b[4m${s}\x1b[24m`),
 	} as unknown as Theme
 }
 
@@ -112,18 +113,78 @@ function createMockStatusLineData(opts?: {
 	permissionsWarning?: string
 	updateAvailable?: string
 	lsp?: string
+	workPr?: string
+	workPrUrl?: string
 }): ReadonlyFooterDataProvider {
 	const statuses = new Map<string, string>()
 	if (opts?.permissionsMode) statuses.set("permissions-mode", opts.permissionsMode)
 	if (opts?.permissionsWarning) statuses.set("permissions-warning", opts.permissionsWarning)
 	if (opts?.updateAvailable) statuses.set("update-available", opts.updateAvailable)
 	if (opts?.lsp) statuses.set("lsp", opts.lsp)
+	if (opts?.workPr) statuses.set("work-pr", opts.workPr)
+	if (opts?.workPrUrl) statuses.set("work-pr-url", opts.workPrUrl)
 	return {
 		getExtensionStatuses: vi.fn(() => statuses),
 	} as unknown as ReadonlyFooterDataProvider
 }
 
 describe("buildScriptPayload", () => {
+	it.each([
+		["PR #7 open", "#7", "https://github.com/example/repo/pull/7"],
+		["MR !7 open", "!7", "https://gitlab.com/example/team/repo/-/merge_requests/7"],
+	])("links the number in %s without adding terminal columns", (status, number, url) => {
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({ workPr: status, workPrUrl: url }),
+		}
+		for (const segments of [buildStatusLineSegments(context, new Set()), buildControlsLineSegments(context)]) {
+			const segment = segments.find((item) => item.id === "work-pr")
+			expect(segment?.text).toContain(hyperlink(number, url))
+			// Only the number reads as a link: accented and underlined, with the label and state muted.
+			expect(segment?.text).toBe(
+				`\x1b[2m${status.slice(0, 2)}\x1b[0m \x1b[4m\x1b[36m${hyperlink(number, url)}\x1b[39m\x1b[24m \x1b[2mopen\x1b[0m`,
+			)
+			expect(segment?.width).toBe(visibleWidth(status))
+			expect(visibleWidth(renderFittedLine(segments, 40, context.theme))).toBeLessThanOrEqual(40)
+		}
+	})
+	it("shows PR lookup status in both footers and hides it when no work has commits", () => {
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({ workPr: "PR #7 open" }),
+		}
+		for (const segments of [buildStatusLineSegments(context, new Set()), buildControlsLineSegments(context)]) {
+			expect(stripAnsi(segments.find((segment) => segment.id === "work-pr")?.text ?? "")).toBe("PR #7 open")
+			expect(visibleWidth(renderFittedLine(segments, 40, context.theme))).toBeLessThanOrEqual(40)
+		}
+		context.statusLineData = createMockStatusLineData()
+		expect(buildStatusLineSegments(context, new Set()).some((segment) => segment.id === "work-pr")).toBe(false)
+	})
+	it("drops the PR state before anything else when the line runs out of room", () => {
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({ workPr: "PR #7 open" }),
+		}
+		const segments = () => buildStatusLineSegments(context, new Set())
+		const full = stripAnsi(renderFittedLine(segments(), 1000, context.theme))
+		expect(full).toContain("PR #7 open")
+		const fitted = stripAnsi(renderFittedLine(segments(), visibleWidth(full) - 1, context.theme))
+		expect(fitted).toContain("PR #7")
+		expect(fitted).not.toContain("PR #7 open")
+		expect(fitted.replace("PR #7", "")).toBe(full.replace("PR #7 open", ""))
+	})
+	it("mutes the label of a waiting or failed PR lookup", () => {
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({ workPr: "PR/MR waiting" }),
+		}
+		const segment = buildStatusLineSegments(context, new Set()).find((item) => item.id === "work-pr")
+		expect(segment?.text).toBe("\x1b[2mPR/MR\x1b[0m \x1b[36mwaiting\x1b[39m")
+	})
 	it("shows a V2 run in both the default footer and custom-script controls", () => {
 		const data = createMockStatusLineData()
 		vi.mocked(data.getExtensionStatuses).mockReturnValue(

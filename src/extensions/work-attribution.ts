@@ -22,6 +22,7 @@ import { readPlanWorkId } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
 import { findWorkContinuation, type WorkContinuation } from "./work-attribution/continuation.js"
+import { debugWorkAttribution } from "./work-attribution/diagnostics.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
 import { subscribeFileReconciliation } from "./work-attribution/reconcile-supervisor.js"
 import { flushWorkSummaries, markNewWork, recoverWorkSummaries, updateWorkSummary } from "./work-attribution/summary.js"
@@ -29,6 +30,17 @@ import { flushWorkSummaries, markNewWork, recoverWorkSummaries, updateWorkSummar
 export interface WorkContext {
 	cwd: string
 	sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">
+}
+export const WORK_CHANGED_EVENT = "kimchi:work-changed"
+export const WORK_STATE_REQUEST_EVENT = "kimchi:work-state-request"
+export const WORK_DETAILS_REQUEST_EVENT = "kimchi:work-details-request"
+export interface WorkStateRequest {
+	tracking?: boolean
+	current?: { ctx: ExtensionContext; workId: string }
+}
+export interface WorkDetailsRequest {
+	workId: string
+	lines: string[]
 }
 const WORK_IDENTITY_ENTRY = "work_identity"
 const identities = new Map<string, string>()
@@ -40,12 +52,12 @@ export function workLedgerPath(ctx: WorkContext): string {
 	// Session IDs also come from imported sessions; never interpret them as paths.
 	return join(getAgentDir(), "work-attribution", `${encodeURIComponent(ctx.sessionManager.getSessionId())}.jsonl`)
 }
-/** Attribution is observational: callers may continue without IDs after a visible persistence failure. */
+/** Attribution is observational: callers may continue without IDs after a persistence failure. */
 export function tryWorkAttribution<T>(record: () => T): T | undefined {
 	try {
 		return record()
 	} catch (error) {
-		console.warn("[work-attribution] Attribution unavailable:", error)
+		debugWorkAttribution("Attribution unavailable:", error)
 		return undefined
 	}
 }
@@ -53,7 +65,7 @@ export async function tryWorkAttributionAsync<T>(record: () => Promise<T>): Prom
 	try {
 		return await record()
 	} catch (error) {
-		console.warn("[work-attribution] Attribution unavailable:", error)
+		debugWorkAttribution("Attribution unavailable:", error)
 		return undefined
 	}
 }
@@ -94,7 +106,7 @@ export function appendWorkRecord(
 export function setWorkId(
 	ctx: WorkContext,
 	existingWorkId?: string,
-	pi?: Pick<ExtensionAPI, "appendEntry">,
+	pi?: Pick<ExtensionAPI, "appendEntry" | "events">,
 	continuation?: Pick<WorkContinuation, "source" | "evidence">,
 ): string {
 	const workId = existingWorkId ?? randomUUID()
@@ -103,6 +115,7 @@ export function setWorkId(
 	appendWorkRecord(ctx, { type: "work", ...(continuation ? { continuation } : {}) }, workId)
 	identities.set(workLedgerPath(ctx), workId)
 	pi?.appendEntry(WORK_IDENTITY_ENTRY, { workId, ...(continuation ? { continuation } : {}) })
+	pi?.events.emit(WORK_CHANGED_EVENT, undefined)
 	return workId
 }
 export function getWorkId(ctx: WorkContext): string {
@@ -197,7 +210,22 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 	const isChild = inheritedWorkId !== undefined
 	return (pi) => {
 		let stopReconciliation: (() => Promise<void>) | undefined
+		let activeContext: ExtensionContext | undefined
+		function notifyWorkChanged(): void {
+			if (!isChild) pi.events.emit(WORK_CHANGED_EVENT, undefined)
+		}
+		function registerWorkState(): () => void {
+			return pi.events.on(WORK_STATE_REQUEST_EVENT, (candidate) => {
+				if (isChild || !candidate || typeof candidate !== "object" || Array.isArray(candidate)) return
+				const request = candidate as WorkStateRequest
+				request.tracking = true
+				if (activeContext && initialized.has(workLedgerPath(activeContext)))
+					request.current = { ctx: activeContext, workId: getWorkId(activeContext) }
+			})
+		}
+		let unregisterWorkState: (() => void) | undefined = registerWorkState()
 		pi.on("session_start", (_event, ctx) => {
+			unregisterWorkState ??= registerWorkState()
 			recoverWorkSummaries()
 			try {
 				bind(ctx)
@@ -223,8 +251,12 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 		const branchEligible = new Set<string>()
 		const explicitSelection = new Set<string>()
 		function bind(ctx: ExtensionContext): void {
+			activeContext = ctx
 			const key = workLedgerPath(ctx)
-			if (initialized.has(key)) return
+			if (initialized.has(key)) {
+				notifyWorkChanged()
+				return
+			}
 			const branch = ctx.sessionManager.getBranch()
 			const fresh = !existsSync(key) || freshSessionLedgers.has(key)
 			let copiedWorkId: string | undefined
@@ -258,6 +290,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 			if (copiedExplicit && copiedWorkId === workId) explicitSelection.add(key)
 			pi.appendEntry(WORK_IDENTITY_ENTRY, { workId, ...(explicitSelection.has(key) ? { explicit: true } : {}) })
 			initialized.add(key)
+			notifyWorkChanged()
 		}
 		pi.on("input", async (event, ctx) => {
 			if (isChild || event.source === "extension") return
@@ -325,6 +358,9 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 			toolRequests.delete(workLedgerPath(ctx))
 		})
 		pi.on("session_shutdown", async (_event, ctx) => {
+			activeContext = undefined
+			unregisterWorkState?.()
+			unregisterWorkState = undefined
 			const key = workLedgerPath(ctx)
 			const stop = stopReconciliation
 			stopReconciliation = undefined
@@ -341,7 +377,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 			explicitSelection.delete(key)
 		})
 		pi.registerCommand("work", {
-			description: "Show work ID, start new work (/work new), or continue a saved plan (/work <path>)",
+			description: "Show work details, start new work (/work new), or continue a saved plan (/work <path>)",
 			handler: async (args, ctx) => {
 				try {
 					await ctx.waitForIdle()
@@ -357,8 +393,12 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 						branchEligible.delete(workLedgerPath(ctx))
 						explicitSelection.add(workLedgerPath(ctx))
 						pi.appendEntry(WORK_IDENTITY_ENTRY, { workId: getWorkId(ctx), explicit: true })
+						// bind() announced the previous work; announce the one selected here.
+						notifyWorkChanged()
 					}
-					notify(ctx, `Work ID: ${getWorkId(ctx)}`)
+					const details: WorkDetailsRequest = { workId: getWorkId(ctx), lines: [] }
+					pi.events.emit(WORK_DETAILS_REQUEST_EVENT, details)
+					notify(ctx, [`Work ID: ${details.workId}`, ...details.lines].join("\n"))
 				} catch (error) {
 					warnWorkAttribution(ctx, error)
 				}

@@ -12,15 +12,11 @@ import { createProcessRegistry } from "../bash-background/process-registry.js"
 import { getSessionRegistry, setSessionRegistry } from "../bash-background/session-registry.js"
 import * as attribution from "../work-attribution.js"
 import { createCommitTrackingBashTool, createCommitTrackingOperations, type ObservedCommit } from "./commits.js"
+import * as diagnostics from "./diagnostics.js"
 import { flushWorkSummaries } from "./summary.js"
 
-const { debug } = vi.hoisted(() => ({ debug: vi.fn() }))
 vi.mock("node:fs", async (importOriginal) => ({
-	...(await importOriginal<typeof import("node:fs")>()),
-}))
-vi.mock("node:util", async (importOriginal) => ({
-	...(await importOriginal<typeof import("node:util")>()),
-	debuglog: () => debug,
+	...(await importOriginal<typeof fs>()),
 }))
 
 let directory: string
@@ -52,7 +48,6 @@ beforeEach(() => {
 	git(repository, "config", "user.email", "test@example.invalid")
 	git(repository, "config", "commit.gpgSign", "false")
 	commits = []
-	debug.mockClear()
 })
 
 afterEach(async () => {
@@ -95,6 +90,50 @@ describe("Git commit observation", () => {
 		expect(commits).toEqual(shas.map((sha) => ({ sha, repository: join(repository, ".git"), worktree: repository })))
 	})
 
+	it.each([
+		"GIT_TRACE2_EVENT",
+		"GIT_TRACE_REFS",
+	])("records commits before and after %s exceeds 8 MiB", async (variable) => {
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const sizePath = join(directory, "trace-size")
+		const pad = `const fs = require("node:fs");
+const line = ${variable === "GIT_TRACE2_EVENT" ? 'JSON.stringify({ event: "data", detail: "x".repeat(1024) })' : '"12:00:00.000000 refs/debug.c:1: read_raw_ref: " + "x".repeat(1024)'} + "\\n";
+fs.appendFileSync(process.env.${variable}, line.repeat(8192));
+fs.writeFileSync(${JSON.stringify(sizePath)}, String(fs.statSync(process.env.${variable}).size));`
+		expect(
+			await run(
+				`git commit --allow-empty -m before && ${quote(process.execPath)} -e ${quote(pad)} && git commit --allow-empty -m after; false`,
+			),
+		).toBe(1)
+		expect(Number(fs.readFileSync(sizePath, "utf8"))).toBeGreaterThan(8 * 1024 * 1024)
+		expect(commits.map((commit) => commit.sha)).toEqual(git(repository, "reflog", "--format=%H").split("\n").reverse())
+		expect(warning).not.toHaveBeenCalled()
+	})
+
+	it("does not print a failed Git trace over the terminal", async () => {
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		vi.spyOn(fs, "mkdtempSync").mockImplementation(() => {
+			throw new Error("trace storage unavailable")
+		})
+		expect(await run("true")).toBe(0)
+		expect(warning).not.toHaveBeenCalled()
+	})
+
+	it.each(["malformed", "unreadable"])("keeps Bash results and cleans up a %s trace", async (failure) => {
+		const debug = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
+		const cleanup = vi.spyOn(fs, "rmSync")
+		const damage =
+			failure === "malformed"
+				? 'printf "bad json\\n" >> "$GIT_TRACE2_EVENT"'
+				: 'rm "$GIT_TRACE2_EVENT" && mkdir "$GIT_TRACE2_EVENT"'
+		expect(await run(`git commit --allow-empty -m unverified && ${damage}; false`)).toBe(1)
+		expect(commits).toEqual([])
+		expect(debug).toHaveBeenCalledWith("Could not record Git commits:", expect.any(Error))
+		const tracePath = cleanup.mock.calls[0]?.[0]
+		expect(tracePath).toBeTruthy()
+		if (tracePath) expect(fs.existsSync(tracePath)).toBe(false)
+	})
+
 	it("tracks the actual git -C and shell cd worktrees", async () => {
 		git(repository, "commit", "--allow-empty", "-m", "base")
 		const worktree = join(directory, "linked tree")
@@ -124,6 +163,7 @@ describe("Git commit observation", () => {
 			`git worktree remove ${quote(worktree)}`,
 			"git commit --allow-empty -m after",
 		]
+		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		expect(await run(commands.join(" && "))).toBe(0)
 		const names = position === "middle" ? ["before", "after"] : ["after"]
 		expect(commits).toEqual(
@@ -133,10 +173,7 @@ describe("Git commit observation", () => {
 				worktree: repository,
 			})),
 		)
-		expect(debug).toHaveBeenCalledWith(
-			expect.stringContaining("Could not resolve Git commit repository"),
-			expect.any(Error),
-		)
+		expect(warning).toHaveBeenCalledWith("Could not resolve Git commit repository:", expect.any(Error))
 	})
 
 	it("does not record checkout or reset alongside a real commit", async () => {
@@ -168,6 +205,56 @@ describe("Git commit observation", () => {
 			mode: 0o700,
 		})
 		expect(await run("git commit --allow-empty -m hooked")).toBe(0)
+		expect(commits.map((commit) => commit.sha)).toEqual([git(repository, "rev-parse", "HEAD")])
+	})
+
+	it.each([
+		"maintenance run --auto --no-detach --task=gc",
+		"gc --auto --no-detach",
+	])("records a commit while Git %s is running", async (maintenance) => {
+		// Two packs trigger auto-GC without relying on Git's loose-object sampling.
+		for (const message of ["base", "second"]) {
+			git(repository, "commit", "--allow-empty", "-qm", message)
+			execFileSync("git", ["-C", repository, "pack-objects", join(repository, ".git", "objects", "pack", "pack")], {
+				input: `${git(repository, "rev-parse", "HEAD")}\n`,
+				stdio: ["pipe", "pipe", "pipe"],
+			})
+		}
+		git(repository, "config", "gc.autoPackLimit", "1")
+		const ready = quote(join(directory, "maintenance-ready"))
+		const release = quote(join(directory, "maintenance-release"))
+		writeFileSync(
+			join(repository, ".git", "hooks", "pre-auto-gc"),
+			`#!/bin/sh
+touch ${ready}
+attempt=0
+while ! test -f ${release}; do
+  attempt=$((attempt + 1))
+  test "$attempt" -lt 500 || exit 1
+  sleep 0.02
+done
+`,
+			{ mode: 0o700 },
+		)
+		expect(
+			await run(`
+git ${maintenance} &
+maintenance_pid=$!
+finish() { touch ${release}; wait "$maintenance_pid"; }
+trap finish EXIT
+attempt=0
+while ! test -f ${ready}; do
+  attempt=$((attempt + 1))
+  test "$attempt" -lt 400 || exit 1
+  sleep 0.02
+done
+git -c maintenance.auto=false -c gc.auto=0 commit --allow-empty -qm concurrent
+commit_result=$?
+touch ${release}
+wait "$maintenance_pid" || exit 1
+exit "$commit_result"
+`),
+		).toBe(0)
 		expect(commits.map((commit) => commit.sha)).toEqual([git(repository, "rev-parse", "HEAD")])
 	})
 
@@ -260,8 +347,9 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 	})
 
 	it.each(["allocation", "cleanup"])("preserves Bash execution when trace %s fails", async (stage) => {
-		const failure = new Error("trace storage unavailable")
+		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		const silence = vi.spyOn(console, "warn")
+		const failure = new Error("trace storage unavailable")
 		const hook =
 			stage === "allocation"
 				? vi.spyOn(fs, "mkdtempSync").mockImplementation(() => {
@@ -272,10 +360,8 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 					})
 		try {
 			expect(await run("printf still-running")).toBe(0)
-			expect(debug).toHaveBeenCalledWith(
-				expect.stringContaining(
-					stage === "allocation" ? "Could not initialize Git trace" : "Could not remove Git trace",
-				),
+			expect(warning).toHaveBeenCalledWith(
+				stage === "allocation" ? "Could not initialize Git trace:" : "Could not remove Git trace:",
 				failure,
 			)
 			expect(silence).not.toHaveBeenCalled()
@@ -291,6 +377,7 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 		vi.spyOn(attribution, "getWorkId").mockImplementation(() => {
 			throw new Error("ledger unavailable")
 		})
+		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		const registry = createProcessRegistry()
 		try {
 			const tool =
@@ -305,8 +392,8 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 				ctx,
 			)
 			expect(result.content).toEqual(expect.arrayContaining([expect.objectContaining({ text: "bash-still-works" })]))
-			expect(debug).toHaveBeenCalledWith(
-				expect.stringContaining("Could not initialize Git attribution"),
+			expect(warning).toHaveBeenCalledWith(
+				"Could not initialize Git attribution:",
 				expect.objectContaining({ message: "ledger unavailable" }),
 			)
 		} finally {

@@ -11,6 +11,7 @@ import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles } from "../orchestration/model-roles.js"
 import { resetRedactionConfigCache } from "../pii-redaction/config.js"
 import * as redactor from "../pii-redaction/redactor.js"
+import * as diagnostics from "../work-attribution/diagnostics.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import * as attribution from "../work-attribution.js"
 import {
@@ -107,7 +108,7 @@ describe("Ferment V2 evaluator", () => {
 		vi.spyOn(attribution, operation).mockImplementation(() => {
 			throw new Error("ledger unavailable")
 		})
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"more work"}'))
 		const result = await evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext())
 		expect(result).toMatchObject({ verdict: "continue", reason: "more work" })

@@ -4,7 +4,11 @@ import * as fs from "node:fs"
 import * as asyncFs from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import type { BeforeProviderHeadersEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
+import type {
+	BeforeProviderHeadersEvent,
+	SessionShutdownEvent,
+	SessionStartEvent,
+} from "@earendil-works/pi-coding-agent"
 import * as locks from "proper-lockfile"
 import { lockSync } from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -18,28 +22,29 @@ import {
 	setWorkId,
 } from "../work-attribution.js"
 
+import * as diagnostics from "./diagnostics.js"
 import { flushWorkSummaries, recoverWorkSummaries } from "./summary.js"
 
-const { debug } = vi.hoisted(() => ({ debug: vi.fn() }))
 vi.mock("proper-lockfile", async (importOriginal) => ({ ...(await importOriginal<typeof locks>()) }))
 vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
 vi.mock("node:fs", async (importOriginal) => ({ ...(await importOriginal<typeof fs>()) }))
-vi.mock("node:util", async (importOriginal) => ({
-	...(await importOriginal<typeof import("node:util")>()),
-	debuglog: () => debug,
-}))
 
 let dir: string
 beforeEach(() => {
 	dir = fs.mkdtempSync(join(tmpdir(), "kimchi-work-summary-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
-	debug.mockClear()
+	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
 })
 afterEach(async () => {
 	await flushWorkSummaries()
-	vi.restoreAllMocks()
-	vi.unstubAllEnvs()
-	fs.rmSync(dir, { recursive: true, force: true })
+	try {
+		expect(vi.getTimerCount()).toBe(0)
+	} finally {
+		vi.useRealTimers()
+		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
+		fs.rmSync(dir, { recursive: true, force: true })
+	}
 })
 function context(sessionId = "parent") {
 	return createContext({ cwd: "/project", sessionManager: { getSessionId: () => sessionId } })
@@ -52,6 +57,74 @@ function summary(workId: string) {
 }
 
 describe("readable work summaries", () => {
+	it("keeps one PR after provider IDs are added and the repository is renamed", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const commit = { type: "commit", sha: "a".repeat(40), repository: "/project/.git", worktree: "/project" }
+		const old = {
+			provider: "github",
+			host: "github.com",
+			url: "https://github.com/example/old/pull/7",
+			checkedAt: "2026-10-02T08:00:00Z",
+		}
+		appendWorkRecord(ctx, { ...commit, pullRequests: [old] })
+		appendWorkRecord(ctx, { ...commit, pullRequests: [{ ...old, id: "42" }] })
+		const renamed = {
+			...old,
+			id: "42",
+			url: "https://github.com/example/new/pull/7",
+			checkedAt: "2026-10-02T09:00:00Z",
+		}
+		appendWorkRecord(ctx, { ...commit, pullRequests: [renamed] })
+		await flushWorkSummaries()
+		expect(summary(workId).commits[0].pullRequests).toEqual([renamed])
+		fs.unlinkSync(path(workId))
+		recoverWorkSummaries()
+		await flushWorkSummaries()
+		expect(summary(workId).commits[0].pullRequests).toEqual([renamed])
+	})
+	it("retains PR links and their newest state through failed lookups and source replay", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const commit = { type: "commit", sha: "a".repeat(40), repository: "/project/.git", worktree: "/project" }
+		const open = {
+			url: "https://github.com/example/repo/pull/7",
+			number: 7,
+			state: "open",
+			checkedAt: "2026-10-02T08:00:00Z",
+		}
+		const merged = { ...open, state: "merged", mergeCommitSha: "b".repeat(40), checkedAt: "2026-10-02T09:00:00Z" }
+		appendWorkRecord(ctx, {
+			...commit,
+			pullRequests: [open],
+			prLookup: { status: "linked", checkedAt: open.checkedAt },
+		})
+		appendWorkRecord(ctx, {
+			...commit,
+			pullRequests: [merged],
+			prLookup: { status: "linked", checkedAt: merged.checkedAt },
+		})
+		const failure = { status: "error", checkedAt: "2026-10-02T10:00:00Z", error: "Run gh auth login" }
+		appendWorkRecord(ctx, { ...commit, pullRequests: [], prLookup: failure })
+		// A replay or later file reconciliation must not reset network observations.
+		appendWorkRecord(ctx, {
+			...commit,
+			pullRequests: [open],
+			prLookup: { status: "linked", checkedAt: open.checkedAt },
+		})
+		appendWorkRecord(ctx, { ...commit, paths: ["example.ts"] })
+		await flushWorkSummaries()
+		expect(summary(workId).commits).toHaveLength(1)
+		expect(summary(workId).commits[0]).toMatchObject({
+			pullRequests: [merged],
+			prLookup: failure,
+			paths: ["example.ts"],
+		})
+		fs.unlinkSync(path(workId))
+		recoverWorkSummaries()
+		await flushWorkSummaries()
+		expect(summary(workId).commits[0]).toMatchObject({ pullRequests: [merged], prLookup: failure })
+	})
 	it("shows why a session continued another work without changing request timestamps", async () => {
 		const ctx = context()
 		const workId = getWorkId(ctx)
@@ -287,20 +360,26 @@ describe("readable work summaries", () => {
 		else fs.writeFileSync(path(workId), corrupt.replace("WORK_ID", workId))
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
-		await api.getHandler<SessionStartEvent>("session_start")(
-			{ type: "session_start", reason: "startup" },
-			context("fresh"),
-		)
-		await flushWorkSummaries()
-		expect(summary(workId)).toMatchObject({
-			workId,
-			sessions: expect.arrayContaining(["parent", "child"]),
-			requests: [expect.objectContaining({ requestId: "old-request", sessionId: "parent" })],
-			plans: [expect.objectContaining({ path: "/old-plan.md", sessionId: "child" })],
-		})
+		const fresh = context("fresh")
+		try {
+			await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, fresh)
+			await flushWorkSummaries()
+			expect(summary(workId)).toMatchObject({
+				workId,
+				sessions: expect.arrayContaining(["parent", "child"]),
+				requests: [expect.objectContaining({ requestId: "old-request", sessionId: "parent" })],
+				plans: [expect.objectContaining({ path: "/old-plan.md", sessionId: "child" })],
+			})
+		} finally {
+			await api.getHandler<SessionShutdownEvent>("session_shutdown")(
+				{ type: "session_shutdown", reason: "quit" },
+				fresh,
+			)
+		}
 	})
 	it("keeps a durable request header when the derived summary directory is blocked", async () => {
 		fs.writeFileSync(join(dir, "work"), "blocked")
+		const warn = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
 		const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
@@ -312,7 +391,7 @@ describe("readable work summaries", () => {
 			.map((line) => JSON.parse(line))
 		expect(event.headers["X-Request-Id"]).toBe(rows.find((row) => row.type === "request").requestId)
 		await flushWorkSummaries()
-		expect(debug).toHaveBeenCalledWith(expect.stringContaining("Work summary unavailable"), expect.any(Error))
+		expect(warn).toHaveBeenCalledWith("Work summary unavailable:", expect.any(Error))
 	})
 	it("does not scan unrelated histories for an ordinary append", async () => {
 		const workId = getWorkId(context())
@@ -398,7 +477,7 @@ describe("readable work summaries", () => {
 			if (args[0] === ledger) throw new Error("injected ledger read failure")
 			return read(...args)
 		})
-		vi.spyOn(console, "warn").mockImplementation(() => {})
+		vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		recoverWorkSummaries()
 		await flushWorkSummaries()
 		expect(fs.existsSync(join(dir, "work-attribution", ".recovered.json"))).toBe(false)
@@ -467,13 +546,14 @@ describe("readable work summaries", () => {
 		})
 		if (failure === "rename")
 			vi.spyOn(asyncFs, "rename").mockRejectedValue(new Error("injected summary rename failure"))
+		const warn = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		const silence = vi.spyOn(console, "warn")
 		const request = recordProviderRequest(ctx)
 		await flushWorkSummaries()
 		expect(summary(workId).requests).toEqual([])
 		expect(fs.readFileSync(join(dir, "work-attribution", "parent.jsonl"), "utf8")).toContain(request.requestId)
 		expect(fs.readdirSync(dirname(path(workId))).some((file) => file.endsWith(".tmp"))).toBe(false)
-		expect(debug).toHaveBeenCalledWith(expect.stringContaining("Work summary unavailable"), expect.any(Error))
+		expect(warn).toHaveBeenCalledWith("Work summary unavailable:", expect.any(Error))
 		expect(silence).not.toHaveBeenCalled()
 		vi.restoreAllMocks()
 		recoverWorkSummaries()
@@ -503,12 +583,13 @@ describe("readable work summaries", () => {
 			return file
 		})
 		const rename = vi.spyOn(asyncFs, "rename")
+		const warn = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		const request = recordProviderRequest(ctx)
 		await flushWorkSummaries()
 		expect(rename).not.toHaveBeenCalled()
 		expect(summary(workId).requests).toEqual([])
 		expect(fs.readFileSync(join(dir, "work-attribution", "parent.jsonl"), "utf8")).toContain(request.requestId)
-		expect(debug).toHaveBeenCalledWith(expect.stringContaining("Work summary unavailable"), expect.any(Error))
+		expect(warn).toHaveBeenCalledWith("Work summary unavailable:", expect.any(Error))
 		// This test invokes the observer directly; release the still-owned real fixture lease.
 		await locks.unlock(dirname(path(workId)))
 	})
@@ -556,7 +637,8 @@ console.log("durable"); await flushWorkSummaries();`,
 		try {
 			const code = await new Promise<number | null>((resolve) => child.once("exit", resolve))
 			expect(code, errors).toBe(0)
-			expect(errors).toContain("Work summary unavailable")
+			expect(errors).not.toMatch(/work-attribution|Work summary unavailable/)
+			expect(fs.readFileSync(join(dir, "logs", "work-attribution.log"), "utf8")).toContain("Work summary unavailable")
 			expect(summary(workId).requests).toEqual([])
 			recoverWorkSummaries()
 			await flushWorkSummaries()

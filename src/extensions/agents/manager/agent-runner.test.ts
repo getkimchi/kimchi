@@ -3,8 +3,11 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "../../__mocks__/context.js"
+import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { AUTO_MODEL_PROVIDER } from "../../auto-model/constants.js"
 import dapExtension from "../../dap.js"
+import * as diagnostics from "../../work-attribution/diagnostics.js"
 import { flushWorkSummaries } from "../../work-attribution/summary.js"
 
 let attributionDir: string
@@ -387,7 +390,7 @@ describe("runAgent — telemetry extension", () => {
 
 	it("starts a child when attribution storage is unavailable", async () => {
 		writeFileSync(join(attributionDir, "work-attribution"), "blocked")
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		const session = makeFakeSession({})
 		mockCreateAgentSession.mockResolvedValue({
 			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
@@ -500,18 +503,14 @@ describe("runAgent — telemetry extension", () => {
 		})
 
 		const workerFactories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []
-		const toolCallHandlers: Array<(event: unknown) => void> = []
+		const childApi = createExtensionApi()
 		for (const factory of workerFactories) {
-			runInlineExtension(factory, {
-				registerCommand: vi.fn(),
-				on: (event: string, handler: (event: unknown) => void) => {
-					if (event === "tool_call") toolCallHandlers.push(handler)
-				},
-			} as unknown as ExtensionAPI)
+			await runInlineExtension(factory, childApi.api)
 		}
 
 		const event = { toolName: "bash", input: { command: "sleep 480" } }
-		for (const handler of toolCallHandlers) handler(event)
+		const childContext = createContext({ cwd: ctx.cwd })
+		for (const handler of childApi.getHandlers("tool_call")) await handler(event, childContext)
 
 		expect(event.input).toHaveProperty("timeout", DEFAULT_BASH_TIMEOUT_SECONDS)
 	})
@@ -562,9 +561,9 @@ describe("runAgent — telemetry extension", () => {
 			emitUsage: false,
 			promptAction: async (emit) => {
 				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[5]
-				const registerTool = vi.fn()
-				runInlineExtension(factory, { registerTool } as unknown as ExtensionAPI)
-				const tool = registerTool.mock.calls[0]?.[0]
+				const childApi = createExtensionApi()
+				await runInlineExtension(factory, childApi.api)
+				const tool = childApi.getRegisteredTool("submit_agent_report")
 				await tool.execute(
 					"report-1",
 					{
@@ -575,7 +574,7 @@ describe("runAgent — telemetry extension", () => {
 					},
 					undefined,
 					undefined,
-					undefined,
+					createContext(),
 				)
 				emit({ type: "tool_execution_end", toolName: "submit_agent_report" })
 				await new Promise<void>((resolve) => queueMicrotask(() => resolve()))

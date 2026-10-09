@@ -3,10 +3,11 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { setImmediate } from "node:timers/promises"
-import { debuglog } from "node:util"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { lock } from "proper-lockfile"
 import { isWorkId } from "../../shared/work-id.js"
+import { mergePullRequestLinks } from "../pull-request-status/links.js"
+import { debugWorkAttribution } from "./diagnostics.js"
 
 const LOCK_STALE_MS = 5000
 const MERGE_BATCH_SIZE = 1000
@@ -19,7 +20,7 @@ interface SummaryEntry {
 	sessionId: string
 	[key: string]: unknown
 }
-interface WorkRecord extends SummaryEntry {
+export interface WorkRecord extends SummaryEntry {
 	version: 1
 	type: "work" | "request" | "plan" | "commit" | "file_transition"
 	workId: string
@@ -45,9 +46,8 @@ const backgroundTasks = new Set<Promise<unknown>>()
 const recoveredDirectories = new Set<string>()
 /** Work IDs generated in this process: they cannot have older history to scan. */
 const newWork = new Set<string>()
-const debug = debuglog("kimchi:work-attribution")
 function logDebug(error: unknown): void {
-	debug("Work summary unavailable: %o", error)
+	debugWorkAttribution("Work summary unavailable:", error)
 }
 function object(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -107,7 +107,7 @@ async function readSummary(path: string, workId: string): Promise<WorkSummary | 
 		if (!(error instanceof SyntaxError) && (!object(error) || error.code !== "ENOENT")) throw error
 	}
 }
-function readRecords(agentDir: string, modifiedSince?: number): WorkRecord[] {
+export function readWorkRecords(agentDir: string, modifiedSince?: number): WorkRecord[] {
 	const directory = join(agentDir, "work-attribution")
 	if (!existsSync(directory)) return []
 	const records: WorkRecord[] = []
@@ -150,6 +150,15 @@ function commitKey(row: SummaryEntry): string {
 }
 function continuationKey(row: SummaryEntry): string {
 	return JSON.stringify([row.sessionId, row.source, row.evidence])
+}
+function latestObservation(previous: unknown, current: unknown): Record<string, unknown> | undefined {
+	if (!object(current) || typeof current.checkedAt !== "string") return object(previous) ? previous : undefined
+	if (!object(previous) || typeof previous.checkedAt !== "string") return current
+	return Date.parse(current.checkedAt) >= Date.parse(previous.checkedAt) ? current : previous
+}
+/** Empty or failed lookups never remove an association already confirmed by GitHub. */
+function pullRequestLinks(...values: unknown[]): Record<string, unknown>[] {
+	return mergePullRequestLinks(...values.map((value) => (Array.isArray(value) ? value.filter(object) : [])))
 }
 /** A repeated scan can add evidence or strengthen a match without discarding earlier links. */
 function fileMatches(...values: unknown[]) {
@@ -227,6 +236,12 @@ async function merge(summary: WorkSummary, records: WorkRecord[]): Promise<void>
 		const existing = entries.get(key)
 		if (type === "commit" && (item.fileMatches !== undefined || existing?.fileMatches !== undefined))
 			item.fileMatches = fileMatches(existing?.fileMatches, item.fileMatches)
+		if (type === "commit") {
+			if (item.pullRequests !== undefined || existing?.pullRequests !== undefined)
+				item.pullRequests = pullRequestLinks(existing?.pullRequests, item.pullRequests)
+			if (item.prLookup !== undefined || existing?.prLookup !== undefined)
+				item.prLookup = latestObservation(existing?.prLookup, item.prLookup)
+		}
 		if (existing) {
 			const paths = type === "commit" ? strings(existing.paths, item.paths) : []
 			const transitionIds = type === "commit" ? strings(existing.transitionIds, item.transitionIds) : []
@@ -279,7 +294,7 @@ async function update(
 		fileTransitions: [],
 		continuations: [],
 	}
-	const history = !summary && !complete ? readRecords(agentDir).filter((row) => row.workId === workId) : []
+	const history = !summary && !complete ? readWorkRecords(agentDir).filter((row) => row.workId === workId) : []
 	await merge(value, history.concat(records))
 	if (published === JSON.stringify(value)) return
 	assertLease()
@@ -395,7 +410,7 @@ async function recover(agentDir: string): Promise<void> {
 	const startedAt = Date.now()
 	const previous = await readRecovery(agentDir, stamp)
 	const groups = new Map<string, WorkRecord[]>()
-	for (const row of readRecords(agentDir, previous && previous.startedAt - RECOVERY_MTIME_SLACK_MS)) {
+	for (const row of readWorkRecords(agentDir, previous && previous.startedAt - RECOVERY_MTIME_SLACK_MS)) {
 		const rows = groups.get(row.workId) ?? []
 		rows.push(row)
 		groups.set(row.workId, rows)

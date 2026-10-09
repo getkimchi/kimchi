@@ -22,6 +22,7 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache } from "../../ferment/store.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
+import * as diagnostics from "../work-attribution/diagnostics.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { getWorkId, recordProviderRequest, setWorkId } from "../work-attribution.js"
 import { FermentCommandController } from "./commands.js"
@@ -584,7 +585,7 @@ describe("saved Ferment work attribution", () => {
 		)
 		writeFileSync(join(h.fermentsDir, "agent"), "blocked")
 		const ctx = createContext({ cwd: h.fermentsDir })
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		try {
 			resumeFerment(h.pi, ferment.id, ctx, h.runtime)
 			expect(actionableHidden(h.sentMessages)).toHaveLength(1)
