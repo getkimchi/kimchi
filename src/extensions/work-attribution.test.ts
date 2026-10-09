@@ -28,6 +28,7 @@ import {
 	getWorkSegment,
 	recordProviderRequest,
 	setWorkId,
+	WORK_CHANGED_EVENT,
 } from "./work-attribution.js"
 
 let dir: string
@@ -201,10 +202,16 @@ describe("local work attribution", () => {
 			source: "named-artifact" as const,
 			evidence: { path: "/project/ADR.md", transitionId: "planning-write" },
 		}
-		vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue(selected)
 		const api = createExtensionApi()
+		const announced = vi.fn()
+		vi.spyOn(continuation, "findWorkContinuation").mockImplementation(async () => {
+			// Count only what the adoption announces, after the input bound the session.
+			api.api.events.on(WORK_CHANGED_EVENT, announced)
+			return selected
+		})
 		createWorkAttributionExtension()(api.api)
 		await api.getHandler<InputEvent>("input")({ type: "input", text: "Implement ADR.md", source: "rpc" }, ctx)
+		expect(announced).toHaveBeenCalledOnce()
 		const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
 		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(event, ctx)
 		expect(records().find((row) => row.requestId === event.headers["X-Request-Id"]).workId).toBe(workId)

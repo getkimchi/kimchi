@@ -620,7 +620,6 @@ export function createWorkAttributionExtension(
 						markNewWork(workId)
 					}
 					setWorkId(ctx, workId, pi, { source: "semantic", evidence })
-					notifyWorkChanged()
 					notify(ctx, `Work matching ${decision.decision === "new" ? "started new" : "continued"} work: ${workId}`)
 				} else appendWorkRecord(ctx, { type: "work", continuation: { source: "semantic", evidence } }, current)
 				saveScope(workId)

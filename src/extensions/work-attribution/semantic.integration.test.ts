@@ -24,6 +24,7 @@ import {
 	pinWorkContext,
 	recordProviderRequest,
 	setWorkId,
+	WORK_CHANGED_EVENT,
 } from "../work-attribution.js"
 import * as supervisor from "./reconcile-supervisor.js"
 import type * as WorkAccounts from "./scope.js"
@@ -220,6 +221,25 @@ it("keeps the existing work and request available when private metadata is damag
 	expect(readWorkRecords(join(root, "agent"))).toContainEqual(
 		expect.objectContaining({ type: "request", workId: current, requestId: request.headers["X-Request-Id"] }),
 	)
+})
+
+it("announces a work change from model matching once", async () => {
+	await rememberWorkIntent(cwd, planned, first)
+	const ctx = createContext({ cwd, model, modelRegistry, sessionManager: { getSessionId: () => "announce" } })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	const announced = vi.fn()
+	vi.mocked(classifyWorkIntent).mockImplementationOnce(async () => {
+		// Count only what the decision announces, after the input bound the session.
+		api.api.events.on(WORK_CHANGED_EVENT, announced)
+		return { decision: "continue", workId: planned, model: "selected/chat" }
+	})
+	await api.getHandler<InputEvent>("input")(
+		{ type: "input", source: "interactive", text: "Build the comma-separated download with quoted cells." },
+		ctx,
+	)
+	expect(getWorkId(ctx)).toBe(planned)
+	expect(announced).toHaveBeenCalledOnce()
 })
 
 it("matches a fresh session's input past 256 work directories without saved task text", async () => {
