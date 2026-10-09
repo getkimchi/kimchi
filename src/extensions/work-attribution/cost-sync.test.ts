@@ -162,16 +162,13 @@ function previousCostDetailLines(value: unknown, path: string): string[] {
 afterEach(async () => {
 	await flushWorkSummaries()
 	// Every report a test saved prints the same `/work` lines from its bounded totals as from the whole file.
-	// Connected works differ only in the Prices line, which now counts the work's own requests.
 	for (const workId of existsSync(join(dir, "work")) ? readdirSync(join(dir, "work")).filter(isWorkId) : []) {
 		const path = join(dir, "work", workId, "costs.json")
 		if (!existsSync(path)) continue
 		const saved = JSON.parse(readFileSync(path, "utf8"))
 		const totals = workCostTotals(saved)
 		if (!totals) continue
-		const own = (lines: string[]) =>
-			totals.group.length > 1 ? lines.filter((line) => !line.startsWith("Prices:")) : lines
-		expect(own(costDetailLines(totals, path))).toEqual(own(previousCostDetailLines(saved, path)))
+		expect(costDetailLines(totals, path)).toEqual(previousCostDetailLines(saved, path))
 	}
 	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
