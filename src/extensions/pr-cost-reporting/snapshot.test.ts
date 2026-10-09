@@ -809,6 +809,20 @@ describe("per-request upload window and evidence labels", () => {
 		expect(built).toMatchObject({ incomplete: false, skippedRequests: 0 })
 		expect(built.snapshots[0].content.coverage.historyComplete).toBe(true)
 	})
+	it("sends a request with more than 8 bills without IDs, so the server finds them by its tag", () => {
+		const rows = records()
+		const bills = Array.from({ length: 9 }, (_, index) => ({
+			requestId,
+			billingRecordId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+			costUsd: "0.100000000",
+			account,
+		}))
+		const { content } = buildSnapshots(rows, calculatePullRequestCosts(rows, bills), new Map(), true).snapshots[0]
+		expect(content.requests.map((request) => request.billingRecordIds)).toEqual([[]])
+		expect(() =>
+			validateSnapshot({ schemaVersion: 1, producerId: requestId, revision: "1", generatedAt: at, ...content }),
+		).not.toThrow()
+	})
 	it("never sends another account's billing IDs for a post-merge request", () => {
 		const other = { ...account, organizationId: "99999999-9999-4999-8999-999999999999" }
 		const rows = [

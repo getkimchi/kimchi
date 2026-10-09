@@ -78,6 +78,7 @@ const DETAIL_WINDOW_MS = 90 * 24 * 60 * 60 * 1000
 /** The server stops accepting corrections five minutes before a PR's details expire. */
 const CORRECTION_MARGIN_MS = 5 * 60_000
 const FINISHED_PR_GRACE_MS = 2 * 24 * 60 * 60 * 1000
+const MAX_BILLING_IDS = 8
 export const MAX_REVISION = 9223372036854775807n
 export function revision(value: unknown): value is string {
 	return typeof value === "string" && /^[1-9]\d{0,18}$/.test(value) && BigInt(value) <= MAX_REVISION
@@ -209,7 +210,7 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 			seen.has(request.requestId) ||
 			!validTime(request.startedAt) ||
 			!Array.isArray(request.billingRecordIds) ||
-			request.billingRecordIds.length > 8 ||
+			request.billingRecordIds.length > MAX_BILLING_IDS ||
 			request.billingRecordIds.some((id) => !isWorkId(id)) ||
 			new Set(request.billingRecordIds).size !== request.billingRecordIds.length ||
 			!allocation ||
@@ -688,7 +689,11 @@ export function buildSnapshots(
 				kind = "unknown"
 			const billingAccountVerified =
 				request.reason !== "work-account-mismatch" && request.reason !== "work-account-unverified"
-			const bills = billingAccountVerified ? [...request.billingRecordIds] : []
+			// The server accepts 8 bill IDs per request; it finds a larger set through the request's exact billing tag.
+			const bills =
+				billingAccountVerified && request.billingRecordIds.length <= MAX_BILLING_IDS
+					? [...request.billingRecordIds]
+					: []
 			group.content.requests.push({
 				requestId: request.requestId,
 				billingRecordIds: bills,
