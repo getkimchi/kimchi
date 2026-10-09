@@ -121,7 +121,7 @@ flowchart TD
 
 Model checks share a three-second limit, including provider authentication and redaction. Account verification has a separate one-second limit and a short in-memory cache. Cancellation, opt-out, account or model changes, a session change or a newer delivered message prevents a late result from changing work. Unresolved references to recorded work are never overridden by a model guess. Explicit choices and local children keep the rules above.
 
-Comparisons stop rather than omit evidence above 256 saved task texts, 32 retained plan versions per work or 12,000 serialized input characters. Work directories without saved task text do not count. When one of the first two limits stops matching, `/work` says so instead of warning on every prompt. Large histories, slow providers and unsupported output formats can therefore remain unresolved. Earlier works without saved task text are not backfilled.
+Comparisons stop rather than omit evidence above 256 saved task texts, 32 retained plan versions per work or 12,000 serialized input characters. Work directories without saved task text do not count. When the saved-task or plan-version limit stops matching, `/work` says so instead of warning on every prompt. Large histories, slow providers and unsupported output formats can therefore remain unresolved. Earlier works without saved task text are not backfilled.
 
 These are model judgments and can be wrong. Each request keeps its input's segment ID, matching method and reason. An uncertain answer preserves the current work ID and marks that input as unknown. Later inputs cannot silently reclassify earlier requests. A future cost calculation must preserve this uncertainty. `/work new` or `/work <plan path>` gives an explicit choice.
 
