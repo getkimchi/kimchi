@@ -43,6 +43,7 @@ export const COLLECTIONS = [
 ] as const
 export type Collection = (typeof COLLECTIONS)[number]
 const COLLECTION_NAMES = new Set<string>(COLLECTIONS)
+
 function isCollection(name: string): name is Collection {
 	return COLLECTION_NAMES.has(name)
 }
@@ -116,19 +117,24 @@ export class RowLogDamage extends Error {}
 function object(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 }
+
 function code(error: unknown): unknown {
 	return object(error) ? error.code : undefined
 }
+
 function count(value: unknown, minimum = 0): value is number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum
 }
+
 function isRow(value: unknown): value is Row {
 	return object(value) && typeof value.sessionId === "string"
 }
+
 /** Version 1 readers were lenient: any object in a collection is a row. The writer validates them. */
 function savedRow(value: unknown): value is Row {
 	return object(value)
 }
+
 function text(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined
 }
@@ -240,6 +246,7 @@ function readCommitted<T>(
 		} catch {
 			return undefined
 		}
+
 		const view = versionOneView(value, workId)
 		if (view) return fromVersionOne(view)
 		if (!isWorkHead(value, workId)) return undefined
@@ -282,6 +289,7 @@ export function readWorkRows(agentDir: string, workId: string, collection: Colle
  * The manifest, or the same values computed from a version 1 summary small enough to read. Opens no row log.
  * "too-large" is a version 1 summary over `maxBytes`; its next update migrates it.
  */
+
 export async function readWorkHead(
 	agentDir: string,
 	workId: string,
@@ -324,10 +332,12 @@ function timestamp(value: unknown): number | undefined {
 	const day = value.slice(0, 10)
 	return new Date(`${day}T00:00:00Z`).toISOString().startsWith(day) ? parsed : undefined
 }
+
 /** Whether a row stamped `at` replaces a latest value stamped `current`. Rows without a valid time sort first. */
 function replaces(at: unknown, current: { at?: string } | undefined): boolean {
 	return !current || (timestamp(at) ?? 0) >= (timestamp(current.at) ?? 0)
 }
+
 /** Folds one changed or saved row into what `/work` lists. */
 export function observeLatest(latest: WorkLatest, collection: Collection, row: Row): void {
 	const at = collection === "requests" ? row.startedAt : row.recordedAt
@@ -357,12 +367,14 @@ export function observeLatest(latest: WorkLatest, collection: Collection, row: R
 			latest.plan = { recordedAt, snapshotPath: row.snapshotPath }
 	}
 }
+
 /** PR links of every commit row, merged; empty or failed lookups never remove a link. */
 export function commitPullRequests(commits: Iterable<Row>): Record<string, unknown>[] {
 	return mergePullRequestLinks(
 		...[...commits].map((row) => (Array.isArray(row.pullRequests) ? row.pullRequests.filter(object) : [])),
 	)
 }
+
 /** `latest` and `pullRequests` recomputed from every row, in log order. */
 export function summaryLatest(
 	rows: (collection: Collection) => Iterable<Row>,
@@ -376,6 +388,7 @@ interface Line {
 	offset: number
 	length: number
 }
+
 interface LogIndex {
 	generation: number
 	/** File identity: a replaced file is scanned again. */
@@ -389,12 +402,15 @@ interface LogIndex {
 	/** Newest line per key, in first-seen order. */
 	lines: Map<string, Line>
 }
+
 /** Row positions of logs this process has read, most recently used last. */
 const indexes = new Map<string, { index: LogIndex; rows: number }>()
 let indexedRows = 0
+
 function cached(folder: string, collection: Collection): LogIndex | undefined {
 	return indexes.get(`${folder}\0${collection}`)?.index
 }
+
 function remember(folder: string, collection: Collection, index: LogIndex): void {
 	const key = `${folder}\0${collection}`
 	const previous = indexes.get(key)
@@ -410,6 +426,7 @@ function remember(folder: string, collection: Collection, index: LogIndex): void
 		indexedRows -= entry.rows
 	}
 }
+
 /** Drops this work's positions; its next update scans the logs again. */
 function forget(folder: string): void {
 	for (const collection of COLLECTIONS) {
@@ -503,6 +520,7 @@ async function writeLog(
 			chunk = []
 			chunkBytes = 0
 		}
+
 		let rows = 0
 		for (const [key, line] of lines) {
 			const length = Buffer.byteLength(line)
@@ -639,6 +657,7 @@ async function openLogs(folder: string, head: WorkHead, check: RowCheck): Promis
 			await handle.close()
 		}
 	}
+
 	const files = new Map<Collection, number>()
 	const reader = (collection: Collection, index: LogIndex) => (line: Line) => {
 		let fd = files.get(collection)
@@ -646,6 +665,7 @@ async function openLogs(folder: string, head: WorkHead, check: RowCheck): Promis
 			fd = openSync(logPath(folder, collection, index.generation), "r")
 			files.set(collection, fd)
 		}
+
 		const buffer = Buffer.allocUnsafe(line.length)
 		if (readSync(fd, buffer, 0, line.length, line.offset) !== line.length)
 			throw new RowLogDamage(`A ${collection} row is missing`)
@@ -678,6 +698,7 @@ async function openWork(
 	} catch (error) {
 		if (!(error instanceof SyntaxError) && code(error) !== "ENOENT") throw error
 	}
+
 	let damaged: WorkHead | undefined
 	if (isWorkHead(value, workId)) {
 		try {
@@ -688,6 +709,7 @@ async function openWork(
 			damaged = value
 		}
 	}
+
 	// A version 1 summary migrates with every row; anything else is rebuilt from the journals.
 	const saved = damaged ? undefined : summary(value)
 	return {
@@ -706,6 +728,7 @@ async function openWork(
 function* serialized(touched: RowStore["touched"]): Generator<[string, string]> {
 	for (const [key, { row }] of touched) yield [key, JSON.stringify(row)]
 }
+
 /** Each touched row's new line, when it differs from the saved one. */
 async function changedLines(store: RowStore): Promise<[string, string, Row][]> {
 	const changed: [string, string, Row][] = []
@@ -781,12 +804,14 @@ async function commitWork(
 		}
 		values = summaryLatest((collection) => [...work.rows[collection].touched.values()].map(({ row }) => row))
 	}
+
 	const head: WorkHead = { version: 2, workId, updatedAt: new Date().toISOString(), sessions, logs, ...values }
 	await writeFileDurably(join(folder, WORK_FILE), `${JSON.stringify(head, null, 2)}\n`, assertLease)
 	for (const collection of COLLECTIONS) {
 		const index = written[collection]
 		if (index) remember(folder, collection, index)
 	}
+
 	const compacted = await compactLogs(folder, head, { ...work.indexes, ...written }, assertLease)
 	if (generations || compacted || !cleaned.has(folder)) {
 		await removeStrays(folder, compacted ?? head)
@@ -811,6 +836,7 @@ function liveRows(folder: string, collection: Collection, index: LogIndex): Row[
  * first-seen order to the next generation, committed with `latest` recomputed from every row, then the old
  * generation is deleted. A reader holding the old manifest sees it missing once and rereads the manifest.
  */
+
 async function compactLogs(
 	folder: string,
 	head: WorkHead,
@@ -854,6 +880,7 @@ async function compactLogs(
 		}
 		if (collection === "commits") pullRequests = commitPullRequests(commits)
 	}
+
 	const compacted: WorkHead = { ...head, logs, latest, pullRequests }
 	await writeFileDurably(join(folder, WORK_FILE), `${JSON.stringify(compacted, null, 2)}\n`, assertLease)
 	for (const [collection, index, old] of replaced) {
@@ -869,6 +896,7 @@ async function compactLogs(
  * `apply` learns that it must merge the work's whole history. Returns the committed manifest, or undefined
  * when nothing changed.
  */
+
 export async function updateWorkRows(
 	folder: string,
 	workId: string,

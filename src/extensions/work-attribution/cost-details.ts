@@ -82,6 +82,7 @@ function untaggedTotals(rows: Record<string, unknown>[]): { untagged?: Record<st
 			untagged[row.billingTagSkipped] = (untagged[row.billingTagSkipped] ?? 0) + 1
 	return Object.keys(untagged).length ? { untagged } : {}
 }
+
 function failedRefreshTotals(rows: Record<string, unknown>[]): { failedRefresh?: { count: number; reason?: string } } {
 	const failed = rows.flatMap((row) =>
 		object(row.billingLookup) && row.billingLookup.status === "unavailable" ? [row.billingLookup] : [],
@@ -94,6 +95,7 @@ function failedRefreshTotals(rows: Record<string, unknown>[]): { failedRefresh?:
 		failedRefresh: { count: failed.length, ...(typeof latest.reason === "string" ? { reason: latest.reason } : {}) },
 	}
 }
+
 export function workCostTotals(report: unknown): WorkCostTotals | undefined {
 	if (
 		!object(report) ||
@@ -222,6 +224,7 @@ export function costDetailLines(value: unknown, path: string): string[] {
 				`Confirmed: $${row.sure} USD; inferred: $${row.likely} USD${row.totalCostUsd === null ? " known so far" : ""}.`,
 			)
 	}
+
 	// Work without a PR has no cost line above, so its own priced spend is shown here.
 	const { priced, total, knownCostUsd, unresolved, inferred, shared } = value.requests
 	if (typeof priced === "number" && typeof total === "number")
@@ -233,6 +236,7 @@ export function costDetailLines(value: unknown, path: string): string[] {
 		const untagged = Object.entries(value.requests.untagged).filter(
 			(entry): entry is [string, number] => typeof entry[1] === "number",
 		)
+
 		const count = untagged.reduce((sum, [, total]) => sum + total, 0)
 		const reasons = untagged
 			.sort(([left], [right]) => left.localeCompare(right))
