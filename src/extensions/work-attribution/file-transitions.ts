@@ -23,6 +23,7 @@ import {
 	type WorkContext,
 	workLedgerPath,
 } from "../work-attribution.js"
+import { debugWorkAttribution } from "./diagnostics.js"
 import { MAX_HUNK_BYTES, matchesFileHunks } from "./file-hunks.js"
 import { fileMatchStrength, SHA256_HEX } from "./summary.js"
 
@@ -65,9 +66,9 @@ type Transition = FileTransition
 function gitBytes(
 	cwd: string,
 	args: string[],
-	options: { input?: Buffer; signal?: AbortSignal } = {},
+	options: { input?: Buffer; signal?: AbortSignal; env?: Record<string, string> } = {},
 ): Promise<Buffer> {
-	const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1" }
+	const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1", ...options.env }
 	for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"]) delete env[key]
 	return new Promise((resolve, reject) => {
 		const child = execFile(
@@ -84,7 +85,7 @@ function gitBytes(
 async function git(
 	cwd: string,
 	args: string[],
-	options: { input?: Buffer; signal?: AbortSignal } = {},
+	options: { input?: Buffer; signal?: AbortSignal; env?: Record<string, string> } = {},
 ): Promise<string> {
 	return (await gitBytes(cwd, args, options)).toString("utf8").trimEnd()
 }
@@ -111,11 +112,37 @@ async function supportsGitAttributes(path: string, signal?: AbortSignal): Promis
 	// Attribute files may themselves have changed during the native write.
 	return !(await unsupportedAttributes(dirname(path), [path], signal)).size
 }
-/** `data` is the file content already read by the caller, so the hash matches what it checked. */
+/** Retained snapshots older than this are removed; commits are matched long before. */
+const SNAPSHOT_RETENTION_MS = 30 * 24 * 60 * 60_000
+let snapshotsPrunedAt = 0
+/**
+ * Retained snapshots live in Kimchi's own object store for each repository, never as unreachable loose objects in
+ * the user's repository, where Git's automatic gc would keep repacking them and warn.
+ */
+function snapshotObjects(repository: string): string {
+	return join(getAgentDir(), "work-attribution", "objects", createHash("sha256").update(repository).digest("hex"))
+}
+/** At most daily per process, delete retained snapshots past their retention; a missing one only skips hunk matching. */
+async function pruneSnapshots(): Promise<void> {
+	if (Date.now() - snapshotsPrunedAt < 24 * 60 * 60_000) return
+	snapshotsPrunedAt = Date.now()
+	const root = join(getAgentDir(), "work-attribution", "objects")
+	for (const store of await readdir(root).catch(() => [] as string[]))
+		for (const fanout of await readdir(join(root, store)).catch(() => [] as string[]))
+			for (const object of await readdir(join(root, store, fanout)).catch(() => [] as string[])) {
+				const path = join(root, store, fanout, object)
+				const info = await stat(path).catch(() => undefined)
+				if (info?.isFile() && Date.now() - info.mtimeMs > SNAPSHOT_RETENTION_MS) await rm(path, { force: true })
+			}
+}
+/**
+ * `data` is the file content already read by the caller, so the hash matches what it checked. With `retainIn`, the
+ * repository's Git directory, a small text snapshot is kept for later hunk matching.
+ */
 async function diskState(
 	path: string,
 	data?: Buffer,
-	retainBlob = false,
+	retainIn?: string,
 	signal?: AbortSignal,
 ): Promise<FileState | null | undefined> {
 	if (!existsSync(path)) return null
@@ -132,11 +159,20 @@ async function diskState(
 		mode = (await git(parent, ["ls-files", "--stage", "--", file], { signal })).split(" ")[0] || "100644"
 	}
 	const input = data ?? readFileSync(path)
-	const retain = retainBlob && input.length <= MAX_HUNK_BYTES && isUtf8(input) && !input.includes(0)
-	// Uncommitted snapshots are unreachable local blobs: normal pushes exclude them and GC may remove them.
+	const retain = retainIn !== undefined && input.length <= MAX_HUNK_BYTES && isUtf8(input) && !input.includes(0)
 	if (retain) {
 		try {
-			return { blob: await git(parent, ["hash-object", "-w", "--stdin", `--path=${file}`], { input, signal }), mode }
+			const objects = snapshotObjects(retainIn)
+			await mkdir(objects, { recursive: true, mode: 0o700 })
+			void pruneSnapshots().catch((error) => debugWorkAttribution("Could not prune edit snapshots:", error))
+			return {
+				blob: await git(parent, ["hash-object", "-w", "--stdin", `--path=${file}`], {
+					input,
+					signal,
+					env: { GIT_OBJECT_DIRECTORY: objects },
+				}),
+				mode,
+			}
 		} catch {
 			// Snapshot storage is optional; a dry hash still supports whole-file attribution.
 			if (!(await supportsGitAttributes(file, signal))) return undefined
@@ -321,7 +357,7 @@ function operations(ctx: WorkContext, toolCallId: string): EditOperations & Writ
 				? await tryWorkAttributionAsync(async () => {
 						const repo = await repositoryFile(path)
 						if (!repo) return
-						const before = await diskState(path, undefined, repo.baselineFile !== null)
+						const before = await diskState(path, undefined, repo.baselineFile !== null ? repo.repository : undefined)
 						if (before === undefined) return
 						if (readDigest !== undefined && readDigest !== digest(readFileSync(path))) return
 						return { ...repo, before }
@@ -332,7 +368,11 @@ function operations(ctx: WorkContext, toolCallId: string): EditOperations & Writ
 				await tryWorkAttributionAsync(async () => {
 					const written = existsSync(path) ? readFileSync(path) : undefined
 					if (!written?.equals(Buffer.from(content))) return
-					const after = await diskState(path, written, evidence.before !== null && evidence.baselineFile !== null)
+					const after = await diskState(
+						path,
+						written,
+						evidence.before !== null && evidence.baselineFile !== null ? evidence.repository : undefined,
+					)
 					if (!after || same(evidence.before, after)) return
 					const log = await reflog(evidence.worktree)
 					// A cursor after the successful mutation excludes pre-existing matching history.
@@ -540,7 +580,7 @@ export async function readAttributedFileState(
 ): Promise<FileState | null | undefined> {
 	return tryWorkAttributionAsync(async () => {
 		try {
-			return await diskState(path, undefined, false, signal)
+			return await diskState(path, undefined, undefined, signal)
 		} catch (error) {
 			if (!signal?.aborted) throw error
 		}
@@ -856,12 +896,15 @@ async function matchesCommittedHunks(
 	if (!before || !parent || !committed || [after, parent, committed].some((state) => state.mode !== before.mode))
 		return false
 	const texts: string[] = []
+	// Snapshots come from Kimchi's store; the parent and committed blobs, and snapshots of older builds, from the repository.
+	const snapshotEnv = { GIT_ALTERNATE_OBJECT_DIRECTORIES: snapshotObjects(repository) }
 	for (const state of [before, after, parent, committed]) {
 		checkBudget()
 		if (!SHA.test(state.blob)) return false
 		const info = await git(repository, ["cat-file", "--batch-check=%(objecttype) %(objectsize)"], {
 			input: Buffer.from(`${state.blob}\n`),
 			signal,
+			env: snapshotEnv,
 		})
 		checkBudget()
 		// Git reports optional snapshots removed by GC separately from interrupted or failed reads.
@@ -870,7 +913,7 @@ async function matchesCommittedHunks(
 		if (!size) throw new Error("Invalid Git snapshot response")
 		// Check the declared size before reading a commit that may contain a large human addition.
 		if (Number(size[1]) > MAX_HUNK_BYTES) return false
-		const data = await gitBytes(repository, ["cat-file", "blob", state.blob], { signal })
+		const data = await gitBytes(repository, ["cat-file", "blob", state.blob], { signal, env: snapshotEnv })
 		checkBudget()
 		if (data.length > MAX_HUNK_BYTES || !isUtf8(data) || data.includes(0)) return false
 		texts.push(data.toString("utf8"))

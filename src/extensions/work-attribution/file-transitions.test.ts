@@ -1,5 +1,6 @@
 import * as childProcess from "node:child_process"
 import { execFileSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import {
 	chmodSync,
 	existsSync,
@@ -53,6 +54,11 @@ async function startSession(api: ReturnType<typeof createExtensionApi>, ctx = co
 }
 function git(...args: string[]) {
 	return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim()
+}
+/** Kimchi's own store of retained edit snapshots for the test repository. */
+function snapshots() {
+	const repository = realpathSync(join(repo, ".git"))
+	return join(root, "agent", "work-attribution", "objects", createHash("sha256").update(repository).digest("hex"))
 }
 function context(session = "original") {
 	return createContext({ cwd: repo, sessionManager: { getSessionId: () => session } })
@@ -842,13 +848,14 @@ describe("manual commit reconciliation", () => {
 			}),
 		])
 	})
-	it("retains exact native text snapshots without retaining ordinary file inspections", async () => {
+	it("retains exact native text snapshots in Kimchi's store, never in the repository", async () => {
 		baseline()
 		const dirty = "one\ntwo\nhuman-before\n"
 		writeFileSync(join(repo, "file.txt"), dirty)
 		const inspected = await readAttributedFileState(join(repo, "file.txt"))
 		expect(inspected?.blob).toBeDefined()
 		expect(() => git("cat-file", "-e", inspected?.blob ?? "missing")).toThrow()
+		const loose = git("count-objects")
 		await edit("one", "first")
 		const transition = rows().find((row) => row.type === "file_transition")
 		expect(transition.before).toEqual(inspected)
@@ -856,9 +863,14 @@ describe("manual commit reconciliation", () => {
 			[transition.before, dirty],
 			[transition.after, dirty.replace("one", "first")],
 		]) {
-			const stored = execFileSync("git", ["-C", repo, "cat-file", "blob", state.blob])
+			// Unreachable snapshots in the user's repository would keep Git's automatic gc repacking and warning.
+			expect(() => git("cat-file", "-e", state.blob)).toThrow()
+			const stored = execFileSync("git", ["-C", repo, "cat-file", "blob", state.blob], {
+				env: { ...process.env, GIT_OBJECT_DIRECTORY: snapshots() },
+			})
 			expect(stored.equals(Buffer.from(content))).toBe(true)
 		}
+		expect(git("count-objects")).toBe(loose)
 		expect(JSON.stringify(rows())).not.toContain("human-before")
 	})
 	it.each(["true", "false"])("reads many files like single-file inspections (core.filemode=%s)", async (filemode) => {
@@ -1050,7 +1062,7 @@ describe("manual commit reconciliation", () => {
 		if (kind === "partial" || kind === "interleaved") await edit("second-before", "second-after")
 		const transition = rows().find((row) => row.type === "file_transition")
 		if (kind === "missing-blob")
-			rmSync(join(repo, ".git", "objects", transition.after.blob.slice(0, 2), transition.after.blob.slice(2)))
+			rmSync(join(snapshots(), transition.after.blob.slice(0, 2), transition.after.blob.slice(2)))
 		let content = readFileSync(join(repo, "file.txt"), "utf8").replace("human-before", "human-after")
 		if (kind === "overlap") content = content.replace("native-after", "human-overlap")
 		if (kind === "partial") content = content.replace("second-after", "second-before")

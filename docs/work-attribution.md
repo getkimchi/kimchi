@@ -214,7 +214,7 @@ New edit records reference a snapshot of the visible Git references and worktree
 
 `file-hunks` handles disjoint human and agent edits in the same text file, including inserted lines that shift the agent's change. Every native changed section must appear completely, with unique unchanged context. Overlap, partial staging, repeated ambiguous context, broken edit chains and missing objects stay unmatched. Whole-file evidence takes precedence; a later hunk match cannot weaken it.
 
-Native writes retain eligible before/after file contents as local Git blobs for this comparison. Eligible files are tracked UTF-8 text, no larger than 256 KiB; matching allows up to 64 changed sections. The journal still stores hashes and IDs. Ordinary pushes do not send these unreferenced blobs, but local backups can retain them and Git garbage collection can remove them. Reading a file for continuation does not create a blob. A failed optional snapshot leaves ordinary whole-file tracking available.
+Native writes retain eligible before/after file contents for this comparison in Kimchi's own Git object store, `work-attribution/objects/<repository hash>/` under the agent directory, never in your repository, so Git's automatic garbage collection there never sees them. Eligible files are tracked UTF-8 text, no larger than 256 KiB; matching allows up to 64 changed sections. The journal still stores hashes and IDs. Snapshots older than 30 days are removed; a missing snapshot only means that file is not matched by hunks. Reading a file for continuation does not create a snapshot. A failed optional snapshot leaves ordinary whole-file tracking available.
 
 ### 4. Find pull requests and merge requests
 
