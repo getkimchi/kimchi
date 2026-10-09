@@ -127,6 +127,78 @@ it("replaces a revoked automatic confirmation when its input is linked to anothe
 	})
 })
 
+it("refuses an unlink from a work that a newer correction moved the requests away from", async () => {
+	const workScope = createWorkScopeSnapshot(join(dir, ".git")).scope
+	vi.spyOn(scope, "captureWorkScope").mockResolvedValue({ scope: workScope, isCurrent: () => true })
+	const session = (name: string) => {
+		const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => name } })
+		scope.saveNewWorkScope(getWorkId(ctx), workScope)
+		recordProviderRequest(ctx)
+		return ctx
+	}
+	const planner = session("planner")
+	const segment = { id: randomUUID(), attribution: "session", reason: "matching-disabled" } as const
+	const producer = recordProviderRequest({ ...planner, segment })
+	const first = session("first")
+	const second = session("second")
+	await correctWorkLink(first, `link ${getWorkId(planner)} ${segment.id}`)
+	await correctWorkLink(second, `link ${getWorkId(planner)} ${segment.id}`)
+	const links = () =>
+		readWorkRecords(dir)
+			.filter((row) => row.type === "work_link")
+			.sort((left, right) => Number(left.revision) - Number(right.revision))
+	const saved = links()
+	expect(saved.map((row) => [row.revision, row.targetWorkId])).toEqual([
+		[1, getWorkId(first)],
+		[2, getWorkId(second)],
+	])
+	await expect(correctWorkLink(first, `unlink ${saved[0].linkId}`)).rejects.toThrow(/moved this correction/)
+	expect(links()).toEqual(saved)
+	expect(requestWorkLinks(readWorkRecords(dir)).get(producer.requestId)).toMatchObject({
+		workIds: new Set([getWorkId(second)]),
+		unresolved: false,
+	})
+})
+
+it("revokes a moved correction from its newest work with that revision's evidence", async () => {
+	const originalScope = createWorkScopeSnapshot(join(dir, ".git")).scope
+	vi.spyOn(scope, "captureWorkScope").mockResolvedValue({ scope: originalScope, isCurrent: () => true })
+	const planner = createContext({ cwd: dir, sessionManager: { getSessionId: () => "planner" } })
+	const workId = getWorkId(planner)
+	scope.saveNewWorkScope(workId, originalScope)
+	const segment = { id: randomUUID(), attribution: "session", reason: "planning" } as const
+	const producer = recordProviderRequest({ ...planner, segment })
+	const plan = savePlanMarkdown({ cwd: dir, name: "export", planText: "# Export\n", workId })
+	appendWorkRecord(planner, { type: "plan", ...plan, requestId: producer.requestId })
+	confirmWorkContinuation(planner, { workId, source: "saved-plan", evidence: { path: plan.path } }, originalScope)
+	const implementer = createContext({ cwd: dir, sessionManager: { getSessionId: () => "implementer" } })
+	const target = getWorkId(implementer)
+	scope.saveNewWorkScope(target, originalScope)
+	recordProviderRequest(implementer)
+	await correctWorkLink(implementer, `link ${workId} ${segment.id}`)
+	const links = () =>
+		readWorkRecords(dir)
+			.filter((row) => row.type === "work_link")
+			.sort((left, right) => Number(left.revision) - Number(right.revision))
+	const [automatic, moved] = links()
+	expect(automatic.evidence).toMatchObject({ source: "saved-plan" })
+	expect(moved.evidence).toMatchObject({ source: "work-command" })
+	// The planner's work still lists the automatic confirmation, but no longer owns it.
+	await expect(correctWorkLink(planner, `unlink ${automatic.linkId}`)).rejects.toThrow(/moved this correction/)
+	await correctWorkLink(implementer, `unlink ${automatic.linkId}`)
+	const revoked = links()[2]
+	expect(revoked).toMatchObject({
+		linkId: automatic.linkId,
+		revision: 3,
+		status: "revoked",
+		sourceWorkId: workId,
+		targetWorkId: target,
+		requestIds: moved.requestIds,
+		evidence: moved.evidence,
+	})
+	expect(requestWorkLinks(readWorkRecords(dir)).get(producer.requestId)).toMatchObject({ unresolved: true })
+})
+
 it("refuses a correction when the session changes during account verification", async () => {
 	const captured = createWorkScopeSnapshot(join(dir, ".git"))
 	let session = "old-session"

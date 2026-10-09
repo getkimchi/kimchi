@@ -229,11 +229,10 @@ export async function correctWorkLink(ctx: WorkContext, args: string): Promise<s
 	)
 		throw new Error("Work correction needs the original account and repository")
 	const records = readWorkRecords(getAgentDir())
-	let existing = records.filter(
-		(row) => row.type === "work_link" && row.targetWorkId === targetWorkId && row.linkId === id,
-	)
+	let existing: WorkRecord[]
 	let requestIds: string[]
 	let sourceWorkId: string
+	let evidence: unknown
 	if (command === "link") {
 		const sourceScope = readWorkScope(id)
 		const selected = records.filter(
@@ -267,8 +266,15 @@ export async function correctWorkLink(ctx: WorkContext, args: string): Promise<s
 				.map((row) => row.linkId),
 		)
 		existing = records.filter((row) => row.type === "work_link" && overlapping.has(row.linkId))
+		evidence = { source: "work-command", segmentId }
 	} else {
-		const previous = existing[0]
+		// A later /work link can move this correction elsewhere; only the work of its newest revision may revoke it.
+		existing = records.filter((row) => row.type === "work_link" && row.linkId === id)
+		const revision = Math.max(0, ...existing.map((row) => (typeof row.revision === "number" ? row.revision : 0)))
+		const latest = existing.filter((row) => row.revision === revision)
+		if (latest.some((row) => row.targetWorkId !== targetWorkId))
+			throw new Error("A later revision moved this correction to another work; unlink it there")
+		const previous = latest[0]
 		if (
 			!previous ||
 			!isWorkId(previous.sourceWorkId) ||
@@ -280,6 +286,7 @@ export async function correctWorkLink(ctx: WorkContext, args: string): Promise<s
 			...new Set(existing.flatMap((row) => (Array.isArray(row.requestIds) ? row.requestIds.filter(isWorkId) : []))),
 		].sort()
 		sourceWorkId = previous.sourceWorkId
+		evidence = previous.evidence
 	}
 	if (
 		existing.some(
@@ -306,7 +313,7 @@ export async function correctWorkLink(ctx: WorkContext, args: string): Promise<s
 			requestIds,
 			scope: captured.scope,
 			status: command === "link" ? "active" : "revoked",
-			evidence: command === "link" ? { source: "work-command", segmentId } : existing[0].evidence,
+			evidence,
 		})
 	}
 	return `Work correction ${command === "link" ? "saved" : "revoked"}: ${linkIds.join(", ")}. Original request IDs are unchanged.`
