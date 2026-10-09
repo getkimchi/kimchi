@@ -47,6 +47,36 @@ describe("render-pages (Phase 1.6)", () => {
 		expect(images.size).toBe(0)
 		expect(unavailableNote).toContain("injected pdfium failure")
 	})
+
+	it("degrades to a note when the document itself fails to parse (hostile bytes)", async () => {
+		const { pdfiumImport } = await import("./render-pages.test-helpers.js")
+		const { images, unavailableNote } = await renderPdfPages(await makeScannedPdf(), [1], {
+			pdfiumImport: pdfiumImport({ failParse: "corrupt xref table" }),
+		})
+		expect(images.size).toBe(0)
+		expect(unavailableNote).toContain("corrupt xref table")
+	})
+
+	it("skips a page whose render fails without sinking the other pages", async () => {
+		const { pdfiumImport } = await import("./render-pages.test-helpers.js")
+		const { images, unavailableNote } = await renderPdfPages(await makeScannedPdf(), [1, 2], {
+			pdfiumImport: pdfiumImport({ failPages: [1] }),
+		})
+		expect(unavailableNote).toBeUndefined()
+		expect([...images.keys()]).toEqual([2])
+	})
+
+	it("rejects oversized pages before rasterizing (no bitmap allocation)", async () => {
+		const { pdfiumImport } = await import("./render-pages.test-helpers.js")
+		const oversized = pdfiumImport({
+			pageSizes: { 1: { originalWidth: 20000, originalHeight: 20000 } }, // 20000·2.083² ≫ 4096²
+		})
+		const { images, unavailableNote } = await renderPdfPages(await makeScannedPdf(), [1, 2], {
+			pdfiumImport: oversized,
+		})
+		expect(unavailableNote).toBeUndefined()
+		expect([...images.keys()]).toEqual([2]) // page 1 skipped pre-render, page 2 intact
+	})
 })
 
 describe("maybeRenderScannedPages — vision gate", () => {

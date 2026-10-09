@@ -34,8 +34,10 @@ export const PAGE_RENDER_SCALE = 150 / 72
  *  smaller than unpdf's maxImageSize, at 150 DPI ≈ A0-ish page). */
 const MAX_IMAGE_PIXELS = 4096 * 4096
 
-type PdfiumModule = typeof import("@hyzyla/pdfium")
-type PdfiumLibraryInstance = Awaited<ReturnType<PdfiumModule["PDFiumLibrary"]["init"]>>
+export type PdfiumModule = typeof import("@hyzyla/pdfium")
+export type PdfiumLibraryInstance = Awaited<ReturnType<PdfiumModule["PDFiumLibrary"]["init"]>>
+export type PdfiumDocumentInstance = Awaited<ReturnType<PdfiumLibraryInstance["loadDocument"]>>
+export type PdfiumPageRender = Awaited<ReturnType<ReturnType<PdfiumDocumentInstance["getPage"]>["render"]>>
 
 export interface PdfiumLoad {
 	pdfium: PdfiumLibraryInstance | null
@@ -102,7 +104,9 @@ export interface PageRenderResult {
 /**
  * Render the given 1-based pages of a PDF to PNG. Pages outside numPages are
  * skipped (callers pass pages they already extracted, so this is defensive).
- * A pdfium load failure returns an empty map plus a note — never throws.
+ * Never throws: a pdfium load/parse failure returns an empty map plus a note,
+ * and a page whose render fails (hostile content, oversized page) is skipped
+ * individually without sinking the rest.
  */
 export async function renderPdfPages(
 	data: Uint8Array,
@@ -116,14 +120,29 @@ export async function renderPdfPages(
 			unavailableNote: `page images unavailable (pdfium: ${error ?? "load failed"})`,
 		}
 	}
-	const doc = await pdfium.loadDocument(data)
+	let doc: PdfiumDocumentInstance
+	try {
+		doc = await pdfium.loadDocument(data)
+	} catch (err) {
+		return {
+			images: new Map(),
+			unavailableNote: `page images unavailable (pdfium: ${err instanceof Error ? err.message : String(err)})`,
+		}
+	}
 	try {
 		const images = new Map<number, Uint8Array>()
 		for (const page of pages) {
 			if (page < 1 || page > doc.getPageCount()) continue
-			const rendered = await doc.getPage(page - 1).render({ scale: PAGE_RENDER_SCALE })
-			if (rendered.width * rendered.height > MAX_IMAGE_PIXELS) continue
-			images.set(page, encodePngFromBgra(rendered.width, rendered.height, rendered.data))
+			try {
+				// Pre-raster check: PDFium allocates the full bitmap during render,
+				// so an oversized page must be rejected from its point size BEFORE
+				// rendering, not from the rendered bitmap afterwards.
+				const { originalWidth, originalHeight } = doc.getPage(page - 1).getOriginalSize()
+				if (originalWidth * PAGE_RENDER_SCALE * (originalHeight * PAGE_RENDER_SCALE) > MAX_IMAGE_PIXELS) continue
+				const rendered = await doc.getPage(page - 1).render({ scale: PAGE_RENDER_SCALE })
+				if (rendered.width * rendered.height > MAX_IMAGE_PIXELS) continue
+				images.set(page, encodePngFromBgra(rendered.width, rendered.height, rendered.data))
+			} catch {}
 		}
 		return { images }
 	} finally {
