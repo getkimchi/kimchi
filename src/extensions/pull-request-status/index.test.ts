@@ -692,7 +692,7 @@ describe("expected lookup failures", () => {
 		update({ ...commit, recordedAt, prLookup: { status: "pending", checkedAt } })
 		expect(ctx.ui.setStatus).not.toHaveBeenCalledWith("work-pr", "PR/MR waiting")
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
-		await api.getRegisteredCommand("work").handler("", { ...createCommandContext(), ...ctx })
+		await api.getRegisteredCommand("work").handler("", textCommandContext())
 		const shown = vi.mocked(ctx.ui.notify).mock.calls.at(-1)?.[0]
 		expect(shown).toContain("PR/MR lookup: 2 commits without a PR after 32 days, no longer checked")
 		// Later PRs add other /work lines, such as costs still waiting for billing; only lookup lines matter here.
