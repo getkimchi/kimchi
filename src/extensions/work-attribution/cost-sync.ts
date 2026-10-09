@@ -274,15 +274,16 @@ export async function reconcileWorkCosts(
 			const age = Date.now() - (endsAt - 32 * DAY_MS)
 			// One final lookup may catch up after a closed client; a final lookup without any
 			// billing page is retried on the slow schedule.
+			// Unsettled results, including failed and never-completed lookups, slow down after a day.
 			const refresh =
 				Date.now() >= endsAt
 					? lastCheck < endsAt
 						? 0
 						: SLOW_REFRESH_MS
-					: item.lookup?.status === "priced" || item.lookup?.status === "no-charge"
+					: isSettled(item.lookup)
 						? // Settled results change rarely: recheck them less often as they age.
 							Math.max(PRICED_REFRESH_MS, Math.min(DAY_MS, age / 16))
-						: item.lookup?.status === "pending" && age >= DAY_MS
+						: age >= DAY_MS
 							? PRICED_REFRESH_MS
 							: PENDING_REFRESH_MS
 			if (Date.now() - lastCheck < refresh) continue

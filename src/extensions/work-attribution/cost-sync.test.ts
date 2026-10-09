@@ -1664,6 +1664,28 @@ describe("billing poll scheduling", () => {
 		expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(300 + Math.ceil(300 / 29))
 		expect(readWorkRecords(dir)).toEqual(journal)
 	})
+	it("rechecks a lasting failure older than a day every five minutes, not on every pass", async () => {
+		let now = Date.parse("2026-10-08T12:00:00.000Z")
+		vi.setSystemTime(now)
+		const requestId = randomUUID()
+		seedJournal([{ requestId, dispatchedAt: "2026-10-05T12:00:00.000Z" }])
+		// A page arrives but its counted row never does, so every lookup fails after the first page.
+		fetchMock.mockImplementation(async (input) =>
+			new URL(String(input)).searchParams.get("tags")
+				? Response.json({ items: [], totalCount: 1 })
+				: Response.json({ organizationId: ORG, userId: PROMPT }),
+		)
+		for (let pass = 0; pass < 120; pass++) {
+			await sync()
+			now += 30_000
+			vi.setSystemTime(now)
+		}
+		expect(lookedUp()).toHaveLength(12)
+		expect(readWorkCostReport(dir).requests.get(requestId)?.lookup).toMatchObject({
+			status: "unavailable",
+			reason: "Billing response did not include every counted row",
+		})
+	})
 	it("keeps the final check at the end of the window for a priced request on a daily recheck", async () => {
 		const requestId = randomUUID()
 		// Dispatched 31.5 days ago and last checked 12 hours ago: the next daily recheck would fall after the window.
