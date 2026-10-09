@@ -125,6 +125,10 @@ function count(value: unknown, minimum = 0): value is number {
 function isRow(value: unknown): value is Row {
 	return object(value) && typeof value.sessionId === "string"
 }
+/** Version 1 readers were lenient: any object in a collection is a row. The writer validates them. */
+function savedRow(value: unknown): value is Row {
+	return object(value)
+}
 function text(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined
 }
@@ -177,7 +181,7 @@ function versionOneView(value: unknown, workId: string): WorkSummaryView | undef
 	const sessions = Array.isArray(value.sessions) ? value.sessions.filter((session) => typeof session === "string") : []
 	return summaryView(workId, sessions, (collection) => {
 		const rows = value[collection]
-		return Array.isArray(rows) ? rows.filter(isRow) : []
+		return Array.isArray(rows) ? rows.filter(savedRow) : []
 	})
 }
 
@@ -295,20 +299,17 @@ export async function readWorkHead(
 	} catch {
 		return undefined
 	}
-	if (isWorkHead(value, workId)) return value
+	return isWorkHead(value, workId) ? value : summaryHead(value, workId, new Date(modifiedAt).toISOString())
+}
+
+/** The head of a version 1 summary, computed from its rows; they stay inside `work.json` (generation 0). */
+export function summaryHead(value: unknown, workId: string, updatedAt: string): WorkHead | undefined {
 	const view = versionOneView(value, workId)
 	if (!view) return undefined
 	const logs: Partial<Record<Collection, RowLog>> = {}
 	for (const collection of COLLECTIONS)
 		if (view[collection].length) logs[collection] = { generation: 0, bytes: 0, rows: view[collection].length }
-	return {
-		version: 2,
-		workId,
-		updatedAt: new Date(modifiedAt).toISOString(),
-		sessions: view.sessions,
-		logs,
-		...summaryLatest((collection) => view[collection]),
-	}
+	return { version: 2, workId, updatedAt, sessions: view.sessions, logs, ...summaryLatest((name) => view[name]) }
 }
 
 /** Milliseconds of an ISO 8601 timestamp, as `/work` orders rows; impossible dates are not times. */

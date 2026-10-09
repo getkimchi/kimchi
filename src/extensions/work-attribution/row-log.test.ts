@@ -8,6 +8,8 @@ import { performance } from "node:perf_hooks"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { appendWorkRecord } from "../work-attribution.js"
+import { readWorkBrowser } from "./browser.js"
+import { workCostTotals } from "./cost-details.js"
 import {
 	COLLECTIONS,
 	type Collection,
@@ -778,6 +780,23 @@ describe("a large work", () => {
 		expect(head).toMatchObject({ version: 2, logs: { requests: { rows: 20_011 } } })
 		expect(opened).not.toHaveBeenCalled()
 		expect(vi.mocked(asyncFs.open)).not.toHaveBeenCalled()
+		expect(vi.mocked(fs.readSync)).not.toHaveBeenCalled()
+
+		// The /work browser lists it from the manifest and the bounded cost totals alone.
+		const priced = summary.requests.map((row) => ({
+			requestId: row.requestId,
+			workIds: [workId],
+			priceStatus: "priced",
+			knownCostUsd: "0.001234560",
+		}))
+		fs.writeFileSync(
+			join(folder(workId), "cost-totals.json"),
+			JSON.stringify(workCostTotals({ workId, pullRequests: [], requests: priced })),
+		)
+		const browser = await readWorkBrowser(dir, { workId, lines: [] })
+		expect(browser.rows[0].value).toBe("$24.69 known so far · no PR")
+		expect(browser.rows[0].description).toContain("· 20011 requests")
+		expect(opened).not.toHaveBeenCalled()
 		expect(vi.mocked(fs.readSync)).not.toHaveBeenCalled()
 	}, 120_000)
 })

@@ -288,6 +288,88 @@ test("the next message recovers account tracking after its saved scope is lost",
 	)
 })
 
+test("/work keeps listing an oversized summary from an older build with its PR and spend so far", async ({
+	terminal,
+}) => {
+	const workId = randomUUID()
+	const url = "https://github.com/example/kimchi/pull/7"
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "work-browser-oversized-summary",
+			account,
+			gitInit: true,
+			models,
+			responses: [],
+			seedHome(home) {
+				// An older build kept every row in work.json; this one is larger than the 8 MiB /work reads.
+				const folder = join(home, ".config/kimchi/harness/work", workId)
+				mkdirSync(folder, { recursive: true })
+				const requests = Array.from({ length: 3600 }, (_, index) => ({
+					requestId: String(index),
+					sessionId: "older",
+					billingRows: [{ id: String(index), costUsd: "0.001", note: "x".repeat(2500) }],
+				}))
+				const pullRequest = { provider: "github", host: "github.com", number: 7, url, state: "open" }
+				const commit = {
+					sha: "a".repeat(40),
+					repository: "/src/kimchi/.git",
+					worktree: "/src/kimchi",
+					sessionId: "older",
+				}
+				writeFileSync(
+					join(folder, "work.json"),
+					JSON.stringify({
+						version: 1,
+						workId,
+						sessions: ["older"],
+						requests,
+						plans: [],
+						commits: [{ ...commit, pullRequests: [pullRequest] }],
+					}),
+				)
+				// The cost pass's bounded totals still name the work's PR and its spend so far.
+				const spend = { total: 3600, priced: 3600, knownCostUsd: "3.600000000" }
+				writeFileSync(
+					join(folder, "cost-totals.json"),
+					JSON.stringify({
+						version: 1,
+						workId,
+						group: [workId],
+						groupRequests: spend,
+						requests: { ...spend, recorded: 3600, unresolved: 0, inferred: 0, shared: 0 },
+						pullRequests: [
+							{
+								key: '["github","github.com","7"]',
+								account: null,
+								own: true,
+								pullRequest: { provider: "github", number: 7, state: "open", url },
+								totalCostUsd: null,
+								knownCostUsd: "0.000000000",
+								soFar: { knownCostUsd: "3.600000000", complete: false },
+							},
+						],
+						report: "costs.json",
+					}),
+				)
+			},
+		},
+		async (_fixture, trace) => {
+			terminal.submit("/work")
+			await waitForText(terminal, "summary too large", { full: false })
+			const listed = viewText(terminal)
+				.split("\n")
+				.find((line) => line.includes(workId.slice(0, 8)))
+			expect(listed).toContain("summary too large")
+			// Requests newer than the last cost pass may be missing, so the amount stays partial.
+			expect(listed).toContain("$3.60 known so far · PR #7 open")
+			trace.step("the list keeps an oversized older summary's PR and spend so far until its next update converts it")
+			terminal.keyEscape()
+			await waitForText(terminal, PROMPT_READY, { full: false })
+		},
+	)
+})
+
 test("the user can correct one earlier planning turn and revoke that correction", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,

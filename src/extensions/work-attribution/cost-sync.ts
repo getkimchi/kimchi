@@ -19,6 +19,7 @@ import {
 	openBilling,
 } from "./billing-evidence.js"
 import { type BillingSource, captureBillingSource, LOOKUP_WINDOW_MS, sameBillingSource } from "./billing-source.js"
+import { workCostTotals } from "./cost-details.js"
 import {
 	calculatePullRequestCosts,
 	type PullRequestCost,
@@ -197,6 +198,12 @@ function group<K, T>(groups: Map<K, T[]>, key: K, value: T): void {
 	else groups.set(key, [value])
 }
 
+async function writeChanged(path: string, content: string, assertLease: () => void): Promise<void> {
+	try {
+		if (readFileSync(path, "utf8") === content) return
+	} catch {}
+	await writeFileDurably(path, content, assertLease)
+}
 async function publishReports(
 	agentDir: string,
 	{ displays, report, workIds }: CostState,
@@ -269,11 +276,13 @@ async function publishReports(
 		await mkdir(directory, { recursive: true, mode: 0o700 })
 		// ponytail: connected works repeat in per-work files; use one shared snapshot if storage growth warrants it.
 		const value = { version: 1, workId, ...content(component(workId)) }
-		const text = `${JSON.stringify(value, null, 2)}\n`
-		try {
-			if (readFileSync(join(directory, "costs.json"), "utf8") === text) continue
-		} catch {}
-		await writeFileDurably(join(directory, "costs.json"), text, assertLease)
+		// `/work` and its browser read only these bounded totals.
+		await writeChanged(
+			join(directory, "cost-totals.json"),
+			`${JSON.stringify(workCostTotals(value), null, 2)}\n`,
+			assertLease,
+		)
+		await writeChanged(join(directory, "costs.json"), `${JSON.stringify(value, null, 2)}\n`, assertLease)
 	}
 }
 
