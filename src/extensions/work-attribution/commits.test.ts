@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process"
 import * as fs from "node:fs"
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join, sep } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -464,7 +464,7 @@ await flushWorkSummaries();`
 		])
 	}, 15000)
 
-	it("follows another session's commit of the same work through a rebase", async () => {
+	it("follows another session's commit of the same work through a rebase, reading only commit rows", async () => {
 		vi.stubEnv("PI_CODING_AGENT_DIR", join(directory, "agent"))
 		const first = createContext({ cwd: repository, sessionManager: { getSessionId: () => "first" } })
 		const workId = attribution.getWorkId(first)
@@ -486,6 +486,7 @@ await flushWorkSummaries();`
 		// A later session of the same work only knows the commit from the work's summary.
 		const second = createContext({ cwd: repository, sessionManager: { getSessionId: () => "second" } })
 		attribution.setWorkId(second, workId)
+		const opened = vi.spyOn(fs, "openSync")
 		await createCommitTrackingBashTool(second).execute(
 			"second-tool",
 			{ command: "git rebase -q main" },
@@ -493,6 +494,9 @@ await flushWorkSummaries();`
 			undefined,
 			second,
 		)
+		const logs = opened.mock.calls.map(([path]) => String(path)).filter((path) => path.includes(`${sep}rows${sep}`))
+		expect(logs.length).toBeGreaterThan(0)
+		expect(logs.every((path) => basename(path).startsWith("commits."))).toBe(true)
 		const recorded = fs
 			.readFileSync(attribution.workLedgerPath(second), "utf8")
 			.trim()
