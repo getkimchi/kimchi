@@ -2,7 +2,7 @@
 
 Kimchi keeps a local record of the model requests, file edits, plans and commits that belong to the same work. A `workId` connects them, even when planning and implementation happen in different sessions or worktrees of the same repository.
 
-The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's home directory. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits, then looks up their request costs in the background. `/work` shows one total split into sure and likely spend, or an open PR's spend so far, plus the work's priced spend; `costs.json` keeps the calculation. Incomplete billing stays unknown. These files are not uploaded.
+The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's home directory. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits, then looks up their request costs in the background. `/work` shows one total split into confirmed and inferred spend, or an open PR's spend so far, plus the work's priced spend; `costs.json` keeps the calculation. Incomplete billing stays unknown. These files are not uploaded.
 
 ## Where the files live
 
@@ -349,29 +349,29 @@ flowchart TD
     K -->|Yes| D{"Work match unresolved?"}
     D -->|Yes| UO
     D -->|No| C{"This request's work belongs<br/>to several PRs?"}
-    C -->|Yes| F{"All native edits from this input<br/>have complete file-chain evidence<br/>leading to exactly one PR?"}
+    C -->|Yes| F{"Every native edit from this input<br/>that a commit names has complete<br/>file-chain evidence to exactly one PR?"}
     F -->|No| S["Keep the request in shared costs"]
     F -->|Yes| M
     C -->|No| M{"One confirmed merged PR?"}
     M -->|No| O["Keep request unlinked or unmerged"]
     M -->|Yes| E{"Native input edits landed,<br/>or explicit plan/work choice?"}
-    E -->|Yes| SU["Sure spend"]
-    E -->|No| IN["Likely spend"]
-    SU --> A["One PR total: sure plus likely;<br/>count each billing row once"]
+    E -->|Yes| SU["Confirmed spend"]
+    E -->|No| IN["Inferred spend"]
+    SU --> A["One PR total: confirmed plus inferred;<br/>count each billing row once"]
     IN --> A
 ```
 
 Planning, implementation, local children and fixes count together when their saved work links point to the same PR. Related discussion also counts when it belongs to that work, even if it changes no files. Two works contributing to one PR produce one combined total only when their API endpoint, organization and user match. Different accounts get separate totals. Separate works in one conversation keep their own PR links and costs. A malformed PR link affects only its own work. Repeating a lookup, rebasing a commit or rebuilding the summary does not multiply its charges.
 
-Sure spend includes the requests from an input whose own native edits landed in that PR, plus explicit plan, work and correction choices. Other session inputs and model matches are likely spend. An input can include several requests and local children; they keep the same confidence when their complete edit evidence belongs to one PR.
+Confirmed spend includes the requests from an input whose own native edits landed in that PR, plus explicit plan, work and correction choices. Other session inputs, model matches and requests without an input record are inferred spend. An input can include several requests and local children; they keep the same confidence when their complete edit evidence belongs to one PR.
 
-When one work spans several PRs, every recorded native edit from an input must lead to one PR to confirm that assignment. Planning without edits, an input touching both PRs, missing or conflicting proof, and weaker `path-blob` evidence stay shared. One exception keeps a merged PR complete when the same work continues: a request that started before a PR merged is not shared with a follow-up PR whose first linked commit in the work was recorded after that merge. A rebased commit counts from its original. This timing rule only ever yields likely spend; it never makes a request sure. Kimchi never divides one request's charge by file count or a guessed percentage. Rewrite ancestry alone cannot establish an exclusive allocation.
+When one work spans several PRs, every recorded native edit from an input that a commit names must lead to one PR to confirm that assignment. An edit no commit names, such as a scratch, ignored or reverted file, neither confirms nor blocks it while every commit of the work is matched. Planning without edits, an input touching both PRs, missing or conflicting proof, and weaker `path-blob` evidence stay shared. One exception keeps a merged PR complete when the same work continues: a request that started before a PR merged is not shared with a follow-up PR whose first linked commit in the work was recorded after that merge. A rebased commit counts from its original. This timing rule only ever yields inferred spend; it never makes a request confirmed. Kimchi never divides one request's charge by file count or a guessed percentage. Rewrite ancestry alone cannot establish an exclusive allocation.
 
 Pending prices, including never-checked and failed lookups, are checked after 30 seconds, slowing to five minutes after a day. Known prices and settled no-charge attempts are rechecked less often as they age: after a sixteenth of the request's age, at least five minutes and at most a day apart. Each pass looks up never-checked, pending and failed requests before rechecking known results, so rechecks cannot delay a new price. Each pass has time and request limits, so a backlog can take several passes. Polling stops once a lookup at or beyond the end of the fixed 32-day window reaches the billing API. Kimchi records that final result in the journal even when it is unchanged. A late launch can make that final check; one that fails before any billing page is retried hourly. Polling times survive restarts without adding unchanged billing rows to the journal. `/work` reads the saved result without waiting for the network.
 
-Prices are USD decimal strings with up to nine decimal places. `knownCostUsd` is the known subtotal; `totalCostUsd` includes sure and likely spend and is `null` while required prices or PR ownership remain unresolved. `explicit` and `inferred` hold the two portions. An explicit billed zero is valid. A complete empty lookup also settles to zero once the attempt is 24 hours old, with `billingLookup.status: "no-charge"` and no invented billing ID. Errors, incomplete pages and missing account evidence cannot settle a request. A later bill replaces the zero.
+Prices are USD decimal strings with up to nine decimal places. `knownCostUsd` is the known subtotal; `totalCostUsd` includes confirmed and inferred spend and is `null` while required prices or PR ownership remain unresolved. `explicit` and `inferred` hold the two portions. An explicit billed zero is valid. A complete empty lookup also settles to zero once the attempt is 24 hours old, with `billingLookup.status: "no-charge"` and no invented billing ID. Errors, incomplete pages and missing account evidence cannot settle a request. A later bill replaces the zero.
 
-An exact price does not confirm a model's task match. Likely requests remain listed under `inferredRequestIds` and in the `inferred` cost portion. `/work` shows the combined total and its sure/likely split. Shared requests stay outside individual PR totals. Requests started after all linked PRs merged also stay outside those totals, including when their billing or task match is unresolved.
+An exact price does not confirm a model's task match. Inferred requests remain listed under `inferredRequestIds` and in the `inferred` cost portion. `/work` shows the combined total and its confirmed/inferred split. Shared requests stay outside individual PR totals. Requests started after all linked PRs merged also stay outside those totals, including when their billing or task match is unresolved.
 
 A refresh that fails before any billing page arrives adds no evidence. This covers being offline, DNS or TLS errors, a failed API key check, an HTTP error such as 429 or 5xx on the first page, and Kimchi's pass deadline. The last confirmed price stays usable and nothing is added to the journal. `billing-polls.json` keeps the failure, the request's `billingLookup` in `costs.json` shows it with its real timestamp, and `/work` says that the last refresh failed. Errors after the first page, including partial pagination, keep the full total unknown. Failure records saved by earlier versions also stay unknown until a complete lookup succeeds, because they do not record whether a page had arrived; their pass-deadline records marked as happening before any page are the exception.
 

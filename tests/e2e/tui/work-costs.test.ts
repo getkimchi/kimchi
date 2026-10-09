@@ -25,7 +25,9 @@ async function waitForCosts(path: string, ready: (costs: Record<string, unknown[
 	throw new Error(`Timed out waiting for ${path}`)
 }
 
-test("an open PR's pending cost becomes a sure and likely total once it is billed and merged", async ({ terminal }) => {
+test("an open PR's pending cost becomes a confirmed and inferred total once it is billed and merged", async ({
+	terminal,
+}) => {
 	const workId = randomUUID()
 	const url = "https://github.com/example/kimchi-lab/pull/731"
 	const extraArgs: string[] = []
@@ -129,7 +131,7 @@ test("an open PR's pending cost becomes a sure and likely total once it is bille
 			await waitForText(terminal, "PR #731 open", { full: false, timeoutMs: 10_000 })
 			await waitForCosts(costsPath, (costs) => costs.requests?.length === 1)
 			terminal.submit("/work")
-			await waitForText(terminal, "Cost so far: unknown; $0.000000000 USD confirmed (open)")
+			await waitForText(terminal, "Cost so far: unknown; $0.000000000 USD priced (open)")
 			await waitForText(terminal, "Prices: 0/1 requests priced, $0.000000000 USD known so far.")
 			trace.step("an open PR's spend stays unknown while its request has no bill")
 			billed = true
@@ -139,9 +141,9 @@ test("an open PR's pending cost becomes a sure and likely total once it is bille
 			)
 			terminal.submit("/work")
 			await waitForText(terminal, `Cost: $0.000166000 USD — ${url}`)
-			await waitForText(terminal, "Sure: $0.000000000 USD; likely: $0.000166000 USD.")
+			await waitForText(terminal, "Confirmed: $0.000000000 USD; inferred: $0.000166000 USD.")
 			await waitForText(terminal, "Prices: 1/1 requests priced, $0.000166000 USD.")
-			trace.step("the merged PR shows its billed total split into sure and likely spend")
+			trace.step("the merged PR shows its billed total split into confirmed and inferred spend")
 		},
 	)
 })

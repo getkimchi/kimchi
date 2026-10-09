@@ -25,7 +25,7 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 						: "Account: unknown",
 				)
 			const label = object(row.pullRequest) ? row.pullRequest.url : row.key
-			// An unmerged PR's spend stays outside sure and likely totals until it merges.
+			// An unmerged PR's spend stays outside confirmed and inferred totals until it merges.
 			const state = object(row.pullRequest) && row.pullRequest.state !== "merged" ? row.pullRequest.state : undefined
 			if (state) {
 				const counted = requests.filter(
@@ -49,13 +49,13 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 				lines.push(
 					complete
 						? `Cost so far: $${spent} USD (${state}) — ${label}`
-						: `Cost so far: unknown; $${spent} USD confirmed (${state}) — ${label}`,
+						: `Cost so far: unknown; $${spent} USD priced (${state}) — ${label}`,
 				)
 			} else if (typeof row.totalCostUsd === "string") lines.push(`Cost: $${row.totalCostUsd} USD — ${label}`)
-			else lines.push(`Cost: unknown; $${row.knownCostUsd} USD confirmed so far — ${label}`)
+			else lines.push(`Cost: unknown; $${row.knownCostUsd} USD priced so far — ${label}`)
 			if (!state && object(row.explicit) && object(row.inferred))
 				lines.push(
-					`Sure: $${row.explicit.knownCostUsd} USD; likely: $${row.inferred.knownCostUsd} USD${row.totalCostUsd === null ? " known so far" : ""}.`,
+					`Confirmed: $${row.explicit.knownCostUsd} USD; inferred: $${row.inferred.knownCostUsd} USD${row.totalCostUsd === null ? " known so far" : ""}.`,
 				)
 		}
 		if (Array.isArray(value.requests)) {

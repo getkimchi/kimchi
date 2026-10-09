@@ -183,12 +183,12 @@ describe("automatic exact work cost lookup", () => {
 		}
 		save([])
 		expect(workCostDetails(dir, workId)).toContain(
-			"Cost so far: unknown; $0.000000000 USD confirmed (open) — https://github.com/example/repo/pull/1",
+			"Cost so far: unknown; $0.000000000 USD priced (open) — https://github.com/example/repo/pull/1",
 		)
 		save([{ requestId: "open", billingRecordId: ROW, costUsd: "0.5", account }])
 		const lines = workCostDetails(dir, workId)
 		expect(lines).toContain("Cost so far: $0.500000000 USD (open) — https://github.com/example/repo/pull/1")
-		expect(lines.join("\n")).not.toContain("Sure:")
+		expect(lines.join("\n")).not.toContain("Confirmed:")
 	})
 
 	it("keeps a legacy request's exact price without assigning today's account to its work", async () => {
@@ -273,7 +273,7 @@ describe("automatic exact work cost lookup", () => {
 		expect(workCostDetails(dir, workId)).toContain(
 			"Prices: 1/1 requests priced, $0.123456789 USD. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
 		)
-		expect(workCostDetails(dir, workId)).toContain("Sure: $0.000000000 USD; likely: $0.123456789 USD.")
+		expect(workCostDetails(dir, workId)).toContain("Confirmed: $0.000000000 USD; inferred: $0.123456789 USD.")
 	})
 
 	it("counts requests sent without a billing tag by reason in work details", async () => {
@@ -384,7 +384,7 @@ describe("automatic exact work cost lookup", () => {
 		expect(costs.requests[0]).toMatchObject({
 			priceStatus: "priced",
 			totalCostUsd: "0.123456789",
-			allocation: change === "same-account" ? "pull-request" : "unknown",
+			allocation: change === "same-account" ? "inferred" : "unknown",
 		})
 		if (change !== "same-account") {
 			expect(costs.requests[0].reason).toBe(

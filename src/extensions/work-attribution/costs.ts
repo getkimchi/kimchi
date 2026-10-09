@@ -57,7 +57,7 @@ export interface RequestCostAllocation {
 }
 
 export interface PullRequestCost extends CostTotal {
-	/** Sure and likely portions of the headline total. */
+	/** Confirmed and inferred portions of the headline total. */
 	explicit: CostTotal
 	inferred: CostTotal
 	/** Canonical provider identity; combine with account when comparing totals. */
@@ -243,7 +243,14 @@ function exclusiveRequestPulls(
 ): Map<string, string> {
 	const transitions = new Map<
 		string,
-		{ row: WorkRecord; fingerprint?: string; invalid: boolean; covered: boolean; pulls: Set<string> }
+		{
+			row: WorkRecord
+			fingerprint?: string
+			invalid: boolean
+			covered: boolean
+			referenced: boolean
+			pulls: Set<string>
+		}
 	>()
 	const requestTransitions = new Map<string, Set<string>>()
 	const unresolvedRequests = new Set<string>()
@@ -269,6 +276,7 @@ function exclusiveRequestPulls(
 				fingerprint,
 				invalid: fingerprint === undefined,
 				covered: false,
+				referenced: false,
 				pulls: new Set(),
 			})
 	}
@@ -310,6 +318,7 @@ function exclusiveRequestPulls(
 				)
 			const links = key === undefined ? undefined : commitPulls.get(key)
 			for (const value of evidence) {
+				value.referenced = true
 				// A rewrite names ancestry, not which native changes survived in the new commit.
 				if (!valid || !links?.size || rewritten.has(JSON.stringify([row.workId, row.repository, row.sha]))) {
 					value.invalid = true
@@ -322,6 +331,9 @@ function exclusiveRequestPulls(
 	}
 
 	const exclusive = new Map<string, string>()
+	// An edit no commit names, such as a scratch, ignored or reverted file, neither proves nor blocks a PR. While a
+	// commit of its work is unmatched, the edit could be in it, so it still blocks.
+	const neutral = new Set<string>()
 	for (const [requestId, ids] of requestTransitions) {
 		const owner = ownership.get(requestId)
 		if (!owner || unresolvedRequests.has(requestId) || owner.workIds.size !== 1 || owner.sessionIds.size !== 1) continue
@@ -329,6 +341,15 @@ function exclusiveRequestPulls(
 		let complete = true
 		for (const id of ids) {
 			const value = transitions.get(id)
+			if (
+				value &&
+				!value.invalid &&
+				!value.referenced &&
+				!unresolvedWorks.has(value.row.workId) &&
+				owner.workIds.has(value.row.workId) &&
+				owner.sessionIds.has(value.row.sessionId)
+			)
+				continue
 			if (
 				!value ||
 				value.invalid ||
@@ -342,7 +363,9 @@ function exclusiveRequestPulls(
 			}
 			for (const pull of value.pulls) pulls.add(pull)
 		}
-		if (complete && pulls.size === 1) for (const pull of pulls) exclusive.set(requestId, pull)
+		if (!complete) continue
+		if (pulls.size === 1) for (const pull of pulls) exclusive.set(requestId, pull)
+		else if (!pulls.size) neutral.add(requestId)
 	}
 
 	// One input can require several requests or local children before producing its edits.
@@ -362,7 +385,7 @@ function exclusiveRequestPulls(
 		if (requestTransitions.has(requestId) || unresolvedRequests.has(requestId)) {
 			const pull = exclusive.get(requestId)
 			if (pull) input.pulls.add(pull)
-			else input.complete = false
+			else if (!neutral.has(requestId)) input.complete = false
 		}
 		inputs.set(key, input)
 	}
@@ -632,7 +655,7 @@ export function calculatePullRequestCosts(
 				if (allocated.allocation === "shared" && followUps.size && followUps.size < pullRequestIds.length) {
 					pullRequestIds = pullRequestIds.filter((key) => !followUps.has(key))
 					allocated = allocation(owner, pullRequestIds, pulls, invalidWorkLinks)
-					// Timing narrows the candidates but never proves the remaining PR sure.
+					// Timing narrows the candidates but never confirms the remaining PR.
 					if (allocated.allocation === "pull-request") allocated = { allocation: "inferred" }
 				}
 			}
@@ -643,10 +666,12 @@ export function calculatePullRequestCosts(
 			else if (
 				!postMerge &&
 				(owner.segment?.attribution === "inferred" ||
-					(owner.segment?.attribution === "session" && allocated.allocation === "pull-request")) &&
+					// A request without an input record has no evidence of its own, like a session match.
+					((owner.segment === undefined || owner.segment.attribution === "session") &&
+						allocated.allocation === "pull-request")) &&
 				!exclusive &&
 				!link &&
-				// An open PR's spend stays unmerged whatever the matching evidence; it has no sure or likely split yet.
+				// An open PR's spend stays unmerged whatever the matching evidence; it has no confirmed or inferred split yet.
 				(allocated.allocation === "pull-request" || allocated.allocation === "shared")
 			)
 				allocated = { allocation: "inferred" }
@@ -731,8 +756,8 @@ export function calculatePullRequestCosts(
 							row.allocation === "pull-request" || (row.allocation === "inferred" && row.pullRequestIds.length === 1),
 					)
 
-					const sure = assigned.filter((row) => row.allocation === "pull-request")
-					const likely = assigned.filter((row) => row.allocation === "inferred")
+					const confirmedRows = assigned.filter((row) => row.allocation === "pull-request")
+					const inferredRows = assigned.filter((row) => row.allocation === "inferred")
 					const cost = total(assigned)
 					return {
 						key,
@@ -740,13 +765,13 @@ export function calculatePullRequestCosts(
 						pullRequest,
 						workIds: [...workIds].sort(),
 						...cost,
-						explicit: total(sure),
-						inferred: total(likely),
+						explicit: total(confirmedRows),
+						inferred: total(inferredRows),
 						totalCostUsd:
 							account &&
 							pullRequest?.state === "merged" &&
 							!sharedRequestIds.length &&
-							inferredRequestIds.length === likely.length &&
+							inferredRequestIds.length === inferredRows.length &&
 							!unknownRequestIds.length
 								? cost.totalCostUsd
 								: null,

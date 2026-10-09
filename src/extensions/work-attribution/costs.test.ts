@@ -341,7 +341,7 @@ describe("request matching decisions", () => {
 		const open = pullRequest({ state: "open", mergeCommitSha: null, mergedAt: null, closedAt: null })
 		const report = calculatePullRequestCosts(
 			[
-				request("sure", "work-a", "session-a", time(10), {
+				request("confirmed", "work-a", "session-a", time(10), {
 					segment: { id: "a", attribution: "explicit", reason: "work-command" },
 				}),
 				request("model", "work-a", "session-a", time(11), {
@@ -352,12 +352,12 @@ describe("request matching decisions", () => {
 				}),
 				commit("work-a", [open]),
 			],
-			[charge("sure", "1"), charge("model", "2"), charge("session", "4")],
+			[charge("confirmed", "1"), charge("model", "2"), charge("session", "4")],
 		)
 		expect(report.requests.map((row) => [row.requestId, row.allocation])).toEqual([
+			["confirmed", "unmerged"],
 			["model", "unmerged"],
 			["session", "unmerged"],
-			["sure", "unmerged"],
 		])
 		expect(report.pullRequests[0]).toMatchObject({ knownCostUsd: "0.000000000", inferredRequestIds: [] })
 		expect(report.unallocated.unmerged.totalCostUsd).toBe("7.000000000")
@@ -502,29 +502,42 @@ describe("exclusive native contributions within a multi-PR work", () => {
 		)
 	})
 
-	it.each(["unmatched", "unlinked", "weak"])("requires every native transition to be covered (%s)", (kind) => {
+	it.each(["unlinked", "weak"])("requires every native transition a commit names to be covered (%s)", (kind) => {
 		const first = nativeEdit("a")
 		const second = nativeEdit("a", { transitionId: "edit-other", path: "other.ts" })
-		const records = [request("a"), first, second, contribution(first), otherCommit()]
-		if (kind !== "unmatched")
-			records.push(
-				contribution(second, pullRequest(), {
-					sha: "f".repeat(40),
-					...(kind === "unlinked"
-						? { pullRequests: [] }
-						: {
-								fileMatches: [
-									{
-										path: second.path,
-										worktree: second.worktree,
-										method: "path-blob",
-										transitionIds: [second.transitionId],
-									},
-								],
-							}),
-				}),
-			)
+		const records = [
+			request("a"),
+			first,
+			second,
+			contribution(first),
+			otherCommit(),
+			contribution(second, pullRequest(), {
+				sha: "f".repeat(40),
+				...(kind === "unlinked"
+					? { pullRequests: [] }
+					: {
+							fileMatches: [
+								{
+									path: second.path,
+									worktree: second.worktree,
+									method: "path-blob",
+									transitionIds: [second.transitionId],
+								},
+							],
+						}),
+			}),
+		]
 		expect(calculatePullRequestCosts(records, [charge("a", "1")]).requests[0].allocation).toBe("shared")
+	})
+
+	it("does not let a native edit no commit names, such as a scratch file, block the PR its other edits prove", () => {
+		const first = nativeEdit("a")
+		const scratch = nativeEdit("a", { transitionId: "edit-scratch", path: "notes.md" })
+		const records = [request("a"), first, scratch, contribution(first), otherCommit()]
+		expect(calculatePullRequestCosts(records, [charge("a", "1")]).requests[0]).toMatchObject({
+			allocation: "pull-request",
+			pullRequestIds: [firstKey],
+		})
 	})
 
 	it.each([
@@ -708,8 +721,8 @@ describe("exclusive native contributions within a multi-PR work", () => {
 	})
 })
 
-describe("sure and likely spend per input", () => {
-	it("confirms the input that produced native edits and keeps other session inputs likely", () => {
+describe("confirmed and inferred spend per input", () => {
+	it("confirms the input that produced native edits and keeps other session inputs inferred", () => {
 		const segment = { id: "implementation", attribution: "session", reason: "matching-disabled" }
 		const edit = nativeEdit("edit")
 		const rows = [
@@ -790,7 +803,20 @@ describe("calculatePullRequestCosts", () => {
 			sharedRequestIds: [],
 			unknownRequestIds: [],
 		})
-		expect(report.requests.every((row) => row.allocation === "pull-request")).toBe(true)
+		// Without input records or native edits, nothing confirms the requests: they count as inferred.
+		expect(report.requests.every((row) => row.allocation === "inferred")).toBe(true)
+	})
+
+	it("infers a request without an input record and keeps an explicitly selected input confirmed", () => {
+		const explicit = { segment: { id: "input", attribution: "explicit", reason: "work-command" } }
+		const report = calculatePullRequestCosts(
+			[request("a"), request("b", "work-a", "session-a", time(11), explicit), commit()],
+			[charge("a", "1"), charge("b", "2")],
+		)
+		expect(report.requests.map((row) => [row.requestId, row.allocation])).toEqual([
+			["a", "inferred"],
+			["b", "pull-request"],
+		])
 	})
 
 	it.each(["session-a", "session-b"])("includes two works for one PR across %s", (session) => {
@@ -890,7 +916,7 @@ describe("calculatePullRequestCosts", () => {
 			[charge("shared", "1"), charge("exclusive", "2")],
 		)
 		expect(report.unallocated.shared.requestIds).toEqual(["shared"])
-		expect(report.requests.find((row) => row.requestId === "exclusive")?.allocation).toBe("pull-request")
+		expect(report.requests.find((row) => row.requestId === "exclusive")?.allocation).toBe("inferred")
 		expect(report.pullRequests[1]).toMatchObject({
 			requestIds: ["exclusive"],
 			sharedRequestIds: ["shared"],
@@ -965,7 +991,7 @@ describe("calculatePullRequestCosts", () => {
 			workIds: ["work-a"],
 			sessionIds: ["session-a"],
 			startedAt: time(10),
-			allocation: "pull-request",
+			allocation: "inferred",
 		})
 	})
 
@@ -1074,7 +1100,7 @@ describe("calculatePullRequestCosts", () => {
 			],
 			[charge("a", "1"), charge("b", "2")],
 		)
-		expect(report.requests[0]).toMatchObject({ requestId: "a", allocation: "pull-request" })
+		expect(report.requests[0]).toMatchObject({ requestId: "a", allocation: "inferred" })
 		expect(report.requests[1]).toMatchObject({ requestId: "b", allocation: "unknown", reason: "pull-request-invalid" })
 		expect(report.pullRequests[0].totalCostUsd).toBe("1.000000000")
 	})
@@ -1260,7 +1286,7 @@ describe("repository renames", () => {
 			[charge("a", "1")],
 		)
 		expect(report.pullRequests).toHaveLength(1)
-		expect(report.requests[0]).toMatchObject({ allocation: "pull-request", totalCostUsd: "1.000000000" })
+		expect(report.requests[0]).toMatchObject({ allocation: "inferred", totalCostUsd: "1.000000000" })
 		expect(report.pullRequests[0]).toMatchObject({ requestIds: ["a"], totalCostUsd: "1.000000000" })
 	})
 })
@@ -1353,7 +1379,7 @@ describe("one work across a merged PR and its follow-up", () => {
 			expect(allocated(after, "follow-up")).toMatchObject({ allocation: "unmerged" })
 			expect(after.unallocated.shared.requestIds).toEqual([])
 		})
-		it("never makes an explicitly planned request sure through follow-up timing", () => {
+		it("never makes an explicitly planned request confirmed through follow-up timing", () => {
 			const records = [plan("explicit", "saved-plan"), implement, edit, firstCommit]
 			expect(allocated(calculatePullRequestCosts(records, prices), "plan")?.allocation).toBe("pull-request")
 			const after = calculatePullRequestCosts([...records, followUp, followUpCommit()], prices)
