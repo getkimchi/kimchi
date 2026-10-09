@@ -278,6 +278,15 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// default `openai` thinkingFormat which sends `reasoning_effort`. The map
 	// disables thinking with `none` and advertises max to Pi's selector.
 	const upstream = m.provider === "anthropic" ? ANTHROPIC_MODELS_BY_ID[m.slug] : undefined
+	// NOTE: kimi slugs deliberately get NO `deferredToolsMode: "kimi"` compat.
+	// Verified against the live gateway (2026-09-30): the ai-enabler path (1)
+	// rejects upstream's in-band system message (`{role:"system",tools:[...]}`
+	// with no content field) with HTTP 400 — its deserializer requires
+	// `content` — and (2) even with `content:""` the in-band tools are not
+	// exposed to the model (probe with a forced call returned no tool_calls,
+	// while the same tool in the top-level `tools` array was called).
+	// Revisit only if the gateway starts honoring in-band tools AND accepting
+	// content-less system messages.
 	const compat = upstream
 		? upstream.compat
 		: m.provider !== "anthropic" && m.slug.startsWith("claude-")

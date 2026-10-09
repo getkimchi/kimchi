@@ -252,10 +252,27 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev/anthropic"].headers["X-Provider-Type"]).toBe("anthropic")
 	})
 
-	it("does not set compat for non-anthropic ai-enabler models", async () => {
+	it("sets no compat for kimi-* ai-enabler models (in-band tools unsupported by the gateway)", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		// Verified against the live gateway (2026-09-30): the ai-enabler path
+		// rejects upstream's content-less in-band system message with HTTP 400
+		// and silently drops in-band tools even when content is present. Until
+		// the gateway honors them, deferredToolsMode would break every stamped
+		// reveal — see the note in metadataToModel.
+		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
+	})
+
+	it("does not set compat for non-kimi non-claude ai-enabler models", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [GLM] }),
 		} as Response)
 
 		await updateModelsConfig(modelsJsonPath, "test-key")
