@@ -560,7 +560,17 @@ describe("PR status with the real reconciliation supervisor", () => {
 				sha,
 				recordedAt: pr.checkedAt,
 				pullRequests: [
-					{ ...pr, url, number: index + 1, state: "merged", headSha: sha, mergeCommitSha: sha, mergedAt: pr.checkedAt },
+					{
+						...pr,
+						url,
+						id: String(index + 1),
+						repositoryId: "17",
+						number: index + 1,
+						state: "merged",
+						headSha: sha,
+						mergeCommitSha: sha,
+						mergedAt: pr.checkedAt,
+					},
 				],
 			}
 		})
