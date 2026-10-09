@@ -64,6 +64,7 @@ export async function readWorkBrowser(
 			if (info) modified.set(workId, info.mtimeMs)
 		}),
 	)
+
 	const recent = [...modified]
 		.filter(([workId, at]) => workId !== current.workId && at >= now - RECENT_MS)
 		.sort(([, left], [, right]) => right - left)
@@ -128,6 +129,7 @@ function workRow(agentDir: string, work: SavedWork, current?: WorkDetailsRequest
 	const unpriced = requests.flatMap((row) =>
 		typeof row.requestId === "string" && !saved.has(row.requestId) ? [{ requestId: row.requestId }] : [],
 	)
+
 	// A saved report also lists connected works' requests; the row shows this work's own spend.
 	const spent = summary || costs ? [...(costs ? ownRequests(costs, workId) : []), ...unpriced] : undefined
 	const links = mergePullRequestLinks(...commits.map((commit) => storedPullRequests(commit.pullRequests)))
@@ -162,10 +164,12 @@ function location(edits: Entry[], commits: Entry[], requests: Entry[]): { name?:
 		edits.filter((row) => typeof row.repository === "string"),
 		"recordedAt",
 	)
+
 	const commit = newest(
 		commits.filter((row) => typeof row.repository === "string"),
 		"recordedAt",
 	)
+
 	const request = newest(requests, "startedAt")
 	const scope = request && object(request.scope) ? request.scope : undefined
 	const path = edit?.repository ?? commit?.repository ?? scope?.repository ?? request?.cwd

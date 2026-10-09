@@ -30,6 +30,7 @@ import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../sha
 import { isWorkId } from "../shared/work-id.js"
 import { isHarnessSteer } from "./steer-marker.js"
 import { trackPRCostMetric } from "./telemetry/pr-cost.js"
+import { type BillingSource, captureBillingSource, requestTagSelector } from "./work-attribution/billing-source.js"
 import { readWorkBrowser } from "./work-attribution/browser.js"
 import { WorkBrowserPanel } from "./work-attribution/browser-panel.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
