@@ -312,14 +312,22 @@ export async function debugStateAt(deps: ComposedDeps, opts: DebugStateAtOptions
 			// stop, not the current one), so isStopped after that call is always
 			// false and the check would be useless there.
 			const wasStopped = session.isStopped
-			await session.setBreakpoint(opts.file, opts.line)
+			const bp = await session.setBreakpoint(opts.file, opts.line)
 			await session.completeLaunch()
+			// js-debug binds provisional breakpoints asynchronously when the
+			// target source loads — pausing at entry gives the bind time to land;
+			// wait for the bound event before continuing or tiny programs run
+			// past an unbound breakpoint to completion.
+			const awaitBound = async () => {
+				if (bp.id != null && !bp.verified) await session.waitForBreakpointBound(bp.id)
+			}
 			let stop: StoppedEvent
 			try {
 				if (wasStopped) {
 					// Existing session already paused elsewhere (break-on-entry or a
 					// previous breakpoint): waiting for a fresh stop would time out
 					// without resuming — continue explicitly to reach the new breakpoint.
+					await awaitBound()
 					stop = await session.continue()
 				} else {
 					// After completeLaunch (configurationDone), the program starts
@@ -330,6 +338,7 @@ export async function debugStateAt(deps: ComposedDeps, opts: DebugStateAtOptions
 					// If the program stopped at entry (stopOnEntry), continue to the
 					// actual breakpoint.
 					if (stop.reason === "entry") {
+						await awaitBound()
 						stop = await session.continue()
 					}
 				}
@@ -551,9 +560,11 @@ export async function debugWatchChange(
 	return withTimeoutAndCleanup(
 		timeoutMs,
 		async () => {
-			// Set breakpoint and run to it
-			await session.setBreakpoint(opts.file, opts.line)
+			// Set breakpoint and run to it. Wait for a provisional breakpoint to
+			// bind before continuing (js-debug async binding — see debugStateAt).
+			const bp = await session.setBreakpoint(opts.file, opts.line)
 			await session.completeLaunch()
+			if (bp.id != null && !bp.verified) await session.waitForBreakpointBound(bp.id)
 			await session.continue()
 
 			// Get initial value

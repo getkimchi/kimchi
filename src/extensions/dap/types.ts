@@ -246,6 +246,12 @@ export interface DapClient {
 	stoppedEvent: StoppedEvent | null
 	/** Waiters for the next `stopped` event. */
 	stoppedWaiters: DapStoppedWaiter[]
+	/** Breakpoint ids the adapter has bound/verified via `breakpoint` events.
+	 *  js-debug returns new breakpoints as provisional and binds them
+	 *  asynchronously once the target source loads. */
+	boundBreakpointIds: Set<number>
+	/** Waiters resolved when a breakpoint id becomes bound. */
+	breakpointBoundWaiters: Array<{ id: number; resolve: () => void }>
 	/** Waiters for the next `terminated` event. */
 	terminatedWaiters: DapTerminatedWaiter[]
 	/** Captured output lines (stdout/stderr/console), capped by the client. */

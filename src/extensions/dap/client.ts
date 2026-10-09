@@ -454,6 +454,23 @@ async function startMessageReader(client: DapClient, stateTarget?: DapClient): P
 							}
 							break
 						}
+						case "breakpoint": {
+							// js-debug binds provisional breakpoints asynchronously once the
+							// target source loads; surface the bound state so callers can
+							// wait before continuing (tiny programs otherwise complete
+							// before the breakpoint binds).
+							const body = message.body as { breakpoint?: { id?: number; verified?: boolean } }
+							const id = body.breakpoint?.id
+							if (id != null && body.breakpoint?.verified) {
+								state.boundBreakpointIds.add(id)
+								state.breakpointBoundWaiters = state.breakpointBoundWaiters.filter((w) => {
+									if (w.id !== id) return true
+									w.resolve()
+									return false
+								})
+							}
+							break
+						}
 						case "thread": {
 							const body = message.body as { threadId?: number }
 							if (body.threadId != null) state.threadId = body.threadId
@@ -627,6 +644,8 @@ async function startChildSession(parent: DapClient, configuration: Record<string
 		threadId: null,
 		stoppedEvent: null,
 		stoppedWaiters: [],
+		boundBreakpointIds: new Set(),
+		breakpointBoundWaiters: [],
 		terminatedWaiters: [],
 		outputLines: [],
 		terminated: false,
@@ -767,6 +786,8 @@ export class DapClientRegistry {
 				threadId: null,
 				stoppedEvent: null,
 				stoppedWaiters: [],
+				boundBreakpointIds: new Set(),
+				breakpointBoundWaiters: [],
 				terminatedWaiters: [],
 				outputLines: [],
 				terminated: false,

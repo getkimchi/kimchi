@@ -107,7 +107,13 @@ function makeDeps(cwd: string): ComposedDeps {
 			if (!adapter) throw new Error(`No adapter for ${opts.program}`)
 			const client = await clientRegistry.getOrCreate(adapter, cwd)
 			const session = sessionRegistry.create({ adapter, cwd, client })
-			await session.launch({ program: opts.program, cwd, stopOnEntry: opts.stopOnEntry })
+			await session.launch({
+				program: opts.program,
+				cwd,
+				// Mirrors the extension's launchSession: js-debug skips the entry
+				// stop (see launchSession in ../dap.ts).
+				stopOnEntry: opts.stopOnEntry && adapter.name !== "js-debug",
+			})
 			return session
 		},
 	}
