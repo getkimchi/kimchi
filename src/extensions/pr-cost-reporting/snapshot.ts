@@ -95,6 +95,11 @@ export function validTime(value: unknown): value is string {
 function onlyKeys(value: object, allowed: string[]): boolean {
 	return Object.keys(value).every((key) => allowed.includes(key))
 }
+/** When a PR merged or closed, as the server reads it, in either the local or the wire shape. An open PR has not. */
+function finishedAt(pr: { state: string; mergedAt?: string | null; closedAt?: string | null } | null | undefined) {
+	const value = pr?.state === "merged" ? pr.mergedAt : pr?.state === "closed" ? pr.closedAt : undefined
+	return value ? Date.parse(value) : undefined
+}
 
 /** A final boundary check also applies to pending payloads recovered from disk. */
 export function validateSnapshot(snapshot: WireSnapshot): void {
@@ -289,11 +294,7 @@ export function fitSnapshot(
 			trimmedRequests: total,
 		},
 	})
-	const finishedAt = new Map<string, number | undefined>()
-	for (const pr of content.pullRequests) {
-		const finished = pr.state === "merged" ? pr.mergedAt : pr.state === "closed" ? pr.closedAt : undefined
-		finishedAt.set(pr.id, finished === undefined ? undefined : Date.parse(finished))
-	}
+	const finishTimes = new Map(content.pullRequests.map((pr) => [pr.id, finishedAt(pr)]))
 	const pullSize = new Map(content.pullRequests.map((pr) => [pr.id, size(pr)]))
 	const requestSize = new Map(content.requests.map((request) => [request.requestId, size(request)]))
 	const references = new Map<string, number>()
@@ -340,7 +341,7 @@ export function fitSnapshot(
 		// requests stays: buildSnapshots keeps one only for a revocation receipt.
 		const removable = content.pullRequests
 			.filter((pr) => !locked.has(pr.id) && byPull.has(pr.id))
-			.map((pr) => ({ id: pr.id, finished: finishedAt.get(pr.id) }))
+			.map((pr) => ({ id: pr.id, finished: finishTimes.get(pr.id) }))
 			.sort(
 				(a, b) =>
 					Number(a.finished === undefined) - Number(b.finished === undefined) ||
@@ -356,7 +357,7 @@ export function fitSnapshot(
 	for (const request of content.requests) {
 		const ids = request.allocation.pullRequestIds
 		const started = Date.parse(request.startedAt)
-		const finished = ids.map((id) => finishedAt.get(id))
+		const finished = ids.map((id) => finishTimes.get(id))
 		rank.set(
 			request.requestId,
 			!ids.length
@@ -482,8 +483,8 @@ export function buildSnapshots(
 		if (
 			candidates.length &&
 			candidates.every((pr) => {
-				const finished = pr.pullRequest?.state === "merged" ? pr.pullRequest.mergedAt : pr.pullRequest?.closedAt
-				return finished && Date.now() >= Date.parse(finished) + DETAIL_WINDOW_MS - CORRECTION_MARGIN_MS
+				const finished = finishedAt(pr.pullRequest)
+				return finished !== undefined && Date.now() >= finished + DETAIL_WINDOW_MS - CORRECTION_MARGIN_MS
 			})
 		)
 			continue
@@ -501,8 +502,8 @@ export function buildSnapshots(
 	const recentPulls = new Set(
 		report.pullRequests
 			.filter((pr) => {
-				const finishedAt = pr.pullRequest?.state === "merged" ? pr.pullRequest.mergedAt : pr.pullRequest?.closedAt
-				return !finishedAt || Date.parse(finishedAt) >= cutoff - FINISHED_PR_GRACE_MS
+				const finished = finishedAt(pr.pullRequest)
+				return finished === undefined || finished >= cutoff - FINISHED_PR_GRACE_MS
 			})
 			.map((pr) => pr.key),
 	)
@@ -522,13 +523,12 @@ export function buildSnapshots(
 					report.pullRequests.some((pr) => {
 						if (!pr.account || !sameWorkAccount(pr.account, account) || !request.pullRequestIds.includes(pr.key))
 							return false
-						const finished = pr.pullRequest?.state === "merged" ? pr.pullRequest.mergedAt : pr.pullRequest?.closedAt
+						const finished = finishedAt(pr.pullRequest)
 						return (
-							finished !== null &&
 							finished !== undefined &&
-							Date.now() < Date.parse(finished) + DETAIL_WINDOW_MS - CORRECTION_MARGIN_MS &&
+							Date.now() < finished + DETAIL_WINDOW_MS - CORRECTION_MARGIN_MS &&
 							(Date.parse(receipt.recordedAt) >= cutoff ||
-								Date.parse(receipt.recordedAt) >= Date.parse(finished) + UPLOAD_WINDOW_MS)
+								Date.parse(receipt.recordedAt) >= finished + UPLOAD_WINDOW_MS)
 						)
 					})
 				)
@@ -695,9 +695,9 @@ export function buildSnapshots(
 			const omitted: string[] = []
 			group.content.requests = retained
 			group.content.pullRequests = group.content.pullRequests.filter((pr) => {
-				const finishedAt = pr.state === "merged" ? pr.mergedAt : pr.closedAt
-				const keep = pulls.has(pr.id) || !finishedAt || Date.parse(finishedAt) >= cutoff - FINISHED_PR_GRACE_MS
-				if (!keep && finishedAt && Date.now() < Date.parse(finishedAt) + DETAIL_WINDOW_MS) omitted.push(pr.id)
+				const finished = finishedAt(pr)
+				const keep = pulls.has(pr.id) || finished === undefined || finished >= cutoff - FINISHED_PR_GRACE_MS
+				if (!keep && finished !== undefined && Date.now() < finished + DETAIL_WINDOW_MS) omitted.push(pr.id)
 				return keep
 			})
 			if (omitted.length) group.content.windowedPullRequestIds = omitted.sort()
