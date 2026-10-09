@@ -228,6 +228,51 @@ it("keeps an explicit legacy plan choice unscoped instead of silently replacing 
 	expect(existsSync(join(root, "agent", "work", WORK, "scope.json"))).toBe(false)
 })
 
+it.each([
+	"same",
+	"repository",
+	"organization",
+])("checks the %s scope before an explicit /work plan choice", async (variant) => {
+	vi.mocked(settings.readConfigSetting).mockReturnValue(false)
+	const saved = savePlanMarkdown({ cwd, name: "export", planText: "# Export", workId: WORK })
+	writeFileSync(
+		join(root, "agent", "work", WORK, "scope.json"),
+		JSON.stringify({
+			version: 1,
+			workId: WORK,
+			repository: realpathSync(join(cwd, ".git")),
+			account: { apiUrl: endpoint, organizationId: ORG, userId: USER },
+		}),
+	)
+	let implementingCwd = cwd
+	if (variant === "repository") {
+		implementingCwd = join(root, "other")
+		execFileSync("git", ["init", "-q", implementingCwd])
+	} else if (variant === "organization") identity = { ...identity, organizationId: CURRENT }
+	const ctx = createContext({ cwd: implementingCwd })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	await api.getRegisteredCommand("work").handler(saved.path, { ...createCommandContext(), ...ctx })
+	const selected = getWorkId(ctx)
+	await api.getHandler<InputEvent>("input")({ type: "input", source: "rpc", text: "Implement the selected plan" }, ctx)
+	const request = recordProviderRequest(ctx)
+	const segment = readWorkRecords(join(root, "agent")).find((row) => row.requestId === request.requestId)?.segment
+	if (variant === "same") {
+		expect([selected, request.workId]).toEqual([WORK, WORK])
+		expect(segment).toMatchObject({ attribution: "explicit", reason: "work-command" })
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.anything(), "warning")
+		return
+	}
+	// The refused choice keeps the current work instead of a choice the next input would silently replace.
+	expect(selected).not.toBe(WORK)
+	expect(ctx.ui.notify).toHaveBeenCalledExactlyOnceWith(
+		`Cannot continue this plan here: its work ${WORK} belongs to another ${variant === "repository" ? "repository" : "account"}. Current work: ${selected}`,
+		"warning",
+	)
+	expect(request.workId).toBe(selected)
+	expect(segment).toMatchObject({ attribution: "session", reason: "matching-disabled" })
+})
+
 it.each(["organization", "actor", "endpoint"])("does not load another %s's retained task text", async (field) => {
 	await rememberWorkIntent(cwd, WORK, "Private task in account A")
 	key = randomUUID()

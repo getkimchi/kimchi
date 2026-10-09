@@ -281,8 +281,8 @@ function hasWorkOutput(ctx: ExtensionContext, workId: string): boolean {
 			}
 		})
 }
-function notify(ctx: ExtensionContext, message: string): void {
-	if (ctx.hasUI) ctx.ui.notify(message, "info")
+function notify(ctx: ExtensionContext, message: string, type: "info" | "warning" = "info"): void {
+	if (ctx.hasUI) ctx.ui.notify(message, type)
 	else console.error(message)
 }
 /** Visible, non-fatal warning shared by every attribution caller. */
@@ -717,6 +717,18 @@ export function createWorkAttributionExtension(
 					else if (value) {
 						const workId = readPlanWorkId(readFileSync(resolve(ctx.cwd, value), "utf8"))
 						if (!workId) throw new Error("Plan has no valid work ID")
+						// Like /work link, refuse another account's or repository's work; the next input would replace it.
+						const planScope = readWorkScope(workId)
+						const captured = planScope && (await captureWorkScope(ctx.cwd))
+						if (planScope && captured?.isCurrent() && !sameWorkScope(planScope, captured.scope)) {
+							const other = planScope.repository === captured.scope.repository ? "account" : "repository"
+							notify(
+								ctx,
+								`Cannot continue this plan here: its work ${workId} belongs to another ${other}. Current work: ${getWorkId(ctx)}`,
+								"warning",
+							)
+							return
+						}
 						setWorkId(ctx, workId)
 					}
 					if (value) {
