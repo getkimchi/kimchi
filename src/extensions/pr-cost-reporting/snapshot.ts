@@ -507,6 +507,15 @@ export function buildSnapshots(
 			})
 			.map((pr) => pr.key),
 	)
+	// The server keeps a finished PR's details until day 90; after that only its frozen total remains.
+	const detailed = new Set(
+		report.pullRequests
+			.filter((pr) => {
+				const finished = finishedAt(pr.pullRequest)
+				return finished === undefined || Date.now() < finished + DETAIL_WINDOW_MS
+			})
+			.map((pr) => pr.key),
+	)
 	const current = (request: RequestCostAllocation) =>
 		!request.startedAt ||
 		Date.parse(request.startedAt) >= cutoff ||
@@ -535,6 +544,27 @@ export function buildSnapshots(
 			})
 			.map((request) => request.requestId),
 	)
+	// The server replaces a listed PR's whole inventory. When an included request, such as a post-merge one, names a
+	// finished PR outside the window, send every request of that PR too, or its earlier claims would be withdrawn.
+	const requestsByPull = new Map<string, RequestCostAllocation[]>()
+	for (const request of report.requests)
+		for (const key of request.pullRequestIds) {
+			const requests = requestsByPull.get(key)
+			if (requests) requests.push(request)
+			else requestsByPull.set(key, [request])
+		}
+	const listed = new Set<string>()
+	const pending = report.requests.filter((request) => included.has(request.requestId))
+	for (let index = 0; index < pending.length; index++)
+		for (const key of pending[index].pullRequestIds) {
+			if (recentPulls.has(key) || listed.has(key) || !detailed.has(key)) continue
+			listed.add(key)
+			for (const other of requestsByPull.get(key) ?? [])
+				if (other.account && !included.has(other.requestId)) {
+					included.add(other.requestId)
+					pending.push(other)
+				}
+		}
 	const unpriced = new Set(
 		report.requests.filter((request) => request.priceStatus !== "priced").map((request) => request.requestId),
 	)
@@ -619,11 +649,14 @@ export function buildSnapshots(
 			const pullRequestIds: string[] = []
 			for (const candidate of candidates) {
 				const pr = candidate.pullRequest
+				// A request naming a PR past its detail window is sent without it: the server already settled that PR,
+				// and listing it again would only bring back details that expiry removes.
 				if (
 					!pr?.id ||
 					pr.repositoryId !== repo.id ||
 					pr.host !== repo.host ||
-					(pr.provider ?? "github") !== repo.provider
+					(pr.provider ?? "github") !== repo.provider ||
+					!detailed.has(candidate.key)
 				)
 					continue
 				const metadata = {

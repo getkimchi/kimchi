@@ -738,14 +738,33 @@ describe("per-request upload window and evidence labels", () => {
 	const snapshot = (rows: WorkRecord[], bills: ReturnType<typeof bill>[]) =>
 		buildSnapshots(rows, calculatePullRequestCosts(rows, bills), new Map(), true)
 
-	it("sends a long-lived work's recent requests without its finished history", () => {
+	it("keeps an old merged PR's earlier claims when a recent post-merge request names it", () => {
+		// The server replaces a listed PR's whole inventory, so the pre-merge request must come along.
 		const rows = [
 			request(planned, "2026-08-01T00:00:00.000Z"),
 			commit([merged("101", "2026-08-02T00:00:00.000Z")]),
 			request(later, "2026-10-06T00:00:00.000Z"),
 		]
 		const { content } = snapshot(rows, [bill(planned, 1), bill(later, 2)]).snapshots[0]
-		expect(content.requests.map((row) => row.requestId)).toEqual([later])
+		expect(content.requests.map((row) => [row.requestId, row.allocation.kind])).toEqual([
+			[planned, "pull-request"],
+			[later, "post-merge"],
+		])
+		expect(content.pullRequests.map((pr) => pr.id)).toEqual(["101"])
+		expect(content.windowedPullRequestIds).toBeUndefined()
+	})
+	it("sends a recent request without a PR the server settled past its detail window", () => {
+		const rows = [
+			request(planned, "2026-06-30T00:00:00.000Z"),
+			commit([merged("101", "2026-07-01T00:00:00.000Z")]),
+			request(later, "2026-10-06T00:00:00.000Z"),
+		]
+		const { content } = snapshot(rows, [bill(planned, 1), bill(later, 2)]).snapshots[0]
+		expect(content.requests.map((row) => [row.requestId, row.allocation])).toEqual([
+			[later, { kind: "unknown", pullRequestIds: [], method: "session" }],
+		])
+		expect(content.pullRequests).toEqual([])
+		expect(content.windowedPullRequestIds).toBeUndefined()
 	})
 	it.each([
 		["past day 90", "2026-07-08T12:00:00.000Z"],
