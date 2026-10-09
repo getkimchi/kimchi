@@ -100,6 +100,24 @@ export class McpKeychainUnavailableError extends Error {
 	}
 }
 
+/**
+ * Thrown when the user declined the macOS keychain consent dialog for an item
+ * whose access-control list does not trust `/usr/bin/security` (a legacy
+ * in-process item). Denial is a distinct user state, not an unavailable
+ * keychain: it must surface as "re-authenticate" rather than "unavailable",
+ * and once denied it must not re-prompt the dialog within the process.
+ */
+export class McpKeychainDeniedError extends Error {
+	constructor(account?: string) {
+		super(
+			"macOS keychain consent was declined for the MCP credential '" +
+				`${account ?? "unknown"}` +
+				"' — click Authenticate or run `kimchi mcp auth <server>` to store fresh credentials.",
+		)
+		this.name = "McpKeychainDeniedError"
+	}
+}
+
 /** Result shape of one `/usr/bin/security` invocation. */
 export interface SecurityToolResult {
 	status: number | null
@@ -110,7 +128,7 @@ export interface SecurityToolResult {
 
 export type SecurityToolRunner = (args: string[], stdin?: string) => SecurityToolResult
 
-const defaultSecurityRunner: SecurityToolRunner = (args, stdin) => {
+export const defaultSecurityRunner: SecurityToolRunner = (args, stdin) => {
 	// A generous bound turns an abandoned keychain consent dialog (possible on
 	// the first read of a legacy ACL item) into a diagnosable error instead of
 	// an indefinite hang. The in-process SecItem path blocked the same way.
@@ -131,7 +149,38 @@ const KEYCHAIN_NOT_FOUND_MARKER = "could not be found"
 const KEYCHAIN_USER_INTERACTION_MARKER = "interaction is not allowed"
 const SECURITY_EXIT_ITEM_NOT_FOUND = 44
 const SECURITY_EXIT_INTERACTION_NOT_ALLOWED = 36
+// /usr/bin/security exit codes are the OSStatus as an unsigned byte (OSStatus & 0xFF):
+// 44 = errSecItemNotFound, 36 = errSecInteractionNotAllowed, 45 = errSecDuplicateItem,
+// 128 = errSecUserCanceled. Validated on macOS 26.6.2: declining the keychain consent
+// dialog makes security exit 128 (errSecUserCanceled) with empty stderr. Exit 45 is
+// a duplicate-item WRITE failure, never a denial — misclassifying it would report a
+// failed re-add as "consent was declined".
+const SECURITY_EXIT_CONSENT_DENIED = 128
 const SECURITY_TOOL_TIMEOUT_MS = 120_000
+
+/**
+ * Per-process tombstone for denied keychain items, keyed by `service\0account`.
+ * A denial is a user decision that must not re-prompt the consent dialog on
+ * every subsequent read (Studio auto-probes MCP servers on mount and on config
+ * change). The entry is cleared by a successful write or delete
+ * (re-authentication's delete + add) and by {@link resetSecurityToolCaches}.
+ */
+const deniedKeychainItems = new Map<string, McpKeychainDeniedError>()
+
+/**
+ * Per-process tombstone for items whose implicit ACL self-heal rewrite was
+ * declined: without it, every read of a readable plain-legacy item would
+ * re-attempt the heal and re-prompt its consent dialog. Reads still return the
+ * credential; only the rewrite is suppressed. Cleared by a successful write or
+ * delete and by {@link resetSecurityToolCaches}.
+ */
+const declinedSelfHealItems = new Set<string>()
+
+/** Test/recovery seam: drop every cached denial so the runner is consulted again. */
+export function resetSecurityToolCaches(): void {
+	deniedKeychainItems.clear()
+	declinedSelfHealItems.clear()
+}
 const ENVELOPE_PREFIX = "b64:"
 const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
 
@@ -144,8 +193,15 @@ function isUserInteractionNotAllowed(result: SecurityToolResult): boolean {
 	)
 }
 
-function isKeychainItemNotFound(result: SecurityToolResult): boolean {
+export function isKeychainItemNotFound(result: SecurityToolResult): boolean {
 	return result.stderr.includes(KEYCHAIN_NOT_FOUND_MARKER) || result.status === SECURITY_EXIT_ITEM_NOT_FOUND
+}
+
+export function isConsentDenied(result: SecurityToolResult): boolean {
+	// The dialog denial (errSecUserCanceled) exits 128 with empty stderr on macOS
+	// 26.6.2, so there is no stable message substring to check first; the exit
+	// code is the classifier.
+	return result.status === SECURITY_EXIT_CONSENT_DENIED
 }
 
 /** Text with no control characters other than tab/newline and no U+FFFD (guards against mis-decoding genuinely hex-shaped passwords). */
@@ -158,7 +214,7 @@ function isPrintableText(value: string): boolean {
 	return true
 }
 
-function failOnUnavailableKeychain(result: SecurityToolResult): void {
+function classifyKeychainFailure(result: SecurityToolResult, context?: { account: string }): void {
 	if (result.error) {
 		// A typed error from the runner (e.g. spawn timeout) already carries the
 		// actionable detail — surface it verbatim instead of double-wrapping.
@@ -171,12 +227,7 @@ function failOnUnavailableKeychain(result: SecurityToolResult): void {
 		throw new McpKeychainUnavailableError(`failed to run /usr/bin/security: ${result.error.message}`)
 	}
 	if (isUserInteractionNotAllowed(result)) throw new McpKeychainUnavailableError(result.stderr.trim())
-}
-
-function assertSecuritySucceeded(result: SecurityToolResult, verb: string): void {
-	failOnUnavailableKeychain(result)
-	if (result.status === 0) return
-	throw new Error(`security ${verb} failed (exit ${result.status}): ${result.stderr.trim()}`)
+	if (isConsentDenied(result)) throw new McpKeychainDeniedError(context?.account)
 }
 
 /**
@@ -221,11 +272,17 @@ export class SecurityToolEntry implements KeyringEntryLike {
 	}
 
 	getPassword(): string | null {
+		// A denied item must never re-prompt the consent dialog: reads short-circuit
+		// on the cached denial without invoking the runner (Studio auto-probes MCP
+		// servers on mount and on config change, which would otherwise storm).
+		this.denyIfDenied()
 		const result = this.run("find-generic-password", "-w")
 		if (isKeychainItemNotFound(result)) return null
-		assertSecuritySucceeded(result, "find-generic-password")
+		this.assertReadSucceeded(result, "find-generic-password")
 		const decoded = decodeSecurityPayload(result.stdout.replace(/\r?\n$/, ""))
-		if (decoded.origin === "plain-legacy" && this.service === MCP_OAUTH_SERVICE) this.selfHealAcl(decoded.value)
+		if (decoded.origin === "plain-legacy" && this.service === MCP_OAUTH_SERVICE && !this.selfHealDeclined()) {
+			this.selfHealAcl(decoded.value)
+		}
 		return decoded.value
 	}
 
@@ -241,15 +298,65 @@ export class SecurityToolEntry implements KeyringEntryLike {
 			"add-generic-password",
 			"-w",
 			`${ENVELOPE_PREFIX}${Buffer.from(password).toString("base64")}`,
+			"-T",
+			"/usr/bin/security",
 		)
-		assertSecuritySucceeded(result, "add-generic-password")
+		this.assertSucceeded(result, "add-generic-password")
+		// Re-authentication rewrote the item so its ACL trusts `security`: drop any
+		// cached denial (and a declined self-heal marker) so subsequent reads
+		// consult the runner again (permanently silent for a successful write).
+		this.clearTombstones()
 	}
 
 	deleteCredential(): boolean {
 		const result = this.run("delete-generic-password")
 		if (isKeychainItemNotFound(result)) return false
-		assertSecuritySucceeded(result, "delete-generic-password")
+		this.assertSucceeded(result, "delete-generic-password")
+		// A deleted item can no longer be denied: drop the tombstones so later reads
+		// consult the runner (not-found) instead of a stale denial.
+		this.clearTombstones()
 		return true
+	}
+
+	private cacheKey(): string {
+		return `${this.service}\0${this.account}`
+	}
+
+	private denyIfDenied(): void {
+		const denied = deniedKeychainItems.get(this.cacheKey())
+		if (denied) throw denied
+	}
+
+	private selfHealDeclined(): boolean {
+		return declinedSelfHealItems.has(this.cacheKey())
+	}
+
+	private clearTombstones(): void {
+		deniedKeychainItems.delete(this.cacheKey())
+		declinedSelfHealItems.delete(this.cacheKey())
+	}
+
+	/** Assert the runner result, throwing the typed keychain failure or a verb-specific error. */
+	private assertSucceeded(result: SecurityToolResult, verb: string): void {
+		classifyKeychainFailure(result, { account: this.account })
+		if (result.status !== 0) throw new Error(`security ${verb} failed (exit ${result.status}): ${result.stderr.trim()}`)
+	}
+
+	/**
+	 * Read-path assertion: like {@link assertSucceeded}, but a consent denial is
+	 * cached so the item never re-prompts the dialog within this process. Only
+	 * read-path denials are cached: a cache keyed on writes would poison an
+	 * otherwise-working plaintext item whose (optional) self-heal rewrite was
+	 * declined, and an explicit re-authentication write must always be allowed
+	 * to reach the runner.
+	 */
+	private assertReadSucceeded(result: SecurityToolResult, verb: string): void {
+		try {
+			this.assertSucceeded(result, verb)
+		} catch (error) {
+			if (error instanceof McpKeychainDeniedError) deniedKeychainItems.set(this.cacheKey(), error)
+			throw error
+		}
 	}
 
 	private run(verb: string, ...args: string[]): SecurityToolResult {
@@ -260,6 +367,9 @@ export class SecurityToolEntry implements KeyringEntryLike {
 		try {
 			this.setPassword(password)
 		} catch (error) {
+			// A declined heal consent must not re-prompt on every subsequent read of
+			// this readable item: record it and keep serving the credential as-is.
+			if (error instanceof McpKeychainDeniedError) declinedSelfHealItems.add(this.cacheKey())
 			console.warn(
 				`[mcp] keychain ACL self-heal failed for ${this.service}/${this.account}: ${error instanceof Error ? error.message : String(error)}`,
 			)
@@ -381,6 +491,7 @@ export function inspectMcpCredentialAccount(serverName: string): McpCredentialAc
 		return { status: "present", ...(serverUrl === undefined ? {} : { serverUrl }) }
 	} catch (error) {
 		if (error instanceof McpKeychainUnavailableError) throw error
+		if (error instanceof McpKeychainDeniedError) throw error
 		return { status: "unavailable" }
 	}
 }

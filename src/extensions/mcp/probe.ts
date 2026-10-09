@@ -12,8 +12,13 @@ import { Client, type ListToolsResult } from "@modelcontextprotocol/client"
 import { createMcpAdapter } from "pi-mcp-adapter"
 import { inspectMcpOAuthTokensForUrl } from "pi-mcp-adapter/oauth"
 import type { ServerEntry } from "pi-mcp-adapter/types"
-import { inspectMcpCredentialAccount, installKeyringRequireBridge } from "./keyring-require-bridge.js"
+import {
+	inspectMcpCredentialAccount,
+	installKeyringRequireBridge,
+	McpKeychainDeniedError,
+} from "./keyring-require-bridge.js"
 import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
+import { cleanupStrayMcpOAuthEntriesBestEffort } from "./stray-oauth-entry-cleanup.js"
 
 type SdkTool = ListToolsResult["tools"][number]
 
@@ -24,6 +29,13 @@ export interface ProbeResult {
 	tools: ProbeTool[]
 	needsAuth: boolean
 	error: string | null
+	/**
+	 * Set when credential inspection failed because the user declined the macOS
+	 * keychain consent dialog for a legacy item. Distinct from a generic error:
+	 * it drives the "re-authenticate to renew the stored login token" affordance
+	 * (Studio connector cards) instead of reading as an unavailable keychain.
+	 */
+	keychainDenied?: boolean
 }
 
 export interface McpProbeOptions {
@@ -267,12 +279,23 @@ function resolveProbeName(name: string, definition: ServerEntry): string {
 	try {
 		const urlStatus = inspectMcpOAuthTokensForUrl(name, definition.url)
 		if (urlStatus.status === "present") return name
-		if (urlStatus.status === "absent") {
+		if (urlStatus.status === "absent" || urlStatus.status === "unavailable") {
+			// "unavailable" is not a vector for skipping inspection: the adapter
+			// collapses a declined keychain consent (a legacy ACL item) to its
+			// generic status, but the per-process denial cache in SecurityToolEntry
+			// records the real cause — inspectMcpCredentialAccount rethrows the
+			// cached McpKeychainDeniedError so the probe surfaces the
+			// re-authenticate state instead of looping an anonymous connect.
 			const account = inspectMcpCredentialAccount(name)
 			if (account.status === "absent" || (account.status === "present" && !account.serverUrl)) return name
 			if (account.status === "present" && account.serverUrl === definition.url) return name
 		}
 	} catch (error) {
+		// A declined keychain consent is a user state, not an inspection failure:
+		// let it propagate (the caller short-circuits with a needs-auth result)
+		// instead of collapsing it to "unavailable" and re-prompting on the next
+		// probe.
+		if (error instanceof McpKeychainDeniedError) throw error
 		// Credential inspection is best-effort, but credential preservation is
 		// fail-closed: an unverified URL must never reuse the durable account name.
 		console.warn(
@@ -299,6 +322,7 @@ export class UpstreamMcpProbe implements McpProbe {
 	async probeTools(name: string, definition: ServerEntry, options: McpProbeOptions = {}): Promise<ProbeResult> {
 		options.signal?.throwIfAborted()
 		installKeyringRequireBridge()
+		cleanupStrayMcpOAuthEntriesBestEffort()
 		installProbeToolMetadataCapture()
 		const capturedTools = new Map<string, ProbeTool>()
 		// URL-only servers can advertise OAuth during connection. Reserve time
@@ -356,7 +380,20 @@ export class UpstreamMcpProbe implements McpProbe {
 			const { warnings } = migrateLegacyOAuthCredentials({ mcpServers: { [name]: definition } }, { cwd })
 			for (const warning of warnings) console.warn(warning)
 		}
-		const probeName = resolveProbeName(name, definition)
+		let probeName: string
+		try {
+			probeName = resolveProbeName(name, definition)
+		} catch (error) {
+			if (error instanceof McpKeychainDeniedError) {
+				// Fail closed exactly like an unverifiable credential: never reuse the
+				// durable account name (no anonymous connect either — it would just
+				// re-prompt the dialog or drift into an unwanted OAuth attempt). The
+				// per-process denial backoff in SecurityToolEntry already makes repeat
+				// probes of this server keychain-I/O-free.
+				return { tools: [], needsAuth: true, keychainDenied: true, error: error.message }
+			}
+			throw error
+		}
 		const throwaway = probeName !== name
 		const serverUrl = definition.url
 		const hasHeaders = Boolean(definition.headers && Object.keys(definition.headers).length > 0)
