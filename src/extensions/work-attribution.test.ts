@@ -2,13 +2,16 @@ import { randomUUID } from "node:crypto"
 import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { AssistantMessage } from "@earendil-works/pi-ai"
 import {
 	type BeforeProviderHeadersEvent,
+	findCutPoint,
 	type InputEvent,
 	type SessionBeforeCompactEvent,
 	SessionManager,
 	type SessionShutdownEvent,
 	type SessionStartEvent,
+	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { readPlanWorkId, savePlanMarkdown } from "../shared/planning/plan-markdown.js"
@@ -62,56 +65,59 @@ describe("local work attribution", () => {
 		"user",
 		"custom",
 		"assistant",
-		"toolResult",
 	] as const)("keeps work metadata without creating an extra compaction summary before %s", async (role) => {
+		const assistant = (text: string): AssistantMessage => ({
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "openai-completions",
+			provider: "test",
+			model: "test",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 2,
+		})
 		const manager = SessionManager.inMemory(dir)
 		manager.appendMessage({ role: "user", content: "Earlier task", timestamp: 1 })
-		manager.appendMessage({ role: "user", content: "Previous turn", timestamp: 2 })
-		const earlierMessages = manager.buildSessionContext().messages
-		const firstKeptEntryId = manager.appendCustomEntry("work_identity", { workId: randomUUID() })
+		manager.appendMessage(assistant("Earlier answer"))
+		const previousTurn = manager.appendMessage({ role: "user", content: "Previous turn", timestamp: 2 })
+		manager.appendMessage(assistant("Previous answer"))
+		// Every input appends work identity metadata before its message.
+		manager.appendCustomEntry("work_identity", { workId: randomUUID() })
 		manager.appendCustomEntry("work_identity", { segment: { id: randomUUID() } })
 		if (role === "custom") manager.appendCustomMessageEntry("annotation", "Continue", false)
 		else if (role === "user") manager.appendMessage({ role, content: "Continue", timestamp: 3 })
-		else if (role === "toolResult")
-			manager.appendMessage({
-				role,
-				toolCallId: "write",
-				toolName: "write",
-				content: [{ type: "text", text: "Written" }],
-				isError: false,
-				timestamp: 3,
-			})
-		else
-			manager.appendMessage({
-				role,
-				content: [{ type: "text", text: "Continuing" }],
-				api: "openai-completions",
-				provider: "test",
-				model: "test",
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-				stopReason: "stop",
-				timestamp: 3,
-			})
-		// Pi 0.85.1 moves its cut back over invisible metadata, then incorrectly
-		// treats the previous turn as a prefix even when the kept user turn is whole.
+		// Control: metadata inside a turn, so the kept assistant message really is a split turn's suffix.
+		else manager.appendMessage(assistant("Continuing"))
+		const entries = manager.getBranch()
+		// The Pi behaviour behind the session_before_compact workaround: the cut moves back over the metadata, and the
+		// turn before it counts as split. Once Pi stops doing this for a whole turn, remove the workaround.
+		const cut = findCutPoint(entries, 0, entries.length, 1)
+		expect(entries[cut.firstKeptEntryIndex]).toMatchObject({ type: "custom", customType: "work_identity" })
+		expect(cut).toMatchObject({
+			isSplitTurn: true,
+			turnStartIndex: entries.findIndex((entry) => entry.id === previousTurn),
+		})
+		// Like Pi's prepareCompaction(), which is not exported, split the history at the cut.
+		const messages = (from: number, to: number) =>
+			entries.slice(from, to).flatMap((entry) => sessionEntryToContextMessages(entry).slice(0, 1))
 		const event: SessionBeforeCompactEvent = {
 			type: "session_before_compact",
-			branchEntries: manager.getBranch(),
+			branchEntries: entries,
 			preparation: {
-				firstKeptEntryId,
-				messagesToSummarize: earlierMessages.slice(0, 1),
-				turnPrefixMessages: earlierMessages.slice(1),
-				isSplitTurn: true,
+				firstKeptEntryId: entries[cut.firstKeptEntryIndex].id,
+				messagesToSummarize: messages(0, cut.turnStartIndex),
+				turnPrefixMessages: messages(cut.turnStartIndex, cut.firstKeptEntryIndex),
+				isSplitTurn: cut.isSplitTurn,
 				tokensBefore: 100,
 				fileOps: { read: new Set(), written: new Set(), edited: new Set() },
-				settings: { enabled: true, reserveTokens: 100, keepRecentTokens: 10 },
+				settings: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
 			},
 			reason: "manual",
 			willRetry: false,
@@ -123,14 +129,14 @@ describe("local work attribution", () => {
 		createWorkAttributionExtension()(api.api)
 		for (const handler of api.getHandlers<SessionBeforeCompactEvent>("session_before_compact"))
 			await handler(event, createContext({ cwd: dir, sessionManager: manager }))
-		if (role === "user" || role === "custom") {
+		if (role === "assistant") expect(event.preparation).toEqual(before)
+		else
 			expect(event.preparation).toEqual({
 				...before,
-				messagesToSummarize: earlierMessages,
+				messagesToSummarize: messages(0, cut.firstKeptEntryIndex),
 				turnPrefixMessages: [],
 				isSplitTurn: false,
 			})
-		} else expect(event.preparation).toEqual(before)
 		expect(event.branchEntries).toEqual(branchBefore)
 	})
 	it("marks a new request's missing scope as unknown instead of making it look like legacy history", () => {

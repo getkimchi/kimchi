@@ -323,6 +323,10 @@ export function createWorkAttributionExtension(
 			})
 		}
 		let unregisterWorkState: (() => void) | undefined = registerWorkState()
+		// Workaround for Pi 0.85.1 findCutPoint(): it moves the cut back over metadata entries, such as the
+		// work_identity entry each input appends, then reports the turn before them as split even when the kept turn
+		// is whole. Remove this hook once Pi reports such a cut as unsplit (the compaction test in
+		// work-attribution.test.ts then fails), or once inputs stop appending work_identity entries.
 		pi.on("session_before_compact", ({ preparation, branchEntries }) => {
 			if (!preparation.isSplitTurn) return
 			const firstKept = branchEntries.findIndex((entry) => entry.id === preparation.firstKeptEntryId)
@@ -332,7 +336,6 @@ export function createWorkAttributionExtension(
 				firstVisible++
 			if (firstVisible === firstKept || firstVisible === branchEntries.length) return
 			if (findTurnStartIndex(branchEntries, firstVisible, firstVisible) !== firstVisible) return
-			// Pi 0.85.1 mistakes metadata before a whole turn for a mid-turn cut.
 			// Keep our work identity entries, but summarize the earlier history only once.
 			preparation.messagesToSummarize.push(...preparation.turnPrefixMessages)
 			preparation.turnPrefixMessages = []
