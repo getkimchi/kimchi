@@ -278,12 +278,14 @@ function exclusiveRequestPulls(
 			unresolvedWorks.add(row.workId)
 			continue
 		}
+
 		const key = commitIdentity(row)
 		for (const match of row.fileMatches) {
 			if (!object(match) || !Array.isArray(match.transitionIds) || !match.transitionIds.length) {
 				unresolvedWorks.add(row.workId)
 				continue
 			}
+
 			const ids = match.transitionIds.filter((id): id is string => typeof id === "string" && Boolean(id))
 			const evidence = ids.flatMap((id) => {
 				const value = transitions.get(id)
@@ -318,6 +320,7 @@ function exclusiveRequestPulls(
 			}
 		}
 	}
+
 	const exclusive = new Map<string, string>()
 	for (const [requestId, ids] of requestTransitions) {
 		const owner = ownership.get(requestId)
@@ -341,6 +344,7 @@ function exclusiveRequestPulls(
 		}
 		if (complete && pulls.size === 1) for (const pull of pulls) exclusive.set(requestId, pull)
 	}
+
 	// One input can require several requests or local children before producing its edits.
 	const inputs = new Map<string, { requests: string[]; pulls: Set<string>; complete: boolean }>()
 	for (const [requestId, owner] of ownership) {
@@ -352,6 +356,7 @@ function exclusiveRequestPulls(
 			owner.account?.organizationId,
 			owner.account?.userId,
 		])
+
 		const input = inputs.get(key) ?? { requests: [], pulls: new Set<string>(), complete: true }
 		input.requests.push(requestId)
 		if (requestTransitions.has(requestId) || unresolvedRequests.has(requestId)) {
@@ -418,6 +423,7 @@ function requestPrices(observations: readonly RequestCostObservation[], noCharge
 			else if (value.prices.size === 0) missing = true
 			else for (const amount of value.prices) nanos += amount
 		}
+
 		const priceStatus: PriceStatus = conflict ? "conflict" : invalid ? "invalid" : missing ? "missing" : "priced"
 		return { billingRecordIds, priceStatus, nanos }
 	}
@@ -479,6 +485,7 @@ export function calculatePullRequestCosts(
 			if (identity?.id) add(identitiesByUrl, identity.url, pullRequestKey(identity))
 		}
 	}
+
 	const firstRecorded = (commit: string) => {
 		let earliest = commitRecorded.get(commit) ?? Number.POSITIVE_INFINITY
 		const seen = new Set([commit])
@@ -488,6 +495,7 @@ export function calculatePullRequestCosts(
 		}
 		return earliest
 	}
+
 	/** Keyed by work and PR: when that work first recorded a commit linked to the PR. */
 	const firstLinked = new Map<string, number>()
 	for (const row of records) {
@@ -507,6 +515,7 @@ export function calculatePullRequestCosts(
 					(owner.segment !== undefined && JSON.stringify(owner.segment) !== JSON.stringify(segment))
 				owner.segment ??= segment
 			}
+
 			const account = object(row.scope) && isWorkAccount(row.scope.account) ? row.scope.account : undefined
 			owner.unverifiedAccount ||= !account || (owner.account !== undefined && !sameWorkAccount(owner.account, account))
 			owner.account ??= account
@@ -528,6 +537,7 @@ export function calculatePullRequestCosts(
 				invalidWorkLinks.add(row.workId)
 				continue
 			}
+
 			const { identity, pullRequest: pull } = parsed
 			const aliases = identitiesByUrl.get(identity.url)
 			const key = identity.id
@@ -546,6 +556,7 @@ export function calculatePullRequestCosts(
 				if (!pulls.has(key)) pulls.set(key, { checkedAt: Number.NEGATIVE_INFINITY, pullRequest: null })
 				continue
 			}
+
 			const checkedAt = Date.parse(pull.checkedAt)
 			const previous = pulls.get(key)
 			if (!previous || checkedAt > previous.checkedAt) pulls.set(key, { checkedAt, pullRequest: pull })
@@ -575,6 +586,7 @@ export function calculatePullRequestCosts(
 		}
 		return followUps
 	}
+
 	const exclusivePulls = exclusiveRequestPulls(records, ownership, commitPulls)
 	const links = requestWorkLinks(records)
 	const priceFor = requestPrices(observations, noCharge)
@@ -585,6 +597,7 @@ export function calculatePullRequestCosts(
 		accounts.push(row.account)
 		billingAccounts.set(row.requestId, accounts)
 	}
+
 	const amounts = new Map<string, bigint>()
 	const requests: RequestCostAllocation[] = [...ownership]
 		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
@@ -615,6 +628,7 @@ export function calculatePullRequestCosts(
 					pullRequestIds = unmergedAtStart
 					allocated = allocation(owner, pullRequestIds, pulls, invalidWorkLinks)
 				}
+
 				const followUps = followUpPulls(pullRequestIds, owner.startedAt, allocationWorks)
 				if (allocated.allocation === "shared" && followUps.size && followUps.size < pullRequestIds.length) {
 					pullRequestIds = pullRequestIds.filter((key) => !followUps.has(key))
@@ -623,6 +637,7 @@ export function calculatePullRequestCosts(
 					if (allocated.allocation === "pull-request") allocated = { allocation: "inferred" }
 				}
 			}
+
 			const postMerge = allocated.allocation === "post-merge"
 			if (!postMerge && owner.unresolvedMatch && !exclusive && !link)
 				allocated = { allocation: "unknown", reason: "work-match-unresolved" }
@@ -683,6 +698,7 @@ export function calculatePullRequestCosts(
 			requestsByPull.set(key, linked)
 		}
 	}
+
 	function total(rows: RequestCostAllocation[]): CostTotal {
 		const knownCostUsd = usd(rows.reduce((sum, row) => sum + (amounts.get(row.requestId) ?? 0n), 0n))
 		return {
@@ -691,6 +707,7 @@ export function calculatePullRequestCosts(
 			totalCostUsd: rows.every((row) => row.priceStatus === "priced") ? knownCostUsd : null,
 		}
 	}
+
 	const pullRequests = [...pulls]
 		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
 		.flatMap(([key, { pullRequest }]) => {
@@ -714,6 +731,7 @@ export function calculatePullRequestCosts(
 						(row) =>
 							row.allocation === "pull-request" || (row.allocation === "inferred" && row.pullRequestIds.length === 1),
 					)
+
 					const sure = assigned.filter((row) => row.allocation === "pull-request")
 					const likely = assigned.filter((row) => row.allocation === "inferred")
 					const cost = total(assigned)
