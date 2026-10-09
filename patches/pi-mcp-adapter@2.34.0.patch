@@ -13,6 +13,12 @@
 #     pending at https://github.com/nicobailon/pi-mcp-adapter (remove when
 #     upstream supports an opportunistic loopback listener for manual
 #     redirect flows)
+#   - OAuth metadata Accept header: strict gateways answer 406 when
+#     text/event-stream is missing; upstream issue pending at
+#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
+#     sends "Accept: application/json, text/event-stream")
+#   - DCR clientInfo version: hardcoded "2.11.0" in mcp-auth-flow; remove
+#     when upstream derives it from the package version
 # Changes:
 #   - agent-dir/config (+dist mirrors): resolve the MCP project config
 #     directory via piConfig.mcpProjectConfigDir so project MCP config can
@@ -49,7 +55,10 @@
 #   - proxy-modes: a background auth watcher that fails with the callback
 #     timeout appends the actionable manual-auth instructions (URL and
 #     auth-complete paste command) to the failure status message.
-
+#   - mcp-auth-flow: DCR clientInfo version bumped from stale hardcoded
+#     "2.11.0" to "2.34.0".
+#   - mcp-oauth-provider: configured-discovery metadata fetch sends Accept
+#     "application/json, text/event-stream" instead of "application/json".
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -371,7 +380,7 @@ index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547
          if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
              return true;
 diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
-index 0ae900470d923665153cdbc6028dd91f81c180b2..3e1d02e242e5f9bf5dd393839014ea3cd9a353df 100644
+index 0ae900470d923665153cdbc6028dd91f81c180b2..632f17314276b4a0295744b6560733e412d0868d 100644
 --- a/mcp-auth-flow.ts
 +++ b/mcp-auth-flow.ts
 @@ -25,6 +25,8 @@ import {
@@ -409,6 +418,15 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..3e1d02e242e5f9bf5dd393839014ea3c
    discovery: AuthDiscovery
    getHeaders: () => Headers
    authStorageOptions: AuthStorageOptions
+@@ -343,7 +357,7 @@ async function probeAuthDiscovery(serverUrl: string, definition?: ServerEntry, s
+         params: {
+           protocolVersion: LATEST_PROTOCOL_VERSION,
+           capabilities: {},
+-          clientInfo: { name: "pi-mcp-adapter", version: "2.11.0" },
++          clientInfo: { name: "pi-mcp-adapter", version: "2.34.0" },
+         },
+       }),
+       ...(discoverySignal ? { signal: discoverySignal } : {}),
 @@ -453,7 +467,7 @@ export async function startAuth(
    definition?: ServerEntry,
    options: AuthenticateOptions = {},
@@ -662,6 +680,19 @@ index 91b73cf0ebffa07cb7ea9a3fcd08e7c0fb3ec5c6..4b79b41a3f5524ffc570a9a222c0843c
    clearTimeout(pending.timeout)
    pendingAuths.delete(state)
    pending.resolve({ code, ...(iss !== null ? { iss } : {}) })
+diff --git a/mcp-oauth-provider.ts b/mcp-oauth-provider.ts
+index 61369dc32e42649d06f624daf622266bff1f2a29..828604e17c9cefbafc4804dca110fe51b9af464e 100644
+--- a/mcp-oauth-provider.ts
++++ b/mcp-oauth-provider.ts
+@@ -221,7 +221,7 @@ async function loadConfiguredDiscoveryState(
+   fetchFn: FetchLike,
+ ): Promise<OAuthDiscoveryState> {
+   const response = await fetchFn(metadataUrl, {
+-    headers: { accept: "application/json" },
++    headers: { accept: "application/json, text/event-stream" },
+   })
+   if (!response.ok) {
+     await response.text().catch(() => {})
 diff --git a/metadata-cache.ts b/metadata-cache.ts
 index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef31282e511d4f 100644
 --- a/metadata-cache.ts

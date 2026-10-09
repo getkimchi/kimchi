@@ -21,6 +21,19 @@ const transportKind = process.env.KIMCHI_MCP_FIXTURE_TRANSPORT ?? "stdio"
 const expectedBearerToken = process.env.KIMCHI_MCP_FIXTURE_BEARER_TOKEN
 const oauthEnabled = process.env.KIMCHI_MCP_FIXTURE_OAUTH === "1"
 const oauthPreauthorized = process.env.KIMCHI_MCP_FIXTURE_OAUTH_PREAUTHORIZED === "1"
+// Spec-strict gateway mode (e.g. agentgateway v1.5.0): OAuth metadata and DCR
+// endpoints answer 406 unless the request Accept advertises text/event-stream.
+const strictAccept = process.env.KIMCHI_MCP_FIXTURE_STRICT_ACCEPT === "1"
+
+function rejectOnStrictAccept(request, response, path) {
+	if (!strictAccept) return false
+	const accept = request.headers.accept ?? ""
+	if (accept.includes("text/event-stream")) return false
+	record("oauth_strict_accept_rejected", { path, accept })
+	response.writeHead(406, { "content-type": "application/json" })
+	response.end(JSON.stringify({ error: "Not Acceptable: text/event-stream required" }))
+	return true
+}
 const oauthGrantType = process.env.KIMCHI_MCP_FIXTURE_OAUTH_GRANT_TYPE ?? "authorization_code"
 const oauthClientId = process.env.KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_ID ?? "kimchi-e2e-client"
 const oauthClientSecret = process.env.KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_SECRET ?? "kimchi-e2e-client-secret"
@@ -257,7 +270,8 @@ async function runHttpFixture() {
 			}
 
 			if (oauthEnabled && url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
-				record("oauth_resource_metadata_requested", { path: url.pathname })
+				record("oauth_resource_metadata_requested", { path: url.pathname, accept: request.headers.accept })
+				if (rejectOnStrictAccept(request, response, url.pathname)) return
 				sendJson(response, 200, {
 					resource: `${origin}/mcp`,
 					authorization_servers: [origin],
@@ -267,7 +281,8 @@ async function runHttpFixture() {
 			}
 
 			if (oauthEnabled && url.pathname === "/.well-known/oauth-authorization-server") {
-				record("oauth_server_metadata_requested")
+				record("oauth_server_metadata_requested", { accept: request.headers.accept })
+				if (rejectOnStrictAccept(request, response, url.pathname)) return
 				sendJson(response, 200, {
 					issuer: origin,
 					authorization_endpoint: `${origin}/authorize`,
@@ -286,7 +301,8 @@ async function runHttpFixture() {
 
 			if (oauthEnabled && request.method === "POST" && url.pathname === "/register") {
 				const metadata = await readJsonBody(request)
-				record("oauth_client_registered", { redirectUris: metadata?.redirect_uris })
+				record("oauth_client_registered", { redirectUris: metadata?.redirect_uris, accept: request.headers.accept })
+				if (rejectOnStrictAccept(request, response, url.pathname)) return
 				sendJson(response, 201, {
 					...metadata,
 					client_id: "kimchi-e2e-oauth-client",
