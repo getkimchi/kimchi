@@ -826,6 +826,49 @@ it("reads each journal once and no retained plan in an idle pass over confirmed 
 	expect(links()).toHaveLength(30)
 })
 
+it("skips unchanged history after a pass that examined every receipt without writing, until a journal changes", async () => {
+	const flow = acceptedContinuation()
+	const ledger = join(dir, "work-attribution", `${flow.ctx.sessionManager.getSessionId()}.jsonl`)
+	const original = readWorkRecords(dir).find((row) => row.type === "plan")
+	const rows = readWorkRecords(dir).filter(
+		(row) => row.sessionId === flow.ctx.sessionManager.getSessionId() && row.type !== "plan",
+	)
+	fs.writeFileSync(ledger, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`)
+	await flushWorkSummaries()
+	const progress = {}
+	await repair(progress)
+	expect(links()).toEqual([])
+	const read = vi.spyOn(fs, "readFileSync")
+	await repair(progress)
+	expect(read.mock.calls.filter(([path]) => String(path).endsWith(".jsonl"))).toEqual([])
+	read.mockRestore()
+	// Restoring the producer record changes its journal, so the next pass reads history again and confirms the plan.
+	fs.appendFileSync(ledger, `${JSON.stringify(original)}\n`)
+	await repair(progress)
+	expect(links()).toHaveLength(1)
+})
+
+it("does not retry plan receipts saved without an acceptance hash, so their history can settle", async () => {
+	for (let index = 0; index < 30; index++) {
+		const { consumer, workId, continuation } = acceptedContinuation("plan", `planner-${index}`)
+		const { contentHash: _contentHash, requestId: _requestId, ...evidence } = continuation.evidence
+		const sessionId = consumer.sessionManager.getSessionId()
+		// Releases before acceptance hashes saved plan receipts that can never name their producer.
+		fs.writeFileSync(
+			join(dir, "work-attribution", `${sessionId}.jsonl`),
+			`${JSON.stringify({ version: 1, type: "work", workId, sessionId, cwd: dir, recordedAt: new Date().toISOString(), continuation: { source: continuation.source, evidence } })}\n`,
+		)
+	}
+	await flushWorkSummaries()
+	const progress = {}
+	await repair(progress)
+	const read = vi.spyOn(fs, "readFileSync")
+	await repair(progress)
+	expect(read.mock.calls.filter(([path]) => String(path).endsWith(".jsonl"))).toEqual([])
+	read.mockRestore()
+	expect(links()).toEqual([])
+})
+
 it("keeps a concurrent revocation authoritative when its append follows the repair snapshot", async () => {
 	const flow = acceptedContinuation()
 	await flushWorkSummaries()

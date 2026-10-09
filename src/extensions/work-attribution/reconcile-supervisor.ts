@@ -27,6 +27,7 @@ interface Supervisor {
 	running?: Promise<void>
 	nextRepository?: string
 	nextContinuation?: string
+	settledJournals?: string
 	channels: Map<ChannelKind, Channel>
 }
 interface ReconciliationSubscriber {
