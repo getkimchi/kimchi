@@ -11,7 +11,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs"
 import { join, relative, sep } from "node:path"
 import { createMemoryBackend, defaultMemoryDir, normalizeMem0SearchResults } from "./backend.js"
-import { MEMORY_USER_ID } from "./config.js"
+import { MEMORY_RESOURCE_ID, MEMORY_USER_ID } from "./config.js"
 import { acquireCaptureLock } from "./lock.js"
 import { resolveProjectScope, sanitizeScopeId } from "./scope.js"
 
@@ -69,9 +69,10 @@ export type AdminCommand =
 	| { op: "search"; query: string; scope: ScopeFilter; json: boolean }
 	| { op: "delete"; ids: string[] }
 	| { op: "reset"; scope: ScopeFilter; yes: boolean }
+	| { op: "set-enabled"; enabled: boolean }
 	| { op: "usage-error"; message: string }
 
-export const USAGE = `usage: memory [list|search|delete|reset]
+export const USAGE = `usage: memory [list|search|delete|reset|enable|disable]
 
   (no arguments)   overview: storage path, per-store stats, pending jobs
   list    [--scope local|personal|project|all] [--project <owner/name>]
@@ -79,6 +80,10 @@ export const USAGE = `usage: memory [list|search|delete|reset]
   search  <query> [--scope ...] [--json]
   delete  <id> [<id>...]
   reset   --scope all|personal|project [--project <owner/name>] [--yes]
+  enable | disable
+          Toggle memory for the current interactive session only. Resets on
+          restart; the persistent feature switch is
+          "kimchi resources enable|disable ${MEMORY_RESOURCE_ID}".
 
   The default scope for list and search is local: the personal store plus
   the current project (personal only outside a repository). --scope all
@@ -86,8 +91,10 @@ export const USAGE = `usage: memory [list|search|delete|reset]
 
 // --- grammar ------------------------------------------------------------------
 
-const KNOWN_SUBCOMMANDS = new Set(["list", "search", "delete", "reset"])
+const KNOWN_SUBCOMMANDS = new Set(["list", "search", "delete", "reset", "enable", "disable"])
 const DEFAULT_LIST_LIMIT = 50
+
+export { DEFAULT_LIST_LIMIT }
 
 interface ParsedFlags {
 	values: Record<string, string>
@@ -140,6 +147,52 @@ function localScope(cwd: string): ScopeFilter {
  */
 const LOCAL_UNRESOLVED: ScopeFilter = { kind: "local", scopeId: undefined }
 
+/** Shared scope-grammar errors — single-sourced for the flag parser and the ext-method param mapping. */
+const PROJECT_REQUIRES_SCOPE = "--project requires --scope project"
+const PROJECT_WITHOUT_ID = "--scope project requires --project <owner/name> (or run inside a git repository)"
+
+/**
+ * Map ACP ext-method { scope, project } params onto the admin ScopeFilter —
+ * the same semantics as the flag grammar (personal | project | all | local;
+ * `project` pairs with an explicit project id; the default and `local`
+ * resolve via the caller-supplied cwd). Type mismatches and invalid values
+ * come back as { error } for the handler to surface as invalid params.
+ *
+ * Without a cwd there is no anchor: local (and the default) degrade to
+ * personal-only — the same semantics as the grammar outside a repository.
+ * The ACP server's own process cwd must never be the fallback; it is a
+ * long-lived process whose cwd is unrelated to any session.
+ */
+export function scopeFilterFromParams(
+	params: { scope?: unknown; project?: unknown },
+	opts: { cwd?: string },
+): ScopeFilter | { error: string } {
+	const { scope, project } = params
+	if (scope !== undefined && typeof scope !== "string") return { error: "scope must be a string" }
+	if (project !== undefined && typeof project !== "string") return { error: "project must be a string" }
+	if (opts.cwd === undefined) {
+		// No anchor. Explicit personal/all and an explicit project id need
+		// none; everything else that would probe a cwd fails fast instead.
+		if (scope === undefined || scope === "local") {
+			return project !== undefined ? { error: PROJECT_REQUIRES_SCOPE } : LOCAL_UNRESOLVED
+		}
+		if (scope === "project" && project === undefined) return { error: PROJECT_WITHOUT_ID }
+	}
+	const values: Record<string, string> = {}
+	if (scope !== undefined) values.scope = scope
+	if (project !== undefined) values.project = project
+	// The cwd is only read on the paths the no-anchor shortcut above already
+	// excluded, so the placeholder never reaches resolveProjectScope.
+	return parseScopeFilter(
+		{ values, bools: new Set<string>(), positionals: [] },
+		{ cwd: opts.cwd ?? "" },
+		{
+			reset: false,
+			usesScope: true,
+		},
+	)
+}
+
 function parseScopeFilter(
 	flags: ParsedFlags,
 	opts: { cwd: string },
@@ -149,7 +202,7 @@ function parseScopeFilter(
 	// --project names an explicit target and pairs with --scope project only —
 	// every other scope silently discarded it before.
 	if (flags.values.project !== undefined && raw !== "project") {
-		return { error: "--project requires --scope project" }
+		return { error: PROJECT_REQUIRES_SCOPE }
 	}
 	if (raw === undefined) {
 		if (reset) return { error: `reset requires --scope (all, personal, or project)` }
@@ -174,9 +227,7 @@ function parseScopeFilter(
 	}
 	const resolved = resolveProjectScope(opts.cwd)
 	if (!resolved) {
-		return {
-			error: "--scope project requires --project <owner/name> (or run inside a git repository)",
-		}
+		return { error: PROJECT_WITHOUT_ID }
 	}
 	return { kind: "project", scopeId: resolved.id }
 }
@@ -191,6 +242,16 @@ export function parseAdminArgs(args: string[], opts: { cwd: string }): AdminComm
 	const rest = sub === "" ? args : args.slice(1)
 	const flags = parseFlagTokens(rest)
 	if ("error" in flags) return { op: "usage-error", message: flags.error }
+	// The toggle is session-scoped by definition — no flags, no positionals,
+	// no scope to disambiguate (the persistent switch is the /resources
+	// feature toggle). Checked before the scope parse so `enable --scope x`
+	// reports the toggle rule, not a scope error.
+	if (sub === "enable" || sub === "disable") {
+		if (rest.length > 0) {
+			return { op: "usage-error", message: `${sub} takes no arguments — it toggles the current session's memory only` }
+		}
+		return { op: "set-enabled", enabled: sub === "enable" }
+	}
 	// Only list and search consume the parsed scope — overview and delete get
 	// the unresolved local marker instead of paying the git probe.
 	const scope = parseScopeFilter(flags, opts, {
@@ -384,11 +445,25 @@ function renderFactLines(page: AdminFact[]): string[] {
 
 // --- operations ------------------------------------------------------------------
 
+/**
+ * The session-scoped memory toggle behind the set-enabled op. Wired by
+ * interactive surfaces (the in-session /memory command, backed by the shared
+ * session-toggle module); the CLI passes no handle — enable/disable have no
+ * session to act on there.
+ */
+export interface MemoryStateHandle {
+	/** The session's override: undefined = default (enabled). */
+	read(): boolean | undefined
+	setSession(enabled: boolean): void
+}
+
 export interface AdminRunOptions {
 	/** cwd for `--scope project` resolution. */
 	cwd: string
 	/** Pre-destructive confirm for reset — return false to abort. `--yes` skips it. */
 	confirm?: (message: string) => Promise<boolean>
+	/** Session-scoped memory toggle for enable|disable (interactive surfaces only). */
+	memoryState?: MemoryStateHandle
 	/** Test seams. */
 	deps?: AdminDeps
 }
@@ -409,12 +484,12 @@ export async function runAdminCommand(args: string[], options: AdminRunOptions):
 	}
 	const deps = resolveDeps(options.deps)
 	// The --json flag selects the rendering at the surface; the ops always
-	// produce both.
-	const useJson = parsed.op !== "delete" && parsed.op !== "reset" ? parsed.json : false
+	// produce both. Only the read ops carry a json flag.
+	const useJson = parsed.op === "overview" || parsed.op === "list" || parsed.op === "search" ? parsed.json : false
 	try {
 		switch (parsed.op) {
 			case "overview":
-				return withMode(await opOverview(deps), useJson)
+				return withMode(await opOverview(deps, options.memoryState), useJson)
 			case "list":
 				return withMode(await opList(parsed, deps), useJson)
 			case "search":
@@ -423,6 +498,8 @@ export async function runAdminCommand(args: string[], options: AdminRunOptions):
 				return withMode(await opDelete(parsed, deps), false)
 			case "reset":
 				return withMode(await opReset(parsed, options, deps), false)
+			case "set-enabled":
+				return withMode(opSetEnabled(parsed, options), false)
 		}
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err)
@@ -502,11 +579,21 @@ export async function adminDeleteFacts(
 	return { deleted, notFound }
 }
 
-async function opOverview(deps: ResolvedDeps): Promise<Omit<AdminResult, "useJson">> {
-	const stores = listStores(deps.memoryRoot)
+/** Structured overview: per-store stats plus pending-capture counters. */
+export interface MemoryOverview {
+	root: string
+	stores: Array<{ scope: string; facts: number; sizeBytes: number }>
+	pendingJobs: number
+	ledgerEntries: number
+}
+
+/** Structured overview data — the data half of the overview rendering, shared with the ACP memory_status ext-method. */
+export async function adminOverview(deps?: AdminDeps): Promise<MemoryOverview> {
+	const resolved = resolveDeps(deps)
+	const stores = listStores(resolved.memoryRoot)
 	const entries = await Promise.all(
 		stores.map(async (store) => {
-			const backend = await deps.createBackend(store.dbPath)
+			const backend = await resolved.createBackend(store.dbPath)
 			return {
 				scope: store.scopeId,
 				facts: (await backend.getAll()).length,
@@ -514,24 +601,57 @@ async function opOverview(deps: ResolvedDeps): Promise<Omit<AdminResult, "useJso
 			}
 		}),
 	)
-	const pendingJobs = countDirEntries(join(deps.memoryRoot, "pending"))
-	const ledgerEntries = ledgerEntryCount(join(deps.memoryRoot, "captured-hashes.json"))
-	const data = { root: deps.memoryRoot, stores: entries, pendingJobs, ledgerEntries }
+	return {
+		root: resolved.memoryRoot,
+		stores: entries,
+		pendingJobs: countDirEntries(join(resolved.memoryRoot, "pending")),
+		ledgerEntries: ledgerEntryCount(join(resolved.memoryRoot, "captured-hashes.json")),
+	}
+}
 
-	const lines = [`Memory storage: ${deps.memoryRoot}`, ""]
-	if (entries.length === 0) {
+async function opOverview(deps: ResolvedDeps, memoryState?: MemoryStateHandle): Promise<Omit<AdminResult, "useJson">> {
+	const data = await adminOverview(deps)
+
+	const lines: string[] = []
+	if (memoryState) {
+		lines.push(memoryState.read() === false ? "Memory: disabled (this session)" : "Memory: enabled")
+	}
+	lines.push(`Memory storage: ${data.root}`, "")
+	if (data.stores.length === 0) {
 		lines.push("No memories stored yet.")
 	} else {
-		const scopeWidth = Math.max(5, ...entries.map((e) => e.scope.length))
+		const scopeWidth = Math.max(5, ...data.stores.map((e) => e.scope.length))
 		lines.push(`  ${"scope".padEnd(scopeWidth)}  facts    size`)
-		for (const entry of entries) {
+		for (const entry of data.stores) {
 			lines.push(
 				`  ${entry.scope.padEnd(scopeWidth)}  ${String(entry.facts).padEnd(8)}  ${formatSize(entry.sizeBytes)}`,
 			)
 		}
 	}
-	lines.push("", `Pending capture jobs: ${pendingJobs}`, `Captured-message ledger entries: ${ledgerEntries}`, "", USAGE)
+	lines.push(
+		"",
+		`Pending capture jobs: ${data.pendingJobs}`,
+		`Captured-message ledger entries: ${data.ledgerEntries}`,
+		"",
+		USAGE,
+	)
 	return result({ text: lines.join("\n"), data })
+}
+
+function opSetEnabled(parsed: { enabled: boolean }, options: AdminRunOptions): Omit<AdminResult, "useJson"> {
+	if (!options.memoryState) {
+		const message = `error: enable/disable toggle the current interactive session's memory — run /memory inside a session, or use "kimchi resources enable|disable ${MEMORY_RESOURCE_ID}" for the persistent feature switch`
+		return {
+			text: message,
+			json: JSON.stringify({ error: "enable/disable require an interactive session" }, null, 2),
+			code: 1,
+		}
+	}
+	options.memoryState.setSession(parsed.enabled)
+	return result({
+		text: parsed.enabled ? "Memory enabled." : "Memory disabled for this session — resets on restart.",
+		data: { enabled: parsed.enabled, sessionOverride: options.memoryState.read() },
+	})
 }
 
 async function opList(
@@ -591,18 +711,33 @@ async function opDelete(parsed: { ids: string[] }, deps: ResolvedDeps): Promise<
 	return result({ text: lines.join("\n"), data, code: notFound.length > 0 ? 1 : 0 })
 }
 
-async function opReset(
-	parsed: { scope: ScopeFilter; yes: boolean },
-	options: AdminRunOptions,
-	deps: ResolvedDeps,
-): Promise<Omit<AdminResult, "useJson">> {
-	const cancelled: Omit<AdminResult, "useJson"> = {
-		text: "Cancelled.",
-		json: JSON.stringify({ cancelled: true }, null, 2),
-		code: 1,
-	}
+/** One structured reset outcome — the data half for non-grammar surfaces (the ACP memory_reset ext-method). */
+export type AdminResetOutcome =
+	| { ok: true; scope: string; facts: number; stores?: number; pendingJobs?: number }
+	/** Client-side failures — the caller renders them or surfaces them as params problems. */
+	| { ok: false; reason: "cancelled" | "confirmation-required" }
+	| { ok: false; reason: "no-such-store"; scopeId: string }
 
-	if (parsed.scope.kind === "all") {
+export interface AdminResetOptions {
+	/** Skip the confirm gate (the grammar's --yes; the ACP method's confirm:true). */
+	yes?: boolean
+	/** Pre-destructive confirm — return false to abort. Ignored when yes. */
+	confirm?: (message: string) => Promise<boolean>
+	/** Test seams. */
+	deps?: AdminDeps
+}
+
+/**
+ * Structured reset: the same stats → confirm → lock → wipe path the grammar
+ * op runs, as data instead of rendered text. Client-side failures (no such
+ * store, a declined or missing confirmation) come back as { ok: false } —
+ * the caller renders them or surfaces them as params problems; environmental
+ * failures (lock, backend, fs) throw so callers can classify them distinctly
+ * (internalError over ACP, never invalidParams).
+ */
+export async function adminResetScope(scope: ScopeFilter, options: AdminResetOptions = {}): Promise<AdminResetOutcome> {
+	const deps = resolveDeps(options.deps)
+	if (scope.kind === "all") {
 		const stores = listStores(deps.memoryRoot)
 		const storeCounts = await Promise.all(
 			stores.map(async (store) => {
@@ -612,20 +747,14 @@ async function opReset(
 		)
 		const facts = storeCounts.reduce((a, b) => a + b, 0)
 		const pendingJobs = countDirEntries(join(deps.memoryRoot, "pending"))
-		if (!parsed.yes && !options.confirm) {
-			return {
-				text: "error: reset --scope all requires --yes or an interactive confirmation",
-				json: JSON.stringify({ error: "confirmation required" }, null, 2),
-				code: 1,
-			}
-		}
+		if (!options.yes && !options.confirm) return { ok: false, reason: "confirmation-required" }
 		if (
-			!parsed.yes &&
+			!options.yes &&
 			!(await options.confirm?.(
 				`Wipe ALL memory? This permanently deletes ${stores.length} store(s), ${facts} fact(s), and ${pendingJobs} pending capture job(s).`,
 			))
 		) {
-			return cancelled
+			return { ok: false, reason: "cancelled" }
 		}
 		const release = await deps.acquireLock(deps.memoryRoot)
 		try {
@@ -641,35 +770,26 @@ async function opReset(
 		} finally {
 			await release()
 		}
-		return result({
-			text: `Wiped the memory root: ${stores.length} store(s), ${facts} fact(s), ${pendingJobs} pending job(s) removed.`,
-			data: { scope: "all", stores: stores.length, facts, pendingJobs },
-		})
+		return { ok: true, scope: "all", facts, stores: stores.length, pendingJobs }
 	}
 
-	const scopeId = parsed.scope.kind === "personal" ? "personal" : parsed.scope.scopeId
-	const store = listStores(deps.memoryRoot).find((s) => s.scopeId === scopeId)
-	if (!store) {
-		return result({
-			text: `No memory store for ${scopeId} — nothing to reset.`,
-			data: { scope: scopeId, error: "no such store" },
-			code: 1,
-		})
+	if (scope.kind === "local") {
+		// Both reset surfaces reject local before reaching here (the grammar
+		// and the ACP handler's scope validation) — an internal invariant, not
+		// a user-facing failure mode.
+		throw new Error("adminResetScope: local is not a valid reset target")
 	}
+	const scopeId = scope.kind === "personal" ? "personal" : scope.scopeId
+	const store = listStores(deps.memoryRoot).find((s) => s.scopeId === scopeId)
+	if (!store) return { ok: false, reason: "no-such-store", scopeId }
 	const backend = await deps.createBackend(store.dbPath)
 	const facts = (await backend.getAll()).length
-	if (!parsed.yes && !options.confirm) {
-		return {
-			text: "error: reset requires --yes or an interactive confirmation",
-			json: JSON.stringify({ error: "confirmation required" }, null, 2),
-			code: 1,
-		}
-	}
+	if (!options.yes && !options.confirm) return { ok: false, reason: "confirmation-required" }
 	if (
-		!parsed.yes &&
+		!options.yes &&
 		!(await options.confirm?.(`Reset the ${scopeId} store? This permanently deletes ${facts} fact(s).`))
 	) {
-		return cancelled
+		return { ok: false, reason: "cancelled" }
 	}
 	const release = await deps.acquireLock(deps.memoryRoot)
 	try {
@@ -677,8 +797,44 @@ async function opReset(
 	} finally {
 		await release()
 	}
-	return result({
-		text: `Reset ${scopeId}: deleted ${facts} fact(s).`,
-		data: { scope: scopeId, facts },
-	})
+	return { ok: true, scope: scopeId, facts }
+}
+
+async function opReset(
+	parsed: { scope: ScopeFilter; yes: boolean },
+	options: AdminRunOptions,
+	deps: ResolvedDeps,
+): Promise<Omit<AdminResult, "useJson">> {
+	const outcome = await adminResetScope(parsed.scope, { yes: parsed.yes, confirm: options.confirm, deps })
+	if (outcome.ok) {
+		return outcome.stores !== undefined
+			? result({
+					text: `Wiped the memory root: ${outcome.stores} store(s), ${outcome.facts} fact(s), ${outcome.pendingJobs} pending job(s) removed.`,
+					data: {
+						scope: outcome.scope,
+						stores: outcome.stores,
+						facts: outcome.facts,
+						pendingJobs: outcome.pendingJobs,
+					},
+				})
+			: result({
+					text: `Reset ${outcome.scope}: deleted ${outcome.facts} fact(s).`,
+					data: { scope: outcome.scope, facts: outcome.facts },
+				})
+	}
+	if (outcome.reason === "cancelled") {
+		return { text: "Cancelled.", json: JSON.stringify({ cancelled: true }, null, 2), code: 1 }
+	}
+	if (outcome.reason === "no-such-store") {
+		return result({
+			text: `No memory store for ${outcome.scopeId} — nothing to reset.`,
+			data: { scope: outcome.scopeId, error: "no such store" },
+			code: 1,
+		})
+	}
+	return {
+		text: "error: reset requires --yes or an interactive confirmation",
+		json: JSON.stringify({ error: "confirmation required" }, null, 2),
+		code: 1,
+	}
 }

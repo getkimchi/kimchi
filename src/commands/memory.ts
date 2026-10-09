@@ -3,7 +3,10 @@
  * search, delete, reset). A thin shell over the shared admin core
  * (src/extensions/memory/admin.ts); the in-session /memory command uses
  * the same core. Deletion is user-only by design — the model never gets a
- * write tool (docs/memory-extension.md).
+ * write tool (docs/memory-extension.md). enable/disable surface the core's
+ * usage-style error for session-less callers: the runtime toggle lives in
+ * interactive sessions; the persistent feature switch is
+ * `kimchi resources enable|disable extensions.memory`.
  */
 import { runAdminCommand } from "../extensions/memory/admin.js"
 import { confirm } from "./_helpers.js"

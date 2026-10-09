@@ -6,6 +6,7 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { MEMORY_SEARCH_TIMEOUT_MS, TURN_RECALL_QUERY_MAX_CHARS } from "./config.js"
 import { createMemoryExtension, type MemorySearcher } from "./index.js"
 import { MemoryPanel } from "./memory-panel.js"
+import { getSessionMemoryOverride, setSessionMemoryOverride } from "./session-toggle.js"
 
 // The /memory command handler delegates to the admin core; the backend-
 // touching functions are mocked so arg threading, panel mounting, and
@@ -140,10 +141,24 @@ describe("memory extension", () => {
 		expect(ctx.ui.custom).toHaveBeenCalledTimes(1) // unchanged — no second panel
 		expect(ctx.ui.setWidget).toHaveBeenCalledWith("memory-view", ["{", '  "total": 0', "}"])
 
-		// A non-UI context (ACP/print mode) prints plainly to the console.
+		// rpc mode (ACP): no panel — the text path renders through the UI
+		// bridge (notify/setWidget), exactly like the overview.
+		const rpcCtx = { ...createCommandContext(), mode: "rpc" as const }
+		vi.mocked(admin.runAdminCommand).mockResolvedValue({
+			text: "rpc line 1\nrpc line 2",
+			json: "{}",
+			code: 0,
+			useJson: false,
+		})
+		await command.handler("list", rpcCtx)
+		expect(admin.adminListFacts).toHaveBeenCalledTimes(1) // no second panel fetch
+		expect(rpcCtx.ui.custom).not.toHaveBeenCalled()
+		expect(rpcCtx.ui.setWidget).toHaveBeenCalledWith("memory-view", ["rpc line 1", "rpc line 2"])
+
+		// A non-UI context (print mode) prints plainly to the console.
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
 		try {
-			const plainCtx = { ...createCommandContext(), hasUI: false }
+			const plainCtx = { ...createCommandContext(), mode: "rpc" as const, hasUI: false }
 			vi.mocked(admin.runAdminCommand).mockResolvedValue({
 				text: "plain output",
 				json: "{}",
@@ -151,7 +166,7 @@ describe("memory extension", () => {
 				useJson: false,
 			})
 			await command.handler("list", plainCtx)
-			expect(admin.adminListFacts).toHaveBeenCalledTimes(1) // panel routing requires a UI
+			expect(admin.adminListFacts).toHaveBeenCalledTimes(1) // panel routing requires the TUI
 			expect(logSpy).toHaveBeenCalledWith("plain output")
 		} finally {
 			logSpy.mockRestore()
@@ -462,5 +477,128 @@ describe("memory extension", () => {
 		// message is fresh signal, so recall keeps running for the whole session.
 		expect(search).toHaveBeenCalledTimes(8)
 		expect(sendMessage).toHaveBeenCalledTimes(7)
+	})
+
+	it("the session toggle gates memory: disabled drops it, re-enable recomputes", async () => {
+		const search = vi.fn(async () => [{ memory: "flag fact", score: 0.7 }])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		const ctx = createContext()
+		const on = await start(startEvent("turn 1"), ctx)
+		expect(on?.systemPrompt).toContain("flag fact")
+
+		// Disabled through the shared toggle — exactly what the ACP
+		// set_memory_enabled ext-method writes: no digest, no notice, no
+		// recall, no further retrieval.
+		setSessionMemoryOverride(ctx.sessionManager, false)
+		const off = await start(startEvent("turn 2"), ctx)
+		expect(off).toBeUndefined()
+		expect(search).toHaveBeenCalledTimes(1)
+
+		// Re-enabled: flip detection reset the digest — the next start
+		// recomputes instead of replaying the stale prefix.
+		setSessionMemoryOverride(ctx.sessionManager, true)
+		const back = await start(startEvent("turn 3"), ctx)
+		expect(back?.systemPrompt).toContain("flag fact")
+		expect(search).toHaveBeenCalledTimes(2)
+	})
+
+	it("the session toggle is scoped per session", async () => {
+		// Two runtimes — one per session, matching how pi binds extensions
+		// (a fresh factory invocation per session runtime).
+		const makeExtension = () =>
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: async () => ({ search: vi.fn(async () => [{ memory: "shared fact", score: 0.7 }]) }),
+			})
+		const a = await setup(makeExtension())
+		const b = await setup(makeExtension())
+		const ctxA = createContext()
+		const ctxB = createContext()
+		await a.start(startEvent("a 1"), ctxA)
+		setSessionMemoryOverride(ctxA.sessionManager, false)
+		expect(await a.start(startEvent("a 2"), ctxA)).toBeUndefined()
+		// b's session is untouched — a fresh session starts active.
+		const on = await b.start(startEvent("b 1"), ctxB)
+		expect(on?.systemPrompt).toContain("shared fact")
+	})
+
+	it("the /memory command wires a session-scoped memoryState handle", async () => {
+		const admin = await import("./admin.js")
+		const { api, getRegisteredCommand } = createExtensionApi()
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => hits() })(api)
+		const command = getRegisteredCommand("memory")
+		const ctx = createCommandContext()
+		vi.mocked(admin.runAdminCommand).mockResolvedValue({ text: "ok", json: "{}", code: 0, useJson: false })
+
+		await command.handler("disable", ctx)
+		const passed = vi.mocked(admin.runAdminCommand).mock.calls[0]?.[1]
+		const handle = passed?.memoryState
+		if (!handle) throw new Error("expected the handler to pass a memoryState handle")
+		// The handle reads and writes the shared toggle keyed by the SAME
+		// sessionManager the before_agent_start handler captures — so a flip
+		// from the command affects the next agent start.
+		handle.setSession(false)
+		expect(getSessionMemoryOverride(ctx.sessionManager)).toBe(false)
+		expect(handle.read()).toBe(false)
+		handle.setSession(true)
+		expect(getSessionMemoryOverride(ctx.sessionManager)).toBe(true)
+		expect(handle.read()).toBe(true)
+	})
+
+	it("memory_search reports the disabled state instead of a misleading miss", async () => {
+		const search = vi.fn(async () => [{ memory: "fact", score: 0.7 }])
+		const { api, getHandler, getRegisteredTool } = createExtensionApi()
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) })(api)
+		const start = getHandler<BeforeAgentStartEvent, { systemPrompt?: string } | undefined>("before_agent_start")
+		const ctx = createContext()
+		await start(startEvent("turn 1"), ctx)
+
+		setSessionMemoryOverride(ctx.sessionManager, false)
+		const tool = getRegisteredTool("memory_search")
+		const result = (await tool.execute("t1", { query: "anything" }, undefined, undefined, ctx)) as {
+			content: Array<{ type: string; text: string }>
+		}
+		expect(result.content[0]?.text).toContain("disabled")
+		expect(result.content[0]?.text).toContain("/memory enable")
+		// Only the turn-1 digest ran — the tool did not search.
+		expect(search).toHaveBeenCalledTimes(1)
+	})
+
+	it("the /memory command's toggle gates the very next agent start (identity seam)", async () => {
+		const admin = await import("./admin.js")
+		// Route the command through the REAL admin core for this test — the
+		// file-wide runAdminCommand mock would otherwise swallow the set-enabled
+		// execution, and the point is the full path: command → handle → shared
+		// toggle → runtime read.
+		const real = await vi.importActual<typeof import("./admin.js")>("./admin.js")
+		vi.mocked(admin.runAdminCommand).mockImplementation(real.runAdminCommand)
+		try {
+			const search = vi.fn(async () => [{ memory: "fact", score: 0.7 }])
+			const { api, getHandler, getRegisteredCommand } = createExtensionApi()
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) })(api)
+			const start = getHandler<BeforeAgentStartEvent, { systemPrompt?: string } | undefined>("before_agent_start")
+			const command = getRegisteredCommand("memory")
+			// ONE context object across both surfaces — the WeakMap key must be
+			// the same sessionManager instance for the command's write and the
+			// runtime's read (the session-toggle module's documented identity
+			// assumption).
+			const ctx = createCommandContext()
+
+			const on = await start(startEvent("turn 1"), ctx)
+			expect(on?.systemPrompt).toContain("fact")
+
+			await command.handler("disable", ctx)
+			expect(await start(startEvent("turn 2"), ctx)).toBeUndefined()
+
+			await command.handler("enable", ctx)
+			const back = await start(startEvent("turn 3"), ctx)
+			expect(back?.systemPrompt).toContain("fact")
+		} finally {
+			// Drop the real-implementation bridge so later tests keep the
+			// file-wide mock semantics.
+			vi.mocked(admin.runAdminCommand).mockReset()
+		}
 	})
 })
