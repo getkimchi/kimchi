@@ -17,8 +17,16 @@ import path from "node:path"
 import { Readable } from "node:stream"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import type { BunProcess } from "../lsp/types.js"
-import { DapClientRegistry, sendRequest } from "./client.js"
+import { DapClientRegistry, logSwallow, sendRequest } from "./client.js"
 import type { DapAdapterConfig, DapClient } from "./types.js"
+
+// Mock debuglog the same way work-attribution's tests do (#1362): capture the
+// debug logger so routing can be asserted, keeping node:util's other exports.
+const { debug } = vi.hoisted(() => ({ debug: vi.fn() }))
+vi.mock("node:util", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:util")>()),
+	debuglog: () => debug,
+}))
 
 // =============================================================================
 // Shared config / helpers
@@ -786,4 +794,26 @@ describe("missing adapter binary", () => {
 		expect(registry.getAll()).toHaveLength(0)
 		registry.shutdownAll()
 	}, 30_000)
+})
+
+describe("logSwallow — non-fatal failure routing", () => {
+	beforeEach(() => {
+		debug.mockReset()
+	})
+
+	it("routes through debuglog (kimchi:dap), never the raw console", () => {
+		// Raw console writes corrupt the interactive TUI — see noteClientFailure
+		// in ../lsp.ts for the same class of bug.
+		const consoleSpy = vi.spyOn(console, "error")
+		logSwallow("startDebugging")(new Error("reverse-request reply failed"))
+		expect(debug).toHaveBeenCalledTimes(1)
+		expect(debug).toHaveBeenCalledWith("[dap] startDebugging failed: reverse-request reply failed")
+		expect(consoleSpy).not.toHaveBeenCalled()
+		consoleSpy.mockRestore()
+	})
+
+	it("stringifies non-Error throwables", () => {
+		logSwallow("sendResponse")("boom")
+		expect(debug).toHaveBeenCalledWith("[dap] sendResponse failed: boom")
+	})
 })

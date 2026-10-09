@@ -1,4 +1,5 @@
 // extensions/lsp/client.ts
+import { debuglog } from "node:util"
 import { resolveTsserverPath } from "./servers.js"
 import type {
 	BunProcess,
@@ -20,6 +21,10 @@ import { detectLanguageId, fileToUri } from "./utils.js"
 const clients = new Map<string, LspClient>()
 const clientLocks = new Map<string, Promise<LspClient>>()
 const fileOperationLocks = new Map<string, Promise<void>>()
+
+/** Diagnostic log for reader anomalies — silent unless NODE_DEBUG=kimchi:lsp.
+ *  Raw console writes corrupt the interactive TUI (see lsp.ts). */
+const debug = debuglog("kimchi:lsp")
 
 // =============================================================================
 // Client Capabilities
@@ -80,14 +85,14 @@ function parseMessage(
 		// Corrupted JSON body — skip the frame entirely rather than crashing
 		// the reader (which would reject all pending requests and leave a
 		// zombie client). Log the raw content for production debugging.
-		console.error(`LSP: skipping unparseable frame (${contentLen} bytes):`, content.slice(0, 200))
+		debug(`LSP: skipping unparseable frame (${contentLen} bytes):`, content.slice(0, 200))
 		return { skipped: true, remaining: buf.subarray(end) }
 	}
 
 	if (typeof message !== "object" || message === null) {
 		// Valid JSON but not an object (e.g. bare `null`, a number, a string).
 		// The `in` operator used below throws on primitives, so skip these.
-		console.error(`LSP: skipping non-object frame (${contentLen} bytes):`, content.slice(0, 200))
+		debug(`LSP: skipping non-object frame (${contentLen} bytes):`, content.slice(0, 200))
 		return { skipped: true, remaining: buf.subarray(end) }
 	}
 

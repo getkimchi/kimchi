@@ -15,7 +15,7 @@
 //   3. Valid frames after skipped ones still process.
 //   4. On reader crash, the zombie client is removed from the registry.
 //
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { getAllClients, getOrCreateClient, sendRequest, shutdownAll } from "./client.js"
 import type { BunProcess, ServerConfig } from "./types.js"
 
@@ -184,6 +184,7 @@ afterAll(() => {
 })
 
 afterEach(() => {
+	vi.restoreAllMocks()
 	shutdownAll()
 })
 
@@ -286,6 +287,9 @@ describe("LSP client reader — malformed frame resilience", () => {
 	})
 
 	it("processes multiple valid frames interleaved with malformed ones", async () => {
+		// Raw console writes corrupt the interactive TUI — the skip path must
+		// route through debuglog ("kimchi:lsp"), never console.error.
+		const consoleSpy = vi.spyOn(console, "error")
 		const clientPromise = getOrCreateClient(FAKE_CONFIG, CWD)
 		await answerInitialize(fake)
 		const client = await clientPromise
@@ -314,6 +318,7 @@ describe("LSP client reader — malformed frame resilience", () => {
 		// All three valid frames were processed; garbage and null were skipped
 		expect(client.diagnostics.get(uri1)?.diagnostics[0].message).toBe("updated")
 		expect(client.diagnostics.has(uri2)).toBe(true)
+		expect(consoleSpy).not.toHaveBeenCalled()
 	})
 })
 
