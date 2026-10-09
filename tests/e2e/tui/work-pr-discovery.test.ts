@@ -123,7 +123,8 @@ test("pending work survives a GitHub login error and finds a PR while coding con
 			setGitHub("open")
 			await waitForText(terminal, "PR #731 open", { full: false, timeoutMs: 35_000 })
 			terminal.submit("/work")
-			await waitForText(terminal, "· PR #731 open", { full: false })
+			// The footer ends with `· PR #731 open` too; only the panel row has the work ID before it.
+			await waitForText(terminal, new RegExp(`${workId.slice(0, 8)}.*· PR #731 open`), { full: false })
 			terminal.keyPress(Key.Enter)
 			await waitForText(terminal, PROMPT_READY, { full: false })
 			const printed = viewText(terminal)
