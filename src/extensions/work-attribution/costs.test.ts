@@ -1549,6 +1549,25 @@ describe("exclusive allocation with tool-observed edits", () => {
 	})
 
 	it.each([
+		["an empty PR lookup", { pullRequests: [] }],
+		["no PR lookup yet", { pullRequests: undefined }],
+	])("keeps native proof unconfirmed while the input's own Bash commit has %s", (_case, fields) => {
+		// Discovery may still find it, or it was squashed outside Kimchi and never reaches a PR.
+		const segment = { id: "input", attribution: "session", reason: "new-task" }
+		const sure = calculatePullRequestCosts(
+			[request("r", "work-a", "session-a", time(10), { segment }), edit, nativeCommit],
+			[charge("r", "1")],
+		)
+		expect(sure.requests[0].allocation).toBe("pull-request")
+		const report = calculatePullRequestCosts(
+			[request("r", "work-a", "session-a", time(10), { segment }), edit, nativeCommit, { ...bashCommit, ...fields }],
+			[charge("r", "1")],
+		)
+		expect(report.requests[0].allocation).toBe("inferred")
+		expect(report.pullRequests[0]).toMatchObject({ totalCostUsd: "1.000000000", explicit: { requestIds: [] } })
+	})
+
+	it.each([
 		{ name: "same PR", pull: pullRequest(), allocation: "pull-request" },
 		{ name: "other PR", pull: second, allocation: "shared" },
 	])("checks a local child's Bash commit to the $name for the whole input", ({ pull, allocation }) => {
