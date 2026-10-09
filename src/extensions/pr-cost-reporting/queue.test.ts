@@ -300,6 +300,29 @@ describe("durable reporting queue", () => {
 		expect(Object.values(state.entries).map((entry) => entry.repository.id)).toEqual(["43"])
 		expect(state.error).toContain("limits")
 	})
+	it("does not rewrite or sync an unchanged queue", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const before = await files.stat(path)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const after = await files.stat(path)
+		expect([after.ino, after.mtimeMs]).toEqual([before.ino, before.mtimeMs])
+	})
+	it("holds only the replacement that would overflow the local queue", async () => {
+		await setReportingEnabled(directory, true)
+		// Four full repositories pass the 24 MiB queue; the others are queued, and the last one waits for room.
+		const full = (repositoryId: string) => {
+			const value = snapshot(Array.from({ length: SNAPSHOT_LIMITS.requests }, () => crypto.randomUUID()))
+			value.content.repository.id = repositoryId
+			return value
+		}
+		await queueSnapshots(directory, ["51", "52", "53", "54"].map(full))
+		const state = await readReportingState(directory)
+		expect(Object.values(state.entries).filter((entry) => entry.pending)).toHaveLength(3)
+		expect(state.error).toContain("until queued reports leave room in the local queue")
+		expect((await files.stat(join(directory, "pr-cost-reporting", "state.json"))).size).toBeLessThan(24 * 1024 * 1024)
+	}, 60_000)
 	it("keeps the retry deadline when new source evidence replaces a rate-limited snapshot", async () => {
 		await setReportingEnabled(directory, true)
 		await queueSnapshots(directory, [snapshot()])

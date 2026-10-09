@@ -61,6 +61,10 @@ export interface AccountPause {
 export const UPLOAD_INTERVAL_MS = 5 * 60_000
 /** A limit learned from the server is retried at the normal limits after a week. */
 const LEARNED_LIMIT_MS = 7 * 24 * 60 * 60_000
+/** The local queue's size limit; a replacement that would cross it waits instead of blocking every repository. */
+const MAX_STATE_BYTES = 24 * 1024 * 1024
+/** Room for JSON punctuation the per-entry estimate leaves out. */
+const STATE_SIZE_MARGIN = 64 * 1024
 export interface PendingRepository {
 	account: WorkAccount
 	repository: ReportingRepository
@@ -161,13 +165,19 @@ function empty(): ReportingState {
 }
 
 export async function readReportingState(agentDir: string): Promise<ReportingState> {
+	return (await loadReportingState(agentDir)).state
+}
+
+/** The validated state and, when the file exists, its text, so an unchanged update can skip the write. */
+async function loadReportingState(agentDir: string): Promise<{ state: ReportingState; text?: string }> {
 	try {
 		const file = await open(statePath(agentDir), "r")
 		let value: ReportingState
+		let text: string
 		try {
-			if ((await file.stat()).size > 24 * 1024 * 1024)
-				throw new Error("PR reporting state exceeds its local size limit")
-			value = JSON.parse(await file.readFile("utf8"))
+			if ((await file.stat()).size > MAX_STATE_BYTES) throw new Error("PR reporting state exceeds its local size limit")
+			text = await file.readFile("utf8")
+			value = JSON.parse(text)
 		} finally {
 			await file.close()
 		}
@@ -233,11 +243,11 @@ export async function readReportingState(agentDir: string): Promise<ReportingSta
 			kind: "queueDepth",
 			value: Object.values(value.entries).filter((entry) => entry.pending).length,
 		})
-		return value
+		return { state: value, text }
 	} catch (error) {
 		if (object(error) && error.code === "ENOENT") {
 			trackPRCostMetric({ kind: "queueDepth", value: 0 })
-			return empty()
+			return { state: empty() }
 		}
 		throw new Error("PR reporting state is unreadable; queued reports were not replaced", { cause: error })
 	}
@@ -256,11 +266,13 @@ async function update(agentDir: string, mutate: (state: ReportingState) => void)
 		},
 	})
 	try {
-		const state = await readReportingState(agentDir)
+		const { state, text } = await loadReportingState(agentDir)
 		state.machine ??= await machineFingerprint()
 		mutate(state)
 		const body = `${JSON.stringify(state)}\n`
-		if (Buffer.byteLength(body) > 24 * 1024 * 1024) throw new Error("PR reporting queue exceeds its local size limit")
+		// Passes run every 30 seconds; an unchanged queue is not rewritten or synced.
+		if (body === text) return state
+		if (Buffer.byteLength(body) > MAX_STATE_BYTES) throw new Error("PR reporting queue exceeds its local size limit")
 		await writeFileDurably(statePath(agentDir), body, () => {
 			if (compromised) throw compromised
 		})
@@ -412,6 +424,10 @@ export async function queueSnapshots(
 			if (snapshotMarkers(snapshot.content).some((marker) => marker.startsWith("correction:") && !seen.has(marker)))
 				corrected.add(accountKey(snapshot.account))
 		}
+		// Smaller replacements first; one that would push the queue past its size limit waits for space.
+		let size = changes.length ? Buffer.byteLength(JSON.stringify(state)) : 0
+		let tooLarge = 0
+		changes.sort(([, a], [, b]) => JSON.stringify(a.content).length - JSON.stringify(b.content).length)
 		for (const [key, snapshot, digest] of changes) {
 			const entry = state.entries[key]
 			const next = BigInt(entry?.revision ?? "0") + 1n
@@ -430,7 +446,7 @@ export async function queueSnapshots(
 				withdrawals.has(key) ||
 				corrected.has(accountKey(snapshot.account)) ||
 				snapshotMarkers(snapshot.content).some((marker) => !acknowledged.has(marker))
-			state.entries[key] = {
+			const replacement: PendingRepository = {
 				...entry,
 				account: snapshot.account,
 				repository: snapshot.content.repository,
@@ -449,6 +465,16 @@ export async function queueSnapshots(
 				attempts: entry?.attempts ?? 0,
 				retryAt: entry?.retryAt ?? 0,
 			}
+			const grown =
+				Buffer.byteLength(JSON.stringify({ [key]: replacement })) -
+				(entry ? Buffer.byteLength(JSON.stringify({ [key]: entry })) : 0)
+			if (size + grown > MAX_STATE_BYTES - STATE_SIZE_MARGIN) {
+				if (entry) entry.held = true
+				tooLarge++
+				continue
+			}
+			size += grown
+			state.entries[key] = replacement
 			largest = {
 				requests: Math.max(largest?.requests ?? 0, pending.requests.length),
 				bytes: Math.max(largest?.bytes ?? 0, Buffer.byteLength(JSON.stringify(pending))),
@@ -461,6 +487,9 @@ export async function queueSnapshots(
 					? [
 							`PR reporting held ${invalid.size} snapshot(s) that are invalid or exceed the upload limits after trimming`,
 						]
+					: []),
+				...(tooLarge
+					? [`PR reporting held ${tooLarge} snapshot(s) until queued reports leave room in the local queue`]
 					: []),
 			].join(". ") || undefined
 	})
