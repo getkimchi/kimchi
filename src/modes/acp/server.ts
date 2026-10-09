@@ -127,7 +127,7 @@ import {
 	ACP_REATTACH_MID_TURN_META_KEY,
 	buildToolCallId,
 } from "../../sandbox/worker/acp-protocol.js"
-import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-state.js"
+import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"

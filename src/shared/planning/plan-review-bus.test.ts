@@ -1,15 +1,18 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	consumePlanReviewContext,
 	emitPlanReviewDecision,
 	emitPlanReviewRequest,
 	getActivePlanReviewSource,
+	notifyPlanReviewClosed,
 	onPlanReviewDecision,
 	onPlanReviewRequest,
 	PLAN_REVIEW_DECISION_CHANNEL,
 	PLAN_REVIEW_REQUEST_CHANNEL,
 	type PlanReviewContext,
+	resetPlanReviewClosedListenersForTests,
+	subscribePlanReviewClosed,
 } from "./plan-review-bus.js"
 
 function createMockPi(): {
@@ -235,5 +238,46 @@ describe("onPlanReviewRequest / onPlanReviewDecision", () => {
 		registeredHandler?.({ source: "adhoc" }) // missing planContent
 
 		expect(handler).not.toHaveBeenCalled()
+	})
+})
+
+describe("plan-review closed notifier", () => {
+	afterEach(() => {
+		resetPlanReviewClosedListenersForTests()
+	})
+
+	it("delivers the sessionId to subscribers", () => {
+		const listener = vi.fn()
+		subscribePlanReviewClosed(listener)
+		notifyPlanReviewClosed("session-a")
+		expect(listener).toHaveBeenCalledWith("session-a")
+	})
+
+	it("supports multiple listeners in registration order", () => {
+		const calls: string[] = []
+		subscribePlanReviewClosed((id) => calls.push(`first:${id}`))
+		subscribePlanReviewClosed((id) => calls.push(`second:${id}`))
+		notifyPlanReviewClosed("s")
+		expect(calls).toEqual(["first:s", "second:s"])
+	})
+
+	it("stops delivering after unsubscribe", () => {
+		const listener = vi.fn()
+		const unsubscribe = subscribePlanReviewClosed(listener)
+		unsubscribe()
+		notifyPlanReviewClosed("session-a")
+		expect(listener).not.toHaveBeenCalled()
+	})
+
+	it("does not leak notifications across listeners for other sessions (listeners filter by sessionId)", () => {
+		const sessionA = vi.fn()
+		const sessionB: string[] = []
+		subscribePlanReviewClosed(sessionA)
+		subscribePlanReviewClosed((id) => {
+			if (id === "b") sessionB.push(id)
+		})
+		notifyPlanReviewClosed("a")
+		expect(sessionA).toHaveBeenCalledWith("a")
+		expect(sessionB).toEqual([])
 	})
 })

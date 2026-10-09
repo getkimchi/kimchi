@@ -15,11 +15,12 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { isResourceEnabled } from "../../resources/store.js"
-import { emitPlanReviewDecision, PLAN_REVIEW_DECISION_CHANNEL } from "../../shared/planning/plan-review-bus.js"
 import {
+	emitPlanReviewDecision,
+	PLAN_REVIEW_DECISION_CHANNEL,
 	resetPlanReviewClosedListenersForTests,
 	subscribePlanReviewClosed,
-} from "../../shared/planning/plan-review-state.js"
+} from "../../shared/planning/plan-review-bus.js"
 import { registerReadOnlyToolProvider } from "../../shared/planning/tool-profile-manager.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"

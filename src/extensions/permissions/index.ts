@@ -16,10 +16,10 @@ import {
 	consumePlanReviewContext,
 	emitPlanReviewDecision,
 	emitPlanReviewRequest,
+	notifyPlanReviewClosed,
 	onPlanReviewDecision,
 	type PlanReviewDecisionPayload,
 } from "../../shared/planning/plan-review-bus.js"
-import { notifyPlanReviewClosed } from "../../shared/planning/plan-review-state.js"
 import {
 	contentHasToolCall,
 	hasPlanSubmitToolCall,
