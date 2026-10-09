@@ -280,6 +280,38 @@ describe("automatic exact work cost lookup", () => {
 		expect(workCostDetails(dir, workId)).toContain("Sure: $0.000000000 USD; likely: $0.123456789 USD.")
 	})
 
+	it("counts requests sent without a billing tag by reason in work details", async () => {
+		const untagged = (reason: string) => {
+			const requestId = randomUUID()
+			const { ctx, workId, source } = tracked("untagged", requestId)
+			appendWorkRecord(ctx, {
+				type: "request_dispatch",
+				requestId,
+				dispatchedAt: "2026-10-01T08:00:00.000Z",
+				billingSource: source,
+				billingTagSkipped: reason,
+			})
+			return workId
+		}
+		const workId = untagged("tag-limit")
+		untagged("tag-limit")
+		untagged("tag-limit")
+		await sync()
+		expect(fetchMock).not.toHaveBeenCalled()
+		expect(report(workId).requests.map((row: { billingTagSkipped: string }) => row.billingTagSkipped)).toEqual([
+			"tag-limit",
+			"tag-limit",
+			"tag-limit",
+		])
+		expect(workCostDetails(dir, workId)).toContain(
+			"3 requests untagged: tag limit (Kimchi adds model and phase tags; keep at most 7 in /tags).",
+		)
+		untagged("body-uninspectable")
+		await sync()
+		expect(workCostDetails(dir, workId)).toContain(
+			"4 requests untagged: 1 body uninspectable, 3 tag limit (Kimchi adds model and phase tags; keep at most 7 in /tags).",
+		)
+	})
 	it("shows price coverage and unresolved ownership separately in work details", async () => {
 		const { ctx, workId } = tagged("details", randomUUID(), {
 			segment: { id: "uncertain", attribution: "unknown", reason: "model-uncertain" },

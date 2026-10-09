@@ -19,6 +19,7 @@ import {
 	time,
 	usd,
 } from "./costs.js"
+import { PRICED_TAG_LIMIT } from "./request-tags.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
 import {
 	object,
@@ -662,7 +663,12 @@ async function publishReports(
 	const workRequests = new Map<string, unknown[]>()
 	for (const row of report.requests) {
 		const item = requests.get(row.requestId)
-		const shown = { ...row, billingLookup: displayedLookup(item, item && currentPoll(polls, item)) }
+		const shown = {
+			...row,
+			// Why the request was sent without a billing tag; such a request cannot be priced.
+			...(item?.tagSkipped && !item.selector ? { billingTagSkipped: item.tagSkipped } : {}),
+			billingLookup: displayedLookup(item, item && currentPoll(polls, item)),
+		}
 		for (const workId of new Set([...row.workIds, ...(row.linkedWorkIds ?? [])])) group(workRequests, workId, shown)
 	}
 	for (const workId of workIds) {
@@ -964,6 +970,19 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 			lines.push(
 				`Prices: ${priced}/${requests.length} requests priced, $${known} USD${priced < requests.length ? " known so far" : ""}. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
 			)
+			const untagged = new Map<string, number>()
+			for (const row of requests)
+				if (typeof row.billingTagSkipped === "string")
+					untagged.set(row.billingTagSkipped, (untagged.get(row.billingTagSkipped) ?? 0) + 1)
+			if (untagged.size) {
+				const count = [...untagged.values()].reduce((sum, value) => sum + value, 0)
+				const reasons = [...untagged]
+					.sort(([left], [right]) => left.localeCompare(right))
+					.map(([reason, total]) => `${untagged.size > 1 ? `${total} ` : ""}${reason.replaceAll("-", " ")}`)
+				lines.push(
+					`${count} request${count === 1 ? "" : "s"} untagged: ${reasons.join(", ")}${untagged.has("tag-limit") ? ` (Kimchi adds model and phase tags; keep at most ${PRICED_TAG_LIMIT} in /tags)` : ""}.`,
+				)
+			}
 			const failed = requests.flatMap((row) =>
 				object(row.billingLookup) && row.billingLookup.status === "unavailable" ? [row.billingLookup] : [],
 			)
