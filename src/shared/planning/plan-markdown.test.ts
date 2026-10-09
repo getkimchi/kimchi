@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as diagnostics from "../../extensions/work-attribution/diagnostics.js"
 import { derivePlanTitle, fermentPlanFileName, savePlanMarkdown, slugifyPlanName } from "./plan-markdown.js"
 
 describe("slugifyPlanName", () => {
@@ -82,7 +83,8 @@ describe("savePlanMarkdown", () => {
 	})
 
 	it("keeps the local plan usable when retaining a version fails", () => {
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const terminal = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const debug = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		writeFileSync(join(tmpDir, "agent"), "blocked")
 		const saved = savePlanMarkdown({
 			cwd: join(tmpDir, "worktree"),
@@ -92,7 +94,9 @@ describe("savePlanMarkdown", () => {
 		})
 		expect(saved.snapshotPath).toBeUndefined()
 		expect(readFileSync(saved.path, "utf8")).toContain("# Plan")
-		expect(warning).toHaveBeenCalled()
+		expect(debug).toHaveBeenCalledWith("Could not retain plan version:", expect.any(Error))
+		// Terminal output would corrupt the TUI.
+		expect(terminal).not.toHaveBeenCalled()
 	})
 
 	it("creates .kimchi/plans and writes the file, returning the absolute path", () => {

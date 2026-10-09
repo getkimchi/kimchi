@@ -23,6 +23,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { writeFileAtomic } from "../../config/json.js"
+import { debugWorkAttribution } from "../../extensions/work-attribution/diagnostics.js"
 import { isWorkId } from "../work-id.js"
 
 /** Canonical directory (relative to the project cwd) for plan markdown files. */
@@ -160,7 +161,8 @@ export function savePlanMarkdown(opts: SavePlanMarkdownOptions): {
 			writeFileAtomic(snapshotPath, content)
 			return { path: filePath, snapshotPath, contentHash: hash }
 		} catch (error) {
-			console.warn("[work-attribution] Could not retain plan version:", error)
+			// Callers show their own notice; terminal output would corrupt the TUI.
+			debugWorkAttribution("Could not retain plan version:", error)
 		}
 	}
 	return { path: filePath }
