@@ -17,7 +17,8 @@ vi.mock("./remote-agent-runner.js", () => ({
 }))
 
 import type { AgentSession, ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { createContext } from "../../__mocks__/context.js"
+import { createContext, createLiveContext } from "../../__mocks__/context.js"
+import { createModel } from "../../__mocks__/model-registry.js"
 import { flushWorkSummaries } from "../../work-attribution/summary.js"
 import { getWorkId, getWorkSegment, setWorkId } from "../../work-attribution.js"
 import { AgentManager } from "./agent-manager.js"
@@ -62,6 +63,58 @@ it("starts a queued background child in the work and segment active when it was 
 		finishFirst()
 		await vi.waitFor(() => expect(inherited).toHaveLength(2))
 		expect(inherited[1]).toEqual({ workId: spawnedIn, segment: spawnedSegment })
+	} finally {
+		manager.dispose()
+	}
+})
+
+it("pins only the work for a queued child; Pi's context getters and stale guard stay live", async () => {
+	const parent = createLiveContext({ cwd: dir, model: createModel("model-at-spawn") })
+	const spawnedIn = getWorkId(parent.ctx)
+	const spawnedSegment = getWorkSegment(parent.ctx)
+	const read = (value: () => unknown) => {
+		try {
+			return value()
+		} catch (error) {
+			return error instanceof Error ? error.message : String(error)
+		}
+	}
+	const started: Record<string, unknown>[] = []
+	const finish: (() => void)[] = []
+	vi.mocked(runAgent).mockImplementation(async (childCtx) => {
+		started.push({
+			workId: getWorkId(childCtx),
+			segment: getWorkSegment(childCtx),
+			model: read(() => childCtx.model?.id),
+			session: read(() => childCtx.sessionManager.getSessionId()),
+		})
+		await new Promise<void>((resolve) => finish.push(resolve))
+		return {
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		}
+	})
+	const manager = new AgentManager(undefined, 1)
+	try {
+		for (const name of ["running", "after-model-change", "after-session-replacement"])
+			manager.spawn({} as ExtensionAPI, parent.ctx, "Explore", name, { description: name, isBackground: true })
+		setWorkId(parent.ctx)
+		parent.set("model", createModel("model-at-start"))
+		finish[0]()
+		await vi.waitFor(() => expect(started).toHaveLength(2))
+		parent.invalidate()
+		finish[1]()
+		await vi.waitFor(() => expect(started).toHaveLength(3))
+		finish[2]()
+		const pinned = { workId: spawnedIn, segment: spawnedSegment }
+		expect(started[1]).toEqual({ ...pinned, model: "model-at-start", session: "test-session" })
+		expect(started[2]).toEqual({
+			...pinned,
+			model: expect.stringContaining("stale"),
+			session: expect.stringContaining("stale"),
+		})
 	} finally {
 		manager.dispose()
 	}

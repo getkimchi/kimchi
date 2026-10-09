@@ -32,6 +32,46 @@ export function sendTerminalInput(ctx: ExtensionContext, data: string): void {
 	}
 }
 
+/**
+ * {@link createContext} built like Pi's runner context: each property is a getter read on access, and every read
+ * throws once `invalidate()` marks the context stale. Use it for code that keeps or copies `ctx`, where plain data
+ * properties would hide a frozen copy. Pi checks its methods when called; this mock checks them when read.
+ */
+export function createLiveContext(overrides?: Parameters<typeof createContext>[0]): {
+	ctx: ExtensionContext
+	/** Changes what later reads return, as a model switch does in Pi. */
+	set<K extends keyof ExtensionContext>(key: K, value: ExtensionContext[K]): void
+	/** Marks the context stale, as Pi does after a session replacement or reload. */
+	invalidate(): void
+} {
+	const values: Record<string, unknown> = { ...createContext(overrides) }
+	let stale = false
+	const ctx = Object.defineProperties(
+		{},
+		Object.fromEntries(
+			Object.keys(values).map((key) => [
+				key,
+				{
+					enumerable: true,
+					get: () => {
+						if (stale) throw new Error("This extension ctx is stale after session replacement or reload.")
+						return values[key]
+					},
+				},
+			]),
+		),
+	) as ExtensionContext
+	return {
+		ctx,
+		set: (key, value) => {
+			values[key] = value
+		},
+		invalidate: () => {
+			stale = true
+		},
+	}
+}
+
 export function createContext(
 	overrides?: Mocked<
 		Omit<Partial<ExtensionContext>, "ui" | "sessionManager" | "modelRegistry" | "model" | "getContextUsage"> & {
