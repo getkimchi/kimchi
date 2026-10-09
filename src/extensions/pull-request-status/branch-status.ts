@@ -40,7 +40,16 @@ export async function lookupBranchPullRequest(
 						direction: "desc",
 						per_page: "1",
 					}
-				: { scope: "all", state: "all", source_branch: branch, order_by: "updated_at", sort: "desc", per_page: "100" },
+				: {
+						scope: "all",
+						state: "all",
+						source_branch: branch,
+						// Forks often reuse branch names such as main; older GitLab ignores this filter, so results are checked below.
+						source_project_id: String(remote.id),
+						order_by: "updated_at",
+						sort: "desc",
+						per_page: "100",
+					},
 		).toString()
 		const values =
 			remote.provider === "gitlab"

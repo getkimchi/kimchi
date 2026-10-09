@@ -362,8 +362,10 @@ export async function pages(
 		if (!Array.isArray(result.value))
 			throw new LookupError(`${label(repository)} returned invalid pull request pages.`, "invalid")
 		values.push(...result.value)
-		const link = /<([^>]+)>;\s*rel="?next"?/.exec(result.headers.get("link") ?? "")?.[1]
+		// GitLab's own page counter comes first: its Link header also repeats route parameters and adds defaulted
+		// filters, such as with_labels_details, that the request never sent.
 		const nextPage = result.headers.get("x-next-page")
+		const link = nextPage ? undefined : /<([^>]+)>;\s*rel="?next"?/.exec(result.headers.get("link") ?? "")?.[1]
 		if (!link && !nextPage) return values
 		let next: URL
 		try {
@@ -371,7 +373,7 @@ export async function pages(
 		} catch {
 			throw new LookupError("The Git provider returned invalid pagination.")
 		}
-		if (!link && nextPage) next.searchParams.set("page", nextPage)
+		if (nextPage) next.searchParams.set("page", nextPage)
 		sameOrigin(next, initialURL.origin)
 		const pageNumber = next.searchParams.get("page") ?? ""
 		const numericRoute = /^\/(?:api\/v3\/)?repositories\/([1-9]\d*)(\/.+)$/.exec(next.pathname)

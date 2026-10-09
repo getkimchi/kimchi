@@ -488,6 +488,8 @@ describe("repository and branch selection", () => {
 		useProvider("gitlab")
 		replies((url) => {
 			expect(url.searchParams.get("source_branch")).toBe("feature")
+			// Current GitLab filters forks out itself; an older server ignores the filter and pages through them.
+			expect(url.searchParams.get("source_project_id")).toBe("42")
 			if (!url.searchParams.has("page"))
 				return Response.json([mr(8, { source_project_id: 99 })], { headers: { "x-next-page": "2" } })
 			return [mr()]
@@ -496,6 +498,33 @@ describe("repository and branch selection", () => {
 			pullRequest: { provider: "gitlab", number: 7 },
 		})
 		expect(http).toHaveBeenCalledTimes(3)
+	})
+	it("follows gitlab.com's next page when its Link header adds the route and defaulted filters", async () => {
+		useProvider("gitlab")
+		replies((url) => {
+			if (url.searchParams.get("page") === "2") return [mr()]
+			// As gitlab.com answers a merge request list: the Link header repeats the project route and adds
+			// with_labels_details and with_merge_status_recheck, which the request never sent.
+			const page = (number: number) => {
+				const link = new URL(url)
+				link.searchParams.set("id", "team/subgroup/repo")
+				link.searchParams.set("page", String(number))
+				link.searchParams.set("with_labels_details", "false")
+				link.searchParams.set("with_merge_status_recheck", "false")
+				return link.href
+			}
+			return Response.json([mr(8, { source_project_id: 99 })], {
+				headers: {
+					link: `<${page(2)}>; rel="next", <${page(1)}>; rel="first", <${page(2)}>; rel="last"`,
+					"x-next-page": "2",
+				},
+			})
+		})
+		expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toMatchObject({
+			pullRequest: { provider: "gitlab", number: 7 },
+		})
+		const pages = http.mock.calls.map(([url]) => url).filter((url) => url.pathname.endsWith("/merge_requests"))
+		expect(pages.map((url) => url.searchParams.has("with_labels_details"))).toEqual([false, false])
 	})
 	it("does not display another GitLab project's same-name branch when no local-source MR exists", async () => {
 		useProvider("gitlab")
