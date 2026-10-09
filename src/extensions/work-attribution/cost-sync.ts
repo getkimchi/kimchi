@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
@@ -10,9 +10,24 @@ import { isWorkId } from "../../shared/work-id.js"
 import { boundedResponse } from "../../utils/http.js"
 import { plainURL } from "../../utils/url.js"
 import { appendWorkRecord } from "../work-attribution.js"
-import { calculatePullRequestCosts, decimalNanos, type RequestCostObservation, time, usd } from "./costs.js"
+import {
+	calculatePullRequestCosts,
+	decimalNanos,
+	type PullRequestCost,
+	type PullRequestCostReport,
+	type RequestCostObservation,
+	time,
+	usd,
+} from "./costs.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
-import { object, readWorkRecords, SHA256_HEX, type WorkRecord } from "./summary.js"
+import {
+	object,
+	readWorkRecords,
+	readWorkRecordsAsync,
+	SHA256_HEX,
+	type WorkRecord,
+	workJournalFingerprint,
+} from "./summary.js"
 
 export interface BillingSource {
 	apiUrl: string
@@ -145,6 +160,20 @@ function readBillingPolls(path: string): Record<string, BillingPoll> {
 			}
 	} catch {}
 	return polls
+}
+
+type Billable = RequestBilling & { source: BillingSource; selector: BillingSelector }
+/**
+ * Without an exact identity there is no network work to retry; the report derives that state
+ * from source records. The window closes once a lookup at or after its end reached the billing API.
+ */
+function billable(item: RequestBilling): item is Billable {
+	return (
+		!item.invalid &&
+		item.source !== undefined &&
+		item.selector !== undefined &&
+		!(Date.parse(item.substantiveLookup?.checkedAt ?? "") >= Date.parse(item.selector.endTime))
+	)
 }
 
 /** Scheduling state applies only to the journal observation it was written for. */
@@ -570,14 +599,72 @@ export function readWorkCostReport(agentDir: string, records = readWorkRecords(a
 	return { records, requests, report }
 }
 
+interface CostState {
+	agentDir: string
+	/** The journals this calculation came from; see workJournalFingerprint. */
+	fingerprint: string
+	requests: Map<string, RequestBilling>
+	/** Requests that may still need a lookup; closed windows cost an idle pass nothing. */
+	open: Billable[]
+	report: PullRequestCostReport
+	workIds: string[]
+	/** Refresh failures shown by the last complete publish of this calculation. */
+	published?: string
+}
+let lastCostState: CostState | undefined
+
+/** The calculation is a pure function of the journals, so passes reuse it until a journal changes. */
+async function costState(agentDir: string): Promise<CostState> {
+	// Fingerprint before reading: an append during the read only makes the next pass recalculate.
+	const fingerprint = await workJournalFingerprint(agentDir)
+	if (lastCostState?.agentDir === agentDir && lastCostState.fingerprint === fingerprint) return lastCostState
+	const records = await readWorkRecordsAsync(agentDir)
+	const { requests, report } = readWorkCostReport(agentDir, records)
+	lastCostState = {
+		agentDir,
+		fingerprint,
+		requests,
+		open: [...requests.values()].filter(billable),
+		report,
+		workIds: [...new Set(records.map((row) => row.workId))],
+	}
+	return lastCostState
+}
+
+/** Besides the journals, costs.json shows only refresh failures kept in billing-polls.json. */
+function refreshFailures(state: CostState, polls: Record<string, BillingPoll>): string {
+	return JSON.stringify(
+		Object.keys(polls)
+			.sort()
+			.flatMap((requestId) => {
+				const item = state.requests.get(requestId)
+				const failure = item && currentPoll(polls, item)?.failure
+				return failure ? [[requestId, failure.checkedAt, failure.reason]] : []
+			}),
+	)
+}
+
+function group<T>(groups: Map<string, T[]>, key: string, value: T): void {
+	const values = groups.get(key)
+	if (values) values.push(value)
+	else groups.set(key, [value])
+}
+
 async function publishReports(
 	agentDir: string,
-	assertLease: () => void,
+	{ requests, report, workIds }: CostState,
 	polls: Record<string, BillingPoll>,
-	snapshot?: WorkRecord[],
+	assertLease: () => void,
 ): Promise<void> {
-	const { records, requests, report } = readWorkCostReport(agentDir, snapshot)
-	const workIds = new Set(records.map((row) => row.workId))
+	// Group rows by work once instead of filtering every row for every work.
+	const pullRequests = new Map<string, PullRequestCost[]>()
+	for (const row of report.pullRequests) for (const workId of row.workIds) group(pullRequests, workId, row)
+	const workRequests = new Map<string, unknown[]>()
+	for (const row of report.requests) {
+		const item = requests.get(row.requestId)
+		const shown = { ...row, billingLookup: displayedLookup(item, item && currentPoll(polls, item)) }
+		for (const workId of new Set([...row.workIds, ...(row.linkedWorkIds ?? [])])) group(workRequests, workId, shown)
+	}
 	for (const workId of workIds) {
 		assertLease()
 		const directory = join(agentDir, "work", workId)
@@ -585,13 +672,8 @@ async function publishReports(
 		const value = {
 			version: 1,
 			workId,
-			pullRequests: report.pullRequests.filter((row) => row.workIds.includes(workId)),
-			requests: report.requests
-				.filter((row) => row.workIds.includes(workId) || row.linkedWorkIds?.includes(workId))
-				.map((row) => {
-					const item = requests.get(row.requestId)
-					return { ...row, billingLookup: displayedLookup(item, item && currentPoll(polls, item)) }
-				}),
+			pullRequests: pullRequests.get(workId) ?? [],
+			requests: workRequests.get(workId) ?? [],
 		}
 		const content = `${JSON.stringify(value, null, 2)}\n`
 		try {
@@ -607,8 +689,9 @@ export async function reconcileWorkCosts(
 	signal: AbortSignal,
 	assertLease: () => void = () => {},
 ): Promise<void> {
-	const records = readWorkRecords(agentDir)
-	const requests = billingRequests(records)
+	const state = await costState(agentDir)
+	signal.throwIfAborted()
+	assertLease()
 	let changed = false
 	const pollingPath = join(agentDir, "work-attribution", "billing-polls.json")
 	const polls = readBillingPolls(pollingPath)
@@ -631,26 +714,23 @@ export async function reconcileWorkCosts(
 	const organizations = new Map<string, Promise<VerifyApiKeyResponse>>()
 	const credentials = new Map<string, { key: string; source?: BillingSource }>()
 	try {
-		const checkedAt = (item: RequestBilling) =>
-			currentPoll(polls, item)?.checkedAt ?? Date.parse(item.lookup?.checkedAt ?? "")
 		// Unknown prices come first; rechecks of settled results wait for any spare budget.
-		const settled = (item: RequestBilling) =>
-			item.lookup?.status === "priced" || item.lookup?.status === "no-charge" ? 1 : 0
-		const ordered = [...requests.values()].sort(
-			(left, right) => settled(left) - settled(right) || (checkedAt(left) || 0) - (checkedAt(right) || 0),
-		)
-		for (const item of ordered) {
+		// Keys are computed once: parsing timestamps inside the comparator dominated idle passes.
+		const ordered = state.open
+			.map((item) => ({
+				item,
+				settled: item.lookup?.status === "priced" || item.lookup?.status === "no-charge" ? 1 : 0,
+				lastCheck: currentPoll(polls, item)?.checkedAt ?? (Date.parse(item.lookup?.checkedAt ?? "") || 0),
+			}))
+			.sort((left, right) => left.settled - right.settled || left.lastCheck - right.lastCheck)
+		for (const [index, { item, lastCheck }] of ordered.entries()) {
+			// Most requests are not due; still let the UI run during a long scan.
+			if (index && index % 2000 === 0) await setImmediate()
 			signal.throwIfAborted()
 			assertLease()
 			if (boundedSignal.aborted || Date.now() >= deadline || calls >= MAX_CALLS || processed >= MAX_PROCESSED_REQUESTS)
 				break
-			// Without an exact identity there is no network work to retry. The report derives
-			// this state from source records instead of appending the same event every tick.
-			if (item.invalid || !item.source || !item.selector) continue
 			const endsAt = Date.parse(item.selector.endTime)
-			// The window closes only once a lookup at or after its end reached the billing API.
-			if (Date.parse(item.substantiveLookup?.checkedAt ?? "") >= endsAt) continue
-			const lastCheck = checkedAt(item)
 			const age = Date.now() - (endsAt - 32 * DAY_MS)
 			// One final lookup may catch up after a closed client; a final lookup without any
 			// billing page is retried on the slow schedule.
@@ -802,15 +882,19 @@ export async function reconcileWorkCosts(
 		assertLease()
 		const currentPolls = JSON.stringify(polls)
 		if (currentPolls !== previousPolls) writeFileAtomic(pollingPath, `${currentPolls}\n`)
-		await publishReports(
-			agentDir,
-			() => {
-				signal.throwIfAborted()
-				assertLease()
-			},
-			polls,
-			changed ? undefined : records,
+		const latest = changed ? await costState(agentDir) : state
+		const failures = refreshFailures(latest, polls)
+		// Unchanged inputs give unchanged reports; only a deleted report needs writing again.
+		if (
+			latest.published === failures &&
+			latest.workIds.every((workId) => existsSync(join(agentDir, "work", workId, "costs.json")))
 		)
+			return
+		await publishReports(agentDir, latest, polls, () => {
+			signal.throwIfAborted()
+			assertLease()
+		})
+		latest.published = failures
 	} finally {
 		clearTimeout(timeout)
 	}

@@ -1,6 +1,6 @@
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
-import { mkdir, readFile } from "node:fs/promises"
-import { dirname, join } from "node:path"
+import { createReadStream, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { mkdir, readdir, readFile, stat } from "node:fs/promises"
+import { basename, dirname, join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { lock } from "proper-lockfile"
@@ -16,6 +16,8 @@ const RECOVERY_STAMP = ".recovered.json"
 const RECOVERY_VERSION = 4
 // Coarse filesystem timestamps and small clock differences must not hide an append.
 const RECOVERY_MTIME_SLACK_MS = 2000
+/** Background reads yield to the event loop after each chunk of this size. */
+const READ_CHUNK_BYTES = 1_048_576
 interface SummaryEntry {
 	sessionId: string
 	[key: string]: unknown
@@ -132,6 +134,14 @@ async function readSummary(path: string, workId: string): Promise<WorkSummary | 
 		if (!(error instanceof SyntaxError) && (!object(error) || error.code !== "ENOENT")) throw error
 	}
 }
+function parseRecord(line: string, records: WorkRecord[]): void {
+	try {
+		const value = JSON.parse(line)
+		if (record(value)) records.push(value)
+	} catch {
+		/* interrupted append */
+	}
+}
 export function readWorkRecords(agentDir: string, modifiedSince?: number): WorkRecord[] {
 	const directory = join(agentDir, "work-attribution")
 	if (!existsSync(directory)) return []
@@ -144,14 +154,7 @@ export function readWorkRecords(agentDir: string, modifiedSince?: number): WorkR
 			try {
 				const path = join(source, file.name)
 				if (modifiedSince !== undefined && statSync(path).mtimeMs < modifiedSince) continue
-				for (const line of readFileSync(path, "utf8").split("\n")) {
-					try {
-						const value = JSON.parse(line)
-						if (record(value)) records.push(value)
-					} catch {
-						/* interrupted append */
-					}
-				}
+				for (const line of readFileSync(path, "utf8").split("\n")) parseRecord(line, records)
 			} catch (error) {
 				// An incomplete scan must not advance recovery past a journal we could not read.
 				throw new Error(`Could not read work ledger ${file.name}`, { cause: error })
@@ -159,6 +162,52 @@ export function readWorkRecords(agentDir: string, modifiedSince?: number): WorkR
 		}
 	}
 	return records
+}
+/** The journals both readers parse, in the same order. */
+async function workJournals(agentDir: string): Promise<string[]> {
+	const directory = join(agentDir, "work-attribution")
+	const paths: string[] = []
+	for (const source of [directory, join(directory, "transitions")]) {
+		try {
+			for (const file of await readdir(source, { withFileTypes: true }))
+				if (file.isFile() && file.name.endsWith(".jsonl")) paths.push(join(source, file.name))
+		} catch (error) {
+			if (!object(error) || error.code !== "ENOENT") throw error
+		}
+	}
+	return paths
+}
+/** Like readWorkRecords, but yields to the event loop after each file chunk so a large history never blocks the UI. */
+export async function readWorkRecordsAsync(agentDir: string): Promise<WorkRecord[]> {
+	const records: WorkRecord[] = []
+	for (const path of await workJournals(agentDir)) {
+		try {
+			let partial = ""
+			for await (const chunk of createReadStream(path, { encoding: "utf8", highWaterMark: READ_CHUNK_BYTES })) {
+				const lines = `${partial}${chunk}`.split("\n")
+				partial = lines.pop() ?? ""
+				for (const line of lines) parseRecord(line, records)
+				await setImmediate()
+			}
+			parseRecord(partial, records)
+		} catch (error) {
+			throw new Error(`Could not read work ledger ${basename(path)}`, { cause: error })
+		}
+	}
+	return records
+}
+/** Names, sizes and modification times of the journals; any append or replacement changes it. */
+export async function workJournalFingerprint(agentDir: string): Promise<string> {
+	const entries: string[] = []
+	for (const path of await workJournals(agentDir)) {
+		try {
+			const { size, mtimeMs } = await stat(path)
+			entries.push(JSON.stringify([path, size, mtimeMs]))
+		} catch (error) {
+			if (!object(error) || error.code !== "ENOENT") throw error
+		}
+	}
+	return entries.sort().join("\n")
 }
 function strings(...values: unknown[]): string[] {
 	return [

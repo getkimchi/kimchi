@@ -23,7 +23,7 @@ import {
 } from "../work-attribution.js"
 
 import * as diagnostics from "./diagnostics.js"
-import { flushWorkSummaries, recoverWorkSummaries } from "./summary.js"
+import { flushWorkSummaries, readWorkRecords, readWorkRecordsAsync, recoverWorkSummaries } from "./summary.js"
 
 vi.mock("proper-lockfile", async (importOriginal) => ({ ...(await importOriginal<typeof locks>()) }))
 vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
@@ -174,6 +174,30 @@ describe("readable work summaries", () => {
 			await recovering.flushWorkSummaries()
 		}
 		expect(summary(workId).requests[0]).toMatchObject({ billingLookup: newer, billingRows: [charge] })
+	})
+	it("reads large journals in the background without blocking the event loop", async () => {
+		const ledgers = join(dir, "work-attribution")
+		fs.mkdirSync(join(ledgers, "transitions"), { recursive: true })
+		const workId = randomUUID()
+		const row = (requestId: string, note = "") =>
+			JSON.stringify({ version: 1, type: "request", workId, sessionId: "large", requestId, note })
+		// About 6 MiB in several files; one multi-byte note crosses a read chunk boundary.
+		const lines = Array.from({ length: 20_000 }, () => row(randomUUID(), "x".repeat(200)))
+		fs.writeFileSync(join(ledgers, "large.jsonl"), `${row(randomUUID(), "é".repeat(700_000))}\n${lines.join("\n")}\n`)
+		fs.writeFileSync(join(ledgers, "transitions", "edits.jsonl"), `${lines.slice(0, 1000).join("\n")}\ninterrupted`)
+		let turns = 0
+		let reading = true
+		const spin = () => {
+			turns++
+			if (reading) setImmediate(spin)
+		}
+		setImmediate(spin)
+		const records = await readWorkRecordsAsync(dir)
+		reading = false
+		expect(records).toHaveLength(21_001)
+		expect(records).toEqual(readWorkRecords(dir))
+		// The synchronous reader would let no other callback run until it finished.
+		expect(turns).toBeGreaterThanOrEqual(6)
 	})
 	it("lists each billing ID once with its latest observation, including after a replay", async () => {
 		const ctx = context()

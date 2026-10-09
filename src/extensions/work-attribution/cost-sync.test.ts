@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto"
+import * as fs from "node:fs"
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as json from "../../config/json.js"
 import * as config from "../../config.js"
 import { createContext } from "../__mocks__/context.js"
 import { appendWorkRecord, getWorkId } from "../work-attribution.js"
@@ -13,10 +15,16 @@ import {
 	requestTagSelector,
 	workCostDetails,
 } from "./cost-sync.js"
+import * as costs from "./costs.js"
 import { calculatePullRequestCosts } from "./costs.js"
+import * as summary from "./summary.js"
 import { flushWorkSummaries, readWorkRecords, recoverWorkSummaries, type WorkRecord } from "./summary.js"
 
 vi.mock("../../config.js", async (original) => ({ ...(await original<typeof config>()) }))
+vi.mock("../../config/json.js", async (original) => ({ ...(await original<typeof json>()) }))
+vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
+vi.mock("./costs.js", async (original) => ({ ...(await original<typeof costs>()) }))
+vi.mock("./summary.js", async (original) => ({ ...(await original<typeof summary>()) }))
 
 const API = "https://billing.example/api"
 const GATEWAY = "https://gateway.example/openai/v1/chat/completions"
@@ -1615,6 +1623,60 @@ describe("billing poll scheduling", () => {
 		expect(readWorkCostReport(dir).requests.get(requestId)?.substantiveLookup?.checkedAt).toBe(
 			new Date(end + 60_000).toISOString(),
 		)
+	})
+})
+
+describe("idle cost passes", () => {
+	it("skips reading, recalculating and writing costs while the journals are unchanged", async () => {
+		const { workId, ctx, requestId, source } = tagged()
+		await sync()
+		await flushWorkSummaries()
+		const saved = report(workId)
+		const read = vi.spyOn(summary, "readWorkRecordsAsync")
+		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
+		const write = vi.spyOn(json, "writeFileDurably")
+		const readFile = vi.spyOn(fs, "readFileSync")
+		const reports = (calls: unknown[][]) => calls.filter(([path]) => String(path).endsWith("costs.json"))
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000)
+		await sync()
+		await sync()
+		expect(read).not.toHaveBeenCalled()
+		expect(calculate).not.toHaveBeenCalled()
+		expect(reports(write.mock.calls)).toEqual([])
+		expect(reports(readFile.mock.calls)).toEqual([])
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+		// A deleted report is rebuilt from the same calculation.
+		unlinkSync(join(dir, "work", workId, "costs.json"))
+		await sync()
+		expect(report(workId)).toEqual(saved)
+		expect(calculate).not.toHaveBeenCalled()
+		expect(reports(write.mock.calls)).toHaveLength(1)
+		// Any append changes the journals' fingerprint.
+		appendWorkRecord(ctx, { type: "request_response", requestId, billingSource: source, response: { status: 200 } })
+		await sync()
+		expect(read).toHaveBeenCalledOnce()
+		expect(calculate).toHaveBeenCalledOnce()
+		expect(report(workId)).toEqual(saved)
+	})
+	it("keeps an idle pass over 5,000 settled requests far cheaper than recalculating them", async () => {
+		seedJournal(
+			Array.from({ length: 5000 }, () => ({
+				requestId: randomUUID(),
+				dispatchedAt: "2026-08-01T00:00:00.000Z",
+				lookup: "priced" as const,
+				checkedAt: "2026-09-10T00:00:00.000Z",
+			})),
+		)
+		const timed = async () => {
+			const started = performance.now()
+			await sync()
+			return performance.now() - started
+		}
+		const first = await timed()
+		const idle = Math.min(await timed(), await timed())
+		expect(fetchMock).not.toHaveBeenCalled()
+		// A coarse ratio, not a wall-clock budget: both passes run on the same machine and load.
+		expect(idle).toBeLessThan(first / 5)
 	})
 })
 

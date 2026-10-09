@@ -286,7 +286,7 @@ All paths below are inside the agent directory.
 | File | What it is for |
 | --- | --- |
 | `work/<workId>/work.json` | Readable summary of sessions, request attempts, plans, file edits, continuation evidence, commits and PR links. |
-| `work/<workId>/costs.json` | Derived PR totals and each request's allocation, price and billing lookup status. Rebuilt from source records when missing. |
+| `work/<workId>/costs.json` | Derived PR totals and each request's allocation, price and billing lookup status. Rebuilt from source records when missing, and rewritten only after a journal or refresh failure changes. |
 | `work-attribution/billing-polls.json` | Latest polling times and the last refresh that failed before any billing page. Replaced after checks, so unchanged results and failed refreshes do not grow the journal. |
 | `work/<workId>/scope.json` | Original API endpoint, organization, user and Git common-directory identity. Credentials are not saved here. |
 | `work/<workId>/intent.json` | Saved task text for opt-in model matching, bound to its original account and repository. |
