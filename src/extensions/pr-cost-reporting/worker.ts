@@ -173,7 +173,11 @@ export async function deliverSnapshots(
 				assertCurrent()
 				status = response.status
 				retryAfterMs = parseRetryAfterMs(response)
-				if (!response.ok) errorMessage = `PR reporting returned HTTP ${response.status}`
+				if (!response.ok)
+					errorMessage =
+						response.status === 403
+							? "PR reporting is not allowed for this API key: uploading PR costs needs an Owner or Member role (HTTP 403)"
+							: `PR reporting returned HTTP ${response.status}`
 				// Verify, acknowledgement and error bodies are small; neither response text nor headers enter durable state.
 				const bounded = await boundedResponse(
 					response,

@@ -552,6 +552,17 @@ describe("account-fenced reporting delivery", () => {
 		expect(Object.values(state.entries)[0].pending).toBeDefined()
 		expect(JSON.stringify(state)).not.toContain("secret")
 	})
+	it("explains a role that cannot upload and retries it slowly", async () => {
+		http.mockImplementation(async () => Response.json({ message: "permission denied" }, { status: 403 }))
+		const before = Date.now()
+		await deliverSnapshots(directory, "/project", new AbortController().signal, () => {})
+		const state = await readReportingState(directory)
+		const [entry] = Object.values(state.entries)
+		expect(entry.lastError).toBe(
+			"PR reporting is not allowed for this API key: uploading PR costs needs an Owner or Member role (HTTP 403)",
+		)
+		expect(entry.retryAt - before).toBeGreaterThanOrEqual(0.8 * 60 * 60 * 1000)
+	})
 	it("still delivers when the opt-out watcher cannot start", async () => {
 		vi.spyOn(fs, "watch").mockImplementation(() => {
 			throw Object.assign(new Error("inotify watch limit reached"), { code: "ENOSPC" })
