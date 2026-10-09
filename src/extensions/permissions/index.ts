@@ -11,7 +11,12 @@ import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
-import { derivePlanTitle, savePlanMarkdown, slugifyPlanName } from "../../shared/planning/plan-markdown.js"
+import {
+	derivePlanTitle,
+	savePlanMarkdown,
+	slugifyPlanName,
+	UNRETAINED_PLAN_NOTICE,
+} from "../../shared/planning/plan-markdown.js"
 import {
 	consumePlanReviewContext,
 	emitPlanReviewDecision,
@@ -736,6 +741,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					const saved = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText, workId })
 					planPath = saved.path
 					snapshotPath = saved.snapshotPath
+					// The log has the cause; a missing retained copy also changes how the plan can continue.
+					if (workId && !snapshotPath && ctx.hasUI) ctx.ui.notify(`permissions: ${UNRETAINED_PLAN_NOTICE}`, "warning")
 					if (workId)
 						tryWorkAttribution(() =>
 							appendWorkRecord(ctx, { type: "plan", ...saved, ...(origin && { requestId: origin.requestId }) }, workId),

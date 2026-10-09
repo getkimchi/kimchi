@@ -5,6 +5,7 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
+import { UNRETAINED_PLAN_NOTICE } from "../../../shared/planning/plan-markdown.js"
 import { createContext } from "../../__mocks__/context.js"
 import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { flushWorkSummaries, readWorkRecords } from "../../work-attribution/summary.js"
@@ -603,6 +604,36 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		expect(existsSync(join(attributionDir, ".kimchi", "plans"))).toBe(true)
 		if (stage !== "identity")
 			expect(loadRuntimeState(active.id, attributionDir).workId).toBe(originalWorkId ?? getWorkId(ctx))
+	})
+
+	it.each(["saved", "blocked"])("warns only when the plan's retained copy cannot be saved (%s)", async (outcome) => {
+		const { execute } = createProposeHarness()
+		const ctx = createContext({ hasUI: true, cwd: attributionDir })
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		if (outcome === "blocked") {
+			// Retained copies live under <agent>/work/<workId>/plans.
+			rmSync(join(attributionDir, "work"), { recursive: true, force: true })
+			writeFileSync(join(attributionDir, "work"), "blocked")
+		}
+		const result = await execute(
+			"tool-call-1",
+			{
+				title: "Retained Proposal",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "P1", goal: "Build it", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+		warn.mockRestore()
+		expect(okText(result)).toContain(join(attributionDir, ".kimchi", "plans"))
+		const notice = [`ferment: ${UNRETAINED_PLAN_NOTICE}`, "warning"]
+		if (outcome === "blocked") expect(ctx.ui.notify).toHaveBeenCalledWith(...notice)
+		else expect(ctx.ui.notify).not.toHaveBeenCalledWith(...notice)
 	})
 
 	it("saves the proposal's originating request even if work changed before the tool ran", async () => {

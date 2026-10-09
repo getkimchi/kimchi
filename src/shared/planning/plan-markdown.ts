@@ -124,6 +124,10 @@ export interface SavePlanMarkdownOptions {
 	readonly workId?: string
 }
 
+/** Shown after {@link savePlanMarkdown} kept an attributed plan without its retained copy. */
+export const UNRETAINED_PLAN_NOTICE =
+	"plan saved without its retained copy; naming or pasting it later will not continue its work, but /work <plan path> still selects it"
+
 /**
  * Write (or overwrite in place) a plan markdown file under
  * `<cwd>/.kimchi/plans/<slug(name)>.md` and retain its version when attributed.

@@ -15,6 +15,7 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { isResourceEnabled } from "../../resources/store.js"
+import { UNRETAINED_PLAN_NOTICE } from "../../shared/planning/plan-markdown.js"
 import { emitPlanReviewDecision, PLAN_REVIEW_DECISION_CHANNEL } from "../../shared/planning/plan-review-bus.js"
 import { registerReadOnlyToolProvider } from "../../shared/planning/tool-profile-manager.js"
 import { createContext } from "../__mocks__/context.js"
@@ -988,6 +989,30 @@ describe("plan mode assumption detection", () => {
 					requestId: headers["X-Request-Id"],
 				}),
 			)
+		})
+
+		it.each(["saved", "blocked"])("warns only when the plan's retained copy cannot be saved (%s)", async (outcome) => {
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-"))
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+			try {
+				if (outcome === "blocked") {
+					// Retained copies live under <agent>/work/<workId>/plans.
+					rmSync(join(attributionDir, "work"), { recursive: true, force: true })
+					writeFileSync(join(attributionDir, "work"), "blocked")
+				}
+				const ctx = createMockContext(["Rework the plan"])
+				ctx.cwd = tmpDir
+				await submitPlan(harness, PLAN_V1, ctx)
+				expect(readdirSync(join(tmpDir, ".kimchi", "plans"))).toEqual(["plan-cache-layer.md"])
+				const notice = [`permissions: ${UNRETAINED_PLAN_NOTICE}`, "warning"]
+				if (outcome === "blocked") expect(ctx.ui.notify).toHaveBeenCalledWith(...notice)
+				else expect(ctx.ui.notify).not.toHaveBeenCalledWith(...notice)
+			} finally {
+				warn.mockRestore()
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
 		})
 
 		it("saves the plan file when the plan is produced, before the approval choice", async () => {

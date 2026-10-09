@@ -35,7 +35,11 @@ import {
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
-import { fermentPlanFileName, savePlanMarkdown } from "../../../shared/planning/plan-markdown.js"
+import {
+	fermentPlanFileName,
+	savePlanMarkdown,
+	UNRETAINED_PLAN_NOTICE,
+} from "../../../shared/planning/plan-markdown.js"
 import { emitPlanReviewRequest } from "../../../shared/planning/plan-review-bus.js"
 import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
 import { withBlocked } from "../../herdr-events.js"
@@ -1195,6 +1199,8 @@ ${renderGateGuidance("scope_ferment")}`,
 				})
 				planPath = saved.path
 				snapshotPath = saved.snapshotPath
+				// The log has the cause; a missing retained copy also changes how the plan can continue.
+				if (workId && !snapshotPath && ctx.hasUI) ctx.ui.notify(`ferment: ${UNRETAINED_PLAN_NOTICE}`, "warning")
 				if (workId) {
 					tryWorkAttribution(() => {
 						setFermentWorkId(fermentId, workId)
