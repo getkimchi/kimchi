@@ -26,6 +26,7 @@ import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
+import { createDeferredReveal } from "../deferred-reveal.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -36,6 +37,7 @@ import {
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
+import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import type { RemoteGitWorkflow } from "../remote-run/git-workflow.js"
 import { handleRemoteCompletion, handleRemoteFailure } from "../remote-run/post-completion.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
@@ -106,6 +108,9 @@ import {
 	type Theme,
 	type UICtx,
 } from "./ui/agent-widget.js"
+
+/** Tools hidden until the session spawns its first subagent (see deferral block below). */
+export const AGENT_CONTINUATION_TOOL_NAMES = ["resume_subagent", "steer_subagent", "get_subagent_result"] as const
 
 // ---- Shared helpers ----
 
@@ -2428,6 +2433,26 @@ ${AGENT_TOOL_GUIDELINES}`,
 			},
 		}),
 	)
+
+	// ---- continuation-tool deferral ----
+	// resume_subagent / steer_subagent / get_subagent_result (~700 est tokens of
+	// schema text) stay registered but hidden until the session actually has a
+	// subagent — `Agent` is the always-visible anchor and its description already
+	// names the continuation tools for discovery. Reveal is one-way on the
+	// first Agent tool_result, mirroring the bash_control pattern. Agent workers
+	// keep full visibility (their profiles list these tools as shared and the
+	// profile manager filters against visibility votes).
+	const visibility = createToolVisibility(pi)
+	// Defer the three continuation tools until the first successful Agent result
+	// (Agent's description names them for discovery). Agent workers keep full
+	// visibility (their profiles list these tools as shared and the profile
+	// manager filters against visibility votes).
+	const reveal = createDeferredReveal(pi, visibility, AGENT_CONTINUATION_TOOL_NAMES, { anchorToolName: "Agent" })
+	pi.on("session_start", () => {
+		// Reset per session (mirrors the DAP deferral lifecycle): a reveal from a
+		// previous session in the same process must not leak forward.
+		reveal.resetForSession()
+	})
 
 	// ---- /agents interactive menu ----
 
