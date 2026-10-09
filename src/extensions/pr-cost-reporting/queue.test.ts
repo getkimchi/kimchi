@@ -21,7 +21,14 @@ import {
 	takeLimitNotices,
 	takeReportingNotice,
 } from "./queue.js"
-import { accountKey, buildSnapshots, type RepositorySnapshot, repositoryKey, SNAPSHOT_LIMITS } from "./snapshot.js"
+import {
+	accountKey,
+	buildSnapshots,
+	fitSnapshot,
+	type RepositorySnapshot,
+	repositoryKey,
+	SNAPSHOT_LIMITS,
+} from "./snapshot.js"
 
 const account = {
 	apiUrl: "https://api.example",
@@ -722,23 +729,40 @@ describe("server limits", () => {
 		expect(accepted.entries[key].limitAttempts).toBeUndefined()
 	})
 	it.each([
-		["requests", 12, 10, 6, { requests: 5 }],
+		// 6 sent, 12 counted: the server adds 6, so only 4 fit, not the proportional 5.
+		["requests", 12, 10, 6, { requests: 4 }],
 		["requests", undefined, undefined, 6, { requests: 5 }],
 		["pullRequests", 3, 2, 3, undefined],
+		["windowedPullRequests", 2001, 2000, 3, undefined],
 	] as const)("learns a smaller %s limit from a snapshot rejection (%s of %s)", async (name, current, maximum, size, learned) => {
 		await setReportingEnabled(directory, true)
 		await queueSnapshots(directory, [snapshot(requests(size))])
 		const at = Date.now()
 		const limit = { scope: "snapshot" as const, limit: name, current, maximum, at }
 		const state = await limitSnapshot(directory, key, "1", limit, at + 1000)
+		expect(state.entries[key].limit).toEqual(limit)
 		if (!learned) {
-			// No PRs were sent, so a PR limit cannot be met by sending fewer.
+			// No PRs were sent, and windowed IDs never exceed the server's limit, so sending fewer cannot help.
 			expect(state.entries[key].learned).toBeUndefined()
 			return
 		}
 		expect(state.entries[key].learned).toEqual({ ...learned, until: at + 7 * 24 * 60 * 60_000 })
 		expect(learnedLimits(state, at).get(key)).toEqual({ ...SNAPSHOT_LIMITS, ...learned })
 		expect(learnedLimits(state, at + 7 * 24 * 60 * 60_000).size).toBe(0)
+	})
+	it("learns in one rejection a cap that fits when the server counts 26,000 retained requests besides the upload", async () => {
+		await setReportingEnabled(directory, true)
+		const retained = 26_000
+		const upload = snapshot(requests(15_800))
+		await queueSnapshots(directory, [upload])
+		const at = Date.now()
+		const current = upload.content.requests.length + retained
+		const limit = { scope: "snapshot" as const, limit: "requests" as const, current, maximum: 32_000, at }
+		const limits = learnedLimits(await limitSnapshot(directory, key, "1", limit, at + 1000), at).get(key)
+		expect(limits).toEqual({ ...SNAPSHOT_LIMITS, requests: 6_000 })
+		// The next upload is trimmed to the learned cap, and with the retained requests it fits the server's.
+		const next = fitSnapshot(upload.content, limits ?? SNAPSHOT_LIMITS, () => true)
+		expect((next?.content.requests.length ?? current) + retained).toBeLessThanOrEqual(32_000)
 	})
 	it("learns bytes from the server's measure, so a different encoding still converges", async () => {
 		await setReportingEnabled(directory, true)

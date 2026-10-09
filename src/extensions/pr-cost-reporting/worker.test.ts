@@ -755,6 +755,13 @@ describe("server limits", () => {
 			maximum: 100,
 			at: 5,
 		})
+		expect(serverLimit({ details: [limitDetail("snapshot", "windowedPullRequests", "2001", "2000")] }, 5)).toEqual({
+			scope: "snapshot",
+			limit: "windowedPullRequests",
+			current: 2001,
+			maximum: 2000,
+			at: 5,
+		})
 		expect(serverLimit({ details: [{ ...detail, domain: "elsewhere" }] }, 5)).toBeUndefined()
 		expect(serverLimit({ details: [{ ...detail, reason: "QUOTA" }] }, 5)).toBeUndefined()
 		expect(serverLimit({ code: 8, message: "busy" }, 5)).toBeUndefined()

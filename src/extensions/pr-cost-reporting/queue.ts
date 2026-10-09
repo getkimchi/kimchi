@@ -34,6 +34,7 @@ export const LIMIT_NAMES = [
 	"bytes",
 	"requests",
 	"pullRequests",
+	"windowedPullRequests",
 	"snapshots",
 	"repositories",
 	"billingIds",
@@ -528,7 +529,13 @@ export function deferSnapshot(
 	})
 }
 
-/** The server's measure of the rejected dimension scaled onto ours, so different encodings still converge. */
+/**
+ * A smaller cap for the rejected dimension, learned in one step. The server's overflow may scale with the
+ * upload (another encoding of the same body) or add a constant (records it counts besides the upload), so
+ * the cap is the smaller of the proportional and the subtractive target. A subtractive target of zero or
+ * less cannot be met by any upload, so only the proportional one applies then. The client never sends more
+ * than the server's 2,000 windowed PR IDs, so that limit teaches nothing.
+ */
 function learnedLimit(pending: WireSnapshot, limit: ServerLimit): number | undefined {
 	if (limit.limit !== "requests" && limit.limit !== "pullRequests" && limit.limit !== "bytes") return undefined
 	const measured = {
@@ -537,10 +544,12 @@ function learnedLimit(pending: WireSnapshot, limit: ServerLimit): number | undef
 		bytes: Buffer.byteLength(JSON.stringify(pending)),
 	}[limit.limit]
 	const { current, maximum } = limit
-	const target =
-		current !== undefined && maximum !== undefined && current > maximum
-			? Math.floor((measured * maximum) / current)
-			: Math.floor(measured * 0.9)
+	let target = Math.floor(measured * 0.9)
+	if (current !== undefined && maximum !== undefined && current > maximum) {
+		const subtractive = measured - (current - maximum)
+		target = Math.floor((measured * maximum) / current)
+		if (subtractive > 0) target = Math.min(target, subtractive)
+	}
 	const learned = Math.min(target, measured - 1)
 	return learned > 0 ? learned : undefined
 }
