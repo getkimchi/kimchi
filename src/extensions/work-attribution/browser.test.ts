@@ -296,6 +296,24 @@ describe("work browser rows", () => {
 		expect(spend).toBe("$0.8750")
 	})
 
+	it("counts a listed work's whole connected report in the header, unlisted works included", () => {
+		const [listed, older] = [1, 2].map(workId)
+		const { rows, spend } = browse([
+			{
+				workId: listed,
+				summary: summary(listed, { requests: [request("listed")] }),
+				costs: costs(listed, [
+					{ requestId: "listed", usd: "0.500000000", workIds: [listed] },
+					// A connected work too old to be listed.
+					{ requestId: "older", usd: "0.125000000", workIds: [older] },
+				]),
+			},
+		])
+
+		expect(rows[0].value).toBe("$0.5000 · no PR")
+		expect(spend).toBe("$0.6250")
+	})
+
 	it("names each work's PR state from its saved links", () => {
 		const ids = [1, 2, 3, 4, 5].map(workId)
 		const { rows } = browse(
