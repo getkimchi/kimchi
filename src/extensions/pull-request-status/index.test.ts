@@ -582,6 +582,12 @@ describe("PR status with the real reconciliation supervisor", () => {
 		await pass(2 * rows.length)
 		// Startup can clear the footer more than once under load; it ends on the current work's PR alone.
 		const calls = vi.mocked(ctx.ui.setStatus).mock.calls
+		await vi.waitFor(() =>
+			expect(calls.slice(-2)).toEqual([
+				["work-pr-url", "https://github.com/example/repo/pull/1"],
+				["work-pr", "PR #1 merged"],
+			]),
+		)
 		expect(calls.slice(-2)).toEqual([
 			["work-pr-url", "https://github.com/example/repo/pull/1"],
 			["work-pr", "PR #1 merged"],

@@ -6,6 +6,18 @@ import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
+// The variables `automation.ts` treats as CI; the runner's own would hide the interactive default notice.
+const CI_VARIABLES = [
+	"CI",
+	"GITHUB_ACTIONS",
+	"GITLAB_CI",
+	"BUILDKITE",
+	"JENKINS_URL",
+	"TEAMCITY_VERSION",
+	"CIRCLECI",
+	"TF_BUILD",
+]
+
 for (const telemetry of [false, true]) {
 	test(`PR reporting follows SaaS uploads (${telemetry ? "on" : "off"}) until explicitly changed`, async ({
 		terminal,
@@ -16,7 +28,10 @@ for (const telemetry of [false, true]) {
 				artifactName: `pr-cost-reporting-${telemetry}`,
 				responses: [],
 				gitInit: true,
-				env: { KIMCHI_TELEMETRY_ENABLED: String(telemetry) },
+				env: {
+					KIMCHI_TELEMETRY_ENABLED: String(telemetry),
+					...Object.fromEntries(CI_VARIABLES.map((name) => [name, ""])),
+				},
 				seedHome(homeDir) {
 					const path = join(homeDir, ".config/kimchi/config.json")
 					const config = JSON.parse(readFileSync(path, "utf8"))
