@@ -63,6 +63,7 @@ export interface AcpMcpFixture extends AcpFixture {
 
 export interface AcpFixtureOptions {
 	account?: Parameters<typeof startFakeOpenAiServer>[0]["account"]
+	billingRows?: Parameters<typeof startFakeOpenAiServer>[0]["billingRows"]
 	responses: FakeResponseScript[]
 	models?: FakeModel[]
 	providerId?: string
@@ -251,7 +252,12 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		: [{ ...DEFAULT_MODEL, input: modelInput ?? DEFAULT_MODEL.input, contextWindow: 64_000, maxTokens: 1024 }]
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-acp-home-"))
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-acp-work-"))
-	const fake = await startFakeOpenAiServer({ responses, models: configuredModels, account: options.account })
+	const fake = await startFakeOpenAiServer({
+		responses,
+		models: configuredModels,
+		account: options.account,
+		billingRows: options.billingRows,
+	})
 
 	let proc: ChildProcess | null = null
 	let mcp: McpFixture | undefined
