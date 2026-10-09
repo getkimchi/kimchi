@@ -16,6 +16,10 @@ import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/perm
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import { emitPlanReviewDecision, PLAN_REVIEW_DECISION_CHANNEL } from "../../shared/planning/plan-review-bus.js"
+import {
+	resetPlanReviewClosedListenersForTests,
+	subscribePlanReviewClosed,
+} from "../../shared/planning/plan-review-state.js"
 import { registerReadOnlyToolProvider } from "../../shared/planning/tool-profile-manager.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
@@ -4528,6 +4532,115 @@ describe("adhoc submit_plan mode availability", () => {
 			expect(readdirSync(join(tmpDir, ".kimchi", "plans"))).toEqual(["plan-cache-layer.md"])
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+})
+
+// =============================================================================
+// Plan review closed notification (surfaces like ACP hold state across the
+// review and need the one fact pi session events never surface: review ended
+// WITHOUT a follow-up turn)
+// =============================================================================
+
+describe("plan review closed notification", () => {
+	const PLAN =
+		"# Plan: Cache Layer\n\n## Goal\nAdd caching layer.\n\n## Chunks\n\n### Chunk 1: Add cache primitive\n- **Accept When**: round-trip works"
+
+	function collectClosed() {
+		const closed: string[] = []
+		const unsubscribe = subscribePlanReviewClosed((sessionId) => closed.push(sessionId))
+		return { closed, unsubscribe }
+	}
+
+	afterEach(() => {
+		resetPlanReviewClosedListenersForTests()
+	})
+
+	it("notifies when the user chooses rework — no follow-up turn starts", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const { closed, unsubscribe } = collectClosed()
+		try {
+			const ctx = createMockContext(["Rework the plan"])
+			await submitPlan(harness, PLAN, ctx)
+			await vi.waitFor(() => {
+				expect(closed).toEqual([TEST_SESSION_ID])
+			})
+		} finally {
+			unsubscribe()
+		}
+	})
+
+	it("notifies when the review menu is dismissed without a decision", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const { closed, unsubscribe } = collectClosed()
+		try {
+			const ctx = createMockContext([undefined])
+			await submitPlan(harness, PLAN, ctx)
+			await vi.waitFor(() => {
+				expect(closed).toEqual([TEST_SESSION_ID])
+			})
+		} finally {
+			unsubscribe()
+		}
+	})
+
+	it("does NOT notify when the plan is executed locally — a follow-up turn starts", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const { closed, unsubscribe } = collectClosed()
+		try {
+			const ctx = createMockContext([EXECUTE_LOCAL_DECISION_OPTION])
+			await submitPlan(harness, PLAN, ctx)
+			await vi.waitFor(() => {
+				expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+					expect.objectContaining({ customType: "plan-execute", content: expect.stringContaining(PLAN) }),
+					expect.anything(),
+				)
+			})
+			// Let any stray notifications surface before asserting silence.
+			await new Promise((resolve) => setTimeout(resolve, 10))
+			expect(closed).toEqual([])
+		} finally {
+			unsubscribe()
+		}
+	})
+
+	it("does NOT notify when dismissal is abort-driven — plannotator decided first", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const { closed, unsubscribe } = collectClosed()
+		try {
+			const ctx = createMockContext([])
+			// Signal-aware select: the plan menu (first call, signal-protected)
+			// stays pending until the plannotator decision aborts it, mirroring the
+			// real UI select honoring its AbortSignal. Any subsequent select (the
+			// "where should it run?" dialog when remote is enabled) picks local.
+			let selectCall = 0
+			ctx.ui.select = vi.fn(
+				(_title: string, _options: string[], selectOpts?: { signal?: AbortSignal }) =>
+					new Promise<string | undefined>((resolve) => {
+						selectCall++
+						if (selectCall === 1) {
+							selectOpts?.signal?.addEventListener("abort", () => resolve(undefined))
+						} else {
+							resolve(EXECUTE_LOCAL_DECISION_OPTION)
+						}
+					}),
+			)
+			await submitPlan(harness, PLAN, ctx)
+			emitPlanReviewDecision(harness.pi, { decision: "execute", source: "plannotator", planReviewSource: "adhoc" })
+			await vi.waitFor(() => {
+				expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+					expect.objectContaining({ customType: "plan-execute", content: expect.stringContaining(PLAN) }),
+					expect.anything(),
+				)
+			})
+			await new Promise((resolve) => setTimeout(resolve, 10))
+			expect(closed).toEqual([])
+		} finally {
+			unsubscribe()
 		}
 	})
 })
