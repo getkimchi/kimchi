@@ -355,7 +355,11 @@ function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
 		// Older generic timeout records may contain incomplete pages.
 		const beforePageTimeout =
 			lookup.status === "unavailable" && lookup.reason === BEFORE_PAGE_TIMEOUT_MESSAGE && row.billingRows.length === 0
-		if (!beforePageTimeout) evidence.set(item, [...(evidence.get(item) ?? []), lookup])
+		if (!beforePageTimeout) {
+			const lookups = evidence.get(item)
+			if (lookups) lookups.push(lookup)
+			else evidence.set(item, [lookup])
+		}
 		for (const bill of row.billingRows) {
 			if (!object(bill) || !isWorkId(bill.id) || (bill.costUsd !== null && typeof bill.costUsd !== "string")) {
 				item.invalid = true
