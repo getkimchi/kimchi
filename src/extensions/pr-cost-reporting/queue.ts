@@ -345,7 +345,6 @@ export function recordReportingError(agentDir: string, error: string): Promise<R
  * Replaces a repository's entire inventory. The fsynced rename completes before delivery can begin.
  * Every change replaces the pending snapshot; whether it may skip the upload window is decided here.
  */
-
 export async function queueSnapshots(
 	agentDir: string,
 	snapshots: RepositorySnapshot[],
@@ -583,7 +582,6 @@ export function deferSnapshot(
  * less cannot be met by any upload, so only the proportional one applies then. The client never sends more
  * than the server's 2,000 windowed PR IDs, so that limit teaches nothing.
  */
-
 function learnedLimit(pending: WireSnapshot, limit: ServerLimit): number | undefined {
 	if (limit.limit !== "requests" && limit.limit !== "pullRequests" && limit.limit !== "bytes") return undefined
 	const measured = {
@@ -607,7 +605,6 @@ function learnedLimit(pending: WireSnapshot, limit: ServerLimit): number | undef
  * A PR_COST_LIMIT rejection is quota, not an outage. Account-wide limits pause every repository of the
  * account; a repository limit waits on its own counter, and a snapshot limit also teaches a smaller cap.
  */
-
 export function limitSnapshot(
 	agentDir: string,
 	key: string,

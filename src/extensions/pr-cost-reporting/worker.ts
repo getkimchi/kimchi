@@ -42,7 +42,6 @@ const jitter = (ms: number) => Math.round(ms * (0.8 + 0.4 * Math.random()))
  * off from 30 seconds to 30 minutes. Other 4xx responses, such as an endpoint not deployed yet, cannot
  * be fixed by retrying and wait one to six hours.
  */
-
 export function retryDelay(status: number | undefined, attempts: number, retryAfterMs: number | null): number {
 	if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429)
 		return jitter(Math.min(LIMIT_RETRY_MS, HOUR_MS * 2 ** attempts))

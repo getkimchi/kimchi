@@ -285,7 +285,6 @@ export function wireBytes(content: SnapshotContent): number {
  * without requests is removed rather than named as windowed, because the server would restore its
  * old claims into the same snapshot. Returns undefined when the kept requests alone exceed the limits.
  */
-
 export function fitSnapshot(
 	content: SnapshotContent,
 	limits: SnapshotLimits,

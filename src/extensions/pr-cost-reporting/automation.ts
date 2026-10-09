@@ -19,7 +19,6 @@ const disabled = (value: string | undefined) => ["0", "false", "off", "no"].incl
  * and benchmarks (the only callers of the infrastructure breaker) would report noise. Interactive TUI,
  * ACP and RPC sessions still report. Local attribution runs either way.
  */
-
 export function uploadSkipReason(mode: ExtensionContext["mode"], env = process.env): string | undefined {
 	if (disabled(env.KIMCHI_PR_COST_REPORTING)) return "KIMCHI_PR_COST_REPORTING=0"
 	if (mode === "print") return "non-interactive print mode"
