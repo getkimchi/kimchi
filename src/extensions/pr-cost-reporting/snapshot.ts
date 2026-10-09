@@ -60,7 +60,7 @@ type SnapshotRequest = SnapshotContent["requests"][number]
 export interface RepositorySnapshot {
 	account: WorkAccount
 	content: SnapshotContent
-	/** Complete local inventory before windowing. Lets the queue distinguish expiry from lost evidence. */
+	/** Complete local inventory before windowing. Lets the queue tell windowed-out requests from lost evidence. */
 	observedRequestIds?: string[]
 	/** Missing provider evidence holds prior claims for this group; never enters the wire body. */
 	incomplete?: boolean
@@ -83,7 +83,7 @@ export interface SnapshotLimits {
 export const SNAPSHOT_LIMITS: SnapshotLimits = { requests: 32_000, pullRequests: 250, bytes: 8 * 1024 * 1024 }
 const UPLOAD_WINDOW_MS = 32 * 24 * 60 * 60 * 1000
 const DETAIL_WINDOW_MS = 90 * 24 * 60 * 60 * 1000
-/** The server stops accepting corrections five minutes before a PR's details expire. */
+/** The server stops accepting corrections five minutes before a PR's total becomes final on day 90. */
 const CORRECTION_MARGIN_MS = 5 * 60_000
 const FINISHED_PR_GRACE_MS = 2 * 24 * 60 * 60 * 1000
 const MAX_BILLING_IDS = 8
@@ -682,7 +682,7 @@ export function buildSnapshots(
 			for (const candidate of candidates) {
 				const pr = candidate.pullRequest
 				// A request naming a PR past its detail window is sent without it: the server already settled that PR,
-				// and listing it again would only bring back details that expiry removes.
+				// and its final total no longer changes.
 				if (
 					!pr?.id ||
 					pr.repositoryId !== repo.id ||

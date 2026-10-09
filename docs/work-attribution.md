@@ -471,7 +471,7 @@ The footer and Ferment budgets have different token scopes. Ferment V2 counts pa
 
 ## Turning Cost per PR off
 
-Cost per PR is listed in `/resources` like other built-in extensions and is on by default. Disabling it there, or with `kimchi resources disable extensions.cost-per-pr`, takes effect at the next start: Kimchi records no work, looks up no PRs and shows no `/work` or PR/MR status. Other extensions stop recording work at once. Records already saved stay on disk.
+Cost per PR is listed in `/resources` like other built-in extensions and is on by default. Disabling it there, or with `kimchi resources disable extensions.cost-per-pr`, takes effect at the next start: Kimchi records no work, looks up no PRs, shows no `/work` or PR/MR status and uploads no PR cost reports. Other extensions stop recording work at once. Records already saved stay on disk.
 
 ## What still needs work
 
