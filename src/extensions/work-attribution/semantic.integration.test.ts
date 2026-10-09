@@ -222,6 +222,50 @@ it("keeps the existing work and request available when private metadata is damag
 	)
 })
 
+it("matches a fresh session's input past 256 work directories without saved task text", async () => {
+	for (let index = 0; index < 300; index++)
+		mkdirSync(join(root, "agent", "work", `30000000-0000-4000-8000-${String(index).padStart(12, "0")}`), {
+			recursive: true,
+		})
+	await rememberWorkIntent(cwd, planned, first)
+	const ctx = createContext({ cwd, model, modelRegistry, sessionManager: { getSessionId: () => "many-sessions" } })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	vi.mocked(classifyWorkIntent).mockResolvedValueOnce({ decision: "continue", workId: planned, model: "selected/chat" })
+	await api.getHandler<InputEvent>("input")(
+		{ type: "input", source: "interactive", text: "Build the comma-separated download with quoted cells." },
+		ctx,
+	)
+	expect(vi.mocked(classifyWorkIntent).mock.calls[0][1].candidates.map((candidate) => candidate.workId)).toEqual([
+		planned,
+	])
+	expect(getWorkId(ctx)).toBe(planned)
+})
+
+it("reports a reached matching limit in /work instead of on every prompt", async () => {
+	for (let index = 0; index < 257; index++) {
+		const id = `30000000-0000-4000-8000-${String(index).padStart(12, "0")}`
+		mkdirSync(join(root, "agent", "work", id), { recursive: true })
+		writeFileSync(
+			workIntentPath(id),
+			JSON.stringify({ version: 2, workId: id, repository: "/elsewhere/.git", summary: "Other repository task" }),
+		)
+	}
+	const ctx = createContext({ cwd, model, modelRegistry })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	const input = api.getHandler<InputEvent>("input")
+	for (const text of ["Add a CSV export", "Quote the commas too"])
+		await input({ type: "input", source: "interactive", text }, ctx)
+	expect(classifyWorkIntent).not.toHaveBeenCalled()
+	expect(ctx.ui.notify).not.toHaveBeenCalled()
+	await api.getRegisteredCommand("work").handler("", { ...createCommandContext(), ...ctx })
+	expect(ctx.ui.notify).toHaveBeenCalledExactlyOnceWith(
+		expect.stringContaining("Work matching stopped: more than 256 saved tasks to compare."),
+		"info",
+	)
+})
+
 it.each([
 	"saved",
 	"unowned-output",

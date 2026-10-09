@@ -132,7 +132,8 @@ export async function rememberWorkIntent(
 	}
 }
 
-async function readIntent(workId: string, repo: string, account: WorkAccount): Promise<WorkIntent | undefined> {
+/** Undefined when the work saved no task text; null when its text belongs to another repository or account. */
+async function readIntent(workId: string, repo: string, account: WorkAccount): Promise<WorkIntent | null | undefined> {
 	const file = await open(workIntentPath(workId), "r").catch((error: NodeJS.ErrnoException) => {
 		if (error.code !== "ENOENT") throw new Error("Cannot read local work intent")
 	})
@@ -151,11 +152,11 @@ async function readIntent(workId: string, repo: string, account: WorkAccount): P
 			value.summary.length > 4000
 		)
 			throw new Error("Invalid local work intent")
-		if (value.repository !== repo) return
+		if (value.repository !== repo) return null
 		// Legacy text has no authenticated owner; never migrate it to whoever is logged in now.
-		if (value.version === 1) return
+		if (value.version === 1) return null
 		if (!isWorkAccount(value.account)) throw new Error("Invalid local work account")
-		if (!sameWorkAccount(value.account, account)) return
+		if (!sameWorkAccount(value.account, account)) return null
 		return { workId, summary: value.summary }
 	} catch {
 		// Missing history is expected; unreadable history must not hide a competing task.
@@ -174,14 +175,14 @@ async function addPlan(intent: WorkIntent): Promise<WorkIntent> {
 	let newest: { path: string; mtime: number } | undefined
 	let count = 0
 	for await (const file of files) {
-		if (++count > 32) throw new WorkMatchingLimit("Too many plan versions for semantic matching")
+		if (++count > 32) throw new WorkMatchingLimit("a saved task has more than 32 plan versions")
 		if (!file.isFile() || !file.name.endsWith(".md")) continue
 		const path = join(directory, file.name)
 		const info = await stat(path)
 		if (!newest || info.mtimeMs > newest.mtime) newest = { path, mtime: info.mtimeMs }
 	}
 	if (!newest) return intent
-	if ((await stat(newest.path)).size > 16000) throw new WorkMatchingLimit("Plan too large for semantic matching")
+	if ((await stat(newest.path)).size > 16000) throw new WorkMatchingLimit("a saved plan is larger than 16,000 bytes")
 	const content = await readFile(newest.path, "utf8")
 	if (readPlanWorkId(content) !== intent.workId) throw new Error("Invalid retained plan identity")
 	return { ...intent, summary: `${intent.summary}\nSaved plan:\n${content.slice(content.indexOf("\n") + 1)}` }
@@ -204,13 +205,15 @@ export async function loadWorkIntents(cwd: string, workId: string, text: string,
 		const files = await opendir(join(getAgentDir(), "work")).catch((error: NodeJS.ErrnoException) => {
 			if (error.code !== "ENOENT") throw new Error("Cannot read local work history")
 		})
-		let count = 0
+		let saved = 0
 		if (files)
 			for await (const file of files) {
-				// ponytail: scan at most 256 work directories; add an index if local history exceeds this bound.
-				if (++count > 256) throw new WorkMatchingLimit("Too many works for semantic matching")
 				if (!file.isDirectory() || !isWorkId(file.name) || file.name === workId) continue
 				const intent = await readIntent(file.name, repo, captured.account)
+				// Every session creates a work directory; only saved task text counts toward the bound.
+				if (intent === undefined) continue
+				// ponytail: read at most 256 saved tasks; add an index if local history exceeds this bound.
+				if (++saved > 256) throw new WorkMatchingLimit("more than 256 saved tasks to compare")
 				if (intent) candidates.push(await addPlan(intent))
 			}
 	}

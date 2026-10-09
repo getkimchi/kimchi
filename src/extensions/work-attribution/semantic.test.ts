@@ -562,11 +562,30 @@ it.each([
 	await expect(loadWorkIntents(cwd, currentId, input.message, true)).rejects.toThrow()
 })
 
-it("refuses an incomplete scan of large work history", async () => {
+it("compares saved tasks beyond 256 work directories without saved task text", async () => {
 	const { root, cwd } = repositoryFixture()
-	for (let index = 0; index < 257; index++)
-		mkdirSync(join(root, "agent", "work", `10000000-0000-4000-8000-${String(index).padStart(12, "0")}`), {
+	// Every session creates a work directory; most never save task text.
+	for (let index = 0; index < 300; index++)
+		mkdirSync(join(root, "agent", "work", `30000000-0000-4000-8000-${String(index).padStart(12, "0")}`), {
 			recursive: true,
 		})
-	await expect(loadWorkIntents(cwd, currentId, input.message, true)).rejects.toThrow("Too many works")
+	await rememberWorkIntent(cwd, workId, "CSV export")
+	const loaded = await loadWorkIntents(cwd, currentId, input.message, true)
+	expect(loaded.input.candidates).toEqual([{ workId, summary: "CSV export" }])
+})
+
+it("refuses an incomplete scan of more than 256 saved tasks", async () => {
+	const { root, cwd } = repositoryFixture()
+	for (let index = 0; index < 257; index++) {
+		const id = `30000000-0000-4000-8000-${String(index).padStart(12, "0")}`
+		mkdirSync(join(root, "agent", "work", id), { recursive: true })
+		// Saved task text from any repository counts: each one is read to find this repository's tasks.
+		writeFileSync(
+			workIntentPath(id),
+			JSON.stringify({ version: 2, workId: id, repository: "/elsewhere/.git", summary: "Other repository task" }),
+		)
+	}
+	await expect(loadWorkIntents(cwd, currentId, input.message, true)).rejects.toThrow(
+		"more than 256 saved tasks to compare",
+	)
 })

@@ -369,6 +369,8 @@ export function createWorkAttributionExtension(
 		const explicitSelection = new Set<string>()
 		let inputGeneration = 0
 		let semanticAbort: AbortController | undefined
+		/** A history limit that stopped model matching; /work reports it instead of every prompt warning. */
+		let matchingLimit: string | undefined
 		pi.on("model_select", () => {
 			inputGeneration++
 			semanticAbort?.abort()
@@ -572,6 +574,7 @@ export function createWorkAttributionExtension(
 				if (!model || !workMatchingEnabled() || !captured) return
 				matching = true
 				const intents = await loadWorkIntents(ctx.cwd, current, event.text, eligible())
+				matchingLimit = undefined
 				if (!unchanged()) return
 				if (!intents.account?.isCurrent()) {
 					useSegment("unknown", "account-unavailable")
@@ -627,6 +630,7 @@ export function createWorkAttributionExtension(
 				)
 				await rememberWorkIntent(ctx.cwd, workId, event.text, intents.repository, intents.account)
 			} catch (error) {
+				if (error instanceof WorkMatchingLimit) matchingLimit = error.message
 				if (matching || error instanceof WorkMatchingLimit) debugWorkAttribution("Work matching skipped:", error)
 				else warnWorkAttribution(ctx, error)
 			}
@@ -751,6 +755,10 @@ export function createWorkAttributionExtension(
 					}
 					const details: WorkDetailsRequest = { workId: getWorkId(ctx), lines: [] }
 					pi.events.emit(WORK_DETAILS_REQUEST_EVENT, details)
+					if (matchingLimit && workMatchingEnabled())
+						details.lines.push(
+							`Work matching stopped: ${matchingLimit}. New inputs stay unresolved in the current work.`,
+						)
 					notify(ctx, [`Work ID: ${details.workId}`, ...details.lines].join("\n"))
 				} catch (error) {
 					warnWorkAttribution(ctx, error)

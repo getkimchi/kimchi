@@ -368,7 +368,7 @@ describe("fresh-session guard after scope recovery", () => {
 it("leaves an input unresolved without a warning when matching history exceeds its limits", async () => {
 	vi.spyOn(semantic, "workMatchingEnabled").mockReturnValue(true)
 	vi.spyOn(semantic, "loadWorkIntents").mockRejectedValue(
-		new semantic.WorkMatchingLimit("Too many works for semantic matching"),
+		new semantic.WorkMatchingLimit("more than 256 saved tasks to compare"),
 	)
 	const api = createExtensionApi()
 	createWorkAttributionExtension()(api.api)
