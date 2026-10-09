@@ -677,7 +677,6 @@ describe("server limits", () => {
 		const entry = await entryFor("42")
 		expect(entry).toMatchObject({
 			attempts: 0,
-			limitAttempts: 1,
 			limit: { scope: "producer", limit: "repositories", current: 101, maximum: 100 },
 		})
 		expect((entry?.retryAt ?? 0) - before).toBeGreaterThanOrEqual(LIMIT_RETRY_MS)
@@ -702,7 +701,7 @@ describe("server limits", () => {
 		await deliver()
 		expect(posts()).toHaveLength(1)
 		const state = await readReportingState(directory)
-		expect(Object.values(state.paused ?? {})).toMatchObject([{ attempts: 1, limit: { scope, limit: "requests" } }])
+		expect(Object.values(state.paused ?? {})).toMatchObject([{ limit: { scope, limit: "requests" } }])
 		expect(statusText(state, undefined).text).toContain(
 			`PR cost reporting paused for ${owner}: ${scope} limit reached (requests 50000 of 50000). Ask an admin to free space or wait; next try in about`,
 		)

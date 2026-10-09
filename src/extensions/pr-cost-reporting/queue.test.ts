@@ -724,13 +724,13 @@ describe("server limits", () => {
 		await queueSnapshots(directory, [snapshot([requestId])])
 		const limit = { scope: "organization" as const, limit: "requests" as const, current: 50000, maximum: 50000, at: 1 }
 		const first = await limitSnapshot(directory, key, "1", limit, 1000)
-		expect(first.paused).toEqual({ [accountKey(account)]: { limit, retryAt: 1000, attempts: 1 } })
+		expect(first.paused).toEqual({ [accountKey(account)]: { limit, retryAt: 1000 } })
 		expect(first.entries[key]).toMatchObject({ retryAt: 0, attempts: 0 })
 		expect(first.entries[key].limit).toBeUndefined()
 		expect(dueLimitNotices(first)).toEqual({ repositories: [], pauses: [limit] })
 		expect(await takeLimitNotices(directory)).toEqual({ repositories: [], pauses: [limit] })
 		const again = await limitSnapshot(directory, key, "1", { ...limit, at: 2 }, 2000)
-		expect(again.paused?.[accountKey(account)]).toMatchObject({ attempts: 2, retryAt: 2000, noticeShown: true })
+		expect(again.paused?.[accountKey(account)]).toMatchObject({ retryAt: 2000, noticeShown: true })
 		expect(await takeLimitNotices(directory)).toEqual({ repositories: [], pauses: [] })
 	})
 	it("lifts a pause only when an upload that adds claims is accepted", async () => {
@@ -753,7 +753,7 @@ describe("server limits", () => {
 		await queueSnapshots(directory, [snapshot([requestId])])
 		const limit = { scope: "producer" as const, limit: "repositories" as const, current: 101, maximum: 100, at: 1 }
 		const state = await limitSnapshot(directory, key, "1", limit, 5000)
-		expect(state.entries[key]).toMatchObject({ limit, limitAttempts: 1, attempts: 0, retryAt: 5000 })
+		expect(state.entries[key]).toMatchObject({ limit, attempts: 0, retryAt: 5000 })
 		expect(state.entries[key].learned).toBeUndefined()
 		expect(dueLimitNotices(state).repositories).toEqual([snapshot().content.repository])
 		const accepted = await acknowledgeSnapshot(directory, key, "1", {
@@ -762,7 +762,6 @@ describe("server limits", () => {
 			receivedAt: new Date().toISOString(),
 		})
 		expect(accepted.entries[key].limit).toBeUndefined()
-		expect(accepted.entries[key].limitAttempts).toBeUndefined()
 	})
 	it.each([
 		// 6 sent, 12 counted: the server adds 6, so only 4 fit, not the proportional 5.
@@ -822,7 +821,6 @@ describe("server limits", () => {
 		const state = await setReportingEnabled(directory, true)
 		expect(state.paused).toBeUndefined()
 		expect(state.entries[key]).toMatchObject({ retryAt: 0, limit: { scope: "producer" } })
-		expect(state.entries[key].limitAttempts).toBeUndefined()
 	})
 	it("ignores a limit for a revision that was already replaced", async () => {
 		await setReportingEnabled(directory, true)
@@ -863,7 +861,7 @@ describe("server limits", () => {
 		await setReportingEnabled(directory, true)
 		const path = join(directory, "pr-cost-reporting", "state.json")
 		const saved = JSON.parse(await readFile(path, "utf8"))
-		saved.paused = { [accountKey(account)]: { limit: { scope: "organization", at: 1 }, retryAt: 1, attempts: -1 } }
+		saved.paused = { [accountKey(account)]: { limit: { scope: "organization", at: 1 }, retryAt: "soon" } }
 		await writeFile(path, JSON.stringify(saved))
 		await expect(readReportingState(directory)).rejects.toThrow("unreadable")
 	})

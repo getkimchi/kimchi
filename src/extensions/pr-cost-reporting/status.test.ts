@@ -79,7 +79,7 @@ describe("/pr-reporting status", () => {
 					}),
 					entry("3", { trimmed: 1200 }),
 				],
-				{ paused: { [accountKey(account)]: { limit, retryAt: now + 30 * 60_000, attempts: 1 } } },
+				{ paused: { [accountKey(account)]: { limit, retryAt: now + 30 * 60_000 } } },
 			),
 			undefined,
 			now,

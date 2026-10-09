@@ -54,7 +54,6 @@ export interface ServerLimit {
 export interface AccountPause {
 	limit: ServerLimit
 	retryAt: number
-	attempts: number
 	noticeShown?: true
 }
 /** Ordinary changes upload at most once in this window per repository. */
@@ -87,8 +86,6 @@ export interface PendingRepository {
 	markers?: string[]
 	/** The last PR_COST_LIMIT rejection of this repository, until an upload is accepted. */
 	limit?: ServerLimit
-	/** Limit rejections in a row, counted apart from transient failures in `attempts`. */
-	limitAttempts?: number
 	/** Smaller snapshot limits learned from a snapshot-scope rejection, used until `until`. */
 	learned?: Partial<SnapshotLimits> & { until: number }
 	/** Requests left out of the latest queued snapshot to fit the limits. */
@@ -135,7 +132,6 @@ function validEntryExtras(entry: PendingRepository): boolean {
 			(Array.isArray(entry.markers) &&
 				entry.markers.every((marker) => typeof marker === "string" && marker.length <= 256))) &&
 		(entry.limit === undefined || validLimit(entry.limit)) &&
-		(entry.limitAttempts === undefined || count(entry.limitAttempts)) &&
 		(learned === undefined ||
 			(object(learned) &&
 				Number.isFinite(learned.until) &&
@@ -225,7 +221,6 @@ async function loadReportingState(agentDir: string): Promise<{ state: ReportingS
 						!object(pause) ||
 						!validLimit(pause.limit) ||
 						!Number.isFinite(pause.retryAt) ||
-						!count(pause.attempts) ||
 						(pause.noticeShown !== undefined && pause.noticeShown !== true),
 				))
 		)
@@ -303,7 +298,6 @@ export function setReportingEnabled(agentDir: string, enabled: boolean): Promise
 			entry.uploadedAt = undefined
 			entry.attempts = 0
 			entry.retryAt = 0
-			entry.limitAttempts = undefined
 			if (enabled) continue
 			// The discarded replacement may have arrived even if its acknowledgement did not.
 			if (entry.pending) entry.acceptedDigest = undefined
@@ -525,7 +519,6 @@ export function acknowledgeSnapshot(
 			entry.lastAcknowledgedAt = ack.receivedAt
 			entry.markers = snapshotMarkers(entry.pending)
 			entry.limit = undefined
-			entry.limitAttempts = undefined
 			// Only an upload that adds claims proves an account limit no longer blocks; withdrawals pass it.
 			if (state.paused && (entry.pending.requests.length || entry.pending.pullRequests.length)) {
 				delete state.paused[accountKey(entry.account)]
@@ -605,17 +598,11 @@ export function limitSnapshot(
 			const previous = state.paused?.[account]
 			state.paused = {
 				...state.paused,
-				[account]: {
-					limit,
-					retryAt,
-					attempts: (previous?.attempts ?? 0) + 1,
-					...(previous?.noticeShown ? { noticeShown: true } : {}),
-				},
+				[account]: { limit, retryAt, ...(previous?.noticeShown ? { noticeShown: true } : {}) },
 			}
 			return
 		}
 		entry.limit = limit
-		entry.limitAttempts = (entry.limitAttempts ?? 0) + 1
 		entry.retryAt = retryAt
 		const learned = limit.scope === "snapshot" ? learnedLimit(entry.pending, limit) : undefined
 		if (learned && limit.limit)
