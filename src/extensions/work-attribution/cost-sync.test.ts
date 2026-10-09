@@ -409,6 +409,33 @@ describe("automatic exact work cost lookup", () => {
 			"4 requests untagged: 1 body uninspectable, 3 tag limit (Kimchi adds model and phase tags; keep at most 7 in /tags).",
 		)
 	})
+	it("counts only the work's own untagged and failed requests in work details of connected works", async () => {
+		const untaggedId = randomUUID()
+		const untagged = tracked("untagged", untaggedId)
+		appendWorkRecord(untagged.ctx, {
+			type: "request_dispatch",
+			requestId: untaggedId,
+			dispatchedAt: "2026-10-01T08:00:00.000Z",
+			billingSource: untagged.source,
+			billingTagSkipped: "tag-limit",
+		})
+		const priced = tagged("priced")
+		await sync()
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + RECHECK_MS)
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }))
+		await sync()
+		// Both works share PR #1, so each saved report lists both requests.
+		expect(report(untagged.workId).requests).toHaveLength(2)
+		const untaggedLines = workCostDetails(dir, untagged.workId)
+		expect(untaggedLines).toContain(
+			"1 request untagged: tag limit (Kimchi adds model and phase tags; keep at most 7 in /tags).",
+		)
+		expect(untaggedLines.join("\n")).not.toContain("Last billing refresh failed")
+		const pricedLines = workCostDetails(dir, priced.workId)
+		expect(pricedLines).toContain("Last billing refresh failed for 1 request: Billing API returned HTTP 503.")
+		expect(pricedLines.join("\n")).not.toContain("untagged")
+	})
 	it("shows price coverage and unresolved ownership separately in work details", async () => {
 		const { ctx, workId } = tagged("details", randomUUID(), {
 			segment: { id: "uncertain", attribution: "unknown", reason: "model-uncertain" },

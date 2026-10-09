@@ -78,7 +78,7 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 			)
 
 			const untagged = new Map<string, number>()
-			for (const row of requests)
+			for (const row of own)
 				if (typeof row.billingTagSkipped === "string")
 					untagged.set(row.billingTagSkipped, (untagged.get(row.billingTagSkipped) ?? 0) + 1)
 			if (untagged.size) {
@@ -91,7 +91,7 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 				)
 			}
 
-			const failed = requests.flatMap((row) =>
+			const failed = own.flatMap((row) =>
 				object(row.billingLookup) && row.billingLookup.status === "unavailable" ? [row.billingLookup] : [],
 			)
 			if (failed.length) {
