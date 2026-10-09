@@ -13,7 +13,7 @@ const SNAPSHOT_BUDGET_MS = 1000
 const INDEX_LISTING_BYTES = 64 * 1024 * 1024
 /** Changed paths kept per observation; cost allocation only needs to know that something changed. */
 const MAX_OBSERVED_PATHS = 128
-/** Requests that already recorded an incomplete scan; one is enough to keep their spend from being sure. */
+/** Requests that already recorded an incomplete scan; one is enough to keep their spend from being confirmed. */
 const incompleteRequests = new Set<string>()
 interface Snapshot {
 	repository: string
@@ -118,7 +118,7 @@ export async function observeToolFiles<T>(
 							files.push({ path, before: previous, after: current })
 					}
 				}
-				// One incomplete scan per request already keeps its spend from being sure.
+				// One incomplete scan per request already keeps its spend from being confirmed.
 				const requestId = origin?.requestId
 				const repeated = !files.length && !complete && requestId !== undefined && incompleteRequests.has(requestId)
 				if (!complete && requestId !== undefined) incompleteRequests.add(requestId)

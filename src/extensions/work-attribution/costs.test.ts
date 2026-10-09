@@ -1543,6 +1543,41 @@ describe("exclusive allocation with tool-observed edits", () => {
 		expect(report.requests[0].allocation).toBe("shared")
 	})
 
+	it.each([
+		["a file no native edit touched", { files: [{ path: "dist/out.js" }] }, "pull-request"],
+		["the natively edited file", { files: [{ path: "a.ts" }] }, "inferred"],
+		["an incomplete scan", { complete: false, files: [], reason: "incomplete-snapshot" }, "inferred"],
+		["a truncated scan", { files: [{ path: "dist/out.js" }], changedPaths: 200, truncated: true }, "inferred"],
+	])("lets a Bash change to %s decide whether native proof stands", (_case, fields, allocation) => {
+		const changed = (file: { path: string }) => ({
+			...file,
+			before: null,
+			after: { blob: "1".repeat(40), mode: "100644" },
+		})
+		const observation: WorkRecord = {
+			version: 1,
+			type: "file_observation",
+			workId: "work-a",
+			sessionId: "session-a",
+			observationId: "obs-1",
+			source: "bash",
+			toolCallId: "bash-tool",
+			requestId: "r",
+			repository: "/repo/.git",
+			worktree: "/repo",
+			startedAt: time(11),
+			complete: true,
+			...fields,
+			files: fields.files.map(changed),
+		}
+		const segment = { id: "input", attribution: "session", reason: "new-task" }
+		const report = calculatePullRequestCosts(
+			[request("r", "work-a", "session-a", time(10), { segment }), edit, nativeCommit, observation],
+			[charge("r", "1")],
+		)
+		expect(report.requests[0].allocation).toBe(allocation)
+	})
+
 	it("keeps a request shared when its Bash commit belongs to another PR without an observation", () => {
 		const report = calculatePullRequestCosts([request("r"), edit, nativeCommit, bashCommit], [charge("r", "1")])
 		expect(report.requests[0].allocation).toBe("shared")
@@ -1554,11 +1589,11 @@ describe("exclusive allocation with tool-observed edits", () => {
 	])("keeps native proof unconfirmed while the input's own Bash commit has %s", (_case, fields) => {
 		// Discovery may still find it, or it was squashed outside Kimchi and never reaches a PR.
 		const segment = { id: "input", attribution: "session", reason: "new-task" }
-		const sure = calculatePullRequestCosts(
+		const confirmed = calculatePullRequestCosts(
 			[request("r", "work-a", "session-a", time(10), { segment }), edit, nativeCommit],
 			[charge("r", "1")],
 		)
-		expect(sure.requests[0].allocation).toBe("pull-request")
+		expect(confirmed.requests[0].allocation).toBe("pull-request")
 		const report = calculatePullRequestCosts(
 			[request("r", "work-a", "session-a", time(10), { segment }), edit, nativeCommit, { ...bashCommit, ...fields }],
 			[charge("r", "1")],
@@ -1585,7 +1620,7 @@ describe("exclusive allocation with tool-observed edits", () => {
 		expect(report.requests.map((row) => row.allocation)).toEqual([allocation, allocation])
 	})
 
-	it.each(["bash", "mcp"])("keeps the whole input likely when a child's %s observation is incomplete", (source) => {
+	it.each(["bash", "mcp"])("keeps the whole input inferred when a child's %s observation is incomplete", (source) => {
 		const segment = { id: "input", attribution: "session", reason: "new-task" }
 		const report = calculatePullRequestCosts(
 			[

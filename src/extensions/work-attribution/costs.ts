@@ -257,9 +257,10 @@ function exclusiveRequestPulls(
 	const unresolvedRequests = new Set<string>()
 	const unresolvedWorks = new Set<string>()
 	const rewritten = new Set<string>()
+	const observations: { requestId: string; row: WorkRecord }[] = []
 	for (const row of records) {
-		// Tool windows can overlap human edits, so observations cannot prove exclusive ownership.
-		if (row.type === "file_observation" && typeof row.requestId === "string") unresolvedRequests.add(row.requestId)
+		if (row.type === "file_observation" && typeof row.requestId === "string")
+			observations.push({ requestId: row.requestId, row })
 		if (row.type === "commit" && typeof row.rewrittenFrom === "string")
 			rewritten.add(JSON.stringify([row.workId, row.repository, row.rewrittenFrom]))
 		if (row.type !== "file_transition") continue
@@ -282,6 +283,26 @@ function exclusiveRequestPulls(
 				referenced: false,
 				pulls: new Set(),
 			})
+	}
+	// Tool windows can overlap human edits, so an observation never proves ownership. It blocks native proof only where
+	// it could have altered that evidence: an incomplete or truncated scan, or a file natively edited in the same work and
+	// worktree. A tool change to any other file, such as build output, leaves the proof alone.
+	const nativePaths = new Set(
+		[...transitions.values()].map(({ row }) => JSON.stringify([row.workId, row.worktree, row.path])),
+	)
+	for (const { requestId, row } of observations) {
+		const files = Array.isArray(row.files) ? row.files : []
+		if (
+			row.complete !== true ||
+			row.truncated === true ||
+			files.some(
+				(file) =>
+					!object(file) ||
+					typeof file.path !== "string" ||
+					nativePaths.has(JSON.stringify([row.workId, row.worktree, file.path])),
+			)
+		)
+			unresolvedRequests.add(requestId)
 	}
 	for (const row of records) {
 		if (row.type !== "commit") continue
