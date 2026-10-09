@@ -146,7 +146,7 @@ The client sends each request from the last 32 days and each request that may be
 
 The client names intentionally omitted finished PRs in `windowedPullRequestIds`. The server keeps those PRs and their claims, including when its clock has not reached day 32 yet. Omitting a PR without naming it withdraws its uploaded claims; it does not silently change an already frozen assignment.
 
-At day 32 the server saves a frozen subtotal. It keeps detailed claims for 90 days after merge or close, then retains only the small report for 13 calendar months from the original freeze date. Missing prices and disputed ownership stay incomplete. Expiring one PR's details does not mark the rest of the repository's recorded history incomplete.
+At day 32 the server saves a frozen subtotal. It keeps detailed claims for 90 days after merge or close, then keeps only the small report. Frozen reports do not expire, and their original freeze date never changes. Missing prices and disputed ownership stay incomplete. Expiring one PR's details does not mark the rest of the repository's recorded history incomplete.
 
 Until day 90, an explicit `/work link`, `/work unlink` or verified producer confirmation can correct frozen ownership. The server saves the changed total before acknowledging an accepted correction and records `correctedAt`; `frozenAt` and archive expiry stay unchanged. Replayed corrections and ordinary uploads cannot move frozen costs. The dashboard shows both dates.
 
