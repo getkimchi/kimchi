@@ -781,6 +781,37 @@ describe("sessions that never upload", () => {
 })
 
 describe("repository identity for work without a PR", () => {
+	it.each([
+		["unsupported", "This repository has no supported GitHub or GitLab remote.", true],
+		["retry", "GitHub lookup timed out. Kimchi will retry.", false],
+	] as const)("leaves other repositories complete only when a lookup fails as %s", async (kind, message, complete) => {
+		await rm(join(directory, "pr-cost-reporting", "state.json"))
+		await seedLinked()
+		const path = join(directory, "work-attribution", "source.jsonl")
+		const startedAt = new Date().toISOString()
+		await writeFile(
+			path,
+			`${await readFile(path, "utf8")}${JSON.stringify({
+				version: 1,
+				type: "request",
+				workId: "77777777-7777-4777-8777-777777777777",
+				sessionId: "scratch-session",
+				requestId: "66666666-6666-4666-8666-666666666666",
+				startedAt,
+				recordedAt: startedAt,
+				scope: { account: content.account, repository: "/scratch/.git" },
+			})}\n`,
+		)
+		vi.spyOn(pullRequests, "lookupRepositoryIdentity").mockRejectedValue(new pullRequests.LookupError(message, kind))
+		respond(accepted)
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(posts().map((payload) => [payload.repository.id, payload.coverage.historyComplete])).toEqual([
+			["42", complete],
+		])
+		const { error } = await readReportingState(directory)
+		if (complete) expect(error).toBeUndefined()
+		else expect(error).toContain("skipped 1 request(s) without original account or repository evidence")
+	})
 	it("delivers a known repository while another lookup times out, then retries that lookup after cooldown", async () => {
 		await seedLinked()
 		const path = join(directory, "work-attribution", "source.jsonl")

@@ -12,6 +12,8 @@ export interface ReportingRepository {
 	id: string
 	name?: string
 }
+/** A local repository's provider identity, or `unsupported` when it has none (no GitHub or GitLab remote, or gone). */
+export type RepositoryIdentity = ReportingRepository | "unsupported"
 interface CorrectionReceipt {
 	id: string
 	revision: number
@@ -417,7 +419,8 @@ function method(
 export function buildSnapshots(
 	records: WorkRecord[],
 	report: PullRequestCostReport,
-	repositories: Map<string, ReportingRepository>,
+	/** Identities by Git directory; a directory left out has not been looked up successfully yet. */
+	repositories: Map<string, RepositoryIdentity>,
 	historyComplete: boolean,
 	costRefreshes = new Map<string, string>(),
 	/** Stricter limits a repository's server rejection taught, by account and repository key. */
@@ -583,12 +586,17 @@ export function buildSnapshots(
 					continue
 				}
 				const repo = repositories.get(row.scope.repository)
+				// A repository without a provider identity has no snapshot to report to; nothing is missing from others.
+				if (repo === "unsupported") continue
 				if (repo) destinations.set(repositoryKey(repo), repo)
 				else missing = true
 			}
 		if (!destinations.size) {
-			incomplete = true
-			skippedRequests++
+			// Like unscoped attempts, only requests that would be sent leave the history incomplete.
+			if (missing && current(request)) {
+				incomplete = true
+				skippedRequests++
+			}
 			continue
 		}
 		if (missing) incomplete = true

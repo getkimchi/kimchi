@@ -4,6 +4,7 @@ import { loadConfig } from "../../config.js"
 import { boundedResponse, fetchWithRetry, parseRetryAfterMs } from "../../utils/http.js"
 import { plainURL } from "../../utils/url.js"
 import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js"
+import { LookupError } from "../pull-request-status/provider-records.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
 import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../work-attribution/scope.js"
@@ -24,7 +25,7 @@ import {
 	type SnapshotAck,
 	UPLOAD_INTERVAL_MS,
 } from "./queue.js"
-import { accountKey, buildSnapshots, type ReportingRepository } from "./snapshot.js"
+import { accountKey, buildSnapshots, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
 
 const PASS_MS = 5000
 const RESPONSE_BYTES = 64 * 1024
@@ -72,7 +73,8 @@ export function serverLimit(body: unknown, at = Date.now()): ServerLimit | undef
 		at,
 	}
 }
-const repositoryCache = new Map<string, { checkedAt: number; value?: ReportingRepository }>()
+/** A failed lookup keeps its kind: a repository without a GitHub or GitLab identity is not missing evidence. */
+const repositoryCache = new Map<string, { checkedAt: number; value?: ReportingRepository; unsupported?: true }>()
 
 function safeEndpoint(value: string): boolean {
 	const url = plainURL(value, ["https:", "http:"])
@@ -254,7 +256,7 @@ export async function reconcileReporting(
 		check()
 		const { records, report, historyComplete, costRefreshes } = readWorkCostReport(agentDir, check)
 		if (!historyComplete) throw new Error("PR reporting is waiting for readable source records")
-		const repositories = new Map<string, ReportingRepository>()
+		const repositories = new Map<string, RepositoryIdentity>()
 		const needed = new Map<string, string>()
 		const requestRepositories = new Map<string, Set<string>>()
 		for (const row of records)
@@ -281,6 +283,7 @@ export async function reconcileReporting(
 		for (const repository of needed.keys()) {
 			const cached = repositoryCache.get(cacheKey(repository))
 			if (cached?.value) repositories.set(repository, cached.value)
+			else if (cached?.unsupported) repositories.set(repository, "unsupported")
 		}
 		for (const [repository, path] of [...needed].sort(
 			([a], [b]) =>
@@ -297,8 +300,11 @@ export async function reconcileReporting(
 				const value = await lookupRepositoryIdentity(path, AbortSignal.any([bounded, AbortSignal.timeout(lookupMs)]))
 				repositoryCache.set(key, { checkedAt: Date.now(), value })
 				repositories.set(repository, value)
-			} catch {
-				repositoryCache.set(key, { checkedAt: Date.now() })
+			} catch (error) {
+				// Transient failures (network, timeouts, rate limits) retry and leave the history incomplete meanwhile.
+				const unsupported = error instanceof LookupError && error.kind === "unsupported"
+				repositoryCache.set(key, { checkedAt: Date.now(), ...(unsupported ? { unsupported: true } : {}) })
+				if (unsupported) repositories.set(repository, "unsupported")
 				check()
 			}
 		}

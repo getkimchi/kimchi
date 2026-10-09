@@ -6,6 +6,7 @@ import {
 	accountKey,
 	buildSnapshots,
 	fitSnapshot,
+	type RepositoryIdentity,
 	repositoryKey,
 	SNAPSHOT_LIMITS,
 	type SnapshotContent,
@@ -801,6 +802,47 @@ describe("per-request upload window and evidence labels", () => {
 			allocation: { kind: "post-merge" },
 			billingRecordIds: [],
 		})
+	})
+})
+
+describe("repositories without a provider identity", () => {
+	const scratch = "/src/scratch/.git"
+	const scratchRequestId = "55555555-5555-4555-8555-555555555555"
+	// One request in a local repository without a GitHub or GitLab remote, beside a reported PR repository.
+	const scan = (startedAt: string, identities: [string, RepositoryIdentity][]) => {
+		const rows: WorkRecord[] = [
+			...records(),
+			{
+				version: 1,
+				type: "request",
+				workId: "scratch-work",
+				sessionId: "scratch-session",
+				requestId: scratchRequestId,
+				startedAt,
+				recordedAt: startedAt,
+				scope: { account, repository: scratch },
+			},
+		]
+		return buildSnapshots(rows, calculatePullRequestCosts(rows, []), new Map(identities), true)
+	}
+
+	it("does not let an out-of-window request there mark other repositories incomplete", () => {
+		const built = scan("2026-03-20T00:00:00.000Z", [])
+		expect(built).toMatchObject({ incomplete: false, skippedRequests: 0 })
+		expect(built.snapshots.map(({ content }) => [content.repository.id, content.coverage.historyComplete])).toEqual([
+			["42", true],
+		])
+	})
+	it("does not let a recent request in an unsupported repository mark them incomplete either", () => {
+		const built = scan("2026-10-06T12:00:00.000Z", [[scratch, "unsupported"]])
+		expect(built).toMatchObject({ incomplete: false, skippedRequests: 0 })
+		expect(built.snapshots[0].content.coverage.historyComplete).toBe(true)
+		expect(JSON.stringify(built.snapshots)).not.toContain(scratchRequestId)
+	})
+	it("still marks history incomplete while a recent request's repository is not identified yet", () => {
+		const built = scan("2026-10-06T12:00:00.000Z", [])
+		expect(built).toMatchObject({ incomplete: true, skippedRequests: 1 })
+		expect(built.snapshots[0].content.coverage.historyComplete).toBe(false)
 	})
 })
 
