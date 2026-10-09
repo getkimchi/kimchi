@@ -9,16 +9,19 @@ import type { ReportingRepository } from "./snapshot.js"
 
 const name = (repository: ReportingRepository) => repository.name ?? `${repository.host} repository ${repository.id}`
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`
+
 function inAbout(ms: number): string {
 	if (ms <= 0) return "at the next upload"
 	const minutes = Math.max(1, Math.round(ms / 60_000))
 	return `in about ${minutes < 60 ? `${minutes} min` : `${Math.round(minutes / 60)} h`}`
 }
+
 function reached(limit: ServerLimit): string {
 	const values =
 		limit.current !== undefined && limit.maximum !== undefined ? ` ${limit.current} of ${limit.maximum}` : ""
 	return `${limit.scope ?? "server"} limit reached${limit.limit ? ` (${limit.limit}${values})` : ""}`
 }
+
 /** A snapshot limit in a dimension trimming can shrink is retried with a smaller snapshot. */
 function shrinking({ limit, learned }: PendingRepository): boolean {
 	return (
@@ -27,6 +30,7 @@ function shrinking({ limit, learned }: PendingRepository): boolean {
 		learned?.[limit.limit] !== undefined
 	)
 }
+
 const owner = (limit: ServerLimit) =>
 	limit.scope === "contributor" ? "your account in this organization" : "this organization"
 const paused = (limit: ServerLimit) =>

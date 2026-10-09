@@ -42,12 +42,14 @@ const jitter = (ms: number) => Math.round(ms * (0.8 + 0.4 * Math.random()))
  * off from 30 seconds to 30 minutes. Other 4xx responses, such as an endpoint not deployed yet, cannot
  * be fixed by retrying and wait one to six hours.
  */
+
 export function retryDelay(status: number | undefined, attempts: number, retryAfterMs: number | null): number {
 	if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429)
 		return jitter(Math.min(LIMIT_RETRY_MS, HOUR_MS * 2 ** attempts))
 	if (retryAfterMs !== null) return Math.min(Math.max(retryAfterMs, 30_000), LIMIT_RETRY_MS)
 	return jitter(Math.min(30 * MINUTE_MS, 30_000 * 2 ** attempts))
 }
+
 /** Reads the PR_COST_LIMIT ErrorInfo of a 429 body; anything else is not a limit. */
 export function serverLimit(body: unknown, at = Date.now()): ServerLimit | undefined {
 	if (!object(body) || !Array.isArray(body.details)) return undefined
@@ -74,6 +76,7 @@ export function serverLimit(body: unknown, at = Date.now()): ServerLimit | undef
 		at,
 	}
 }
+
 /** A failed lookup keeps its kind: a repository without a GitHub or GitLab identity is not missing evidence. */
 const repositoryCache = new Map<string, { checkedAt: number; value?: ReportingRepository; unsupported?: true }>()
 
@@ -128,6 +131,7 @@ export async function deliverSnapshots(
 				.filter(([, pause]) => pause.retryAt > now)
 				.map(([account]) => account),
 		)
+
 		const due = Object.entries(state.entries)
 			.filter(
 				([, entry]) =>
@@ -160,6 +164,7 @@ export async function deliverSnapshots(
 				if (loadConfig({ cwd }).apiKey !== key || platformApiUrl(cwd) !== apiUrl)
 					throw new Error("PR reporting credentials changed")
 			}
+
 			const fetchBounded: typeof fetch = async (input, init) => {
 				assertCurrent()
 				const current = await readReportingState(agentDir)
@@ -204,6 +209,7 @@ export async function deliverSnapshots(
 					errorMessage = "PR reporting is waiting for the original account"
 					throw new Error(errorMessage)
 				}
+
 				const response = await fetchWithRetry(
 					`${apiUrl}/ai-optimizer/v1beta/organizations/${entry.account.organizationId}/pr-cost-snapshots`,
 					{
@@ -320,6 +326,7 @@ export async function reconcileReporting(
 				check()
 			}
 		}
+
 		const built = buildSnapshots(records, report, repositories, historyComplete, costRefreshes, learnedLimits(state))
 		check()
 		const queued = await queueSnapshots(agentDir, built.snapshots, !built.incomplete)

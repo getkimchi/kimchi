@@ -22,6 +22,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 	pi.registerEntryRenderer<string>("pr-cost-reporting-notice", (entry, _options, theme) =>
 		typeof entry.data === "string" ? new Text(theme.fg("dim", entry.data), 1, 0) : undefined,
 	)
+
 	let context: ExtensionContext | undefined
 	/** CI, print, JSON and benchmark runs keep local attribution but never upload. */
 	let skipReason: string | undefined
@@ -29,6 +30,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 	let activeKey = ""
 	let stop: (() => Promise<void>) | undefined
 	let draining = Promise.resolve()
+
 	async function reportingEnabled(showNotice = true): Promise<boolean> {
 		try {
 			const state = await readReportingState(getAgentDir())
@@ -49,6 +51,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 			return false
 		}
 	}
+
 	function synchronize(ctx = context): void {
 		if (!started || !ctx) return
 		const request: WorkStateRequest = {}
@@ -73,6 +76,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 		}
 	}
 	pi.events.on(WORK_CHANGED_EVENT, () => synchronize())
+
 	pi.on("session_start", async (_event, ctx) => {
 		started = true
 		skipReason = uploadSkipReason(ctx.mode)
@@ -80,18 +84,21 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 		// Studio drops notifications for a session it has not registered yet, so it gets the notice after a turn.
 		if (stop) await reportingEnabled(!IS_ACP_MODE)
 	})
+
 	pi.on("agent_end", () => {
 		// Disk reads must not hold turn completion or the dialogs waiting for idle.
 		draining = draining.then(async () => {
 			if (started && stop && (await reportingEnabled())) requestWorkReconciliation()
 		})
 	})
+
 	pi.on("session_shutdown", async () => {
 		started = false
 		await Promise.all([draining, stop?.()])
 		stop = undefined
 		context = undefined
 	})
+
 	pi.registerCommand("pr-reporting", {
 		description: "PR cost reporting: on, off, or status (defaults to the SaaS telemetry setting)",
 		handler: async (args, ctx) => {

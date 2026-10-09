@@ -12,14 +12,17 @@ export interface ReportingRepository {
 	id: string
 	name?: string
 }
+
 /** A local repository's provider identity, or `unsupported` when it has none (no GitHub or GitLab remote, or gone). */
 export type RepositoryIdentity = ReportingRepository | "unsupported"
+
 interface CorrectionReceipt {
 	id: string
 	revision: number
 	recordedAt: string
 	source: "work-command" | "producer-confirmation"
 }
+
 export interface SnapshotContent {
 	repository: ReportingRepository
 	windowedPullRequestIds?: string[]
@@ -51,7 +54,9 @@ export interface SnapshotContent {
 		trimmedRequests?: number
 	}
 }
+
 type SnapshotRequest = SnapshotContent["requests"][number]
+
 export interface RepositorySnapshot {
 	account: WorkAccount
 	content: SnapshotContent
@@ -60,17 +65,20 @@ export interface RepositorySnapshot {
 	/** Missing provider evidence holds prior claims for this group; never enters the wire body. */
 	incomplete?: boolean
 }
+
 export interface WireSnapshot extends SnapshotContent {
 	schemaVersion: 1
 	producerId: string
 	revision: string
 	generatedAt: string
 }
+
 export interface SnapshotLimits {
 	requests: number
 	pullRequests: number
 	bytes: number
 }
+
 /** The server's per-snapshot limits. A larger inventory is trimmed rather than held. */
 export const SNAPSHOT_LIMITS: SnapshotLimits = { requests: 32_000, pullRequests: 250, bytes: 8 * 1024 * 1024 }
 const UPLOAD_WINDOW_MS = 32 * 24 * 60 * 60 * 1000
@@ -80,22 +88,28 @@ const CORRECTION_MARGIN_MS = 5 * 60_000
 const FINISHED_PR_GRACE_MS = 2 * 24 * 60 * 60 * 1000
 const MAX_BILLING_IDS = 8
 export const MAX_REVISION = 9223372036854775807n
+
 export function revision(value: unknown): value is string {
 	return typeof value === "string" && /^[1-9]\d{0,18}$/.test(value) && BigInt(value) <= MAX_REVISION
 }
+
 export function repositoryKey(repository: ReportingRepository): string {
 	return JSON.stringify([repository.provider, repository.host, repository.id])
 }
+
 export function accountKey(account: WorkAccount): string {
 	return JSON.stringify([account.apiUrl, account.organizationId, account.userId])
 }
+
 /** Protobuf timestamps start at year 1. */
 export function validTime(value: unknown): value is string {
 	return typeof value === "string" && Number(value.slice(0, 4)) >= 1 && time(value) !== undefined
 }
+
 function onlyKeys(value: object, allowed: string[]): boolean {
 	return Object.keys(value).every((key) => allowed.includes(key))
 }
+
 /** When a PR merged or closed, as the server reads it, in either the local or the wire shape. An open PR has not. */
 function finishedAt(pr: { state: string; mergedAt?: string | null; closedAt?: string | null } | null | undefined) {
 	const value = pr?.state === "merged" ? pr.mergedAt : pr?.state === "closed" ? pr.closedAt : undefined
@@ -107,6 +121,7 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 	const fail = () => {
 		throw new Error("PR reporting snapshot is invalid or exceeds the upload limits")
 	}
+
 	const { repository: repo, pullRequests, requests, coverage } = snapshot
 	if (
 		!onlyKeys(snapshot, [
@@ -187,6 +202,7 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 		if (plainURL(pr.url)?.host !== repo.host) fail()
 		pulls.add(pr.id)
 	}
+
 	const windowed = snapshot.windowedPullRequestIds
 	if (
 		windowed !== undefined &&
@@ -269,6 +285,7 @@ export function wireBytes(content: SnapshotContent): number {
  * without requests is removed rather than named as windowed, because the server would restore its
  * old claims into the same snapshot. Returns undefined when the kept requests alone exceed the limits.
  */
+
 export function fitSnapshot(
 	content: SnapshotContent,
 	limits: SnapshotLimits,
@@ -295,6 +312,7 @@ export function fitSnapshot(
 			trimmedRequests: total,
 		},
 	})
+
 	const finishTimes = new Map(content.pullRequests.map((pr) => [pr.id, finishedAt(pr)]))
 	const pullSize = new Map(content.pullRequests.map((pr) => [pr.id, size(pr)]))
 	const requestSize = new Map(content.requests.map((request) => [request.requestId, size(request)]))
@@ -338,6 +356,7 @@ export function fitSnapshot(
 				list.reduce((max, request) => Math.max(max, Date.parse(request.startedAt)), 0),
 			]),
 		)
+
 		// Finished PRs by finish time, then open PRs with the oldest latest activity. A PR without
 		// requests stays: buildSnapshots keeps one only for a revocation receipt.
 		const removable = content.pullRequests
@@ -354,6 +373,7 @@ export function fitSnapshot(
 			for (const request of byPull.get(id) ?? []) drop(request)
 		}
 	}
+
 	const rank = new Map<string, [number, number, number]>()
 	for (const request of content.requests) {
 		const ids = request.allocation.pullRequestIds
@@ -368,6 +388,7 @@ export function fitSnapshot(
 					: [1, Math.max(...finished.map(Number)), started],
 		)
 	}
+
 	const order = content.requests
 		.filter((request) => !request.correction && !dropped.has(request.requestId))
 		.sort((a, b) => {
@@ -453,11 +474,13 @@ export function buildSnapshots(
 			}
 		}
 	}
+
 	// Reuse the native proof validator. Revocations are explicit user decisions;
 	// validate their original scope and evidence before sending the receipt.
 	const verified = requestWorkLinks(
 		records.map((row) => (row.type === "work_link" && row.status === "revoked" ? { ...row, status: "active" } : row)),
 	)
+
 	const byRequest = new Map(report.requests.map((request) => [request.requestId, request]))
 	const corrections = new Map<string, CorrectionReceipt>()
 	for (const request of report.requests) {
@@ -498,6 +521,7 @@ export function buildSnapshots(
 			source: manual ? "work-command" : "producer-confirmation",
 		})
 	}
+
 	// Send recent attempts, attempts of open or recently finished PRs and corrections the server can still apply.
 	// Older finished history stays on the server through exact windowed PR IDs, so long-lived works stay small.
 	const recentPulls = new Set(
@@ -508,6 +532,7 @@ export function buildSnapshots(
 			})
 			.map((pr) => pr.key),
 	)
+
 	// The server keeps a finished PR's details until day 90; after that only its frozen total remains.
 	const detailed = new Set(
 		report.pullRequests
@@ -517,6 +542,7 @@ export function buildSnapshots(
 			})
 			.map((pr) => pr.key),
 	)
+
 	const current = (request: RequestCostAllocation) =>
 		!request.startedAt ||
 		Date.parse(request.startedAt) >= cutoff ||
@@ -545,6 +571,7 @@ export function buildSnapshots(
 			})
 			.map((request) => request.requestId),
 	)
+
 	// The server replaces a listed PR's whole inventory. When an included request, such as a post-merge one, names a
 	// finished PR outside the window, send every request of that PR too, or its earlier claims would be withdrawn.
 	const requestsByPull = new Map<string, RequestCostAllocation[]>()
@@ -569,6 +596,7 @@ export function buildSnapshots(
 	const unpriced = new Set(
 		report.requests.filter((request) => request.priceStatus !== "priced").map((request) => request.requestId),
 	)
+
 	// A verified no-charge attempt is priced at zero and has no billing records to send.
 	const noCharge = new Set(
 		report.requests
@@ -588,10 +616,12 @@ export function buildSnapshots(
 			}
 			continue
 		}
+
 		const account = request.account
 		const candidates = report.pullRequests.filter(
 			(pr) => pr.account && sameWorkAccount(pr.account, account) && request.pullRequestIds.includes(pr.key),
 		)
+
 		const destinations = new Map<string, ReportingRepository>()
 		let missing = false
 		for (const candidate of candidates) {
@@ -602,6 +632,7 @@ export function buildSnapshots(
 				missing = true
 				continue
 			}
+
 			const repo: ReportingRepository = {
 				provider: pr.provider ?? "github",
 				host: pr.host,
@@ -616,6 +647,7 @@ export function buildSnapshots(
 					missing = true
 					continue
 				}
+
 				const repo = repositories.get(row.scope.repository)
 				// A repository without a provider identity has no snapshot to report to; nothing is missing from others.
 				if (repo === "unsupported") continue
@@ -668,6 +700,7 @@ export function buildSnapshots(
 					...(pr.mergedAt ? { mergedAt: pr.mergedAt } : {}),
 					...(pr.state === "closed" && pr.closedAt ? { closedAt: pr.closedAt } : {}),
 				}
+
 				const existing = group.content.pullRequests.find((other) => other.id === pr.id)
 				if (existing && JSON.stringify(existing) !== JSON.stringify(metadata)) {
 					conflicts.add(key)
@@ -676,6 +709,7 @@ export function buildSnapshots(
 				if (!existing) group.content.pullRequests.push(metadata)
 				pullRequestIds.push(pr.id)
 			}
+
 			let kind: SnapshotContent["requests"][number]["allocation"]["kind"] =
 				request.allocation === "inferred" ? (pullRequestIds.length > 1 ? "shared" : "pull-request") : request.allocation
 			// The backend applies each candidate's merge cutoff to a shared claim.
@@ -705,6 +739,7 @@ export function buildSnapshots(
 					method: method(request, links),
 				},
 			})
+
 			const refreshed = billingAccountVerified ? costRefreshes.get(request.requestId) : undefined
 			if (
 				refreshed &&
@@ -714,6 +749,7 @@ export function buildSnapshots(
 				group.content.coverage.lastCostRefreshAt = refreshed
 		}
 	}
+
 	const isUnpriced = (request: SnapshotRequest) =>
 		unpriced.has(request.requestId) || (!request.billingRecordIds.length && !noCharge.has(request.requestId))
 	const snapshots = [...groups.entries()]
