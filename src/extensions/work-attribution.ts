@@ -116,7 +116,7 @@ export function workLedgerPath(ctx: WorkContext): string {
 }
 /** Attribution is observational: callers may continue without IDs after a persistence failure. */
 export function tryWorkAttribution<T>(record: () => T): T | undefined {
-	// The cost-per-PR switch also stops records that other extensions write through this wrapper.
+	// With Cost per PR disabled, other extensions record no work through this wrapper.
 	if (!isResourceEnabled(COST_PER_PR_RESOURCE_ID)) return undefined
 	try {
 		return record()

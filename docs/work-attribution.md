@@ -325,9 +325,9 @@ The implementation uses Pi's existing hooks and native Git tracing. It adds no d
 
 </details>
 
-## Turning it off
+## Turning Cost per PR off
 
-`kimchi resources disable extensions.cost-per-pr`, or the same switch in `/resources`, turns off the whole feature at the next start: no work records, PR lookups, `/work` or PR/MR status. Writes that other extensions make through work attribution stop at once. Existing local records stay on disk, and `kimchi resources enable extensions.cost-per-pr` turns it back on.
+Cost per PR is listed in `/resources` like other built-in extensions and is on by default. Disabling it there, or with `kimchi resources disable extensions.cost-per-pr`, takes effect at the next start: Kimchi records no work, looks up no PRs and shows no `/work` or PR/MR status. Other extensions stop recording work at once. Records already saved stay on disk.
 
 ## What still needs work
 
