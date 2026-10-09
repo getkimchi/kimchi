@@ -1,6 +1,6 @@
 import { isWorkId } from "../../shared/work-id.js"
 import { plainURL } from "../../utils/url.js"
-import { providerId } from "../pull-request-status/pull-requests.js"
+import { providerId } from "../pull-request-status/provider-records.js"
 import { type PullRequestCostReport, type RequestCostAllocation, time } from "../work-attribution/costs.js"
 import { requestWorkLinks } from "../work-attribution/links.js"
 import { isWorkScope, sameWorkAccount, type WorkAccount } from "../work-attribution/scope.js"

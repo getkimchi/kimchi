@@ -4,7 +4,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
-import * as pullRequests from "../pull-request-status/pull-requests.js"
+import * as providerApi from "../pull-request-status/provider-api.js"
+import { LookupError } from "../pull-request-status/provider-records.js"
 import * as health from "../telemetry/pr-cost.js"
 import { readWorkCostReport, requestTagSelector } from "../work-attribution/cost-sync.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
@@ -153,7 +154,7 @@ describe("account-fenced reporting delivery", () => {
 				.filter((line) => JSON.parse(line).type !== "commit")
 				.join("\n")}\n`,
 		)
-		vi.spyOn(pullRequests, "lookupRepositoryIdentity").mockResolvedValue({
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({
 			...content.content.repository,
 			name: "example/repo",
 		})
@@ -827,7 +828,7 @@ describe("repository identity for work without a PR", () => {
 				scope: { account: content.account, repository: "/scratch/.git" },
 			})}\n`,
 		)
-		vi.spyOn(pullRequests, "lookupRepositoryIdentity").mockRejectedValue(new pullRequests.LookupError(message, kind))
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new LookupError(message, kind))
 		respond(accepted)
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		expect(posts().map((payload) => [payload.repository.id, payload.coverage.historyComplete])).toEqual([
@@ -854,7 +855,7 @@ describe("repository identity for work without a PR", () => {
 				scope: { account: content.account, repository: "/slow/.git" },
 			})}\n`,
 		)
-		const lookup = vi.spyOn(pullRequests, "lookupRepositoryIdentity").mockImplementation(
+		const lookup = vi.spyOn(providerApi, "lookupRepositoryIdentity").mockImplementation(
 			(_path, signal) =>
 				new Promise((_resolve, reject) => {
 					signal.addEventListener("abort", () => reject(signal.reason), { once: true })
@@ -882,7 +883,7 @@ describe("repository identity for work without a PR", () => {
 			.split("\n")
 			.filter((line) => JSON.parse(line).type !== "commit")
 		await writeFile(path, `${rows.join("\n")}\n`)
-		const lookup = vi.spyOn(pullRequests, "lookupRepositoryIdentity").mockResolvedValue({
+		const lookup = vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({
 			provider: "github",
 			host: "github.com",
 			name: "team/first",
@@ -922,7 +923,7 @@ describe("repository identity for work without a PR", () => {
 		)
 		let lookups = 0
 		// A realistic lookup: Git remote read, CLI token lookup and one provider API round-trip.
-		vi.spyOn(pullRequests, "lookupRepositoryIdentity").mockImplementation(async (path) => {
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockImplementation(async (path) => {
 			lookups++
 			await new Promise((resolve) => setTimeout(resolve, 450))
 			return {
