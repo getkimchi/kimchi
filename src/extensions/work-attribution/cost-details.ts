@@ -59,9 +59,9 @@ export interface WorkCostTotals {
 		pullRequest: { provider: string; number: number; state: string; url: string } | null
 		totalCostUsd: string | null
 		knownCostUsd: string
-		/** Sure and likely parts of a merged or closed PR's spend. */
-		sure?: string
-		likely?: string
+		/** Confirmed (`explicit`) and inferred parts of a merged or closed PR's spend, as in `costs.json`. */
+		explicit?: string
+		inferred?: string
 		/** An unmerged PR's spend so far, and whether every request it may include is priced. */
 		soFar?: { knownCostUsd: string; complete: boolean }
 	}[]
@@ -152,7 +152,7 @@ export function workCostTotals(report: unknown): WorkCostTotals | undefined {
 				totalCostUsd: typeof row.totalCostUsd === "string" ? row.totalCostUsd : null,
 				knownCostUsd: String(row.knownCostUsd),
 				...(!unmerged && object(row.explicit) && object(row.inferred)
-					? { sure: String(row.explicit.knownCostUsd), likely: String(row.inferred.knownCostUsd) }
+					? { explicit: String(row.explicit.knownCostUsd), inferred: String(row.inferred.knownCostUsd) }
 					: {}),
 				...(unmerged ? { soFar: spendSoFar(row, requests) } : {}),
 			}
@@ -221,9 +221,9 @@ export function costDetailLines(value: unknown, path: string): string[] {
 			)
 		else if (typeof row.totalCostUsd === "string") lines.push(`Cost: $${row.totalCostUsd} USD — ${label}`)
 		else lines.push(`Cost: unknown; $${row.knownCostUsd} USD priced so far — ${label}`)
-		if (!state && typeof row.sure === "string" && typeof row.likely === "string")
+		if (!state && typeof row.explicit === "string" && typeof row.inferred === "string")
 			lines.push(
-				`Confirmed: $${row.sure} USD; inferred: $${row.likely} USD${row.totalCostUsd === null ? " known so far" : ""}.`,
+				`Confirmed: $${row.explicit} USD; inferred: $${row.inferred} USD${row.totalCostUsd === null ? " known so far" : ""}.`,
 			)
 	}
 
