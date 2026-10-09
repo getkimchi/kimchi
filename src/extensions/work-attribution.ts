@@ -374,7 +374,9 @@ export function createWorkAttributionExtension(
 		})
 		const initialized = new Set<string>()
 		const continuationEligible = new Set<string>()
-		const explicitSelection = new Set<string>()
+		// Sessions whose inputs belong to a selected work, with the reason their segments carry: "work-command" for
+		// /work, or the source of an accepted continuation.
+		const explicitSelection = new Map<string, string>()
 		let inputGeneration = 0
 		let semanticAbort: AbortController | undefined
 		/** A history limit that stopped model matching; /work reports it instead of every prompt warning. */
@@ -424,7 +426,8 @@ export function createWorkAttributionExtension(
 			}
 			freshSessionLedgers.delete(key)
 			const workId = getWorkId(ctx)
-			if (copiedExplicit && copiedWorkId === workId) explicitSelection.add(key)
+			if (copiedExplicit && copiedWorkId === workId)
+				explicitSelection.set(key, copiedSegment?.attribution === "explicit" ? copiedSegment.reason : "work-command")
 			pi.appendEntry(WORK_IDENTITY_ENTRY, {
 				workId,
 				segment: getWorkSegment(ctx),
@@ -539,8 +542,11 @@ export function createWorkAttributionExtension(
 					}
 				}
 				saveScope(current)
-				if (explicitSelection.has(key)) {
-					useSegment("explicit", "work-command")
+				const explicitReason = explicitSelection.get(key)
+				// /work selects the work for every later input. An accepted continuation does too, except for an input
+				// that names a plan or artifact again: that reference is checked like any other.
+				if (explicitReason === "work-command" || (explicitReason && !hasWorkReference(event.text))) {
+					useSegment("explicit", explicitReason)
 					return
 				}
 				const eligible = () => continuationEligible.has(key) && !hasWorkOutput(ctx, current)
@@ -553,7 +559,7 @@ export function createWorkAttributionExtension(
 					ctx.cwd === cwd &&
 					workLedgerPath(ctx) === key &&
 					getWorkId(ctx) === current &&
-					!explicitSelection.has(key)
+					explicitSelection.get(key) === explicitReason
 				const referencesWork = hasWorkReference(event.text)
 				const records = referencesWork ? readWorkRecords(getAgentDir()) : undefined
 				const found =
@@ -569,13 +575,21 @@ export function createWorkAttributionExtension(
 							`Continuing the saved ${found.source === "named-artifact" ? "artifact" : "plan"}'s work: ${found.workId}`,
 						)
 					}
+					explicitSelection.set(key, found.source)
 					useSegment("explicit", found.source)
 					if (captured) confirmWorkContinuation(ctx, found, captured.scope, records)
 					if (model) await rememberWorkIntent(ctx.cwd, found.workId, event.text)
 					return
 				}
 				if (found || (records && hasOwnedWorkReference(ctx, event.text, records))) {
+					// A reference this session's continuation cannot account for may start another task.
+					explicitSelection.delete(key)
 					useSegment("unknown", "unresolved-reference")
+					return
+				}
+				// The reference named no work, so the accepted continuation still covers this input.
+				if (explicitReason) {
+					useSegment("explicit", explicitReason)
 					return
 				}
 				// Without a verified account and repository, matching stays unresolved.
@@ -751,7 +765,7 @@ export function createWorkAttributionExtension(
 						appendWorkRecord(ctx, { type: "work", segment: getWorkSegment(ctx) })
 						inputGeneration++
 						semanticAbort?.abort()
-						explicitSelection.add(workLedgerPath(ctx))
+						explicitSelection.set(workLedgerPath(ctx), "work-command")
 						pi.appendEntry(WORK_IDENTITY_ENTRY, {
 							workId: getWorkId(ctx),
 							explicit: true,

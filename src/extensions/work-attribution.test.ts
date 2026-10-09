@@ -237,6 +237,50 @@ describe("local work attribution", () => {
 			continuation: { source: selected.source, evidence: selected.evidence },
 		})
 	})
+	it("keeps an accepted plan continuation for later inputs until a reference to other work ends it", async () => {
+		const planned = getWorkId(createContext({ cwd: dir, sessionManager: { getSessionId: () => "planning" } }))
+		const find = vi
+			.spyOn(continuation, "findWorkContinuation")
+			.mockResolvedValueOnce({ workId: planned, source: "saved-plan", evidence: { path: "/plan.md" } })
+		const manager = SessionManager.inMemory(dir)
+		const ctx = { ...createContext({ cwd: dir }), sessionManager: manager }
+		const api = createExtensionApi()
+		api.appendEntry.mockImplementation((type, data) => {
+			manager.appendCustomEntry(type, data)
+		})
+		createWorkAttributionExtension()(api.api)
+		const input = api.getHandler<InputEvent>("input")
+		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+		await input({ type: "input", text: "Implement /plan.md", source: "interactive" }, ctx)
+		expect(getWorkId(ctx)).toBe(planned)
+		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "explicit", reason: "saved-plan" })
+		manager.appendMessage({
+			role: "toolResult",
+			toolCallId: "native-write",
+			toolName: "write",
+			isError: false,
+			content: [{ type: "text", text: "Written" }],
+			timestamp: Date.now(),
+		})
+		await input({ type: "input", text: "Also add a test", source: "interactive" }, ctx)
+		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "explicit", reason: "saved-plan" })
+
+		// A restart keeps the continuation and its reason.
+		await api.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
+		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "resume" }, ctx)
+		await input({ type: "input", text: "Fix the lint error", source: "interactive" }, ctx)
+		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "explicit", reason: "saved-plan" })
+		expect(find).toHaveBeenCalledOnce()
+
+		const other = "22222222-2222-4222-8222-222222222222"
+		find.mockResolvedValueOnce({ workId: other, source: "saved-plan", evidence: { path: "/other.md" } })
+		await input({ type: "input", text: "Implement /other.md", source: "interactive" }, ctx)
+		expect(getWorkId(ctx)).toBe(planned)
+		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "unknown", reason: "unresolved-reference" })
+		await input({ type: "input", text: "Carry on", source: "interactive" }, ctx)
+		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "session" })
+		await api.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
+	})
 	it("resolves external input before work output and ignores extension input", async () => {
 		const find = vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue(undefined)
 		const api = createExtensionApi()
