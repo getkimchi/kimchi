@@ -596,6 +596,29 @@ describe("account-fenced reporting delivery", () => {
 		expect(posts().map((payload) => [payload.revision, payload.requests.length])).toEqual([["1", 1]])
 		expect((await readReportingState(directory)).error).toContain("could not capture a complete inventory")
 	})
+	it("still delivers queued snapshots whose larger replacements do not fit the local queue", async () => {
+		const ids = new Map(["51", "52", "53"].map((id) => [id, Array.from({ length: 32_000 }, () => crypto.randomUUID())]))
+		const full = (bills: number) =>
+			[...ids].map(([repositoryId, requestIds]) => {
+				const value = inventory(requestIds, repositoryId)
+				for (const request of value.content.requests)
+					request.billingRecordIds = Array.from({ length: bills }, () => crypto.randomUUID())
+				return value
+			})
+		await queueSnapshots(directory, [content, ...full(0)])
+		// Two bills per request make every replacement too large to queue beside the snapshots already waiting.
+		expect((await queueSnapshots(directory, [content, ...full(2)])).error).toContain(
+			"until queued reports leave room in the local queue",
+		)
+		respond(accepted)
+		await deliver()
+		// Delivering what is already queued is what frees the room; nothing may stall it.
+		expect(posts().map((payload) => [payload.repository.id, payload.revision])).toEqual([
+			["42", "1"],
+			["51", "1"],
+			["52", "1"],
+		])
+	}, 60_000)
 })
 
 const second = "55555555-5555-4555-8555-555555555551"

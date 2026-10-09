@@ -439,7 +439,8 @@ export async function queueSnapshots(
 				corrected.add(accountKey(snapshot.account))
 		}
 
-		// Smaller replacements first; one that would push the queue past its size limit waits for space.
+		// Smaller replacements first; one that would push the queue past its size limit waits for space. The snapshot it
+		// would replace stays deliverable: acknowledging queued snapshots is what frees that space.
 		let size = changes.length ? Buffer.byteLength(JSON.stringify(state)) : 0
 		let tooLarge = 0
 		changes.sort(([, a], [, b]) => JSON.stringify(a.content).length - JSON.stringify(b.content).length)
@@ -486,7 +487,6 @@ export async function queueSnapshots(
 				Buffer.byteLength(JSON.stringify({ [key]: replacement })) -
 				(entry ? Buffer.byteLength(JSON.stringify({ [key]: entry })) : 0)
 			if (size + grown > MAX_STATE_BYTES - STATE_SIZE_MARGIN) {
-				if (entry) entry.held = true
 				tooLarge++
 				continue
 			}
