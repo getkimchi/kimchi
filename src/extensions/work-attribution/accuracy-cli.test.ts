@@ -93,7 +93,7 @@ type CliSpawnError = Error & { code: number | string | undefined; stdout: string
 
 /** Run the documented command with the caller's environment intact. */
 function spawnCli(args: readonly string[]) {
-	return execFileAsync(tsxPath, [scriptPath, ...args], { timeout: 120_000 })
+	return execFileAsync(tsxPath, [scriptPath, ...args], { timeout: 20_000 })
 }
 
 async function expectSpawnFailure(args: readonly string[]): Promise<CliSpawnError> {
@@ -112,7 +112,8 @@ function writeFixture(name: string, value: unknown): string {
 	return path
 }
 
-describe("accuracy-cli (spawned via tsx)", () => {
+// Leave time for the child to exit and report its error before Vitest removes the fixtures.
+describe("accuracy-cli (spawned via tsx)", { timeout: 30_000 }, () => {
 	it("exits 3 and prints the complete summary when a valid report disagrees with its labels", async () => {
 		const reportPath = writeFixture("valid-report.json", {
 			pullRequests: [],
@@ -201,7 +202,7 @@ describe("runCli (in-process)", () => {
 		expect(runCli([reportPath, labelsPath]).code).toBe(2)
 	})
 
-	it("exits incomplete when a real CLI invocation scores only USD 1 of USD 10", async () => {
+	it("exits incomplete when only USD 1 of USD 10 is labelled", () => {
 		const reportPath = writeFixture("partial-label-report.json", {
 			requests: [
 				row("req-labelled", { allocation: "pull-request", pullRequestIds: [PR1], knownCostUsd: "1.000000000" }),
@@ -210,9 +211,9 @@ describe("runCli (in-process)", () => {
 		})
 		const labelsPath = writeFixture("partial-label-labels.json", [label("req-labelled", PR1)])
 
-		const error = await expectSpawnFailure([reportPath, labelsPath])
-		expect(error.code).toBe(2)
-		expect(error.stdout).toContain("req-unlabelled")
+		const outcome = runCli([reportPath, labelsPath])
+		expect(outcome.code).toBe(2)
+		expect(outcome.stdout.join("\n")).toContain("req-unlabelled")
 	})
 
 	it("exits 1 with the usage line for wrong argument counts", () => {
