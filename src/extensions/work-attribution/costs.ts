@@ -499,7 +499,6 @@ export function calculatePullRequestCosts(
 	/** Keyed by work and PR: when that work first recorded a commit linked to the PR. */
 	const firstLinked = new Map<string, number>()
 	for (const row of records) {
-		if (row.type === "request_response") continue
 		if (row.type === "request" && typeof row.requestId === "string" && row.requestId) {
 			const owner: RequestOwnership = ownership.get(row.requestId) ?? {
 				workIds: new Set<string>(),
