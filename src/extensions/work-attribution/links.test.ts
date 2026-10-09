@@ -191,7 +191,11 @@ it("revokes a moved correction from its newest work with that revision's evidenc
 	const producer = recordProviderRequest({ ...planner, segment })
 	const plan = savePlanMarkdown({ cwd: dir, name: "export", planText: "# Export\n", workId })
 	appendWorkRecord(planner, { type: "plan", ...plan, requestId: producer.requestId })
-	confirmWorkContinuation(planner, { workId, source: "saved-plan", evidence: { path: plan.path } }, originalScope)
+	confirmWorkContinuation(
+		planner,
+		{ workId, source: "saved-plan", evidence: { path: plan.path, contentHash: plan.contentHash } },
+		originalScope,
+	)
 	const implementer = createContext({ cwd: dir, sessionManager: { getSessionId: () => "implementer" } })
 	const target = getWorkId(implementer)
 	scope.saveNewWorkScope(target, originalScope)
