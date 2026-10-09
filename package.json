@@ -27,6 +27,7 @@
 		"typecheck": "tsc --noEmit",
 		"check": "pnpm run lint && pnpm run typecheck",
 		"test": "vitest run --dir src",
+		"test:dap-integration": "vitest run --config vitest.dap-integration.config.ts",
 		"test:smoke": "vitest run --config tests/smoke/vitest.config.ts",
 		"test:e2e:tui": "pnpm run build:binary && node scripts/run-tui-e2e.js",
 		"test:e2e:tui:debug": "pnpm run build:binary && node scripts/run-tui-e2e.js --debug",

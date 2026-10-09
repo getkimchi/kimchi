@@ -168,7 +168,10 @@ describe("debug_state_at", () => {
 
 	it("sets breakpoint, continues, and returns hit + locals + backtrace + evaluated + stdout + stderr", async () => {
 		const stub = createStubSession()
-		stub.continue.mockResolvedValue(stop("breakpoint"))
+		// First continue (entry → breakpoint) resolves with the breakpoint stop;
+		// the resume-to-completion loop's continue rejects with a terminated
+		// error — the debuggee finished running.
+		stub.continue.mockResolvedValueOnce(stop("breakpoint")).mockRejectedValueOnce(new Error("DAP session terminated"))
 		stub.getStackFrame.mockResolvedValue([frame(1, "main", "app.ts", 10), frame(2, "helper", "util.ts", 20)])
 		stub.getVariables.mockResolvedValue([{ name: "x", value: "42", type: "number", variablesReference: 0 }])
 		stub.outputLines = [
@@ -186,7 +189,9 @@ describe("debug_state_at", () => {
 
 		expect(result.hit).toBe(true)
 		expect(stub.setBreakpoint).toHaveBeenCalledWith("app.ts", 10)
-		expect(stub.continue).toHaveBeenCalledTimes(1)
+		// One continue to reach the breakpoint from entry, one to run to
+		// completion — the final stdout/stderr are part of the result.
+		expect(stub.continue).toHaveBeenCalledTimes(2)
 		expect(result.locals).toHaveLength(1)
 		expect(result.locals[0].name).toBe("x")
 		expect(result.locals[0].value).toBe("42")

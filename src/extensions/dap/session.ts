@@ -21,6 +21,7 @@
 //   watcher or shutdownAll.
 
 import { randomUUID } from "node:crypto"
+import path from "node:path"
 import { sendRequest } from "./client.js"
 import type {
 	Breakpoint,
@@ -92,6 +93,26 @@ export class DapSession {
 		this.cwd = opts.cwd
 		this.client = opts.client
 		this.timeoutMs = opts.timeoutMs ?? 30_000
+		// js-debug nested sessions: breakpoints sent before `startDebugging`
+		// arrives go to the parent (manager) connection, which has no debuggee.
+		// Register a replay hook so the child handshake re-applies every
+		// tracked breakpoint to the real debuggee session before it starts.
+		this.client.replayBreakpoints = async (child) => {
+			for (const [file, bps] of this.breakpoints) {
+				if (bps.length === 0) continue
+				await sendRequest(
+					child,
+					"setBreakpoints",
+					{
+						source: { path: file },
+						breakpoints: bps.map((b) => ({ line: b.line, condition: b.condition })),
+						lines: bps.map((b) => b.line),
+						sourceModified: false,
+					},
+					this.timeoutMs,
+				)
+			}
+		}
 	}
 
 	// ---------------------------------------------------------------------------
@@ -265,7 +286,40 @@ export class DapSession {
 	/** Set a breakpoint at `line` in `file`. DAP `setBreakpoints` replaces the
 	 *  full set for a source, so we resend all tracked breakpoints for that file.
 	 *  Returns the verified status of the breakpoint just set. */
+	/** Wait (bounded) for the adapter to report breakpoint `id` bound.
+	 *  js-debug returns new breakpoints as provisional and binds them
+	 *  asynchronously once the target source loads; continuing without waiting
+	 *  lets tiny programs run to completion past an unbound breakpoint
+	 *  (observed with a 4-line app.js: entry stop → continue → terminated,
+	 *  never bound). Resolves false on timeout so adapters that never emit
+	 *  `breakpoint` events (dlv, debugpy) don't hang. */
+	async waitForBreakpointBound(id: number, timeoutMs = 3_000): Promise<boolean> {
+		if (this.client.boundBreakpointIds.has(id)) return true
+		return new Promise((resolve) => {
+			const timer = setTimeout(() => {
+				this.client.breakpointBoundWaiters = this.client.breakpointBoundWaiters.filter((w) => w.id !== id)
+				resolve(false)
+			}, timeoutMs)
+			this.client.breakpointBoundWaiters.push({
+				id,
+				resolve: () => {
+					clearTimeout(timer)
+					resolve(true)
+				},
+			})
+		})
+	}
+
 	async setBreakpoint(file: string, line: number, condition?: string): Promise<Breakpoint> {
+		// Absolutize against the session cwd: adapters (js-debug in particular)
+		// match breakpoint source paths against the debuggee's script path, which
+		// is the absolute `program` path the session was launched with. A
+		// relative `file` (the natural agent usage, e.g.
+		// `debug_state_at({file: "app.js"})`) otherwise goes on the wire
+		// verbatim and the breakpoint never binds — the debuggee runs to
+		// completion with hit: false. Both the initial setBreakpoints and the
+		// child-handshake replay (keyed by this map) use the resolved path.
+		if (!path.isAbsolute(file)) file = path.join(this.cwd, file)
 		// Configuration requests are only legal after the adapter emits
 		// `initialized`; slow adapters reject or silently ignore early
 		// breakpoints. After completeLaunch() this resolves instantly.

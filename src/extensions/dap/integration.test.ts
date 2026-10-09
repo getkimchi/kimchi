@@ -107,7 +107,13 @@ function makeDeps(cwd: string): ComposedDeps {
 			if (!adapter) throw new Error(`No adapter for ${opts.program}`)
 			const client = await clientRegistry.getOrCreate(adapter, cwd)
 			const session = sessionRegistry.create({ adapter, cwd, client })
-			await session.launch({ program: opts.program, cwd, stopOnEntry: opts.stopOnEntry })
+			await session.launch({
+				program: opts.program,
+				cwd,
+				// Mirrors the extension's launchSession: js-debug skips the entry
+				// stop (see launchSession in ../dap.ts).
+				stopOnEntry: opts.stopOnEntry && adapter.name !== "js-debug",
+			})
 			return session
 		},
 	}
@@ -214,8 +220,15 @@ describe("DAP integration — Node.js (js-debug)", () => {
 		30_000,
 	)
 
+	// Real-adapter integration test, run via the dedicated script (the file is
+	// excluded from the main parallel `pnpm run test` — see vitest.config.ts).
+	// js-debug delivers the debuggee's final stdout AFTER the terminated event;
+	// the trace drain (2s in the shared-session path, 10s when the tool launched
+	// the session) plus retries absorb the flush lag. CI never installs js-debug,
+	// so this test skips there.
 	it.skipIf(!HAS_JS_DEBUG)(
 		"debug_trace_calls returns structured call records",
+		{ timeout: 30_000, retry: 2 },
 		async () => {
 			const result = await debugTraceCalls(deps, {
 				program: traceFixturePath,
@@ -227,7 +240,6 @@ describe("DAP integration — Node.js (js-debug)", () => {
 			const addCall = result.calls.find((c) => c.fn === "add")
 			expect(addCall).toBeDefined()
 		},
-		30_000,
 	)
 })
 

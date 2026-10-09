@@ -26,6 +26,17 @@ const SERVERS: ServerConfig[] = [
 		extensions: ["go"],
 		installHint: "go install golang.org/x/tools/gopls@latest",
 	},
+	{
+		name: "pyright",
+		command: "pyright-langserver",
+		args: ["--stdio"],
+		extensions: ["py", "pyw"],
+		// pyright never emits $/progress startup cycles — waiting would stall
+		// on the fixed timeout at every startup (same reason as the TS7 native
+		// server). It's ready to serve as soon as the initialize reply lands.
+		skipProjectLoadWait: true,
+		installHint: "npm i -g pyright",
+	},
 ]
 
 /**
@@ -61,24 +72,98 @@ function exists(cmd: string): boolean {
 }
 
 /**
- * Returns LSP servers relevant to the current project. Servers are
- * activated when their binary is on PATH AND their project marker (go.mod,
- * tsconfig.json, package.json) exists in cwd or a parent directory — e.g. a
- * Go project won't activate typescript-language-server even if it's on PATH.
- * TypeScript additionally activates the workspace's own TypeScript 7 native
- * server when present (no global install needed).
+ * Returns the LSP servers relevant to the current project. At most ONE
+ * server is active per session: an LSP server is a long-lived subprocess, so
+ * activating one per language of a polyglot repo wastes a process per session
+ * for languages the session rarely touches. Candidates are collected via
+ * marker presence (upward walk first, bounded downward scan for nested-module
+ * monorepos as fallback), then narrowed: root/ancestor markers beat
+ * nested-scan matches, remaining ties go to the language with the most source
+ * files within depth 2, and registry order breaks exact ties. Servers are
+ * activated when their binary is on PATH — e.g. a Go project won't activate
+ * typescript-language-server even if it's on PATH.
  */
 export function detectServers(cwd: string): ServerConfig[] {
-	const servers: ServerConfig[] = []
+	const winner = selectWinner(cwd)
+	if (!winner) return []
+	// TypeScript resolves to one of two flavors (classic vs TS7 native) —
+	// the workspace's own compiler decides.
+	if (winner.server === TYPESCRIPT_LANGUAGE_SERVER) return detectTsServers(cwd)
+	return exists(winner.server.command) ? [winner.server] : []
+}
+
+/** Marker-match candidate for session-start activation. */
+interface MarkerCandidate {
+	server: ServerConfig
+	/** True when the marker was found by the upward walk (cwd or an ancestor). */
+	fromRoot: boolean
+}
+
+/** All servers whose project marker is present for cwd, with match direction. */
+function markerCandidates(cwd: string): MarkerCandidate[] {
+	const out: MarkerCandidate[] = []
 	for (const s of SERVERS) {
-		if (s === TYPESCRIPT_LANGUAGE_SERVER) {
-			servers.push(...detectTsServers(cwd))
-			continue
-		}
 		const markers = ROOT_MARKERS[s.name] ?? []
-		if (findMarkerUp(cwd, markers) && exists(s.command)) servers.push(s)
+		if (findMarkerUp(cwd, markers)) out.push({ server: s, fromRoot: true })
+		else if (findMarkerDown(cwd, markers, 2)) out.push({ server: s, fromRoot: false })
 	}
-	return servers
+	return out
+}
+
+/**
+ * The single activation winner for cwd, ignoring binary availability —
+ * shared by detectServers (activate it) and detectMissingCandidates (report
+ * it as missing). Returns undefined when no markers match at all.
+ */
+function selectWinner(cwd: string): MarkerCandidate | undefined {
+	const candidates = markerCandidates(cwd)
+	if (candidates.length === 0) return undefined
+	// A marker in cwd or an ancestor is a much stronger signal than one found
+	// by scanning subdirectories — drop nested-only candidates whenever a
+	// root-level one exists.
+	const pool = candidates.some((c) => c.fromRoot) ? candidates.filter((c) => c.fromRoot) : candidates
+	if (pool.length === 1) return pool[0]
+	// Polyglot tie (e.g. package.json + pyproject.toml at the root, or several
+	// languages detected only via nested modules): the dominant language by
+	// source-file count wins — that is the language the session is most likely
+	// to actually edit.
+	let best = pool[0]
+	let bestCount = -1
+	for (const candidate of pool) {
+		const count = countSourceFiles(cwd, candidate.server.extensions)
+		if (count > bestCount) {
+			best = candidate
+			bestCount = count
+		}
+	}
+	return best
+}
+
+/**
+ * Count source files matching `extensions` within two subdir levels of cwd
+ * (the same reach as the nested-module marker scan), skipping dot-dirs and
+ * vendored trees. Cheap enough for session-start selection, coarse enough to
+ * rank languages.
+ */
+function countSourceFiles(cwd: string, extensions: string[], depth: number = 3): number {
+	if (depth <= 0) return 0
+	const dir = path.resolve(cwd)
+	let entries: fs.Dirent[]
+	try {
+		entries = fs.readdirSync(dir, { withFileTypes: true })
+	} catch {
+		return 0
+	}
+	let count = 0
+	for (const entry of entries) {
+		if (entry.name.startsWith(".") || (entry.isDirectory() && SKIP_DIRS.has(entry.name))) continue
+		if (entry.isDirectory()) {
+			count += countSourceFiles(path.join(dir, entry.name), extensions, depth - 1)
+		} else if (extensions.includes(path.extname(entry.name).slice(1).toLowerCase())) {
+			count++
+		}
+	}
+	return count
 }
 
 /**
@@ -90,34 +175,29 @@ export function detectServers(cwd: string): ServerConfig[] {
  * lands on the clean failed-to-start path rather than going silent.
  */
 function detectTsServers(cwd: string): ServerConfig[] {
-	if (!findMarkerUp(cwd, ROOT_MARKERS["typescript-language-server"])) return []
+	if (!markerPresent(cwd, ROOT_MARKERS["typescript-language-server"])) return []
 	const nativePath = resolveTsNativeServerPath(cwd)
 	if (nativePath) return [tsNativeConfig(nativePath)]
 	return exists(TYPESCRIPT_LANGUAGE_SERVER.command) ? [TYPESCRIPT_LANGUAGE_SERVER] : []
 }
 
 /**
- * Returns LSP servers whose project marker (go.mod, tsconfig.json, package.json)
- * is present in cwd or any parent directory up to the filesystem root, but
- * whose binary is NOT on PATH — i.e. servers this project would use if
- * installed. Used to surface a degraded LSP state to the user instead of
- * silently no-op'ing. Walks parent directories so monorepo subdirectories
- * where the marker lives in a parent are detected.
+ * Returns the LSP server whose project marker is present in cwd or any
+ * parent directory (with the nested-module downward fallback) but whose
+ * binary is NOT on PATH — i.e. the server this project would use if
+ * installed, at most one per session (mirrors detectServers' single-winner
+ * selection). Used to surface a degraded LSP state to the user instead of
+ * silently no-op'ing.
  */
 export function detectMissingCandidates(cwd: string): ServerConfig[] {
-	const missing: ServerConfig[] = []
-	for (const s of SERVERS) {
-		const markers = ROOT_MARKERS[s.name] ?? []
-		if (!findMarkerUp(cwd, markers)) continue
-		if (s === TYPESCRIPT_LANGUAGE_SERVER) {
-			// TypeScript is only "missing" when neither the classic server nor
-			// the TypeScript 7 native fallback could be activated.
-			if (detectTsServers(cwd).length === 0) missing.push(s)
-			continue
-		}
-		if (!exists(s.command)) missing.push(s)
+	const winner = selectWinner(cwd)
+	if (!winner) return []
+	if (winner.server === TYPESCRIPT_LANGUAGE_SERVER) {
+		// TypeScript is only "missing" when neither the classic server nor
+		// the TypeScript 7 native fallback could be activated.
+		return detectTsServers(cwd).length === 0 ? [winner.server] : []
 	}
-	return missing
+	return exists(winner.server.command) ? [] : [winner.server]
 }
 
 /** Get the server config for a specific file path, or null if no server applies. */
@@ -218,6 +298,48 @@ const ROOT_MARKERS: Record<string, string[]> = {
 	gopls: ["go.mod"],
 	"typescript-language-server": ["tsconfig.json", "package.json"],
 	"typescript-native": ["tsconfig.json", "package.json"],
+	pyright: ["pyproject.toml", "setup.py", "requirements.txt", "Pipfile"],
+}
+
+/** Directories the bounded downward marker scan never descends into —
+ *  vendored/build trees that routinely contain third-party module markers
+ *  (e.g. .devbox/go/pkg/mod with dozens of go.mod files). Dot-directories
+ *  are skipped separately. */
+const SKIP_DIRS = new Set(["node_modules", "vendor", "dist", "build", "out", "target"])
+
+/**
+ * Bounded downward marker scan for nested-module monorepos — repos whose
+ * go.mod/package.json live only in subdirectories (e.g. apis/grpc, cli/cai).
+ * Depth ≤ 2 from cwd, skipping dot-dirs and SKIP_DIRS. Called only as a
+ * fallback when the upward walk (findMarkerUp) finds nothing, so flat repos
+ * and repos with root markers keep their existing detection semantics.
+ */
+function findMarkerDown(cwd: string, markers: string[], depth: number): boolean {
+	if (depth <= 0) return false
+	const dir = path.resolve(cwd)
+	let entries: fs.Dirent[]
+	try {
+		entries = fs.readdirSync(dir, { withFileTypes: true })
+	} catch {
+		return false
+	}
+	for (const entry of entries) {
+		if (!entry.isDirectory()) continue
+		if (entry.name.startsWith(".") || SKIP_DIRS.has(entry.name)) continue
+		const child = path.join(dir, entry.name)
+		if (markers.some((m) => fs.existsSync(path.join(child, m)))) return true
+		if (findMarkerDown(child, markers, depth - 1)) return true
+	}
+	return false
+}
+
+/**
+ * Marker present for the session cwd: primary upward walk from cwd, plus a
+ * bounded downward fallback for nested-module monorepos. Exported so the
+ * DAP adapter registry (dap/adapters.ts) shares the exact same semantics.
+ */
+export function markerPresent(cwd: string, markers: string[]): boolean {
+	return findMarkerUp(cwd, markers) || findMarkerDown(cwd, markers, 2)
 }
 
 /**
