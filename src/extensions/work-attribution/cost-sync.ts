@@ -1,125 +1,31 @@
-import { createHash } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations.js"
 import { writeFileAtomic, writeFileDurably } from "../../config/json.js"
-import { loadConfig, resolveEndpoints } from "../../config.js"
+import { loadConfig } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
-import { boundedResponse } from "../../utils/http.js"
-import { plainURL } from "../../utils/url.js"
 import { appendWorkRecord } from "../work-attribution.js"
+import { BEFORE_PAGE_TIMEOUT_MESSAGE, type BillingRow, billingResponse, lookupRows } from "./billing-api.js"
 import {
-	calculatePullRequestCosts,
-	decimalNanos,
-	type PullRequestCost,
-	type PullRequestCostReport,
-	type RequestCostObservation,
-	time,
-	usd,
-} from "./costs.js"
-import { PRICED_TAG_LIMIT } from "./request-tags.js"
-import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
-import {
-	object,
-	readWorkRecords,
-	readWorkRecordsAsync,
-	SHA256_HEX,
-	type WorkRecord,
-	workJournalFingerprint,
-} from "./summary.js"
+	type BillingDisplay,
+	type BillingLookup,
+	billingDisplay,
+	billingRequests,
+	type OpenBilling,
+	openBilling,
+} from "./billing-evidence.js"
+import { type BillingSource, captureBillingSource, sameBillingSource } from "./billing-source.js"
+import { calculatePullRequestCosts, type PullRequestCost, type PullRequestCostReport } from "./costs.js"
+import type { WorkAccount } from "./scope.js"
+import { object, readWorkRecords, readWorkRecordsAsync, workJournalFingerprint } from "./summary.js"
 
-export interface BillingSource {
-	apiUrl: string
-	gatewayUrl: string
-	/** One-way fingerprint of the credential actually sent; never the credential itself. */
-	credentialHash: string
-}
-export type BillingSelector = { type: "tag"; tag: string; startTime: string; endTime: string }
+// The background pass: it looks up due bills within a budget, journals new evidence and publishes reports.
 
-/** The exact tag finds the bill; starting early tolerates a fast local clock within the API's 33-day range. */
-const LOOKUP_LEAD_MS = 12 * 60 * 60_000
-/** Billing timestamps describe completed reports, so retain a broad fixed window. */
-export function requestTagSelector(
-	requestId: string,
-	dispatchedAt: string,
-	leadMs = LOOKUP_LEAD_MS,
-): BillingSelector | undefined {
-	if (!isWorkId(requestId) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(dispatchedAt)) return undefined
-	const timestamp = Date.parse(dispatchedAt)
-	if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== dispatchedAt) return undefined
-	return {
-		type: "tag",
-		tag: `kimchi-request:${requestId}`,
-		startTime: new Date(timestamp - leadMs).toISOString(),
-		endTime: new Date(timestamp + 32 * 24 * 60 * 60_000).toISOString(),
-	}
-}
-interface BillingRow {
-	id: string
-	costUsd: string | null
-	/** Optional API observations, not estimates. Absent values remain unknown. */
-	promptTokens?: string
-	completionTokens?: string
-	totalTokens?: string
-	cacheReadInputTokens?: string
-	cacheCreationFiveMinuteTokens?: string
-	cacheCreationOneHourTokens?: string
-	webSearchRequests?: string
-	promptPrice?: string
-	completionPrice?: string
-	cacheReadPrice?: string
-	cacheCreationPrice?: string
-	originalTotalPrice?: string
-	recommendedTotalPrice?: string
-	createTime?: string
-	provider?: string
-	providerName?: string
-	model?: string
-	originalModel?: string
-	recommendedModel?: string
-	recommendedProvider?: string
-	sessionId?: string
-	parentSessionId?: string
-	routed?: boolean
-	recovered?: boolean
-	responseStatusCode?: number
-	messageCount?: number
-	contextWindowSize?: number
-	turnIndex?: number
-	contextUtilizationPct?: number
-	/** Names of malformed optional fields; never their raw values. */
-	metadataUnavailable?: string[]
-}
-interface BillingLookup {
-	status: "priced" | "no-charge" | "pending" | "unavailable" | "invalid" | "account-changed"
-	checkedAt: string
-	organizationId?: string
-	userId?: string
-	reason?: string
-}
-interface RequestBilling {
-	request: WorkRecord
-	requestId: string
-	source?: BillingSource
-	selector?: BillingSelector
-	tagSkipped?: string
-	invalid: boolean
-	lookup?: BillingLookup
-	substantiveLookup?: BillingLookup
-	lastCost?: WorkRecord
-	organizationId?: string
-	userId?: string
-	observations: RequestCostObservation[]
-}
 const PASS_MS = 5000
-const BEFORE_PAGE_TIMEOUT_MESSAGE = "Billing lookup time limit exceeded before receiving any billing page"
 const MAX_CALLS = 30
 const MAX_PROCESSED_REQUESTS = 30
-const MAX_PAGES = 5
-const MAX_BODY_BYTES = 1_048_576
-const PAGE_SIZE = 100
 const PENDING_REFRESH_MS = 30_000
 const PRICED_REFRESH_MS = 5 * 60_000
 const DAY_MS = 24 * 60 * 60_000
@@ -163,87 +69,6 @@ function readBillingPolls(path: string): Record<string, BillingPoll> {
 	return polls
 }
 
-/** What a pass needs to schedule, look up and record a request whose billing window is open. */
-interface OpenBilling {
-	requestId: string
-	workId: string
-	sessionId: string
-	cwd?: string
-	source: BillingSource
-	selector: BillingSelector
-	lookup?: BillingLookup
-	substantiveLookup?: BillingLookup
-	/** Rows of the last journaled result, so an unchanged lookup is not journaled again. */
-	lastRows?: unknown[]
-	organizationId?: string
-	userId?: string
-	billed: boolean
-}
-/**
- * Without an exact identity there is no network work to retry; the report derives that state
- * from source records. The window closes once a lookup at or after its end reached the billing API.
- */
-function openBilling(item: RequestBilling): OpenBilling | undefined {
-	const { source, selector } = item
-	if (
-		item.invalid ||
-		!source ||
-		!selector ||
-		Date.parse(item.substantiveLookup?.checkedAt ?? "") >= Date.parse(selector.endTime)
-	)
-		return undefined
-	return {
-		requestId: item.requestId,
-		workId: item.request.workId,
-		sessionId: item.request.sessionId,
-		...(typeof item.request.cwd === "string" ? { cwd: item.request.cwd } : {}),
-		source,
-		selector,
-		lookup: item.lookup,
-		substantiveLookup: item.substantiveLookup,
-		lastRows: Array.isArray(item.lastCost?.billingRows) ? item.lastCost.billingRows : undefined,
-		organizationId: item.organizationId,
-		userId: item.userId,
-		billed: item.observations.length > 0,
-	}
-}
-
-/** What costs.json shows for a request besides its allocation. */
-interface BillingDisplay {
-	/** The journal observation a poll entry must refer to. */
-	lookupAt: string
-	billingLookup: Partial<BillingLookup> & Pick<BillingLookup, "status">
-	/** Only a request that can be looked up can show a failed refresh, with its verified account. */
-	refresh?: { organizationId?: string; userId?: string }
-	/** Why the request was sent without a billing tag; such a request cannot be priced. */
-	tagSkipped?: string
-}
-function billingDisplay(item: RequestBilling): BillingDisplay {
-	const display = {
-		lookupAt: item.lookup?.checkedAt ?? "",
-		...(item.tagSkipped && !item.selector ? { tagSkipped: item.tagSkipped } : {}),
-	}
-	if (item.invalid) return { ...display, billingLookup: { status: "invalid", reason: "Conflicting billing evidence" } }
-	if (!item.source || !item.selector)
-		return {
-			...display,
-			billingLookup: {
-				status: "pending",
-				reason: item.tagSkipped
-					? `Billing tag skipped: ${item.tagSkipped}`
-					: "No captured billing source or request selector",
-			},
-		}
-	return {
-		...display,
-		billingLookup: item.lookup ?? { status: "pending" },
-		refresh: {
-			...(item.organizationId ? { organizationId: item.organizationId } : {}),
-			...(item.userId ? { userId: item.userId } : {}),
-		},
-	}
-}
-
 /** Scheduling state applies only to the journal observation it was written for. */
 function currentPoll(polls: Record<string, BillingPoll>, item: OpenBilling): BillingPoll | undefined {
 	const poll = polls[item.requestId]
@@ -258,367 +83,6 @@ function shownFailure(display: BillingDisplay | undefined, poll: BillingPoll | u
 function costFingerprint(rows: unknown[], lookup: BillingLookup): string {
 	const { checkedAt: _, ...result } = lookup
 	return JSON.stringify([result, [...new Set(rows.map((row) => JSON.stringify(row)))].sort()])
-}
-
-function httpUrl(value: unknown): value is string {
-	return plainURL(value, ["https:", "http:"]) !== undefined
-}
-function fingerprint(key: string): string {
-	return createHash("sha256").update(key).digest("hex")
-}
-function source(value: unknown): value is BillingSource {
-	return (
-		object(value) &&
-		httpUrl(value.apiUrl) &&
-		httpUrl(value.gatewayUrl) &&
-		typeof value.credentialHash === "string" &&
-		SHA256_HEX.test(value.credentialHash)
-	)
-}
-function sameSource(left: BillingSource, right: BillingSource): boolean {
-	return (
-		left.apiUrl === right.apiUrl && left.gatewayUrl === right.gatewayUrl && left.credentialHash === right.credentialHash
-	)
-}
-function storedLookup(value: unknown): value is BillingLookup {
-	if (!object(value) || typeof value.checkedAt !== "string" || !Number.isFinite(Date.parse(value.checkedAt)))
-		return false
-	return (
-		(value.status === "priced" ||
-			value.status === "no-charge" ||
-			value.status === "pending" ||
-			value.status === "unavailable" ||
-			value.status === "invalid" ||
-			value.status === "account-changed") &&
-		(value.organizationId === undefined || isWorkId(value.organizationId)) &&
-		(value.userId === undefined || isWorkId(value.userId)) &&
-		(value.reason === undefined || typeof value.reason === "string")
-	)
-}
-/** Capture at dispatch, after provider auth has supplied the actual outgoing headers. */
-export function captureBillingSource(headers: Headers, url: string, cwd: string): BillingSource | undefined {
-	const key = headers.get("x-api-key") ?? /^Bearer (\S+)$/i.exec(headers.get("authorization") ?? "")?.[1]
-	if (!key) return undefined
-	let gatewayUrl: string
-	try {
-		const parsed = new URL(url)
-		parsed.search = ""
-		parsed.hash = ""
-		gatewayUrl = parsed.toString()
-	} catch {
-		return undefined
-	}
-	if (!httpUrl(gatewayUrl)) return undefined
-	const endpoints = resolveEndpoints({ cwd })
-	const configured = [
-		endpoints.llmEndpoint,
-		endpoints.openAiBaseUrl,
-		endpoints.anthropicBaseUrl,
-		endpoints.experimentalOpenAiBaseUrl,
-	]
-	if (!configured.some((base) => gatewayUrl.startsWith(`${base.replace(/\/+$/, "")}/`))) return undefined
-	if (!httpUrl(endpoints.platformApiUrl)) return undefined
-	return { apiUrl: endpoints.platformApiUrl.replace(/\/+$/, ""), gatewayUrl, credentialHash: fingerprint(key) }
-}
-
-function selector(value: unknown): value is BillingSelector {
-	return (
-		object(value) &&
-		value.type === "tag" &&
-		typeof value.tag === "string" &&
-		typeof value.startTime === "string" &&
-		typeof value.endTime === "string"
-	)
-}
-function sameSelector(left: BillingSelector, right: BillingSelector): boolean {
-	return left.tag === right.tag && left.startTime === right.startTime && left.endTime === right.endTime
-}
-function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
-	const requests = new Map<string, RequestBilling>()
-	for (const row of records) {
-		if (row.type !== "request" || typeof row.requestId !== "string") continue
-		const previous = requests.get(row.requestId)
-		if (previous) {
-			previous.invalid ||= previous.request.workId !== row.workId || previous.request.sessionId !== row.sessionId
-			continue
-		}
-		requests.set(row.requestId, { request: row, requestId: row.requestId, invalid: false, observations: [] })
-	}
-	for (const row of records) {
-		if (row.type !== "request_dispatch" && row.type !== "request_response") continue
-		const item = requests.get(String(row.requestId))
-		if (!item) continue
-		if (row.workId !== item.request.workId || row.sessionId !== item.request.sessionId) {
-			item.invalid = true
-			continue
-		}
-		if (row.billingSource !== undefined) {
-			if (!source(row.billingSource)) {
-				item.invalid = true
-				continue
-			}
-			if (item.source && !sameSource(item.source, row.billingSource)) item.invalid = true
-			item.source = row.billingSource
-		}
-		if (row.type === "request_dispatch") {
-			if (typeof row.billingTagSkipped === "string") item.tagSkipped = row.billingTagSkipped
-			if (row.billingSelector === undefined) continue
-			const { dispatchedAt } = row
-			const saved = row.billingSelector
-			// Selectors saved before the wider window began five minutes before dispatch.
-			const expected =
-				typeof dispatchedAt === "string"
-					? [LOOKUP_LEAD_MS, 5 * 60_000].map((lead) => requestTagSelector(item.requestId, dispatchedAt, lead))
-					: []
-			if (
-				!selector(saved) ||
-				!expected.some((value) => value && sameSelector(value, saved)) ||
-				!source(row.billingSource)
-			) {
-				item.invalid = true
-				continue
-			}
-			if (item.selector && !sameSelector(item.selector, saved)) item.invalid = true
-			item.selector = saved
-		}
-	}
-	const evidence = new Map<RequestBilling, BillingLookup[]>()
-	for (const row of records) {
-		if (row.type !== "request_cost") continue
-		const item = requests.get(String(row.requestId))
-		// Rows without a tag selector came from the removed prompt-ID lookup and prove nothing.
-		if (!item || !selector(row.billingSelector)) continue
-		if (
-			!storedLookup(row.billingLookup) ||
-			!item.source ||
-			!source(row.billingSource) ||
-			!sameSource(item.source, row.billingSource) ||
-			!item.selector ||
-			!sameSelector(item.selector, row.billingSelector) ||
-			row.sessionId !== item.request.sessionId ||
-			row.workId !== item.request.workId ||
-			!Array.isArray(row.billingRows)
-		) {
-			item.invalid = true
-			continue
-		}
-		const lookup = row.billingLookup
-		if (
-			(!lookup.organizationId &&
-				(row.billingRows.length || lookup.status === "priced" || lookup.status === "no-charge")) ||
-			(lookup.status === "no-charge" && row.billingRows.length > 0)
-		) {
-			item.invalid = true
-			continue
-		}
-		if (lookup.organizationId) {
-			if (item.organizationId && item.organizationId !== lookup.organizationId) item.invalid = true
-			item.organizationId = lookup.organizationId
-		}
-		if (lookup.userId) {
-			if (item.userId && item.userId !== lookup.userId) item.invalid = true
-			item.userId = lookup.userId
-		}
-		if (!item.lookup || Date.parse(lookup.checkedAt) >= Date.parse(item.lookup.checkedAt)) {
-			item.lookup = lookup
-			item.lastCost = row
-		}
-		// Earlier versions journaled timeouts before any billing page; they add no evidence.
-		// Older generic timeout records may contain incomplete pages.
-		const beforePageTimeout =
-			lookup.status === "unavailable" && lookup.reason === BEFORE_PAGE_TIMEOUT_MESSAGE && row.billingRows.length === 0
-		if (!beforePageTimeout) {
-			const lookups = evidence.get(item)
-			if (lookups) lookups.push(lookup)
-			else evidence.set(item, [lookup])
-		}
-		for (const bill of row.billingRows) {
-			if (!object(bill) || !isWorkId(bill.id) || (bill.costUsd !== null && typeof bill.costUsd !== "string")) {
-				item.invalid = true
-				continue
-			}
-			item.observations.push({
-				requestId: item.requestId,
-				billingRecordId: bill.id,
-				costUsd: bill.costUsd,
-				account:
-					lookup.organizationId && lookup.userId
-						? { apiUrl: item.source.apiUrl, organizationId: lookup.organizationId, userId: lookup.userId }
-						: undefined,
-			})
-		}
-	}
-	for (const [item, lookups] of evidence)
-		for (const lookup of lookups.sort((left, right) => Date.parse(left.checkedAt) - Date.parse(right.checkedAt))) {
-			// A changed key or account stops refreshes; it cannot withdraw a verified complete price.
-			if (lookup.status === "account-changed" && item.substantiveLookup?.status === "priced") continue
-			item.substantiveLookup = lookup
-		}
-	return requests
-}
-/** Bounded response body; do not copy server errors, prompts or unrelated fields to the ledger. */
-async function billingResponse(response: Response, signal: AbortSignal): Promise<Response> {
-	if (!response.ok) {
-		await response.body?.cancel()
-		throw new Error(`Billing API returned HTTP ${response.status}`)
-	}
-	if (!response.body) throw new Error("Billing API returned no body")
-	return boundedResponse(response, MAX_BODY_BYTES, signal, "Billing response exceeded the size limit")
-}
-
-/** Keep only safe, typed billing facts. Bad optional metadata does not erase a valid charge. */
-function billingMetadata(item: Record<string, unknown>): Partial<BillingRow> {
-	const result: Partial<BillingRow> = {}
-	const unavailable: string[] = []
-	for (const field of [
-		"promptPrice",
-		"completionPrice",
-		"cacheReadPrice",
-		"cacheCreationPrice",
-		"originalTotalPrice",
-		"recommendedTotalPrice",
-	] as const) {
-		const value = item[field]
-		if (value == null) continue
-		if (typeof value === "string" && decimalNanos(value) !== undefined) result[field] = value
-		else unavailable.push(field)
-	}
-	for (const field of [
-		"promptTokens",
-		"completionTokens",
-		"totalTokens",
-		"cacheReadInputTokens",
-		"cacheCreationFiveMinuteTokens",
-		"cacheCreationOneHourTokens",
-		"webSearchRequests",
-	] as const) {
-		const value = item[field]
-		if (value == null) continue
-		const exact =
-			typeof value === "string"
-				? value
-				: typeof value === "number" && Number.isSafeInteger(value) && value >= 0
-					? String(value)
-					: ""
-		if (/^(0|[1-9]\d{0,19})$/.test(exact) && BigInt(exact) <= 18_446_744_073_709_551_615n) result[field] = exact
-		else unavailable.push(field)
-	}
-	for (const field of [
-		"provider",
-		"providerName",
-		"model",
-		"originalModel",
-		"recommendedModel",
-		"recommendedProvider",
-	] as const) {
-		const value = item[field]
-		if (value == null || value === "") continue
-		if (typeof value === "string" && value.length <= 200 && !/\p{Cc}/u.test(value)) result[field] = value
-		else unavailable.push(field)
-	}
-	for (const field of ["sessionId", "parentSessionId"] as const) {
-		const value = item[field]
-		if (value == null || value === "") continue
-		if (isWorkId(value)) result[field] = value
-		else unavailable.push(field)
-	}
-	for (const field of ["routed", "recovered"] as const) {
-		const value = item[field]
-		if (value == null) continue
-		if (typeof value === "boolean") result[field] = value
-		else unavailable.push(field)
-	}
-	for (const field of ["responseStatusCode", "messageCount", "contextWindowSize", "turnIndex"] as const) {
-		const value = item[field]
-		if (value == null) continue
-		const max = field === "responseStatusCode" ? 599 : 4_294_967_295
-		if (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= max) result[field] = value
-		else unavailable.push(field)
-	}
-	if (item.contextUtilizationPct != null) {
-		const value = item.contextUtilizationPct
-		if (typeof value === "number" && Number.isFinite(value) && value >= 0) result.contextUtilizationPct = value
-		else unavailable.push("contextUtilizationPct")
-	}
-	if (item.createTime != null) {
-		const value = item.createTime
-		if (typeof value === "string" && time(value) !== undefined) result.createTime = value
-		else unavailable.push("createTime")
-	}
-	if (unavailable.length) result.metadataUnavailable = unavailable.sort()
-	return result
-}
-
-async function lookupRows(
-	apiUrl: string,
-	organizationId: string,
-	userId: string | undefined,
-	requestSelector: BillingSelector,
-	apiKey: string,
-	fetchBounded: typeof fetch,
-	rows: BillingRow[],
-	onPage: () => void,
-): Promise<void> {
-	let cursor = ""
-	const cursors = new Set<string>()
-	const billingIds = new Set<string>()
-	let expectedCount: number | undefined
-	for (let page = 0; page < MAX_PAGES; page++) {
-		const params = new URLSearchParams({ inferUserFromApiKey: "true", "page.limit": String(PAGE_SIZE) })
-		params.set("tags", requestSelector.tag)
-		params.set("startTime", requestSelector.startTime)
-		params.set("endTime", requestSelector.endTime)
-		if (cursor) params.set("page.cursor", cursor)
-		const response = await fetchBounded(
-			`${apiUrl}/ai-optimizer/v1beta/organizations/${encodeURIComponent(organizationId)}/llm-requests?${params}`,
-			{
-				headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-			},
-		).catch((error: unknown) => {
-			if (cursor && error instanceof Error && error.message === BEFORE_PAGE_TIMEOUT_MESSAGE)
-				throw new Error("Billing lookup time limit exceeded during pagination")
-			throw error
-		})
-		const body: unknown = await response.json()
-		if (!object(body) || !Array.isArray(body.items) || body.items.length > PAGE_SIZE)
-			throw new Error("Invalid billing response")
-		// From here on a failure concerns billing evidence: a page has arrived.
-		onPage()
-		if (body.totalCount !== undefined) {
-			if (typeof body.totalCount !== "number" || !Number.isSafeInteger(body.totalCount) || body.totalCount < 0)
-				throw new Error("Invalid billing result count")
-			// New rows may arrive between pages. A changed count needs another complete lookup.
-			if (expectedCount !== undefined && expectedCount !== body.totalCount)
-				throw new Error("Billing result count changed during pagination")
-			expectedCount = body.totalCount
-		}
-		for (const item of body.items) {
-			if (!object(item) || !isWorkId(item.id)) throw new Error("Billing response has no valid row identity")
-			if (userId && item.castaiApiKeyOwnerId !== undefined && item.castaiApiKeyOwnerId !== userId)
-				throw new Error("Billing response belongs to another API key owner")
-			if (item.totalPrice !== null && item.totalPrice !== undefined && typeof item.totalPrice !== "string")
-				throw new Error("Billing response has no exact decimal price")
-			const costUsd = item.totalPrice ?? null
-			if (costUsd !== null && decimalNanos(costUsd) === undefined)
-				throw new Error("Billing response has an invalid decimal price")
-			rows.push({ id: item.id, costUsd, ...billingMetadata(item) })
-			billingIds.add(item.id)
-		}
-		if (body.nextPageCursor === undefined || body.nextPageCursor === "") {
-			if (expectedCount !== undefined && billingIds.size !== expectedCount)
-				throw new Error("Billing response did not include every counted row")
-			return
-		}
-		if (
-			typeof body.nextPageCursor !== "string" ||
-			body.nextPageCursor.length > 4096 ||
-			cursors.has(body.nextPageCursor)
-		)
-			throw new Error("Invalid billing page cursor")
-		cursor = body.nextPageCursor
-		cursors.add(cursor)
-	}
-	throw new Error("Billing lookup exceeded the page limit")
 }
 
 /** Read durable evidence rather than combining per-work caches. */
@@ -641,11 +105,13 @@ export function readWorkCostReport(agentDir: string, records = readWorkRecords(a
 				userId: lookup.userId,
 			})
 	}
+
 	const incomplete = new Set(
 		[...requests.values()]
 			.filter((item) => item.invalid || (item.substantiveLookup?.status !== "priced" && !noCharge.has(item.requestId)))
 			.map((item) => item.requestId),
 	)
+
 	const report = calculatePullRequestCosts(
 		records,
 		[...requests.values()].flatMap((item) => (item.invalid ? [] : item.observations)),
@@ -668,6 +134,7 @@ interface CostState {
 	/** Refresh failures shown by the last complete publish of this calculation. */
 	published?: string
 }
+
 let lastCostState: CostState | undefined
 
 /** The calculation is a pure function of the journals, so passes reuse it until a journal changes. */
@@ -745,6 +212,7 @@ async function publishReports(
 			pullRequests: pullRequests.get(workId) ?? [],
 			requests: workRequests.get(workId) ?? [],
 		}
+
 		const content = `${JSON.stringify(value, null, 2)}\n`
 		try {
 			if (readFileSync(join(directory, "costs.json"), "utf8") === content) continue
@@ -781,6 +249,7 @@ export async function reconcileWorkCosts(
 		const response = await fetch(input, { ...init, signal: boundedSignal, redirect: "error" })
 		return billingResponse(response, boundedSignal)
 	}
+
 	const organizations = new Map<string, Promise<VerifyApiKeyResponse>>()
 	const credentials = new Map<string, { key: string; source?: BillingSource }>()
 	try {
@@ -822,6 +291,7 @@ export async function reconcileWorkCosts(
 				organizationId: item.organizationId,
 				userId: item.userId,
 			}
+
 			const rows: BillingRow[] = []
 			let pageReceived = false
 			try {
@@ -838,14 +308,16 @@ export async function reconcileWorkCosts(
 					}
 					credentials.set(credentialKey, credential)
 				}
+
 				const { key, source: current } = credential
 				// An unchanged key/endpoint mismatch has no work to retry. It must not
 				// consume the budget ahead of current-account or restored credentials.
-				if (item.lookup?.status === "account-changed" && (!current || !sameSource(current, item.source))) continue
+				if (item.lookup?.status === "account-changed" && (!current || !sameBillingSource(current, item.source)))
+					continue
 				// Cached auth failures settle in a microtask; let UI and cancellation run.
 				await setImmediate()
 				signal.throwIfAborted()
-				if (!current || !sameSource(current, item.source)) {
+				if (!current || !sameBillingSource(current, item.source)) {
 					lookup.status = "account-changed"
 					lookup.reason = "Original credential or endpoint is no longer configured"
 				} else {
@@ -864,6 +336,7 @@ export async function reconcileWorkCosts(
 						})
 						organizations.set(account, organization)
 					}
+
 					const { organizationId, userId } = await organization
 					lookup.organizationId = item.organizationId ?? organizationId
 					lookup.userId = item.userId ?? userId
@@ -971,95 +444,5 @@ export async function reconcileWorkCosts(
 		latest.published = failures
 	} finally {
 		clearTimeout(timeout)
-	}
-}
-
-/** /work reads the last durable result; opening the command never waits for the network. */
-export function workCostDetails(agentDir: string, workId: string): string[] {
-	if (!isWorkId(workId)) return []
-	try {
-		const value: unknown = JSON.parse(readFileSync(join(agentDir, "work", workId, "costs.json"), "utf8"))
-		if (!object(value) || !Array.isArray(value.pullRequests)) return ["Cost: unknown; waiting for billing"]
-		const lines: string[] = []
-		const requests = Array.isArray(value.requests) ? value.requests.filter(object) : []
-		for (const row of value.pullRequests) {
-			if (!object(row)) continue
-			if (value.pullRequests.some((other) => object(other) && other !== row && other.key === row.key))
-				lines.push(
-					isWorkAccount(row.account)
-						? `Account: ${row.account.organizationId} / ${row.account.userId} (${row.account.apiUrl})`
-						: "Account: unknown",
-				)
-			const label = object(row.pullRequest) ? row.pullRequest.url : row.key
-			// An unmerged PR's spend stays outside sure and likely totals until it merges.
-			const state = object(row.pullRequest) && row.pullRequest.state !== "merged" ? row.pullRequest.state : undefined
-			if (state) {
-				const counted = requests.filter(
-					(request) =>
-						request.allocation === "unmerged" &&
-						Array.isArray(request.pullRequestIds) &&
-						request.pullRequestIds.includes(row.key) &&
-						(isWorkAccount(request.account) && isWorkAccount(row.account)
-							? sameWorkAccount(request.account, row.account)
-							: request.account === row.account),
-				)
-				const spent = usd(counted.reduce((sum, request) => sum + (decimalNanos(request.knownCostUsd) ?? 0n), 0n))
-				// Unpriced, shared or unresolved requests may still belong to this PR.
-				const complete =
-					isWorkAccount(row.account) &&
-					counted.every((request) => request.priceStatus === "priced") &&
-					[row.sharedRequestIds, row.inferredRequestIds, row.unknownRequestIds].every(
-						(ids) => !Array.isArray(ids) || !ids.length,
-					)
-				lines.push(
-					complete
-						? `Cost so far: $${spent} USD (${state}) — ${label}`
-						: `Cost so far: unknown; $${spent} USD confirmed (${state}) — ${label}`,
-				)
-			} else if (typeof row.totalCostUsd === "string") lines.push(`Cost: $${row.totalCostUsd} USD — ${label}`)
-			else lines.push(`Cost: unknown; $${row.knownCostUsd} USD confirmed so far — ${label}`)
-			if (!state && object(row.explicit) && object(row.inferred))
-				lines.push(
-					`Sure: $${row.explicit.knownCostUsd} USD; likely: $${row.inferred.knownCostUsd} USD${row.totalCostUsd === null ? " known so far" : ""}.`,
-				)
-		}
-		if (Array.isArray(value.requests)) {
-			const priced = requests.filter((row) => row.priceStatus === "priced").length
-			// Work without a PR has no cost line above, so its priced spend is shown here.
-			const known = usd(requests.reduce((sum, row) => sum + (decimalNanos(row.knownCostUsd) ?? 0n), 0n))
-			const unresolved = requests.filter((row) => row.allocation === "unknown").length
-			const inferred = requests.filter((row) => row.allocation === "inferred").length
-			const shared = requests.filter((row) => row.allocation === "shared").length
-			lines.push(
-				`Prices: ${priced}/${requests.length} requests priced, $${known} USD${priced < requests.length ? " known so far" : ""}. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
-			)
-			const untagged = new Map<string, number>()
-			for (const row of requests)
-				if (typeof row.billingTagSkipped === "string")
-					untagged.set(row.billingTagSkipped, (untagged.get(row.billingTagSkipped) ?? 0) + 1)
-			if (untagged.size) {
-				const count = [...untagged.values()].reduce((sum, value) => sum + value, 0)
-				const reasons = [...untagged]
-					.sort(([left], [right]) => left.localeCompare(right))
-					.map(([reason, total]) => `${untagged.size > 1 ? `${total} ` : ""}${reason.replaceAll("-", " ")}`)
-				lines.push(
-					`${count} request${count === 1 ? "" : "s"} untagged: ${reasons.join(", ")}${untagged.has("tag-limit") ? ` (Kimchi adds model and phase tags; keep at most ${PRICED_TAG_LIMIT} in /tags)` : ""}.`,
-				)
-			}
-			const failed = requests.flatMap((row) =>
-				object(row.billingLookup) && row.billingLookup.status === "unavailable" ? [row.billingLookup] : [],
-			)
-			if (failed.length) {
-				const latest = failed.reduce((left, right) =>
-					String(right.checkedAt ?? "") > String(left.checkedAt ?? "") ? right : left,
-				)
-				lines.push(
-					`Last billing refresh failed for ${failed.length} request${failed.length === 1 ? "" : "s"}${typeof latest.reason === "string" ? `: ${latest.reason}` : ""}.`,
-				)
-			}
-		}
-		return [...lines, `Cost details: ${join(agentDir, "work", workId, "costs.json")}`]
-	} catch {
-		return ["Cost: unknown; waiting for billing"]
 	}
 }

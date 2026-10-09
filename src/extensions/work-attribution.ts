@@ -29,6 +29,7 @@ import { isResourceEnabled } from "../resources/store.js"
 import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
 import { isHarnessSteer } from "./steer-marker.js"
+import { type BillingSource, captureBillingSource, requestTagSelector } from "./work-attribution/billing-source.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
 import {
 	findWorkContinuation,
@@ -36,12 +37,7 @@ import {
 	hasWorkReference,
 	type WorkContinuation,
 } from "./work-attribution/continuation.js"
-import {
-	type BillingSource,
-	captureBillingSource,
-	requestTagSelector,
-	workCostDetails,
-} from "./work-attribution/cost-sync.js"
+import { workCostDetails } from "./work-attribution/cost-details.js"
 import { debugWorkAttribution } from "./work-attribution/diagnostics.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
 import { confirmWorkContinuation, correctWorkLink } from "./work-attribution/links.js"

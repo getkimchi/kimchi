@@ -23,9 +23,9 @@ import { createCommandContext, createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createWorkScopeSnapshot } from "./__mocks__/work-scope.js"
 import requestTimingExtension from "./request-timing.js"
+import * as billingSource from "./work-attribution/billing-source.js"
 import { createWorkCommitTrackingOperations } from "./work-attribution/commits.js"
 import * as continuation from "./work-attribution/continuation.js"
-import * as costSync from "./work-attribution/cost-sync.js"
 import * as supervisor from "./work-attribution/reconcile-supervisor.js"
 import * as scope from "./work-attribution/scope.js"
 import { flushWorkSummaries, readWorkRecords, recoverWorkSummaries } from "./work-attribution/summary.js"
@@ -241,10 +241,10 @@ describe("local work attribution", () => {
 			gatewayUrl: "https://gateway.example/v1/chat/completions",
 			credentialHash: "a".repeat(64),
 		}
-		vi.spyOn(costSync, "captureBillingSource").mockReturnValue(original)
+		vi.spyOn(billingSource, "captureBillingSource").mockReturnValue(original)
 		const headers = new Headers({ "X-Request-Id": identity.requestId, Authorization: "Bearer test-key" })
 		prepareProviderRequest(headers, original.gatewayUrl, { bodyTags: [] })
-		vi.mocked(costSync.captureBillingSource).mockReturnValue({ ...original, credentialHash: "b".repeat(64) })
+		vi.mocked(billingSource.captureBillingSource).mockReturnValue({ ...original, credentialHash: "b".repeat(64) })
 		setWorkId(ctx)
 		recordProviderResponse(identity.requestId, {
 			status: 200,
@@ -262,7 +262,7 @@ describe("local work attribution", () => {
 	])("persists skipped tagging without changing user tags: $reason", ({ bodyTags, header, reason }) => {
 		const ctx = createContext({ cwd: dir })
 		const { requestId } = recordProviderRequest(ctx, ctx.model)
-		vi.spyOn(costSync, "captureBillingSource").mockReturnValue({
+		vi.spyOn(billingSource, "captureBillingSource").mockReturnValue({
 			apiUrl: "https://billing.invalid",
 			gatewayUrl: "https://model.invalid/v1/chat/completions",
 			credentialHash: "a".repeat(64),
@@ -280,7 +280,7 @@ describe("local work attribution", () => {
 		const ctx = createContext({ cwd: dir })
 		const { requestId } = recordProviderRequest(ctx, ctx.model)
 		const url = "https://model.invalid/v1/chat/completions"
-		vi.spyOn(costSync, "captureBillingSource").mockReturnValue({
+		vi.spyOn(billingSource, "captureBillingSource").mockReturnValue({
 			apiUrl: "https://billing.invalid",
 			gatewayUrl: url,
 			credentialHash: "a".repeat(64),
@@ -307,7 +307,7 @@ describe("local work attribution", () => {
 		const ctx = createContext({ cwd: dir })
 		const { requestId } = recordProviderRequest(ctx, ctx.model)
 		const url = "https://model.invalid/v1/chat/completions"
-		vi.spyOn(costSync, "captureBillingSource").mockReturnValue({
+		vi.spyOn(billingSource, "captureBillingSource").mockReturnValue({
 			apiUrl: "https://billing.invalid",
 			gatewayUrl: url,
 			credentialHash: "a".repeat(64),
@@ -351,7 +351,7 @@ describe("local work attribution", () => {
 			await handler(event, ctx)
 		const logicalId = event.headers["X-Request-Id"]
 		const promptIds = ["11111111-2222-4333-8444-555555555555", "22222222-2222-4333-8444-555555555555"]
-		vi.spyOn(costSync, "captureBillingSource").mockReturnValue({
+		vi.spyOn(billingSource, "captureBillingSource").mockReturnValue({
 			apiUrl: "https://billing.invalid/api",
 			gatewayUrl: `${model.baseUrl}/chat/completions`,
 			credentialHash: "a".repeat(64),

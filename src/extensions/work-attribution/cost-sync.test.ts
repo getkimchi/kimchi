@@ -8,13 +8,9 @@ import * as json from "../../config/json.js"
 import * as config from "../../config.js"
 import { createContext } from "../__mocks__/context.js"
 import { appendWorkRecord, getWorkId } from "../work-attribution.js"
-import {
-	captureBillingSource,
-	readWorkCostReport,
-	reconcileWorkCosts,
-	requestTagSelector,
-	workCostDetails,
-} from "./cost-sync.js"
+import { captureBillingSource, requestTagSelector } from "./billing-source.js"
+import { workCostDetails } from "./cost-details.js"
+import { readWorkCostReport, reconcileWorkCosts } from "./cost-sync.js"
 import * as costs from "./costs.js"
 import { calculatePullRequestCosts } from "./costs.js"
 import * as summary from "./summary.js"
