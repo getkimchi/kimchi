@@ -398,6 +398,8 @@ function method(
 	request: RequestCostAllocation,
 	links: Map<string, WorkRecord>,
 ): SnapshotContent["requests"][number]["allocation"]["method"] {
+	// A likely local assignment stays likely on the server, whatever evidence its segment or a link carries.
+	if (request.allocation === "inferred") return request.segment?.attribution === "inferred" ? "model" : "session"
 	if (request.linkIds?.length)
 		return request.linkIds.some((id) => {
 			const evidence = links.get(id)?.evidence

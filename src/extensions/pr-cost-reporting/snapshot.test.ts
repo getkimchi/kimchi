@@ -570,6 +570,36 @@ describe("local and reported confidence", () => {
 		expect(result.snapshots[0].content.requests[0].allocation.kind).toBe("unknown")
 		expect(result.snapshots[0].content.requests[0].correction).toBeUndefined()
 	})
+	it.each([
+		["an explicit segment", { id: billingId, attribution: "explicit", reason: "work-command" }, false, "session"],
+		["a /work link", { id: billingId, attribution: "session", reason: "test" }, true, "session"],
+		[
+			"a model match with a /work link",
+			{ id: billingId, attribution: "inferred", reason: "model-same" },
+			true,
+			"model",
+		],
+	])("never reports a likely PR assignment carrying %s as sure", (_case, segment, linked, method) => {
+		const rows: WorkRecord[] = records([pull()], { segment }).map((row) => ({ ...row, workId: requestId }))
+		if (linked)
+			rows.push({
+				...rows[0],
+				type: "work_link",
+				linkId: "55555555-5555-4555-8555-555555555555",
+				revision: 1,
+				status: "active",
+				sourceWorkId: requestId,
+				targetWorkId: requestId,
+				requestIds: [requestId],
+				evidence: { source: "work-command", requestId, segmentId: billingId },
+			})
+		const report = calculatePullRequestCosts(rows, [{ requestId, billingRecordId: billingId, costUsd: "1", account }])
+		// Narrowing a request to one PR can leave it likely despite such evidence; it must not reach the server as sure.
+		report.requests[0].allocation = "inferred"
+		const [request] = buildSnapshots(rows, report, new Map(), true).snapshots[0].content.requests
+		expect(request.allocation).toEqual({ kind: "pull-request", pullRequestIds: ["101"], method })
+		if (linked) expect(request.correction).toMatchObject({ source: "work-command" })
+	})
 	// The server counts only native, explicit and user-correction methods as confirmed (explicit) PR spend.
 	const confirmedMethods = ["native", "explicit", "user-correction"]
 	it.each([
