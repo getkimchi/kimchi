@@ -13,7 +13,7 @@ import {
 import { currentBranch, lookupBranchPullRequest } from "./branch-status.js"
 import { mergePullRequestLinks } from "./links.js"
 import { lookupFailureReason } from "./provider-records.js"
-import type { WorkPullRequest, WorkPullRequestUpdate } from "./pull-requests.js"
+import { LOOKUP_WINDOW_MS, type WorkPullRequest, type WorkPullRequestUpdate } from "./pull-requests.js"
 
 /** `PR #7 open` or `MR !7 merged`; the status line shows the state only while there is room. */
 function requestStatus(pr: WorkPullRequest): string {
@@ -72,6 +72,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		const rows = selected ? [...(updates.get(selected)?.values() ?? [])] : []
 		const commits = new Map<string, WorkPullRequestUpdate>()
 		const linked = new Set<string>()
+		const recorded = new Map<string, number>()
 		const links: WorkPullRequest[] = []
 		for (const row of rows) {
 			const key = JSON.stringify([row.repository, row.sha])
@@ -82,8 +83,13 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 			)
 				commits.set(key, row)
 			if (row.pullRequests.length) linked.add(key)
+			recorded.set(key, Math.min(recorded.get(key) ?? Date.now(), Date.parse(row.recordedAt ?? "") || Date.now()))
 			links.push(...row.pullRequests)
 		}
+		// Discovery no longer checks these, so they neither wait nor need action.
+		const stopped = new Set(
+			[...recorded].flatMap(([key, time]) => (!linked.has(key) && Date.now() - time > LOOKUP_WINDOW_MS ? [key] : [])),
+		)
 
 		const latest = [...commits.entries()]
 		// A later successful lookup in the same repository supersedes an older failure, such as an expired token.
@@ -93,7 +99,8 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 				succeeded.set(row.repository, Math.max(succeeded.get(row.repository) ?? 0, Date.parse(row.prLookup.checkedAt)))
 		const messages = (quiet: boolean) => [
 			...new Set(
-				latest.flatMap(([, row]) =>
+				latest.flatMap(([key, row]) =>
+					!stopped.has(key) &&
 					row.prLookup?.error &&
 					(quiet || !row.prLookup.reason) &&
 					Date.parse(row.prLookup.checkedAt) > (succeeded.get(row.repository) ?? 0)
@@ -105,10 +112,17 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		return {
 			links: mergePullRequestLinks(links),
 			// A repository without GitHub or GitLab never gets a PR; it is not waiting for one.
-			pending: latest.filter(([key, row]) => !linked.has(key) && row.prLookup?.reason !== "unsupported").length,
-			// Only actionable failures reach the footer and warnings; /work also lists retries.
+			pending: latest.filter(
+				([key, row]) => !linked.has(key) && !stopped.has(key) && row.prLookup?.reason !== "unsupported",
+			).length,
+			// Only actionable failures reach the footer and warnings; /work also lists retries and stopped checks.
 			errors: messages(false),
-			lookupErrors: messages(true),
+			lookupErrors: [
+				...messages(true),
+				...(stopped.size
+					? [`${stopped.size} commit${stopped.size === 1 ? "" : "s"} without a PR after 32 days, no longer checked`]
+					: []),
+			],
 		}
 	}
 

@@ -24,6 +24,9 @@ const MTIME_SLACK_MS = 2000
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
+/** A commit still without a PR this long after it was first recorded is no longer checked. */
+export const LOOKUP_WINDOW_MS = 32 * DAY_MS
+
 /** Failures saved before this process started are retried once, so a fixed token need not wait out the backoff. */
 const PROCESS_STARTED = Date.now()
 
@@ -109,7 +112,7 @@ function lookupDue(commits: WorkPullRequestUpdate[], lastChecked = 0, now = Date
 	if (!latest) return true
 	const age = now - Math.min(...commits.map((commit) => Date.parse(commit.recordedAt ?? "") || now))
 	// Whatever the last result, including an error or an unsupported remote. Known links keep refreshing.
-	if (age > 32 * DAY_MS && commits.every((commit) => !commit.pullRequests.length)) return false
+	if (age > LOOKUP_WINDOW_MS && commits.every((commit) => !commit.pullRequests.length)) return false
 	if (latest.error && !latest.reason && Date.parse(latest.checkedAt) < PROCESS_STARTED) return true
 	return now - Math.max(Date.parse(latest.checkedAt), lastChecked) >= Math.min(DAY_MS, age / 16)
 }

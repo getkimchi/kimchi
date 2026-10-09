@@ -645,4 +645,36 @@ describe("expected lookup failures", () => {
 		expect(shown).toContain("PR/MR lookup: GitHub is offline.")
 		expect(shown).toContain("PR/MR lookup: No supported remote.")
 	})
+	it("stops counting a commit as waiting or failing once discovery stops checking it", async () => {
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const status = createExtensionApi()
+		pullRequestStatusExtension({ ...status.api, events: api.api.events })
+		await start(api)
+		await start(status)
+		const update = vi.mocked(supervisor.subscribePullRequestReconciliation).mock.calls[0][0].onPullRequest
+		const commit = { ...contribution(getWorkId(ctx)), pullRequests: [] }
+		const checkedAt = new Date().toISOString()
+		const recordedAt = new Date(Date.now() - 33 * 24 * 60 * 60 * 1000).toISOString()
+		// Discovery stopped checking both after 32 days, so the footer neither asks for action nor waits.
+		update({
+			...commit,
+			sha: "c".repeat(40),
+			recordedAt,
+			prLookup: { status: "error", checkedAt, error: "GitHub could not find this repository." },
+		})
+		await Promise.resolve()
+		expect(ctx.ui.setStatus).not.toHaveBeenCalledWith("work-pr", "PR/MR check /work")
+		update({ ...commit, recordedAt, prLookup: { status: "pending", checkedAt } })
+		expect(ctx.ui.setStatus).not.toHaveBeenCalledWith("work-pr", "PR/MR waiting")
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		await api.getRegisteredCommand("work").handler("", { ...createCommandContext(), ...ctx })
+		const shown = vi.mocked(ctx.ui.notify).mock.calls.at(-1)?.[0]
+		expect(shown).toContain("PR/MR lookup: 2 commits without a PR after 32 days, no longer checked")
+		expect(shown).not.toContain("waiting")
+		expect(shown).not.toContain("could not find")
+		// A newer commit of the same work still waits.
+		update({ ...commit, sha: "d".repeat(40), prLookup: { status: "pending", checkedAt } })
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR/MR waiting")
+	})
 })
