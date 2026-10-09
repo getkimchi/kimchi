@@ -45,19 +45,19 @@ export function hasOwnedWorkReference(
 			if (readPlanWorkId(readFileSync(path, "utf8"))) return true
 		} catch {}
 	}
+	// Journals are never pruned: compare file names before resolving each row's directory.
+	const names = new Set([...paths].map((path) => basename(path)))
+	const owns = (root: string, path: unknown) => {
+		if (typeof path !== "string") return false
+		const resolved = resolve(root, path)
+		return names.has(basename(resolved)) && paths.has(canonical(resolved))
+	}
 	return records.some((row) => {
 		if (row.type === "plan" && typeof row.cwd === "string") {
 			const cwd = row.cwd
-			return [row.path, row.snapshotPath].some(
-				(path) => typeof path === "string" && paths.has(canonical(resolve(cwd, path))),
-			)
+			return [row.path, row.snapshotPath].some((path) => owns(cwd, path))
 		}
-		return (
-			row.type === "file_transition" &&
-			typeof row.path === "string" &&
-			typeof row.worktree === "string" &&
-			paths.has(canonical(resolve(row.worktree, row.path)))
-		)
+		return row.type === "file_transition" && typeof row.worktree === "string" && owns(row.worktree, row.path)
 	})
 }
 
