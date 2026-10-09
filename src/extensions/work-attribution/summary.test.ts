@@ -192,7 +192,7 @@ describe("readable work summaries", () => {
 			if (reading) setImmediate(spin)
 		}
 		setImmediate(spin)
-		const records = await readWorkRecordsAsync(dir)
+		const records = await readWorkRecordsAsync(dir, new AbortController().signal)
 		reading = false
 		expect(records).toHaveLength(21_001)
 		expect(records).toEqual(readWorkRecords(dir))

@@ -177,8 +177,11 @@ async function workJournals(agentDir: string): Promise<string[]> {
 	}
 	return paths
 }
-/** Like readWorkRecords, but yields to the event loop after each file chunk so a large history never blocks the UI. */
-export async function readWorkRecordsAsync(agentDir: string): Promise<WorkRecord[]> {
+/**
+ * Like readWorkRecords, but yields to the event loop after each file chunk so a large history never blocks the UI,
+ * and stops there once `signal` aborts so a closing session need not wait for the rest.
+ */
+export async function readWorkRecordsAsync(agentDir: string, signal: AbortSignal): Promise<WorkRecord[]> {
 	const records: WorkRecord[] = []
 	for (const path of await workJournals(agentDir)) {
 		try {
@@ -188,9 +191,11 @@ export async function readWorkRecordsAsync(agentDir: string): Promise<WorkRecord
 				partial = lines.pop() ?? ""
 				for (const line of lines) parseRecord(line, records)
 				await setImmediate()
+				signal.throwIfAborted()
 			}
 			parseRecord(partial, records)
 		} catch (error) {
+			if (signal.aborted) throw error
 			throw new Error(`Could not read work ledger ${basename(path)}`, { cause: error })
 		}
 	}

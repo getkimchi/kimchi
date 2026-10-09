@@ -1412,6 +1412,17 @@ describe("automatic exact work cost lookup", () => {
 		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual([])
 		expect(() => report(workId)).toThrow()
 	})
+	it("stops reading the journals once aborted instead of finishing the calculation", async () => {
+		tagged()
+		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
+		const controller = new AbortController()
+		const running = reconcileWorkCosts(dir, controller.signal)
+		// Closing a session aborts the pass while the journals are still being read.
+		controller.abort()
+		await expect(running).rejects.toThrow(expect.objectContaining({ name: "AbortError" }))
+		expect(calculate).not.toHaveBeenCalled()
+		expect(fetchMock).not.toHaveBeenCalled()
+	})
 })
 
 describe("billing refresh after the request tag window closes", () => {

@@ -139,11 +139,13 @@ interface CostState {
 let lastCostState: CostState | undefined
 
 /** The calculation is a pure function of the journals, so passes reuse it until a journal changes. */
-async function costState(agentDir: string): Promise<CostState> {
+async function costState(agentDir: string, signal: AbortSignal): Promise<CostState> {
 	// Fingerprint before reading: an append during the read only makes the next pass recalculate.
 	const fingerprint = await workJournalFingerprint(agentDir)
 	if (lastCostState?.agentDir === agentDir && lastCostState.fingerprint === fingerprint) return lastCostState
-	const records = await readWorkRecordsAsync(agentDir)
+	const records = await readWorkRecordsAsync(agentDir, signal)
+	// The calculation cannot stop midway; a closing session must not wait for one it no longer needs.
+	signal.throwIfAborted()
 	const { requests, report } = readWorkCostReport(agentDir, records)
 	const open: OpenBilling[] = []
 	const displays = new Map<string, BillingDisplay>()
@@ -228,7 +230,7 @@ export async function reconcileWorkCosts(
 	signal: AbortSignal,
 	assertLease: () => void = () => {},
 ): Promise<void> {
-	const state = await costState(agentDir)
+	const state = await costState(agentDir, signal)
 	signal.throwIfAborted()
 	assertLease()
 	let changed = false
@@ -424,7 +426,7 @@ export async function reconcileWorkCosts(
 		}
 		signal.throwIfAborted()
 		assertLease()
-		const latest = changed ? await costState(agentDir) : state
+		const latest = changed ? await costState(agentDir, signal) : state
 		signal.throwIfAborted()
 		assertLease()
 		// Closed windows, which the journal now proves, and vanished requests need no scheduling state.
