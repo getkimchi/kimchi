@@ -880,9 +880,14 @@ export async function reconcileWorkCosts(
 		}
 		signal.throwIfAborted()
 		assertLease()
+		const latest = changed ? await costState(agentDir) : state
+		signal.throwIfAborted()
+		assertLease()
+		// Closed windows, which the journal now proves, and vanished requests need no scheduling state.
+		const open = new Set(latest.open.map((item) => item.requestId))
+		for (const requestId of Object.keys(polls)) if (!open.has(requestId)) delete polls[requestId]
 		const currentPolls = JSON.stringify(polls)
 		if (currentPolls !== previousPolls) writeFileAtomic(pollingPath, `${currentPolls}\n`)
-		const latest = changed ? await costState(agentDir) : state
 		const failures = refreshFailures(latest, polls)
 		// Unchanged inputs give unchanged reports; only a deleted report needs writing again.
 		if (

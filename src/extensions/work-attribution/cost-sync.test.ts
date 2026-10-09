@@ -1428,6 +1428,36 @@ describe("billing refresh after the request tag window closes", () => {
 		}
 		expect(costRows()).toHaveLength(1)
 	})
+	it("drops a request's poll entry once its final check is journaled, then never calls for it again", async () => {
+		const { workId, requestId } = tagged()
+		await sync()
+		const polls = () => JSON.parse(readFileSync(join(dir, "work-attribution", "billing-polls.json"), "utf8"))
+		expect(polls()).toHaveProperty(requestId)
+		let now = Date.parse("2026-11-02T08:00:00.000Z") + 60_000
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		fetchMock.mockClear()
+		await sync()
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+		// The unchanged final result is journaled once, so the journal proves that the window closed.
+		expect(costRows()).toHaveLength(2)
+		expect(costRows()[1].billingLookup).toMatchObject({ status: "priced", checkedAt: new Date(now).toISOString() })
+		expect(polls()).not.toHaveProperty(requestId)
+		now += 3 * 24 * 60 * 60_000
+		await sync()
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+		expect(costRows()).toHaveLength(2)
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
+	})
+	it("drops poll entries of requests that no journal contains", async () => {
+		const { requestId } = tagged()
+		await sync()
+		const path = join(dir, "work-attribution", "billing-polls.json")
+		const stray = randomUUID()
+		const saved = JSON.parse(readFileSync(path, "utf8"))
+		writeFileSync(path, JSON.stringify({ ...saved, [stray]: { checkedAt: Date.now(), lookupAt: "" } }))
+		await sync()
+		expect(Object.keys(JSON.parse(readFileSync(path, "utf8")))).toEqual([requestId])
+	})
 	it("retries a final check made offline and keeps the confirmed total until it succeeds", async () => {
 		const { workId } = tagged()
 		await sync()
