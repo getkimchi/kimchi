@@ -164,9 +164,28 @@ testWithJsDebug(
 							},
 						],
 					},
+					// Same visibility-deferral flow as the degraded test: debug_state_at
+					// is hidden at session start, so scripted call 1 returns "Tool
+					// debug_state_at not found", the hidden-tool-guidance backstop
+					// reveals it, and scripted call 2 executes against the real adapter.
+					{
+						toolCalls: [
+							{
+								function: {
+									name: "debug_state_at",
+									arguments: JSON.stringify({ file: "app.js", line: 2, evaluated: ["a + b"] }),
+								},
+							},
+						],
+					},
 					{ stream: ["State captured at the breakpoint."] },
 				],
-				env: { KIMCHI_DAP_BINARIES: "" }, // keep other machine adapters inert
+				// Whitelist ONLY js-debug: the empty override used to inert other
+				// adapters also disabled js-debug's script-path detection, so the
+				// footer rendered "js-debug not installed" and the happy path never
+				// exercised a real adapter. Naming js-debug whitelists its custom
+				// script-path probe; dlv/debugpy/lldb-dap stay inert.
+				env: { KIMCHI_DAP_BINARIES: "js-debug" },
 				seedHome: (_homeDir, workDir) => {
 					writeFileSync(join(workDir, "package.json"), '{"name":"debugme","version":"1.0.0"}\n')
 					// Breakpoint at line 2 stops inside add() with a=2, b=3.
@@ -178,7 +197,11 @@ testWithJsDebug(
 			},
 			async (fixture, trace) => {
 				trace.step("checking status footer for active js-debug")
-				expect(viewText(terminal)).toContain("DAP: js-debug")
+				// Poll instead of snapshotting — the footer status is applied
+				// asynchronously after session_start detection (same pattern as the
+				// degraded test above); an immediate snapshot races and fails even
+				// when detection is correct.
+				await waitForText(terminal, "DAP: js-debug", { full: false })
 
 				terminal.submit("capture state at app.js line 2")
 				trace.step("submitted prompt")
