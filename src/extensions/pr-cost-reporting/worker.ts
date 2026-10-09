@@ -241,16 +241,12 @@ export async function deliverSnapshots(
 	}
 }
 
-/**
- * Runs after local pricing, under the existing reconciliation lease. Without `deliver` (automation)
- * the inventory is still captured and queued for a later interactive session; nothing is uploaded.
- */
+/** Runs after local pricing, under the existing reconciliation lease, in sessions that may upload. */
 export async function reconcileReporting(
 	agentDir: string,
 	cwd: string,
 	signal: AbortSignal,
 	assertLease: () => void,
-	deliver = true,
 ): Promise<void> {
 	const state = await readReportingState(agentDir)
 	if (!state.enabled) return
@@ -333,7 +329,7 @@ export async function reconcileReporting(
 			)
 	}
 	// Reports already queued go out with their own time even when this pass could not capture a new inventory.
-	if (!deliver || signal.aborted) return
+	if (signal.aborted) return
 	try {
 		await deliverSnapshots(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
 	} catch {

@@ -61,9 +61,11 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 		}
 		context = next
 		activeKey = key
-		if (request.tracking && request.current) {
+		// Sessions that never upload (CI, print or JSON mode, benchmarks) skip the pass; the next interactive
+		// session builds the same reports from the same journals.
+		if (request.tracking && request.current && !skipReason) {
 			stop ??= subscribeReportingReconciliation(async (agentDir, signal, assertLease) => {
-				if (context) await reconcileReporting(agentDir, context.cwd, signal, assertLease, !skipReason)
+				if (context) await reconcileReporting(agentDir, context.cwd, signal, assertLease)
 			})
 		} else if (stop) {
 			draining = Promise.all([draining, stop()]).then(() => {})

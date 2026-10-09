@@ -27,7 +27,7 @@ Every change replaces the queued snapshot on disk at once, but each repository u
 
 ### Sessions that never upload
 
-CI jobs, one-shot runs and benchmarks would only add noise, so they keep recording and attributing work locally and queue snapshots, but never upload. A later interactive session on the same machine sends that queue. `/pr-reporting status` names the reason:
+CI jobs, one-shot runs and benchmarks would only add noise, so they keep recording and attributing work locally but skip the reporting pass and never upload. A later interactive session on the same machine builds and sends the same reports from those records. `/pr-reporting status` names the reason:
 
 - `KIMCHI_PR_COST_REPORTING=0` (also `false`, `off` or `no`) turns uploads off for the process, whatever the saved choice.
 - `--print`/`-p` and `--mode json` runs, including piped input, which Pi runs in print mode. Interactive TUI, Studio (ACP) and RPC sessions upload.

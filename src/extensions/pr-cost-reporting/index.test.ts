@@ -198,7 +198,7 @@ describe("optional PR reporting", () => {
 		["rpc", true],
 		["print", false],
 		["json", false],
-	] as const)("keeps attributing in a %s session and uploads only when interactive", async (mode, deliver) => {
+	] as const)("keeps attributing in a %s session and reports only when interactive", async (mode, deliver) => {
 		const ctx = createContext({ mode })
 		const api = createExtensionApi()
 		api.api.events.on(WORK_STATE_REQUEST_EVENT, (value) => {
@@ -206,10 +206,14 @@ describe("optional PR reporting", () => {
 		})
 		reportingExtension(api.api)
 		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
-		const [[report]] = vi.mocked(supervisor.subscribeReportingReconciliation).mock.calls
-		const signal = new AbortController().signal
-		await report(directory, signal, () => {})
-		expect(reconcileReporting).toHaveBeenCalledWith(directory, ctx.cwd, signal, expect.any(Function), deliver)
+		// A session that never uploads reads no history; the next interactive session builds the same reports.
+		const subscriptions = vi.mocked(supervisor.subscribeReportingReconciliation).mock.calls
+		expect(subscriptions).toHaveLength(deliver ? 1 : 0)
+		if (deliver) {
+			const signal = new AbortController().signal
+			await subscriptions[0][0](directory, signal, () => {})
+			expect(reconcileReporting).toHaveBeenCalledWith(directory, ctx.cwd, signal, expect.any(Function))
+		}
 		const commandCtx = { ...createCommandContext(), mode }
 		await api.getRegisteredCommand("pr-reporting").handler("status", commandCtx)
 		const [[text]] = vi.mocked(commandCtx.ui.notify).mock.calls
