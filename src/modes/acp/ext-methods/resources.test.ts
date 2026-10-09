@@ -3,7 +3,7 @@
 // writes go through a temp settings path so the real harness settings are
 // never touched.
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { RequestError } from "@agentclientprotocol/sdk"
@@ -131,5 +131,21 @@ describe("handleSetResourceEnabled", () => {
 		// Nothing was written for the unknown id — the settings file was never
 		// created.
 		expect(existsSync(settingsPath)).toBe(false)
+	})
+
+	it("a failed settings write surfaces as internalError, not invalidParams", () => {
+		// A settings path whose parent is a regular file — writeJson cannot
+		// create the directory (nor read through it), so the write itself
+		// fails and the handler classifies it as environmental.
+		const blocker = join(tempDir, "not-a-dir")
+		writeFileSync(blocker, "occupied")
+		const err = thrownRequestError(() =>
+			handleSetResourceEnabled(
+				{ settingsPath: join(blocker, "settings.json") },
+				{ resourceId: "extensions.memory", enabled: true },
+			),
+		)
+		expect(err.code).toBe(-32603)
+		expect(err.message).toContain("Failed to persist resource override")
 	})
 })

@@ -144,7 +144,7 @@ export function handleSetMemoryEnabled(
 	if (!isResourceEnabled(MEMORY_RESOURCE_ID)) {
 		throw RequestError.invalidParams(
 			undefined,
-			'the memory feature is disabled — enable it via set_resource_enabled (resourceId "extensions.memory") and restart the session',
+			`the memory feature is disabled — enable it via set_resource_enabled (resourceId "${MEMORY_RESOURCE_ID}") and restart the session`,
 		)
 	}
 	setSessionMemoryOverride(session.sessionManager, enabled)

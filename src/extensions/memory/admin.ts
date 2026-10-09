@@ -11,7 +11,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs"
 import { join, relative, sep } from "node:path"
 import { createMemoryBackend, defaultMemoryDir, normalizeMem0SearchResults } from "./backend.js"
-import { MEMORY_USER_ID } from "./config.js"
+import { MEMORY_RESOURCE_ID, MEMORY_USER_ID } from "./config.js"
 import { acquireCaptureLock } from "./lock.js"
 import { resolveProjectScope, sanitizeScopeId } from "./scope.js"
 
@@ -83,7 +83,7 @@ export const USAGE = `usage: memory [list|search|delete|reset|enable|disable]
   enable | disable
           Toggle memory for the current interactive session only. Resets on
           restart; the persistent feature switch is
-          "kimchi resources enable|disable extensions.memory".
+          "kimchi resources enable|disable ${MEMORY_RESOURCE_ID}".
 
   The default scope for list and search is local: the personal store plus
   the current project (personal only outside a repository). --scope all
@@ -640,8 +640,7 @@ async function opOverview(deps: ResolvedDeps, memoryState?: MemoryStateHandle): 
 
 function opSetEnabled(parsed: { enabled: boolean }, options: AdminRunOptions): Omit<AdminResult, "useJson"> {
 	if (!options.memoryState) {
-		const message =
-			'error: enable/disable toggle the current interactive session\'s memory — run /memory inside a session, or use "kimchi resources enable|disable extensions.memory" for the persistent feature switch'
+		const message = `error: enable/disable toggle the current interactive session's memory — run /memory inside a session, or use "kimchi resources enable|disable ${MEMORY_RESOURCE_ID}" for the persistent feature switch`
 		return {
 			text: message,
 			json: JSON.stringify({ error: "enable/disable require an interactive session" }, null, 2),

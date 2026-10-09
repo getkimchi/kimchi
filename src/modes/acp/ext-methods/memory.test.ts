@@ -366,6 +366,19 @@ describe("handleMemorySearch", () => {
 		const blank = await thrownRequestErrorAsync(() => handleMemorySearch(options, { query: "   " }))
 		expect(blank.code).toBe(-32602)
 	})
+
+	it("gateway failures surface as internalError, not invalidParams", async () => {
+		const { options } = harness({ personal: [fact("p1", "a fact")] })
+		const err = await thrownRequestErrorAsync(() =>
+			handleMemorySearch(
+				{ deps: { ...options.deps, createBackend: () => Promise.reject(new Error("gateway down")) } },
+				{ query: "dog", scope: "all" },
+			),
+		)
+		expect(err.code).toBe(-32603)
+		expect(err.message).toContain("memory search failed")
+		expect(err.message).toContain("gateway down")
+	})
 })
 
 // --- memory_delete -----------------------------------------------------------------
@@ -559,5 +572,24 @@ describe("KimchiAcpAgent extMethod memory", () => {
 				enabled: true,
 			}),
 		).rejects.toMatchObject({ code: -32602, message: expect.stringContaining("unknown sessionId nope") })
+	})
+
+	it("memory_delete and memory_search dispatch through the agent", async () => {
+		const session = new FakeAgentSession("sess-1")
+		const agent = makeAgent(session)
+		await agent.initialize({ protocolVersion: 1 })
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// The destructive store op round-trips through the dispatch; with the
+		// isolated HOME's empty stores every id lands in notFound.
+		const deleted = await agent.extMethod(AVAILABLE_EXT_METHODS.memory_delete, { ids: ["no-such-id"] })
+		expect(deleted).toEqual({ deleted: [], notFound: ["no-such-id"] })
+
+		// The search dispatch proves its wiring; with no stores it returns
+		// empty results without touching the embedding gateway.
+		const search = (await agent.extMethod(AVAILABLE_EXT_METHODS.memory_search, { query: "anything" })) as {
+			results: unknown[]
+		}
+		expect(search.results).toEqual([])
 	})
 })
