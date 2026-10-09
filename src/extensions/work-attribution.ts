@@ -744,12 +744,17 @@ export function createWorkAttributionExtension(
 					explicitSelection.set(key, found.source)
 					useSegment("explicit", found.source)
 					// Appends since the read are this input's receipt and segment, which confirmation does not use.
-					confirmWorkContinuation(
-						ctx,
-						{ ...found, ...continuation },
-						captured.scope,
-						history ?? readContinuationHistory(getAgentDir()),
-					)
+					// Unreadable history blocks only the confirmation; the adopted work still remembers this input.
+					try {
+						confirmWorkContinuation(
+							ctx,
+							{ ...found, ...continuation },
+							captured.scope,
+							history ?? readContinuationHistory(getAgentDir()),
+						)
+					} catch (error) {
+						warnWorkAttribution(ctx, error)
+					}
 					if (model) await rememberWorkIntent(ctx.cwd, found.workId, event.text)
 					return
 				}

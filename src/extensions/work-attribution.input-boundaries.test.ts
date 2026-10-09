@@ -393,7 +393,7 @@ describe("journal problems during live plan continuation", () => {
 		writeFileSync(journal, content)
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
-		const ctx = createContext({ cwd: dir })
+		const ctx = createContext({ cwd: dir, model: createModel("chat"), modelRegistry: createModelRegistry() })
 		await api.getHandler<InputEvent>("input")(
 			{ type: "input", text: "Implement /plans/plan.md", source: "interactive" },
 			ctx,
@@ -422,8 +422,11 @@ describe("journal problems during live plan continuation", () => {
 			newer(planned),
 			"Work history contains unknown record types",
 		],
-	])("adopts the plan and names the journal with %s in its warning", async (_kind, name, content, problem) => {
+	])("adopts the plan, remembers its input and names the journal with %s in its warning", async (_kind, name, content, problem) => {
+		const remember = vi.spyOn(semantic, "rememberWorkIntent").mockResolvedValue()
 		const { ctx, journal } = await continuePlan(name, content)
 		expect(ctx.ui.notify).toHaveBeenCalledWith(`Work attribution unavailable: ${problem} in ${journal}:1`, "warning")
+		// The blocked confirmation must not also drop the adopted work's matching memory.
+		expect(remember).toHaveBeenCalledWith(dir, planned, "Implement /plans/plan.md")
 	})
 })
