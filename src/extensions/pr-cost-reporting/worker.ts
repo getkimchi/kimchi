@@ -98,16 +98,33 @@ export async function deliverSnapshots(
 	const combined = AbortSignal.any([signal, controller.signal])
 	// Seeing an opt-out from another process mid-upload is an optimisation: each upload rereads the state anyway.
 	// Without a watcher, for example when inotify watches run out, delivery still works.
+	// One durable write raises several events on Linux and the state can reach 24 MiB, so one reread runs at a time;
+	// events seen during it cause one more.
 	let watcher: ReturnType<typeof watch> | undefined
-	try {
-		watcher = watch(reportingDirectory(agentDir), { persistent: false }, () => {
-			void readReportingState(agentDir).then(
+	let rereading = false
+	let changedAgain = false
+	const reread = () => {
+		if (rereading) {
+			changedAgain = true
+			return
+		}
+		rereading = true
+		void readReportingState(agentDir)
+			.then(
 				(state) => {
 					if (!state.enabled) controller.abort()
 				},
 				() => controller.abort(),
 			)
-		})
+			.finally(() => {
+				rereading = false
+				if (!changedAgain || !watcher) return
+				changedAgain = false
+				reread()
+			})
+	}
+	try {
+		watcher = watch(reportingDirectory(agentDir), { persistent: false }, reread)
 	} catch {}
 	try {
 		const state = await readReportingState(agentDir)
@@ -243,6 +260,7 @@ export async function deliverSnapshots(
 		}
 	} finally {
 		watcher?.close()
+		watcher = undefined
 		clearTimeout(timer)
 	}
 }

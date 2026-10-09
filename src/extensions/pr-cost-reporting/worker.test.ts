@@ -611,7 +611,8 @@ describe("account-fenced reporting delivery", () => {
 			"until queued reports leave room in the local queue",
 		)
 		respond(accepted)
-		await deliver()
+		// A 24 MiB queue can outlast one 5-second pass on a slow CI runner; this checks for a stall, not speed.
+		await deliverSnapshots(directory, "/project", new AbortController().signal, () => {}, Date.now() + 50_000)
 		// Delivering what is already queued is what frees the room; nothing may stall it.
 		expect(posts().map((payload) => [payload.repository.id, payload.revision])).toEqual([
 			["42", "1"],
