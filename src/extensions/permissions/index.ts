@@ -16,6 +16,7 @@ import {
 	consumePlanReviewContext,
 	emitPlanReviewDecision,
 	emitPlanReviewRequest,
+	notifyPlanReviewClosed,
 	onPlanReviewDecision,
 	type PlanReviewDecisionPayload,
 } from "../../shared/planning/plan-review-bus.js"
@@ -825,7 +826,16 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					.then((choice) => {
 						unsubscribeAbortListener()
 						// select returns undefined when aborted — plannotator already decided.
-						if (choice === undefined) return
+						if (choice === undefined) {
+							// An abort means plannotator raced and its decision handler may
+							// still dispatch a follow-up turn — not a close. A genuine
+							// dismissal (escape / client cancel) ends the review WITHOUT any
+							// further turn, a fact pi session events never surface: notify.
+							if (!planMenuAbort.signal.aborted) {
+								notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
+							}
+							return
+						}
 						if (choice === EXECUTE_LOCAL_DECISION_OPTION) {
 							emitPlanReviewDecision(pi, {
 								decision: "execute",
@@ -920,6 +930,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					changeMode(ctx, "auto", { mode: "plan", initiatedBy: "user", source: "runtime" }, "cloud_spawn_failed")
 				}
 			}
+			// Cloud execution never starts a local follow-up turn (the remote run
+			// reports back asynchronously) — the review is over either way: notify.
+			notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 		}
 
 		if (payload.decision === "execute") {
@@ -949,6 +962,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					await executeLocally()
 				} else {
 					ctx.ui?.notify?.("Plan execution deferred — re-open the review to choose again.", "info")
+					// Deferral ends the review with no follow-up turn: notify surfaces
+					// (e.g. ACP holds the originating prompt open across the review).
+					notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 				}
 				return
 			}
@@ -1027,6 +1043,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					if (getRuntimePermissionMode().mode === "plan") {
 						changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
 					}
+					// Draft-only conversion dispatches no follow-up turn: notify.
+					notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 					ctx.ui?.notify?.(
 						`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment list to resume and scope it interactively.`,
 					)
@@ -1122,6 +1140,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				defaultFermentRuntime.setActive(undefined)
 				const message = err instanceof Error ? err.message : String(err)
 				ctx.ui?.notify?.(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`)
+				// Promotion failed — the review is over with no follow-up turn: notify.
+				notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 			}
 		} else if (payload.decision === "start_cloud") {
 			await executeInCloud()
@@ -1135,8 +1155,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				},
 				{ triggerTurn: true },
 			)
+		} else {
+			// "rework" (and any future no-op decision) — the review ends here
+			// without dispatching a follow-up turn. Notify surfaces that hold
+			// state across the review (ACP keeps the prompt open so execution
+			// lands inside it; a no-turn close must still end it).
+			notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 		}
-		// "rework" = stay in plan mode, no action needed
 	})
 
 	pi.on("tool_call", async (event, ctx) => {

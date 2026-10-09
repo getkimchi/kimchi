@@ -143,6 +143,7 @@ import {
 import { applyWriteTodos, clearTodoStore } from "../../extensions/todos/store.js"
 import { updateModelsConfig } from "../../models.js"
 import { ACP_LIFETIME_USAGE_META_KEY, ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
+import { notifyPlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
@@ -10292,5 +10293,201 @@ describe("KimchiAcpAgent set_project_trust pin sweep", () => {
 		expect(result).toMatchObject({ trusted: false })
 		expect(isProjectScopeAllowed(parentDir)).toBe(false)
 		expect(existsSync(join(agentDir, "trust.json"))).toBe(false)
+	})
+})
+
+// =============================================================================
+// Plan-review held prompts (submit_plan): the model turn ends in a plan
+// review — the PromptRequest must stay OPEN (single end_turn) until the
+// decision's follow-up turn drains, the review closes without work, or the
+// client cancels. See .kimchi/plans/acp-plan-review-turn-lifecycle.md.
+// =============================================================================
+
+describe("plan-review held prompt", () => {
+	function makeHeldAgent() {
+		const { conn, updates } = makeRecordingConn()
+		const heldFake = new FakeAgentSession("session-plan-review")
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(heldFake),
+		})
+		return { localAgent, heldFake, updates }
+	}
+
+	/** pi's message_end for a failed assistant response (retries exhausted). */
+	function assistantErrorEvent(errorMessage: string): AgentSessionEvent {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error",
+			errorMessage,
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	/** Emit the submit_plan tool lifecycle pi-mono fires when a plan is
+	 * submitted: the tool executes and the model turn ends. */
+	function emitSubmitPlan(heldFake: FakeAgentSession): void {
+		heldFake.emit({
+			type: "tool_execution_start",
+			toolCallId: "tc-submit-plan",
+			toolName: "submit_plan",
+			args: { planContent: "# Plan" },
+		})
+		heldFake.emit({
+			type: "tool_execution_end",
+			toolCallId: "tc-submit-plan",
+			toolName: "submit_plan",
+			result: { content: [{ type: "text", text: "Plan submitted." }] },
+			isError: false,
+		})
+	}
+
+	/** Start a prompt whose model turn ends in submit_plan; returns the pending
+	 * PromptRequest promise plus a flag flipped when it settles. */
+	async function startHeldPrompt(localAgent: KimchiAcpAgent, heldFake: FakeAgentSession) {
+		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		heldFake.promptImpl = async () => {
+			heldFake.emit({ type: "agent_start" })
+			emitSubmitPlan(heldFake)
+			// Turn ends here — session.prompt resolves. The review is pending.
+		}
+		let settled: { ok: boolean; value?: unknown; error?: unknown } | undefined
+		const promptPromise = localAgent
+			.prompt({ sessionId: res.sessionId, prompt: [{ type: "text", text: "plan it" }] })
+			.then(
+				(value) => {
+					settled = { ok: true, value }
+				},
+				(error) => {
+					settled = { ok: false, error }
+				},
+			)
+		// Let session.prompt() resolve inside the agent. The PromptRequest must
+		// stay pending: no early end_turn while the review is undecided.
+		await vi.waitFor(() => {
+			expect(heldFake.promptCalls).toHaveLength(1)
+		})
+		await delay(30)
+		return { sessionId: res.sessionId, promptPromise, isSettled: () => settled, settledValue: () => settled }
+	}
+
+	it("holds the prompt open while the review is undecided (no early end_turn)", async () => {
+		const { localAgent, heldFake } = makeHeldAgent()
+		const { promptPromise, isSettled } = await startHeldPrompt(localAgent, heldFake)
+		expect(isSettled()).toBeUndefined()
+
+		// Permissions reports the review closed without a follow-up turn
+		// (rework / dismissal) → the prompt resolves with exactly one end_turn.
+		notifyPlanReviewClosed(heldFake.sessionId)
+		await promptPromise
+		const settled = isSettled()
+		expect(settled?.ok).toBe(true)
+		expect((settled?.value as { stopReason: string })?.stopReason).toBe("end_turn")
+	})
+
+	it("streams the execution turn into the held prompt and ends it once, after agent_settled", async () => {
+		const { localAgent, heldFake, updates } = makeHeldAgent()
+		const { promptPromise, isSettled } = await startHeldPrompt(localAgent, heldFake)
+		expect(isSettled()).toBeUndefined()
+		const updatesBefore = updates.length
+
+		// Decision approved → the follow-up turn starts as an internal pi turn.
+		heldFake.emit({ type: "agent_start" })
+		heldFake.emit({
+			type: "message_update",
+			assistantMessageEvent: {
+				type: "text_delta",
+				delta: "executing the plan",
+				contentIndex: 0,
+				partial: {} as unknown as AssistantMessage,
+			},
+			message: {} as unknown as AssistantMessage,
+		})
+		heldFake.emit(agentEnd())
+		// Still in flight: agent_end alone must not finalize (chained continues).
+		await delay(10)
+		expect(isSettled()).toBeUndefined()
+
+		heldFake.emit({ type: "agent_settled" })
+		await promptPromise
+		const settled = isSettled()
+		expect(settled?.ok).toBe(true)
+		expect((settled?.value as { stopReason: string })?.stopReason).toBe("end_turn")
+		// Execution chunks were forwarded into the same prompt's update stream.
+		expect(updates.slice(updatesBefore).some((u) => u.update.sessionUpdate === "agent_message_chunk")).toBe(true)
+	})
+
+	it("delivers a single end_turn across chained continue cycles of the execution turn", async () => {
+		const { localAgent, heldFake } = makeHeldAgent()
+		const { promptPromise, isSettled } = await startHeldPrompt(localAgent, heldFake)
+
+		heldFake.emit({ type: "agent_start" })
+		heldFake.emit(agentEnd())
+		await delay(5)
+		expect(isSettled()).toBeUndefined()
+		// Chained continue (retry / queued message): second cycle in the same run.
+		heldFake.emit({ type: "agent_start" })
+		heldFake.emit(agentEnd())
+		await delay(5)
+		expect(isSettled()).toBeUndefined()
+
+		heldFake.emit({ type: "agent_settled" })
+		await promptPromise
+		expect(isSettled()?.ok).toBe(true)
+	})
+
+	it("finalizes immediately when the review closes without a follow-up turn", async () => {
+		const { localAgent, heldFake } = makeHeldAgent()
+		const { promptPromise, isSettled } = await startHeldPrompt(localAgent, heldFake)
+		notifyPlanReviewClosed(heldFake.sessionId)
+		await promptPromise
+		expect(isSettled()?.ok).toBe(true)
+	})
+
+	it("ignores close notifications for other sessions and non-held turns", async () => {
+		const { localAgent, heldFake } = makeHeldAgent()
+		const { promptPromise, isSettled } = await startHeldPrompt(localAgent, heldFake)
+		notifyPlanReviewClosed("some-other-session")
+		await delay(20)
+		expect(isSettled()).toBeUndefined()
+		notifyPlanReviewClosed(heldFake.sessionId)
+		await promptPromise
+		expect(isSettled()?.ok).toBe(true)
+	})
+
+	it("cancel during the review pause resolves with stopReason cancelled", async () => {
+		const { localAgent, heldFake } = makeHeldAgent()
+		const { sessionId, promptPromise, isSettled } = await startHeldPrompt(localAgent, heldFake)
+		await localAgent.cancel({ sessionId })
+		await promptPromise
+		const settled = isSettled()
+		expect(settled?.ok).toBe(true)
+		expect((settled?.value as { stopReason: string })?.stopReason).toBe("cancelled")
+	})
+
+	it("surfaces a terminal execution error as a JSON-RPC failure, not a silent end_turn", async () => {
+		const { localAgent, heldFake } = makeHeldAgent()
+		const { promptPromise, isSettled } = await startHeldPrompt(localAgent, heldFake)
+
+		heldFake.emit({ type: "agent_start" })
+		heldFake.emit(assistantErrorEvent("boom"))
+		heldFake.emit(agentEnd())
+		heldFake.emit({ type: "agent_settled" })
+		await promptPromise
+		expect(isSettled()?.ok).toBe(false)
 	})
 })
