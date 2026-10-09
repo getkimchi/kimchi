@@ -54,10 +54,25 @@ describe("installGlobalFetchInstrumentation", () => {
 		expect(JSON.stringify(prepare.mock.calls[0][2])).not.toContain("private prompt")
 		expect(baseCalls[0].init?.body).toBe(body)
 	})
+	it("inspects tags in an image-heavy 6 MiB body", async () => {
+		const prepare = vi.fn()
+		installGlobalFetchInstrumentation({ userAgent: "test", onModelRequest: prepare })
+		const image = `data:image/png;base64,${"A".repeat(6 * 1024 * 1024)}`
+		const body = JSON.stringify({
+			messages: [{ content: [{ type: "image_url", image_url: { url: image } }] }],
+			tags: ["team:one"],
+		})
+		await fetch("https://llm.test/v1/chat/completions", {
+			method: "POST",
+			headers: { "X-Request-Id": "request" },
+			body,
+		})
+		expect(prepare.mock.calls[0][2]).toEqual({ bodyTags: ["team:one"] })
+	})
 	it.each([
 		"not-json",
 		JSON.stringify({ tags: "team:one" }),
-		"x".repeat(4_194_305),
+		"x".repeat(64 * 1024 * 1024 + 1),
 	])("leaves uninspectable bodies untagged", async (body) => {
 		const prepare = vi.fn()
 		installGlobalFetchInstrumentation({ userAgent: "test", onModelRequest: prepare })

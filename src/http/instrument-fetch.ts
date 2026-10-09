@@ -38,6 +38,9 @@ let onModelCompletionSettled: ((originalFetch: FetchFn) => Promise<unknown>) | u
 let onModelRequest: GlobalFetchInstrumentationOptions["onModelRequest"]
 let onModelResponse: GlobalFetchInstrumentationOptions["onModelResponse"]
 
+/** String bodies are already in memory; even image-heavy contexts parse in milliseconds below this bound. */
+const MAX_INSPECTED_BODY_CHARS = 64 * 1024 * 1024
+
 export interface ModelRequestMetadata {
 	/** Only top-level tags; undefined means the body cannot be inspected safely. */
 	bodyTags?: readonly string[]
@@ -46,7 +49,8 @@ export interface ModelRequestMetadata {
 function requestMetadata(input: RequestInfo | URL, init?: RequestInit): ModelRequestMetadata {
 	const body = init?.body ?? (input instanceof Request ? input.body : undefined)
 	if (body === undefined || body === null) return { bodyTags: [] }
-	if (typeof body !== "string" || body.length > 4_194_304) return { bodyTags: undefined }
+	// Streams and Request bodies cannot be read without consuming them.
+	if (typeof body !== "string" || body.length > MAX_INSPECTED_BODY_CHARS) return { bodyTags: undefined }
 	try {
 		const parsed: unknown = JSON.parse(body)
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { bodyTags: undefined }

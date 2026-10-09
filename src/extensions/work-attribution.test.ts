@@ -276,6 +276,30 @@ describe("local work attribution", () => {
 		})
 		expect(records().find((row) => row.type === "request_dispatch")).not.toHaveProperty("billingSelector")
 	})
+	it("tags an image-heavy request above the former 4 MiB inspection bound", async () => {
+		const ctx = createContext({ cwd: dir })
+		const { requestId } = recordProviderRequest(ctx, ctx.model)
+		const url = "https://model.invalid/v1/chat/completions"
+		vi.spyOn(costSync, "captureBillingSource").mockReturnValue({
+			apiUrl: "https://billing.invalid",
+			gatewayUrl: url,
+			credentialHash: "a".repeat(64),
+		})
+		const sent = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("ok"))
+		vi.stubGlobal("fetch", sent)
+		installGlobalFetchInstrumentation({ userAgent: "test", onModelRequest: prepareProviderRequest })
+		const image = `data:image/png;base64,${"A".repeat(6 * 1024 * 1024)}`
+		const body = JSON.stringify({
+			messages: [{ content: [{ type: "image_url", image_url: { url: image } }] }],
+			tags: ["team:one"],
+		})
+		await fetch(url, { method: "POST", headers: { "X-Request-Id": requestId }, body })
+		expect(new Headers(sent.mock.calls[0][1]?.headers).get("X-Tags")).toBe(`kimchi-request:${requestId}`)
+		expect(records().find((row) => row.type === "request_dispatch")).toMatchObject({
+			requestId,
+			billingSelector: { tag: `kimchi-request:${requestId}` },
+		})
+	})
 	it.each([
 		false,
 		true,
