@@ -103,7 +103,7 @@ it("shows pending and discovered GitLab MR details over ACP without a model requ
 	await expectNotification(fixture, sessionId, {
 		method: "setStatus",
 		statusKey: "work-pr",
-		statusText: "PR/MR: waiting",
+		statusText: "PR/MR waiting",
 	})
 	const beforePending = fixture.client.extNotifications.length
 	expect((await prompt(fixture, sessionId, "/work")).stopReason).toBe("end_turn")
@@ -120,7 +120,7 @@ it("shows pending and discovered GitLab MR details over ACP without a model requ
 	await expectNotification(fixture, sessionId, {
 		method: "setStatus",
 		statusKey: "work-pr",
-		statusText: "MR: !731 open",
+		statusText: "MR !731 open",
 	})
 	await expectNotification(fixture, sessionId, {
 		method: "setStatus",

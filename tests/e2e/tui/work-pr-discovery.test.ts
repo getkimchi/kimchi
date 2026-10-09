@@ -106,17 +106,17 @@ test("pending work survives a GitHub login error and finds a PR while coding con
 			},
 		},
 		async (fixture, trace) => {
-			await waitForText(terminal, "PR/MR: waiting", { full: false, timeoutMs: 5_000 })
+			await waitForText(terminal, "PR/MR waiting", { full: false, timeoutMs: 5_000 })
 			trace.step("resumed work is waiting for its pull request")
 			setGitHub("auth")
-			await waitForText(terminal, "PR/MR: check /work", { full: false, timeoutMs: 10_000 })
+			await waitForText(terminal, "PR/MR check /work", { full: false, timeoutMs: 10_000 })
 			terminal.submit("/work")
 			await waitForText(terminal, "GitHub authentication failed. Check the token for github.com.")
 			trace.step("GitHub token rejection is visible while coding stays available")
 			terminal.submit("Can I keep coding while GitHub is unavailable?")
 			await waitForText(terminal, "You can keep coding while GitHub is unavailable.")
 			setGitHub("open")
-			await waitForText(terminal, "PR: #731 open", { full: false, timeoutMs: 35_000 })
+			await waitForText(terminal, "PR #731 open", { full: false, timeoutMs: 35_000 })
 			terminal.submit("/work")
 			await waitForText(terminal, "https://github.com/example/kimchi-lab/pull/731")
 			trace.step("the next background check finds the externally created PR")

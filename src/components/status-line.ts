@@ -51,6 +51,7 @@ type SegmentRaw =
 	| { kind: "budget"; percentage: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
 	| { kind: "ferment-v2"; state: string }
+	| { kind: "work-pr"; compact: string }
 
 /** A single piece of the status line. */
 export interface Segment {
@@ -289,6 +290,15 @@ function recompactSegment<K extends SegmentRaw["kind"]>(
 
 /** The ordered compaction steps */
 const STEPS: CompactionStep[] = [
+	{
+		name: "drop-work-pr-state",
+		apply: (segs) =>
+			recompactSegment(segs, "work-pr", "work-pr", (raw) => ({
+				id: "work-pr",
+				text: raw.compact,
+				width: visibleWidth(raw.compact),
+			})),
+	},
 	{
 		name: "drop-context-bar",
 		apply: (segs, ctx) =>
@@ -597,13 +607,33 @@ function buildCreditsSegment(theme: Theme, pinned: boolean): Segment | null {
 	return { id: "credits", text, width: visibleWidth(text) }
 }
 
+/** `PR #7 open` or `MR !7 merged`, as the PR status extension sets it. */
+const WORK_PR_STATUS = /^(PR|MR) ([#!]\d+)(?: (.+))?$/
+
+/**
+ * Only the PR number stands out, accented and underlined as the link; the label and state stay muted. The state
+ * is extra detail, so the compaction ladder drops it first (`PR #7 open` → `PR #7`).
+ */
 function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
 	const statuses = statusLineData.getExtensionStatuses()
 	const status = statuses.get("work-pr")
 	if (!status) return null
+	const match = WORK_PR_STATUS.exec(status)
+	if (!match) {
+		// Waiting, several links or a lookup problem: a muted label and an accented value.
+		const space = status.indexOf(" ")
+		const text =
+			space === -1
+				? accentText(theme, status)
+				: `${dimText(theme, status.slice(0, space))} ${accentText(theme, status.slice(space + 1))}`
+		return { id: "work-pr", text, width: visibleWidth(text) }
+	}
+	const [, label, number, state] = match
 	const url = statuses.get("work-pr-url")
-	const text = accentText(theme, url ? status.replace(/[#!]\d+/, (number) => hyperlink(number, url)) : status)
-	return { id: "work-pr", text, width: visibleWidth(text) }
+	const compact = `${dimText(theme, label)} ${theme.underline(accentText(theme, url ? hyperlink(number, url) : number))}`
+	if (!state) return { id: "work-pr", text: compact, width: visibleWidth(compact) }
+	const text = `${compact} ${dimText(theme, state)}`
+	return { id: "work-pr", text, width: visibleWidth(text), raw: { kind: "work-pr", compact } }
 }
 
 function buildBudgetSegment(theme: Theme, pinned: boolean): Segment | null {

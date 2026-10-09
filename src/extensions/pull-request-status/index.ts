@@ -19,11 +19,13 @@ import {
 	type WorkPullRequestUpdate,
 } from "./pull-requests.js"
 
+/** `PR #7 open` or `MR !7 merged`; the status line shows the state only while there is room. */
 function requestStatus(pr: WorkPullRequest): string {
-	return `${pr.provider === "gitlab" ? "MR: !" : "PR: #"}${pr.number} ${pr.state}`
+	return `${pr.provider === "gitlab" ? "MR !" : "PR #"}${pr.number} ${pr.state}`
 }
-/** A branch's PR is asked for again only after a branch change or this long. */
+/** A branch's PR is asked for again only after a branch change, a push or PR creation, or this long. */
 const BRANCH_REFRESH_MS = 5 * 60_000
+const PUBLISH_COMMAND = /\b(?:git\s+push|gh\s+pr\s+create|glab\s+mr\s+create)\b/
 
 export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	let context: ExtensionContext | undefined
@@ -109,12 +111,12 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	}
 	function renderWork(): void {
 		const { links, pending, errors } = details()
-		if (errors.length) footer("PR/MR: check /work")
+		if (errors.length) footer("PR/MR check /work")
 		else if (links.length === 1 && !pending) footer(requestStatus(links[0]), links[0].url)
-		else if (links.length) footer(`PRs/MRs: ${links.length} linked${pending ? `, ${pending} waiting` : ""}`)
-		else if (pending) footer("PR/MR: waiting")
+		else if (links.length) footer(`PRs/MRs ${links.length} linked${pending ? `, ${pending} waiting` : ""}`)
+		else if (pending) footer("PR/MR waiting")
 		// Orientation only: the branch PR's cost is tracked once this work records a commit.
-		else footer(branchPull && `Branch ${requestStatus(branchPull)}`, branchPull?.url)
+		else footer(branchPull && requestStatus(branchPull), branchPull?.url)
 	}
 	function receive(update: WorkPullRequestUpdate): void {
 		const rows = updates.get(update.workId) ?? new Map<string, WorkPullRequestUpdate>()
@@ -214,7 +216,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 						const reason = lookupFailureReason(error)
 						if (reason === "retry") return
 						if (reason === "unsupported") return footer()
-						footer("PR/MR: unavailable")
+						footer("PR/MR unavailable")
 						warnOnce(error)
 					}),
 			// A lookup replaced by a new session hands over to that session's first check.
@@ -273,9 +275,19 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		started = true
 		synchronize(ctx)
 	})
+	// A push or a new PR/MR from the shell shows at once instead of at the next five-minute check.
+	const publishing = new Set<string>()
+	pi.on("tool_execution_start", (event) => {
+		const command = event.args?.command
+		if (event.toolName === "bash" && typeof command === "string" && PUBLISH_COMMAND.test(command))
+			publishing.add(event.toolCallId)
+	})
 	pi.on("tool_execution_end", (event, ctx) => {
+		const published = publishing.delete(event.toolCallId)
+		if (published) branchCheckedAt = 0
 		// Only shell commands switch branches or open PRs; the interval poll covers the rest.
-		if (tracking || event.toolName !== "bash" || Date.now() - shellRefreshAt < RECONCILIATION_INTERVAL_MS) return
+		if (tracking || event.toolName !== "bash") return
+		if (!published && Date.now() - shellRefreshAt < RECONCILIATION_INTERVAL_MS) return
 		shellRefreshAt = Date.now()
 		synchronize(ctx)
 	})
