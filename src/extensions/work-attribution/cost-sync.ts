@@ -13,6 +13,7 @@ import {
 	type BillingLookup,
 	billingDisplay,
 	billingRequests,
+	isSettled,
 	type OpenBilling,
 	openBilling,
 } from "./billing-evidence.js"
@@ -258,7 +259,7 @@ export async function reconcileWorkCosts(
 		const ordered = state.open
 			.map((item) => ({
 				item,
-				settled: item.lookup?.status === "priced" || item.lookup?.status === "no-charge" ? 1 : 0,
+				settled: isSettled(item.lookup) ? 1 : 0,
 				lastCheck: currentPoll(polls, item)?.checkedAt ?? (Date.parse(item.lookup?.checkedAt ?? "") || 0),
 			}))
 			.sort((left, right) => left.settled - right.settled || left.lastCheck - right.lastCheck)
@@ -385,10 +386,10 @@ export async function reconcileWorkCosts(
 			assertLease()
 			const previousLookup = item.lookup
 			// The journal must prove that the window closed, even when the final result is unchanged.
-			// A changed account never closes it for a verified price, which that change cannot withdraw.
+			// A changed account never closes it for a settled result, which that change cannot withdraw.
 			const final =
 				Date.parse(lookup.checkedAt) >= endsAt &&
-				!(lookup.status === "account-changed" && item.substantiveLookup?.status === "priced")
+				!(lookup.status === "account-changed" && isSettled(item.substantiveLookup))
 			const repeated =
 				previousLookup &&
 				((item.lastRows && costFingerprint(rows, lookup) === costFingerprint(item.lastRows, previousLookup)) ||

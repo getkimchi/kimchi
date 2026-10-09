@@ -1760,6 +1760,39 @@ describe("empty billing settlement", () => {
 		await sync()
 		expect(report(workId).requests[0]).toMatchObject({ totalCostUsd: "0.012345678", billingRecordIds: [ROW] })
 	})
+	it("keeps a settled no-charge through a key change and after its window ends", async () => {
+		const { workId } = tagged()
+		const dispatchedAt = Date.parse("2026-10-01T08:00:00.000Z")
+		let now = dispatchedAt + 25 * 60 * 60_000
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		fetchMock.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: ORG, userId: PROMPT })
+				: Response.json({ items: [] }),
+		)
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.000000000")
+		currentKey = "test-only-rotated-key"
+		fetchMock.mockClear()
+		now += 3 * 24 * 60 * 60_000
+		await sync()
+		expect(report(workId).requests[0]).toMatchObject({
+			priceStatus: "priced",
+			totalCostUsd: "0.000000000",
+			billingLookup: { status: "account-changed" },
+		})
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.000000000")
+		// The changed key cannot close the window as unknown, and repeated passes add nothing.
+		const journaled = readWorkRecords(dir).filter((row) => row.type === "request_cost").length
+		now = dispatchedAt + 33 * 24 * 60 * 60_000
+		for (let pass = 0; pass < 3; pass++) {
+			await sync()
+			now += 60 * 60_000
+		}
+		expect(fetchMock).not.toHaveBeenCalled()
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toHaveLength(journaled)
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.000000000")
+	})
 	it.each(["incomplete", "error"])("does not settle a %s empty lookup", async (kind) => {
 		const { workId } = tagged()
 		vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-03T08:00:00.000Z"))

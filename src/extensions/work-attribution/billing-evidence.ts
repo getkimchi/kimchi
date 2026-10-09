@@ -23,6 +23,11 @@ export interface BillingLookup {
 	reason?: string
 }
 
+/** A complete verified result: a price, or no charge after the settlement delay. */
+export function isSettled(lookup: BillingLookup | undefined): boolean {
+	return lookup?.status === "priced" || lookup?.status === "no-charge"
+}
+
 export interface RequestBilling {
 	request: WorkRecord
 	requestId: string
@@ -257,8 +262,8 @@ export function billingRequests(records: WorkRecord[]): Map<string, RequestBilli
 	}
 	for (const [item, lookups] of evidence)
 		for (const lookup of lookups.sort((left, right) => Date.parse(left.checkedAt) - Date.parse(right.checkedAt))) {
-			// A changed key or account stops refreshes; it cannot withdraw a verified complete price.
-			if (lookup.status === "account-changed" && item.substantiveLookup?.status === "priced") continue
+			// A changed key or account stops refreshes; it cannot withdraw a verified price or settled no-charge.
+			if (lookup.status === "account-changed" && isSettled(item.substantiveLookup)) continue
 			item.substantiveLookup = lookup
 		}
 	return requests
