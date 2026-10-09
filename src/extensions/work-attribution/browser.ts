@@ -6,7 +6,7 @@ import { mergePullRequestLinks, pullRequestLabel } from "../pull-request-status/
 import { storedPullRequests } from "../pull-request-status/provider-records.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import type { WorkDetailsRequest } from "../work-attribution.js"
-import { costDetailLines, knownSpend } from "./cost-details.js"
+import { costDetailLines, knownSpend, ownRequests } from "./cost-details.js"
 import { time } from "./costs.js"
 import { object } from "./summary.js"
 
@@ -128,7 +128,8 @@ function workRow(agentDir: string, work: SavedWork, current?: WorkDetailsRequest
 	const unpriced = requests.flatMap((row) =>
 		typeof row.requestId === "string" && !saved.has(row.requestId) ? [{ requestId: row.requestId }] : [],
 	)
-	const spent = summary || costs ? [...(costs ?? []), ...unpriced] : undefined
+	// A saved report also lists connected works' requests; the row shows this work's own spend.
+	const spent = summary || costs ? [...(costs ? ownRequests(costs, workId) : []), ...unpriced] : undefined
 	const links = mergePullRequestLinks(...commits.map((commit) => storedPullRequests(commit.pullRequests)))
 	const times = [
 		...requests.map((row) => time(row.startedAt)),

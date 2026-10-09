@@ -37,14 +37,18 @@ function summary(id: string, fields: Record<string, unknown[]> = {}) {
 function request(requestId: string, startedAt = "2026-10-08T09:00:00Z") {
 	return { requestId, sessionId: "session", startedAt, cwd: "/src/kimchi", scope: { repository: "/src/kimchi/.git" } }
 }
-function costs(id: string, requests: { requestId: string; usd?: string; priced?: boolean }[]) {
+function costs(
+	id: string,
+	requests: { requestId: string; usd?: string; priced?: boolean; workIds?: string[]; linkedWorkIds?: string[] }[],
+) {
 	return {
 		version: 1,
 		workId: id,
 		pullRequests: [],
-		requests: requests.map(({ requestId, usd = "0", priced = true }) => ({
+		requests: requests.map(({ requestId, usd = "0", priced = true, workIds = [id], linkedWorkIds }) => ({
 			requestId,
-			workIds: [id],
+			workIds,
+			...(linkedWorkIds ? { linkedWorkIds } : {}),
 			allocation: "unlinked",
 			pullRequestIds: [],
 			priceStatus: priced ? "priced" : "missing",
@@ -195,6 +199,31 @@ describe("work browser rows", () => {
 			},
 		])
 
+		expect(spend).toBe("$0.8750")
+	})
+
+	it("shows each work's own spend while the saved reports repeat their connected works", () => {
+		const [first, second] = [1, 2].map(workId)
+		// The cost pass saves the whole connected group in each member's costs.json.
+		const group = [
+			{ requestId: "planning", usd: "0.500000000", workIds: [first] },
+			{ requestId: "linked", usd: "0.250000000", workIds: [first], linkedWorkIds: [second] },
+			{ requestId: "implementation", usd: "0.125000000", workIds: [second] },
+		]
+		const { rows, spend } = browse([
+			{
+				workId: first,
+				summary: summary(first, { requests: [request("planning"), request("linked")] }),
+				costs: costs(first, group),
+			},
+			{
+				workId: second,
+				summary: summary(second, { requests: [request("implementation")] }),
+				costs: costs(second, group),
+			},
+		])
+
+		expect(rows.map((row) => row.value.split(" · ")[0])).toEqual(["$0.7500", "$0.3750"])
 		expect(spend).toBe("$0.8750")
 	})
 
