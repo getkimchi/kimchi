@@ -7,6 +7,28 @@ on:
   merge_group:
 
 jobs:
+  documents-cross-os:
+    # Document unit tests on macOS + Windows — the documents extension must
+    # behave identically across targets; Linux is covered by pr-checks.
+    if: github.event_name == 'pull_request'
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    concurrency:
+      group: ci-documents-${{ github.head_ref }}-${{ matrix.os }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+      - name: Document unit tests
+        run: pnpm exec vitest run src/extensions/documents
+
   pr-checks:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

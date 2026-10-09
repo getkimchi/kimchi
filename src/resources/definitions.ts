@@ -130,6 +130,16 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		defaultEnabled: false,
 		restartRequired: true,
 	},
+	{
+		id: "extensions.documents",
+		kind: "extensions",
+		experimental: true,
+		label: "Documents: read",
+		description:
+			"Read PDF/DOCX/PPTX/XLSX (plus XLS/ODS/CSV) as Markdown — via the read_document tool, transparent `read`, and @file arguments.",
+		defaultEnabled: false,
+		restartRequired: true,
+	},
 ]
 
 export const RESOURCE_KINDS: readonly ResourceKind[] = ["hooks", "tools", "extensions", "plugins"]

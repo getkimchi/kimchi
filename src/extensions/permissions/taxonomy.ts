@@ -1,10 +1,11 @@
 import { type ControlOperator, type ParseEntry, parse as parseShell } from "shell-quote"
 import type { ToolCategory } from "./types.js"
 
-export const FILE_TOOLS = new Set(["read", "write", "edit", "ls", "grep", "find"])
+export const FILE_TOOLS = new Set(["read", "write", "edit", "ls", "grep", "find", "read_document"])
 
 const STATIC_CATEGORIES: Record<string, ToolCategory> = {
 	read: "readOnly",
+	read_document: "readOnly",
 	skill: "readOnly",
 	grep: "readOnly",
 	find: "readOnly",

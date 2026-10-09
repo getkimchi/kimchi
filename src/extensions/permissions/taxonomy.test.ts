@@ -3,6 +3,7 @@ import {
 	bashSegmentForms,
 	classifyTool,
 	extractBashProgram,
+	FILE_TOOLS,
 	isCompoundCommand,
 	isHardBlockedBash,
 	isReadOnlyBashCommand,
@@ -19,6 +20,8 @@ describe("classifyTool", () => {
 		expect(classifyTool("write")).toBe("write")
 		expect(classifyTool("edit")).toBe("write")
 		expect(classifyTool("bash")).toBe("execute")
+		expect(classifyTool("read_document")).toBe("readOnly")
+		expect(FILE_TOOLS.has("read_document")).toBe(true)
 	})
 
 	it("classifies daemon tools as execute (same risk class as bash)", () => {

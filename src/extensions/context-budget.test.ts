@@ -27,6 +27,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it, vi } from "vitest"
+import { isResourceEnabled } from "../resources/store.js"
 import { measureCanonicalToolSurface } from "./context-budget-tools.js"
 
 // Pin the mcp-adapter to zero configured servers: with no servers the
@@ -146,6 +147,10 @@ function canonicalSurfaces() {
 	const skillsRoot = join(repoRoot(), "resources", "skills")
 	const skills = readdirSync(skillsRoot, { withFileTypes: true })
 		.filter((entry) => entry.isDirectory())
+		// Skills gated behind a resource toggle (`requires-resource:`) are not
+		// part of the advertised surface while their toggle is off — counting
+		// them here would break the toggle-off parity rule.
+		.filter((entry) => !bundledSkillDisabled(skillsRoot, entry.name))
 		.map((entry) => loadSkillFrontmatter(skillsRoot, entry.name))
 	return { systemPromptInteractive, systemPromptHeadless, skills }
 }
@@ -154,6 +159,14 @@ interface SkillFrontmatter {
 	file: string
 	name: string
 	description: string
+}
+
+/** True when the skill declares `requires-resource:` and that toggle is off. */
+function bundledSkillDisabled(skillsRoot: string, dir: string): boolean {
+	const content = readFileSync(join(skillsRoot, dir, "SKILL.md"), "utf8")
+	const match = /^requires-resource:\s*(\S+)\s*$/m.exec(content.slice(0, 2000))
+	if (!match) return false
+	return !isResourceEnabled(match[1])
 }
 
 /** Parse name/description frontmatter the same way the skills catalog consumes it. */
