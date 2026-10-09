@@ -1240,6 +1240,26 @@ describe("automatic exact work cost lookup", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(3)
 		expect(report(workId).pullRequests[0]).toMatchObject({ knownCostUsd: "1.000000000", totalCostUsd: null })
 	})
+	it("stops at the page limit and keeps the known subtotal unknown", async () => {
+		const { workId } = tagged()
+		let page = 0
+		fetchMock.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: ORG, userId: PROMPT })
+				: Response.json({
+						items: [{ id: `44444444-2222-4333-8444-55555555555${page}`, totalPrice: "1" }],
+						nextPageCursor: `page-${++page}`,
+					}),
+		)
+		await sync()
+		// One key check and five pages; the sixth page is never requested.
+		expect(fetchMock).toHaveBeenCalledTimes(6)
+		expect(report(workId).requests[0].billingLookup).toMatchObject({
+			status: "unavailable",
+			reason: "Billing lookup exceeded the page limit",
+		})
+		expect(report(workId).pullRequests[0]).toMatchObject({ knownCostUsd: "5.000000000", totalCostUsd: null })
+	})
 	it("bounds oversized responses without persisting any response contents", async () => {
 		const { workId } = tagged()
 		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
