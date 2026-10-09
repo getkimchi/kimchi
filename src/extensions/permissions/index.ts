@@ -736,7 +736,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					const saved = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText, workId })
 					planPath = saved.path
 					snapshotPath = saved.snapshotPath
-					if (workId) tryWorkAttribution(() => appendWorkRecord(ctx, { type: "plan", ...saved, ...origin }, workId))
+					if (workId)
+						tryWorkAttribution(() =>
+							appendWorkRecord(ctx, { type: "plan", ...saved, ...(origin && { requestId: origin.requestId }) }, workId),
+						)
 				} catch (err) {
 					const detail = err instanceof Error ? err.message : String(err)
 					if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")

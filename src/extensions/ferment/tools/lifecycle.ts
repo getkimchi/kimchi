@@ -1198,7 +1198,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				if (workId) {
 					tryWorkAttribution(() => {
 						setFermentWorkId(fermentId, workId)
-						appendWorkRecord(pinned, { type: "plan", ...saved, ...origin }, workId)
+						appendWorkRecord(pinned, { type: "plan", ...saved, ...(origin && { requestId: origin.requestId }) }, workId)
 					})
 				}
 			} catch (err) {
