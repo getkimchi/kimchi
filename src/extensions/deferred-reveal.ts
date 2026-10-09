@@ -20,17 +20,20 @@ import type { ToolVisibilityAPI } from "./prompt-construction/tool-visibility.js
  *
  * In-band reveal cache stability (`addedToolNames`):
  *
- * Besides enabling the tools (the top-level `params.tools` array changes —
- * fine for providers without native deferred-tool support), every reveal
- * stamps the triggering toolResult message with `addedToolNames`. Providers
- * with native deferred-tool loading (upstream `deferredToolsMode === "kimi"`)
- * use it as the load point: they keep the revealed tools OUT of the wire
- * `tools` array and instead deliver their schemas in-band right after the
- * stamped tool result, so the cacheable prefix never changes mid-session.
- * Providers without native support read no such field and behave exactly as
- * before. Stamps key on the tool call id of the call whose toolResult should
- * carry the marker — matched at `message_end`, which fires after execution
- * and before the next LLM request.
+ * Besides enabling the tools (the top-level `params.tools` array changes),
+ * every reveal stamps the triggering toolResult message with
+ * `addedToolNames`. Upstream's wire converters read that marker when a model
+ * carries native deferred-tool compat (`deferredToolsMode`): they keep the
+ * revealed tools OUT of the wire `tools` array and deliver their schemas
+ * in-band right after the stamped tool result, so the cacheable prefix
+ * never changes mid-session. Currently NO production model carries such
+ * compat — the Kimchi gateway rejects the in-band messages (HTTP 400), so
+ * `models.ts:metadataToModel` deliberately omits it — and the stamp is
+ * inert on every wire we serve. It is kept because the cost is trivial and
+ * the mechanism is the correct load point if a gateway ever honors in-band
+ * tools again. Stamps key on the tool call id of the call whose toolResult
+ * should carry the marker — matched at `message_end`, which fires after
+ * execution and before the next LLM request.
  */
 export interface DeferredReveal {
 	/**
