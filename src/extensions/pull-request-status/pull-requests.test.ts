@@ -14,13 +14,9 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { parse as parseYaml } from "yaml"
 import * as summaries from "../work-attribution/summary.js"
-import {
-	lookupBranchPullRequest,
-	lookupFailureReason,
-	readWorkPullRequestUpdates,
-	reconcileWorkPullRequests,
-	type WorkPullRequestUpdate,
-} from "./pull-requests.js"
+import { lookupBranchPullRequest } from "./branch-status.js"
+import { lookupFailureReason } from "./provider-records.js"
+import { readWorkPullRequestUpdates, reconcileWorkPullRequests, type WorkPullRequestUpdate } from "./pull-requests.js"
 
 const cli = vi.hoisted(() => ({
 	git: vi.fn<(args: string[], options: ExecFileOptions) => Promise<string | undefined>>(),

@@ -10,19 +10,16 @@ import {
 	type WorkDetailsRequest,
 	type WorkStateRequest,
 } from "../work-attribution.js"
+import { currentBranch, lookupBranchPullRequest } from "./branch-status.js"
 import { mergePullRequestLinks } from "./links.js"
-import {
-	currentBranch,
-	lookupBranchPullRequest,
-	lookupFailureReason,
-	type WorkPullRequest,
-	type WorkPullRequestUpdate,
-} from "./pull-requests.js"
+import { lookupFailureReason } from "./provider-records.js"
+import type { WorkPullRequest, WorkPullRequestUpdate } from "./pull-requests.js"
 
 /** `PR #7 open` or `MR !7 merged`; the status line shows the state only while there is room. */
 function requestStatus(pr: WorkPullRequest): string {
 	return `${pr.provider === "gitlab" ? "MR !" : "PR #"}${pr.number} ${pr.state}`
 }
+
 /** A branch's PR is asked for again only after a branch change, a push or PR creation, or this long. */
 const BRANCH_REFRESH_MS = 5 * 60_000
 const PUBLISH_COMMAND = /\b(?:git\s+push|gh\s+pr\s+create|glab\s+mr\s+create)\b/
@@ -47,9 +44,11 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	const warnings = new Set<string>()
 	// Failures saved before this session started stay in the footer and /work without a new warning.
 	const startedAt = Date.now()
+
 	function contextKey(ctx: ExtensionContext): string {
 		return JSON.stringify([ctx.cwd, ctx.sessionManager.getSessionId()])
 	}
+
 	function footer(text?: string, url?: string): void {
 		if (!context?.hasUI) return
 		const value = JSON.stringify([text, url])
@@ -59,6 +58,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		context.ui.setStatus("work-pr-url", url)
 		context.ui.setStatus("work-pr", text)
 	}
+
 	function warnOnce(error: unknown): void {
 		const message = error instanceof Error ? error.message : String(error)
 		if (!started || !context || warnings.has(message)) return
@@ -67,6 +67,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		if (context.hasUI) context.ui.notify(text, "warning")
 		else console.error(text)
 	}
+
 	function details(selected = workId) {
 		const rows = selected ? [...(updates.get(selected)?.values() ?? [])] : []
 		const commits = new Map<string, WorkPullRequestUpdate>()
@@ -83,6 +84,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 			if (row.pullRequests.length) linked.add(key)
 			links.push(...row.pullRequests)
 		}
+
 		const latest = [...commits.entries()]
 		// A later successful lookup in the same repository supersedes an older failure, such as an expired token.
 		const succeeded = new Map<string, number>()
@@ -109,6 +111,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 			lookupErrors: messages(true),
 		}
 	}
+
 	function renderWork(): void {
 		const { links, pending, errors } = details()
 		if (errors.length) footer("PR/MR check /work")
@@ -118,6 +121,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		// Orientation only: the branch PR's cost is tracked once this work records a commit.
 		else footer(branchPull && requestStatus(branchPull), branchPull?.url)
 	}
+
 	function receive(update: WorkPullRequestUpdate): void {
 		const rows = updates.get(update.workId) ?? new Map<string, WorkPullRequestUpdate>()
 		rows.set(JSON.stringify([update.repository, update.sha, update.sessionId, update.worktree]), update)
@@ -133,11 +137,13 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		// Every reconciliation pass delivers all recorded commits; only the current work's rows change its footer.
 		if (started && tracking && update.workId === workId) renderWork()
 	}
+
 	function releaseWork(): void {
 		const stop = stopReconciliation
 		stopReconciliation = undefined
 		if (stop) draining = Promise.all([draining, stop()]).then(() => {})
 	}
+
 	function stopBranch(): void {
 		clearInterval(timer)
 		timer = undefined
@@ -147,6 +153,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	 * Runs one branch check at a time. `current()` turns false once the check is aborted or its session or mode is
 	 * replaced; `settled` runs when the next check may start.
 	 */
+
 	function startBranchRun(
 		stillCurrent: () => boolean,
 		task: (ctx: ExtensionContext, signal: AbortSignal, current: () => boolean) => Promise<void>,
@@ -164,6 +171,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		})
 		branchRun = { controller, promise }
 	}
+
 	/** Records the current branch and reports whether its PR should be looked up. */
 	function branchLookupDue(branch: string | undefined): boolean {
 		if (branch === branchName && Date.now() - branchCheckedAt < BRANCH_REFRESH_MS) return false
@@ -172,6 +180,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		branchCheckedAt = Date.now()
 		return true
 	}
+
 	function pollBranchForWork(): void {
 		const { links, pending, errors } = details()
 		if (links.length || pending || errors.length) return
@@ -191,6 +200,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 			},
 		)
 	}
+
 	function pollBranch(): void {
 		if (tracking) {
 			pollBranchForWork()
@@ -225,6 +235,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 			},
 		)
 	}
+
 	function synchronize(ctx = context): void {
 		if (!started || !ctx) return
 		const request: WorkStateRequest = {}
@@ -271,17 +282,21 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 			...lookupErrors.map((error) => `PR/MR lookup: ${error}`),
 		)
 	})
+
 	pi.on("session_start", (_event, ctx) => {
 		started = true
 		synchronize(ctx)
 	})
+
 	// A push or a new PR/MR from the shell shows at once instead of at the next five-minute check.
 	const publishing = new Set<string>()
+
 	pi.on("tool_execution_start", (event) => {
 		const command = event.args?.command
 		if (event.toolName === "bash" && typeof command === "string" && PUBLISH_COMMAND.test(command))
 			publishing.add(event.toolCallId)
 	})
+
 	pi.on("tool_execution_end", (event, ctx) => {
 		const published = publishing.delete(event.toolCallId)
 		if (published) branchCheckedAt = 0
@@ -291,6 +306,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		shellRefreshAt = Date.now()
 		synchronize(ctx)
 	})
+
 	pi.on("session_shutdown", async () => {
 		started = false
 		footer()
