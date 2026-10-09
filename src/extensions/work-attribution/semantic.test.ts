@@ -14,7 +14,13 @@ import * as redactionConfig from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
 import { getWorkId, setWorkId } from "../work-attribution.js"
 import type * as WorkAccounts from "./scope.js"
-import { classifyWorkIntent, loadWorkIntents, rememberWorkIntent, workIntentPath } from "./semantic.js"
+import {
+	classifyWorkIntent,
+	loadWorkIntents,
+	rememberWorkIntent,
+	WorkMatchingLimit,
+	workIntentPath,
+} from "./semantic.js"
 import { flushWorkSummaries, readWorkRecords } from "./summary.js"
 
 vi.mock("../pii-redaction/redactor.js", () => ({ redactTextOrThrow: vi.fn() }))
@@ -559,7 +565,10 @@ it.each([
 	} else
 		for (let index = 0; index < 33; index++)
 			writeFileSync(join(dirname(saved.snapshotPath), `${index}.md`), "# Excess history")
-	await expect(loadWorkIntents(cwd, currentId, input.message, true)).rejects.toThrow()
+	const loading = loadWorkIntents(cwd, currentId, input.message, true)
+	// /work reports the size and version limits; damaged evidence stays an ordinary failure.
+	if (kind === "size" || kind === "versions") await expect(loading).rejects.toThrow(WorkMatchingLimit)
+	else await expect(loading).rejects.toThrow()
 })
 
 it("compares saved tasks beyond 256 work directories without saved task text", async () => {
