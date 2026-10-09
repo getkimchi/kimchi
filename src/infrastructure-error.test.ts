@@ -132,6 +132,34 @@ describe("infrastructure error tracker", () => {
 		])
 	})
 
+	it("skips the audit and failure tracking for an explicit user abort", () => {
+		const { tracker, emit, auditEntries } = createTrackerHarness()
+		const controller = new AbortController()
+		controller.abort()
+		const abortCtx = { sessionManager: { getSessionFile: () => sessionFile }, signal: controller.signal }
+
+		// A user Esc/cancel ends the turn with stock AbortError text — this is
+		// an intentional stop, not a provider failure.
+		emit(assistantError("The operation was aborted."), abortCtx)
+
+		expect(auditEntries).toEqual([])
+		expect(tracker.getFailure()).toBeUndefined()
+	})
+
+	it("still audits identical abort wording when the signal was not aborted", () => {
+		const { tracker, emit, auditEntries } = createTrackerHarness()
+		const controller = new AbortController()
+		const ctx = { sessionManager: { getSessionFile: () => sessionFile }, signal: controller.signal }
+
+		// A genuine network AbortError from the provider (signal not aborted).
+		emit(assistantError("fetch failed"), ctx)
+
+		expect(auditEntries).toHaveLength(1)
+		// The abort wording guard is signal-keyed, so it cannot swallow a real
+		// failure that happens after a disruption the user did not request.
+		expect(tracker.getFailure()).toMatchObject({ error: { reason: "transport_failure" } })
+	})
+
 	it("does not audit successful or non-error assistant messages", () => {
 		const { emit, auditEntries } = createTrackerHarness()
 		emit(assistantStop("all good"))

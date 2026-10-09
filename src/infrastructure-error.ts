@@ -66,8 +66,15 @@ export function createInfrastructureErrorTracker(): InfrastructureErrorTracker {
 
 				let error: LLMGatewayError | undefined
 				if (message.stopReason === "error" && typeof message.errorMessage === "string") {
-					error = classifyLLMGatewayError(message.errorMessage)
-					recordClassificationAudit(pi, message.errorMessage, error)
+					// An explicit user abort ends the turn with stopReason "error" and
+					// a stock AbortError text — not a provider failure, so no audit.
+					// The cancel signal (not the text) identifies the abort; keyed
+					// this way it covers every abort wording variant and never
+					// swallows a genuine network error with the same stock message.
+					if (!ctx.signal?.aborted) {
+						error = classifyLLMGatewayError(message.errorMessage)
+						recordClassificationAudit(pi, message.errorMessage, error)
+					}
 				}
 
 				if (error?.isInfrastructure) {
