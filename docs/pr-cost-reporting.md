@@ -45,7 +45,7 @@ Each upload replaces one producer's inventory for one account and repository. It
 - The Git provider, host, stable target repository ID, and optional repository name.
 - Stable PR/MR IDs, numbers, links, state and merge or close times.
 - Exact request attempt UUIDs, verified billing-row UUIDs and request start times.
-- Allocation kind, referenced PR IDs and evidence method. An `unknown` request names the PRs it may belong to, so only those totals stay incomplete. An input whose native edits landed in the PR sends `native`; other session inputs send `session` and stay likely. Continued plans send `explicit`; `/work link` corrections send `user-correction`. Model guesses send `model` and stay likely.
+- Allocation kind, referenced PR IDs and evidence method. An `unknown` request names the PRs it may belong to, so only those totals stay incomplete. An input whose native edits landed in the PR sends `native`; other session inputs send `session` and stay inferred. Continued plans send `explicit`; `/work link` corrections send `user-correction`. Model guesses send `model` and stay inferred.
 - Request counts, missing-price counts, history completeness and the latest applicable cost refresh time.
 
 Optional fields explain later updates. `windowedPullRequestIds` lists finished PRs deliberately left out of this upload. A request's `correction` contains the validated link's UUID, revision, time and source (`work-command` or `producer-confirmation`). The source distinguishes an explicit `/work link` or `/work unlink` from a verified saved-plan or artifact confirmation. `coverage.trimmedRequests` counts requests left out to fit the upload limits; it appears only when some were, and then `historyComplete` is `false`.

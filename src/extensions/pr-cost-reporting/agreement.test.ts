@@ -71,12 +71,12 @@ function request(n: number, workNumber: number, attribution: string, startedAt =
 
 it("pins the PR totals that /work and the console must agree on", () => {
 	const records = [
-		// 101: sure spend, a verified no-charge attempt and later post-merge work.
+		// 101: confirmed spend, a verified no-charge attempt and later post-merge work.
 		...work(1, [[pull(101, "a"), "a"]]),
 		request(1, 1, "explicit"),
 		request(6, 1, "explicit"),
 		request(7, 1, "explicit", "2026-10-04T14:00:00.000Z"),
-		// 102: a model match is likely spend.
+		// 102: a model match is inferred spend.
 		...work(2, [[pull(102, "a"), "a"]]),
 		request(2, 2, "inferred"),
 		// Unresolved matching with no candidate PR leaves every PR complete.

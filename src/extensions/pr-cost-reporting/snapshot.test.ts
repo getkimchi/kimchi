@@ -163,11 +163,12 @@ describe("allowlisted repository snapshots", () => {
 	})
 	it("contains provider and billing evidence only, without prices or private local data", () => {
 		const content = build().snapshots[0].content
+		// Without an input record or native proof, the request is inferred and uploads as session grouping.
 		expect(content.requests[0]).toEqual({
 			requestId,
 			billingRecordIds: [billingId],
 			startedAt: at,
-			allocation: { kind: "pull-request", pullRequestIds: ["101"], method: "native" },
+			allocation: { kind: "pull-request", pullRequestIds: ["101"], method: "session" },
 		})
 		for (const privateValue of [
 			"private-work",
@@ -580,7 +581,7 @@ describe("local and reported confidence", () => {
 			true,
 			"model",
 		],
-	])("never reports a likely PR assignment carrying %s as sure", (_case, segment, linked, method) => {
+	])("never reports an inferred PR assignment carrying %s as confirmed", (_case, segment, linked, method) => {
 		const rows: WorkRecord[] = records([pull()], { segment }).map((row) => ({ ...row, workId: requestId }))
 		if (linked)
 			rows.push({
@@ -595,7 +596,7 @@ describe("local and reported confidence", () => {
 				evidence: { source: "work-command", requestId, segmentId: billingId },
 			})
 		const report = calculatePullRequestCosts(rows, [{ requestId, billingRecordId: billingId, costUsd: "1", account }])
-		// Narrowing a request to one PR can leave it likely despite such evidence; it must not reach the server as sure.
+		// Narrowing a request to one PR can leave it inferred despite such evidence; it must not reach the server as confirmed.
 		report.requests[0].allocation = "inferred"
 		const [request] = buildSnapshots(rows, report, new Map(), true).snapshots[0].content.requests
 		expect(request.allocation).toEqual({ kind: "pull-request", pullRequestIds: ["101"], method })
