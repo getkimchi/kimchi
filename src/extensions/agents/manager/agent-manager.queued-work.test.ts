@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -20,7 +21,7 @@ import type { AgentSession, ExtensionAPI } from "@earendil-works/pi-coding-agent
 import { createContext, createLiveContext } from "../../__mocks__/context.js"
 import { createModel } from "../../__mocks__/model-registry.js"
 import { flushWorkSummaries } from "../../work-attribution/summary.js"
-import { getWorkId, getWorkSegment, setWorkId } from "../../work-attribution.js"
+import { appendWorkRecord, getWorkId, getWorkSegment, setWorkId } from "../../work-attribution.js"
 import { AgentManager } from "./agent-manager.js"
 import { runAgent } from "./agent-runner.js"
 
@@ -70,8 +71,11 @@ it("starts a queued background child in the work and segment active when it was 
 
 it("pins only the work for a queued child; Pi's context getters and stale guard stay live", async () => {
 	const parent = createLiveContext({ cwd: dir, model: createModel("model-at-spawn") })
-	const spawnedIn = getWorkId(parent.ctx)
-	const spawnedSegment = getWorkSegment(parent.ctx)
+	const spawnedIn = randomUUID()
+	const spawnedSegment = { id: randomUUID(), attribution: "session", reason: "matching-disabled" } as const
+	// A restored ledger gives the parent an active input segment.
+	appendWorkRecord(parent.ctx, { type: "work", segment: spawnedSegment }, spawnedIn)
+	expect([getWorkId(parent.ctx), getWorkSegment(parent.ctx)]).toEqual([spawnedIn, spawnedSegment])
 	const read = (value: () => unknown) => {
 		try {
 			return value()
