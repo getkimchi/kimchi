@@ -23,6 +23,7 @@ import {
 	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent"
 import { writeConfigSetting } from "../config/settings.js"
+import { isResourceEnabled } from "../resources/store.js"
 import { readPlanWorkId } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
 import { isHarnessSteer } from "./steer-marker.js"
@@ -37,6 +38,7 @@ import { debugWorkAttribution } from "./work-attribution/diagnostics.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
 import { confirmWorkContinuation, correctWorkLink } from "./work-attribution/links.js"
 import { subscribeFileReconciliation } from "./work-attribution/reconcile-supervisor.js"
+import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
 import {
 	captureWorkScope,
 	readWorkScope,
@@ -114,6 +116,8 @@ export function workLedgerPath(ctx: WorkContext): string {
 }
 /** Attribution is observational: callers may continue without IDs after a persistence failure. */
 export function tryWorkAttribution<T>(record: () => T): T | undefined {
+	// The cost-per-PR switch also stops records that other extensions write through this wrapper.
+	if (!isResourceEnabled(COST_PER_PR_RESOURCE_ID)) return undefined
 	try {
 		return record()
 	} catch (error) {
@@ -122,6 +126,7 @@ export function tryWorkAttribution<T>(record: () => T): T | undefined {
 	}
 }
 export async function tryWorkAttributionAsync<T>(record: () => Promise<T>): Promise<T | undefined> {
+	if (!isResourceEnabled(COST_PER_PR_RESOURCE_ID)) return undefined
 	try {
 		return await record()
 	} catch (error) {

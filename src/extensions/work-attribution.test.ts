@@ -5,6 +5,7 @@ import { join } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import {
 	type BeforeProviderHeadersEvent,
+	createLocalBashOperations,
 	findCutPoint,
 	type InputEvent,
 	type SessionBeforeCompactEvent,
@@ -19,6 +20,7 @@ import { createCommandContext, createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createWorkScopeSnapshot } from "./__mocks__/work-scope.js"
 import requestTimingExtension from "./request-timing.js"
+import { createWorkCommitTrackingOperations } from "./work-attribution/commits.js"
 import * as continuation from "./work-attribution/continuation.js"
 import * as supervisor from "./work-attribution/reconcile-supervisor.js"
 import * as scope from "./work-attribution/scope.js"
@@ -31,6 +33,8 @@ import {
 	getWorkSegment,
 	recordProviderRequest,
 	setWorkId,
+	tryWorkAttribution,
+	tryWorkAttributionAsync,
 	WORK_CHANGED_EVENT,
 } from "./work-attribution.js"
 
@@ -781,5 +785,21 @@ describe("local work attribution", () => {
 		const next = recordProviderRequest(ctx)
 		const rows = readFileSync(path, "utf8").trim().split("\n")
 		expect(JSON.parse(rows.at(-1) ?? "").requestId).toBe(next.requestId)
+	})
+})
+
+describe("cost-per-PR switch", () => {
+	it("turns attribution from other extensions into a no-op that writes nothing", async () => {
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", dir)
+		writeFileSync(join(dir, "settings.json"), JSON.stringify({ resources: { "extensions.cost-per-pr": false } }))
+		const record = vi.fn(() => "recorded")
+
+		expect(tryWorkAttribution(record)).toBeUndefined()
+		expect(await tryWorkAttributionAsync(async () => record())).toBeUndefined()
+		const local = createLocalBashOperations()
+		expect(createWorkCommitTrackingOperations(createContext({ cwd: dir }), "bash-call", local)).toBe(local)
+
+		expect(record).not.toHaveBeenCalled()
+		expect(readdirSync(dir)).toEqual(["settings.json"])
 	})
 })

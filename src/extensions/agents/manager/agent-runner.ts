@@ -17,6 +17,7 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
+import { isResourceEnabled } from "../../../resources/store.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import { isAutoRoutedModel } from "../../auto-model/constants.js"
@@ -33,6 +34,7 @@ import { loadProjectContextFiles } from "../../prompt-construction/context-files
 import requestTimingExtension from "../../request-timing.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
+import { COST_PER_PR_RESOURCE_ID } from "../../work-attribution/resource.js"
 import {
 	createWorkAttributionExtension,
 	getWorkId,
@@ -496,7 +498,9 @@ ${skillLines}`
 		: []
 	const extensionFactories: InlineExtension[] = [
 		telemetryExtension(readTelemetryConfig()),
-		createWorkAttributionExtension(inheritedWorkId ?? null, inheritedSegment),
+		...(isResourceEnabled(COST_PER_PR_RESOURCE_ID)
+			? [createWorkAttributionExtension(inheritedWorkId ?? null, inheritedSegment)]
+			: []),
 		requestTimingExtension,
 		...autoExtensionFactories,
 		bashExtension,

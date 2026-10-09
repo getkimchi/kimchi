@@ -10,9 +10,10 @@ import {
 	createLocalBashOperations,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
-
+import { isResourceEnabled } from "../../resources/store.js"
 import { appendWorkRecord, getWorkId, pinWorkContext, type WorkContext, workLedgerPath } from "../work-attribution.js"
 import { debugWorkAttribution } from "./diagnostics.js"
+import { COST_PER_PR_RESOURCE_ID } from "./resource.js"
 
 const GIT_LOOKUP_TIMEOUT_MS = 2000
 
@@ -312,6 +313,7 @@ export function createWorkCommitTrackingOperations(
 	toolCallId: string,
 	local: BashOperations = createLocalBashOperations(),
 ): BashOperations {
+	if (!isResourceEnabled(COST_PER_PR_RESOURCE_ID)) return local
 	const pinned = pinWorkContext(ctx)
 	try {
 		const workId = getWorkId(pinned)
