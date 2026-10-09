@@ -799,4 +799,67 @@ describe("a large work", () => {
 		expect(opened).not.toHaveBeenCalled()
 		expect(vi.mocked(fs.readSync)).not.toHaveBeenCalled()
 	}, 120_000)
+
+	it("scans a log that a restarted process leaves unchanged once, not on every update", async () => {
+		const workId = randomUUID()
+		await apply(
+			Array.from({ length: 2000 }, (_, index) => ({
+				version: 1,
+				type: "file_transition",
+				workId,
+				sessionId: "edits",
+				transitionId: `transition-${index}`,
+				toolCallId: "call",
+				repository: "/repo/.git",
+				worktree: "/tree",
+				path: `src/file-${index}.ts`,
+				recordedAt: iso(BASE + index * 1000),
+			})),
+		)
+		const edits = manifest(workId).logs.fileTransitions
+		if (!edits) throw new Error("edits were not saved")
+		// A new module instance has no cached positions, like Kimchi after a restart.
+		vi.resetModules()
+		const restarted = await import("./summary.js")
+		const syncFs = await import("node:fs")
+		const promises = await import("node:fs/promises")
+		const request = (index: number): WorkRecord => ({
+			version: 1,
+			type: "request",
+			workId,
+			sessionId: "requests",
+			requestId: `request-${index}`,
+			startedAt: iso(BASE + 10 ** 7 + index),
+			recordedAt: iso(BASE + 10 ** 7 + index),
+		})
+		// The first update reads every committed log once.
+		restarted.updateWorkSummary(request(0))
+		await restarted.flushWorkSummaries()
+
+		let read = 0
+		const readSync = syncFs.readSync
+		vi.spyOn(syncFs, "readSync").mockImplementation((...args) => {
+			const bytes = readSync(...args)
+			read += bytes
+			return bytes
+		})
+		const open = promises.open
+		vi.spyOn(promises, "open").mockImplementation(async (...args) => {
+			const handle = await open(...args)
+			const original = handle.read.bind(handle)
+			vi.spyOn(handle, "read").mockImplementation(async (...readArgs) => {
+				const result = await original(...readArgs)
+				read += result.bytesRead
+				return result
+			})
+			return handle
+		})
+		for (let index = 1; index <= 10; index++) {
+			restarted.updateWorkSummary(request(index))
+			await restarted.flushWorkSummaries()
+		}
+
+		expect(read).toBeLessThan(edits.bytes)
+		expect(manifest(workId).logs.requests?.rows).toBe(11)
+	})
 })

@@ -652,6 +652,8 @@ async function openLogs(folder: string, head: WorkHead, check: RowCheck): Promis
 			if (index.bytes < log.bytes) await scanLog(handle, collection, index, log.bytes, check)
 			index.mtimeMs = (await handle.stat()).mtimeMs
 			if (index.lines.size !== log.rows) throw new RowLogDamage(`The ${collection} log has the wrong row count`)
+			// Kept for later updates too, so a log this update leaves unchanged is not scanned again.
+			remember(folder, collection, index)
 			indexes[collection] = index
 		} finally {
 			await handle.close()
