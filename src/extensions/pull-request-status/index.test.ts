@@ -539,9 +539,10 @@ describe("PR status with the real reconciliation supervisor", () => {
 			join(directory, "work-attribution", "history.jsonl"),
 			`${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
 		)
-		// Each tick delivers all 101 commits, and so does the lease owner's pass it starts.
+		// Each tick delivers all 101 commits, and so does the lease owner's pass it starts. A reconciliation that
+		// work tracking requests at startup can add one more pass, so wait for at least these and an idle scan.
 		const pass = async (deliveries: number) => {
-			await vi.waitFor(() => expect(delivered).toHaveLength(deliveries), { timeout: 10_000 })
+			await vi.waitFor(() => expect(delivered.length).toBeGreaterThanOrEqual(deliveries), { timeout: 10_000 })
 			await vi.waitFor(async () => expect(await check(join(directory, "work-attribution"))).toBe(false), {
 				timeout: 10_000,
 			})
@@ -560,8 +561,9 @@ describe("PR status with the real reconciliation supervisor", () => {
 			),
 		).toBe(true)
 		const written = calls.length
+		const seen = delivered.length
 		await vi.advanceTimersByTimeAsync(30_000)
-		await pass(4 * rows.length)
+		await pass(seen + rows.length)
 		expect(ctx.ui.setStatus).toHaveBeenCalledTimes(written)
 	}, 30_000)
 })
