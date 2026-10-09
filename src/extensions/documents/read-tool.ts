@@ -9,13 +9,16 @@
  */
 
 import { readFile, stat } from "node:fs/promises"
+import type { ImageContent } from "@earendil-works/pi-ai"
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { resolveUserPath } from "../../fs-paths.js"
+import { modelSupportsImages } from "../vision-support.js"
 import { extractDocument } from "./extract.js"
 import { MAX_OUTPUT_CHARS, MAX_UNITS_PER_CALL } from "./limits.js"
 import { DocumentError, type ExtractedDocument, isDocumentError } from "./model.js"
 import { parseUnitRange, renderDocument } from "./render.js"
+import { maybeRenderScannedPages } from "./render-pages.js"
 
 const ReadDocumentSchema = Type.Object({
 	path: Type.String({ description: "Path to the document (PDF, DOCX, PPTX, XLSX, XLS, ODS, CSV)." }),
@@ -61,8 +64,11 @@ interface ReadDocumentDetails {
 	errorCode?: string
 }
 
-function textResult(text: string, details: ReadDocumentDetails | null = null) {
-	return { content: [{ type: "text" as const, text }], details }
+function textResult(text: string, details: ReadDocumentDetails | null = null, images: ImageContent[] = []) {
+	return {
+		content: [{ type: "text" as const, text }, ...images],
+		details,
+	}
 }
 
 /**
@@ -141,7 +147,7 @@ export function createReadDocumentTool(deps: ReadDocumentDeps = {}): ToolDefinit
 		execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
 			try {
 				const cwd = ctx?.cwd ?? process.cwd()
-				const { doc } = await loadExtracted(params.path, cwd, { ...deps, tool: "read_document" })
+				const { doc, data } = await loadExtracted(params.path, cwd, { ...deps, tool: "read_document" })
 				// Re-extract with formulas when requested (cheap; keeps cache-free determinism).
 				let renderedDoc = doc
 				if (params.formulas && (doc.format === "xlsx" || doc.format === "xls" || doc.format === "ods")) {
@@ -170,12 +176,28 @@ export function createReadDocumentTool(deps: ReadDocumentDeps = {}): ToolDefinit
 								(selection.indices?.[selection.indices.length - 1] ?? 0) + 1
 							}-" })`
 						: ""
-				return textResult(`${out.text}${continuation}`, {
-					format: renderedDoc.format,
-					totalUnits: out.totalUnits,
-					selectedUnits: out.selectedUnits,
-					truncated: out.truncated,
+				// Phase 1.6: image-only PDF pages become image blocks on vision models.
+				const scanned = await maybeRenderScannedPages({
+					data,
+					doc: renderedDoc,
+					selected: selection.indices,
+					supportsImages: modelSupportsImages(ctx?.model),
 				})
+				const note = scanned.note ? `\n\nNote: ${scanned.note}.` : ""
+				const marker =
+					scanned.images.length > 0
+						? `\n\n[page-images] ${scanned.images.length} scanned page(s) attached as images.`
+						: ""
+				return textResult(
+					`${out.text}${continuation}${note}${marker}`,
+					{
+						format: renderedDoc.format,
+						totalUnits: out.totalUnits,
+						selectedUnits: out.selectedUnits,
+						truncated: out.truncated,
+					},
+					scanned.images.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType })),
+				)
 			} catch (err) {
 				if (isDocumentError(err)) return textResult(`read_document failed: ${err.message}`, { errorCode: err.code })
 				throw err

@@ -11,10 +11,11 @@ import { existsSync } from "node:fs"
 import JSZip from "jszip"
 import * as XLSX from "xlsx"
 import { extractDocument } from "./extract.js"
-import { makeSimpleDocx, makeSimplePdf, makeSimplePptx } from "./fixtures/builders.js"
+import { makeScannedPdf, makeSimpleDocx, makeSimplePdf, makeSimplePptx } from "./fixtures/builders.js"
 import { isDocumentError } from "./model.js"
 import { listZipEntries } from "./ooxml/package.js"
 import { resolvePdfjsAssets } from "./pdfjs-assets.js"
+import { loadCanvas, maybeRenderScannedPages } from "./render-pages.js"
 
 export interface DoctorCheck {
 	name: string
@@ -111,7 +112,30 @@ export async function runDoctor(deps: { goldens?: Partial<DoctorGoldens> } = {})
 		push("read-xlsx", false, (err as Error).message)
 	}
 
-	// 3. Hostile-input handling intact in this build.
+	// 3. Page images (Phase 1.6): canvas availability is REPORTED, and when
+	// canvas loads, a scanned page is rendered through the full pipeline.
+	// Non-fatal by design — doctor must stay green on targets or environments
+	// where the native addon fails (scanned pages degrade to warnings there).
+	{
+		const { canvas, error } = await loadCanvas()
+		push("canvas", true, canvas ? "available" : `unavailable: ${error ?? "load failed"}`)
+		if (canvas) {
+			try {
+				const data = await makeScannedPdf()
+				const doc = await extractDocument("scan.pdf", data, { tool: "doctor" })
+				const outcome = await maybeRenderScannedPages({ data, doc, supportsImages: true })
+				const pngMagicOk = outcome.images.every((img) => {
+					const bytes = Buffer.from(img.data, "base64")
+					return bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+				})
+				push("page-images", outcome.images.length === 2 && pngMagicOk, outcome.note)
+			} catch (err) {
+				push("page-images", false, (err as Error).message)
+			}
+		}
+	}
+
+	// 4. Hostile-input handling intact in this build.
 	try {
 		// Deflated 10 MB of zeros — must be rejected by the ratio cap, in < 1 s.
 		const zip = new JSZip()

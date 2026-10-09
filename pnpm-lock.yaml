@@ -250,6 +250,24 @@ importers:
       '@mariozechner/clipboard-win32-x64-msvc':
         specifier: 0.3.6
         version: 0.3.6
+      '@napi-rs/canvas':
+        specifier: ^1.0.10
+        version: 1.0.10
+      '@napi-rs/canvas-darwin-arm64':
+        specifier: 1.0.10
+        version: 1.0.10
+      '@napi-rs/canvas-darwin-x64':
+        specifier: 1.0.10
+        version: 1.0.10
+      '@napi-rs/canvas-linux-arm64-gnu':
+        specifier: 1.0.10
+        version: 1.0.10
+      '@napi-rs/canvas-linux-x64-gnu':
+        specifier: 1.0.10
+        version: 1.0.10
+      '@napi-rs/canvas-win32-x64-msvc':
+        specifier: 1.0.10
+        version: 1.0.10
 
 packages:
 

@@ -12,7 +12,7 @@ import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { waitForText } from "./support/assertions.js"
-import { makeSimplePdf } from "./support/document-fixtures.js"
+import { makeScannedPdf, makeSimplePdf } from "./support/document-fixtures.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -63,6 +63,34 @@ test("read on a PDF is transparently replaced with extracted markdown (toggle on
 			// read also rendered something useful to the user in the TUI.
 			expect(fixture.agentDir).toBeTruthy()
 			trace.step("provider request carries extracted markdown + read_document tool")
+		},
+	)
+})
+
+test("scanned PDF reaches the vision model as page images (toggle on)", async ({ terminal }) => {
+	const pdf = await makeScannedPdf()
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "document-scanned-images",
+			env: { KIMCHI_ENABLE_RESOURCES: "extensions.documents" },
+			models: [{ slug: "vision", displayName: "Fake Vision", provider: "openai", input: ["text", "image"] }],
+			seedHome: (_homeDir, workDir) => {
+				writeFileSync(join(workDir, "scan.pdf"), pdf)
+			},
+			responses: [
+				{ toolCalls: [{ function: { name: "read", arguments: JSON.stringify({ path: "scan.pdf" }) } }] },
+				{ stream: ["Scanned pages read."] },
+			],
+		},
+		async (fixture) => {
+			terminal.submit("read scan.pdf")
+			await waitForText(terminal, "Scanned pages read.")
+			const turns = conversationTurns(fixture.fake.requests)
+			expect(turns.length).toBeGreaterThanOrEqual(2)
+			const second = JSON.stringify(turns[1].body)
+			expect(second).toContain("[page-images] 2 scanned page(s) attached as images.")
+			expect(second).toContain('"image_url"') // provider-bound image blocks
 		},
 	)
 })

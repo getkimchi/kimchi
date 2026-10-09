@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest"
 import * as XLSX from "xlsx"
-import { makeSimplePdf, makeSimplePptx } from "./fixtures/builders.js"
+import { makeScannedPdf, makeSimplePdf, makeSimplePptx } from "./fixtures/builders.js"
 import { createReadDocumentTool, selectUnits, stripLocators } from "./read-tool.js"
+import { loadCanvas } from "./render-pages.js"
 
 function depsFor(fixtures: Record<string, Uint8Array>) {
 	return {
@@ -96,6 +97,43 @@ describe("read_document tool", () => {
 		})
 		const out = await run({ "/w/wb.xlsx": data }, { path: "/w/wb.xlsx", formulas: true })
 		expect(out.text).toContain("=SUM(B1:B1)")
+	})
+
+	it("attaches page images for a scanned PDF when the model accepts images", async () => {
+		if (!(await loadCanvas()).canvas) return // exotic env; degradation is covered in render-pages.test
+		const t = createReadDocumentTool(depsFor({ "/w/s.pdf": await makeScannedPdf() }))
+		const res = await t.execute(
+			"c1",
+			{ path: "/w/s.pdf" } as never,
+			undefined as never,
+			undefined as never,
+			{
+				cwd: "/w",
+				model: { provider: "p", id: "v", input: ["text", "image"] },
+			} as never,
+		)
+		const kinds = res.content.map((b) => b.type)
+		expect(kinds.filter((k) => k === "image")).toHaveLength(2)
+		const text = res.content[0].type === "text" ? res.content[0].text : ""
+		expect(text).toContain("[page-images] 2 scanned page(s)")
+	})
+
+	it("keeps warning-only output for a scanned PDF on a text-only model", async () => {
+		const t = createReadDocumentTool(depsFor({ "/w/s.pdf": await makeScannedPdf() }))
+		const res = await t.execute(
+			"c1",
+			{ path: "/w/s.pdf" } as never,
+			undefined as never,
+			undefined as never,
+			{
+				cwd: "/w",
+				model: { provider: "p", id: "t", input: ["text"] },
+			} as never,
+		)
+		expect(res.content.every((b) => b.type === "text")).toBe(true)
+		const text = res.content[0].type === "text" ? res.content[0].text : ""
+		expect(text).toContain("no text layer")
+		expect(text).not.toContain("[page-images]")
 	})
 
 	it("maps typed extraction failures to error results", async () => {

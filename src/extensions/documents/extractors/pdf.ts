@@ -36,7 +36,12 @@ export async function extractPdf(data: Uint8Array): Promise<ExtractedDocument> {
 	const assets = resolvePdfjsAssets()
 	let pdf: PdfLikeDocumentProxy
 	try {
-		pdf = await getDocumentProxy(data, {
+		// Defensive copy: pdf.js destroy() detaches the underlying ArrayBuffer
+		// (unpdf's loopback port consumes buffers as transferables). Handing it
+		// caller-shared bytes would detach the caller's copy — any later pdf.js
+		// use of those bytes (e.g. page rendering in render-pages.ts) then dies
+		// on DataCloneError / "detached from the view".
+		pdf = await getDocumentProxy(data.slice(), {
 			useSystemFonts: false,
 			disableFontFace: true,
 			maxImageSize: PDF_MAX_IMAGE_PIXELS,

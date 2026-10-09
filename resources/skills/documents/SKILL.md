@@ -15,6 +15,7 @@ Kimchi reads office documents natively; no skills, plugins, or external tools ar
 - **Large documents.** Output is capped at 20 units and 50 KB per call. Read by range: `read_document({ path, pages: "1-5" })` works for pages (PDF), slides (PPTX), and sheet numbers (XLSX). A truncated reply contains a continuation pointer — call again with a narrower range.
 - **Specific sheets and rows.** `read_document({ path, sheet: "Totals", rows: "20-60" })`. A missing sheet name returns the list of valid names.
 - **Formulas.** `read_document({ path, formulas: true })` shows formula strings instead of computed values (XLSX/XLS/ODS).
+- **Scanned / image-only PDFs.** Pages with no text layer are rendered to images and attached automatically when your model accepts image input — just `read` them. The text notes `N scanned page(s) attached as images.` when this happens. On a text-only model you get a "no text layer" warning instead; switch to a vision-capable model (`/model`, rows with the IMG marker) to read them.
 
 ## Locators — why the output looks the way it does
 

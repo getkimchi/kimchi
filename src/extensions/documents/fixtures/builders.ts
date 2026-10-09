@@ -6,6 +6,9 @@
 import { PDFDocument, StandardFonts } from "@cantoo/pdf-lib"
 import JSZip from "jszip"
 
+// require() is provided at runtime by Bun's bundler; also resolves in vitest.
+declare const require: (id: string) => unknown
+
 /** Two-page PDF: "Hello from page one" / "Second page content". */
 export async function makeSimplePdf(): Promise<Uint8Array> {
 	const doc = await PDFDocument.create()
@@ -25,6 +28,69 @@ export async function makePdfWithBlankPage(): Promise<Uint8Array> {
 	const page2 = doc.addPage([612, 792])
 	page2.drawText("Only this page has text", { x: 72, y: 700, size: 18, font })
 	return doc.save()
+}
+
+/**
+ * Scanned-receipt class PDF: a full-page raster image and NO text layer on
+ * either page — the input the Phase 1.6 page-image fallback exists for.
+ */
+export async function makeScannedPdf(): Promise<Uint8Array> {
+	const doc = await PDFDocument.create()
+	const png = await doc.embedPng(SOLID_PAGE_PNG)
+	for (let i = 0; i < 2; i++) {
+		const page = doc.addPage([255, 340])
+		page.drawImage(png, { x: 0, y: 0, width: 255, height: 340 })
+	}
+	return doc.save()
+}
+
+/** 8×8 solid red PNG (self-encoded minimal RGB PNG, no external asset). */
+const SOLID_PAGE_PNG = encodeSolidPng(8, 8, 200, 30, 30)
+
+/**
+ * Minimal valid RGB PNG encoder (truecolor, no interlace, filter 0).
+ * Self-authored: keeps the scanned fixture free of license-bearing assets
+ * and deterministic across platforms (CRC32 + zlib only).
+ */
+export function encodeSolidPng(width: number, height: number, r: number, g: number, b: number): Uint8Array {
+	const { deflateSync, crc32 } = require("node:zlib") as typeof import("node:zlib")
+	const signature = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+	const ihdr = new Uint8Array(13)
+	const view = new DataView(ihdr.buffer)
+	view.setUint32(0, width)
+	view.setUint32(4, height)
+	ihdr[8] = 8 // bit depth
+	ihdr[9] = 2 // color type: truecolor RGB
+	const pixelRow = new Uint8Array(width * 3 + 1)
+	for (let x = 0; x < width; x++) {
+		pixelRow[1 + x * 3] = r
+		pixelRow[2 + x * 3] = g
+		pixelRow[3 + x * 3] = b
+	}
+	const pixels = new Uint8Array(pixelRow.length * height)
+	for (let y = 0; y < height; y++) pixels.set(pixelRow, y * pixelRow.length)
+	const idat = new Uint8Array(deflateSync(pixels))
+	return concat([signature, chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", new Uint8Array(0))])
+
+	function chunk(type: string, body: Uint8Array): Uint8Array {
+		const out = new Uint8Array(12 + body.length)
+		const v = new DataView(out.buffer)
+		v.setUint32(0, body.length)
+		out.set([type.charCodeAt(0), type.charCodeAt(1), type.charCodeAt(2), type.charCodeAt(3)], 4)
+		out.set(body, 8)
+		v.setUint32(8 + body.length, crc32(out.subarray(4, 8 + body.length)) >>> 0)
+		return out
+	}
+	function concat(parts: Uint8Array[]): Uint8Array {
+		const total = parts.reduce((n, p) => n + p.length, 0)
+		const combined = new Uint8Array(total)
+		let at = 0
+		for (const p of parts) {
+			combined.set(p, at)
+			at += p.length
+		}
+		return combined
+	}
 }
 
 /** Minimal but valid DOCX: Heading1 title, normal paragraph, 2×2 table. */

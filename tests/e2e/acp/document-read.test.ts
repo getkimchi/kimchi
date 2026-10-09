@@ -8,7 +8,7 @@
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { makeSimplePdf } from "../../../src/extensions/documents/fixtures/builders.js"
+import { makeScannedPdf, makeSimplePdf } from "../../../src/extensions/documents/fixtures/builders.js"
 import { type AcpFixture, PROMPT_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
 
@@ -25,6 +25,39 @@ describe("ACP integration — document read", () => {
 		else process.env.KIMCHI_ENABLE_RESOURCES = realEnableEnv
 		await fixture.stop()
 	})
+
+	it(
+		"scanned PDF reaches the vision model as image blocks (tool-result forwarding)",
+		async () => {
+			fixture = await startAcpFixture({
+				artifactName: "document-scanned-images-acp",
+				models: [{ slug: "vision", displayName: "Fake Vision", provider: "openai", input: ["text", "image"] }],
+				responses: [
+					{ toolCalls: [{ function: { name: "read", arguments: JSON.stringify({ path: "scan.pdf" }) } }] },
+					{ stream: ["scanned read"] },
+				],
+			})
+			writeFileSync(join(fixture.workDir, "scan.pdf"), await makeScannedPdf())
+			const sessionId = await newSession(fixture, fixture.workDir)
+			expect(await prompt(fixture, sessionId, "read scan.pdf")).toMatchObject({ stopReason: "end_turn" })
+
+			const systemPromptOf = (body: unknown): string => {
+				const messages = (body as { messages?: Array<{ role: string; content: unknown }> }).messages ?? []
+				return messages
+					.filter((m) => m.role === "system")
+					.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+					.join("\n")
+			}
+			const chats = fixture.fake.requests
+				.filter((r) => r.url.includes("chat/completions"))
+				.filter((r) => !systemPromptOf(r.body).includes("Name the user's actual task"))
+			expect(chats.length).toBeGreaterThanOrEqual(2)
+			const second = JSON.stringify(chats[1].body)
+			expect(second).toContain("[page-images] 2 scanned page(s) attached as images.")
+			expect(second).toContain('"image_url"')
+		},
+		PROMPT_TIMEOUT_MS * 3,
+	)
 
 	it(
 		"read_document is advertised and read interception feeds extracted text into context",
