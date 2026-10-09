@@ -367,4 +367,36 @@ describe("work browser rows", () => {
 			].join("\n"),
 		)
 	})
+
+	it("explains unknown prices with the work's own untagged requests and failed refreshes only", () => {
+		const [first, second] = [1, 2].map(workId)
+		// The cost pass saves the whole connected group in each member's costs.json.
+		const group = (id: string) => {
+			const report = costs(id, [
+				{ requestId: "planning", usd: "0.500000000", workIds: [first] },
+				{ requestId: "untagged", priced: false, workIds: [second] },
+			])
+			Object.assign(report.requests[1], {
+				billingTagSkipped: "tag-limit",
+				billingLookup: {
+					status: "unavailable",
+					reason: "Billing lookup unavailable",
+					checkedAt: "2026-10-08T10:00:00Z",
+				},
+			})
+			return report
+		}
+		const { rows } = browse([
+			{ workId: first, summary: summary(first, { requests: [request("planning")] }), costs: group(first) },
+			{ workId: second, summary: summary(second, { requests: [request("untagged")] }), costs: group(second) },
+		])
+		const details = (id: string) => rows.find((row) => row.workId === id)?.details
+
+		expect(details(first)).toContain("Prices: 1/1 requests priced, $0.500000000 USD.")
+		expect(details(first)).not.toContain("untagged")
+		expect(details(first)).not.toContain("Last billing refresh failed")
+		expect(details(second)).toContain("Prices: 0/1 requests priced, $0.000000000 USD known so far.")
+		expect(details(second)).toContain("1 request untagged: tag limit")
+		expect(details(second)).toContain("Last billing refresh failed for 1 request: Billing lookup unavailable.")
+	})
 })
