@@ -6,6 +6,8 @@ import { PRICED_TAG_LIMIT } from "./request-tags.js"
 import { isWorkAccount, sameWorkAccount } from "./scope.js"
 import { object } from "./summary.js"
 
+// The cost lines /work shows, read from the work's saved costs.json.
+
 /** /work reads the last durable result; opening the command never waits for the network. */
 export function workCostDetails(agentDir: string, workId: string): string[] {
 	if (!isWorkId(workId)) return []

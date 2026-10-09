@@ -59,11 +59,11 @@ export interface OpenBilling {
 	userId?: string
 	billed: boolean
 }
+
 /**
  * Without an exact identity there is no network work to retry; the report derives that state
  * from source records. The window closes once a lookup at or after its end reached the billing API.
  */
-
 export function openBilling(item: RequestBilling): OpenBilling | undefined {
 	const { source, selector } = item
 	if (
