@@ -81,7 +81,7 @@ it("pins the PR totals that /work and the console must agree on", () => {
 		request(2, 2, "inferred"),
 		// Unresolved matching with no candidate PR leaves every PR complete.
 		request(3, 3, "unknown"),
-		// 103: an attempt without a verified billing account leaves only its candidate incomplete.
+		// 103: an explicit attempt with no bill yet stays on its PR, which stays incomplete until the bill arrives.
 		...work(4, [[pull(103, "a"), "a"]]),
 		request(4, 4, "explicit"),
 		// 104 and 201: one attempt shared across repositories is counted once and leaves both incomplete.
