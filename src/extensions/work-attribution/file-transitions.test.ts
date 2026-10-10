@@ -1,5 +1,6 @@
 import * as childProcess from "node:child_process"
 import { execFileSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import {
 	chmodSync,
 	existsSync,
@@ -30,7 +31,10 @@ import * as diagnostics from "./diagnostics.js"
 import {
 	createTrackedEditTool,
 	createTrackedWriteTool,
+	type FileState,
 	knownTransitionRepositories,
+	readAttributedFileState,
+	readAttributedFileStates,
 	reconcileFileTransitions,
 	reconcileRepositoryTransitions,
 } from "./file-transitions.js"
@@ -50,6 +54,11 @@ async function startSession(api: ReturnType<typeof createExtensionApi>, ctx = co
 }
 function git(...args: string[]) {
 	return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim()
+}
+/** Kimchi's own store of retained edit snapshots for the test repository. */
+function snapshots() {
+	const repository = realpathSync(join(repo, ".git"))
+	return join(root, "agent", "work-attribution", "objects", createHash("sha256").update(repository).digest("hex"))
 }
 function context(session = "original") {
 	return createContext({ cwd: repo, sessionManager: { getSessionId: () => session } })
@@ -133,8 +142,10 @@ describe("manual commit reconciliation", () => {
 	it.each([
 		"ls-tree",
 		"merge-base",
+		"cat-file",
 	])("retries a timed-out %s comparison in an external linked worktree without checkpointing it", async (command) => {
-		baseline()
+		writeFileSync(join(repo, "file.txt"), "heading\none\ncontext\nseparator\nhuman-before\nfooter\n")
+		commit()
 		const primary = repo
 		repo = join(root, "external-worktree")
 		execFileSync("git", ["-C", primary, "worktree", "add", "-qb", "external", repo])
@@ -143,6 +154,11 @@ describe("manual commit reconciliation", () => {
 		// Stash interrupts the exact file chain, exercising comparisons in the shared .git directory.
 		git("stash", "push", "-q")
 		git("stash", "pop", "-q")
+		if (command === "cat-file")
+			writeFileSync(
+				join(repo, "file.txt"),
+				readFileSync(join(repo, "file.txt"), "utf8").replace("human-before", "human-after"),
+			)
 		const sha = commit()
 		const repository = realpathSync(join(primary, ".git"))
 		const worktree = realpathSync(repo)
@@ -176,7 +192,13 @@ describe("manual commit reconciliation", () => {
 				workId,
 				repository,
 				worktree,
-				fileMatches: [expect.objectContaining({ path: "file.txt", method: "path-blob", worktree })],
+				fileMatches: [
+					expect.objectContaining({
+						path: "file.txt",
+						method: command === "cat-file" ? "file-hunks" : "path-blob",
+						worktree,
+					}),
+				],
 			}),
 		])
 	}, 10000)
@@ -783,6 +805,321 @@ describe("manual commit reconciliation", () => {
 			git("commit", "-qm", "unrelated")
 		} else if (kind !== "partial") commit()
 		await reconcileFileTransitions(context("fresh"))
+		expect(contributions()).toEqual([])
+	})
+	it.each([
+		"before",
+		"after",
+		"shifted",
+		"both",
+	])("joins complete native hunks beside human edits (%s)", async (timing) => {
+		const original = "heading\nnative-before\nnative-context\nseparator\nhuman-before\nfooter\n"
+		writeFileSync(join(repo, "file.txt"), original)
+		commit()
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		if (timing === "before" || timing === "both")
+			writeFileSync(join(repo, "file.txt"), original.replace("human-before", "human-after"))
+		await edit("native-before", "native-after", ctx)
+		if (timing !== "before") {
+			const content = readFileSync(join(repo, "file.txt"), "utf8").replace("human-before", "human-after")
+			writeFileSync(
+				join(repo, "file.txt"),
+				`${timing === "shifted" || timing === "both" ? "human-prefix\n" : ""}${content}`,
+			)
+		}
+		const sha = commit()
+		await reconcileFileTransitions(context("reopened"))
+		await reconcileFileTransitions(context("again"))
+		const transition = rows().find((row) => row.type === "file_transition")
+		expect(contributions()).toEqual([
+			expect.objectContaining({
+				sha,
+				workId,
+				sessionId: "original",
+				fileMatches: [
+					{
+						path: "file.txt",
+						method: "file-hunks",
+						worktree: realpathSync(repo),
+						transitionIds: [transition.transitionId],
+					},
+				],
+			}),
+		])
+	})
+	it("reads the four texts of a hunk match with two Git processes", async () => {
+		writeFileSync(join(repo, "file.txt"), "heading\nnative-before\ncontext\nseparator\nhuman-before\nfooter\n")
+		commit()
+		await edit("native-before", "native-after")
+		writeFileSync(
+			join(repo, "file.txt"),
+			readFileSync(join(repo, "file.txt"), "utf8").replace("human-before", "human-after"),
+		)
+		commit()
+		const { execFile: execute } = await vi.importActual<typeof childProcess>("node:child_process")
+		const reads: string[] = []
+		vi.spyOn(childProcess, "execFile").mockImplementation(((...args: Parameters<typeof execute>) => {
+			if (Array.isArray(args[1]) && args[1][2] === "cat-file") reads.push(String(args[1][3]))
+			return execute(...args)
+		}) as typeof execute)
+		await reconcileFileTransitions(context("reopened"))
+		expect(contributions()).toEqual([
+			expect.objectContaining({ fileMatches: [expect.objectContaining({ method: "file-hunks" })] }),
+		])
+		expect(reads).toEqual(["--batch-check=%(objecttype) %(objectsize)", "--batch"])
+	})
+	it("retains exact native text snapshots in Kimchi's store, never in the repository", async () => {
+		baseline()
+		const dirty = "one\ntwo\nhuman-before\n"
+		writeFileSync(join(repo, "file.txt"), dirty)
+		const inspected = await readAttributedFileState(join(repo, "file.txt"))
+		expect(inspected?.blob).toBeDefined()
+		expect(() => git("cat-file", "-e", inspected?.blob ?? "missing")).toThrow()
+		const loose = git("count-objects")
+		await edit("one", "first")
+		const transition = rows().find((row) => row.type === "file_transition")
+		expect(transition.before).toEqual(inspected)
+		for (const [state, content] of [
+			[transition.before, dirty],
+			[transition.after, dirty.replace("one", "first")],
+		]) {
+			// Unreachable snapshots in the user's repository would keep Git's automatic gc repacking and warning.
+			expect(() => git("cat-file", "-e", state.blob)).toThrow()
+			const stored = execFileSync("git", ["-C", repo, "cat-file", "blob", state.blob], {
+				env: { ...process.env, GIT_OBJECT_DIRECTORY: snapshots() },
+			})
+			expect(stored.equals(Buffer.from(content))).toBe(true)
+		}
+		expect(git("count-objects")).toBe(loose)
+		expect(JSON.stringify(rows())).not.toContain("human-before")
+	})
+	it("retains each new edited content once and no copy of the committed file", async () => {
+		baseline()
+		await edit("one", "first")
+		await edit("two", "second")
+		await edit("second", "two")
+		const transitions = rows().filter((row) => row.type === "file_transition")
+		const stored = readdirSync(snapshots(), { recursive: true })
+			.map(String)
+			.filter((path) => /^[\da-f]{2}\/[\da-f]+$/.test(path))
+			.map((path) => path.replace("/", ""))
+		// The repository already has the committed blob the first edit starts from; later edits start from stored content.
+		expect(transitions[0].before).toEqual(transitions[0].baselineFile)
+		expect(stored.sort()).toEqual([transitions[0].after.blob, transitions[1].after.blob].sort())
+	})
+	it.each(["true", "false"])("reads many files like single-file inspections (core.filemode=%s)", async (filemode) => {
+		writeFileSync(
+			join(repo, ".gitattributes"),
+			"*.txt text eol=lf\n*.utf16 working-tree-encoding=UTF-16\n*.filtered filter=unexpected\n",
+		)
+		writeFileSync(join(repo, "tool.sh"), "#!/bin/sh\n")
+		chmodSync(join(repo, "tool.sh"), 0o755)
+		baseline()
+		git("config", "core.filemode", filemode)
+		git("config", "filter.unexpected.clean", "touch filter-ran; cat")
+		const odd = 'odd "name" \\ with\nnewline.txt'
+		const files = {
+			"file.txt": "first\r\ntwo\r\n",
+			"tool.sh": "#!/bin/sh\necho changed\n",
+			[odd]: "odd\n",
+			"text.utf16": "encoded\n",
+			"data.filtered": "filtered\n",
+			"big.log": "x".repeat(8 * 1024 * 1024 + 1),
+		}
+		for (const [path, content] of Object.entries(files)) writeFileSync(join(repo, path), content)
+		chmodSync(join(repo, "tool.sh"), 0o644)
+		symlinkSync("file.txt", join(repo, "link"))
+		const worktree = realpathSync(repo)
+		const paths = [...Object.keys(files), "link", "missing.txt"]
+		const expected = new Map<string, FileState | null | undefined>()
+		for (const path of paths) expected.set(path, await readAttributedFileState(join(worktree, path)))
+		expect(await readAttributedFileStates(worktree, paths)).toEqual(expected)
+		expect([...expected].filter(([, state]) => state).map(([path]) => path)).toEqual(["file.txt", "tool.sh", odd])
+		expect(expected.get("tool.sh")?.mode).toBe(filemode === "false" ? "100755" : "100644")
+		expect(existsSync(join(repo, "filter-ran"))).toBe(false)
+	})
+	it("preserves exact attribution when Git cannot retain the snapshot", async () => {
+		baseline()
+		const { execFile: execute } = await vi.importActual<typeof childProcess>("node:child_process")
+		let snapshots = 0
+		vi.spyOn(childProcess, "execFile").mockImplementation(((...args: Parameters<typeof execute>) => {
+			if (Array.isArray(args[1]) && args[1].includes("hash-object") && args[1].includes("-w")) {
+				snapshots += 1
+				args[1] = [...args[1], "--invalid-retention-test"]
+			}
+			return execute(...args)
+		}) as typeof execute)
+		vi.spyOn(console, "warn").mockImplementation(() => {})
+		await edit("one", "first")
+		expect(readFileSync(join(repo, "file.txt"), "utf8")).toBe("first\ntwo\n")
+		const transitions = rows().filter((row) => row.type === "file_transition")
+		expect(transitions).toHaveLength(1)
+		// The edit starts from the committed file, so only its new content needs a snapshot.
+		expect(snapshots).toBe(1)
+		expect(() => git("cat-file", "-e", transitions[0].after.blob)).toThrow()
+		const sha = commit()
+		await reconcileFileTransitions(context("reopened"))
+		expect(contributions()).toEqual([
+			expect.objectContaining({
+				sha,
+				fileMatches: [expect.objectContaining({ method: "file-chain", transitionIds: [transitions[0].transitionId] })],
+			}),
+		])
+	})
+	it("leaves attribution unresolved when both retained and dry hashing fail", async () => {
+		baseline()
+		const { execFile: execute } = await vi.importActual<typeof childProcess>("node:child_process")
+		vi.spyOn(childProcess, "execFile").mockImplementation(((...args: Parameters<typeof execute>) => {
+			if (Array.isArray(args[1]) && args[1].includes("hash-object")) args[1] = [...args[1], "--invalid-hash-test"]
+			return execute(...args)
+		}) as typeof execute)
+		vi.spyOn(console, "warn").mockImplementation(() => {})
+		await edit("one", "first")
+		expect(readFileSync(join(repo, "file.txt"), "utf8")).toBe("first\ntwo\n")
+		expect(rows().filter((row) => row.type === "file_transition")).toEqual([])
+	})
+	it("rechecks Git filters before falling back to a dry hash", async () => {
+		baseline()
+		git("config", "filter.unexpected.clean", "touch filter-ran; cat")
+		const { execFile: execute } = await vi.importActual<typeof childProcess>("node:child_process")
+		vi.spyOn(childProcess, "execFile").mockImplementation(((...args: Parameters<typeof execute>) => {
+			if (Array.isArray(args[1]) && args[1].includes("hash-object") && args[1].includes("-w")) {
+				writeFileSync(join(repo, ".gitattributes"), "*.txt filter=unexpected\n")
+				args[1] = [...args[1], "--invalid-retention-test"]
+			}
+			return execute(...args)
+		}) as typeof execute)
+		await edit("one", "first")
+		expect(readFileSync(join(repo, "file.txt"), "utf8")).toBe("first\ntwo\n")
+		expect(existsSync(join(repo, "filter-ran"))).toBe(false)
+		expect(rows().filter((row) => row.type === "file_transition")).toEqual([])
+	})
+	it("matches Git-normalized native hunks beside human CRLF edits", async () => {
+		const original = "heading\nnative-before\ncontext\nseparator\nhuman-before\nfooter\n"
+		writeFileSync(join(repo, ".gitattributes"), "*.txt text eol=lf\n")
+		writeFileSync(join(repo, "file.txt"), original)
+		commit()
+		writeFileSync(join(repo, "file.txt"), original.replaceAll("\n", "\r\n"))
+		await edit("native-before", "native-after")
+		writeFileSync(
+			join(repo, "file.txt"),
+			original.replace("native-before", "native-after").replace("human-before", "human-after").replaceAll("\n", "\r\n"),
+		)
+		const sha = commit()
+		await reconcileFileTransitions(context("reopened"))
+		expect(contributions()).toEqual([
+			expect.objectContaining({ sha, fileMatches: [expect.objectContaining({ method: "file-hunks" })] }),
+		])
+	})
+	it("rechecks mixed edits skipped by the previous content matcher", async () => {
+		const original = "heading\nnative-before\ncontext\nseparator\nhuman-before\nfooter\n"
+		writeFileSync(join(repo, "file.txt"), original)
+		commit()
+		await edit("native-before", "native-after")
+		writeFileSync(
+			join(repo, "file.txt"),
+			original.replace("native-before", "native-after").replace("human-before", "human-after"),
+		)
+		const sha = commit()
+		await reconcileFileTransitions(context("initial"))
+		await flushWorkSummaries()
+		const directory = join(root, "agent", "work-attribution")
+		for (const file of readdirSync(directory).filter((name) => name.endsWith(".jsonl"))) {
+			const path = join(directory, file)
+			const retained = readFileSync(path, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line))
+				.filter((row) => row.type !== "commit")
+			writeFileSync(path, `${retained.map((row) => JSON.stringify(row)).join("\n")}\n`)
+		}
+		const transitions = join(directory, "transitions")
+		const checkpoint = readdirSync(transitions).find((name) => name.endsWith(".content-checkpoint"))
+		if (!checkpoint) throw new Error("Expected a completed content checkpoint")
+		const path = join(transitions, checkpoint)
+		const progress = JSON.parse(readFileSync(path, "utf8"))
+		progress.evidence = progress.evidence.replace(/^content-v3:/, "content-v2:")
+		writeFileSync(path, JSON.stringify(progress))
+		expect(contributions()).toEqual([])
+		await reconcileFileTransitions(context("upgraded"))
+		expect(contributions()).toEqual([
+			expect.objectContaining({ sha, fileMatches: [expect.objectContaining({ method: "file-hunks" })] }),
+		])
+	})
+	it("skips oversized committed files without blocking other native hunk matches", async () => {
+		const original = "heading\nnative-before\ncontext\nseparator\nhuman-before\nfooter\n"
+		writeFileSync(join(repo, "file.txt"), original)
+		writeFileSync(join(repo, "small.txt"), original)
+		commit()
+		await createTrackedEditTool(context(), "small-edit").execute("small-edit", {
+			path: "small.txt",
+			edits: [{ oldText: "native-before", newText: "native-after" }],
+		})
+		writeFileSync(
+			join(repo, "small.txt"),
+			original.replace("native-before", "native-after").replace("human-before", "human-after"),
+		)
+		const smallCommit = commit()
+		await edit("native-before", "native-after")
+		writeFileSync(
+			join(repo, "file.txt"),
+			`${original.replace("native-before", "native-after")}${"x".repeat(9 * 1024 * 1024)}`,
+		)
+		commit()
+		const repository = realpathSync(join(repo, ".git"))
+		await reconcileRepositoryTransitions(repository)
+		await reconcileRepositoryTransitions(repository)
+		expect(contributions()).toEqual([
+			expect.objectContaining({
+				sha: smallCommit,
+				fileMatches: [expect.objectContaining({ path: "small.txt", method: "file-hunks" })],
+			}),
+		])
+	})
+	it.each([
+		"overlap",
+		"partial",
+		"missing-blob",
+		"mode",
+		"binary",
+		"interleaved",
+		"deleted",
+	])("leaves incomplete native hunks unresolved (%s)", async (kind) => {
+		const original = `${kind === "binary" ? "\0" : ""}heading\nnative-before\ncontext\nseparator\nsecond-before\nsecond-context\ngap\nhuman-before\nfooter\n`
+		writeFileSync(join(repo, "file.txt"), original)
+		commit()
+		await edit("native-before", "native-after")
+		if (kind === "interleaved")
+			writeFileSync(
+				join(repo, "file.txt"),
+				readFileSync(join(repo, "file.txt"), "utf8").replace("human-before", "human-after"),
+			)
+		if (kind === "partial" || kind === "interleaved") await edit("second-before", "second-after")
+		const transition = rows().find((row) => row.type === "file_transition")
+		if (kind === "missing-blob")
+			rmSync(join(snapshots(), transition.after.blob.slice(0, 2), transition.after.blob.slice(2)))
+		let content = readFileSync(join(repo, "file.txt"), "utf8").replace("human-before", "human-after")
+		if (kind === "overlap") content = content.replace("native-after", "human-overlap")
+		if (kind === "partial") content = content.replace("second-after", "second-before")
+		writeFileSync(join(repo, "file.txt"), content)
+		if (kind === "mode") chmodSync(join(repo, "file.txt"), 0o755)
+		if (kind === "deleted") rmSync(join(repo, "file.txt"))
+		commit()
+		await reconcileFileTransitions(context("reopened"))
+		expect(contributions()).toEqual([])
+	})
+	it("leaves repeated native hunk locations unresolved beside human edits", async () => {
+		const original = "heading\nsame\nx\nsame\nseparator\nsame\nx\nsame\ngap\nhuman-before\nfooter\n"
+		writeFileSync(join(repo, "file.txt"), original)
+		commit()
+		await write("file.txt", original.replace("x", "y"))
+		writeFileSync(
+			join(repo, "file.txt"),
+			readFileSync(join(repo, "file.txt"), "utf8").replace("human-before", "human-after"),
+		)
+		commit()
+		await reconcileFileTransitions(context("reopened"))
 		expect(contributions()).toEqual([])
 	})
 	it("matches only contributed files in a mixed commit", async () => {

@@ -51,9 +51,10 @@ export function isReadOnlyQualifiedMcpTool(originalName: string, annotations?: T
  * adapter's valid metadata, using upstream filtering and wire-name rules.
  * Ambiguous names fail closed: a read-only claim must never authorize a
  * different server's tool. The facade intersects these candidates with its
- * registered tools before exposing them to the planning profile.
+ * registered tools before exposing them to the planning profile. With
+ * `server`, only that server's tools qualify, as for a gateway call naming it.
  */
-export function collectReadOnlyMcpWireNames(config: McpConfig): string[] {
+export function collectReadOnlyMcpWireNames(config: McpConfig, server?: string): string[] {
 	const cache = loadMetadataCache()
 	if (!cache?.servers) return []
 	const qualified = new Map<string, boolean>()
@@ -76,7 +77,8 @@ export function collectReadOnlyMcpWireNames(config: McpConfig): string[] {
 			const source = entry.tools.find((candidate) => candidate.name === tool.originalName)
 			qualified.set(
 				tool.name,
-				!qualified.has(tool.name) &&
+				(server === undefined || serverName === server) &&
+					!qualified.has(tool.name) &&
 					nameCounts.get(tool.name) === 1 &&
 					!tool.resourceUri &&
 					source !== undefined &&

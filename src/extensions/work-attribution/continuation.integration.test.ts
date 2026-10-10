@@ -24,7 +24,7 @@ import { calculatePullRequestCosts } from "./costs.js"
 import { createTrackedWriteTool } from "./file-transitions.js"
 import { correctWorkLink } from "./links.js"
 import * as scope from "./scope.js"
-import { flushWorkSummaries, readWorkRecords, type WorkRecord } from "./summary.js"
+import { flushWorkSummaries, readWorkRecords, recoverWorkSummaries, type WorkRecord } from "./summary.js"
 
 let root: string | undefined
 afterEach(async () => {
@@ -57,6 +57,47 @@ async function planningRepository() {
 	const workId = getWorkId(ctx)
 	return { cwd, git, path, workId, agentDir: join(root, "agent") }
 }
+
+it.each([0, 7])("records a candidate observation for an ADR written by Bash before exit %s", async (exitCode) => {
+	const { cwd, agentDir } = await planningRepository()
+	const ctx = createContext({ cwd, sessionManager: { getSessionId: () => `bash-planner-${exitCode}` } })
+	const workId = getWorkId(ctx)
+	const path = "docs/adr/from-bash.md"
+	const toolCallId = `bash-adr-${exitCode}`
+	const content = "# CSV export from a shell tool"
+	await createCommitTrackingBashTool(ctx)
+		.execute(
+			toolCallId,
+			{ command: `printf '%s\\n' '${content}' > ${path}; exit ${exitCode}` },
+			undefined,
+			undefined,
+			ctx,
+		)
+		.catch((error) => {
+			if (exitCode === 0) throw error
+		})
+	expect(readFileSync(join(cwd, path), "utf8")).toBe(`${content}\n`)
+
+	// A shell execution window can include human edits; it is weaker than a native write.
+	expect(readWorkRecords(agentDir)).toContainEqual(
+		expect.objectContaining({
+			type: "file_observation",
+			source: "bash",
+			workId,
+			toolCallId,
+			files: expect.arrayContaining([expect.objectContaining({ path })]),
+		}),
+	)
+	await flushWorkSummaries()
+	const summaryPath = join(agentDir, "work", workId, "work.json")
+	const saved = JSON.parse(readFileSync(summaryPath, "utf8"))
+	expect(saved.fileObservations).toContainEqual(expect.objectContaining({ toolCallId, source: "bash" }))
+	rmSync(summaryPath)
+	recoverWorkSummaries()
+	await flushWorkSummaries()
+	expect(JSON.parse(readFileSync(summaryPath, "utf8")).fileObservations).toEqual(saved.fileObservations)
+	expect(await findWorkContinuation({ cwd }, `Implement ${path}`)).toBeUndefined()
+})
 
 it("does not claim a human-written ADR after a read-only Bash call", async () => {
 	const { cwd, agentDir } = await planningRepository()

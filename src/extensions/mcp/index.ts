@@ -17,6 +17,7 @@ import {
 } from "../../shared/planning/tool-profile-manager.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { observeToolFiles } from "../work-attribution/file-observations.js"
 import { loadKimchiMcpConfig } from "./config.js"
 import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
 import {
@@ -85,6 +86,21 @@ function isBlockedInPlanning(toolName: string, isReadOnlyTool: (wireName: string
 	return toolName === MCP_PROXY_TOOL || toolName === MCP_SCRIPT_TOOL || !isReadOnlyTool(toolName)
 }
 
+/**
+ * Whether a call can change local files. The gateway writes only through an action, such as an install, or a call of
+ * a tool that is not read-only-qualified on the server it names; its search, describe and status calls only read.
+ */
+function canChangeFiles(
+	toolName: string,
+	params: unknown,
+	getReadOnlyToolNames: (server?: string) => readonly string[],
+): boolean {
+	if (toolName !== MCP_PROXY_TOOL) return !getReadOnlyToolNames().includes(toolName)
+	// The adapter's schema makes these strings.
+	const { action, tool, server } = params as { action?: string; tool?: string; server?: string }
+	return action !== undefined || (tool !== undefined && !getReadOnlyToolNames(server).includes(tool))
+}
+
 type UpstreamLifecycleHandler = ExtensionHandler<unknown, unknown>
 type CapturedUpstreamEvent = "input" | "session_start"
 
@@ -92,7 +108,7 @@ function createUpstreamApi(
 	pi: ExtensionAPI,
 	policy: McpToolSurfacePolicy,
 	captureHandler: (event: CapturedUpstreamEvent, handler: UpstreamLifecycleHandler) => void,
-	getReadOnlyToolNames: () => readonly string[],
+	getReadOnlyToolNames: (server?: string) => readonly string[],
 ): ExtensionAPI {
 	const visibility = createToolVisibility(pi)
 	const registeredToolNames = new Set<string>()
@@ -141,7 +157,10 @@ function createUpstreamApi(
 							) {
 								return blockedPlanningResult(brandedTool.name)
 							}
-							return brandMcpAdapterOwnedToolResult(await execute(...args))
+							const result = canChangeFiles(brandedTool.name, args[1], getReadOnlyToolNames)
+								? await observeToolFiles(args[4], args[0], "mcp", () => execute(...args))
+								: await execute(...args)
+							return brandMcpAdapterOwnedToolResult(result)
 						},
 					})
 					visibility.enable([tool.name])
@@ -297,7 +316,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					(upstreamEvent, handler) => {
 						upstreamHandlers[upstreamEvent].push(handler)
 					},
-					() => collectReadOnlyMcpWireNames(config),
+					(server) => collectReadOnlyMcpWireNames(config, server),
 				),
 			)
 		}

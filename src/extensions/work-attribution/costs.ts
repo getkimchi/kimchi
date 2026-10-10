@@ -253,10 +253,14 @@ function exclusiveRequestPulls(
 		}
 	>()
 	const requestTransitions = new Map<string, Set<string>>()
+	const requestCommitPulls = new Map<string, Set<string>>()
 	const unresolvedRequests = new Set<string>()
 	const unresolvedWorks = new Set<string>()
 	const rewritten = new Set<string>()
+	const observations: { requestId: string; row: WorkRecord }[] = []
 	for (const row of records) {
+		if (row.type === "file_observation" && typeof row.requestId === "string")
+			observations.push({ requestId: row.requestId, row })
 		if (row.type === "commit" && typeof row.rewrittenFrom === "string")
 			rewritten.add(JSON.stringify([row.workId, row.repository, row.rewrittenFrom]))
 		if (row.type !== "file_transition") continue
@@ -280,14 +284,39 @@ function exclusiveRequestPulls(
 				pulls: new Set(),
 			})
 	}
+	// Tool windows can overlap human edits, so an observation never proves ownership. It blocks native proof only where
+	// it could have altered that evidence: an incomplete or truncated scan, or a file natively edited in the same work and
+	// worktree. A tool change to any other file, such as build output, leaves the proof alone.
+	const nativePaths = new Set(
+		[...transitions.values()].map(({ row }) => JSON.stringify([row.workId, row.worktree, row.path])),
+	)
+	for (const { requestId, row } of observations) {
+		const files = Array.isArray(row.files) ? row.files : []
+		if (
+			row.complete !== true ||
+			row.truncated === true ||
+			files.some(
+				(file) =>
+					!object(file) ||
+					typeof file.path !== "string" ||
+					nativePaths.has(JSON.stringify([row.workId, row.worktree, file.path])),
+			)
+		)
+			unresolvedRequests.add(requestId)
+	}
 	for (const row of records) {
-		if (row.type !== "commit" || (row.fileMatches === undefined && row.source !== "native-file-transition")) continue
+		if (row.type !== "commit") continue
+		const key = commitIdentity(row)
+		if (typeof row.requestId === "string" && !rewritten.has(JSON.stringify([row.workId, row.repository, row.sha]))) {
+			const links = key === undefined ? undefined : commitPulls.get(key)
+			if (links?.size) for (const pull of links) add(requestCommitPulls, row.requestId, pull)
+			else unresolvedRequests.add(row.requestId)
+		}
+		if (row.fileMatches === undefined && row.source !== "native-file-transition") continue
 		if (!Array.isArray(row.fileMatches) || !row.fileMatches.length) {
 			unresolvedWorks.add(row.workId)
 			continue
 		}
-
-		const key = commitIdentity(row)
 		for (const match of row.fileMatches) {
 			if (!object(match) || !Array.isArray(match.transitionIds) || !match.transitionIds.length) {
 				unresolvedWorks.add(row.workId)
@@ -305,7 +334,7 @@ function exclusiveRequestPulls(
 				row.source === "native-file-transition" &&
 				ids.length === match.transitionIds.length &&
 				evidence.length === ids.length &&
-				(match.method === "file-chain" || match.method === "path-blob") &&
+				(match.method === "file-chain" || match.method === "path-blob" || match.method === "file-hunks") &&
 				match.worktree === row.worktree &&
 				evidence.every(
 					({ row: edit, fingerprint }) =>
@@ -339,6 +368,7 @@ function exclusiveRequestPulls(
 		if (!owner || unresolvedRequests.has(requestId) || owner.workIds.size !== 1 || owner.sessionIds.size !== 1) continue
 		const pulls = new Set<string>()
 		let complete = true
+		let proven = false
 		for (const id of ids) {
 			const value = transitions.get(id)
 			if (
@@ -361,11 +391,14 @@ function exclusiveRequestPulls(
 				complete = false
 				break
 			}
+			proven = true
 			for (const pull of value.pulls) pulls.add(pull)
 		}
+		for (const pull of requestCommitPulls.get(requestId) ?? []) pulls.add(pull)
 		if (!complete) continue
-		if (pulls.size === 1) for (const pull of pulls) exclusive.set(requestId, pull)
-		else if (!pulls.size) neutral.add(requestId)
+		// A tool commit names its PR but proves no edit of its own; the input still counts its PR below.
+		if (!proven) neutral.add(requestId)
+		else if (pulls.size === 1) for (const pull of pulls) exclusive.set(requestId, pull)
 	}
 
 	// One input can require several requests or local children before producing its edits.
@@ -382,6 +415,7 @@ function exclusiveRequestPulls(
 
 		const input = inputs.get(key) ?? { requests: [], pulls: new Set<string>(), complete: true }
 		input.requests.push(requestId)
+		for (const pull of requestCommitPulls.get(requestId) ?? []) input.pulls.add(pull)
 		if (requestTransitions.has(requestId) || unresolvedRequests.has(requestId)) {
 			const pull = exclusive.get(requestId)
 			if (pull) input.pulls.add(pull)
@@ -390,9 +424,11 @@ function exclusiveRequestPulls(
 		inputs.set(key, input)
 	}
 	for (const input of inputs.values()) {
+		const nativeEvidence = input.requests.some((requestId) => exclusive.has(requestId))
 		for (const requestId of input.requests) {
 			exclusive.delete(requestId)
-			if (input.complete && input.pulls.size === 1) for (const pull of input.pulls) exclusive.set(requestId, pull)
+			if (nativeEvidence && input.complete && input.pulls.size === 1)
+				for (const pull of input.pulls) exclusive.set(requestId, pull)
 		}
 	}
 	return exclusive

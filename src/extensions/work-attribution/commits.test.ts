@@ -163,7 +163,7 @@ fs.writeFileSync(${JSON.stringify(sizePath)}, String(fs.statSync(process.env.${v
 			`git worktree remove ${quote(worktree)}`,
 			"git commit --allow-empty -m after",
 		]
-		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
+		const debug = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		expect(await run(commands.join(" && "))).toBe(0)
 		const names = position === "middle" ? ["before", "after"] : ["after"]
 		expect(commits).toEqual(
@@ -173,7 +173,9 @@ fs.writeFileSync(${JSON.stringify(sizePath)}, String(fs.statSync(process.env.${v
 				worktree: repository,
 			})),
 		)
-		expect(warning).toHaveBeenCalledWith("Could not resolve Git commit repository:", expect.any(Error))
+		// The removed tree's commit is traced and dropped only because its repository is gone. On Linux, a detached
+		// maintenance run from the previous commit may still be running here and must not leave that commit unowned.
+		expect(debug).toHaveBeenCalledWith("Could not resolve Git commit repository:", expect.any(Error))
 	})
 
 	it("does not record checkout or reset alongside a real commit", async () => {
