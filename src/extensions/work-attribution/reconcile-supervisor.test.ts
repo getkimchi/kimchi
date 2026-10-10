@@ -9,9 +9,11 @@ import * as transitions from "./file-transitions.js"
 import * as continuations from "./links.js"
 import {
 	RECONCILIATION_INTERVAL_MS,
+	requestWorkReconciliation,
 	subscribeCostReconciliation,
 	subscribeFileReconciliation,
 	subscribePullRequestReconciliation,
+	subscribeReportingReconciliation,
 } from "./reconcile-supervisor.js"
 
 vi.mock("proper-lockfile", async (original) => ({ ...(await original<typeof locks>()) }))
@@ -58,6 +60,68 @@ afterEach(async () => {
 })
 
 describe("shared file reconciliation", () => {
+	it("coalesces immediate refreshes during a running pass without overlap or waiting for the interval", async () => {
+		let finish!: () => void
+		const gate = new Promise<void>((resolve) => {
+			finish = resolve
+		})
+		let active = 0
+		let maximum = 0
+		const report = vi.fn(async () => {
+			maximum = Math.max(maximum, ++active)
+			await gate
+			active--
+		})
+		stops.push(subscribeReportingReconciliation(report))
+		try {
+			await vi.waitFor(() => expect(report).toHaveBeenCalledOnce())
+			requestWorkReconciliation()
+			requestWorkReconciliation()
+			requestWorkReconciliation()
+			expect(report).toHaveBeenCalledOnce()
+			finish()
+			await vi.waitFor(() => expect(report).toHaveBeenCalledTimes(2))
+			expect(maximum).toBe(1)
+		} finally {
+			finish()
+		}
+	})
+	it("discards a requested refresh when the last subscriber shuts down", async () => {
+		const report = vi.fn(async (_directory: string, signal: AbortSignal) => {
+			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
+		})
+		const stop = subscribeReportingReconciliation(report)
+		stops.push(stop)
+		await vi.waitFor(() => expect(report).toHaveBeenCalledOnce())
+		requestWorkReconciliation()
+		await stop()
+		requestWorkReconciliation()
+		expect(report).toHaveBeenCalledOnce()
+		expect(vi.getTimerCount()).toBe(0)
+	})
+	it("runs optional reporting after costs and historical repair and cancels only that subscription", async () => {
+		const order: string[] = []
+		vi.mocked(costs.reconcileWorkCosts).mockImplementation(async () => {
+			order.push("costs")
+		})
+		vi.mocked(continuations.reconcileWorkContinuations).mockImplementation(async () => {
+			order.push("history")
+		})
+		subscribe()
+		stops.push(subscribeCostReconciliation())
+		let reportSignal: AbortSignal | undefined
+		const stop = subscribeReportingReconciliation(async (_directory, signal, assertLease) => {
+			assertLease()
+			order.push("reporting")
+			reportSignal = signal
+			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
+		})
+		stops.push(stop)
+		await vi.waitFor(() => expect(order).toEqual(["costs", "history", "reporting"]))
+		await stop()
+		expect(reportSignal?.aborted).toBe(true)
+		expect(vi.getTimerCount()).toBe(1)
+	})
 	it("runs PR and cost work before a failed historical repair and retries without a PR warning", async () => {
 		const order: string[] = []
 		const onError = vi.fn()

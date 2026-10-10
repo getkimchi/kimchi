@@ -2,7 +2,7 @@ import { isUtf8 } from "node:buffer"
 import { execFile } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { constants, existsSync, lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs"
-import { access, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
+import { access, mkdir, open, readdir, readFile, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative } from "node:path"
 import {
 	createEditTool,
@@ -11,6 +11,7 @@ import {
 	getAgentDir,
 	type WriteOperations,
 } from "@earendil-works/pi-coding-agent"
+import { writeFileDurably } from "../../config/json.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { SHA } from "../pull-request-status/provider-records.js"
 import {
@@ -305,19 +306,7 @@ async function saveHistoryBoundary(refTips: string[]): Promise<string> {
 	}
 	const path = historyBoundaryPath(id)
 	await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-	const temporary = join(dirname(path), `.${id}-${randomUUID()}.tmp`)
-	try {
-		const file = await open(temporary, "wx", 0o600)
-		try {
-			await file.writeFile(`${JSON.stringify({ version: 1, refTips })}\n`)
-			await file.sync()
-		} finally {
-			await file.close()
-		}
-		await rename(temporary, path)
-	} finally {
-		await rm(temporary, { force: true })
-	}
+	await writeFileDurably(path, `${JSON.stringify({ version: 1, refTips })}\n`)
 	return id
 }
 /** Native tools invoke these operations inside their existing file mutation queue. */

@@ -560,7 +560,17 @@ describe("PR status with the real reconciliation supervisor", () => {
 				sha,
 				recordedAt: pr.checkedAt,
 				pullRequests: [
-					{ ...pr, url, number: index + 1, state: "merged", headSha: sha, mergeCommitSha: sha, mergedAt: pr.checkedAt },
+					{
+						...pr,
+						url,
+						id: String(index + 1),
+						repositoryId: "17",
+						number: index + 1,
+						state: "merged",
+						headSha: sha,
+						mergeCommitSha: sha,
+						mergedAt: pr.checkedAt,
+					},
 				],
 			}
 		})
@@ -582,6 +592,14 @@ describe("PR status with the real reconciliation supervisor", () => {
 		await pass(2 * rows.length)
 		// Startup can clear the footer more than once under load; it ends on the current work's PR alone.
 		const calls = vi.mocked(ctx.ui.setStatus).mock.calls
+		await vi.waitFor(
+			() =>
+				expect(calls.slice(-2)).toEqual([
+					["work-pr-url", "https://github.com/example/repo/pull/1"],
+					["work-pr", "PR #1 merged"],
+				]),
+			{ timeout: 25_000 },
+		)
 		expect(calls.slice(-2)).toEqual([
 			["work-pr-url", "https://github.com/example/repo/pull/1"],
 			["work-pr", "PR #1 merged"],

@@ -1,0 +1,70 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { expect, test } from "@microsoft/tui-test"
+import { fullText, waitForText } from "./support/assertions.js"
+import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+
+test.use(TUI_TEST_CONFIG)
+
+// The variables `automation.ts` treats as CI; the runner's own would hide the interactive default notice.
+const CI_VARIABLES = [
+	"CI",
+	"GITHUB_ACTIONS",
+	"GITLAB_CI",
+	"BUILDKITE",
+	"JENKINS_URL",
+	"TEAMCITY_VERSION",
+	"CIRCLECI",
+	"TF_BUILD",
+]
+
+for (const telemetry of [false, true]) {
+	test(`PR reporting follows SaaS uploads (${telemetry ? "on" : "off"}) until explicitly changed`, async ({
+		terminal,
+	}) => {
+		await runKimchiSession(
+			terminal,
+			{
+				artifactName: `pr-cost-reporting-${telemetry}`,
+				responses: [],
+				gitInit: true,
+				env: {
+					KIMCHI_TELEMETRY_ENABLED: String(telemetry),
+					...Object.fromEntries(CI_VARIABLES.map((name) => [name, ""])),
+				},
+				seedHome(homeDir) {
+					const path = join(homeDir, ".config/kimchi/config.json")
+					const config = JSON.parse(readFileSync(path, "utf8"))
+					config.telemetry = {
+						endpoint: `${config.llmEndpoint}/logs`,
+						metricsEndpoint: `${config.llmEndpoint}/metrics`,
+					}
+					writeFileSync(path, JSON.stringify(config))
+				},
+			},
+			async (fixture, trace) => {
+				const path = join(fixture.agentDir, "pr-cost-reporting", "state.json")
+				if (telemetry) {
+					await waitForText(terminal, "PR costs are reported to your account")
+					expect(fullText(terminal)).toMatch(/\/pr-reporting\s+off/)
+					expect(JSON.parse(readFileSync(path, "utf8")).defaultNoticeShown).toBe(true)
+				} else expect(fullText(terminal)).not.toContain("PR costs are reported to your account")
+				terminal.submit("/pr-reporting status")
+				await waitForText(terminal, `PR reporting: ${telemetry ? "on" : "off"} (SaaS default)`)
+				if (!telemetry) expect(existsSync(path)).toBe(false)
+				trace.step("reporting follows the existing SaaS upload setting")
+				terminal.submit("/pr-reporting on")
+				await waitForText(terminal, "PR reporting on.")
+				expect(JSON.parse(readFileSync(path, "utf8")).enabled).toBe(true)
+				trace.step("explicit consent is saved and the upload fields are explained")
+				terminal.submit("/pr-reporting off")
+				await waitForText(terminal, "Pending uploads were deleted")
+				const state = JSON.parse(readFileSync(path, "utf8"))
+				expect(state.enabled).toBe(false)
+				expect(state.entries).toEqual({})
+				expect(fixture.fake.requests.filter((request) => request.url.includes("/chat/completions"))).toHaveLength(0)
+				trace.step("reporting is off again with no model calls")
+			},
+		)
+	})
+}

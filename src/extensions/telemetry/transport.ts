@@ -1,6 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import type { TelemetryConfig } from "../../config.js"
+import { readTelemetryConfig, type TelemetryConfig } from "../../config.js"
 import { fetchWithRetry } from "../../utils/http.js"
 import { getVersion } from "../../utils.js"
 import { nowNano, strAttr } from "./helpers.js"
@@ -52,6 +52,10 @@ export interface MetricData {
 	type: "Sum" | "Gauge"
 	value: number
 	attrs: Record<string, string | number | boolean>
+	/** Operational health has no session or actor dimensions. */
+	scope?: "aggregate"
+	/** A counter reset starts a new stream even if the user resumes the same session. */
+	startTimeUnixNano?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +156,7 @@ export async function sendMetrics(
 	metrics: MetricData[],
 	sessionStartNano: string,
 	userEmail?: string,
+	canSendAggregate?: (consent: TelemetryConfig) => boolean,
 ): Promise<void> {
 	if (!config.enabled || !config.metricsEndpoint || metrics.length === 0) return
 	const now = nowNano()
@@ -168,10 +173,10 @@ export async function sendMetrics(
 								dataPoints: [
 									{
 										timeUnixNano: now,
-										startTimeUnixNano: sessionStartNano,
+										startTimeUnixNano: m.startTimeUnixNano ?? sessionStartNano,
 										...(Number.isInteger(m.value) ? { asInt: String(m.value) } : { asDouble: m.value }),
 										attributes: [
-											strAttr("session.id", sessionId),
+											...(m.scope === "aggregate" ? [] : [strAttr("session.id", sessionId)]),
 											strAttr("client", "pi"),
 											...Object.entries(m.attrs).map(([k, v]) => strAttr(k, String(v))),
 										],
@@ -189,6 +194,8 @@ export async function sendMetrics(
 	for (const metric of metrics) {
 		logEventToFile(metric.name, { value: metric.value, ...metric.attrs })
 	}
+	const aggregate = metrics.some((metric) => metric.scope === "aggregate")
+	const consent = new AbortController()
 	try {
 		const response = await fetchWithRetry(
 			config.metricsEndpoint,
@@ -197,7 +204,19 @@ export async function sendMetrics(
 				headers: { "Content-Type": "application/json", ...config.headers },
 				body: JSON.stringify(payload),
 			},
-			{ timeoutMs: 10_000, retry: { maxRetries: 3 } },
+			{
+				timeoutMs: 10_000,
+				retry: { maxRetries: 3 },
+				signal: consent.signal,
+				fetchImpl: (url, init) => {
+					if (aggregate) {
+						const current = readTelemetryConfig()
+						if (!current.enabled || canSendAggregate?.(current) === false) consent.abort()
+					}
+					consent.signal.throwIfAborted()
+					return globalThis.fetch(url, init)
+				},
+			},
 		)
 		if (!response.ok) {
 			logEventToFile("telemetry.response.error", {

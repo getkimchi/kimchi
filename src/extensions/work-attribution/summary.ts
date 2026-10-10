@@ -172,14 +172,6 @@ async function readSummary(path: string, workId: string): Promise<WorkSummary | 
 		if (!(error instanceof SyntaxError) && (!object(error) || error.code !== "ENOENT")) throw error
 	}
 }
-function parseRecord(line: string, records: WorkRecord[]): void {
-	try {
-		const value = JSON.parse(line)
-		if (record(value)) records.push(value)
-	} catch {
-		/* interrupted append */
-	}
-}
 /** An interrupted append leaves a record cut off mid-value; any other unparseable line is damage. */
 function truncated(line: string): boolean {
 	const closing: string[] = []
@@ -217,6 +209,38 @@ function truncated(line: string): boolean {
 		}
 	})
 }
+/**
+ * Parses one journal line by line; `final` marks the text after its last newline, which may still be in progress.
+ * A cut-off record that later appends moved past was interrupted; any other unparseable line, including a cut-off
+ * final record, is damage.
+ */
+function journalParser(path: string, records: WorkRecord[], onRecordProblem?: (problem: WorkRecordProblem) => void) {
+	let line = 0
+	let cut: number[] = []
+	return (text: string, final: boolean): void => {
+		line++
+		if (!text.trim()) {
+			if (final) for (const number of cut) onRecordProblem?.({ kind: "invalid", path, line: number })
+			return
+		}
+		// A later line shows that the cut-off records before it were interrupted appends.
+		cut = []
+		let value: unknown
+		try {
+			value = JSON.parse(text)
+		} catch {
+			if (final) return
+			if (truncated(text)) cut.push(line)
+			else onRecordProblem?.({ kind: "invalid", path, line })
+			return
+		}
+		if (record(value)) records.push(value)
+		else
+			onRecordProblem?.(
+				unknownType(value) ? { kind: "unknown-type", path, line, record: value } : { kind: "invalid", path, line },
+			)
+	}
+}
 export function readWorkRecords(
 	agentDir: string,
 	modifiedSince?: number,
@@ -238,29 +262,11 @@ export function readWorkRecords(
 				const path = join(source, file.name)
 				if (modifiedSince !== undefined && statSync(path).mtimeMs < modifiedSince) continue
 				const lines = readFileSync(path, "utf8").split("\n")
-				let last = lines.length - 1
-				while (last > 0 && !lines[last].trim()) last--
+				const parse = journalParser(path, records, onRecordProblem)
 				for (const [index, line] of lines.entries()) {
 					// The first check follows each file read; later ones skip lines, as a clock read per line adds up.
 					if (index % BUDGET_CHECK_LINES === 0) checkBudget()
-					if (!line.trim()) continue
-					let value: unknown
-					try {
-						value = JSON.parse(line)
-					} catch {
-						// The final line may still be in progress. A cut-off record that later appends moved past was
-						// interrupted; anything else, including a cut-off final record, is damage.
-						if (index < lines.length - 1 && !(index < last && truncated(line)))
-							onRecordProblem?.({ kind: "invalid", path, line: index + 1 })
-						continue
-					}
-					if (record(value)) records.push(value)
-					else
-						onRecordProblem?.(
-							unknownType(value)
-								? { kind: "unknown-type", path, line: index + 1, record: value }
-								: { kind: "invalid", path, line: index + 1 },
-						)
+					parse(line, index === lines.length - 1)
 				}
 			} catch (error) {
 				// An incomplete scan must not advance recovery past a journal we could not read.
@@ -289,19 +295,24 @@ async function workJournals(agentDir: string): Promise<string[]> {
  * Like readWorkRecords, but yields to the event loop after each file chunk so a large history never blocks the UI,
  * and stops there once `signal` aborts so a closing session need not wait for the rest.
  */
-export async function readWorkRecordsAsync(agentDir: string, signal: AbortSignal): Promise<WorkRecord[]> {
+export async function readWorkRecordsAsync(
+	agentDir: string,
+	signal: AbortSignal,
+	onRecordProblem?: (problem: WorkRecordProblem) => void,
+): Promise<WorkRecord[]> {
 	const records: WorkRecord[] = []
 	for (const path of await workJournals(agentDir)) {
 		try {
+			const parse = journalParser(path, records, onRecordProblem)
 			let partial = ""
 			for await (const chunk of createReadStream(path, { encoding: "utf8", highWaterMark: READ_CHUNK_BYTES })) {
 				const lines = `${partial}${chunk}`.split("\n")
 				partial = lines.pop() ?? ""
-				for (const line of lines) parseRecord(line, records)
+				for (const line of lines) parse(line, false)
 				await setImmediate()
 				signal.throwIfAborted()
 			}
-			parseRecord(partial, records)
+			parse(partial, true)
 		} catch (error) {
 			if (signal.aborted) throw error
 			throw new Error(`Could not read work ledger ${basename(path)}`, { cause: error })

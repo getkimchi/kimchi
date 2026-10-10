@@ -6,6 +6,7 @@ import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations
 import { writeFileAtomic, writeFileDurably } from "../../config/json.js"
 import { loadConfig } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
+import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { BEFORE_PAGE_TIMEOUT_MESSAGE, type BillingRow, billingResponse, lookupRows } from "./billing-api.js"
 import {
@@ -125,7 +126,14 @@ export function readWorkCostReport(agentDir: string, records = readWorkRecords(a
 		incomplete,
 		noCharge,
 	)
-	return { records, requests, report }
+	const costRefreshes = new Map(
+		[...requests.values()].flatMap((item) =>
+			!item.invalid && item.substantiveLookup?.status === "priced"
+				? [[item.requestId, item.substantiveLookup.checkedAt] as const]
+				: [],
+		),
+	)
+	return { records, report, requests, costRefreshes }
 }
 
 interface CostState {
@@ -195,6 +203,10 @@ async function publishReports(
 	polls: Record<string, BillingPoll>,
 	assertLease: () => void,
 ): Promise<void> {
+	trackPRCostMetric({
+		kind: "unpriced",
+		value: report.requests.filter((request) => request.priceStatus !== "priced").length,
+	})
 	// Shared PR totals and correction links connect works, transitively; a saved report covers the whole component.
 	const neighbours = new Map<string, Set<string>>()
 	for (const ids of [

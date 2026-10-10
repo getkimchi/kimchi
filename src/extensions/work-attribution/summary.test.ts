@@ -94,7 +94,7 @@ describe("readable work summaries", () => {
 		readWorkRecords(dir, undefined, () => {}, invalid)
 		expect(invalid).toHaveBeenCalledTimes(2)
 	})
-	it.each(["", "transitions"])("skips only interrupted appends in %s journals", (source) => {
+	it.each(["", "transitions"])("skips only interrupted appends in %s journals", async (source) => {
 		const row = { version: 1, type: "work", workId: randomUUID(), sessionId: "writer" }
 		const complete = JSON.stringify(row)
 		const directory = join(dir, "work-attribution", source)
@@ -114,9 +114,13 @@ describe("readable work summaries", () => {
 			const invalid = vi.fn()
 			expect(readWorkRecords(dir, undefined, () => {}, invalid)).toEqual(rows)
 			expect(invalid).toHaveBeenCalledTimes(invalidCount)
+			// The background reader sees the same damage.
+			const background = vi.fn()
+			expect(await readWorkRecordsAsync(dir, new AbortController().signal, background)).toEqual(rows)
+			expect(background.mock.calls).toEqual(invalid.mock.calls)
 		}
 	})
-	it("reports damage and complete records of unknown types as separate problems", () => {
+	it("reports damage and complete records of unknown types as separate problems", async () => {
 		const row = { version: 1, type: "work", workId: randomUUID(), sessionId: "writer" }
 		// A newer Kimchi sharing this history can add record types that this version cannot interpret.
 		const newer = { ...row, type: "work_checkpoint", sessionId: "newer", requestIds: [randomUUID()] }
@@ -135,6 +139,9 @@ describe("readable work summaries", () => {
 			[{ kind: "invalid", path: ledger, line: 4 }],
 			[{ kind: "invalid", path: ledger, line: 5 }],
 		])
+		const background = vi.fn()
+		expect(await readWorkRecordsAsync(dir, new AbortController().signal, background)).toEqual([row, row])
+		expect(background.mock.calls).toEqual(problems.mock.calls)
 	})
 	it("skips a record cut at any position, including inside a \\u escape", () => {
 		const row = { version: 1, type: "work", workId: randomUUID(), sessionId: "writer" }

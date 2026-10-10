@@ -7,6 +7,7 @@ import {
 	reconcileWorkPullRequests,
 	type WorkPullRequestUpdate,
 } from "../pull-request-status/pull-requests.js"
+import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { reconcileWorkCosts } from "./cost-sync.js"
 import { debugWorkAttribution as debug } from "./diagnostics.js"
 import { knownTransitionRepositories, reconcileRepositoryTransitions } from "./file-transitions.js"
@@ -14,7 +15,7 @@ import { type ContinuationProgress, reconcileWorkContinuations } from "./links.j
 
 export const RECONCILIATION_INTERVAL_MS = 30_000
 const PASS_BUDGET_MS = 3000
-type ChannelKind = "pull-requests" | "costs"
+type ChannelKind = "pull-requests" | "costs" | "reporting"
 /** Optional work with its own cancellation; unsubscribing waits only for that channel's pass. */
 interface Channel {
 	controller: AbortController
@@ -25,11 +26,13 @@ interface Supervisor extends ContinuationProgress {
 	controller: AbortController
 	timer?: ReturnType<typeof setInterval>
 	running?: Promise<void>
+	requested?: boolean
 	nextRepository?: string
 	channels: Map<ChannelKind, Channel>
 }
 interface ReconciliationSubscriber {
 	kind: "files" | ChannelKind
+	onReport?: (agentDir: string, signal: AbortSignal, assertLease: () => void) => Promise<void>
 	onPullRequest?: (update: WorkPullRequestUpdate) => void
 	onError?: (error: unknown) => void
 }
@@ -86,6 +89,7 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 		if (compromised) throw compromised
 	}
 	const deadline = Date.now() + PASS_BUDGET_MS
+	trackPRCostMetric({ kind: "reconciliation" })
 	const exhausted = new Error("Work attribution reconciliation time limit exceeded")
 	const checkBudget = () => {
 		assertLease()
@@ -141,6 +145,16 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 				if (!signal.aborted) debug("Could not reconcile work continuations: %o", error)
 			}
 		}
+		const report = [...owner.subscribers].find((subscriber) => subscriber.kind === "reporting")?.onReport
+		if (report)
+			await runChannel(
+				owner,
+				"reporting",
+				signal,
+				assertLease,
+				(channelSignal, assertChannel) => report(agentDir, channelSignal, assertChannel),
+				(error) => debug("Could not report PR costs: %o", error),
+			)
 	} finally {
 		if (!compromised) await release()
 	}
@@ -174,7 +188,20 @@ function tick(agentDir: string, owner: Supervisor): void {
 		})
 		.finally(() => {
 			owner.running = undefined
+			if (owner.requested) {
+				owner.requested = false
+				tick(agentDir, owner)
+			}
 		})
+}
+
+/** Refresh existing subscribers now, or once the current leased pass finishes. */
+export function requestWorkReconciliation(): void {
+	const agentDir = resolve(getAgentDir())
+	const owner = supervisors.get(agentDir)
+	if (!owner || owner.controller.signal.aborted) return
+	if (owner.running) owner.requested = true
+	else tick(agentDir, owner)
 }
 
 /** One optional worker per harness directory. Local children never subscribe. */
@@ -232,4 +259,10 @@ export function subscribePullRequestReconciliation(subscriber: {
 /** Price lookups share the timer and lease; only main work-tracking sessions subscribe. */
 export function subscribeCostReconciliation(): () => Promise<void> {
 	return subscribeReconciliation({ kind: "costs" })
+}
+/** An optional extension supplies delivery; work tracking has no reporting dependency. */
+export function subscribeReportingReconciliation(
+	onReport: NonNullable<ReconciliationSubscriber["onReport"]>,
+): () => Promise<void> {
+	return subscribeReconciliation({ kind: "reporting", onReport })
 }

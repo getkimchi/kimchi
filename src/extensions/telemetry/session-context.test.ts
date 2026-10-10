@@ -1,9 +1,15 @@
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
+import * as config from "../../config.js"
 import * as osMetadata from "../../utils/os-metadata.js"
 import { createContext } from "../__mocks__/context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { setTelemetryFermentV2Context } from "./ferment-v2-context.js"
+import * as telemetry from "./index.js"
+import { trackPRCostMetric } from "./pr-cost.js"
 import { _resetSharedAccumulators, TelemetryContext } from "./session-context.js"
 
 vi.mock("../../api/me.js", () => ({
@@ -41,10 +47,172 @@ describe("SessionContext", () => {
 		globalThis.fetch = originalFetch
 		_resetSharedAccumulators()
 		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
 		// session.parent_id simulation env — never leak the subagent worker flag
 		// or the parent session id into sibling tests.
 		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 		Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
+	})
+
+	it("flushes PR health without adding user or session labels", async () => {
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.setPiSessionId("private-session")
+		ctx.userId = "private-user"
+		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, queueDepth: 0, startTimeUnixNano: "1000000000" }
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+		const [, options] = vi.mocked(globalThis.fetch).mock.calls[0]
+		const body = JSON.parse(String(options?.body))
+		const serialized = JSON.stringify(body)
+		expect(serialized).not.toContain("private-session")
+		expect(serialized).not.toContain("private-user")
+		expect(serialized).not.toContain("user.account_uuid")
+		expect(serialized).not.toContain("session.id")
+		expect(body.resourceMetrics[0].scopeMetrics[0].metrics).toHaveLength(2)
+	})
+
+	it("drops buffered PR health when telemetry is turned off before flush", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, startTimeUnixNano: "1000000000" }
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+		expect(globalThis.fetch).not.toHaveBeenCalled()
+		expect(ctx.cumulative.prCost).toBeUndefined()
+	})
+
+	it("rechecks PR health consent after pending identity lookup", async () => {
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		const ctx = new TelemetryContext(makeConfig())
+		let release!: () => void
+		ctx.userEmailReady = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, startTimeUnixNano: "1000000000" }
+		ctx.flushMetrics()
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+		release()
+		await Promise.allSettled([...ctx.inFlight])
+		expect(globalThis.fetch).not.toHaveBeenCalled()
+		expect(ctx.cumulative.prCost).toBeUndefined()
+	})
+
+	it("does not retry a PR health batch after telemetry is turned off", async () => {
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		vi.spyOn(Math, "random").mockReturnValue(0)
+		vi.mocked(globalThis.fetch).mockImplementationOnce(async () => {
+			vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+			return new Response(null, { status: 503 })
+		})
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, startTimeUnixNano: "1000000000" }
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+	})
+
+	it("does not restore a discarded batch if telemetry is re-enabled before identity resolves", async () => {
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		const ctx = new TelemetryContext(makeConfig())
+		let release!: () => void
+		ctx.userEmailReady = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		ctx.cumulative.prCost = { matching: { explicit: 4 }, delivery: {}, startTimeUnixNano: "1000000000" }
+		ctx.flushMetrics()
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+		ctx.flushMetrics()
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		ctx.cumulative.prCost = { matching: { session: 1 }, delivery: {}, startTimeUnixNano: "2000000000" }
+		ctx.flushMetrics()
+		release()
+		await Promise.allSettled([...ctx.inFlight])
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const body = JSON.parse(String(vi.mocked(globalThis.fetch).mock.calls[0][1]?.body))
+		expect(body.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].startTimeUnixNano).toBe("2000000000")
+	})
+
+	it("does not retry discarded health counts after telemetry is re-enabled", async () => {
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		vi.spyOn(Math, "random").mockReturnValue(0)
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.cumulative.prCost = { matching: { explicit: 4 }, delivery: {}, startTimeUnixNano: "1000000000" }
+		vi.mocked(globalThis.fetch).mockImplementationOnce(async () => {
+			vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+			ctx.flushMetrics()
+			vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+			ctx.cumulative.prCost = { matching: { session: 1 }, delivery: {}, startTimeUnixNano: "2000000000" }
+			return new Response(null, { status: 503 })
+		})
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+		expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+		const body = JSON.parse(String(vi.mocked(globalThis.fetch).mock.calls[1][1]?.body))
+		expect(body.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].startTimeUnixNano).toBe("2000000000")
+	})
+
+	it.each([
+		"buffered",
+		"identity",
+		"identity-with-fresh-counts",
+		"retry",
+	])("discards %s health after persisted off/on between flushes", async (stage) => {
+		const directory = mkdtempSync(join(tmpdir(), "kimchi-health-consent-"))
+		const path = join(directory, "config.json")
+		const readConfig = config.readTelemetryConfig
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", undefined)
+		vi.spyOn(config, "readTelemetryConfig").mockImplementation(() => readConfig(path))
+		vi.spyOn(Math, "random").mockReturnValue(0)
+		try {
+			config.writeTelemetryEnabled(true, path)
+			const ctx = new TelemetryContext(makeConfig())
+			vi.spyOn(telemetry, "_getTelemetryCtx").mockReturnValue(ctx)
+			trackPRCostMetric({ kind: "matching", outcome: "explicit" })
+			const toggle = () => {
+				config.writeTelemetryEnabled(false, path)
+				config.writeTelemetryEnabled(true, path)
+			}
+			let release!: () => void
+			if (stage.startsWith("identity"))
+				ctx.userEmailReady = new Promise<void>((resolve) => {
+					release = resolve
+				})
+			if (stage === "retry")
+				vi.mocked(globalThis.fetch).mockImplementationOnce(async () => {
+					toggle()
+					return new Response(null, { status: 503 })
+				})
+			if (stage === "buffered") toggle()
+			ctx.flushMetrics()
+			if (stage.startsWith("identity")) {
+				toggle()
+				if (stage === "identity-with-fresh-counts") trackPRCostMetric({ kind: "matching", outcome: "session" })
+				release()
+			}
+			await Promise.allSettled([...ctx.inFlight])
+			const previousAttempts = stage === "retry" ? 1 : 0
+			expect(globalThis.fetch).toHaveBeenCalledTimes(previousAttempts)
+
+			if (stage !== "identity-with-fresh-counts") trackPRCostMetric({ kind: "matching", outcome: "session" })
+			ctx.flushMetrics()
+			await Promise.allSettled([...ctx.inFlight])
+			expect(globalThis.fetch).toHaveBeenCalledTimes(previousAttempts + 1)
+			const body = JSON.parse(String(vi.mocked(globalThis.fetch).mock.calls.at(-1)?.[1]?.body))
+			const metrics = body.resourceMetrics[0].scopeMetrics[0].metrics
+			expect(metrics).toHaveLength(1)
+			expect(metrics[0].sum.dataPoints[0].asInt).toBe("1")
+			expect(metrics[0].sum.dataPoints[0].attributes).toContainEqual({
+				key: "decision",
+				value: { stringValue: "session" },
+			})
+		} finally {
+			rmSync(directory, { recursive: true, force: true })
+		}
 	})
 
 	it("emit appends source and session_type to every event", async () => {

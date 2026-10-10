@@ -62,6 +62,8 @@ export interface AcpMcpFixture extends AcpFixture {
 }
 
 export interface AcpFixtureOptions {
+	/** Enable telemetry against the fixture server, never a shared ingest endpoint. */
+	telemetry?: boolean
 	account?: Parameters<typeof startFakeOpenAiServer>[0]["account"]
 	billingRows?: Parameters<typeof startFakeOpenAiServer>[0]["billingRows"]
 	responses: FakeResponseScript[]
@@ -324,6 +326,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				{
 					apiKey: "fake",
 					llmEndpoint: fake.baseUrl,
+					telemetry: { endpoint: `${fake.baseUrl}/logs`, metricsEndpoint: `${fake.baseUrl}/metrics` },
 					skillPaths: [],
 					migrationState: "done",
 					onboarding: { hideSessionModeDialog: true },
@@ -419,6 +422,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				// Keep the /v1/me identity lookup (telemetry pre-session) on the
 				// fake server; otherwise it would reach the real app API.
 				KIMCHI_REMOTE_ENDPOINT: fake.baseUrl,
+				...(options.telemetry === undefined ? {} : { KIMCHI_TELEMETRY_ENABLED: String(options.telemetry) }),
 				...(mcp?.env ?? {}),
 			},
 			cwd: workDir,

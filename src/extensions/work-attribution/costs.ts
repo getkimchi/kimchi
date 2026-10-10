@@ -637,7 +637,13 @@ export function calculatePullRequestCosts(
 			if (!previous || checkedAt > previous.checkedAt) pulls.set(key, { checkedAt, pullRequest: pull })
 			else if (checkedAt === previous.checkedAt && previous.pullRequest) {
 				const other = previous.pullRequest
-				if (other.state !== pull.state || time(other.mergedAt) !== time(pull.mergedAt)) previous.pullRequest = null
+				if (
+					other.state !== pull.state ||
+					time(other.mergedAt) !== time(pull.mergedAt) ||
+					(other.id && pull.id && other.id !== pull.id) ||
+					(other.repositoryId && pull.repositoryId && other.repositoryId !== pull.repositoryId)
+				)
+					previous.pullRequest = null
 				// Equivalent cost evidence may still carry different display metadata. Keep output stable.
 				else if (JSON.stringify(pull) < JSON.stringify(other)) previous.pullRequest = pull
 			}

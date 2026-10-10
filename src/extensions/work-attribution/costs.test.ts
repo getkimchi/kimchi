@@ -61,6 +61,15 @@ function charge(requestId: string, costUsd: string | null, billingRecordId = req
 const secondPull = () => pullRequest({ number: 2, url: "https://github.com/example/repository/pull/2" })
 
 describe("account-scoped PR totals", () => {
+	it("retains stable provider IDs and rejects equally recent contradictory IDs", () => {
+		const first = commit("work-a", [pullRequest({ id: "81", repositoryId: "42" })])
+		expect(calculatePullRequestCosts([request("a"), first], []).pullRequests[0].pullRequest).toMatchObject({
+			id: "81",
+			repositoryId: "42",
+		})
+		const conflicting = commit("work-a", [pullRequest({ id: "81", repositoryId: "43" })])
+		expect(calculatePullRequestCosts([request("a"), first, conflicting], []).pullRequests[0].pullRequest).toBeNull()
+	})
 	it.each(["organizationId", "userId", "apiUrl"] as const)("separates the same PR by %s", (field) => {
 		const scope = createWorkScopeSnapshot("/repo/.git").scope
 		const other = {

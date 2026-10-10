@@ -29,6 +29,7 @@ import { isResourceEnabled } from "../resources/store.js"
 import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
 import { isHarnessSteer } from "./steer-marker.js"
+import { trackPRCostMetric } from "./telemetry/pr-cost.js"
 import { type BillingSource, captureBillingSource, requestTagSelector } from "./work-attribution/billing-source.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
 import { findWorkContinuation, hasWorkReference, type WorkContinuation } from "./work-attribution/continuation.js"
@@ -639,6 +640,7 @@ export function createWorkAttributionExtension(
 			if (event.source === "extension") return
 			// Optional model matching never interrupts the user; its failures leave the input unresolved.
 			let matching = false
+			let matchingOutcome: "failed" | "limited" | undefined
 			try {
 				bind(ctx)
 				const key = workLedgerPath(ctx)
@@ -824,9 +826,21 @@ export function createWorkAttributionExtension(
 				)
 				await rememberWorkIntent(ctx.cwd, workId, event.text, intents.repository, intents.account)
 			} catch (error) {
-				if (error instanceof WorkMatchingLimit) matchingLimit = error.message
-				if (matching || error instanceof WorkMatchingLimit) debugWorkAttribution("Work matching skipped:", error)
-				else warnWorkAttribution(ctx, error)
+				if (error instanceof WorkMatchingLimit) {
+					matchingLimit = error.message
+					matchingOutcome = "limited"
+					debugWorkAttribution("Work matching skipped:", error)
+				} else {
+					matchingOutcome = "failed"
+					if (matching) debugWorkAttribution("Work matching skipped:", error)
+					else warnWorkAttribution(ctx, error)
+				}
+			} finally {
+				if (generation === inputGeneration)
+					trackPRCostMetric({
+						kind: "matching",
+						outcome: matchingOutcome ?? getWorkSegment(ctx)?.attribution ?? "unknown",
+					})
 			}
 		}
 		pi.on("before_provider_headers", (event, ctx) => {
