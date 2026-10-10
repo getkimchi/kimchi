@@ -107,6 +107,7 @@ import memoryExtension from "./extensions/memory/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelListExtension from "./extensions/model-list.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
+import notificationsExtension from "./extensions/notifications.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
 import orphanToolResultSanitizerExtension from "./extensions/orphan-tool-result-sanitizer.js"
@@ -836,6 +837,8 @@ try {
 			infrastructureBreakerExtension,
 			interactiveErrorSurfaceExtension,
 			rateLimitNoticeExtension,
+			// Run after continuation handlers so intermediate settled events stay silent.
+			notificationsExtension,
 		]
 
 		if (IS_ACP_MODE) {
