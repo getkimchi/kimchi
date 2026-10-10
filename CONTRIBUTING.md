@@ -36,6 +36,22 @@ Kimchi is licensed under the **Apache License 2.0**. By contributing, you agree 
 4. **Pass CI.** Run `pnpm run check` and `pnpm run test` locally before opening a PR. PRs that fail CI will not be reviewed.
 5. **Fill in the PR template.** Every field in the template exists for a reason. PRs with blank or placeholder descriptions will be closed.
 
+## Running a single test file or test
+
+When iterating on a specific change, running the full suite with `pnpm run test` is slow. Instead, run a single test file with:
+
+```sh
+pnpm exec vitest run src/cli-args.test.ts
+```
+
+To run a single named test within that file:
+
+```sh
+pnpm exec vitest run src/cli-args.test.ts -t "test name"
+```
+
+This is faster for iterating on a specific change, but the full `pnpm run test` should still pass before you open a PR (see "Pass CI" above).
+
 ## What we will and won't accept
 
 **Likely to be accepted:**
