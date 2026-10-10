@@ -31,12 +31,7 @@ import { isWorkId } from "../shared/work-id.js"
 import { isHarnessSteer } from "./steer-marker.js"
 import { type BillingSource, captureBillingSource, requestTagSelector } from "./work-attribution/billing-source.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
-import {
-	findWorkContinuation,
-	hasOwnedWorkReference,
-	hasWorkReference,
-	type WorkContinuation,
-} from "./work-attribution/continuation.js"
+import { findWorkContinuation, hasWorkReference, type WorkContinuation } from "./work-attribution/continuation.js"
 import { workCostDetails } from "./work-attribution/cost-details.js"
 import { debugWorkAttribution } from "./work-attribution/diagnostics.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
@@ -70,7 +65,6 @@ import {
 	flushWorkSummaries,
 	markNewWork,
 	object,
-	readWorkRecords,
 	recoverWorkSummaries,
 	updateWorkSummary,
 } from "./work-attribution/summary.js"
@@ -719,11 +713,13 @@ export function createWorkAttributionExtension(
 					workLedgerPath(ctx) === key &&
 					getWorkId(ctx) === current &&
 					explicitSelection.get(key) === explicitReason
-				const found =
-					captured && (eligible() || referencesWork)
+				// Ownership needs no scope: an input naming recorded work stays unresolved even without one.
+				const references =
+					referencesWork || (captured && eligible())
 						? await findWorkContinuation(pinWorkContext(ctx), event.text, captured)
 						: undefined
 				if (!unchanged()) return
+				const found = references?.match
 				if (found && captured && (found.workId === current || eligible())) {
 					const accepted = { ...found, evidence: { ...found.evidence, segmentId, ...captured.scope } }
 					// One history read serves the pin and the confirmation. If it fails, the receipt stays unpinned and
@@ -758,7 +754,7 @@ export function createWorkAttributionExtension(
 					if (model) await rememberWorkIntent(ctx.cwd, found.workId, event.text)
 					return
 				}
-				if (found || (referencesWork && hasOwnedWorkReference(ctx, event.text, readWorkRecords(getAgentDir())))) {
+				if (references?.owned) {
 					// A reference this session's continuation cannot account for may start another task.
 					explicitSelection.delete(key)
 					useSegment("unknown", "unresolved-reference")

@@ -8,7 +8,12 @@ import { createContext } from "../__mocks__/context.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import { appendWorkRecord, getWorkId, recordProviderRequest, workLedgerPath } from "../work-attribution.js"
 import { calculatePullRequestCosts } from "./costs.js"
-import { confirmWorkContinuation, correctWorkLink, reconcileWorkContinuations } from "./links.js"
+import {
+	confirmWorkContinuation,
+	correctWorkLink,
+	readContinuationHistory,
+	reconcileWorkContinuations,
+} from "./links.js"
 import * as scope from "./scope.js"
 import { flushWorkSummaries, readWorkRecords } from "./summary.js"
 
@@ -52,7 +57,7 @@ function planned() {
 
 it("lets a user correction move automatically confirmed planning requests after revoking the confirmation", async () => {
 	const flow = planned()
-	confirmWorkContinuation(flow.planner, flow.continuation, flow.original)
+	confirmWorkContinuation(flow.planner, flow.continuation, flow.original, readContinuationHistory(dir))
 	const auto = readWorkRecords(dir).filter((row) => row.type === "work_link")
 	expect(auto).toHaveLength(1)
 	// The user revokes the automatic confirmation in the planning work...

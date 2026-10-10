@@ -85,8 +85,15 @@ describe("input submitted while the agent is still streaming", () => {
 		const planned = "11111111-1111-4111-8111-111111111111"
 		vi.spyOn(continuation, "findWorkContinuation").mockImplementation(async (_ctx, text) =>
 			text.includes("plan.md")
-				? { workId: planned, source: "saved-plan", evidence: { path: "/plans/plan.md", contentHash: "a".repeat(64) } }
-				: undefined,
+				? {
+						match: {
+							workId: planned,
+							source: "saved-plan",
+							evidence: { path: "/plans/plan.md", contentHash: "a".repeat(64) },
+						},
+						owned: true,
+					}
+				: { owned: false },
 		)
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
@@ -163,8 +170,8 @@ describe("queued input delivery", () => {
 			.spyOn(continuation, "findWorkContinuation")
 			.mockImplementation(async (_ctx, text) =>
 				text.includes("plan.md")
-					? { workId: planned, source: "saved-plan", evidence: { path: "/plans/plan.md" } }
-					: undefined,
+					? { match: { workId: planned, source: "saved-plan", evidence: { path: "/plans/plan.md" } }, owned: true }
+					: { owned: false },
 			)
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
@@ -327,9 +334,12 @@ describe("fresh-session guard after scope recovery", () => {
 		const other = "22222222-2222-4222-8222-222222222222"
 		vi.spyOn(scope, "readWorkScope").mockImplementation((workId) => (workId === legacy ? undefined : captured.scope))
 		const find = vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue({
-			workId: other,
-			source: "named-artifact",
-			evidence: { path: join(dir, "docs/adr.md"), transitionId: randomUUID() },
+			match: {
+				workId: other,
+				source: "named-artifact",
+				evidence: { path: join(dir, "docs/adr.md"), transitionId: randomUUID() },
+			},
+			owned: true,
 		})
 		const manager = SessionManager.inMemory(dir)
 		manager.appendCustomEntry("work_identity", { workId: legacy })
@@ -384,9 +394,12 @@ describe("journal problems during live plan continuation", () => {
 	/** Writes one other journal, then continues a saved plan of the planned work in a fresh session. */
 	async function continuePlan(name: string, content: string) {
 		vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue({
-			workId: planned,
-			source: "saved-plan",
-			evidence: { path: "/plans/plan.md", contentHash: "a".repeat(64) },
+			match: {
+				workId: planned,
+				source: "saved-plan",
+				evidence: { path: "/plans/plan.md", contentHash: "a".repeat(64) },
+			},
+			owned: true,
 		})
 		const journal = join(dir, "work-attribution", name)
 		mkdirSync(join(dir, "work-attribution"), { recursive: true })

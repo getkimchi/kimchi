@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { readFileSync, realpathSync } from "node:fs"
+import { realpathSync } from "node:fs"
 import { readdir, readFile, realpath } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { getAgentDir, parseSkillBlock } from "@earendil-works/pi-coding-agent"
@@ -7,7 +7,7 @@ import { readPlanWorkId } from "../../shared/planning/plan-markdown.js"
 import type { WorkContext } from "../work-attribution.js"
 import { type FileTransition, readAttributedFileState, readRepositoryTransitions } from "./file-transitions.js"
 import { captureWorkScope, readWorkScope, sameWorkScope, type WorkAccount, type WorkScopeSnapshot } from "./scope.js"
-import type { WorkRecord } from "./summary.js"
+import { readWorkRecords } from "./summary.js"
 
 const MARKDOWN_REFERENCE = /(?:^|[\s@'"`([])([^\s@'"`()[\]<>#]+\.md)(?:#[^\s'"`()[\]<>]*)?(?=$|[\s'"`()[\],;:.!?])/gi
 const FILE_REFERENCE =
@@ -25,46 +25,6 @@ export function userText(text: string): string {
 export function hasWorkReference(text: string): boolean {
 	const message = userText(text)
 	return message.includes("<!-- kimchi-work-id:") || [...message.matchAll(MARKDOWN_REFERENCE)].length > 0
-}
-
-/** Ordinary Markdown mentions do not select work; recorded owners and plan markers do. */
-export function hasOwnedWorkReference(
-	ctx: Pick<WorkContext, "cwd">,
-	text: string,
-	records: readonly WorkRecord[],
-): boolean {
-	const normalized = text.replaceAll("\r\n", "\n")
-	const skill = parseSkillBlock(normalized)
-	const message = skill ? (skill.userMessage ?? "") : normalized
-	if (message.includes("<!-- kimchi-work-id:")) return true
-	const canonical = (path: string) => {
-		try {
-			return join(realpathSync(dirname(path)), basename(path))
-		} catch {
-			return path
-		}
-	}
-	const paths = new Set([...message.matchAll(MARKDOWN_REFERENCE)].map((match) => canonical(resolve(ctx.cwd, match[1]))))
-	for (const path of paths) {
-		if (!NATIVE_PLAN_PATH.test(path)) continue
-		try {
-			if (readPlanWorkId(readFileSync(path, "utf8"))) return true
-		} catch {}
-	}
-	// Journals are never pruned: compare file names before resolving each row's directory.
-	const names = new Set([...paths].map((path) => basename(path)))
-	const owns = (root: string, path: unknown) => {
-		if (typeof path !== "string") return false
-		const resolved = resolve(root, path)
-		return names.has(basename(resolved)) && paths.has(canonical(resolved))
-	}
-	return records.some((row) => {
-		if (row.type === "plan" && typeof row.cwd === "string") {
-			const cwd = row.cwd
-			return [row.path, row.snapshotPath].some((path) => owns(cwd, path))
-		}
-		return row.type === "file_transition" && typeof row.worktree === "string" && owns(row.worktree, row.path)
-	})
 }
 
 export interface WorkContinuation {
@@ -163,7 +123,9 @@ async function namedArtifact(
 				}
 			}
 		} catch {
-			// Missing files still have to pass the ownership check below.
+			// A deleted plan keeps the works its plan records name. Missing files still pass the ownership check below.
+			const owners = savedPlanOwners(path)
+			if (owners.length) native = { owners }
 		}
 	}
 	const evidence = await transitions(directory, path)
@@ -184,6 +146,26 @@ async function namedArtifact(
 				? artifactMatch(row, path)
 				: undefined,
 	}
+}
+
+/** Journals are never pruned, so they are read only for a native plan path that no longer exists. */
+function savedPlanOwners(path: string): string[] {
+	const canonical = (saved: string) => {
+		try {
+			return join(realpathSync(dirname(saved)), basename(saved))
+		} catch {
+			return saved
+		}
+	}
+	return readWorkRecords(getAgentDir()).flatMap((row) => {
+		const cwd = row.cwd
+		if (row.type !== "plan" || typeof cwd !== "string") return []
+		const named = [row.path, row.snapshotPath].some(
+			(saved) =>
+				typeof saved === "string" && basename(saved) === basename(path) && canonical(resolve(cwd, saved)) === path,
+		)
+		return named ? [row.workId] : []
+	})
 }
 
 async function pastedPlans(text: string): Promise<{ matches: WorkContinuation[]; remaining: string } | undefined> {
@@ -223,16 +205,18 @@ async function pastedPlans(text: string): Promise<{ matches: WorkContinuation[];
 	return { matches, remaining: remaining + text.slice(end) }
 }
 
-/** Resolve identity before dispatch; the caller owns fresh-session and explicit-selection gates. */
+/**
+ * Resolve identity before dispatch, and whether the input names any recorded work. Nothing is continued without a
+ * captured scope. The caller owns fresh-session and explicit-selection gates.
+ */
 export async function findWorkContinuation(
 	ctx: Pick<WorkContext, "cwd">,
 	text: string,
-	captured?: WorkScopeSnapshot,
-): Promise<WorkContinuation | undefined> {
-	const scope = captured ?? (await captureWorkScope(ctx.cwd))
-	if (!scope?.isCurrent()) return
+	captured: WorkScopeSnapshot | undefined,
+): Promise<{ match?: WorkContinuation; owned: boolean }> {
 	const pasted = await pastedPlans(userText(text))
-	if (!pasted || pasted.remaining.includes("<!-- kimchi-work-id:")) return
+	// A work marker names recorded work even when its plan cannot be verified.
+	if (!pasted || pasted.remaining.includes("<!-- kimchi-work-id:")) return { owned: true }
 	const paths = new Set([...pasted.remaining.matchAll(FILE_REFERENCE)].map((match) => match[1].replace(/\.+$/, "")))
 	// Extensionless names such as Makefile need no path syntax to have a recorded owner.
 	const words = new Set(pasted.remaining.split(/[\s@'"`()[\]<>#,;:!?]+/).map((word) => word.replace(/\.+$/, "")))
@@ -250,13 +234,17 @@ export async function findWorkContinuation(
 		return reads.get(directory)
 	}
 	const named = await Promise.all([...paths].map((path) => namedArtifact(ctx.cwd, path, transitions)))
-	if (named.some((file) => !file)) return // Unreadable evidence is not proof that a file has no owner.
+	// Markdown names plans and artifacts; other owned files only compete with a continuation.
+	const owned =
+		pasted.matches.length > 0 || [...paths].some((path, index) => /\.md$/i.test(path) && !!named[index]?.owners.length)
+	if (named.some((file) => !file)) return { owned } // Unreadable evidence is not proof that a file has no owner.
 	const matches = [...pasted.matches, ...named.flatMap((file) => (file?.match ? [file.match] : []))]
-	if (new Set(matches.map((match) => match.workId)).size !== 1) return
+	if (new Set(matches.map((match) => match.workId)).size !== 1) return { owned }
 	const match = matches[0]
-	if (named.some((file) => file?.owners.some((owner) => owner !== match.workId))) return
+	if (named.some((file) => file?.owners.some((owner) => owner !== match.workId))) return { owned }
 	const owner = readWorkScope(match.workId)
-	if (!owner || !sameWorkScope(owner, scope.scope) || !scope.isCurrent()) return
+	if (!owner || !captured?.isCurrent() || !sameWorkScope(owner, captured.scope)) return { owned }
 	const current = await captureWorkScope(ctx.cwd)
-	if (current && sameWorkScope(current.scope, scope.scope) && scope.isCurrent()) return match
+	const verified = current && sameWorkScope(current.scope, captured.scope) && captured.isCurrent()
+	return { match: verified ? match : undefined, owned }
 }

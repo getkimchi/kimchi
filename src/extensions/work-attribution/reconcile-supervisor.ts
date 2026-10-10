@@ -10,7 +10,7 @@ import {
 import { reconcileWorkCosts } from "./cost-sync.js"
 import { debugWorkAttribution as debug } from "./diagnostics.js"
 import { knownTransitionRepositories, reconcileRepositoryTransitions } from "./file-transitions.js"
-import { reconcileWorkContinuations } from "./links.js"
+import { type ContinuationProgress, reconcileWorkContinuations } from "./links.js"
 
 export const RECONCILIATION_INTERVAL_MS = 30_000
 const PASS_BUDGET_MS = 3000
@@ -20,14 +20,12 @@ interface Channel {
 	controller: AbortController
 	running?: Promise<void>
 }
-interface Supervisor {
+interface Supervisor extends ContinuationProgress {
 	subscribers: Set<ReconciliationSubscriber>
 	controller: AbortController
 	timer?: ReturnType<typeof setInterval>
 	running?: Promise<void>
 	nextRepository?: string
-	nextContinuation?: string
-	settledJournals?: string
 	channels: Map<ChannelKind, Channel>
 }
 interface ReconciliationSubscriber {

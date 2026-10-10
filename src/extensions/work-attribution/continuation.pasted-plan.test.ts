@@ -15,13 +15,14 @@ vi.mock("./file-transitions.js", () => ({
 }))
 
 let cwd: string
+let captured: scope.WorkScopeSnapshot
 const planningWork = "11111111-1111-4111-8111-111111111111"
 const otherWork = "22222222-2222-4222-8222-222222222222"
 const after = { blob: "b".repeat(40), mode: "100644" }
 beforeEach(() => {
 	cwd = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-pasted-plan-")))
 	vi.stubEnv("PI_CODING_AGENT_DIR", join(cwd, "agent"))
-	const captured = createWorkScopeSnapshot(join(cwd, ".git"))
+	captured = createWorkScopeSnapshot(join(cwd, ".git"))
 	vi.spyOn(scope, "captureWorkScope").mockResolvedValue(captured)
 	vi.spyOn(scope, "readWorkScope").mockReturnValue(captured.scope)
 	mkdirSync(join(cwd, "docs/adr"), { recursive: true })
@@ -75,5 +76,5 @@ it.each([
 	expect(hasWorkReference(prompt)).toBe(true)
 	// Docs: "A changed plan, unknown ID, or conflicting plan stays unresolved. File paths inside the
 	// verified plan are its instructions, not additional work selections."
-	expect((await findWorkContinuation({ cwd }, prompt))?.workId).toBeUndefined()
+	expect(await findWorkContinuation({ cwd }, prompt, captured)).toEqual({ owned: true })
 })

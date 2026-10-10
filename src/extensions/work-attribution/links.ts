@@ -31,6 +31,8 @@ interface RequestLink {
 
 const REPAIR_BUDGET_MS = 3000
 const MAX_CONTINUATIONS_PER_PASS = 25
+// Coarse filesystem timestamps must not hide an append.
+const MTIME_SLACK_MS = 2000
 /** Rows between time-budget checks: a clock read per row is measurable on long histories. */
 const BUDGET_CHECK_ROWS = 1024
 
@@ -294,17 +296,15 @@ function continuationProducers(
 }
 
 /** Keep a known producer's identity even if its source journal is unavailable during a later pass. */
-export function pinWorkContinuation(continuation: WorkContinuation, history?: ContinuationHistory): WorkContinuation {
-	const producers = continuationProducers(
-		continuation,
-		workIndex(history ?? readContinuationHistory(getAgentDir()), continuation.workId),
-	)
+export function pinWorkContinuation(continuation: WorkContinuation, history: ContinuationHistory): WorkContinuation {
+	const producers = continuationProducers(continuation, workIndex(history, continuation.workId))
 	const ids = new Set(producers.map((row) => row.requestId))
 	const requestId = producers[0]?.requestId
 	if (!isWorkId(requestId) || !producers.every((row) => isWorkId(row.requestId)) || ids.size !== 1) return continuation
 	return { ...continuation, evidence: { ...continuation.evidence, requestId } }
 }
 
+/** Null when the receipt can never link; undefined while missing or conflicting evidence leaves it unresolved. */
 function continuationLink(
 	continuation: WorkContinuation,
 	scope: WorkScope,
@@ -340,10 +340,11 @@ function continuationLink(
 	if (producerIds.size !== 1 || (evidence.requestId !== undefined && !producerIds.has(evidence.requestId))) return
 	const origins = index.requests.get(String(producers[0].requestId)) ?? []
 	const segment = origins[0]?.segment
+	// An explicit input already chose its work, so there is nothing to confirm.
+	if (isWorkSegment(segment) && segment.attribution === "explicit") return null
 	if (
 		!isWorkSegment(segment) ||
 		!isWorkId(segment.id) ||
-		segment.attribution === "explicit" ||
 		!origins.every(
 			(row) =>
 				row.workId === workId &&
@@ -358,9 +359,9 @@ function continuationLink(
 	if (!requests.every((row) => isWorkId(row.requestId) && isWorkScope(row.scope) && sameWorkScope(row.scope, scope)))
 		return
 	const requestIds = [...new Set(requests.map((row) => String(row.requestId)))].sort()
+	// An existing correction or confirmation takes precedence, even when it was revoked.
+	if (requestIds.some((id) => index.linked.has(id))) return null
 	if (
-		// An existing correction or confirmation takes precedence, even when it was revoked.
-		requestIds.some((id) => index.linked.has(id)) ||
 		// Requests before a new work's delayed first scope stay unscoped; only another scope conflicts.
 		(index.workRequests.get(workId) ?? []).some((row) => isWorkScope(row.scope) && !sameWorkScope(row.scope, scope)) ||
 		requestIds.some((id) =>
@@ -394,14 +395,10 @@ export function confirmWorkContinuation(
 	ctx: WorkContext,
 	continuation: WorkContinuation,
 	scope: WorkScope,
-	history?: ContinuationHistory,
+	history: ContinuationHistory,
 ): void {
 	if (getWorkId(ctx) !== continuation.workId) return
-	const link = continuationLink(
-		continuation,
-		scope,
-		workIndex(history ?? readContinuationHistory(getAgentDir()), continuation.workId),
-	)
+	const link = continuationLink(continuation, scope, workIndex(history, continuation.workId))
 	if (link) appendWorkRecord(ctx, link, continuation.workId)
 }
 
@@ -415,14 +412,32 @@ function acceptedContinuation(row: WorkRecord): WorkContinuation | undefined {
 	return { workId: row.workId, source, evidence: { ...evidence, path: evidence.path } }
 }
 
+/** A receipt that can name its producer; any other receipt never resolves. */
+function receipt(row: WorkRecord): { key: string; continuation: WorkContinuation } | undefined {
+	const continuation = acceptedContinuation(row)
+	if (continuation && producerKey(continuation) && typeof row.cwd === "string")
+		return { key: JSON.stringify([row.workId, row.sessionId, continuation]), continuation }
+}
+
+export interface ContinuationProgress {
+	/** The rotation position. */
+	nextContinuation?: string
+	/** The journals of the last pass that examined every receipt and wrote nothing. */
+	settledJournals?: string
+	/** Receipts confirmed or never linkable. Later passes skip them, so they cannot keep history from settling. */
+	done?: Set<string>
+	/** Set while no receipt can link: every receipt known then, and when that history was read. */
+	quiet?: { since: number; receipts: Set<string> }
+}
+
 /** Retry accepted evidence locally; unresolved receipts are never marked permanently complete. */
 export async function reconcileWorkContinuations(
 	agentDir: string,
 	signal: AbortSignal,
 	assertLease: () => void,
-	/** The rotation position, and the journals of the last pass that examined every receipt and wrote nothing. */
-	progress: { nextContinuation?: string; settledJournals?: string } = {},
+	progress: ContinuationProgress = {},
 ): Promise<void> {
+	const startedAt = Date.now()
 	// Fingerprint before reading: an append during the read only makes the next pass read again.
 	const journals = await workJournalFingerprint(agentDir)
 	// Until a journal changes, such a pass would only repeat itself.
@@ -434,22 +449,36 @@ export async function reconcileWorkContinuations(
 		assertLease()
 		if (Date.now() > deadline) throw new Error("Work continuation reconciliation time limit exceeded")
 	}
+	if (progress.quiet) {
+		// Journals only grow, so only those changed since can hold a new receipt; nothing else needs the whole history.
+		const { since, receipts } = progress.quiet
+		const changed = readWorkRecords(agentDir, since - MTIME_SLACK_MS, checkBudget)
+		const known = (row: WorkRecord) => {
+			const found = receipt(row)
+			return !found || receipts.has(found.key)
+		}
+		if (changed.every(known)) {
+			progress.quiet = { since: startedAt, receipts }
+			progress.settledJournals = journals
+			return
+		}
+		progress.quiet = undefined
+	}
+	progress.done ??= new Set()
+	const done = progress.done
 	const history = readContinuationHistory(agentDir, checkBudget)
 	const { index } = history
+	const receipts = new Set<string>()
 	const candidates = new Map<string, { row: WorkRecord; continuation: WorkContinuation }>()
 	for (const row of history.records) {
-		const continuation = acceptedContinuation(row)
-		// A receipt that cannot name its producer never resolves. A linked producer is already confirmed or corrected,
-		// and its link would be refused anyway. A work named by an unknown record type waits without holding back the
-		// other receipts.
-		if (
-			continuation &&
-			producerKey(continuation) &&
-			typeof row.cwd === "string" &&
-			!index.linked.has(continuation.evidence.requestId) &&
-			!unknownRecords(history, row.workId).length
-		)
-			candidates.set(JSON.stringify([row.workId, row.sessionId, continuation]), { row, continuation })
+		const found = receipt(row)
+		if (!found) continue
+		receipts.add(found.key)
+		// A linked producer is already confirmed or corrected, and its link would be refused anyway.
+		if (index.linked.has(found.continuation.evidence.requestId)) done.add(found.key)
+		// A work named by an unknown record type waits without holding back the other receipts.
+		if (!done.has(found.key) && !unknownRecords(history, row.workId).length)
+			candidates.set(found.key, { row, continuation: found.continuation })
 	}
 	const keys = [...candidates.keys()].sort()
 	const start = Math.max(0, keys.indexOf(progress.nextContinuation ?? ""))
@@ -467,6 +496,7 @@ export async function reconcileWorkContinuations(
 		const scope = readWorkScope(row.workId)
 		if (!scope) continue
 		const link = continuationLink(continuation, scope, index, checkBudget, acceptedAt)
+		if (link === null) done.add(keys[position])
 		if (!link) continue
 		checkBudget()
 		appendWorkRecord(
@@ -476,9 +506,12 @@ export async function reconcileWorkContinuations(
 			join(agentDir, "work-attribution", `${encodeURIComponent(row.sessionId)}.jsonl`),
 		)
 		wrote = true
+		done.add(keys[position])
 		indexRecord(index, { ...link, version: 1, workId: row.workId, sessionId: row.sessionId })
 	}
-	if (!wrote && keys.length <= MAX_CONTINUATIONS_PER_PASS) progress.settledJournals = journals
+	if (keys.length > MAX_CONTINUATIONS_PER_PASS) return
+	if (!wrote) progress.settledJournals = journals
+	if (keys.every((key) => done.has(key))) progress.quiet = { since: startedAt, receipts }
 }
 
 /** Explicit repair chooses one input segment; choosing its current work confirms an uncertain assignment. */

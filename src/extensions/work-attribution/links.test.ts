@@ -15,6 +15,7 @@ import {
 	confirmWorkContinuation,
 	correctWorkLink,
 	pinWorkContinuation,
+	readContinuationHistory,
 	reconcileWorkContinuations,
 	requestWorkLinks,
 } from "./links.js"
@@ -51,6 +52,7 @@ it.each(["session", "inferred"] as const)("confirms the %s input that produced a
 		ctx,
 		{ workId, source: "saved-plan", evidence: { path: plan.path, contentHash: plan.contentHash } },
 		originalScope,
+		readContinuationHistory(dir),
 	)
 	const links = requestWorkLinks(readWorkRecords(dir))
 	for (const request of [research, producer]) {
@@ -133,6 +135,7 @@ it("replaces a revoked automatic confirmation when its input is linked to anothe
 		planner,
 		{ workId, source: "saved-plan", evidence: { path: plan.path, contentHash: plan.contentHash } },
 		originalScope,
+		readContinuationHistory(dir),
 	)
 	const automatic = readWorkRecords(dir).find((row) => row.type === "work_link")
 	expect(automatic).toBeDefined()
@@ -195,6 +198,7 @@ it("revokes a moved correction from its newest work with that revision's evidenc
 		planner,
 		{ workId, source: "saved-plan", evidence: { path: plan.path, contentHash: plan.contentHash } },
 		originalScope,
+		readContinuationHistory(dir),
 	)
 	const implementer = createContext({ cwd: dir, sessionManager: { getSessionId: () => "implementer" } })
 	const target = getWorkId(implementer)
@@ -487,7 +491,8 @@ for (const mode of ["live", "repair"] as const) {
 				...originalScope,
 			},
 		}
-		if (mode === "live") confirmWorkContinuation(ctx, { workId, ...accepted }, originalScope)
+		if (mode === "live")
+			confirmWorkContinuation(ctx, { workId, ...accepted }, originalScope, readContinuationHistory(dir))
 		else {
 			const consumer = createContext({ cwd: dir, sessionManager: { getSessionId: () => "consumer" } })
 			appendWorkRecord(consumer, { type: "work", continuation: accepted }, workId)
@@ -603,9 +608,9 @@ for (const mode of ["pin", "live", "history"] as const) {
 		const continuation = { ...flow.continuation, workId: flow.workId }
 		const invoke = () =>
 			mode === "pin"
-				? pinWorkContinuation(continuation)
+				? pinWorkContinuation(continuation, readContinuationHistory(dir))
 				: mode === "live"
-					? confirmWorkContinuation(flow.ctx, continuation, flow.originalScope)
+					? confirmWorkContinuation(flow.ctx, continuation, flow.originalScope, readContinuationHistory(dir))
 					: repair()
 		await expect(Promise.resolve().then(invoke)).rejects.toThrow(
 			`Incomplete work history contains invalid records in ${damaged}:1`,
@@ -650,9 +655,9 @@ for (const mode of ["pin", "live", "history"] as const) {
 		const continuation = { ...flow.continuation, workId: flow.workId, evidence }
 		const invoke = () =>
 			mode === "pin"
-				? pinWorkContinuation(continuation)
+				? pinWorkContinuation(continuation, readContinuationHistory(dir))
 				: mode === "live"
-					? confirmWorkContinuation(flow.ctx, continuation, flow.originalScope)
+					? confirmWorkContinuation(flow.ctx, continuation, flow.originalScope, readContinuationHistory(dir))
 					: repair()
 		if (named === "other work") {
 			const pinned = await invoke()
@@ -699,8 +704,10 @@ for (const mode of ["pin", "live", "history"] as const) {
 				row.type === "plan" && row.path === continuation.evidence.path && row.contentHash === evidence.contentHash,
 		)
 		expect(new Set(producers.map((row) => row.requestId)).size).toBe(2)
-		if (mode === "pin") expect(pinWorkContinuation(continuation).evidence.requestId).toBeUndefined()
-		else if (mode === "live") confirmWorkContinuation(flow.ctx, continuation, flow.originalScope)
+		if (mode === "pin")
+			expect(pinWorkContinuation(continuation, readContinuationHistory(dir)).evidence.requestId).toBeUndefined()
+		else if (mode === "live")
+			confirmWorkContinuation(flow.ctx, continuation, flow.originalScope, readContinuationHistory(dir))
 		else await repair()
 		expect(links()).toEqual([])
 	})
@@ -809,7 +816,7 @@ it("recovers a large receipt set over bounded passes without permanently skippin
 	expect(links()).toHaveLength(26)
 })
 
-it("reads each journal once and no retained plan in an idle pass over confirmed receipts", async () => {
+it("reads each journal once and no retained plan in a full pass over confirmed receipts", async () => {
 	for (let index = 0; index < 30; index++) acceptedContinuation("plan", `planner-${index}`)
 	const progress = {}
 	await repair(progress)
@@ -817,7 +824,8 @@ it("reads each journal once and no retained plan in an idle pass over confirmed 
 	expect(links()).toHaveLength(30)
 	await flushWorkSummaries()
 	const read = vi.spyOn(fs, "readFileSync")
-	await repair(progress)
+	// A restarted process has no progress, so it reads the whole history.
+	await repair()
 	const paths = read.mock.calls.map(([path]) => String(path))
 	const journals = paths.filter((path) => path.endsWith(".jsonl"))
 	expect(journals).toHaveLength(60)
@@ -867,6 +875,48 @@ it("does not retry plan receipts saved without an acceptance hash, so their hist
 	expect(read.mock.calls.filter(([path]) => String(path).endsWith(".jsonl"))).toEqual([])
 	read.mockRestore()
 	expect(links()).toEqual([])
+})
+
+it("lets receipts that can never link drop out, so passes over more than 25 of them settle", async () => {
+	for (let index = 0; index < 26; index++) {
+		const { ctx, consumer, workId, originalScope, continuation } = acceptedContinuation("plan", `planner-${index}`)
+		confirmWorkContinuation(ctx, { workId, ...continuation }, originalScope, readContinuationHistory(dir))
+		// A later receipt for the same plan, without the producer it pinned, can no longer confirm anything.
+		const { requestId: _requestId, ...evidence } = continuation.evidence
+		appendWorkRecord(consumer, { type: "work", continuation: { ...continuation, evidence } }, workId)
+	}
+	await flushWorkSummaries()
+	const progress = {}
+	await repair(progress)
+	await repair(progress)
+	const read = vi.spyOn(fs, "readFileSync")
+	await repair(progress)
+	expect(read.mock.calls.filter(([path]) => String(path).endsWith(".jsonl"))).toEqual([])
+	read.mockRestore()
+	expect(links()).toHaveLength(26)
+})
+
+it("reads only journals changed since the last pass once no receipt can still link", async () => {
+	for (let index = 0; index < 3; index++) acceptedContinuation("plan", `planner-${index}`)
+	const progress = {}
+	await repair(progress)
+	await repair(progress)
+	expect(links()).toHaveLength(3)
+	await flushWorkSummaries()
+	const journals = join(dir, "work-attribution")
+	const earlier = new Date(Date.now() - 60_000)
+	for (const file of fs.readdirSync(journals)) fs.utimesSync(join(journals, file), earlier, earlier)
+	// Another session keeps working; each request appends to its own journal.
+	const active = createContext({ cwd: dir, sessionManager: { getSessionId: () => "active" } })
+	recordProviderRequest(active)
+	await flushWorkSummaries()
+	const read = vi.spyOn(fs, "readFileSync")
+	await repair(progress)
+	expect(read.mock.calls.map(([path]) => String(path)).filter((path) => path.endsWith(".jsonl"))).toEqual([
+		join(journals, "active.jsonl"),
+	])
+	read.mockRestore()
+	expect(links()).toHaveLength(3)
 })
 
 it("keeps a concurrent revocation authoritative when its append follows the repair snapshot", async () => {

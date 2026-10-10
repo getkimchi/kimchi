@@ -19,7 +19,7 @@ import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
-import { appendWorkRecord, createWorkAttributionExtension, getWorkId } from "../work-attribution.js"
+import { appendWorkRecord, createWorkAttributionExtension, getWorkId, getWorkSegment } from "../work-attribution.js"
 import { createCommitTrackingBashTool } from "./commits.js"
 import { findWorkContinuation } from "./continuation.js"
 import { calculatePullRequestCosts } from "./costs.js"
@@ -58,11 +58,11 @@ async function planningRepository() {
 	const path = "docs/adr/decision.md"
 	await createTrackedWriteTool(ctx, "write-adr").execute("write-adr", { path, content: "# Build the feature\n" })
 	const workId = getWorkId(ctx)
-	return { cwd, git, path, workId, agentDir: join(root, "agent") }
+	return { cwd, git, path, workId, captured, agentDir: join(root, "agent") }
 }
 
 it.each([0, 7])("records a candidate observation for an ADR written by Bash before exit %s", async (exitCode) => {
-	const { cwd, agentDir } = await planningRepository()
+	const { cwd, captured, agentDir } = await planningRepository()
 	const ctx = createContext({ cwd, sessionManager: { getSessionId: () => `bash-planner-${exitCode}` } })
 	const workId = getWorkId(ctx)
 	const path = "docs/adr/from-bash.md"
@@ -99,17 +99,17 @@ it.each([0, 7])("records a candidate observation for an ADR written by Bash befo
 	recoverWorkSummaries()
 	await flushWorkSummaries()
 	expect(JSON.parse(readFileSync(summaryPath, "utf8")).fileObservations).toEqual(saved.fileObservations)
-	expect(await findWorkContinuation({ cwd }, `Implement ${path}`)).toBeUndefined()
+	expect(await findWorkContinuation({ cwd }, `Implement ${path}`, captured)).toEqual({ owned: false })
 })
 
 it("does not claim a human-written ADR after a read-only Bash call", async () => {
-	const { cwd, agentDir } = await planningRepository()
+	const { cwd, captured, agentDir } = await planningRepository()
 	const path = "docs/adr/from-human.md"
 	writeFileSync(join(cwd, path), "# Human decision\n")
 	const ctx = createContext({ cwd, sessionManager: { getSessionId: () => "bash-reader" } })
 	await createCommitTrackingBashTool(ctx).execute("read-adr", { command: `cat ${path}` }, undefined, undefined, ctx)
 
-	expect(await findWorkContinuation({ cwd }, `Implement ${path}`)).toBeUndefined()
+	expect(await findWorkContinuation({ cwd }, `Implement ${path}`, captured)).toEqual({ owned: false })
 	expect(readWorkRecords(agentDir)).not.toContainEqual(
 		expect.objectContaining({
 			type: "file_observation",
@@ -159,25 +159,43 @@ it.each(
 })
 
 it("continues a named skill-written ADR across worktrees without native plan mode", async () => {
-	const { cwd, git, path, workId } = await planningRepository()
-	expect(await findWorkContinuation({ cwd }, `/skill:implement ${path}`)).toMatchObject({
+	const { cwd, git, path, workId, captured } = await planningRepository()
+	expect((await findWorkContinuation({ cwd }, `/skill:implement ${path}`, captured)).match).toMatchObject({
 		workId,
 		source: "named-artifact",
 		evidence: { path: join(cwd, path), branch: "feature" },
 	})
-	expect(await findWorkContinuation({ cwd }, "/skill:implement")).toBeUndefined()
+	expect(await findWorkContinuation({ cwd }, "/skill:implement", captured)).toEqual({ owned: false })
 	git("add", path)
 	git("commit", "-q", "-m", "Save the ADR")
 	const otherTree = join(cwd, "..", "implementation")
 	git("worktree", "add", "-q", "-b", "implementation", otherTree)
-	expect(await findWorkContinuation({ cwd: otherTree }, `Implement ${path}`)).toMatchObject({
+	expect((await findWorkContinuation({ cwd: otherTree }, `Implement ${path}`, captured)).match).toMatchObject({
 		workId,
 		source: "named-artifact",
 		evidence: { path: join(otherTree, path), worktree: cwd },
 	})
-	expect(await findWorkContinuation({ cwd: otherTree }, "/skill:implement")).toBeUndefined()
+	expect(await findWorkContinuation({ cwd: otherTree }, "/skill:implement", captured)).toEqual({ owned: false })
 	writeFileSync(join(otherTree, path), "# Different work\n")
-	expect(await findWorkContinuation({ cwd: otherTree }, `Implement ${path}`)).toBeUndefined()
+	// The changed copy cannot continue the ADR's work, but it still names that work.
+	expect(await findWorkContinuation({ cwd: otherTree }, `Implement ${path}`, captured)).toEqual({ owned: true })
+})
+
+it("leaves an input naming an ADR owned from another worktree unresolved without reading every journal", async () => {
+	const { cwd, git, path, workId } = await planningRepository()
+	git("add", path)
+	git("commit", "-q", "-m", "Save the ADR")
+	const otherTree = join(cwd, "..", "implementation")
+	git("worktree", "add", "-q", "-b", "implementation", otherTree)
+	writeFileSync(join(otherTree, path), "# Revised by hand\n")
+	const ctx = createContext({ cwd: otherTree, sessionManager: { getSessionId: () => "other-tree" } })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	const journals = vi.spyOn(summary, "readWorkRecords")
+	await api.getHandler<InputEvent>("input")({ type: "input", source: "interactive", text: `Revise ${path}` }, ctx)
+	expect(getWorkId(ctx)).not.toBe(workId)
+	expect(getWorkSegment(ctx)).toMatchObject({ attribution: "unknown", reason: "unresolved-reference" })
+	expect(journals).not.toHaveBeenCalled()
 })
 
 it.each(["interactive", "rpc"] as const)("adopts a pasted plan before the first %s request", async (source) => {
