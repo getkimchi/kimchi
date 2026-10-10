@@ -25,6 +25,7 @@ The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's h
 ~/.config/kimchi/harness/work-attribution/<session-id>.jsonl
 ~/.config/kimchi/harness/work-attribution/transitions/<repo-worktree-hash>.jsonl
 ~/.config/kimchi/harness/work-attribution/ref-tips/<snapshot-hash>.json
+~/.config/kimchi/harness/work-attribution/objects/<repository-hash>/
 ```
 
 For example, work `6f102360-39a9-4d6e-8ac7-984c97c0e313` is saved at:
@@ -168,7 +169,7 @@ One request can produce edits in several repositories. Each edit keeps the ID of
 
 Bash and attributed write-capable MCP calls also compare the starting repository before and after execution. Changed paths appear in `fileObservations`, including writes before a failure or cancellation. Background Bash records its observation when the process finishes. Existing dirty files are compared against their actual starting contents, so a read-only command does not claim earlier human edits.
 
-These observations are candidates: a human or another agent can edit during the same window. They cannot prove exclusive PR ownership or automatically connect a named ADR. Qualified read-only MCP calls are skipped. Opaque remote changes and changes outside the starting repository have no local observation. Snapshots read at most 128 dirty paths within a one-second scan budget; unsupported dirty files or incomplete scans record `complete: false`, with no inferred file ownership. Unchanged committed symlinks and submodules do not make a scan incomplete. Dirty symlinks, oversized files and nested repositories stay unknown without printing an attribution warning over the terminal.
+These observations are candidates: a human or another agent can edit during the same window. They cannot prove exclusive PR ownership or automatically connect a named ADR. MCP calls are observed only when they can change files: a call of a tool that is not qualified read-only, directly or through the gateway, or a gateway action such as an install. Gateway search, describe, instructions, server listing, connect and status calls are skipped. Opaque remote changes and changes outside the starting repository have no local observation. Snapshots read at most 128 dirty paths within a one-second scan budget; other paths are compared through the HEAD commit, so commits, checkouts and resets made by the tool are observed too. An incomplete scan records `complete: false`, with no inferred file ownership. Kimchi does not hash dirty symlinks, oversized files, files with Git filters or nested repositories. It compares a symlink's target, and otherwise the inode, size and modification time, so only a change makes the scan incomplete. None of these cases prints an attribution warning over the terminal.
 
 ### 3. Link commits to the work that produced them
 
@@ -214,7 +215,7 @@ New edit records reference a snapshot of the visible Git references and worktree
 
 `file-hunks` handles disjoint human and agent edits in the same text file, including inserted lines that shift the agent's change. Every native changed section must appear completely, with unique unchanged context. Overlap, partial staging, repeated ambiguous context, broken edit chains and missing objects stay unmatched. Whole-file evidence takes precedence; a later hunk match cannot weaken it.
 
-Native writes retain eligible before/after file contents for this comparison in Kimchi's own Git object store, `work-attribution/objects/<repository hash>/` under the agent directory, never in your repository, so Git's automatic garbage collection there never sees them. Eligible files are tracked UTF-8 text, no larger than 256 KiB; matching allows up to 64 changed sections. The journal still stores hashes and IDs. Snapshots older than 30 days are removed; a missing snapshot only means that file is not matched by hunks. Reading a file for continuation does not create a snapshot. A failed optional snapshot leaves ordinary whole-file tracking available.
+Native writes retain eligible before/after file contents for this comparison in Kimchi's own Git object store, `work-attribution/objects/<repository hash>/` under the agent directory, never in your repository, so Git's automatic garbage collection there never sees them. Eligible files are tracked UTF-8 text, no larger than 256 KiB; matching allows up to 64 changed sections. The journal still stores hashes and IDs. Kimchi keeps these snapshots and deletes none by age, so the store grows by one object per distinct edited content: the committed version an edit starts from is read from your repository instead of being copied, and identical content is stored once. A missing snapshot only means that file is not matched by hunks. Reading a file for continuation does not create a snapshot. A failed optional snapshot leaves ordinary whole-file tracking available.
 
 ### 4. Find pull requests and merge requests
 
@@ -304,6 +305,7 @@ All paths below are inside the agent directory.
 | `work-attribution/<session-id>.jsonl` | Append-only history used to rebuild the summary. |
 | `work-attribution/transitions/*.jsonl` | Edit evidence: request/tool IDs, repository paths, Git blobs and file modes before and after each native edit/write change. |
 | `work-attribution/ref-tips/*.json` | Shared snapshots of the commit references and worktree heads visible when an edit was saved. `historyBoundaryId` identifies the snapshot. |
+| `work-attribution/objects/<repository hash>/` | Kimchi's own Git object store of native edit text kept for `file-hunks` matching. Nothing is deleted by age; it grows by one object per distinct edited content, without copies of the committed version an edit starts from. |
 | `work-attribution/pr-checks.json` | When each recorded repository and commit was last checked for a PR or MR, including checks whose unchanged result was not appended. A restart therefore keeps the lookup schedule. Kimchi replaces the file at most once per pass and only after a change. It drops entries for commits it no longer records and for checks more than a day old. Deleting it costs at most one extra check per commit. |
 
 - Each plan record has `path` for the editable file, `snapshotPath` for its retained version and `contentHash` to detect changes. Plans produced by an attributed tool also name its `requestId`. If saving the retained copy fails, Kimchi shows a warning and leaves the local plan usable. Naming or pasting that plan later then does not continue its work or confirm its producing input; `/work <plan path>` still selects it.

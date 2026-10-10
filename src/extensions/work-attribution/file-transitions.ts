@@ -120,9 +120,15 @@ function snapshotObjects(repository: string): string {
 }
 /**
  * `data` is the file content already read by the caller, so the hash matches what it checked. With `retainIn`, the
- * repository's Git directory, a small text snapshot is kept for later hunk matching.
+ * repository's Git directory, a small text snapshot is kept for later hunk matching. With `committed`, the file's blob
+ * in HEAD, it is hashed first and kept only when neither the repository nor the store has it yet.
  */
-async function diskState(path: string, data?: Buffer, retainIn?: string): Promise<FileState | null | undefined> {
+async function diskState(
+	path: string,
+	data?: Buffer,
+	retainIn?: string,
+	committed?: string,
+): Promise<FileState | null | undefined> {
 	if (!existsSync(path)) return null
 	const stat = lstatSync(path)
 	if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return undefined
@@ -139,6 +145,10 @@ async function diskState(path: string, data?: Buffer, retainIn?: string): Promis
 	if (retain) {
 		try {
 			const objects = snapshotObjects(retainIn)
+			if (committed !== undefined) {
+				const blob = await git(parent, ["hash-object", "--stdin", `--path=${file}`], { input })
+				if (blob === committed || existsSync(join(objects, blob.slice(0, 2), blob.slice(2)))) return { blob, mode }
+			}
 			await mkdir(objects, { recursive: true, mode: 0o700 })
 			return {
 				blob: await git(parent, ["hash-object", "-w", "--stdin", `--path=${file}`], {
@@ -331,7 +341,12 @@ function operations(ctx: WorkContext, toolCallId: string): EditOperations & Writ
 				? await tryWorkAttributionAsync(async () => {
 						const repo = await repositoryFile(path)
 						if (!repo) return
-						const before = await diskState(path, undefined, repo.baselineFile !== null ? repo.repository : undefined)
+						const before = await diskState(
+							path,
+							undefined,
+							repo.baselineFile !== null ? repo.repository : undefined,
+							repo.baselineFile?.blob,
+						)
 						if (before === undefined) return
 						if (readDigest !== undefined && readDigest !== digest(readFileSync(path))) return
 						return { ...repo, before }
@@ -860,28 +875,39 @@ async function matchesCommittedHunks(
 	const after = chain[chain.length - 1].after
 	if (!before || !parent || !committed || [after, parent, committed].some((state) => state.mode !== before.mode))
 		return false
-	const texts: string[] = []
+	const blobs = [before, after, parent, committed].map((state) => state.blob)
+	if (!blobs.every((blob) => SHA.test(blob))) return false
 	// Snapshots come from Kimchi's store; the parent and committed blobs, and snapshots of older builds, from the repository.
-	const snapshotEnv = { GIT_ALTERNATE_OBJECT_DIRECTORIES: snapshotObjects(repository) }
-	for (const state of [before, after, parent, committed]) {
-		checkBudget()
-		if (!SHA.test(state.blob)) return false
-		const info = await git(repository, ["cat-file", "--batch-check=%(objecttype) %(objectsize)"], {
-			input: Buffer.from(`${state.blob}\n`),
-			signal,
-			env: snapshotEnv,
-		})
-		checkBudget()
+	const options = {
+		input: Buffer.from(blobs.map((blob) => `${blob}\n`).join("")),
+		signal,
+		env: { GIT_ALTERNATE_OBJECT_DIRECTORIES: snapshotObjects(repository) },
+	}
+	checkBudget()
+	const info = (await git(repository, ["cat-file", "--batch-check=%(objecttype) %(objectsize)"], options)).split("\n")
+	checkBudget()
+	for (const [index, blob] of blobs.entries()) {
 		// Git reports optional snapshots removed by GC separately from interrupted or failed reads.
-		if (info === `${state.blob} missing`) return false
-		const size = /^blob (\d+)$/.exec(info)
+		if (info[index] === `${blob} missing`) return false
+		const size = /^blob (\d+)$/.exec(info[index] ?? "")
 		if (!size) throw new Error("Invalid Git snapshot response")
 		// Check the declared size before reading a commit that may contain a large human addition.
 		if (Number(size[1]) > MAX_HUNK_BYTES) return false
-		const data = await gitBytes(repository, ["cat-file", "blob", state.blob], { signal, env: snapshotEnv })
-		checkBudget()
-		if (data.length > MAX_HUNK_BYTES || !isUtf8(data) || data.includes(0)) return false
-		texts.push(data.toString("utf8"))
+	}
+	const data = await gitBytes(repository, ["cat-file", "--batch"], options)
+	checkBudget()
+	const texts: string[] = []
+	let offset = 0
+	for (const blob of blobs) {
+		// Each object is `<id> blob <size>\n<content>\n`.
+		const header = data.indexOf(10, offset)
+		const [id, type, size] = data.subarray(offset, header).toString("utf8").split(" ")
+		if (header < 0 || id !== blob || type !== "blob" || !/^\d+$/.test(size))
+			throw new Error("Invalid Git snapshot response")
+		const text = data.subarray(header + 1, header + 1 + Number(size))
+		offset = header + 2 + Number(size)
+		if (!isUtf8(text) || text.includes(0)) return false
+		texts.push(text.toString("utf8"))
 	}
 	return matchesFileHunks(texts[0], texts[1], texts[2], texts[3], checkBudget)
 }

@@ -1,6 +1,15 @@
 import * as childProcess from "node:child_process"
 import { execFileSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import {
+	appendFileSync,
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
@@ -117,6 +126,8 @@ it("reads many dirty files with the same Git processes as one", async () => {
 	}
 	const one = await spawned(1)
 	expect(await spawned(100)).toEqual(one)
+	// Clean paths match HEAD, so no snapshot lists the whole index.
+	expect(one).not.toContain("ls-files")
 })
 
 it("reports an incomplete scan instead of treating a truncated dirty tree as complete", async () => {
@@ -234,13 +245,65 @@ it.each([
 			execFileSync("git", ["-C", join(cwd, "vendor"), "init", "-q"])
 		},
 	],
-])("observes a read-only Bash call silently in a repository with %s", async (_case, setup) => {
+])("records nothing, silently, for a read-only Bash call in a repository with %s", async (_case, setup) => {
 	setup()
 	const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 	try {
 		await observeToolFiles(createContext({ cwd }), "read-only", "bash", async () => "listing")
 		expect(warn).not.toHaveBeenCalled()
+		// An untracked symlinked node_modules must not keep every input's spend unconfirmed.
+		expect(observations()).toEqual([])
 	} finally {
 		warn.mockRestore()
 	}
+})
+
+it.each([
+	[
+		"retargets an untracked symlink",
+		() => symlinkSync("source.ts", join(cwd, "link")),
+		() => {
+			rmSync(join(cwd, "link"))
+			symlinkSync(".gitignore", join(cwd, "link"))
+		},
+	],
+	[
+		"appends to a dirty file over 8 MiB",
+		() => writeFileSync(join(cwd, "big.log"), Buffer.alloc(8 * 1024 * 1024 + 1, 97)),
+		() => appendFileSync(join(cwd, "big.log"), "more"),
+	],
+])("records an incomplete scan when a Bash call %s", async (_case, setup, change) => {
+	setup()
+	await observeToolFiles(createContext({ cwd }), "change", "bash", async () => change())
+	expect(observations()).toEqual([expect.objectContaining({ complete: false, reason: "incomplete-snapshot" })])
+})
+
+it.each([
+	["an existing branch", () => {}],
+	["an unborn branch", () => git("checkout", "-q", "--orphan", "fresh")],
+])("records files a Bash commit changes on %s", async (_case, setup) => {
+	const committed = (path: string) => ({ blob: git("rev-parse", `HEAD:${path}`), mode: "100644" })
+	const original = committed("source.ts")
+	setup()
+	await observeToolFiles(createContext({ cwd }), "commit", "bash", async () => {
+		writeFileSync(join(cwd, "source.ts"), "committed\n")
+		writeFileSync(join(cwd, "new.ts"), "new\n")
+		git("add", ".")
+		git("commit", "-qm", "tool")
+	})
+	const [observation] = observations()
+	expect(observation).toMatchObject({ complete: true })
+	expect(observation.files).toHaveLength(2)
+	expect(observation.files).toEqual(
+		expect.arrayContaining([
+			{ path: "source.ts", before: original, after: committed("source.ts") },
+			{ path: "new.ts", before: null, after: committed("new.ts") },
+		]),
+	)
+})
+
+it("does not claim a human edit that a Bash call only commits", async () => {
+	writeFileSync(join(cwd, "source.ts"), "human version\n")
+	await observeToolFiles(createContext({ cwd }), "commit", "bash", async () => git("commit", "-qam", "human"))
+	expect(observations()).toEqual([])
 })

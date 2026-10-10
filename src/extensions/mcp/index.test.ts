@@ -6,6 +6,7 @@ import type { BeforeProviderHeadersEvent, ExtensionAPI, ToolDefinition } from "@
 import type { McpAdapterOptions, McpConfig } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
+import type * as CliArgs from "../../cli-args.js"
 import type * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -62,7 +63,7 @@ vi.mock("pi-mcp-adapter", () => ({
 
 // The real work-attribution chain reads other CLI helpers, so only the parsed arguments are replaced.
 vi.mock("../../cli-args.js", async (importOriginal) => ({
-	...(await importOriginal<typeof import("../../cli-args.js")>()),
+	...(await importOriginal<typeof CliArgs>()),
 	getParsedCliArgs: () => ({
 		options: {
 			"mcp-config": cliState.mcpConfig,
@@ -97,8 +98,10 @@ vi.mock("../../shared/planning/tool-profile-manager.js", () => ({
 	registerReadOnlyToolProvider: planning.registerReadOnlyToolProvider,
 }))
 
+// Wire names carry their server's prefix, as with the adapter's default "server" prefix mode.
 vi.mock("./read-only.js", () => ({
-	collectReadOnlyMcpWireNames: () => [...readOnlyState.wireNames],
+	collectReadOnlyMcpWireNames: (_config: McpConfig, server?: string) =>
+		[...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`)),
 }))
 
 vi.mock("../permissions/mode-controller.js", () => ({
@@ -356,6 +359,36 @@ describe("upstream MCP adapter facade", () => {
 		for (const registered of harness.getRegisteredTools())
 			await registered.execute(registered.name, {}, undefined, undefined, ctx)
 		expect(observeToolFiles).toHaveBeenCalledExactlyOnceWith(ctx, "docs_write", "mcp", expect.any(Function))
+	})
+
+	it("observes gateway calls only when an action or a tool not qualified read-only can write", async () => {
+		vi.mocked(observeToolFiles).mockClear()
+		configState.config = { mcpServers: { docs: { command: "docs" }, other: { command: "other" } } }
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		readOnlyState.wireNames.add("docs_get_issue")
+		upstream.api?.registerTool(tool("mcp", "MCP"))
+		const calls = {
+			search: { search: "issue" },
+			describe: { describe: "docs_write" },
+			instructions: { instructions: "docs" },
+			list: { server: "docs" },
+			status: {},
+			read: { tool: "docs_get_issue", args: {} },
+			"read-on-server": { tool: "docs_get_issue", server: "docs" },
+			"another-server": { tool: "docs_get_issue", server: "other" },
+			write: { tool: "docs_write", args: {} },
+			install: { action: "install", url: "https://example.test/mcp" },
+		}
+		const ctx = createContext()
+		for (const [id, params] of Object.entries(calls))
+			await harness.getRegisteredTool("mcp").execute(id, params, undefined, undefined, ctx)
+		expect(vi.mocked(observeToolFiles).mock.calls.map((call) => call[1])).toEqual([
+			"another-server",
+			"write",
+			"install",
+		])
 	})
 
 	it("records a proxied MCP tool's real file write under its model request and work", async () => {

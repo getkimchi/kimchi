@@ -848,6 +848,27 @@ describe("manual commit reconciliation", () => {
 			}),
 		])
 	})
+	it("reads the four texts of a hunk match with two Git processes", async () => {
+		writeFileSync(join(repo, "file.txt"), "heading\nnative-before\ncontext\nseparator\nhuman-before\nfooter\n")
+		commit()
+		await edit("native-before", "native-after")
+		writeFileSync(
+			join(repo, "file.txt"),
+			readFileSync(join(repo, "file.txt"), "utf8").replace("human-before", "human-after"),
+		)
+		commit()
+		const { execFile: execute } = await vi.importActual<typeof childProcess>("node:child_process")
+		const reads: string[] = []
+		vi.spyOn(childProcess, "execFile").mockImplementation(((...args: Parameters<typeof execute>) => {
+			if (Array.isArray(args[1]) && args[1][2] === "cat-file") reads.push(String(args[1][3]))
+			return execute(...args)
+		}) as typeof execute)
+		await reconcileFileTransitions(context("reopened"))
+		expect(contributions()).toEqual([
+			expect.objectContaining({ fileMatches: [expect.objectContaining({ method: "file-hunks" })] }),
+		])
+		expect(reads).toEqual(["--batch-check=%(objecttype) %(objectsize)", "--batch"])
+	})
 	it("retains exact native text snapshots in Kimchi's store, never in the repository", async () => {
 		baseline()
 		const dirty = "one\ntwo\nhuman-before\n"
@@ -872,6 +893,20 @@ describe("manual commit reconciliation", () => {
 		}
 		expect(git("count-objects")).toBe(loose)
 		expect(JSON.stringify(rows())).not.toContain("human-before")
+	})
+	it("retains each new edited content once and no copy of the committed file", async () => {
+		baseline()
+		await edit("one", "first")
+		await edit("two", "second")
+		await edit("second", "two")
+		const transitions = rows().filter((row) => row.type === "file_transition")
+		const stored = readdirSync(snapshots(), { recursive: true })
+			.map(String)
+			.filter((path) => /^[\da-f]{2}\/[\da-f]+$/.test(path))
+			.map((path) => path.replace("/", ""))
+		// The repository already has the committed blob the first edit starts from; later edits start from stored content.
+		expect(transitions[0].before).toEqual(transitions[0].baselineFile)
+		expect(stored.sort()).toEqual([transitions[0].after.blob, transitions[1].after.blob].sort())
 	})
 	it.each(["true", "false"])("reads many files like single-file inspections (core.filemode=%s)", async (filemode) => {
 		writeFileSync(
@@ -904,14 +939,14 @@ describe("manual commit reconciliation", () => {
 		expect(expected.get("tool.sh")?.mode).toBe(filemode === "false" ? "100755" : "100644")
 		expect(existsSync(join(repo, "filter-ran"))).toBe(false)
 	})
-	it.each([1, 2])("preserves exact attribution when Git cannot retain snapshot %s", async (failure) => {
+	it("preserves exact attribution when Git cannot retain the snapshot", async () => {
 		baseline()
 		const { execFile: execute } = await vi.importActual<typeof childProcess>("node:child_process")
 		let snapshots = 0
 		vi.spyOn(childProcess, "execFile").mockImplementation(((...args: Parameters<typeof execute>) => {
 			if (Array.isArray(args[1]) && args[1].includes("hash-object") && args[1].includes("-w")) {
 				snapshots += 1
-				if (snapshots === failure) args[1] = [...args[1], "--invalid-retention-test"]
+				args[1] = [...args[1], "--invalid-retention-test"]
 			}
 			return execute(...args)
 		}) as typeof execute)
@@ -920,8 +955,9 @@ describe("manual commit reconciliation", () => {
 		expect(readFileSync(join(repo, "file.txt"), "utf8")).toBe("first\ntwo\n")
 		const transitions = rows().filter((row) => row.type === "file_transition")
 		expect(transitions).toHaveLength(1)
-		expect(snapshots).toBe(2)
-		if (failure === 2) expect(() => git("cat-file", "-e", transitions[0].after.blob)).toThrow()
+		// The edit starts from the committed file, so only its new content needs a snapshot.
+		expect(snapshots).toBe(1)
+		expect(() => git("cat-file", "-e", transitions[0].after.blob)).toThrow()
 		const sha = commit()
 		await reconcileFileTransitions(context("reopened"))
 		expect(contributions()).toEqual([
