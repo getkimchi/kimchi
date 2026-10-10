@@ -17,7 +17,7 @@ import {
 	type OpenBilling,
 	openBilling,
 } from "./billing-evidence.js"
-import { type BillingSource, captureBillingSource, sameBillingSource } from "./billing-source.js"
+import { type BillingSource, captureBillingSource, LOOKUP_WINDOW_MS, sameBillingSource } from "./billing-source.js"
 import { calculatePullRequestCosts, type PullRequestCost, type PullRequestCostReport } from "./costs.js"
 import type { WorkAccount } from "./scope.js"
 import { object, readWorkRecords, readWorkRecordsAsync, workJournalFingerprint } from "./summary.js"
@@ -273,7 +273,7 @@ export async function reconcileWorkCosts(
 			if (boundedSignal.aborted || Date.now() >= deadline || calls >= MAX_CALLS || processed >= MAX_PROCESSED_REQUESTS)
 				break
 			const endsAt = Date.parse(item.selector.endTime)
-			const age = Date.now() - (endsAt - 32 * DAY_MS)
+			const age = Date.now() - (endsAt - LOOKUP_WINDOW_MS)
 			// One final lookup may catch up after a closed client; a final lookup without any
 			// billing page is retried on the slow schedule.
 			// Unsettled results, including failed and never-completed lookups, slow down after a day.
@@ -376,7 +376,7 @@ export async function reconcileWorkCosts(
 						? error.message
 						: "Billing lookup unavailable"
 				// Offline, DNS/TLS, key checks, HTTP errors and deadlines before the first page add
-				// no evidence: keep the last confirmed result and only remember the failure.
+				// no evidence: keep the last known result and only remember the failure.
 				if (!pageReceived) {
 					polls[item.requestId] = {
 						checkedAt: Date.parse(lookup.checkedAt),
@@ -389,10 +389,8 @@ export async function reconcileWorkCosts(
 			assertLease()
 			const previousLookup = item.lookup
 			// The journal must prove that the window closed, even when the final result is unchanged.
-			// A changed account never closes it for a settled result, which that change cannot withdraw.
-			const final =
-				Date.parse(lookup.checkedAt) >= endsAt &&
-				!(lookup.status === "account-changed" && isSettled(item.substantiveLookup))
+			// A changed account never closes it: that lookup did not reach the billing API.
+			const final = Date.parse(lookup.checkedAt) >= endsAt && lookup.status !== "account-changed"
 			const repeated =
 				previousLookup &&
 				((item.lastRows && costFingerprint(rows, lookup) === costFingerprint(item.lastRows, previousLookup)) ||

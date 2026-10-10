@@ -18,6 +18,9 @@ export type BillingSelector = { type: "tag"; tag: string; startTime: string; end
 /** The exact tag finds the bill; starting early tolerates a fast local clock within the API's 33-day range. */
 export const LOOKUP_LEAD_MS = 12 * 60 * 60_000
 
+/** How long after dispatch a bill is still looked up. */
+export const LOOKUP_WINDOW_MS = 32 * 24 * 60 * 60_000
+
 /** Billing timestamps describe completed reports, so retain a broad fixed window. */
 export function requestTagSelector(
 	requestId: string,
@@ -31,7 +34,7 @@ export function requestTagSelector(
 		type: "tag",
 		tag: `kimchi-request:${requestId}`,
 		startTime: new Date(timestamp - leadMs).toISOString(),
-		endTime: new Date(timestamp + 32 * 24 * 60 * 60_000).toISOString(),
+		endTime: new Date(timestamp + LOOKUP_WINDOW_MS).toISOString(),
 	}
 }
 

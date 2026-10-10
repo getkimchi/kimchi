@@ -11,7 +11,7 @@ import { object, SHA256_HEX, type WorkRecord } from "./summary.js"
 export interface RequestCostObservation {
 	requestId: string
 	billingRecordId: string
-	/** Exact USD Decimal(18,9); null means the row has no confirmed price yet. */
+	/** Exact USD Decimal(18,9); null means the row has no known price yet. */
 	costUsd: string | null
 	/** Verified billing account; independent of the work selected before dispatch. */
 	account?: WorkAccount
@@ -22,9 +22,9 @@ type PriceStatus = "priced" | "missing" | "invalid" | "conflict"
 
 export interface CostTotal {
 	requestIds: string[]
-	/** Confirmed subtotal. Missing or contradictory billing rows contribute no amount. */
+	/** Known subtotal of the included requests. Missing or contradictory billing rows contribute no amount. */
 	knownCostUsd: string
-	/** Null until all included requests have confirmed prices and allocation is unambiguous. */
+	/** Null until all included requests are priced and allocation is unambiguous. */
 	totalCostUsd: string | null
 }
 
@@ -680,8 +680,7 @@ export function calculatePullRequestCosts(
 			const accounts = billingAccounts.get(requestId) ?? []
 			const workAccount = owner.account
 			const reason: RequestCostAllocation["reason"] =
-				owner.unverifiedAccount ||
-				(workAccount && (!accounts.length || accounts.some((account) => !isWorkAccount(account))))
+				owner.unverifiedAccount || (workAccount && accounts.some((account) => !isWorkAccount(account)))
 					? "work-account-unverified"
 					: workAccount && accounts.some((account) => account && !sameWorkAccount(workAccount, account))
 						? "work-account-mismatch"

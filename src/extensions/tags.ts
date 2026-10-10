@@ -26,12 +26,14 @@ import { Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { readConfigSetting } from "../config/settings.js"
 import { isValidTag, parseTag, resolveDefaultTags, type TagTier } from "../config/tags.js"
+import { isResourceEnabled } from "../resources/store.js"
 import type { ThinkingLevel } from "./agents/personas/types.js"
 import { getEffectiveModel } from "./auto-model/state.js"
 import { resolveMultiModelEnabled } from "./multi-model.js"
 import { shouldSuppressFermentModeTools } from "./print-mode.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 import { GATEWAY_TAG_LIMIT, PRICED_TAG_LIMIT } from "./work-attribution/request-tags.js"
+import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -386,7 +388,7 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 			}
 		}
 		const total = tagManager.getAllTags().length
-		const unpriced = succeeded.length > 0 && total > PRICED_TAG_LIMIT
+		const unpriced = succeeded.length > 0 && total > PRICED_TAG_LIMIT && isResourceEnabled(COST_PER_PR_RESOURCE_ID)
 		if (unpriced)
 			lines.push(
 				"",

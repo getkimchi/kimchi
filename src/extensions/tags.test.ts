@@ -20,6 +20,7 @@ import { isValidTag, parseTag } from "../config/tags.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../project-scope-trust.js"
 import tagsExtension, { getCurrentPhase, peekActiveTags, setCurrentPhase, TagManager } from "./tags.js"
 import { prepareBillingTag } from "./work-attribution/request-tags.js"
+import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
 
 const MOCK_HOME = join(tmpdir(), `kimchi-tags-mock-home-${process.pid}`)
 
@@ -602,6 +603,17 @@ describe("room for the per-request billing tag", () => {
 		expect(messages[1].message).toContain(
 			"With 8 tags plus the model and phase tags, Kimchi requests reach the gateway's 10-tag limit. They cannot carry a billing tag, so /work cannot price them. Keep at most 7 tags to see their costs.",
 		)
+	})
+
+	it("does not warn about the billing tag while Cost per PR is disabled", async () => {
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", MOCK_HOME)
+		writeFileSync(join(MOCK_HOME, "settings.json"), JSON.stringify({ resources: { [COST_PER_PR_RESOURCE_ID]: false } }))
+		const pi = makePi()
+		tagsExtension(pi)
+		const messages: { message: string; type?: string }[] = []
+		await pi.runCommand("tags", `add ${configured(8).join(" ")}`, notifyingContext("billing-disabled", messages))
+		expect(messages[0]).toMatchObject({ type: "info" })
+		expect(messages[0].message).not.toContain("billing tag")
 	})
 })
 

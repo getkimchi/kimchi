@@ -124,6 +124,20 @@ describe("account-scoped PR totals", () => {
 			totalCostUsd: null,
 		})
 	})
+
+	it("keeps the assignment of a request without a bill and leaves only its price unknown", () => {
+		const explicit = { segment: { id: "input", attribution: "explicit", reason: "work-command" } }
+		const report = calculatePullRequestCosts(
+			[request("a", "work-a", "session-a", time(10), explicit), request("b", "work-b", "session-b"), commit()],
+			[],
+		)
+		expect(report.requests.map((row) => [row.requestId, row.allocation, row.reason, row.priceStatus])).toEqual([
+			["a", "pull-request", undefined, "missing"],
+			["b", "unlinked", undefined, "missing"],
+		])
+		expect(report.pullRequests[0]).toMatchObject({ requestIds: ["a"], unknownRequestIds: [], totalCostUsd: null })
+		expect(report.unallocated.unknown.requestIds).toEqual([])
+	})
 })
 
 describe("scoped historical work corrections", () => {
@@ -173,7 +187,7 @@ describe("scoped historical work corrections", () => {
 			totalCostUsd: "1.000000000",
 		})
 		expect(costs.requests.find((row) => row.requestId === "unrelated")).toMatchObject({
-			allocation: "unknown",
+			allocation: "unlinked",
 			pullRequestIds: [],
 		})
 		expect(rows).toEqual(original)
@@ -770,7 +784,7 @@ describe("confirmed and inferred spend per input", () => {
 })
 
 describe("calculatePullRequestCosts", () => {
-	it("keeps a confirmed subtotal when the billing lookup has not returned every page", () => {
+	it("keeps a known subtotal when the billing lookup has not returned every page", () => {
 		const report = calculatePullRequestCosts([request("a"), commit()], [charge("a", "1.25")], new Set(["a"]))
 		expect(report.requests[0]).toMatchObject({
 			priceStatus: "missing",

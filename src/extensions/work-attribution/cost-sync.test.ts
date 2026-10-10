@@ -831,7 +831,7 @@ describe("automatic exact work cost lookup", () => {
 			},
 		})
 	})
-	it("keeps a confirmed price when an empty refresh exhausts the pass budget without claiming a fresh check", async () => {
+	it("keeps a known price when an empty refresh exhausts the pass budget without claiming a fresh check", async () => {
 		const { workId } = tagged()
 		await sync()
 		const original = readWorkRecords(dir).find((row) => row.type === "request_cost")
@@ -864,7 +864,7 @@ describe("automatic exact work cost lookup", () => {
 		await sync()
 		expect(fetchMock).not.toHaveBeenCalled()
 		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual(observations)
-		// No evidence arrived, so the confirmed price keeps its own refresh schedule.
+		// No evidence arrived, so the known price keeps its own refresh schedule.
 		now += RECHECK_MS
 		await sync()
 		expect(fetchMock).toHaveBeenCalledTimes(2)
@@ -998,7 +998,7 @@ describe("automatic exact work cost lookup", () => {
 		["rate limit", new Response(null, { status: 429 }), "Billing API returned HTTP 429"],
 		["server error", new Response(null, { status: 503 }), "Billing API returned HTTP 503"],
 		["non-JSON page", new Response("<html>proxy</html>"), "Billing lookup unavailable"],
-	] as const)("keeps a confirmed price without a journal row after a %s failure before the first page", async (kind, failure, reason) => {
+	] as const)("keeps a known price without a journal row after a %s failure before the first page", async (kind, failure, reason) => {
 		const { workId } = tagged()
 		await sync()
 		const journal = readWorkRecords(dir)
@@ -1472,7 +1472,7 @@ describe("billing refresh after the request tag window closes", () => {
 		expect(ledgerBytes() - before).toBeLessThan(2000)
 		expect(readWorkCostReport(dir).report.requests[0].totalCostUsd).toBe("0.000000000")
 	})
-	it("does not re-record an unchanged confirmed price on every refresh", async () => {
+	it("does not re-record an unchanged known price on every refresh", async () => {
 		taggedRequest()
 		fetchMock.mockImplementation(async (input) =>
 			String(input).endsWith("api-keys:verify")
@@ -1507,6 +1507,41 @@ describe("billing refresh after the request tag window closes", () => {
 		expect(costRows()).toHaveLength(2)
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
 	})
+	it.each([
+		["a late launch with another key", "key"],
+		["an API key owner change before the window ended", "owner"],
+	])("keeps an unpriced request open after %s until the original account returns", async (_name, change) => {
+		const { workId } = tagged()
+		fetchMock.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: ORG, userId: PROMPT })
+				: Response.json({ items: [] }),
+		)
+		await sync()
+		// The tag window ends 32 days after the 08:00 dispatch.
+		const end = Date.parse("2026-11-02T08:00:00.000Z")
+		let now = change === "key" ? end + 60_000 : end - 60 * 60_000
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		if (change === "key") currentKey = "test-only-rotated-key"
+		else fetchMock.mockImplementation(async () => Response.json({ organizationId: ORG, userId: ROW }))
+		for (let pass = 0; pass < 4; pass++) {
+			await sync()
+			now += 60 * 60_000 + 1000
+		}
+		// These lookups never reached the billing API, so none of them closes the window.
+		expect(costRows()).toMatchObject([
+			{ billingLookup: { status: "pending" } },
+			{ billingLookup: { status: "account-changed" } },
+		])
+		currentKey = "test-only-original-key"
+		fetchMock.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: ORG, userId: PROMPT })
+				: Response.json({ items: [{ id: ROW, totalPrice: "0.123456789" }] }),
+		)
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
+	})
 	it("drops poll entries of requests that no journal contains", async () => {
 		const { requestId } = tagged()
 		await sync()
@@ -1517,7 +1552,7 @@ describe("billing refresh after the request tag window closes", () => {
 		await sync()
 		expect(Object.keys(JSON.parse(readFileSync(path, "utf8")))).toEqual([requestId])
 	})
-	it("retries a final check made offline and keeps the confirmed total until it succeeds", async () => {
+	it("retries a final check made offline and keeps the known total until it succeeds", async () => {
 		const { workId } = tagged()
 		await sync()
 		const journal = readWorkRecords(dir)

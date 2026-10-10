@@ -262,8 +262,9 @@ export function billingRequests(records: WorkRecord[]): Map<string, RequestBilli
 	}
 	for (const [item, lookups] of evidence)
 		for (const lookup of lookups.sort((left, right) => Date.parse(left.checkedAt) - Date.parse(right.checkedAt))) {
-			// A changed key or account stops refreshes; it cannot withdraw a verified price or settled no-charge.
-			if (lookup.status === "account-changed" && isSettled(item.substantiveLookup)) continue
+			// A changed key or account stops refreshes without reaching the billing API, so it can neither
+			// withdraw an earlier result nor close the window.
+			if (lookup.status === "account-changed") continue
 			item.substantiveLookup = lookup
 		}
 	return requests
