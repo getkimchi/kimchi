@@ -159,6 +159,7 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
+import { COST_PER_PR_RESOURCE_ID } from "./extensions/work-attribution/resource.js"
 import { createWorkAttributionExtension } from "./extensions/work-attribution.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import { installGlobalFetchInstrumentation } from "./http/instrument-fetch.js"
@@ -827,8 +828,10 @@ try {
 			traceIdExtension,
 			contextAssemblyExtension,
 			cacheSummaryExtension,
-			createWorkAttributionExtension(),
-			pullRequestStatusExtension,
+			...enabledExtensionFactories([
+				{ id: COST_PER_PR_RESOURCE_ID, factory: createWorkAttributionExtension() },
+				{ id: COST_PER_PR_RESOURCE_ID, factory: pullRequestStatusExtension },
+			] satisfies ManagedExtensionFactory[]),
 			requestTimingExtension,
 			llmResponseLogExtension,
 			activityExtension,

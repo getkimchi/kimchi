@@ -1,51 +1,209 @@
+import { randomUUID } from "node:crypto"
 import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { AssistantMessage } from "@earendil-works/pi-ai"
 import {
 	type BeforeProviderHeadersEvent,
+	createLocalBashOperations,
+	findCutPoint,
 	type InputEvent,
+	type SessionBeforeCompactEvent,
 	SessionManager,
 	type SessionShutdownEvent,
 	type SessionStartEvent,
+	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { readPlanWorkId, savePlanMarkdown } from "../shared/planning/plan-markdown.js"
 import { createCommandContext, createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
+import { createWorkScopeSnapshot } from "./__mocks__/work-scope.js"
 import requestTimingExtension from "./request-timing.js"
+import { createWorkCommitTrackingOperations } from "./work-attribution/commits.js"
 import * as continuation from "./work-attribution/continuation.js"
 import * as supervisor from "./work-attribution/reconcile-supervisor.js"
-import { flushWorkSummaries } from "./work-attribution/summary.js"
+import * as scope from "./work-attribution/scope.js"
+import { flushWorkSummaries, recoverWorkSummaries } from "./work-attribution/summary.js"
 import {
 	appendWorkRecord,
 	createWorkAttributionExtension,
 	getToolRequest,
 	getWorkId,
+	getWorkSegment,
 	recordProviderRequest,
 	setWorkId,
+	tryWorkAttribution,
+	tryWorkAttributionAsync,
+	WORK_CHANGED_EVENT,
 } from "./work-attribution.js"
 
 let dir: string
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "kimchi-work-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
+	const captured = createWorkScopeSnapshot(join(dir, ".git"))
+	vi.spyOn(scope, "captureWorkScope").mockResolvedValue(captured)
+	vi.spyOn(scope, "readWorkScope").mockReturnValue(captured.scope)
 	vi.spyOn(supervisor, "subscribeFileReconciliation").mockReturnValue(async () => {})
 })
 afterEach(async () => {
 	await flushWorkSummaries()
 	vi.restoreAllMocks()
+	vi.unstubAllGlobals()
 	vi.unstubAllEnvs()
 	rmSync(dir, { recursive: true, force: true })
 })
 function records() {
-	return readdirSync(join(dir, "work-attribution")).flatMap((file) =>
-		readFileSync(join(dir, "work-attribution", file), "utf8")
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line)),
-	)
+	return readdirSync(join(dir, "work-attribution"))
+		.filter((file) => file.endsWith(".jsonl"))
+		.flatMap((file) =>
+			readFileSync(join(dir, "work-attribution", file), "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line)),
+		)
 }
 describe("local work attribution", () => {
+	it.each([
+		"user",
+		"custom",
+		"assistant",
+	] as const)("keeps work metadata without creating an extra compaction summary before %s", async (role) => {
+		const assistant = (text: string): AssistantMessage => ({
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "openai-completions",
+			provider: "test",
+			model: "test",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 2,
+		})
+		const manager = SessionManager.inMemory(dir)
+		manager.appendMessage({ role: "user", content: "Earlier task", timestamp: 1 })
+		manager.appendMessage(assistant("Earlier answer"))
+		const previousTurn = manager.appendMessage({ role: "user", content: "Previous turn", timestamp: 2 })
+		manager.appendMessage(assistant("Previous answer"))
+		// Every input appends work identity metadata before its message.
+		manager.appendCustomEntry("work_identity", { workId: randomUUID() })
+		manager.appendCustomEntry("work_identity", { segment: { id: randomUUID() } })
+		if (role === "custom") manager.appendCustomMessageEntry("annotation", "Continue", false)
+		else if (role === "user") manager.appendMessage({ role, content: "Continue", timestamp: 3 })
+		// Control: metadata inside a turn, so the kept assistant message really is a split turn's suffix.
+		else manager.appendMessage(assistant("Continuing"))
+		const entries = manager.getBranch()
+		// The Pi behaviour behind the session_before_compact workaround: the cut moves back over the metadata, and the
+		// turn before it counts as split. Once Pi stops doing this for a whole turn, remove the workaround.
+		const cut = findCutPoint(entries, 0, entries.length, 1)
+		expect(entries[cut.firstKeptEntryIndex]).toMatchObject({ type: "custom", customType: "work_identity" })
+		expect(cut).toMatchObject({
+			isSplitTurn: true,
+			turnStartIndex: entries.findIndex((entry) => entry.id === previousTurn),
+		})
+		// Like Pi's prepareCompaction(), which is not exported, split the history at the cut.
+		const messages = (from: number, to: number) =>
+			entries.slice(from, to).flatMap((entry) => sessionEntryToContextMessages(entry).slice(0, 1))
+		const event: SessionBeforeCompactEvent = {
+			type: "session_before_compact",
+			branchEntries: entries,
+			preparation: {
+				firstKeptEntryId: entries[cut.firstKeptEntryIndex].id,
+				messagesToSummarize: messages(0, cut.turnStartIndex),
+				turnPrefixMessages: messages(cut.turnStartIndex, cut.firstKeptEntryIndex),
+				isSplitTurn: cut.isSplitTurn,
+				tokensBefore: 100,
+				fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+				settings: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
+			},
+			reason: "manual",
+			willRetry: false,
+			signal: new AbortController().signal,
+		}
+		const before = structuredClone(event.preparation)
+		const branchBefore = structuredClone(event.branchEntries)
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		for (const handler of api.getHandlers<SessionBeforeCompactEvent>("session_before_compact"))
+			await handler(event, createContext({ cwd: dir, sessionManager: manager }))
+		if (role === "assistant") expect(event.preparation).toEqual(before)
+		else
+			expect(event.preparation).toEqual({
+				...before,
+				messagesToSummarize: messages(0, cut.firstKeptEntryIndex),
+				turnPrefixMessages: [],
+				isSplitTurn: false,
+			})
+		expect(event.branchEntries).toEqual(branchBefore)
+	})
+	it("marks a new request's missing scope as unknown instead of making it look like legacy history", () => {
+		const ctx = createContext({ cwd: dir })
+		const original = recordProviderRequest(ctx)
+		vi.mocked(scope.readWorkScope).mockReturnValue(undefined)
+		const afterLoss = recordProviderRequest(ctx)
+		const first = records().find((row) => row.type === "request" && row.requestId === original.requestId)
+		const second = records().find((row) => row.type === "request" && row.requestId === afterLoss.requestId)
+		expect(first.scope).toBeDefined()
+		expect(second.workId).toBe(first.workId)
+		expect(second.scope).toBeNull()
+	})
+	it.each([
+		"same",
+		"different",
+	])("repairs one earlier input in the %s work and revokes it after recovery", async (owner) => {
+		const planner = createContext({ cwd: dir, sessionManager: { getSessionId: () => "planner" } })
+		const segment = { id: randomUUID(), attribution: "session", reason: "matching-disabled" } as const
+		const selected = recordProviderRequest({ ...planner, segment })
+		const unrelated = recordProviderRequest({ ...planner, segment: { ...segment, id: randomUUID() } })
+		const ctx = {
+			...createCommandContext(),
+			...createContext({
+				cwd: dir,
+				sessionManager: { getSessionId: () => (owner === "same" ? "planner" : "implementer") },
+			}),
+		}
+		const target = recordProviderRequest(ctx)
+		const mock = createExtensionApi()
+		createWorkAttributionExtension()(mock.api)
+		const command = mock.getRegisteredCommand("work")
+		await command.handler(`link ${selected.workId} ${segment.id}`, ctx)
+		const links = records().filter((row) => row.type === "work_link")
+		expect(links).toHaveLength(1)
+		expect(links[0]).toMatchObject({
+			sourceWorkId: selected.workId,
+			targetWorkId: target.workId,
+			requestIds: [selected.requestId],
+			revision: 1,
+			status: "active",
+		})
+		expect(links[0].requestIds).not.toContain(unrelated.requestId)
+		expect(getWorkId(planner)).toBe(selected.workId)
+		expect(getWorkId(ctx)).toBe(target.workId)
+		await flushWorkSummaries()
+		const path = join(dir, "work", target.workId, "work.json")
+		expect(JSON.parse(readFileSync(path, "utf8")).workLinks).toHaveLength(1)
+		writeFileSync(path, "damaged")
+		recoverWorkSummaries()
+		await flushWorkSummaries()
+		expect(JSON.parse(readFileSync(path, "utf8")).workLinks).toHaveLength(1)
+		await command.handler(`unlink ${links[0].linkId}`, ctx)
+		expect(records().filter((row) => row.type === "work_link")).toEqual([
+			links[0],
+			expect.objectContaining({
+				linkId: links[0].linkId,
+				revision: 2,
+				status: "revoked",
+				requestIds: [selected.requestId],
+			}),
+		])
+	})
 	it("adopts a named artifact before dispatch and records why the sessions were joined", async () => {
 		const ctx = createContext({ cwd: dir })
 		const workId = getWorkId(createContext({ cwd: dir, sessionManager: { getSessionId: () => "planning" } }))
@@ -54,10 +212,16 @@ describe("local work attribution", () => {
 			source: "named-artifact" as const,
 			evidence: { path: "/project/ADR.md", transitionId: "planning-write" },
 		}
-		vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue(selected)
 		const api = createExtensionApi()
+		const announced = vi.fn()
+		vi.spyOn(continuation, "findWorkContinuation").mockImplementation(async () => {
+			// Count only what the adoption announces, after the input bound the session.
+			api.api.events.on(WORK_CHANGED_EVENT, announced)
+			return selected
+		})
 		createWorkAttributionExtension()(api.api)
 		await api.getHandler<InputEvent>("input")({ type: "input", text: "Implement ADR.md", source: "rpc" }, ctx)
+		expect(announced).toHaveBeenCalledOnce()
 		const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
 		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(event, ctx)
 		expect(records().find((row) => row.requestId === event.headers["X-Request-Id"]).workId).toBe(workId)
@@ -73,7 +237,51 @@ describe("local work attribution", () => {
 			continuation: { source: selected.source, evidence: selected.evidence },
 		})
 	})
-	it("allows the branch fallback only on a fresh session's first external input", async () => {
+	it("keeps an accepted plan continuation for later inputs until a reference to other work ends it", async () => {
+		const planned = getWorkId(createContext({ cwd: dir, sessionManager: { getSessionId: () => "planning" } }))
+		const find = vi
+			.spyOn(continuation, "findWorkContinuation")
+			.mockResolvedValueOnce({ workId: planned, source: "saved-plan", evidence: { path: "/plan.md" } })
+		const manager = SessionManager.inMemory(dir)
+		const ctx = { ...createContext({ cwd: dir }), sessionManager: manager }
+		const api = createExtensionApi()
+		api.appendEntry.mockImplementation((type, data) => {
+			manager.appendCustomEntry(type, data)
+		})
+		createWorkAttributionExtension()(api.api)
+		const input = api.getHandler<InputEvent>("input")
+		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+		await input({ type: "input", text: "Implement /plan.md", source: "interactive" }, ctx)
+		expect(getWorkId(ctx)).toBe(planned)
+		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "explicit", reason: "saved-plan" })
+		manager.appendMessage({
+			role: "toolResult",
+			toolCallId: "native-write",
+			toolName: "write",
+			isError: false,
+			content: [{ type: "text", text: "Written" }],
+			timestamp: Date.now(),
+		})
+		await input({ type: "input", text: "Also add a test", source: "interactive" }, ctx)
+		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "explicit", reason: "saved-plan" })
+
+		// A restart keeps the continuation and its reason.
+		await api.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
+		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "resume" }, ctx)
+		await input({ type: "input", text: "Fix the lint error", source: "interactive" }, ctx)
+		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "explicit", reason: "saved-plan" })
+		expect(find).toHaveBeenCalledOnce()
+
+		const other = "22222222-2222-4222-8222-222222222222"
+		find.mockResolvedValueOnce({ workId: other, source: "saved-plan", evidence: { path: "/other.md" } })
+		await input({ type: "input", text: "Implement /other.md", source: "interactive" }, ctx)
+		expect(getWorkId(ctx)).toBe(planned)
+		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "unknown", reason: "unresolved-reference" })
+		await input({ type: "input", text: "Carry on", source: "interactive" }, ctx)
+		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "session" })
+		await api.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
+	})
+	it("resolves external input before work output and ignores extension input", async () => {
 		const find = vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue(undefined)
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
@@ -82,22 +290,16 @@ describe("local work attribution", () => {
 		await input({ type: "input", text: "Implement", source: "extension" }, ctx)
 		expect(find).not.toHaveBeenCalled()
 		await input({ type: "input", text: "Implement", source: "interactive" }, ctx)
-		expect(find).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: dir }), "Implement", {
-			allowBranchFallback: true,
-		})
+		expect(find).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: dir }), "Implement", expect.any(Object))
 		await input({ type: "input", text: "Continue", source: "interactive" }, ctx)
-		expect(find).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: dir }), "Continue", {
-			allowBranchFallback: false,
-		})
+		expect(find).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: dir }), "Continue", expect.any(Object))
 		const started = createContext({ cwd: dir, sessionManager: { getSessionId: () => "requested" } })
 		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(
 			{ type: "before_provider_headers", headers: {} },
 			started,
 		)
 		await input({ type: "input", text: "Later", source: "interactive" }, started)
-		expect(find).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: dir }), "Later", {
-			allowBranchFallback: false,
-		})
+		expect(find).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: dir }), "Later", expect.any(Object))
 	})
 	it("allows fresh continuation after an earlier startup hook allocated the ledger", async () => {
 		const ctx = createContext({ cwd: dir })
@@ -106,7 +308,7 @@ describe("local work attribution", () => {
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
 		await api.getHandler<InputEvent>("input")({ type: "input", text: "Implement", source: "rpc" }, ctx)
-		expect(find).toHaveBeenCalledWith(expect.objectContaining({ cwd: dir }), "Implement", { allowBranchFallback: true })
+		expect(find).toHaveBeenCalledWith(expect.objectContaining({ cwd: dir }), "Implement", expect.any(Object))
 	})
 	it("preserves restored identity even when a crash left no native tool result", async () => {
 		const ctx = createContext({ cwd: dir })
@@ -124,7 +326,8 @@ describe("local work attribution", () => {
 		createWorkAttributionExtension()(resumed.api)
 		await resumed.getHandler<InputEvent>("input")({ type: "input", text: "Implement ADR.md", source: "rpc" }, ctx)
 		expect(getWorkId(ctx)).toBe(original)
-		expect(find).not.toHaveBeenCalled()
+		expect(find).toHaveBeenCalledOnce()
+		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "unknown", reason: "unresolved-reference" })
 		const plan = savePlanMarkdown({ cwd: dir, name: "explicit", planText: "# Plan", workId: selected })
 		await resumed.getRegisteredCommand("work").handler(plan.path, { ...createCommandContext(), ...ctx })
 		expect(getWorkId(ctx)).toBe(selected)
@@ -156,7 +359,9 @@ describe("local work attribution", () => {
 		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "resume" }, ctx)
 		await api.getHandler<InputEvent>("input")({ type: "input", text: "Implement /plan.md", source: "interactive" }, ctx)
 		expect(getWorkId(ctx)).toBe(own)
-		expect(find).not.toHaveBeenCalled()
+		expect(find).toHaveBeenCalledOnce()
+		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "unknown", reason: "unresolved-reference" })
+		find.mockClear()
 		const empty = createContext({ cwd: dir, sessionManager: { getSessionId: () => "explicit" } })
 		await api.getRegisteredCommand("work").handler("new", { ...createCommandContext(), ...empty })
 		const explicit = getWorkId(empty)
@@ -373,24 +578,40 @@ describe("local work attribution", () => {
 		const parent = createContext({ cwd: dir })
 		const child = createContext({ cwd: dir, sessionManager: { getSessionId: () => "saved-child" } })
 		const original = getWorkId(parent)
-		setWorkId(child, original)
+		const segment = { id: "first-input", attribution: "unknown", reason: "model-uncertain" } as const
 		const old = createExtensionApi()
-		createWorkAttributionExtension(original)(old.api)
+		createWorkAttributionExtension(original, segment)(old.api)
+		await old.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(
+			{ type: "before_provider_headers", headers: {} },
+			child,
+		)
 		await old.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, child)
 		const parentNext = setWorkId(parent)
 		const reopened = createExtensionApi()
-		createWorkAttributionExtension(parentNext)(reopened.api)
+		const nextSegment = { id: "next-input", attribution: "explicit", reason: "work-command" } as const
+		createWorkAttributionExtension(parentNext, nextSegment)(reopened.api)
 		await reopened.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(
 			{ type: "before_provider_headers", headers: {} },
 			child,
 		)
 		expect(getWorkId(child)).toBe(original)
+		expect(getWorkSegment(child)).toEqual(segment)
 		const fresh = createContext({ cwd: dir, sessionManager: { getSessionId: () => "fresh-child" } })
 		await reopened.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(
 			{ type: "before_provider_headers", headers: {} },
 			fresh,
 		)
 		expect(getWorkId(fresh)).toBe(parentNext)
+		expect(getWorkSegment(fresh)).toEqual(nextSegment)
+	})
+	it("does not carry a prior task's segment through a direct work switch", async () => {
+		const ctx = createContext({ cwd: dir })
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		await api.getHandler<InputEvent>("input")({ type: "input", source: "interactive", text: "First task" }, ctx)
+		expect(getWorkSegment(ctx)).toBeDefined()
+		setWorkId(ctx)
+		expect(getWorkSegment(ctx)).toBeUndefined()
 	})
 
 	it("restores the work at a real historical fork point and preserves the fork on resume", async () => {
@@ -401,6 +622,9 @@ describe("local work attribution", () => {
 			parent.appendCustomEntry(type, data)
 		})
 		createWorkAttributionExtension()(api.api)
+		await api.getHandler<InputEvent>("input")({ type: "input", source: "interactive", text: "First task" }, parentCtx)
+		const originalSegment = getWorkSegment(parentCtx)
+		expect(originalSegment).toBeDefined()
 		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(
 			{ type: "before_provider_headers", headers: {} },
 			parentCtx,
@@ -438,6 +662,7 @@ describe("local work attribution", () => {
 			forkCtx,
 		)
 		expect(getWorkId(forkCtx)).toBe(original)
+		expect(getWorkSegment(forkCtx)).toEqual(originalSegment)
 		await forkApi.getHandler<SessionShutdownEvent>("session_shutdown")(
 			{ type: "session_shutdown", reason: "quit" },
 			forkCtx,
@@ -452,6 +677,7 @@ describe("local work attribution", () => {
 			resumedCtx,
 		)
 		expect(getWorkId(resumedCtx)).toBe(original)
+		expect(getWorkSegment(resumedCtx)).toEqual(originalSegment)
 	})
 
 	it("ignores malformed copied work metadata and lets the session's ledger win", async () => {
@@ -603,5 +829,21 @@ describe("local work attribution", () => {
 		const next = recordProviderRequest(ctx)
 		const rows = readFileSync(path, "utf8").trim().split("\n")
 		expect(JSON.parse(rows.at(-1) ?? "").requestId).toBe(next.requestId)
+	})
+})
+
+describe("cost-per-PR switch", () => {
+	it("turns attribution from other extensions into a no-op that writes nothing", async () => {
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", dir)
+		writeFileSync(join(dir, "settings.json"), JSON.stringify({ resources: { "extensions.cost-per-pr": false } }))
+		const record = vi.fn(() => "recorded")
+
+		expect(tryWorkAttribution(record)).toBeUndefined()
+		expect(await tryWorkAttributionAsync(async () => record())).toBeUndefined()
+		const local = createLocalBashOperations()
+		expect(createWorkCommitTrackingOperations(createContext({ cwd: dir }), "bash-call", local)).toBe(local)
+
+		expect(record).not.toHaveBeenCalled()
+		expect(readdirSync(dir)).toEqual(["settings.json"])
 	})
 })

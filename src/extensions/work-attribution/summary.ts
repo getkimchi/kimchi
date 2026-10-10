@@ -1,10 +1,10 @@
-import { randomUUID } from "node:crypto"
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
-import { mkdir, open, readFile, rename, rm } from "node:fs/promises"
+import { mkdir, readFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { lock } from "proper-lockfile"
+import { writeFileDurably } from "../../config/json.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { mergePullRequestLinks } from "../pull-request-status/links.js"
 import { debugWorkAttribution } from "./diagnostics.js"
@@ -13,7 +13,7 @@ const LOCK_STALE_MS = 5000
 const MERGE_BATCH_SIZE = 1000
 const LOCK_RETRIES = { retries: 60, factor: 1.5, minTimeout: 25, maxTimeout: 100 }
 const RECOVERY_STAMP = ".recovered.json"
-const RECOVERY_VERSION = 2
+const RECOVERY_VERSION = 3
 // Coarse filesystem timestamps and small clock differences must not hide an append.
 const RECOVERY_MTIME_SLACK_MS = 2000
 interface SummaryEntry {
@@ -22,13 +22,14 @@ interface SummaryEntry {
 }
 export interface WorkRecord extends SummaryEntry {
 	version: 1
-	type: "work" | "request" | "plan" | "commit" | "file_transition"
+	type: "work" | "work_link" | "request" | "plan" | "commit" | "file_transition"
 	workId: string
 }
 interface WorkSummary {
 	version: 1
 	workId: string
 	sessions: string[]
+	workLinks: SummaryEntry[]
 	requests: SummaryEntry[]
 	plans: SummaryEntry[]
 	commits: SummaryEntry[]
@@ -49,7 +50,7 @@ const newWork = new Set<string>()
 function logDebug(error: unknown): void {
 	debugWorkAttribution("Work summary unavailable:", error)
 }
-function object(value: unknown): value is Record<string, unknown> {
+export function object(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 function entry(value: unknown, fields: string[]): value is SummaryEntry {
@@ -63,6 +64,8 @@ function record(value: unknown): value is WorkRecord {
 	switch (value.type) {
 		case "work":
 			return true
+		case "work_link":
+			return entry(value, ["linkId", "sourceWorkId", "targetWorkId"]) && Array.isArray(value.requestIds)
 		case "request":
 			return entry(value, ["requestId"])
 		case "plan":
@@ -80,6 +83,9 @@ function validSummary(value: unknown, workId: string): value is WorkSummary {
 		object(value) &&
 		value.version === 1 &&
 		value.workId === workId &&
+		(value.workLinks === undefined ||
+			(Array.isArray(value.workLinks) &&
+				value.workLinks.every((row) => entry(row, ["linkId", "sourceWorkId", "targetWorkId"])))) &&
 		Array.isArray(value.sessions) &&
 		value.sessions.every((session) => typeof session === "string") &&
 		Array.isArray(value.requests) &&
@@ -102,7 +108,12 @@ async function readSummary(path: string, workId: string): Promise<WorkSummary | 
 	try {
 		const value = JSON.parse(await readFile(path, "utf8"))
 		if (validSummary(value, workId))
-			return { ...value, fileTransitions: value.fileTransitions ?? [], continuations: value.continuations ?? [] }
+			return {
+				...value,
+				workLinks: value.workLinks ?? [],
+				fileTransitions: value.fileTransitions ?? [],
+				continuations: value.continuations ?? [],
+			}
 	} catch (error) {
 		if (!(error instanceof SyntaxError) && (!object(error) || error.code !== "ENOENT")) throw error
 	}
@@ -191,6 +202,17 @@ function fileMatches(...values: unknown[]) {
 }
 function recordKey(type: WorkRecord["type"], row: SummaryEntry): string {
 	switch (type) {
+		case "work_link":
+			return JSON.stringify([
+				row.linkId,
+				row.revision,
+				row.sourceWorkId,
+				row.targetWorkId,
+				row.requestIds,
+				row.scope,
+				row.status,
+				row.evidence,
+			])
 		case "request":
 			return JSON.stringify(row.requestId)
 		case "plan":
@@ -203,12 +225,19 @@ function recordKey(type: WorkRecord["type"], row: SummaryEntry): string {
 }
 async function merge(summary: WorkSummary, records: WorkRecord[]): Promise<void> {
 	const sessions = new Set(summary.sessions)
+	const links = new Map(summary.workLinks.map((row) => [recordKey("work_link", row), row]))
 	const requests = new Map(summary.requests.map((row) => [JSON.stringify(row.requestId), row]))
 	const plans = new Map(summary.plans.map((row) => [planKey(row), row]))
 	const commits = new Map(summary.commits.map((row) => [commitKey(row), row]))
 	const transitions = new Map(summary.fileTransitions.map((row) => [JSON.stringify(row.transitionId), row]))
 	const continuations = new Map(summary.continuations.map((row) => [continuationKey(row), row]))
-	const entriesByType = { request: requests, plan: plans, commit: commits, file_transition: transitions }
+	const entriesByType = {
+		work_link: links,
+		request: requests,
+		plan: plans,
+		commit: commits,
+		file_transition: transitions,
+	}
 	for (let index = 0; index < records.length; index++) {
 		if (index % MERGE_BATCH_SIZE === 0) await setImmediate()
 		const { type, version: _version, workId: _workId, ...item } = records[index]
@@ -251,27 +280,15 @@ async function merge(summary: WorkSummary, records: WorkRecord[]): Promise<void>
 		} else entries.set(key, item)
 	}
 	summary.sessions = [...sessions]
+	summary.workLinks = [...links.values()]
 	summary.requests = [...requests.values()]
 	summary.plans = [...plans.values()]
 	summary.commits = [...commits.values()]
 	summary.fileTransitions = [...transitions.values()]
 	summary.continuations = [...continuations.values()]
 }
-async function publish(directory: string, summary: WorkSummary, assertLease: () => void): Promise<void> {
-	const temporary = join(directory, `.work-${randomUUID()}.tmp`)
-	try {
-		const file = await open(temporary, "wx", 0o600)
-		try {
-			await file.writeFile(`${JSON.stringify(summary, null, 2)}\n`)
-			await file.sync()
-		} finally {
-			await file.close()
-		}
-		assertLease()
-		await rename(temporary, join(directory, "work.json"))
-	} finally {
-		await rm(temporary, { force: true })
-	}
+function publish(directory: string, summary: WorkSummary, assertLease: () => void): Promise<void> {
+	return writeFileDurably(join(directory, "work.json"), `${JSON.stringify(summary, null, 2)}\n`, assertLease)
 }
 async function update(
 	agentDir: string,
@@ -288,6 +305,7 @@ async function update(
 		version: 1,
 		workId,
 		sessions: [],
+		workLinks: [],
 		requests: [],
 		plans: [],
 		commits: [],

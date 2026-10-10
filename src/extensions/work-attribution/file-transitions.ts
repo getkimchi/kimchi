@@ -92,14 +92,16 @@ async function diskState(path: string, data?: Buffer): Promise<FileState | null 
 	if (!existsSync(path)) return null
 	const stat = lstatSync(path)
 	if (!stat.isFile() || stat.size > MAX_FILE_BYTES) throw new Error("Unsupported file for work attribution")
-	if (!(await supportsGitAttributes(path))) return undefined
-	const parent = dirname(path)
+	// Git resolves a symlinked directory to the repository it points into, as repositoryFile does.
+	const parent = realpathSync(dirname(path))
+	const file = join(parent, basename(path))
+	if (!(await supportsGitAttributes(file))) return undefined
 	let mode = stat.mode & 0o111 ? "100755" : "100644"
 	if ((await git(parent, ["config", "--type=bool", "--default=true", "--get", "core.filemode"])) === "false") {
-		mode = (await git(parent, ["ls-files", "--stage", "--", path])).split(" ")[0] || "100644"
+		mode = (await git(parent, ["ls-files", "--stage", "--", file])).split(" ")[0] || "100644"
 	}
 	const input = data ?? readFileSync(path)
-	return { blob: await git(parent, ["hash-object", "--stdin", `--path=${path}`], { input }), mode }
+	return { blob: await git(parent, ["hash-object", "--stdin", `--path=${file}`], { input }), mode }
 }
 async function treeState(
 	cwd: string,
@@ -410,7 +412,7 @@ async function readJournals(repository: string, checkBudget: () => void): Promis
 	}
 	return journals
 }
-/** Read all ownership evidence for one repository; never return a truncated set. */
+/** Read all ownership evidence for one repository; never return a truncated set. Null outside any Git worktree. */
 export async function readRepositoryTransitions(cwd: string): Promise<
 	| {
 			repository: string
@@ -418,6 +420,7 @@ export async function readRepositoryTransitions(cwd: string): Promise<
 			branch?: string
 			transitions: FileTransition[]
 	  }
+	| null
 	| undefined
 > {
 	return tryWorkAttributionAsync(async () => {
@@ -425,8 +428,10 @@ export async function readRepositoryTransitions(cwd: string): Promise<
 		let worktree: string
 		try {
 			worktree = realpathSync(await git(cwd, ["rev-parse", "--show-toplevel"]))
-		} catch {
-			return
+		} catch (error) {
+			// Git exits with 128 outside a worktree. Any other failure leaves ownership unknown.
+			if (error instanceof Error && "code" in error && error.code === 128) return null
+			throw error
 		}
 		const repository = realpathSync(await git(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
 		let branch: string | undefined

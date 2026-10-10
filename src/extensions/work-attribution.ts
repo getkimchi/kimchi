@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import {
 	closeSync,
 	existsSync,
@@ -11,25 +11,84 @@ import {
 	writeFileSync,
 } from "node:fs"
 import { dirname, join, resolve } from "node:path"
+import { contentText } from "@earendil-works/pi-ai"
 import {
 	createEditToolDefinition,
 	createWriteToolDefinition,
 	type ExtensionAPI,
 	type ExtensionContext,
+	findTurnStartIndex,
 	getAgentDir,
+	type InputEvent,
+	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent"
-import { readPlanWorkId } from "../shared/planning/plan-markdown.js"
+import { writeConfigSetting } from "../config/settings.js"
+import { isResourceEnabled } from "../resources/store.js"
+import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
+import { isHarnessSteer } from "./steer-marker.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
-import { findWorkContinuation, type WorkContinuation } from "./work-attribution/continuation.js"
+import {
+	findWorkContinuation,
+	hasOwnedWorkReference,
+	hasWorkReference,
+	type WorkContinuation,
+} from "./work-attribution/continuation.js"
 import { debugWorkAttribution } from "./work-attribution/diagnostics.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
+import { confirmWorkContinuation, correctWorkLink } from "./work-attribution/links.js"
 import { subscribeFileReconciliation } from "./work-attribution/reconcile-supervisor.js"
-import { flushWorkSummaries, markNewWork, recoverWorkSummaries, updateWorkSummary } from "./work-attribution/summary.js"
+import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
+import {
+	captureWorkScope,
+	readWorkScope,
+	sameWorkScope,
+	saveNewWorkScope,
+	workCredential,
+	workRepository,
+} from "./work-attribution/scope.js"
+import {
+	classifyWorkIntent,
+	loadWorkIntents,
+	rememberWorkIntent,
+	WorkMatchingLimit,
+	workIntentPath,
+	workMatchingEnabled,
+} from "./work-attribution/semantic.js"
+import {
+	flushWorkSummaries,
+	markNewWork,
+	object,
+	readWorkRecords,
+	recoverWorkSummaries,
+	updateWorkSummary,
+} from "./work-attribution/summary.js"
 
+export interface WorkSegment {
+	id: string
+	attribution: "explicit" | "inferred" | "session" | "unknown"
+	reason: string
+}
+export function isWorkSegment(value: unknown): value is WorkSegment {
+	return (
+		object(value) &&
+		typeof value.id === "string" &&
+		!!value.id &&
+		typeof value.reason === "string" &&
+		!!value.reason &&
+		(value.attribution === "explicit" ||
+			value.attribution === "inferred" ||
+			value.attribution === "session" ||
+			value.attribution === "unknown")
+	)
+}
 export interface WorkContext {
 	cwd: string
 	sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">
+	/** Queued local children retain the work selected at spawn. */
+	workId?: string
+	/** Null pins the absence of a segment before a later input creates one. */
+	segment?: WorkSegment | null
 }
 export const WORK_CHANGED_EVENT = "kimchi:work-changed"
 export const WORK_STATE_REQUEST_EVENT = "kimchi:work-state-request"
@@ -44,16 +103,21 @@ export interface WorkDetailsRequest {
 }
 const WORK_IDENTITY_ENTRY = "work_identity"
 const identities = new Map<string, string>()
+const activeSegments = new Map<string, WorkSegment>()
+/** New works waiting for their first verified scope, with the credential of their first input. */
+const newWorksToScope = new Map<string, string | undefined>()
 const workOutputs = new Map<string, Set<string>>()
 /** Earlier startup hooks can allocate a fresh ledger before the extension binds it. */
 const freshSessionLedgers = new Set<string>()
-
+type RequestModel = Pick<NonNullable<ExtensionContext["model"]>, "provider" | "id">
 export function workLedgerPath(ctx: WorkContext): string {
 	// Session IDs also come from imported sessions; never interpret them as paths.
 	return join(getAgentDir(), "work-attribution", `${encodeURIComponent(ctx.sessionManager.getSessionId())}.jsonl`)
 }
 /** Attribution is observational: callers may continue without IDs after a persistence failure. */
 export function tryWorkAttribution<T>(record: () => T): T | undefined {
+	// With Cost per PR disabled, other extensions record no work through this wrapper.
+	if (!isResourceEnabled(COST_PER_PR_RESOURCE_ID)) return undefined
 	try {
 		return record()
 	} catch (error) {
@@ -62,6 +126,7 @@ export function tryWorkAttribution<T>(record: () => T): T | undefined {
 	}
 }
 export async function tryWorkAttributionAsync<T>(record: () => Promise<T>): Promise<T | undefined> {
+	if (!isResourceEnabled(COST_PER_PR_RESOURCE_ID)) return undefined
 	try {
 		return await record()
 	} catch (error) {
@@ -111,14 +176,21 @@ export function setWorkId(
 ): string {
 	const workId = existingWorkId ?? randomUUID()
 	if (!isWorkId(workId)) throw new Error("Invalid work UUID")
-	if (!existingWorkId) markNewWork(workId)
-	appendWorkRecord(ctx, { type: "work", ...(continuation ? { continuation } : {}) }, workId)
-	identities.set(workLedgerPath(ctx), workId)
-	pi?.appendEntry(WORK_IDENTITY_ENTRY, { workId, ...(continuation ? { continuation } : {}) })
+	if (!existingWorkId) {
+		markNewWork(workId)
+		newWorksToScope.set(workId, undefined)
+	}
+	const key = workLedgerPath(ctx)
+	const segment = identities.get(key) === workId ? activeSegments.get(key) : undefined
+	appendWorkRecord(ctx, { type: "work", segment, ...(continuation ? { continuation } : {}) }, workId)
+	identities.set(key, workId)
+	if (!segment) activeSegments.delete(key)
+	pi?.appendEntry(WORK_IDENTITY_ENTRY, { workId, segment, ...(continuation ? { continuation } : {}) })
 	pi?.events.emit(WORK_CHANGED_EVENT, undefined)
 	return workId
 }
 export function getWorkId(ctx: WorkContext): string {
+	if (ctx.workId !== undefined) return ctx.workId
 	const path = workLedgerPath(ctx)
 	const cached = identities.get(path)
 	if (cached) return cached
@@ -131,6 +203,7 @@ export function getWorkId(ctx: WorkContext): string {
 				const record = JSON.parse(line)
 				if (record.type === "work" && isWorkId(record.workId)) {
 					identities.set(path, record.workId)
+					if (isWorkSegment(record.segment)) activeSegments.set(path, record.segment)
 					return record.workId
 				}
 			} catch {}
@@ -142,13 +215,28 @@ export function getWorkId(ctx: WorkContext): string {
 }
 export function recordProviderRequest(
 	ctx: WorkContext,
-	model?: Pick<NonNullable<ExtensionContext["model"]>, "provider" | "id">,
+	model?: RequestModel,
 	workId = getWorkId(ctx),
+	purpose?: "work-matching",
 ): { requestId: string; workId: string } {
 	const requestId = randomUUID()
+	const startedAt = new Date().toISOString()
+	const segment = getWorkSegment(ctx)
+	// New requests must distinguish unknown scope from legacy records that predate account tracking.
+	const scope = readWorkScope(workId) ?? null
 	appendWorkRecord(
 		ctx,
-		{ type: "request", requestId, provider: model?.provider, model: model?.id, modelSource: "context" },
+		{
+			type: "request",
+			requestId,
+			startedAt,
+			provider: model?.provider,
+			model: model?.id,
+			modelSource: "context",
+			segment,
+			scope,
+			purpose,
+		},
 		workId,
 	)
 	return { requestId, workId }
@@ -156,7 +244,12 @@ export function recordProviderRequest(
 /** Snapshot the session so later async work stays attributed to it after a session switch. */
 export function pinWorkContext(ctx: WorkContext): WorkContext {
 	const sessionId = ctx.sessionManager.getSessionId()
-	return { cwd: ctx.cwd, sessionManager: { getSessionId: () => sessionId } }
+	const segment = getWorkSegment(ctx)
+	return { cwd: ctx.cwd, sessionManager: { getSessionId: () => sessionId }, segment: segment ? { ...segment } : null }
+}
+/** Requests retain this immutable input decision even after the session moves to another task. */
+export function getWorkSegment(ctx: WorkContext): WorkSegment | undefined {
+	return ctx.segment === undefined ? activeSegments.get(workLedgerPath(ctx)) : (ctx.segment ?? undefined)
 }
 /** A session that already wrote files, a plan, or a commit keeps its current identity. */
 function hasWorkOutput(ctx: ExtensionContext, workId: string): boolean {
@@ -168,9 +261,7 @@ function hasWorkOutput(ctx: ExtensionContext, workId: string): boolean {
 		if (
 			entry.type === "custom" &&
 			entry.customType === WORK_IDENTITY_ENTRY &&
-			typeof entry.data === "object" &&
-			entry.data !== null &&
-			"workId" in entry.data &&
+			object(entry.data) &&
 			isWorkId(entry.data.workId) &&
 			entry.data.workId !== workId
 		)
@@ -195,8 +286,8 @@ function hasWorkOutput(ctx: ExtensionContext, workId: string): boolean {
 			}
 		})
 }
-function notify(ctx: ExtensionContext, message: string): void {
-	if (ctx.hasUI) ctx.ui.notify(message, "info")
+function notify(ctx: ExtensionContext, message: string, type: "info" | "warning" = "info"): void {
+	if (ctx.hasUI) ctx.ui.notify(message, type)
 	else console.error(message)
 }
 /** Visible, non-fatal warning shared by every attribution caller. */
@@ -206,9 +297,22 @@ export function warnWorkAttribution(ctx: Pick<ExtensionContext, "hasUI" | "ui">,
 	else console.error(message)
 }
 /** A null identity denotes a child whose parent attribution was unavailable. */
-export function createWorkAttributionExtension(inheritedWorkId?: string | null): (pi: ExtensionAPI) => void {
+export function createWorkAttributionExtension(
+	inheritedWorkId?: string | null,
+	inheritedSegment?: WorkSegment,
+): (pi: ExtensionAPI) => void {
 	const isChild = inheritedWorkId !== undefined
 	return (pi) => {
+		let preparedInput = false
+		// Mirrors Pi's queues: it matches a delivered message by text, steering first.
+		const queued: Record<"steer" | "followUp", { text: string; extension: boolean }[]> = { steer: [], followUp: [] }
+		// Pi dequeues a message before every message_start handler finishes; keep it until the run settles.
+		let delivering: { text: string; extension: boolean }[] = []
+		const clearQueued = () => {
+			queued.steer = []
+			queued.followUp = []
+			delivering = []
+		}
 		let stopReconciliation: (() => Promise<void>) | undefined
 		let activeContext: ExtensionContext | undefined
 		function notifyWorkChanged(): void {
@@ -224,7 +328,29 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 			})
 		}
 		let unregisterWorkState: (() => void) | undefined = registerWorkState()
+		// Workaround for Pi 0.85.1 findCutPoint(): it moves the cut back over metadata entries, such as the
+		// work_identity entry each input appends, then reports the turn before them as split even when the kept turn
+		// is whole. Remove this hook once Pi reports such a cut as unsplit (the compaction test in
+		// work-attribution.test.ts then fails), or once inputs stop appending work_identity entries.
+		pi.on("session_before_compact", ({ preparation, branchEntries }) => {
+			if (!preparation.isSplitTurn) return
+			const firstKept = branchEntries.findIndex((entry) => entry.id === preparation.firstKeptEntryId)
+			if (firstKept < 0) return
+			let firstVisible = firstKept
+			while (firstVisible < branchEntries.length && !sessionEntryToContextMessages(branchEntries[firstVisible]).length)
+				firstVisible++
+			if (firstVisible === firstKept || firstVisible === branchEntries.length) return
+			if (findTurnStartIndex(branchEntries, firstVisible, firstVisible) !== firstVisible) return
+			// Keep our work identity entries, but summarize the earlier history only once.
+			preparation.messagesToSummarize.push(...preparation.turnPrefixMessages)
+			preparation.turnPrefixMessages = []
+			preparation.isSplitTurn = false
+		})
 		pi.on("session_start", (_event, ctx) => {
+			preparedInput = false
+			clearQueued()
+			inputGeneration++
+			semanticAbort?.abort()
 			unregisterWorkState ??= registerWorkState()
 			recoverWorkSummaries()
 			try {
@@ -248,8 +374,17 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 		})
 		const initialized = new Set<string>()
 		const continuationEligible = new Set<string>()
-		const branchEligible = new Set<string>()
-		const explicitSelection = new Set<string>()
+		// Sessions whose inputs belong to a selected work, with the reason their segments carry: "work-command" for
+		// /work, or the source of an accepted continuation.
+		const explicitSelection = new Map<string, string>()
+		let inputGeneration = 0
+		let semanticAbort: AbortController | undefined
+		/** A history limit that stopped model matching; /work reports it instead of every prompt warning. */
+		let matchingLimit: string | undefined
+		pi.on("model_select", () => {
+			inputGeneration++
+			semanticAbort?.abort()
+		})
 		function bind(ctx: ExtensionContext): void {
 			activeContext = ctx
 			const key = workLedgerPath(ctx)
@@ -261,71 +396,269 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 			const fresh = !existsSync(key) || freshSessionLedgers.has(key)
 			let copiedWorkId: string | undefined
 			let copiedExplicit = false
+			let copiedSegment: WorkSegment | undefined
 			for (const entry of branch.toReversed()) {
 				if (
 					entry.type === "custom" &&
 					entry.customType === WORK_IDENTITY_ENTRY &&
-					typeof entry.data === "object" &&
-					entry.data !== null &&
-					"workId" in entry.data &&
+					object(entry.data) &&
 					isWorkId(entry.data.workId)
 				) {
 					copiedWorkId = entry.data.workId
 					copiedExplicit = "explicit" in entry.data && entry.data.explicit === true
+					if ("segment" in entry.data && isWorkSegment(entry.data.segment)) copiedSegment = entry.data.segment
 					break
 				}
 			}
 			if (!existsSync(key)) {
-				if (inheritedWorkId || copiedWorkId) setWorkId(ctx, inheritedWorkId ?? copiedWorkId)
+				if (copiedWorkId || inheritedWorkId) setWorkId(ctx, copiedWorkId ?? inheritedWorkId ?? undefined)
 				else getWorkId(ctx)
+				const segment = copiedWorkId ? copiedSegment : inheritedSegment
+				if (segment) {
+					appendWorkRecord(ctx, { type: "work", segment })
+					activeSegments.set(key, { ...segment })
+				}
 			} else getWorkId(ctx)
 			// A restored session keeps its durable identity even if it crashed between
 			// a file mutation and its tool result, including edits in another repository.
 			if (fresh && !isChild && !copiedWorkId && !branch.some((entry) => entry.type === "message")) {
 				continuationEligible.add(key)
-				branchEligible.add(key)
 			}
 			freshSessionLedgers.delete(key)
 			const workId = getWorkId(ctx)
-			if (copiedExplicit && copiedWorkId === workId) explicitSelection.add(key)
-			pi.appendEntry(WORK_IDENTITY_ENTRY, { workId, ...(explicitSelection.has(key) ? { explicit: true } : {}) })
+			if (copiedExplicit && copiedWorkId === workId)
+				explicitSelection.set(key, copiedSegment?.attribution === "explicit" ? copiedSegment.reason : "work-command")
+			pi.appendEntry(WORK_IDENTITY_ENTRY, {
+				workId,
+				segment: getWorkSegment(ctx),
+				...(explicitSelection.has(key) ? { explicit: true } : {}),
+			})
 			initialized.add(key)
 			notifyWorkChanged()
 		}
-		pi.on("input", async (event, ctx) => {
-			if (isChild || event.source === "extension") return
+		pi.on("input", (event, ctx) => {
+			// Pi emits input before enqueueing; the running turn still owns its next request.
+			if (event.streamingBehavior) {
+				// An empty Pi queue means earlier entries are being delivered or were restored to the editor.
+				if (!ctx.hasPendingMessages()) {
+					delivering.push(...queued.steer, ...queued.followUp)
+					queued.steer = []
+					queued.followUp = []
+				}
+				queued[event.streamingBehavior].push({ text: event.text, extension: event.source === "extension" })
+				return
+			}
+			return attributeInput(event, ctx)
+		})
+		pi.on("before_agent_start", () => {
+			// The initial prompt was handled before skill/template expansion by the input hook.
+			preparedInput = true
+		})
+		pi.on("message_start", async (event, ctx) => {
+			if (event.message.role !== "user") return
+			if (preparedInput) {
+				preparedInput = false
+				return
+			}
+			const text = contentText(event.message.content, "")
+			const queue = [queued.steer, queued.followUp, delivering].find((entries) =>
+				entries.some((entry) => entry.text === text),
+			)
+			if (
+				queue?.splice(
+					queue.findIndex((entry) => entry.text === text),
+					1,
+				)[0].extension
+			)
+				return
+			if (isHarnessSteer(text)) return
+			// Pi awaits message_start before sending the request that receives a queued message.
+			await attributeInput({ type: "input", text, source: "interactive" }, ctx)
+		})
+		pi.on("agent_settled", () => {
+			preparedInput = false
+			clearQueued()
+		})
+		async function attributeInput(event: InputEvent, ctx: ExtensionContext): Promise<void> {
+			if (isChild) return
+			const model = ctx.model ? { ...ctx.model } : undefined
+			const generation = ++inputGeneration
+			semanticAbort?.abort()
+			if (event.source === "extension") return
+			// Optional model matching never interrupts the user; its failures leave the input unresolved.
+			let matching = false
 			try {
 				bind(ctx)
 				const key = workLedgerPath(ctx)
-				const allowBranchFallback = branchEligible.delete(key)
-				const current = getWorkId(ctx)
-				if (!continuationEligible.has(key) || explicitSelection.has(key) || hasWorkOutput(ctx, current)) return
-				const found = await findWorkContinuation(pinWorkContext(ctx), event.text, { allowBranchFallback })
+				const cwd = ctx.cwd
+				let current = getWorkId(ctx)
+				const segmentId = randomUUID()
+				const useSegment = (attribution: WorkSegment["attribution"], reason: string) => {
+					const segment = { id: segmentId, attribution, reason }
+					appendWorkRecord(ctx, { type: "work", segment })
+					activeSegments.set(key, segment)
+					pi.appendEntry(WORK_IDENTITY_ENTRY, {
+						workId: getWorkId(ctx),
+						segment,
+						...(explicitSelection.has(key) ? { explicit: true } : {}),
+					})
+				}
+				useSegment(
+					workMatchingEnabled() ? "unknown" : "session",
+					workMatchingEnabled() ? "matching-unresolved" : "matching-disabled",
+				)
+				const captured = await captureWorkScope(cwd)
 				if (
-					!found ||
-					found.workId === current ||
+					generation !== inputGeneration ||
+					ctx.cwd !== cwd ||
 					workLedgerPath(ctx) !== key ||
-					getWorkId(ctx) !== current ||
-					!continuationEligible.has(key) ||
-					explicitSelection.has(key) ||
-					hasWorkOutput(ctx, current)
+					getWorkId(ctx) !== current
 				)
 					return
-				const { workId, source, evidence } = found
-				setWorkId(ctx, workId, pi, { source, evidence })
-				const message =
-					source === "recent-branch"
-						? `Continuing recent work on branch ${evidence.branch}: ${workId}`
-						: `Continuing the saved ${source === "saved-plan" ? "plan" : "artifact"}'s work: ${workId}`
-				notify(ctx, message)
+				const previousScope = readWorkScope(current)
+				// A pending work keeps waiting only under the credential of its first input.
+				const credential = workCredential(cwd)
+				const pending = (workId: string) => {
+					if (!newWorksToScope.has(workId)) return false
+					const started = newWorksToScope.get(workId) ?? credential
+					newWorksToScope.set(workId, started)
+					return started === credential
+				}
+				const missingOriginalScope = !previousScope && !pending(current) && !explicitSelection.has(key)
+				if (
+					captured?.isCurrent() &&
+					(missingOriginalScope || (previousScope && !sameWorkScope(previousScope, captured.scope)))
+				) {
+					// Recovered identity belongs to new inputs, never to earlier unscoped history.
+					current = setWorkId(ctx, undefined, pi)
+					explicitSelection.delete(key)
+					useSegment(workMatchingEnabled() ? "unknown" : "session", previousScope ? "scope-changed" : "scope-recovered")
+				}
+				// A new work waits for its first verified capture; until then its requests stay unscoped.
+				const saveScope = (workId: string) => {
+					if (pending(workId) && captured?.isCurrent()) {
+						newWorksToScope.delete(workId)
+						saveNewWorkScope(workId, captured.scope)
+					}
+				}
+				saveScope(current)
+				const explicitReason = explicitSelection.get(key)
+				const referencesWork = hasWorkReference(event.text)
+				// /work selects the work for every later input. An accepted continuation does too, except for an input
+				// that names a plan or artifact again: that reference is checked like any other.
+				if (explicitReason === "work-command" || (explicitReason && !referencesWork)) {
+					useSegment("explicit", explicitReason)
+					return
+				}
+				const eligible = () => continuationEligible.has(key) && !hasWorkOutput(ctx, current)
+				const unchanged = () =>
+					generation === inputGeneration &&
+					(!captured || captured.isCurrent()) &&
+					ctx.model?.provider === model?.provider &&
+					ctx.model?.id === model?.id &&
+					ctx.model?.baseUrl === model?.baseUrl &&
+					ctx.cwd === cwd &&
+					workLedgerPath(ctx) === key &&
+					getWorkId(ctx) === current &&
+					explicitSelection.get(key) === explicitReason
+				const records = referencesWork ? readWorkRecords(getAgentDir()) : undefined
+				const found =
+					captured && (eligible() || referencesWork)
+						? await findWorkContinuation(pinWorkContext(ctx), event.text, captured)
+						: undefined
+				if (!unchanged()) return
+				if (found && (found.workId === current || eligible())) {
+					if (found.workId !== current) {
+						setWorkId(ctx, found.workId, pi, { source: found.source, evidence: found.evidence })
+						notify(
+							ctx,
+							`Continuing the saved ${found.source === "named-artifact" ? "artifact" : "plan"}'s work: ${found.workId}`,
+						)
+					}
+					explicitSelection.set(key, found.source)
+					useSegment("explicit", found.source)
+					if (captured) confirmWorkContinuation(ctx, found, captured.scope, records)
+					if (model) await rememberWorkIntent(ctx.cwd, found.workId, event.text)
+					return
+				}
+				if (found || (records && hasOwnedWorkReference(ctx, event.text, records))) {
+					// A reference this session's continuation cannot account for may start another task.
+					explicitSelection.delete(key)
+					useSegment("unknown", "unresolved-reference")
+					return
+				}
+				// The reference named no work, so the accepted continuation still covers this input.
+				if (explicitReason) {
+					useSegment("explicit", explicitReason)
+					return
+				}
+				// Without a verified account and repository, matching stays unresolved.
+				if (!model || !workMatchingEnabled() || !captured) return
+				matching = true
+				const intents = await loadWorkIntents(ctx.cwd, current, event.text, eligible())
+				matchingLimit = undefined
+				if (!unchanged()) return
+				if (!intents.account?.isCurrent()) {
+					useSegment("unknown", "account-unavailable")
+					return
+				}
+				semanticAbort = new AbortController()
+				const decision = await classifyWorkIntent(
+					{ ...pinWorkContext(ctx), model, modelRegistry: ctx.modelRegistry },
+					intents.input,
+					semanticAbort.signal,
+					intents.account.isCurrent,
+				)
+				if ((await workRepository(cwd)) !== intents.repository) return
+				if (
+					!decision ||
+					!unchanged() ||
+					!workMatchingEnabled() ||
+					!intents.account.isCurrent() ||
+					(decision.decision === "continue" && !eligible())
+				)
+					return
+				const workId =
+					decision.decision === "continue"
+						? decision.workId
+						: decision.decision === "new" && intents.input.current
+							? randomUUID()
+							: current
+				const freshTask = decision.decision === "new" && !intents.input.current && !intents.input.candidates.length
+				const evidence: WorkContinuation["evidence"] = {
+					path: workIntentPath(workId),
+					repository: intents.repository,
+					model: decision.model,
+					decision: decision.decision,
+					inputHash: createHash("sha256").update(event.text).digest("hex"),
+					segmentId,
+					promptVersion: 1,
+					candidateWorkIds: intents.input.candidates.map((candidate) => candidate.workId),
+					account: intents.account.account,
+				}
+				if (workId !== current) {
+					if (decision.decision === "new") {
+						newWorksToScope.set(workId, credential)
+						markNewWork(workId)
+					}
+					setWorkId(ctx, workId, pi, { source: "semantic", evidence })
+					notify(ctx, `Work matching ${decision.decision === "new" ? "started new" : "continued"} work: ${workId}`)
+				} else appendWorkRecord(ctx, { type: "work", continuation: { source: "semantic", evidence } }, current)
+				saveScope(workId)
+				useSegment(
+					decision.decision === "unknown" ? "unknown" : freshTask ? "session" : "inferred",
+					decision.decision === "unknown" ? "model-uncertain" : freshTask ? "new-task" : `model-${decision.decision}`,
+				)
+				await rememberWorkIntent(ctx.cwd, workId, event.text, intents.repository, intents.account)
 			} catch (error) {
-				warnWorkAttribution(ctx, error)
+				if (error instanceof WorkMatchingLimit) matchingLimit = error.message
+				if (matching || error instanceof WorkMatchingLimit) debugWorkAttribution("Work matching skipped:", error)
+				else warnWorkAttribution(ctx, error)
 			}
-		})
+		}
 		pi.on("before_provider_headers", (event, ctx) => {
 			try {
 				bind(ctx)
-				branchEligible.delete(workLedgerPath(ctx))
 				const identity = recordProviderRequest(ctx, ctx.model)
 				event.headers["X-Request-Id"] = identity.requestId
 				// Kept local: work identity is used by diagnostics, not uploaded as a header.
@@ -358,6 +691,10 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 			toolRequests.delete(workLedgerPath(ctx))
 		})
 		pi.on("session_shutdown", async (_event, ctx) => {
+			preparedInput = false
+			clearQueued()
+			inputGeneration++
+			semanticAbort?.abort()
 			activeContext = undefined
 			unregisterWorkState?.()
 			unregisterWorkState = undefined
@@ -368,36 +705,81 @@ export function createWorkAttributionExtension(inheritedWorkId?: string | null):
 			await stop?.()
 			await flushWorkSummaries()
 			activeRequests.delete(key)
+			activeSegments.delete(key)
 			toolRequests.delete(key)
 			identities.delete(key)
 			workOutputs.delete(key)
 			freshSessionLedgers.delete(key)
 			initialized.delete(key)
-			branchEligible.delete(key)
 			explicitSelection.delete(key)
 		})
 		pi.registerCommand("work", {
-			description: "Show work details, start new work (/work new), or continue a saved plan (/work <path>)",
+			description:
+				"Show work details, start work (new), continue a plan (<path>), control matching (matching on|off), or correct earlier requests (link|unlink)",
 			handler: async (args, ctx) => {
 				try {
+					const value = args.trim()
+					if (value === "matching on" || value === "matching off") {
+						writeConfigSetting("workSemanticMatching", value === "matching on")
+						inputGeneration++
+						semanticAbort?.abort()
+						notify(
+							ctx,
+							value === "matching on"
+								? "Task matching enabled: saved task text may be sent to your selected model."
+								: "Task matching disabled. Local work tracking stays enabled.",
+						)
+						return
+					}
 					await ctx.waitForIdle()
 					bind(ctx)
-					const value = args.trim()
+					if (/^(link|unlink)(?:\s|$)/.test(value)) {
+						notify(ctx, await correctWorkLink(ctx, value))
+						notifyWorkChanged()
+						return
+					}
 					if (value === "new") setWorkId(ctx)
 					else if (value) {
 						const workId = readPlanWorkId(readFileSync(resolve(ctx.cwd, value), "utf8"))
 						if (!workId) throw new Error("Plan has no valid work ID")
+						// Like /work link, refuse another account's or repository's work; the next input would replace it.
+						const planScope = readWorkScope(workId)
+						const captured = planScope && (await captureWorkScope(ctx.cwd))
+						if (planScope && captured?.isCurrent() && !sameWorkScope(planScope, captured.scope)) {
+							const other = planScope.repository === captured.scope.repository ? "account" : "repository"
+							notify(
+								ctx,
+								`Cannot continue this plan here: its work ${workId} belongs to another ${other}. Current work: ${getWorkId(ctx)}`,
+								"warning",
+							)
+							return
+						}
 						setWorkId(ctx, workId)
 					}
 					if (value) {
-						branchEligible.delete(workLedgerPath(ctx))
-						explicitSelection.add(workLedgerPath(ctx))
-						pi.appendEntry(WORK_IDENTITY_ENTRY, { workId: getWorkId(ctx), explicit: true })
+						activeSegments.set(workLedgerPath(ctx), {
+							id: randomUUID(),
+							attribution: "explicit",
+							reason: "work-command",
+						})
+						appendWorkRecord(ctx, { type: "work", segment: getWorkSegment(ctx) })
+						inputGeneration++
+						semanticAbort?.abort()
+						explicitSelection.set(workLedgerPath(ctx), "work-command")
+						pi.appendEntry(WORK_IDENTITY_ENTRY, {
+							workId: getWorkId(ctx),
+							explicit: true,
+							segment: getWorkSegment(ctx),
+						})
 						// bind() announced the previous work; announce the one selected here.
 						notifyWorkChanged()
 					}
 					const details: WorkDetailsRequest = { workId: getWorkId(ctx), lines: [] }
 					pi.events.emit(WORK_DETAILS_REQUEST_EVENT, details)
+					if (matchingLimit && workMatchingEnabled())
+						details.lines.push(
+							`Work matching stopped: ${matchingLimit}. New inputs stay unresolved in the current work.`,
+						)
 					notify(ctx, [`Work ID: ${details.workId}`, ...details.lines].join("\n"))
 				} catch (error) {
 					warnWorkAttribution(ctx, error)
@@ -417,4 +799,32 @@ export function getToolRequest(
 	toolCallId: string,
 ): { requestId: string; workId: string } | undefined {
 	return toolRequests.get(workLedgerPath(ctx))?.get(toolCallId)
+}
+/**
+ * Save a tool's plan in the work of the request that produced it, or else the session's work; a tool that awaits first
+ * passes a pinned `work` context. Failures are shown under `label` rather than thrown: review continues without a file.
+ */
+export function saveToolPlan(
+	ctx: Pick<ExtensionContext, "hasUI" | "ui">,
+	work: WorkContext,
+	toolCallId: string,
+	label: string,
+	plan: { name: string; planText: string },
+): { path: string; snapshotPath?: string; workId?: string } | undefined {
+	const origin = tryWorkAttribution(() => getToolRequest(work, toolCallId))
+	const workId = tryWorkAttribution(() => origin?.workId ?? getWorkId(work))
+	try {
+		const saved = savePlanMarkdown({ cwd: work.cwd, ...plan, workId })
+		// The log has the cause; a missing retained copy also changes how the plan can continue.
+		if (workId && !saved.snapshotPath && ctx.hasUI) ctx.ui.notify(`${label}: ${UNRETAINED_PLAN_NOTICE}`, "warning")
+		if (workId)
+			tryWorkAttribution(() =>
+				appendWorkRecord(work, { type: "plan", ...saved, ...(origin && { requestId: origin.requestId }) }, workId),
+			)
+		return { ...saved, workId }
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error)
+		if (ctx.hasUI) ctx.ui.notify(`${label}: failed to save plan file: ${detail}`, "warning")
+		else console.error(`${label}: failed to save plan file: ${detail}`)
+	}
 }

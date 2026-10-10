@@ -1,8 +1,7 @@
 /** Discovers the PRs and MRs of recorded commits: lookup scheduling, the check cache and the journal updates. */
-import { randomUUID } from "node:crypto"
 import { readFileSync } from "node:fs"
-import { open, rename, rm } from "node:fs/promises"
 import { join, resolve } from "node:path"
+import { writeFileDurably } from "../../config/json.js"
 import { readWorkRecords } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { mergePullRequestLinks as mergePullRequests, pullRequestKey } from "./links.js"
@@ -169,21 +168,7 @@ async function saveLookupChecks(
 
 	const contents = `${JSON.stringify(value)}\n`
 	if (contents === (checks.saved ?? "{}\n")) return
-	const directory = join(agentDir, "work-attribution")
-	const temporary = join(directory, `.${LOOKUP_CHECKS}-${randomUUID()}.tmp`)
-	try {
-		const file = await open(temporary, "wx", 0o600)
-		try {
-			await file.writeFile(contents)
-			await file.sync()
-		} finally {
-			await file.close()
-		}
-		assertLease()
-		await rename(temporary, join(directory, LOOKUP_CHECKS))
-	} finally {
-		await rm(temporary, { force: true })
-	}
+	await writeFileDurably(join(agentDir, "work-attribution", LOOKUP_CHECKS), contents, assertLease)
 }
 
 function commitKey(row: WorkPullRequestUpdate): string {

@@ -3,6 +3,7 @@ import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../extensions/claude-code-skills
 import { FERMENT_V2_RESOURCE_ID } from "../extensions/ferment-v2/constants.js"
 import { MEMORY_RESOURCE_ID } from "../extensions/memory/config.js"
 import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/index.js"
+import { COST_PER_PR_RESOURCE_ID } from "../extensions/work-attribution/resource.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { discoverClaudeCodeHookResourceDefinitions } from "./claude-code-hook-resources.js"
 import { discoverKimchiHookResourceDefinitions } from "./kimchi-hook-resources.js"
@@ -94,6 +95,14 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		label: "Kimchi Workflows",
 		description: "Enable the /workflow command for authoring and running TypeScript workflows.",
 		defaultEnabled: false,
+		restartRequired: true,
+	},
+	{
+		id: COST_PER_PR_RESOURCE_ID,
+		kind: "extensions",
+		label: "Cost per PR",
+		description: "Link model requests to their work and pull requests, and show /work and the PR/MR status.",
+		defaultEnabled: true,
 		restartRequired: true,
 	},
 	{

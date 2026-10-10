@@ -15,8 +15,10 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { isResourceEnabled } from "../../resources/store.js"
+import { UNRETAINED_PLAN_NOTICE } from "../../shared/planning/plan-markdown.js"
 import { emitPlanReviewDecision, PLAN_REVIEW_DECISION_CHANNEL } from "../../shared/planning/plan-review-bus.js"
 import { registerReadOnlyToolProvider } from "../../shared/planning/tool-profile-manager.js"
+import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
@@ -32,8 +34,9 @@ import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { CUSTOM_BRANCH_ITEM, CUSTOM_BRANCH_PROMPT } from "../remote-run/git-workflow.js"
 import { runCloudAgent } from "../remote-run/runner.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
-import { flushWorkSummaries } from "../work-attribution/summary.js"
-import { getWorkId } from "../work-attribution.js"
+import { COST_PER_PR_RESOURCE_ID } from "../work-attribution/resource.js"
+import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary.js"
+import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
 import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
@@ -128,7 +131,7 @@ afterEach(async () => {
 beforeEach(cleanPermissionEnv)
 beforeEach(() => {
 	populateCliArgs([])
-	isResourceEnabledMock.mockReturnValue(false)
+	isResourceEnabledMock.mockImplementation((id) => id === COST_PER_PR_RESOURCE_ID)
 })
 afterEach(() => populateCliArgs([]))
 afterEach(cleanPermissionEnv)
@@ -954,6 +957,65 @@ describe("plan mode assumption detection", () => {
 		const PLAN_V2 =
 			"# Plan: Cache Layer\n\n## Goal\nAdd caching layer with TTL.\n\n## Chunks\n\n### Chunk 1: Add cache primitive\n- **Accept When**: round-trip works"
 
+		it("saves the plan's originating request even if work changed before the tool ran", async () => {
+			const ctx = createContext({
+				cwd: attributionDir,
+				hasUI: false,
+				sessionManager: { getSessionId: () => TEST_SESSION_ID },
+			})
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, ctx)
+			const tracing = createExtensionApi()
+			createWorkAttributionExtension()(tracing.api)
+			const headers: Record<string, string> = {}
+			await tracing.getHandler("before_provider_headers")({ headers }, ctx)
+			expect(headers["X-Request-Id"]).toBeTypeOf("string")
+			const workId = getWorkId(ctx)
+			await tracing.getHandler("message_end")(
+				{
+					message: {
+						role: "assistant",
+						stopReason: "toolUse",
+						content: [{ type: "toolCall", id: "tc-submit-plan", name: "submit_plan" }],
+					},
+				},
+				ctx,
+			)
+			setWorkId(ctx)
+			await submitPlan(harness, PLAN_V1, ctx)
+			expect(readWorkRecords(attributionDir)).toContainEqual(
+				expect.objectContaining({
+					type: "plan",
+					workId,
+					requestId: headers["X-Request-Id"],
+				}),
+			)
+		})
+
+		it.each(["saved", "blocked"])("warns only when the plan's retained copy cannot be saved (%s)", async (outcome) => {
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-"))
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+			try {
+				if (outcome === "blocked") {
+					// Retained copies live under <agent>/work/<workId>/plans.
+					rmSync(join(attributionDir, "work"), { recursive: true, force: true })
+					writeFileSync(join(attributionDir, "work"), "blocked")
+				}
+				const ctx = createMockContext(["Rework the plan"])
+				ctx.cwd = tmpDir
+				await submitPlan(harness, PLAN_V1, ctx)
+				expect(readdirSync(join(tmpDir, ".kimchi", "plans"))).toEqual(["plan-cache-layer.md"])
+				const notice = [`permissions: ${UNRETAINED_PLAN_NOTICE}`, "warning"]
+				if (outcome === "blocked") expect(ctx.ui.notify).toHaveBeenCalledWith(...notice)
+				else expect(ctx.ui.notify).not.toHaveBeenCalledWith(...notice)
+			} finally {
+				warn.mockRestore()
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
+
 		it("saves the plan file when the plan is produced, before the approval choice", async () => {
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 			await harness.fire("session_start", {}, createMockContext([]))
@@ -1015,7 +1077,7 @@ describe("plan mode assumption detection", () => {
 		})
 
 		it("execute references the saved plan path and a new planning round gets a fresh file", async () => {
-			isResourceEnabledMock.mockReturnValue(false)
+			isResourceEnabledMock.mockImplementation((id) => id === COST_PER_PR_RESOURCE_ID)
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 			await harness.fire("session_start", {}, createMockContext([]))
 			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-execute-"))
@@ -1052,7 +1114,7 @@ describe("plan mode assumption detection", () => {
 		})
 
 		it("Execute routes through Ferment V2 when the experiment is enabled", async () => {
-			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID)
+			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID || id === COST_PER_PR_RESOURCE_ID)
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 			const calls: string[] = []
 			registerFermentV2PlanExecutor(harness.pi, async (execution) => {
@@ -1088,7 +1150,7 @@ describe("plan mode assumption detection", () => {
 		})
 
 		it("Execute fails closed when the experiment is enabled but the Ferment V2 executor is absent", async () => {
-			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID)
+			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID || id === COST_PER_PR_RESOURCE_ID)
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 			await harness.fire("session_start", {}, createMockContext([]))
 			const ctx = createMockContext(["Execute the plan locally"])
@@ -1104,7 +1166,7 @@ describe("plan mode assumption detection", () => {
 		})
 
 		it("Execute uses inline approved Markdown when the plan file is unavailable", async () => {
-			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID)
+			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID || id === COST_PER_PR_RESOURCE_ID)
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 			const executions: Array<{ objective: string; planPath?: string }> = []
 			registerFermentV2PlanExecutor(harness.pi, async (execution) => {
@@ -1136,7 +1198,7 @@ describe("plan mode assumption detection", () => {
 		})
 
 		it("Execute does not start legacy execution when the Ferment V2 executor keeps the existing run", async () => {
-			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID)
+			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID || id === COST_PER_PR_RESOURCE_ID)
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 			registerFermentV2PlanExecutor(harness.pi, async () => "kept-existing")
 			await harness.fire("session_start", {}, createMockContext([]))
@@ -1150,7 +1212,7 @@ describe("plan mode assumption detection", () => {
 		})
 
 		it("Execute shows only neutral failure copy when the Ferment V2 executor rejects", async () => {
-			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID)
+			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID || id === COST_PER_PR_RESOURCE_ID)
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 			registerFermentV2PlanExecutor(harness.pi, async () => {
 				throw new Error("boom")
@@ -1175,7 +1237,7 @@ describe("plan mode assumption detection", () => {
 		})
 
 		it("ignores an execute decision when no approved-plan review context is active", async () => {
-			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID)
+			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID || id === COST_PER_PR_RESOURCE_ID)
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 			const executor = vi.fn(async () => "started" as const)
 			registerFermentV2PlanExecutor(harness.pi, executor)

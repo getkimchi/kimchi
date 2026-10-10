@@ -62,12 +62,15 @@ export interface AcpMcpFixture extends AcpFixture {
 }
 
 export interface AcpFixtureOptions {
+	account?: Parameters<typeof startFakeOpenAiServer>[0]["account"]
 	responses: FakeResponseScript[]
 	models?: FakeModel[]
 	providerId?: string
 	defaultProvider?: string
 	/** Pin the fake model by default; false exercises unconfigured startup. */
 	defaultModel?: string | false
+	/** Merge isolated harness settings before startup reads and caches model roles. */
+	settings?: Record<string, unknown>
 	extraArgs?: string[]
 	/** Input modalities advertised by the default deterministic fake model. Ignored when `models` is provided. */
 	modelInput?: ("text" | "image")[]
@@ -248,7 +251,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		: [{ ...DEFAULT_MODEL, input: modelInput ?? DEFAULT_MODEL.input, contextWindow: 64_000, maxTokens: 1024 }]
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-acp-home-"))
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-acp-work-"))
-	const fake = await startFakeOpenAiServer({ responses, models: configuredModels })
+	const fake = await startFakeOpenAiServer({ responses, models: configuredModels, account: options.account })
 
 	let proc: ChildProcess | null = null
 	let mcp: McpFixture | undefined
@@ -354,11 +357,19 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			),
 			"utf-8",
 		)
-		if (defaultModel !== false) {
+		if (defaultModel !== false || options.settings) {
 			writeFileSync(
 				join(agentDir, "settings.json"),
 				JSON.stringify(
-					{ defaultProvider: defaultProvider ?? providerId, defaultModel: defaultModel ?? configuredModels[0]?.slug },
+					{
+						...(defaultModel === false
+							? {}
+							: {
+									defaultProvider: defaultProvider ?? providerId,
+									defaultModel: defaultModel ?? configuredModels[0]?.slug,
+								}),
+						...options.settings,
+					},
 					null,
 					"\t",
 				),

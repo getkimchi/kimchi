@@ -1,6 +1,6 @@
 # Work attribution
 
-Kimchi keeps a local record of the model requests, file edits, plans and commits that belong to the same work. A `workId` connects them, even when planning and implementation happen in different sessions or repositories.
+Kimchi keeps a local record of the model requests, file edits, plans and commits that belong to the same work. A `workId` connects them, even when planning and implementation happen in different sessions or worktrees of the same repository.
 
 The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's home directory. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits and saves those links in the same file. Calculating costs and uploading these records come later.
 
@@ -14,7 +14,11 @@ The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's h
 
 # User: summary and retained plan versions
 ~/.config/kimchi/harness/work/<workId>/work.json
+~/.config/kimchi/harness/work/<workId>/scope.json
 ~/.config/kimchi/harness/work/<workId>/plans/add-search-<content-hash>.md
+
+# User: saved task text used for later matching
+~/.config/kimchi/harness/work/<workId>/intent.json
 
 # User: source history used to rebuild summaries and match later commits
 ~/.config/kimchi/harness/work-attribution/<session-id>.jsonl
@@ -35,46 +39,53 @@ Deleting a worktree removes its editable plan but leaves the user-level summary 
 ```mermaid
 flowchart LR
     A["Session A: plan"] -->|save native plan or write Markdown| P["Saved planning evidence"]
-    P -->|name its path or continue recent branch work| B["Fresh session B: implement"]
+    P -->|name its path or paste the saved native plan| B["Fresh session B: implement"]
     A -->|requests| W["Local work.json"]
     B -->|requests and commits| W
 ```
 
 1. **Start working.** Kimchi creates a work ID and records model requests under it.
 2. **Save a plan or write an ADR.** Native plans get retained copies. A Markdown file written through Kimchi's native write/edit tools keeps its work identity in the local edit journal.
-3. **Continue in a fresh session.** Name the saved file, for example `Implement docs/adr/search.md`. If you omit the path, Kimchi can continue the one recent work on that feature branch under the rules below. Use `/work new` first when starting an unrelated task.
-4. **Implement and commit.** Kimchi adds requests, edits and linked commits to the work's summary. For a native plan in a deleted worktree, use its retained absolute path.
+3. **Continue in a fresh session.** Name the saved file, for example `Implement docs/adr/search.md`, or paste a native plan with its work-ID header. Pasted text must match a retained version. If you enabled model matching, a separate call to the selected model can also recognize a paraphrased task. Without matching evidence, the new session keeps its own work ID, even on the same branch.
+4. **Implement and commit.** Kimchi adds requests, edits and linked commits to the work's summary. A native plan still works after its original worktree is deleted: use its retained path or paste its saved text.
 
 ## How Kimchi matches things
 
 ### 1. Choose the work ID before the request
 
-CLI and Studio choose the work before sending the request:
+CLI and Studio choose the work before sending the request. A message queued while the agent is responding takes ownership only when delivered. Until then, requests and edits keep the running input's work. A local child keeps the work and input captured when it was spawned, even if it waits in a queue.
+
+For a main-session input, a verified account or repository change starts separate work before these matching rules run. Missing identity prevents automatic adoption of another work.
 
 ```mermaid
 flowchart LR
-    P["User message"] --> E{"Fresh session, no explicit choice,<br/>and no work output?"}
-    E -->|No| K["Keep current ID"]
-    E -->|Yes| N{"Names a Markdown path?"}
-    N -->|Yes| I{"Saved plan ID or unchanged file<br/>with one recorded owner?"}
-    I -->|Missing or conflicting| K
-    I -->|Yes| A["Use saved work ID"]
-    N -->|No| B{"First input, known feature branch,<br/>one recent work with unchanged Markdown?"}
-    B -->|No| K
-    B -->|Yes| H["Use recent work ID<br/>and record branch inference"]
+    P["Delivered user message"] --> E{"Explicit work choice,<br/>child or extension input?"}
+    E -->|Yes| K["Keep current ID"]
+    E -->|No| F{"Reference to recorded work<br/>or native plan?"}
+    F -->|Yes| V{"Same account and repository;<br/>one valid owner: current work,<br/>or a fresh session without output?"}
+    V -->|Yes| A["Use saved work ID"]
+    V -->|No| U["Keep current ID;<br/>input unresolved"]
+    F -->|No| J{"Model matching enabled,<br/>same account and saved task text?"}
+    J -->|No| K
+    J -->|Yes| D{"Compare message with current task<br/>and eligible saved tasks in this repository"}
+    D -->|Message names a task on its own;<br/>exactly one saved task matches| A
+    D -->|Clearly different from current task| N["Start new work ID"]
+    D -->|Same task or uncertain| K
     K --> R["Record next request"]
     A --> R
-    H --> R
+    N --> R
+    U --> R
 ```
 
-- **Named native plan:** reads the work ID saved at the top of the file. Its retained copy works after deleting the original worktree.
-- **Named Markdown file:** requires one recorded work owner and the same current Git blob and file mode as the saved edit. A committed ADR can therefore continue work from another worktree. Conflicting or unknown paths prevent automatic selection.
-- **No path:** only the first input in a fresh session can use branch inference. Kimchi requires a known non-default branch, exactly one work with recorded edits in that worktree and branch during the last 24 hours, and unchanged Markdown with no competing owner.
-- **Keep an explicit choice:** `/work new`, a reopened session, local children and extension-injected input do not automatically switch work. Existing work output also prevents switching. A skill's template paths do not count as user references.
+- **Named native plan:** reads the work ID saved at the top of the file and requires the file to match a locally retained version. Its retained copy works after deleting the original worktree. A plan edited by hand stays unresolved until Kimchi saves it again; `/work <plan path>` still selects it.
+- **Pasted native plan:** requires the work-ID header and complete text of a locally retained version. Plain text and Markdown code blocks both work. A changed plan, unknown ID, or conflicting plan stays unresolved. File paths inside the verified plan are its instructions, not additional work selections.
+- **Named Markdown file:** requires one recorded work owner and the same current Git blob and file mode as the saved edit. A committed ADR can therefore continue work from another worktree. Mentioning an unowned file, such as `Fix README.md`, is ordinary input. A saved plan mixed with another unresolved path still prevents automatic selection.
+- **Separate model check:** when enabled, the model selected when the message is submitted can compare it with saved task text from the same authenticated account and repository. It can continue one earlier task or separate an unrelated question. The branch, worktree and recent activity alone do not establish a link.
+- **Keep an explicit choice:** `/work new`, local children and extension-injected input do not automatically switch work. An accepted plan or artifact continuation also keeps the session's later inputs in that work, like `/work <plan>`, including after restart. An input that names a plan or artifact again is checked as usual; one that points to other work stays unresolved and ends this. Restored sessions and existing work output prevent adopting another saved task. Naming a verified plan or artifact from the current work still confirms that input, including after restart. The model check can still start new work for a clearly unrelated message. A skill's template paths do not count as user references.
 
-Branch inference is a guess based on recent local activity. An unrelated first message on the same branch can meet those rules, so use `/work new` to keep it separate. The summary records whether continuation came from a saved plan, a named artifact or recent branch activity.
+The summary records whether continuation came from a named plan, pasted plan, named artifact, or a model decision. Pasted-plan evidence points to the retained file. Semantic evidence names the model and decision and saves a hash of the input, without copying its text. Older branch-inference records remain readable; Kimchi does not rewrite their history.
 
-Naming one eligible file can select its work even when asking to compare it. Reading a file through a tool or pasting its contents does not itself establish a link; a fresh session may still qualify for the separate branch rule.
+Naming one eligible file can select its work even when asking to compare it. Reading a file through a tool does not select its work. Pasting an ordinary document supplies no exact link; the selected model may still infer one from the user's message. Earlier requests keep their original work IDs. A verified continuation can also confirm the input that produced the selected plan or artifact, as described below.
 
 Other cases use these rules:
 
@@ -84,9 +95,61 @@ Other cases use these rules:
 | Reopen a session | Restores its current ID. |
 | Create a local child or branch the conversation | Inherits the parent's ID when the child is created, or the ID at the branch point. |
 | Resume a saved Ferment | Uses the Ferment's saved ID before inference. **Leave paused** keeps the current ID. |
-| Choose explicitly | `/work <plan path>` selects that plan's work; `/work new` creates separate work in the same chat. `/work` shows the current ID, PR links and lookup errors. |
+| Choose explicitly | `/work <plan path>` selects that plan's work unless it belongs to another account or repository; `/work new` creates separate work in the same chat. `/work` shows the current ID, PR links and lookup errors. |
 
-Kimchi does not detect later task changes or search other worktrees by filename. One work can span several sessions; one session can contribute to several works.
+Kimchi does not search other worktrees by filename. One work can span several sessions; one session can contribute to several works.
+
+#### A separate call to the selected model
+
+Model matching is off by default. `/work matching on` allows saved task text to be sent to the selected provider. `/work matching off` cancels a pending comparison without waiting for the main model to finish. The setting is `workSemanticMatching` in `~/.config/kimchi/harness/settings.json`; local tracking and explicit saved-plan continuation work while it is off. This setting does not enable report uploads.
+
+Kimchi captures the model selected when you submit a message, then uses that model for separate matching calls before the main reply. These calls use its normal authentication and provider connection. They have no tools and do not enter the chat history. No local model, extra model setting or `judge` role is required. With no saved task to compare, the first message needs no matching call.
+
+While matching is enabled, the first user message is kept in `work/<workId>/intent.json` after its account is verified. Later checks use that text and the latest retained native plan. Candidates must belong to the same Git repository, API endpoint, organization and authenticated user. Rotating a key for the same account keeps that identity. Missing user identity or legacy text without an account prevents automatic semantic continuation; old text is not assigned to whoever is logged in now. Enabled redaction applies before sending. Raw text and credentials are not copied into `work.json`.
+
+The model checks the current task first. To find earlier work, it first reads the message alone, then compares each eligible saved task separately. Exactly one must match and every competitor must be clearly different. Each check is a separate paid request with its own ID, saved before dispatch. Matching requests stay with the work active before the decision; adopting another work never moves those earlier requests.
+
+```mermaid
+flowchart TD
+    I["Submit message; capture selected model"] --> H{"Saved task text?"}
+    H -->|No| R["Keep work ID; send main request"]
+    H -->|Yes| C["Separate model calls:<br/>current task, then eligible earlier tasks"]
+    C -->|Same, uncertain, invalid reply or timeout| R
+    C -->|Clearly unrelated to current work| N["New work ID; send main request"]
+    C -->|Exactly one earlier task matches| A["Saved work ID; send main request"]
+```
+
+Model checks share a three-second limit, including provider authentication and redaction. Account verification has a separate one-second limit and a short in-memory cache. Cancellation, opt-out, account or model changes, a session change or a newer delivered message prevents a late result from changing work. Unresolved references to recorded work are never overridden by a model guess. Explicit choices and local children keep the rules above.
+
+Comparisons stop rather than omit evidence above 256 saved task texts, 32 retained plan versions per work, a latest retained plan over 16,000 bytes or 12,000 serialized input characters. Work directories without saved task text do not count. When any of these limits stops matching, `/work` says so instead of warning on every prompt. Large histories, slow providers and unsupported output formats can therefore remain unresolved. Earlier works without saved task text are not backfilled.
+
+These are model judgments and can be wrong. Each request keeps its input's segment ID, matching method and reason. An uncertain answer preserves the current work ID and marks that input as unknown. Later inputs cannot silently reclassify earlier requests. A future cost calculation must preserve this uncertainty. `/work new` or `/work <plan path>` gives an explicit choice.
+
+Segments distinguish an explicit plan or work choice, a model inference, ordinary grouping within a session, and an unknown result. Retries, delayed side calls and local children retain their originating segment. Restarting a child restores its saved decision; a historical fork keeps the decision at its fork point. Matching calls have their own `session` segment with `reason: "work-matching"` and `purpose: "work-matching"`; they remain overhead of the work active before the decision. With model matching disabled, ordinary session grouping remains available; its source is recorded as `session`, not as a model decision.
+
+Automatic continuation also requires the same verified account and Git repository. New work saves the API endpoint, organization, user and Git common-directory identity in `scope.json`; requests retain that scope. Another worktree of the same repository can continue it. Switching account or repository starts separate work. Missing account verification, a non-Git directory or an older work without scope prevents automatic adoption; matching then stays unresolved without a warning. `/work <plan path>` refuses a plan whose work was saved for another verified account or repository and keeps the current work. A plan without saved scope remains an explicit local choice; older records are never assigned today's account just because they were reopened.
+
+If account verification is unavailable for a new work's first input, the work keeps waiting for its scope and saves it at the next verified message under the same API key and endpoint; a changed key starts new work instead. Requests made before that stay unscoped. If an existing work's scope file is missing or damaged, the next message starts newly scoped work. An explicit `/work` choice remains selected, with missing scope still unknown. Earlier request records stay unchanged; Kimchi does not fill their missing account data with the current login.
+
+#### Correct earlier requests
+
+Continuing a verified plan or native artifact also checks its producing request. Kimchi confirms the requests from that input under the continued work, whether they were ordinary session work, inferred or unresolved. For example, `Plan docs/new-feature.md` starts as session work; continuing its saved plan later confirms the planning requests automatically. Other inputs in that conversation stay unchanged.
+
+This needs one recorded producer, an unchanged retained plan version or native edit, and matching account/repository scope. Missing or conflicting producer records stay unresolved. An existing correction or revocation takes precedence. The resulting `workLinks` entry names the plan/artifact evidence, producing `requestId` and `segmentId`; no source rows are rewritten. Model guesses do not create these confirmations.
+
+If planning and implementation already ended up in separate works, open the implementing work and run:
+
+```text
+/work link <planning-work-id> <planning-segment-id>
+```
+
+The planning work's `work.json` lists `requests[].segment.id`. The command selects requests already recorded for that input, including its retries and side calls. Other inputs in the same conversation stay separate. Both works and the selected requests must have matching saved account and repository scope. Older records without that evidence cannot be repaired this way.
+
+If an uncertain input already belongs to the right work, use that current work ID as the source. This records your confirmation without changing its original request or work IDs. `/work unlink <link-id>` also revokes this confirmation.
+
+The command saves a `work_link` revision in the implementing work. It names the selected requests and their intended work; original request and work IDs stay unchanged. The target work's `work.json` keeps these revisions in `workLinks` for later cost calculations. Model decisions do not retroactively rewrite earlier requests.
+
+To withdraw it, run `/work unlink <link-id>` in the implementing work. A revoked or conflicting correction leaves the affected assignment unknown until corrected again. Linking those requests from another work replaces the earlier link with a newer revision, including a revoked automatic confirmation. Only the work with the newest revision can then revoke it.
 
 ### 2. Connect each file edit to its model request
 
@@ -208,9 +271,9 @@ Kimchi tries credentials in this order: an environment token for the selected ho
 
 ### 5. Build the local summary
 
-Before sending a covered model request, Kimchi saves and flushes its request ID, work ID and session ID. It then sends `X-Request-Id`. This also works with telemetry disabled.
+Before sending a covered model request, Kimchi saves and flushes its request ID, work ID, session ID, input segment and account/repository scope. Missing scope is saved as `null`. It then sends `X-Request-Id`. This also works with telemetry disabled.
 
-Records with the same work ID go into the same `work.json`. Requests are deduplicated by request ID; commit records keep the contributing sessions. `fileTransitions` keeps the recorded edits, and `continuations` explains why another session adopted the work. IDs identify records; array positions have no meaning.
+Records with the same work ID go into the same `work.json`. Requests are deduplicated by request ID; commit records keep the contributing sessions. `fileTransitions` keeps the recorded edits, `continuations` explains why another session adopted the work, and `workLinks` keeps correction revisions. IDs identify records; array positions have no meaning.
 
 A request record describes an attempt. It does not prove a successful response or give its cost. The work records and retained plan text stay local; `work.json` contains paths, request metadata and PR links, with no prompts, file contents or prices. PR lookup sends repository and commit identifiers to the repository's GitHub or GitLab API.
 
@@ -222,13 +285,15 @@ All paths below are inside the agent directory.
 | File | What it is for |
 | --- | --- |
 | `work/<workId>/work.json` | Readable summary of sessions, request attempts, plans, file edits, continuation evidence, commits and PR links. |
+| `work/<workId>/scope.json` | Original API endpoint, organization, user and Git common-directory identity. Credentials are not saved here. |
+| `work/<workId>/intent.json` | Saved task text for opt-in model matching, bound to its original account and repository. |
 | `work/<workId>/plans/<name>-<content-hash>.md` | Saved plan versions that survive worktree deletion. Identical content reuses the same copy. |
 | `work-attribution/<session-id>.jsonl` | Append-only history used to rebuild the summary. |
 | `work-attribution/transitions/*.jsonl` | Edit evidence: request/tool IDs, repository paths, Git blobs and file modes before and after each native edit/write change. |
 | `work-attribution/ref-tips/*.json` | Shared snapshots of the commit references and worktree heads visible when an edit was saved. `historyBoundaryId` identifies the snapshot. |
 | `work-attribution/pr-checks.json` | When each recorded repository and commit was last checked for a PR or MR, including checks whose unchanged result was not appended. A restart therefore keeps the lookup schedule. Kimchi replaces the file at most once per pass and only after a change. It drops entries for commits it no longer records and for checks more than a day old. Deleting it costs at most one extra check per commit. |
 
-- Each plan record has `path` for the editable file and `snapshotPath` for its retained version. If saving the retained copy fails, Kimchi warns and leaves the local plan usable.
+- Each plan record has `path` for the editable file, `snapshotPath` for its retained version and `contentHash` to detect changes. Plans produced by an attributed tool also name its `requestId`. If saving the retained copy fails, Kimchi shows a warning and leaves the local plan usable. Naming or pasting that plan later then does not continue its work or confirm its producing input; `/work <plan path>` still selects it.
 - Kimchi flushes source records before updating `work.json`. Writers merge under a lock and replace the summary atomically. Shutdown waits for queued summary writes.
 - Recovery saves the time of its last successful scan plus each summary's size and modification time. It reads source logs changed since then and skips writing unchanged results.
 - A missing or invalid known summary triggers a full replay of the source logs, including edit journals. A failed log read or summary write leaves the checkpoint unchanged. Older summaries remain readable when the new collections are absent.
@@ -260,11 +325,16 @@ The implementation uses Pi's existing hooks and native Git tracing. It adds no d
 
 </details>
 
+## Turning Cost per PR off
+
+Cost per PR is listed in `/resources` like other built-in extensions and is on by default. Disabling it there, or with `kimchi resources disable extensions.cost-per-pr`, takes effect at the next start: Kimchi records no work, looks up no PRs and shows no `/work` or PR/MR status. Other extensions stop recording work at once. Records already saved stay on disk.
+
 ## What still needs work
 
 - **PR costs:** join requests to billing, then decide how to split one work's cost across several PRs.
 - **Backend IDs:** verify that the proxy saves the request/session IDs needed for the billing join. The client records do not yet prove that link.
-- **Account and repository IDs:** add account IDs and recover stable provider IDs for older links that lack them.
+- **Stable repository IDs:** account scope is recorded locally; recover stable provider IDs for older links that lack them.
+- **Historical repair:** old records without account or producer evidence stay unresolved. Automatic replay of newly available evidence is still separate work.
 - **Remote agents:** link their requests and returned commits to the local work. Remote sessions are outside this MVP.
 
 <details>
