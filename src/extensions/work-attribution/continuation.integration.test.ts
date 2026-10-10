@@ -328,6 +328,13 @@ it("continues 'Implement plan.md and write docs/adr/new.md' before the output ex
 	)
 })
 
+it("continues a saved plan when the input also names a file outside every Git worktree", async () => {
+	const flow = await recordedPlan("path")
+	const log = join(flow.cwd, "..", "build.log")
+	await flow.input({ type: "input", source: "interactive", text: `${flow.text}; logs in ${log}` }, flow.implementer)
+	expect(getWorkId(flow.implementer)).toBe(flow.workId)
+})
+
 it.each([
 	"unchanged",
 	"changed",

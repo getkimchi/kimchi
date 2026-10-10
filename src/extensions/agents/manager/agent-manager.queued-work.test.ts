@@ -17,8 +17,9 @@ vi.mock("./remote-agent-runner.js", () => ({
 	isRemoteSessionConnected: vi.fn(),
 }))
 
-import type { AgentSession, ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import { createContext, createLiveContext } from "../../__mocks__/context.js"
+import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { createModel } from "../../__mocks__/model-registry.js"
 import { flushWorkSummaries } from "../../work-attribution/summary.js"
 import { appendWorkRecord, getWorkId, getWorkSegment, setWorkId } from "../../work-attribution.js"
@@ -55,9 +56,10 @@ it("starts a queued background child in the work and segment active when it was 
 		}
 	})
 	const manager = new AgentManager(undefined, 1)
+	const pi = createExtensionApi().api
 	try {
-		manager.spawn({} as ExtensionAPI, ctx, "Explore", "one", { description: "one", isBackground: true })
-		const queued = manager.spawn({} as ExtensionAPI, ctx, "Explore", "two", { description: "two", isBackground: true })
+		manager.spawn(pi, ctx, "Explore", "one", { description: "one", isBackground: true })
+		const queued = manager.spawn(pi, ctx, "Explore", "two", { description: "two", isBackground: true })
 		expect(manager.getRecord(queued)?.status).toBe("queued")
 		// The parent moves on (/work new, a pasted plan, or a semantic "new" decision).
 		setWorkId(ctx)
@@ -101,9 +103,10 @@ it("pins only the work for a queued child; Pi's context getters and stale guard 
 		}
 	})
 	const manager = new AgentManager(undefined, 1)
+	const pi = createExtensionApi().api
 	try {
 		for (const name of ["running", "after-model-change", "after-session-replacement"])
-			manager.spawn({} as ExtensionAPI, parent.ctx, "Explore", name, { description: name, isBackground: true })
+			manager.spawn(pi, parent.ctx, "Explore", name, { description: name, isBackground: true })
 		setWorkId(parent.ctx)
 		parent.set("model", createModel("model-at-start"))
 		finish[0]()

@@ -237,12 +237,7 @@ export async function correctWorkLink(ctx: WorkContext, args: string): Promise<s
 		const sourceScope = readWorkScope(id)
 		const selected = records.filter(
 			(row) =>
-				row.type === "request" &&
-				row.workId === id &&
-				!!row.segment &&
-				typeof row.segment === "object" &&
-				"id" in row.segment &&
-				row.segment.id === segmentId,
+				row.type === "request" && row.workId === id && isWorkSegment(row.segment) && row.segment.id === segmentId,
 		)
 		if (
 			!sourceScope ||

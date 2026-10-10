@@ -24,7 +24,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { writeConfigSetting } from "../config/settings.js"
 import { isResourceEnabled } from "../resources/store.js"
-import { readPlanWorkId } from "../shared/planning/plan-markdown.js"
+import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
 import { isHarnessSteer } from "./steer-marker.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
@@ -543,9 +543,10 @@ export function createWorkAttributionExtension(
 				}
 				saveScope(current)
 				const explicitReason = explicitSelection.get(key)
+				const referencesWork = hasWorkReference(event.text)
 				// /work selects the work for every later input. An accepted continuation does too, except for an input
 				// that names a plan or artifact again: that reference is checked like any other.
-				if (explicitReason === "work-command" || (explicitReason && !hasWorkReference(event.text))) {
+				if (explicitReason === "work-command" || (explicitReason && !referencesWork)) {
 					useSegment("explicit", explicitReason)
 					return
 				}
@@ -560,7 +561,6 @@ export function createWorkAttributionExtension(
 					workLedgerPath(ctx) === key &&
 					getWorkId(ctx) === current &&
 					explicitSelection.get(key) === explicitReason
-				const referencesWork = hasWorkReference(event.text)
 				const records = referencesWork ? readWorkRecords(getAgentDir()) : undefined
 				const found =
 					captured && (eligible() || referencesWork)
@@ -799,4 +799,32 @@ export function getToolRequest(
 	toolCallId: string,
 ): { requestId: string; workId: string } | undefined {
 	return toolRequests.get(workLedgerPath(ctx))?.get(toolCallId)
+}
+/**
+ * Save a tool's plan in the work of the request that produced it, or else the session's work; a tool that awaits first
+ * passes a pinned `work` context. Failures are shown under `label` rather than thrown: review continues without a file.
+ */
+export function saveToolPlan(
+	ctx: Pick<ExtensionContext, "hasUI" | "ui">,
+	work: WorkContext,
+	toolCallId: string,
+	label: string,
+	plan: { name: string; planText: string },
+): { path: string; snapshotPath?: string; workId?: string } | undefined {
+	const origin = tryWorkAttribution(() => getToolRequest(work, toolCallId))
+	const workId = tryWorkAttribution(() => origin?.workId ?? getWorkId(work))
+	try {
+		const saved = savePlanMarkdown({ cwd: work.cwd, ...plan, workId })
+		// The log has the cause; a missing retained copy also changes how the plan can continue.
+		if (workId && !saved.snapshotPath && ctx.hasUI) ctx.ui.notify(`${label}: ${UNRETAINED_PLAN_NOTICE}`, "warning")
+		if (workId)
+			tryWorkAttribution(() =>
+				appendWorkRecord(work, { type: "plan", ...saved, ...(origin && { requestId: origin.requestId }) }, workId),
+			)
+		return { ...saved, workId }
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error)
+		if (ctx.hasUI) ctx.ui.notify(`${label}: failed to save plan file: ${detail}`, "warning")
+		else console.error(`${label}: failed to save plan file: ${detail}`)
+	}
 }

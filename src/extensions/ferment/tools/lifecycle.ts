@@ -1,10 +1,4 @@
-import {
-	appendWorkRecord,
-	getToolRequest,
-	getWorkId,
-	pinWorkContext,
-	tryWorkAttribution,
-} from "../../work-attribution.js"
+import { pinWorkContext, saveToolPlan, tryWorkAttribution } from "../../work-attribution.js"
 /**
  * Ferment lifecycle tools: list, scope, update fields, complete.
  *
@@ -35,11 +29,7 @@ import {
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
-import {
-	fermentPlanFileName,
-	savePlanMarkdown,
-	UNRETAINED_PLAN_NOTICE,
-} from "../../../shared/planning/plan-markdown.js"
+import { fermentPlanFileName } from "../../../shared/planning/plan-markdown.js"
 import { emitPlanReviewRequest } from "../../../shared/planning/plan-review-bus.js"
 import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
 import { withBlocked } from "../../herdr-events.js"
@@ -1119,8 +1109,6 @@ ${renderGateGuidance("scope_ferment")}`,
 			const questionValidationError = validateScopingQuestions(questions)
 			if (questionValidationError) return toolErr(questionValidationError)
 			const pinned = pinWorkContext(ctx)
-			const origin = tryWorkAttribution(() => getToolRequest(pinned, toolCallId))
-			const workId = tryWorkAttribution(() => origin?.workId ?? getWorkId(pinned))
 
 			// 3. Resolve the target ferment. If no id is given and no active ferment
 			// exists, bootstrap a new draft from the proposal.
@@ -1188,30 +1176,14 @@ ${renderGateGuidance("scope_ferment")}`,
 			// filename is stable for this ferment so re-proposals overwrite the
 			// same file. Failures are non-fatal but warned so the review flow
 			// can continue without a path.
-			let planPath: string | undefined
-			let snapshotPath: string | undefined
-			try {
-				const saved = savePlanMarkdown({
-					cwd: ctx.cwd,
-					name: fermentPlanFileName(ferment.name, fermentId),
-					planText: planEntry,
-					workId,
-				})
-				planPath = saved.path
-				snapshotPath = saved.snapshotPath
-				// The log has the cause; a missing retained copy also changes how the plan can continue.
-				if (workId && !snapshotPath && ctx.hasUI) ctx.ui.notify(`ferment: ${UNRETAINED_PLAN_NOTICE}`, "warning")
-				if (workId) {
-					tryWorkAttribution(() => {
-						setFermentWorkId(fermentId, workId)
-						appendWorkRecord(pinned, { type: "plan", ...saved, ...(origin && { requestId: origin.requestId }) }, workId)
-					})
-				}
-			} catch (err) {
-				const detail = err instanceof Error ? err.message : String(err)
-				if (ctx.hasUI) ctx.ui.notify(`ferment: failed to save plan file: ${detail}`, "warning")
-				else console.error(`ferment: failed to save plan file: ${detail}`)
-			}
+			const saved = saveToolPlan(ctx, pinned, toolCallId, "ferment", {
+				name: fermentPlanFileName(ferment.name, fermentId),
+				planText: planEntry,
+			})
+			const workId = saved?.workId
+			if (workId) tryWorkAttribution(() => setFermentWorkId(fermentId, workId))
+			const planPath = saved?.path
+			const snapshotPath = saved?.snapshotPath
 			const savedPlanNote =
 				(planPath ? `\n\nPlan file: ${planPath}` : "") +
 				(snapshotPath ? `\nContinue from another worktree using: ${snapshotPath}` : "")

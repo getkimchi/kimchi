@@ -1,6 +1,6 @@
 import { readFileSync, realpathSync } from "node:fs"
 import { readdir, readFile, realpath } from "node:fs/promises"
-import { basename, dirname, join, relative, resolve } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { getAgentDir, parseSkillBlock } from "@earendil-works/pi-coding-agent"
 import { readPlanWorkId } from "../../shared/planning/plan-markdown.js"
 import type { WorkContext } from "../work-attribution.js"
@@ -13,11 +13,16 @@ const FILE_REFERENCE =
 	/(?:^|[\s@'"`([])([^\s@'"`()[\]<>#]*[/.][^\s@'"`()[\]<>#,:;!?]+)(?:#[^\s'"`()[\]<>]*)?(?=$|[\s'"`()[\],;.!?]|:\d)/gi
 const NATIVE_PLAN_PATH = /\/(?:\.kimchi\/plans|work\/[\da-f-]{36}\/plans)\/[^/]+\.md$/i
 
-/** Unresolved explicit references must not be overridden by a semantic guess. */
-export function hasWorkReference(text: string): boolean {
+/** The user's own text: RPC clients can pass an already expanded skill, whose body the user did not write. */
+export function userText(text: string): string {
 	const normalized = text.replaceAll("\r\n", "\n")
 	const skill = parseSkillBlock(normalized)
-	const message = skill ? (skill.userMessage ?? "") : normalized
+	return skill ? (skill.userMessage ?? "") : normalized
+}
+
+/** Unresolved explicit references must not be overridden by a semantic guess. */
+export function hasWorkReference(text: string): boolean {
+	const message = userText(text)
 	return message.includes("<!-- kimchi-work-id:") || [...message.matchAll(MARKDOWN_REFERENCE)].length > 0
 }
 
@@ -107,9 +112,18 @@ async function unchanged(row: FileTransition, path: string): Promise<boolean> {
 	const current = await readAttributedFileState(path)
 	return current?.blob === row.after.blob && current.mode === row.after.mode
 }
+/** Whether the real `path` lies in `worktree` itself rather than in a repository nested inside it. */
+async function inWorktree(worktree: string, path: string): Promise<boolean> {
+	const inside = relative(worktree, path)
+	if (inside.startsWith("..") || isAbsolute(inside)) return false
+	for (let directory = dirname(path); directory.length > worktree.length; directory = dirname(directory))
+		if (await realpath(join(directory, ".git")).catch(() => undefined)) return false
+	return true
+}
 async function namedArtifact(
 	cwd: string,
 	named: string,
+	transitions: (directory: string, path: string) => ReturnType<typeof readRepositoryTransitions>,
 ): Promise<{ owners: string[]; match?: WorkContinuation } | undefined> {
 	const resolved = resolve(cwd, named)
 	let directory = dirname(resolved)
@@ -139,10 +153,13 @@ async function namedArtifact(
 			// Missing files still have to pass the ownership check below.
 		}
 	}
-	const evidence = await readRepositoryTransitions(directory)
+	const evidence = await transitions(directory, path)
+	// No transition can own a path outside every Git worktree.
+	if (evidence === null) return native ?? { owners: [] }
 	if (!evidence) return native
+	const repositoryPath = relative(evidence.worktree, path)
 	const rows = evidence.transitions.filter(
-		(row) => row.repository === evidence.repository && row.path === relative(evidence.worktree, path),
+		(row) => row.repository === evidence.repository && row.path === repositoryPath,
 	)
 	const owners = [...new Set([...(native?.owners ?? []), ...rows.map((row) => row.workId)])]
 	if (native) return { owners, match: owners.length === 1 ? native.match : undefined }
@@ -200,11 +217,7 @@ export async function findWorkContinuation(
 ): Promise<WorkContinuation | undefined> {
 	const scope = captured ?? (await captureWorkScope(ctx.cwd))
 	if (!scope?.isCurrent()) return
-	// RPC clients can pass an already expanded skill. Only its user arguments select work.
-	const normalized = text.replaceAll("\r\n", "\n")
-	const skill = parseSkillBlock(normalized)
-	const userText = skill ? (skill.userMessage ?? "") : normalized
-	const pasted = await pastedPlans(userText)
+	const pasted = await pastedPlans(userText(text))
 	if (!pasted || pasted.remaining.includes("<!-- kimchi-work-id:")) return
 	const paths = new Set([...pasted.remaining.matchAll(FILE_REFERENCE)].map((match) => match[1].replace(/\.+$/, "")))
 	// Extensionless names such as Makefile need no path syntax to have a recorded owner.
@@ -214,13 +227,21 @@ export async function findWorkContinuation(
 		const path = relative(ctx.cwd, resolve(row.worktree, row.path))
 		if (!path.includes("/") && words.has(path)) paths.add(path)
 	}
-	const named = await Promise.all([...paths].map((path) => namedArtifact(ctx.cwd, path)))
+	// Every dotted or slashed word may be a path. Paths in this worktree reuse its evidence, and each other
+	// directory is read once, so URLs and stack traces start no Git process per word.
+	const reads = new Map([[ctx.cwd, Promise.resolve(evidence)]])
+	const transitions = async (directory: string, path: string) => {
+		if (evidence && (await inWorktree(evidence.worktree, path))) return evidence
+		if (!reads.has(directory)) reads.set(directory, readRepositoryTransitions(directory))
+		return reads.get(directory)
+	}
+	const named = await Promise.all([...paths].map((path) => namedArtifact(ctx.cwd, path, transitions)))
 	if (named.some((file) => !file)) return // Unreadable evidence is not proof that a file has no owner.
 	const matches = [...pasted.matches, ...named.flatMap((file) => (file?.match ? [file.match] : []))]
 	if (new Set(matches.map((match) => match.workId)).size !== 1) return
 	const match = matches[0]
 	if (named.some((file) => file?.owners.some((owner) => owner !== match.workId))) return
-	const owner = match && readWorkScope(match.workId)
+	const owner = readWorkScope(match.workId)
 	if (!owner || !sameWorkScope(owner, scope.scope) || !scope.isCurrent()) return
 	const current = await captureWorkScope(ctx.cwd)
 	if (current && sameWorkScope(current.scope, scope.scope) && scope.isCurrent()) return match

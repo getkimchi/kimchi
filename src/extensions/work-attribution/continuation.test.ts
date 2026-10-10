@@ -210,4 +210,22 @@ describe("continuing saved work", () => {
 		)
 		expect(await findWorkContinuation({ cwd }, "Implement docs/adr/decision.md")).toBeUndefined()
 	})
+	it("resolves paths, URLs and dotted words in this worktree from one read of its evidence", async () => {
+		await findWorkContinuation(
+			{ cwd },
+			"Implement docs/adr/decision.md, e.g. per https://example.com/guide, after Module._compile failed at src/a.ts:12:5",
+			createWorkScopeSnapshot(join(cwd, ".git")),
+		)
+		expect(readRepositoryTransitions).toHaveBeenCalledOnce()
+		expect(readAttributedFileState).toHaveBeenCalledWith(join(cwd, "docs/adr/decision.md"))
+	})
+	it("reads a repository nested in this worktree separately", async () => {
+		mkdirSync(join(cwd, "vendor/lib/.git"), { recursive: true })
+		await findWorkContinuation(
+			{ cwd },
+			"Implement docs/adr/decision.md and update vendor/lib/README.md",
+			createWorkScopeSnapshot(join(cwd, ".git")),
+		)
+		expect(readRepositoryTransitions).toHaveBeenCalledWith(join(cwd, "vendor/lib"))
+	})
 })

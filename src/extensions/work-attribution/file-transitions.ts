@@ -412,7 +412,7 @@ async function readJournals(repository: string, checkBudget: () => void): Promis
 	}
 	return journals
 }
-/** Read all ownership evidence for one repository; never return a truncated set. */
+/** Read all ownership evidence for one repository; never return a truncated set. Null outside any Git worktree. */
 export async function readRepositoryTransitions(cwd: string): Promise<
 	| {
 			repository: string
@@ -420,6 +420,7 @@ export async function readRepositoryTransitions(cwd: string): Promise<
 			branch?: string
 			transitions: FileTransition[]
 	  }
+	| null
 	| undefined
 > {
 	return tryWorkAttributionAsync(async () => {
@@ -427,8 +428,10 @@ export async function readRepositoryTransitions(cwd: string): Promise<
 		let worktree: string
 		try {
 			worktree = realpathSync(await git(cwd, ["rev-parse", "--show-toplevel"]))
-		} catch {
-			return
+		} catch (error) {
+			// Git exits with 128 outside a worktree. Any other failure leaves ownership unknown.
+			if (error instanceof Error && "code" in error && error.code === 128) return null
+			throw error
 		}
 		const repository = realpathSync(await git(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
 		let branch: string | undefined

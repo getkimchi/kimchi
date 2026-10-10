@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { mkdir, open, opendir, readFile, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
-import { type ExtensionContext, getAgentDir, parseSkillBlock } from "@earendil-works/pi-coding-agent"
+import { type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
 import { readConfigSetting } from "../../config/settings.js"
 import { isKimchiProvider } from "../../kimchi-provider.js"
 import { readPlanWorkId } from "../../shared/planning/plan-markdown.js"
@@ -17,6 +17,7 @@ import {
 	tryWorkAttribution,
 	type WorkContext,
 } from "../work-attribution.js"
+import { userText } from "./continuation.js"
 import {
 	captureWorkAccount,
 	isWorkAccount,
@@ -86,12 +87,6 @@ export function workMatchingEnabled(): boolean {
 	return readConfigSetting("workSemanticMatching", (value): value is boolean => typeof value === "boolean", false)
 }
 
-function userMessage(text: string): string {
-	const normalized = text.replaceAll("\r\n", "\n")
-	const skill = parseSkillBlock(normalized)
-	return (skill ? (skill.userMessage ?? "") : normalized).trim()
-}
-
 export function workIntentPath(workId: string): string {
 	if (!isWorkId(workId)) throw new Error("Invalid work UUID")
 	return join(getAgentDir(), "work", workId, "intent.json")
@@ -106,7 +101,7 @@ export async function rememberWorkIntent(
 	knownAccount?: WorkAccountSnapshot,
 ): Promise<void> {
 	if (!workMatchingEnabled()) return
-	const summary = userMessage(text)
+	const summary = userText(text).trim()
 	if (!summary || summary.length > 4000) return
 	const captured = knownAccount ?? (await captureWorkAccount(cwd))
 	if (!captured?.isCurrent() || !workMatchingEnabled()) return
@@ -197,7 +192,7 @@ export async function loadWorkIntents(cwd: string, workId: string, text: string,
 		return {
 			repository: repo,
 			account: undefined,
-			input: { current: null, candidates: [], message: userMessage(text) },
+			input: { current: null, candidates: [], message: userText(text).trim() },
 		}
 	const current = await readIntent(workId, repo, captured.account)
 	const candidates: WorkIntent[] = []
@@ -220,7 +215,7 @@ export async function loadWorkIntents(cwd: string, workId: string, text: string,
 	return {
 		repository: repo,
 		account: captured,
-		input: { current: current ? await addPlan(current) : null, candidates, message: userMessage(text) },
+		input: { current: current ? await addPlan(current) : null, candidates, message: userText(text).trim() },
 	}
 }
 
@@ -235,7 +230,10 @@ export async function classifyWorkIntent(
 	if (!model) return
 	const unknown = { decision: "unknown" as const, model: refFromModel(model) }
 	if (!workMatchingEnabled()) return unknown
-	if (JSON.stringify(input).length > 12000 || !input.message.trim() || signal?.aborted) return unknown
+	if (!input.message.trim() || signal?.aborted) return unknown
+	// /work reports a limit; an unknown decision would be recorded as the model's uncertainty.
+	if (JSON.stringify(input).length > 12000)
+		throw new WorkMatchingLimit("the saved tasks and message exceed 12,000 characters")
 	if (!input.current && !input.candidates.length) return { decision: "new", model: unknown.model }
 	const context = pinWorkContext(ctx)
 	// Matching is overhead of the original work, independent of the task decision it produces.

@@ -410,9 +410,9 @@ it.each([204, 304])("abstains safely on an empty HTTP %s response", async (statu
 
 it("rejects oversized input instead of dropping disambiguating content", async () => {
 	const server = await provider(JSON.stringify({ decision: "continue", workId }))
-	expect(await classifyWorkIntent(server.ctx, { ...input, message: "x".repeat(13000) })).toMatchObject({
-		decision: "unknown",
-	})
+	await expect(classifyWorkIntent(server.ctx, { ...input, message: "x".repeat(13000) })).rejects.toThrow(
+		WorkMatchingLimit,
+	)
 	expect(server.requests).toHaveLength(0)
 })
 
@@ -569,6 +569,16 @@ it.each([
 	// /work reports the size and version limits; damaged evidence stays an ordinary failure.
 	if (kind === "size" || kind === "versions") await expect(loading).rejects.toThrow(WorkMatchingLimit)
 	else await expect(loading).rejects.toThrow()
+})
+
+it("reports a limit when a retained plan under 16,000 bytes fills the matching input", async () => {
+	const { cwd } = repositoryFixture()
+	await rememberWorkIntent(cwd, workId, "CSV export")
+	savePlanMarkdown({ cwd, workId, name: "csv", planText: `# CSV export\n${"Quote embedded commas.\n".repeat(600)}` })
+	const loaded = await loadWorkIntents(cwd, currentId, input.message, true)
+	const server = await provider(JSON.stringify({ decision: "match" }))
+	await expect(classifyWorkIntent(server.ctx, loaded.input)).rejects.toThrow(WorkMatchingLimit)
+	expect(server.requests).toHaveLength(0)
 })
 
 it("compares saved tasks beyond 256 work directories without saved task text", async () => {

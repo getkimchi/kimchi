@@ -11,12 +11,7 @@ import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
-import {
-	derivePlanTitle,
-	savePlanMarkdown,
-	slugifyPlanName,
-	UNRETAINED_PLAN_NOTICE,
-} from "../../shared/planning/plan-markdown.js"
+import { derivePlanTitle, slugifyPlanName } from "../../shared/planning/plan-markdown.js"
 import {
 	consumePlanReviewContext,
 	emitPlanReviewDecision,
@@ -61,7 +56,7 @@ import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
-import { appendWorkRecord, getToolRequest, getWorkId, tryWorkAttribution } from "../work-attribution.js"
+import { getWorkId, saveToolPlan, tryWorkAttribution } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
 import { resolveClassifierCandidates } from "./classifier-models.js"
@@ -733,25 +728,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 				// Save plan to disk
 				if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
-				let planPath: string | undefined
-				let snapshotPath: string | undefined
-				const origin = tryWorkAttribution(() => getToolRequest(ctx, toolCallId))
-				const workId = tryWorkAttribution(() => origin?.workId ?? getWorkId(ctx))
-				try {
-					const saved = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText, workId })
-					planPath = saved.path
-					snapshotPath = saved.snapshotPath
-					// The log has the cause; a missing retained copy also changes how the plan can continue.
-					if (workId && !snapshotPath && ctx.hasUI) ctx.ui.notify(`permissions: ${UNRETAINED_PLAN_NOTICE}`, "warning")
-					if (workId)
-						tryWorkAttribution(() =>
-							appendWorkRecord(ctx, { type: "plan", ...saved, ...(origin && { requestId: origin.requestId }) }, workId),
-						)
-				} catch (err) {
-					const detail = err instanceof Error ? err.message : String(err)
-					if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
-					else console.error(`permissions: failed to save plan file: ${detail}`)
-				}
+				const saved = saveToolPlan(ctx, ctx, toolCallId, "permissions", { name: activePlanSlug, planText })
+				const planPath = saved?.path
+				const snapshotPath = saved?.snapshotPath
 				const retainedPlanNote = snapshotPath ? `\nContinue from another worktree using: ${snapshotPath}` : ""
 
 				// Agent worker: silent submit. Saves the plan and terminates the turn
