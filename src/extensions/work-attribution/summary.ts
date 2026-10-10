@@ -392,9 +392,6 @@ const RECORD_COLLECTIONS: Record<Exclude<WorkRecord["type"], "work">, Collection
 	file_transition: "fileTransitions",
 	file_observation: "fileObservations",
 }
-function recordKey(type: Exclude<WorkRecord["type"], "work">, row: SummaryEntry): string {
-	return ROW_KEYS[RECORD_COLLECTIONS[type]](row)
-}
 /** Rows by key. A store that reads saved rows on demand can stand in for a Map. */
 interface RowMap {
 	get(key: string): SummaryEntry | undefined
@@ -406,17 +403,6 @@ export type SummaryRows = { sessions: { add(sessionId: string): unknown } } & Re
 /** Merge rules for one batch of records, applied row by row. */
 export async function mergeWorkRecords(summary: SummaryRows, records: WorkRecord[]): Promise<void> {
 	const { sessions, continuations } = summary
-	const entriesByType = {
-		work_link: summary.workLinks,
-		request: summary.requests,
-		request_dispatch: summary.requests,
-		request_response: summary.requests,
-		request_cost: summary.requests,
-		plan: summary.plans,
-		commit: summary.commits,
-		file_transition: summary.fileTransitions,
-		file_observation: summary.fileObservations,
-	}
 	for (let index = 0; index < records.length; index++) {
 		if (index % MERGE_BATCH_SIZE === 0) await setImmediate()
 		const { type, version: _version, workId: _workId, ...item } = records[index]
@@ -439,8 +425,9 @@ export async function mergeWorkRecords(summary: SummaryRows, records: WorkRecord
 			}
 			continue
 		}
-		const entries = entriesByType[type]
-		const key = recordKey(type, item)
+		const collection = RECORD_COLLECTIONS[type]
+		const entries = summary[collection]
+		const key = ROW_KEYS[collection](item)
 		const existing = entries.get(key)
 		if (type === "request_cost" && existing?.billingRows !== undefined && Array.isArray(item.billingRows)) {
 			// Each billing ID is listed once, as its latest observation describes it.
