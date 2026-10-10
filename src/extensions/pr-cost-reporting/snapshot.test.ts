@@ -78,7 +78,6 @@ function build(rows = records(), priced = true) {
 			priced ? [{ requestId, billingRecordId: billingId, costUsd: "1.234567891", account }] : [],
 		),
 		new Map(),
-		true,
 	)
 }
 function wire(): WireSnapshot {
@@ -142,7 +141,6 @@ describe("allowlisted repository snapshots", () => {
 			rows,
 			report,
 			new Map([["/private/repo/.git", { provider: "github", host: "github.com", id: "42" }]]),
-			true,
 		)
 		expect(result.snapshots[0].content.requests.map((request) => request.requestId)).toEqual([billingId])
 	})
@@ -153,7 +151,6 @@ describe("allowlisted repository snapshots", () => {
 			rows,
 			report,
 			new Map([["/private/repo/.git", { provider: "github", host: "github.com", id: "42" }]]),
-			true,
 		)
 		expect(result.snapshots[0].content.requests).toEqual([])
 		expect(
@@ -221,7 +218,7 @@ describe("allowlisted repository snapshots", () => {
 		const repositories = new Map([
 			["/private/repo/.git", { provider: "github" as const, host: "github.com", id: "42" }],
 		])
-		const content = buildSnapshots(rows, report, repositories, true).snapshots[0].content
+		const content = buildSnapshots(rows, report, repositories).snapshots[0].content
 		// The server leaves only an unknown request's candidate PRs incomplete.
 		expect(content.requests.find((row) => row.requestId === unresolved)?.allocation).toMatchObject({
 			kind: "unknown",
@@ -251,7 +248,7 @@ describe("allowlisted repository snapshots", () => {
 			new Set(),
 			new Map([[unbilled, account]]),
 		)
-		const content = buildSnapshots(rows, report, new Map(), true).snapshots[0].content
+		const content = buildSnapshots(rows, report, new Map()).snapshots[0].content
 		expect(report.pullRequests[0].totalCostUsd).toBe("1.500000000")
 		expect(content.coverage).toMatchObject({ observedRequests: 2, unpricedRequests: 0 })
 	})
@@ -264,7 +261,7 @@ describe("allowlisted repository snapshots", () => {
 		)
 		const report = calculatePullRequestCosts(rows, [{ requestId, billingRecordId: billingId, costUsd: "1", account }])
 		expect(report.requests[0].allocation).toBe("post-merge")
-		const content = buildSnapshots(rows, report, new Map(), true).snapshots[0].content
+		const content = buildSnapshots(rows, report, new Map()).snapshots[0].content
 		expect(content.requests[0].allocation).toEqual({
 			kind: count === 1 ? "post-merge" : "shared",
 			pullRequestIds: Array.from({ length: count }, (_, index) => String(101 + index)),
@@ -279,7 +276,7 @@ describe("allowlisted repository snapshots", () => {
 		const pr = { ...pull(), state, mergedAt: state === "merged" ? pull().mergedAt : null }
 		const rows = records([pr], { segment: { id: "segment", attribution: "inferred", reason: "model-same" } })
 		const report = calculatePullRequestCosts(rows, [{ requestId, billingRecordId: billingId, costUsd: "1", account }])
-		expect(buildSnapshots(rows, report, new Map(), true).snapshots[0].content.requests[0].allocation).toMatchObject({
+		expect(buildSnapshots(rows, report, new Map()).snapshots[0].content.requests[0].allocation).toMatchObject({
 			method: "model",
 		})
 	})
@@ -300,12 +297,12 @@ describe("allowlisted repository snapshots", () => {
 		const report = calculatePullRequestCosts(rows, [
 			{ requestId, billingRecordId: billingId, costUsd: "1", account: { ...account, userId: requestId } },
 		])
-		expect(buildSnapshots(rows, report, new Map(), true).snapshots[0].content.requests[0].billingRecordIds).toEqual([])
+		expect(buildSnapshots(rows, report, new Map()).snapshots[0].content.requests[0].billingRecordIds).toEqual([])
 	})
 	it("keeps billing rows with an unverified contributor out of the upload", () => {
 		const rows = records()
 		const report = calculatePullRequestCosts(rows, [{ requestId, billingRecordId: billingId, costUsd: "1" }])
-		expect(buildSnapshots(rows, report, new Map(), true).snapshots[0].content.requests[0].billingRecordIds).toEqual([])
+		expect(buildSnapshots(rows, report, new Map()).snapshots[0].content.requests[0].billingRecordIds).toEqual([])
 	})
 	it("matches the server's per-snapshot limits", () => {
 		expect(SNAPSHOT_LIMITS).toEqual({ requests: 32_000, pullRequests: 250, bytes: 8 * 1024 * 1024 })
@@ -386,9 +383,7 @@ describe("allowlisted repository snapshots", () => {
 			[requestId, at],
 			["other-account-request", "2026-10-05T13:00:00Z"],
 		])
-		expect(
-			buildSnapshots(rows, report, new Map(), true, refreshed).snapshots[0].content.coverage.lastCostRefreshAt,
-		).toBe(at)
+		expect(buildSnapshots(rows, report, new Map(), refreshed).snapshots[0].content.coverage.lastCostRefreshAt).toBe(at)
 	})
 })
 
@@ -433,7 +428,7 @@ describe("local and reported confidence", () => {
 			explicit: { requestIds: [requestId] },
 			inferred: { requestIds: [other] },
 		})
-		expect(buildSnapshots(rows, report, new Map(), true).snapshots[0].content.requests).toMatchObject([
+		expect(buildSnapshots(rows, report, new Map()).snapshots[0].content.requests).toMatchObject([
 			{ requestId, allocation: { kind: "pull-request", method: "native" } },
 			{ requestId: other, allocation: { kind: "pull-request", method: "session" } },
 		])
@@ -598,7 +593,7 @@ describe("local and reported confidence", () => {
 		const report = calculatePullRequestCosts(rows, [{ requestId, billingRecordId: billingId, costUsd: "1", account }])
 		// Narrowing a request to one PR can leave it inferred despite such evidence; it must not reach the server as confirmed.
 		report.requests[0].allocation = "inferred"
-		const [request] = buildSnapshots(rows, report, new Map(), true).snapshots[0].content.requests
+		const [request] = buildSnapshots(rows, report, new Map()).snapshots[0].content.requests
 		expect(request.allocation).toEqual({ kind: "pull-request", pullRequestIds: ["101"], method })
 		if (linked) expect(request.correction).toMatchObject({ source: "work-command" })
 	})
@@ -614,7 +609,7 @@ describe("local and reported confidence", () => {
 		const confirmedLocally = report.requests
 			.filter((request) => request.allocation === "pull-request")
 			.map((request) => request.requestId)
-		const confirmedOnServer = buildSnapshots(rows, report, new Map(), true)
+		const confirmedOnServer = buildSnapshots(rows, report, new Map())
 			.snapshots[0].content.requests.filter(
 				(request) => request.allocation.kind === "pull-request" && confirmedMethods.includes(request.allocation.method),
 			)
@@ -637,7 +632,7 @@ describe("conflicting PR metadata", () => {
 		if (!bad?.pullRequest || !request) throw new Error("Fixture has no first PR")
 		report.pullRequests.push({ ...bad, key: "contradictory", pullRequest: { ...bad.pullRequest, number: 9 } })
 		request.pullRequestIds.push("contradictory")
-		const result = buildSnapshots(rows, report, new Map(), true)
+		const result = buildSnapshots(rows, report, new Map())
 		expect(result.incomplete).toBe(true)
 		expect(result.snapshots.map((snapshot) => snapshot.content.repository.id)).toEqual(["43"])
 	})
@@ -674,7 +669,7 @@ describe("conflicting PR metadata", () => {
 		const report = calculatePullRequestCosts(rows, [])
 		let snapshots: ReturnType<typeof buildSnapshots>["snapshots"] = []
 		expect(() => {
-			snapshots = buildSnapshots(rows, report, new Map(), true).snapshots
+			snapshots = buildSnapshots(rows, report, new Map()).snapshots
 		}).not.toThrow()
 		expect(snapshots.map((snapshot) => snapshot.content.repository.id).sort()).toEqual(["42", "43"])
 	})
@@ -737,7 +732,7 @@ describe("per-request upload window and evidence labels", () => {
 		account: billed,
 	})
 	const snapshot = (rows: WorkRecord[], bills: ReturnType<typeof bill>[]) =>
-		buildSnapshots(rows, calculatePullRequestCosts(rows, bills), new Map(), true)
+		buildSnapshots(rows, calculatePullRequestCosts(rows, bills), new Map())
 
 	it("keeps an old merged PR's earlier claims when a recent post-merge request names it", () => {
 		// The server replaces a listed PR's whole inventory, so the pre-merge request must come along.
@@ -818,7 +813,7 @@ describe("per-request upload window and evidence labels", () => {
 			costUsd: "0.100000000",
 			account,
 		}))
-		const { content } = buildSnapshots(rows, calculatePullRequestCosts(rows, bills), new Map(), true).snapshots[0]
+		const { content } = buildSnapshots(rows, calculatePullRequestCosts(rows, bills), new Map()).snapshots[0]
 		expect(content.requests.map((request) => request.billingRecordIds)).toEqual([[]])
 		expect(() =>
 			validateSnapshot({ schemaVersion: 1, producerId: requestId, revision: "1", generatedAt: at, ...content }),
@@ -857,7 +852,7 @@ describe("repositories without a provider identity", () => {
 				scope: { account, repository: scratch },
 			},
 		]
-		return buildSnapshots(rows, calculatePullRequestCosts(rows, []), new Map(identities), true)
+		return buildSnapshots(rows, calculatePullRequestCosts(rows, []), new Map(identities))
 	}
 
 	it("does not let an out-of-window request there mark other repositories incomplete", () => {
@@ -992,7 +987,6 @@ describe("trimming a snapshot to the upload limits", () => {
 			rows,
 			calculatePullRequestCosts(rows, []),
 			new Map(),
-			true,
 			new Map(),
 			new Map([[key, { ...SNAPSHOT_LIMITS, requests: 1 }]]),
 		).snapshots

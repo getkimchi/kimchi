@@ -19,7 +19,7 @@ PR cost reporting paused for this organization: organization limit reached (requ
 owner/repo is partially reported: 1200 requests left out to fit the upload limits.
 ```
 
-Only main sessions with work tracking run this extension. Child sessions contribute their existing request records through the local calculator; they do not start upload workers. Removing work tracking leaves the independent branch PR status available.
+Only main sessions with work tracking run this extension. Child sessions contribute their existing request records through the local calculator; they do not start upload workers. Turning Cost per PR off in `/resources` turns off work tracking, PR/MR status and reporting together.
 
 The worker gathers the existing local inventory at startup, refreshes after each agent turn when reporting is on, and checks again every 30 seconds while Kimchi runs. A request can first appear as unlinked or unknown, then gain a PR and a price in later reports. Changed reports receive a higher `revision` and a new `generatedAt`; the server replaces the previous report, so repeated updates do not add the same charge again. A running pass or a saved retry deadline can delay an update.
 
@@ -123,7 +123,7 @@ An isolated harness home uses its own directory. The state file contains consent
 
 Only the newest pending snapshot for a repository is retained. Corrections and revocations with preserved request membership replace earlier allocations. When all requests move to another verified repository in the same account, an empty higher-revision snapshot withdraws the old group. The old membership remains protected while that withdrawal is pending, including after opt-out and restart. Missing source evidence alone cannot trigger that withdrawal. An acknowledgement for an older in-flight revision cannot delete a newer payload. Restarting resumes durable state instead of adding the same charges again.
 
-The existing reconciliation worker runs reporting after local cost lookup. Each pass reads the local history and queues snapshots within five seconds, then delivers within another five seconds, with at most three upload attempts. Queued reports are delivered even when capture fails. Verification and upload reject redirects and cap response bodies at 64 KiB. Credentials and endpoint are checked again after awaited operations and immediately before dispatch. Opt-out from another harness process cancels an active upload through a local state-file watcher; if the watcher cannot start, each upload still rereads the state first.
+The existing reconciliation worker runs reporting after local cost lookup. Each pass reads the local history in the background and queues snapshots within five seconds, then delivers within another five seconds, with at most three upload attempts. While the journals and the local queue are unchanged since the last capture, a pass skips reading them; it captures again after an hour so the upload window still moves. Queued reports are delivered even when capture fails. Verification and upload reject redirects and cap response bodies at 64 KiB. Credentials and endpoint are checked again after awaited operations and immediately before dispatch. Opt-out from another harness process cancels an active upload through a local state-file watcher; if the watcher cannot start, each upload still rereads the state first.
 
 Repository lookups share the capture budget. A found identity is kept for a day, and so is a repository without a GitHub or GitLab identity. Other failed lookups wait at least 30 seconds before retry. Unchecked repositories go first, and each pass reserves time to queue the repositories it already knows. A slow or unavailable provider does not discard that progress.
 
@@ -181,7 +181,7 @@ The existing telemetry setting controls these metrics separately from `/pr-repor
 
 Only `client=pi` and the fixed outcome appear as labels. The metrics add no session, user, work, request, repository or PR identifiers. Turning telemetry off drops buffered health counts and stops retries; turning it back on starts a new counter stream. An already dispatched request cannot be recalled.
 
-`kimchi config telemetry off` changes a local consent version in the settings file. A quick `off` then `on` from another terminal also discards older health batches, even when the running session did not check settings while telemetry was off. This version stays local and is not sent as a metric label.
+`kimchi config telemetry off` changes a local consent version in the config file. A quick `off` then `on` from another terminal also discards older health batches, even when the running session did not check settings while telemetry was off. This version stays local and is not sent as a metric label.
 
 Counters are cumulative within their OTLP start time; gauges describe the latest observed state and can decrease. Repeated exports must keep the latest value for that stream. Backend health queries use raw samples rather than session-based productivity rollups. These metrics help find missing prices and stuck delivery; they do not establish matching accuracy or change any PR total.
 

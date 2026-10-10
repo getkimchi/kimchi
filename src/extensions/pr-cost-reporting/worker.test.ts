@@ -1,5 +1,5 @@
 import * as fs from "node:fs"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -9,6 +9,8 @@ import { LookupError } from "../pull-request-status/provider-records.js"
 import * as health from "../telemetry/pr-cost.js"
 import { requestTagSelector } from "../work-attribution/billing-source.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
+import * as costs from "../work-attribution/costs.js"
+import * as summary from "../work-attribution/summary.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { queueSnapshots, readReportingState, setReportingEnabled, UPLOAD_INTERVAL_MS } from "./queue.js"
@@ -18,6 +20,8 @@ import { deliverSnapshots, LIMIT_RETRY_MS, reconcileReporting, serverLimit } fro
 
 const config = vi.hoisted(() => ({ key: "test-key", endpoint: "https://api.example" }))
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
+vi.mock("../work-attribution/costs.js", async (original) => ({ ...(await original<typeof costs>()) }))
+vi.mock("../work-attribution/summary.js", async (original) => ({ ...(await original<typeof summary>()) }))
 vi.mock("../../config.js", () => ({
 	loadConfig: () => ({ apiKey: config.key }),
 	resolveEndpoints: () => ({ platformApiUrl: config.endpoint }),
@@ -254,7 +258,7 @@ describe("account-fenced reporting delivery", () => {
 		const path = join(directory, "work-attribution", "source.jsonl")
 		await writeFile(path, (await readFile(path, "utf8")).replaceAll('"repositoryId":"42"', '"repositoryId":"43"'))
 		const source = readWorkCostReport(directory)
-		const built = buildSnapshots(source.records, source.report, new Map(), source.historyComplete, source.costRefreshes)
+		const built = buildSnapshots(source.records, source.report, new Map(), source.costRefreshes)
 		await queueSnapshots(directory, built.snapshots, !built.incomplete)
 		await rm(path)
 		http.mockClear()
@@ -979,6 +983,33 @@ describe("repository identity for work without a PR", () => {
 		// One lookup per repository, plus at most one abandoned when a pass deadline interrupts it.
 		expect(lookups).toBeLessThanOrEqual(13)
 	}, 30_000)
+})
+
+describe("idle reporting passes", () => {
+	it("skips an unchanged pass, reads journals in the background and still moves the window", async () => {
+		await seedLinked()
+		respond(accepted)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		// The acknowledgement changed the queue, so the second pass captures once more.
+		await run()
+		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
+		const blockingRead = vi.spyOn(summary, "readWorkRecords")
+		await run()
+		expect(calculate).not.toHaveBeenCalled()
+		// Without new records, the upload window still moves within the hour.
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60 * 60_000)
+		await run()
+		expect(calculate).toHaveBeenCalledOnce()
+		await appendFile(
+			join(directory, "work-attribution", "source.jsonl"),
+			`${JSON.stringify({ version: 1, type: "work", workId: "55555555-5555-4555-8555-555555555555", sessionId: "private-session", recordedAt: new Date().toISOString() })}\n`,
+		)
+		await run()
+		expect(calculate).toHaveBeenCalledTimes(2)
+		expect(blockingRead).not.toHaveBeenCalled()
+		expect(posts()).toHaveLength(1)
+	})
 })
 
 describe("journals with a torn final append", () => {

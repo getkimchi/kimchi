@@ -105,7 +105,7 @@ it("pins the PR totals that /work and the console must agree on", () => {
 	}))
 	const noCharge = new Map([[id("2", 6), account]])
 	const report = calculatePullRequestCosts(records, bills, new Set(), noCharge)
-	const { snapshots, incomplete } = buildSnapshots(records, report, repositories, true)
+	const { snapshots, incomplete } = buildSnapshots(records, report, repositories)
 	expect(incomplete).toBe(false)
 	// Each attempt appears once in the request list, whichever bucket or PR it belongs to.
 	const organizationNanos = report.requests.reduce((sum, row) => sum + (decimalNanos(row.knownCostUsd) ?? 0n), 0n)

@@ -1,29 +1,31 @@
 import { watch } from "node:fs"
 import { verifyApiKey } from "../../api/organizations.js"
 import { loadConfig } from "../../config.js"
-import { boundedResponse, fetchWithRetry, parseRetryAfterMs } from "../../utils/http.js"
+import { boundedResponse, parseRetryAfterMs } from "../../utils/http.js"
 import { plainURL } from "../../utils/url.js"
 import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js"
 import { LookupError } from "../pull-request-status/provider-records.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
 import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../work-attribution/scope.js"
-import { object } from "../work-attribution/summary.js"
+import { object, readWorkRecordsAsync, workJournalFingerprint } from "../work-attribution/summary.js"
 import {
 	ACCOUNT_SCOPES,
 	acknowledgeSnapshot,
 	deferSnapshot,
+	inUploadWindow,
 	LIMIT_NAMES,
 	LIMIT_SCOPES,
 	learnedLimits,
 	limitSnapshot,
 	queueSnapshots,
+	type ReportingState,
 	readReportingState,
 	recordReportingError,
 	reportingDirectory,
+	reportingStateVersion,
 	type ServerLimit,
 	type SnapshotAck,
-	UPLOAD_INTERVAL_MS,
 } from "./queue.js"
 import { accountKey, buildSnapshots, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
 
@@ -149,16 +151,7 @@ export async function deliverSnapshots(
 		)
 
 		const due = Object.entries(state.entries)
-			.filter(
-				([, entry]) =>
-					entry.pending &&
-					!entry.held &&
-					entry.retryAt <= now &&
-					(entry.urgent ||
-						entry.uploadedAt === undefined ||
-						entry.uploadedAt > now ||
-						now - entry.uploadedAt >= UPLOAD_INTERVAL_MS),
-			)
+			.filter(([, entry]) => entry.pending && !entry.held && entry.retryAt <= now && !inUploadWindow(entry, now))
 			.sort(([, a], [, b]) => Number(!a.urgent) - Number(!b.urgent) || a.retryAt - b.retryAt)
 		let attempts = 0
 		for (const [id, entry] of due) {
@@ -226,14 +219,13 @@ export async function deliverSnapshots(
 					throw new Error(errorMessage)
 				}
 
-				const response = await fetchWithRetry(
+				const response = await fetchBounded(
 					`${apiUrl}/ai-optimizer/v1beta/organizations/${entry.account.organizationId}/pr-cost-snapshots`,
 					{
 						method: "POST",
 						headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", Accept: "application/json" },
 						body: JSON.stringify(snapshot),
 					},
-					{ fetchImpl: fetchBounded, signal: combined, retry: { maxRetries: 0 } },
 				)
 				assertCurrent()
 				if (response.status === 429) limit = serverLimit(await response.json().catch(() => undefined))
@@ -274,84 +266,8 @@ export async function reconcileReporting(
 ): Promise<void> {
 	const state = await readReportingState(agentDir)
 	if (!state.enabled) return
-	const deadline = Date.now() + PASS_MS
-	const bounded = AbortSignal.any([signal, AbortSignal.timeout(PASS_MS)])
-	const check = () => {
-		assertLease()
-		bounded.throwIfAborted()
-		if (Date.now() >= deadline) throw new Error("PR reporting pass time limit exceeded")
-	}
 	try {
-		check()
-		const { records, report, historyComplete, costRefreshes } = readWorkCostReport(agentDir, check)
-		if (!historyComplete) throw new Error("PR reporting is waiting for readable source records")
-		const repositories = new Map<string, RepositoryIdentity>()
-		const needed = new Map<string, string>()
-		const requestRepositories = new Map<string, Set<string>>()
-		for (const row of records)
-			if (row.type === "request" && typeof row.requestId === "string" && isWorkScope(row.scope)) {
-				const values = requestRepositories.get(row.requestId) ?? new Set<string>()
-				values.add(row.scope.repository)
-				requestRepositories.set(row.requestId, values)
-			}
-		for (const request of report.requests) {
-			check()
-			const linked = report.pullRequests.filter(
-				(pr) =>
-					request.account &&
-					pr.account &&
-					sameWorkAccount(request.account, pr.account) &&
-					request.pullRequestIds.includes(pr.key),
-			)
-			if (linked.length && linked.every((pr) => pr.pullRequest?.id && pr.pullRequest.repositoryId)) continue
-			for (const repository of requestRepositories.get(request.requestId) ?? []) needed.set(repository, repository)
-		}
-		for (const [key, cached] of repositoryCache)
-			if (Date.now() - cached.checkedAt >= REPOSITORY_CACHE_MS) repositoryCache.delete(key)
-		const cacheKey = (repository: string) => JSON.stringify([agentDir, repository])
-		// One credential lookup per host and pass, not one per repository.
-		const tokens: Parameters<typeof lookupRepositoryIdentity>[2] = new Map()
-		for (const repository of needed.keys()) {
-			const cached = repositoryCache.get(cacheKey(repository))
-			if (cached?.value) repositories.set(repository, cached.value)
-			else if (cached?.unsupported) repositories.set(repository, "unsupported")
-		}
-		for (const [repository, path] of [...needed].sort(
-			([a], [b]) =>
-				(repositoryCache.get(cacheKey(a))?.checkedAt ?? 0) - (repositoryCache.get(cacheKey(b))?.checkedAt ?? 0),
-		)) {
-			const key = cacheKey(repository)
-			const cached = repositoryCache.get(key)
-			if (cached?.value || cached?.unsupported || (cached && Date.now() - cached.checkedAt < 30_000)) continue
-			// Reserve time to persist and deliver known groups even when discovery is slow.
-			if (Date.now() >= deadline - 2000) break
-			check()
-			try {
-				const lookupMs = Math.min(3000, deadline - Date.now() - 1000)
-				const value = await lookupRepositoryIdentity(
-					path,
-					AbortSignal.any([bounded, AbortSignal.timeout(lookupMs)]),
-					tokens,
-				)
-				repositoryCache.set(key, { checkedAt: Date.now(), value })
-				repositories.set(repository, value)
-			} catch (error) {
-				// Transient failures (network, timeouts, rate limits) retry and leave the history incomplete meanwhile.
-				const unsupported = error instanceof LookupError && error.kind === "unsupported"
-				repositoryCache.set(key, { checkedAt: Date.now(), ...(unsupported ? { unsupported: true } : {}) })
-				if (unsupported) repositories.set(repository, "unsupported")
-				check()
-			}
-		}
-
-		const built = buildSnapshots(records, report, repositories, historyComplete, costRefreshes, learnedLimits(state))
-		check()
-		const queued = await queueSnapshots(agentDir, built.snapshots, !built.incomplete)
-		if (built.skippedRequests)
-			await recordReportingError(
-				agentDir,
-				`${queued.error ? `${queued.error}. ` : ""}PR reporting skipped ${built.skippedRequests} request(s) without original account or repository evidence; history coverage is incomplete`,
-			)
+		await captureSnapshots(agentDir, state, signal, assertLease)
 	} catch {
 		if (!signal.aborted)
 			await recordReportingError(
@@ -366,4 +282,107 @@ export async function reconcileReporting(
 	} catch {
 		if (!signal.aborted) await recordReportingError(agentDir, "PR reporting could not deliver queued reports")
 	}
+}
+
+/** Unchanged journals and queue give the same snapshots; only the moving upload window needs another capture. */
+const CAPTURE_REFRESH_MS = HOUR_MS
+/** What the last capture that settled every repository identity read and left behind, and when it started. */
+let lastCapture: { inputs: string; at: number } | undefined
+
+/** Queues every repository's snapshot, unless the journals and queue have not changed since the last capture. */
+async function captureSnapshots(
+	agentDir: string,
+	state: ReportingState,
+	signal: AbortSignal,
+	assertLease: () => void,
+): Promise<void> {
+	const deadline = Date.now() + PASS_MS
+	const bounded = AbortSignal.any([signal, AbortSignal.timeout(PASS_MS)])
+	const check = () => {
+		assertLease()
+		bounded.throwIfAborted()
+		if (Date.now() >= deadline) throw new Error("PR reporting pass time limit exceeded")
+	}
+	check()
+	// Fingerprint before reading: an append during the read only makes the next pass capture again.
+	const journals = await workJournalFingerprint(agentDir)
+	const inputs = async () => JSON.stringify([agentDir, journals, await reportingStateVersion(agentDir)])
+	if (lastCapture?.inputs === (await inputs()) && Date.now() - lastCapture.at < CAPTURE_REFRESH_MS) return
+	const startedAt = Date.now()
+	let historyComplete = true
+	const records = await readWorkRecordsAsync(agentDir, bounded, () => {
+		historyComplete = false
+	})
+	check()
+	if (!historyComplete) throw new Error("PR reporting is waiting for readable source records")
+	const { report, costRefreshes } = readWorkCostReport(agentDir, records)
+	const repositories = new Map<string, RepositoryIdentity>()
+	const needed = new Set<string>()
+	const requestRepositories = new Map<string, Set<string>>()
+	for (const row of records)
+		if (row.type === "request" && typeof row.requestId === "string" && isWorkScope(row.scope)) {
+			const values = requestRepositories.get(row.requestId) ?? new Set<string>()
+			values.add(row.scope.repository)
+			requestRepositories.set(row.requestId, values)
+		}
+	for (const request of report.requests) {
+		check()
+		const linked = report.pullRequests.filter(
+			(pr) =>
+				request.account &&
+				pr.account &&
+				sameWorkAccount(request.account, pr.account) &&
+				request.pullRequestIds.includes(pr.key),
+		)
+		if (linked.length && linked.every((pr) => pr.pullRequest?.id && pr.pullRequest.repositoryId)) continue
+		for (const repository of requestRepositories.get(request.requestId) ?? []) needed.add(repository)
+	}
+	for (const [key, cached] of repositoryCache)
+		if (Date.now() - cached.checkedAt >= REPOSITORY_CACHE_MS) repositoryCache.delete(key)
+	const cacheKey = (repository: string) => JSON.stringify([agentDir, repository])
+	// One credential lookup per host and pass, not one per repository.
+	const tokens: Parameters<typeof lookupRepositoryIdentity>[2] = new Map()
+	for (const repository of needed) {
+		const cached = repositoryCache.get(cacheKey(repository))
+		if (cached?.value) repositories.set(repository, cached.value)
+		else if (cached?.unsupported) repositories.set(repository, "unsupported")
+	}
+	for (const repository of [...needed].sort(
+		(a, b) => (repositoryCache.get(cacheKey(a))?.checkedAt ?? 0) - (repositoryCache.get(cacheKey(b))?.checkedAt ?? 0),
+	)) {
+		const key = cacheKey(repository)
+		const cached = repositoryCache.get(key)
+		if (cached?.value || cached?.unsupported || (cached && Date.now() - cached.checkedAt < 30_000)) continue
+		// Reserve time to persist and deliver known groups even when discovery is slow.
+		if (Date.now() >= deadline - 2000) break
+		check()
+		try {
+			const lookupMs = Math.min(3000, deadline - Date.now() - 1000)
+			const value = await lookupRepositoryIdentity(
+				repository,
+				AbortSignal.any([bounded, AbortSignal.timeout(lookupMs)]),
+				tokens,
+			)
+			repositoryCache.set(key, { checkedAt: Date.now(), value })
+			repositories.set(repository, value)
+		} catch (error) {
+			// Transient failures (network, timeouts, rate limits) retry and leave the history incomplete meanwhile.
+			const unsupported = error instanceof LookupError && error.kind === "unsupported"
+			repositoryCache.set(key, { checkedAt: Date.now(), ...(unsupported ? { unsupported: true } : {}) })
+			if (unsupported) repositories.set(repository, "unsupported")
+			check()
+		}
+	}
+
+	const built = buildSnapshots(records, report, repositories, costRefreshes, learnedLimits(state))
+	check()
+	const queued = await queueSnapshots(agentDir, built.snapshots, !built.incomplete)
+	if (built.skippedRequests)
+		await recordReportingError(
+			agentDir,
+			`${queued.error ? `${queued.error}. ` : ""}PR reporting skipped ${built.skippedRequests} request(s) without original account or repository evidence; history coverage is incomplete`,
+		)
+	// A repository lookup that failed or ran out of time is retried by the next pass.
+	if ([...needed].every((repository) => repositories.has(repository)))
+		lastCapture = { inputs: await inputs(), at: startedAt }
 }

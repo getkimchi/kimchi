@@ -231,7 +231,6 @@ describe("automatic exact work cost lookup", () => {
 		const source = readWorkCostReport(dir)
 		expect(source.report.requests).toHaveLength(1)
 		expect(source.report.requests[0]).toMatchObject({ billingRecordIds: [ROW], totalCostUsd: "0.123456789" })
-		expect(source.historyComplete).toBe(true)
 	})
 	it("labels separate accounts when a work view contains the same PR more than once", async () => {
 		const { workId } = tagged()

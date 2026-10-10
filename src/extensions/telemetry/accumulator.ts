@@ -1,5 +1,5 @@
-import type { WorkSegment } from "../work-attribution.js"
 import { computeLineChanges, computeWriteLines, inferLanguage, type ToolArgs } from "./helpers.js"
+import type { PRCostMetric } from "./pr-cost.js"
 import type { MetricData } from "./transport.js"
 
 // ---------------------------------------------------------------------------
@@ -19,8 +19,8 @@ export interface CumulativeState {
 	prCost?: {
 		startTimeUnixNano: string
 		consentVersion?: string
-		matching: Partial<Record<WorkSegment["attribution"] | "failed", number>>
-		delivery: Partial<Record<"success" | "failed" | "canceled", number>>
+		matching: Partial<Record<Extract<PRCostMetric, { kind: "matching" }>["outcome"], number>>
+		delivery: Partial<Record<Extract<PRCostMetric, { kind: "delivery" }>["outcome"], number>>
 		unpriced?: number
 		queueDepth?: number
 		snapshotRequests?: number

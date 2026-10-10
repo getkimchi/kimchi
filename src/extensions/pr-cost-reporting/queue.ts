@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { mkdir, open } from "node:fs/promises"
+import { mkdir, open, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { lock } from "proper-lockfile"
 import { writeFileDurably } from "../../config/json.js"
@@ -153,6 +153,16 @@ function validEntryExtras(entry: PendingRepository): boolean {
 	)
 }
 
+/** An ordinary change waits out the window after the last upload attempt; an urgent one, or a clock set back, does not. */
+export function inUploadWindow(entry: PendingRepository, now: number): boolean {
+	return (
+		!entry.urgent &&
+		entry.uploadedAt !== undefined &&
+		entry.uploadedAt <= now &&
+		now - entry.uploadedAt < UPLOAD_INTERVAL_MS
+	)
+}
+
 /** What the server must hear about at once: PR states and explicit `/work` corrections. */
 export function snapshotMarkers(content: SnapshotContent): string[] {
 	const markers = new Set(content.pullRequests.map((pr) => `pull-request:${pr.id}:${pr.state}`))
@@ -174,6 +184,12 @@ function empty(): ReportingState {
 
 export async function readReportingState(agentDir: string): Promise<ReportingState> {
 	return (await loadReportingState(agentDir)).state
+}
+
+/** Changes with every saved update, since each one replaces the file; empty before the first. */
+export async function reportingStateVersion(agentDir: string): Promise<string> {
+	const saved = await stat(statePath(agentDir)).catch(() => undefined)
+	return saved ? JSON.stringify([saved.ino, saved.size, saved.mtimeMs]) : ""
 }
 
 /** The validated state and, when the file exists, its text, so an unchanged update can skip the write. */
@@ -388,7 +404,8 @@ export async function queueSnapshots(
 		const withdrawals = new Set<string>()
 		for (const [key, entry] of Object.entries(state.entries)) {
 			if (entry.learned && entry.learned.until <= now) entry.learned = undefined
-			if (!current.has(key)) {
+			// An acknowledged withdrawal left no claims; rebuilding it would only send it again.
+			if (!current.has(key) && (entry.requestHashes.length || entry.pending)) {
 				if (
 					!invalid.has(key) &&
 					entry.requestHashes.every((member) => reported.get(accountKey(entry.account))?.has(member))
@@ -411,9 +428,10 @@ export async function queueSnapshots(
 			}
 		}
 
-		const changes: [string, RepositorySnapshot, string][] = []
+		const changes: [string, RepositorySnapshot, string, number][] = []
 		for (const [key, snapshot] of current) {
-			const digest = createHash("sha256").update(JSON.stringify(snapshot.content)).digest("hex")
+			const text = JSON.stringify(snapshot.content)
+			const digest = createHash("sha256").update(text).digest("hex")
 			const entry = state.entries[key]
 			if (
 				entry &&
@@ -426,7 +444,9 @@ export async function queueSnapshots(
 			}
 			if (entry) entry.held = undefined
 			if (entry?.pendingDigest === digest || (!entry?.pending && entry?.acceptedDigest === digest)) continue
-			changes.push([key, snapshot, digest])
+			// History that is all outside the upload window has nothing to send and no earlier upload to replace.
+			if (!entry && !snapshot.content.requests.length && !snapshot.content.pullRequests.length) continue
+			changes.push([key, snapshot, digest, text.length])
 		}
 
 		// An explicit correction can move requests to another repository; when one first appears, every
@@ -443,7 +463,7 @@ export async function queueSnapshots(
 		// would replace stays deliverable: acknowledging queued snapshots is what frees that space.
 		let size = changes.length ? Buffer.byteLength(JSON.stringify(state)) : 0
 		let tooLarge = 0
-		changes.sort(([, a], [, b]) => JSON.stringify(a.content).length - JSON.stringify(b.content).length)
+		changes.sort((a, b) => a[3] - b[3])
 		for (const [key, snapshot, digest] of changes) {
 			const entry = state.entries[key]
 			const next = BigInt(entry?.revision ?? "0") + 1n

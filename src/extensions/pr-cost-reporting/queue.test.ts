@@ -136,6 +136,26 @@ describe("durable reporting queue", () => {
 		})
 		expect((await readReportingState(directory)).entries[key].requestHashes).toHaveLength(1)
 	})
+	it("queues nothing for a repository whose only history is older than the upload window", async () => {
+		await setReportingEnabled(directory, true)
+		const old = new Date(Date.now() - 120 * 24 * 60 * 60_000).toISOString()
+		const rows: WorkRecord[] = [
+			{
+				version: 1,
+				type: "request",
+				workId: "55555555-5555-4555-8555-555555555555",
+				sessionId: "old-session",
+				requestId,
+				startedAt: old,
+				recordedAt: old,
+				scope: { account, repository: "/repo/.git" },
+			},
+		]
+		const repositories = new Map([["/repo/.git", snapshot().content.repository]])
+		const built = buildSnapshots(rows, calculatePullRequestCosts(rows, []), repositories)
+		expect(built.snapshots.map((value) => value.content.requests)).toEqual([[]])
+		expect((await queueSnapshots(directory, built.snapshots, true)).entries).toEqual({})
+	})
 	it("claims the default-on notice once across concurrent sessions", async () => {
 		expect((await Promise.all([takeReportingNotice(directory), takeReportingNotice(directory)])).sort()).toEqual([
 			false,
@@ -193,7 +213,7 @@ describe("durable reporting queue", () => {
 			await setReportingEnabled(directory, true)
 		}
 		// A restarted process sees only an independent repository; neither migration payload was acknowledged.
-		const healthy = snapshot()
+		const healthy = snapshot([otherRequestId])
 		healthy.content.repository.id = "44"
 		await queueSnapshots(directory, [healthy], false)
 		const restarted = await readReportingState(directory)
@@ -293,7 +313,7 @@ describe("durable reporting queue", () => {
 			allocation: { kind: "unlinked", pullRequestIds: [], method: "native" },
 		})
 		oversized.content.coverage.observedRequests = 1
-		const healthy = snapshot()
+		const healthy = snapshot([otherRequestId])
 		healthy.content.repository.id = "43"
 		await queueSnapshots(directory, [oversized, healthy])
 		const state = await readReportingState(directory)
@@ -338,11 +358,11 @@ describe("durable reporting queue", () => {
 	})
 	it("keeps the retry deadline when new source evidence replaces a rate-limited snapshot", async () => {
 		await setReportingEnabled(directory, true)
-		await queueSnapshots(directory, [snapshot()])
+		await queueSnapshots(directory, [snapshot([requestId])])
 		const [key] = Object.keys((await readReportingState(directory)).entries)
 		const retryAt = Date.now() + 120000
 		await deferSnapshot(directory, key, "1", retryAt, "PR reporting returned HTTP 429")
-		const changed = snapshot()
+		const changed = snapshot([requestId])
 		changed.content.coverage.historyComplete = false
 		await queueSnapshots(directory, [changed])
 		expect((await readReportingState(directory)).entries[key]).toMatchObject({ revision: "2", retryAt, attempts: 1 })
@@ -356,7 +376,7 @@ describe("durable reporting queue", () => {
 			if (String(args[0]).endsWith(".tmp")) vi.spyOn(file, "sync").mockRejectedValue(new Error("disk unavailable"))
 			return file
 		})
-		await expect(queueSnapshots(directory, [snapshot()])).rejects.toThrow("disk unavailable")
+		await expect(queueSnapshots(directory, [snapshot([requestId])])).rejects.toThrow("disk unavailable")
 		expect(await readReportingState(directory)).toEqual(before)
 	})
 	it("replaces an accepted inventory with a higher-revision empty snapshot after local removal", async () => {
@@ -404,7 +424,7 @@ describe("durable reporting queue", () => {
 		})
 		const incomplete = snapshot()
 		incomplete.content.coverage.historyComplete = false
-		const healthy = snapshot()
+		const healthy = snapshot([otherRequestId])
 		healthy.content.repository.id = "44"
 		await queueSnapshots(directory, [incomplete, healthy])
 		const restarted = await readReportingState(directory)
@@ -435,11 +455,11 @@ describe("durable reporting queue", () => {
 	})
 	it("replaces pending snapshots, survives restart and ignores a late acknowledgement", async () => {
 		await setReportingEnabled(directory, true)
-		await queueSnapshots(directory, [snapshot()])
+		await queueSnapshots(directory, [snapshot([requestId])])
 		const before = await readReportingState(directory)
 		const [key, first] = Object.entries(before.entries)[0]
 		expect(first.pending?.revision).toBe("1")
-		const next = snapshot()
+		const next = snapshot([requestId])
 		next.content.coverage.historyComplete = false
 		await queueSnapshots(directory, [next])
 		await acknowledgeSnapshot(directory, key, "1", {
@@ -457,27 +477,30 @@ describe("durable reporting queue", () => {
 	})
 	it("deduplicates concurrent captures and deletes payloads on opt-out without resetting revisions", async () => {
 		await setReportingEnabled(directory, true)
-		await Promise.all([queueSnapshots(directory, [snapshot()]), queueSnapshots(directory, [snapshot()])])
+		await Promise.all([
+			queueSnapshots(directory, [snapshot([requestId])]),
+			queueSnapshots(directory, [snapshot([requestId])]),
+		])
 		const [key] = Object.keys((await readReportingState(directory)).entries)
 		expect((await readReportingState(directory)).entries[key].revision).toBe("1")
 		await setReportingEnabled(directory, false)
 		expect((await readReportingState(directory)).entries[key].pending).toBeUndefined()
 		await setReportingEnabled(directory, true)
-		await queueSnapshots(directory, [snapshot()])
+		await queueSnapshots(directory, [snapshot([requestId])])
 		expect((await readReportingState(directory)).entries[key].pending?.revision).toBe("2")
 	})
 	it("separates accounts and advances beyond a server revision without acknowledging newer content", async () => {
 		await setReportingEnabled(directory, true)
-		const other = snapshot()
+		const other = snapshot([requestId])
 		other.account = { ...account, userId: "33333333-3333-4333-8333-333333333333" }
-		await queueSnapshots(directory, [snapshot(), other])
+		await queueSnapshots(directory, [snapshot([requestId]), other])
 		const [key] = Object.keys((await readReportingState(directory)).entries)
 		await acknowledgeSnapshot(directory, key, "1", {
 			status: "stale",
 			revision: "8",
 			receivedAt: new Date().toISOString(),
 		})
-		await queueSnapshots(directory, [snapshot(), other])
+		await queueSnapshots(directory, [snapshot([requestId]), other])
 		const state = await readReportingState(directory)
 		expect(Object.keys(state.entries)).toHaveLength(2)
 		expect(state.entries[key].pending?.revision).toBe("9")
@@ -568,7 +591,6 @@ describe("unusable provider metadata for one PR", () => {
 			rows,
 			calculatePullRequestCosts(rows, []),
 			new Map([["/repo/.git", { provider: "gitlab" as const, host: "gitlab.com", id: "42", name: "team/repo" }]]),
-			true,
 		)
 		return queueSnapshots(directory, built.snapshots, !built.incomplete)
 	}
@@ -681,6 +703,19 @@ describe("upload window", () => {
 		const entries = await queue(moved)
 		expect([entries[key].pending?.requests, entries[key].urgent]).toEqual([[], true])
 		expect(entries[otherKey].urgent).toBe(true)
+	})
+	it("does not send an acknowledged withdrawal again when history completeness changes", async () => {
+		await setReportingEnabled(directory, true)
+		const moved = snapshot([requestId])
+		moved.content.repository = { ...moved.content.repository, id: "43" }
+		await queue(snapshot([requestId]))
+		await accept()
+		await queue(moved)
+		await accept()
+		// A repository lookup that fails and later recovers flips the completeness of the captures in between.
+		for (const complete of [false, true]) await queueSnapshots(directory, [moved], complete)
+		const { entries } = await readReportingState(directory)
+		expect([entries[key].revision, entries[key].requestHashes, entries[key].pending]).toEqual(["2", [], undefined])
 	})
 	it("sends other changed repositories of the account at once only when a correction first appears", async () => {
 		await setReportingEnabled(directory, true)

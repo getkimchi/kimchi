@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { SessionStartEvent } from "@earendil-works/pi-coding-agent"
+import type { ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { INFRA_BREAKER_THRESHOLD_ENV } from "../../upstream-retry-patch.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
@@ -39,16 +39,21 @@ afterEach(() => {
 	vi.unstubAllEnvs()
 	rmSync(directory, { recursive: true, force: true })
 })
+/** An extension API whose work tracking reports `current()` as the tracked main session. */
+function trackedApi(current: () => ExtensionContext) {
+	const api = createExtensionApi()
+	api.api.events.on(WORK_STATE_REQUEST_EVENT, (value) => {
+		Object.assign(value as WorkStateRequest, { tracking: true, current: { workId: "test-work", ctx: current() } })
+	})
+	return api
+}
 
 describe("optional PR reporting", () => {
 	it("does not break session startup or turn completion when reporting state is damaged", async () => {
 		await setReportingEnabled(directory, true)
 		writeFileSync(join(directory, "pr-cost-reporting", "state.json"), "{broken")
 		const ctx = createContext()
-		const api = createExtensionApi()
-		api.api.events.on(WORK_STATE_REQUEST_EVENT, (value) => {
-			Object.assign(value as WorkStateRequest, { tracking: true, current: { workId: "test-work", ctx } })
-		})
+		const api = trackedApi(() => ctx)
 		reportingExtension(api.api)
 		await expect(
 			api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx),
@@ -61,10 +66,7 @@ describe("optional PR reporting", () => {
 		const ctx = createContext()
 		const notices: unknown[] = []
 		for (let launch = 0; launch < 2; launch++) {
-			const api = createExtensionApi()
-			api.api.events.on(WORK_STATE_REQUEST_EVENT, (value) => {
-				Object.assign(value as WorkStateRequest, { tracking: true, current: { workId: "test-work", ctx } })
-			})
+			const api = trackedApi(() => ctx)
 			reportingExtension(api.api)
 			await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
 			await api.getHandler("agent_end")({}, ctx)
@@ -79,10 +81,7 @@ describe("optional PR reporting", () => {
 		mode.acp = true
 		try {
 			const ctx = createContext()
-			const api = createExtensionApi()
-			api.api.events.on(WORK_STATE_REQUEST_EVENT, (value) => {
-				Object.assign(value as WorkStateRequest, { tracking: true, current: { workId: "test-work", ctx } })
-			})
+			const api = trackedApi(() => ctx)
 			reportingExtension(api.api)
 			await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
 			// Studio drops notifications for a session it has not registered yet.
@@ -99,11 +98,8 @@ describe("optional PR reporting", () => {
 	it("lets the turn finish while reporting state is still being read", async () => {
 		await setReportingEnabled(directory, true)
 		const state = await readReportingState(directory)
-		const api = createExtensionApi()
 		const ctx = createContext()
-		api.api.events.on(WORK_STATE_REQUEST_EVENT, (value) => {
-			Object.assign(value as WorkStateRequest, { tracking: true, current: { workId: "test-work", ctx } })
-		})
+		const api = trackedApi(() => ctx)
 		reportingExtension(api.api)
 		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
 		let release!: (value: queue.ReportingState) => void
@@ -129,10 +125,7 @@ describe("optional PR reporting", () => {
 		if (choice === "telemetry-off") vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
 		else await setReportingEnabled(directory, choice === "explicit-on")
 		const ctx = createContext()
-		const api = createExtensionApi()
-		api.api.events.on(WORK_STATE_REQUEST_EVENT, (value) => {
-			Object.assign(value as WorkStateRequest, { tracking: true, current: { workId: "test-work", ctx } })
-		})
+		const api = trackedApi(() => ctx)
 		reportingExtension(api.api)
 		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
 		await api.getHandler("agent_end")({}, ctx)
@@ -142,11 +135,8 @@ describe("optional PR reporting", () => {
 		await api.getHandler("session_shutdown")({}, ctx)
 	})
 	it("cancels the old account context before switching to another project session", async () => {
-		const api = createExtensionApi()
 		let ctx = createContext({ cwd: "/first" })
-		api.api.events.on(WORK_STATE_REQUEST_EVENT, (value) => {
-			Object.assign(value as WorkStateRequest, { tracking: true, current: { workId: "test-work", ctx } })
-		})
+		const api = trackedApi(() => ctx)
 		const stop = vi.fn(async () => {})
 		vi.mocked(supervisor.subscribeReportingReconciliation).mockReturnValue(stop)
 		reportingExtension(api.api)
@@ -167,11 +157,8 @@ describe("optional PR reporting", () => {
 		expect(supervisor.requestWorkReconciliation).not.toHaveBeenCalled()
 	})
 	it("starts main reporting by default and refreshes immediately when enabled or a turn ends", async () => {
-		const api = createExtensionApi()
 		const ctx = createContext()
-		api.api.events.on(WORK_STATE_REQUEST_EVENT, (value) => {
-			Object.assign(value as WorkStateRequest, { tracking: true, current: { workId: "test-work", ctx } })
-		})
+		const api = trackedApi(() => ctx)
 		const stop = vi.fn(async () => {})
 		vi.mocked(supervisor.subscribeReportingReconciliation).mockReturnValue(stop)
 		reportingExtension(api.api)
@@ -200,10 +187,7 @@ describe("optional PR reporting", () => {
 		["json", false],
 	] as const)("keeps attributing in a %s session and reports only when interactive", async (mode, deliver) => {
 		const ctx = createContext({ mode })
-		const api = createExtensionApi()
-		api.api.events.on(WORK_STATE_REQUEST_EVENT, (value) => {
-			Object.assign(value as WorkStateRequest, { tracking: true, current: { workId: "test-work", ctx } })
-		})
+		const api = trackedApi(() => ctx)
 		reportingExtension(api.api)
 		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
 		// A session that never uploads reads no history; the next interactive session builds the same reports.
@@ -254,18 +238,22 @@ describe("optional PR reporting", () => {
 					content: {
 						repository: { provider: "github", host: "github.com", id: "42", name: "owner/repo" },
 						pullRequests: [],
-						requests: [],
-						coverage: { observedRequests: 0, unpricedRequests: 0, historyComplete: false, trimmedRequests: 3 },
+						requests: [
+							{
+								requestId: "33333333-3333-4333-8333-333333333333",
+								billingRecordIds: [],
+								startedAt: "2026-10-04T12:00:00Z",
+								allocation: { kind: "unlinked", pullRequestIds: [], method: "native" },
+							},
+						],
+						coverage: { observedRequests: 1, unpricedRequests: 1, historyComplete: false, trimmedRequests: 3 },
 					},
 				},
 			])
 			const text = "PR costs for owner/repo are partially reported: limit reached. See /pr-reporting status."
 			const ctx = createContext()
 			for (let launch = 0; launch < 2; launch++) {
-				const api = createExtensionApi()
-				api.api.events.on(WORK_STATE_REQUEST_EVENT, (value) => {
-					Object.assign(value as WorkStateRequest, { tracking: true, current: { workId: "test-work", ctx } })
-				})
+				const api = trackedApi(() => ctx)
 				reportingExtension(api.api)
 				await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
 				// Studio drops notifications for a session it has not registered yet.

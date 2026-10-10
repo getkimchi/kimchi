@@ -27,7 +27,7 @@ import {
 	totalRequestCosts,
 } from "./costs.js"
 import type { WorkAccount } from "./scope.js"
-import { object, readWorkRecords, readWorkRecordsAsync, type WorkRecord, workJournalFingerprint } from "./summary.js"
+import { object, readWorkRecords, readWorkRecordsAsync, workJournalFingerprint } from "./summary.js"
 
 // The background pass: it looks up due bills within a budget, journals new evidence and publishes reports.
 
@@ -94,13 +94,7 @@ function costFingerprint(rows: unknown[], lookup: BillingLookup): string {
 }
 
 /** Read durable evidence rather than combining per-work caches. */
-export function readWorkCostReport(agentDir: string, checkBudget: () => void = () => {}, snapshot?: WorkRecord[]) {
-	let historyComplete = true
-	const records =
-		snapshot ??
-		readWorkRecords(agentDir, undefined, checkBudget, () => {
-			historyComplete = false
-		})
+export function readWorkCostReport(agentDir: string, records = readWorkRecords(agentDir)) {
 	const requests = billingRequests(records)
 	const noCharge = new Map<string, WorkAccount>()
 	for (const item of requests.values()) {
@@ -139,7 +133,7 @@ export function readWorkCostReport(agentDir: string, checkBudget: () => void = (
 				: [],
 		),
 	)
-	return { records, report, requests, historyComplete, costRefreshes }
+	return { records, report, requests, costRefreshes }
 }
 
 interface CostState {
@@ -166,7 +160,7 @@ async function costState(agentDir: string, signal: AbortSignal): Promise<CostSta
 	const records = await readWorkRecordsAsync(agentDir, signal)
 	// The calculation cannot stop midway; a closing session must not wait for one it no longer needs.
 	signal.throwIfAborted()
-	const { requests, report } = readWorkCostReport(agentDir, undefined, records)
+	const { requests, report } = readWorkCostReport(agentDir, records)
 	const open: OpenBilling[] = []
 	const displays = new Map<string, BillingDisplay>()
 	for (const item of requests.values()) {

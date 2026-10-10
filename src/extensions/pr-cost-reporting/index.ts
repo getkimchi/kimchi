@@ -31,11 +31,11 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 	let stop: (() => Promise<void>) | undefined
 	let draining = Promise.resolve()
 
-	async function reportingEnabled(showNotice = true): Promise<boolean> {
+	async function reportingEnabled(): Promise<boolean> {
 		try {
 			const state = await readReportingState(getAgentDir())
 			const ctx = context
-			if (showNotice && ctx?.hasUI && state.enabled && state.followsTelemetry && !state.defaultNoticeShown)
+			if (ctx?.hasUI && state.enabled && state.followsTelemetry && !state.defaultNoticeShown)
 				if (await takeReportingNotice(getAgentDir())) {
 					const text =
 						"PR costs are reported to your account (repository/PR details and request/billing IDs). Turn off with /pr-reporting off."
@@ -44,7 +44,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 					else pi.appendEntry("pr-cost-reporting-notice", text)
 				}
 			const due = dueLimitNotices(state)
-			if (showNotice && ctx?.hasUI && (due.repositories.length || due.pauses.length))
+			if (ctx?.hasUI && (due.repositories.length || due.pauses.length))
 				for (const text of limitNoticeTexts(await takeLimitNotices(getAgentDir()))) ctx.ui.notify(text, "warning")
 			return state.enabled
 		} catch {
@@ -82,7 +82,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 		skipReason = uploadSkipReason(ctx.mode)
 		synchronize(ctx)
 		// Studio drops notifications for a session it has not registered yet, so it gets the notice after a turn.
-		if (stop) await reportingEnabled(!IS_ACP_MODE)
+		if (stop && !IS_ACP_MODE) await reportingEnabled()
 	})
 
 	pi.on("agent_end", () => {

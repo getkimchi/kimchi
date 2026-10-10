@@ -1,9 +1,9 @@
 import {
+	inUploadWindow,
 	type LimitNotices,
 	type PendingRepository,
 	type ReportingState,
 	type ServerLimit,
-	UPLOAD_INTERVAL_MS,
 } from "./queue.js"
 import type { ReportingRepository } from "./snapshot.js"
 
@@ -55,13 +55,7 @@ export function statusText(
 ): { text: string; warning: boolean } {
 	const entries = Object.values(state.entries)
 	const pending = entries.filter((entry) => entry.pending)
-	const waiting = pending.filter(
-		(entry) =>
-			!entry.urgent &&
-			entry.uploadedAt !== undefined &&
-			entry.uploadedAt <= now &&
-			now - entry.uploadedAt < UPLOAD_INTERVAL_MS,
-	).length
+	const waiting = pending.filter((entry) => inUploadWindow(entry, now)).length
 	const problems = [
 		...Object.values(state.paused ?? {}).map(
 			(pause) =>

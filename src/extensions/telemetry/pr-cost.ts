@@ -3,7 +3,7 @@ import type { WorkSegment } from "../work-attribution.js"
 import { nowNano } from "./helpers.js"
 import { _getTelemetryCtx } from "./index.js"
 
-type PRCostMetric =
+export type PRCostMetric =
 	| { kind: "matching"; outcome: WorkSegment["attribution"] | "failed" | "limited" }
 	| { kind: "delivery"; outcome: "success" | "failed" | "canceled" }
 	/** snapshotRequests and snapshotBytes describe the largest snapshot queued in a reporting pass. */
@@ -28,7 +28,7 @@ export function trackPRCostMetric(metric: PRCostMetric): void {
 	}
 	const state = ctx.cumulative.prCost
 	if (metric.kind === "matching" || metric.kind === "delivery") {
-		const counts: Partial<Record<string, number>> = state[metric.kind]
+		const counts: Partial<Record<typeof metric.outcome, number>> = state[metric.kind]
 		counts[metric.outcome] = (counts[metric.outcome] ?? 0) + 1
 	} else if (metric.kind === "reconciliation") state.reconciliationStartedAt = Date.now()
 	else if (Number.isSafeInteger(metric.value) && metric.value >= 0) state[metric.kind] = metric.value

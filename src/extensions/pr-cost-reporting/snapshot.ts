@@ -443,13 +443,12 @@ export function buildSnapshots(
 	report: PullRequestCostReport,
 	/** Identities by Git directory; a directory left out has not been looked up successfully yet. */
 	repositories: Map<string, RepositoryIdentity>,
-	historyComplete: boolean,
 	costRefreshes = new Map<string, string>(),
 	/** Stricter limits a repository's server rejection taught, by account and repository key. */
 	limits = new Map<string, SnapshotLimits>(),
 ): { snapshots: RepositorySnapshot[]; incomplete: boolean; skippedRequests: number } {
 	const groups = new Map<string, RepositorySnapshot>()
-	let incomplete = !historyComplete
+	let incomplete = false
 	let skippedRequests = 0
 	const original = new Map<string, WorkRecord[]>()
 	const links = new Map<string, WorkRecord>()
@@ -672,7 +671,7 @@ export function buildSnapshots(
 						repository: repo,
 						pullRequests: [],
 						requests: [],
-						coverage: { observedRequests: 0, unpricedRequests: 0, historyComplete },
+						coverage: { observedRequests: 0, unpricedRequests: 0, historyComplete: true },
 					},
 				}
 				groups.set(key, group)
