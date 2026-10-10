@@ -1,5 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
+import { stripTerminalSequences } from "@earendil-works/pi-tui"
 import { DEFAULT_SLUG, derivePlanTitle } from "../../shared/planning/plan-markdown.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { mergePullRequestLinks, pullRequestLabel } from "../pull-request-status/links.js"
@@ -10,7 +11,7 @@ import { costDetailLines, knownSpend, ownRequests } from "./cost-details.js"
 import { time } from "./costs.js"
 import { object } from "./summary.js"
 
-/** Besides the current work, the panel lists works whose summary changed recently. */
+/** Besides the current work, the panel lists works with activity this recent. */
 const RECENT_MS = 35 * 24 * 60 * 60_000
 const MAX_WORKS = 30
 /** Larger files are skipped rather than read; a plan is read only for its title. */
@@ -65,28 +66,51 @@ export async function readWorkBrowser(
 		}),
 	)
 
-	const recent = [...modified]
+	const candidates = [...modified]
 		.filter(([workId, at]) => workId !== current.workId && at >= now - RECENT_MS)
-		.sort(([, left], [, right]) => right - left)
-		.slice(0, MAX_WORKS - 1)
 		.map(([workId]) => workId)
-	const works = await Promise.all(
-		[current.workId, ...recent].map(async (workId): Promise<SavedWork> => {
-			const folder = join(directory, workId)
-			const [summary, costs] = await Promise.all([
-				readJson(join(folder, "work.json")),
-				readJson(join(folder, "costs.json")),
-			])
-			return {
+	const [own, ...others] = await Promise.all(
+		[current.workId, ...candidates].map(
+			async (workId): Promise<SavedWork> => ({
 				workId,
-				summary,
-				costs,
-				planTitle: await readPlanTitle(folder, summary),
+				summary: await readJson(join(directory, workId, "work.json")),
 				modifiedAt: modified.get(workId),
-			}
+			}),
+		),
+	)
+	// Cost passes rewrite work.json weeks after the last request, so saved activity times pick the works listed.
+	const recent = others
+		.map((work) => ({ work, activity: lastActivity(work) ?? 0 }))
+		.filter(({ activity }) => activity >= now - RECENT_MS)
+		.sort((left, right) => right.activity - left.activity || left.work.workId.localeCompare(right.work.workId))
+		.slice(0, MAX_WORKS - 1)
+		.map(({ work }) => work)
+	const works = await Promise.all(
+		[own, ...recent].map(async (work): Promise<SavedWork> => {
+			const folder = join(directory, work.workId)
+			const [costs, planTitle] = await Promise.all([
+				readJson(join(folder, "costs.json")),
+				readPlanTitle(folder, work.summary),
+			])
+			return { ...work, costs, planTitle }
 		}),
 	)
 	return buildWorkBrowser(agentDir, current, works)
+}
+
+/** The parsed `work.json`, when it is this work's. */
+function savedSummary({ workId, summary }: SavedWork): Entry | undefined {
+	return object(summary) && summary.workId === workId ? summary : undefined
+}
+
+/** Newest request start, native edit or retained plan; the file time when the summary has none. */
+function lastActivity(work: SavedWork): number | undefined {
+	const summary = savedSummary(work)
+	const times = [
+		...entries(summary, "requests").map((row) => time(row.startedAt)),
+		...[...entries(summary, "fileTransitions"), ...entries(summary, "plans")].map((row) => time(row.recordedAt)),
+	].filter((at) => at !== undefined)
+	return times.length ? Math.max(...times) : work.modifiedAt
 }
 
 /** Rows from saved summaries. Only the current work has live PR lookup lines; the rest use their saved links. */
@@ -116,7 +140,7 @@ export function buildWorkBrowser(agentDir: string, current: WorkDetailsRequest, 
 function workRow(agentDir: string, work: SavedWork, current?: WorkDetailsRequest) {
 	const { workId } = work
 	const folder = join(agentDir, "work", workId)
-	const summary = object(work.summary) && work.summary.workId === workId ? work.summary : undefined
+	const summary = savedSummary(work)
 	const requests = entries(summary, "requests")
 	const edits = entries(summary, "fileTransitions")
 	const commits = entries(summary, "commits")
@@ -133,11 +157,7 @@ function workRow(agentDir: string, work: SavedWork, current?: WorkDetailsRequest
 	// A saved report also lists connected works' requests; the row shows this work's own spend.
 	const spent = summary || costs ? [...(costs ? ownRequests(costs, workId) : []), ...unpriced] : undefined
 	const links = mergePullRequestLinks(...commits.map((commit) => storedPullRequests(commit.pullRequests)))
-	const times = [
-		...requests.map((row) => time(row.startedAt)),
-		...[...edits, ...entries(summary, "plans")].map((row) => time(row.recordedAt)),
-	].filter((at) => at !== undefined)
-	const activity = times.length ? Math.max(...times) : work.modifiedAt
+	const activity = lastActivity(work)
 	const { name, branch } = location(edits, commits, requests)
 	const title = plain(work.planTitle ?? [name, branch].filter(Boolean).join(" · "))
 	const pullRequests = current ? current.lines : links.map((pr) => `${pullRequestLabel(pr)}: ${pr.url}`)
@@ -222,7 +242,9 @@ function localTime(at: number): string {
 
 /** Saved names come from model and Git output; keep them to one printable line. */
 function plain(text: string): string {
-	return text.replace(/\p{Cc}+/gu, " ").trim()
+	return stripTerminalSequences(text)
+		.replace(/\p{Cc}+/gu, " ")
+		.trim()
 }
 
 /** Object entries of one summary collection; a damaged collection reads as empty. */

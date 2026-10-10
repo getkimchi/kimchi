@@ -103,12 +103,14 @@ function browse(works: SavedWork[], lines: string[] = []) {
 
 describe("work browser rows", () => {
 	it("lists the current work first, then recent works by last activity, and leaves out old works", async () => {
-		const [current, older, newer, stale] = [1, 2, 3, 4].map(workId)
+		const [current, older, newer, stale, idle] = [1, 2, 3, 4, 5].map(workId)
 		save(current, { summary: summary(current, { requests: [request("r1", "2026-09-20T09:00:00Z")] }) }, NOW - DAY)
 		// A later background update does not make older work more recent than newer activity.
 		save(older, { summary: summary(older, { requests: [request("r2", "2026-10-07T10:00:00Z")] }) }, NOW - HOUR)
 		save(newer, { summary: summary(newer, { requests: [request("r3", "2026-10-08T09:00:00Z")] }) }, NOW - 2 * HOUR)
 		save(stale, { summary: summary(stale, { requests: [request("r4", "2026-08-20T09:00:00Z")] }) }, NOW - 40 * DAY)
+		// A request's final cost record rewrites the summary of work idle for over a month.
+		save(idle, { summary: summary(idle, { requests: [request("r5", "2026-08-19T09:00:00Z")] }) }, NOW - HOUR)
 		mkdirSync(join(agentDir, "work", "not-a-work"))
 
 		const { rows } = await readWorkBrowser(agentDir, { workId: current, lines: [] }, NOW)
@@ -127,6 +129,26 @@ describe("work browser rows", () => {
 		expect(rows).toHaveLength(30)
 		expect(rows[0].workId).toBe(workId(35))
 		expect(rows.map((row) => row.workId)).toContain(workId(29))
+		expect(rows.map((row) => row.workId)).not.toContain(workId(30))
+	})
+
+	it("keeps the most recently active works when more works changed recently", async () => {
+		const current = workId(1)
+		save(current, { summary: summary(current) })
+		// Background cost and PR updates rewrote these summaries after their last activity.
+		for (let index = 2; index <= 30; index++)
+			save(
+				workId(index),
+				{ summary: summary(workId(index), { requests: [request(`r${index}`, "2026-09-28T09:00:00Z")] }) },
+				NOW - HOUR,
+			)
+		const active = workId(31)
+		save(active, { summary: summary(active, { requests: [request("active", "2026-10-07T09:00:00Z")] }) }, NOW - DAY)
+
+		const { rows } = await readWorkBrowser(agentDir, { workId: current, lines: [] }, NOW)
+
+		expect(rows).toHaveLength(30)
+		expect(rows[1].workId).toBe(active)
 		expect(rows.map((row) => row.workId)).not.toContain(workId(30))
 	})
 
@@ -308,7 +330,7 @@ describe("work browser rows", () => {
 		const { rows } = await readWorkBrowser(agentDir, { workId: planned, lines: [] }, NOW)
 		const label = (id: string) => rows.find((row) => row.workId === id)?.label
 
-		expect(label(planned)).toBe("● 00000001 Add CSV [31m export")
+		expect(label(planned)).toBe("● 00000001 Add CSV export")
 		expect(label(edited)).toBe("  00000002 kimchi · feat/csv")
 		expect(label(asked)).toBe("  00000003 app")
 	})
