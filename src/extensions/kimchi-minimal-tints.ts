@@ -18,7 +18,8 @@
 // 24-step gray ramp.
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { getActiveThemeName, onThemeChange } from "../settings-watcher.js"
+import { onThemeChange as onPiThemeChange } from "@earendil-works/pi-coding-agent"
+import { getActiveThemeName } from "../settings-watcher.js"
 import {
 	detectColorMode,
 	estimateTerminalBackground,
@@ -28,7 +29,6 @@ import {
 	type Rgb,
 	tintBackground,
 } from "../terminal-bg-probe.js"
-import { onThemeFileChange } from "../theme-file-watcher.js"
 
 // In truecolor mode the deltas produce visually distinct steps. In 256-color
 // mode (Terminal.app, screen) the 24-step gray ramp (step size 10) limits
@@ -91,34 +91,28 @@ export default function kimchiMinimalTintsExtension(pi: ExtensionAPI) {
 		ctx.ui.setStatus("kimchi-tints-rerender", undefined)
 	}
 
-	let unsubscribeThemeChange: (() => void) | undefined
-	let unsubscribeThemeFileChange: (() => void) | undefined
+	let unsubscribePiThemeChange: (() => void) | undefined
 
 	pi.on("session_start", (_event, ctx: ExtensionContext) => {
 		if (getActiveThemeName() === "kimchi-minimal") applyTints(ctx)
 
-		unsubscribeThemeChange?.()
-		unsubscribeThemeChange = onThemeChange((newName) => {
-			if (newName === "kimchi-minimal") {
-				applyTints(ctx)
-				triggerRerender(ctx)
-			}
-		})
-
-		// Re-apply tints when the active theme file is edited externally.
-		unsubscribeThemeFileChange?.()
-		unsubscribeThemeFileChange = onThemeFileChange((changedTheme) => {
-			if (changedTheme === "kimchi-minimal") {
-				applyTints(ctx)
-				triggerRerender(ctx)
-			}
+		// pi's callback fires on theme switches AND on live reloads of the
+		// active theme file — one subscription covers both cases, and it runs
+		// after pi has already swapped the live Theme instance, so tints apply
+		// against the freshly-loaded theme. (The old dedicated file watcher
+		// cost a blocking fs.watch on the startup path; pi already watches the
+		// active theme file itself.)
+		unsubscribePiThemeChange?.()
+		unsubscribePiThemeChange = onPiThemeChange(() => {
+			const activeName = ctx.ui.theme.name ?? getActiveThemeName()
+			if (activeName !== "kimchi-minimal") return
+			applyTints(ctx)
+			triggerRerender(ctx)
 		})
 	})
 
 	pi.on("session_shutdown", () => {
-		unsubscribeThemeChange?.()
-		unsubscribeThemeChange = undefined
-		unsubscribeThemeFileChange?.()
-		unsubscribeThemeFileChange = undefined
+		unsubscribePiThemeChange?.()
+		unsubscribePiThemeChange = undefined
 	})
 }

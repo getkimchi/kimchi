@@ -560,6 +560,32 @@ index 0877ee7edaa522a496d98dd5fc9e9133849d070e..8fbc555ca6dae3555ced6f169ffff985
      while (true) {
          const agentsSkillsDir = join(currentDir, ".agents", "skills");
          if (agentsSkillsDir !== userAgentsSkillsDir && existsSync(agentsSkillsDir)) {
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index e2b640b661a7712fa3f86ed5ecb494b98a6f9e4d..49ba6491850ad8c54b751aced2922b79305b5b00 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -26,7 +26,7 @@ export { hasTrustRequiringProjectResources, type ProjectTrustDecision, ProjectTr
+ export { type MainOptions, main } from "./main.ts";
+ export { InteractiveMode, type InteractiveModeOptions, type JsonAgentSessionEvent, type ModelInfo, type PrintModeOptions, RpcClient, type RpcClientOptions, type RpcCommand, type RpcEventListener, type RpcExtensionUIRequest, type RpcExtensionUIResponse, type RpcResponse, type RpcSessionState, runPrintMode, runRpcMode, } from "./modes/index.ts";
+ export { ArminComponent, AssistantMessageComponent, BashExecutionComponent, BorderedLoader, BranchSummaryMessageComponent, CompactionSummaryMessageComponent, CustomEditor, type CustomEditorOptions, CustomMessageComponent, DynamicBorder, ExtensionEditorComponent, ExtensionInputComponent, ExtensionSelectorComponent, FooterComponent, keyHint, keyText, LoginDialogComponent, ModelSelectorComponent, OAuthSelectorComponent, type RenderDiffOptions, rawKeyHint, renderDiff, SessionSelectorComponent, type SettingsCallbacks, type SettingsConfig, SettingsSelectorComponent, ShowImagesSelectorComponent, SkillInvocationMessageComponent, ThemeSelectorComponent, ThinkingSelectorComponent, ToolExecutionComponent, type ToolExecutionOptions, TreeSelectorComponent, truncateToVisualLines, UserMessageComponent, UserMessageSelectorComponent, type VisualTruncateResult, } from "./modes/interactive/components/index.ts";
+-export { getLanguageFromPath, getMarkdownTheme, getSelectListTheme, getSettingsListTheme, highlightCode, initTheme, Theme, type ThemeColor, } from "./modes/interactive/theme/theme.ts";
++export { getLanguageFromPath, getMarkdownTheme, getSelectListTheme, getSettingsListTheme, highlightCode, initTheme, onThemeChange, Theme, type ThemeColor, } from "./modes/interactive/theme/theme.ts";
+ export { copyToClipboard } from "./utils/clipboard.ts";
+ export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
+ export { convertToPng } from "./utils/image-convert.ts";
+diff --git a/dist/index.js b/dist/index.js
+index 01017cdbf6a26b3d36e236c7f9e835fbf0fa5c3a..0a325af76391168453a291cb2e51f8d9a261ac7a 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -36,7 +36,7 @@ export { InteractiveMode, RpcClient, runPrintMode, runRpcMode, } from "./modes/i
+ // UI components for extensions
+ export { ArminComponent, AssistantMessageComponent, BashExecutionComponent, BorderedLoader, BranchSummaryMessageComponent, CompactionSummaryMessageComponent, CustomEditor, CustomMessageComponent, DynamicBorder, ExtensionEditorComponent, ExtensionInputComponent, ExtensionSelectorComponent, FooterComponent, keyHint, keyText, LoginDialogComponent, ModelSelectorComponent, OAuthSelectorComponent, rawKeyHint, renderDiff, SessionSelectorComponent, SettingsSelectorComponent, ShowImagesSelectorComponent, SkillInvocationMessageComponent, ThemeSelectorComponent, ThinkingSelectorComponent, ToolExecutionComponent, TreeSelectorComponent, truncateToVisualLines, UserMessageComponent, UserMessageSelectorComponent, } from "./modes/interactive/components/index.js";
+ // Theme utilities for custom tools and extensions
+-export { getLanguageFromPath, getMarkdownTheme, getSelectListTheme, getSettingsListTheme, highlightCode, initTheme, Theme, } from "./modes/interactive/theme/theme.js";
++export { getLanguageFromPath, getMarkdownTheme, getSelectListTheme, getSettingsListTheme, highlightCode, initTheme, onThemeChange, Theme, } from "./modes/interactive/theme/theme.js";
+ // Clipboard utilities
+ export { copyToClipboard } from "./utils/clipboard.js";
+ export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.js";
 diff --git a/dist/modes/interactive/components/branch-summary-message.js b/dist/modes/interactive/components/branch-summary-message.js
 index e23ca6db02a29814112dd4945bd868604eb6676f..d0f6fd7aeb79c6a20655805152a30970f1b4cc2a 100644
 --- a/dist/modes/interactive/components/branch-summary-message.js
@@ -1007,3 +1033,170 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..17aaf99f181161f52349d281686403b7
                  this.showStatus(`Session exported to: ${filePath}`);
              }
              else {
+diff --git a/dist/modes/interactive/theme/theme.d.ts b/dist/modes/interactive/theme/theme.d.ts
+index 67f86908ad3f720bbf79d3104a946af7f6d9c0f6..bd422cc2591a34c3c76a7febc2753d8ca738fb3e 100644
+--- a/dist/modes/interactive/theme/theme.d.ts
++++ b/dist/modes/interactive/theme/theme.d.ts
+@@ -95,7 +95,7 @@ export declare function setTheme(name: string, enableWatcher?: boolean): {
+     error?: string;
+ };
+ export declare function setThemeInstance(themeInstance: Theme): void;
+-export declare function onThemeChange(callback: () => void): void;
++export declare function onThemeChange(callback: () => void): () => boolean;
+ export declare function stopThemeWatcher(): void;
+ /**
+  * Get resolved theme colors as CSS-compatible hex strings.
+diff --git a/dist/modes/interactive/theme/theme.js b/dist/modes/interactive/theme/theme.js
+index 54181674b80ff729ee87ad4d9f8a7e1fa48d1f28..0e2e82f9f3bbad47bc898df47be83cb047df696a 100644
+--- a/dist/modes/interactive/theme/theme.js
++++ b/dist/modes/interactive/theme/theme.js
+@@ -552,7 +552,25 @@ function setGlobalTheme(t) {
+ let currentThemeName;
+ let themeWatcher;
+ let themeReloadTimer;
+-let onThemeChangeCallback;
++// kimchi-dev: multiple listeners instead of a single callback slot — pi's
++// interactive mode registers its own UI-invalidation listener, and host
++// harnesses (kimchi's tints) need theme-change and theme-file-reload
++// notifications without clobbering each other.
++const themeChangeListeners = new Set();
++export function onThemeChange(callback) {
++    themeChangeListeners.add(callback);
++    return () => themeChangeListeners.delete(callback);
++}
++function notifyThemeChange() {
++    for (const listener of themeChangeListeners) {
++        try {
++            listener();
++        }
++        catch (error) {
++            console.warn("[theme] onThemeChange listener error:", error);
++        }
++    }
++}
+ const registeredThemes = new Map();
+ export function setRegisteredThemes(themes) {
+     registeredThemes.clear();
+@@ -586,9 +604,7 @@ export function setTheme(name, enableWatcher = false) {
+         if (enableWatcher) {
+             startThemeWatcher();
+         }
+-        if (onThemeChangeCallback) {
+-            onThemeChangeCallback();
+-        }
++        notifyThemeChange();
+         return { success: true };
+     }
+     catch (error) {
+@@ -606,14 +622,26 @@ export function setThemeInstance(themeInstance) {
+     setGlobalTheme(themeInstance);
+     currentThemeName = "<in-memory>";
+     stopThemeWatcher(); // Can't watch a direct instance
+-    if (onThemeChangeCallback) {
+-        onThemeChangeCallback();
+-    }
+-}
+-export function onThemeChange(callback) {
+-    onThemeChangeCallback = callback;
++    notifyThemeChange();
+ }
++let watchedThemeFile = undefined;
+ function startThemeWatcher() {
++    // kimchi-dev: keep the existing watcher when the watched file is unchanged.
++    // pi re-arms the theme watcher on every initTheme/setTheme call (interactive
++    // startup applies the theme 3-4 times: main.js initTheme, the
++    // InteractiveThemeController constructor, applyFromSettings, and later
++    // re-applies), and each re-arm pays a synchronous fs.watch close. On macOS
++    // with a busy fseventsd a single close has been measured at 11+ seconds,
++    // which dominated startup. Same file → reuse the live watcher.
++    if (themeWatcher && watchedThemeFile) {
++        const nextName = currentThemeName;
++        if (nextName && nextName !== "dark" && nextName !== "light") {
++            const nextFile = path.join(getCustomThemesDir(), `${nextName}.json`);
++            if (nextFile === watchedThemeFile && fs.existsSync(nextFile)) {
++                return;
++            }
++        }
++    }
+     stopThemeWatcher();
+     // Only watch if it's a custom theme (not built-in)
+     if (!currentThemeName || currentThemeName === "dark" || currentThemeName === "light") {
+@@ -646,16 +674,15 @@ function startThemeWatcher() {
+                 const reloadedTheme = loadThemeFromPath(themeFile);
+                 registeredThemes.set(watchedThemeName, reloadedTheme);
+                 setGlobalTheme(reloadedTheme);
+-                // Notify callback (to invalidate UI)
+-                if (onThemeChangeCallback) {
+-                    onThemeChangeCallback();
+-                }
++                // Notify listeners (to invalidate UI)
++                notifyThemeChange();
+             }
+             catch (_error) {
+                 // Ignore errors (file might be in invalid state while being edited)
+             }
+         }, 100);
+     };
++    watchedThemeFile = themeFile;
+     themeWatcher =
+         watchWithErrorHandler(customThemesDir, (_eventType, filename) => {
+             if (currentThemeName !== watchedThemeName) {
+@@ -679,6 +706,7 @@ export function stopThemeWatcher() {
+         clearTimeout(themeReloadTimer);
+         themeReloadTimer = undefined;
+     }
++    watchedThemeFile = undefined;
+     closeWatcher(themeWatcher);
+     themeWatcher = undefined;
+ }
+diff --git a/dist/utils/fs-watch.js b/dist/utils/fs-watch.js
+index 730ecc2f5afcd106f9224327b5cbc5d12a142af3..ff35bc0b1a22a8e3cbbfbb167bf660f83b35af5a 100644
+--- a/dist/utils/fs-watch.js
++++ b/dist/utils/fs-watch.js
+@@ -4,16 +4,33 @@ export function closeWatcher(watcher) {
+     if (!watcher) {
+         return;
+     }
+-    try {
+-        watcher.close();
+-    }
+-    catch {
+-        // Ignore watcher close errors
+-    }
++    // kimchi-dev: FSWatcher.close() is synchronous on macOS and can block for
++    // seconds on a busy fseventsd (measured 0.5-11s per close under load).
++    // pi closes every watcher during interactive shutdown, turning exit into
++    // a multi-second stall. Defer the close to an unref'd timer instead: a
++    // process that is already draining exits without ever paying the close
++    // cost (the OS reclaims the fd when the process dies), while a live
++    // session still closes the watcher on the next tick. Callers null their
++    // reference immediately, so the deferred close never observes reuse, and
++    // the event guards at the watch sites filter the one stale event that can
++    // slip through in that window.
++    const t = setTimeout(() => {
++        try {
++            watcher.close();
++        }
++        catch {
++            // Watcher already destroyed.
++        }
++    }, 3000);
++    t.unref?.();
+ }
+ export function watchWithErrorHandler(path, listener, onError) {
+     try {
+-        const watcher = watch(path, listener);
++        // kimchi-dev: non-persistent + unref'd so a watcher never keeps the
++        // event loop (and therefore exit) alive on its own. Interactive
++        // sessions are held open by the TUI's stdio, not by watchers.
++        const watcher = watch(path, { persistent: false }, listener);
++        watcher.unref?.();
+         watcher.on("error", onError);
+         return watcher;
+     }
+@@ -22,4 +39,3 @@ export function watchWithErrorHandler(path, listener, onError) {
+         return null;
+     }
+ }
+\ No newline at end of file
+-//# sourceMappingURL=fs-watch.js.map
