@@ -14,6 +14,7 @@ import { lockSync } from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { savedWorkSummary } from "../__mocks__/work-summary.js"
 import {
 	appendWorkRecord,
 	createWorkAttributionExtension,
@@ -53,7 +54,7 @@ function path(workId: string) {
 	return join(dir, "work", workId, "work.json")
 }
 function summary(workId: string) {
-	return JSON.parse(fs.readFileSync(path(workId), "utf8"))
+	return savedWorkSummary(dir, workId)
 }
 
 describe("readable work summaries", () => {
@@ -397,10 +398,7 @@ describe("readable work summaries", () => {
 		for (const snapshotPath of ["/work/plans/v1.md", "/work/plans/v2.md", "/work/plans/v2.md"])
 			appendWorkRecord(ctx, { type: "plan", path: "/project/.kimchi/plans/feature.md", snapshotPath })
 		await flushWorkSummaries()
-		expect(summary(workId).plans.map((plan: { snapshotPath: string }) => plan.snapshotPath)).toEqual([
-			"/work/plans/v1.md",
-			"/work/plans/v2.md",
-		])
+		expect(summary(workId).plans.map((plan) => plan.snapshotPath)).toEqual(["/work/plans/v1.md", "/work/plans/v2.md"])
 	})
 	it("finishes the turn while summary publication is pending, but drains it on shutdown", async () => {
 		const originalRename = asyncFs.rename
@@ -480,7 +478,6 @@ describe("readable work summaries", () => {
 		expect(value.requests[0]).not.toHaveProperty("version")
 		expect(value.requests[0]).not.toHaveProperty("type")
 		expect(summary(next).requests).toHaveLength(1)
-		expect(fs.readFileSync(path(workId), "utf8")).toContain('\n  "workId":')
 	})
 	it("retains request-to-file links and different originating sessions for the same commit", async () => {
 		const workId = getWorkId(context())
@@ -509,7 +506,7 @@ describe("readable work summaries", () => {
 		await flushWorkSummaries()
 		expect(
 			summary(workId)
-				.commits.map((entry: { sessionId: string }) => entry.sessionId)
+				.commits.map((entry) => entry.sessionId)
 				.sort(),
 		).toEqual(["child", "parent"])
 		expect(summary(workId).fileTransitions).toEqual([
@@ -552,8 +549,8 @@ describe("readable work summaries", () => {
 		const ctx = context()
 		const request = recordProviderRequest(ctx)
 		await flushWorkSummaries()
-		const existing = summary(request.workId)
-		existing.fileTransitions = undefined
+		// A version 1 summary written before file transitions were recorded.
+		const { fileTransitions: _, ...existing } = summary(request.workId)
 		fs.writeFileSync(path(request.workId), JSON.stringify(existing))
 		const journal = join(dir, "work-attribution", "transitions", "old.jsonl")
 		fs.mkdirSync(dirname(journal), { recursive: true })
@@ -605,8 +602,7 @@ describe("readable work summaries", () => {
 			complete: false,
 		})
 		await flushWorkSummaries()
-		const old = summary(workId)
-		old.fileObservations = undefined
+		const { fileObservations: _, ...old } = summary(workId)
 		old.commits[0].fileMatches = []
 		fs.writeFileSync(path(workId), JSON.stringify(old))
 		const { size, mtimeMs } = fs.statSync(path(workId))
@@ -727,7 +723,7 @@ describe("readable work summaries", () => {
 			`${JSON.stringify({ type: "request", requestId: "unpublished", version: 1, sessionId: "parent", workId, cwd: "/project", recordedAt: new Date().toISOString() })}\n`,
 		)
 		expect((await launch()).ledgerReads).toBe(1)
-		expect(summary(workId).requests.map((row: { requestId: string }) => row.requestId)).toContain("unpublished")
+		expect(summary(workId).requests.map((row) => row.requestId)).toContain("unpublished")
 		// Recovered ledgers may be unchanged even when their derived output disappears or is damaged.
 		fs.utimesSync(ledger, past, past)
 		for (const damaged of [undefined, "{"]) {
@@ -793,10 +789,7 @@ describe("readable work summaries", () => {
 		appendWorkRecord(ctx, { type: "request", requestId: "queued" }, workId)
 		release()
 		await flushWorkSummaries()
-		expect(summary(workId).requests.map((row: { requestId: string }) => row.requestId)).toEqual([
-			"queued",
-			"during-release",
-		])
+		expect(summary(workId).requests.map((row) => row.requestId)).toEqual(["queued", "during-release"])
 	})
 	it("does one recovery scan per agent directory despite child session fanout", async () => {
 		const workId = getWorkId(context())
@@ -993,6 +986,18 @@ console.log("ready"); await flushWorkSummaries();`,
 			expect(errors).toEqual([])
 			expect(summary(workId).requests).toHaveLength(24)
 			expect(summary(workId).sessions.sort()).toEqual(["session-0", "session-1", "session-2"])
+			// The version 1 file migrated once; every append landed on a committed line boundary.
+			const head = JSON.parse(fs.readFileSync(path(workId), "utf8"))
+			const log = fs.readFileSync(join(directory, "rows", `requests.${head.logs.requests.generation}.jsonl`))
+			expect(head).toMatchObject({
+				version: 2,
+				logs: { requests: { rows: 24, bytes: log.length }, sessions: { rows: 3 } },
+			})
+			expect(log.at(-1)).toBe(10)
+			expect(fs.readdirSync(join(directory, "rows")).sort()).toEqual([
+				`requests.${head.logs.requests.generation}.jsonl`,
+				`sessions.${head.logs.sessions.generation}.jsonl`,
+			])
 		} finally {
 			if (reading) clearInterval(reading)
 			for (const { child } of children) child.kill()

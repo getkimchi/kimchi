@@ -120,10 +120,11 @@ it("shows an open MR's pending cost, then its confirmed and inferred total once 
 	})
 	mkdirSync(join(cwd, ".kimchi", "plans"), { recursive: true })
 	writeFileSync(join(cwd, ".kimchi", "plans", "costs.md"), `<!-- kimchi-work-id: ${workId} -->\n# Add a greeting\n`)
-	const costsPath = join(agentDir, "work", workId, "costs.json")
-	const costs = () => {
+	// `/work` reads these totals; the full `costs.json` is refreshed at most every five minutes.
+	const totalsPath = join(agentDir, "work", workId, "cost-totals.json")
+	const totals = () => {
 		try {
-			return JSON.parse(readFileSync(costsPath, "utf8"))
+			return JSON.parse(readFileSync(totalsPath, "utf8"))
 		} catch {
 			return undefined
 		}
@@ -131,7 +132,7 @@ it("shows an open MR's pending cost, then its confirmed and inferred total once 
 
 	const sessionId = await newSession(fixture, cwd)
 	expect((await prompt(fixture, sessionId, "/work .kimchi/plans/costs.md")).stopReason).toBe("end_turn")
-	await waitFor(costs, (value) => value?.requests?.length === 1, 45_000)
+	await waitFor(totals, (value) => value?.requests?.total === 1, 45_000)
 	const pending = await workDetails(fixture, sessionId)
 	expect(pending).toContain("Cost so far: unknown; $0.000000000 USD priced (open)")
 	expect(pending).toContain("Prices: 0/1 requests priced, $0.000000000 USD known so far.")
@@ -139,7 +140,7 @@ it("shows an open MR's pending cost, then its confirmed and inferred total once 
 	billed = true
 	setGitLab("merged")
 	await waitFor(
-		costs,
+		totals,
 		(value) => value?.pullRequests?.some((row: { totalCostUsd?: unknown }) => row.totalCostUsd === "0.000166000"),
 		75_000,
 	)

@@ -1,20 +1,35 @@
 import { randomUUID } from "node:crypto"
 import * as fs from "node:fs"
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as json from "../../config/json.js"
 import * as config from "../../config.js"
+import { isWorkId } from "../../shared/work-id.js"
 import { createContext } from "../__mocks__/context.js"
+import { savedWorkSummary } from "../__mocks__/work-summary.js"
 import { appendWorkRecord, getWorkId } from "../work-attribution.js"
 import { captureBillingSource, requestTagSelector } from "./billing-source.js"
-import { workCostDetails } from "./cost-details.js"
+import { readWorkBrowser } from "./browser.js"
+import { costDetailLines, workCostDetails, workCostTotals } from "./cost-details.js"
 import { readWorkCostReport, reconcileWorkCosts } from "./cost-sync.js"
 import * as costs from "./costs.js"
-import { calculatePullRequestCosts } from "./costs.js"
+import { calculatePullRequestCosts, decimalNanos, usd } from "./costs.js"
+import { PRICED_TAG_LIMIT } from "./request-tags.js"
+import { isWorkAccount, sameWorkAccount } from "./scope.js"
 import * as summary from "./summary.js"
-import { flushWorkSummaries, readWorkRecords, recoverWorkSummaries, type WorkRecord } from "./summary.js"
+import { flushWorkSummaries, object, readWorkRecords, recoverWorkSummaries, type WorkRecord } from "./summary.js"
 
 vi.mock("../../config.js", async (original) => ({ ...(await original<typeof config>()) }))
 vi.mock("../../config/json.js", async (original) => ({ ...(await original<typeof json>()) }))
@@ -39,6 +54,8 @@ beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "kimchi-cost-sync-"))
 	currentKey = "test-only-original-key"
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
+	// These cases read the full report after every pass; one case below keeps the five-minute refresh.
+	vi.stubEnv("KIMCHI_E2E_COST_REPORT_REFRESH_MS", "0")
 	const originalConfig = config.loadConfig()
 	const endpoints = config.resolveEndpoints()
 	vi.spyOn(config, "loadConfig").mockImplementation(() => ({ ...originalConfig, apiKey: currentKey }))
@@ -58,8 +75,106 @@ beforeEach(() => {
 	)
 	vi.stubGlobal("fetch", fetchMock)
 })
+/** The `/work` cost lines the previous release printed from a whole `costs.json`. */
+function previousCostDetailLines(value: unknown, path: string): string[] {
+	if (!object(value) || !Array.isArray(value.pullRequests)) return ["Cost: unknown; waiting for billing"]
+	const lines: string[] = []
+	const requests = Array.isArray(value.requests) ? value.requests.filter(object) : []
+	for (const row of value.pullRequests) {
+		if (!object(row)) continue
+		if (value.pullRequests.some((other) => object(other) && other !== row && other.key === row.key))
+			lines.push(
+				isWorkAccount(row.account)
+					? `Account: ${row.account.organizationId} / ${row.account.userId} (${row.account.apiUrl})`
+					: "Account: unknown",
+			)
+		const label = object(row.pullRequest) ? row.pullRequest.url : row.key
+		// An unmerged PR's spend stays outside confirmed and inferred totals until it merges.
+		const state = object(row.pullRequest) && row.pullRequest.state !== "merged" ? row.pullRequest.state : undefined
+		if (state) {
+			const counted = requests.filter(
+				(request) =>
+					request.allocation === "unmerged" &&
+					Array.isArray(request.pullRequestIds) &&
+					request.pullRequestIds.includes(row.key) &&
+					(isWorkAccount(request.account) && isWorkAccount(row.account)
+						? sameWorkAccount(request.account, row.account)
+						: request.account === row.account),
+			)
+			const spent = usd(counted.reduce((sum, request) => sum + (decimalNanos(request.knownCostUsd) ?? 0n), 0n))
+			// Unpriced, shared or unresolved requests may still belong to this PR.
+			const complete =
+				isWorkAccount(row.account) &&
+				counted.every((request) => request.priceStatus === "priced") &&
+				[row.sharedRequestIds, row.inferredRequestIds, row.unknownRequestIds].every(
+					(ids) => !Array.isArray(ids) || !ids.length,
+				)
+			lines.push(
+				complete
+					? `Cost so far: $${spent} USD (${state}) — ${label}`
+					: `Cost so far: unknown; $${spent} USD priced (${state}) — ${label}`,
+			)
+		} else if (typeof row.totalCostUsd === "string") lines.push(`Cost: $${row.totalCostUsd} USD — ${label}`)
+		else lines.push(`Cost: unknown; $${row.knownCostUsd} USD priced so far — ${label}`)
+		if (!state && object(row.explicit) && object(row.inferred))
+			lines.push(
+				`Confirmed: $${row.explicit.knownCostUsd} USD; inferred: $${row.inferred.knownCostUsd} USD${row.totalCostUsd === null ? " known so far" : ""}.`,
+			)
+	}
+	if (Array.isArray(value.requests)) {
+		// PR lines above include connected works; this one is the work's own spend, even without a PR.
+		const { workId } = value
+		const own =
+			typeof workId === "string"
+				? requests.filter((row) =>
+						[row.workIds, row.linkedWorkIds].some((ids) => Array.isArray(ids) && ids.includes(workId)),
+					)
+				: requests
+		const priced = own.filter((row) => row.priceStatus === "priced").length
+		const nanos = own.reduce((sum, row) => sum + (decimalNanos(row.knownCostUsd) ?? 0n), 0n)
+		const unresolved = own.filter((row) => row.allocation === "unknown").length
+		const inferred = own.filter((row) => row.allocation === "inferred").length
+		const shared = own.filter((row) => row.allocation === "shared").length
+		lines.push(
+			`Prices: ${priced}/${own.length} requests priced, $${usd(nanos)} USD${priced < own.length ? " known so far" : ""}. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
+		)
+		const untagged = new Map<string, number>()
+		for (const row of own)
+			if (typeof row.billingTagSkipped === "string")
+				untagged.set(row.billingTagSkipped, (untagged.get(row.billingTagSkipped) ?? 0) + 1)
+		if (untagged.size) {
+			const count = [...untagged.values()].reduce((sum, value) => sum + value, 0)
+			const reasons = [...untagged]
+				.sort(([left], [right]) => left.localeCompare(right))
+				.map(([reason, total]) => `${untagged.size > 1 ? `${total} ` : ""}${reason.replaceAll("-", " ")}`)
+			lines.push(
+				`${count} request${count === 1 ? "" : "s"} untagged: ${reasons.join(", ")}${untagged.has("tag-limit") ? ` (Kimchi adds model and phase tags; keep at most ${PRICED_TAG_LIMIT} in /tags)` : ""}.`,
+			)
+		}
+		const failed = own.flatMap((row) =>
+			object(row.billingLookup) && row.billingLookup.status === "unavailable" ? [row.billingLookup] : [],
+		)
+		if (failed.length) {
+			const latest = failed.reduce((left, right) =>
+				String(right.checkedAt ?? "") > String(left.checkedAt ?? "") ? right : left,
+			)
+			lines.push(
+				`Last billing refresh failed for ${failed.length} request${failed.length === 1 ? "" : "s"}${typeof latest.reason === "string" ? `: ${latest.reason}` : ""}.`,
+			)
+		}
+	}
+	return [...lines, `Cost details: ${path}`]
+}
+
 afterEach(async () => {
 	await flushWorkSummaries()
+	// Every report a test saved prints the same `/work` lines from its bounded totals as from the whole file.
+	for (const workId of existsSync(join(dir, "work")) ? readdirSync(join(dir, "work")).filter(isWorkId) : []) {
+		const path = join(dir, "work", workId, "costs.json")
+		if (!existsSync(path)) continue
+		const saved = JSON.parse(readFileSync(path, "utf8"))
+		expect(costDetailLines(workCostTotals(saved), path)).toEqual(previousCostDetailLines(saved, path))
+	}
 	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
 	vi.unstubAllGlobals()
@@ -198,6 +313,45 @@ describe("automatic exact work cost lookup", () => {
 		)
 	})
 
+	it("prints each connected work's own spend while their PR total counts every contributor", async () => {
+		const first = tagged("first")
+		const second = tagged("second")
+		fetchMock.mockImplementation(async (input) => {
+			const url = new URL(String(input))
+			if (url.pathname.endsWith("api-keys:verify")) return Response.json({ organizationId: ORG, userId: PROMPT })
+			const isFirst = url.searchParams.get("tags") === `kimchi-request:${first.requestId}`
+			return Response.json({ items: [{ id: isFirst ? ROW : ORG, totalPrice: isFirst ? "1" : "2" }] })
+		})
+		await sync()
+		for (const [{ workId }, own] of [
+			[first, "1.000000000"],
+			[second, "2.000000000"],
+		] as const) {
+			const lines = workCostDetails(dir, workId)
+			expect(lines).toContain("Cost: $3.000000000 USD — https://github.com/example/repo/pull/1")
+			expect(lines.find((line) => line.startsWith("Prices:"))).toMatch(
+				new RegExp(`^Prices: 1/1 requests priced, \\$${own.replace(".", "\\.")} USD\\.`),
+			)
+			// The bounded totals name the same connected group in each member's folder.
+			expect(JSON.parse(readFileSync(join(dir, "work", workId, "cost-totals.json"), "utf8")).group).toEqual(
+				[first.workId, second.workId].sort(),
+			)
+		}
+		const totals = join(dir, "work", first.workId, "cost-totals.json")
+		const written = statSync(totals).mtimeMs
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10 * 60_000)
+		await sync()
+		expect(statSync(totals).mtimeMs).toBe(written)
+		await flushWorkSummaries()
+		// The browser shows the same own amounts and counts the connected works' requests once.
+		const { rows, spend } = await readWorkBrowser(dir, { workId: first.workId, lines: [] })
+		expect(Object.fromEntries(rows.map((row) => [row.workId, row.value]))).toEqual({
+			[first.workId]: "$1.00 · PR #1 merged",
+			[second.workId]: "$2.00 · PR #1 merged",
+		})
+		expect(spend).toBe("$3.00")
+	})
+
 	it("saves only the selected work's unrelated requests in its aggregate buckets", async () => {
 		const works = ["first", "second"].map((sessionId) => {
 			const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
@@ -242,7 +396,7 @@ describe("automatic exact work cost lookup", () => {
 			knownCostUsd: "0.000000000",
 			totalCostUsd: null,
 		})
-		writeFileSync(join(dir, "work", workId, "costs.json"), JSON.stringify(saved))
+		writeFileSync(join(dir, "work", workId, "cost-totals.json"), JSON.stringify(workCostTotals(saved)))
 		const lines = workCostDetails(dir, workId)
 		expect(lines).toContain(`Account: ${ORG} / ${PROMPT} (${API})`)
 		expect(lines).toContain("Account: unknown")
@@ -289,7 +443,7 @@ describe("automatic exact work cost lookup", () => {
 		const save = (observations: Parameters<typeof calculatePullRequestCosts>[1]) => {
 			const costs = calculatePullRequestCosts(records, observations)
 			mkdirSync(join(dir, "work", workId), { recursive: true })
-			writeFileSync(join(dir, "work", workId, "costs.json"), JSON.stringify({ version: 1, workId, ...costs }))
+			writeFileSync(join(dir, "work", workId, "cost-totals.json"), JSON.stringify(workCostTotals({ workId, ...costs })))
 		}
 		save([])
 		expect(workCostDetails(dir, workId)).toContain(
@@ -598,12 +752,11 @@ describe("automatic exact work cost lookup", () => {
 		const expected = { id: ROW, costUsd: "0.123456789", ...metadata }
 		expect(readWorkRecords(dir).find((row) => row.type === "request_cost")?.billingRows).toEqual([expected])
 		await flushWorkSummaries()
-		const path = join(dir, "work", workId, "work.json")
-		expect(JSON.parse(readFileSync(path, "utf8")).requests[0].billingRows).toEqual([expected])
-		writeFileSync(path, "damaged")
+		expect(savedWorkSummary(dir, workId).requests[0].billingRows).toEqual([expected])
+		writeFileSync(join(dir, "work", workId, "work.json"), "damaged")
 		recoverWorkSummaries()
 		await flushWorkSummaries()
-		expect(JSON.parse(readFileSync(path, "utf8")).requests[0].billingRows).toEqual([expected])
+		expect(savedWorkSummary(dir, workId).requests[0].billingRows).toEqual([expected])
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
 		expect(JSON.stringify(readWorkRecords(dir))).not.toContain("DO_NOT_SAVE")
 	})
@@ -686,7 +839,7 @@ describe("automatic exact work cost lookup", () => {
 		fetchMock.mockResolvedValueOnce(Response.json({ items: [enriched, enriched], totalCount: 1 }))
 		await sync()
 		await flushWorkSummaries()
-		const rows = JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8")).requests[0].billingRows
+		const rows = savedWorkSummary(dir, workId).requests[0].billingRows
 		expect(rows).toEqual([{ id: ROW, costUsd: "0.123456789", promptTokens: "100", cacheReadPrice: "0" }])
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
 		vi.mocked(Date.now).mockReturnValue(now + 2 * RECHECK_MS)
@@ -694,9 +847,7 @@ describe("automatic exact work cost lookup", () => {
 		fetchMock.mockResolvedValueOnce(Response.json({ items: [enriched], totalCount: 1 }))
 		await sync()
 		await flushWorkSummaries()
-		expect(JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8")).requests[0].billingRows).toEqual(
-			rows,
-		)
+		expect(savedWorkSummary(dir, workId).requests[0].billingRows).toEqual(rows)
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
 	})
 	it.each([
@@ -712,7 +863,7 @@ describe("automatic exact work cost lookup", () => {
 		else fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }))
 		await sync()
 		await flushWorkSummaries()
-		const request = JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8")).requests[0]
+		const request = savedWorkSummary(dir, workId).requests[0]
 		// A failed key check returns no billing page, and a changed key cannot withdraw a verified price.
 		expect(request.billingLookup).toMatchObject({
 			organizationId: ORG,
@@ -1234,12 +1385,11 @@ describe("automatic exact work cost lookup", () => {
 		const { workId } = tagged()
 		await sync()
 		await flushWorkSummaries()
-		const path = join(dir, "work", workId, "work.json")
-		const before = JSON.parse(readFileSync(path, "utf8"))
-		writeFileSync(path, "broken")
+		const before = savedWorkSummary(dir, workId)
+		writeFileSync(join(dir, "work", workId, "work.json"), "broken")
 		recoverWorkSummaries()
 		await flushWorkSummaries()
-		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(before)
+		expect(savedWorkSummary(dir, workId)).toEqual(before)
 	})
 	it("bounds requests per pass and visits the remaining requests on the next pass", async () => {
 		for (let i = 0; i < 35; i++) tagged(`session-${i}`)
@@ -1454,7 +1604,7 @@ describe("automatic exact work cost lookup", () => {
 		expect(fetchMock.mock.calls[1][1]?.body).toBeUndefined()
 		expect(report(workId).pullRequests[0]).toMatchObject({ knownCostUsd: "0.123456789", totalCostUsd: "0.123456789" })
 		await flushWorkSummaries()
-		const summary = JSON.parse(readFileSync(join(dir, "work", workId, "work.json"), "utf8"))
+		const summary = savedWorkSummary(dir, workId)
 		expect(summary.requests).toHaveLength(1)
 		expect(summary.requests[0].billingRows).toEqual([{ id: ROW, costUsd: "0.123456789" }])
 		expect(JSON.stringify(readWorkRecords(dir))).not.toContain(currentKey)
@@ -1516,6 +1666,37 @@ describe("automatic exact work cost lookup", () => {
 		fetchMock.mockResolvedValueOnce(Response.json({ items: [item] }))
 		await sync()
 		expect(report(workId).pullRequests[0].totalCostUsd).toBeNull()
+	})
+	it("refreshes the full report at most every five minutes while /work shows each new price", async () => {
+		vi.stubEnv("KIMCHI_E2E_COST_REPORT_REFRESH_MS", undefined)
+		const { workId } = tagged()
+		const path = join(dir, "work", workId, "costs.json")
+		let price: string | undefined
+		fetchMock.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: ORG, userId: PROMPT })
+				: Response.json({ items: price ? [{ id: ROW, totalPrice: price }] : [] }),
+		)
+		await sync()
+		// A process's first pass writes every report.
+		const pending = readFileSync(path, "utf8")
+		expect(JSON.parse(pending).pullRequests[0].totalCostUsd).toBeNull()
+		price = "0.5"
+		const now = Date.now()
+		const clock = vi.spyOn(Date, "now")
+		for (const minutes of [1, 4]) {
+			clock.mockReturnValue(now + minutes * 60_000)
+			await sync()
+			expect(readFileSync(path, "utf8")).toBe(pending)
+			expect(workCostDetails(dir, workId)).toContain("Cost: $0.500000000 USD — https://github.com/example/repo/pull/1")
+		}
+		clock.mockReturnValue(now + 5 * 60_000)
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.500000000")
+		// A deleted report is rebuilt on the next pass.
+		unlinkSync(path)
+		await sync()
+		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.500000000")
 	})
 	it("keeps missing billing pending and accepts a late explicit zero", async () => {
 		const { workId } = tagged()
@@ -1946,6 +2127,13 @@ describe("idle cost passes", () => {
 		expect(report(workId)).toEqual(saved)
 		expect(calculate).not.toHaveBeenCalled()
 		expect(reports(write.mock.calls)).toHaveLength(1)
+		// So are the deleted totals that /work reads.
+		const totals = join(dir, "work", workId, "cost-totals.json")
+		const shown = workCostDetails(dir, workId)
+		unlinkSync(totals)
+		await sync()
+		expect(workCostDetails(dir, workId)).toEqual(shown)
+		expect(calculate).not.toHaveBeenCalled()
 		// Any append changes the journals' fingerprint.
 		appendWorkRecord(ctx, { type: "request_response", requestId, billingSource: source, response: { status: 200 } })
 		await sync()

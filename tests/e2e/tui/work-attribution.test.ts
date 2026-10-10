@@ -8,6 +8,7 @@ import { check } from "proper-lockfile"
 import { fullText, viewText, waitForText } from "./support/assertions.js"
 import { type FakeResponseRequest, isWorkMatchingRequest } from "./support/fake-openai-server.js"
 import { launchKimchi, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { readWorkSummary } from "./support/work-summary.js"
 
 test.use(TUI_TEST_CONFIG)
 const models = [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }]
@@ -234,16 +235,13 @@ async function waitForSummary(
 	workId: string,
 	minimum: Partial<Record<"sessions" | "requests" | "plans" | "commits" | "workLinks", number>>,
 ) {
-	const path = join(agentDir, "work", workId, "work.json")
 	const deadline = Date.now() + 15_000
 	while (Date.now() < deadline) {
-		try {
-			const summary = JSON.parse(readFileSync(path, "utf8"))
-			if (Object.entries(minimum).every(([key, count]) => summary[key]?.length >= count)) return summary
-		} catch {}
+		const summary = readWorkSummary(agentDir, workId)
+		if (summary && Object.entries(minimum).every(([key, count]) => summary[key]?.length >= count)) return summary
 		await sleep(50)
 	}
-	throw new Error(`Work summary did not become ready: ${path}`)
+	throw new Error(`Work summary did not become ready: ${join(agentDir, "work", workId, "work.json")}`)
 }
 
 test("the next message recovers account tracking after its saved scope is lost", async ({ terminal }) => {
@@ -286,6 +284,88 @@ test("the next message recovers account tracking after its saved scope is lost",
 			terminal.keyEscape()
 			await waitForText(terminal, PROMPT_READY, { full: false })
 			trace.step("the next message uses newly scoped work without assigning today's identity to old history")
+		},
+	)
+})
+
+test("/work keeps listing an oversized summary from an older build with its PR and spend so far", async ({
+	terminal,
+}) => {
+	const workId = randomUUID()
+	const url = "https://github.com/example/kimchi/pull/7"
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "work-browser-oversized-summary",
+			account,
+			gitInit: true,
+			models,
+			responses: [],
+			seedHome(home) {
+				// An older build kept every row in work.json; this one is larger than the 8 MiB /work reads.
+				const folder = join(home, ".config/kimchi/harness/work", workId)
+				mkdirSync(folder, { recursive: true })
+				const requests = Array.from({ length: 3600 }, (_, index) => ({
+					requestId: String(index),
+					sessionId: "older",
+					billingRows: [{ id: String(index), costUsd: "0.001", note: "x".repeat(2500) }],
+				}))
+				const pullRequest = { provider: "github", host: "github.com", number: 7, url, state: "open" }
+				const commit = {
+					sha: "a".repeat(40),
+					repository: "/src/kimchi/.git",
+					worktree: "/src/kimchi",
+					sessionId: "older",
+				}
+				writeFileSync(
+					join(folder, "work.json"),
+					JSON.stringify({
+						version: 1,
+						workId,
+						sessions: ["older"],
+						requests,
+						plans: [],
+						commits: [{ ...commit, pullRequests: [pullRequest] }],
+					}),
+				)
+				// The cost pass's bounded totals still name the work's PR and its spend so far.
+				const spend = { total: 3600, priced: 3600, knownCostUsd: "3.600000000" }
+				writeFileSync(
+					join(folder, "cost-totals.json"),
+					JSON.stringify({
+						version: 1,
+						workId,
+						group: [workId],
+						groupRequests: spend,
+						requests: { ...spend, recorded: 3600, unresolved: 0, inferred: 0, shared: 0 },
+						pullRequests: [
+							{
+								key: '["github","github.com","7"]',
+								account: null,
+								own: true,
+								pullRequest: { provider: "github", number: 7, state: "open", url },
+								totalCostUsd: null,
+								knownCostUsd: "0.000000000",
+								soFar: { knownCostUsd: "3.600000000", complete: false },
+							},
+						],
+						report: "costs.json",
+					}),
+				)
+			},
+		},
+		async (_fixture, trace) => {
+			terminal.submit("/work")
+			await waitForText(terminal, "summary too large", { full: false })
+			const listed = viewText(terminal)
+				.split("\n")
+				.find((line) => line.includes(workId.slice(0, 8)))
+			expect(listed).toContain("summary too large")
+			// Requests newer than the last cost pass may be missing, so the amount stays partial.
+			expect(listed).toContain("$3.60 known so far · PR #7 open")
+			trace.step("the list keeps an oversized older summary's PR and spend so far until its next update converts it")
+			terminal.keyEscape()
+			await waitForText(terminal, PROMPT_READY, { full: false })
 		},
 	)
 })

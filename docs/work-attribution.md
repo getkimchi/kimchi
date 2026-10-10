@@ -2,19 +2,21 @@
 
 Kimchi keeps a local record of the model requests, file edits, plans and commits that belong to the same work. A `workId` connects them, even when planning and implementation happen in different sessions or worktrees of the same repository.
 
-The result is `~/.config/kimchi/harness/work/<workId>/work.json` in the user's home directory. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits, then looks up their request costs in the background. `/work` shows one total split into confirmed and inferred spend, or an open PR's spend so far, plus the work's priced spend; `costs.json` keeps the calculation. Incomplete billing stays unknown. These files are not uploaded.
+The result is a summary in `~/.config/kimchi/harness/work/<workId>/` in the user's home directory: `work.json` and its row logs. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits, then looks up their request costs in the background. `/work` shows one total split into confirmed and inferred spend, or an open PR's spend so far, plus the work's own priced spend; `costs.json` keeps the calculation. Incomplete billing stays unknown. These files are not uploaded.
 
 ## Where the files live
 
-**`work.json` is stored per user, outside the project.** All projects use the same `~/.config/kimchi/harness/` directory, with a separate folder for each work ID. `~` means the home directory of the user running Kimchi.
+**The summary is stored per user, outside the project.** All projects use the same `~/.config/kimchi/harness/` directory, with a separate folder for each work ID. `~` means the home directory of the user running Kimchi.
 
 ```text
 # Project: editable plan
 ~/src/example/.kimchi/plans/add-search.md
 
-# User: summary and retained plan versions
+# User: summary, cost reports and retained plan versions
 ~/.config/kimchi/harness/work/<workId>/work.json
+~/.config/kimchi/harness/work/<workId>/rows/<collection>.<generation>.jsonl
 ~/.config/kimchi/harness/work/<workId>/scope.json
+~/.config/kimchi/harness/work/<workId>/cost-totals.json
 ~/.config/kimchi/harness/work/<workId>/costs.json
 ~/.config/kimchi/harness/work/<workId>/plans/add-search-<content-hash>.md
 
@@ -42,7 +44,7 @@ Deleting a worktree removes its editable plan but leaves the user-level summary 
 flowchart LR
     A["Session A: plan"] -->|save native plan or write Markdown| P["Saved planning evidence"]
     P -->|name its path or paste the saved native plan| B["Fresh session B: implement"]
-    A -->|requests| W["Local work.json"]
+    A -->|requests| W["Local work summary"]
     B -->|requests and commits| W
 ```
 
@@ -53,11 +55,11 @@ flowchart LR
 
 ## Browse works with `/work`
 
-In the terminal, `/work` opens a list of works. The current work comes first, marked `●`, followed by up to 29 works with activity in the last 35 days, newest first. Each row names the work by its saved plan's title, or else by repository and branch, with a short work ID. It also shows the work's priced spend and PR state, for example `$0.0623 · PR #731 open` or `$0.0123 known so far · 2 PRs`.
+In the terminal, `/work` opens a list of works. The current work comes first, marked `●`, followed by up to 29 works with activity in the last 35 days, newest first. Each row names the work by its saved plan's title, or else by repository and branch, with a short work ID. It also shows the work's own priced spend and PR state, for example `$0.0623 · PR #731 open` or `$0.0123 known so far · 2 PRs`. Own spend covers the work's requests and requests a correction linked into it, not other works on the same PR.
 
-Amounts in the list are rounded; the details keep exact values. `known so far` means some requests still have no price, including requests made since the last cost check. A work whose requests have no price yet shows `cost unknown`, never `$0`. The header adds up the listed works; a request saved by several connected works counts once.
+Amounts in the list are rounded; the details keep exact values. `known so far` means some requests still have no price, including requests made since the last cost check. A work whose requests have no price yet shows `cost unknown`, never `$0`. The header adds up the cost reports of the listed works. Connected works share one report, so its requests count once, including those of connected works that are not listed.
 
-The selected row shows what `/work` prints, plus its repository, branch, last activity and request count. Only the current work has live PR lookup lines; other works show their saved PR links. Enter prints the selected work's details into the conversation, and Esc closes the list. The list reads only local files, so it never waits for the network.
+The selected row shows what `/work` prints, plus its repository, branch, last activity and request count. Only the current work has live PR lookup lines; other works show their saved PR links. Enter prints the selected work's details into the conversation, and Esc closes the list. The list reads only each work's small `work.json` and `cost-totals.json`, so it opens quickly for long works and never waits for the network. A summary saved by an older build that is larger than 8 MiB shows `summary too large` with its saved spend and PRs until the work's next update converts it.
 
 ACP, RPC and print mode keep printing the current work's details as text. So do `/work new`, `/work <plan path>`, `/work matching on|off` and `/work link|unlink`.
 
@@ -117,7 +119,7 @@ Model matching is off by default. `/work matching on` allows saved task text to 
 
 Kimchi captures the model selected when you submit a message, then uses that model for separate matching calls before the main reply. These calls use its normal authentication and provider connection. They have no tools and do not enter the chat history. No local model, extra model setting or `judge` role is required. With no saved task to compare, the first message needs no matching call.
 
-While matching is enabled, the first user message is kept in `work/<workId>/intent.json` after its account is verified. Later checks use that text and the latest retained native plan. Candidates must belong to the same Git repository, API endpoint, organization and authenticated user. Rotating a key for the same account keeps that identity. Missing user identity or legacy text without an account prevents automatic semantic continuation; old text is not assigned to whoever is logged in now. Enabled redaction applies before sending. Raw text and credentials are not copied into `work.json`.
+While matching is enabled, the first user message is kept in `work/<workId>/intent.json` after its account is verified. Later checks use that text and the latest retained native plan. Candidates must belong to the same Git repository, API endpoint, organization and authenticated user. Rotating a key for the same account keeps that identity. Missing user identity or legacy text without an account prevents automatic semantic continuation; old text is not assigned to whoever is logged in now. Enabled redaction applies before sending. Raw text and credentials are not copied into the work summary.
 
 The model checks the current task first. To find earlier work, it first reads the message alone, then compares each eligible saved task separately. Exactly one must match and every competitor must be clearly different. Each check is a separate paid request with its own ID, saved before dispatch. Matching requests stay with the work active before the decision; adopting another work never moves those earlier requests.
 
@@ -163,11 +165,11 @@ If planning and implementation already ended up in separate works, open the impl
 /work link <planning-work-id> <planning-segment-id>
 ```
 
-The planning work's `work.json` lists `requests[].segment.id`. The command selects requests already recorded for that input, including its retries and side calls. Other inputs in the same conversation stay separate. Both works and the selected requests must have matching saved account and repository scope. Older records without that evidence cannot be repaired this way.
+The planning work's request rows list `segment.id`. The command selects requests already recorded for that input, including its retries and side calls. Other inputs in the same conversation stay separate. Both works and the selected requests must have matching saved account and repository scope. Older records without that evidence cannot be repaired this way.
 
 If an uncertain input already belongs to the right work, use that current work ID as the source. This records your confirmation without changing its original request or work IDs. `/work unlink <link-id>` also revokes this confirmation.
 
-The command saves a `work_link` revision in the implementing work. It names the selected requests and their intended work; original request and work IDs stay unchanged. The target work's `work.json` keeps these revisions in `workLinks` for cost calculations. Model decisions do not retroactively rewrite earlier requests.
+The command saves a `work_link` revision in the implementing work. It names the selected requests and their intended work; original request and work IDs stay unchanged. The target work's summary keeps these revisions in its `workLinks` rows for cost calculations. Model decisions do not retroactively rewrite earlier requests.
 
 To withdraw it, run `/work unlink <link-id>` in the implementing work. A revoked or conflicting correction leaves the affected assignment unknown until corrected again. Linking those requests from another work replaces the earlier link with a newer revision, including a revoked automatic confirmation. Only the work with the newest revision can then revoke it.
 
@@ -178,7 +180,7 @@ flowchart LR
     R["Model request with requestId"] --> A["Assistant returns tool calls"]
     A --> T["Native write or edit"]
     T --> F["fileTransitions: requestId,<br/>toolCallId, repository and path"]
-    F --> W["Same work.json"]
+    F --> W["Same work summary"]
 ```
 
 One request can produce edits in several repositories. Each edit keeps the ID of the request that produced its tool call, even if another request runs before the file write finishes. The request's `cwd` remains the session's working directory; each edit records the repository and worktree it actually changed.
@@ -303,9 +305,31 @@ Kimchi tries credentials in this order: an environment token for the selected ho
 
 Before sending a covered model request, Kimchi saves and flushes its request ID, work ID, session ID, input segment and account/repository scope. Missing scope is saved as `null`. It then sends `X-Request-Id`. This also works with telemetry disabled.
 
-Records with the same work ID go into the same `work.json`. Requests are deduplicated by request ID; commit records keep the contributing sessions. `fileTransitions` keeps native edits, `fileObservations` keeps candidate Bash/MCP changes, `continuations` explains why an input continued the current or another saved work, and `workLinks` keeps correction revisions. IDs identify records; array positions have no meaning.
+Records with the same work ID go into the same summary. Requests are deduplicated by request ID; commit records keep the contributing sessions. `fileTransitions` keeps native edits, `fileObservations` keeps candidate Bash/MCP changes, `continuations` explains why an input continued the current or another saved work, and `workLinks` keeps correction revisions. IDs identify records; positions have no meaning.
 
-A request record describes an attempt. It does not prove a successful response or a charge. Covered HTTP replies add their status and safe response IDs. Billing lookups later add exact prices when available. `work.json` contains paths, request metadata, PR links and billing rows, with no prompts or file contents. Retained native plans contain the plan text and stay local. PR lookup sends repository and commit identifiers to the repository's GitHub or GitLab API.
+`work.json` is a small manifest written on one line. It holds what `/work` lists (latest activity, repository, branch, retained plan and every commit's PR links) and one entry per log. Each collection is an append-only log, `rows/<collection>.<generation>.jsonl`, with one JSON row per line. The work's sessions are a log too, `rows/sessions.<generation>.jsonl`, which gains a row when a session first contributes. A later line with the same key replaces an earlier one and keeps its position. Keys are the request, transition, observation and session IDs; a commit's key is its session, SHA, repository and worktree; a plan's is its session, path and retained copy; a continuation's is its session, source and evidence; and a work link's is the whole revision. Only the first `bytes` of each log, as `work.json` records them, are committed (formatted here):
+
+```json
+{
+  "version": 2,
+  "workId": "6f102360-39a9-4d6e-8ac7-984c97c0e313",
+  "logs": {
+    "requests": { "generation": 3, "bytes": 33441207, "rows": 15012 },
+    "commits": { "generation": 1, "bytes": 41877, "rows": 38 },
+    "sessions": { "generation": 1, "bytes": 106, "rows": 2 }
+  }
+}
+```
+
+To read one collection by hand, take its committed bytes and keep each key's last row:
+
+```sh
+cd ~/.config/kimchi/harness/work/<workId>
+g=$(jq .logs.requests.generation work.json); n=$(jq .logs.requests.bytes work.json)
+head -c "$n" "rows/requests.$g.jsonl" | jq -sc 'reduce .[] as $r ({}; .[$r.requestId] = $r) | [.[]]'
+```
+
+A request record describes an attempt. It does not prove a successful response or a charge. Covered HTTP replies add their status and safe response IDs. Billing lookups later add exact prices when available. The summary contains paths, request metadata, PR links and billing rows, with no prompts or file contents. Retained native plans contain the plan text and stay local. PR lookup sends repository and commit identifiers to the repository's GitHub or GitLab API.
 
 <details>
 <summary>Local files and recovery</summary>
@@ -314,8 +338,10 @@ All paths below are inside the agent directory.
 
 | File | What it is for |
 | --- | --- |
-| `work/<workId>/work.json` | Readable summary of sessions, request attempts, plans, file edits, continuation evidence, commits and PR links. |
-| `work/<workId>/costs.json` | Derived PR totals and each request's allocation, price and billing lookup status. Rebuilt from source records when missing, and rewritten only after a journal or refresh failure changes. |
+| `work/<workId>/work.json` | Manifest: what `/work` lists and the committed length of each row log. Replacing it commits new rows. |
+| `work/<workId>/rows/<collection>.<generation>.jsonl` | Readable summary rows: request attempts, plans, file edits, continuation evidence, commits, PR links and, in `sessions`, the contributing sessions. A later line with the same key replaces an earlier one. |
+| `work/<workId>/cost-totals.json` | What `/work` prints: PR totals, and the work's own requests and priced spend. Rewritten when it changes. |
+| `work/<workId>/costs.json` | Derived PR totals and each request's allocation, price and billing lookup status, for all connected works. Refreshed at most every five minutes after a journal or refresh failure changes, and rebuilt from source records when missing. |
 | `work-attribution/billing-polls.json` | Latest polling times and the last refresh that failed before any billing page, only for requests whose billing window is still open. Replaced after checks, so unchanged results and failed refreshes do not grow the journal. |
 | `work/<workId>/scope.json` | Original API endpoint, organization, user and Git common-directory identity. Credentials are not saved here. |
 | `work/<workId>/intent.json` | Saved task text for opt-in model matching, bound to its original account and repository. |
@@ -327,9 +353,11 @@ All paths below are inside the agent directory.
 | `work-attribution/pr-checks.json` | When each recorded repository and commit was last checked for a PR or MR, including checks whose unchanged result was not appended. A restart therefore keeps the lookup schedule. Kimchi replaces the file at most once per pass and only after a change. It drops entries for commits it no longer records and for checks more than a day old. Deleting it costs at most one extra check per commit. |
 
 - Each plan record has `path` for the editable file, `snapshotPath` for its retained version and `contentHash` to detect changes. Plans produced by an attributed tool also name its `requestId`. If saving the retained copy fails, Kimchi shows a warning and leaves the local plan usable. Naming or pasting that plan later then does not continue its work or confirm its producing input; `/work <plan path>` still selects it.
-- Kimchi flushes source records before updating `work.json`. Writers merge under a lock and replace the summary atomically. Shutdown waits for queued summary writes.
-- Recovery saves the time of its last successful scan plus each summary's size and modification time. It reads source logs changed since then and skips writing unchanged results.
-- A missing or invalid known summary triggers a full replay of the source logs, including edit journals. A failed log read or summary write leaves the checkpoint unchanged. Older summaries remain readable when the new collections are absent.
+- Kimchi flushes source records before updating the summary. Writers merge under a per-work lock, append only changed rows, sync them, then replace `work.json`, which commits them. Readers stop at each log's committed length, so an interrupted append is ignored and the next writer removes it. Shutdown waits for queued summary writes.
+- When a log's superseded lines outweigh half its current rows and exceed 1 MiB, the writer copies each key's latest row into the next generation, commits it and deletes the old file. A reader that loaded the old manifest rereads it once.
+- Recovery saves the time of its last successful scan plus each manifest's size and modification time. It reads source logs changed since then and skips writing unchanged results.
+- A missing or invalid summary, a log shorter than its committed length, or a damaged row triggers a full replay of the work's source logs, including edit journals, into a new generation. A failed log read or summary write leaves the checkpoint unchanged.
+- Summaries saved before row logs keep everything in `work.json` (`"version": 1`). They stay readable and convert on the work's next update; idle works are not rewritten. Releases up to v1.7.1 do not read the new format: they rebuild a version 1 summary from the source logs, without record types they do not know, and the next newer release converts it again and removes the stale logs. Earlier version 2 manifests that list `sessions` themselves stay readable; the work's next update moves them into the sessions log.
 
 </details>
 
@@ -407,7 +435,7 @@ An exact price does not confirm a model's task match. Inferred requests remain l
 
 A refresh that fails before any billing page arrives adds no evidence. This covers being offline, DNS or TLS errors, a failed API key check, an HTTP error such as 429 or 5xx on the first page, and Kimchi's pass deadline. The last known price stays usable and nothing is added to the journal. `billing-polls.json` keeps the failure, the request's `billingLookup` in `costs.json` shows it with its real timestamp, and `/work` says that the last refresh failed. Errors after the first page, including partial pagination, keep the full total unknown. Failure records saved by earlier versions also stay unknown until a complete lookup succeeds, because they do not record whether a page had arrived; their pass-deadline records marked as happening before any page are the exception.
 
-Billing details appear on the matching `work.json` request. This excerpt uses example IDs; comments explain the fields and are not part of the stored JSON:
+Billing details appear on the matching request row in `rows/requests.<generation>.jsonl`. This excerpt uses example IDs; comments explain the fields and are not part of the stored JSON:
 
 ```jsonc
 {
