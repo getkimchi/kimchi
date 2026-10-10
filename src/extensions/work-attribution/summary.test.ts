@@ -23,7 +23,7 @@ import {
 } from "../work-attribution.js"
 
 import * as diagnostics from "./diagnostics.js"
-import { flushWorkSummaries, recoverWorkSummaries } from "./summary.js"
+import { flushWorkSummaries, readWorkRecords, readWorkRecordsAsync, recoverWorkSummaries } from "./summary.js"
 
 vi.mock("proper-lockfile", async (importOriginal) => ({ ...(await importOriginal<typeof locks>()) }))
 vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
@@ -124,6 +124,137 @@ describe("readable work summaries", () => {
 		recoverWorkSummaries()
 		await flushWorkSummaries()
 		expect(summary(workId).commits[0]).toMatchObject({ pullRequests: [merged], prLookup: failure })
+	})
+	it.each(["priced", "unavailable"])("keeps newer billing status (%s) through delayed recovery", async (status) => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const request = recordProviderRequest(ctx)
+		const charge = { id: randomUUID(), costUsd: "0.25" }
+		const priced = { status: "priced" }
+		const unavailable = { status: "unavailable", reason: "Billing API returned HTTP 503" }
+		const older = { ...(status === "priced" ? unavailable : priced), checkedAt: "2026-10-04T09:00:00Z" }
+		const newer = { ...(status === "priced" ? priced : unavailable), checkedAt: "2026-10-04T09:05:00Z" }
+		appendWorkRecord(ctx, {
+			type: "request_cost",
+			requestId: request.requestId,
+			billingRows: older.status === "priced" ? [charge] : [],
+			billingLookup: older,
+		})
+		await flushWorkSummaries()
+		// A second process can capture an older ledger before waiting for the summary lock.
+		vi.resetModules()
+		const recovering = await import("./summary.js")
+		const originalLock = locks.lock
+		let release!: () => void
+		let waiting!: () => void
+		const blocked = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const entered = new Promise<void>((resolve) => {
+			waiting = resolve
+		})
+		vi.spyOn(locks, "lock").mockImplementationOnce(async (...args) => {
+			waiting()
+			await blocked
+			return originalLock(...args)
+		})
+		recovering.recoverWorkSummaries()
+		try {
+			await entered
+			appendWorkRecord(ctx, {
+				type: "request_cost",
+				requestId: request.requestId,
+				billingRows: newer.status === "priced" ? [charge] : [],
+				billingLookup: newer,
+			})
+			await flushWorkSummaries()
+			expect(summary(workId).requests[0].billingLookup).toEqual(newer)
+		} finally {
+			release()
+			await recovering.flushWorkSummaries()
+		}
+		expect(summary(workId).requests[0]).toMatchObject({ billingLookup: newer, billingRows: [charge] })
+	})
+	it("reads large journals in the background without blocking the event loop", async () => {
+		const ledgers = join(dir, "work-attribution")
+		fs.mkdirSync(join(ledgers, "transitions"), { recursive: true })
+		const workId = randomUUID()
+		const row = (requestId: string, note = "") =>
+			JSON.stringify({ version: 1, type: "request", workId, sessionId: "large", requestId, note })
+		// About 6 MiB in several files; one multi-byte note crosses a read chunk boundary.
+		const lines = Array.from({ length: 20_000 }, () => row(randomUUID(), "x".repeat(200)))
+		fs.writeFileSync(join(ledgers, "large.jsonl"), `${row(randomUUID(), "é".repeat(700_000))}\n${lines.join("\n")}\n`)
+		fs.writeFileSync(join(ledgers, "transitions", "edits.jsonl"), `${lines.slice(0, 1000).join("\n")}\ninterrupted`)
+		let turns = 0
+		let reading = true
+		const spin = () => {
+			turns++
+			if (reading) setImmediate(spin)
+		}
+		setImmediate(spin)
+		const records = await readWorkRecordsAsync(dir, new AbortController().signal)
+		reading = false
+		expect(records).toHaveLength(21_001)
+		expect(records).toEqual(readWorkRecords(dir))
+		// The synchronous reader would let no other callback run until it finished.
+		expect(turns).toBeGreaterThanOrEqual(6)
+	})
+	it("lists each billing ID once with its latest observation, including after a replay", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const { requestId } = recordProviderRequest(ctx)
+		const id = randomUUID()
+		const other = randomUUID()
+		const pending = {
+			type: "request_cost",
+			requestId,
+			billingRows: [{ id, costUsd: null, createTime: "2026-10-08T10:00:01Z" }],
+			billingLookup: { status: "pending", checkedAt: "2026-10-08T10:00:30.000Z" },
+		}
+		const priced = {
+			type: "request_cost",
+			requestId,
+			billingRows: [{ id, costUsd: "0.000166000", createTime: "2026-10-08T10:00:01Z", model: "glm-5.3" }],
+			billingLookup: { status: "priced", checkedAt: "2026-10-08T10:05:30.000Z" },
+		}
+		appendWorkRecord(ctx, pending)
+		appendWorkRecord(ctx, priced)
+		// A delayed older observation neither duplicates nor replaces the later price.
+		appendWorkRecord(ctx, {
+			...pending,
+			billingRows: [...pending.billingRows, { id: other, costUsd: null }],
+		})
+		await flushWorkSummaries()
+		const expected = [priced.billingRows[0], { id: other, costUsd: null }]
+		expect(summary(workId).requests[0]).toMatchObject({ billingRows: expected, billingLookup: priced.billingLookup })
+		fs.unlinkSync(path(workId))
+		recoverWorkSummaries()
+		await flushWorkSummaries()
+		expect(summary(workId).requests[0].billingRows).toEqual(expected)
+	})
+	it.each([
+		"billingLookup",
+		"prLookup",
+		"pullRequests",
+	])("recovers %s from a malformed observation timestamp", async (field) => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const base =
+			field === "billingLookup"
+				? { type: "request_cost", requestId: recordProviderRequest(ctx).requestId }
+				: { type: "commit", sha: "a".repeat(40), repository: "/project/.git", worktree: "/project" }
+		const invalid = {
+			url: "https://github.com/example/repo/pull/7",
+			status: "unavailable",
+			checkedAt: "invalid-history",
+		}
+		const valid = { ...invalid, status: "complete", checkedAt: "2026-10-04T10:00:00Z" }
+		for (const observation of [invalid, valid, invalid]) {
+			appendWorkRecord(ctx, { ...base, [field]: field === "pullRequests" ? [observation] : observation })
+			await flushWorkSummaries()
+		}
+		const row = field === "billingLookup" ? summary(workId).requests[0] : summary(workId).commits[0]
+		expect(row[field]).toEqual(field === "pullRequests" ? [valid] : valid)
 	})
 	it("shows why a session continued another work without changing request timestamps", async () => {
 		const ctx = context()
@@ -332,7 +463,7 @@ describe("readable work summaries", () => {
 			expect.objectContaining({ transitionId: "old-transition", toolCallId: "old-tool" }),
 		])
 		expect(summary(request.workId).fileTransitions[0]).not.toHaveProperty("requestId")
-		expect(JSON.parse(fs.readFileSync(join(dir, "work-attribution", ".recovered.json"), "utf8")).version).toBe(3)
+		expect(JSON.parse(fs.readFileSync(join(dir, "work-attribution", ".recovered.json"), "utf8")).version).toBe(4)
 		fs.rmSync(path(request.workId))
 		vi.resetModules()
 		const relaunched = await import("./summary.js")

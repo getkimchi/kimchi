@@ -17,6 +17,7 @@ import type * as discovery from "./pull-requests.js"
 
 vi.mock("../work-attribution/reconcile-supervisor.js", () => ({
 	subscribeFileReconciliation: vi.fn(),
+	subscribeCostReconciliation: vi.fn(),
 	subscribePullRequestReconciliation: vi.fn(),
 	RECONCILIATION_INTERVAL_MS: 30_000,
 }))
@@ -84,6 +85,7 @@ beforeEach(() => {
 	vi.stubEnv("PI_CODING_AGENT_DIR", directory)
 	ctx = createContext({ cwd: directory })
 	vi.mocked(supervisor.subscribeFileReconciliation).mockReturnValue(async () => {})
+	vi.mocked(supervisor.subscribeCostReconciliation).mockReturnValue(async () => {})
 	vi.mocked(supervisor.subscribePullRequestReconciliation).mockReturnValue(async () => {})
 	vi.mocked(branches.currentBranch).mockResolvedValue(undefined)
 	vi.mocked(branches.lookupBranchPullRequest).mockResolvedValue({ branch: "feature", pullRequest: pr })

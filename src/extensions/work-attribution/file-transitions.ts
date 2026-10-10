@@ -21,6 +21,7 @@ import {
 	type WorkContext,
 	workLedgerPath,
 } from "../work-attribution.js"
+import { SHA256_HEX } from "./summary.js"
 
 const GIT_TIMEOUT_MS = 2000
 const MAX_FILE_BYTES = 8 * 1024 * 1024
@@ -296,7 +297,7 @@ function isTransition(value: Record<string, unknown>): value is Record<string, u
 		(value.recordedAt === undefined || typeof value.recordedAt === "string") &&
 		(value.refTips === undefined || validRefTips(value.refTips)) &&
 		(value.historyBoundaryId === undefined ||
-			(typeof value.historyBoundaryId === "string" && /^[a-f0-9]{64}$/.test(value.historyBoundaryId))) &&
+			(typeof value.historyBoundaryId === "string" && SHA256_HEX.test(value.historyBoundaryId))) &&
 		["transitionId", "toolCallId", "sessionId", "cwd", "repository", "worktree", "path"].every(
 			(key) => typeof value[key] === "string",
 		) &&

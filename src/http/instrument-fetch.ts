@@ -1,10 +1,8 @@
 /**
  * Global fetch instrumentation, installed once at startup.
  *
- * Patching `globalThis.fetch` is deliberate: pi-ai constructs its vendor SDK
- * clients internally and exposes no fetch or transport injection point, so
- * the global is the only single choke point that covers model completions,
- * OAuth flows, MCP HTTP transports and kimchi's own requests alike.
+ * This shared adapter covers Pi's vendor SDKs and Kimchi's direct fetch
+ * callers, including title generation, OAuth and MCP transports.
  *
  * Install happens in entry.ts, right after installProxyAgent() and BEFORE the
  * auto-update check: under Bun the wrapper is the only layer that bounds a
@@ -14,6 +12,7 @@
  * installGlobalFetchInstrumentation call — see the options doc.
  */
 
+import { debugWorkAttribution } from "../extensions/work-attribution/diagnostics.js"
 import { requestUrl, rewrapResponseWithBody, wrapFetchWithIdleTimeout } from "./stream-idle-timeout.js"
 
 type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -36,10 +35,43 @@ type BrandedFetch = FetchFn & Record<symbol, boolean | undefined>
  * already-installed patched fetch.
  */
 let onModelCompletionSettled: ((originalFetch: FetchFn) => Promise<unknown>) | undefined
+let onModelRequest: GlobalFetchInstrumentationOptions["onModelRequest"]
+let onModelResponse: GlobalFetchInstrumentationOptions["onModelResponse"]
+
+/** String bodies are already in memory; even image-heavy contexts parse in milliseconds below this bound. */
+const MAX_INSPECTED_BODY_CHARS = 64 * 1024 * 1024
+
+export interface ModelRequestMetadata {
+	/** Only top-level tags; undefined means the body cannot be inspected safely. */
+	bodyTags?: readonly string[]
+}
+
+function requestMetadata(input: RequestInfo | URL, init?: RequestInit): ModelRequestMetadata {
+	const body = init?.body ?? (input instanceof Request ? input.body : undefined)
+	if (body === undefined || body === null) return { bodyTags: [] }
+	// Streams and Request bodies cannot be read without consuming them.
+	if (typeof body !== "string" || body.length > MAX_INSPECTED_BODY_CHARS) return { bodyTags: undefined }
+	try {
+		const parsed: unknown = JSON.parse(body)
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { bodyTags: undefined }
+		if (!("tags" in parsed)) return { bodyTags: [] }
+		return {
+			bodyTags: Array.isArray(parsed.tags)
+				? parsed.tags.filter((tag): tag is string => typeof tag === "string")
+				: undefined,
+		}
+	} catch {
+		return { bodyTags: undefined }
+	}
+}
 
 export interface GlobalFetchInstrumentationOptions {
 	/** Default user-agent, applied when the caller supplies none. */
 	userAgent: string
+	/** Persist a tracked HTTP attempt before dispatch; may replace its outgoing request ID. */
+	onModelRequest?: (headers: Headers, url: string, metadata: ModelRequestMetadata) => void
+	/** Observe response metadata without reading the model's response body. */
+	onModelResponse?: (requestId: string, response: Pick<Response, "status" | "headers">) => void
 	/**
 	 * Kicked off after each model-completion response settles (body fully
 	 * read, errored, or cancelled). Receives the unpatched fetch so the
@@ -51,8 +83,10 @@ export interface GlobalFetchInstrumentationOptions {
 	onModelCompletionSettled?: (originalFetch: FetchFn) => Promise<unknown>
 }
 
-/** Replace `globalThis.fetch` with the instrumented version. Safe to call more than once — later calls only update the billing hook. */
+/** Replace `globalThis.fetch` with the instrumented version. Later installs update the hooks without stacking wrappers. */
 export function installGlobalFetchInstrumentation(options: GlobalFetchInstrumentationOptions): void {
+	if (options.onModelRequest) onModelRequest = options.onModelRequest
+	if (options.onModelResponse) onModelResponse = options.onModelResponse
 	if (options.onModelCompletionSettled) {
 		onModelCompletionSettled = options.onModelCompletionSettled
 	}
@@ -72,9 +106,26 @@ export function installGlobalFetchInstrumentation(options: GlobalFetchInstrument
 		if (!headers.has("user-agent")) {
 			headers.set("user-agent", options.userAgent)
 		}
+		const modelCompletion = isModelCompletionFetch(input)
+		if (modelCompletion && headers.has("x-request-id")) {
+			try {
+				onModelRequest?.(headers, requestUrl(input) ?? "", requestMetadata(input, init))
+			} catch (error) {
+				headers.delete("x-request-id")
+				debugWorkAttribution("Request identity unavailable:", error)
+			}
+		}
+		const requestId = headers.get("x-request-id")
 		const response = await idleFetch(input, { ...init, headers })
+		if (requestId && modelCompletion) {
+			try {
+				onModelResponse?.(requestId, response)
+			} catch (error) {
+				debugWorkAttribution("Response metadata unavailable:", error)
+			}
+		}
 		const hook = onModelCompletionSettled
-		return hook && response.ok && isModelCompletionFetch(input)
+		return hook && response.ok && modelCompletion
 			? withBillingRefreshAfterResponseSettles(response, () => hook(originalFetch))
 			: response
 	}
@@ -83,7 +134,7 @@ export function installGlobalFetchInstrumentation(options: GlobalFetchInstrument
 }
 
 function isModelCompletionFetch(input: RequestInfo | URL): boolean {
-	return /\/chat\/completions(?:$|[?#])/.test(requestUrl(input) ?? "")
+	return /\/(?:chat\/completions|v1\/messages|responses)(?:$|[?#])/.test(requestUrl(input) ?? "")
 }
 
 function withBillingRefreshAfterResponseSettles(response: Response, refreshBilling: () => Promise<unknown>): Response {

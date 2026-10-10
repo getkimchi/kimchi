@@ -115,6 +115,8 @@ export interface FakeOpenAiServer {
 
 interface StartFakeOpenAiServerOptions {
 	account?: VerifyApiKeyResponse
+	/** Billed rows for one `kimchi-request:<id>` tag, read on every lookup so a test can change them. */
+	billingRows?: (tag: string) => { id: string; totalPrice: string | null }[]
 	rejectedApiKeys?: string[]
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
@@ -202,6 +204,21 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 					res,
 					req.headers.authorization === "Bearer fake" ? 200 : 401,
 					req.headers.authorization === "Bearer fake" ? options.account : { error: "Invalid fixture key" },
+				)
+				return
+			}
+			if (
+				req.method === "GET" &&
+				options.account &&
+				options.billingRows &&
+				req.url?.startsWith(`/ai-optimizer/v1beta/organizations/${options.account.organizationId}/llm-requests?`)
+			) {
+				const authorized = req.headers.authorization === "Bearer fake"
+				const tag = new URL(req.url, "http://fake").searchParams.get("tags") ?? ""
+				writeJson(
+					res,
+					authorized ? 200 : 401,
+					authorized ? { items: options.billingRows(tag) } : { error: "Invalid fixture key" },
 				)
 				return
 			}

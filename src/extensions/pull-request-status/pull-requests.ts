@@ -2,14 +2,13 @@
 import { readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { writeFileDurably } from "../../config/json.js"
-import { readWorkRecords } from "../work-attribution/summary.js"
+import { object, readWorkRecords } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { mergePullRequestLinks as mergePullRequests, pullRequestKey } from "./links.js"
 import { api, credential, pages, repositoryIdentity, requestJSON } from "./provider-api.js"
 import {
 	LookupError,
 	lookupFailureReason,
-	object,
 	pullRequest,
 	type Repository,
 	SHA,

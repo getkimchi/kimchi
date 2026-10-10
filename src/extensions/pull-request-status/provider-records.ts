@@ -1,5 +1,6 @@
 /** What a GitHub PR or GitLab MR must look like, from a provider response or a saved journal row, and how lookups fail. */
 import { plainURL } from "../../utils/url.js"
+import { object } from "../work-attribution/summary.js"
 import type { WorkPullRequest, WorkPullRequestLookup } from "./pull-requests.js"
 
 export interface Repository {
@@ -29,10 +30,6 @@ export function lookupFailureReason(error: unknown): WorkPullRequestLookup["reas
 }
 
 export const SHA = /^(?:[a-f\d]{40}|[a-f\d]{64})$/i
-
-export function object(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-}
 
 export function timestamp(value: unknown): value is string {
 	return typeof value === "string" && Number.isFinite(Date.parse(value))
