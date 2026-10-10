@@ -291,7 +291,7 @@ export function compareAttributionAccuracy<Label>(
 			problems.push({
 				kind: "unpriced-request",
 				requestId: label.requestId,
-				detail: `request ${label.requestId} has no confirmed price: priceStatus ${text(row.priceStatus)}, knownCostUsd ${text(row.knownCostUsd)}`,
+				detail: `request ${label.requestId} has no known price: priceStatus ${text(row.priceStatus)}, knownCostUsd ${text(row.knownCostUsd)}`,
 			})
 			continue
 		}
@@ -316,7 +316,7 @@ export function compareAttributionAccuracy<Label>(
 		if (row.priceStatus !== "priced" || nanos === undefined) {
 			unpricedRequestIds.push(requestId)
 			if (!alreadyUnpriced.has(requestId))
-				problems.push({ kind: "unpriced-request", requestId, detail: `request ${requestId} has no confirmed price` })
+				problems.push({ kind: "unpriced-request", requestId, detail: `request ${requestId} has no known price` })
 		}
 	}
 

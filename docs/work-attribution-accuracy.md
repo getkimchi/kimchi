@@ -39,7 +39,7 @@ The version 1 reference has one entry per request:
 
 - `requestId` joins the independent inventory to a recorded request.
 - `account` identifies the billing API, organization and API-key owner from independent evidence. Use the recorded API base URL and both UUIDs. Do not copy them from the report or use today's login to fill a gap. The command validates these fields without contacting the provider.
-- `costUsd` is the exact billed USD amount as a decimal string, with at most nine fractional digits. Use `null` when the receipt is missing; zero means a confirmed free request.
+- `costUsd` is the exact billed USD amount as a decimal string, with at most nine fractional digits. Use `null` when the receipt is missing; zero means the request is known to be free.
 - `expected` is the human ownership label. Current discovery uses the provider, host and provider's numeric PR ID, encoded as a JSON string: `"[\"github\",\"github.com\",\"12345\"]"`. This is the API's `id`, not the PR number. Older URL-only records use `provider:host/owner/repo#number`, as in the example above; GitLab subgroup paths are allowed. Establish the identity from independent Git provider evidence, using the same key format as the saved report.
 
 These ownership labels keep different cases separate:
@@ -65,9 +65,9 @@ The report must contain the full `requests`, `pullRequests` and `unallocated` fi
 
 PR totals use the account and the complete PR key together. Two users billed for the same PR get separate output lines; a charge under the wrong account is a disagreement. Two totals for the same account and PR are malformed evidence.
 
-With priced, exclusively labelled requests and no shared labels, a PR's expected final amount comes from the independent receipts. A reported open or closed state cannot turn that amount into unknown. This includes confirmed zero.
+With priced, exclusively labelled requests and no shared labels, a PR's expected final amount comes from the independent receipts. A reported open or closed state cannot turn that amount into unknown. This includes a known zero.
 
-When no independently labelled request belongs exclusively to a PR, the command checks final totals against the report's provider state. An open or closed PR keeps an unknown final total; a merged PR with only post-merge requests has a confirmed zero exclusive total. Provider state itself is not independently verified by the offline command.
+When no independently labelled request belongs exclusively to a PR, the command checks final totals against the report's provider state. An open or closed PR keeps an unknown final total; a merged PR with only post-merge requests has a known zero exclusive total. Provider state itself is not independently verified by the offline command.
 
 An inferred request with one candidate PR contributes once to that PR's headline total. `explicit` holds confirmed spending and `inferred` holds inferred spending. Both portions must list their own requests and match the independent receipt amounts; a correct headline cannot hide a wrong split. An inferred request with several candidates stays outside each headline because its price has no agreed split.
 

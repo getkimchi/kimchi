@@ -238,7 +238,7 @@ export function compareIndependentAttribution(
 	const inferredTotal = expectedUnallocated.get("inferred")
 	for (const [requestId, row] of rows) {
 		if (row.allocation !== "pull-request" && row.allocation !== "inferred") continue
-		const nanos = decimalNanos(row.knownCostUsd)
+		const nanos = unique.get(requestId)?.nanos
 		if (row.allocation === "inferred" && inferredTotal) {
 			inferredTotal.requestIds.push(requestId)
 			inferredTotal.nanos += nanos ?? 0n
@@ -269,10 +269,9 @@ export function compareIndependentAttribution(
 			if (row.allocation === "inferred") group.inferredRequestIds.push(requestId)
 			if (row.pullRequestIds.length === 1) {
 				const portion = group[row.allocation === "pull-request" ? "explicit" : "inferred"]
-				const price = unique.get(requestId)?.nanos
 				portion.requestIds.push(requestId)
-				portion.nanos += price ?? 0n
-				portion.priced &&= row.priceStatus === "priced" && price !== undefined
+				portion.nanos += nanos ?? 0n
+				portion.priced &&= row.priceStatus === "priced" && nanos !== undefined
 			}
 			reportedPRs.set(id, group)
 		}

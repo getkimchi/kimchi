@@ -171,6 +171,18 @@ describe("confirmed and inferred report totals", () => {
 		)
 	})
 
+	it("checks the inferred bucket against the independent receipts", () => {
+		const report = reportFor()
+		// The report prices r2 consistently, but not at its receipt's amount.
+		report.requests[1].knownCostUsd = report.requests[1].totalCostUsd = "0.300000003"
+		report.unallocated.inferred.knownCostUsd = report.unallocated.inferred.totalCostUsd = "0.300000003"
+		expect(compareIndependentAttribution(report, reference).differences).toContainEqual({
+			kind: "aggregate-mismatch",
+			requestId: null,
+			detail: "inferred: report total or contributing requests differ from the reference",
+		})
+	})
+
 	it("cannot certify a report that omits a confidence portion", () => {
 		const report = reportFor()
 		const { inferred: _missing, ...pull } = report.pullRequests[0]
@@ -528,7 +540,7 @@ describe("independent accuracy reference", () => {
 		{ state: "closed", costUsd: "1.000000001" },
 		{ state: "open", costUsd: "0.000000000" },
 		{ state: "closed", costUsd: "0.000000000" },
-	] as const)("keeps the independently confirmed $costUsd final amount when reported state changes to $state", ({
+	] as const)("keeps the independently priced $costUsd final amount when reported state changes to $state", ({
 		state,
 		costUsd,
 	}) => {
