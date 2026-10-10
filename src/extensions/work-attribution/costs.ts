@@ -85,8 +85,25 @@ export function decimalNanos(value: unknown): bigint | undefined {
 	return match ? BigInt(match[1]) * NANOS_PER_USD + BigInt((match[2] ?? "").padEnd(9, "0")) : undefined
 }
 
+/** Render nanos as USD with nine decimals; a negative amount, such as a signed error, keeps its sign. */
 export function usd(nanos: bigint): string {
-	return `${nanos / NANOS_PER_USD}.${(nanos % NANOS_PER_USD).toString().padStart(9, "0")}`
+	const absolute = nanos < 0n ? -nanos : nanos
+	return `${nanos < 0n ? "-" : ""}${absolute / NANOS_PER_USD}.${(absolute % NANOS_PER_USD).toString().padStart(9, "0")}`
+}
+
+/** Sum calculated request amounts without imposing the API's per-bill size limit on their subtotal. */
+export function totalRequestCosts(rows: readonly RequestCostAllocation[]): CostTotal {
+	const knownCostUsd = usd(
+		rows.reduce((sum, row) => {
+			const [whole, fraction = ""] = row.knownCostUsd.split(".")
+			return sum + BigInt(whole) * NANOS_PER_USD + BigInt(fraction.padEnd(9, "0"))
+		}, 0n),
+	)
+	return {
+		requestIds: rows.map((row) => row.requestId),
+		knownCostUsd,
+		totalCostUsd: rows.every((row) => row.priceStatus === "priced") ? knownCostUsd : null,
+	}
 }
 
 export function time(value: unknown): number | undefined {
@@ -656,7 +673,6 @@ export function calculatePullRequestCosts(
 		billingAccounts.set(row.requestId, accounts)
 	}
 
-	const amounts = new Map<string, bigint>()
 	const requests: RequestCostAllocation[] = [...ownership]
 		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
 		.map(([requestId, owner]) => {
@@ -725,7 +741,6 @@ export function calculatePullRequestCosts(
 			if (reason) allocated = postMerge ? { ...allocated, reason } : { allocation: "unknown", reason }
 			const { nanos, ...price } = priceFor(requestId)
 			if (incompleteRequestIds.has(requestId) && price.priceStatus === "priced") price.priceStatus = "missing"
-			amounts.set(requestId, nanos)
 			return {
 				requestId,
 				account: owner.unverifiedAccount ? null : (owner.account ?? null),
@@ -758,15 +773,6 @@ export function calculatePullRequestCosts(
 		}
 	}
 
-	function total(rows: RequestCostAllocation[]): CostTotal {
-		const knownCostUsd = usd(rows.reduce((sum, row) => sum + (amounts.get(row.requestId) ?? 0n), 0n))
-		return {
-			requestIds: rows.map((row) => row.requestId),
-			knownCostUsd,
-			totalCostUsd: rows.every((row) => row.priceStatus === "priced") ? knownCostUsd : null,
-		}
-	}
-
 	const pullRequests = [...pulls]
 		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
 		.flatMap(([key, { pullRequest }]) => {
@@ -793,15 +799,15 @@ export function calculatePullRequestCosts(
 
 					const confirmedRows = assigned.filter((row) => row.allocation === "pull-request")
 					const inferredRows = assigned.filter((row) => row.allocation === "inferred")
-					const cost = total(assigned)
+					const cost = totalRequestCosts(assigned)
 					return {
 						key,
 						account,
 						pullRequest,
 						workIds: [...workIds].sort(),
 						...cost,
-						explicit: total(confirmedRows),
-						inferred: total(inferredRows),
+						explicit: totalRequestCosts(confirmedRows),
+						inferred: totalRequestCosts(inferredRows),
 						totalCostUsd:
 							account &&
 							pullRequest?.state === "merged" &&
@@ -816,7 +822,7 @@ export function calculatePullRequestCosts(
 					}
 				})
 		})
-	const bucket = (kind: Allocation) => total(requests.filter((row) => row.allocation === kind))
+	const bucket = (kind: Allocation) => totalRequestCosts(requests.filter((row) => row.allocation === kind))
 	return {
 		pullRequests,
 		requests,

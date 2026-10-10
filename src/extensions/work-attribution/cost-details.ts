@@ -8,6 +8,13 @@ import { object } from "./summary.js"
 
 // The cost lines /work shows, read from the work's saved costs.json.
 
+/** A saved report also lists connected works' requests; a work's own are its requests and those linked into it. */
+export function ownRequests(rows: readonly Record<string, unknown>[], workId: string): Record<string, unknown>[] {
+	return rows.filter((row) =>
+		[row.workIds, row.linkedWorkIds].some((ids) => Array.isArray(ids) && ids.includes(workId)),
+	)
+}
+
 /** /work reads the last durable result; opening the command never waits for the network. */
 export function workCostDetails(agentDir: string, workId: string): string[] {
 	if (!isWorkId(workId)) return []
@@ -59,18 +66,19 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 				)
 		}
 		if (Array.isArray(value.requests)) {
-			const priced = requests.filter((row) => row.priceStatus === "priced").length
-			// Work without a PR has no cost line above, so its priced spend is shown here.
-			const known = usd(requests.reduce((sum, row) => sum + (decimalNanos(row.knownCostUsd) ?? 0n), 0n))
-			const unresolved = requests.filter((row) => row.allocation === "unknown").length
-			const inferred = requests.filter((row) => row.allocation === "inferred").length
-			const shared = requests.filter((row) => row.allocation === "shared").length
+			// PR lines above include connected works; this one is the work's own spend, even without a PR.
+			const own = ownRequests(requests, workId)
+			const priced = own.filter((row) => row.priceStatus === "priced").length
+			const known = usd(own.reduce((sum, row) => sum + (decimalNanos(row.knownCostUsd) ?? 0n), 0n))
+			const unresolved = own.filter((row) => row.allocation === "unknown").length
+			const inferred = own.filter((row) => row.allocation === "inferred").length
+			const shared = own.filter((row) => row.allocation === "shared").length
 			lines.push(
-				`Prices: ${priced}/${requests.length} requests priced, $${known} USD${priced < requests.length ? " known so far" : ""}. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
+				`Prices: ${priced}/${own.length} requests priced, $${known} USD${priced < own.length ? " known so far" : ""}. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
 			)
 
 			const untagged = new Map<string, number>()
-			for (const row of requests)
+			for (const row of own)
 				if (typeof row.billingTagSkipped === "string")
 					untagged.set(row.billingTagSkipped, (untagged.get(row.billingTagSkipped) ?? 0) + 1)
 			if (untagged.size) {
@@ -83,7 +91,7 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 				)
 			}
 
-			const failed = requests.flatMap((row) =>
+			const failed = own.flatMap((row) =>
 				object(row.billingLookup) && row.billingLookup.status === "unavailable" ? [row.billingLookup] : [],
 			)
 			if (failed.length) {

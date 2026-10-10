@@ -67,7 +67,8 @@ afterEach(async () => {
 	rmSync(dir, { recursive: true, force: true })
 })
 
-function tracked(sessionId: string, requestId: string, fields: Record<string, unknown> = {}) {
+/** A work with one request and, unless `numbers` is empty, a commit in those merged PRs. */
+function tracked(sessionId: string, requestId: string, fields: Record<string, unknown> = {}, numbers = [1]) {
 	const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
 	const workId = getWorkId(ctx)
 	const source = captureBillingSource(new Headers({ Authorization: `Bearer ${currentKey}` }), GATEWAY, dir)
@@ -78,27 +79,26 @@ function tracked(sessionId: string, requestId: string, fields: Record<string, un
 		scope: { account: { apiUrl: API, organizationId: ORG, userId: PROMPT }, repository: join(dir, ".git") },
 		...fields,
 	})
-	appendWorkRecord(ctx, {
-		type: "commit",
-		sha: "a".repeat(40),
-		repository: join(dir, ".git"),
-		worktree: dir,
-		pullRequests: [
-			{
+	if (numbers.length)
+		appendWorkRecord(ctx, {
+			type: "commit",
+			sha: "a".repeat(40),
+			repository: join(dir, ".git"),
+			worktree: dir,
+			pullRequests: numbers.map((number) => ({
 				provider: "github",
 				host: "github.com",
 				repository: "example/repo",
-				number: 1,
-				url: "https://github.com/example/repo/pull/1",
+				number,
+				url: `https://github.com/example/repo/pull/${number}`,
 				state: "merged",
 				headSha: "a".repeat(40),
 				mergeCommitSha: "b".repeat(40),
 				mergedAt: "2026-10-01T09:00:00Z",
 				closedAt: "2026-10-01T09:00:00Z",
 				checkedAt: "2026-10-01T10:00:00Z",
-			},
-		],
-	})
+			})),
+		})
 	return { ctx, workId, source }
 }
 function report(workId: string) {
@@ -107,8 +107,13 @@ function report(workId: string) {
 function sync() {
 	return reconcileWorkCosts(dir, new AbortController().signal)
 }
-function tagged(sessionId = "tagged", requestId: string = randomUUID(), fields: Record<string, unknown> = {}) {
-	const result = tracked(sessionId, requestId, fields)
+function tagged(
+	sessionId = "tagged",
+	requestId: string = randomUUID(),
+	fields: Record<string, unknown> = {},
+	numbers = [1],
+) {
+	const result = tracked(sessionId, requestId, fields, numbers)
 	const dispatchedAt = "2026-10-01T08:00:00.000Z"
 	const selector = requestTagSelector(requestId, dispatchedAt)
 	appendWorkRecord(result.ctx, {
@@ -120,8 +125,105 @@ function tagged(sessionId = "tagged", requestId: string = randomUUID(), fields: 
 	})
 	return { ...result, requestId, selector }
 }
+/** Bills `requestId` USD 1 and every other request USD 2. */
+function billOneThenTwo(requestId: string) {
+	fetchMock.mockImplementation(async (input) => {
+		const url = new URL(String(input))
+		if (url.pathname.endsWith("api-keys:verify")) return Response.json({ organizationId: ORG, userId: PROMPT })
+		const first = url.searchParams.get("tags") === `kimchi-request:${requestId}`
+		return Response.json({ items: [{ id: first ? ROW : ORG, totalPrice: first ? "1" : "2" }] })
+	})
+}
 
 describe("automatic exact work cost lookup", () => {
+	it("saves every request contributing to a PR total across works", async () => {
+		const first = tagged("first")
+		const second = tagged("second")
+		billOneThenTwo(first.requestId)
+		await sync()
+		for (const { workId } of [first, second]) {
+			const saved = report(workId)
+			expect(saved.pullRequests[0].totalCostUsd).toBe("3.000000000")
+			expect(saved.requests.map((row: { requestId: string }) => row.requestId)).toEqual(
+				[first.requestId, second.requestId].sort(),
+			)
+		}
+	})
+
+	it("saves every transitively connected work's requests and PR totals in each work's report", async () => {
+		// The first and last works share no PR; the middle work's commit is in both PRs.
+		const works = [tagged("first"), tagged("middle", randomUUID(), {}, [1, 2]), tagged("last", randomUUID(), {}, [2])]
+		await sync()
+		for (const { workId } of works) {
+			const { requests, pullRequests } = report(workId)
+			expect(requests.map((row: { requestId: string }) => row.requestId)).toEqual(
+				works.map(({ requestId }) => requestId).sort(),
+			)
+			expect(pullRequests.map((row: { pullRequest: { number: number } }) => row.pullRequest.number)).toEqual([1, 2])
+		}
+	})
+
+	it("connects works through a correction link when the linked work has no PR", async () => {
+		const requestId = randomUUID()
+		const source = tagged("source", requestId)
+		const target = tagged("target", randomUUID(), {}, [])
+		appendWorkRecord(target.ctx, {
+			type: "work_link",
+			linkId: randomUUID(),
+			revision: 1,
+			sourceWorkId: source.workId,
+			targetWorkId: target.workId,
+			requestIds: [requestId],
+			scope: { account: { apiUrl: API, organizationId: ORG, userId: PROMPT }, repository: join(dir, ".git") },
+			status: "active",
+			evidence: { source: "work-command" },
+		})
+		await sync()
+		for (const { workId } of [source, target])
+			expect(report(workId).requests.map((row: { requestId: string }) => row.requestId)).toEqual(
+				[requestId, target.requestId].sort(),
+			)
+	})
+
+	it("prices only the work's own requests in /work while its PR total includes connected works", async () => {
+		const first = tagged("first")
+		tagged("second")
+		billOneThenTwo(first.requestId)
+		await sync()
+		const lines = workCostDetails(dir, first.workId)
+		expect(lines).toContain("Cost: $3.000000000 USD — https://github.com/example/repo/pull/1")
+		// Without an input record, the request counts as inferred.
+		expect(lines).toContain(
+			"Prices: 1/1 requests priced, $1.000000000 USD. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
+		)
+	})
+
+	it("saves only the selected work's unrelated requests in its aggregate buckets", async () => {
+		const works = ["first", "second"].map((sessionId) => {
+			const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
+			const workId = getWorkId(ctx)
+			appendWorkRecord(ctx, {
+				type: "request",
+				requestId: sessionId,
+				startedAt: "2026-10-01T08:00:00Z",
+			})
+			return { workId, requestId: sessionId }
+		})
+		await sync()
+		for (const { workId, requestId } of works) {
+			const saved = report(workId)
+			expect(saved.requests.map((row: { requestId: string }) => row.requestId)).toEqual([requestId])
+			expect(saved.unallocated).toMatchObject({
+				unknown: { requestIds: [requestId], knownCostUsd: "0.000000000", totalCostUsd: null },
+				inferred: { requestIds: [], knownCostUsd: "0.000000000", totalCostUsd: "0.000000000" },
+				shared: { requestIds: [] },
+				unlinked: { requestIds: [] },
+				unmerged: { requestIds: [] },
+				"post-merge": { requestIds: [] },
+			})
+		}
+	})
+
 	it("labels separate accounts when a work view contains the same PR more than once", async () => {
 		const { workId } = tagged()
 		await sync()
@@ -241,7 +343,7 @@ describe("automatic exact work cost lookup", () => {
 		await sync()
 		for (const [index, workId] of works.entries()) {
 			const saved = report(workId)
-			expect(saved.requests).toHaveLength(1)
+			expect(saved.requests).toHaveLength(kind === "same-account" ? 2 : 1)
 			expect(saved.pullRequests).toHaveLength(1)
 			expect(saved.pullRequests[0]).toMatchObject({
 				account: index === 0 ? first : second,
@@ -308,6 +410,33 @@ describe("automatic exact work cost lookup", () => {
 			"4 requests untagged: 1 body uninspectable, 3 tag limit (Kimchi adds model and phase tags; keep at most 7 in /tags).",
 		)
 	})
+	it("counts only the work's own untagged and failed requests in work details of connected works", async () => {
+		const untaggedId = randomUUID()
+		const untagged = tracked("untagged", untaggedId)
+		appendWorkRecord(untagged.ctx, {
+			type: "request_dispatch",
+			requestId: untaggedId,
+			dispatchedAt: "2026-10-01T08:00:00.000Z",
+			billingSource: untagged.source,
+			billingTagSkipped: "tag-limit",
+		})
+		const priced = tagged("priced")
+		await sync()
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + RECHECK_MS)
+		fetchMock.mockResolvedValueOnce(Response.json({ organizationId: ORG, userId: PROMPT }))
+		fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }))
+		await sync()
+		// Both works share PR #1, so each saved report lists both requests.
+		expect(report(untagged.workId).requests).toHaveLength(2)
+		const untaggedLines = workCostDetails(dir, untagged.workId)
+		expect(untaggedLines).toContain(
+			"1 request untagged: tag limit (Kimchi adds model and phase tags; keep at most 7 in /tags).",
+		)
+		expect(untaggedLines.join("\n")).not.toContain("Last billing refresh failed")
+		const pricedLines = workCostDetails(dir, priced.workId)
+		expect(pricedLines).toContain("Last billing refresh failed for 1 request: Billing API returned HTTP 503.")
+		expect(pricedLines.join("\n")).not.toContain("untagged")
+	})
 	it("shows price coverage and unresolved ownership separately in work details", async () => {
 		const { ctx, workId } = tagged("details", randomUUID(), {
 			segment: { id: "uncertain", attribution: "unknown", reason: "model-uncertain" },
@@ -335,20 +464,25 @@ describe("automatic exact work cost lookup", () => {
 			evidence: { source: "work-command" },
 		}
 		appendWorkRecord(implementation.ctx, link)
-		fetchMock.mockImplementation(async (input) => {
-			const url = new URL(String(input))
-			if (url.pathname.endsWith("api-keys:verify")) return Response.json({ organizationId: ORG, userId: PROMPT })
-			const planned = url.searchParams.get("tags") === `kimchi-request:${requestId}`
-			return Response.json({ items: [{ id: planned ? ROW : ORG, totalPrice: planned ? "1" : "2" }] })
-		})
+		billOneThenTwo(requestId)
 		await sync()
 		expect(report(implementation.workId).requests).toHaveLength(2)
 		expect(report(implementation.workId).pullRequests[0].totalCostUsd).toBe("3.000000000")
-		expect(report(plan.workId).requests[0]).toMatchObject({
+		expect(
+			report(plan.workId).requests.find((row: { requestId: string }) => row.requestId === requestId),
+		).toMatchObject({
 			workIds: [plan.workId],
 			linkedWorkIds: [implementation.workId],
 			totalCostUsd: "1.000000000",
 		})
+		// The linked request counts for both works; the plan does not count the implementation's own request.
+		expect(workCostDetails(dir, plan.workId)).toContain(
+			"Prices: 1/1 requests priced, $1.000000000 USD. PR assignments: 0 unresolved, 0 inferred, 0 shared.",
+		)
+		// The implementation's own request has no input record; the linked one is confirmed by the link.
+		expect(workCostDetails(dir, implementation.workId)).toContain(
+			"Prices: 2/2 requests priced, $3.000000000 USD. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
+		)
 		appendWorkRecord(implementation.ctx, { ...link, revision: 2, status: "revoked" })
 		await sync()
 		const revoked = report(implementation.workId)
@@ -778,7 +912,10 @@ describe("automatic exact work cost lookup", () => {
 		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000)
 		await sync()
 		expect(fetchMock).toHaveBeenCalledTimes(4)
-		expect(report(workId).requests[0].totalCostUsd).toBe("0.123456789")
+		// The saved report also lists connected works' requests on the same PR.
+		expect(report(workId).requests.find((row: { requestId: string }) => row.requestId === requestId).totalCostUsd).toBe(
+			"0.123456789",
+		)
 		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost" && row.requestId !== requestId)).toEqual(
 			before,
 		)
@@ -810,7 +947,7 @@ describe("automatic exact work cost lookup", () => {
 		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toHaveLength(35)
 	})
 	it("enforces the wall deadline before another HTTP call even before the timer fires", async () => {
-		const { workId } = tagged("a")
+		const { workId, requestId } = tagged("a")
 		tagged("b")
 		const now = Date.now()
 		vi.spyOn(Date, "now").mockReturnValue(now)
@@ -822,7 +959,8 @@ describe("automatic exact work cost lookup", () => {
 		expect(fetchMock).toHaveBeenCalledOnce()
 		// The key check succeeded, but no billing page arrived: nothing is journaled.
 		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual([])
-		expect(report(workId).requests[0]).toMatchObject({
+		// The saved report also lists the connected work's request on the same PR.
+		expect(report(workId).requests.find((row: { requestId: string }) => row.requestId === requestId)).toMatchObject({
 			priceStatus: "missing",
 			totalCostUsd: null,
 			billingLookup: {
@@ -1195,12 +1333,15 @@ describe("automatic exact work cost lookup", () => {
 		fetchMock.mockClear()
 		await sync()
 		expect(fetchMock).not.toHaveBeenCalled()
-		expect(report(priced.workId).requests[0]).toMatchObject({
+		// Both works share the PR, so each saved report lists both requests.
+		const saved = (workId: string, requestId: string) =>
+			report(workId).requests.find((row: { requestId: string }) => row.requestId === requestId)
+		expect(saved(priced.workId, priced.requestId)).toMatchObject({
 			priceStatus: "priced",
 			totalCostUsd: "0.200000000",
 			billingLookup: { status: "account-changed", reason: "Original credential or endpoint is no longer configured" },
 		})
-		expect(report(pending.workId).requests[0]).toMatchObject({
+		expect(saved(pending.workId, pending.requestId)).toMatchObject({
 			priceStatus: "missing",
 			totalCostUsd: null,
 			billingLookup: { status: "account-changed" },
@@ -1209,7 +1350,7 @@ describe("automatic exact work cost lookup", () => {
 		currentKey = "test-only-original-key"
 		vi.mocked(Date.now).mockReturnValue(Date.now() + 6 * 60_000)
 		await sync()
-		expect(report(priced.workId).requests[0].billingLookup.status).toBe("priced")
+		expect(saved(priced.workId, priced.requestId).billingLookup.status).toBe("priced")
 	})
 	it("does not grow the journal for a verified price whose account changed after the window", async () => {
 		const { workId } = tagged()
@@ -1929,12 +2070,14 @@ describe("empty billing settlement", () => {
 			.map(([input]) => new URL(String(input)))
 			.filter((url) => url.pathname.endsWith("/llm-requests"))
 		expect(lookups.map((url) => url.searchParams.get("tags"))).toEqual([`kimchi-request:${control.requestId}`])
-		expect(report(untagged.workId).requests[0]).toMatchObject({
+		const saved = (workId: string, id: string) =>
+			report(workId).requests.find((row: { requestId: string }) => row.requestId === id)
+		expect(saved(untagged.workId, requestId)).toMatchObject({
 			totalCostUsd: null,
 			billingLookup: { status: "pending" },
 		})
 		expect(report(untagged.workId).pullRequests[0].totalCostUsd).toBeNull()
-		expect(report(control.workId).requests[0]).toMatchObject({ totalCostUsd: "0.123456789" })
+		expect(saved(control.workId, control.requestId)).toMatchObject({ totalCostUsd: "0.123456789" })
 	})
 	it("keeps unchanged checks out of journals and preserves retry timing across reloads", async () => {
 		const { workId } = tagged()
