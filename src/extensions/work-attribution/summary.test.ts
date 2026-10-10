@@ -83,6 +83,82 @@ describe("readable work summaries", () => {
 		await flushWorkSummaries()
 		expect(summary(workId).commits[0].pullRequests).toEqual([renamed])
 	})
+	it("reports malformed nonblank ledger rows without treating a trailing newline as lost history", () => {
+		const ctx = context()
+		recordProviderRequest(ctx)
+		const invalid = vi.fn()
+		const ledger = join(dir, "work-attribution", "parent.jsonl")
+		readWorkRecords(dir, undefined, () => {}, invalid)
+		expect(invalid).not.toHaveBeenCalled()
+		fs.appendFileSync(ledger, '\n{broken\n{"type":"request"}\n')
+		readWorkRecords(dir, undefined, () => {}, invalid)
+		expect(invalid).toHaveBeenCalledTimes(2)
+	})
+	it.each(["", "transitions"])("skips only interrupted appends in %s journals", (source) => {
+		const row = { version: 1, type: "work", workId: randomUUID(), sessionId: "writer" }
+		const complete = JSON.stringify(row)
+		const directory = join(dir, "work-attribution", source)
+		fs.mkdirSync(directory, { recursive: true })
+		const ledger = join(directory, "interrupted.jsonl")
+		for (const [suffix, invalidCount, rows] of [
+			['{"type":"request"', 0, [row]],
+			['{"type":"request"\n', 1, [row]],
+			// Released writers start a new line after a cut-off record and append the next one.
+			['{"type":"request"}', 1, [row]],
+			[`{"type":"request"\n${complete}`, 0, [row, row]],
+			[`{"type":"request","workId":"12\n${complete}`, 0, [row, row]],
+			[`{"type":"request"}x\n${complete}`, 1, [row, row]],
+			[complete, 0, [row, row]],
+		] as const) {
+			fs.writeFileSync(ledger, `${complete}\n${suffix}`)
+			const invalid = vi.fn()
+			expect(readWorkRecords(dir, undefined, () => {}, invalid)).toEqual(rows)
+			expect(invalid).toHaveBeenCalledTimes(invalidCount)
+		}
+	})
+	it("reports damage and complete records of unknown types as separate problems", () => {
+		const row = { version: 1, type: "work", workId: randomUUID(), sessionId: "writer" }
+		// A newer Kimchi sharing this history can add record types that this version cannot interpret.
+		const newer = { ...row, type: "work_checkpoint", sessionId: "newer", requestIds: [randomUUID()] }
+		const ledger = join(dir, "work-attribution", "mixed.jsonl")
+		fs.mkdirSync(dirname(ledger), { recursive: true })
+		const lines = [row, newer, { ...newer, workId: "not-a-work-id" }, { ...row, type: "request" }].map((value) =>
+			JSON.stringify(value),
+		)
+		fs.writeFileSync(ledger, `${lines.join("\n")}\n{broken\n${JSON.stringify(row)}\n`)
+		const problems = vi.fn()
+		expect(readWorkRecords(dir, undefined, () => {}, problems)).toEqual([row, row])
+		// Both kinds reach the callback, so readers that need complete history still see an unknown type.
+		expect(problems.mock.calls).toEqual([
+			[{ kind: "unknown-type", path: ledger, line: 2, record: newer }],
+			[{ kind: "invalid", path: ledger, line: 3 }],
+			[{ kind: "invalid", path: ledger, line: 4 }],
+			[{ kind: "invalid", path: ledger, line: 5 }],
+		])
+	})
+	it("skips a record cut at any position, including inside a \\u escape", () => {
+		const row = { version: 1, type: "work", workId: randomUUID(), sessionId: "writer" }
+		const complete = JSON.stringify(row)
+		// Provider and Git errors keep terminal colours, which JSON writes as \u001b escapes.
+		const cut = JSON.stringify({
+			...row,
+			type: "commit",
+			sha: "a".repeat(40),
+			prLookup: { status: "error", error: '\u001b[31mGitHub said "no"\u001b[0m\tC:\\repo\n', attempts: [1, -1.5e3] },
+			complete: false,
+		})
+		const escapes = [...cut.matchAll(/\\u001b/g)].map((match) => match.index)
+		expect(escapes).toHaveLength(2)
+		const ledger = join(dir, "work-attribution", "interrupted.jsonl")
+		fs.mkdirSync(dirname(ledger), { recursive: true })
+		for (let end = 1; end < cut.length; end++) {
+			fs.writeFileSync(ledger, `${complete}\n${cut.slice(0, end)}\n${complete}\n`)
+			const invalid = vi.fn()
+			expect(readWorkRecords(dir, undefined, () => {}, invalid)).toEqual([row, row])
+			expect({ end, invalid: invalid.mock.calls.length }).toEqual({ end, invalid: 0 })
+		}
+	})
+
 	it("retains PR links and their newest state through failed lookups and source replay", async () => {
 		const ctx = context()
 		const workId = getWorkId(ctx)

@@ -31,16 +31,16 @@ import { isWorkId } from "../shared/work-id.js"
 import { isHarnessSteer } from "./steer-marker.js"
 import { type BillingSource, captureBillingSource, requestTagSelector } from "./work-attribution/billing-source.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
-import {
-	findWorkContinuation,
-	hasOwnedWorkReference,
-	hasWorkReference,
-	type WorkContinuation,
-} from "./work-attribution/continuation.js"
+import { findWorkContinuation, hasWorkReference, type WorkContinuation } from "./work-attribution/continuation.js"
 import { workCostDetails } from "./work-attribution/cost-details.js"
 import { debugWorkAttribution } from "./work-attribution/diagnostics.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
-import { confirmWorkContinuation, correctWorkLink } from "./work-attribution/links.js"
+import {
+	confirmWorkContinuation,
+	correctWorkLink,
+	pinWorkContinuation,
+	readContinuationHistory,
+} from "./work-attribution/links.js"
 import { subscribeCostReconciliation, subscribeFileReconciliation } from "./work-attribution/reconcile-supervisor.js"
 import { prepareBillingTag } from "./work-attribution/request-tags.js"
 import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
@@ -65,7 +65,6 @@ import {
 	flushWorkSummaries,
 	markNewWork,
 	object,
-	readWorkRecords,
 	recoverWorkSummaries,
 	updateWorkSummary,
 } from "./work-attribution/summary.js"
@@ -187,8 +186,10 @@ export function appendWorkRecord(
 		const size = fstatSync(fd).size
 		const last = Buffer.alloc(1)
 		if (size) readSync(fd, last, 0, 1, size - 1)
-		const prefix = size && last[0] !== 10 ? "\n" : ""
-		writeFileSync(fd, `${prefix}${JSON.stringify(record)}\n`)
+		// An unterminated tail is an interrupted append. Start a new line instead of truncating:
+		// another process may be appending, and readers skip only that cut-off record.
+		const repair = size && last[0] !== 10 ? "\n" : ""
+		writeFileSync(fd, `${repair}${JSON.stringify(record)}\n`)
 		fsyncSync(fd)
 	} finally {
 		closeSync(fd)
@@ -712,27 +713,48 @@ export function createWorkAttributionExtension(
 					workLedgerPath(ctx) === key &&
 					getWorkId(ctx) === current &&
 					explicitSelection.get(key) === explicitReason
-				const records = referencesWork ? readWorkRecords(getAgentDir()) : undefined
-				const found =
-					captured && (eligible() || referencesWork)
+				// Ownership needs no scope: an input naming recorded work stays unresolved even without one.
+				const references =
+					referencesWork || (captured && eligible())
 						? await findWorkContinuation(pinWorkContext(ctx), event.text, captured)
 						: undefined
 				if (!unchanged()) return
-				if (found && (found.workId === current || eligible())) {
+				const found = references?.match
+				if (found && captured && (found.workId === current || eligible())) {
+					const accepted = { ...found, evidence: { ...found.evidence, segmentId, ...captured.scope } }
+					// One history read serves the pin and the confirmation. If it fails, the receipt stays unpinned and
+					// the confirmation reads again to report why.
+					const history = tryWorkAttribution(() => readContinuationHistory(getAgentDir()))
+					const pinned = (history && tryWorkAttribution(() => pinWorkContinuation(accepted, history))) ?? accepted
+					const continuation = {
+						source: pinned.source,
+						evidence: pinned.evidence,
+					}
 					if (found.workId !== current) {
-						setWorkId(ctx, found.workId, pi, { source: found.source, evidence: found.evidence })
+						setWorkId(ctx, found.workId, pi, continuation)
 						notify(
 							ctx,
 							`Continuing the saved ${found.source === "named-artifact" ? "artifact" : "plan"}'s work: ${found.workId}`,
 						)
-					}
+					} else appendWorkRecord(ctx, { type: "work", continuation }, current)
 					explicitSelection.set(key, found.source)
 					useSegment("explicit", found.source)
-					if (captured) confirmWorkContinuation(ctx, found, captured.scope, records)
+					// Appends since the read are this input's receipt and segment, which confirmation does not use.
+					// Unreadable history blocks only the confirmation; the adopted work still remembers this input.
+					try {
+						confirmWorkContinuation(
+							ctx,
+							{ ...found, ...continuation },
+							captured.scope,
+							history ?? readContinuationHistory(getAgentDir()),
+						)
+					} catch (error) {
+						warnWorkAttribution(ctx, error)
+					}
 					if (model) await rememberWorkIntent(ctx.cwd, found.workId, event.text)
 					return
 				}
-				if (found || (records && hasOwnedWorkReference(ctx, event.text, records))) {
+				if (references?.owned) {
 					// A reference this session's continuation cannot account for may start another task.
 					explicitSelection.delete(key)
 					useSegment("unknown", "unresolved-reference")

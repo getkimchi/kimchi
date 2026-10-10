@@ -85,8 +85,15 @@ describe("input submitted while the agent is still streaming", () => {
 		const planned = "11111111-1111-4111-8111-111111111111"
 		vi.spyOn(continuation, "findWorkContinuation").mockImplementation(async (_ctx, text) =>
 			text.includes("plan.md")
-				? { workId: planned, source: "saved-plan", evidence: { path: "/plans/plan.md", contentHash: "a".repeat(64) } }
-				: undefined,
+				? {
+						match: {
+							workId: planned,
+							source: "saved-plan",
+							evidence: { path: "/plans/plan.md", contentHash: "a".repeat(64) },
+						},
+						owned: true,
+					}
+				: { owned: false },
 		)
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
@@ -163,8 +170,8 @@ describe("queued input delivery", () => {
 			.spyOn(continuation, "findWorkContinuation")
 			.mockImplementation(async (_ctx, text) =>
 				text.includes("plan.md")
-					? { workId: planned, source: "saved-plan", evidence: { path: "/plans/plan.md" } }
-					: undefined,
+					? { match: { workId: planned, source: "saved-plan", evidence: { path: "/plans/plan.md" } }, owned: true }
+					: { owned: false },
 			)
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
@@ -327,9 +334,12 @@ describe("fresh-session guard after scope recovery", () => {
 		const other = "22222222-2222-4222-8222-222222222222"
 		vi.spyOn(scope, "readWorkScope").mockImplementation((workId) => (workId === legacy ? undefined : captured.scope))
 		const find = vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue({
-			workId: other,
-			source: "named-artifact",
-			evidence: { path: join(dir, "docs/adr.md"), transitionId: randomUUID() },
+			match: {
+				workId: other,
+				source: "named-artifact",
+				evidence: { path: join(dir, "docs/adr.md"), transitionId: randomUUID() },
+			},
+			owned: true,
 		})
 		const manager = SessionManager.inMemory(dir)
 		manager.appendCustomEntry("work_identity", { workId: legacy })
@@ -377,4 +387,59 @@ it("leaves an input unresolved without a warning when matching history exceeds i
 	await api.getHandler<InputEvent>("input")({ type: "input", text: "Explain closures", source: "interactive" }, ctx)
 	expect(getWorkSegment(ctx)).toMatchObject({ attribution: "unknown" })
 	expect(ctx.ui.notify).not.toHaveBeenCalled()
+})
+
+describe("journal problems during live plan continuation", () => {
+	const planned = "11111111-1111-4111-8111-111111111111"
+	/** Writes one other journal, then continues a saved plan of the planned work in a fresh session. */
+	async function continuePlan(name: string, content: string) {
+		vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue({
+			match: {
+				workId: planned,
+				source: "saved-plan",
+				evidence: { path: "/plans/plan.md", contentHash: "a".repeat(64) },
+			},
+			owned: true,
+		})
+		const journal = join(dir, "work-attribution", name)
+		mkdirSync(join(dir, "work-attribution"), { recursive: true })
+		writeFileSync(journal, content)
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const ctx = createContext({ cwd: dir, model: createModel("chat"), modelRegistry: createModelRegistry() })
+		await api.getHandler<InputEvent>("input")(
+			{ type: "input", text: "Implement /plans/plan.md", source: "interactive" },
+			ctx,
+		)
+		expect(getWorkId(ctx)).toBe(planned)
+		return { ctx, journal }
+	}
+	const newer = (workId: string) =>
+		`${JSON.stringify({ version: 1, type: "work_checkpoint", workId, sessionId: "newer" })}\n`
+
+	it("adopts the plan without surfacing an attribution failure for an unrelated torn append", async () => {
+		const { ctx } = await continuePlan("crashed.jsonl", '{"type":"request","requestId":"0b8f')
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("Incomplete work history"), "warning")
+	})
+
+	it("adopts the plan without a warning when an unknown record type names only another work", async () => {
+		const { ctx } = await continuePlan("newer.jsonl", newer("22222222-2222-4222-8222-222222222222"))
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.anything(), "warning")
+	})
+
+	it.each([
+		["a damaged line", "damaged.jsonl", '{"type":"request"}}\n', "Incomplete work history contains invalid records"],
+		[
+			"an unknown record type for this work",
+			"newer.jsonl",
+			newer(planned),
+			"Work history contains unknown record types",
+		],
+	])("adopts the plan, remembers its input and names the journal with %s in its warning", async (_kind, name, content, problem) => {
+		const remember = vi.spyOn(semantic, "rememberWorkIntent").mockResolvedValue()
+		const { ctx, journal } = await continuePlan(name, content)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(`Work attribution unavailable: ${problem} in ${journal}:1`, "warning")
+		// The blocked confirmation must not also drop the adopted work's matching memory.
+		expect(remember).toHaveBeenCalledWith(dir, planned, "Implement /plans/plan.md")
+	})
 })

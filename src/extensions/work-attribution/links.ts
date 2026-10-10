@@ -1,17 +1,40 @@
 import { createHash, randomUUID } from "node:crypto"
 import { readFileSync, realpathSync } from "node:fs"
+import { join } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { isWorkId } from "../../shared/work-id.js"
 import { appendWorkRecord, getWorkId, isWorkSegment, type WorkContext } from "../work-attribution.js"
 import type { WorkContinuation } from "./continuation.js"
-import { captureWorkScope, isWorkScope, readWorkScope, sameWorkScope, type WorkScope } from "./scope.js"
-import { readWorkRecords, type WorkRecord } from "./summary.js"
+import {
+	captureWorkScope,
+	isWorkAccount,
+	isWorkScope,
+	readWorkScope,
+	sameWorkAccount,
+	sameWorkScope,
+	type WorkScope,
+} from "./scope.js"
+import {
+	object,
+	readWorkRecords,
+	SHA256_HEX,
+	type WorkRecord,
+	type WorkRecordProblem,
+	workJournalFingerprint,
+} from "./summary.js"
 
 interface RequestLink {
 	workIds: Set<string>
 	linkIds: Set<string>
 	unresolved: boolean
 }
+
+const REPAIR_BUDGET_MS = 3000
+const MAX_CONTINUATIONS_PER_PASS = 25
+// Coarse filesystem timestamps must not hide an append.
+const MTIME_SLACK_MS = 2000
+/** Rows between time-budget checks: a clock read per row is measurable on long histories. */
+const BUDGET_CHECK_ROWS = 1024
 
 /** Direct request corrections only: never merge sessions or follow transitive work links. */
 export function requestWorkLinks(records: readonly WorkRecord[]): Map<string, RequestLink> {
@@ -123,21 +146,132 @@ export function requestWorkLinks(records: readonly WorkRecord[]): Map<string, Re
 	return result
 }
 
-/** Confirm the producer's input after a verified continuation; never override an existing correction. */
-export function confirmWorkContinuation(
-	ctx: WorkContext,
+/** Lookups over one journal snapshot, so checking a receipt never rescans the whole history. */
+interface ContinuationIndex {
+	/** Request IDs named by any correction or confirmation, whatever its revision or status. */
+	linked: Set<unknown>
+	/** Request rows in journal order by request ID, by work, and by work plus input segment. */
+	requests: Map<string, WorkRecord[]>
+	workRequests: Map<string, WorkRecord[]>
+	segmentRequests: Map<string, WorkRecord[]>
+	/** Possible producers in journal order: plans by work plus content hash, native edits by work plus transition. */
+	plans: Map<string, WorkRecord[]>
+	transitions: Map<string, WorkRecord[]>
+}
+
+function addRow(rows: Map<string, WorkRecord[]>, key: string, row: WorkRecord): void {
+	const existing = rows.get(key)
+	if (existing) existing.push(row)
+	else rows.set(key, [row])
+}
+
+// Work IDs are fixed-length UUIDs, so prefixing one keeps each composite key unambiguous.
+function indexRecord(index: ContinuationIndex, row: WorkRecord): void {
+	if (row.type === "work_link" && Array.isArray(row.requestIds)) for (const id of row.requestIds) index.linked.add(id)
+	else if (row.type === "request" && typeof row.requestId === "string") {
+		addRow(index.requests, row.requestId, row)
+		addRow(index.workRequests, row.workId, row)
+		if (isWorkSegment(row.segment)) addRow(index.segmentRequests, row.workId + row.segment.id, row)
+	} else if (row.type === "plan" && typeof row.contentHash === "string")
+		addRow(index.plans, row.workId + row.contentHash, row)
+	else if (row.type === "file_transition" && typeof row.transitionId === "string")
+		addRow(index.transitions, row.workId + row.transitionId, row)
+}
+
+function indexContinuationRecords(
+	records: readonly WorkRecord[],
+	checkBudget: () => void = () => {},
+): ContinuationIndex {
+	const index: ContinuationIndex = {
+		linked: new Set(),
+		requests: new Map(),
+		workRequests: new Map(),
+		segmentRequests: new Map(),
+		plans: new Map(),
+		transitions: new Map(),
+	}
+	for (let position = 0; position < records.length; position++) {
+		if (position % BUDGET_CHECK_ROWS === 0) checkBudget()
+		indexRecord(index, records[position])
+	}
+	return index
+}
+
+/** One complete journal snapshot for continuation checks. */
+export interface ContinuationHistory {
+	records: WorkRecord[]
+	index: ContinuationIndex
+	/** Complete records of types this version does not know, with every UUID each one names. */
+	unknown: { problem: WorkRecordProblem; ids: Set<string> }[]
+}
+
+/** Every UUID a record names: an unknown record type may concern any of those works or requests. */
+function namedIds(value: unknown, ids = new Set<string>()): Set<string> {
+	if (isWorkId(value)) ids.add(value)
+	else if (Array.isArray(value)) for (const item of value) namedIds(item, ids)
+	else if (object(value))
+		for (const [key, item] of Object.entries(value)) {
+			if (isWorkId(key)) ids.add(key)
+			namedIds(item, ids)
+		}
+	return ids
+}
+
+/** Names each affected journal once, with its first problem line, so it can be found and repaired. */
+function journals(problems: readonly WorkRecordProblem[]): string {
+	const lines = new Map<string, number>()
+	for (const { path, line } of problems) if (!lines.has(path)) lines.set(path, line)
+	const named = [...lines].map(([path, line]) => `${path}:${line}`)
+	return named.length > 3 ? `${named.slice(0, 3).join(", ")} and ${named.length - 3} more` : named.join(", ")
+}
+
+/** Damage anywhere could hide a revocation, so it blocks every confirmation until the journal is repaired. */
+export function readContinuationHistory(agentDir: string, checkBudget?: () => void): ContinuationHistory {
+	const invalid: WorkRecordProblem[] = []
+	const unknown: ContinuationHistory["unknown"] = []
+	const records = readWorkRecords(agentDir, undefined, checkBudget, (problem) => {
+		if (problem.kind === "invalid") invalid.push(problem)
+		else unknown.push({ problem, ids: namedIds(problem.record) })
+	})
+	if (invalid.length) throw new Error(`Incomplete work history contains invalid records in ${journals(invalid)}`)
+	return { records, index: indexContinuationRecords(records, checkBudget), unknown }
+}
+
+/** Unknown record types naming this work or one of its requests; this version cannot tell what they change. */
+function unknownRecords(history: ContinuationHistory, workId: string): WorkRecordProblem[] {
+	return history.unknown
+		.filter(({ ids }) =>
+			[...ids].some((id) => id === workId || history.index.requests.get(id)?.some((row) => row.workId === workId)),
+		)
+		.map(({ problem }) => problem)
+}
+
+/** A newer record type blocks only the work it concerns; unrelated works stay decidable. */
+function workIndex(history: ContinuationHistory, workId: string): ContinuationIndex {
+	const unknown = unknownRecords(history, workId)
+	if (unknown.length) throw new Error(`Work history contains unknown record types in ${journals(unknown)}`)
+	return history.index
+}
+
+/** Index key of the records that can have produced an accepted plan or artifact; a receipt without one never resolves. */
+function producerKey({ workId, source, evidence }: WorkContinuation): string | undefined {
+	if (source === "named-artifact") return isWorkId(evidence.transitionId) ? workId + evidence.transitionId : undefined
+	// Plan receipts saved before acceptance hashes cannot tell the accepted version apart.
+	if (source !== "semantic" && typeof evidence.contentHash === "string" && SHA256_HEX.test(evidence.contentHash))
+		return workId + evidence.contentHash
+}
+
+function continuationProducers(
 	continuation: WorkContinuation,
-	scope: WorkScope,
-	records?: readonly WorkRecord[],
-): void {
-	if (continuation.source === "semantic" || getWorkId(ctx) !== continuation.workId) return
-	records ??= readWorkRecords(getAgentDir())
-	const { workId, source, evidence } = continuation
-	const producers = records.filter((row) => {
-		if (row.workId !== workId) return false
-		if (source === "named-artifact") return row.type === "file_transition" && row.transitionId === evidence.transitionId
-		if (row.type !== "plan") return false
-		const matchesPath = [row.path, row.snapshotPath].some((path) => {
+	index: ContinuationIndex,
+	checkBudget: () => void = () => {},
+) {
+	const { source, evidence } = continuation
+	const key = producerKey(continuation)
+	if (!key) return []
+	if (source === "named-artifact") return index.transitions.get(key) ?? []
+	const producers = (index.plans.get(key) ?? []).filter((row) =>
+		[row.path, row.snapshotPath].some((path) => {
 			if (typeof path !== "string") return false
 			if (path === evidence.path) return true
 			try {
@@ -145,29 +279,72 @@ export function confirmWorkContinuation(
 			} catch {
 				return false
 			}
-		})
-		if (!matchesPath) return false
-		// The editable plan may have changed since it was produced. Require its retained version.
+		}),
+	)
+	// Missing or damaged bytes cannot eliminate a competing producer and make ownership certain.
+	const retained = producers.every((row) => {
+		checkBudget()
 		try {
-			if (typeof row.snapshotPath !== "string" || typeof row.contentHash !== "string") return false
+			if (typeof row.snapshotPath !== "string") return false
 			const saved = readFileSync(row.snapshotPath)
-			return (
-				createHash("sha256").update(saved).digest("hex") === row.contentHash &&
-				saved.equals(readFileSync(evidence.path))
-			)
+			return createHash("sha256").update(saved).digest("hex") === evidence.contentHash
 		} catch {
 			return false
 		}
 	})
+	return retained ? producers : []
+}
+
+/** Keep a known producer's identity even if its source journal is unavailable during a later pass. */
+export function pinWorkContinuation(continuation: WorkContinuation, history: ContinuationHistory): WorkContinuation {
+	const producers = continuationProducers(continuation, workIndex(history, continuation.workId))
+	const ids = new Set(producers.map((row) => row.requestId))
+	const requestId = producers[0]?.requestId
+	if (!isWorkId(requestId) || !producers.every((row) => isWorkId(row.requestId)) || ids.size !== 1) return continuation
+	return { ...continuation, evidence: { ...continuation.evidence, requestId } }
+}
+
+/** Null when the receipt can never link; undefined while missing or conflicting evidence leaves it unresolved. */
+function continuationLink(
+	continuation: WorkContinuation,
+	scope: WorkScope,
+	index: ContinuationIndex,
+	checkBudget: () => void = () => {},
+	acceptedAt?: number,
+) {
+	const { workId, source, evidence } = continuation
+	const originalScope = readWorkScope(workId)
+	if (
+		!originalScope ||
+		!sameWorkScope(originalScope, scope) ||
+		(evidence.repository !== undefined && evidence.repository !== scope.repository) ||
+		(evidence.account !== undefined &&
+			(!isWorkAccount(evidence.account) || !sameWorkAccount(evidence.account, scope.account))) ||
+		(evidence.requestId !== undefined && !isWorkId(evidence.requestId))
+	)
+		return
+	const producers = continuationProducers(continuation, index, checkBudget).filter((row) => {
+		// A later identical save cannot explain an earlier acceptance. Restored source
+		// records retain their original timestamp; genuinely later production stays unknown.
+		return (
+			source === "named-artifact" ||
+			evidence.requestId !== undefined ||
+			acceptedAt === undefined ||
+			(typeof row.recordedAt === "string" &&
+				Number.isFinite(Date.parse(row.recordedAt)) &&
+				Date.parse(row.recordedAt) < acceptedAt)
+		)
+	})
 	if (!producers.length || !producers.every((row) => isWorkId(row.requestId))) return
 	const producerIds = new Set(producers.map((row) => row.requestId))
-	if (producerIds.size !== 1) return
-	const origins = records.filter((row) => row.type === "request" && producerIds.has(row.requestId))
+	if (producerIds.size !== 1 || (evidence.requestId !== undefined && !producerIds.has(evidence.requestId))) return
+	const origins = index.requests.get(String(producers[0].requestId)) ?? []
 	const segment = origins[0]?.segment
+	// An explicit input already chose its work, so there is nothing to confirm.
+	if (isWorkSegment(segment) && segment.attribution === "explicit") return null
 	if (
 		!isWorkSegment(segment) ||
 		!isWorkId(segment.id) ||
-		segment.attribution === "explicit" ||
 		!origins.every(
 			(row) =>
 				row.workId === workId &&
@@ -178,24 +355,30 @@ export function confirmWorkContinuation(
 		)
 	)
 		return
-	const requests = records.filter(
-		(row) =>
-			row.type === "request" && row.workId === workId && isWorkSegment(row.segment) && row.segment.id === segment.id,
-	)
+	const requests = index.segmentRequests.get(workId + segment.id) ?? []
 	if (!requests.every((row) => isWorkId(row.requestId) && isWorkScope(row.scope) && sameWorkScope(row.scope, scope)))
 		return
 	const requestIds = [...new Set(requests.map((row) => String(row.requestId)))].sort()
+	// An existing correction or confirmation takes precedence, even when it was revoked.
+	if (requestIds.some((id) => index.linked.has(id))) return null
 	if (
-		records.some(
-			(row) =>
-				row.type === "work_link" &&
-				Array.isArray(row.requestIds) &&
-				row.requestIds.some((id) => requestIds.includes(id)),
+		// Requests before a new work's delayed first scope stay unscoped; only another scope conflicts.
+		(index.workRequests.get(workId) ?? []).some((row) => isWorkScope(row.scope) && !sameWorkScope(row.scope, scope)) ||
+		requestIds.some((id) =>
+			(index.requests.get(id) ?? []).some(
+				(row) =>
+					row.workId !== workId ||
+					!isWorkSegment(row.segment) ||
+					row.segment.id !== segment.id ||
+					!isWorkScope(row.scope) ||
+					!sameWorkScope(row.scope, scope),
+			),
 		)
 	)
 		return
-	appendWorkRecord(ctx, {
-		type: "work_link",
+	checkBudget()
+	return {
+		type: "work_link" as const,
 		linkId: randomUUID(),
 		revision: 1,
 		status: "active",
@@ -204,7 +387,131 @@ export function confirmWorkContinuation(
 		requestIds,
 		scope,
 		evidence: { ...evidence, source, requestId: origins[0].requestId, segmentId: segment.id },
-	})
+	}
+}
+
+/** Confirm the producer's input after a verified continuation; never override an existing correction. */
+export function confirmWorkContinuation(
+	ctx: WorkContext,
+	continuation: WorkContinuation,
+	scope: WorkScope,
+	history: ContinuationHistory,
+): void {
+	if (getWorkId(ctx) !== continuation.workId) return
+	const link = continuationLink(continuation, scope, workIndex(history, continuation.workId))
+	if (link) appendWorkRecord(ctx, link, continuation.workId)
+}
+
+function acceptedContinuation(row: WorkRecord): WorkContinuation | undefined {
+	if (row.type !== "work" || !row.continuation || typeof row.continuation !== "object") return
+	const value = row.continuation
+	if (!("source" in value) || !("evidence" in value)) return
+	const { source, evidence } = value
+	if (source !== "saved-plan" && source !== "pasted-plan" && source !== "named-artifact") return
+	if (!evidence || typeof evidence !== "object" || !("path" in evidence) || typeof evidence.path !== "string") return
+	return { workId: row.workId, source, evidence: { ...evidence, path: evidence.path } }
+}
+
+/** A receipt that can name its producer; any other receipt never resolves. */
+function receipt(row: WorkRecord): { key: string; continuation: WorkContinuation } | undefined {
+	const continuation = acceptedContinuation(row)
+	if (continuation && producerKey(continuation) && typeof row.cwd === "string")
+		return { key: JSON.stringify([row.workId, row.sessionId, continuation]), continuation }
+}
+
+export interface ContinuationProgress {
+	/** The rotation position. */
+	nextContinuation?: string
+	/** The journals of the last pass that examined every receipt and wrote nothing. */
+	settledJournals?: string
+	/** Receipts confirmed or never linkable. Later passes skip them, so they cannot keep history from settling. */
+	done?: Set<string>
+	/** Set while no receipt can link: every receipt known then, and when that history was read. */
+	quiet?: { since: number; receipts: Set<string> }
+}
+
+/** Retry accepted evidence locally; unresolved receipts are never marked permanently complete. */
+export async function reconcileWorkContinuations(
+	agentDir: string,
+	signal: AbortSignal,
+	assertLease: () => void,
+	progress: ContinuationProgress = {},
+): Promise<void> {
+	const startedAt = Date.now()
+	// Fingerprint before reading: an append during the read only makes the next pass read again.
+	const journals = await workJournalFingerprint(agentDir)
+	// Until a journal changes, such a pass would only repeat itself.
+	if (progress.settledJournals === journals) return
+	progress.settledJournals = undefined
+	const deadline = Date.now() + REPAIR_BUDGET_MS
+	const checkBudget = () => {
+		signal.throwIfAborted()
+		assertLease()
+		if (Date.now() > deadline) throw new Error("Work continuation reconciliation time limit exceeded")
+	}
+	if (progress.quiet) {
+		// Journals only grow, so only those changed since can hold a new receipt; nothing else needs the whole history.
+		const { since, receipts } = progress.quiet
+		const changed = readWorkRecords(agentDir, since - MTIME_SLACK_MS, checkBudget)
+		const known = (row: WorkRecord) => {
+			const found = receipt(row)
+			return !found || receipts.has(found.key)
+		}
+		if (changed.every(known)) {
+			progress.quiet = { since: startedAt, receipts }
+			progress.settledJournals = journals
+			return
+		}
+		progress.quiet = undefined
+	}
+	progress.done ??= new Set()
+	const done = progress.done
+	const history = readContinuationHistory(agentDir, checkBudget)
+	const { index } = history
+	const receipts = new Set<string>()
+	const candidates = new Map<string, { row: WorkRecord; continuation: WorkContinuation }>()
+	for (const row of history.records) {
+		const found = receipt(row)
+		if (!found) continue
+		receipts.add(found.key)
+		// A linked producer is already confirmed or corrected, and its link would be refused anyway.
+		if (index.linked.has(found.continuation.evidence.requestId)) done.add(found.key)
+		// A work named by an unknown record type waits without holding back the other receipts.
+		if (!done.has(found.key) && !unknownRecords(history, row.workId).length)
+			candidates.set(found.key, { row, continuation: found.continuation })
+	}
+	const keys = [...candidates.keys()].sort()
+	const start = Math.max(0, keys.indexOf(progress.nextContinuation ?? ""))
+	let wrote = false
+	for (let offset = 0; offset < Math.min(keys.length, MAX_CONTINUATIONS_PER_PASS); offset++) {
+		checkBudget()
+		const position = (start + offset) % keys.length
+		// A slow or broken receipt yields its place; it remains eligible on a later pass.
+		progress.nextContinuation = keys[(position + 1) % keys.length]
+		const candidate = candidates.get(keys[position])
+		if (!candidate) continue
+		const { row, continuation } = candidate
+		const acceptedAt = typeof row.recordedAt === "string" ? Date.parse(row.recordedAt) : Number.NaN
+		if (continuation.source !== "named-artifact" && !Number.isFinite(acceptedAt)) continue
+		const scope = readWorkScope(row.workId)
+		if (!scope) continue
+		const link = continuationLink(continuation, scope, index, checkBudget, acceptedAt)
+		if (link === null) done.add(keys[position])
+		if (!link) continue
+		checkBudget()
+		appendWorkRecord(
+			{ cwd: String(row.cwd), sessionManager: { getSessionId: () => row.sessionId } },
+			link,
+			row.workId,
+			join(agentDir, "work-attribution", `${encodeURIComponent(row.sessionId)}.jsonl`),
+		)
+		wrote = true
+		done.add(keys[position])
+		indexRecord(index, { ...link, version: 1, workId: row.workId, sessionId: row.sessionId })
+	}
+	if (keys.length > MAX_CONTINUATIONS_PER_PASS) return
+	if (!wrote) progress.settledJournals = journals
+	if (keys.every((key) => done.has(key))) progress.quiet = { since: startedAt, receipts }
 }
 
 /** Explicit repair chooses one input segment; choosing its current work confirms an uncertain assignment. */

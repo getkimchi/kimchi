@@ -18,25 +18,38 @@ const RECOVERY_VERSION = 5
 const RECOVERY_MTIME_SLACK_MS = 2000
 /** Background reads yield to the event loop after each chunk of this size. */
 const READ_CHUNK_BYTES = 1_048_576
+const BUDGET_CHECK_LINES = 1024
 interface SummaryEntry {
 	sessionId: string
 	[key: string]: unknown
 }
+const WORK_RECORD_TYPES = [
+	"work",
+	"work_link",
+	"request",
+	"request_dispatch",
+	"request_response",
+	"request_cost",
+	"plan",
+	"commit",
+	"file_transition",
+	"file_observation",
+] as const
+const KNOWN_RECORD_TYPES: ReadonlySet<unknown> = new Set(WORK_RECORD_TYPES)
 export interface WorkRecord extends SummaryEntry {
 	version: 1
-	type:
-		| "work"
-		| "work_link"
-		| "request"
-		| "request_dispatch"
-		| "request_response"
-		| "request_cost"
-		| "plan"
-		| "commit"
-		| "file_transition"
-		| "file_observation"
+	type: (typeof WORK_RECORD_TYPES)[number]
 	workId: string
 }
+/**
+ * A journal line that readWorkRecords did not return. "invalid" is damage: an unparseable line or a record that fails
+ * validation. "unknown-type" is a complete version-1 record of a type this version does not know, usually written by a
+ * newer Kimchi sharing this history. Readers that need complete history, such as PR cost reporting, must treat both
+ * kinds as incomplete history.
+ */
+export type WorkRecordProblem =
+	| { kind: "invalid"; path: string; line: number }
+	| { kind: "unknown-type"; path: string; line: number; record: Record<string, unknown> }
 interface WorkSummary {
 	version: 1
 	workId: string
@@ -102,6 +115,16 @@ function record(value: unknown): value is WorkRecord {
 			return false
 	}
 }
+function unknownType(value: unknown): value is Record<string, unknown> {
+	return (
+		object(value) &&
+		value.version === 1 &&
+		isWorkId(value.workId) &&
+		typeof value.sessionId === "string" &&
+		typeof value.type === "string" &&
+		!KNOWN_RECORD_TYPES.has(value.type)
+	)
+}
 function validSummary(value: unknown, workId: string): value is WorkSummary {
 	return (
 		object(value) &&
@@ -157,25 +180,95 @@ function parseRecord(line: string, records: WorkRecord[]): void {
 		/* interrupted append */
 	}
 }
-export function readWorkRecords(agentDir: string, modifiedSince?: number): WorkRecord[] {
+/** An interrupted append leaves a record cut off mid-value; any other unparseable line is damage. */
+function truncated(line: string): boolean {
+	const closing: string[] = []
+	let inString = false
+	// Where an escape sequence such as \n or \u001b began, and how many \u hex digits it still needs.
+	let escapeStart = -1
+	let hexDigits = 0
+	for (let index = 0; index < line.length; index++) {
+		const char = line[index]
+		if (escapeStart >= 0) {
+			if (hexDigits) {
+				if (--hexDigits === 0) escapeStart = -1
+			} else if (char === "u") hexDigits = 4
+			else escapeStart = -1
+		} else if (inString) {
+			if (char === "\\") escapeStart = index
+			else if (char === '"') inString = false
+		} else if (char === '"') inString = true
+		else if (char === "{" || char === "[") closing.push(char === "{" ? "}" : "]")
+		else if ((char === "}" || char === "]") && closing.pop() !== char) return false
+	}
+	if (!closing.length) return false
+	// Close an open string before any partial escape, or drop a partial number or literal in a value position,
+	// then complete the value.
+	const start = inString
+		? `${escapeStart >= 0 ? line.slice(0, escapeStart) : line}"`
+		: line.replace(/(?<=[:[,])[\w.+-]+$/, "")
+	const end = closing.reverse().join("")
+	return ["", "null", ":null", '"":null'].some((value) => {
+		try {
+			JSON.parse(`${start}${value}${end}`)
+			return true
+		} catch {
+			return false
+		}
+	})
+}
+export function readWorkRecords(
+	agentDir: string,
+	modifiedSince?: number,
+	checkBudget: () => void = () => {},
+	onRecordProblem?: (problem: WorkRecordProblem) => void,
+): WorkRecord[] {
+	checkBudget()
 	const directory = join(agentDir, "work-attribution")
 	if (!existsSync(directory)) return []
 	const records: WorkRecord[] = []
 	// Both kinds of source journals feed work.json; there is no second copy of file evidence.
 	for (const source of [directory, join(directory, "transitions")]) {
+		checkBudget()
 		if (!existsSync(source)) continue
 		for (const file of readdirSync(source, { withFileTypes: true })) {
+			checkBudget()
 			if (!file.isFile() || !file.name.endsWith(".jsonl")) continue
 			try {
 				const path = join(source, file.name)
 				if (modifiedSince !== undefined && statSync(path).mtimeMs < modifiedSince) continue
-				for (const line of readFileSync(path, "utf8").split("\n")) parseRecord(line, records)
+				const lines = readFileSync(path, "utf8").split("\n")
+				let last = lines.length - 1
+				while (last > 0 && !lines[last].trim()) last--
+				for (const [index, line] of lines.entries()) {
+					// The first check follows each file read; later ones skip lines, as a clock read per line adds up.
+					if (index % BUDGET_CHECK_LINES === 0) checkBudget()
+					if (!line.trim()) continue
+					let value: unknown
+					try {
+						value = JSON.parse(line)
+					} catch {
+						// The final line may still be in progress. A cut-off record that later appends moved past was
+						// interrupted; anything else, including a cut-off final record, is damage.
+						if (index < lines.length - 1 && !(index < last && truncated(line)))
+							onRecordProblem?.({ kind: "invalid", path, line: index + 1 })
+						continue
+					}
+					if (record(value)) records.push(value)
+					else
+						onRecordProblem?.(
+							unknownType(value)
+								? { kind: "unknown-type", path, line: index + 1, record: value }
+								: { kind: "invalid", path, line: index + 1 },
+						)
+				}
 			} catch (error) {
 				// An incomplete scan must not advance recovery past a journal we could not read.
 				throw new Error(`Could not read work ledger ${file.name}`, { cause: error })
 			}
 		}
 	}
+	checkBudget()
 	return records
 }
 /** The journals both readers parse, in the same order. */

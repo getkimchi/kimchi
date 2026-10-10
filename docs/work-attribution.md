@@ -137,7 +137,15 @@ If account verification is unavailable for a new work's first input, the work ke
 
 Continuing a verified plan or native artifact also checks its producing request. Kimchi confirms the requests from that input under the continued work, whether they were ordinary session work, inferred or unresolved. For example, `Plan docs/new-feature.md` starts as session work; continuing its saved plan later confirms the planning requests automatically. Other inputs in that conversation stay unchanged.
 
-This needs one recorded producer, an unchanged retained plan version or native edit, and matching account/repository scope. Missing or conflicting producer records stay unresolved. An existing correction or revocation takes precedence. The resulting `workLinks` entry names the plan/artifact evidence, producing `requestId` and `segmentId`; no source rows are rewritten. Model guesses do not create these confirmations.
+This needs one recorded producer, the accepted retained plan version or native edit, and matching account/repository scope. Requests the work made before its delayed first scope stay unscoped and do not prevent this; a request saved under another account or repository does. Missing or conflicting producer records stay unresolved. An existing correction or revocation takes precedence. The resulting `workLinks` entry names the plan/artifact evidence, producing `requestId` and `segmentId`; no source rows are rewritten. Model guesses do not create these confirmations.
+
+Kimchi saves each accepted continuation, including a reference to the current work. Plan receipts retain a hash of the accepted bytes; receipts also retain the original account, repository and accepting input, plus the producing request when it is known. Editing a plan later does not change that receipt.
+
+After restart and during ordinary background reconciliation, Kimchi retries accepted continuations whose producer could not yet be confirmed. It uses the original scoped records and makes no model or authentication calls for this repair. A restored source record can complete the evidence. A later identical plan cannot replace a known producer; without a pinned producer, the source record must predate acceptance. Missing evidence stays unresolved and is retried. Old plan receipts without an acceptance hash remain unresolved, even when they name a retained snapshot; older native-artifact receipts can use their exact saved transition ID. This never changes original request IDs or exact prices, and it cannot replace a correction or revocation.
+
+Repair shares the existing reconciliation worker and lease. PR discovery and billing run first. Each repair pass reads history once and checks its three-second budget. It skips receipts that are confirmed or can never be, because their producing input already has a confirmation or correction or was an explicit choice, and examines at most 25 others, rotating past slow or failed candidates. Failed or interrupted passes do not mark history complete. When a pass has examined every remaining receipt and confirmed none, later passes skip the read until a journal changes. A retained plan file restored by hand is therefore checked after the next journal write. Once no receipt can still be confirmed, later passes read only the journals changed since, looking for new receipts.
+
+A crash can leave the last journal line unfinished. Readers skip that line while it has no final newline. The next append starts a new line and leaves the unfinished bytes in place, because another process may be appending to the same journal. Readers skip a record that was cut off mid-value once later records follow it, including journals written by v1.7.1, so another session can still continue a plan. Other malformed lines and invalid complete records still block confirmation and historical repair until the journal is repaired; the warning names the journal and its first damaged line. A complete record of a type this version does not know, for example one written by a newer Kimchi sharing this history, is not damage. It blocks confirmation only for the work and requests it names, with a warning that names its journal; other works are still confirmed.
 
 If planning and implementation already ended up in separate works, open the implementing work and run:
 
@@ -285,7 +293,7 @@ Kimchi tries credentials in this order: an environment token for the selected ho
 
 Before sending a covered model request, Kimchi saves and flushes its request ID, work ID, session ID, input segment and account/repository scope. Missing scope is saved as `null`. It then sends `X-Request-Id`. This also works with telemetry disabled.
 
-Records with the same work ID go into the same `work.json`. Requests are deduplicated by request ID; commit records keep the contributing sessions. `fileTransitions` keeps native edits, `fileObservations` keeps candidate Bash/MCP changes, `continuations` explains why another session adopted the work, and `workLinks` keeps correction revisions. IDs identify records; array positions have no meaning.
+Records with the same work ID go into the same `work.json`. Requests are deduplicated by request ID; commit records keep the contributing sessions. `fileTransitions` keeps native edits, `fileObservations` keeps candidate Bash/MCP changes, `continuations` explains why an input continued the current or another saved work, and `workLinks` keeps correction revisions. IDs identify records; array positions have no meaning.
 
 A request record describes an attempt. It does not prove a successful response or a charge. Covered HTTP replies add their status and safe response IDs. Billing lookups later add exact prices when available. `work.json` contains paths, request metadata, PR links and billing rows, with no prompts or file contents. Retained native plans contain the plan text and stay local. PR lookup sends repository and commit identifiers to the repository's GitHub or GitLab API.
 
@@ -470,7 +478,7 @@ Cost per PR is listed in `/resources` like other built-in extensions and is on b
 - **Shared costs:** planning and requests without complete exclusive edit evidence stay shared when the work spans several PRs.
 - **Missing request identity:** older untagged attempts and requests whose billing tag had to be skipped stay unpriced.
 - **Stable repository IDs:** recover stable provider IDs for older links that lack them.
-- **Historical repair:** old records without account or producer evidence stay unresolved. Automatic replay of newly available evidence is still separate work.
+- **Historical repair:** accepted plan and artifact continuations are retried automatically, but plan receipts saved without an acceptance hash and records without account or producer evidence stay unresolved.
 - **Remote agents:** link their requests and returned commits to the local work. Remote sessions are outside this MVP.
 
 <details>

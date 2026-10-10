@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import {
+	appendFileSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -17,13 +19,14 @@ import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
-import { appendWorkRecord, createWorkAttributionExtension, getWorkId } from "../work-attribution.js"
+import { appendWorkRecord, createWorkAttributionExtension, getWorkId, getWorkSegment } from "../work-attribution.js"
 import { createCommitTrackingBashTool } from "./commits.js"
 import { findWorkContinuation } from "./continuation.js"
 import { calculatePullRequestCosts } from "./costs.js"
 import { createTrackedWriteTool } from "./file-transitions.js"
-import { correctWorkLink } from "./links.js"
+import { correctWorkLink, reconcileWorkContinuations } from "./links.js"
 import * as scope from "./scope.js"
+import * as summary from "./summary.js"
 import { flushWorkSummaries, readWorkRecords, recoverWorkSummaries, type WorkRecord } from "./summary.js"
 
 let root: string | undefined
@@ -55,11 +58,11 @@ async function planningRepository() {
 	const path = "docs/adr/decision.md"
 	await createTrackedWriteTool(ctx, "write-adr").execute("write-adr", { path, content: "# Build the feature\n" })
 	const workId = getWorkId(ctx)
-	return { cwd, git, path, workId, agentDir: join(root, "agent") }
+	return { cwd, git, path, workId, captured, agentDir: join(root, "agent") }
 }
 
 it.each([0, 7])("records a candidate observation for an ADR written by Bash before exit %s", async (exitCode) => {
-	const { cwd, agentDir } = await planningRepository()
+	const { cwd, captured, agentDir } = await planningRepository()
 	const ctx = createContext({ cwd, sessionManager: { getSessionId: () => `bash-planner-${exitCode}` } })
 	const workId = getWorkId(ctx)
 	const path = "docs/adr/from-bash.md"
@@ -96,17 +99,17 @@ it.each([0, 7])("records a candidate observation for an ADR written by Bash befo
 	recoverWorkSummaries()
 	await flushWorkSummaries()
 	expect(JSON.parse(readFileSync(summaryPath, "utf8")).fileObservations).toEqual(saved.fileObservations)
-	expect(await findWorkContinuation({ cwd }, `Implement ${path}`)).toBeUndefined()
+	expect(await findWorkContinuation({ cwd }, `Implement ${path}`, captured)).toEqual({ owned: false })
 })
 
 it("does not claim a human-written ADR after a read-only Bash call", async () => {
-	const { cwd, agentDir } = await planningRepository()
+	const { cwd, captured, agentDir } = await planningRepository()
 	const path = "docs/adr/from-human.md"
 	writeFileSync(join(cwd, path), "# Human decision\n")
 	const ctx = createContext({ cwd, sessionManager: { getSessionId: () => "bash-reader" } })
 	await createCommitTrackingBashTool(ctx).execute("read-adr", { command: `cat ${path}` }, undefined, undefined, ctx)
 
-	expect(await findWorkContinuation({ cwd }, `Implement ${path}`)).toBeUndefined()
+	expect(await findWorkContinuation({ cwd }, `Implement ${path}`, captured)).toEqual({ owned: false })
 	expect(readWorkRecords(agentDir)).not.toContainEqual(
 		expect.objectContaining({
 			type: "file_observation",
@@ -156,25 +159,43 @@ it.each(
 })
 
 it("continues a named skill-written ADR across worktrees without native plan mode", async () => {
-	const { cwd, git, path, workId } = await planningRepository()
-	expect(await findWorkContinuation({ cwd }, `/skill:implement ${path}`)).toMatchObject({
+	const { cwd, git, path, workId, captured } = await planningRepository()
+	expect((await findWorkContinuation({ cwd }, `/skill:implement ${path}`, captured)).match).toMatchObject({
 		workId,
 		source: "named-artifact",
 		evidence: { path: join(cwd, path), branch: "feature" },
 	})
-	expect(await findWorkContinuation({ cwd }, "/skill:implement")).toBeUndefined()
+	expect(await findWorkContinuation({ cwd }, "/skill:implement", captured)).toEqual({ owned: false })
 	git("add", path)
 	git("commit", "-q", "-m", "Save the ADR")
 	const otherTree = join(cwd, "..", "implementation")
 	git("worktree", "add", "-q", "-b", "implementation", otherTree)
-	expect(await findWorkContinuation({ cwd: otherTree }, `Implement ${path}`)).toMatchObject({
+	expect((await findWorkContinuation({ cwd: otherTree }, `Implement ${path}`, captured)).match).toMatchObject({
 		workId,
 		source: "named-artifact",
 		evidence: { path: join(otherTree, path), worktree: cwd },
 	})
-	expect(await findWorkContinuation({ cwd: otherTree }, "/skill:implement")).toBeUndefined()
+	expect(await findWorkContinuation({ cwd: otherTree }, "/skill:implement", captured)).toEqual({ owned: false })
 	writeFileSync(join(otherTree, path), "# Different work\n")
-	expect(await findWorkContinuation({ cwd: otherTree }, `Implement ${path}`)).toBeUndefined()
+	// The changed copy cannot continue the ADR's work, but it still names that work.
+	expect(await findWorkContinuation({ cwd: otherTree }, `Implement ${path}`, captured)).toEqual({ owned: true })
+})
+
+it("leaves an input naming an ADR owned from another worktree unresolved without reading every journal", async () => {
+	const { cwd, git, path, workId } = await planningRepository()
+	git("add", path)
+	git("commit", "-q", "-m", "Save the ADR")
+	const otherTree = join(cwd, "..", "implementation")
+	git("worktree", "add", "-q", "-b", "implementation", otherTree)
+	writeFileSync(join(otherTree, path), "# Revised by hand\n")
+	const ctx = createContext({ cwd: otherTree, sessionManager: { getSessionId: () => "other-tree" } })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	const journals = vi.spyOn(summary, "readWorkRecords")
+	await api.getHandler<InputEvent>("input")({ type: "input", source: "interactive", text: `Revise ${path}` }, ctx)
+	expect(getWorkId(ctx)).not.toBe(workId)
+	expect(getWorkSegment(ctx)).toMatchObject({ attribution: "unknown", reason: "unresolved-reference" })
+	expect(journals).not.toHaveBeenCalled()
 })
 
 it.each(["interactive", "rpc"] as const)("adopts a pasted plan before the first %s request", async (source) => {
@@ -197,7 +218,26 @@ it.each(["interactive", "rpc"] as const)("adopts a pasted plan before the first 
 		expect.objectContaining({
 			sessionId: "pasted-session",
 			source: "pasted-plan",
-			evidence: { path: saved.snapshotPath },
+			evidence: expect.objectContaining({ path: saved.snapshotPath, contentHash: saved.contentHash }),
+		}),
+	)
+})
+
+it("reads work history once to pin and confirm a plan continuation", async () => {
+	const flow = await recordedPlan("path")
+	const reads = vi.spyOn(summary, "readWorkRecords")
+	await flow.input({ type: "input", source: "interactive", text: flow.text }, flow.implementer)
+	expect(reads).toHaveBeenCalledOnce()
+	expect(getWorkId(flow.implementer)).toBe(flow.workId)
+	const rows = readWorkRecords(flow.agentDir)
+	expect(rows.filter((row) => row.type === "work_link")).toMatchObject([
+		{ requestIds: [flow.research, flow.producer].sort() },
+	])
+	expect(rows).toContainEqual(
+		expect.objectContaining({
+			type: "work",
+			sessionId: "consumer",
+			continuation: expect.objectContaining({ evidence: expect.objectContaining({ requestId: flow.producer }) }),
 		}),
 	)
 })
@@ -522,4 +562,75 @@ it.each([
 	)
 	// Keeping a work marker is not proof that the old request produced this new content.
 	expect(readWorkRecords(flow.agentDir).filter((row) => row.type === "work_link")).toEqual([])
+})
+
+it.each(
+	(["path", "snapshot", "paste", "artifact"] as const).flatMap((kind) =>
+		[false, true].map((sameWork) => ({ kind, sameWork })),
+	),
+)("retains accepted $kind evidence and original scope (same work: $sameWork)", async ({ kind, sameWork }) => {
+	const flow = await recordedPlan(kind)
+	const ctx = sameWork ? flow.planner : flow.implementer
+	await flow.input({ type: "input", source: "rpc", text: flow.text }, ctx)
+	const rows = readWorkRecords(flow.agentDir)
+	const receipt = rows.find(
+		(row) => row.type === "work" && row.sessionId === ctx.sessionManager.getSessionId() && row.continuation,
+	)
+	expect(receipt).toMatchObject({
+		workId: flow.workId,
+		continuation: {
+			source: kind === "artifact" ? "named-artifact" : kind === "paste" ? "pasted-plan" : "saved-plan",
+			evidence: {
+				segmentId: expect.any(String),
+				requestId: flow.producer,
+				...createWorkScopeSnapshot(join(flow.cwd, ".git")).scope,
+				...(kind === "artifact" ? {} : { contentHash: rows.find((row) => row.type === "plan")?.contentHash }),
+			},
+		},
+	})
+})
+
+it("retains the edited snapshot's accepted bytes after the original snapshot is restored", async () => {
+	const flow = await recordedPlan("snapshot")
+	const plan = readWorkRecords(flow.agentDir).find((row) => row.type === "plan")
+	if (typeof plan?.snapshotPath !== "string") throw new Error("Missing retained plan")
+	const original = readFileSync(plan.snapshotPath)
+	const edited = `<!-- kimchi-work-id: ${flow.workId} -->\n# Different accepted task\n`
+	writeFileSync(plan.snapshotPath, edited)
+	await flow.input({ type: "input", source: "interactive", text: flow.text }, flow.implementer)
+	writeFileSync(plan.snapshotPath, original)
+	const rows = readWorkRecords(flow.agentDir)
+	expect(rows.filter((row) => row.type === "work_link")).toEqual([])
+	expect(rows.find((row) => row.type === "work" && row.continuation)).toMatchObject({
+		continuation: { evidence: { contentHash: createHash("sha256").update(edited).digest("hex") } },
+	})
+	await reconcileWorkContinuations(flow.agentDir, new AbortController().signal, () => {})
+	expect(readWorkRecords(flow.agentDir).filter((row) => row.type === "work_link")).toEqual([])
+})
+
+it.each([
+	"interactive",
+	"rpc",
+] as const)("repairs same-work acceptance after missing producer requests return (%s)", async (source) => {
+	const flow = await recordedPlan("path")
+	const ledger = join(flow.agentDir, "work-attribution", "producer.jsonl")
+	const original = readWorkRecords(flow.agentDir).filter((row) => row.sessionId === "producer")
+	const request = original.find((row) => row.type === "request" && row.requestId === flow.producer)
+	writeFileSync(
+		ledger,
+		`${original
+			.filter((row) => row !== request)
+			.map((row) => JSON.stringify(row))
+			.join("\n")}\n`,
+	)
+	await flow.input({ type: "input", source, text: flow.text }, flow.planner)
+	expect(readWorkRecords(flow.agentDir).filter((row) => row.type === "work_link")).toEqual([])
+	appendFileSync(ledger, `${JSON.stringify(request)}\n`)
+	await reconcileWorkContinuations(flow.agentDir, new AbortController().signal, () => {})
+	expect(readWorkRecords(flow.agentDir).filter((row) => row.type === "work_link")).toMatchObject([
+		{
+			workId: flow.workId,
+			requestIds: [flow.research, flow.producer].sort(),
+		},
+	])
 })

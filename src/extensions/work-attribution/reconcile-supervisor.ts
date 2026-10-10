@@ -10,6 +10,7 @@ import {
 import { reconcileWorkCosts } from "./cost-sync.js"
 import { debugWorkAttribution as debug } from "./diagnostics.js"
 import { knownTransitionRepositories, reconcileRepositoryTransitions } from "./file-transitions.js"
+import { type ContinuationProgress, reconcileWorkContinuations } from "./links.js"
 
 export const RECONCILIATION_INTERVAL_MS = 30_000
 const PASS_BUDGET_MS = 3000
@@ -19,7 +20,7 @@ interface Channel {
 	controller: AbortController
 	running?: Promise<void>
 }
-interface Supervisor {
+interface Supervisor extends ContinuationProgress {
 	subscribers: Set<ReconciliationSubscriber>
 	controller: AbortController
 	timer?: ReturnType<typeof setInterval>
@@ -132,6 +133,14 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 			(channelSignal, assertChannel) => reconcileWorkCosts(agentDir, channelSignal, assertChannel),
 			(error) => debug("Could not reconcile costs: %o", error),
 		)
+		// Historical repair is local and has its own budget; PR and billing work run first.
+		if ([...owner.subscribers].some((subscriber) => subscriber.kind === "files")) {
+			try {
+				await reconcileWorkContinuations(agentDir, signal, assertLease, owner)
+			} catch (error) {
+				if (!signal.aborted) debug("Could not reconcile work continuations: %o", error)
+			}
+		}
 	} finally {
 		if (!compromised) await release()
 	}
