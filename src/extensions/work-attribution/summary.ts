@@ -402,7 +402,7 @@ interface RowMap {
 	set(key: string, row: SummaryEntry): unknown
 }
 /** One work's rows while records merge: sessions in first-seen order, each collection by row key. */
-export type SummaryRows = { sessions: Set<string> } & Record<Collection, RowMap>
+export type SummaryRows = { sessions: { add(sessionId: string): unknown } } & Record<Collection, RowMap>
 /** Merge rules for one batch of records, applied row by row. */
 export async function mergeWorkRecords(summary: SummaryRows, records: WorkRecord[]): Promise<void> {
 	const { sessions, continuations } = summary
@@ -491,7 +491,7 @@ async function update(
 			await mergeWorkRecords(rows, history.concat(records))
 		},
 	)
-	const bytes = head && Buffer.byteLength(JSON.stringify(head, null, 2))
+	const bytes = head && Buffer.byteLength(JSON.stringify(head))
 	if (bytes && bytes > MANIFEST_WARNING_BYTES)
 		debugWorkAttribution(`Work summary manifest for ${workId} is ${bytes} bytes`)
 }

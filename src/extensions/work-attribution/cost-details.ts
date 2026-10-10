@@ -1,22 +1,35 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { isWorkId } from "../../shared/work-id.js"
-import { decimalNanos, usd } from "./costs.js"
+import type { BillingDisplay } from "./billing-evidence.js"
+import { decimalNanos, type PullRequestCost, type RequestCostAllocation, usd } from "./costs.js"
 import { PRICED_TAG_LIMIT } from "./request-tags.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
 import { object } from "./summary.js"
 
-// The cost lines /work shows, read from the work's saved costs.json.
+// The cost lines /work shows, read from the work's saved cost-totals.json.
+
+/** A request of a saved report, with the billing state `costs.json` shows for it. */
+export type SavedRequestCost = RequestCostAllocation & {
+	/** Why the request was sent without a billing tag; such a request is never priced. */
+	billingTagSkipped?: string
+	billingLookup?: BillingDisplay["billingLookup"]
+}
+
+/** The parts of a work's `costs.json` its totals come from; PRs and requests include connected works'. */
+export interface WorkCostReport {
+	workId: string
+	pullRequests: PullRequestCost[]
+	requests: SavedRequestCost[]
+}
 
 /** A saved report also lists connected works' requests; a work's own are its requests and those linked into it. */
-export function ownRequests(rows: readonly Record<string, unknown>[], workId: string): Record<string, unknown>[] {
-	return rows.filter((row) =>
-		[row.workIds, row.linkedWorkIds].some((ids) => Array.isArray(ids) && ids.includes(workId)),
-	)
+function ownRequests(rows: SavedRequestCost[], workId: string): SavedRequestCost[] {
+	return rows.filter((row) => row.workIds.includes(workId) || row.linkedWorkIds?.includes(workId))
 }
 
 /** Priced requests and the known subtotal of saved request costs; unpriced requests add nothing. */
-export function knownSpend(requests: Record<string, unknown>[]): { priced: number; total: number; nanos: bigint } {
+export function knownSpend(requests: SavedRequestCost[]): { priced: number; total: number; nanos: bigint } {
 	return {
 		priced: requests.filter((row) => row.priceStatus === "priced").length,
 		total: requests.length,
@@ -48,7 +61,7 @@ export interface WorkCostTotals {
 		shared: number
 		/** Requests sent without a billing tag, by reason; such requests are never priced. */
 		untagged?: Record<string, number>
-		/** Requests whose last billing refresh failed before any page, with the newest reason. */
+		/** Requests whose last billing refresh failed, with the newest reason. */
 		failedRefresh?: { count: number; reason?: string }
 	}
 	pullRequests: {
@@ -59,7 +72,7 @@ export interface WorkCostTotals {
 		pullRequest: { provider: string; number: number; state: string; url: string } | null
 		totalCostUsd: string | null
 		knownCostUsd: string
-		/** Confirmed (`explicit`) and inferred parts of a merged or closed PR's spend, as in `costs.json`. */
+		/** Confirmed (`explicit`) and inferred known subtotals of a merged PR's spend. */
 		explicit?: string
 		inferred?: string
 		/** An unmerged PR's spend so far, and whether every request it may include is priced. */
@@ -69,64 +82,49 @@ export interface WorkCostTotals {
 	report: "costs.json"
 }
 
-function spendTotals(rows: Record<string, unknown>[]): SpendTotals {
+function spendTotals(rows: SavedRequestCost[]): SpendTotals {
 	const { priced, total, nanos } = knownSpend(rows)
 	return { total, priced, knownCostUsd: usd(nanos) }
 }
 
 /** Requests sent without a billing tag, by reason. */
-function untaggedTotals(rows: Record<string, unknown>[]): { untagged?: Record<string, number> } {
+function untaggedTotals(rows: SavedRequestCost[]): { untagged?: Record<string, number> } {
 	const untagged: Record<string, number> = {}
-	for (const row of rows)
-		if (typeof row.billingTagSkipped === "string")
-			untagged[row.billingTagSkipped] = (untagged[row.billingTagSkipped] ?? 0) + 1
+	for (const { billingTagSkipped: reason } of rows)
+		if (reason !== undefined) untagged[reason] = (untagged[reason] ?? 0) + 1
 	return Object.keys(untagged).length ? { untagged } : {}
 }
 
-/** Requests whose last billing refresh failed before any page, with the newest reason. */
-function failedRefreshTotals(rows: Record<string, unknown>[]): { failedRefresh?: { count: number; reason?: string } } {
-	const failed = rows.flatMap((row) =>
-		object(row.billingLookup) && row.billingLookup.status === "unavailable" ? [row.billingLookup] : [],
-	)
+/** Requests whose last billing refresh failed, with the newest reason. */
+function failedRefreshTotals(rows: SavedRequestCost[]): { failedRefresh?: { count: number; reason?: string } } {
+	const failed = rows.flatMap(({ billingLookup }) => (billingLookup?.status === "unavailable" ? [billingLookup] : []))
 	if (!failed.length) return {}
-	const latest = failed.reduce((left, right) =>
-		String(right.checkedAt ?? "") > String(left.checkedAt ?? "") ? right : left,
-	)
+	const latest = failed.reduce((left, right) => ((right.checkedAt ?? "") > (left.checkedAt ?? "") ? right : left))
 	return {
-		failedRefresh: { count: failed.length, ...(typeof latest.reason === "string" ? { reason: latest.reason } : {}) },
+		failedRefresh: { count: failed.length, ...(latest.reason === undefined ? {} : { reason: latest.reason }) },
 	}
 }
 
 /** Totals for the work a saved report belongs to. Its requests may include connected works'; PR rows count them all. */
-export function workCostTotals(report: unknown): WorkCostTotals | undefined {
-	if (
-		!object(report) ||
-		typeof report.workId !== "string" ||
-		!Array.isArray(report.pullRequests) ||
-		!Array.isArray(report.requests)
-	)
-		return undefined
-	const { workId } = report
-	const ids = (value: unknown) => (Array.isArray(value) ? value.filter((id) => typeof id === "string") : [])
-	const requests = report.requests.filter(object)
-	const pullRequests = report.pullRequests.filter(object)
+export function workCostTotals({ workId, pullRequests, requests }: WorkCostReport): WorkCostTotals {
 	// Own spend: the work's requests and requests a correction linked into it, not other connected works'.
 	const own = ownRequests(requests, workId)
-	const assigned = (allocation: string) => own.filter((row) => row.allocation === allocation).length
+	const assigned = (allocation: RequestCostAllocation["allocation"]) =>
+		own.filter((row) => row.allocation === allocation).length
 	return {
 		version: 1,
 		workId,
 		group: [
 			...new Set([
 				workId,
-				...requests.flatMap((row) => [...ids(row.workIds), ...ids(row.linkedWorkIds)]),
-				...pullRequests.flatMap((row) => ids(row.workIds)),
+				...requests.flatMap((row) => [...row.workIds, ...(row.linkedWorkIds ?? [])]),
+				...pullRequests.flatMap((row) => row.workIds),
 			]),
 		].sort(),
 		groupRequests: spendTotals(requests),
 		requests: {
 			...spendTotals(own),
-			recorded: requests.filter((row) => ids(row.workIds).includes(workId)).length,
+			recorded: requests.filter((row) => row.workIds.includes(workId)).length,
 			unresolved: assigned("unknown"),
 			inferred: assigned("inferred"),
 			shared: assigned("shared"),
@@ -134,27 +132,24 @@ export function workCostTotals(report: unknown): WorkCostTotals | undefined {
 			...failedRefreshTotals(own),
 		},
 		pullRequests: pullRequests.map((row) => {
-			const pull = object(row.pullRequest) ? row.pullRequest : undefined
-			// An unmerged PR's spend stays outside confirmed and inferred totals until it merges.
-			const unmerged = pull && pull.state !== "merged"
+			const pull = row.pullRequest
 			return {
-				key: String(row.key),
-				account: isWorkAccount(row.account) ? row.account : null,
-				own: ids(row.workIds).includes(workId),
-				pullRequest:
-					pull &&
-					(pull.provider === "github" || pull.provider === "gitlab") &&
-					typeof pull.number === "number" &&
-					typeof pull.state === "string" &&
-					typeof pull.url === "string"
-						? { provider: pull.provider, number: pull.number, state: pull.state, url: pull.url }
-						: null,
-				totalCostUsd: typeof row.totalCostUsd === "string" ? row.totalCostUsd : null,
-				knownCostUsd: String(row.knownCostUsd),
-				...(!unmerged && object(row.explicit) && object(row.inferred)
-					? { explicit: String(row.explicit.knownCostUsd), inferred: String(row.inferred.knownCostUsd) }
-					: {}),
-				...(unmerged ? { soFar: spendSoFar(row, requests) } : {}),
+				key: row.key,
+				account: row.account,
+				own: row.workIds.includes(workId),
+				// A PR link without a provider is GitHub's, as cost reports read stored links.
+				pullRequest: pull && {
+					provider: pull.provider ?? "github",
+					number: pull.number,
+					state: pull.state,
+					url: pull.url,
+				},
+				totalCostUsd: row.totalCostUsd,
+				knownCostUsd: row.knownCostUsd,
+				// An unmerged PR's spend stays outside confirmed and inferred totals until it merges.
+				...(pull && pull.state !== "merged"
+					? { soFar: spendSoFar(row, requests) }
+					: { explicit: row.explicit.knownCostUsd, inferred: row.inferred.knownCostUsd }),
 			}
 		}),
 		report: "costs.json",
@@ -162,13 +157,12 @@ export function workCostTotals(report: unknown): WorkCostTotals | undefined {
 }
 
 /** An open or closed PR's priced spend over the requests counted for it so far. */
-function spendSoFar(row: Record<string, unknown>, requests: Record<string, unknown>[]) {
+function spendSoFar(row: PullRequestCost, requests: SavedRequestCost[]) {
 	const counted = requests.filter(
 		(request) =>
 			request.allocation === "unmerged" &&
-			Array.isArray(request.pullRequestIds) &&
 			request.pullRequestIds.includes(row.key) &&
-			(isWorkAccount(request.account) && isWorkAccount(row.account)
+			(request.account && row.account
 				? sameWorkAccount(request.account, row.account)
 				: request.account === row.account),
 	)
@@ -176,11 +170,9 @@ function spendSoFar(row: Record<string, unknown>, requests: Record<string, unkno
 		knownCostUsd: usd(counted.reduce((sum, request) => sum + (decimalNanos(request.knownCostUsd) ?? 0n), 0n)),
 		// Unpriced, shared or unresolved requests may still belong to this PR.
 		complete:
-			isWorkAccount(row.account) &&
+			row.account !== null &&
 			counted.every((request) => request.priceStatus === "priced") &&
-			[row.sharedRequestIds, row.inferredRequestIds, row.unknownRequestIds].every(
-				(ids) => !Array.isArray(ids) || !ids.length,
-			),
+			[row.sharedRequestIds, row.inferredRequestIds, row.unknownRequestIds].every((ids) => !ids.length),
 	}
 }
 

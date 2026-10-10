@@ -307,16 +307,16 @@ Before sending a covered model request, Kimchi saves and flushes its request ID,
 
 Records with the same work ID go into the same summary. Requests are deduplicated by request ID; commit records keep the contributing sessions. `fileTransitions` keeps native edits, `fileObservations` keeps candidate Bash/MCP changes, `continuations` explains why an input continued the current or another saved work, and `workLinks` keeps correction revisions. IDs identify records; positions have no meaning.
 
-`work.json` is a small manifest. It holds the sessions, what `/work` lists (latest activity, repository, branch, retained plan and every commit's PR links) and one entry per collection. Each collection is an append-only log, `rows/<collection>.<generation>.jsonl`, with one JSON row per line. A later line with the same key replaces an earlier one and keeps its position. Keys are the request, transition and observation IDs; a commit's key is its session, SHA, repository and worktree; a plan's is its session, path and retained copy; a continuation's is its session, source and evidence; and a work link's is the whole revision. Only the first `bytes` of each log, as `work.json` records them, are committed:
+`work.json` is a small manifest written on one line. It holds what `/work` lists (latest activity, repository, branch, retained plan and every commit's PR links) and one entry per log. Each collection is an append-only log, `rows/<collection>.<generation>.jsonl`, with one JSON row per line. The work's sessions are a log too, `rows/sessions.<generation>.jsonl`, which gains a row when a session first contributes. A later line with the same key replaces an earlier one and keeps its position. Keys are the request, transition, observation and session IDs; a commit's key is its session, SHA, repository and worktree; a plan's is its session, path and retained copy; a continuation's is its session, source and evidence; and a work link's is the whole revision. Only the first `bytes` of each log, as `work.json` records them, are committed (formatted here):
 
 ```json
 {
   "version": 2,
   "workId": "6f102360-39a9-4d6e-8ac7-984c97c0e313",
-  "sessions": ["01a10dc0-7ea4-74d8-9b87-9a5026c7b05c"],
   "logs": {
     "requests": { "generation": 3, "bytes": 33441207, "rows": 15012 },
-    "commits": { "generation": 1, "bytes": 41877, "rows": 38 }
+    "commits": { "generation": 1, "bytes": 41877, "rows": 38 },
+    "sessions": { "generation": 1, "bytes": 106, "rows": 2 }
   }
 }
 ```
@@ -338,8 +338,8 @@ All paths below are inside the agent directory.
 
 | File | What it is for |
 | --- | --- |
-| `work/<workId>/work.json` | Manifest: sessions, what `/work` lists and the committed length of each row log. Replacing it commits new rows. |
-| `work/<workId>/rows/<collection>.<generation>.jsonl` | Readable summary rows: request attempts, plans, file edits, continuation evidence, commits and PR links. A later line with the same key replaces an earlier one. |
+| `work/<workId>/work.json` | Manifest: what `/work` lists and the committed length of each row log. Replacing it commits new rows. |
+| `work/<workId>/rows/<collection>.<generation>.jsonl` | Readable summary rows: request attempts, plans, file edits, continuation evidence, commits, PR links and, in `sessions`, the contributing sessions. A later line with the same key replaces an earlier one. |
 | `work/<workId>/cost-totals.json` | What `/work` prints: PR totals, and the work's own requests and priced spend. Rewritten when it changes. |
 | `work/<workId>/costs.json` | Derived PR totals and each request's allocation, price and billing lookup status, for all connected works. Refreshed at most every five minutes after a journal or refresh failure changes, and rebuilt from source records when missing. |
 | `work-attribution/billing-polls.json` | Latest polling times and the last refresh that failed before any billing page, only for requests whose billing window is still open. Replaced after checks, so unchanged results and failed refreshes do not grow the journal. |
@@ -357,7 +357,7 @@ All paths below are inside the agent directory.
 - When a log's superseded lines outweigh half its current rows and exceed 1 MiB, the writer copies each key's latest row into the next generation, commits it and deletes the old file. A reader that loaded the old manifest rereads it once.
 - Recovery saves the time of its last successful scan plus each manifest's size and modification time. It reads source logs changed since then and skips writing unchanged results.
 - A missing or invalid summary, a log shorter than its committed length, or a damaged row triggers a full replay of the work's source logs, including edit journals, into a new generation. A failed log read or summary write leaves the checkpoint unchanged.
-- Summaries saved before row logs keep everything in `work.json` (`"version": 1`). They stay readable and convert on the work's next update; idle works are not rewritten. Releases up to v1.7.1 do not read the new format: they rebuild a version 1 summary from the source logs, without record types they do not know, and the next newer release converts it again and removes the stale logs.
+- Summaries saved before row logs keep everything in `work.json` (`"version": 1`). They stay readable and convert on the work's next update; idle works are not rewritten. Releases up to v1.7.1 do not read the new format: they rebuild a version 1 summary from the source logs, without record types they do not know, and the next newer release converts it again and removes the stale logs. Earlier version 2 manifests that list `sessions` themselves stay readable; the work's next update moves them into the sessions log.
 
 </details>
 

@@ -8,8 +8,9 @@ import { mergePullRequestLinks } from "../pull-request-status/links.js"
 /*
  * Work summary storage. Version 2 `work/<id>/work.json` is a small manifest. Each collection's rows live in
  * `rows/<collection>.<generation>.jsonl`, one version 1 row per line; a later line with the same key replaces an
- * earlier one, and the first line of a key fixes its position. A writer appends changed rows, syncs them, then
- * renames the manifest, which commits them. This module uses plain `fs` so tests and tools can read summaries.
+ * earlier one, and the first line of a key fixes its position. Sessions are a log too, one `{"sessionId"}` row each.
+ * A writer appends changed rows, syncs them, then renames the manifest, which commits them. This module uses plain
+ * `fs` so tests and tools can read summaries.
  */
 
 /** The manifest, and the commit point for every row log. */
@@ -42,14 +43,17 @@ export const COLLECTIONS = [
 	"continuations",
 ] as const
 export type Collection = (typeof COLLECTIONS)[number]
-const COLLECTION_NAMES = new Set<string>(COLLECTIONS)
+/** Every row log: the collections and the work's sessions in first-seen order. */
+export const LOGS = [...COLLECTIONS, "sessions"] as const
+export type LogName = (typeof LOGS)[number]
+const LOG_NAMES = new Set<string>(LOGS)
 
-function isCollection(name: string): name is Collection {
-	return COLLECTION_NAMES.has(name)
+function isLog(name: string): name is LogName {
+	return LOG_NAMES.has(name)
 }
 
-/** Row identity per collection. */
-export const ROW_KEYS: Record<Collection, (row: Row) => string> = {
+/** Row identity per log. */
+export const ROW_KEYS: Record<LogName, (row: Row) => string> = {
 	workLinks: (row) =>
 		JSON.stringify([
 			row.linkId,
@@ -67,9 +71,10 @@ export const ROW_KEYS: Record<Collection, (row: Row) => string> = {
 	fileTransitions: (row) => JSON.stringify(row.transitionId),
 	fileObservations: (row) => JSON.stringify(row.observationId),
 	continuations: (row) => JSON.stringify([row.sessionId, row.source, row.evidence]),
+	sessions: (row) => JSON.stringify(row.sessionId),
 }
 
-/** `rows/<collection>.<generation>.jsonl`. Bytes past `bytes` belong to an interrupted append and are ignored. */
+/** `rows/<log>.<generation>.jsonl`. Bytes past `bytes` belong to an interrupted append and are ignored. */
 export interface RowLog {
 	/** Positive for a log file. `readWorkHead` reports rows still inside a version 1 `work.json` as generation 0. */
 	generation: number
@@ -96,10 +101,10 @@ export interface WorkHead {
 	workId: string
 	/** Time of the last committed change. */
 	updatedAt: string
-	/** Sessions in first-seen order. */
-	sessions: string[]
+	/** Sessions in first-seen order, in manifests written before the sessions log; the next update moves them. */
+	sessions?: string[]
 	/** A missing log is an empty collection. */
-	logs: Partial<Record<Collection, RowLog>>
+	logs: Partial<Record<LogName, RowLog>>
 	latest: WorkLatest
 	/** PR links of every commit row, merged. */
 	pullRequests: Record<string, unknown>[]
@@ -139,7 +144,7 @@ function text(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined
 }
 
-export function logPath(folder: string, collection: Collection, generation: number): string {
+export function logPath(folder: string, collection: LogName, generation: number): string {
 	return join(folder, ROWS, `${collection}.${generation}.jsonl`)
 }
 
@@ -150,16 +155,12 @@ export function isWorkHead(value: unknown, workId: string): value is WorkHead {
 		value.version === 2 &&
 		value.workId === workId &&
 		typeof value.updatedAt === "string" &&
-		Array.isArray(value.sessions) &&
-		value.sessions.every((session) => typeof session === "string") &&
+		(value.sessions === undefined ||
+			(Array.isArray(value.sessions) && value.sessions.every((session) => typeof session === "string"))) &&
 		object(value.logs) &&
 		Object.entries(value.logs).every(
 			([name, log]) =>
-				isCollection(name) &&
-				object(log) &&
-				count(log.generation, 1) &&
-				count(log.rows, 1) &&
-				count(log.bytes, log.rows + 1),
+				isLog(name) && object(log) && count(log.generation, 1) && count(log.rows, 1) && count(log.bytes, log.rows + 1),
 		) &&
 		object(value.latest) &&
 		Array.isArray(value.pullRequests)
@@ -191,7 +192,7 @@ function versionOneView(value: unknown, workId: string): WorkSummaryView | undef
 	})
 }
 
-function parseRow(line: string, collection: Collection): Row {
+function parseRow(line: string, collection: LogName): Row {
 	let row: unknown
 	try {
 		row = JSON.parse(line)
@@ -203,7 +204,7 @@ function parseRow(line: string, collection: Collection): Row {
 }
 
 /** Rows of one committed range, folded by key. */
-function foldLog(collection: Collection, buffer: Buffer): Row[] {
+function foldLog(collection: LogName, buffer: Buffer): Row[] {
 	const rows = new Map<string, Row>()
 	let start = 0
 	for (let end = buffer.indexOf(10); end !== -1; end = buffer.indexOf(10, start)) {
@@ -216,7 +217,7 @@ function foldLog(collection: Collection, buffer: Buffer): Row[] {
 }
 
 /** The committed bytes of one log. A compaction may delete it after its manifest was read (ENOENT). */
-function readLogSync(folder: string, collection: Collection, generation: number, bytes: number): Buffer {
+function readLogSync(folder: string, collection: LogName, generation: number, bytes: number): Buffer {
 	const fd = openSync(logPath(folder, collection, generation), "r")
 	try {
 		const buffer = Buffer.allocUnsafe(bytes)
@@ -260,7 +261,7 @@ function readCommitted<T>(
 	}
 }
 
-function foldCommitted(folder: string, head: WorkHead, collection: Collection): Row[] {
+function foldCommitted(folder: string, head: WorkHead, collection: LogName): Row[] {
 	const log = head.logs[collection]
 	return log ? foldLog(collection, readLogSync(folder, collection, log.generation, log.bytes)) : []
 }
@@ -271,7 +272,12 @@ export function readWorkSummary(agentDir: string, workId: string): WorkSummaryVi
 		agentDir,
 		workId,
 		(view) => view,
-		(folder, head) => summaryView(workId, head.sessions, (collection) => foldCommitted(folder, head, collection)),
+		(folder, head) =>
+			summaryView(
+				workId,
+				head.sessions ?? foldCommitted(folder, head, "sessions").map((row) => row.sessionId),
+				(collection) => foldCommitted(folder, head, collection),
+			),
 	)
 }
 
@@ -314,10 +320,9 @@ export async function readWorkHead(
 export function summaryHead(value: unknown, workId: string, updatedAt: string): WorkHead | undefined {
 	const view = versionOneView(value, workId)
 	if (!view) return undefined
-	const logs: Partial<Record<Collection, RowLog>> = {}
-	for (const collection of COLLECTIONS)
-		if (view[collection].length) logs[collection] = { generation: 0, bytes: 0, rows: view[collection].length }
-	return { version: 2, workId, updatedAt, sessions: view.sessions, logs, ...summaryLatest((name) => view[name]) }
+	const logs: Partial<Record<LogName, RowLog>> = {}
+	for (const name of LOGS) if (view[name].length) logs[name] = { generation: 0, bytes: 0, rows: view[name].length }
+	return { version: 2, workId, updatedAt, logs, ...summaryLatest((name) => view[name]) }
 }
 
 /** Milliseconds of an ISO 8601 timestamp, as `/work` orders rows; impossible dates are not times. */
@@ -407,11 +412,11 @@ interface LogIndex {
 const indexes = new Map<string, { index: LogIndex; rows: number }>()
 let indexedRows = 0
 
-function cached(folder: string, collection: Collection): LogIndex | undefined {
+function cached(folder: string, collection: LogName): LogIndex | undefined {
 	return indexes.get(`${folder}\0${collection}`)?.index
 }
 
-function remember(folder: string, collection: Collection, index: LogIndex): void {
+function remember(folder: string, collection: LogName, index: LogIndex): void {
 	const key = `${folder}\0${collection}`
 	const previous = indexes.get(key)
 	if (previous) {
@@ -429,7 +434,7 @@ function remember(folder: string, collection: Collection, index: LogIndex): void
 
 /** Drops this work's positions; its next update scans the logs again. */
 function forget(folder: string): void {
-	for (const collection of COLLECTIONS) {
+	for (const collection of LOGS) {
 		const key = `${folder}\0${collection}`
 		const entry = indexes.get(key)
 		if (!entry) continue
@@ -449,7 +454,7 @@ async function readExactly(handle: FileHandle, buffer: Buffer, position: number)
 /** Indexes committed lines from `index.bytes` to `end`; each must be a valid row, and the range must end a line. */
 async function scanLog(
 	handle: FileHandle,
-	collection: Collection,
+	collection: LogName,
 	index: LogIndex,
 	end: number,
 	check: RowCheck,
@@ -464,7 +469,8 @@ async function scanLog(
 		let start = 0
 		for (let stop = buffer.indexOf(10); stop !== -1; stop = buffer.indexOf(10, start)) {
 			const row = parseRow(buffer.toString("utf8", start, stop), collection)
-			if (!check(collection, row)) throw new RowLogDamage(`A ${collection} row is invalid`)
+			// A session row is valid once it names its session.
+			if (collection !== "sessions" && !check(collection, row)) throw new RowLogDamage(`A ${collection} row is invalid`)
 			const key = ROW_KEYS[collection](row)
 			const previous = index.lines.get(key)
 			if (previous) index.live -= previous.length + 1
@@ -480,8 +486,8 @@ async function scanLog(
 	index.bytes = end
 }
 
-/** Next unused generation of a collection, past any file a crash or another version left behind. */
-async function nextGeneration(folder: string, collection: Collection, current = 0): Promise<number> {
+/** Next unused generation of a log, past any file a crash or another version left behind. */
+async function nextGeneration(folder: string, collection: LogName, current = 0): Promise<number> {
 	let highest = current
 	for (const name of await readdir(join(folder, ROWS)).catch(() => [])) {
 		const match = /^(\w+)\.(\d+)\.jsonl$/.exec(name)
@@ -495,7 +501,7 @@ async function removeStrays(folder: string, head: WorkHead): Promise<void> {
 	for (const name of await readdir(join(folder, ROWS)).catch(() => [])) {
 		const match = /^(\w+)\.(\d+)\.jsonl$/.exec(name)
 		// A reader may still hold an old generation open. Windows then refuses, and a later update retries.
-		if (match && isCollection(match[1]) && head.logs[match[1]]?.generation !== Number(match[2]))
+		if (match && isLog(match[1]) && head.logs[match[1]]?.generation !== Number(match[2]))
 			await rm(join(folder, ROWS, name), { force: true }).catch(() => {})
 	}
 }
@@ -503,7 +509,7 @@ async function removeStrays(folder: string, head: WorkHead): Promise<void> {
 /** Writes a new log from `[key, line]` pairs; returns its index. */
 async function writeLog(
 	folder: string,
-	collection: Collection,
+	collection: LogName,
 	generation: number,
 	lines: Iterable<[string, string]>,
 	assertLease: () => void,
@@ -571,7 +577,7 @@ export class RowStore {
 	/** Rows read or set in this update, in first-touch order, with the saved line each was read from. */
 	readonly touched = new Map<string, { row: Row; line?: string }>()
 	constructor(
-		private readonly collection: Collection,
+		private readonly collection: LogName,
 		private readonly index?: LogIndex,
 		private readonly readLine?: (line: Line) => string,
 	) {}
@@ -596,12 +602,22 @@ export class RowStore {
 	}
 }
 
-/** Sessions and rows of one work while records merge into it. */
-export type WorkRows = { sessions: Set<string> } & Record<Collection, RowStore>
+/** The work's sessions; one first seen in this update is appended to their log. */
+class SessionStore extends RowStore {
+	add(sessionId: string): void {
+		const key = ROW_KEYS.sessions({ sessionId })
+		if (!this.has(key)) this.set(key, { sessionId })
+	}
+}
 
-function workRows(sessions: Iterable<string>, store: (collection: Collection) => RowStore): WorkRows {
+/** Sessions and rows of one work while records merge into it. */
+export type WorkRows = { sessions: SessionStore } & Record<Collection, RowStore>
+
+/** `saved` lists sessions that no log holds yet. */
+function workRows(sessions: SessionStore, saved: string[], store: (collection: Collection) => RowStore): WorkRows {
+	for (const sessionId of saved) sessions.add(sessionId)
 	return {
-		sessions: new Set(sessions),
+		sessions,
 		workLinks: store("workLinks"),
 		requests: store("requests"),
 		plans: store("plans"),
@@ -619,15 +635,15 @@ interface OpenWork {
 	rebuild: boolean
 	/** A damaged manifest being rebuilt; new generations go past the ones it named. */
 	damaged?: WorkHead
-	indexes: Partial<Record<Collection, LogIndex>>
+	indexes: Partial<Record<LogName, LogIndex>>
 	rows: WorkRows
 	close(): void
 }
 
 /** Opens and checks the committed logs, dropping an interrupted append; damage throws. */
 async function openLogs(folder: string, head: WorkHead, check: RowCheck): Promise<OpenWork> {
-	const indexes: Partial<Record<Collection, LogIndex>> = {}
-	for (const collection of COLLECTIONS) {
+	const indexes: Partial<Record<LogName, LogIndex>> = {}
+	for (const collection of LOGS) {
 		const log = head.logs[collection]
 		if (!log) continue
 		const handle = await open(logPath(folder, collection, log.generation), "r+")
@@ -676,7 +692,8 @@ async function openLogs(folder: string, head: WorkHead, check: RowCheck): Promis
 		head,
 		rebuild: false,
 		indexes,
-		rows: workRows(head.sessions, (collection) => {
+		// A manifest written before the sessions log lists them itself; this update moves them into the log.
+		rows: workRows(new SessionStore("sessions", indexes.sessions), head.sessions ?? [], (collection) => {
 			const index = indexes[collection]
 			return new RowStore(collection, index, index && reader(collection, index))
 		}),
@@ -717,7 +734,7 @@ async function openWork(
 		rebuild: !saved,
 		damaged,
 		indexes: {},
-		rows: workRows(saved?.sessions ?? [], (collection) => {
+		rows: workRows(new SessionStore("sessions"), saved?.sessions ?? [], (collection) => {
 			const store = new RowStore(collection)
 			for (const row of saved?.[collection] ?? []) store.set(ROW_KEYS[collection](row), row)
 			return store
@@ -750,18 +767,17 @@ async function commitWork(
 	assertLease: () => void,
 ): Promise<WorkHead | undefined> {
 	const { head: previous } = work
-	const changes = new Map<Collection, [string, string, Row][]>()
+	const changes = new Map<LogName, [string, string, Row][]>()
 	if (previous)
-		for (const collection of COLLECTIONS) {
+		for (const collection of LOGS) {
 			const changed = await changedLines(work.rows[collection])
 			if (changed.length) changes.set(collection, changed)
 		}
-	const sessions = [...work.rows.sessions]
-	if (previous && !changes.size && sessions.length === previous.sessions.length) return undefined
+	if (previous && !changes.size) return undefined
 	assertLease()
 	await mkdir(join(folder, ROWS), { recursive: true, mode: 0o700 })
-	const logs: Partial<Record<Collection, RowLog>> = {}
-	const written: Partial<Record<Collection, LogIndex>> = {}
+	const logs: Partial<Record<LogName, RowLog>> = {}
+	const written: Partial<Record<LogName, LogIndex>> = {}
 	let values: Pick<WorkHead, "latest" | "pullRequests">
 	let generations = !previous
 	if (previous) {
@@ -783,7 +799,7 @@ async function commitWork(
 				index.lines.set(key, { offset, length })
 				index.live += length + 1
 				offset += length + 1
-				observeLatest(latest, collection, row)
+				if (collection !== "sessions") observeLatest(latest, collection, row)
 			}
 			index.bytes = offset
 			written[collection] = index
@@ -796,7 +812,7 @@ async function commitWork(
 				: previous.pullRequests,
 		}
 	} else {
-		for (const collection of COLLECTIONS) {
+		for (const collection of LOGS) {
 			const { touched } = work.rows[collection]
 			if (!touched.size) continue
 			const generation = await nextGeneration(folder, collection, work.damaged?.logs[collection]?.generation)
@@ -806,9 +822,9 @@ async function commitWork(
 		values = summaryLatest((collection) => [...work.rows[collection].touched.values()].map(({ row }) => row))
 	}
 
-	const head: WorkHead = { version: 2, workId, updatedAt: new Date().toISOString(), sessions, logs, ...values }
-	await writeFileDurably(join(folder, WORK_FILE), `${JSON.stringify(head, null, 2)}\n`, assertLease)
-	for (const collection of COLLECTIONS) {
+	const head: WorkHead = { version: 2, workId, updatedAt: new Date().toISOString(), logs, ...values }
+	await writeFileDurably(join(folder, WORK_FILE), `${JSON.stringify(head)}\n`, assertLease)
+	for (const collection of LOGS) {
 		const index = written[collection]
 		if (index) remember(folder, collection, index)
 	}
@@ -883,7 +899,7 @@ async function compactLogs(
 	}
 
 	const compacted: WorkHead = { ...head, logs, latest, pullRequests }
-	await writeFileDurably(join(folder, WORK_FILE), `${JSON.stringify(compacted, null, 2)}\n`, assertLease)
+	await writeFileDurably(join(folder, WORK_FILE), `${JSON.stringify(compacted)}\n`, assertLease)
 	for (const [collection, index, old] of replaced) {
 		remember(folder, collection, index)
 		await rm(logPath(folder, collection, old), { force: true }).catch(() => {})
@@ -938,7 +954,7 @@ export async function validWorkFiles(
 		return false
 	}
 	if (!isWorkHead(value, workId)) return summary(value)
-	for (const collection of COLLECTIONS) {
+	for (const collection of LOGS) {
 		const log = value.logs[collection]
 		if (!log) continue
 		const info = await stat(logPath(folder, collection, log.generation)).catch(() => undefined)

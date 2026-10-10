@@ -20,8 +20,9 @@ import {
 	openBilling,
 } from "./billing-evidence.js"
 import { type BillingSource, captureBillingSource, LOOKUP_WINDOW_MS, sameBillingSource } from "./billing-source.js"
-import { workCostTotals } from "./cost-details.js"
+import { type SavedRequestCost, workCostTotals } from "./cost-details.js"
 import {
+	type CostTotal,
 	calculatePullRequestCosts,
 	type PullRequestCost,
 	type PullRequestCostReport,
@@ -249,7 +250,7 @@ async function publishReports(
 	for (const row of report.pullRequests) if (row.workIds.length) group(pullRequests, component(row.workIds[0]), row)
 	const requests = new Map<Set<string>, RequestCostAllocation[]>()
 	for (const row of report.requests) if (row.workIds.length) group(requests, component(row.workIds[0]), row)
-	const shown = (row: RequestCostAllocation) => {
+	const shown = (row: RequestCostAllocation): SavedRequestCost => {
 		const display = displays.get(row.requestId)
 		const failure = shownFailure(display, polls[row.requestId])
 		return {
@@ -261,7 +262,10 @@ async function publishReports(
 		}
 	}
 	// Members of one component share the same rows, so build them once per component.
-	const contents = new Map<Set<string>, object>()
+	const contents = new Map<
+		Set<string>,
+		{ pullRequests: PullRequestCost[]; requests: SavedRequestCost[]; unallocated: Record<string, CostTotal> }
+	>()
 	const content = (included: Set<string>) => {
 		let found = contents.get(included)
 		if (found) return found

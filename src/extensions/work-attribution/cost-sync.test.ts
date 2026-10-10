@@ -22,7 +22,7 @@ import { savedWorkSummary } from "../__mocks__/work-summary.js"
 import { appendWorkRecord, getWorkId } from "../work-attribution.js"
 import { captureBillingSource, requestTagSelector } from "./billing-source.js"
 import { readWorkBrowser } from "./browser.js"
-import { costDetailLines, knownSpend, ownRequests, workCostDetails, workCostTotals } from "./cost-details.js"
+import { costDetailLines, workCostDetails, workCostTotals } from "./cost-details.js"
 import { readWorkCostReport, reconcileWorkCosts } from "./cost-sync.js"
 import * as costs from "./costs.js"
 import { calculatePullRequestCosts, decimalNanos, usd } from "./costs.js"
@@ -123,13 +123,20 @@ function previousCostDetailLines(value: unknown, path: string): string[] {
 	}
 	if (Array.isArray(value.requests)) {
 		// PR lines above include connected works; this one is the work's own spend, even without a PR.
-		const own = typeof value.workId === "string" ? ownRequests(requests, value.workId) : requests
-		const spend = knownSpend(own)
+		const { workId } = value
+		const own =
+			typeof workId === "string"
+				? requests.filter((row) =>
+						[row.workIds, row.linkedWorkIds].some((ids) => Array.isArray(ids) && ids.includes(workId)),
+					)
+				: requests
+		const priced = own.filter((row) => row.priceStatus === "priced").length
+		const nanos = own.reduce((sum, row) => sum + (decimalNanos(row.knownCostUsd) ?? 0n), 0n)
 		const unresolved = own.filter((row) => row.allocation === "unknown").length
 		const inferred = own.filter((row) => row.allocation === "inferred").length
 		const shared = own.filter((row) => row.allocation === "shared").length
 		lines.push(
-			`Prices: ${spend.priced}/${spend.total} requests priced, $${usd(spend.nanos)} USD${spend.priced < spend.total ? " known so far" : ""}. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
+			`Prices: ${priced}/${own.length} requests priced, $${usd(nanos)} USD${priced < own.length ? " known so far" : ""}. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
 		)
 		const untagged = new Map<string, number>()
 		for (const row of own)
@@ -166,9 +173,7 @@ afterEach(async () => {
 		const path = join(dir, "work", workId, "costs.json")
 		if (!existsSync(path)) continue
 		const saved = JSON.parse(readFileSync(path, "utf8"))
-		const totals = workCostTotals(saved)
-		if (!totals) continue
-		expect(costDetailLines(totals, path)).toEqual(previousCostDetailLines(saved, path))
+		expect(costDetailLines(workCostTotals(saved), path)).toEqual(previousCostDetailLines(saved, path))
 	}
 	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
@@ -438,10 +443,7 @@ describe("automatic exact work cost lookup", () => {
 		const save = (observations: Parameters<typeof calculatePullRequestCosts>[1]) => {
 			const costs = calculatePullRequestCosts(records, observations)
 			mkdirSync(join(dir, "work", workId), { recursive: true })
-			writeFileSync(
-				join(dir, "work", workId, "cost-totals.json"),
-				JSON.stringify(workCostTotals({ version: 1, workId, ...costs })),
-			)
+			writeFileSync(join(dir, "work", workId, "cost-totals.json"), JSON.stringify(workCostTotals({ workId, ...costs })))
 		}
 		save([])
 		expect(workCostDetails(dir, workId)).toContain(

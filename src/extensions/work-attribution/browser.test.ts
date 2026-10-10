@@ -5,7 +5,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { buildWorkBrowser, readWorkBrowser, type SavedWork } from "./browser.js"
-import { workCostDetails, workCostTotals } from "./cost-details.js"
+import { type WorkCostReport, workCostDetails, workCostTotals } from "./cost-details.js"
+import type { PullRequestCost } from "./costs.js"
 import { summaryHead, type WorkHead } from "./row-log.js"
 
 vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
@@ -46,22 +47,42 @@ function request(requestId: string, startedAt = "2026-10-08T09:00:00Z") {
 function costs(
 	id: string,
 	requests: { requestId: string; usd?: string; priced?: boolean; workIds?: string[]; linkedWorkIds?: string[] }[],
-	pullRequests: unknown[] = [],
-) {
+	pullRequests: PullRequestCost[] = [],
+): WorkCostReport {
 	return {
-		version: 1,
 		workId: id,
 		pullRequests,
 		requests: requests.map(({ requestId, usd = "0", priced = true, workIds = [id], linkedWorkIds }) => ({
 			requestId,
+			account: null,
 			workIds,
 			...(linkedWorkIds ? { linkedWorkIds } : {}),
-			allocation: "unlinked",
+			sessionIds: ["session"],
+			startedAt: null,
 			pullRequestIds: [],
+			allocation: "unlinked",
+			billingRecordIds: [],
 			priceStatus: priced ? "priced" : "missing",
 			knownCostUsd: usd,
 			totalCostUsd: priced ? usd : null,
 		})),
+	}
+}
+/** A saved PR total; request lists and portions not given are empty. */
+function pullRequestCost(
+	row: Pick<PullRequestCost, "key" | "pullRequest" | "workIds" | "knownCostUsd" | "totalCostUsd"> &
+		Partial<PullRequestCost>,
+): PullRequestCost {
+	const empty = { requestIds: [], knownCostUsd: "0.000000000", totalCostUsd: "0.000000000" }
+	return {
+		account: null,
+		requestIds: [],
+		explicit: empty,
+		inferred: empty,
+		sharedRequestIds: [],
+		inferredRequestIds: [],
+		unknownRequestIds: [],
+		...row,
 	}
 }
 function pullRequest(number: number, state: "open" | "closed" | "merged", provider: "github" | "gitlab" = "github") {
@@ -94,7 +115,7 @@ function commit(sha: string, pullRequests: unknown[]) {
 }
 function save(
 	id: string,
-	files: { summary?: unknown; costs?: unknown; totals?: string; plans?: Record<string, string> },
+	files: { summary?: unknown; costs?: WorkCostReport; totals?: string; plans?: Record<string, string> },
 	at = NOW,
 ) {
 	const folder = join(agentDir, "work", id)
@@ -111,7 +132,7 @@ function save(
 	if (files.summary !== undefined) utimesSync(join(folder, "work.json"), new Date(at), new Date(at))
 }
 function browse(
-	works: { workId: string; summary?: ReturnType<typeof summary>; costs?: unknown }[],
+	works: { workId: string; summary?: ReturnType<typeof summary>; costs?: WorkCostReport }[],
 	lines: string[] = [],
 ) {
 	const saved: SavedWork[] = works.map((work) => ({
@@ -239,16 +260,19 @@ describe("work browser rows", () => {
 					{ requestId: "other", usd: "0.125000000", workIds: [second] },
 				],
 				[
-					{
+					pullRequestCost({
 						key: '["github","github.com","7"]',
-						account: null,
 						pullRequest: pullRequest(7, "merged"),
 						workIds: [first, second],
+						requestIds: ["own", "linked", "other"],
 						knownCostUsd: "0.875000000",
 						totalCostUsd: "0.875000000",
-						explicit: { knownCostUsd: "0.875000000" },
-						inferred: { knownCostUsd: "0.000000000" },
-					},
+						explicit: {
+							requestIds: ["own", "linked", "other"],
+							knownCostUsd: "0.875000000",
+							totalCostUsd: "0.875000000",
+						},
+					}),
 				],
 			)
 		const { rows, spend } = browse([
@@ -443,14 +467,13 @@ describe("work browser rows", () => {
 				id,
 				[{ requestId: "r0", usd: "0.250000000" }],
 				[
-					{
+					pullRequestCost({
 						key: '["github","github.com","7"]',
-						account: null,
 						pullRequest: pull,
 						workIds: [id],
 						knownCostUsd: "0.000000000",
 						totalCostUsd: null,
-					},
+					}),
 				],
 			),
 		})
@@ -478,7 +501,6 @@ describe("work browser rows", () => {
 				version: 2,
 				workId: id,
 				updatedAt: new Date(NOW).toISOString(),
-				sessions: ["session"],
 				logs: { requests: { generation: 3, bytes: 33_441_207, rows: 15_000 } },
 				latest: {
 					activityAt: new Date(NOW - index * HOUR).toISOString(),

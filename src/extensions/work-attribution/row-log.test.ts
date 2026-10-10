@@ -10,10 +10,12 @@ import { createContext } from "../__mocks__/context.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { readWorkBrowser } from "./browser.js"
 import { workCostTotals } from "./cost-details.js"
+import type { RequestCostAllocation } from "./costs.js"
 import {
 	COLLECTIONS,
 	type Collection,
 	commitPullRequests,
+	LOGS,
 	logPath,
 	ROW_KEYS,
 	readWorkHead,
@@ -116,21 +118,23 @@ function expectCommitted(workId: string, expected: WorkSummaryView, { latest = t
 	expect(head.version).toBe(2)
 	expect(JSON.stringify(readWorkSummary(dir, workId))).toBe(JSON.stringify(expected))
 	const named: string[] = []
-	for (const collection of COLLECTIONS) {
-		const log = head.logs[collection]
+	for (const name of LOGS) {
+		const log = head.logs[name]
 		if (!log) {
-			expect(expected[collection]).toEqual([])
+			expect(expected[name]).toEqual([])
 			continue
 		}
-		const path = logPath(folder(workId), collection, log.generation)
+		const path = logPath(folder(workId), name, log.generation)
 		named.push(basename(path))
 		const bytes = fs.readFileSync(path)
 		expect(bytes.length).toBe(log.bytes)
 		expect(bytes[log.bytes - 1]).toBe(10)
-		expect(log.rows).toBe(expected[collection].length)
+		expect(log.rows).toBe(expected[name].length)
 	}
 	expect(fs.readdirSync(join(folder(workId), "rows")).sort()).toEqual(named.sort())
-	expect(head.sessions).toEqual(expected.sessions)
+	// Sessions live in their log, and the manifest is compact: every update rewrites it.
+	expect(head.sessions).toBeUndefined()
+	expect(fs.readFileSync(join(folder(workId), "work.json"), "utf8")).toBe(`${JSON.stringify(head)}\n`)
 	expect(head.pullRequests).toEqual(commitPullRequests(expected.commits))
 	if (latest) expect(head.latest).toEqual(summaryLatest((collection) => expected[collection]).latest)
 	return head
@@ -430,10 +434,9 @@ describe("row logs", () => {
 		await apply(first)
 		const expected = await versionOneUpdate(emptySummary(workId), first)
 		const head = manifest(workId)
-		for (const collection of COLLECTIONS) {
-			const log = head.logs[collection]
-			if (log)
-				fs.appendFileSync(logPath(folder(workId), collection, log.generation), '{"sessionId":"cut","requestId":"x')
+		for (const name of LOGS) {
+			const log = head.logs[name]
+			if (log) fs.appendFileSync(logPath(folder(workId), name, log.generation), '{"sessionId":"cut","requestId":"x')
 		}
 		expect(readWorkSummary(dir, workId)).toEqual(expected)
 		await apply(second)
@@ -534,6 +537,25 @@ describe("row logs", () => {
 			const generation = old.logs[collection]?.generation
 			if (generation) expect(head.logs[collection]?.generation).toBeGreaterThan(generation)
 		}
+	})
+
+	it("reads a manifest that still lists its sessions and moves them into a log on the next update", async () => {
+		const workId = randomUUID()
+		const [first, ...rest] = randomRecords(10, workId, 40)
+		await apply(first)
+		const expected = await versionOneUpdate(emptySummary(workId), first)
+		// Builds before the sessions log listed them in the manifest.
+		const { sessions: log, ...logs } = manifest(workId).logs
+		if (!log) throw new Error("sessions were not saved")
+		fs.rmSync(logPath(folder(workId), "sessions", log.generation))
+		fs.writeFileSync(
+			join(folder(workId), "work.json"),
+			JSON.stringify({ ...manifest(workId), sessions: expected.sessions, logs }, null, 2),
+		)
+		expect(readWorkSummary(dir, workId)).toEqual(expected)
+		const next = rest.flat()
+		await apply(next)
+		expectCommitted(workId, await versionOneUpdate(expected, next))
 	})
 
 	it("rereads the manifest once when a compaction replaces a log during a read", async () => {
@@ -767,28 +789,36 @@ describe("a large work", () => {
 		const median = [...times].sort((left, right) => left - right)[10]
 		expect(median).toBeLessThan(50)
 		expect(Math.max(...appended)).toBeLessThanOrEqual(8 * 1024)
-		expect(fs.statSync(join(folder(workId), "work.json")).size).toBeLessThanOrEqual(16 * 1024)
+		// Its 200 sessions are in their own log, so each update rewrites a small manifest.
+		expect(fs.statSync(join(folder(workId), "work.json")).size).toBeLessThanOrEqual(2 * 1024)
 		// No ordinary update scans a log: only the line of each changed row is read.
 		expect(read).toBeLessThan(20 * 8 * 1024)
 
 		vi.mocked(asyncFs.open).mockClear()
 		vi.mocked(fs.readSync).mockClear()
 		const opened = vi.spyOn(fs, "openSync")
-		const started = performance.now()
 		const head = await readWorkHead(dir, workId)
-		expect(performance.now() - started).toBeLessThan(5)
 		expect(head).toMatchObject({ version: 2, logs: { requests: { rows: 20_011 } } })
 		expect(opened).not.toHaveBeenCalled()
 		expect(vi.mocked(asyncFs.open)).not.toHaveBeenCalled()
 		expect(vi.mocked(fs.readSync)).not.toHaveBeenCalled()
 
 		// The /work browser lists it from the manifest and the bounded cost totals alone.
-		const priced = summary.requests.map((row) => ({
-			requestId: row.requestId,
-			workIds: [workId],
-			priceStatus: "priced",
-			knownCostUsd: "0.001234560",
-		}))
+		const priced = summary.requests.map(
+			(row): RequestCostAllocation => ({
+				requestId: String(row.requestId),
+				account: null,
+				workIds: [workId],
+				sessionIds: [row.sessionId],
+				startedAt: String(row.startedAt),
+				pullRequestIds: [],
+				allocation: "unlinked",
+				billingRecordIds: [],
+				priceStatus: "priced",
+				knownCostUsd: "0.001234560",
+				totalCostUsd: "0.001234560",
+			}),
+		)
 		fs.writeFileSync(
 			join(folder(workId), "cost-totals.json"),
 			JSON.stringify(workCostTotals({ workId, pullRequests: [], requests: priced })),

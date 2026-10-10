@@ -478,7 +478,6 @@ describe("readable work summaries", () => {
 		expect(value.requests[0]).not.toHaveProperty("version")
 		expect(value.requests[0]).not.toHaveProperty("type")
 		expect(summary(next).requests).toHaveLength(1)
-		expect(fs.readFileSync(path(workId), "utf8")).toContain('\n  "workId":')
 	})
 	it("retains request-to-file links and different originating sessions for the same commit", async () => {
 		const workId = getWorkId(context())
@@ -990,9 +989,15 @@ console.log("ready"); await flushWorkSummaries();`,
 			// The version 1 file migrated once; every append landed on a committed line boundary.
 			const head = JSON.parse(fs.readFileSync(path(workId), "utf8"))
 			const log = fs.readFileSync(join(directory, "rows", `requests.${head.logs.requests.generation}.jsonl`))
-			expect(head).toMatchObject({ version: 2, logs: { requests: { rows: 24, bytes: log.length } } })
+			expect(head).toMatchObject({
+				version: 2,
+				logs: { requests: { rows: 24, bytes: log.length }, sessions: { rows: 3 } },
+			})
 			expect(log.at(-1)).toBe(10)
-			expect(fs.readdirSync(join(directory, "rows"))).toEqual([`requests.${head.logs.requests.generation}.jsonl`])
+			expect(fs.readdirSync(join(directory, "rows")).sort()).toEqual([
+				`requests.${head.logs.requests.generation}.jsonl`,
+				`sessions.${head.logs.sessions.generation}.jsonl`,
+			])
 		} finally {
 			if (reading) clearInterval(reading)
 			for (const { child } of children) child.kill()

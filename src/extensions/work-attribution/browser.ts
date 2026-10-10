@@ -12,7 +12,7 @@ import { decimalNanos, time } from "./costs.js"
 import { MAX_SUMMARY_BYTES, readWorkHead, type WorkHead } from "./row-log.js"
 import { object } from "./summary.js"
 
-/** Besides the current work, the panel lists works whose summary changed recently. */
+/** Besides the current work, the panel lists works with activity this recent. */
 const RECENT_MS = 35 * 24 * 60 * 60_000
 const MAX_WORKS = 30
 /** A plan is read only for its title. */
@@ -66,28 +66,41 @@ export async function readWorkBrowser(
 		}),
 	)
 
-	const recent = [...modified]
+	const candidates = [...modified]
 		.filter(([workId, at]) => workId !== current.workId && at >= now - RECENT_MS)
-		.sort(([, left], [, right]) => right - left)
-		.slice(0, MAX_WORKS - 1)
 		.map(([workId]) => workId)
-	const works = await Promise.all(
-		[current.workId, ...recent].map(async (workId): Promise<SavedWork> => {
-			const folder = join(directory, workId)
-			const [head, totals] = await Promise.all([
-				readWorkHead(agentDir, workId),
-				readJson(join(folder, "cost-totals.json")),
-			])
-			return {
+	const [own, ...others] = await Promise.all(
+		[current.workId, ...candidates].map(
+			async (workId): Promise<SavedWork> => ({
 				workId,
-				head,
-				totals,
-				planTitle: typeof head === "object" ? await readPlanTitle(folder, head) : undefined,
+				head: await readWorkHead(agentDir, workId),
 				modifiedAt: modified.get(workId),
-			}
+			}),
+		),
+	)
+	// Cost passes rewrite work.json weeks after the last request, so saved activity times pick the works listed.
+	const recent = others
+		.map((work) => ({ work, activity: lastActivity(work) ?? 0 }))
+		.filter(({ activity }) => activity >= now - RECENT_MS)
+		.sort((left, right) => right.activity - left.activity || left.work.workId.localeCompare(right.work.workId))
+		.slice(0, MAX_WORKS - 1)
+		.map(({ work }) => work)
+	const works = await Promise.all(
+		[own, ...recent].map(async (work): Promise<SavedWork> => {
+			const folder = join(directory, work.workId)
+			const [totals, planTitle] = await Promise.all([
+				readJson(join(folder, "cost-totals.json")),
+				typeof work.head === "object" ? readPlanTitle(folder, work.head) : undefined,
+			])
+			return { ...work, totals, planTitle }
 		}),
 	)
 	return buildWorkBrowser(agentDir, current, works)
+}
+
+/** Newest request start, native edit or retained plan; the file time when the manifest has none. */
+function lastActivity(work: SavedWork): number | undefined {
+	return (typeof work.head === "object" ? time(work.head.latest.activityAt) : undefined) ?? work.modifiedAt
 }
 
 /** Rows from saved summaries. Only the current work has live PR lookup lines; the rest use their saved links. */
@@ -177,7 +190,7 @@ function workRow(agentDir: string, work: SavedWork, current?: WorkDetailsRequest
 			? (totals?.links ?? [])
 			: []
 	const latest = head?.latest
-	const activity = time(latest?.activityAt) ?? work.modifiedAt
+	const activity = lastActivity(work)
 	const path =
 		latest?.edit?.repository ?? latest?.commit?.repository ?? latest?.request?.repository ?? latest?.request?.cwd
 	const name = path === undefined ? undefined : repositoryName(path)
