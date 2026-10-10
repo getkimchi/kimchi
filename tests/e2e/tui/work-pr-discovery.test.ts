@@ -3,9 +3,9 @@ import { randomUUID } from "node:crypto"
 import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { SessionManager } from "@earendil-works/pi-coding-agent"
-import { expect, test } from "@microsoft/tui-test"
-import { waitForText } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { expect, Key, test } from "@microsoft/tui-test"
+import { viewText, waitForText } from "./support/assertions.js"
+import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -111,15 +111,28 @@ test("pending work survives a GitHub login error and finds a PR while coding con
 			setGitHub("auth")
 			await waitForText(terminal, "PR/MR check /work", { full: false, timeoutMs: 10_000 })
 			terminal.submit("/work")
-			await waitForText(terminal, "GitHub authentication failed. Check the token for github.com.")
-			trace.step("GitHub token rejection is visible while coding stays available")
+			await waitForText(terminal, "Kimchi work", { full: false })
+			await waitForText(terminal, "PR/MR lookup: GitHub authentication failed. Check the token for github.com.", {
+				full: false,
+			})
+			terminal.keyEscape()
+			await waitForText(terminal, PROMPT_READY, { full: false })
+			trace.step("the work panel shows the GitHub token rejection; Esc returns to coding")
 			terminal.submit("Can I keep coding while GitHub is unavailable?")
 			await waitForText(terminal, "You can keep coding while GitHub is unavailable.")
 			setGitHub("open")
 			await waitForText(terminal, "PR #731 open", { full: false, timeoutMs: 35_000 })
 			terminal.submit("/work")
-			await waitForText(terminal, "https://github.com/example/kimchi-lab/pull/731")
-			trace.step("the next background check finds the externally created PR")
+			// The footer ends with `· PR #731 open` too; only the panel row has the work ID before it.
+			await waitForText(terminal, new RegExp(`${workId.slice(0, 8)}.*· PR #731 open`), { full: false })
+			trace.step("the work panel lists the work with its open PR")
+			terminal.keyPress(Key.Enter)
+			await waitForText(terminal, PROMPT_READY, { full: false })
+			const printed = viewText(terminal)
+			expect(printed).not.toContain("Esc close")
+			expect(printed).toContain(`Work ID: ${workId}`)
+			expect(printed).toContain("PR #731 open: https://github.com/example/kimchi-lab/pull/731")
+			trace.step("the next background check finds the PR; Enter prints the work's details")
 			const summary = JSON.parse(readFileSync(join(fixture.agentDir, "work", workId, "work.json"), "utf8"))
 			expect(summary.commits).toHaveLength(1)
 			expect(summary.commits[0]).toMatchObject({

@@ -6,7 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { SessionManager } from "@earendil-works/pi-coding-agent"
 import { test } from "@microsoft/tui-test"
 import { waitForText } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import { BILLING_ACCOUNT, seedPendingWorkCost } from "./support/work-costs.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -133,6 +133,9 @@ test("an open PR's pending cost becomes a confirmed and inferred total once it i
 			terminal.submit("/work")
 			await waitForText(terminal, "Cost so far: unknown; $0.000000000 USD priced (open)")
 			await waitForText(terminal, "Prices: 0/1 requests priced, $0.000000000 USD known so far.")
+			// The work panel shows the current work's cost lines; close it before opening it again.
+			terminal.keyEscape()
+			await waitForText(terminal, PROMPT_READY, { full: false })
 			trace.step("an open PR's spend stays unknown while its request has no bill")
 			billed = true
 			setGitHub("merged")

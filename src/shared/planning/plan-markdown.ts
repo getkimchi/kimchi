@@ -57,7 +57,8 @@ export function generatePlanPersistenceNote(opts: {
 	return `Write the completed plan to ${location} — one file per plan, updated in place when the plan changes. The file path must be returned in the \`files\` array of your response.`
 }
 
-const DEFAULT_SLUG = "untitled-plan"
+/** Fallback slug, also returned by {@link derivePlanTitle} for a plan without a title. */
+export const DEFAULT_SLUG = "untitled-plan"
 const MAX_SLUG_LENGTH = 48
 
 /**

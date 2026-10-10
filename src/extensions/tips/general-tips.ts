@@ -42,6 +42,11 @@ export const GENERAL_TIPS = [
 		message: "Tag requests in Analytics: `/tags add key:value` (e.g. project:myapp).",
 	},
 	{
+		id: "work-costs",
+		scope: "general",
+		message: "Run `/work` to see your work's cost and PRs.",
+	},
+	{
 		id: "continue-session",
 		scope: "general",
 		message: "Resume the latest session with `kimchi --continue`.",

@@ -11,14 +11,9 @@ import {
 	type WorkStateRequest,
 } from "../work-attribution.js"
 import { currentBranch, lookupBranchPullRequest } from "./branch-status.js"
-import { mergePullRequestLinks } from "./links.js"
+import { mergePullRequestLinks, pullRequestLabel } from "./links.js"
 import { lookupFailureReason } from "./provider-records.js"
 import { LOOKUP_WINDOW_MS, type WorkPullRequest, type WorkPullRequestUpdate } from "./pull-requests.js"
-
-/** `PR #7 open` or `MR !7 merged`; the status line shows the state only while there is room. */
-function requestStatus(pr: WorkPullRequest): string {
-	return `${pr.provider === "gitlab" ? "MR !" : "PR #"}${pr.number} ${pr.state}`
-}
 
 /** A branch's PR is asked for again only after a branch change, a push or PR creation, or this long. */
 const BRANCH_REFRESH_MS = 5 * 60_000
@@ -129,11 +124,11 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	function renderWork(): void {
 		const { links, pending, errors } = details()
 		if (errors.length) footer("PR/MR check /work")
-		else if (links.length === 1 && !pending) footer(requestStatus(links[0]), links[0].url)
+		else if (links.length === 1 && !pending) footer(pullRequestLabel(links[0]), links[0].url)
 		else if (links.length) footer(`PRs/MRs ${links.length} linked${pending ? `, ${pending} waiting` : ""}`)
 		else if (pending) footer("PR/MR waiting")
 		// Orientation only: the branch PR's cost is tracked once this work records a commit.
-		else footer(branchPull && requestStatus(branchPull), branchPull?.url)
+		else footer(branchPull && pullRequestLabel(branchPull), branchPull?.url)
 	}
 
 	function receive(update: WorkPullRequestUpdate): void {
@@ -232,7 +227,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 						const result = branch ? await lookupBranchPullRequest(ctx.cwd, signal) : undefined
 						if (!current()) return
 						const pr = result?.pullRequest
-						footer(pr ? requestStatus(pr) : undefined, pr?.url)
+						footer(pr ? pullRequestLabel(pr) : undefined, pr?.url)
 					})
 					.catch((error) => {
 						if (!current()) return
@@ -291,7 +286,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		if (typeof request.workId !== "string" || !Array.isArray(request.lines)) return
 		const { links, pending, lookupErrors } = details(request.workId)
 		request.lines.push(
-			...links.map((pr) => `${pr.provider === "gitlab" ? "MR !" : "PR #"}${pr.number} ${pr.state}: ${pr.url}`),
+			...links.map((pr) => `${pullRequestLabel(pr)}: ${pr.url}`),
 			...(pending ? [`PR/MR lookup: ${pending} commit${pending === 1 ? "" : "s"} waiting`] : []),
 			...lookupErrors.map((error) => `PR/MR lookup: ${error}`),
 		)
