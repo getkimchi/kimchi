@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import type * as Fs from "node:fs"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -37,6 +38,17 @@ it.each([
 	["a plan's retained path", () => [row("plan", { cwd, path: "gone.md", snapshotPath: "docs/adr.md" })], true],
 ] as const)("finds whether a mention of %s has an owner", (_case, records, owned) => {
 	expect(hasOwnedWorkReference({ cwd }, "Implement docs/adr.md", records())).toBe(owned)
+})
+
+it("does not count plans and files that only the current work recorded", () => {
+	const own = [
+		row("file_transition", { worktree: cwd, path: "docs/adr.md" }),
+		row("plan", { cwd, path: "docs/plan.md" }),
+	]
+	expect(hasOwnedWorkReference({ cwd }, "What do docs/adr.md and docs/plan.md say?", own, workId)).toBe(false)
+	// A file that other work also recorded may still belong to that work.
+	const other = { ...row("file_transition", { worktree: cwd, path: "docs/adr.md" }), workId: randomUUID() }
+	expect(hasOwnedWorkReference({ cwd }, "What does docs/adr.md say?", [...own, other], workId)).toBe(true)
 })
 
 it("matches an owner through a directory alias", () => {
