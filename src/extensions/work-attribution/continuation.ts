@@ -26,11 +26,15 @@ export function hasWorkReference(text: string): boolean {
 	return message.includes("<!-- kimchi-work-id:") || [...message.matchAll(MARKDOWN_REFERENCE)].length > 0
 }
 
-/** Ordinary Markdown mentions do not select work; recorded owners and plan markers do. */
+/**
+ * Ordinary Markdown mentions do not select work; recorded owners and plan markers do. Plans and files that only the
+ * current work recorded name no other task, even after a command or a person changed them.
+ */
 export function hasOwnedWorkReference(
 	ctx: Pick<WorkContext, "cwd">,
 	text: string,
 	records: readonly WorkRecord[],
+	current?: string,
 ): boolean {
 	const normalized = text.replaceAll("\r\n", "\n")
 	const skill = parseSkillBlock(normalized)
@@ -47,7 +51,8 @@ export function hasOwnedWorkReference(
 	for (const path of paths) {
 		if (!NATIVE_PLAN_PATH.test(path)) continue
 		try {
-			if (readPlanWorkId(readFileSync(path, "utf8"))) return true
+			const planned = readPlanWorkId(readFileSync(path, "utf8"))
+			if (planned && planned !== current) return true
 		} catch {}
 	}
 	// Journals are never pruned: compare file names before resolving each row's directory.
@@ -58,6 +63,7 @@ export function hasOwnedWorkReference(
 		return names.has(basename(resolved)) && paths.has(canonical(resolved))
 	}
 	return records.some((row) => {
+		if (row.workId === current) return false
 		if (row.type === "plan" && typeof row.cwd === "string") {
 			const cwd = row.cwd
 			return [row.path, row.snapshotPath].some((path) => owns(cwd, path))
