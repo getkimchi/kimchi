@@ -213,6 +213,7 @@ export async function findWorkContinuation(
 	ctx: Pick<WorkContext, "cwd">,
 	text: string,
 	captured: WorkScopeSnapshot | undefined,
+	currentWorkId?: string,
 ): Promise<{ match?: WorkContinuation; owned: boolean }> {
 	const pasted = await pastedPlans(userText(text))
 	// A work marker names recorded work even when its plan cannot be verified.
@@ -234,9 +235,13 @@ export async function findWorkContinuation(
 		return reads.get(directory)
 	}
 	const named = await Promise.all([...paths].map((path) => namedArtifact(ctx.cwd, path, transitions)))
-	// Markdown names plans and artifacts; other owned files only compete with a continuation.
+	// Markdown names plans and artifacts; other owned files only compete with a continuation. Plans and files that
+	// only the current work recorded name no other task, even after a command or a person changed them.
 	const owned =
-		pasted.matches.length > 0 || [...paths].some((path, index) => /\.md$/i.test(path) && !!named[index]?.owners.length)
+		pasted.matches.some((match) => match.workId !== currentWorkId) ||
+		[...paths].some(
+			(path, index) => /\.md$/i.test(path) && !!named[index]?.owners.some((owner) => owner !== currentWorkId),
+		)
 	if (named.some((file) => !file)) return { owned } // Unreadable evidence is not proof that a file has no owner.
 	const matches = [...pasted.matches, ...named.flatMap((file) => (file?.match ? [file.match] : []))]
 	if (new Set(matches.map((match) => match.workId)).size !== 1) return { owned }

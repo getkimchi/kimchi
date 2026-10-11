@@ -720,7 +720,7 @@ export function createWorkAttributionExtension(
 				// Ownership needs no scope: an input naming recorded work stays unresolved even without one.
 				const references =
 					referencesWork || (captured && eligible())
-						? await findWorkContinuation(pinWorkContext(ctx), event.text, captured)
+						? await findWorkContinuation(pinWorkContext(ctx), event.text, captured, current)
 						: undefined
 				if (!unchanged()) return
 				const found = references?.match
