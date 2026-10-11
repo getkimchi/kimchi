@@ -732,7 +732,7 @@ export function createWorkAttributionExtension(
 					if (model) await rememberWorkIntent(ctx.cwd, found.workId, event.text)
 					return
 				}
-				if (found || (records && hasOwnedWorkReference(ctx, event.text, records))) {
+				if (found || (records && hasOwnedWorkReference(ctx, event.text, records, current))) {
 					// A reference this session's continuation cannot account for may start another task.
 					explicitSelection.delete(key)
 					useSegment("unknown", "unresolved-reference")

@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
@@ -690,6 +690,17 @@ describe("local work attribution", () => {
 		await input({ type: "input", text: "Fix the lint error", source: "interactive" }, ctx)
 		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "explicit", reason: "saved-plan" })
 		expect(find).toHaveBeenCalledOnce()
+
+		// Naming a file this work wrote keeps the continuation, even after a command changed it and it no longer
+		// matches the recorded edit.
+		mkdirSync(join(dir, "work-attribution"), { recursive: true })
+		appendFileSync(
+			join(dir, "work-attribution", "edits.jsonl"),
+			`${JSON.stringify({ version: 1, type: "file_transition", workId: planned, sessionId: "implementer", transitionId: "write-notes", toolCallId: "write-notes", repository: join(dir, ".git"), worktree: dir, path: "notes.md" })}\n`,
+		)
+		find.mockResolvedValueOnce(undefined)
+		await input({ type: "input", text: "What does notes.md contain now?", source: "interactive" }, ctx)
+		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "explicit", reason: "saved-plan" })
 
 		const other = "22222222-2222-4222-8222-222222222222"
 		find.mockResolvedValueOnce({ workId: other, source: "saved-plan", evidence: { path: "/other.md" } })
