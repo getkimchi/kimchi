@@ -72,6 +72,18 @@ it.each([
 	expect(await owned("Implement docs/adr.md")).toBe(expected)
 })
 
+it("does not count plans and files that only the current work recorded", async () => {
+	transitions.push(edit("docs/adr.md"))
+	const saved = savePlanMarkdown({ cwd, name: "own", planText: "# Plan\n", workId })
+	appendWorkRecord(createContext({ cwd }), { type: "plan", ...saved }, workId)
+	await flushWorkSummaries()
+	const mention = `What do docs/adr.md and ${saved.path} say?`
+	expect((await findWorkContinuation({ cwd }, mention, undefined, workId)).owned).toBe(false)
+	// A file that other work also recorded may still belong to that work.
+	transitions.push({ ...edit("docs/adr.md"), workId: randomUUID() })
+	expect((await findWorkContinuation({ cwd }, mention, undefined, workId)).owned).toBe(true)
+})
+
 it("matches an owner through a directory alias", async () => {
 	symlinkSync(join(cwd, "docs"), join(cwd, "alias"), "dir")
 	transitions.push(edit("docs/adr.md"))
