@@ -700,6 +700,18 @@ describe("local work attribution", () => {
 		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "explicit", reason: "saved-plan" })
 		expect(find).toHaveBeenCalledOnce()
 
+		// Naming a file only this work recorded keeps the continuation, even after a command changed it and it no
+		// longer matches the recorded edit.
+		find.mockResolvedValueOnce({ owned: false })
+		await input({ type: "input", text: "What does notes.md contain now?", source: "interactive" }, ctx)
+		expect(find).toHaveBeenLastCalledWith(
+			expect.anything(),
+			"What does notes.md contain now?",
+			expect.anything(),
+			planned,
+		)
+		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "explicit", reason: "saved-plan" })
+
 		const other = "22222222-2222-4222-8222-222222222222"
 		find.mockResolvedValueOnce({
 			match: { workId: other, source: "saved-plan", evidence: { path: "/other.md" } },
@@ -721,16 +733,31 @@ describe("local work attribution", () => {
 		await input({ type: "input", text: "Implement", source: "extension" }, ctx)
 		expect(find).not.toHaveBeenCalled()
 		await input({ type: "input", text: "Implement", source: "interactive" }, ctx)
-		expect(find).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: dir }), "Implement", expect.any(Object))
+		expect(find).toHaveBeenLastCalledWith(
+			expect.objectContaining({ cwd: dir }),
+			"Implement",
+			expect.any(Object),
+			expect.any(String),
+		)
 		await input({ type: "input", text: "Continue", source: "interactive" }, ctx)
-		expect(find).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: dir }), "Continue", expect.any(Object))
+		expect(find).toHaveBeenLastCalledWith(
+			expect.objectContaining({ cwd: dir }),
+			"Continue",
+			expect.any(Object),
+			expect.any(String),
+		)
 		const started = createContext({ cwd: dir, sessionManager: { getSessionId: () => "requested" } })
 		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(
 			{ type: "before_provider_headers", headers: {} },
 			started,
 		)
 		await input({ type: "input", text: "Later", source: "interactive" }, started)
-		expect(find).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: dir }), "Later", expect.any(Object))
+		expect(find).toHaveBeenLastCalledWith(
+			expect.objectContaining({ cwd: dir }),
+			"Later",
+			expect.any(Object),
+			expect.any(String),
+		)
 	})
 	it("allows fresh continuation after an earlier startup hook allocated the ledger", async () => {
 		const ctx = createContext({ cwd: dir })
@@ -739,7 +766,12 @@ describe("local work attribution", () => {
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
 		await api.getHandler<InputEvent>("input")({ type: "input", text: "Implement", source: "rpc" }, ctx)
-		expect(find).toHaveBeenCalledWith(expect.objectContaining({ cwd: dir }), "Implement", expect.any(Object))
+		expect(find).toHaveBeenCalledWith(
+			expect.objectContaining({ cwd: dir }),
+			"Implement",
+			expect.any(Object),
+			expect.any(String),
+		)
 	})
 	it("preserves restored identity even when a crash left no native tool result", async () => {
 		const ctx = createContext({ cwd: dir })
