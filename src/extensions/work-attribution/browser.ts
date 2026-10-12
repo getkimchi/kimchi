@@ -9,13 +9,14 @@ import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import type { WorkDetailsRequest } from "../work-attribution.js"
 import { costDetailLines, type knownSpend } from "./cost-details.js"
 import { decimalNanos, time } from "./costs.js"
-import { MAX_SUMMARY_BYTES, readWorkHead, type WorkHead } from "./row-log.js"
+import { readWorkHead, type WorkHead } from "./row-log.js"
 import { object } from "./summary.js"
 
 /** Besides the current work, the panel lists works with activity this recent. */
 const RECENT_MS = 35 * 24 * 60 * 60_000
 const MAX_WORKS = 30
-/** A plan is read only for its title. */
+/** Larger files are skipped rather than read; a plan is read only for its title. */
+const MAX_TOTALS_BYTES = 8 * 1024 * 1024
 const MAX_PLAN_BYTES = 256 * 1024
 
 type Spend = ReturnType<typeof knownSpend>
@@ -24,8 +25,8 @@ type Link = Pick<WorkPullRequest, "provider" | "number" | "state" | "url">
 /** One work's saved files; any of them can be missing or damaged. Each stays small however long the work runs. */
 export interface SavedWork {
 	workId: string
-	/** The `work.json` manifest, or "too-large" for a version 1 summary over the read limit. */
-	head?: WorkHead | "too-large"
+	/** The `work.json` manifest. */
+	head?: WorkHead
 	/** Parsed `cost-totals.json`. */
 	totals?: unknown
 	planTitle?: string
@@ -79,7 +80,9 @@ export async function readWorkBrowser(
 		),
 	)
 	// Cost passes rewrite work.json weeks after the last request, so saved activity times pick the works listed.
+	// Reading deletes a work.json that is not a manifest; that work is listed again once an update rebuilds it.
 	const recent = others
+		.filter((work) => work.head)
 		.map((work) => ({ work, activity: lastActivity(work) ?? 0 }))
 		.filter(({ activity }) => activity >= now - RECENT_MS)
 		.sort((left, right) => right.activity - left.activity || left.work.workId.localeCompare(right.work.workId))
@@ -90,7 +93,7 @@ export async function readWorkBrowser(
 			const folder = join(directory, work.workId)
 			const [totals, planTitle] = await Promise.all([
 				readJson(join(folder, "cost-totals.json")),
-				typeof work.head === "object" ? readPlanTitle(folder, work.head) : undefined,
+				work.head && readPlanTitle(folder, work.head),
 			])
 			return { ...work, totals, planTitle }
 		}),
@@ -100,7 +103,7 @@ export async function readWorkBrowser(
 
 /** Newest request start, native edit or retained plan; the file time when the manifest has none. */
 function lastActivity(work: SavedWork): number | undefined {
-	return (typeof work.head === "object" ? time(work.head.latest.activityAt) : undefined) ?? work.modifiedAt
+	return time(work.head?.latest.activityAt) ?? work.modifiedAt
 }
 
 /** Rows from saved summaries. Only the current work has live PR lookup lines; the rest use their saved links. */
@@ -134,18 +137,6 @@ export function buildWorkBrowser(agentDir: string, current: WorkDetailsRequest, 
 	}
 }
 
-function pullRequestLink(value: unknown): Link | undefined {
-	if (
-		!object(value) ||
-		(value.provider !== "github" && value.provider !== "gitlab") ||
-		typeof value.number !== "number" ||
-		(value.state !== "open" && value.state !== "closed" && value.state !== "merged") ||
-		typeof value.url !== "string"
-	)
-		return undefined
-	return { provider: value.provider, number: value.number, state: value.state, url: value.url }
-}
-
 function spendOf(value: unknown): Spend | undefined {
 	return object(value) && typeof value.priced === "number" && typeof value.total === "number"
 		? { priced: value.priced, total: value.total, nanos: decimalNanos(value.knownCostUsd) ?? 0n }
@@ -163,19 +154,13 @@ function costTotals(value: unknown, workId: string) {
 		own,
 		recorded: value.requests.recorded,
 		group: { key: JSON.stringify(value.group), spend: group },
-		/** PRs this work committed to. */
-		links: value.pullRequests.flatMap((row) => {
-			const link = object(row) && row.own === true ? pullRequestLink(row.pullRequest) : undefined
-			return link ? [link] : []
-		}),
 	}
 }
 
 function workRow(agentDir: string, work: SavedWork, current?: WorkDetailsRequest) {
 	const { workId } = work
 	const folder = join(agentDir, "work", workId)
-	const head = typeof work.head === "object" ? work.head : undefined
-	const tooLarge = work.head === "too-large"
+	const { head } = work
 	const totals = costTotals(work.totals, workId)
 	const requests = head?.logs.requests?.rows ?? 0
 	// Requests recorded after the last cost pass are not in the totals yet; they count as unpriced.
@@ -183,12 +168,7 @@ function workRow(agentDir: string, work: SavedWork, current?: WorkDetailsRequest
 	const spent: Spend | undefined = totals
 		? { ...totals.own, total: totals.own.total + unpriced }
 		: head && { priced: 0, total: unpriced, nanos: 0n }
-	// A summary too large to read still has its PRs in the totals, but its newest requests may be unpriced.
-	const links: Link[] = head
-		? mergePullRequestLinks(storedPullRequests(head.pullRequests))
-		: tooLarge
-			? (totals?.links ?? [])
-			: []
+	const links: Link[] = head ? mergePullRequestLinks(storedPullRequests(head.pullRequests)) : []
 	const latest = head?.latest
 	const activity = lastActivity(work)
 	const path =
@@ -203,13 +183,11 @@ function workRow(agentDir: string, work: SavedWork, current?: WorkDetailsRequest
 				`Repository: ${name ? plain(name) : "unknown"}${branch ? ` · branch ${plain(branch)}` : ""}`,
 				`Last activity: ${activity === undefined ? "unknown" : localTime(activity)} · ${requests} request${requests === 1 ? "" : "s"}`,
 			]
-		: [
-				`${tooLarge ? "Summary too large to list until the work's next update" : "Summary unavailable"}: ${join(folder, "work.json")}`,
-			]
+		: [`Summary unavailable: ${join(folder, "work.json")}`]
 	const row: WorkRow = {
 		workId,
-		label: `${current ? "●" : " "} ${workId.slice(0, 8)} ${title || (head ? "untitled work" : tooLarge ? "summary too large" : "summary unavailable")}`,
-		value: `${spendText(spent, tooLarge)} · ${pullRequestState(links)}`,
+		label: `${current ? "●" : " "} ${workId.slice(0, 8)} ${title || (head ? "untitled work" : "summary unavailable")}`,
+		value: `${spendText(spent)} · ${pullRequestState(links)}`,
 		description: [`Work ID: ${workId}`, ...context, ...pullRequests, ...costLines].join("\n"),
 		details: [`Work ID: ${workId}`, ...pullRequests, ...costLines].join("\n"),
 	}
@@ -217,7 +195,7 @@ function workRow(agentDir: string, work: SavedWork, current?: WorkDetailsRequest
 		row,
 		current: current !== undefined,
 		activity,
-		partial: !spent || tooLarge,
+		partial: !spent,
 		unpriced,
 		group: totals?.group,
 	}
@@ -278,7 +256,7 @@ async function readText(path: string, limit: number): Promise<string | undefined
 }
 
 async function readJson(path: string): Promise<unknown> {
-	const text = await readText(path, MAX_SUMMARY_BYTES)
+	const text = await readText(path, MAX_TOTALS_BYTES)
 	try {
 		return text === undefined ? undefined : JSON.parse(text)
 	} catch {

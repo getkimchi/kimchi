@@ -1,4 +1,4 @@
-import { closeSync, openSync, readFileSync, readSync } from "node:fs"
+import { closeSync, openSync, readFileSync, readSync, type Stats } from "node:fs"
 import { type FileHandle, mkdir, open, readdir, readFile, rm, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
@@ -7,17 +7,16 @@ import { mergePullRequestLinks } from "../pull-request-status/links.js"
 
 /*
  * Work summary storage. Version 2 `work/<id>/work.json` is a small manifest. Each collection's rows live in
- * `rows/<collection>.<generation>.jsonl`, one version 1 row per line; a later line with the same key replaces an
- * earlier one, and the first line of a key fixes its position. Sessions are a log too, one `{"sessionId"}` row each.
- * A writer appends changed rows, syncs them, then renames the manifest, which commits them. This module uses plain
- * `fs` so tests and tools can read summaries.
+ * `rows/<collection>.<generation>.jsonl`, one row per line; a later line with the same key replaces an earlier one,
+ * and the first line of a key fixes its position. Sessions are a log too, one `{"sessionId"}` row each. A writer
+ * appends changed rows, syncs them, then renames the manifest, which commits them. Any other `work.json`, such as a
+ * version 1 summary from an older release, is deleted when the work is next listed or updated. This module uses
+ * plain `fs` so tests and tools can read summaries.
  */
 
 /** The manifest, and the commit point for every row log. */
 export const WORK_FILE = "work.json"
 const ROWS = "rows"
-/** Version 1 summaries larger than this are not read just to list a work. */
-export const MAX_SUMMARY_BYTES = 8 * 1024 * 1024
 /** Appends and copies are written in chunks of at most this size. */
 const CHUNK_BYTES = 4 * 1024 * 1024
 /** A log is compacted once superseded lines exceed half its live rows and this many bytes. */
@@ -26,13 +25,13 @@ const COMPACT_GARBAGE_BYTES = 1024 * 1024
 const MAX_INDEXED_ROWS = 200_000
 const YIELD_ROWS = 1000
 
-/** One row of a summary collection, as version 1 `work.json` stores it. */
+/** One row of a summary collection. */
 export interface Row {
 	sessionId: string
 	[key: string]: unknown
 }
 
-/** Summary collections, named as in version 1 `work.json`. Each one is a row log in version 2. */
+/** Summary collections; each one is a row log. */
 export const COLLECTIONS = [
 	"workLinks",
 	"requests",
@@ -76,11 +75,10 @@ export const ROW_KEYS: Record<LogName, (row: Row) => string> = {
 
 /** `rows/<log>.<generation>.jsonl`. Bytes past `bytes` belong to an interrupted append and are ignored. */
 export interface RowLog {
-	/** Positive for a log file. `readWorkHead` reports rows still inside a version 1 `work.json` as generation 0. */
 	generation: number
 	/** Committed length. */
 	bytes: number
-	/** Distinct keys: the length of the version 1 array. */
+	/** Distinct keys. */
 	rows: number
 }
 
@@ -110,8 +108,8 @@ export interface WorkHead {
 	pullRequests: Record<string, unknown>[]
 }
 
-/** The version 1 `work.json` shape, which folding the row logs returns. */
-export type WorkSummaryView = { version: 1; workId: string; sessions: string[] } & Record<Collection, Row[]>
+/** Every row of a work, as folding its logs returns them. */
+export type WorkSummaryView = { workId: string; sessions: string[] } & Record<Collection, Row[]>
 
 /** Validates one committed row; a failure means the logs are damaged and the work is rebuilt from its journals. */
 export type RowCheck = (collection: Collection, row: Row) => boolean
@@ -133,11 +131,6 @@ function count(value: unknown, minimum = 0): value is number {
 
 function isRow(value: unknown): value is Row {
 	return object(value) && typeof value.sessionId === "string"
-}
-
-/** Version 1 readers were lenient: any object in a collection is a row. The writer validates them. */
-function savedRow(value: unknown): value is Row {
-	return object(value)
 }
 
 function text(value: unknown): string | undefined {
@@ -169,7 +162,6 @@ export function isWorkHead(value: unknown, workId: string): value is WorkHead {
 
 function summaryView(workId: string, sessions: string[], rows: (collection: Collection) => Row[]): WorkSummaryView {
 	return {
-		version: 1,
 		workId,
 		sessions,
 		workLinks: rows("workLinks"),
@@ -180,16 +172,6 @@ function summaryView(workId: string, sessions: string[], rows: (collection: Coll
 		fileObservations: rows("fileObservations"),
 		continuations: rows("continuations"),
 	}
-}
-
-/** A version 1 summary read as leniently as `/work` always read it; older ones lack later collections. */
-function versionOneView(value: unknown, workId: string): WorkSummaryView | undefined {
-	if (!object(value) || value.version !== 1 || value.workId !== workId) return undefined
-	const sessions = Array.isArray(value.sessions) ? value.sessions.filter((session) => typeof session === "string") : []
-	return summaryView(workId, sessions, (collection) => {
-		const rows = value[collection]
-		return Array.isArray(rows) ? rows.filter(savedRow) : []
-	})
 }
 
 function parseRow(line: string, collection: LogName): Row {
@@ -236,7 +218,6 @@ function readLogSync(folder: string, collection: LogName, generation: number, by
 function readCommitted<T>(
 	agentDir: string,
 	workId: string,
-	fromVersionOne: (view: WorkSummaryView) => T,
 	read: (folder: string, head: WorkHead) => T,
 ): T | undefined {
 	const folder = join(agentDir, "work", workId)
@@ -248,8 +229,6 @@ function readCommitted<T>(
 			return undefined
 		}
 
-		const view = versionOneView(value, workId)
-		if (view) return fromVersionOne(view)
 		if (!isWorkHead(value, workId)) return undefined
 		try {
 			return read(folder, value)
@@ -266,63 +245,52 @@ function foldCommitted(folder: string, head: WorkHead, collection: LogName): Row
 	return log ? foldLog(collection, readLogSync(folder, collection, log.generation, log.bytes)) : []
 }
 
-/** The whole summary in the version 1 shape, from either version; undefined when missing or damaged. */
+/** The whole summary; undefined when missing or damaged. */
 export function readWorkSummary(agentDir: string, workId: string): WorkSummaryView | undefined {
-	return readCommitted(
-		agentDir,
-		workId,
-		(view) => view,
-		(folder, head) =>
-			summaryView(
-				workId,
-				head.sessions ?? foldCommitted(folder, head, "sessions").map((row) => row.sessionId),
-				(collection) => foldCommitted(folder, head, collection),
-			),
+	return readCommitted(agentDir, workId, (folder, head) =>
+		summaryView(
+			workId,
+			head.sessions ?? foldCommitted(folder, head, "sessions").map((row) => row.sessionId),
+			(collection) => foldCommitted(folder, head, collection),
+		),
 	)
 }
 
-/** One collection's rows from either version, without reading the other logs. */
+/** One collection's rows, without reading the other logs. */
 export function readWorkRows(agentDir: string, workId: string, collection: Collection): Row[] | undefined {
-	return readCommitted(
-		agentDir,
-		workId,
-		(view) => view[collection],
-		(folder, head) => foldCommitted(folder, head, collection),
-	)
+	return readCommitted(agentDir, workId, (folder, head) => foldCommitted(folder, head, collection))
 }
 
 /**
- * The manifest, or the same values computed from a version 1 summary small enough to read. Opens no row log.
- * "too-large" is a version 1 summary over `maxBytes`; its next update migrates it.
+ * The work's manifest. Any other `work.json`, such as a version 1 summary or a damaged file, is deleted: the work
+ * then has no summary until its next update rebuilds one from the journals.
  */
-
-export async function readWorkHead(
-	agentDir: string,
-	workId: string,
-	maxBytes = MAX_SUMMARY_BYTES,
-): Promise<WorkHead | "too-large" | undefined> {
-	const path = join(agentDir, "work", workId, WORK_FILE)
-	let value: unknown
-	let modifiedAt: number
+async function readManifest(folder: string, workId: string): Promise<WorkHead | undefined> {
+	const path = join(folder, WORK_FILE)
+	let read: Stats
+	let text: string
 	try {
-		const info = await stat(path)
-		if (!info.isFile()) return undefined
-		if (info.size > maxBytes) return "too-large"
-		modifiedAt = info.mtimeMs
-		value = JSON.parse(await readFile(path, "utf8"))
-	} catch {
-		return undefined
+		read = await stat(path)
+		text = await readFile(path, "utf8")
+	} catch (error) {
+		if (code(error) === "ENOENT") return undefined
+		throw error
 	}
-	return isWorkHead(value, workId) ? value : summaryHead(value, workId, new Date(modifiedAt).toISOString())
+	let value: unknown
+	try {
+		value = JSON.parse(text)
+	} catch {}
+	if (isWorkHead(value, workId)) return value
+	// `/work` reads without the lock: remove only the file read here, never a manifest committed since. A later read
+	// retries a removal that fails.
+	const current = await stat(path).catch(() => undefined)
+	if (current?.ino === read.ino && current.mtimeMs === read.mtimeMs) await rm(path, { force: true }).catch(() => {})
+	return undefined
 }
 
-/** The head of a version 1 summary, computed from its rows; they stay inside `work.json` (generation 0). */
-export function summaryHead(value: unknown, workId: string, updatedAt: string): WorkHead | undefined {
-	const view = versionOneView(value, workId)
-	if (!view) return undefined
-	const logs: Partial<Record<LogName, RowLog>> = {}
-	for (const name of LOGS) if (view[name].length) logs[name] = { generation: 0, bytes: 0, rows: view[name].length }
-	return { version: 2, workId, updatedAt, logs, ...summaryLatest((name) => view[name]) }
+/** The manifest alone, without opening a row log; undefined when the work has no summary. */
+export async function readWorkHead(agentDir: string, workId: string): Promise<WorkHead | undefined> {
+	return readManifest(join(agentDir, "work", workId), workId).catch(() => undefined)
 }
 
 /** Milliseconds of an ISO 8601 timestamp, as `/work` orders rows; impossible dates are not times. */
@@ -486,7 +454,7 @@ async function scanLog(
 	index.bytes = end
 }
 
-/** Next unused generation of a log, past any file a crash or another version left behind. */
+/** Next unused generation of a log, past any file a crash or a rebuild left behind. */
 async function nextGeneration(folder: string, collection: LogName, current = 0): Promise<number> {
 	let highest = current
 	for (const name of await readdir(join(folder, ROWS)).catch(() => [])) {
@@ -496,7 +464,7 @@ async function nextGeneration(folder: string, collection: LogName, current = 0):
 	return highest + 1
 }
 
-/** Deletes row files the manifest does not name: leftovers of crashes, compactions and other versions. */
+/** Deletes row files the manifest does not name: leftovers of crashes, compactions and rebuilds. */
 async function removeStrays(folder: string, head: WorkHead): Promise<void> {
 	for (const name of await readdir(join(folder, ROWS)).catch(() => [])) {
 		const match = /^(\w+)\.(\d+)\.jsonl$/.exec(name)
@@ -629,7 +597,7 @@ function workRows(sessions: SessionStore, saved: string[], store: (collection: C
 }
 
 interface OpenWork {
-	/** The committed manifest when rows are appended; absent when a version 1 summary migrates or the work is rebuilt. */
+	/** The committed manifest when rows are appended; absent when the work is rebuilt. */
 	head?: WorkHead
 	/** Nothing usable was saved: the whole history must be merged again. */
 	rebuild: boolean
@@ -704,41 +672,25 @@ async function openLogs(folder: string, head: WorkHead, check: RowCheck): Promis
 	}
 }
 
-async function openWork(
-	folder: string,
-	workId: string,
-	summary: (value: unknown) => WorkSummaryView | undefined,
-	check: RowCheck,
-): Promise<OpenWork> {
-	let value: unknown
-	try {
-		value = JSON.parse(await readFile(join(folder, WORK_FILE), "utf8"))
-	} catch (error) {
-		if (!(error instanceof SyntaxError) && code(error) !== "ENOENT") throw error
-	}
-
+async function openWork(folder: string, workId: string, check: RowCheck): Promise<OpenWork> {
+	const head = await readManifest(folder, workId)
 	let damaged: WorkHead | undefined
-	if (isWorkHead(value, workId)) {
+	if (head) {
 		try {
-			return await openLogs(folder, value, check)
+			return await openLogs(folder, head, check)
 		} catch (error) {
 			if (!(error instanceof RowLogDamage) && code(error) !== "ENOENT") throw error
 			forget(folder)
-			damaged = value
+			damaged = head
 		}
 	}
 
-	// A version 1 summary migrates with every row; anything else is rebuilt from the journals.
-	const saved = damaged ? undefined : summary(value)
+	// Without a usable manifest, the work is rebuilt from the journals.
 	return {
-		rebuild: !saved,
+		rebuild: true,
 		damaged,
 		indexes: {},
-		rows: workRows(new SessionStore("sessions"), saved?.sessions ?? [], (collection) => {
-			const store = new RowStore(collection)
-			for (const row of saved?.[collection] ?? []) store.set(ROW_KEYS[collection](row), row)
-			return store
-		}),
+		rows: workRows(new SessionStore("sessions"), [], (collection) => new RowStore(collection)),
 		close() {},
 	}
 }
@@ -759,7 +711,7 @@ async function changedLines(store: RowStore): Promise<[string, string, Row][]> {
 	return changed
 }
 
-/** Commits changed rows: appended to the current logs, or as new generations on migration and rebuild. */
+/** Commits changed rows: appended to the current logs, or as new generations on a rebuild. */
 async function commitWork(
 	folder: string,
 	workId: string,
@@ -908,24 +860,18 @@ async function compactLogs(
 }
 
 /**
- * One locked update: opens the work's summary in either version, lets `apply` merge records into its rows, then
- * commits what changed. A version 1 summary migrates here; a missing, invalid or damaged one is rebuilt, and
- * `apply` learns that it must merge the work's whole history. Returns the committed manifest, or undefined
- * when nothing changed.
+ * One locked update: opens the work's summary, lets `apply` merge records into its rows, then commits what changed.
+ * A missing, invalid or damaged summary is rebuilt, and `apply` learns that it must merge the work's whole history.
+ * Returns the committed manifest, or undefined when nothing changed.
  */
 
 export async function updateWorkRows(
 	folder: string,
 	workId: string,
-	options: {
-		/** A valid version 1 summary with every collection, or undefined. */
-		summary: (value: unknown) => WorkSummaryView | undefined
-		check: RowCheck
-		assertLease: () => void
-	},
+	options: { check: RowCheck; assertLease: () => void },
 	apply: (rows: WorkRows, rebuild: boolean) => Promise<void>,
 ): Promise<WorkHead | undefined> {
-	const work = await openWork(folder, workId, options.summary, options.check)
+	const work = await openWork(folder, workId, options.check)
 	try {
 		await apply(work.rows, work.rebuild)
 		// Saved rows are loaded; a compaction may delete the file they came from.
@@ -941,21 +887,12 @@ export async function updateWorkRows(
 	}
 }
 
-/** Cheap validity for launch recovery: a version 1 summary, or a manifest whose logs hold their committed bytes. */
-export async function validWorkFiles(
-	folder: string,
-	workId: string,
-	summary: (value: unknown) => boolean,
-): Promise<boolean> {
-	let value: unknown
-	try {
-		value = JSON.parse(await readFile(join(folder, WORK_FILE), "utf8"))
-	} catch {
-		return false
-	}
-	if (!isWorkHead(value, workId)) return summary(value)
+/** Cheap validity for launch recovery: a manifest whose logs hold their committed bytes. */
+export async function validWorkFiles(folder: string, workId: string): Promise<boolean> {
+	const head = await readManifest(folder, workId).catch(() => undefined)
+	if (!head) return false
 	for (const collection of LOGS) {
-		const log = value.logs[collection]
+		const log = head.logs[collection]
 		if (!log) continue
 		const info = await stat(logPath(folder, collection, log.generation)).catch(() => undefined)
 		if (!info || info.size < log.bytes) return false

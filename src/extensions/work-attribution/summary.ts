@@ -7,14 +7,7 @@ import { lock } from "proper-lockfile"
 import { isWorkId } from "../../shared/work-id.js"
 import { mergePullRequestLinks } from "../pull-request-status/links.js"
 import { debugWorkAttribution } from "./diagnostics.js"
-import {
-	COLLECTIONS,
-	type Collection,
-	ROW_KEYS,
-	updateWorkRows,
-	validWorkFiles,
-	type WorkSummaryView,
-} from "./row-log.js"
+import { type Collection, ROW_KEYS, updateWorkRows, validWorkFiles } from "./row-log.js"
 
 const LOCK_STALE_MS = 5000
 const MERGE_BATCH_SIZE = 1000
@@ -122,7 +115,7 @@ function unknownType(value: unknown): value is Record<string, unknown> {
 		!KNOWN_RECORD_TYPES.has(value.type)
 	)
 }
-/** Field checks for one row of each collection, in version 1 `work.json` and in the row logs. */
+/** Field checks for one committed row of each collection's log. */
 const ROW_CHECKS: Record<Collection, (row: unknown) => boolean> = {
 	workLinks: (row) => entry(row, ["linkId", "sourceWorkId", "targetWorkId"]),
 	requests: (row) => entry(row, ["requestId"]),
@@ -132,35 +125,6 @@ const ROW_CHECKS: Record<Collection, (row: unknown) => boolean> = {
 	fileObservations: (row) =>
 		entry(row, ["observationId", "toolCallId", "repository", "worktree", "source"]) && Array.isArray(row.files),
 	continuations: (row) => entry(row, ["source"]) && object(row.evidence),
-}
-/** Collections that summaries written before them lack. */
-const LATER_COLLECTIONS = new Set<Collection>(["workLinks", "fileTransitions", "fileObservations", "continuations"])
-function validSummary(value: unknown, workId: string): value is WorkSummaryView {
-	return (
-		object(value) &&
-		value.version === 1 &&
-		value.workId === workId &&
-		Array.isArray(value.sessions) &&
-		value.sessions.every((session) => typeof session === "string") &&
-		COLLECTIONS.every((collection) => {
-			const rows = value[collection]
-			return (
-				(rows === undefined && LATER_COLLECTIONS.has(collection)) ||
-				(Array.isArray(rows) && rows.every(ROW_CHECKS[collection]))
-			)
-		})
-	)
-}
-/** A valid version 1 summary, with collections it predates as empty ones. */
-function versionOneSummary(value: unknown, workId: string): WorkSummaryView | undefined {
-	if (!validSummary(value, workId)) return undefined
-	return {
-		...value,
-		workLinks: value.workLinks ?? [],
-		fileTransitions: value.fileTransitions ?? [],
-		fileObservations: value.fileObservations ?? [],
-		continuations: value.continuations ?? [],
-	}
 }
 /** An interrupted append leaves a record cut off mid-value; any other unparseable line is damage. */
 function truncated(line: string): boolean {
@@ -468,11 +432,7 @@ async function update(
 	const head = await updateWorkRows(
 		join(agentDir, "work", workId),
 		workId,
-		{
-			summary: (value) => versionOneSummary(value, workId),
-			check: (collection, row) => ROW_CHECKS[collection](row),
-			assertLease,
-		},
+		{ check: (collection, row) => ROW_CHECKS[collection](row), assertLease },
 		async (rows, rebuild) => {
 			const history = rebuild && !complete ? readWorkRecords(agentDir).filter((row) => row.workId === workId) : []
 			await mergeWorkRecords(rows, history.concat(records))
@@ -567,8 +527,7 @@ async function readRecovery(agentDir: string, stamp: string) {
 		if (!existsSync(path)) return undefined
 		const current = summaryFingerprint(path)
 		// Missing or damaged output requires all source ledgers, even when none changed.
-		if (current !== fingerprint && !(await validWorkFiles(directory, workId, (value) => validSummary(value, workId))))
-			return undefined
+		if (current !== fingerprint && !(await validWorkFiles(directory, workId))) return undefined
 		summaries[workId] = current
 	}
 	return { startedAt: saved.startedAt, summaries }

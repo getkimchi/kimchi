@@ -7,6 +7,7 @@ import { basename, join } from "node:path"
 import { performance } from "node:perf_hooks"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
+import { saveWorkSummary } from "../__mocks__/work-summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { readWorkBrowser } from "./browser.js"
 import { workCostTotals } from "./cost-details.js"
@@ -19,7 +20,6 @@ import {
 	logPath,
 	ROW_KEYS,
 	readWorkHead,
-	readWorkRows,
 	readWorkSummary,
 	summaryLatest,
 	type WorkHead,
@@ -50,16 +50,8 @@ function folder(workId: string): string {
 function manifest(workId: string): WorkHead {
 	return JSON.parse(fs.readFileSync(join(folder(workId), "work.json"), "utf8"))
 }
-function writeVersionOne(summary: WorkSummaryView): void {
-	fs.mkdirSync(folder(summary.workId), { recursive: true })
-	fs.writeFileSync(join(folder(summary.workId), "work.json"), `${JSON.stringify(summary, null, 2)}\n`)
-}
-function fixture(name: string): WorkSummaryView {
-	return JSON.parse(fs.readFileSync(new URL(`./__fixtures__/${name}`, import.meta.url), "utf8"))
-}
 function emptySummary(workId: string): WorkSummaryView {
 	return {
-		version: 1,
 		workId,
 		sessions: [],
 		workLinks: [],
@@ -71,19 +63,9 @@ function emptySummary(workId: string): WorkSummaryView {
 		continuations: [],
 	}
 }
-/** The version 1 shape with every collection, in the order the row logs fold into. */
-function withDefaults(value: WorkSummaryView): WorkSummaryView {
-	const empty = emptySummary(value.workId)
-	return {
-		...empty,
-		sessions: value.sessions,
-		...Object.fromEntries(COLLECTIONS.map((collection) => [collection, value[collection] ?? []])),
-	}
-}
-
-/** How version 1 applied a batch: parse the whole summary, merge in memory, serialize it again. */
-async function versionOneUpdate(summary: WorkSummaryView, records: WorkRecord[]): Promise<WorkSummaryView> {
-	const copy = withDefaults(JSON.parse(JSON.stringify(summary)))
+/** The reference: the same merge applied to a copy of every row in memory, then serialized. */
+async function mergeInMemory(summary: WorkSummaryView, records: WorkRecord[]): Promise<WorkSummaryView> {
+	const copy: WorkSummaryView = JSON.parse(JSON.stringify(summary))
 	const keyed = (collection: Collection) => new Map(copy[collection].map((row) => [ROW_KEYS[collection](row), row]))
 	const rows = {
 		sessions: new Set(copy.sessions),
@@ -98,7 +80,6 @@ async function versionOneUpdate(summary: WorkSummaryView, records: WorkRecord[])
 	await mergeWorkRecords(rows, structuredClone(records))
 	return JSON.parse(
 		JSON.stringify({
-			version: 1,
 			workId: copy.workId,
 			sessions: [...rows.sessions],
 			...Object.fromEntries(COLLECTIONS.map((collection) => [collection, [...rows[collection].values()]])),
@@ -112,7 +93,7 @@ async function apply(records: WorkRecord[]): Promise<void> {
 	await flushWorkSummaries()
 }
 
-/** The committed files match the expected version 1 view, and no stray row file is left. */
+/** The committed logs fold to the expected rows, and no stray row file is left. */
 function expectCommitted(workId: string, expected: WorkSummaryView, { latest = true } = {}): WorkHead {
 	const head = manifest(workId)
 	expect(head.version).toBe(2)
@@ -331,51 +312,51 @@ function randomRecords(seed: number, workId: string, count: number, { replays = 
 	return batches
 }
 
-describe("version 1 summaries", () => {
-	it.each([
-		"work-summary-v1.7.1.json",
-		"work-summary-v1-stack.json",
-		"work-summary-v1-legacy.json",
-	])("reads %s unchanged and migrates it on the next update", async (name) => {
-		const saved = fixture(name)
-		writeVersionOne(saved)
-		const { workId } = saved
-		expect(readWorkSummary(dir, workId)).toEqual(withDefaults(saved))
-		expect(readWorkRows(dir, workId, "commits")).toEqual(saved.commits)
-		const head = await readWorkHead(dir, workId)
-		expect(head).toMatchObject({ version: 2, logs: { requests: { rows: saved.requests.length } } })
-		const existing = saved.requests[0]
-		const batch: WorkRecord[] = [
-			{
-				version: 1,
-				type: "request_response",
-				workId,
-				sessionId: existing.sessionId,
-				requestId: String(existing.requestId),
-				response: { status: 200, receivedAt: "2026-10-08T12:00:00.000Z" },
-				recordedAt: "2026-10-08T12:00:00.000Z",
-			},
-			{
-				version: 1,
-				type: "request",
-				workId,
-				sessionId: "new-session",
-				requestId: "new-request",
-				startedAt: "2026-10-08T12:00:01.000Z",
-				recordedAt: "2026-10-08T12:00:01.000Z",
-			},
-		]
-		await apply(batch)
-		const expected = await versionOneUpdate(saved, batch)
-		expectCommitted(workId, expected)
-		expect(readWorkSummary(dir, workId)?.requests.at(-1)).toMatchObject({ requestId: "new-request" })
+describe("a work.json from an older release", () => {
+	const older = () => createContext({ cwd: "/project", sessionManager: { getSessionId: () => "older" } })
+	/** A work its journals record, whose work.json a release before row logs saved with every row. */
+	async function olderWork(): Promise<string> {
+		const workId = randomUUID()
+		appendWorkRecord(older(), { type: "request", requestId: "journaled", startedAt: iso(BASE) }, workId)
+		await flushWorkSummaries()
+		fs.rmSync(join(folder(workId), "rows"), { recursive: true })
+		// No journal has this row; only the old file does.
+		const row = { requestId: "only-in-work-json", sessionId: "older", startedAt: iso(BASE) }
+		const summary = { version: 1, workId, sessions: ["older"], requests: [row], plans: [], commits: [] }
+		fs.writeFileSync(join(folder(workId), "work.json"), `${JSON.stringify(summary, null, 2)}\n`)
+		fs.writeFileSync(
+			join(folder(workId), "cost-totals.json"),
+			JSON.stringify(workCostTotals({ workId, pullRequests: [], requests: [] })),
+		)
+		return workId
+	}
+
+	it("is deleted by /work, which leaves the work out until its next update rebuilds it", async () => {
+		const workId = await olderWork()
+		const kept = fs
+			.readdirSync(folder(workId))
+			.filter((name) => name !== "work.json")
+			.sort()
+		const current = randomUUID()
+
+		const { rows } = await readWorkBrowser(dir, { workId: current, lines: [] }, BASE + 60_000)
+
+		expect(rows.map((row) => row.workId)).toEqual([current])
+		expect(fs.readdirSync(folder(workId)).sort()).toEqual(kept)
+		appendWorkRecord(older(), { type: "request", requestId: "next", startedAt: iso(BASE + 1000) }, workId)
+		await flushWorkSummaries()
+		const listed = await readWorkBrowser(dir, { workId: current, lines: [] }, BASE + 60_000)
+		expect(listed.rows.find((row) => row.workId === workId)?.description).toContain("· 2 requests")
 	})
 
-	it("reads a version 1 summary that grew past the listing limit only as too large", async () => {
-		const saved = fixture("work-summary-v1.7.1.json")
-		writeVersionOne(saved)
-		expect(await readWorkHead(dir, saved.workId, 100)).toBe("too-large")
-		expect(readWorkSummary(dir, saved.workId)).toEqual(withDefaults(saved))
+	it("is deleted by the next update, which rebuilds the work from its journals", async () => {
+		const workId = await olderWork()
+
+		appendWorkRecord(older(), { type: "request", requestId: "next", startedAt: iso(BASE + 1000) }, workId)
+		await flushWorkSummaries()
+
+		expect(manifest(workId).version).toBe(2)
+		expect(readWorkSummary(dir, workId)?.requests.map((row) => row.requestId)).toEqual(["journaled", "next"])
 	})
 })
 
@@ -386,31 +367,25 @@ describe("row logs", () => {
 		[3, { large: true }],
 		[4, { replays: true, large: true }],
 	])(
-		"fold to the version 1 merge of random records (seed %i, %o)",
+		"fold to an in-memory merge of random records (seed %i, %o)",
 		async (seed, options) => {
 			const workId = randomUUID()
-			const batches = randomRecords(seed, workId, 360, options)
-			let expected = await versionOneUpdate(emptySummary(workId), batches.slice(0, 5).flat())
-			writeVersionOne(expected)
+			let expected = emptySummary(workId)
 			let compactions = 0
 			let previous: WorkHead | undefined
-			for (const [index, batch] of batches.slice(5).entries()) {
-				let migrated = !previous
-				if (index === 30) {
-					// An older release rewrote the summary as version 1; its logs are left behind.
-					writeVersionOne(expected)
-					migrated = true
-				}
+			for (const batch of randomRecords(seed, workId, 360, options)) {
 				await apply(batch)
-				expected = await versionOneUpdate(expected, batch)
-				const generations = (head?: WorkHead) =>
-					COLLECTIONS.map((collection) => head?.logs[collection]?.generation ?? 0)
+				expected = await mergeInMemory(expected, batch)
 				// Replayed older records can move a row's time back; /work keeps the newer value until a recompute.
-				const head = expectCommitted(workId, expected, { latest: !options.replays || migrated })
-				const advanced = generations(head).some((generation, at) => generation > generations(previous)[at])
-				if (advanced && !migrated && previous) {
+				// The first commit computes it from every row.
+				const head = expectCommitted(workId, expected, { latest: !options.replays || !previous })
+				// A compaction moves a log to its next generation and recomputes what /work lists from every row.
+				const compacted = COLLECTIONS.some((collection) => {
+					const log = previous?.logs[collection]
+					return log && (head.logs[collection]?.generation ?? 0) > log.generation
+				})
+				if (compacted) {
 					compactions++
-					// Compaction recomputes what /work lists from every row.
 					expect(head.latest).toEqual(summaryLatest((collection) => expected[collection]).latest)
 				}
 				previous = head
@@ -432,7 +407,7 @@ describe("row logs", () => {
 				[[], []],
 			)
 		await apply(first)
-		const expected = await versionOneUpdate(emptySummary(workId), first)
+		const expected = await mergeInMemory(emptySummary(workId), first)
 		const head = manifest(workId)
 		for (const name of LOGS) {
 			const log = head.logs[name]
@@ -440,7 +415,7 @@ describe("row logs", () => {
 		}
 		expect(readWorkSummary(dir, workId)).toEqual(expected)
 		await apply(second)
-		expectCommitted(workId, await versionOneUpdate(expected, second))
+		expectCommitted(workId, await mergeInMemory(expected, second))
 	})
 
 	it.each(["missing", "short", "garbled"])("rebuilds a work from its journals when a log is %s", async (damage) => {
@@ -503,7 +478,7 @@ describe("row logs", () => {
 		for (const batch of batches) {
 			renames = 0
 			await apply(batch)
-			expected = await versionOneUpdate(expected, batch)
+			expected = await mergeInMemory(expected, batch)
 			if (fs.readdirSync(join(folder(workId), "rows")).length > Object.keys(manifest(workId).logs).length) break
 		}
 		const stray = fs
@@ -520,30 +495,14 @@ describe("row logs", () => {
 		vi.mocked(asyncFs.rename).mockRestore()
 		const next = records.slice(0, 1)
 		await apply(next)
-		expectCommitted(workId, await versionOneUpdate(expected, next))
+		expectCommitted(workId, await mergeInMemory(expected, next))
 	}, 60_000)
-
-	it("starts a fresh generation after an older release rewrote the summary as version 1", async () => {
-		const workId = randomUUID()
-		const [first, ...rest] = randomRecords(6, workId, 30)
-		await apply(first)
-		const old = manifest(workId)
-		const expected = await versionOneUpdate(emptySummary(workId), first)
-		writeVersionOne(expected)
-		const next = rest.flat()
-		await apply(next)
-		const head = expectCommitted(workId, await versionOneUpdate(expected, next))
-		for (const collection of COLLECTIONS) {
-			const generation = old.logs[collection]?.generation
-			if (generation) expect(head.logs[collection]?.generation).toBeGreaterThan(generation)
-		}
-	})
 
 	it("reads a manifest that still lists its sessions and moves them into a log on the next update", async () => {
 		const workId = randomUUID()
 		const [first, ...rest] = randomRecords(10, workId, 40)
 		await apply(first)
-		const expected = await versionOneUpdate(emptySummary(workId), first)
+		const expected = await mergeInMemory(emptySummary(workId), first)
 		// Builds before the sessions log listed them in the manifest.
 		const { sessions: log, ...logs } = manifest(workId).logs
 		if (!log) throw new Error("sessions were not saved")
@@ -555,7 +514,7 @@ describe("row logs", () => {
 		expect(readWorkSummary(dir, workId)).toEqual(expected)
 		const next = rest.flat()
 		await apply(next)
-		expectCommitted(workId, await versionOneUpdate(expected, next))
+		expectCommitted(workId, await mergeInMemory(expected, next))
 	})
 
 	it("rereads the manifest once when a compaction replaces a log during a read", async () => {
@@ -628,7 +587,7 @@ for (const batch of JSON.parse(readFileSync(process.argv[2], "utf8"))) {
 		expect(failures).toEqual([])
 		expect(reads).toBeGreaterThan(10)
 		let expected = emptySummary(workId)
-		for (const batch of batches) expected = await versionOneUpdate(expected, batch)
+		for (const batch of batches) expected = await mergeInMemory(expected, batch)
 		const head = expectCommitted(workId, expected)
 		expect(COLLECTIONS.some((collection) => (head.logs[collection]?.generation ?? 0) > 1)).toBe(true)
 	}, 60_000)
@@ -637,7 +596,7 @@ for (const batch of JSON.parse(readFileSync(process.argv[2], "utf8"))) {
 		const workId = randomUUID()
 		const batches = randomRecords(9, workId, 300, { large: true })
 		await apply(batches[0])
-		let expected = await versionOneUpdate(emptySummary(workId), batches[0])
+		let expected = await mergeInMemory(emptySummary(workId), batches[0])
 		// A second module instance has its own cached positions, like another Kimchi process.
 		vi.resetModules()
 		const other = await import("./summary.js")
@@ -645,7 +604,7 @@ for (const batch of JSON.parse(readFileSync(process.argv[2], "utf8"))) {
 		for (const batch of batches.slice(1, -1)) {
 			for (const record of structuredClone(batch)) other.updateWorkSummary(record)
 			await other.flushWorkSummaries()
-			expected = await versionOneUpdate(expected, batch)
+			expected = await mergeInMemory(expected, batch)
 		}
 		const changed = manifest(workId)
 		expect(
@@ -653,7 +612,7 @@ for (const batch of JSON.parse(readFileSync(process.argv[2], "utf8"))) {
 		).toBe(true)
 		const last = batches.at(-1) ?? []
 		await apply(last)
-		expectCommitted(workId, await versionOneUpdate(expected, last))
+		expectCommitted(workId, await mergeInMemory(expected, last))
 	}, 60_000)
 })
 
@@ -723,7 +682,7 @@ describe("a large work", () => {
 			sessionId: sessions[0],
 			recordedAt: iso(BASE + index * 3_600_000),
 		}))
-		writeVersionOne(summary)
+		await saveWorkSummary(dir, summary)
 		const record = (index: number): WorkRecord => ({
 			version: 1,
 			type: "request",

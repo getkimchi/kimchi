@@ -14,7 +14,7 @@ import { lockSync } from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
-import { savedWorkSummary } from "../__mocks__/work-summary.js"
+import { savedWorkSummary, saveWorkSummary } from "../__mocks__/work-summary.js"
 import {
 	appendWorkRecord,
 	createWorkAttributionExtension,
@@ -457,7 +457,7 @@ describe("readable work summaries", () => {
 		recordProviderRequest(parent)
 		await flushWorkSummaries()
 		const value = summary(workId)
-		expect(value).toMatchObject({ version: 1, workId, sessions: expect.arrayContaining(["parent", "child"]) })
+		expect(value).toMatchObject({ workId, sessions: expect.arrayContaining(["parent", "child"]) })
 		expect(value.requests).toHaveLength(2)
 		expect(value.requests).toEqual(
 			expect.arrayContaining([
@@ -549,9 +549,7 @@ describe("readable work summaries", () => {
 		const ctx = context()
 		const request = recordProviderRequest(ctx)
 		await flushWorkSummaries()
-		// A version 1 summary written before file transitions were recorded.
-		const { fileTransitions: _, ...existing } = summary(request.workId)
-		fs.writeFileSync(path(request.workId), JSON.stringify(existing))
+		const existing = summary(request.workId)
 		const journal = join(dir, "work-attribution", "transitions", "old.jsonl")
 		fs.mkdirSync(dirname(journal), { recursive: true })
 		fs.writeFileSync(
@@ -602,9 +600,11 @@ describe("readable work summaries", () => {
 			complete: false,
 		})
 		await flushWorkSummaries()
+		// A summary saved by a build that did not merge observations or hunk evidence.
 		const { fileObservations: _, ...old } = summary(workId)
 		old.commits[0].fileMatches = []
-		fs.writeFileSync(path(workId), JSON.stringify(old))
+		fs.rmSync(dirname(path(workId)), { recursive: true })
+		await saveWorkSummary(dir, old)
 		const { size, mtimeMs } = fs.statSync(path(workId))
 		const ledger = join(dir, "work-attribution", "parent.jsonl")
 		const past = new Date(Date.now() - 60 * 60 * 1000)
@@ -931,11 +931,7 @@ console.log("durable"); await flushWorkSummaries();`,
 	it("serializes simultaneous processes without lost updates or truncated publication", async () => {
 		const workId = randomUUID()
 		const directory = dirname(path(workId))
-		fs.mkdirSync(directory, { recursive: true })
-		fs.writeFileSync(
-			path(workId),
-			JSON.stringify({ version: 1, workId, sessions: [], requests: [], plans: [], commits: [] }),
-		)
+		await saveWorkSummary(dir, { workId, sessions: [] })
 		const release = lockSync(directory)
 		const script = join(dir, "writer.mts")
 		fs.writeFileSync(
@@ -986,7 +982,7 @@ console.log("ready"); await flushWorkSummaries();`,
 			expect(errors).toEqual([])
 			expect(summary(workId).requests).toHaveLength(24)
 			expect(summary(workId).sessions.sort()).toEqual(["session-0", "session-1", "session-2"])
-			// The version 1 file migrated once; every append landed on a committed line boundary.
+			// Every append landed on a committed line boundary.
 			const head = JSON.parse(fs.readFileSync(path(workId), "utf8"))
 			const log = fs.readFileSync(join(directory, "rows", `requests.${head.logs.requests.generation}.jsonl`))
 			expect(head).toMatchObject({
