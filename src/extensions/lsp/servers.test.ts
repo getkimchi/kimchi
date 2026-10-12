@@ -90,6 +90,15 @@ describe("detectServers", () => {
 		expect(detectServers("/project")[0].name).toBe("gopls")
 	})
 
+	it("boots gopls through its shared daemon (-remote=auto)", () => {
+		setFiles(["go.mod"])
+		setBinaries(["gopls"])
+		const result = detectServers("/project")
+		// N sessions on one repo share one gopls engine; the daemon
+		// self-terminates ~60s after its last client disconnects.
+		expect(result[0].args).toContain("-remote=auto")
+	})
+
 	it("returns typescript-language-server when package.json present and binary on PATH", () => {
 		setFiles(["package.json"])
 		setBinaries(["typescript-language-server"])
