@@ -234,6 +234,42 @@ describe("DAP session-tool deferral", () => {
 		expect(mock.setActiveToolsCalls).toHaveLength(2)
 	})
 
+	it("reveals the entry tools when the dap-debugging skill is loaded via skill_view", async () => {
+		await fireSessionStart()
+
+		for (const h of mock.handlers.tool_call) {
+			h({ toolName: "skill_view", toolCallId: "c1", input: { name: "dap-debugging" } }, createCtx())
+		}
+
+		for (const name of DAP_ENTRY_TOOL_NAMES) {
+			expect(mock.activeTools.has(name), `${name} should be visible after skill_view`).toBe(true)
+		}
+		for (const name of DAP_SESSION_TOOL_NAMES) {
+			expect(mock.activeTools.has(name), `${name} should stay hidden until a session exists`).toBe(false)
+		}
+		expect(mock.setActiveToolsCalls).toHaveLength(2) // 1 hide + 1 reveal
+
+		// Linked-file loads (name still present) do not produce a second transition.
+		for (const h of mock.handlers.tool_call) {
+			h(
+				{ toolName: "skill_view", toolCallId: "c2", input: { name: "dap-debugging", file_path: "references/api.md" } },
+				createCtx(),
+			)
+		}
+		expect(mock.setActiveToolsCalls).toHaveLength(2)
+	})
+
+	it("does not reveal entry tools on other skills' skill_view calls", async () => {
+		await fireSessionStart()
+		for (const h of mock.handlers.tool_call) {
+			h({ toolName: "skill_view", toolCallId: "c1", input: { name: "verify-kimchi" } }, createCtx())
+		}
+		for (const name of DAP_ENTRY_TOOL_NAMES) {
+			expect(mock.activeTools.has(name), `${name} should stay hidden`).toBe(false)
+		}
+		expect(mock.setActiveToolsCalls).toHaveLength(1)
+	})
+
 	it("reveals the entry tools on Windows-style backslash skill paths", async () => {
 		await fireSessionStart()
 

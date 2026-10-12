@@ -3,7 +3,17 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { type AdminBackend, type AdminMemoryItem, listStores, parseAdminArgs, runAdminCommand } from "./admin.js"
+import {
+	type AdminBackend,
+	type AdminMemoryItem,
+	type AdminRunOptions,
+	adminOverview,
+	adminResetScope,
+	listStores,
+	parseAdminArgs,
+	runAdminCommand,
+	scopeFilterFromParams,
+} from "./admin.js"
 
 // --- fixtures -------------------------------------------------------------------
 
@@ -56,16 +66,18 @@ function harness(stores: Record<string, AdminMemoryItem[]>, cwd = NO_REPO_CWD) {
 		writeFileSync(dbPath, "")
 		backends.set(dbPath, makeFakeBackend(items))
 	}
-	const run = (args: string[]) =>
+	const run = (args: string[], extra?: Pick<AdminRunOptions, "memoryState" | "confirm">) =>
 		runAdminCommand(args, {
 			cwd,
-			deps: {
-				memoryRoot: root,
-				createBackend: (dbPath) => Promise.resolve(backends.get(dbPath)?.backend ?? makeFakeBackend([]).backend),
-				acquireLock: () => Promise.resolve(() => Promise.resolve()),
-			},
+			deps,
+			...extra,
 		})
-	return { root, backends, run }
+	const deps = {
+		memoryRoot: root,
+		createBackend: (dbPath: string) => Promise.resolve(backends.get(dbPath)?.backend ?? makeFakeBackend([]).backend),
+		acquireLock: () => Promise.resolve(() => Promise.resolve()),
+	}
+	return { root, backends, deps, run }
 }
 
 const roots: string[] = []
@@ -191,6 +203,79 @@ describe("parseAdminArgs", () => {
 		expect(parseAdminArgs(["list", "--bogus"], { cwd: NO_REPO_CWD })).toMatchObject({ op: "usage-error" })
 		expect(parseAdminArgs(["list", "extra"], { cwd: NO_REPO_CWD })).toMatchObject({ op: "usage-error" })
 		expect(parseAdminArgs(["--scope"], { cwd: NO_REPO_CWD })).toMatchObject({ op: "usage-error" })
+	})
+
+	it("bare enable/disable parse as the session-scoped toggle", () => {
+		expect(parseAdminArgs(["enable"], { cwd: NO_REPO_CWD })).toEqual({ op: "set-enabled", enabled: true })
+		expect(parseAdminArgs(["disable"], { cwd: NO_REPO_CWD })).toEqual({ op: "set-enabled", enabled: false })
+	})
+
+	it("the toggle takes no arguments or flags", () => {
+		const cases: string[][] = [
+			["enable", "extra"],
+			["disable", "--scope", "personal"],
+			["enable", "--json"],
+			["disable", "--yes"],
+			["enable", "--project", "owner/name"],
+		]
+		for (const args of cases) {
+			const parsed = parseAdminArgs(args, { cwd: NO_REPO_CWD })
+			expect(parsed, JSON.stringify(args)).toMatchObject({ op: "usage-error" })
+			if (parsed.op === "usage-error") {
+				expect(parsed.message).toContain("takes no arguments")
+			}
+		}
+	})
+})
+
+// --- scopeFilterFromParams (ACP ext-method scope mapping) ------------------------
+
+describe("scopeFilterFromParams", () => {
+	it("maps param scopes onto the grammar's ScopeFilter", () => {
+		expect(scopeFilterFromParams({}, { cwd: NO_REPO_CWD })).toEqual({ kind: "local", scopeId: undefined })
+		expect(scopeFilterFromParams({ scope: "personal" }, { cwd: NO_REPO_CWD })).toEqual({ kind: "personal" })
+		expect(scopeFilterFromParams({ scope: "all" }, { cwd: NO_REPO_CWD })).toEqual({ kind: "all" })
+		expect(scopeFilterFromParams({ scope: "project", project: "owner/name" }, { cwd: NO_REPO_CWD })).toEqual({
+			kind: "project",
+			scopeId: "owner/name",
+		})
+		const repo = makeRepo("https://github.com/cur/proj.git")
+		expect(scopeFilterFromParams({ scope: "local" }, { cwd: repo })).toEqual({ kind: "local", scopeId: "cur/proj" })
+	})
+
+	it("type mismatches and invalid combinations come back as errors", () => {
+		expect(scopeFilterFromParams({ scope: 3 }, { cwd: NO_REPO_CWD })).toEqual({ error: "scope must be a string" })
+		expect(scopeFilterFromParams({ project: true }, { cwd: NO_REPO_CWD })).toEqual({
+			error: "project must be a string",
+		})
+		expect(scopeFilterFromParams({ scope: "bogus" }, { cwd: NO_REPO_CWD })).toMatchObject({
+			error: expect.stringContaining("invalid --scope"),
+		})
+		expect(scopeFilterFromParams({ project: "owner/name" }, { cwd: NO_REPO_CWD })).toMatchObject({
+			error: expect.stringContaining("--project requires --scope project"),
+		})
+	})
+
+	it("without a cwd there is no anchor: local (and the default) degrade to personal-only", () => {
+		// The ACP server's process cwd must never be probed — no cwd means
+		// personal-only, the grammar's outside-a-repository semantics.
+		expect(scopeFilterFromParams({}, {})).toEqual({ kind: "local", scopeId: undefined })
+		expect(scopeFilterFromParams({ scope: "local" }, {})).toEqual({ kind: "local", scopeId: undefined })
+	})
+
+	it("without a cwd, cwd-dependent combinations fail fast instead of probing", () => {
+		expect(scopeFilterFromParams({ project: "owner/name" }, {})).toEqual({
+			error: "--project requires --scope project",
+		})
+		expect(scopeFilterFromParams({ scope: "project" }, {})).toEqual({
+			error: "--scope project requires --project <owner/name> (or run inside a git repository)",
+		})
+		// Explicit scopes that need no cwd keep working.
+		expect(scopeFilterFromParams({ scope: "personal" }, {})).toEqual({ kind: "personal" })
+		expect(scopeFilterFromParams({ scope: "project", project: "owner/name" }, {})).toEqual({
+			kind: "project",
+			scopeId: "owner/name",
+		})
 	})
 })
 
@@ -463,6 +548,53 @@ describe("runAdminCommand — reset", () => {
 	})
 })
 
+// --- adminResetScope (structured reset for the ACP memory_reset ext-method) ------
+
+describe("adminResetScope", () => {
+	it("resets a personal store with yes and returns the structured outcome", async () => {
+		const h = trackedHarness({
+			personal: [fact("p1", "personal fact")],
+			"a/b": [fact("q1", "project fact")],
+		})
+		const outcome = await adminResetScope({ kind: "personal" }, { yes: true, deps: h.deps })
+		expect(outcome).toEqual({ ok: true, scope: "personal", facts: 1 })
+		const personalBackend = [...h.backends.entries()].find(([path]) => path.includes("personal"))?.[1]
+		const projectBackend = [...h.backends.entries()].find(([path]) => path.includes("projects"))?.[1]
+		expect(personalBackend?.isDeletedAll()).toBe(true)
+		expect(projectBackend?.isDeletedAll()).toBe(false)
+	})
+
+	it("a missing store is a client-side outcome, not a throw", async () => {
+		const h = trackedHarness({ personal: [fact("p1", "a fact")] })
+		const outcome = await adminResetScope({ kind: "project", scopeId: "no/such" }, { yes: true, deps: h.deps })
+		expect(outcome).toEqual({ ok: false, reason: "no-such-store", scopeId: "no/such" })
+	})
+
+	it("a declined confirmation cancels; no gate at all requires one", async () => {
+		const h = trackedHarness({ personal: [fact("p1", "a fact")] })
+		const declined = await adminResetScope({ kind: "personal" }, { confirm: async () => false, deps: h.deps })
+		expect(declined).toEqual({ ok: false, reason: "cancelled" })
+		const ungated = await adminResetScope({ kind: "personal" }, { deps: h.deps })
+		expect(ungated).toEqual({ ok: false, reason: "confirmation-required" })
+	})
+
+	it("environmental failures throw so callers can classify them distinctly", async () => {
+		const h = trackedHarness({ personal: [fact("p1", "a fact")] })
+		await expect(
+			adminResetScope(
+				{ kind: "personal" },
+				{
+					yes: true,
+					deps: {
+						...h.deps,
+						acquireLock: () => Promise.reject(new Error("lock busy")),
+					},
+				},
+			),
+		).rejects.toThrow("lock busy")
+	})
+})
+
 describe("runAdminCommand — overview and usage errors", () => {
 	it("the overview reports stores, sizes, pending jobs, and the ledger", async () => {
 		const h = trackedHarness({ personal: [fact("p1", "a fact")] })
@@ -482,5 +614,100 @@ describe("runAdminCommand — overview and usage errors", () => {
 		expect(result.code).toBe(1)
 		expect(result.text).toContain('unknown subcommand "bogus"')
 		expect(result.text).toContain("usage: memory")
+	})
+})
+
+// --- set-enabled (session-scoped toggle) ----------------------------------------
+
+describe("runAdminCommand — set-enabled", () => {
+	it("disable flips the session override and says it resets on restart", async () => {
+		const h = trackedHarness({})
+		let override: boolean | undefined
+		const result = await h.run(["disable"], {
+			memoryState: {
+				read: () => override,
+				setSession: (enabled) => {
+					override = enabled
+				},
+			},
+		})
+		expect(result.code).toBe(0)
+		expect(override).toBe(false)
+		expect(result.text).toBe("Memory disabled for this session — resets on restart.")
+		const data = JSON.parse(result.json) as { enabled: boolean; sessionOverride: boolean | undefined }
+		expect(data).toEqual({ enabled: false, sessionOverride: false })
+	})
+
+	it("enable restores the session override", async () => {
+		const h = trackedHarness({})
+		let override: boolean | undefined = false
+		const result = await h.run(["enable"], {
+			memoryState: {
+				read: () => override,
+				setSession: (enabled) => {
+					override = enabled
+				},
+			},
+		})
+		expect(result.code).toBe(0)
+		expect(override).toBe(true)
+		expect(result.text).toBe("Memory enabled.")
+		const data = JSON.parse(result.json) as { enabled: boolean; sessionOverride: boolean | undefined }
+		expect(data).toEqual({ enabled: true, sessionOverride: true })
+	})
+
+	it("without a memoryState handle (CLI) it errors and points at the real switches", async () => {
+		const h = trackedHarness({})
+		const result = await h.run(["enable"])
+		expect(result.code).toBe(1)
+		expect(result.text).toContain("interactive session")
+		expect(result.text).toContain("kimchi resources enable|disable extensions.memory")
+	})
+
+	it("the overview prepends the session state line when a handle is present", async () => {
+		const h = trackedHarness({ personal: [fact("p1", "a fact")] })
+		let override: boolean | undefined = false
+		const memoryState = {
+			read: () => override,
+			setSession: (enabled: boolean) => {
+				override = enabled
+			},
+		}
+		const disabled = await h.run([], { memoryState })
+		expect(disabled.text).toContain("Memory: disabled (this session)")
+		override = undefined
+		const enabled = await h.run([], { memoryState })
+		expect(enabled.text).toContain("Memory: enabled")
+		// No handle (CLI surface): no state line.
+		const bare = await h.run([])
+		expect(bare.text).not.toContain("Memory: enabled")
+		expect(bare.text).not.toContain("Memory: disabled")
+	})
+})
+
+// --- adminOverview (structured data for the ACP memory_status ext-method) -------
+
+describe("adminOverview", () => {
+	it("returns the structured overview data", async () => {
+		const h = trackedHarness({
+			personal: [fact("p1", "a fact")],
+			"a/b": [fact("q1", "project fact")],
+		})
+		writeFileSync(join(h.root, "captured-hashes.json"), '["h1"]')
+		mkdirSync(join(h.root, "pending"), { recursive: true })
+		writeFileSync(join(h.root, "pending", "job.json"), "{}")
+
+		const data = await adminOverview({
+			memoryRoot: h.root,
+			createBackend: (dbPath) => Promise.resolve(h.backends.get(dbPath)?.backend ?? makeFakeBackend([]).backend),
+			acquireLock: () => Promise.resolve(() => Promise.resolve()),
+		})
+		expect(data.root).toBe(h.root)
+		expect(data.stores).toEqual([
+			{ scope: "personal", facts: 1, sizeBytes: 0 },
+			{ scope: "a/b", facts: 1, sizeBytes: 0 },
+		])
+		expect(data.pendingJobs).toBe(1)
+		expect(data.ledgerEntries).toBe(1)
 	})
 })

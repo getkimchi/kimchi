@@ -127,6 +127,7 @@ import {
 	ACP_REATTACH_MID_TURN_META_KEY,
 	buildToolCallId,
 } from "../../sandbox/worker/acp-protocol.js"
+import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
@@ -137,6 +138,15 @@ import { handleAuthStatus } from "./ext-methods/auth-status.js"
 import { handleImportApply } from "./ext-methods/import-apply.js"
 import { importDiscover } from "./ext-methods/import-discover.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
+import {
+	handleMemoryDelete,
+	handleMemoryList,
+	handleMemoryReset,
+	handleMemorySearch,
+	handleMemoryStatus,
+	handleSetMemoryEnabled,
+} from "./ext-methods/memory.js"
+import { handleListResources, handleSetResourceEnabled } from "./ext-methods/resources.js"
 import { handleSetOnboardingFlag } from "./ext-methods/set-onboarding-flag.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { handleSteering } from "./ext-methods/steering.js"
@@ -366,6 +376,15 @@ export class KimchiAcpAgent implements Agent {
 	// earlier session record.
 	private loadingSessions = new Map<string, Promise<LoadSessionResponse>>()
 	private shutdownPromise: Promise<void> | undefined
+	/** Held-prompt plan reviews finalize when permissions reports the review
+	 * closed without a follow-up turn (rework / menu dismissal). Execution
+	 * decisions are pi-observable (agent_start) and never notify. */
+	private readonly unsubPlanReviewClosed: () => void = subscribePlanReviewClosed((notifiedSessionId) => {
+		const entry = this.sessions.get(notifiedSessionId)
+		const turn = entry?.turn
+		if (!entry || !turn?.planReviewHeld || turn.planReviewExecuting) return
+		this.finalizeHeldPlanReviewTurn(entry, turn)
+	})
 
 	/**
 	 * Resolve the initial permission mode for a session.
@@ -1039,6 +1058,15 @@ export class KimchiAcpAgent implements Agent {
 				// running the chained continues. session.prompt() resolves only after
 				// ALL chained calls complete.
 				if (!entry.turn) return
+				// Held plan-review turn: the turn ended in submit_plan and its
+				// follow-up execution hasn't started — keep the prompt OPEN so the
+				// review's outcome lands inside this PromptRequest. Finalization is
+				// driven by agent_settled (execution drained), the plan-review-closed
+				// notification (rework / dismissal), or cancel during the review
+				// pause — never here. If a decision raced in BEFORE prompt
+				// resolution, the follow-up chained into this same prompt run
+				// (planReviewExecuting already true) and finalization proceeds below.
+				if (entry.turn.planReviewHeld && !entry.turn.planReviewExecuting) return
 				// Resolved with terminal "error" (retries exhausted): do not report
 				// end_turn — the client would show a silent empty reply.
 				if (entry.turn.lastAssistantError && !entry.turn.cancelled) {
@@ -1086,6 +1114,13 @@ export class KimchiAcpAgent implements Agent {
 		const droppedQueue = this.drainQueue(entry)
 		notifyDroppedQueue(this.conn, params.sessionId, droppedQueue, "cancelled")
 		await entry.session.abort()
+		// Held plan-review turn still in the review pause: abort() above was a
+		// no-op (nothing is streaming) and no agent_settled is coming — finalize
+		// here. Held-executing turns finalize via agent_settled after the abort.
+		const heldTurn = entry.turn
+		if (heldTurn?.planReviewHeld && !heldTurn.planReviewExecuting) {
+			this.finalizeTurn(entry, "cancelled")
+		}
 	}
 
 	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -1149,6 +1184,35 @@ export class KimchiAcpAgent implements Agent {
 				// capability), then live-refresh affected sessions. See
 				// handleSetPathTrust.
 				return this.handleSetPathTrust(params)
+			case AVAILABLE_EXT_METHODS.list_resources:
+				// Sessionless read: every known resource with its effective state
+				// — the /resources machinery for client-built settings UIs.
+				return handleListResources()
+			case AVAILABLE_EXT_METHODS.set_resource_enabled:
+				// Sessionless write: the persistent resource override; the response
+				// carries restartRequired so the client can surface the hint.
+				return handleSetResourceEnabled({}, params)
+			case AVAILABLE_EXT_METHODS.memory_status:
+				// Session-scoped: the session's memory toggle state plus the
+				// sessionless store overview (adminOverview).
+				return handleMemoryStatus((sessionId) => this.sessions.get(sessionId)?.session, {}, params)
+			case AVAILABLE_EXT_METHODS.set_memory_enabled:
+				// Session-scoped: flip the session's runtime memory toggle — the
+				// memory extension reads it at its next agent start.
+				return handleSetMemoryEnabled((sessionId) => this.sessions.get(sessionId)?.session, params)
+			case AVAILABLE_EXT_METHODS.memory_list:
+				// Sessionless store op: paginated facts across the selected scopes.
+				return handleMemoryList({}, params)
+			case AVAILABLE_EXT_METHODS.memory_search:
+				// Sessionless store op: ranked search across the selected scopes.
+				return handleMemorySearch({}, params)
+			case AVAILABLE_EXT_METHODS.memory_delete:
+				// Sessionless store op: delete facts by id across all stores.
+				return handleMemoryDelete({}, params)
+			case AVAILABLE_EXT_METHODS.memory_reset:
+				// Sessionless store op: wipe a scope — the client-confirmed
+				// destructive op (the required confirm param mirrors --yes).
+				return handleMemoryReset({}, params)
 			default:
 				throw RequestError.methodNotFound(method)
 		}
@@ -1163,6 +1227,7 @@ export class KimchiAcpAgent implements Agent {
 	private async doShutdown(_cause: "signal" | "disconnect"): Promise<void> {
 		this.commandsRefresher.cancel()
 		this.skillWatcher.close()
+		this.unsubPlanReviewClosed()
 		// Drain any in-flight turn promises before tearing down the session.
 		// On the signal path we process.exit immediately so this is mostly
 		// cosmetic, but runAcpMode's finally also calls shutdown when conn.closed
@@ -1267,6 +1332,19 @@ export class KimchiAcpAgent implements Agent {
 				entry.contentIndexToBlockId.clear()
 				entry.streamedText.clear()
 				entry.toolCallIdMap.clear()
+				// A held plan-review turn seeing the follow-up turn begin: pi events
+				// derive "decision applied with work" — no extension notification.
+				if (turn?.planReviewHeld) turn.planReviewExecuting = true
+				return
+			}
+			case "agent_settled": {
+				// Held plan-review execution drained: pi-mono emits agent_settled
+				// exactly once, after the FULL run chain (chained continues, retries,
+				// compaction) completes — the deterministic end point for an internal
+				// turn that has no session.prompt() promise to await.
+				if (turn?.planReviewHeld && turn.planReviewExecuting) {
+					this.finalizeHeldPlanReviewTurn(entry, turn)
+				}
 				return
 			}
 			case "message_start": {
@@ -1534,6 +1612,12 @@ export class KimchiAcpAgent implements Agent {
 			}
 			case "tool_execution_end": {
 				if (!turn) return
+				// submit_plan ends the model turn while the review is still open:
+				// mark the hold so prompt() resolution skips finalizeTurn and the
+				// review's outcome drives finalization instead. A FAILED execution
+				// (validation error, worker path...) never opens a review — holding
+				// would strand the prompt forever.
+				if (event.toolName === "submit_plan" && !event.isError) turn.planReviewHeld = true
 				if (turn.hiddenToolCallIds.has(event.toolCallId)) {
 					this.retireToolCall(entry, turn, event.toolCallId, { removeFromHidden: true })
 					return
@@ -2165,6 +2249,23 @@ export class KimchiAcpAgent implements Agent {
 				size: ctx.contextWindow,
 			},
 		})
+	}
+
+	/**
+	 * Finalize a held plan-review turn, mirroring the outcome rules of the
+	 * normal prompt-resolution path: client cancel → "cancelled", terminal
+	 * assistant error → JSON-RPC failure (never a silent end_turn), otherwise
+	 * a clean end_turn. Invoked from agent_settled (execution drained) and the
+	 * plan-review-closed notification (rework / menu dismissal).
+	 */
+	private finalizeHeldPlanReviewTurn(entry: SessionRecord, turn: TurnContext): void {
+		if (turn.cancelled) {
+			this.finalizeTurn(entry, "cancelled")
+		} else if (turn.lastAssistantError) {
+			this.failTurn(entry, toTurnError(turn.lastAssistantError))
+		} else {
+			this.finalizeTurn(entry, "end_turn")
+		}
 	}
 
 	private finalizeTurn(entry: SessionRecord, stopReason: PromptResponse["stopReason"]): void {

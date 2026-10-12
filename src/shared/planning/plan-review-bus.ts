@@ -144,3 +144,50 @@ export function onPlanReviewDecision(
 		}
 	})
 }
+
+// =============================================================================
+// Plan-review "closed without a follow-up turn" notifier
+//
+// Unlike the request/decision channels above, this signal cannot live on the
+// session-scoped pi.events bus: its consumer is the ACP SERVER, which holds
+// only the AgentSession — extensions receive the bus facade, surfaces never
+// do. So it uses the same cross-boundary pattern as the todo-store →
+// AcpPlanTracker bridge: a global, sessionId-keyed notify + subscribe.
+//
+// Why the signal exists at all: pi-mono session events cover almost the whole
+// plan-review lifecycle — the review window opens with submit_plan's
+// tool_execution_end and an approved execution starts with the next
+// agent_start — but a review that ends WITHOUT dispatching a follow-up turn
+// (the user picks "Rework the plan", or dismisses the review menu) leaves no
+// observable trace on the session. Surfaces that hold state across the review
+// (the ACP server holds the originating prompt open so execution lands inside
+// it) need that single missing fact. Extensions owning the review UI call
+// notifyPlanReviewClosed(sessionId) at their no-follow-up-turn exits; the
+// extension knows nothing about its listeners.
+// =============================================================================
+
+export type PlanReviewClosedListener = (sessionId: string) => void
+
+const closedListeners = new Set<PlanReviewClosedListener>()
+
+/** Signal that a plan review for the given session ended WITHOUT dispatching a
+ * follow-up turn (rework / dismissal — not an execution decision). */
+export function notifyPlanReviewClosed(sessionId: string): void {
+	for (const listener of closedListeners) {
+		listener(sessionId)
+	}
+}
+
+/** Register a listener for plan-review closed notifications. Returns an unsubscribe
+ * function. Listeners fire synchronously, in registration order. */
+export function subscribePlanReviewClosed(listener: PlanReviewClosedListener): () => void {
+	closedListeners.add(listener)
+	return () => {
+		closedListeners.delete(listener)
+	}
+}
+
+/** Test hook: remove all registered listeners. */
+export function resetPlanReviewClosedListenersForTests(): void {
+	closedListeners.clear()
+}

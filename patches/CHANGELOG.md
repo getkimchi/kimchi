@@ -15,6 +15,54 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
 
 ---
 
+## @modelcontextprotocol/client@2.0.0 (mid-version, additive) — OAuth Accept headers
+
+Not an upgrade: a new patch for the v2 client package while the pin stayed put.
+This is the package that performs the harness's MCP OAuth flows at runtime (a
+pi-mcp-adapter dependency), verified by the spec-strict gateway e2e
+(`tests/e2e/tui/mcp-oauth-strict-accept.test.ts`, fixture `strictAccept` mode
+answering 406 without `text/event-stream`): with this patch the strict-gateway
+login completes; on master it fails with HTTP 406 on the metadata/DCR
+endpoints. The sdk 1.29.0 patch below covers entry points that still import
+the legacy 1.x package; the harness's own MCP OAuth path uses this one.
+
+### `@modelcontextprotocol/client` (new patch)
+
+- **NEW — `dist/index.{mjs,cjs}`.** `tryMetadataDiscovery` (protected-resource
+  metadata, previously no Accept header), `discoverAuthorizationServerMetadata`
+  (was json-only), and `registerClient` / DCR (previously no Accept header) now
+  send `Accept: application/json, text/event-stream`. The token POST
+  (`executeTokenRequest`) is deliberately unchanged, matching the sdk patch's
+  residual-risk note.
+
+---
+
+## pi-mcp-adapter@2.34.0 / @modelcontextprotocol/sdk@1.29.0 (mid-version, additive) — OAuth Accept headers + DCR version
+
+Not an upgrade: new hunks added to the adapter patch and a new SDK patch while both
+pins stayed put. Rebasers can ignore this section; it exists only to explain where
+the OAuth hunks came from.
+
+### `pi-mcp-adapter`
+
+- **NEW — `mcp-oauth-provider.ts`: Accept header on configured-discovery metadata
+  fetch.** Now sends `application/json, text/event-stream` (was json-only);
+  spec-strict gateways (agentgateway) answer 406 otherwise.
+- **NEW — `mcp-auth-flow.ts`: DCR clientInfo version.** Bumped stale hardcoded
+  `"2.11.0"` to `"2.34.0"` so registered OAuth clients report the real package
+  version (the stale string caused a misdiagnosed incident report).
+
+### `@modelcontextprotocol/sdk` (new patch)
+
+- **NEW — `dist/{esm,cjs}/client/auth.js`.** `discoverAuthorizationServerMetadata`
+  GET and `registerClient` (DCR) POST now send `Accept: application/json,
+  text/event-stream` (DCR previously sent no Accept header). The token POST
+  (`executeTokenRequest`) is deliberately unchanged — it is a plain JSON endpoint
+  and worked in the affected environment. Trap for rebasers: patch both the esm
+  and cjs mirrors; line numbers differ between them.
+
+---
+
 ## 0.85.1 (mid-version, additive) — configurable wheel-scroll speed
 
 Not an upgrade: a new behavior was added to the pi-tui patch while the pin stayed
