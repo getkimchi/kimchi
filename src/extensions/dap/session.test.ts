@@ -97,6 +97,8 @@ function createMockClient(capabilities: DapCapabilities | null = null): MockClie
 		threadId: null,
 		stoppedEvent: null,
 		stoppedWaiters,
+		boundBreakpointIds: new Set(),
+		breakpointBoundWaiters: [],
 		terminatedWaiters,
 		outputLines: [],
 		terminated: false,
@@ -617,5 +619,50 @@ describe("launch handshake error surfacing", () => {
 		const err = await session.setBreakpoint("/proj/main.go", 10).catch((e: unknown) => e as Error)
 		expect(err.message).toContain("did not emit 'initialized' within 5ms")
 		expect(err.message).toContain("Building /proj")
+	})
+})
+
+describe("breakpoint source paths", () => {
+	beforeEach(() => {
+		registry.clearAll()
+		captured.length = 0
+		queued.clear()
+	})
+
+	it("absolutizes a relative file against the session cwd (adapters match source.path against the absolute script path)", async () => {
+		const client = createMockClient(null)
+		const session = makeSession(client)
+		queueResponse("launch", {})
+		await session.launch({ program: "/tmp/dap-session-test/app.js", cwd: CWD })
+		queueResponse("setBreakpoints", { breakpoints: [{ verified: true, id: 1 }] })
+
+		await session.setBreakpoint("app.js", 2)
+
+		const args = captured.at(-1)?.args as { source: { path: string } }
+		expect(args.source.path).toBe("/tmp/dap-session-test/app.js")
+	})
+
+	it("tracks the absolutized path so the child-handshake replay reuses it", async () => {
+		const client = createMockClient(null)
+		const session = makeSession(client)
+		queueResponse("launch", {})
+		await session.launch({ program: "/tmp/dap-session-test/app.js", cwd: CWD })
+		queueResponse("setBreakpoints", { breakpoints: [{ verified: true, id: 1 }] })
+		await session.setBreakpoint("app.js", 2)
+
+		queueResponse("setBreakpoints", { breakpoints: [{ verified: true, id: 2 }] })
+		await client.replayBreakpoints?.({} as never)
+
+		const args = captured.at(-1)?.args as { source: { path: string } }
+		expect(args.source.path).toBe("/tmp/dap-session-test/app.js")
+	})
+
+	it("waitForBreakpointBound resolves immediately for already-bound ids and times out otherwise", async () => {
+		const client = createMockClient(null)
+		const session = makeSession(client)
+
+		client.boundBreakpointIds.add(7)
+		expect(await session.waitForBreakpointBound(7, 50)).toBe(true)
+		expect(await session.waitForBreakpointBound(8, 50)).toBe(false)
 	})
 })
