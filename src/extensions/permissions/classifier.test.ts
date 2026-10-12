@@ -5,12 +5,12 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
+import { resolveClassifierCandidates } from "../model-catalog/classifier-models.js"
 import * as diagnostics from "../work-attribution/diagnostics.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { getWorkId } from "../work-attribution.js"
 import { classifyToolCall, parseClassifierOutput } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
-import { resolveClassifierCandidates } from "./classifier-models.js"
 
 const completeMock = vi.fn()
 vi.mock("@earendil-works/pi-ai/compat", () => ({

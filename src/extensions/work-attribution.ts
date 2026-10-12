@@ -881,7 +881,7 @@ export function createWorkAttributionExtension(
 						notify(
 							ctx,
 							value === "matching on"
-								? "Task matching enabled: saved task text may be sent to your selected model."
+								? "Task matching enabled: saved task text may be sent to Kimchi's classifier models or your selected model."
 								: "Task matching disabled. Local work tracking stays enabled.",
 						)
 						return
