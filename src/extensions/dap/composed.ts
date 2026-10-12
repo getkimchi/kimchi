@@ -312,14 +312,22 @@ export async function debugStateAt(deps: ComposedDeps, opts: DebugStateAtOptions
 			// stop, not the current one), so isStopped after that call is always
 			// false and the check would be useless there.
 			const wasStopped = session.isStopped
-			await session.setBreakpoint(opts.file, opts.line)
+			const bp = await session.setBreakpoint(opts.file, opts.line)
 			await session.completeLaunch()
+			// js-debug binds provisional breakpoints asynchronously when the
+			// target source loads — pausing at entry gives the bind time to land;
+			// wait for the bound event before continuing or tiny programs run
+			// past an unbound breakpoint to completion.
+			const awaitBound = async () => {
+				if (bp.id != null && !bp.verified) await session.waitForBreakpointBound(bp.id)
+			}
 			let stop: StoppedEvent
 			try {
 				if (wasStopped) {
 					// Existing session already paused elsewhere (break-on-entry or a
 					// previous breakpoint): waiting for a fresh stop would time out
 					// without resuming — continue explicitly to reach the new breakpoint.
+					await awaitBound()
 					stop = await session.continue()
 				} else {
 					// After completeLaunch (configurationDone), the program starts
@@ -330,6 +338,7 @@ export async function debugStateAt(deps: ComposedDeps, opts: DebugStateAtOptions
 					// If the program stopped at entry (stopOnEntry), continue to the
 					// actual breakpoint.
 					if (stop.reason === "entry") {
+						await awaitBound()
 						stop = await session.continue()
 					}
 				}
@@ -344,18 +353,36 @@ export async function debugStateAt(deps: ComposedDeps, opts: DebugStateAtOptions
 				stop.reason === "breakpoint" ||
 				stop.reason === "function breakpoint" ||
 				stop.reason === "instruction breakpoint"
-			const locals = await collectLocals(session)
 			const backtrace = await session.getStackFrame()
+			const locals = await collectLocals(session, backtrace[0]?.id)
 			const evaluated: EvaluatedExpression[] = []
 			for (const expr of opts.evaluated ?? []) {
 				try {
-					const result = await session.evaluate(expr)
+					// Evaluate in the stopped frame — js-debug requires an explicit
+					// frameId to resolve locals in scope.
+					const result = await session.evaluate(expr, backtrace[0]?.id)
 					evaluated.push({ expression: expr, result })
 				} catch (e) {
 					evaluated.push({
 						expression: expr,
 						error: e instanceof Error ? e.message : String(e),
 					})
+				}
+			}
+			// Resume the debuggee so it runs to completion — the captured
+			// stdout/stderr are part of the result (the program's final output
+			// is often what the caller needs after inspecting state). continue()
+			// rejects with a terminated error once the debuggee exits; further
+			// stops (other breakpoints) are resumed past in the loop. The cap
+			// guards against adapters/stubs whose continue always "succeeds"
+			// without the program ever terminating — without it the loop would
+			// spin forever.
+			for (let resumes = 0; resumes < 100 && !session.isTerminated; resumes++) {
+				try {
+					await session.continue()
+				} catch (err) {
+					if (isTerminatedError(err)) break
+					throw err
 				}
 			}
 			const { stdout, stderr } = collectOutput(session.outputLines)
@@ -468,6 +495,27 @@ export async function debugTraceCalls(
 			} catch (err) {
 				if (!isTerminatedError(err)) throw err
 			}
+			// Drain late output before parsing: adapters (js-debug via CDP) can
+			// emit the debuggee's final stdout lines AFTER the terminated event —
+			// the session is over but the output is still in flight, and under
+			// heavy machine load the flush can lag for seconds. For a one-shot
+			// run (this tool launched the session) wait up to 10s for the stream
+			// to go stable (no new lines for 150ms); when reusing an existing
+			// session (sessionId path — interactive flows and unit stubs) keep a
+			// short 1s cap so a non-instrumented program doesn't stall the tool.
+			const drainCap = shouldTerminate ? 10_000 : 1_000
+			let lastCount = session.outputLines.length
+			let stableSince = Date.now()
+			const drainDeadline = Date.now() + drainCap
+			while (Date.now() < drainDeadline) {
+				await new Promise((r) => setTimeout(r, 50))
+				if (session.outputLines.length !== lastCount) {
+					lastCount = session.outputLines.length
+					stableSince = Date.now()
+				} else if (Date.now() - stableSince >= 150) {
+					break
+				}
+			}
 			return parseTraceCalls(session.outputLines)
 		},
 		async () => {
@@ -512,9 +560,11 @@ export async function debugWatchChange(
 	return withTimeoutAndCleanup(
 		timeoutMs,
 		async () => {
-			// Set breakpoint and run to it
-			await session.setBreakpoint(opts.file, opts.line)
+			// Set breakpoint and run to it. Wait for a provisional breakpoint to
+			// bind before continuing (js-debug async binding — see debugStateAt).
+			const bp = await session.setBreakpoint(opts.file, opts.line)
 			await session.completeLaunch()
+			if (bp.id != null && !bp.verified) await session.waitForBreakpointBound(bp.id)
 			await session.continue()
 
 			// Get initial value

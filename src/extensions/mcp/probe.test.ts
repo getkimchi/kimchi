@@ -66,19 +66,41 @@ const credentialAccount = vi.hoisted(() => ({
 		| { status: "unavailable" },
 	error: undefined as Error | undefined,
 }))
-vi.mock("./keyring-require-bridge.js", () => ({
-	installKeyringRequireBridge,
-	inspectMcpCredentialAccount: () => {
-		if (credentialAccount.error) throw credentialAccount.error
-		return credentialAccount.value
-	},
-}))
+vi.mock("./keyring-require-bridge.js", async () => {
+	const actual = await vi.importActual<typeof import("./keyring-require-bridge.js")>("./keyring-require-bridge.js")
+	return {
+		installKeyringRequireBridge,
+		inspectMcpCredentialAccount: () => {
+			if (credentialAccount.error) throw credentialAccount.error
+			return credentialAccount.value
+		},
+		McpKeychainDeniedError: actual.McpKeychainDeniedError,
+		// Consumed as the default runner by stray-oauth-entry-cleanup (imported via
+		// probe.js); a quiet no-op dump keeps the cleanup out of probe tests.
+		defaultSecurityRunner: () => ({ stdout: "", stderr: "", status: 0, error: undefined }),
+	}
+})
 
 vi.mock("./oauth-migration.js", () => ({
 	migrateLegacyOAuthCredentials: vi.fn(() => ({ migratedServerNames: [], warnings: [] })),
 }))
 
+const tokensForUrlResult = vi.hoisted(() => ({
+	forced: null as { status: "present" } | { status: "absent" } | { status: "unavailable" } | null,
+}))
+vi.mock("pi-mcp-adapter/oauth", async () => {
+	const actual = await vi.importActual<typeof import("pi-mcp-adapter/oauth")>("pi-mcp-adapter/oauth")
+	return {
+		...actual,
+		// Default passthrough; tests can force a status (e.g. "unavailable" — the
+		// shape a declined keychain consent looks like to the adapter).
+		inspectMcpOAuthTokensForUrl: (name: string, url: string) =>
+			tokensForUrlResult.forced ?? actual.inspectMcpOAuthTokensForUrl(name, url),
+	}
+})
+
 import { inspectMcpOAuthTokensForUrl, updateMcpOAuthTokensForUrl } from "pi-mcp-adapter/oauth"
+import { McpKeychainDeniedError } from "./keyring-require-bridge.js"
 import { UpstreamMcpProbe } from "./probe.js"
 
 const authStoreEnv = "PI_MCP_ADAPTER_TEST_AUTH_STORE"
@@ -111,6 +133,7 @@ beforeEach(() => {
 	mcpClient.state.tools = []
 	credentialAccount.value = { status: "absent" }
 	credentialAccount.error = undefined
+	tokensForUrlResult.forced = null
 	upstream.mcpAuth.mockReset()
 	upstream.options = undefined
 	upstream.registerMcpAuthCommand = true
@@ -665,6 +688,54 @@ describe("UpstreamMcpProbe", () => {
 		} finally {
 			warn.mockRestore()
 		}
+	})
+
+	it("short-circuits with a needs-auth denial result when keychain consent is declined", async () => {
+		const expected = new McpKeychainDeniedError("sha256-x")
+		credentialAccount.error = expected
+
+		const result = await new UpstreamMcpProbe().probeTools("denied-server", { url: "https://example.test/mcp" })
+
+		// Fail closed (no anonymous connect under the durable name, no OAuth run)
+		// and surface the denial as needs-auth so callers render "re-authenticate".
+		expect(result).toEqual({
+			tools: [],
+			needsAuth: true,
+			keychainDenied: true,
+			error: expected.message,
+		})
+		expect(upstream.sessionStart).not.toHaveBeenCalled()
+		expect(upstream.logout).not.toHaveBeenCalled()
+	})
+
+	it("surfaces a declined consent the adapter's token lookup reports as unavailable", async () => {
+		// Verified live on macOS 26.6.2: pi-mcp-adapter's inspectMcpOAuthTokensForUrl
+		// swallows the typed denial from its keyring read and reports "unavailable".
+		tokensForUrlResult.forced = { status: "unavailable" }
+		const expected = new McpKeychainDeniedError("sha256-x")
+		credentialAccount.error = expected
+
+		const result = await new UpstreamMcpProbe().probeTools("denied-via-adapter", { url: "https://example.test/mcp" })
+
+		expect(result).toEqual({
+			tools: [],
+			needsAuth: true,
+			keychainDenied: true,
+			error: expected.message,
+		})
+		expect(upstream.sessionStart).not.toHaveBeenCalled()
+		expect(upstream.logout).not.toHaveBeenCalled()
+	})
+
+	it("uses the real server name when an unavailable token lookup is verified by the credential account", async () => {
+		tokensForUrlResult.forced = { status: "unavailable" }
+		const url = "https://example.test/mcp"
+		credentialAccount.value = { status: "present", serverUrl: url }
+
+		await new UpstreamMcpProbe().probeTools("unavailable-lookup-verified", { url })
+
+		expect(configuredServerNames()).toEqual(["unavailable-lookup-verified"])
+		expect(upstream.logout).not.toHaveBeenCalled()
 	})
 
 	it("isolates orphaned credentials when their stored URL is not discoverable from config", async () => {

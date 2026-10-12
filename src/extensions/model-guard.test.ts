@@ -930,6 +930,25 @@ describe("turn_end compaction guard", () => {
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Continuing automatically"), "info")
 	})
 
+	it("skips the guard entirely when the context window cannot hold the compaction reserve", async () => {
+		// Regression: with a small-window model (e.g. the 8k e2e fake) the
+		// threshold went NEGATIVE, so every toolUse turn exceeded it and the
+		// guard attempted inlineCompact each turn — the TUI rendered
+		// "Compaction failed: Nothing to compact (session too small)" on every
+		// turn.
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const inlineCompact = vi.fn()
+		const ctx = makeMidTurnCtx({
+			model: { id: "small", input: ["text"], contextWindow: 8_192 } as ExtensionContext["model"],
+			inlineCompact,
+		})
+
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+
+		expect(inlineCompact).not.toHaveBeenCalled()
+	})
+
 	it("does not compact when totalTokens is below the compaction threshold", async () => {
 		const { pi, trigger } = makeMockPI()
 		modelGuardExtension(pi)

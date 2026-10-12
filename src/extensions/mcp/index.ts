@@ -29,6 +29,7 @@ import {
 import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
 import { MCP_PROJECT_TRUST_WARNING, resolveMcpProjectTrust } from "./project-trust.js"
 import { collectReadOnlyMcpWireNames } from "./read-only.js"
+import { cleanupStrayMcpOAuthEntriesBestEffort } from "./stray-oauth-entry-cleanup.js"
 
 const MCP_PROXY_TOOL = "mcp"
 const MCP_SCRIPT_TOOL = "mcpScript"
@@ -251,6 +252,7 @@ export function createKimchiMcpAdapterExtension(options: KimchiMcpAdapterExtensi
 
 function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterExtensionOptions): void {
 	installKeyringRequireBridge()
+	cleanupStrayMcpOAuthEntriesBestEffort()
 	installMcpOAuthCallbackBranding()
 	pi.registerFlag("mcp-config", { description: "Path to MCP config file", type: "string" })
 	let policy: McpToolSurfacePolicy | undefined
