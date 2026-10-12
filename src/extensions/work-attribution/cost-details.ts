@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { isWorkId } from "../../shared/work-id.js"
-import { decimalNanos, usd } from "./costs.js"
+import { decimalNanos, roundedUsd } from "./costs.js"
 import { PRICED_TAG_LIMIT } from "./request-tags.js"
 import { isWorkAccount, sameWorkAccount } from "./scope.js"
 import { object } from "./summary.js"
@@ -13,6 +13,12 @@ export function ownRequests(rows: readonly Record<string, unknown>[], workId: st
 	return rows.filter((row) =>
 		[row.workIds, row.linkedWorkIds].some((ids) => Array.isArray(ids) && ids.includes(workId)),
 	)
+}
+
+/** A saved exact amount as /work shows it; a damaged amount reads as unknown. */
+function price(value: unknown): string {
+	const nanos = decimalNanos(value)
+	return nanos === undefined ? "unknown" : roundedUsd(nanos)
 }
 
 /** /work reads the last durable result; opening the command never waits for the network. */
@@ -45,7 +51,7 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 							: request.account === row.account),
 				)
 
-				const spent = usd(counted.reduce((sum, request) => sum + (decimalNanos(request.knownCostUsd) ?? 0n), 0n))
+				const spent = roundedUsd(counted.reduce((sum, request) => sum + (decimalNanos(request.knownCostUsd) ?? 0n), 0n))
 				// Unpriced, shared or unresolved requests may still belong to this PR.
 				const complete =
 					isWorkAccount(row.account) &&
@@ -55,26 +61,26 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 					)
 				lines.push(
 					complete
-						? `Cost so far: $${spent} USD (${state}) — ${label}`
-						: `Cost so far: unknown; $${spent} USD priced (${state}) — ${label}`,
+						? `Cost so far: ${spent} (${state}) — ${label}`
+						: `Cost so far: unknown; ${spent} priced (${state}) — ${label}`,
 				)
-			} else if (typeof row.totalCostUsd === "string") lines.push(`Cost: $${row.totalCostUsd} USD — ${label}`)
-			else lines.push(`Cost: unknown; $${row.knownCostUsd} USD priced so far — ${label}`)
+			} else if (typeof row.totalCostUsd === "string") lines.push(`Cost: ${price(row.totalCostUsd)} — ${label}`)
+			else lines.push(`Cost: unknown; ${price(row.knownCostUsd)} priced so far — ${label}`)
 			if (!state && object(row.explicit) && object(row.inferred))
 				lines.push(
-					`Confirmed: $${row.explicit.knownCostUsd} USD; inferred: $${row.inferred.knownCostUsd} USD${row.totalCostUsd === null ? " known so far" : ""}.`,
+					`Confirmed: ${price(row.explicit.knownCostUsd)}; inferred: ${price(row.inferred.knownCostUsd)}${row.totalCostUsd === null ? " known so far" : ""}.`,
 				)
 		}
 		if (Array.isArray(value.requests)) {
 			// PR lines above include connected works; this one is the work's own spend, even without a PR.
 			const own = ownRequests(requests, workId)
 			const priced = own.filter((row) => row.priceStatus === "priced").length
-			const known = usd(own.reduce((sum, row) => sum + (decimalNanos(row.knownCostUsd) ?? 0n), 0n))
+			const known = roundedUsd(own.reduce((sum, row) => sum + (decimalNanos(row.knownCostUsd) ?? 0n), 0n))
 			const unresolved = own.filter((row) => row.allocation === "unknown").length
 			const inferred = own.filter((row) => row.allocation === "inferred").length
 			const shared = own.filter((row) => row.allocation === "shared").length
 			lines.push(
-				`Prices: ${priced}/${own.length} requests priced, $${known} USD${priced < own.length ? " known so far" : ""}. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
+				`Prices: ${priced}/${own.length} requests priced, ${known}${priced < own.length ? " known so far" : ""}. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
 			)
 
 			const untagged = new Map<string, number>()

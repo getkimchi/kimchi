@@ -47,6 +47,7 @@ describe("complete native hunk matching", () => {
 	it("keeps oversized or expensive diffs unresolved", () => {
 		const large = "x".repeat(256 * 1024 + 1)
 		expect(matchesFileHunks(large, `${large}changed`, large, `${large}changed`, unchangedBudget)).toBe(false)
+		expect(matchesFileHunks("", `${large}\n`, "", `${large}\nhuman\n`, unchangedBudget)).toBe(false)
 		const many = Array.from({ length: 2100 }, (_, index) => `${index}\n`).join("")
 		expect(matchesFileHunks(many, many.replaceAll("\n", "changed\n"), many, "new\n", unchangedBudget)).toBe(false)
 	})
@@ -56,5 +57,31 @@ describe("complete native hunk matching", () => {
 				throw new Error("deadline")
 			}),
 		).toThrow("deadline")
+	})
+})
+
+describe("content written into an empty file", () => {
+	const written = "alpha\nbeta\n"
+	it.each([
+		["unchanged", written],
+		["human lines after", `${written}human\n`],
+		["human lines before", `human\n${written}`],
+		["human lines around", `human\n${written}more\n`],
+	])("matches when every written line survives in one place (%s)", (_name, committed) => {
+		expect(matchesFileHunks("", written, "", committed, unchangedBudget)).toBe(true)
+	})
+	it.each([
+		["edited line", written, "alpha\nhuman-beta\n"],
+		["inserted line", written, "alpha\nhuman\nbeta\n"],
+		["repeated content", written, `${written}human\n${written}`],
+		["part of a longer line", "beta\n", "alphabeta\n"],
+		["extended last line", "alpha\nbeta", "alpha\nbeta\nhuman\n"],
+		["empty content", "", "human\n"],
+		["blank lines", "\n \n\t\n", "human\n\n \n\t\nmore\n"],
+	])("leaves rewritten, ambiguous or blank content unresolved (%s)", (_name, content, committed) => {
+		expect(matchesFileHunks("", content, "", committed, unchangedBudget)).toBe(false)
+	})
+	it("needs a parent without content too", () => {
+		expect(matchesFileHunks("", written, "existing\n", `existing\n${written}`, unchangedBudget)).toBe(false)
 	})
 })
