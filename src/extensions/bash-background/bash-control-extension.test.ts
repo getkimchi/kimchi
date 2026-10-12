@@ -11,8 +11,9 @@
  * (`__mocks__/extension-api.ts`) plus a real registry/coordinator driven
  * by a fake BashOperations.
  */
-import type { ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent"
+import type { ToolCallEventResult } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createFakeOps, type FakeOps } from "./__mocks__/fake-bash-ops.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
@@ -86,7 +87,7 @@ function spawnRunning(command = "long-running", cwd = "/test/cwd"): string {
 
 // ─── Event helpers ────────────────────────────────────────────────────────────
 
-const ctx = {} as ExtensionContext
+const ctx = createContext()
 
 function fireSessionStart(harness: ReturnType<typeof createExtensionApi>): Promise<unknown[]> {
 	return harness.emit("session_start", {}, ctx)

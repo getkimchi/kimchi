@@ -254,6 +254,21 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	const terminalDetails = new Map<string, Record<string, unknown>>()
 	let disposed = false
 
+	/** Both reminder creation and consumption use the same current-state view. */
+	function unresolvedProcesses(): { running: string[]; awaitingDelivery: string[] } {
+		const state = getState()
+		const running: string[] = []
+		const awaitingDelivery: string[] = []
+		for (const handle of trackedHandles) {
+			const cls = classifyTrackedHandle(state, handle, pendingExitDeliveries)
+			if (cls === "running") running.push(handle)
+			else if (cls === "awaiting") awaitingDelivery.push(handle)
+			else if (cls === "resolved") trackedHandles.delete(handle)
+			// Queued exits already have their own continuation.
+		}
+		return { running, awaitingDelivery }
+	}
+
 	pi.on("session_start", () => {
 		terminalDetails.clear()
 		trackedHandles = new Set()
@@ -595,7 +610,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		if (disposed) return
 		const message = event.message
 		if (message?.role !== "assistant") return
-		const stopReason = (message as { stopReason?: unknown }).stopReason
+		const stopReason = message.stopReason
 		if (stopReason === "aborted" || stopReason === "error") {
 			// Cancellation/termination is authoritative: no completion
 			// continuation, and the outstanding reminder (if any) is released —
@@ -614,17 +629,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		// resolved (its result was already delivered by a tool result, or
 		// it never existed): it is dropped from tracking (self-heal) and
 		// never counted as running.
-		const state = getState()
-		const running: string[] = []
-		const awaitingDelivery: string[] = []
-		for (const handle of trackedHandles) {
-			const cls = classifyTrackedHandle(state, handle, pendingExitDeliveries)
-			if (cls === "running") running.push(handle)
-			else if (cls === "awaiting") awaitingDelivery.push(handle)
-			else if (cls === "resolved") trackedHandles.delete(handle)
-			// "queued": the exit notification itself continues the run and
-			// resolves the state — no reminder needed for it.
-		}
+		const { running, awaitingDelivery } = unresolvedProcesses()
 		if (running.length === 0 && awaitingDelivery.length === 0) return
 		// One outstanding reminder per session: a queued-but-unconsumed
 		// reminder makes this attempt redundant (the loop will drain it
@@ -674,15 +679,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		// with genuinely unresolved work may queue a fresh one.
 		completionReminderOutstanding = false
 		// Revalidate from current state.
-		const state = getState()
-		const running: string[] = []
-		const awaitingDelivery: string[] = []
-		for (const handle of trackedHandles) {
-			const cls = classifyTrackedHandle(state, handle, pendingExitDeliveries)
-			if (cls === "running") running.push(handle)
-			else if (cls === "awaiting") awaitingDelivery.push(handle)
-			else if (cls === "resolved") trackedHandles.delete(handle)
-		}
+		const { running, awaitingDelivery } = unresolvedProcesses()
 		const sameSet = sameHandles(details.running, running) && sameHandles(details.awaiting, awaitingDelivery)
 		if (sameSet) return undefined
 		const content =

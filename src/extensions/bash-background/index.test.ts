@@ -9,10 +9,10 @@
  * steer into the closing session. The extension must UNPUBLISH the
  * session state before awaiting the drain.
  */
-import type { ExtensionContext, KeybindingsManager } from "@earendil-works/pi-coding-agent"
+import type { KeybindingsManager } from "@earendil-works/pi-coding-agent"
 import { ProcessTerminal, Text, TuiMainScreen } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { createCommandContext } from "../__mocks__/context.js"
+import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { testTheme } from "../__mocks__/theme.js"
 import { CommandsPanel } from "./commands-panel.js"
@@ -20,24 +20,7 @@ import bashBackgroundExtension from "./index.js"
 import { DEFAULT_BASH_PROCESS_LIMIT_SECONDS } from "./process-registry.js"
 import { type BashSessionState, getSessionState, setSessionState } from "./session-registry.js"
 
-const sessionCtx = { cwd: "/tmp" } as unknown as ExtensionContext
-
-interface RegisteredTool {
-	name: string
-	description: string
-	execute: unknown
-}
-
-function registeredTools(
-	registerTool: ReturnType<typeof createExtensionApi>["registerTool"],
-): Map<string, RegisteredTool> {
-	const tools = new Map<string, RegisteredTool>()
-	for (const call of registerTool.mock.calls) {
-		const tool = call[0] as unknown as RegisteredTool
-		tools.set(tool.name, tool)
-	}
-	return tools
-}
+const sessionCtx = createContext({ cwd: "/tmp" })
 
 describe("bashBackgroundExtension — shutdown drain ordering", () => {
 	afterEach(() => {
@@ -109,12 +92,12 @@ describe("bashBackgroundExtension — production description composition", () =>
 	})
 
 	it("registers the bash tool with the cohort guidance from bashToolDescription", async () => {
-		const { api, emit, registerTool } = createExtensionApi()
+		const { api, emit, getRegisteredTool } = createExtensionApi()
 		bashBackgroundExtension(api)
 
 		await emit("session_start", {}, sessionCtx)
 
-		const bash = registeredTools(registerTool).get("bash")
+		const bash = getRegisteredTool("bash")
 		expect(bash).toBeDefined()
 		// The production-registered description must carry the cohort
 		// contract so the model knows processes continue by default and are
@@ -130,12 +113,12 @@ describe("bashBackgroundExtension — production description composition", () =>
 	})
 
 	it("registers the bash tool with the background-execute function", async () => {
-		const { api, emit, registerTool } = createExtensionApi()
+		const { api, emit, getRegisteredTool } = createExtensionApi()
 		bashBackgroundExtension(api)
 
 		await emit("session_start", {}, sessionCtx)
 
-		const bash = registeredTools(registerTool).get("bash")
+		const bash = getRegisteredTool("bash")
 		expect(bash).toBeDefined()
 		expect(typeof bash?.execute).toBe("function")
 

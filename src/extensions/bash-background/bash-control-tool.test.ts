@@ -373,10 +373,24 @@ describe("bash_control — filtered inspection (handles)", () => {
 		const text = textOf(result)
 		expect(text).toContain(` handle: ${done}`)
 		expect(text).toContain("done-output")
+		expect(text).not.toContain(`Unknown handle '${done}'`)
 		// The live handle appears as running evidence (handle: command).
 		expect(text).toContain(`${live}: live-proc`)
 		expect(result.details.exitedHandles).toEqual([done])
 		expect(result.details.runningHandles).toEqual([live])
+	})
+
+	it("reports a stale cohort handle as unknown when its registry entry is gone", async () => {
+		const { tool } = setup()
+		const gone = spawnRunning("gone-proc")
+		await ops.exitMatching("gone-proc", 0)
+		await registry.whenExited(gone)
+		await registry.remove(gone)
+
+		const result = await callExecute(tool, { handles: [gone] })
+		expect(textOf(result)).toContain(`Unknown handle '${gone}' in this session`)
+		expect(result.details.runningHandles).toEqual([])
+		expect(result.details.exitedHandles).toEqual([])
 	})
 
 	it("rejects handles with wait: true before applying any stop", async () => {
