@@ -29,6 +29,7 @@ import { loadRuntimeState } from "../ferment/runtime-state-store.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
+import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "../model-catalog/classifier-models.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { CUSTOM_BRANCH_ITEM, CUSTOM_BRANCH_PROMPT } from "../remote-run/git-workflow.js"
@@ -38,7 +39,6 @@ import { COST_PER_PR_RESOURCE_ID } from "../work-attribution/resource.js"
 import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
-import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
 import permissionsExtension, { checkCompoundCommand, handleCompoundConfirm, notifyFermentActive } from "./index.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "./mode.js"
@@ -85,8 +85,8 @@ vi.mock("./classifier.js", async () => {
 	}
 })
 
-vi.mock("./classifier-models.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("./classifier-models.js")>()
+vi.mock("../model-catalog/classifier-models.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../model-catalog/classifier-models.js")>()
 	return {
 		...actual,
 		resolveClassifierCandidates: vi.fn(() => ({
