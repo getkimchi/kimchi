@@ -31,6 +31,18 @@ export type TurnContext = {
 	usage: TurnUsage
 	resolve: (res: PromptResponse) => void
 	reject: (err: unknown) => void
+	/**
+	 * Plan-review lifecycle (submit_plan): the turn ended in a plan review and
+	 * the prompt is HELD open (no end_turn) so the approved execution turn
+	 * lands inside this PromptRequest. Set at submit_plan's tool_execution_end.
+	 * Held turns finalize on `agent_settled` (pi-mono emits it once, after the
+	 * full run chain — chained continues, retries, compaction — drains), on a
+	 * plan-review "closed without a turn" notification (rework / dismissal),
+	 * or on cancel during the review pause.
+	 */
+	planReviewHeld?: boolean
+	/** True once the plan-review follow-up turn has started executing. */
+	planReviewExecuting?: boolean
 }
 
 /**

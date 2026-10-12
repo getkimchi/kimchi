@@ -10,8 +10,10 @@ import {
 	installKeyringRequireBridge,
 	LEGACY_MCP_OAUTH_SERVICE,
 	MCP_OAUTH_SERVICE,
+	McpKeychainDeniedError,
 	McpKeychainUnavailableError,
 	remapMcpOAuthService,
+	resetSecurityToolCaches,
 	SecurityToolEntry,
 	type SecurityToolResult,
 } from "./keyring-require-bridge.js"
@@ -113,11 +115,27 @@ describe("inspectMcpCredentialAccount", () => {
 			vi.restoreAllMocks()
 		}
 	})
+
+	it("surfaces a declined consent dialog instead of collapsing it to unavailable", () => {
+		vi.stubGlobal("process", { ...process, platform: "darwin", env: {} })
+		vi.spyOn(SecurityToolEntry.prototype, "getPassword").mockImplementation(() => {
+			throw new McpKeychainDeniedError("sha256-declined")
+		})
+		try {
+			expect(() => inspectMcpCredentialAccount("denied-server")).toThrow(McpKeychainDeniedError)
+		} finally {
+			vi.unstubAllGlobals()
+			vi.restoreAllMocks()
+		}
+	})
 })
 
 describe("SecurityToolEntry (macOS /usr/bin/security backend)", () => {
 	afterEach(() => {
 		vi.restoreAllMocks()
+		// The denial backoff is module-level state: a denied item from one test
+		// must not leak into the next.
+		resetSecurityToolCaches()
 	})
 
 	const OK: SecurityToolResult = { status: 0, stdout: "", stderr: "" }
@@ -131,6 +149,8 @@ describe("SecurityToolEntry (macOS /usr/bin/security backend)", () => {
 		stdout: "",
 		stderr: "security: SecKeychainItemCopyContent: User interaction is not allowed.",
 	}
+	// Validated macOS 26.6.2: declining the consent dialog exits 128 with empty stderr.
+	const DENIED: SecurityToolResult = { status: 128, stdout: "", stderr: "" }
 
 	function envelope(text: string): string {
 		return `b64:${Buffer.from(text, "utf8").toString("base64")}`
@@ -218,6 +238,93 @@ describe("SecurityToolEntry (macOS /usr/bin/security backend)", () => {
 		).toBeInstanceOf(McpKeychainUnavailableError)
 	})
 
+	it("classifies a declined consent dialog as a typed denial error on every verb", () => {
+		for (const op of ["read", "write", "delete"] as const) {
+			const entry = new SecurityToolEntry("svc", "acct", fakeRunner(() => DENIED).runner)
+			const error = capture(() =>
+				op === "read" ? entry.getPassword() : op === "write" ? entry.setPassword("x") : entry.deleteCredential(),
+			)
+			expect(error).toBeInstanceOf(McpKeychainDeniedError)
+			expect(String(error)).toContain("consent was declined")
+			expect(String(error)).toContain("'acct'")
+			expect(String(error)).toContain("kimchi mcp auth")
+		}
+	})
+
+	it("classifies exit 45 (errSecDuplicateItem) as a write failure, not a consent denial", () => {
+		const { runner } = fakeRunner(() => ({
+			status: 45,
+			stdout: "",
+			stderr: "security: SecKeychainDuplicateItem: ... already exists",
+		}))
+		const error = capture(() => new SecurityToolEntry("svc", "acct", runner).getPassword())
+		expect(error).not.toBeInstanceOf(McpKeychainDeniedError)
+		expect(error).toBeInstanceOf(Error)
+		expect(String(error)).toContain("exit 45")
+	})
+
+	it("backs off a denied item: the second read throws without invoking the runner", () => {
+		const { runner, calls } = fakeRunner(() => DENIED)
+		const entry = new SecurityToolEntry("svc", "acct", runner)
+
+		const first = capture(() => entry.getPassword())
+		expect(first).toBeInstanceOf(McpKeychainDeniedError)
+		const second = capture(() => entry.getPassword())
+		expect(second).toBeInstanceOf(McpKeychainDeniedError)
+		// One dialog per item per process, even when denied: the second read must
+		// not re-spawn /usr/bin/security.
+		expect(calls).toHaveLength(1)
+	})
+
+	it("applies the backoff per item, not per service", () => {
+		const { runner, calls } = fakeRunner((args) => (args[4] === "acct" ? DENIED : NOT_FOUND))
+		const denied = new SecurityToolEntry("svc", "acct", runner)
+		const allowed = new SecurityToolEntry("svc", "other", runner)
+
+		capture(() => denied.getPassword())
+		expect(capture(() => denied.getPassword())).toBeInstanceOf(McpKeychainDeniedError)
+		// A different account under the same service is unaffected.
+		expect(allowed.getPassword()).toBeNull()
+		// 1 denied read + 1 allowed read; the second denied read was cache-served.
+		expect(calls).toHaveLength(2)
+	})
+
+	it("rolls back the cached denial when re-authentication writes the item", () => {
+		let denyReads = true
+		const { runner, calls } = fakeRunner((args) => {
+			if (args[0] === "find-generic-password") return denyReads ? DENIED : { ...OK, stdout: `${envelope("pw")}\n` }
+			return OK
+		})
+		const entry = new SecurityToolEntry("svc", "acct", runner)
+
+		capture(() => entry.getPassword())
+		expect(calls.filter((args) => args[0] === "find-generic-password")).toHaveLength(1)
+
+		denyReads = false
+		entry.setPassword("fresh")
+		// The write succeeded, so the rewritten item must be read back normally.
+		expect(entry.getPassword()).toBe("pw")
+	})
+
+	it("a successful delete clears the cached denial tombstone", () => {
+		let denyReads = true
+		const { runner, calls } = fakeRunner((args) => {
+			if (args[0] === "find-generic-password") return denyReads ? DENIED : NOT_FOUND
+			return OK
+		})
+		const entry = new SecurityToolEntry("svc", "acct", runner)
+
+		expect(capture(() => entry.getPassword())).toBeInstanceOf(McpKeychainDeniedError)
+
+		// A deleted item can no longer be denied: the tombstone must be gone.
+		expect(entry.deleteCredential()).toBe(true)
+
+		denyReads = false
+		// The next read consults the runner again (not-found) instead of the stale denial.
+		expect(entry.getPassword()).toBeNull()
+		expect(calls.filter((args) => args[0] === "find-generic-password")).toHaveLength(2)
+	})
+
 	it("writes by recreating the item so its ACL trusts security, wrapping the secret in a b64 envelope", () => {
 		// `add-generic-password -U` preserves an existing item's ACL, so an
 		// in-process legacy item would keep trusting only its old binary.
@@ -225,7 +332,7 @@ describe("SecurityToolEntry (macOS /usr/bin/security backend)", () => {
 		new SecurityToolEntry("svc", "acct", runner).setPassword("tok secret")
 		expect(calls).toEqual([
 			["delete-generic-password", "-s", "svc", "-a", "acct"],
-			["add-generic-password", "-s", "svc", "-a", "acct", "-w", envelope("tok secret")],
+			["add-generic-password", "-s", "svc", "-a", "acct", "-w", envelope("tok secret"), "-T", "/usr/bin/security"],
 		])
 	})
 
@@ -240,7 +347,10 @@ describe("SecurityToolEntry (macOS /usr/bin/security backend)", () => {
 		const { runner, calls } = storedItem(envelope(payload))
 		const entry = new SecurityToolEntry("svc", "acct", runner)
 		entry.setPassword(payload)
-		expect(calls.at(-1)?.at(-1)).toBe(envelope(payload))
+		// The secret envelope is the third-to-last arg; the trailing -T pair pins
+		// /usr/bin/security as the trusted ACL app.
+		expect(calls.at(-1)?.at(-3)).toBe(envelope(payload))
+		expect(calls.at(-1)?.slice(-2)).toEqual(["-T", "/usr/bin/security"])
 		expect(entry.getPassword()).toBe(payload)
 	})
 
@@ -273,7 +383,17 @@ describe("SecurityToolEntry (macOS /usr/bin/security backend)", () => {
 		expect(new SecurityToolEntry(MCP_OAUTH_SERVICE, "acct", runner).getPassword()).toBe(payload)
 		expect(writes(calls)).toEqual([
 			["delete-generic-password", "-s", MCP_OAUTH_SERVICE, "-a", "acct"],
-			["add-generic-password", "-s", MCP_OAUTH_SERVICE, "-a", "acct", "-w", envelope(payload)],
+			[
+				"add-generic-password",
+				"-s",
+				MCP_OAUTH_SERVICE,
+				"-a",
+				"acct",
+				"-w",
+				envelope(payload),
+				"-T",
+				"/usr/bin/security",
+			],
 		])
 	})
 
@@ -310,6 +430,52 @@ describe("SecurityToolEntry (macOS /usr/bin/security backend)", () => {
 		)
 		expect(new SecurityToolEntry(MCP_OAUTH_SERVICE, "acct", runner).getPassword()).toBe("pw")
 		expect(warn).toHaveBeenCalledWith(expect.stringContaining("keychain ACL self-heal failed"))
+	})
+
+	it("does not re-attempt the self-heal after its consent was declined", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const payload = JSON.stringify({ legacy: "ascii" })
+		const { runner, calls } = fakeRunner((args) => {
+			if (args[0] === "find-generic-password") return { ...OK, stdout: `${payload}\n` }
+			if (args[0] === "delete-generic-password") return DENIED
+			return OK
+		})
+		const entry = new SecurityToolEntry(MCP_OAUTH_SERVICE, "acct", runner)
+
+		expect(entry.getPassword()).toBe(payload)
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("keychain ACL self-heal failed"))
+		// The heal rewrote via delete + add; the declined delete aborted the add.
+		expect(writes(calls)).toHaveLength(1)
+
+		// The declined-self-heal tombstone suppresses the retry: the next read
+		// still serves the credential without invoking the write verbs again.
+		expect(entry.getPassword()).toBe(payload)
+		expect(writes(calls)).toHaveLength(1)
+	})
+
+	it("a successful write clears the declined self-heal marker", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const payload = JSON.stringify({ legacy: "ascii" })
+		let denyWrites = true
+		const { runner, calls } = fakeRunner((args) => {
+			if (args[0] === "find-generic-password") return { ...OK, stdout: `${payload}\n` }
+			return denyWrites ? DENIED : OK
+		})
+		const entry = new SecurityToolEntry(MCP_OAUTH_SERVICE, "acct", runner)
+
+		// Declined heal: the write denial is not cached, but the retry is suppressed.
+		expect(entry.getPassword()).toBe(payload)
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("keychain ACL self-heal failed"))
+		expect(writes(calls)).toHaveLength(1)
+
+		denyWrites = false
+		entry.setPassword("fresh")
+
+		// The re-auth write cleared the declined-self-heal marker, so the next read
+		// of the still plain-legacy item re-attempts the heal: delete invoked once
+		// more (writes: denied heal delete, re-auth delete + add, heal delete + add).
+		expect(entry.getPassword()).toBe(payload)
+		expect(writes(calls)).toHaveLength(5)
 	})
 
 	it("deletes entries and reports absence as false", () => {
