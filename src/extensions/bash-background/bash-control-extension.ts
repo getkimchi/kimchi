@@ -13,9 +13,11 @@
  * ./terminal-delivery.ts for the owning state machine):
  *
  *  - Every process retains a `whenExited` watcher. An exit is delivered
- *    immediately, never held for a periodic review. Exits pending in the
- *    same scheduling boundary are coalesced into one message (microtask
- *    flush — no multi-second delay, no batching timer).
+ *    promptly, never held for a periodic review. Exits landing within a
+ *    short TRAILING window of each other coalesce into one message (see
+ *    EXIT_BATCH_WINDOW_MS — no multi-second delay, no recurring timer),
+ *    which carries every terminal result, error, and output and omits
+ *    remaining-cohort status (inspection provides that accurately).
  *  - Exit of a handle owned by an active `bash_control` call (waits own
  *    every handle including joiners; inspections and stop-lists own the
  *    handles they may collect) is claimed silently — that call's
@@ -87,6 +89,16 @@ import type { BashExitMessageDetails, TerminalOwner } from "./terminal-delivery.
 
 /** Custom message type for an unattended process-exit notification. */
 export const BASH_BACKGROUND_EXIT_MESSAGE_TYPE = "bash-background-exit"
+/**
+ * Trailing coalescing window (milliseconds) for unattended-exit
+ * notification batches: every new pending exit re-arms one flush timer,
+ * so exits landing within the window of each other (e.g. staggered by tens
+ * of milliseconds) batch into ONE message. Deliberately short — idle
+ * wake-ups and cohort-wait yielding stay prompt — and deliberately a
+ * trailing window, so a burst of exits never splits across its own
+ * leading edge. Exported for tests.
+ */
+export const EXIT_BATCH_WINDOW_MS = 50
 /** Custom message type for the once-per-session concurrency reinforcement steer. */
 export const BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE = "bash-background-concurrency"
 /** Custom message type for the completion-continuation follow-up. */
@@ -285,11 +297,12 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	// cannot clear this session's outstanding flag.
 	let sessionGenerationId = randomUUID()
 	// Exits pending delivery in the current scheduling boundary. Flushed as
-	// one coalesced message on the next microtask — prompt notification with
-	// no multi-second delay and no recurring batching timer. Also read by the
-	// completion continuation to suppress redundant reminders.
+	// one coalesced message per trailing window (see EXIT_BATCH_WINDOW_MS)
+	// — prompt notification with no multi-second delay and no recurring
+	// batching timer. Also read by the completion continuation to suppress
+	// redundant reminders.
 	let pendingExitDeliveries: string[] = []
-	let exitDeliveryScheduled = false
+	let exitDeliveryTimer: NodeJS.Timeout | undefined
 	const terminalDetails = new Map<string, Record<string, unknown>>()
 	let disposed = false
 
@@ -302,7 +315,8 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		completionReminderOutstanding = false
 		sessionGenerationId = randomUUID()
 		pendingExitDeliveries = []
-		exitDeliveryScheduled = false
+		if (exitDeliveryTimer) clearTimeout(exitDeliveryTimer)
+		exitDeliveryTimer = undefined
 		runTerminated = undefined
 		disposed = false
 		pi.registerTool(createBashControlToolDefinition(getState))
@@ -395,28 +409,37 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	}
 
 	/**
-	 * Deliver an unattended exit immediately (snapshot → record → remove →
-	 * notify). Exits landing in the same scheduling boundary coalesce into
-	 * ONE message: the flush is a microtask, so no exit waits on a timer and
-	 * an active bash_control wait is never postponed.
+	 * Deliver unattended exits (snapshot → record → remove → notify).
+	 * Exits coalesce across a TRAILING window (EXIT_BATCH_WINDOW_MS):
+	 * every new pending exit re-arms one flush timer, so a burst of exits
+	 * (e.g. staggered by tens of milliseconds) batches into ONE message
+	 * that preserves every terminal result, error, and output. The timer is
+	 * deliberately referenced (never unref'd): a quiet event loop must never
+	 * lose the delivery. The message carries ONLY the terminal results —
+	 * repeated remaining-cohort status is intentionally omitted (inspection
+	 * provides it accurately); a late-arriving notice must never repeat
+	 * stale claims about processes that were stopped in the meantime.
 	 *
 	 * The message is delivered as STEERING with typed identity details: the
 	 * installed loop consumes steering at the next turn boundary (before the
 	 * next assistant response), so delivery does not require a tool-free
-	 * assistant stop. Outcomes already recorded in the delivery state (e.g.
-	 * requeued by the failed-call backstop) reuse their recorded payload —
-	 * no re-collection.
+	 * assistant stop — every exit in the window awaits the same delivery
+	 * boundary and is batched into this one message. Outcomes already
+	 * recorded in the delivery state (e.g. requeued by the failed-call
+	 * backstop) reuse their recorded payload — no re-collection.
 	 */
 	function deliverUnattendedExit(state: BashSessionState, handle: string): void {
 		pendingExitDeliveries.push(handle)
-		if (exitDeliveryScheduled) return
-		exitDeliveryScheduled = true
+		// Trailing coalescing: re-arm the flush on every arrival.
+		if (exitDeliveryTimer) clearTimeout(exitDeliveryTimer)
+		exitDeliveryTimer = setTimeout(() => flushExitDeliveries(state), EXIT_BATCH_WINDOW_MS)
+	}
+
+	/** Flush the coalesced exit batch (armed by deliverUnattendedExit). */
+	function flushExitDeliveries(state: BashSessionState): void {
+		exitDeliveryTimer = undefined
 		void (async () => {
 			try {
-				// Same-boundary coalescing: let sibling exit callbacks (already
-				// queued microtasks) join this batch before it is built.
-				await Promise.resolve()
-				exitDeliveryScheduled = false
 				if (disposed) {
 					pendingExitDeliveries = []
 					return
@@ -461,22 +484,6 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 					}
 				}
 				if (included.length === 0) return
-				// Opportunistic compact statuses for the rest of the cohort (no
-				// cursor advance — nothing was collected from them).
-				const { registry, coordinator } = state
-				const remaining = coordinator.handles()
-				if (remaining.length > 0) {
-					const statuses = remaining
-						.map((h) => {
-							const e = registry.getEntry(h)
-							if (e?.state !== "running") return undefined
-							return `- ${h}: ${e.commandSummary}; running ${elapsedSecondsSince(e.spawnedAtMs)}s`
-						})
-						.filter((line): line is string => line !== undefined)
-					if (statuses.length > 0) {
-						blocks.push(`Still running (${statuses.length}):\n${statuses.join("\n")}`)
-					}
-				}
 				// A cancelled/errored run must not be restarted: keep the
 				// payload in the conversation (appended, no inference wake)
 				// instead of triggering a turn.
@@ -939,6 +946,8 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		activeControlCalls.clear()
 		claimedExits.clear()
 		pendingExitDeliveries = []
+		if (exitDeliveryTimer) clearTimeout(exitDeliveryTimer)
+		exitDeliveryTimer = undefined
 		completionReminderOutstanding = false
 	})
 }

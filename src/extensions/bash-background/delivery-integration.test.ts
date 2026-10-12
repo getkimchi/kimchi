@@ -179,7 +179,7 @@ async function setupIntegration(script: ScriptedResponse[]): Promise<Integration
 		description: "independent work",
 		parameters: { type: "object" as const, properties: {}, additionalProperties: false },
 		execute: async () => {
-			await new Promise((resolve) => setTimeout(resolve, 30))
+			await new Promise((resolve) => setTimeout(resolve, 150))
 			return { content: [{ type: "text", text: "independent work done" }] }
 		},
 	}
@@ -380,7 +380,7 @@ function exitDuringTool(
 				// Let the exit watcher + delivery flush enqueue the steering
 				// message, then the user aborts and the TUI/ACP drop queued
 				// steering (clearQueue/clearAllQueues before session.abort()).
-				await new Promise((resolve) => setTimeout(resolve, 20))
+				await new Promise((resolve) => setTimeout(resolve, 150))
 				harness.agent.abort()
 				harness.agent.clearAllQueues()
 			}
@@ -637,7 +637,7 @@ describe("background bash exit delivery (real installed agent loop)", () => {
 			if (event === "tool_execution_start" && p?.toolName === "read" && !aborted) {
 				aborted = true
 				// The user aborts mid-execution; the process keeps running.
-				await new Promise((resolve) => setTimeout(resolve, 20))
+				await new Promise((resolve) => setTimeout(resolve, 150))
 				harness.agent.abort()
 			}
 			return origEmit(event, payload, context as ExtensionContext)
@@ -650,7 +650,7 @@ describe("background bash exit delivery (real installed agent loop)", () => {
 		// The unattended exit lands while the session is idle and terminated.
 		harness.ops.emitMatching("post-abort", `${MARKER}\n`)
 		await harness.ops.exitMatching("post-abort", 0)
-		await new Promise((resolve) => setTimeout(resolve, 50))
+		await new Promise((resolve) => setTimeout(resolve, 150))
 
 		// No inference restart: no new provider request was made.
 		expect(harness.requests.length).toBe(3)

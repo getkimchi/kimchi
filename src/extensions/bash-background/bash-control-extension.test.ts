@@ -21,6 +21,7 @@ import bashControlExtension, {
 	BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE,
 	BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE,
 	BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
+	EXIT_BATCH_WINDOW_MS,
 } from "./bash-control-extension.js"
 import { createBashControlToolDefinition } from "./bash-control-tool.js"
 import { createProcessRegistry, type ProcessRegistry } from "./process-registry.js"
@@ -65,6 +66,32 @@ function messages(harness: ReturnType<typeof createExtensionApi>): SentMessage[]
 
 function followUps(harness: ReturnType<typeof createExtensionApi>, customType: string): SentMessage[] {
 	return messages(harness).filter((m) => m.customType === customType)
+}
+
+/** Fire the message_end event for a queued custom message (consumption). */
+async function consumeFollowUp(
+	harness: ReturnType<typeof createExtensionApi>,
+	sent: SentMessage,
+): Promise<Array<{ message: Record<string, unknown> } | undefined>> {
+	const results = await harness.emit(
+		"message_end",
+		{
+			type: "message_end",
+			message: {
+				role: "custom",
+				customType: sent.customType,
+				content: sent.content,
+				display: sent.display,
+				details: sent.details,
+				timestamp: 0,
+			},
+		},
+		ctx,
+	)
+	return results.filter(
+		(r): r is { message: Record<string, unknown> } =>
+			typeof r === "object" && r !== null && "message" in (r as Record<string, unknown>),
+	)
 }
 
 beforeEach(() => {
@@ -171,9 +198,12 @@ function fireShutdown(harness: ReturnType<typeof createExtensionApi>): Promise<u
 	return harness.emit("session_shutdown", {}, ctx)
 }
 
-/** Let watcher promise callbacks run. */
+/**
+ * Let watcher promise callbacks run AND outlast the exit-delivery
+ * coalescing window, so queued exit notifications have flushed.
+ */
 async function flush(): Promise<void> {
-	await new Promise((resolve) => setTimeout(resolve, 0))
+	await new Promise((resolve) => setTimeout(resolve, EXIT_BATCH_WINDOW_MS + 60))
 }
 
 /** Start a session and track a handle via a bash handoff result. */
@@ -324,7 +354,12 @@ describe("unattended exits", () => {
 		expect(state.delivery.getPending(handle)?.phase).toBe("queued")
 	})
 
-	it("includes compact statuses for remaining running handles", async () => {
+	it("omits remaining-cohort status from exit notices (inspection provides it)", async () => {
+		// Reviewer finding ("Exit notices have no per-turn cap"): every notice
+		// used to repeat the full cohort status. Automatic exit notices now
+		// carry ONLY the terminal results — a later-arriving notice must never
+		// repeat stale claims about processes that were stopped in the
+		// meantime; bash_control inspection reports the cohort accurately.
 		const harness = makePiWithState()
 		const a = spawnRunning("first-proc")
 		const b = spawnRunning("second-proc")
@@ -345,8 +380,140 @@ describe("unattended exits", () => {
 		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
 		expect(exits).toHaveLength(1)
 		const text = exits[0]?.content[0]?.text ?? ""
-		expect(text).toContain("Still running")
-		expect(text).toContain("second-proc")
+		expect(text).toContain(` handle: ${a}`)
+		expect(text).not.toContain("Still running")
+		expect(text).not.toContain("second-proc")
+	})
+
+	it("batches staggered exits within the coalescing window into one message preserving every result", async () => {
+		// Reviewer row 4 ("Staggered exit notice volume"): five processes
+		// resolved 25ms apart within one turn produce ONE batched notification
+		// — every terminal result, error, and output preserved, no cohort
+		// status, no per-exit message. Message count and text volume are
+		// asserted without any cap that could lose results.
+		const harness = makePiWithState()
+		const names = ["stagger-one", "stagger-two", "stagger-three", "stagger-four", "stagger-five"]
+		const handles = names.map((name) => spawnRunning(name))
+		await startTrackedSession(harness, handles[0] as string)
+		for (const [i, handle] of handles.slice(1).entries()) {
+			await fireToolResult(harness, {
+				type: "tool_result",
+				toolName: "bash",
+				toolCallId: `c${i + 2}`,
+				input: {},
+				content: [],
+				isError: false,
+				details: { handle, handoff: true, exited: false },
+			})
+		}
+
+		// Resolve their fake executions 25ms apart within one turn.
+		for (const [i, name] of names.entries()) {
+			setTimeout(() => {
+				ops.emitMatching(name, `output-${i}\n`)
+				void ops.exitMatching(name, 0)
+			}, i * 25)
+		}
+		// The trailing window re-arms on every arrival: the last exit lands
+		// at ~100ms and the flush follows ~50ms later.
+		await new Promise((resolve) => setTimeout(resolve, 250))
+
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(exits).toHaveLength(1)
+		const text = exits[0]?.content[0]?.text ?? ""
+		// Every terminal result reached the model exactly once.
+		for (const handle of handles) {
+			expect(text).toContain(` handle: ${handle}`)
+		}
+		for (let i = 0; i < names.length; i++) {
+			expect(text.match(new RegExp(`output-${i}`, "g"))?.length).toBe(1)
+		}
+		expect(text).not.toContain("Still running")
+		// Exactly one notification for five staggered exits.
+		expect(messages(harness).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(1)
+	})
+
+	it("reports a queued outcome as pending until acknowledged and never claims a stopped survivor", async () => {
+		// Reviewer row 5 ("Delayed delivery and stale status"): one process
+		// exits while another keeps running; the exit's notification is
+		// deliberately left unconsumed (queued steering). While it is queued,
+		// inspection says PENDING — never delivered — and once the survivor
+		// is stopped, the notice (built before the stop, delivered after it)
+		// contains no stale claims about the survivor. A pending exit also
+		// yields a cohort wait promptly (covered end-to-end in
+		// delivery-integration.test.ts: "consecutive waits yield to a queued
+		// exit batch behind advisory messages").
+		const harness = makePiWithState()
+		const early = spawnRunning("early-exit")
+		const survivor = spawnRunning("survivor-proc")
+		await startTrackedSession(harness, early)
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "c2",
+			input: {},
+			content: [],
+			isError: false,
+			details: { handle: survivor, handoff: true, exited: false },
+		})
+
+		// The early process exits; its notification queues as steering and
+		// is deliberately NOT consumed.
+		await exitProcess(early, 0)
+		await flush()
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(exits).toHaveLength(1)
+		const noticeText = exits[0]?.content[0]?.text ?? ""
+		expect(noticeText).toContain(` handle: ${early}`)
+		// No cohort status: the notice makes no claims about the survivor.
+		expect(noticeText).not.toContain(survivor)
+		expect(noticeText).not.toContain("Still running")
+
+		// While the outcome is queued, an inspection reports it as PENDING —
+		// never as delivered.
+		const controlTool = createBashControlToolDefinition(() => state)
+		const inspect = await controlTool.execute(
+			"insp-1",
+			{ wait: false } as never,
+			undefined,
+			undefined,
+			undefined as never,
+		)
+		const inspectText = (inspect.content[0] as { text?: string }).text ?? ""
+		expect(inspectText).toContain("queued for automatic delivery and not yet acknowledged")
+		expect(inspect.details.pendingHandles).toEqual([early])
+		expect(inspect.details.runningHandles).toEqual([survivor])
+
+		// The survivor is stopped BEFORE the notification is consumed; its
+		// stop reply reports its own result, not the queued one.
+		const stopArgs = { stop_handles: [survivor] }
+		await fireToolExecutionStart(harness, "stop-survivor", "bash_control", stopArgs)
+		const stopResult = await controlTool.execute(
+			"stop-survivor",
+			stopArgs as never,
+			undefined,
+			undefined,
+			undefined as never,
+		)
+		await fireToolExecutionEnd(harness, "stop-survivor", "bash_control")
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash_control",
+			toolCallId: "stop-survivor",
+			input: stopArgs,
+			content: stopResult.content,
+			isError: false,
+			details: stopResult.details,
+		})
+		expect(stopResult.details.exitedHandles).toEqual([survivor])
+		const stopText = (stopResult.content[0] as { text?: string }).text ?? ""
+		expect(stopText).toContain(` handle: ${survivor}`)
+		expect(stopText).not.toContain("delivered when it exited")
+
+		// Consuming the delayed notification acknowledges it: the outcome
+		// retires and nothing remains pending.
+		await consumeFollowUp(harness, exits[0] as SentMessage)
+		expect(state.delivery.hasPending()).toBe(false)
 	})
 
 	it("coalesces exits landing in the same scheduling boundary into one message", async () => {
@@ -768,32 +935,6 @@ describe("concurrency steer", () => {
 })
 
 describe("completion continuation", () => {
-	/** Fire the message_end event for a queued custom message (consumption). */
-	async function consumeFollowUp(
-		harness: ReturnType<typeof createExtensionApi>,
-		sent: SentMessage,
-	): Promise<Array<{ message: Record<string, unknown> } | undefined>> {
-		const results = await harness.emit(
-			"message_end",
-			{
-				type: "message_end",
-				message: {
-					role: "custom",
-					customType: sent.customType,
-					content: sent.content,
-					display: sent.display,
-					details: sent.details,
-					timestamp: 0,
-				},
-			},
-			ctx,
-		)
-		return results.filter(
-			(r): r is { message: Record<string, unknown> } =>
-				typeof r === "object" && r !== null && "message" in (r as Record<string, unknown>),
-		)
-	}
-
 	it("emits a consolidated continuation on every unresolved completion attempt", async () => {
 		const harness = makePiWithState()
 		const a = spawnRunning("a")
@@ -1145,36 +1286,19 @@ describe("completion continuation", () => {
 		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(1)
 	})
 
-	it("classifies a tracked handle whose registry entry is gone as pending-then-resolved, never running", async () => {
-		// Reviewer row 3 ("Missing registry entry"): the failed live chain
-		// left a stopped handle in tracking with no registry entry. On the
-		// delivery-aware branch the exit watcher retains its outcome, so the
-		// handle is classified as PENDING (never running) until the
-		// notification is acknowledged — then resolved with no reminder.
+	it("classifies a tracked handle whose registry entry is gone as resolved, never running", async () => {
+		// Reviewer row 3 ("Missing registry entry", without a retained
+		// outcome): the failed live chain left a stopped handle in tracking
+		// with no registry entry — the guard must drop it, never list it as
+		// "Still running".
 		const harness = makePiWithState()
 		const ghost = spawnRunning("ghost")
 		await startTrackedSession(harness, ghost)
 		await registry.remove(ghost)
 		await flush()
 
-		// The exit watcher retained the outcome in the delivery state and
-		// queued its notification — nothing ever claims the handle is
-		// running.
-		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
-		expect(exits).toHaveLength(1)
-		const exitText = exits[0]?.content[0]?.text ?? ""
-		expect(exitText).toContain(ghost)
-		expect(exitText).not.toContain("Still running")
-
-		// While the outcome is retained (queued for the notification), the
-		// guard does not queue a redundant reminder — the notification
-		// itself continues the run.
-		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
-		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(0)
-
-		// Once the notification is acknowledged, the outcome retires: no
-		// registry entry and no retained outcome → resolved, no reminder.
-		await consumeFollowUp(harness, exits[0] as SentMessage)
+		// No exit notification either: the entry is gone, nothing to collect.
+		expect(followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(0)
 		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
 		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(0)
 	})
