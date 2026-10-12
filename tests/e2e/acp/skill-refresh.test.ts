@@ -43,6 +43,21 @@ async function waitForBaseline(fixture: AcpFixture, sessionId: string): Promise<
 	throw new Error("initial available_commands_update never arrived")
 }
 
+// An initial palette says resources were loaded, not that native file watching
+// has attached. A separate probe skill establishes readiness through an actual
+// palette update before the single upload/delete operation under test.
+async function waitForSkillWatcher(fixture: AcpFixture, sessionId: string, root: string): Promise<void> {
+	const deadline = Date.now() + WATCHER_TIMEOUT_MS
+	let revision = 0
+	while (Date.now() < deadline) {
+		writeTestSkill(root, "e2e-watcher-ready", `Watcher readiness probe ${revision++}`)
+		// Allow both 250ms debounce stages to flush before another probe write.
+		await delay(1000)
+		if (commandNames(fixture, sessionId).includes("skill:e2e-watcher-ready")) return
+	}
+	throw new Error("skill watcher never re-advertised the readiness probe")
+}
+
 describe("ACP integration — skill change re-advertises palettes", () => {
 	let fixture: AcpFixture
 
@@ -60,6 +75,7 @@ describe("ACP integration — skill change re-advertises palettes", () => {
 
 			// Upload a skill to the global harness skills dir while the session is live.
 			const harnessSkills = join(fixture.homeDir, ".config", "kimchi", "harness", "skills")
+			await waitForSkillWatcher(fixture, sessionId, harnessSkills)
 			writeTestSkill(harnessSkills, "e2e-global-skill", "E2E global skill")
 
 			expect(await lastUpdateIncludes(fixture, sessionId, "skill:e2e-global-skill")).toBe(true)
@@ -83,6 +99,7 @@ describe("ACP integration — skill change re-advertises palettes", () => {
 			const sessionId = await newSession(fixture, fixture.workDir)
 			const baseline = await waitForBaseline(fixture, sessionId)
 			expect(baseline).toContain("skill:e2e-doomed-skill")
+			await waitForSkillWatcher(fixture, sessionId, harnessSkills)
 
 			rmSync(join(harnessSkills, "e2e-doomed-skill"), { recursive: true, force: true })
 

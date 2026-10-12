@@ -17,7 +17,7 @@
  * whether telemetry is enabled.
  */
 
-import { type FSWatcher, readFileSync, watch } from "node:fs"
+import { type FSWatcher, readFileSync, unwatchFile, watch, watchFile } from "node:fs"
 import { resolve } from "node:path"
 
 /** Caller-supplied emit function (matches `SessionContext.emit`'s shape). */
@@ -77,6 +77,9 @@ export function startSettingsChangeWatcher(emit: EmitFn): () => void {
 	let previous = readSettings(agentDir)
 	let debounceTimer: NodeJS.Timeout | undefined
 	let watcher: FSWatcher | undefined
+	const settingsPath = resolve(agentDir, "settings.json")
+	let polling = false
+	let stopped = false
 
 	const fire = (): void => {
 		debounceTimer = undefined
@@ -96,31 +99,45 @@ export function startSettingsChangeWatcher(emit: EmitFn): () => void {
 		previous = current
 	}
 
+	const scheduleFire = (): void => {
+		if (stopped) return
+		if (debounceTimer) clearTimeout(debounceTimer)
+		debounceTimer = setTimeout(fire, DEBOUNCE_MS)
+	}
+
+	try {
+		// Native directory watches can miss changes during attachment or
+		// atomic replacement. Stat polling keeps those changes observable;
+		// snapshot comparison prevents duplicate events from the two paths.
+		watchFile(settingsPath, { persistent: false, interval: 250 }, scheduleFire)
+		polling = true
+	} catch {
+		// Telemetry remains best-effort if polling cannot be started.
+	}
+
 	try {
 		// Watch the parent directory rather than the file itself. Editors that
 		// replace settings.json atomically (write temp + rename) create a new
 		// inode; watching the file directly on Linux would lose the watcher.
 		// Directory-level watching survives inode replacement.
-		const settingsPath = resolve(agentDir, "settings.json")
 		watcher = watch(agentDir, { persistent: false }, (_eventType, filename) => {
 			if (filename !== "settings.json") return
-			if (debounceTimer) clearTimeout(debounceTimer)
-			debounceTimer = setTimeout(fire, DEBOUNCE_MS)
+			scheduleFire()
 		})
 		watcher.unref?.()
 		watcher.on("error", () => {
 			watcher?.close()
 			watcher = undefined
 		})
-		// Reference settingsPath to keep the linter happy — the path is only
-		// used implicitly via the directory watcher + readSettings inside fire().
-		void settingsPath
 	} catch {
 		// settings.json (or its parent dir) may not exist yet.
 	}
 
 	return () => {
+		stopped = true
 		if (debounceTimer) clearTimeout(debounceTimer)
+		if (polling) unwatchFile(settingsPath, scheduleFire)
+		polling = false
 		watcher?.close()
 		watcher = undefined
 	}

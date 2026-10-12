@@ -1,5 +1,6 @@
 import { type FSWatcher, watch } from "chokidar"
 
+import { isRunningUnderBun } from "../../env.js"
 import { resolveSkillRoots } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { createDebounce } from "../../utils/debounce.js"
 import { REFRESH_DEBOUNCE_MS } from "./commands.js"
@@ -87,6 +88,10 @@ export function createSkillWatcher(opts: {
 			// be swallowed as initial state; the next change self-heals.
 			watcher = watch([], {
 				ignoreInitial: true,
+				// Bun's native directory notifications can miss skill changes.
+				// Polling preserves upload/delete refreshes in the built binary;
+				// Node sessions retain the native backend.
+				usePolling: isRunningUnderBun,
 				// <root>/<name>/SKILL.md is two levels below a watched root.
 				depth: 2,
 			})
