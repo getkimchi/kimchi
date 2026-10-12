@@ -523,6 +523,13 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 		const model = ctx.model
 		if (!model) return
 
+		// A window at/below the compaction reserve can never hold a useful
+		// compacted context plus the reserve itself — every turn would exceed a
+		// (negative) threshold and the guard would spam a doomed compact attempt
+		// per turn, rendering "Compaction failed: Nothing to compact" on every
+		// small-window model (the 8k e2e fake reproduces this).
+		if (model.contextWindow <= COMPACTION_RESERVE_TOKENS) return
+
 		const msg = event.message
 		if (msg.role !== "assistant") return
 
