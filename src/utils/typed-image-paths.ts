@@ -12,6 +12,15 @@ import { IMAGE_EXT_TO_MIME, readImageFileFromDisk } from "./image-utils.js"
  * conservative: a token only becomes a match when `readImageFileFromDisk`
  * accepts it (exists, readable, supported extension, within the size cap) —
  * prose tokens that merely look like paths are silently ignored.
+ *
+ * Paths containing spaces (e.g. macOS screenshots: "Screenshot 2026-10-05 at
+ * 14.32.10.png") arrive from terminal drag-and-drop in three shapes: quoted
+ * spans, literal spaces, and shell-escaped spaces (`Screenshot\ 2026-...`).
+ * All three attach: quoted spans are single tokens; a backslash-escaped
+ * space stays inside the token and is unescaped for the disk check; literal
+ * spaces are recovered by greedily re-joining a failed extension-bearing
+ * token with the unquoted tokens before it. Every recovered candidate still
+ * has to pass `readImageFileFromDisk`, so prose never attaches by accident.
  */
 
 export interface TypedImagePathMatch {
@@ -24,13 +33,30 @@ export interface TypedImagePathMatch {
 }
 
 // Quoted spans (double, single, backtick) are single tokens so paths with
-// spaces and inline code spans attach; everything else is whitespace-split
-// (\s covers \r, so CRLF line breaks need no special handling).
-const TOKEN_RE = /("(?:[^"\n]+)"|'(?:[^'\n]+)'|`(?:[^`\n]+)`)|(\S+)/g
+// spaces and inline code spans attach; an unquoted span keeps `\ ` (the shell
+// escape for a space that terminal drags produce) inside the token instead of
+// splitting on it. The glue is deliberately space-only: a backslash before a
+// newline or tab must NOT merge lines, or a trailing `\` on a pasted shell
+// line-continuation would swallow the next line and break its quoted spans.
+// Everything else is whitespace-split (\s covers \r, so CRLF line breaks need
+// no special handling).
+const TOKEN_RE = /("(?:[^"\n]+)"|'(?:[^'\n]+)'|`(?:[^`\n]+)`)|((?:\\ |\S)+)/g
 
 // Prose punctuation clinging to the edges of a typed path in chat text.
 const LEADING_JUNK_RE = /^[([{<'"`]+/
 const TRAILING_JUNK_RE = /[.,;:!?)\]}>'"`]+$/
+
+// Shell-style space escape from terminal drags of paths with spaces. Only
+// unquoted tokens are unescaped: a quoted span may legitimately contain a
+// literal backslash (APFS allows it in filenames) and quoted paths are exact.
+const SHELL_SPACE_ESCAPE_RE = /\\( )/g
+
+// How many preceding unquoted tokens may be joined to recover a path with
+// literal (unescaped) spaces. "Screenshot 2026-10-05 at 16.51.59.png" needs
+// four parts; the bound is generous headroom for longer capture names.
+// Joins re-assemble with single spaces, so names containing consecutive
+// spaces are not recovered — quoted or escaped shapes handle those exactly.
+const MAX_JOIN_TOKENS = 8
 
 interface Token {
 	raw: string
@@ -47,17 +73,51 @@ function tokenize(text: string): Token[] {
 }
 
 /**
- * Reduce a token to a viable local image path candidate, or null. No disk
- * access here — the regex/extension filters exist only to keep the subsequent
- * filesystem guard (readImageFileFromDisk) rare and predictable.
+ * Clean an unquoted token part: strip clinging prose punctuation and turn
+ * shell-escaped spaces back into literal spaces. Returns the cleaned text.
  */
-function toCandidate(token: Token): string | null {
-	const raw = token.quoted ? token.raw.trim() : token.raw.replace(LEADING_JUNK_RE, "").replace(TRAILING_JUNK_RE, "")
-	if (!raw) return null
-	// URLs and file:// URIs are never local attachments.
-	if (raw.includes("://")) return null
-	if (!IMAGE_EXT_TO_MIME[extname(raw).toLowerCase()]) return null
-	return raw
+function cleanUnquotedPart(raw: string): string {
+	return raw.replace(LEADING_JUNK_RE, "").replace(TRAILING_JUNK_RE, "").replace(SHELL_SPACE_ESCAPE_RE, "$1")
+}
+
+/**
+ * Whether the (cleaned) token ends with a supported image extension.
+ */
+function hasImageExtension(raw: string): boolean {
+	return IMAGE_EXT_TO_MIME[extname(raw).toLowerCase()] !== undefined
+}
+
+/**
+ * Candidate path strings for the token at `index`, most precise first.
+ *
+ * Quoted tokens yield a single exact candidate. Unquoted tokens yield the
+ * token itself first (preserving existing relative/absolute resolution), then
+ * the token joined with preceding unquoted tokens, nearest first — so a path
+ * whose spaces were split apart ("Screenshot 2026-10-05 at 14.32.10.png") is
+ * rebuilt from the extension-bearing token outward. Joins stop at a quoted
+ * span (a quoted boundary means the unquoted text is not one path) and are
+ * bounded by MAX_JOIN_TOKENS.
+ *
+ * Joins only prepend words, so every candidate for a token shares the token's
+ * trailing extension. Tokens without one return no candidates at all — join
+ * construction is skipped for plain prose, the overwhelmingly common case.
+ */
+function candidatesForToken(tokens: Token[], index: number): string[] {
+	const token = tokens[index]
+	if (token.quoted) {
+		const raw = token.raw.trim()
+		return hasImageExtension(raw) ? [raw] : []
+	}
+	const anchor = cleanUnquotedPart(token.raw)
+	if (!hasImageExtension(anchor)) return []
+	const out = [anchor]
+	let joined = anchor
+	for (let j = index - 1; j >= 0 && index - j <= MAX_JOIN_TOKENS; j--) {
+		if (tokens[j].quoted) break
+		joined = `${cleanUnquotedPart(tokens[j].raw)} ${joined}`
+		out.push(joined)
+	}
+	return out
 }
 
 function expandHome(raw: string): string {
@@ -75,15 +135,23 @@ function expandHome(raw: string): string {
 export function extractTypedImagePaths(text: string, cwd: string): TypedImagePathMatch[] {
 	const seen = new Set<string>()
 	const matches: TypedImagePathMatch[] = []
-	for (const token of tokenize(text)) {
-		const raw = toCandidate(token)
-		if (!raw) continue
-		const resolvedPath = resolve(cwd, expandHome(raw))
-		if (seen.has(resolvedPath)) continue
-		const image = readImageFileFromDisk(resolvedPath)
-		if (!image) continue
-		seen.add(resolvedPath)
-		matches.push({ rawPath: raw, resolvedPath, image })
+	const tokens = tokenize(text)
+
+	for (let i = 0; i < tokens.length; i++) {
+		for (const raw of candidatesForToken(tokens, i)) {
+			// URLs and file:// URIs are never local attachments. Checked per
+			// candidate: a join can pull a URL-bearing word in front of the
+			// extension-bearing anchor. (The extension itself is already gated in
+			// candidatesForToken — every candidate for a token shares it.)
+			if (raw.includes("://")) continue
+			const resolvedPath = resolve(cwd, expandHome(raw))
+			if (seen.has(resolvedPath)) continue
+			const image = readImageFileFromDisk(resolvedPath)
+			if (!image) continue
+			seen.add(resolvedPath)
+			matches.push({ rawPath: raw, resolvedPath, image })
+			break
+		}
 	}
 	return matches
 }

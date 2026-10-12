@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ferment Lifecycle Guard — Fix Explanation</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-2: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-2: #79c0ff;
+    --green: #3fb950;
+    --green-bg: rgba(63, 185, 80, 0.1);
+    --red: #f85149;
+    --red-bg: rgba(248, 81, 73, 0.1);
+    --orange: #d29922;
+    --orange-bg: rgba(210, 153, 34, 0.1);
+    --purple: #bc8cff;
+    --purple-bg: rgba(188, 140, 255, 0.1);
+    --blue-bg: rgba(88, 166, 255, 0.1);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    font-size: 15px;
+    padding: 0;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 48px 24px 96px; }
+  h1 {
+    font-size: 2em;
+    font-weight: 700;
+    margin-bottom: 8px;
+    letter-spacing: -0.02em;
+  }
+  h2 {
+    font-size: 1.5em;
+    font-weight: 600;
+    margin-top: 56px;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.2em;
+    font-weight: 600;
+    margin-top: 36px;
+    margin-bottom: 12px;
+    color: var(--accent-2);
+  }
+  h4 {
+    font-size: 1.05em;
+    font-weight: 600;
+    margin-top: 24px;
+    margin-bottom: 8px;
+  }
+  p { margin-bottom: 14px; }
+  ul, ol { margin-bottom: 14px; padding-left: 24px; }
+  li { margin-bottom: 6px; }
+  code {
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+    font-size: 0.88em;
+    background: var(--surface-2);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--accent-2);
+  }
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    margin-bottom: 16px;
+    font-size: 0.85em;
+    line-height: 1.5;
+  }
+  pre code {
+    background: none;
+    padding: 0;
+    color: var(--text);
+  }
+  .subtitle { color: var(--text-muted); font-size: 1.1em; margin-bottom: 32px; }
+
+  /* Diagram styles */
+  .diagram {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px 24px;
+    margin-bottom: 24px;
+    text-align: center;
+    overflow-x: auto;
+  }
+  .diagram-label {
+    font-size: 0.8em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 20px;
+  }
+  .flow-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  .flow-row + .flow-row { margin-top: 0; }
+  .node {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-size: 0.85em;
+    font-weight: 600;
+    min-width: 90px;
+    text-align: center;
+    border: 1px solid;
+  }
+  .node-draft { background: var(--blue-bg); border-color: var(--accent); color: var(--accent); }
+  .node-planned { background: var(--purple-bg); border-color: var(--purple); color: var(--purple); }
+  .node-running { background: var(--green-bg); border-color: var(--green); color: var(--green); }
+  .node-paused { background: var(--orange-bg); border-color: var(--orange); color: var(--orange); }
+  .node-complete { background: rgba(139, 148, 158, 0.15); border-color: var(--text-muted); color: var(--text-muted); }
+  .node-abandoned { background: var(--red-bg); border-color: var(--red); color: var(--red); }
+  .node-sub { font-size: 0.75em; font-weight: 400; opacity: 0.8; margin-top: 2px; }
+  .arrow {
+    color: var(--text-muted);
+    font-size: 1.2em;
+    padding: 0 2px;
+  }
+  .arrow-label {
+    font-size: 0.72em;
+    color: var(--text-muted);
+    text-align: center;
+    margin-top: 2px;
+  }
+
+  /* Table styles */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 16px;
+    font-size: 0.9em;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    font-weight: 600;
+    color: var(--accent);
+    font-size: 0.85em;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  td code { font-size: 0.82em; }
+
+  /* Callout boxes */
+  .callout {
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 16px;
+    border-left: 4px solid;
+  }
+  .callout-title {
+    font-weight: 600;
+    margin-bottom: 6px;
+    font-size: 0.95em;
+  }
+  .callout-bug { background: var(--red-bg); border-color: var(--red); }
+  .callout-bug .callout-title { color: var(--red); }
+  .callout-fix { background: var(--green-bg); border-color: var(--green); }
+  .callout-fix .callout-title { color: var(--green); }
+  .callout-info { background: var(--blue-bg); border-color: var(--accent); }
+  .callout-info .callout-title { color: var(--accent); }
+  .callout-warn { background: var(--orange-bg); border-color: var(--orange); }
+  .callout-warn .callout-title { color: var(--orange); }
+
+  /* Timeline */
+  .timeline {
+    position: relative;
+    padding-left: 28px;
+    margin-bottom: 24px;
+  }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 8px;
+    top: 4px;
+    bottom: 4px;
+    width: 2px;
+    background: var(--border);
+  }
+  .timeline-item {
+    position: relative;
+    padding-bottom: 20px;
+  }
+  .timeline-item::before {
+    content: '';
+    position: absolute;
+    left: -24px;
+    top: 6px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 2px solid;
+    background: var(--surface);
+  }
+  .timeline-item.good::before { border-color: var(--green); background: var(--green-bg); }
+  .timeline-item.bad::before { border-color: var(--red); background: var(--red-bg); }
+  .timeline-item.info::before { border-color: var(--accent); background: var(--blue-bg); }
+  .timeline-item.warn::before { border-color: var(--orange); background: var(--orange-bg); }
+  .timeline-label {
+    font-weight: 600;
+    font-size: 0.9em;
+    margin-bottom: 2px;
+  }
+  .timeline-label.good { color: var(--green); }
+  .timeline-label.bad { color: var(--red); }
+  .timeline-label.info { color: var(--accent); }
+  .timeline-label.warn { color: var(--orange); }
+  .timeline-body {
+    font-size: 0.9em;
+    color: var(--text);
+  }
+  .timeline-body code { font-size: 0.85em; }
+
+  /* Badge */
+  .badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.78em;
+    font-weight: 600;
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+  .badge-before { background: var(--red-bg); color: var(--red); border: 1px solid var(--red); }
+  .badge-after { background: var(--green-bg); color: var(--green); border: 1px solid var(--green); }
+
+  /* Comparison grid */
+  .compare-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .compare-col {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+  }
+  .compare-col h4 {
+    margin-top: 0;
+    font-size: 0.95em;
+  }
+  .compare-col.before h4 { color: var(--red); }
+  .compare-col.after h4 { color: var(--green); }
+  @media (max-width: 720px) {
+    .compare-grid { grid-template-columns: 1fr; }
+    .flow-row { flex-direction: column; }
+    .arrow { transform: rotate(90deg); padding: 4px 0; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Ferment Lifecycle Guard — Fix Explanation</h1>
+<p class="subtitle">Preventing silent stalls when the model stops without calling a required lifecycle tool</p>
+
+<!-- ──────────────────────────────────────────────────────────────────── -->
+<!-- TABLE OF CONTENTS                                                    -->
+<!-- ──────────────────────────────────────────────────────────────────── -->
+
+<details open>
+<summary style="cursor:pointer; font-weight:600; color:var(--accent); margin-bottom:16px; display:block;">📋 Table of Contents</summary>
+<ol>
+  <li><a href="#what-is-ferment" style="color:var(--accent-2);">What is a Ferment?</a></li>
+  <li><a href="#lifecycle-stages" style="color:var(--accent-2);">Ferment Lifecycle Stages</a></li>
+  <li><a href="#lifecycle-actions" style="color:var(--accent-2);">Lifecycle Actions &amp; Expected Tool Calls</a></li>
+  <li><a href="#automated-mode" style="color:var(--accent-2);">Automated (One-Shot) Mode</a></li>
+  <li><a href="#the-problem" style="color:var(--accent-2);">The Problem: Silent Stalls</a></li>
+  <li><a href="#root-cause" style="color:var(--accent-2);">Root Cause Analysis</a></li>
+  <li><a href="#the-fix" style="color:var(--accent-2);">The Fix: Lifecycle Obligation Guard</a></li>
+  <li><a href="#before-after" style="color:var(--accent-2);">Before &amp; After Comparison</a></li>
+  <li><a href="#worked-examples" style="color:var(--accent-2);">Worked Examples</a></li>
+  <li><a href="#recovery-actions" style="color:var(--accent-2);">Handling Recovery Actions</a></li>
+  <li><a href="#error-separation" style="color:var(--accent-2);">Error vs. Stop Separation</a></li>
+  <li><a href="#design-decisions" style="color:var(--accent-2);">Key Design Decisions</a></li>
+  <li><a href="#files-changed" style="color:var(--accent-2);">Files Changed</a></li>
+</ol>
+</details>
+
+<!-- ──────────────────────────────────────────────────────────────────── -->
+<!-- 1. WHAT IS A FERMENT                                                 -->
+<!-- ──────────────────────────────────────────────────────────────────── -->
+
+<h2 id="what-is-ferment">1. What is a Ferment?</h2>
+
+<p>
+A <strong>Ferment</strong> is Kimchi's structured unit of work for complex, multi-step coding tasks.
+Instead of letting the AI model wander freely through a codebase, a Ferment enforces a
+<strong>state machine</strong>: the model must progress through defined lifecycle stages, and at each
+stage the engine derives what action is needed next. The model is expected to call a specific
+<em>tool</em> to advance the state — it cannot skip ahead or improvise transitions.
+</p>
+
+<p>
+Think of it like a project plan with phases and steps. The model acts as the engineer executing
+the plan, but the harness (Kimchi) tracks the state and tells the model what the next action is.
+If the model forgets to call the right tool, the harness nudges it.
+</p>
+
+<div class="callout callout-info">
+  <div class="callout-title">💡 Key concept</div>
+  The Ferment state machine is <strong>persistence-backed</strong>: every transition is written to
+  a JSON file on disk. The in-memory "what should the model do next?" decision is derived from
+  this persisted state via a pure function <code>determineNextAction(ferment)</code>. The guard
+  this fix introduces sits between that derivation and the model's next opportunity to act.
+</div>
+
+<!-- ──────────────────────────────────────────────────────────────────── -->
+<!-- 2. LIFECYCLE STAGES                                                  -->
+<!-- ──────────────────────────────────────────────────────────────────── -->
+
+<h2 id="lifecycle-stages">2. Ferment Lifecycle Stages</h2>
+
+<p>
+A Ferment moves through six top-level statuses. Each status determines what the model is expected
+to do:
+</p>
+
+<div class="diagram">
+  <div class="diagram-label">Ferment Status Flow</div>
+  <div class="flow-row">
+    <div class="node node-draft">draft<div class="node-sub">collect scope</div></div>
+    <span class="arrow">→</span>
+    <div class="node node-planned">planned<div class="node-sub">phases defined</div></div>
+    <span class="arrow">→</span>
+    <div class="node node-running">running<div class="node-sub">executing steps</div></div>
+    <span class="arrow">→</span>
+    <div class="node node-complete">complete<div class="node-sub">finished</div></div>
+  </div>
+  <div class="flow-row" style="margin-top:16px;">
+    <div style="width:90px;"></div>
+    <span class="arrow-label"></span>
+    <div class="node node-paused">paused<div class="node-sub">interrupted</div></div>
+    <span class="arrow-label"></span>
+    <div style="width:90px;"></div>
+    <span class="arrow-label"></span>
+    <div class="node node-abandoned">abandoned<div class="node-sub">cancelled</div></div>
+  </div>
+  <div class="flow-row">
+    <span class="arrow-label"></span>
+    <span class="arrow-label">↕ can pause / resume from running or planned</span>
+    <span class="arrow-label"></span>
+    <span class="arrow-label"></span>
+    <span class="arrow-label">← can abandon from any non-terminal state</span>
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr><th>Status</th><th>Meaning</th><th>What the model should do</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>draft</code></td>
+      <td>Initial state — goal, criteria, and phases are being collected</td>
+      <td>Call <code>scope_ferment</code> with the full plan</td>
+    </tr>
+    <tr>
+      <td><code>planned</code></td>
+      <td>Scope is confirmed, phases exist but none are active yet</td>
+      <td>Call <code>activate_ferment_phase</code> to start the first phase</td>
+    </tr>
+    <tr>
+      <td><code>running</code></td>
+      <td>A phase is active; steps within it are being executed</td>
+      <td>Start/complete/verify steps, then complete the phase</td>
+    </tr>
+    <tr>
+      <td><code>paused</code></td>
+      <td>Work is suspended (user abort, error, or explicit pause)</td>
+      <td>Nothing — wait for <code>/ferment resume</code></td>
+    </tr>
+    <tr>
+      <td><code>complete</code></td>
+      <td>All phases are done; the Ferment is finished</td>
+      <td>Nothing — lifecycle is over</td>
+    </tr>
+    <tr>
+      <td><code>abandoned</code></td>
+      <td>Cancelled before completion</td>
+      <td>Nothing — lifecycle is over</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Phase and Step Statuses</h3>
+<p>Within a running Ferment, each phase and step also has its own status:</p>
+
+<div class="diagram">
+  <div class="diagram-label">Phase &amp; Step Status Flows</div>
+  <div style="display:flex; gap:48px; justify-content:center; flex-wrap:wrap;">
+    <div>
+      <div style="font-size:0.8em; color:var(--purple); margin-bottom:10px; font-weight:600;">PHASE</div>
+      <div class="flow-row">
+        <div class="node node-planned" style="min-width:70px; font-size:0.78em;">planned</div>
+        <span class="arrow">→</span>
+        <div class="node node-running" style="min-width:70px; font-size:0.78em;">active</div>
+        <span class="arrow">→</span>
+        <div class="node node-complete" style="min-width:70px; font-size:0.78em;">completed</div>
+      </div>
+      <div class="flow-row">
+        <span class="arrow-label">↘ can also become:</span>
+        <div class="node node-abandoned" style="min-width:70px; font-size:0.78em;">skipped</div>
+        <span class="arrow-label">or</span>
+        <div class="node node-paused" style="min-width:70px; font-size:0.78em;">failed</div>
+      </div>
+    </div>
+    <div>
+      <div style="font-size:0.8em; color:var(--green); margin-bottom:10px; font-weight:600;">STEP</div>
+      <div class="flow-row">
+        <div class="node node-planned" style="min-width:70px; font-size:0.78em;">pending</div>
+        <span class="arrow">→</span>
+        <div class="node node-running" style="min-width:70px; font-size:0.78em;">running</div>
+        <span class="arrow">→</span>
+        <div class="node node-complete" style="min-width:70px; font-size:0.78em;">done</div>
+      </div>
+      <div class="flow-row">
+        <span class="arrow-label">↘ can also become:</span>
+        <div class="node node-complete" style="min-width:70px; font-size:0.78em;">verified</div>
+        <span class="arrow-label">,</span>
+        <div class="node node-abandoned" style="min-width:70px; font-size:0.78em;">skipped</div>
+        <span class="arrow-label">, or</span>
+        <div class="node node-paused" style="min-width:70px; font-size:0.78em;">failed</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ──────────────────────────────────────────────────────────────────── -->
+<!-- 3. LIFECYCLE ACTIONS                                                  -->
+<!-- ──────────────────────────────────────────────────────────────────── -->
+
+<h2 id="lifecycle-actions">3. Lifecycle Actions &amp; Expected Tool Calls</h2>
+
+<p>
+The engine's <code>determineNextAction(ferment)</code> function inspects the persisted state and
+returns a <strong>declarative action</strong> — a description of what should happen next. Each action
+maps to a specific tool the model is expected to call:
+</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Action</th>
+      <th>Tool the model must call</th>
+      <th>When it's needed</th>
+      <th>Concrete?</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>scope</code></td>
+      <td><code>scope_ferment</code></td>
+      <td>Ferment is a draft with no phases yet</td>
+      <td style="color:var(--green);">✓ one tool</td>
+    </tr>
+    <tr>
+      <td><code>activate_phase</code></td>
+      <td><code>activate_ferment_phase</code></td>
+      <td>Ferment is planned, no phase is active</td>
+      <td style="color:var(--green);">✓ one tool</td>
+    </tr>
+    <tr>
+      <td><code>refine</code></td>
+      <td><code>refine_ferment_phase</code></td>
+      <td>Active phase has no steps yet</td>
+      <td style="color:var(--green);">✓ one tool</td>
+    </tr>
+    <tr>
+      <td><code>start_step</code></td>
+      <td><code>start_ferment_step</code></td>
+      <td>Active phase has a pending step</td>
+      <td style="color:var(--green);">✓ one tool</td>
+    </tr>
+    <tr>
+      <td><code>complete_step</code></td>
+      <td><code>complete_ferment_step</code></td>
+      <td>A step is running and its worker has finished</td>
+      <td style="color:var(--green);">✓ one tool</td>
+    </tr>
+    <tr>
+      <td><code>complete_phase</code></td>
+      <td><code>complete_ferment_phase</code></td>
+      <td>All steps in the active phase are done</td>
+      <td style="color:var(--green);">✓ one tool</td>
+    </tr>
+    <tr>
+      <td><code>complete_ferment</code></td>
+      <td><code>complete_ferment</code></td>
+      <td>All phases are completed/skipped</td>
+      <td style="color:var(--green);">✓ one tool</td>
+    </tr>
+    <tr>
+      <td><code>recover_step</code></td>
+      <td><em>choice: skip or restart</em></td>
+      <td>A step has failed</td>
+      <td style="color:var(--orange);">⚠ multiple options</td>
+    </tr>
+    <tr>
+      <td><code>recover_phase</code></td>
+      <td><em>choice: retry, skip, or abandon</em></td>
+      <td>A phase has failed</td>
+      <td style="color:var(--orange);">⚠ multiple options</td>
+    </tr>
+    <tr>
+      <td><code>pause</code></td>
+      <td><em>no tool</em></td>
+      <td>Ferment is paused or drifted</td>
+      <td style="color:var(--text-muted);">— no action</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout callout-info">
+  <div class="callout-title">Concrete vs. choice-oriented</div>
+  Most actions map to <strong>exactly one tool</strong> — these are "concrete obligations."
+  But <code>recover_step</code> and <code>recover_phase</code> have multiple valid paths
+  (skip the failed item, retry it, or abandon the ferment). These are "choice-oriented" —
+  the guard must prompt the model to act without claiming one specific tool is mandatory.
+</div>
+
+<!-- ──────────────────────────────────────────────────────────────────── -->
+<!-- 4. AUTOMATED MODE                                                     -->
+<!-- ──────────────────────────────────────────────────────────────────── -->
+
+<h2 id="automated-mode">4. Automated (One-Shot) Mode</h2>
+
+<p>
+Kimchi has two modes for Ferment execution:
+</p>
+
+<div class="compare-grid">
+  <div class="compare-col">
+    <h4>🔧 Interactive Mode</h4>
+    <ul>
+      <li>User is present throughout</li>
+      <li>Continuation policy: <code>manual</code></li>
+      <li>User confirms plan reviews, phase boundaries, etc.</li>
+      <li>If the model stops without a tool call, the user can steer</li>
+      <li><strong>The guard does not fire here</strong> — it would interrupt legitimate conversation</li>
+    </ul>
+  </div>
+  <div class="compare-col">
+    <h4>🤖 Automated / One-Shot Mode</h4>
+    <ul>
+      <li>No human present — runs unattended (e.g. CI, benchmarks)</li>
+      <li>Continuation policy: <code>automated</code></li>
+      <li>Model must self-drive the entire lifecycle</li>
+      <li>If the model stops without calling the required tool, <strong>nothing else will advance the Ferment</strong></li>
+      <li><strong>The guard fires here</strong> — it's the only recovery mechanism</li>
+    </ul>
+  </div>
+</div>
+
+<div class="diagram">
+  <div class="diagram-label">The Guard's Place in the Pipeline</div>
+  <div class="flow-row">
+    <div class="node" style="background:var(--surface-2); border-color:var(--border); color:var(--text-muted);">Model ends turn<div class="node-sub">no tool calls</div></div>
+    <span class="arrow">→</span>
+    <div class="node" style="background:var(--surface-2); border-color:var(--border); color:var(--text-muted);">Engine derives<div class="node-sub">next action</div></div>
+    <span class="arrow">→</span>
+    <div class="node node-running" style="min-width:120px;">🛡️ Lifecycle Guard<div class="node-sub">schedules retry or reports exhaustion</div></div>
+    <span class="arrow">→</span>
+    <div class="node node-draft" style="min-width:100px;">Model gets<div class="node-sub">another turn</div></div>
+    <span class="arrow">→</span>
+    <div class="node node-planned" style="min-width:100px;">Model calls<div class="node-sub">the right tool</div></div>
+  </div>
+</div>
+
+<!-- ──────────────────────────────────────────────────────────────────── -->
+<!-- 5. THE PROBLEM                                                        -->
+<!-- ──────────────────────────────────────────────────────────────────── -->
+
+<h2 id="the-problem">5. The Problem: Silent Stalls</h2>
+
+<p>
+In automated mode, the model sometimes ends its turn with a text-only response (no tool calls)
+while the Ferment still requires a lifecycle transition. The most common pattern:
+</p>
+
+<div class="callout callout-bug">
+  <div class="callout-title">🐛 The bug — "Calling scope_ferment now"</div>
+  <p style="margin-bottom:8px;">
+    The model produces prose announcing its intent to call a tool, but the actual
+    <code>toolCalls</code> array is empty and <code>stopReason</code> is <code>"stop"</code>.
+    The model <em>thinks</em> it called the tool, but it didn't.
+  </p>
+  <pre><code>// Model response — looks like it's about to call scope_ferment...
+{ content: [{ type: "text", text: "Calling scope_ferment now." }],
+  stopReason: "stop",
+  toolCalls: [] }  // ← no actual tool call!</code></pre>
+</div>
+
+<h3>What happened before the fix</h3>
+
+<p>
+The old recovery mechanism (<code>maybeInjectReactiveContinuationNudge</code>) had three problems:
+</p>
+
+<ol>
+  <li><strong>Budget of 1</strong> — only one retry was allowed (<code>MAX_CONSECUTIVE_REACTIVE_NUDGES = 1</code>).
+    After the model's second text-only stop, the budget was exhausted and the session ended silently.</li>
+  <li><strong>Keyed by Ferment ID only</strong> — the retry counter was a simple
+    <code>Map&lt;fermentId, count&gt;</code>. When the Ferment advanced to a new lifecycle stage
+    (e.g. from <code>scope</code> to <code>activate_phase</code>), the old counter was not
+    automatically reset. Worse, any tool call — even an unrelated <code>read</code> or <code>grep</code> —
+    reset the counter via <code>onFermentToolCallSeen</code>, silently replenishing the budget
+    for an unchanged obligation.</li>
+  <li><strong>No exhaustion diagnostic</strong> — when the budget ran out, the session simply
+    disappeared. No breadcrumb, no telemetry, no indication of what went wrong.</li>
+</ol>
+
+<div class="diagram">
+  <div class="diagram-label">Before: The Silent Stall (budget = 1, keyed by Ferment ID)</div>
+  <div class="timeline">
+    <div class="timeline-item info">
+      <div class="timeline-label info">Turn 1 — Model response</div>
+      <div class="timeline-body">Text-only: "I'll gather requirements…" · <code>toolCalls: []</code> · <code>stopReason: "stop"</code></div>
+    </div>
+    <div class="timeline-item good">
+      <div class="timeline-label good">Reactive nudge fires (budget 0→1)</div>
+      <div class="timeline-body">The old nudge injects a continuation message. Model gets another turn.</div>
+    </div>
+    <div class="timeline-item bad">
+      <div class="timeline-label bad">Turn 2 — Model response</div>
+      <div class="timeline-body">Text-only: "Calling scope_ferment now…" · <code>toolCalls: []</code> · <code>stopReason: "stop"</code></div>
+    </div>
+    <div class="timeline-item bad">
+      <div class="timeline-label bad">Budget exhausted (1 ≥ 1)</div>
+      <div class="timeline-body">No more retries. No diagnostic emitted. Session terminates. <strong>No plan persisted, no coding attempt.</strong></div>
+    </div>
+  </div>
+</div>
+
+<h3>Additional bug: unrelated tool calls reset the budget</h3>
+
+<div class="diagram">
+  <div class="diagram-label">Before: Unrelated tool call silently resets budget</div>
+  <div class="timeline">
+    <div class="timeline-item bad">
+      <div class="timeline-label bad">Turn 1 — Empty stop</div>
+      <div class="timeline-body">Text-only, no tool calls. Budget consumed: 0→1.</div>
+    </div>
+    <div class="timeline-item warn">
+      <div class="timeline-label warn">Turn 2 — Model calls <code>read("README.md")</code></div>
+      <div class="timeline-body">An unrelated tool call. <code>onFermentToolCallSeen</code> fires and <strong>resets the budget to 0</strong>. The scope obligation is unchanged, but the counter is replenished.</div>
+    </div>
+    <div class="timeline-item bad">
+      <div class="timeline-label bad">Turn 3 — Empty stop again</div>
+      <div class="timeline-body">Budget consumed: 0→1 again. The model gets "another chance" it shouldn't have had — but it still doesn't call <code>scope_ferment</code>.</div>
+    </div>
+    <div class="timeline-item bad">
+      <div class="timeline-label bad">This can repeat indefinitely</div>
+      <div class="timeline-body">Each <code>read</code>/<code>grep</code>/<code>ls</code> resets the counter. The model can explore forever without ever calling the required lifecycle tool.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ──────────────────────────────────────────────────────────────────── -->
+<!-- 6. ROOT CAUSE                                                         -->
+<!-- ──────────────────────────────────────────────────────────────────── -->
+
+<h2 id="root-cause">6. Root Cause Analysis</h2>
+
+<p>The old design had a fundamental mismatch: it tracked <em>how many times the model stopped</em>
+per Ferment, but not <em>what obligation was unmet</em>. This led to two failure modes:</p>
+
+<div class="compare-grid">
+  <div class="compare-col before">
+    <h4>Problem 1: Budget too small</h4>
+    <p>With <code>MAX_CONSECUTIVE_REACTIVE_NUDGES = 1</code>, the model got exactly one retry.
+    If it failed twice in a row (which is common — the "Calling scope_ferment now" pattern
+    repeats), the session died.</p>
+  </div>
+  <div class="compare-col before">
+    <h4>Problem 2: Wrong key</h4>
+    <p>The counter was keyed by <code>fermentId</code> only. It didn't distinguish between
+    different obligations (scope vs. activate_phase vs. start_step). Any tool call reset it,
+    even tools unrelated to the pending obligation. State advancement didn't automatically
+    grant a fresh budget.</p>
+  </div>
+</div>
+
+<div class="callout callout-warn">
+  <div class="callout-title">⚠ Conflated paths</div>
+  The old code also used <code>maybeInjectReactiveContinuationNudge</code> for both
+  <code>stopReason: "stop"</code> (model chose to stop) and <code>stopReason: "error"</code>
+  (transport/provider failure). These are fundamentally different failure modes that should
+  have separate recovery budgets — a network error is not the model's fault and shouldn't
+  consume the lifecycle retry budget.
+</div>
+
+<!-- ──────────────────────────────────────────────────────────────────── -->
+<!-- 7. THE FIX                                                            -->
+<!-- ──────────────────────────────────────────────────────────────────── -->
+
+<h2 id="the-fix">7. The Fix: Lifecycle Obligation Guard</h2>
+
+<p>
+The fix replaces the old reactive nudge with a new module:
+<code>src/extensions/ferment/lifecycle-obligation-guard.ts</code>. It introduces three key changes:
+</p>
+
+<h3>7.1 Obligation-keyed retry budget</h3>
+
+<p>
+Instead of keying by Ferment ID alone, the guard keys retries by the <strong>specific outstanding
+obligation</strong>:
+</p>
+
+<pre><code>obligation key = fermentId + ":" + action.kind + ":" + phaseId? + ":" + stepId?</code></pre>
+
+<p>Examples:</p>
+
+<table>
+  <thead><tr><th>Scenario</th><th>Obligation Key</th></tr></thead>
+  <tbody>
+    <tr><td>Draft ferment needs scoping</td><td><code>ferment-123:scope</code></td></tr>
+    <tr><td>Planned ferment needs first phase activated</td><td><code>ferment-123:activate_phase:phase-1</code></td></tr>
+    <tr><td>Running ferment needs step started</td><td><code>ferment-123:start_step:phase-1:step-2</code></td></tr>
+    <tr><td>Failed step needs recovery</td><td><code>ferment-123:recover_step:phase-1:step-1</code></td></tr>
+  </tbody>
+</table>
+
+<div class="callout callout-fix">
+  <div class="callout-title">✓ What this fixes</div>
+  <ul style="margin-bottom:0;">
+    <li>An unrelated <code>read</code>/<code>grep</code> call does <strong>not</strong> reset the budget — the key is unchanged.</li>
+    <li>When <code>scope_ferment</code> succeeds, state advances to <code>activate_phase</code>, which has a <strong>different key</strong> → fresh budget automatically.</li>
+    <li>Switching to another phase or step produces a new key → fresh budget.</li>
+    <li>Old keys for a Ferment are <strong>pruned</strong> when a new current key is observed, so the map doesn't grow indefinitely.</li>
+  </ul>
+</div>
+
+<h3>7.2 Budget of 2 retries</h3>
+
+<p>
+The model now receives <strong>three total opportunities</strong> for one unchanged obligation:
+</p>
+
+<div class="diagram">
+  <div class="diagram-label">After: Retry Budget (MAX_LIFECYCLE_STOP_RETRIES = 2)</div>
+  <div class="flow-row">
+    <div class="node node-abandoned" style="min-width:110px;">Original response<div class="node-sub">empty tool calls</div></div>
+    <span class="arrow">→</span>
+    <div class="node node-running" style="min-width:100px;">Retry 1<div class="node-sub">guard schedules</div></div>
+    <span class="arrow">→</span>
+    <div class="node node-running" style="min-width:100px;">Retry 2<div class="node-sub">guard schedules</div></div>
+    <span class="arrow">→</span>
+    <div class="node node-paused" style="min-width:100px;">Exhausted<div class="node-sub">visible diagnostic</div></div>
+  </div>
+</div>
+
+<h3>7.3 Exhaustion diagnostic</h3>
+
+<p>
+When the budget is exhausted, the guard emits <strong>one visible breadcrumb</strong> explaining
+what happened, plus a <code>FERMENT_EVENTS.STALLED</code> telemetry event. The persisted state
+is left intact — no state is fabricated or silently skipped.
+</p>
+
+<pre><code>Lifecycle guard exhausted for "Hello World CLI":
+required action "scope" (tool: scope_ferment) was not called after 2
+lifecycle-stop retries (3 qualifying text-only stops for the unchanged
+obligation). No state transition was applied automatically.</code></pre>
+
+<div class="callout callout-info">
+  <div class="callout-title">📝 Wording note</div>
+  The message says <strong>"qualifying text-only stops for the unchanged obligation"</strong>
+  rather than "consecutive text-only stops." This is deliberate: an unrelated tool call between
+  stops does not reset the budget, so the stops may not be consecutive. The wording accurately
+  reflects what was counted.
+</div>
+
+<h3>7.4 Architecture</h3>
+
+<div class="diagram">
+  <div class="diagram-label">Guard Architecture — Pure Core + Pi Wrapper</div>
+  <div class="flow-row">
+    <div class="node" style="background:var(--surface-2); border-color:var(--border); color:var(--text-muted); min-width:130px;">
+      <code>deriveObligation()</code>
+      <div class="node-sub">pure: action → obligation<br>mode: concrete | choice-oriented</div>
+    </div>
+    <span class="arrow">→</span>
+    <div class="node" style="background:var(--surface-2); border-color:var(--border); color:var(--text-muted); min-width:130px;">
+      <code>evaluateLifecycleStop()</code>
+      <div class="node-sub">pure: count retries<br>return retry | exhausted</div>
+    </div>
+    <span class="arrow">→</span>
+    <div class="node node-running" style="min-width:140px;">
+      <code>maybeInjectLifecycleObligationGuard()</code>
+      <div class="node-sub">pi-dependent: schedules turn<br>or emits diagnostic</div>
+    </div>
+  </div>
+  <div class="flow-row" style="margin-top:12px;">
+    <div class="arrow-label">← tested without a live session →</div>
+    <span style="width:130px;"></span>
+    <span style="width:130px;"></span>
+    <div class="arrow-label">← owns all side effects →</div>
+  </div>
+</div>
+
+<p>
+The pure decision logic (<code>deriveObligation</code>, <code>evaluateLifecycleStop</code>,
+<code>buildObligationKey</code>) is fully unit-testable without a live pi session. The
+pi-dependent wrapper (<code>maybeInjectLifecycleObligationGuard</code>) owns only the scheduling
+side effects — calling <code>scheduleNextFermentAction</code> to give the model another turn, or
+emitting the exhaustion breadcrumb + telemetry.
+</p>
+
+<!-- ──────────────────────────────────────────────────────────────────── -->
+<!-- 8. BEFORE & AFTER                                                    -->
+<!-- ──────────────────────────────────────────────────────────────────── -->
+
+<h2 id="before-after">8. Before &amp; After Comparison</h2>
+
+<div class="compare-grid">
+  <div class="compare-col before">
+    <h4>Before (Reactive Nudge)</h4>
+    <ul>
+      <li>Budget: <strong>1 retry</strong></li>
+      <li>Key: <code>fermentId</code> only</li>
+      <li>Reset on: <em>any</em> tool call (even <code>read</code>)</li>
+      <li>Exhaustion: <strong>silent</strong> — session disappears</li>
+      <li>Error vs stop: <strong>conflated</strong> — same budget</li>
+      <li>Recovery actions: handled (passed to scheduler)</li>
+      <li>Interactive mode: guard could fire</li>
+    </ul>
+  </div>
+  <div class="compare-col after">
+    <h4>After (Lifecycle Guard)</h4>
+    <ul>
+      <li>Budget: <strong>2 retries</strong> (3 total opportunities)</li>
+      <li>Key: <code>fermentId:action.kind:phaseId?:stepId?</code></li>
+      <li>Reset on: <strong>only</strong> a real state transition (new key)</li>
+      <li>Exhaustion: <strong>visible</strong> breadcrumb + telemetry</li>
+      <li>Error vs stop: <strong>separate paths</strong> — error doesn't consume budget</li>
+      <li>Recovery actions: handled as choice-oriented obligations</li>
+      <li>Interactive mode: <strong>disabled</strong> — user is present to steer</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ──────────────────────────────────────────────────────────────────── -->
+<!-- 9. WORKED EXAMPLES                                                    -->
+<!-- ──────────────────────────────────────────────────────────────────── -->
+
+<h2 id="worked-examples">9. Worked Examples</h2>
+
+<h3>Example 1: Successful recovery after two text-only stops</h3>
+
+<p>This is the exact scenario the TUI E2E test covers. A one-shot ferment is bootstrapped,
+and the model fails twice before succeeding on the third attempt.</p>
+
+<div class="timeline">
+  <div class="timeline-item info">
+    <div class="timeline-label info">Setup</div>
+    <div class="timeline-body">User runs <code>kimchi --ferment-oneshot "Build a hello-world CLI"</code>. A draft ferment is created. The engine derives <code>scope</code> as the next action.</div>
+  </div>
+  <div class="timeline-item bad">
+    <div class="timeline-label bad">Turn 1 — Model response</div>
+    <div class="timeline-body">
+      <code>{ content: [{ type: "text", text: "I'll start by gathering the requirements…" }], stopReason: "stop", toolCalls: [] }</code>
+      <br>No tool call. Ferment is still <code>draft</code>. Obligation key: <code>ferment-1:scope</code>.
+    </div>
+  </div>
+  <div class="timeline-item good">
+    <div class="timeline-label good">Guard fires — Retry 1/2</div>
+    <div class="timeline-body">
+      The guard detects a zero-tool stop with a pending <code>scope</code> obligation. Budget: 0→1. It schedules another model turn with this prefix:
+      <pre style="margin-top:8px;"><code>Ferment "Hello World CLI" still requires scope_ferment.
+The previous turn stopped without a tool call. Call scope_ferment
+now using the required Ferment/phase/step identifiers and payload.
+Include the complete plan and exactly the P1/P2/P3 gate verdicts;
+do not fabricate missing values.</code></pre>
+    </div>
+  </div>
+  <div class="timeline-item bad">
+    <div class="timeline-label bad">Turn 2 — Model response</div>
+    <div class="timeline-body">
+      <code>{ content: [{ type: "text", text: "Calling scope_ferment now." }], stopReason: "stop", toolCalls: [] }</code>
+      <br>Still no tool call! Same obligation key: <code>ferment-1:scope</code>. Budget: 1→2.
+    </div>
+  </div>
+  <div class="timeline-item good">
+    <div class="timeline-label good">Guard fires — Retry 2/2</div>
+    <div class="timeline-body">
+      Budget: 2→2 (max reached). One final, stricter nudge:
+      <pre style="margin-top:8px;"><code>Lifecycle action still pending (retry 2/2). Do not respond with
+an announcement or summary. Emit the required scope_ferment call now.
+If the action cannot safely be performed, use the appropriate user-input
+or recovery mechanism instead of stopping silently.</code></pre>
+    </div>
+  </div>
+  <div class="timeline-item good">
+    <div class="timeline-label good">Turn 3 — Model calls scope_ferment!</div>
+    <div class="timeline-body">
+      <code>{ toolCalls: [{ name: "scope_ferment", arguments: { ferment_id: "...", goal: "...", phases: [...], gates: [P1, P2, P3] } }] }</code>
+      <br>The tool call succeeds. Ferment transitions <code>draft → planned</code>. The obligation key changes to <code>ferment-1:activate_phase:phase-1</code> → <strong>fresh budget automatically</strong>.
+    </div>
+  </div>
+  <div class="timeline-item good">
+    <div class="timeline-label good">Turn 4 — Post-scoping</div>
+    <div class="timeline-body">Model responds with "Plan saved. Ready to activate the phase." Session continues normally.</div>
+  </div>
+</div>
+
+<h3>Example 2: Unrelated tool call does NOT reset the budget</h3>
+
+<p>This demonstrates the key fix: an unrelated <code>read</code> between two empty stops does
+not replenish the budget for the unchanged <code>scope</code> obligation.</p>
+
+<div class="timeline">
+  <div class="timeline-item bad">
+    <div class="timeline-label bad">Turn 1 — Empty stop</div>
+    <div class="timeline-body">No tool calls. Budget for <code>ferment-1:scope</code>: 0→1. Guard schedules retry 1.</div>
+  </div>
+  <div class="timeline-item warn">
+    <div class="timeline-label warn">Turn 2 — Model calls <code>read("README.md")</code></div>
+    <div class="timeline-body">
+      A tool call is made, but it's <strong>not</strong> <code>scope_ferment</code>. The obligation
+      key <code>ferment-1:scope</code> is <strong>unchanged</strong>.
+      <br><br>
+      <strong>Before the fix:</strong> <code>onFermentToolCallSeen</code> would reset the budget to 0.
+      <br><strong>After the fix:</strong> The guard checks if the ferment reached a terminal/paused state.
+      It didn't — it's still <code>draft</code>. The budget is <strong>preserved</strong> at 1.
+    </div>
+  </div>
+  <div class="timeline-item bad">
+    <div class="timeline-label bad">Turn 3 — Empty stop again</div>
+    <div class="timeline-body">No tool calls. Budget for <code>ferment-1:scope</code>: 1→2. Guard schedules retry 2.</div>
+  </div>
+  <div class="timeline-item bad">
+    <div class="timeline-label bad">Turn 4 — Empty stop (third qualifying stop)</div>
+    <div class="timeline-body">Budget: 2→3 (exceeds max of 2). <strong>Exhaustion diagnostic emitted:</strong>
+      <pre style="margin-top:8px;"><code>Lifecycle guard exhausted for "Hello World CLI":
+required action "scope" (tool: scope_ferment) was not called after
+2 lifecycle-stop retries (3 qualifying text-only stops for the
+unchanged obligation). No state transition was applied automatically.</code></pre>
+    </div>
+  </div>
+</div>
+
+<h3>Example 3: State advancement grants a fresh budget</h3>
+
+<div class="timeline">
+  <div class="timeline-item bad">
+    <div class="timeline-label bad">Turn 1 — Empty stop during <code>scope</code></div>
+    <div class="timeline-body">Budget for <code>ferment-1:scope</code>: 0→1.</div>
+  </div>
+  <div class="timeline-item good">
+    <div class="timeline-label good">Turn 2 — Model calls <code>scope_ferment</code> successfully</div>
+    <div class="timeline-body">Ferment transitions <code>draft → planned</code>. Old key <code>ferment-1:scope</code> is pruned. New obligation: <code>activate_phase</code> → key <code>ferment-1:activate_phase:phase-1</code>.</div>
+  </div>
+  <div class="timeline-item bad">
+    <div class="timeline-label bad">Turn 3 — Empty stop during <code>activate_phase</code></div>
+    <div class="timeline-body">New key → <strong>fresh budget</strong>: 0→1. The old scope budget does not carry over.</div>
+  </div>
+  <div class="timeline-item good">
+    <div class="timeline-label good">Turn 4 — Model calls <code>activate_ferment_phase</code></div>
+    <div class="timeline-body">Phase activated. Next obligation: <code>refine</code> or <code>start_step</code> → another fresh key.</div>
+  </div>
+</div>
+
+<!-- ──────────────────────────────────────────────────────────────────── -->
+<!-- 10. RECOVERY ACTIONS                                                 -->
+<!-- ──────────────────────────────────────────────────────────────────── -->
+
+<h2 id="recovery-actions">10. Handling Recovery Actions</h2>
+
+<p>
+<code>recover_step</code> and <code>recover_phase</code> are special: they don't map to one
+mandatory tool. A failed step can be skipped (<code>skip_ferment_step</code>) or retried
+(<code>start_ferment_step</code>). A failed phase can be retried, skipped, or the ferment
+can be abandoned. The guard must not claim one exact tool is mandatory.
+</p>
+
+<div class="callout callout-bug">
+  <div class="callout-title">🐛 Bug found during review (fixed in this branch)</div>
+  The initial implementation excluded <code>recover_step</code>/<code>recover_phase</code> from
+  the guard entirely — returning <code>undefined</code> from <code>deriveObligation</code>. This
+  meant a text-only stop during failure recovery would <strong>silently stall the run</strong> in
+  automated mode — the exact bug class being fixed. The old reactive nudge had passed these
+  actions to the scheduler, which provided choice-oriented guidance. The initial fix dropped that
+  behavior.
+</div>
+
+<div class="callout callout-fix">
+  <div class="callout-title">✓ Fix: choice-oriented obligations</div>
+  Recovery actions are now classified as <strong>choice-oriented obligations</strong> — they
+  go through the same bounded retry tracker, but the guard does not name one mandatory tool.
+  Instead, it schedules the existing scheduler guidance (which already lists the valid options)
+  with a recovery-specific prefix.
+</div>
+
+<p>The <code>LifecycleObligation</code> type uses a discriminated union:</p>
+
+<pre><code>type LifecycleObligation =
+  | { mode: "concrete";          toolName: string;  action: ConcreteLifecycleAction }
+  | { mode: "choice-oriented";   toolName?: never;   action: ChoiceOrientedLifecycleAction }</code></pre>
+
+<p>For choice-oriented obligations:</p>
+<ul>
+  <li><strong>Retry message:</strong> "Diagnose the failure and choose an appropriate recovery path from the guidance below." (no tool named)</li>
+  <li><strong>Scheduler guidance:</strong> The existing <code>buildContextualNudge</code> produces: "Use <code>skip_ferment_step</code> or restart the step via <code>start_ferment_step</code> after fixing the issue."</li>
+  <li><strong>Exhaustion message:</strong> "required recovery action 'recover_step' remained unresolved" (no tool named)</li>
+  <li><strong>Same budget:</strong> 2 retries, keyed normally (e.g. <code>ferment-1:recover_step:phase-1:step-1</code>)</li>
+</ul>
+
+<!-- ──────────────────────────────────────────────────────────────────── -->
+<!-- 11. ERROR SEPARATION                                                  -->
+<!-- ──────────────────────────────────────────────────────────────────── -->
+
+<h2 id="error-separation">11. Error vs. Stop Separation</h2>
+
+<p>
+The old code used <code>maybeInjectReactiveContinuationNudge</code> for both
+<code>stopReason: "stop"</code> and <code>stopReason: "error"</code>. These are fundamentally
+different:
+</p>
+
+<div class="compare-grid">
+  <div class="compare-col">
+    <h4 style="color:var(--orange);"><code>stopReason: "stop"</code></h4>
+    <ul>
+      <li>The model <strong>chose</strong> to stop</li>
+      <li>It could have called a tool but didn't</li>
+      <li>Recovery: nudge the model to try again</li>
+      <li>Consumes the <strong>lifecycle-stop retry budget</strong></li>
+    </ul>
+  </div>
+  <div class="compare-col">
+    <h4 style="color:var(--red);"><code>stopReason: "error"</code></h4>
+    <ul>
+      <li>Transport/provider/gateway failure</li>
+      <li>The model never got to respond</li>
+      <li>Recovery: schedule another turn directly</li>
+      <li><strong>Does NOT consume</strong> the lifecycle-stop budget</li>
+    </ul>
+  </div>
+</div>
+
+<p>
+After the fix, the <code>stopReason: "error"</code> path in <code>events.ts</code> clears the guard
+budget (so the error doesn't contaminate future lifecycle-stop tracking) and then schedules a
+continuation turn independently via <code>scheduleNextFermentAction</code>. The two paths are
+fully separated.
+</p>
+
+<!-- ──────────────────────────────────────────────────────────────────── -->
+<!-- 12. DESIGN DECISIONS                                                 -->
+<!-- ──────────────────────────────────────────────────────────────────── -->
+
+<h2 id="design-decisions">12. Key Design Decisions</h2>
+
+<h3>Why automated-only?</h3>
+<p>
+In interactive mode, a text-only stop may be legitimate — the model might be explaining
+trade-offs or asking the user a question. Firing a lifecycle nudge would interrupt the
+conversation. The user is present to steer, so the guard is not needed. Interactive coverage
+is deferred until the harness can reliably distinguish legitimate conversation stops from
+lifecycle stalls.
+</p>
+
+<h3>Why session-memory, not persisted?</h3>
+<p>
+The retry counter lives in an in-memory <code>Map</code>, not in the Ferment event store. This
+is an agent-loop recovery budget, not domain progress. Persisting it would mean replaying the
+budget on session restart, which could cause stale exhaustion states. The existing nudge counters
+follow the same pattern.
+</p>
+
+<h3>Why not force the tool call?</h3>
+<p>
+The guard never applies a state transition itself. It only schedules another model turn via
+<code>scheduleNextFermentAction</code> (steer delivery). The model must still produce the tool call
+— the tool's own validation logic persists the transition. This preserves the domain model:
+</p>
+
+<pre><code>persisted Ferment state
+        ↓
+determineNextAction / continuation policy
+        ↓
+declarative lifecycle obligation  ← guard lives here
+        ↓
+model emits corresponding lifecycle tool call
+        ↓
+tool validates and persists the transition</code></pre>
+
+<h3>Why prune old keys?</h3>
+<p>
+A long-running Ferment may progress through many phases and steps, each producing a different
+obligation key. Without pruning, the per-Ferment map would grow unboundedly. When a new current
+key is observed, all old keys for that Ferment are deleted. This keeps memory usage bounded
+regardless of Ferment length.
+</p>
+
+<h3>Why a discriminated union for the obligation type?</h3>
+<p>
+Using <code>mode: "concrete" | "choice-oriented"</code> with <code>toolName: string</code> vs
+<code>toolName?: never</code> makes the "no prescribed tool" state explicit at the type level.
+You literally cannot set a tool name on a choice-oriented obligation — the compiler enforces it.
+This prevents accidentally naming a mandatory tool for a recovery action.
+</p>
+
+<!-- ──────────────────────────────────────────────────────────────────── -->
+<!-- 13. FILES CHANGED                                                     -->
+<!-- ──────────────────────────────────────────────────────────────────── -->
+
+<h2 id="files-changed">13. Files Changed</h2>
+
+<table>
+  <thead>
+    <tr><th>File</th><th>Change</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>lifecycle-obligation-guard.ts</code></td>
+      <td><strong>New.</strong> Pure obligation model, key builder, retry tracker, and pi-dependent wrapper.</td>
+    </tr>
+    <tr>
+      <td><code>lifecycle-obligation-guard.test.ts</code></td>
+      <td><strong>New.</strong> 28 unit tests covering key building, derivation, retry tracking, exhaustion, pruning, and choice-oriented classification.</td>
+    </tr>
+    <tr>
+      <td><code>events.ts</code></td>
+      <td>Integrated guard into <code>turn_end</code> after user-input handling. Separated error recovery from lifecycle-stop budget. Added <code>clearAllLifecycleGuards()</code> to <code>session_start</code> and <code>session_shutdown</code>.</td>
+    </tr>
+    <tr>
+      <td><code>events.test.ts</code></td>
+      <td>Added integration tests: unrelated tool call doesn't reset budget, plan review suppresses guard, fresh budget after session restart, error recovery doesn't consume budget, exhaustion wording is accurate.</td>
+    </tr>
+    <tr>
+      <td><code>nudge.ts</code></td>
+      <td>Removed <code>maybeInjectReactiveContinuationNudge</code>, <code>resetReactiveContinuationNudgeCount</code>, and related counter state. Updated module docs.</td>
+    </tr>
+    <tr>
+      <td><code>nudge.test.ts</code></td>
+      <td>Replaced reactive nudge tests with guard tests. Added recover_phase choice-oriented test.</td>
+    </tr>
+    <tr>
+      <td><code>commands.ts</code></td>
+      <td>Replaced <code>resetReactiveContinuationNudgeCount</code> calls with <code>clearLifecycleGuard</code> at pause/resume/exit/abandon sites.</td>
+    </tr>
+    <tr>
+      <td><code>commands.test.ts</code></td>
+      <td>Updated to use <code>maybeInjectLifecycleObligationGuard</code> and <code>clearAllLifecycleGuards</code>.</td>
+    </tr>
+    <tr>
+      <td><code>tools/lifecycle.ts</code></td>
+      <td>Replaced <code>resetReactiveContinuationNudgeCount</code> with <code>clearLifecycleGuard</code> at <code>complete_ferment</code> success/already-complete/abandoned sites.</td>
+    </tr>
+    <tr>
+      <td><code>resume.ts</code></td>
+      <td>Added <code>clearLifecycleGuard</code> on ferment resume.</td>
+    </tr>
+    <tr>
+      <td><code>scheduler.ts</code></td>
+      <td>Added <code>messagePrefix</code> option to <code>ScheduleNextFermentActionOptions</code> so the guard can prepend its retry instruction.</td>
+    </tr>
+    <tr>
+      <td><code>index.test.ts</code></td>
+      <td>Updated <code>deliverAs</code> assertion from <code>"followUp"</code> to <code>"steer"</code> (guard uses steer delivery).</td>
+    </tr>
+    <tr>
+      <td><code>stale-ctx-crash.test.ts</code></td>
+      <td>Updated comment referencing old function name.</td>
+    </tr>
+    <tr>
+      <td><code>ferment-oneshot-scope-nudge.test.ts</code></td>
+      <td><strong>TUI E2E.</strong> Strengthened to require a real <code>scope_ferment</code> tool call + persisted plan. Asserts ≥3 chat-completion requests and exactly one retry instruction per text-only stop.</td>
+    </tr>
+  </tbody>
+</table>
+
+<div style="margin-top:64px; padding-top:24px; border-top:1px solid var(--border); color:var(--text-muted); font-size:0.85em;">
+  Generated from branch <code>fix-stalled-scoping</code> · Commits <code>d55c8e3</code> (guard stalled lifecycle transitions) + <code>18b1012</code> (recover draft lifecycle errors)
+</div>
+
+</div>
+</body>
+</html>

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
+import type { Skill } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	formatPreview,
@@ -426,6 +427,204 @@ describe("SkillManager", () => {
 			const result = await bundledMgr.create("new-skill", "---\ndescription: x\n---\nBody.")
 			expect(result.success).toBe(true)
 			expect(result.path).toContain(tmpDir)
+		})
+	})
+
+	/** Full typed Skill fixture for the discovered tier — pi's Skill requires
+	 *  baseDir/sourceInfo, and the tier consumes baseDir as the directory anchor
+	 *  plus the entry file resolved relative to it from filePath. Mirrors
+	 *  system-prompt.test.ts's createSkill. */
+	function discoveredSkill(overrides: Partial<Skill> & Pick<Skill, "name" | "description" | "filePath">): Skill {
+		return {
+			baseDir: dirname(overrides.filePath),
+			sourceInfo: { path: overrides.filePath, source: "local", scope: "project", origin: "top-level" },
+			disableModelInvocation: false,
+			...overrides,
+		}
+	}
+
+	describe("discovered skills (session inventory tier)", () => {
+		it("views a skill resolved through the discovered provider", async () => {
+			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
+			try {
+				const skillDir = join(discoveredDir, "project-skill")
+				mkdirSync(skillDir)
+				writeFileSync(join(skillDir, "SKILL.md"), "---\ndescription: from project\n---\nProject body.")
+				mgr.setDiscoveredSkillsProvider(() => [
+					discoveredSkill({
+						name: "project-skill",
+						description: "from project",
+						filePath: join(skillDir, "SKILL.md"),
+					}),
+				])
+				const result = await mgr.view("project-skill")
+				expect(result.success).toBe(true)
+				expect(result.content).toContain("Project body.")
+			} finally {
+				rmSync(discoveredDir, { recursive: true, force: true })
+			}
+		})
+
+		it("view fails for a discovered skill absent from the provider", async () => {
+			mgr.setDiscoveredSkillsProvider(() => [])
+			const result = await mgr.view("ghost-skill")
+			expect(result.success).toBe(false)
+			expect(result.error).toContain("not found")
+		})
+
+		it("harness and bundled skills shadow the discovered tier", async () => {
+			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
+			try {
+				const harnessDir = join(tmpDir, "shadowed-skill")
+				mkdirSync(harnessDir)
+				writeFileSync(join(harnessDir, "SKILL.md"), "---\ndescription: harness wins\n---\nHarness body.")
+				const discoveredSkillDir = join(discoveredDir, "shadowed-skill")
+				mkdirSync(discoveredSkillDir)
+				writeFileSync(join(discoveredSkillDir, "SKILL.md"), "---\ndescription: discovered loses\n---\nDiscovered body.")
+				mgr.setDiscoveredSkillsProvider(() => [
+					discoveredSkill({
+						name: "shadowed-skill",
+						description: "discovered loses",
+						filePath: join(discoveredSkillDir, "SKILL.md"),
+					}),
+				])
+				const result = await mgr.view("shadowed-skill")
+				expect(result.success).toBe(true)
+				expect(result.content).toContain("Harness body.")
+			} finally {
+				rmSync(discoveredDir, { recursive: true, force: true })
+			}
+		})
+
+		it("mutations on a discovered skill are refused as read-only", async () => {
+			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
+			try {
+				const skillDir = join(discoveredDir, "ro-skill")
+				mkdirSync(skillDir)
+				writeFileSync(join(skillDir, "SKILL.md"), "---\ndescription: ro\n---\nRO body.")
+				mgr.setDiscoveredSkillsProvider(() => [
+					discoveredSkill({
+						name: "ro-skill",
+						description: "ro",
+						filePath: join(skillDir, "SKILL.md"),
+					}),
+				])
+				const edit = await mgr.edit("ro-skill", "---\ndescription: ro\n---\nNew body.")
+				expect(edit.success).toBe(false)
+				expect(edit.error).toMatch(/read-only/i)
+			} finally {
+				rmSync(discoveredDir, { recursive: true, force: true })
+			}
+		})
+
+		it("views a loose .md skill advertised with a plain .md filePath", async () => {
+			// pi advertises single-file skills (root .md children of a skills root,
+			// single-.md skillPaths entries) with filePath pointing at the .md
+			// itself; view() must read that entry file, not a hardcoded SKILL.md.
+			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
+			try {
+				const loosePath = join(discoveredDir, "loose-skill.md")
+				writeFileSync(loosePath, "---\nname: loose-skill\ndescription: single file\n---\nLoose body.")
+				mgr.setDiscoveredSkillsProvider(() => [
+					discoveredSkill({ name: "loose-skill", description: "single file", filePath: loosePath }),
+				])
+				const result = await mgr.view("loose-skill")
+				expect(result.success).toBe(true)
+				expect(result.content).toContain("Loose body.")
+			} finally {
+				rmSync(discoveredDir, { recursive: true, force: true })
+			}
+		})
+
+		it("refuses to load a discovered skill hidden with disableModelInvocation", async () => {
+			// Mirror of the prompt catalog's visibility rule: hidden skills are
+			// user-invocation-only (/skill:name), so the model-facing skill_view
+			// must treat them as not found rather than expose their instructions.
+			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
+			try {
+				const skillDir = join(discoveredDir, "hidden-skill")
+				mkdirSync(skillDir)
+				writeFileSync(join(skillDir, "SKILL.md"), "---\ndescription: hidden\n---\nHidden body.")
+				mgr.setDiscoveredSkillsProvider(() => [
+					discoveredSkill({
+						name: "hidden-skill",
+						description: "hidden",
+						filePath: join(skillDir, "SKILL.md"),
+						disableModelInvocation: true,
+					}),
+				])
+				const result = await mgr.view("hidden-skill")
+				expect(result.success).toBe(false)
+				expect(result.error).toContain("not found")
+			} finally {
+				rmSync(discoveredDir, { recursive: true, force: true })
+			}
+		})
+
+		it("mutations are refused for a discovered loose .md directly under the harness skills dir", async () => {
+			// A root-level loose .md resolves with the harness root itself as the
+			// skill dir; the discovered tier is unconditionally read-only so edit()
+			// can never drop a stray SKILL.md there (pi's loader would treat the
+			// root as a single-skill root and hide every directory-based skill).
+			const loosePath = join(tmpDir, "root-loose.md")
+			writeFileSync(loosePath, "---\nname: root-loose\ndescription: ro\n---\nLoose body.")
+			mgr.setDiscoveredSkillsProvider(() => [
+				discoveredSkill({ name: "root-loose", description: "ro", filePath: loosePath }),
+			])
+			const edit = await mgr.edit("root-loose", "---\ndescription: hacked\n---\nNew body.")
+			expect(edit.success).toBe(false)
+			expect(edit.error).toMatch(/read-only/i)
+			expect(existsSync(join(tmpDir, "SKILL.md"))).toBe(false)
+		})
+
+		it("refuses file_path on a loose single-file skill so sibling skills stay unreachable", async () => {
+			// A loose .md advertised with a shared skills root as baseDir anchors
+			// skillDir at that root; make the sibling one that is hidden from the
+			// model (disableModelInvocation) to prove the file_path escape cannot
+			// bypass the name-based visibility exclusion either.
+			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
+			try {
+				const siblingDir = join(discoveredDir, "hidden-sibling")
+				mkdirSync(siblingDir)
+				writeFileSync(join(siblingDir, "SKILL.md"), "---\ndescription: hidden\n---\nUser-only instructions.")
+				const loosePath = join(discoveredDir, "loose-skill.md")
+				writeFileSync(loosePath, "---\nname: loose-skill\ndescription: single file\n---\nLoose body.")
+				mgr.setDiscoveredSkillsProvider(() => [
+					discoveredSkill({ name: "loose-skill", description: "single file", filePath: loosePath }),
+					discoveredSkill({
+						name: "hidden-sibling",
+						description: "hidden",
+						filePath: join(siblingDir, "SKILL.md"),
+						disableModelInvocation: true,
+					}),
+				])
+				const result = await mgr.view("loose-skill", "hidden-sibling/SKILL.md")
+				expect(result.success).toBe(false)
+				expect(result.error).toMatch(/single-file skill/)
+				expect(result.content).toBeUndefined()
+			} finally {
+				rmSync(discoveredDir, { recursive: true, force: true })
+			}
+		})
+
+		it("does not enumerate linked files under a loose skill's shared root", async () => {
+			// skillDir resolves to the shared root, so scanning the conventional
+			// subdirs would leak sibling content paths into linked_files.
+			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
+			try {
+				mkdirSync(join(discoveredDir, "references"))
+				writeFileSync(join(discoveredDir, "references", "sibling-notes.md"), "Not part of the loose skill.")
+				const loosePath = join(discoveredDir, "loose-skill.md")
+				writeFileSync(loosePath, "---\nname: loose-skill\ndescription: single file\n---\nLoose body.")
+				mgr.setDiscoveredSkillsProvider(() => [
+					discoveredSkill({ name: "loose-skill", description: "single file", filePath: loosePath }),
+				])
+				const result = await mgr.view("loose-skill")
+				expect(result.success).toBe(true)
+				expect(result.linked_files).toBeUndefined()
+			} finally {
+				rmSync(discoveredDir, { recursive: true, force: true })
+			}
 		})
 	})
 })

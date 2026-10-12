@@ -62,28 +62,33 @@ function textOf(result: { content: { type: string; text?: string }[] }): string 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("createBashControlToolDefinition — shape", () => {
-	it("schema exposes stop_handles + wait + waitSeconds; legacy timing fields are deprecated", () => {
+	it("schema exposes stop_handles + wait + handles + waitSeconds; legacy timing fields are deprecated", () => {
 		const { tool } = setup()
 		expect(tool.name).toBe("bash_control")
 		const schema = tool.parameters as unknown as { properties: Record<string, { description?: string }> }
 		expect(schema.properties).toHaveProperty("stop_handles")
 		expect(schema.properties).toHaveProperty("wait")
+		expect(schema.properties).toHaveProperty("handles")
+		expect(schema.properties.handles?.description).toContain("inspection")
 		expect(schema.properties.waitSeconds?.description).toContain("300")
 		expect(schema.properties.waitSeconds?.description).toContain("600")
 		expect(schema.properties.extend_seconds?.description).toBeUndefined()
 		expect(schema.properties.checkin_interval?.description).toBeUndefined()
 	})
 
-	it("wait: true is required in the schema (no silent omission)", () => {
+	it("wait is optional (omitted = immediate inspection); handles cannot ride a wait", () => {
 		const { tool } = setup()
 		const schema = tool.parameters as unknown as { required?: string[] }
-		expect(schema.required).toContain("wait")
+		expect(schema.required ?? []).not.toContain("wait")
+		expect(schema.required ?? []).not.toContain("handles")
 	})
 
-	it("description documents inspection, bounded waits, and checkpoints", () => {
+	it("description documents inspection, bounded waits, filtered handles, and checkpoints", () => {
 		const { tool } = setup()
 		expect(tool.description).toContain("wait: false")
 		expect(tool.description).toContain("wait: true")
+		expect(tool.description).toContain("handles")
+		expect(tool.description).toContain("Unknown handles are reported individually")
 		expect(tool.description).toContain("checkpoint")
 		expect(tool.description).not.toContain("no-op")
 	})
@@ -297,6 +302,129 @@ describe("bash_control — immediate inspection (wait: false)", () => {
 		ops.emitMatching("cursored", "first\n")
 		await callExecute(tool, { wait: false })
 		expect(registry.snapshotSince(handle).newBytes).toBe(0)
+	})
+})
+
+describe("bash_control — filtered inspection (handles)", () => {
+	it("returns only the selected handle's evidence and output; unselected cursors untouched", async () => {
+		// Reviewer row 6 ("Filtered inspection"): track three processes, emit
+		// distinct output on each, inspect one via `handles`, then the other
+		// two, and finally the whole cohort. Only selected inspection output
+		// is returned; unselected cursors are preserved.
+		const { tool } = setup()
+		const a = spawnRunning("alpha-proc")
+		const b = spawnRunning("beta-proc")
+		const c = spawnRunning("gamma-proc")
+		ops.emitMatching("alpha-proc", "alpha-output\n")
+		ops.emitMatching("beta-proc", "beta-output\n")
+		ops.emitMatching("gamma-proc", "gamma-output\n")
+
+		const one = await callExecute(tool, { handles: [a] })
+		const textOne = textOf(one)
+		expect(textOne).toContain(a)
+		expect(textOne).toContain("alpha-output")
+		expect(textOne).not.toContain(b)
+		expect(textOne).not.toContain(c)
+		expect(textOne).not.toContain("beta-output")
+		expect(textOne).not.toContain("gamma-output")
+		expect(one.details.runningHandles).toEqual([a])
+		expect(one.details.exitedHandles).toEqual([])
+		// Only the selected handle's output cursor advanced.
+		expect(registry.snapshotSince(a).newBytes).toBe(0)
+		expect(registry.snapshotSince(b).newBytes).toBeGreaterThan(0)
+		expect(registry.snapshotSince(c).newBytes).toBeGreaterThan(0)
+
+		// Then the other two.
+		const rest = await callExecute(tool, { handles: [b, c] })
+		expect(textOf(rest)).toContain("beta-output")
+		expect(textOf(rest)).toContain("gamma-output")
+		expect(rest.details.runningHandles).toEqual([b, c])
+		expect(registry.snapshotSince(b).newBytes).toBe(0)
+		expect(registry.snapshotSince(c).newBytes).toBe(0)
+
+		// Finally the whole cohort: everything already delivered.
+		const all = await callExecute(tool, { wait: false })
+		expect(all.details.runningHandles).toEqual([a, b, c])
+		expect(textOf(all)).toContain("No new output since the previous delivery")
+	})
+
+	it("reports unknown handles individually alongside valid ones", async () => {
+		const { tool } = setup()
+		const a = spawnRunning("known-proc")
+		ops.emitMatching("known-proc", "fresh\n")
+		const result = await callExecute(tool, { handles: [a, "no-such-handle"] })
+		const text = textOf(result)
+		expect(text).toContain("Unknown handle 'no-such-handle' in this session")
+		expect(text).toContain("fresh")
+		expect(result.details.runningHandles).toEqual([a])
+		expect(result.details.exitedHandles).toEqual([])
+		// The unknown handle stopped nothing and is never claimed running.
+		expect(registry.getEntry(a)?.state).toBe("running")
+	})
+
+	it("collects a filtered terminal result without sweeping the others", async () => {
+		const { tool } = setup()
+		const done = spawnRunning("done-proc")
+		const live = spawnRunning("live-proc")
+		ops.emitMatching("done-proc", "done-output\n")
+		await ops.exitMatching("done-proc", 0)
+		await registry.whenExited(done)
+
+		const result = await callExecute(tool, { handles: [done, live] })
+		const text = textOf(result)
+		expect(text).toContain(` handle: ${done}`)
+		expect(text).toContain("done-output")
+		// The live handle appears as running evidence (handle: command).
+		expect(text).toContain(`${live}: live-proc`)
+		expect(result.details.exitedHandles).toEqual([done])
+		expect(result.details.runningHandles).toEqual([live])
+	})
+
+	it("rejects handles with wait: true before applying any stop", async () => {
+		const { tool } = setup()
+		const victim = spawnRunning("victim")
+		const result = await callExecute(tool, { wait: true, handles: [victim], stop_handles: [victim] })
+		expect(result.details.reason).toBe("invalid-params")
+		expect(textOf(result)).toContain("handles applies only to an immediate inspection")
+		// No mutation happened.
+		expect(registry.getEntry(victim)?.state).toBe("running")
+	})
+
+	it("rejects waitSeconds when wait is omitted (stop-only call)", async () => {
+		const { tool } = setup()
+		const victim = spawnRunning("victim")
+		const result = await callExecute(tool, { waitSeconds: 30, stop_handles: [victim] })
+		expect(result.details.reason).toBe("invalid-params")
+		expect(registry.getEntry(victim)?.state).toBe("running")
+	})
+
+	it("an empty filter selects nothing and reports so without cohort-wide claims", async () => {
+		// Direct/replay calls can bypass the schema's minItems: 1; an empty
+		// filter must be a no-selection (not a whole-cohort inspection) and
+		// must not claim the cohort's exits.
+		const { tool } = setup()
+		spawnRunning("running-proc")
+		const result = await callExecute(tool, { handles: [] })
+		expect(textOf(result)).toContain("No background processes matched the requested handles")
+		expect(result.details.runningHandles).toEqual([])
+		expect(coordinator.handles()).toHaveLength(1)
+	})
+
+	it("stop-listed handles are dropped from the filter (no repeated outcome)", async () => {
+		const { tool } = setup()
+		const a = spawnRunning("stopme")
+		const b = spawnRunning("keepme")
+		ops.emitMatching("stopme", "stop-output\n")
+		const result = await callExecute(tool, { stop_handles: [a], handles: [a, b] })
+		const text = textOf(result)
+		// a's terminal result appears exactly once (the stop block), never
+		// repeated as an unknown handle by the filtered inspection.
+		expect(text.split(` handle: ${a}`).length - 1).toBe(1)
+		expect(text).not.toContain(`Unknown handle '${a}'`)
+		// b survives as running evidence (handle: command format).
+		expect(text).toContain(`${b}: keepme`)
+		expect(result.details.exitedHandles).toEqual([a])
+		expect(result.details.runningHandles).toEqual([b])
 	})
 })
 

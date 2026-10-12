@@ -79,6 +79,7 @@ import {
 	AUTO_MODEL_DESCRIPTION,
 	AUTO_MODEL_PROVIDER,
 	isAutoRoutedModel,
+	MULTI_MODEL_DEPRECATION_LABEL,
 	splitModelDisplayName,
 } from "../../extensions/auto-model/constants.js"
 import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/state.js"
@@ -2308,11 +2309,13 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 	// `description` is the optional secondary line ACP clients render beneath an
 	// option's name. Only the two routing entries carry one — concrete models are
 	// self-describing — and a client that ignores the field still shows the name.
+	// Multi-model's deprecation label is harness-side: the virtual selection does
+	// not exist in the platform catalog, so no backend marker can carry it.
 	const options = [
 		{
 			value: "multi-model",
 			name: `Multi-model (${orchName})`,
-			description: "Routes each task to the best model, with an orchestrator and workers.",
+			description: `${MULTI_MODEL_DEPRECATION_LABEL} Routes each task to the best model, with an orchestrator and workers.`,
 		},
 		...modelRegistry
 			.getAvailable()

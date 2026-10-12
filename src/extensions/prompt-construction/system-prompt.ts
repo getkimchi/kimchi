@@ -101,7 +101,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		toolsSection,
 		environmentSection,
 		projectContext,
-		skillsSection: formatSkills(filteredSkills),
+		skillsSection: formatSkillsSection(filteredSkills, effectiveTools),
 		orchestrationSection,
 		systemPromptBlocks: blocks.map((block) => block.content).join("\n\n"),
 		suppressed,
@@ -546,37 +546,80 @@ function formatProjectContext(contextFiles?: readonly ContextFile[]): string {
 	return `## Project Guidelines\n\n${combined}`
 }
 
-/** Render-time description budget per skill (Codex-style metadata budget:
- *  name + a bounded description always ride in the prompt, the body loads on
- *  demand). Long authored descriptions are truncated at a word boundary. */
-const SKILL_DESCRIPTION_MAX_CHARS = 200
+/** Cap on a skill's rendered description — the catalog carries routing info
+ *  only, so a long authored description is truncated at a word boundary. 500
+ *  chars keeps the model able to recognize a match without dragging the skill
+ *  body into the prompt. */
+const SKILL_DESCRIPTION_MAX_CHARS = 500
 
-function truncateDescription(description: string): string {
-	// Collapse newlines/runs of whitespace so a multi-line description stays on one bullet.
+/** Block-level budget for the whole catalog (~1% of a 131k-token window under
+ *  the repo's chars-per-token estimator). Full entries render until the budget
+ *  is exhausted; the tail degrades to name-only bullets so an oversized
+ *  inventory cannot blow up the prompt. Degradation order is the inventory's
+ *  own — there is no per-skill usage signal in this renderer to rank
+ *  least-used first. */
+const SKILLS_BLOCK_MAX_CHARS = 5_000
+
+/** Truncate at a word boundary so the remaining routing vocabulary stays
+ *  readable; descriptions above the cap end with an ellipsis. Whitespace is
+ *  collapsed first so a multi-line description stays on one bullet. */
+function truncateDescription(description: string, max: number): string {
 	const trimmed = description.replace(/\s+/g, " ").trim()
-	if (trimmed.length <= SKILL_DESCRIPTION_MAX_CHARS) return trimmed
-	const cut = trimmed.slice(0, SKILL_DESCRIPTION_MAX_CHARS)
-	const lastSpace = cut.lastIndexOf(" ")
-	return `${lastSpace > 0 ? cut.slice(0, lastSpace) : cut}…`
+	if (trimmed.length <= max) return trimmed
+	const slice = trimmed.slice(0, max)
+	const lastSpace = slice.lastIndexOf(" ")
+	const cut = lastSpace > max * 0.6 ? lastSpace : max
+	return `${slice.slice(0, cut).trimEnd()}…`
 }
 
-/** Markdown skills catalog — same formatting language as the rest of the
- *  prompt (no XML). Name + description are always in context; the SKILL.md
- *  body enters only when the agent reads the file. Mirrors the Codex
- *  three-level loading model (metadata → body → scripts). */
-function formatSkills(skills?: readonly Skill[]): string {
-	const visible = (skills ?? []).filter((skill) => !skill.disableModelInvocation)
+/** Render the model-visible skill catalog. The load path depends on session
+ *  wiring: the skill_view-routed catalog when the tool is registered (the
+ *  cli.ts wiring point always pairs this extension with skills-manager), and
+ *  a read-tool catalog otherwise — sessions built without the skills-manager
+ *  extension (tests, SDK entry points) still get a usable instruction instead
+ *  of a pointer to an unregistered tool. Both variants render as markdown. */
+function formatSkillsSection(skills: readonly Skill[] | undefined, tools: readonly ToolInfo[]): string {
+	if (!skills || skills.length === 0) return ""
+	return formatSkills(skills, tools.some((t) => t.name === "skill_view") ? "skill_view" : "read")
+}
+
+/** Render the skill catalog as markdown (no XML — same formatting language as
+ *  the rest of the prompt). skill_view routing keeps the model off
+ *  read-a-path affordances and out of file locations; the read-tool fallback
+ *  includes the SKILL.md path because there the model must load the body
+ *  itself. */
+function formatSkills(skills: readonly Skill[] | undefined, loadTool: "skill_view" | "read"): string {
+	if (!skills || skills.length === 0) return ""
+	const visible = skills.filter((s) => !s.disableModelInvocation)
 	if (visible.length === 0) return ""
+	const loadInstruction =
+		loadTool === "skill_view"
+			? "Before acting on a task that names or clearly matches a skill, load it with the skill_view tool (name: <skill name>), then follow its instructions."
+			: "When a task matches a skill's description, read its SKILL.md with the read tool and follow it. Resolve paths referenced inside a skill file against that file's directory."
 	const lines = [
 		"## Skills",
 		"",
-		"The following skills provide specialized instructions for specific tasks. When a task matches a skill's description, read its SKILL.md with the read tool and follow it. Resolve paths referenced inside a skill file against that file's directory.",
+		`The following skills provide specialized instructions for specific tasks. ${loadInstruction}`,
 		"",
 	]
+	let used = lines.join("\n").length
 	for (const skill of visible) {
-		lines.push(
-			`- **${skill.name.replace(/\s+/g, " ").trim()}** — ${truncateDescription(skill.description)} (\`${skill.filePath}\`)`,
-		)
+		const name = skill.name.replace(/\s+/g, " ").trim()
+		const description = truncateDescription(skill.description, SKILL_DESCRIPTION_MAX_CHARS)
+		const fullBullet =
+			loadTool === "read" ? `- **${name}** — ${description} (\`${skill.filePath}\`)` : `- **${name}** — ${description}`
+		if (used + 1 + fullBullet.length <= SKILLS_BLOCK_MAX_CHARS) {
+			lines.push(fullBullet)
+			used += 1 + fullBullet.length
+			continue
+		}
+		const nameOnly = `- **${name}**`
+		if (used + 1 + nameOnly.length <= SKILLS_BLOCK_MAX_CHARS) {
+			lines.push(nameOnly)
+			used += 1 + nameOnly.length
+			continue
+		}
+		break // even a name-only bullet exceeds the budget — drop the tail entirely
 	}
 	return lines.join("\n")
 }

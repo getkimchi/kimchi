@@ -506,3 +506,210 @@ test("background bash cohort: unattended exit during continued tool work reaches
 		},
 	)
 })
+
+test("background bash cohort: filtered inspection returns only the selected handle; a stop-only call needs no wait", async ({
+	terminal,
+}) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "bash-background-cohort-filtered-inspection-stop-only",
+			responses: [
+				// Turn 1: two long commands with distinct echo output (both hand
+				// off after ~2s).
+				{
+					stream: ["Starting two long commands."],
+					toolCalls: [
+						{
+							id: "call_bash_a",
+							index: 0,
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({ command: "sleep 3 && echo one-alive && sleep 90" }),
+							},
+						},
+						{
+							id: "call_bash_b",
+							index: 1,
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({ command: "sleep 3 && echo two-alive && sleep 90" }),
+							},
+						},
+					],
+				},
+				// Turn 2: a filtered inspection of ONE handle (the most recent = b).
+				{
+					stream: ["Inspecting just the second command.", "Reading its fresh output."],
+					textDelayMs: 1200,
+					toolCalls: [
+						{
+							id: "call_inspect_one",
+							function: {
+								name: "bash_control",
+								arguments: JSON.stringify({ handles: ["__BASH_HANDLE__"] }),
+							},
+						},
+					],
+				},
+				// Turn 3: the whole cohort (omission keeps cohort-wide inspection).
+				{
+					stream: ["Now inspecting the whole cohort."],
+					toolCalls: [
+						{
+							id: "call_inspect_all",
+							function: { name: "bash_control", arguments: JSON.stringify({ wait: false }) },
+						},
+					],
+				},
+				// Turn 4: a stop-only call for BOTH handles — no `wait` needed.
+				{
+					stream: ["Stopping both commands."],
+					toolCalls: [
+						{
+							id: "call_stop",
+							function: {
+								name: "bash_control",
+								arguments: JSON.stringify({
+									stop_handles: ["__BASH_HANDLE__", "__BASH_HANDLE_2__"],
+								}),
+							},
+						},
+					],
+				},
+				// Turn 5: finish.
+				{
+					stream: ["Done — both commands reported and stopped."],
+				},
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Start two long commands, inspect just the second, then the whole cohort, then stop both")
+
+			await waitForText(terminal, "Stopping both commands", { timeoutMs: STREAM_TIMEOUT_MS * 3 })
+			trace.step("filtered + cohort inspections done; stopping both")
+			await waitForText(terminal, "both commands reported and stopped", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("session completed")
+
+			await waitForTurnToSettle(fixture.fake.requests)
+			// Isolate each tool result from the FINAL request's history by
+			// tool_call_id (earlier requests repeat the same messages).
+			const lastMessages =
+				(fixture.fake.requests.at(-1)?.body as { messages?: Array<Record<string, unknown>> } | undefined)?.messages ??
+				[]
+			const toolText = (id: string): string => {
+				const message = lastMessages.find((m) => m.role === "tool" && m.tool_call_id === id)
+				return typeof message?.content === "string" ? message.content : JSON.stringify(message?.content ?? "")
+			}
+			// The filtered inspection reported ONLY the selected handle: its
+			// fresh output arrived, the unselected command's cursor was preserved
+			// (its output stayed unseen).
+			expect(toolText("call_inspect_one")).toContain("two-alive")
+			expect(toolText("call_inspect_one")).not.toContain("one-alive")
+			expect(toolText("call_inspect_one")).toContain("Inspection of 1 background bash process")
+			// The cohort-wide inspection (omission) then delivered the unselected
+			// command's still-unseen output.
+			expect(toolText("call_inspect_all")).toContain("one-alive")
+			expect(toolText("call_inspect_all")).toContain("Inspection of 2 background bash processes")
+			// The stop-only call (no `wait`) stopped both without a schema error;
+			// neither command's already-delivered output was repeated (both say
+			// "no further output" — the echo texts appear only in the command
+			// summaries, never as repeated output).
+			expect(toolText("call_stop").match(/stopped on request/g)?.length).toBe(2)
+			expect(toolText("call_stop").match(/The process produced no further output\./g)?.length).toBe(2)
+			expect(toolText("call_stop")).not.toContain("Final output:")
+			expect(toolText("call_stop")).not.toContain("Error:")
+			// Nothing unresolved remained: no completion demand fired.
+			expect(JSON.stringify(lastMessages)).not.toContain("Task completion requires a disposition")
+			trace.step("filtered inspection preserved cursors; stop-only needed no wait")
+		},
+	)
+})
+
+test("background bash cohort: a queued completion reminder is suppressed when the process is stopped first", async ({
+	terminal,
+}) => {
+	// Stopping with a reminder backlog: the model ends its turn while a
+	// process runs (one completion reminder queues behind the user's
+	// steering), the steering-driven turn stops the process, and the stale
+	// reminder is REPLACED at consumption — the provider never sees a demand.
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "bash-background-cohort-reminder-backlog",
+			responses: [
+				// Turn 1: a long silent command.
+				{
+					stream: ["Starting the long command."],
+					toolCalls: [
+						{
+							id: "call_bash",
+							function: { name: "bash", arguments: JSON.stringify({ command: "sleep 120" }) },
+						},
+					],
+				},
+				// Turn 2: the model tries to finish with the work unresolved. The
+				// slow stream gives the test time to queue steering ahead of the
+				// reminder.
+				{
+					stream: ["I believe the work is complete.", "Nothing further is needed from my side."],
+					textDelayMs: 700,
+				},
+				// Turn 3: responding to the steering — stop the process (stop-only).
+				{
+					stream: ["Right, stopping the background command instead."],
+					toolCalls: [
+						{
+							id: "call_stop",
+							function: {
+								name: "bash_control",
+								arguments: JSON.stringify({ stop_handles: ["__BASH_HANDLE__"] }),
+							},
+						},
+					],
+				},
+				// Turn 4: the model finishes — everything is resolved now.
+				{
+					stream: ["The command is stopped; the task is complete."],
+				},
+				// Turn 5: the drained (replaced) reminder continues the run once
+				// more; nothing remains unresolved, so it settles here.
+				{
+					stream: ["Everything is finished."],
+				},
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Start a long command, then finish the task")
+
+			// While turn 2 is streaming, queue steering ahead of the completion
+			// reminder (the loop consumes steering before follow-ups).
+			await waitForText(terminal, "I believe the work is complete", { timeoutMs: STREAM_TIMEOUT_MS })
+			terminal.submit("Actually, stop the background command")
+			trace.step("steering queued ahead of the completion reminder")
+
+			await waitForText(terminal, "The command is stopped; the task is complete", {
+				timeoutMs: STREAM_TIMEOUT_MS * 2,
+			})
+			trace.step("steering-driven turn stopped the process")
+			await waitForText(terminal, "Everything is finished", { timeoutMs: STREAM_TIMEOUT_MS * 3 })
+			trace.step("session settled")
+
+			await waitForTurnToSettle(fixture.fake.requests)
+			const lastConversation = JSON.stringify(
+				(fixture.fake.requests.at(-1)?.body as { messages?: unknown[] } | undefined)?.messages ?? [],
+			)
+			const conversation = JSON.stringify(
+				fixture.fake.requests.flatMap((r) => (r.body as { messages?: unknown[] } | undefined)?.messages ?? []),
+			)
+			// The stale reminder never demanded a disposition from the provider…
+			expect(conversation).not.toContain("Task completion requires a disposition")
+			// …it was replaced at consumption with the suppression note, exactly
+			// once (counted in the final request — earlier requests repeat the
+			// same history), and the stop was delivered.
+			expect(lastConversation.match(/completion reminder was suppressed/g)?.length).toBe(1)
+			expect(conversation).toContain("stopped on request")
+			trace.step("stale reminder replaced; no disposition demand reached the provider")
+		},
+	)
+})

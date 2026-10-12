@@ -25,7 +25,12 @@
 #     /v1/models/metadata, persisted through models.json) with the
 #     "Default for new sessions." annotation, replacing the old `· default`
 #     badge. The virtual multi-model row inherits its orchestrator model's
-#     stats/description. Layout width reads tui.terminal.columns (pi-tui's
+#     stats/description and is annotated "[Deprecated]" —
+#     a literal mirroring MULTI_MODEL_DEPRECATION_LABEL in
+#     src/extensions/auto-model/constants.ts, which the patched dist cannot
+#     import (ACP sources the constant; rendered-text tests in
+#     src/model-selector-table.test.ts and tests/e2e/tui pin both sides to
+#     the same string). Layout width reads tui.terminal.columns (pi-tui's
 #     Terminal exposes `columns`, not `cols`); the last column is clipped,
 #     never padded, so the header cannot wrap onto a phantom blank line, and
 #     rows total exactly the terminal width. On narrow terminals the
@@ -625,7 +630,7 @@ index 8220e06bc1e2b136c4b84c4af3cd29fd21b98a9f..b213a26c7ac002776850a59d7cafce4c
      dispose() {
          this.countdown?.dispose();
 diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
-index bd8894046f77385541fd9bd7b88268866a34a526..23f6a0c0328dbbf3b7226786dded8f0ca228ca5f 100644
+index bd8894046f77385541fd9bd7b88268866a34a526..41dbea51183403be34687a00a30352548b8f55dd 100644
 --- a/dist/modes/interactive/components/model-selector.js
 +++ b/dist/modes/interactive/components/model-selector.js
 @@ -34,6 +34,7 @@ export class ModelSelectorComponent extends Container {
@@ -718,7 +723,7 @@ index bd8894046f77385541fd9bd7b88268866a34a526..23f6a0c0328dbbf3b7226786dded8f0c
 +            selected: index === this.selectedIndex,
 +            current: item._isMultiModel ? enabled : !enabled && modelsAreEqual(this.currentModel, item.model),
 +            description: descriptions?.get(`${item.model.provider}/${item.model.id}`) ?? "",
-+            annotation: this.isDefaultModel(item.model) ? "Default for new sessions." : "",
++            annotation: item._isMultiModel ? "[Deprecated]" : this.isDefaultModel(item.model) ? "Default for new sessions." : "",
 +        }));
 +        const renderTable = process.__kimchiRenderModelTable;
 +        if (typeof renderTable === "function") {
@@ -824,7 +829,7 @@ index 2e0490362d3396995b587f502ff3e69a7cad9a43..0cb75bb6a9fd0c0a9bdb5eba7cf2eeb8
      render(width) {
          const lines = super.render(width);
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e153475a60948 100644
+index a1e7d98551b085a62359f1b5dc2953d0878b073b..17aaf99f181161f52349d281686403b7f1207447 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -1359,8 +1359,65 @@ export class InteractiveMode {
@@ -894,7 +899,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e1534
                  this.loadedResourcesContainer.addChild(new Spacer(1));
              }
              const promptDiagnostics = promptsResult.diagnostics;
-@@ -1900,6 +1914,7 @@ export class InteractiveMode {
+@@ -1900,6 +1957,7 @@ export class InteractiveMode {
              confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
              input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
              notify: (message, type) => this.showExtensionNotify(message, type),
@@ -902,7 +907,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e1534
              onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
              setStatus: (key, text) => this.setExtensionStatus(key, text),
              setWorkingMessage: (message) => {
-@@ -1945,6 +1960,16 @@ export class InteractiveMode {
+@@ -1945,6 +2003,16 @@ export class InteractiveMode {
              },
              getToolsExpanded: () => this.toolOutputExpanded,
              setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
@@ -919,7 +924,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e1534
          };
      }
      /**
-@@ -3176,7 +3201,7 @@ export class InteractiveMode {
+@@ -3176,7 +3244,7 @@ export class InteractiveMode {
          if (this.chatContainer.children.length > 0) {
              this.chatContainer.addChild(new Spacer(1));
          }
@@ -928,7 +933,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e1534
      }
      async getUserInput() {
          const queuedInput = this.pendingUserInputs.shift();
-@@ -4036,6 +4061,34 @@ export class InteractiveMode {
+@@ -4036,6 +4104,34 @@ export class InteractiveMode {
              this.showModelSelector();
              return;
          }
@@ -963,7 +968,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e1534
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
-@@ -4168,6 +4221,8 @@ export class InteractiveMode {
+@@ -4168,6 +4264,8 @@ export class InteractiveMode {
      }
      showModelSelector(initialSearchInput) {
          this.showSelector((done) => {
@@ -972,7 +977,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e1534
              const selectModel = async (model, persist) => {
                  try {
                      await this.session.setModel(model, { persist });
-@@ -4186,10 +4241,13 @@ export class InteractiveMode {
+@@ -4186,10 +4284,13 @@ export class InteractiveMode {
              };
              const defaultProvider = this.settingsManager.getDefaultProvider();
              const defaultModel = this.settingsManager.getDefaultModel();
@@ -988,7 +993,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e1534
              return { component: selector, focus: selector, dispose: () => selector.dispose() };
          });
      }
-@@ -5051,7 +5109,12 @@ export class InteractiveMode {
+@@ -5051,7 +5152,12 @@ export class InteractiveMode {
          const outputPath = this.getPathCommandArgument(text, "/export");
          try {
              if (outputPath?.endsWith(".jsonl")) {

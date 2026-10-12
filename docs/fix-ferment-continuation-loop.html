@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fix: Ferment Continuation Loop</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --orange: #db6d28;
+    --code-bg: #1c2128;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  h1 { font-size: 1.8em; margin-bottom: 8px; border-bottom: 1px solid var(--border); padding-bottom: 16px; }
+  h2 { font-size: 1.4em; margin-top: 48px; margin-bottom: 12px; color: var(--accent); }
+  h3 { font-size: 1.15em; margin-top: 32px; margin-bottom: 8px; color: var(--text); }
+  p { margin-bottom: 12px; }
+  ul, ol { margin-bottom: 12px; padding-left: 28px; }
+  li { margin-bottom: 6px; }
+  code {
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.9em;
+    color: var(--accent);
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    margin: 12px 0 20px;
+    font-size: 0.85em;
+    line-height: 1.5;
+  }
+  pre code {
+    background: none;
+    padding: 0;
+    color: var(--text);
+  }
+  .bug {
+    border-left: 3px solid var(--red);
+    padding-left: 20px;
+    margin: 24px 0;
+  }
+  .fix {
+    border-left: 3px solid var(--green);
+    padding-left: 20px;
+    margin: 24px 0;
+  }
+  .bug h3, .fix h3 { margin-top: 0; }
+  .bug h3 { color: var(--red); }
+  .fix h3 { color: var(--green); }
+  .step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 12px 0;
+  }
+  .step-label {
+    display: inline-block;
+    background: var(--accent);
+    color: var(--bg);
+    font-size: 0.75em;
+    font-weight: 700;
+    padding: 2px 10px;
+    border-radius: 12px;
+    margin-bottom: 8px;
+  }
+  .step-label.bad { background: var(--red); color: var(--text); }
+  .step-label.good { background: var(--green); color: var(--bg); }
+  .step-label.neutral { background: var(--muted); color: var(--bg); }
+  .callout {
+    background: rgba(210, 153, 34, 0.1);
+    border: 1px solid var(--yellow);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 16px 0;
+    font-size: 0.92em;
+  }
+  .callout strong { color: var(--yellow); }
+  .removed { color: var(--red); text-decoration: line-through; opacity: 0.7; }
+  .added { color: var(--green); }
+  .file-path { color: var(--muted); font-size: 0.85em; font-family: monospace; }
+  .timeline {
+    list-style: none;
+    padding: 0;
+  }
+  .timeline li {
+    padding: 8px 0 8px 20px;
+    border-left: 2px solid var(--border);
+    margin-left: 8px;
+    position: relative;
+    font-size: 0.92em;
+  }
+  .timeline li::before {
+    content: '';
+    position: absolute;
+    left: -5px;
+    top: 14px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .timeline li.bad::before { background: var(--red); }
+  .timeline li.good::before { background: var(--green); }
+  .timeline time {
+    color: var(--muted);
+    font-family: monospace;
+    font-size: 0.9em;
+    margin-right: 8px;
+  }
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 16px 0;
+  }
+  .two-col > div {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .two-col h4 {
+    font-size: 0.9em;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .two-col .current h4 { color: var(--red); }
+  .two-col .fixed h4 { color: var(--green); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 0.9em;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+  }
+  th { background: var(--surface); color: var(--accent); font-weight: 600; }
+  td code { font-size: 0.85em; }
+  .summary-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin: 24px 0;
+  }
+  .summary-box h2 { margin-top: 0; }
+</style>
+</head>
+<body>
+
+<h1>Fix: Ferment Continuation Loop</h1>
+<p class="file-path">Trace: 2026-07-14T16_19_00Z-continuation-loop.jsonl · Session 0.1.65 · Model: glm-5.2-fp8</p>
+
+<div class="summary-box">
+<h2>Problem</h2>
+<p>An interactive TUI session with a stale <strong>"automated"</strong> continuation policy (left over from a
+previous ferment where the user chose "Start execution in auto mode") fell into a 16-turn, 90-second
+"Acknowledged / Standing by" text-only loop after <code>propose_ferment_scoping</code> returned
+"Plan ready for review" and the plan review dialog was shown to the user.</p>
+<p>Two independent nudge systems — one in the ferment extension, one in the orchestration layer —
+each failed to check whether a plan review was pending, and together they ping-ponged the session
+into an infinite continuation loop that the user could not ESC out of.</p>
+</div>
+
+<!-- ===================== BUG 1 ===================== -->
+
+<div class="bug">
+<h3>Bug 1: <code>scheduleNextFermentAction</code> doesn't check for pending plan reviews</h3>
+<p class="file-path">File: src/extensions/ferment/scheduler.ts</p>
+
+<h4>Current logic — step by step</h4>
+
+<div class="step">
+<span class="step-label neutral">Step 1</span>
+<p><code>scheduleNextFermentAction(pi, ferment, runtime, opts)</code> is called from multiple paths:
+<code>maybeInjectReactiveContinuationNudge</code>, <code>maybeInjectFermentStopNudge</code>,
+auto-compaction continuation, and <code>scheduleFermentWakeUp</code>.</p>
+</div>
+
+<div class="step">
+<span class="step-label neutral">Step 2</span>
+<p>The function refreshes the ferment from storage and checks terminal states:</p>
+<pre><code>const ferment = runtime.getStorage().get(scheduledFerment.id) ?? scheduledFerment
+if (ferment.status === "complete" || ferment.status === "abandoned" || ferment.status === "paused") {
+    if (ferment.status === "complete" || ferment.status === "abandoned") runtime.setActive(undefined)
+    else runtime.setActive(ferment)
+    return
+}</code></pre>
+<p>Only <code>complete</code>, <code>abandoned</code>, and <code>paused</code> are terminal. A <code>draft</code>
+ferment passes through.</p>
+</div>
+
+<div class="step">
+<span class="step-label neutral">Step 3</span>
+<p>The function calls <code>decideContinuation</code> to get the next action:</p>
+<pre><code>const decision = decideContinuation(ferment, runtime.getContinuationPolicy(), opts)
+if (decision.type !== "continue") return
+const action = decision.action</code></pre>
+<p>For a <code>draft</code> ferment, <code>decideContinuation</code> returns
+<code>{ type: "continue", action: { kind: "scope", ... } }</code> — meaning "the model should do scoping next".</p>
+</div>
+
+<div class="step">
+<span class="step-label bad">Step 4 — THE BUG</span>
+<p>The function calls <code>shouldSuppressHiddenNudge</code> to decide whether to suppress the nudge:</p>
+<pre><code>if (shouldSuppressHiddenNudge(action, runtime.getContinuationPolicy())) return</code></pre>
+<p><code>shouldSuppressHiddenNudge</code> only checks the <strong>action kind</strong> and <strong>policy</strong>:</p>
+<pre><code>function shouldSuppressHiddenNudge(action: DeclarativeAction, policy: ContinuationPolicy): boolean {
+    if (action.kind === "scope") return policy !== "automated"
+    return false
+}</code></pre>
+<p>When the policy is <code>"automated"</code>, scope nudges are <strong>never suppressed</strong> — by design,
+because in headless one-shot mode the nudge is the only thing keeping the session alive during draft scoping.
+But this is wrong when the session is interactive TUI with a stale automated policy and a plan review dialog
+is about to be shown.</p>
+</div>
+
+<div class="step">
+<span class="step-label neutral">Step 5</span>
+<p>The nudge is sent via <code>safeSendMessage</code> with <code>triggerTurn: true</code>, which creates a new turn:</p>
+<pre><code>safeSendMessage(pi, {
+    customType: "ferment_continuation_nudge",
+    content: [{ type: "text", text: messageText }],
+    display: false,
+    details: { action: action.kind },
+}, { triggerTurn: true })</code></pre>
+</div>
+
+<div class="step">
+<span class="step-label bad">Result</span>
+<p>Even though <code>propose_ferment_scoping</code> set <code>pendingPlanReview</code> and the ferment
+<code>turn_end</code> handler correctly returns early when <code>hasPendingPlanReview(runtime)</code> is true,
+the nudge fires from a code path that doesn't check for pending plan reviews. The trace confirms:
+at <code>16:15:16.636Z</code>, a <code>"Reactive continuation nudge [scope]"</code> breadcrumb fires with
+<code>"policy automated"</code> — 11 seconds after <code>propose_ferment_scoping</code> set the pending review.</p>
+</div>
+</div>
+
+<div class="fix">
+<h3>Fix 1: Guard <code>scheduleNextFermentAction</code> against pending plan reviews</h3>
+<p class="file-path">File: src/extensions/ferment/scheduler.ts · Function: <code>scheduleNextFermentAction</code></p>
+
+<p>Add a <code>hasPendingPlanReview</code> check early in <code>scheduleNextFermentAction</code>, after the
+terminal-state check and before <code>decideContinuation</code>:</p>
+
+<pre><code>export function scheduleNextFermentAction(
+    pi: ExtensionAPI,
+    scheduledFerment: Ferment,
+    runtime: FermentRuntime,
+    opts: ScheduleNextFermentActionOptions = {},
+): void {
+    const ferment = runtime.getStorage().get(scheduledFerment.id) ?? scheduledFerment
+    if (ferment.status === "complete" || ferment.status === "abandoned" || ferment.status === "paused") {
+        if (ferment.status === "complete" || ferment.status === "abandoned") runtime.setActive(undefined)
+        else runtime.setActive(ferment)
+        return
+    }
+
+<span class="added">    // ── NEW: suppress nudges when a plan review is pending ──────────
+    // When propose_ferment_scoping returns "Plan ready for review", the host
+    // defers the review dialog to agent_end. Any nudge here would start a new
+    // turn, preventing agent_end from firing and the dialog from appearing.
+    // This guard is the single chokepoint for ALL ferment nudge paths:
+    // reactive continuation, stop nudge, auto-compaction continuation, and
+    // scheduleFermentWakeUp all funnel through scheduleNextFermentAction.
+    if (hasPendingPlanReview(runtime)) return</span>
+
+    runtime.setActive(ferment)
+
+    const decision = decideContinuation(ferment, runtime.getContinuationPolicy(), opts)
+    // ... rest unchanged</code></pre>
+
+<p><strong>Why this works:</strong> <code>hasPendingPlanReview</code> checks
+<code>runtime.getPendingPlanReview(activeId) !== undefined</code>. When a plan review is pending, the
+ferment is in <code>draft</code> status and the review dialog hasn't been shown yet (or was shown and
+dismissed). Suppressing the nudge here lets the turn end naturally, which lets <code>agent_end</code> fire,
+which lets <code>runPendingPlanReview</code> show the dialog. Once the user confirms or cancels,
+<code>clearPendingPlanReview</code> is called, and subsequent nudges are no longer suppressed.</p>
+
+<p><strong>Why <code>shouldSuppressHiddenNudge</code> is the wrong place:</strong> That function is a
+policy-level check (manual vs. automated) that intentionally allows scope nudges in automated mode.
+The pending-plan-review check is a <strong>state</strong> check that applies regardless of policy —
+even in headless one-shot mode, you don't want to nudge while a review is pending (the headless path
+uses <code>confirmPendingScope</code> directly and never sets <code>pendingPlanReview</code>, so the
+guard is a no-op there).</p>
+
+<p><strong>Import needed:</strong> Add <code>import { hasPendingPlanReview } from "./tool-scope.js"</code>
+to <code>scheduler.ts</code>.</p>
+</div>
+
+<!-- ===================== BUG 2 ===================== -->
+
+<div class="bug">
+<h3>Bug 2: Orchestration <code>ContinuationNudge</code> doesn't check ferment state</h3>
+<p class="file-path">File: src/extensions/prompt-construction/prompt-enrichment.ts · turn_end handler at ~line 375</p>
+
+<h4>Current logic — step by step</h4>
+
+<div class="step">
+<span class="step-label neutral">Step 1</span>
+<p>The orchestration extension registers a <code>turn_end</code> handler that runs on <strong>every</strong>
+assistant turn, independently of the ferment extension's own <code>turn_end</code> handler. Both handlers
+run — they are not mutually exclusive.</p>
+</div>
+
+<div class="step">
+<span class="step-label neutral">Step 2</span>
+<p>The handler first checks delegation tracking and the empty-turn nudge:</p>
+<pre><code>pi.on("turn_end", async (event) => {
+    if (event.message.role !== "assistant") return
+    const assistantMsg = event.message as AssistantMessage
+
+    bumpStallCounter()
+
+    // Mark delegation calls
+    for (const c of assistantMsg.content) {
+        if (c.type === "toolCall" && isDelegationToolCallName(c.name)) {
+            continuationNudge.markDelegationCall()
+        }
+    }</code></pre>
+</div>
+
+<div class="step">
+<span class="step-label neutral">Step 3</span>
+<p>If the model's previous turn was a nudge response, check for done signal or intentional stop:</p>
+<pre><code>if (continuationNudge.isNudgeResponsePending()) {
+    if (continuationNudge.isDoneSignalReceived() || assistantMsg.stopReason === "stop") {
+        return  // respect the stop
+    }
+    // fall through to evaluateTurn
+} else if (!continuationNudge.hasToolBeenCalledThisRun() && emptyTurnNudge.evaluateTurn(assistantMsg)) {
+    pi.sendMessage({ customType: NUDGE_CUSTOM_TYPE, content: EMPTY_TURN_NUDGE_TEXT, display: false },
+        { deliverAs: "followUp" })
+    return
+}</code></pre>
+</div>
+
+<div class="step">
+<span class="step-label bad">Step 4 — THE BUG</span>
+<p>The handler calls <code>continuationNudge.evaluateTurn(assistantMsg)</code> without checking
+whether a ferment plan review is pending:</p>
+<pre><code>if (!continuationNudge.evaluateTurn(assistantMsg)) return
+pi.sendMessage({
+    customType: NUDGE_CUSTOM_TYPE,
+    content: continuationNudge.getNudgeText(),
+    display: false,
+}, { deliverAs: "followUp" })</code></pre>
+<p><code>evaluateTurn</code> checks:
+<code>nudgeCountThisCycle &lt; 2</code>, <code>toolsCalledThisSession</code>, <code>toolsCalledSinceLastUserInput</code>,
+<code>pendingDelegationCount</code>, <code>stopReason</code>, and whether the message has text but no tool calls.
+It does <strong>not</strong> check any ferment state.</p>
+</div>
+
+<div class="step">
+<span class="step-label bad">Step 5 — Cycle counter never resets</span>
+<p>The cycle counter <code>nudgeCountThisCycle</code> is only reset by <code>resetForNewUserInput()</code>,
+which fires on <code>input</code> events with <code>source !== "extension"</code>. But ferment nudges
+arrive as <code>followUp</code> / <code>steer</code> messages, which trigger <code>input</code> with
+<code>source: "extension"</code> — so <code>clearDelegationPending()</code> runs but
+<code>resetForNewUserInput()</code> does <strong>not</strong>.</p>
+<pre><code>pi.on("input", async (event) => {
+    if (event.source === "extension") {
+        continuationNudge.clearDelegationPending()
+        return  // ← does NOT reset cycle counter
+    }
+    continuationNudge.resetForNewUserInput()
+    emptyTurnNudge.resetForNewUserInput()
+})</code></pre>
+</div>
+
+<div class="step">
+<span class="step-label bad">Result</span>
+<p>After the ferment nudge fires (Bug 1), the model responds with text-only "Acknowledged"
+(stopReason: <code>stop</code>). The ferment <code>turn_end</code> handler correctly returns early
+(if <code>hasPendingPlanReview</code> is still true) or suppresses its own nudge (after 1 turn).
+But the orchestration <code>turn_end</code> handler fires <code>evaluateTurn</code> independently,
+injects a <code>nudge</code> followUp, and creates another turn. This repeats until both nudge budgets
+are exhausted — but by then, enough turns have passed that intermediate state changes may reset
+the ferment nudge counter, restarting the cycle.</p>
+</div>
+</div>
+
+<div class="fix">
+<h3>Fix 2: Guard the orchestration nudge against pending plan reviews</h3>
+<p class="file-path">File: src/extensions/prompt-construction/prompt-enrichment.ts · turn_end handler</p>
+
+<p>Add a <code>hasPendingPlanReview</code> check at the top of the orchestration <code>turn_end</code> handler,
+before any nudge logic runs:</p>
+
+<pre><code>pi.on("turn_end", async (event) => {
+    if (event.message.role !== "assistant") return
+    const assistantMsg = event.message as AssistantMessage
+
+<span class="added">    // ── NEW: suppress orchestration nudges while a plan review is pending.
+    // The ferment extension's turn_end handler already suppresses its own
+    // nudges via hasPendingPlanReview, but this handler runs independently
+    // and would otherwise inject followUp messages that create new turns,
+    // preventing agent_end from firing and the plan review dialog from
+    // appearing. The two nudge systems must coordinate on this guard.
+    if (hasPendingPlanReview(runtime)) return</span>
+
+    bumpStallCounter()
+
+    // Mark delegation calls
+    for (const c of assistantMsg.content) {
+        // ... unchanged</code></pre>
+
+<p><strong>Why this works:</strong> When a plan review is pending, the only thing the system should do is
+let the turn end naturally so <code>agent_end</code> fires and <code>runPendingPlanReview</code> can show
+the dialog. Any nudge — ferment or orchestration — that creates a new turn prevents <code>agent_end</code>
+from firing and traps the session in a loop.</p>
+
+<p><strong>Import needed:</strong> The <code>hasPendingPlanReview</code> function lives in
+<code>src/extensions/ferment/tool-scope.ts</code>. The <code>prompt-enrichment.ts</code> file needs access
+to the runtime. This may require passing the runtime through the extension context or using a shared
+import. If importing directly creates a circular dependency, the check can be exposed via a flag on
+<code>ExtensionContext</code> or a lightweight accessor function.</p>
+</div>
+
+<!-- ===================== BUG 3 ===================== -->
+
+<div class="bug">
+<h3>Bug 3: Continuation policy persists across ferments in the same session</h3>
+<p class="file-path">File: src/extensions/ferment/index.ts · <code>runPendingPlanReview</code> at line 189</p>
+
+<h4>Current logic — step by step</h4>
+
+<div class="step">
+<span class="step-label neutral">Step 1</span>
+<p>At session start, the continuation policy is set based on UI availability:</p>
+<pre><code>pi.on("session_start", async (_event, ctx) => {
+    runtime.setContinuationPolicy(ctx?.hasUI ? "manual" : "automated")
+    // ...
+})</code></pre>
+<p>This correctly sets <code>"manual"</code> for interactive TUI sessions and <code>"automated"</code>
+for headless sessions. But this only fires <strong>once</strong> — at session start.</p>
+</div>
+
+<div class="step">
+<span class="step-label neutral">Step 2</span>
+<p>When the user selects "Start execution in auto mode" from the plan review dialog,
+the policy is switched to <code>"automated"</code>:</p>
+<pre><code>// In runPendingPlanReview, after confirmPendingScope:
+if (outcome.kind === "start_auto") {
+    runtime.setContinuationPolicy("automated")
+    requestSharedStatusLineRender()
+}</code></pre>
+<p>This is correct for the ferment the user is approving — they explicitly chose auto mode.</p>
+</div>
+
+<div class="step">
+<span class="step-label bad">Step 3 — THE BUG</span>
+<p>When the first ferment completes and a <strong>new</strong> ferment is created (e.g., the user starts
+a new task via <code>/ferment new</code> or the model bootstraps a draft), the continuation policy is
+<strong>not reset</strong>. The <code>session_start</code> handler doesn't fire again (the session is
+still running), and nothing in the ferment creation path resets the policy.</p>
+<p>In the trace, the user selected "Start execution in auto mode" for the first ferment at 13:13.
+The first ferment completed at ~13:28. The second ferment ("Wire in the newly added variables...")
+was created hours later, but the policy was still <code>"automated"</code>.</p>
+</div>
+
+<div class="step">
+<span class="step-label bad">Result</span>
+<p>The second ferment ran under <code>"automated"</code> continuation policy in an interactive TUI session.
+This caused <code>shouldSuppressHiddenNudge</code> to return <code>false</code> for scope actions,
+<code>isAutomatedContinuationEnabled()</code> to return <code>true</code>, and the reactive continuation
+nudge system to be active — all of which are only appropriate for headless one-shot mode.</p>
+</div>
+</div>
+
+<div class="fix">
+<h3>Fix 3: Reset continuation policy when a new ferment is created</h3>
+<p class="file-path">File: src/extensions/ferment/tools/lifecycle.ts · <code>resolveProposeFermentTarget</code> at ~line 480</p>
+
+<p>When <code>resolveProposeFermentTarget</code> bootstraps a new draft ferment, reset the continuation
+policy to the session default. The session default is <code>"manual"</code> for interactive TUI and
+<code>"automated"</code> for headless — this can be determined from <code>ctx.hasUI</code>:</p>
+
+<pre><code>// In resolveProposeFermentTarget, after creating the new draft:
+const f = storage.create(shortName, goal)
+setActiveFermentAndApplyProfile(pi, runtime, f)
+
+<span class="added">// ── NEW: reset continuation policy to session default for the new ferment.
+// The previous ferment may have been in "automated" mode (user selected
+// "Start execution in auto mode"), but that choice should not carry over
+// to a new ferment. The session_start handler set the default based on
+// ctx.hasUI; we replicate that logic here.
+runtime.setContinuationPolicy(ctx.hasUI ? "manual" : "automated")</span>
+
+if (pi.events) {
+    emitFermentCreated(pi.events, f)
+}</code></pre>
+
+<p><strong>Alternative:</strong> Reset the policy in <code>setActiveFermentAndApplyProfile</code> when
+the active ferment changes to a <code>draft</code> status ferment (indicating a new ferment is starting).
+But the <code>resolveProposeFermentTarget</code> location is more precise — it only fires on new ferment
+creation, not on every <code>setActive</code> call.</p>
+
+<p><strong>Note:</strong> The <code>/ferment new</code> command in <code>commands.ts</code> (line 288)
+already sets <code>runtime.setContinuationPolicy("manual")</code>. But <code>resolveProposeFermentTarget</code>
+is a separate creation path that the model uses when it calls <code>propose_ferment_scoping</code> with
+no <code>ferment_id</code> — this path was missing the reset.</p>
+</div>
+
+<!-- ===================== HOW THE FIXES WORK TOGETHER ===================== -->
+
+<h2>How the three fixes work together</h2>
+
+<div class="two-col">
+<div class="current">
+<h4>Before (broken)</h4>
+<ol>
+<li><code>propose_ferment_scoping</code> sets <code>pendingPlanReview</code></li>
+<li>Model responds text-only (<code>stopReason: stop</code>)</li>
+<li><code>agent_end</code> fires → <code>runPendingPlanReview</code> shows dialog</li>
+<li>User interacts with dialog → review is cleared</li>
+<li><strong>Ferment nudge fires</strong> (Bug 1: <code>shouldSuppressHiddenNudge</code> allows scope nudges in automated mode, doesn't check pending review)</li>
+<li>Model responds "Acknowledged" (text-only, stop)</li>
+<li>Ferment nudge suppressed (cap=1) ✓</li>
+<li><strong>Orchestration nudge fires</strong> (Bug 2: doesn't check pending review or ferment state)</li>
+<li>Model responds "Standing by" (text-only, stop)</li>
+<li>Orchestration nudge fires again (2nd of 2)</li>
+<li>Model responds "Acknowledged" (text-only, stop)</li>
+<li>Both nudge budgets exhausted... but turns keep happening</li>
+<li>Loop continues for ~16 turns until session is killed</li>
+</ol>
+</div>
+<div class="fixed">
+<h4>After (fixed)</h4>
+<ol>
+<li><code>propose_ferment_scoping</code> sets <code>pendingPlanReview</code></li>
+<li>Model responds text-only (<code>stopReason: stop</code>)</li>
+<li><strong>Fix 2:</strong> Orchestration <code>turn_end</code> handler checks <code>hasPendingPlanReview</code> → TRUE → returns early. No nudge.</li>
+<li><code>agent_end</code> fires → <code>runPendingPlanReview</code> shows dialog</li>
+<li>User interacts with dialog → review is cleared</li>
+<li><strong>Fix 1:</strong> If any ferment nudge path is reached, <code>scheduleNextFermentAction</code> checks <code>hasPendingPlanReview</code> → still pending (or just cleared) → returns early if pending. If cleared, <code>shouldSuppressHiddenNudge</code> runs normally — but <strong>Fix 3</strong> ensures the policy is <code>"manual"</code> for a new interactive ferment, so scope nudges are suppressed anyway.</li>
+<li>No nudges fire. Session waits for user input.</li>
+<li>If user confirms the plan → <code>scheduleFermentWakeUp</code> fires with <code>deliverAs: "followUp"</code> — but only after <code>clearPendingPlanReview</code>, so Fix 1 doesn't block it.</li>
+</ol>
+</div>
+</div>
+
+<h2>Defense in depth</h2>
+
+<p>The three fixes form a defense-in-depth strategy:</p>
+
+<table>
+<tr>
+<th>Fix</th>
+<th>Layer</th>
+<th>What it guards</th>
+<th>Without it</th>
+</tr>
+<tr>
+<td><strong>Fix 1</strong></td>
+<td>Ferment scheduler</td>
+<td>All ferment nudge paths (<code>scheduleNextFermentAction</code>)</td>
+<td>Bug 1 fires → first nudge injected → loop starts</td>
+</tr>
+<tr>
+<td><strong>Fix 2</strong></td>
+<td>Orchestration</td>
+<td>Orchestration <code>ContinuationNudge</code> in <code>turn_end</code></td>
+<td>Bug 2 fires → loop sustains even after ferment nudge is suppressed</td>
+</tr>
+<tr>
+<td><strong>Fix 3</strong></td>
+<td>Ferment lifecycle</td>
+<td>Continuation policy on new ferment creation</td>
+<td>Stale "automated" policy makes scope nudges fire in interactive mode</td>
+</tr>
+</table>
+
+<p>Any single fix would prevent the loop in <em>this</em> trace, but all three are needed to prevent
+variants:</p>
+<ul>
+<li><strong>Fix 1 alone</strong> wouldn't prevent the orchestration nudge from firing if the pending review was
+cleared by the user (e.g., they cancelled the dialog) but the model kept responding with text-only turns.</li>
+<li><strong>Fix 2 alone</strong> wouldn't prevent the ferment nudge from firing — it only guards the orchestration path.</li>
+<li><strong>Fix 3 alone</strong> wouldn't help if the user explicitly chose "Start execution in auto mode" for the
+current ferment — that's a legitimate automated run where the nudge system should be active, but Fix 1
+and Fix 2 still need to check <code>hasPendingPlanReview</code> to prevent nudging during the plan review phase.</li>
+</ul>
+
+<!-- ===================== TRACE TIMELINE ===================== -->
+
+<h2>Trace timeline</h2>
+
+<ul class="timeline">
+<li><time>12:36</time> Session starts. <code>session_start</code> sets policy to <code>"manual"</code> (hasUI=true)</li>
+<li class="good"><time>13:13</time> User selects "Start execution in auto mode" → policy set to <code>"automated"</code></li>
+<li><time>13:13-13:28</time> First ferment "Expose Main DB Tuning Flags" completes</li>
+<li><time>~13:30</time> User feedback: flag data types/values incorrect</li>
+<li><time>~14:00</time> User asks about <code>terraform.prod.tfvars</code></li>
+<li><time>~15:46</time> <code>agent_end #4</code> (after ~1h41m idle)</li>
+<li><time>16:11:35</time> User confirms completion criteria via <code>ask_user</code> dialog</li>
+<li><time>16:13:30</time> <code>ask_user</code> — user selects "defer_verification"</li>
+<li class="bad"><time>16:15:05</time> Model calls <code>propose_ferment_scoping</code> (questions=[]) → "Plan ready for review" — sets <code>pendingPlanReview</code></li>
+<li class="bad"><time>16:15:16</time> Turn B: model text-only (stopReason: stop) → <code>agent_end</code> → <code>runPendingPlanReview</code> shows dialog</li>
+<li><time>~16:15-16:17</time> <strong>User interacts with plan review dialog, selects an option</strong></li>
+<li class="bad"><time>16:15:16.639</time> <strong>Bug 1:</strong> <code>ferment_continuation_nudge</code> fires (scope action) — pending review was cleared</li>
+<li class="bad"><time>16:15:54</time> Loop begins: "Acknowledged / Standing by" text-only turns</li>
+<li class="bad"><time>16:15:54-16:18:50</time> <strong>Bug 2:</strong> ~16 turns of loop — orchestration nudge sustains it after ferment nudge is suppressed</li>
+<li><time>~16:17</time> User presses ESC, accidentally dismisses dialog box</li>
+<li class="good"><time>16:18:50</time> <code>agent_end #5</code> — session terminated</li>
+</ul>
+
+<div class="callout">
+<strong>Root precondition:</strong> The continuation policy was <code>"automated"</code> — set when the user chose
+"Start execution in auto mode" for the <em>first</em> ferment at 13:13. This policy persisted into the <em>second</em>
+ferment (Bug 3), which made the ferment nudge system active in an interactive TUI session (Bug 1), and the
+orchestration nudge system ran independently without checking ferment state (Bug 2).
+</div>
+
+</body>
+</html>

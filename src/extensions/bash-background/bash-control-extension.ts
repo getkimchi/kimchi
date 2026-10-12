@@ -49,21 +49,30 @@
  *
  * Concurrency context: while any handle is tracked, write/execute tool
  * calls (shared permission taxonomy) receive at most one advisory steer
- * per turn — reinforcement, never a gate.
+ * per SESSION — reinforcement, never a gate. The advisory lists only
+ * registry-verified running handles, and the first read of a session does
+ * not consume the once-per-session allowance.
  *
- * Completion continuation: EVERY normal assistant stop
+ * Completion continuation: a normal assistant stop
  * (`stopReason === "stop"`) with unresolved managed work — running
  * processes or terminal outcomes awaiting authoritative delivery — queues
- * one consolidated hidden follow-up directing the model to wait or stop.
- * The follow-up keeps the agent run unsettled (the agent loop drains
- * queued follow-ups before stopping), so a task cannot settle
- * successfully while work lacks a disposition. When the only unresolved
- * items are outcomes whose identified steering notification is already
- * queued, the reminder is redundant (the notification itself continues
- * the run) and is suppressed. User cancellation, provider errors, token
- * exhaustion, and shutdown never trigger it.
+ * one consolidated hidden follow-up directing the model to wait or stop,
+ * with AT MOST ONE reminder outstanding per session: repeated stops while
+ * a reminder is still queued are suppressed, and the reminder's contents
+ * are revalidated when the loop consumes it (`message_end`): obsolete
+ * guidance (everything resolved since it was queued) is replaced with a
+ * suppression note through the supported message hook, and stale handle
+ * lists are regenerated, so no queued reminder can keep demanding
+ * dispositions for work that is already resolved. The follow-up keeps the
+ * agent run unsettled (the agent loop drains follow-ups before stopping),
+ * so a task cannot settle successfully while work lacks a disposition.
+ * When the only unresolved items are outcomes whose identified steering
+ * notification is already queued, the reminder is redundant (the
+ * notification itself continues the run) and is suppressed. User
+ * cancellation, provider errors, token exhaustion, and shutdown never
+ * trigger it, and an aborted run releases the outstanding reminder
+ * (kimchi's surfaces drop queued follow-ups on abort).
  */
-
 import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -78,7 +87,7 @@ import type { BashExitMessageDetails, TerminalOwner } from "./terminal-delivery.
 
 /** Custom message type for an unattended process-exit notification. */
 export const BASH_BACKGROUND_EXIT_MESSAGE_TYPE = "bash-background-exit"
-/** Custom message type for the once-per-turn concurrency reinforcement steer. */
+/** Custom message type for the once-per-session concurrency reinforcement steer. */
 export const BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE = "bash-background-concurrency"
 /** Custom message type for the completion-continuation follow-up. */
 export const BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE = "bash-background-completion"
@@ -136,6 +145,16 @@ function formatConcurrencySteer(handles: readonly string[]): string {
 	)
 }
 
+/** Order-insensitive handle-set equality (revalidation compares sets, not order). */
+function sameHandles(a: readonly string[], b: readonly string[]): boolean {
+	if (a.length !== b.length) return false
+	const set = new Set(a)
+	for (const handle of b) {
+		if (!set.has(handle)) return false
+	}
+	return true
+}
+
 /**
  * Build the completion-continuation follow-up text: every unresolved
  * process with its current disposition state (running vs
@@ -158,6 +177,48 @@ function formatCompletionContinuation(running: readonly string[], awaitingDelive
 		"Managed background bash is killed at session shutdown (unlike `daemon` processes), so unfinished work or uncollected output may be lost. " +
 		"Do not end the task while anything remains unresolved."
 	)
+}
+
+/** Typed `details` carried by every completion-continuation reminder. */
+interface BashCompletionMessageDetails {
+	/** Identity of the BashControlExtension generation that queued the reminder. */
+	sessionId: string
+	/** Handles classified as running when the reminder was queued. */
+	running: string[]
+	/** Handles whose terminal outcomes were awaiting delivery when queued. */
+	awaiting: string[]
+}
+
+/** Runtime-guarded read of a completion reminder's typed `details`. */
+function readCompletionMessageDetails(raw: unknown): BashCompletionMessageDetails | undefined {
+	if (!raw || typeof raw !== "object") return undefined
+	const d = raw as Record<string, unknown>
+	if (typeof d.sessionId !== "string") return undefined
+	if (!Array.isArray(d.running) || !d.running.every((h) => typeof h === "string")) return undefined
+	if (!Array.isArray(d.awaiting) || !d.awaiting.every((h) => typeof h === "string")) return undefined
+	return { sessionId: d.sessionId, running: d.running as string[], awaiting: d.awaiting as string[] }
+}
+
+/** Lifecycle classification of one tracked handle at guard/steer time. */
+type TrackedHandleClass = "running" | "awaiting" | "queued" | "resolved"
+
+/**
+ * Classify a tracked handle from the REGISTRY (the authority on process
+ * liveness), never from tracking alone: a handle whose registry entry is
+ * gone and whose exit is not pending delivery is resolved-or-lost — it
+ * must never be reported as running. A retained terminal state is
+ * awaiting delivery; an exit already queued for the notification flush
+ * has its continuation coming from the notification itself.
+ */
+function classifyTrackedHandle(
+	state: BashSessionState | undefined,
+	handle: string,
+	pendingExitDeliveries: readonly string[],
+): TrackedHandleClass {
+	if (pendingExitDeliveries.includes(handle)) return "queued"
+	const entry = state?.registry.getEntry(handle)
+	if (!entry) return "resolved"
+	return entry.state === "running" ? "running" : "awaiting"
 }
 
 /** Ownership an in-flight bash_control call holds over exits. */
@@ -210,8 +271,19 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	}
 	// Exits claimed by an in-flight control call: handle -> toolCallId.
 	let claimedExits = new Map<string, string>()
-	// Once-per-turn coalescing flag for concurrency reinforcement steers.
-	let concurrencySteerSentThisTurn = false
+	// Once-per-SESSION advisory flag for concurrency reinforcement steers:
+	// the first write/execute call while background work is tracked consumes
+	// it; later turns and cohort changes never repeat the advisory.
+	let concurrencyAdvisorySent = false
+	// At most one completion reminder may be queued (outstanding) per
+	// session: repeated stops while the queued reminder has not been
+	// consumed by the agent loop are suppressed, and the consumed reminder
+	// is revalidated (and replaced when obsolete) through message_end.
+	let completionReminderOutstanding = false
+	// Identity of the current session generation: completion reminders
+	// carry it in typed details so a stale message from a replaced session
+	// cannot clear this session's outstanding flag.
+	let sessionGenerationId = randomUUID()
 	// Exits pending delivery in the current scheduling boundary. Flushed as
 	// one coalesced message on the next microtask — prompt notification with
 	// no multi-second delay and no recurring batching timer. Also read by the
@@ -226,7 +298,9 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		trackedHandles = new Set()
 		activeControlCalls = new Map()
 		claimedExits = new Map()
-		concurrencySteerSentThisTurn = false
+		concurrencyAdvisorySent = false
+		completionReminderOutstanding = false
+		sessionGenerationId = randomUUID()
 		pendingExitDeliveries = []
 		exitDeliveryScheduled = false
 		runTerminated = undefined
@@ -243,11 +317,6 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		// cancelled-run state: inference may be woken by exits again.
 		runTerminated = undefined
 	})
-
-	pi.on("turn_start", () => {
-		concurrencySteerSentThisTurn = false
-	})
-
 	/** Assign ownership of `handle`'s terminal delivery to `callId`; first claim wins. */
 	function claimExit(callId: string, handle: string, call: ActiveControlCall): void {
 		call.owned.add(handle)
@@ -590,12 +659,23 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		const wait = args.wait === true
 		const call: ActiveControlCall = { wait, owned: new Set() }
 		activeControlCalls.set(event.toolCallId, call)
-		// Ownership is assigned before the call awaits. Every bash_control
-		// call sweeps available terminal results for the whole cohort (waits
-		// on settlement, immediate inspections right away), so each claims
-		// every tracked handle — first claim wins when calls overlap, so a
-		// rejected concurrent wait cannot steal an existing wait's claims.
-		for (const handle of trackedHandles) claimExit(event.toolCallId, handle, call)
+		// Ownership is assigned before the call awaits. Every whole-cohort
+		// bash_control call (waits on settlement, unfiltered inspections right
+		// away) sweeps available terminal results for the entire cohort, so
+		// each claims every tracked handle — first claim wins when calls
+		// overlap, so a rejected concurrent wait cannot steal an existing
+		// wait's claims. A FILTERED inspection claims only the handles it may
+		// actually collect: unfiltered handles' exits stay with their own
+		// unattended notifications instead of waiting for this call's
+		// tool_execution_end backstop.
+		const filter = Array.isArray(args.handles)
+			? args.handles.filter((h): h is string => typeof h === "string" && h.length > 0)
+			: undefined
+		// An empty filter selects NOTHING (matching the tool's no-selection
+		// semantics for direct calls that bypass the schema's minItems).
+		const claimable =
+			filter !== undefined ? [...trackedHandles].filter((handle) => filter.includes(handle)) : [...trackedHandles]
+		for (const handle of claimable) claimExit(event.toolCallId, handle, call)
 		if (Array.isArray(args.stop_handles)) {
 			for (const h of args.stop_handles) {
 				if (typeof h === "string" && h.length > 0) claimExit(event.toolCallId, h, call)
@@ -659,22 +739,29 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	})
 
 	// Non-blocking: allow every tool call. When a tracked process runs and
-	// the call is a known write/execute tool (per the shared taxonomy),
-	// enqueue ONE concurrency steer per turn as reinforcement.
+	// the call is a known write/execute tool (per the shared taxonomy), enqueue
+	// ONE concurrency steer per session as reinforcement. The advisory lists
+	// only registry-verified running handles — a stale tracked entry whose
+	// process is gone is never asserted to be running.
 	pi.on("tool_call", (event) => {
 		if (trackedHandles.size === 0) return { block: false }
 		if (event.toolName === BASH_CONTROL_TOOL_NAME) return { block: false }
 		const category = classifyTool(event.toolName)
 		if (category !== "write" && category !== "execute") return { block: false }
-		if (concurrencySteerSentThisTurn) return { block: false }
-		concurrencySteerSentThisTurn = true
+		if (concurrencyAdvisorySent) return { block: false }
+		const state = getState()
+		const running = [...trackedHandles].filter(
+			(handle) => classifyTrackedHandle(state, handle, pendingExitDeliveries) === "running",
+		)
+		if (running.length === 0) return { block: false }
+		concurrencyAdvisorySent = true
 		pi.sendMessage(
 			{
 				customType: BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE,
 				content: [
 					{
 						type: "text",
-						text: markHarnessSteer(formatConcurrencySteer([...trackedHandles])),
+						text: markHarnessSteer(formatConcurrencySteer(running)),
 					},
 				],
 				display: false,
@@ -684,17 +771,15 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		return { block: false }
 	})
 
-	// Completion continuation: EVERY normal assistant stop with unresolved
-	// managed work queues one consolidated follow-up. The queued follow-up
-	// keeps the agent run unsettled (the agent loop drains follow-ups
-	// before stopping), so settled success requires a disposition. A stable
-	// handle set never suppresses the guard — repeated attempts each get a
-	// continuation. When the only unresolved items are outcomes whose
-	// identified steering notification is already queued, the reminder is
-	// redundant (the notification itself continues the run) and is
-	// suppressed. Terminal results whose notification is already queued
-	// will resolve the state by themselves, so only genuinely unresolved
-	// work produces a reminder.
+	// Completion continuation: a normal assistant stop with unresolved
+	// managed work queues one consolidated follow-up, with AT MOST ONE
+	// reminder outstanding per session (see the module docstring). The
+	// queued follow-up keeps the agent run unsettled (the agent loop drains
+	// follow-ups before stopping), so settled success requires a
+	// disposition; genuinely unresolved work always receives a new reminder
+	// once the previous one was consumed. Terminal results whose
+	// notification is already queued will resolve the state by themselves,
+	// so they do not queue a redundant reminder.
 	pi.on("turn_end", (event, _ctx: ExtensionContext) => {
 		if (disposed) return
 		const message = event.message
@@ -702,20 +787,32 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		const stopReason = (message as { stopReason?: unknown }).stopReason
 		if (stopReason === "aborted" || stopReason === "error") {
 			// Cancellation/termination is authoritative: no completion
+			// Cancellation/termination is authoritative: no completion
 			// continuation, and no inference restart for later exits. Kimchi's
 			// TUI (Escape) and ACP (cancel) drop queued steering on abort, so
 			// queued automatic outcomes are released back to recoverable
 			// state — a later explicit inspection can deliver them. A late
 			// arrival of a recovered outcome is suppressed via message_end
-			// replacement, so recovery never duplicates the payload.
+			// replacement, so recovery never duplicates the payload. The
+			// outstanding reminder (if any) is released too — the surfaces
+			// drop queued follow-ups on abort, so it would never be consumed.
+			// A programmatic abort that keeps the queue still fires the
+			// reminder's message_end, which clears an already-cleared flag
+			// (no-op).
 			runTerminated = stopReason
 			getState()?.delivery.releaseAutomatic()
+			completionReminderOutstanding = false
 			return
 		}
 		if (stopReason !== "stop") return
 		if (trackedHandles.size === 0 && !getState()?.delivery.hasPending()) return
 		// Read current lifecycle state at the guard boundary: distinguish
-		// live processes from terminal outcomes awaiting delivery.
+		// live processes from terminal outcomes awaiting delivery. Only the
+		// REGISTRY is authoritative for liveness — a tracked handle whose
+		// registry entry is gone and whose exit is not pending delivery is
+		// resolved (its result was already delivered by a tool result, or
+		// it never existed): it is dropped from tracking (self-heal) and
+		// never counted as running.
 		const state = getState()
 		const running: string[] = []
 		const awaitingDelivery = new Set<string>()
@@ -725,15 +822,12 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 				awaitingDelivery.add(handle)
 				continue
 			}
-			const entry = state?.registry.getEntry(handle)
-			if (!state || !entry) {
-				// Ambiguous (transient state): keep it accounted as live.
-				running.push(handle)
-			} else if (entry.state === "running") {
-				running.push(handle)
-			} else if (!pendingExitDeliveries.includes(handle)) {
-				awaitingDelivery.add(handle)
-			}
+			const cls = classifyTrackedHandle(state, handle, pendingExitDeliveries)
+			if (cls === "running") running.push(handle)
+			else if (cls === "awaiting") awaitingDelivery.add(handle)
+			else if (cls === "resolved") trackedHandles.delete(handle)
+			// "queued": the exit notification itself continues the run and
+			// resolves the state — no reminder needed for it.
 		}
 		// Outcomes collected by the automatic channel (registry entry
 		// already removed) stay accountable through the delivery state.
@@ -748,19 +842,94 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 			running.length === 0 &&
 			[...awaitingDelivery].every((handle) => state?.delivery.getPending(handle)?.phase === "queued")
 		if (onlyQueuedNotifications) return
-		pi.sendMessage(
-			{
-				customType: BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE,
-				content: [
-					{
-						type: "text",
-						text: markHarnessSteer(formatCompletionContinuation(running, [...awaitingDelivery])),
+		// One outstanding reminder per session: a queued-but-unconsumed
+		// reminder makes this attempt redundant (the loop will drain it
+		// before the run settles, and its contents are revalidated then).
+		if (completionReminderOutstanding) return
+		completionReminderOutstanding = true
+		try {
+			pi.sendMessage(
+				{
+					customType: BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE,
+					content: [
+						{
+							type: "text",
+							text: markHarnessSteer(formatCompletionContinuation(running, [...awaitingDelivery])),
+						},
+					],
+					display: false,
+					details: {
+						sessionId: sessionGenerationId,
+						running,
+						awaiting: [...awaitingDelivery],
 					},
-				],
+				},
+				{ deliverAs: "followUp" },
+			)
+		} catch {
+			// A synchronous enqueue failure must not silence the guard for
+			// the rest of the session: release the outstanding slot.
+			completionReminderOutstanding = false
+		}
+	})
+
+	// Revalidation seam: the agent loop drains the queued reminder into the
+	// conversation (emitting message_end) BEFORE the next assistant
+	// response. At that boundary the reminder's contents are re-checked
+	// against CURRENT process and delivery state: obsolete guidance
+	// (everything resolved since it was queued — e.g. a stop raced the
+	// queue) is replaced with a suppression note through the supported
+	// message hook, and stale handle lists are regenerated, so no queued
+	// reminder can keep demanding dispositions for already-resolved work.
+	// Unrelated queued messages are untouched (only this customType is
+	// ever replaced).
+	pi.on("message_end", (event, _ctx: ExtensionContext) => {
+		const message = event.message
+		if (message?.role !== "custom") return undefined
+		if (message.customType !== BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE) return undefined
+		const details = readCompletionMessageDetails(message.details)
+		// Session-identity guard: a reminder from a replaced session must
+		// not clear this session's outstanding flag.
+		if (!details || details.sessionId !== sessionGenerationId) return undefined
+		// Consumed: the reminder reached the conversation, so a later stop
+		// with genuinely unresolved work may queue a fresh one.
+		completionReminderOutstanding = false
+		// Revalidate from current process and delivery state.
+		const state = getState()
+		const running: string[] = []
+		const awaitingDelivery = new Set<string>()
+		for (const handle of trackedHandles) {
+			const pending = state?.delivery.getPending(handle)
+			if (pending) {
+				awaitingDelivery.add(handle)
+				continue
+			}
+			const cls = classifyTrackedHandle(state, handle, pendingExitDeliveries)
+			if (cls === "running") running.push(handle)
+			else if (cls === "awaiting") awaitingDelivery.add(handle)
+			else if (cls === "resolved") trackedHandles.delete(handle)
+		}
+		for (const handle of state?.delivery.pendingHandles() ?? []) {
+			awaitingDelivery.add(handle)
+		}
+		const sameSet = sameHandles(details.running, running) && sameHandles(details.awaiting, [...awaitingDelivery])
+		if (sameSet) return undefined
+		const content =
+			running.length === 0 && awaitingDelivery.size === 0
+				? markHarnessSteer(
+						"[Background bash completion reminder was suppressed: every tracked process has been resolved — no disposition is needed. Continue with the task.]",
+					)
+				: markHarnessSteer(formatCompletionContinuation(running, [...awaitingDelivery]))
+		return {
+			message: {
+				role: "custom",
+				customType: BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE,
+				content: [{ type: "text", text: content }],
 				display: false,
+				details: message.details,
+				timestamp: message.timestamp,
 			},
-			{ deliverAs: "followUp" },
-		)
+		}
 	})
 
 	pi.on("session_shutdown", () => {
@@ -770,5 +939,6 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		activeControlCalls.clear()
 		claimedExits.clear()
 		pendingExitDeliveries = []
+		completionReminderOutstanding = false
 	})
 }

@@ -243,10 +243,12 @@ export function handoffGuidanceText(): string {
 		"automatically — do not poll it. Do independent work with the other " +
 		"tools now, avoiding commands or edits that could conflict with it (same " +
 		"files, package managers, ports, generated output). Call bash_control to " +
-		"inspect the cohort (wait: false), to stop specific handles (stop_handles), " +
-		"or with wait: true when you genuinely have no other work until something " +
-		"changes — an explicit wait returns at the first exit or a bounded " +
-		"checkpoint (five minutes by default, ten at most). Intentional " +
-		"servers/watchers that must outlive the session belong in daemon management.]"
+		"inspect this process or the whole cohort (optionally narrowed with handles; " +
+		"wait defaults to an immediate inspection), to stop specific handles " +
+		"(stop_handles, with no wait needed), or with wait: true when you genuinely " +
+		"have no other work until something changes — an explicit wait returns at " +
+		"the first exit or a bounded checkpoint (five minutes by default, ten at " +
+		"most). Intentional servers/watchers that must outlive the session belong in " +
+		"daemon management.]"
 	)
 }
