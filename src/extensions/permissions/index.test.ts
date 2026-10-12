@@ -4214,6 +4214,29 @@ describe("permissions:tool_decision emissions", () => {
 		}
 	})
 
+	it("client-cancelled ACP permission request denies cleanly instead of flapping", async () => {
+		// Headless ACP hosts (Hermes' shim) answer session/request_permission
+		// with `cancelled` — a deterministic denial, not a mode change. The
+		// prompter must surface it as denied-by-client: ONE rejection, no
+		// re-evaluation loop, no mode_flap failure.
+		registerAcpPrompter(TEST_SESSION_ID, { request: vi.fn(async () => ({ kind: "denied-by-client" as const })) })
+		try {
+			const harness = createPermissionsHarness(["bash"])
+			const ctx = { ...createClassifierContext(), mode: "rpc" } as ExtensionContext
+			const decisions = collectDecisions(harness)
+			await harness.fire("session_start", {}, ctx)
+			setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+
+			const result = await harness.fire("tool_call", tcall("bash", { command: "npm install" }), ctx)
+			expect(result).toMatchObject({ block: true })
+			expect(result).not.toMatchObject({ reason: expect.stringContaining("too many times") })
+
+			expect(decisions).toEqual([expect.objectContaining({ decision: "reject", sourceDetail: "denied_by_client" })])
+		} finally {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+		}
+	})
+
 	it("abort reports the mode the prompt was opened under, not the mode switched to", async () => {
 		registerAcpPrompter(TEST_SESSION_ID, {
 			request: vi.fn(async () => {

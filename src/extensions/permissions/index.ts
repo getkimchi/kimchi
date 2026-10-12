@@ -1642,6 +1642,13 @@ function applyApprovalOutcome(
 	session: SessionMemory,
 ): { block: true; reason: string } | "aborted" | undefined {
 	if (outcome.kind === "aborted") return "aborted"
+	if (outcome.kind === "denied-by-client") {
+		return {
+			block: true,
+			reason:
+				"Denied by the connected client's permission policy (the request was cancelled without approval). Ask the user to approve this action in the client, or use an approach the client permits.",
+		}
+	}
 	if (outcome.kind === "allow-once") return undefined
 	if (outcome.kind === "allow-remember") {
 		session.addMany(outcome.rules)
@@ -1683,6 +1690,8 @@ function approvalOutcomeToDecision(outcome: ApprovalOutcome): PermissionDecision
 			return "deny_with_feedback"
 		case "deny":
 			return "deny"
+		case "denied-by-client":
+			return "denied_by_client"
 		case "aborted":
 			return "aborted"
 		default: {
@@ -1704,6 +1713,8 @@ function compoundOutcomeToDecision(outcome: CompoundApprovalOutcome): Permission
 			return "deny_with_feedback"
 		case "deny":
 			return "deny"
+		case "denied-by-client":
+			return "denied_by_client"
 		case "aborted":
 			return "aborted"
 		default: {

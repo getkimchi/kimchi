@@ -77,6 +77,7 @@ export type PermissionDecision =
 	| "allow_remember_wildcard"
 	| "deny"
 	| "deny_with_feedback"
+	| "denied_by_client"
 	| "aborted"
 	| "pick_per_subcommand"
 
@@ -119,6 +120,7 @@ export type PermissionDecisionSourceDetail =
 	| "allow_remember_wildcard"
 	| "deny"
 	| "deny_with_feedback"
+	| "denied_by_client"
 	| "abort"
 	| "mode_flap"
 

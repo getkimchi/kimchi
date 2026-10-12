@@ -2604,7 +2604,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(getAcpPrompter("session-permission")).toBeUndefined()
 	})
 
-	it("maps ACP permission cancellation to an aborted prompt result", async () => {
+	it("maps ACP permission cancellation to a client-denial outcome", async () => {
 		const requests: RequestPermissionRequest[] = []
 		const conn = {
 			sessionUpdate: async (_p: SessionNotification) => {},
@@ -2632,7 +2632,12 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			choices: [{ kind: "allow-once", label: "Allow once" }],
 		})
 
-		expect(result).toEqual({ kind: "aborted" })
+		// A cancelled permission response is the CLIENT denying (headless
+		// hosts cancel fail-safe) — it must NOT report "aborted", which the
+		// permission gate's re-evaluation loop treats as "mode changed,
+		// retry", looping to its cap and failing with the misleading
+		// "Permission mode changed too many times during prompt".
+		expect(result).toEqual({ kind: "denied-by-client" })
 		expect(requests).toHaveLength(1)
 
 		const abort = new AbortController()
@@ -2645,6 +2650,8 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			signal: abort.signal,
 		})
 
+		// A true abort (the request signal fired, e.g. turn cancelled) still
+		// reports aborted — that remains the re-evaluate/mode-change path.
 		expect(skippedResult).toEqual({ kind: "aborted" })
 		expect(requests).toHaveLength(1)
 		await localAgent.shutdown()
