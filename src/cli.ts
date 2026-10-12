@@ -717,8 +717,10 @@ try {
 			loopGuardExtension,
 			explorationGuardExtension,
 			reviewWriteGuardExtension,
-			lspExtension,
-			dapExtension,
+			...enabledExtensionFactories([
+				{ id: "extensions.lsp", factory: lspExtension },
+				{ id: "extensions.dap", factory: dapExtension },
+			] satisfies ManagedExtensionFactory[]),
 			// Always registered — the tool_call handler checks isResourceEnabled
 			// dynamically on every bash call, so enable/disable from /resources
 			// takes effect immediately without a process restart.

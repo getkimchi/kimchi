@@ -58,6 +58,23 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		restartRequired: true,
 	},
 	{
+		id: "extensions.lsp",
+		kind: "extensions",
+		label: "Language server tools",
+		description:
+			"Enable LSP tools for type-aware code intelligence (diagnostics, hover, definition, references, rename).",
+		defaultEnabled: true,
+		restartRequired: true,
+	},
+	{
+		id: "extensions.dap",
+		kind: "extensions",
+		label: "Debug adapter tools",
+		description: "Enable DAP tools for runtime debugging (debug_launch, debug_state_at, breakpoints).",
+		defaultEnabled: true,
+		restartRequired: true,
+	},
+	{
 		id: "extensions.bash-tool-guard",
 		kind: "extensions",
 		label: "Bash-tool guard",
