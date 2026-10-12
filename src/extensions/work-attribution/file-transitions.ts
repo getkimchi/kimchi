@@ -118,6 +118,14 @@ async function supportsGitAttributes(path: string): Promise<boolean> {
 function snapshotObjects(repository: string): string {
 	return join(getAgentDir(), "work-attribution", "objects", createHash("sha256").update(repository).digest("hex"))
 }
+/** Git commits an ignored file only when forced, so its text is not worth keeping. A failed check keeps none either. */
+async function ignored(worktree: string, path: string): Promise<boolean> {
+	try {
+		return Boolean(await git(worktree, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", path]))
+	} catch {
+		return true
+	}
+}
 /**
  * `data` is the file content already read by the caller, so the hash matches what it checked. With `retainIn`, the
  * repository's Git directory, a small text snapshot is kept for later hunk matching. With `committed`, the file's blob
@@ -357,11 +365,12 @@ function operations(ctx: WorkContext, toolCallId: string): EditOperations & Writ
 				await tryWorkAttributionAsync(async () => {
 					const written = existsSync(path) ? readFileSync(path) : undefined
 					if (!written?.equals(Buffer.from(content))) return
-					const after = await diskState(
-						path,
-						written,
-						evidence.before !== null && evidence.baselineFile !== null ? evidence.repository : undefined,
-					)
+					// A file absent from HEAD keeps its text from the write that creates it, for when it is first committed.
+					const retain =
+						evidence.baselineFile === null
+							? !(await ignored(evidence.worktree, evidence.path))
+							: evidence.before !== null
+					const after = await diskState(path, written, retain ? evidence.repository : undefined)
 					if (!after || same(evidence.before, after)) return
 					const log = await reflog(evidence.worktree)
 					// A cursor after the successful mutation excludes pre-existing matching history.
@@ -873,9 +882,11 @@ async function matchesCommittedHunks(
 ): Promise<boolean> {
 	const before = chain[0].before
 	const after = chain[chain.length - 1].after
-	if (!before || !parent || !committed || [after, parent, committed].some((state) => state.mode !== before.mode))
-		return false
-	const blobs = [before, after, parent, committed].map((state) => state.blob)
+	// A chain that created the file starts from empty text, which only a commit adding the file can share.
+	if (!committed || (before === null) !== (parent === null)) return false
+	const states = before && parent ? [before, after, parent, committed] : [after, committed]
+	if (states.some((state) => state.mode !== after.mode)) return false
+	const blobs = states.map((state) => state.blob)
 	if (!blobs.every((blob) => SHA.test(blob))) return false
 	// Snapshots come from Kimchi's store; the parent and committed blobs, and snapshots of older builds, from the repository.
 	const options = {
@@ -909,7 +920,8 @@ async function matchesCommittedHunks(
 		if (!isUtf8(text) || text.includes(0)) return false
 		texts.push(text.toString("utf8"))
 	}
-	return matchesFileHunks(texts[0], texts[1], texts[2], texts[3], checkBudget)
+	const text = (state: FileState | null) => (state ? texts[states.indexOf(state)] : "")
+	return matchesFileHunks(text(before), text(after), text(parent), text(committed), checkBudget)
 }
 /** Content identity is weaker than a complete reflog chain; retain that distinction per file. */
 async function matchContentTransitions(
