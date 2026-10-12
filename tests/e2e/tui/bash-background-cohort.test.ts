@@ -241,12 +241,18 @@ test("background bash cohort: filtered inspection returns only the selected hand
 						{
 							id: "call_bash_a",
 							index: 0,
-							function: { name: "bash", arguments: JSON.stringify({ command: "sleep 3 && echo one-alive && sleep 90" }) },
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({ command: "sleep 3 && echo one-alive && sleep 90" }),
+							},
 						},
 						{
 							id: "call_bash_b",
 							index: 1,
-							function: { name: "bash", arguments: JSON.stringify({ command: "sleep 3 && echo two-alive && sleep 90" }) },
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({ command: "sleep 3 && echo two-alive && sleep 90" }),
+							},
 						},
 					],
 				},
@@ -283,7 +289,7 @@ test("background bash cohort: filtered inspection returns only the selected hand
 							function: {
 								name: "bash_control",
 								arguments: JSON.stringify({
-										stop_handles: ["__BASH_HANDLE__", "__BASH_HANDLE_2__"],
+									stop_handles: ["__BASH_HANDLE__", "__BASH_HANDLE_2__"],
 								}),
 							},
 						},
@@ -296,9 +302,7 @@ test("background bash cohort: filtered inspection returns only the selected hand
 			],
 		},
 		async (fixture, trace) => {
-			terminal.submit(
-				"Start two long commands, inspect just the second, then the whole cohort, then stop both",
-			)
+			terminal.submit("Start two long commands, inspect just the second, then the whole cohort, then stop both")
 
 			await waitForText(terminal, "Stopping both commands", { timeoutMs: STREAM_TIMEOUT_MS * 3 })
 			trace.step("filtered + cohort inspections done; stopping both")
@@ -309,8 +313,8 @@ test("background bash cohort: filtered inspection returns only the selected hand
 			// Isolate each tool result from the FINAL request's history by
 			// tool_call_id (earlier requests repeat the same messages).
 			const lastMessages =
-				(fixture.fake.requests.at(-1)?.body as { messages?: Array<Record<string, unknown>> } | undefined)
-					?.messages ?? []
+				(fixture.fake.requests.at(-1)?.body as { messages?: Array<Record<string, unknown>> } | undefined)?.messages ??
+				[]
 			const toolText = (id: string): string => {
 				const message = lastMessages.find((m) => m.role === "tool" && m.tool_call_id === id)
 				return typeof message?.content === "string" ? message.content : JSON.stringify(message?.content ?? "")
@@ -361,10 +365,10 @@ test("background bash cohort: a queued completion reminder is suppressed when th
 							function: { name: "bash", arguments: JSON.stringify({ command: "sleep 120" }) },
 						},
 					],
-			},
+				},
 				// Turn 2: the model tries to finish with the work unresolved. The
 				// slow stream gives the test time to queue steering ahead of the
-					// reminder.
+				// reminder.
 				{
 					stream: ["I believe the work is complete.", "Nothing further is needed from my side."],
 					textDelayMs: 700,
@@ -414,9 +418,7 @@ test("background bash cohort: a queued completion reminder is suppressed when th
 				(fixture.fake.requests.at(-1)?.body as { messages?: unknown[] } | undefined)?.messages ?? [],
 			)
 			const conversation = JSON.stringify(
-				fixture.fake.requests.flatMap(
-					(r) => (r.body as { messages?: unknown[] } | undefined)?.messages ?? [],
-				),
+				fixture.fake.requests.flatMap((r) => (r.body as { messages?: unknown[] } | undefined)?.messages ?? []),
 			)
 			// The stale reminder never demanded a disposition from the provider…
 			expect(conversation).not.toContain("Task completion requires a disposition")

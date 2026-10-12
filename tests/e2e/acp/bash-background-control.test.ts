@@ -225,12 +225,18 @@ it(
 						{
 							id: "spawn_first",
 							index: 0,
-							function: { name: "bash", arguments: JSON.stringify({ command: "sleep 3 && echo one-alive && sleep 90" }) },
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({ command: "sleep 3 && echo one-alive && sleep 90" }),
+							},
 						},
 						{
 							id: "spawn_second",
 							index: 1,
-							function: { name: "bash", arguments: JSON.stringify({ command: "sleep 3 && echo two-alive && sleep 90" }) },
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({ command: "sleep 3 && echo two-alive && sleep 90" }),
+							},
 						},
 					],
 				},
@@ -258,9 +264,9 @@ it(
 							id: "stop",
 							function: {
 								name: "bash_control",
-									arguments: JSON.stringify({
-										stop_handles: ["__BASH_HANDLE__", "__BASH_HANDLE_2__"],
-									}),
+								arguments: JSON.stringify({
+									stop_handles: ["__BASH_HANDLE__", "__BASH_HANDLE_2__"],
+								}),
 							},
 						},
 					],
@@ -270,9 +276,10 @@ it(
 		})
 		try {
 			const sessionId = await newSession(fixture, fixture.workDir)
-			expect((await prompt(fixture, sessionId, "Start two long commands, inspect just the second, then stop both")).stopReason).toBe(
-				"end_turn",
-			)
+			expect(
+				(await prompt(fixture, sessionId, "Start two long commands, inspect just the second, then stop both"))
+					.stopReason,
+			).toBe("end_turn")
 			const updates = fixture.client.sessionUpdates.map(({ update }) => update)
 			// The filtered inspection reported exactly ONE running handle (the
 			// selected one)…
@@ -301,8 +308,8 @@ it(
 			// Isolate each tool result from the FINAL request's history by
 			// tool_call_id (earlier requests repeat the same messages).
 			const lastMessages =
-				(fixture.fake.requests.at(-1)?.body as { messages?: Array<Record<string, unknown>> } | undefined)
-					?.messages ?? []
+				(fixture.fake.requests.at(-1)?.body as { messages?: Array<Record<string, unknown>> } | undefined)?.messages ??
+				[]
 			const toolText = (id: string): string => {
 				const message = lastMessages.find((m) => m.role === "tool" && m.tool_call_id === id)
 				return typeof message?.content === "string" ? message.content : JSON.stringify(message?.content ?? "")
@@ -336,9 +343,7 @@ it(
 			artifactName: "bash-background-reminder-backlog",
 			responses: [
 				{
-					toolCalls: [
-						{ function: { name: "bash", arguments: JSON.stringify({ command: "sleep 120" }) } },
-					],
+					toolCalls: [{ function: { name: "bash", arguments: JSON.stringify({ command: "sleep 120" }) } }],
 				},
 				// A slow stream keeps the turn live while the steer is injected.
 				{
@@ -386,9 +391,7 @@ it(
 			expect((await pending).stopReason).toBe("end_turn")
 
 			const conversation = JSON.stringify(
-				fixture.fake.requests.flatMap(
-					(request) => (request.body as { messages?: unknown[] } | null)?.messages ?? [],
-			),
+				fixture.fake.requests.flatMap((request) => (request.body as { messages?: unknown[] } | null)?.messages ?? []),
 			)
 			// The stale reminder never demanded a disposition from the provider…
 			expect(conversation).not.toContain("Task completion requires a disposition")

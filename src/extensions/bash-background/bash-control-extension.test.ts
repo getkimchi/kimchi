@@ -1103,8 +1103,7 @@ describe("completion continuation", () => {
 		// no longer demand a disposition for the stopped handle.
 		const replacements = await consumeFollowUp(harness, guards[0] as SentMessage)
 		expect(replacements).toHaveLength(1)
-		const replacedText =
-			(replacements[0]?.message as { content?: Array<{ text?: string }> })?.content?.[0]?.text ?? "" ?? ""
+		const replacedText = (replacements[0]?.message as { content?: Array<{ text?: string }> })?.content?.[0]?.text ?? ""
 		expect(replacedText).toContain("suppressed")
 		expect(replacedText).not.toContain("Still running")
 		expect(replacedText).not.toContain(b)
