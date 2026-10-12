@@ -193,9 +193,7 @@ describe("automatic exact work cost lookup", () => {
 		const lines = workCostDetails(dir, first.workId)
 		expect(lines).toContain("Cost: $3.00 — https://github.com/example/repo/pull/1")
 		// Without an input record, the request counts as inferred.
-		expect(lines).toContain(
-			"Prices: 1/1 requests priced, $1.00. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
-		)
+		expect(lines).toContain("Prices: 1/1 requests priced, $1.00. PR assignments: 0 unresolved, 1 inferred, 0 shared.")
 	})
 
 	it("saves only the selected work's unrelated requests in its aggregate buckets", async () => {
