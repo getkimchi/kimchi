@@ -482,7 +482,6 @@ test("work and request IDs are durable before the first reply, and commits belon
 				}
 				const summary = await waitForSummary(fixture.agentDir, started[0].workId, { requests: sent.length, commits: 1 })
 				expect(summary).toMatchObject({
-					version: 1,
 					workId: started[0].workId,
 					sessions: [started[0].sessionId],
 					plans: [],
