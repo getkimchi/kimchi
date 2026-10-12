@@ -146,6 +146,7 @@ import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import statusExtension from "./extensions/status/index.js"
 import { steerAbortTrackerExtension } from "./extensions/steer-events.js"
+import { steerOutcomeWatcherExtension } from "./extensions/steer-outcome-watcher.js"
 import stripImagesExtension from "./extensions/strip-images.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
@@ -819,6 +820,9 @@ try {
 			// steer:aborted — emits when the user Esc-aborts the turn immediately
 			// following a harness steer (the "user vetoed the nudge" signal).
 			steerAbortTrackerExtension,
+			// steer:outcome for kinds without a bespoke tracker — shared window /
+			// expiry mechanics; sites register watches with a classify fn.
+			steerOutcomeWatcherExtension,
 			// Powershell is Windows-only: hide it when a config activates it on
 			// another platform (dead schema weight otherwise).
 			powershellGateExtension,

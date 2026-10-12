@@ -54,6 +54,11 @@ export interface SteerFiredPayload {
 	/** Short stable reason code (e.g. "early_nudge", "staleness",
 	 *  "empty_turn", "continuation"). No free text. */
 	reason: string
+	/** Random per-fire identifier, generated at the emit site and returned by
+	 *  emitSteerFired so an outcome watcher can attribute its outcome/aborted
+	 *  event back to this exact fire. Not deterministic — a random UUID is
+	 *  fine, since the join is only ever outcome ↔ fire. */
+	steer_id: string
 	/** True when the fire happened inside an agent worker (subagent). */
 	is_subagent: boolean
 	/** True in interactive sessions (UI present); false in
@@ -66,8 +71,14 @@ export interface SteerOutcomePayload {
 	kind: SteerKind
 	/** Whether the agent complied with the steer (stopped the guarded
 	 *  behaviour / adopted the nudge) or repeated the guarded behaviour /
-	 *  ignored the nudge. */
-	outcome: "complied" | "repeated"
+	 *  ignored the nudge. Chunk 3 adds "expired" and the watcher module; until
+	 *  then only the two values below are emitted. */
+	outcome: "complied" | "repeated" | "expired"
+	/** steer_id of the fire this outcome belongs to, when the emitting site
+	 *  tracks it (the guard-kinds with bespoke windows do not yet). */
+	steer_id?: string
+	/** Turns between the fire and this outcome, when the emitter tracks it. */
+	turns_to_outcome?: number
 	/** True when the outcome was observed inside an agent worker (subagent). */
 	is_subagent: boolean
 	/** True in interactive sessions (UI present); false in
@@ -80,6 +91,8 @@ export interface SteerAbortedPayload {
 	kind: SteerKind
 	/** The short reason code of the steer that preceded the abort. */
 	reason: string
+	/** steer_id of the attributed fire, when the abort tracker holds one. */
+	steer_id?: string
 	/** True when the abort happened inside an agent worker (subagent).
 	 *  (A user Esc abort is, by definition, the main session — but the
 	 *  payload keeps the flag for shape parity with the other events.) */
@@ -118,12 +131,15 @@ export interface SteerSessionShape {
 }
 
 /**
- * Emit a steer-fire event. The subagent flag is derived from the ambient
- * worker context; `interactive` defaults to the CLI-args classification and
- * should be overridden with `ctx.hasUI` where a context is available.
- * `sessionId` keys the abort tracker (prevents cross-session attribution on
- * multi-session hosts like ACP); leave it unset only at ctx-less emit sites,
- * where the single-session fallback key is correct.
+ * Emit a steer-fire event and return the generated per-fire id (undefined
+ * when the steer was kill-switch suppressed). The subagent flag is derived
+ * from the ambient worker context; `interactive` defaults to the CLI-args
+ * classification and should be overridden with `ctx.hasUI` where a context
+ * is available. `sessionId` keys the abort tracker (prevents cross-session
+ * attribution on multi-session hosts like ACP); leave it unset only at
+ * ctx-less emit sites, where the single-session fallback key is correct.
+ * Outcome watchers must hold the returned id and pass it to
+ * emitSteerOutcome so the outcome joins back to this exact fire.
  */
 function defaultInteractive(): boolean {
 	try {
@@ -140,34 +156,38 @@ export function emitSteerFired(
 	kind: SteerKind,
 	reason: SteerReason,
 	shape: { interactive?: boolean; sessionId?: string } = {},
-): void {
-	if (isSteerDisabled(kind)) return
+): string | undefined {
+	if (isSteerDisabled(kind)) return undefined
 	const payload: SteerFiredPayload = {
 		kind,
 		reason,
+		steer_id: crypto.randomUUID(),
 		is_subagent: isAgentWorker(),
 		interactive: shape.interactive ?? defaultInteractive(),
 	}
 	try {
 		pi.events.emit(STEER_EVENTS.FIRED, payload)
-		trackLastSteerFired(shape.sessionId ?? "", kind, reason, payload.interactive)
+		trackLastSteerFired(shape.sessionId ?? "", kind, reason, payload.steer_id, payload.interactive)
 	} catch {
 		// pi.events may be unavailable on older hosts or lightweight test
 		// mocks. The steer still functions without telemetry (precedent:
 		// bash-tool-guard.ts / loop-guard.ts domain event emitters).
 	}
+	return payload.steer_id
 }
 
 export function emitSteerOutcome(
 	pi: ExtensionAPI,
 	kind: SteerKind,
 	outcome: SteerOutcomePayload["outcome"],
-	shape: { interactive?: boolean } = {},
+	shape: { interactive?: boolean; steerId?: string; turnsToOutcome?: number } = {},
 ): void {
 	if (isSteerDisabled(kind)) return
 	const payload: SteerOutcomePayload = {
 		kind,
 		outcome,
+		...(shape.steerId !== undefined ? { steer_id: shape.steerId } : {}),
+		...(shape.turnsToOutcome !== undefined ? { turns_to_outcome: shape.turnsToOutcome } : {}),
 		is_subagent: isAgentWorker(),
 		interactive: shape.interactive ?? defaultInteractive(),
 	}
@@ -190,8 +210,10 @@ export function emitSteerOutcome(
  * customType), the continuation nudges (`followUp` + pre-marked constants),
  * and the two domain-channel guards (`bash_tool_guard`, `loop_guard`).
  *
- * Returns false (sending nothing) when the steer is disabled by its kill
- * switch; the caller can treat the return as "a steer was sent".
+ * Returns the emitted fire's steer_id (undefined when kill-switch
+ * suppressed — "no steer was sent"), so callers with an outcome watcher can
+ * attribute the outcome back to this exact fire. Callers that only need the
+ * boolean check keep working: the return is truthy iff a steer was sent.
  */
 export function sendSteer(
 	pi: ExtensionAPI,
@@ -203,8 +225,8 @@ export function sendSteer(
 		text: string
 		deliverAs?: "steer" | "followUp"
 	},
-): boolean {
-	if (isSteerDisabled(opts.kind)) return false
+): string | undefined {
+	if (isSteerDisabled(opts.kind)) return undefined
 	pi.sendMessage(
 		{
 			customType: opts.customType,
@@ -213,11 +235,10 @@ export function sendSteer(
 		},
 		{ deliverAs: opts.deliverAs ?? "steer" },
 	)
-	emitSteerFired(pi, opts.kind, opts.reason, {
+	return emitSteerFired(pi, opts.kind, opts.reason, {
 		interactive: ctx?.hasUI,
 		sessionId: ctx?.sessionManager.getSessionId(),
 	})
-	return true
 }
 
 /**
@@ -267,7 +288,10 @@ export function steerDisableFlagName(kind: SteerKind): string {
  *  Keyed by sessionId so concurrent sessions (ACP hosts) can't misattribute
  *  an abort in one session to a steer fired in another. The empty key is the
  *  fallback for ctx-less emit sites (correct on single-session hosts). */
-const lastSteerFiredBySession = new Map<string, { kind: SteerKind; reason: string; interactive: boolean }>()
+const lastSteerFiredBySession = new Map<
+	string,
+	{ kind: SteerKind; reason: string; steerId: string; interactive: boolean }
+>()
 
 /** Kinds excluded from abort attribution. bash_control_checkin fires on every
  *  still-running poll — tracking it would poison the tracker in any session
@@ -280,9 +304,15 @@ const ABORT_TRACKING_EXCLUDED_KINDS: ReadonlySet<SteerKind> = new Set(["bash_con
  *  tracking keep their previous candidate. Note: emitSteerFired early-returns
  *  WITHOUT tracking when the kill switch suppresses the steer — a disabled
  *  steer can't be vetoed, so nothing new is recorded. */
-function trackLastSteerFired(sessionId: string, kind: SteerKind, reason: string, interactive: boolean): void {
+function trackLastSteerFired(
+	sessionId: string,
+	kind: SteerKind,
+	reason: string,
+	steerId: string,
+	interactive: boolean,
+): void {
 	if (ABORT_TRACKING_EXCLUDED_KINDS.has(kind)) return
-	lastSteerFiredBySession.set(sessionId, { kind, reason, interactive })
+	lastSteerFiredBySession.set(sessionId, { kind, reason, steerId, interactive })
 }
 
 /** Test-only: clear the module-level abort tracker between tests. */
@@ -314,6 +344,7 @@ export function steerAbortTrackerExtension(pi: ExtensionAPI): void {
 		const payload: SteerAbortedPayload = {
 			kind: steer.kind,
 			reason: steer.reason,
+			steer_id: steer.steerId,
 			is_subagent: isAgentWorker(),
 			interactive: steer.interactive,
 		}

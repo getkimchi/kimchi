@@ -71,20 +71,82 @@ describe("handlers/steers", () => {
 		return logEvents(fetchMock)
 	}
 
-	it("steer:fired → steer.fired OTLP record with kind, reason, interactive, is_subagent", async () => {
-		const events = await emitted(handleSteerFired, {
+	it("steer:fired → steer.fired OTLP record with kind, reason, steer_id, turn state, session-shape", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.turnIndex = 4
+		ctx.promptStartMs = Date.now() - 10_000
+		handleSteerFired(ctx, {
 			kind: "todo_early_nudge",
 			reason: "early_nudge",
+			steer_id: "fire-1",
 			is_subagent: false,
 			interactive: true,
 		})
-		const attrs = attrsOf(events, "steer.fired")
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+		const attrs = attrsOf(logEvents(fetchMock), "steer.fired")
 		expect(attrs).toMatchObject({
 			kind: "todo_early_nudge",
 			reason: "early_nudge",
+			steer_id: "fire-1",
+			turn_index: "4",
+			// ms_into_turn is wall-clock elapsed since the mocked promptStartMs;
+			// >= 10s rather than exactly 10000 — a slow runner can tick a
+			// millisecond between setup and emit.
+			steer_ordinal: "1",
 			is_subagent: "false",
 			interactive: "true",
 		})
+		expect(Number(attrs?.ms_into_turn)).toBeGreaterThanOrEqual(10_000)
+	})
+
+	it("steer:fired — second fire increments steer_ordinal and refreshes lastSteer; no steer_id → lastSteer unchanged", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.turnIndex = 2
+		handleSteerFired(ctx, { kind: "exploration_guard", reason: "turn_end", steer_id: "f-1", interactive: true })
+		expect(ctx.steerFiredCount).toBe(1)
+		expect(ctx.lastSteer).toEqual({ kind: "exploration_guard", steerId: "f-1", turnIndex: 2 })
+
+		ctx.turnIndex = 3
+		handleSteerFired(ctx, { kind: "continuation_nudge", reason: "empty_turn", steer_id: "f-2", interactive: true })
+		expect(ctx.steerFiredCount).toBe(2)
+		expect(ctx.lastSteer).toEqual({ kind: "continuation_nudge", steerId: "f-2", turnIndex: 3 })
+
+		// A fire without a steer_id counts (ordinal) but does not overwrite the
+		// tracked lastSteer — it can't be joined back.
+		ctx.turnIndex = 5
+		handleSteerFired(ctx, { kind: "bash_control_checkin", reason: "checkin", interactive: false })
+		expect(ctx.steerFiredCount).toBe(3)
+		expect(ctx.lastSteer?.steerId).toBe("f-2")
+	})
+
+	it("steer:outcome — steer_id and turns_to_outcome pass through; expired accepted", async () => {
+		const events = await emitted(handleSteerOutcome, {
+			kind: "continuation_nudge",
+			outcome: "expired",
+			steer_id: "fire-9",
+			turns_to_outcome: 3,
+			is_subagent: false,
+			interactive: true,
+		})
+		const attrs = attrsOf(events, "steer.outcome")
+		expect(attrs).toMatchObject({
+			kind: "continuation_nudge",
+			outcome: "expired",
+			steer_id: "fire-9",
+			turns_to_outcome: "3",
+		})
+	})
+
+	it("steer:aborted — steer_id passes through when present", async () => {
+		const events = await emitted(handleSteerAborted, {
+			kind: "exploration_guard",
+			reason: "turn_end",
+			steer_id: "fire-7",
+			is_subagent: false,
+			interactive: true,
+		})
+		expect(attrsOf(events, "steer.aborted")).toMatchObject({ steer_id: "fire-7" })
 	})
 
 	it("steer:outcome → steer.outcome OTLP record with kind, outcome, interactive, is_subagent", async () => {
@@ -143,7 +205,13 @@ describe("handlers/steers", () => {
 		// pipeline's, not this handler's — we only assert OUR allowlist keys
 		// are the only steer-* attrs and nothing leaked through.)
 		const steerAttrs = Object.keys(attrs ?? {}).filter((k) => !k.includes(".") && !AMBIENT_BARE_KEYS.has(k))
-		expect(steerAttrs.sort()).toEqual([...STEER_TELEMETRY_ATTR_ALLOWLIST["steer:fired"]].sort())
+		// Emitted steer attrs are a SUBSET of the allowlist — steer_id is only
+		// stamped when the fire carried one, so it isn't present here. The
+		// invariant that matters: no key outside the allowlist ever appears.
+		const allowlist: ReadonlySet<string> = new Set(STEER_TELEMETRY_ATTR_ALLOWLIST["steer:fired"])
+		for (const key of steerAttrs) expect(allowlist.has(key), `unexpected attr ${key}`).toBe(true)
+		expect(steerAttrs).toContain("turn_index")
+		expect(steerAttrs).toContain("steer_ordinal")
 		for (const value of Object.values(attrs ?? {})) {
 			expect(String(value)).not.toContain("secrets")
 			expect(String(value)).not.toContain("/etc/passwd")

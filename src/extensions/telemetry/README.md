@@ -140,6 +140,18 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 
 > **Privacy:** Loop-guard events carry only structured fields — `detector` (which loop detector fired), `count` (per-session warn count), and `is_subagent`. Raw tool args, command text, and the human-readable reason string are intentionally **not** emitted, to avoid leaking user data or secrets.
 
+## Steer / Nudge Events
+
+Guard and nudge extensions publish semantic facts on the `steer:fired` / `steer:outcome` / `steer:aborted` pi.events channels (`steer-events.ts`); this handler (`handlers/steers.ts`) forwards them to OTLP on an attribute allowlist. Payload content, tool args, command text, file paths, and free text are never transmitted — payloads are structured fields only.
+
+| Event | Meaning | Attributes |
+|---|---|---|
+| `steer.fired` | A steer/nudge/guard fired | `kind`, `reason`, `steer_id`, `turn_index`, `ms_into_turn`, `steer_ordinal`, `is_subagent`, `interactive` |
+| `steer.outcome` | The steer closed complied / repeated / expired | `kind`, `outcome`, `steer_id`, `turns_to_outcome`, `is_subagent`, `interactive` |
+| `steer.aborted` | User Esc-vetoed the turn following a steer | `kind`, `reason`, `steer_id`, `is_subagent`, `interactive` |
+
+`steer_id` is a random per-fire UUID generated at the emit site; outcome and aborted records carry the same id so a downstream join attributes them to the exact fire (replaces time-window joins). `turn_index` (1-based, session-scoped, strictly increasing — see the Turn indexing note below), `ms_into_turn`, and the 1-based `steer_ordinal` are stamped by the telemetry handler from `TelemetryContext` on the fire record, so emit sites stay state-free. `outcome` accepts `complied` (stopped / adopted), `repeated` (continued / ignored), or `expired` (the outcome window closed with no decision, e.g. session ended); not every emitting kind tracks all three yet. `steer.aborted` attribution is intentionally strict — a real (non-extension) user message clears the pending steer, so it only fires for the immediate post-steer turn; a separate, looser turn-based read lives on `agent.interrupted` via `last_steer_kind` / `last_steer_id` / `turns_since_last_steer` *(a true session-turn count even across prompts, since both indices are session-scoped)*.
+
 > **Tool decisions:** `decision_source` is the official Claude Code `source` attribute, renamed because `source` already holds the session origin (`cli` / `acp`). `source_detail` is a kimchi-specific refinement (see `PermissionDecisionSourceDetail` in `permissions/permissions-events.ts`). Acceptance rate = `accept / (accept + reject)`.
 >
 > **Interruptions:** `session.end{ended_by}` never observes mid-turn aborts — pi's `ended_by` vocabulary (`fork|manual|new|overflow|quit|reload|resume|startup`) is session-scoped. `agent.interrupted` is emitted once per aborted agent run instead, detected from the final assistant message's `stopReason === "aborted"`: an aborted message with streamed content means the cancel landed mid-LLM-stream (`phase: "llm"`); an empty aborted message preceded by an errored tool result means the cancel landed during that tool's execution (`phase: "tool"`). Follow-up prompts (steering) are intentionally NOT interruptions: they already produce a `user_message` record, so they are detectable by turn ordering downstream. Join interruptions to the turn's `user_message` / `tool_result` records via (`session.id`, `turn_index`).

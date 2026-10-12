@@ -703,7 +703,10 @@ export function registerFermentEvents(
 			// handling, so it falls through to the dropdown below and only
 			// suppresses generic recovery afterwards.
 			if (stopReason === "stop") {
-				const outcome = maybeInjectScopingStopNudge(pi, f.id, toolNames, stopReason, { interactive })
+				const outcome = maybeInjectScopingStopNudge(pi, f.id, toolNames, stopReason, {
+					interactive,
+					sessionId: ctx.sessionManager.getSessionId(),
+				})
 				if (outcome.kind === "scheduled") return
 				if (outcome.kind === "claimed") scopingClaimed = true
 			}

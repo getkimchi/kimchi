@@ -3,6 +3,7 @@ import { isAgentWorker } from "./agent-worker-context.js"
 import { ASSISTANT_OUTPUT_WITHHELD } from "./orchestration/continuation-nudge.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
 import { sendSteer } from "./steer-events.js"
+import { watchSteerOutcome } from "./steer-outcome-watcher.js"
 
 export const DEFAULT_READ_TOOLS = new Set([
 	"read",
@@ -117,6 +118,12 @@ export class ExplorationGuard {
 		this.currentTurnHasAnyTool = false
 		this.currentTurnHasReadTool = false
 		this.subagentAbortPending = false
+	}
+
+	/** True when toolName lands in the configured write/action set — used by
+	 *  the steer-outcome watcher to classify the post-steer tool call. */
+	isWriteToolName(toolName: string): boolean {
+		return this.writeTools.has(toolName)
 	}
 
 	turnStart(): void {
@@ -298,7 +305,29 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 		}
 
 		guard.turnEnd((text) => {
-			sendSteer(pi, ctx, { kind: "exploration_guard", reason: "turn_end", customType: STEER_MESSAGE_TYPE, text })
+			const steerId = sendSteer(pi, ctx, {
+				kind: "exploration_guard",
+				reason: "turn_end",
+				customType: STEER_MESSAGE_TYPE,
+				text,
+			})
+			// Complied = the next action tool (edit/write/command/subagent) within
+			// a few calls; repeated = the window closes on continued read-only
+			// exploration. 3 calls ≈ one more read cycle. ctx can be undefined on
+			// hosts that don't supply one; skip the watch there (no session key).
+			if (steerId !== undefined && ctx) {
+				watchSteerOutcome({
+					kind: "exploration_guard",
+					steerId,
+					sessionId: ctx.sessionManager.getSessionId(),
+					interactive: ctx.hasUI,
+					windowToolCalls: 3,
+					classify: (event) =>
+						event.type === "tool_execution_end" && event.toolName !== undefined && guard.isWriteToolName(event.toolName)
+							? "complied"
+							: undefined,
+				})
+			}
 		})
 	})
 }

@@ -83,7 +83,27 @@ describe("steer-events", () => {
 		expect(payload.interactive).toBe(true)
 		expect(typeof payload.is_subagent).toBe("boolean")
 		// Privacy: no free-text fields beyond the short reason code.
-		expect(Object.keys(payload).sort()).toEqual(["interactive", "is_subagent", "kind", "reason"])
+		expect(Object.keys(payload).sort()).toEqual(["interactive", "is_subagent", "kind", "reason", "steer_id"])
+	})
+
+	it("emitSteerFired returns a per-fire steer_id stamped on the payload; undefined when kill-switched", () => {
+		const { pi, emitted } = makePi()
+		const id = emitSteerFired(pi, "todo_early_nudge", "early_nudge")
+		expect(id).toMatch(/^[0-9a-f-]{36}$/)
+		expect((emitted[0].payload as SteerFiredPayload).steer_id).toBe(id)
+		// Each fire gets a distinct id.
+		expect(emitSteerFired(pi, "todo_early_nudge", "early_nudge")).not.toBe(id)
+
+		process.env[steerDisableFlagName("todo_early_nudge")] = "1"
+		expect(emitSteerFired(pi, "todo_early_nudge", "early_nudge")).toBeUndefined()
+	})
+
+	it("emitSteerOutcome threads caller-supplied steer_id and turns_to_outcome", () => {
+		const { pi, emitted } = makePi()
+		emitSteerOutcome(pi, "todo_early_nudge", "complied", { interactive: true, steerId: "fire-1", turnsToOutcome: 2 })
+		const payload = emitted[0].payload as SteerOutcomePayload
+		expect(payload.steer_id).toBe("fire-1")
+		expect(payload.turns_to_outcome).toBe(2)
 	})
 
 	it("outcome payload shape: semantic kind, complied|repeated outcome, session-shape flags", () => {
@@ -198,6 +218,16 @@ describe("steer-events", () => {
 
 			expect(emitted.filter((e) => e.channel === STEER_EVENTS.ABORTED)).toHaveLength(0)
 		})
+
+		it("steer:aborted carries the same steer_id as its fire", async () => {
+			const { pi, emitted, fire } = makeTrackingPi()
+			const id = emitSteerFired(pi, "exploration_guard", "turn_end", { interactive: true, sessionId: "session" })
+			await fire("turn_end", { message: { role: "assistant", stopReason: "aborted" } })
+
+			const aborted = emitted.filter((e) => e.channel === STEER_EVENTS.ABORTED)
+			expect(aborted).toHaveLength(1)
+			expect(aborted[0].payload).toMatchObject({ steer_id: id })
+		})
 	})
 })
 
@@ -233,7 +263,7 @@ describe("sendSteer", () => {
 		resetSteerAbortTracker()
 	})
 
-	it("sends a marked hidden message and emits the fired event", () => {
+	it("sends a marked hidden message, emits the fired event, returns the fire id", () => {
 		const { pi, emitted, sent } = makePiWithSend()
 		const ok = sendSteer(pi, makeCtx(), {
 			kind: "review_write_guard",
@@ -242,7 +272,10 @@ describe("sendSteer", () => {
 			text: "stop editing",
 		})
 
-		expect(ok).toBe(true)
+		// Truthy = a steer was sent (previously boolean true); the value is the
+		// emitted fire's steer_id for outcome attribution.
+		expect(typeof ok).toBe("string")
+		expect((emitted[0]?.payload as SteerFiredPayload | undefined)?.steer_id).toBe(ok)
 		expect(sent).toHaveLength(1)
 		const message = sent[0].message as {
 			customType: string
@@ -261,7 +294,7 @@ describe("sendSteer", () => {
 		expect(emitted[0].payload).toMatchObject({ kind: "review_write_guard", reason: "steer" })
 	})
 
-	it("kill switch: returns false, sends nothing, emits nothing", () => {
+	it("kill switch: returns undefined, sends nothing, emits nothing", () => {
 		const { pi, emitted, sent } = makePiWithSend()
 		process.env[steerDisableFlagName("exploration_guard")] = "1"
 		const ok = sendSteer(pi, makeCtx(), {
@@ -271,7 +304,7 @@ describe("sendSteer", () => {
 			text: "stop exploring",
 		})
 
-		expect(ok).toBe(false)
+		expect(ok).toBeUndefined()
 		expect(sent).toHaveLength(0)
 		expect(emitted).toHaveLength(0)
 	})

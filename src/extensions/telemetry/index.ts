@@ -821,24 +821,18 @@ function onLoopGuardSubagentAbort(raw: unknown): void {
 // Steer/nudge domain event handlers (subscribed via pi.events)
 // ---------------------------------------------------------------------------
 
-function onSteerFired(raw: unknown): void {
+function onSteerFired(ctx: TelemetryContext, raw: unknown): void {
 	if (!isEnabled()) return
-	const ctx = _telemetryCtx
-	if (!ctx) return
 	handleSteerFired(ctx, raw)
 }
 
-function onSteerOutcome(raw: unknown): void {
+function onSteerOutcome(ctx: TelemetryContext, raw: unknown): void {
 	if (!isEnabled()) return
-	const ctx = _telemetryCtx
-	if (!ctx) return
 	handleSteerOutcome(ctx, raw)
 }
 
-function onSteerAborted(raw: unknown): void {
+function onSteerAborted(ctx: TelemetryContext, raw: unknown): void {
 	if (!isEnabled()) return
-	const ctx = _telemetryCtx
-	if (!ctx) return
 	handleSteerAborted(ctx, raw)
 }
 
@@ -938,10 +932,14 @@ export default function telemetryExtension(config: TelemetryConfig) {
 
 		// Subscribe to steer/nudge domain events. Guard/nudge
 		// extensions publish fire/outcome facts; telemetry forwards them
-		// through the attribute allowlist in handlers/steers.ts.
-		pi.events.on(STEER_EVENTS.FIRED, onSteerFired)
-		pi.events.on(STEER_EVENTS.OUTCOME, onSteerOutcome)
-		pi.events.on(STEER_EVENTS.ABORTED, onSteerAborted)
+		// through the attribute allowlist in handlers/steers.ts. Subscribed
+		// with closures over the per-session telemetryCtx — the steer handlers
+		// mutate session state (steerFiredCount, lastSteer), so routing them
+		// through the module-global pointer would cross sessions on a
+		// concurrent multi-session ACP host.
+		pi.events.on(STEER_EVENTS.FIRED, (raw) => onSteerFired(telemetryCtx, raw))
+		pi.events.on(STEER_EVENTS.OUTCOME, (raw) => onSteerOutcome(telemetryCtx, raw))
+		pi.events.on(STEER_EVENTS.ABORTED, (raw) => onSteerAborted(telemetryCtx, raw))
 
 		// Subscribe to permission decision events. The permissions extension
 		// publishes one fact per gated tool decision; telemetry translates them

@@ -119,6 +119,18 @@ export class TelemetryContext {
 	lastSessionType: string | undefined
 	/** Number of context compactions in the current session. */
 	compactionCount = 0
+	/** Concrete routed backend model observed at the last assistant message
+	 *  when backend routing mapped a virtual id (auto / auto-beta) to a real
+	 *  model. Stamped as `routed_model` on steer events so comply-rate slices
+	 *  stay usable under routing (mirrors agent.interrupted). */
+	lastRoutedModel: string | undefined
+	/** Count of steer.fired events emitted in this session, stamped on each
+	 *  fire as `steer_ordinal` (1-based) for per-kind sequencing analysis. */
+	steerFiredCount = 0
+	/** Most recent steer.fired in this session, recorded by the steer handler.
+	 *  `agent.interrupted` reads this to carry which steer (if any) preceded a
+	 *  user abort and how many turns ago (Chunk 4 of the P0 plan). */
+	lastSteer: { kind: string; steerId: string; turnIndex: number } | undefined
 	/** Cached OS metadata — computed once per SessionContext instance. */
 	private osMetadata: ReturnType<typeof getOsMetadata>
 
@@ -162,6 +174,9 @@ export class TelemetryContext {
 		this.toolStartTimes.clear()
 		this.lastSessionType = undefined
 		this.compactionCount = 0
+		this.lastRoutedModel = undefined
+		this.steerFiredCount = 0
+		this.lastSteer = undefined
 		this.cumulative = getOrCreateAccumulator(this.telemetryId)
 		this.inFlight.clear()
 		this.shuttingDown = false

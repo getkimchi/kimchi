@@ -207,7 +207,10 @@ export default function todosExtension(pi: ExtensionAPI): void {
 				if (!isSteerDisabled("todo_early_nudge")) {
 					markTodoNudgeFired(sessionId)
 					pi.sendMessage(hiddenTodoMessage(TODO_EARLY_NUDGE_MESSAGE), { deliverAs: "steer" })
-					emitSteerFired(pi, "todo_early_nudge", "early_nudge", { interactive: ctx.hasUI })
+					emitSteerFired(pi, "todo_early_nudge", "early_nudge", {
+						interactive: ctx.hasUI,
+						sessionId: ctx.sessionManager.getSessionId(),
+					})
 					markEarlyNudgeFired(sessionId, count)
 				}
 			}

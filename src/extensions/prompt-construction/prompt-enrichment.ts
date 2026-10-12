@@ -70,6 +70,7 @@ import {
 } from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
 import { emitSteerFired, isSteerDisabled } from "../steer-events.js"
+import { watchSteerOutcome } from "../steer-outcome-watcher.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
 import { hasUserLoop } from "./session-user-loop.js"
@@ -80,6 +81,27 @@ import {
 	type PromptMode,
 	type ToolInfo,
 } from "./system-prompt.js"
+
+/** watchSteerOutcome classifier for the two continuation-nudge fire sites.
+ *  Complied = the model calls a tool following the nudge; repeated = another
+ *  text-only / empty turn. 2-turn window so a think-then-act model complies
+ *  on its second turn rather than expiring. Empty steerId (kill-switch race)
+ *  still watches so the behavior/expiry telemetry stays whole. */
+function watchSteerContinuationOutcome(steerId: string | undefined, interactive: boolean, sessionId: string): void {
+	watchSteerOutcome({
+		kind: "continuation_nudge",
+		steerId,
+		sessionId,
+		interactive,
+		windowTurns: 2,
+		classify: (event) =>
+			event.type === "tool_execution_end"
+				? "complied"
+				: event.type === "turn_end" && event.textOnly
+					? "repeated"
+					: undefined,
+	})
+}
 
 function safeUsername(): string {
 	try {
@@ -712,7 +734,11 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 							{ customType: NUDGE_CUSTOM_TYPE, content: EMPTY_TURN_NUDGE_TEXT, display: false },
 							{ deliverAs: "followUp" },
 						)
-						emitSteerFired(pi, "continuation_nudge", "empty_turn", { interactive: ctx.hasUI, sessionId })
+						const steerId = emitSteerFired(pi, "continuation_nudge", "empty_turn", {
+							interactive: ctx.hasUI,
+							sessionId,
+						})
+						watchSteerContinuationOutcome(steerId, ctx.hasUI, sessionId)
 					}
 					return
 				}
@@ -727,7 +753,11 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 					},
 					{ deliverAs: "followUp" },
 				)
-				emitSteerFired(pi, "continuation_nudge", "continuation", { interactive: ctx.hasUI, sessionId })
+				const steerId = emitSteerFired(pi, "continuation_nudge", "continuation", {
+					interactive: ctx.hasUI,
+					sessionId,
+				})
+				watchSteerContinuationOutcome(steerId, ctx.hasUI, sessionId)
 			})
 
 			// Fallback cleanup at settlement: `agent_settled` fires after the

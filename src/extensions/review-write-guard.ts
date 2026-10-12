@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { AgentOutcomeKind, AgentRecord, SubagentType } from "./agents/personas/types.js"
 import { resolveMultiModelEnabled } from "./multi-model.js"
 import { isSteerDisabled, sendSteer } from "./steer-events.js"
+import { watchSteerOutcome } from "./steer-outcome-watcher.js"
 import { getCurrentPhase } from "./tags.js"
 
 const IMPLEMENTATION_TOOLS = new Set(["edit", "write"])
@@ -343,11 +344,25 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 
 		// Steers are advisory: the tool call proceeds either way. (The kill
 		// switch is handled by the early return above.)
-		sendSteer(pi, ctx, {
+		const steerId = sendSteer(pi, ctx, {
 			kind: "review_write_guard",
 			reason: "steer",
 			customType: STEER_MESSAGE_TYPE,
 			text: result.steer,
+		})
+		// Complied = N non-write tool calls before the next write attempt;
+		// repeated = a write attempt while the window is open. Matches the
+		// guard's own re-steer cadence so outcomes don't double-count.
+		watchSteerOutcome({
+			kind: "review_write_guard",
+			steerId,
+			sessionId: ctx.sessionManager.getSessionId(),
+			interactive: ctx.hasUI,
+			windowToolCalls: 3,
+			classify: (event) =>
+				event.type === "tool_execution_end" && event.toolName !== undefined && IMPLEMENTATION_TOOLS.has(event.toolName)
+					? "repeated"
+					: undefined,
 		})
 		return { block: false }
 	})

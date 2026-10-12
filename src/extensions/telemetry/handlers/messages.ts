@@ -37,6 +37,13 @@ export async function handleMessageEnd(
 
 		const model = assistant.model ?? ctx.model?.id ?? "unknown"
 		if (model !== "unknown") tm.currentModel = model
+		// Under backend routing the virtual selection id stays in `model` and
+		// the concrete pick lands in `responseModel`. Track it so steer events
+		// (which fire on the handler path, not message_end) can carry
+		// routed_model alongside the virtual selection.
+		if (typeof assistant.responseModel === "string" && assistant.responseModel !== model) {
+			tm.lastRoutedModel = assistant.responseModel
+		}
 		const availableModels = getAvailableModels()
 		const meta = availableModels.find(
 			(m: { slug: string; provider?: string; limits?: { context_window?: number } }) => m.slug === model,
@@ -125,6 +132,17 @@ export function handleAgentEnd(tm: TelemetryContext, ctx: ExtensionContext, even
 			(m): m is AssistantMessage =>
 				m.role === "assistant" && typeof m.responseModel === "string" && m.responseModel !== m.model,
 		)?.responseModel
+		// Last-steer attribution for aborts the strict steer:aborted tracker
+		// clears: a real user message wipes that tracker, but "user prompted,
+		// then aborted 2 turns later" is still steer-relevant. Turns are capped
+		// at 5 so an abort long after a steer doesn't keep attributing. Both
+		// indices are session-scoped (1-based, never reset across prompts), so
+		// the diff is a true turn count even when the steer fired in an
+		// earlier prompt's run than the aborted one.
+		const lastSteer = tm.lastSteer
+		const turnsSinceLastSteer = lastSteer ? tm.turnIndex - lastSteer.turnIndex : undefined
+		const recentSteer =
+			lastSteer && turnsSinceLastSteer !== undefined && turnsSinceLastSteer <= 5 ? lastSteer : undefined
 		tm.emit(
 			"agent.interrupted",
 			{
@@ -137,6 +155,13 @@ export function handleAgentEnd(tm: TelemetryContext, ctx: ExtensionContext, even
 				is_subagent: String(isAgentWorker()),
 				turn_index: tm.turnIndex,
 				ms_into_turn: tm.promptStartMs > 0 ? Date.now() - tm.promptStartMs : 0,
+				...(recentSteer
+					? {
+							last_steer_kind: recentSteer.kind,
+							last_steer_id: recentSteer.steerId,
+							turns_since_last_steer: turnsSinceLastSteer,
+						}
+					: {}),
 			},
 			ctx,
 			// `currentModel` is the user-facing selection: under backend routing

@@ -35,6 +35,7 @@ import {
 	shouldNudge,
 } from "../../shared/planning/planning-stop-nudge.js"
 import { emitSteerFired, isSteerDisabled } from "../steer-events.js"
+import { watchSteerOutcome } from "../steer-outcome-watcher.js"
 import { decideContinuation } from "./continuation.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
@@ -286,7 +287,7 @@ export function maybeInjectScopingStopNudge(
 	fermentId: string,
 	toolNames: string[],
 	stopReason: string | undefined,
-	opts: { interactive: boolean } = { interactive: true },
+	opts: { interactive: boolean; sessionId?: string } = { interactive: true },
 ): ScopingStopNudgeOutcome {
 	const completionSignalPresent = hasFermentScopingCompletionSignal(toolNames)
 
@@ -320,6 +321,28 @@ export function maybeInjectScopingStopNudge(
 		},
 		{ triggerTurn: true },
 	)
-	emitSteerFired(pi, "planning_stop_nudge", "scoping_stop", { interactive: opts.interactive })
+	const steerId = emitSteerFired(pi, "planning_stop_nudge", "scoping_stop", {
+		interactive: opts.interactive,
+		sessionId: opts.sessionId,
+	})
+	// Complied = any tool call or propose within the next turn (the agent
+	// picked work back up); repeated = it stopped again. One-turn window —
+	// this nudge means "don't stop now", so compliance is immediate.
+	watchSteerOutcome({
+		kind: "planning_stop_nudge",
+		steerId,
+		// Session id routes the watch (and the abort tracker above) to the
+		// session whose pi events feed it; the empty-key fallback only fits
+		// single-session hosts and would strand the watch on ACP.
+		sessionId: opts.sessionId,
+		interactive: opts.interactive,
+		windowTurns: 1,
+		classify: (event) =>
+			event.type === "tool_execution_end"
+				? "complied"
+				: event.type === "turn_end" && event.textOnly
+					? "repeated"
+					: undefined,
+	})
 	return { kind: "scheduled" }
 }

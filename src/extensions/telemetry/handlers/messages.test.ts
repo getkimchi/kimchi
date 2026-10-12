@@ -524,6 +524,107 @@ describe("handleAgentEnd", () => {
 		expect(emitSpy).not.toHaveBeenCalled()
 	})
 
+	it("agent.interrupted carries last_steer_* when the abort lands within 5 turns of a steer", () => {
+		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
+		// A continuation_nudge fired at turn 3; the user typed their own prompt
+		// (which strictly clears steer:aborted) and then aborted at turn 5.
+		ctx.lastSteer = { kind: "continuation_nudge", steerId: "f-99", turnIndex: 3 }
+		ctx.turnIndex = 5
+		handleBeforeAgentStart(ctx, piCtx, { prompt: "thanks, now refactor it" })
+		const emitSpy = vi.spyOn(ctx, "emit")
+		emitSpy.mockClear()
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{ role: "user", content: [{ text: "thanks, now refactor it" }] },
+				{ role: "assistant", stopReason: "aborted", content: [{ text: "partial" }] },
+			],
+		} as unknown as AgentEndEvent)
+
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [eventName, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(eventName).toBe("agent.interrupted")
+		expect(attrs.last_steer_kind).toBe("continuation_nudge")
+		expect(attrs.last_steer_id).toBe("f-99")
+		expect(attrs.turns_since_last_steer).toBe(2)
+	})
+
+	it("agent.interrupted keeps last_steer_* non-negative across prompts (session-scoped turn counter)", () => {
+		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
+		// Prompt 1 occupies session turn 1 and runs three turns; a steer fires
+		// during its last turn (3).
+		ctx.stampUserMessageTurn()
+		ctx.advanceTurn()
+		ctx.advanceTurn()
+		ctx.advanceTurn()
+		ctx.lastSteer = { kind: "exploration_guard", steerId: "f-1", turnIndex: ctx.turnIndex }
+		// Prompt 2 runs two turns; the user aborts during the second. With a
+		// per-prompt-resetting counter this diff went negative (0-based abort
+		// round minus the earlier run's round); the session counter keeps it a
+		// true turn count.
+		handleBeforeAgentStart(ctx, piCtx, { prompt: "one more thing" })
+		ctx.advanceTurn()
+		ctx.advanceTurn()
+		const emitSpy = vi.spyOn(ctx, "emit")
+		emitSpy.mockClear()
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{ role: "user", content: [{ text: "one more thing" }] },
+				{ role: "assistant", stopReason: "aborted", content: [{ text: "p" }] },
+			],
+		} as unknown as AgentEndEvent)
+
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [eventName, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(eventName).toBe("agent.interrupted")
+		expect(attrs.turn_index).toBe(5)
+		expect(attrs.last_steer_kind).toBe("exploration_guard")
+		expect(attrs.last_steer_id).toBe("f-1")
+		expect(attrs.turns_since_last_steer).toBe(2)
+	})
+
+	it("agent.interrupted drops last_steer_* when the abort is more than 5 turns after the steer", () => {
+		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
+		ctx.lastSteer = { kind: "exploration_guard", steerId: "f-1", turnIndex: 2 }
+		ctx.turnIndex = 9 // 7 turns later — long past attribution.
+		handleBeforeAgentStart(ctx, piCtx, { prompt: "do more" })
+		const emitSpy = vi.spyOn(ctx, "emit")
+		emitSpy.mockClear()
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{ role: "user", content: [{ text: "do more" }] },
+				{ role: "assistant", stopReason: "aborted", content: [{ text: "p" }] },
+			],
+		} as unknown as AgentEndEvent)
+
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(attrs).not.toHaveProperty("last_steer_kind")
+		expect(attrs).not.toHaveProperty("last_steer_id")
+		expect(attrs).not.toHaveProperty("turns_since_last_steer")
+	})
+
+	it("agent.interrupted has no last_steer_* when no steer fired this session", () => {
+		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
+		ctx.turnIndex = 2
+		handleBeforeAgentStart(ctx, piCtx, { prompt: "task" })
+		const emitSpy = vi.spyOn(ctx, "emit")
+		emitSpy.mockClear()
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{ role: "user", content: [{ text: "task" }] },
+				{ role: "assistant", stopReason: "aborted", content: [{ text: "p" }] },
+			],
+		} as unknown as AgentEndEvent)
+
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(attrs).not.toHaveProperty("last_steer_kind")
+	})
+
 	it("emits agent.interrupted with phase llm when the last assistant message was aborted mid-stream", () => {
 		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
 		ctx.turnIndex = 3

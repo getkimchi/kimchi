@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { emitSteerFired, isSteerDisabled, type SteerKind, type SteerReason } from "../steer-events.js"
 import { markHarnessSteer } from "../steer-marker.js"
+import { watchSteerOutcome } from "../steer-outcome-watcher.js"
 
 /**
  * One-shot staleness steering.
@@ -54,11 +55,36 @@ export function sendHiddenSteer(
 		},
 		{ deliverAs: "steer" },
 	)
-	if (opts.steerKind)
-		emitSteerFired(pi, opts.steerKind, opts.steerReason ?? "staleness", {
+	if (opts.steerKind) {
+		const steerId = emitSteerFired(pi, opts.steerKind, opts.steerReason ?? "staleness", {
 			interactive: opts.interactive,
 			sessionId: opts.sessionId,
 		})
+		// Complied = a todo write within the next few non-todo tool calls;
+		// repeated = the window closes on more non-todo work. Mirrors the
+		// todo_early_nudge bespoke window (5). isTodoWriteToolName is imported
+		// lazily to avoid a cycle back into todos/index.ts.
+		watchSteerOutcome({
+			kind: opts.steerKind,
+			steerId,
+			sessionId: opts.sessionId,
+			interactive: opts.interactive === true,
+			windowToolCalls: 5,
+			classify: (event) =>
+				event.type === "tool_execution_end" && event.toolName !== undefined && isTodoWriteTool(event.toolName)
+					? "complied"
+					: undefined,
+		})
+	}
+}
+
+/** Local mirror of todos/index.ts's isTodoWriteToolName — importing it would
+ *  pull this module back into the extension it lives in. Todo-tool names are
+ *  stable (the upstream todo tool is built-in), so a small constant is the
+ *  safe seam. */
+const TODO_WRITE_TOOL_NAMES = new Set(["todo", "todo_write", "todowrite"])
+function isTodoWriteTool(toolName: string): boolean {
+	return TODO_WRITE_TOOL_NAMES.has(toolName.toLowerCase())
 }
 
 /**
