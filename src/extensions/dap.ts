@@ -320,11 +320,22 @@ export default function (pi: ExtensionAPI) {
 	// here would carve them out of worker profiles by side effect.
 	const revealSessionTools = createDeferredReveal(pi, visibility, DAP_SESSION_TOOL_NAMES, { hideOnReset: false })
 	const revealEntryTools = createDeferredReveal(pi, visibility, DAP_ENTRY_TOOL_NAMES, { hideOnReset: false })
-	// Skill-load anchor: reading the dap-debugging SKILL.md is the harness's
+	// Skill-load anchor: loading the dap-debugging skill is the harness's
 	// documented way into debugging, so it reveals the entry tools. Watch
-	// tool_call (pre-execution) — the path is in the call arguments. The read
-	// call's own result carries the in-band reveal marker (addedToolNames).
+	// tool_call (pre-execution) — the skill/npath is in the call arguments.
+	// Two load mechanisms must both fire the anchor:
+	//   - skill_view with name === "dap-debugging" (the canonical path since
+	//     #1288: the harness's routing contract tells models to load skills
+	//     this way; it reads from the skills-manager store, so no `read` call
+	//     ever happens)
+	//   - read of the SKILL.md file directly (path contains the marker)
+	// The triggering call's own result carries the in-band reveal marker
+	// (addedToolNames).
 	pi.on("tool_call", (event) => {
+		if (event.toolName === "skill_view") {
+			if (event.input.name === "dap-debugging") revealEntryTools.revealOnce(event.toolCallId)
+			return
+		}
 		if (event.toolName !== "read") return
 		const path = event.input.path
 		// Normalize separators: Windows read calls commonly carry backslashes.
@@ -536,7 +547,14 @@ export default function (pi: ExtensionAPI) {
 				program,
 				cwd,
 				args: opts.args,
-				stopOnEntry: opts.stopOnEntry,
+				// js-debug: honor stopOnEntry only for explicit interactive
+				// launches. Its entry stop lands on the first line of the debuggee
+				// and provisional breakpoints bind/migrate there — an entry stop's
+				// hitBreakpointIds can consume a nearby breakpoint so a later
+				// continue never stops again (observed: a 4-line script ran to
+				// completion past its only breakpoint). Without an entry stop,
+				// js-debug pauses directly at the bound breakpoint.
+				stopOnEntry: opts.stopOnEntry && adapter.name !== "js-debug",
 				env: opts.env,
 			})
 		} catch (err) {

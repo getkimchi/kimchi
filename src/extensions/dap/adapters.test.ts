@@ -38,6 +38,9 @@ beforeEach(() => {
 	mockReaddirSync.mockReset()
 	mockStatSync.mockReset()
 	mockSpawnSync.mockReset()
+	// Default: no subdirectories — the bounded downward marker scan finds
+	// nothing. Nested-module tests override via setTree().
+	mockReaddirSync.mockReturnValue([] as never)
 	// biome-ignore lint/suspicious/noExplicitAny: suppress Bun global for deterministic Node-path testing
 	;(globalThis as any).Bun = undefined
 })
@@ -46,6 +49,28 @@ function setFiles(files: string[]) {
 	mockExistsSync.mockImplementation(((p: unknown) => {
 		const rel = String(p).replace(/^\/project\//, "")
 		return files.includes(rel)
+	}) as never)
+}
+
+/** Like setFiles, but also implements readdirSync so the bounded downward
+ *  marker scan can walk the virtual directory tree derived from `files`. */
+function setTree(files: string[]) {
+	setFiles(files)
+	mockReaddirSync.mockImplementation(((p: unknown) => {
+		const rel = String(p).replace(/^\/project\/?/, "")
+		const prefix = rel ? `${rel}/` : ""
+		const children = new Map<string, boolean>()
+		for (const f of files) {
+			if (!f.startsWith(prefix)) continue
+			const rest = f.slice(prefix.length)
+			if (!rest) continue
+			const [name, ...tail] = rest.split("/")
+			if (name) children.set(name, children.get(name) || tail.length > 0)
+		}
+		return [...children].map(([name, isDir]) => ({
+			name,
+			isDirectory: () => isDir,
+		}))
 	}) as never)
 }
 
@@ -106,6 +131,20 @@ describe("detectAdapters", () => {
 		const result = detectAdapters("/project")
 		expect(result).toHaveLength(1)
 		expect(result[0].name).toBe("lldb-dap")
+	})
+
+	it("activates dlv at a repo root whose go.mod lives two levels down (nested module)", () => {
+		setTree(["cli/cai/go.mod"])
+		setBinaries(["dlv"])
+		const result = detectAdapters("/project")
+		expect(result).toHaveLength(1)
+		expect(result[0].name).toBe("dlv")
+	})
+
+	it("skips node_modules and dot-directories in the nested-module scan", () => {
+		setTree(["node_modules/dep/go.mod", ".devbox/go/pkg/mod/go.mod"])
+		setBinaries(["dlv"])
+		expect(detectAdapters("/project")).toHaveLength(0)
 	})
 
 	it("returns empty when binary is on PATH but no marker file exists", () => {
@@ -189,6 +228,13 @@ describe("detectMissingAdapters", () => {
 		setBinaries([])
 		const result = detectMissingAdapters("/project")
 		expect(result.map((a) => a.name).sort()).toEqual(["debugpy", "dlv", "js-debug"])
+	})
+
+	it("surfaces a missing dlv at a nested-module repo root", () => {
+		setTree(["apis/grpc/go.mod"])
+		setBinaries([])
+		const result = detectMissingAdapters("/project")
+		expect(result.map((a) => a.name)).toEqual(["dlv"])
 	})
 })
 
