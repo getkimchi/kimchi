@@ -601,6 +601,43 @@ describe("upstream MCP adapter facade", () => {
 		expect(planning.reapplyCurrentProfile).toHaveBeenCalledWith(harness.api)
 	})
 
+	it("drops a pending resnapshot when the session shuts down", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+
+		vi.useFakeTimers()
+		try {
+			// A status event schedules the resnapshot; the session is then
+			// replaced/reloaded before it fires. The stale pi's event bus throws
+			// on any later emit, so the callback must never run.
+			harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
+			await harness.getHandler("session_shutdown")({ type: "session_shutdown", reason: "reload" }, createContext())
+			await vi.advanceTimersByTimeAsync(250)
+			expect(planning.reapplyCurrentProfile).not.toHaveBeenCalled()
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("drops a pending resnapshot when a replacement session starts", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+
+		vi.useFakeTimers()
+		try {
+			// new/fork/switch/resume replacements surface as a fresh session_start
+			// (no session_shutdown) — the obsolete resnapshot must be dropped.
+			harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
+			await harness.getHandler("session_start")({ type: "session_start", reason: "resume" }, createContext())
+			await vi.advanceTimersByTimeAsync(250)
+			expect(planning.reapplyCurrentProfile).not.toHaveBeenCalled()
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
 	it("surfaces compatibility warnings when the session starts", async () => {
 		configState.warnings = ["legacy config is malformed"]
 		configState.legacyKeys = ["mcpSearch"]

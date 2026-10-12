@@ -244,6 +244,21 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	}
 	let warnings: string[] = []
 
+	// MCP status events arrive in bursts; one resnapshot after the burst settles
+	// avoids re-deriving the active set (and re-setting the snapshot flag) on
+	// every transition. Pending resnapshots are dropped on session boundaries:
+	// after a replacement the captured pi is stale, and the new session's own
+	// startup re-derives the set. registerTool stays synchronous — it is the
+	// self-correction path for late registrations.
+	const STATUS_RESYNC_DEBOUNCE_MS = 250
+	let statusResyncTimer: ReturnType<typeof setTimeout> | undefined
+	const clearStatusResync = (): void => {
+		if (statusResyncTimer !== undefined) {
+			clearTimeout(statusResyncTimer)
+			statusResyncTimer = undefined
+		}
+	}
+
 	// The adapter is installed after trust resolves, but its input readiness hook
 	// must exist before extension event dispatch begins. Forward through this
 	// eagerly registered handler so cold-cache direct tools are ready for the
@@ -253,6 +268,9 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	})
 
 	pi.on("session_start", async (event, ctx) => {
+		// A replacement path (new/fork/switch/resume) just invalidated the old pi;
+		// its pending resnapshot is obsolete.
+		clearStatusResync()
 		if (!policy) {
 			const cliOptions = getParsedCliArgs().options
 			const overridePath = cliOptions["mcp-config"]
@@ -316,8 +334,6 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	// avoids re-deriving the active set (and re-setting the snapshot flag) on
 	// every transition. registerTool stays synchronous — it is the
 	// self-correction path for late registrations.
-	const STATUS_RESYNC_DEBOUNCE_MS = 250
-	let statusResyncTimer: ReturnType<typeof setTimeout> | undefined
 	pi.events.on(MCP_STATUS_EVENT, () => {
 		if (statusResyncTimer !== undefined) clearTimeout(statusResyncTimer)
 		statusResyncTimer = setTimeout(() => {
@@ -325,9 +341,27 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			if (isToolSurfaceDebugEnabled()) {
 				console.debug("[tool-surface] mcp status burst settled; resnapshotting active profile")
 			}
-			reapplyCurrentProfile(pi)
+			try {
+				reapplyCurrentProfile(pi)
+			} catch (error) {
+				// The captured pi can be action-blocked when the timer fires: the
+				// extension is still loading, or the session was replaced/reloaded
+				// after the status event. Dropping is correct — the active session's
+				// own startup re-derives the set. Anything else is a real error.
+				const message = error instanceof Error ? error.message : String(error)
+				if (
+					!message.includes("Extension runtime not initialized") &&
+					!message.includes("stale after session replacement")
+				) {
+					throw error
+				}
+				if (isToolSurfaceDebugEnabled()) {
+					console.debug(`[tool-surface] resnapshot dropped: ${message}`)
+				}
+			}
 		}, STATUS_RESYNC_DEBOUNCE_MS)
 	})
+	pi.on("session_shutdown", clearStatusResync)
 }
 
 export default function mcpAdapterExtension(pi: ExtensionAPI): void {
