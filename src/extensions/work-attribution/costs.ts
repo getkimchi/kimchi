@@ -89,6 +89,22 @@ export function usd(nanos: bigint): string {
 	return `${nanos / NANOS_PER_USD}.${(nanos % NANOS_PER_USD).toString().padStart(9, "0")}`
 }
 
+/**
+ * Text people read; saved reports keep `usd()`. PR costs are often cents or less, so like the PR costs console page
+ * this keeps about three significant digits below $1, three decimals below $10 and cents from $10, rounding half up.
+ */
+export function roundedUsd(nanos: bigint): string {
+	if (!nanos) return "$0.00"
+	if (nanos < 1000n) return "<$0.000001"
+	const places =
+		nanos >= 10n * NANOS_PER_USD ? 2 : nanos >= NANOS_PER_USD ? 3 : Math.min(6, 12 - nanos.toString().length)
+	const unit = 10n ** BigInt(places)
+	const step = NANOS_PER_USD / unit
+	const rounded = (nanos + step / 2n) / step
+	const fraction = (rounded % unit).toString().padStart(places, "0").replace(/0+$/, "").padEnd(2, "0")
+	return `$${(rounded / unit).toLocaleString("en-US")}.${fraction}`
+}
+
 export function time(value: unknown): number | undefined {
 	if (
 		typeof value !== "string" ||

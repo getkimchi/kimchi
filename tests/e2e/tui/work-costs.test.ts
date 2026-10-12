@@ -131,8 +131,8 @@ test("an open PR's pending cost becomes a confirmed and inferred total once it i
 			await waitForText(terminal, "PR #731 open", { full: false, timeoutMs: 10_000 })
 			await waitForCosts(costsPath, (costs) => costs.requests?.length === 1)
 			terminal.submit("/work")
-			await waitForText(terminal, "Cost so far: unknown; $0.000000000 USD priced (open)")
-			await waitForText(terminal, "Prices: 0/1 requests priced, $0.000000000 USD known so far.")
+			await waitForText(terminal, "Cost so far: unknown; $0.00 priced (open)")
+			await waitForText(terminal, "Prices: 0/1 requests priced, $0.00 known so far.")
 			trace.step("an open PR's spend stays unknown while its request has no bill")
 			billed = true
 			setGitHub("merged")
@@ -140,9 +140,9 @@ test("an open PR's pending cost becomes a confirmed and inferred total once it i
 				costs.pullRequests?.some((row) => (row as { totalCostUsd?: unknown }).totalCostUsd === "0.000166000"),
 			)
 			terminal.submit("/work")
-			await waitForText(terminal, `Cost: $0.000166000 USD — ${url}`)
-			await waitForText(terminal, "Confirmed: $0.000000000 USD; inferred: $0.000166000 USD.")
-			await waitForText(terminal, "Prices: 1/1 requests priced, $0.000166000 USD.")
+			await waitForText(terminal, `Cost: $0.000166 — ${url}`)
+			await waitForText(terminal, "Confirmed: $0.00; inferred: $0.000166.")
+			await waitForText(terminal, "Prices: 1/1 requests priced, $0.000166.")
 			trace.step("the merged PR shows its billed total split into confirmed and inferred spend")
 		},
 	)

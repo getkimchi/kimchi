@@ -737,10 +737,15 @@ export function resetInvalidLlmBaseUrlWarningForTests(): void {
 	warnedInvalidLlmBaseUrl = false
 }
 
-export function resolveEndpoints(options?: { configPath?: string; cwd?: string }): ResolvedEndpoints {
+export function resolveEndpoints(options?: {
+	configPath?: string
+	cwd?: string
+	/** A configuration the caller already loaded for the same options, so it is not read again. */
+	config?: KimchiConfig
+}): ResolvedEndpoints {
 	let cfg: KimchiConfig
 	if (options) {
-		cfg = loadConfig(options)
+		cfg = options.config ?? loadConfig(options)
 	} else {
 		const stamp = globalConfigStamp()
 		if (resolvedEndpointsConfigCache?.stamp !== stamp) {

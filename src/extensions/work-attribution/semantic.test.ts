@@ -10,6 +10,7 @@ import { readConfigSetting } from "../../config/settings.js"
 import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createContext } from "../__mocks__/context.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
+import { DEFAULT_CLASSIFIER_CANDIDATE_REFS } from "../model-catalog/classifier-models.js"
 import * as redactionConfig from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
 import { getWorkId, setWorkId } from "../work-attribution.js"
@@ -102,7 +103,7 @@ const input = {
 	message: "Implement the comma-separated export.",
 }
 
-it("uses the selected model and normal auth with a durable ID per separate request", async () => {
+it("uses the selected model without shared classifier models, with normal auth and a durable ID per request", async () => {
 	const server = await provider([JSON.stringify({ decision: "specific" }), JSON.stringify({ decision: "match" })])
 	vi.mocked(server.registry.getApiKeyAndHeaders).mockResolvedValue({
 		ok: true,
@@ -124,6 +125,30 @@ it("uses the selected model and normal auth with a durable ID per separate reque
 	expect(overhead).toHaveLength(2)
 	expect(overhead.every((row) => row.purpose === "work-matching")).toBe(true)
 	for (const row of overhead) expect(row.segment).toMatchObject({ attribution: "session", reason: "work-matching" })
+})
+
+it("decides on the shared classifier models in order, the next one answering when a model cannot", async () => {
+	const failing = await provider("{}", 500)
+	const server = await provider([JSON.stringify({ decision: "specific" }), JSON.stringify({ decision: "match" })])
+	const [unauthorized, broken, answering] = DEFAULT_CLASSIFIER_CANDIDATE_REFS.map((ref, index) => {
+		const [name, id] = ref.split("/")
+		return { ...createModel(id, name), baseUrl: [server, failing, server][index].model.baseUrl }
+	})
+	const registry = createModelRegistry([server.model, unauthorized, broken, answering])
+	registry.getApiKeyAndHeaders.mockImplementation(async (model) =>
+		model === unauthorized ? { ok: false, error: "No API key" } : { ok: true, apiKey: "classifier-key" },
+	)
+	const ctx = createContext({ cwd: server.root, model: server.model, modelRegistry: registry })
+	expect(await classifyWorkIntent(ctx, input)).toEqual({
+		decision: "continue",
+		workId,
+		model: DEFAULT_CLASSIFIER_CANDIDATE_REFS[2],
+	})
+	expect(registry.getApiKeyAndHeaders.mock.calls.map(([model]) => model)).toEqual([unauthorized, broken, answering])
+	expect(failing.requests).toHaveLength(1)
+	expect(server.requests.map((request) => JSON.parse(request.body).model)).toEqual([answering.id, answering.id])
+	const overhead = readWorkRecords(join(server.root, "agent")).filter((row) => row.type === "request")
+	expect(overhead.map((row) => row.model)).toEqual([broken.id, answering.id, answering.id])
 })
 
 it("does not authenticate or send private task history when matching is disabled", async () => {
