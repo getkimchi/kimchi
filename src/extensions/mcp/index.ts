@@ -12,6 +12,7 @@ import { getConfiguredLegacyMcpKeys } from "../../config.js"
 import {
 	applyCooperativeTweak,
 	getCurrentProfile,
+	isToolSurfaceDebugEnabled,
 	reapplyCurrentProfile,
 	registerReadOnlyToolProvider,
 } from "../../shared/planning/tool-profile-manager.js"
@@ -311,8 +312,21 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		for (const handler of upstreamHandlers.session_start) await handler(event, ctx)
 	})
 
+	// Status events arrive in bursts; one resnapshot after the burst settles
+	// avoids re-deriving the active set (and re-setting the snapshot flag) on
+	// every transition. registerTool stays synchronous — it is the
+	// self-correction path for late registrations.
+	const STATUS_RESYNC_DEBOUNCE_MS = 250
+	let statusResyncTimer: ReturnType<typeof setTimeout> | undefined
 	pi.events.on(MCP_STATUS_EVENT, () => {
-		reapplyCurrentProfile(pi)
+		if (statusResyncTimer !== undefined) clearTimeout(statusResyncTimer)
+		statusResyncTimer = setTimeout(() => {
+			statusResyncTimer = undefined
+			if (isToolSurfaceDebugEnabled()) {
+				console.debug("[tool-surface] mcp status burst settled; resnapshotting active profile")
+			}
+			reapplyCurrentProfile(pi)
+		}, STATUS_RESYNC_DEBOUNCE_MS)
 	})
 }
 

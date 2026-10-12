@@ -118,6 +118,16 @@ export function isProviderReadOnlyTool(pi: ExtensionAPI, name: string): boolean 
 	return collectReadOnlyProviderNames(pi).includes(name)
 }
 
+/** Active tool names carried over — only on the resnapshot path; a deliberate apply replaces. */
+function carryOverNames(trigger: string, pi: ExtensionAPI): string[] {
+	return trigger === "resnapshot" ? pi.getActiveTools() : []
+}
+
+/** Whether KIMCHI_DEBUG_TOOL_SURFACE=1 requests active-set transition logging. */
+export function isToolSurfaceDebugEnabled(): boolean {
+	return process.env.KIMCHI_DEBUG_TOOL_SURFACE === "1"
+}
+
 /**
  * Core logic for `apply()` — sets the active tool list from the catalog and
  * sets the snapshot-applied flag. Exported separately so `FermentToolScope`
@@ -141,35 +151,39 @@ export function isProviderReadOnlyTool(pi: ExtensionAPI, name: string): boolean 
  *
  * @internal — not for direct use outside the tool-profile and ferment layers.
  */
-export function applyCore(profile: ToolProfile, pi: ExtensionAPI): void {
+export function applyCore(profile: ToolProfile, pi: ExtensionAPI, trigger = "apply"): void {
 	installTurnBoundaryReset(pi)
 	const disabled = getDisabledToolNames(pi)
 
+	// Registry-derived profiles rebuild additively on resnapshot, mirroring
+	// upstream's `_refreshToolRegistry` (previous active set + newly registered
+	// tools): sampling `getAllTools()` alone can persist a partial registry
+	// during an async registration wave. Only the resnapshot trigger unions;
+	// a deliberate profile apply replaces. Filters (ferment-only, adhoc-only,
+	// visibility votes) still win. Planning profiles never sample the registry.
 	let allowedNames: string[]
 	if (profile === "idle") {
 		// Idle = no active ferment, no plan mode. Restore the full registered
 		// toolset minus ferment-only tools so users keep access to bash, edit,
 		// write, third-party tools, etc. in normal chat.
-		allowedNames = pi
-			.getAllTools()
-			.map((t) => t.name)
-			.filter((name) => !isFermentOnlyToolName(name) && !disabled.has(name))
+		const carriedNames = carryOverNames(trigger, pi)
+		const registeredNames = pi.getAllTools().map((t) => t.name)
+		allowedNames = [...new Set([...carriedNames, ...registeredNames])].filter(
+			(name) => !isFermentOnlyToolName(name) && !disabled.has(name),
+		)
 	} else if (profile === "implementation-ferment") {
-		// Implementation phase: start from the full registered toolset so
-		// MCP/custom/third-party tools are preserved, then merge in the
-		// required ferment catalog tools defensively (they may not be
+		// Implementation phase: keep the previously active and full registered
+		// toolset so MCP/custom/third-party tools are preserved, then merge in
+		// the required ferment catalog tools defensively (they may not be
 		// registered in the mock/test environment, but must always be present).
 		// First-party adhoc-only tools (e.g. `questionnaire`) are excluded — the
 		// ferment interactive-question surface is `ask_user`.
-		const registeredNames = pi
-			.getAllTools()
-			.map((t) => t.name)
-			.filter((name) => !isAdhocOnlyToolName(name))
+		const carriedNames = carryOverNames(trigger, pi)
+		const registeredNames = pi.getAllTools().map((t) => t.name)
 		const catalogTools = getToolsForProfile(profile).map((t) => t.name)
-		// Union: registered tools first (preserves order), then any catalog
-		// tools not already present.
-		const merged = [...registeredNames, ...catalogTools.filter((name) => !registeredNames.includes(name))]
-		allowedNames = merged.filter((name) => !disabled.has(name))
+		allowedNames = [...new Set([...carriedNames, ...registeredNames, ...catalogTools])].filter(
+			(name) => !isAdhocOnlyToolName(name) && !disabled.has(name),
+		)
 	} else {
 		const tools = getToolsForProfile(profile)
 		allowedNames = tools.map((t) => t.name)
@@ -187,6 +201,18 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI): void {
 		// another extension disabled (e.g. ask_user / confirm_ferment_completion_
 		// criteria hidden when no UI is attached), undoing the cooperative vote.
 		allowedNames = allowedNames.filter((name) => !disabled.has(name))
+	}
+
+	if (isToolSurfaceDebugEnabled()) {
+		// Sampled only when logging is on, so gated-off runs pay nothing.
+		const previous = new Set(pi.getActiveTools())
+		const added = allowedNames.filter((name) => !previous.has(name))
+		const removed = [...previous].filter((name) => !allowedNames.includes(name))
+		console.debug(
+			`[tool-surface] apply profile=${profile} trigger=${trigger} count=${allowedNames.length}` +
+				(added.length ? ` added=[${added.join(",")}]` : "") +
+				(removed.length ? ` removed=[${removed.join(",")}]` : ""),
+		)
 	}
 
 	pi.setActiveTools(allowedNames)
@@ -317,7 +343,7 @@ export function installTurnBoundaryReset(pi: ExtensionAPI): void {
 export function reapplyCurrentProfile(pi: ExtensionAPI): boolean {
 	const profile = lastProfileByScope.get(getToolSessionScope(pi))
 	if (!profile) return false
-	applyCore(profile, pi)
+	applyCore(profile, pi, "resnapshot")
 	return true
 }
 

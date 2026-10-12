@@ -81,6 +81,7 @@ vi.mock("../../config.js", () => ({
 vi.mock("../../shared/planning/tool-profile-manager.js", () => ({
 	applyCooperativeTweak: planning.applyCooperativeTweak,
 	getCurrentProfile: () => planning.currentProfile,
+	isToolSurfaceDebugEnabled: () => false,
 	reapplyCurrentProfile: planning.reapplyCurrentProfile,
 	registerReadOnlyToolProvider: planning.registerReadOnlyToolProvider,
 }))
@@ -560,12 +561,42 @@ describe("upstream MCP adapter facade", () => {
 		expect(harness.api.registerCommand).toHaveBeenCalledWith("mcp", expect.anything())
 	})
 
-	it("reapplies the active profile after an upstream status update", () => {
+	it("reapplies the active profile once after a status-update burst settles", async () => {
 		configState.config = { mcpServers: { docs: { command: "docs" } } }
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
 
-		harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
+		vi.useFakeTimers()
+		try {
+			// 5-event burst.
+			for (let i = 0; i < 5; i++) {
+				harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
+			}
+			expect(planning.reapplyCurrentProfile).not.toHaveBeenCalled()
+
+			await vi.advanceTimersByTimeAsync(250)
+			expect(planning.reapplyCurrentProfile).toHaveBeenCalledTimes(1)
+			expect(planning.reapplyCurrentProfile).toHaveBeenCalledWith(harness.api)
+
+			// A later burst collapses the same way.
+			planning.reapplyCurrentProfile.mockClear()
+			harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
+			await vi.advanceTimersByTimeAsync(250)
+			expect(planning.reapplyCurrentProfile).toHaveBeenCalledTimes(1)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("still resyncs synchronously when the adapter registers a tool", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		planning.reapplyCurrentProfile.mockClear()
+
+		// registerTool must not wait out the status debounce.
+		upstream.api?.registerTool(tool("docs_get_issue", "MCP: get_issue"))
 
 		expect(planning.reapplyCurrentProfile).toHaveBeenCalledWith(harness.api)
 	})
