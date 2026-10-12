@@ -32,7 +32,7 @@ it.each([
 				params: expect.objectContaining({ sessionId, message: expect.stringContaining(message) }),
 			})
 	}
-	await command("/pr-reporting status", `PR reporting: ${telemetry ? "on" : "off"}`)
+	await command("/pr-reporting status", `PR reporting   ${telemetry ? "Enabled" : "Disabled"} (SaaS default)`)
 	if (!telemetry) expect(existsSync(path)).toBe(false)
 	await command("/pr-reporting on", "PR reporting on.")
 	expect(JSON.parse(readFileSync(path, "utf8")).enabled).toBe(true)

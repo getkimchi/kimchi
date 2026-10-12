@@ -50,7 +50,7 @@ for (const telemetry of [false, true]) {
 					expect(JSON.parse(readFileSync(path, "utf8")).defaultNoticeShown).toBe(true)
 				} else expect(fullText(terminal)).not.toContain("PR costs are reported to your account")
 				terminal.submit("/pr-reporting status")
-				await waitForText(terminal, `PR reporting: ${telemetry ? "on" : "off"} (SaaS default)`)
+				await waitForText(terminal, `PR reporting   ${telemetry ? "Enabled" : "Disabled"} (SaaS default)`)
 				if (!telemetry) expect(existsSync(path)).toBe(false)
 				trace.step("reporting follows the existing SaaS upload setting")
 				terminal.submit("/pr-reporting on")

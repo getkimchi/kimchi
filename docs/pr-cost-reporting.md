@@ -5,18 +5,31 @@ PR cost reporting follows the SaaS telemetry setting by default. When SaaS uploa
 The first interactive main session shows one notice that PR costs are reported, with `/pr-reporting off` to disable it. Studio shows it as a notification after the first turn, because notifications sent before a session is registered are dropped. The notice is saved per installation and does not repeat after restart. It is skipped when reporting is off or the user already made an explicit choice.
 
 - `/pr-reporting on` enables uploads for the verified account and requests an immediate update. It also clears upload windows, retry deadlines and account pauses, so the next snapshot of every repository goes out at once.
-- `/pr-reporting status` shows whether reporting follows the SaaS default or an explicit choice, whether this session uploads at all, queued repositories (and how many wait for their upload window), acknowledgements, server limits, partially reported repositories and delivery problems.
+- `/pr-reporting status` shows whether reporting is enabled and whether that follows the SaaS default or an explicit choice, whether this session uploads at all, queued and acknowledged repositories (and how many wait for their upload window), server limits, partially reported repositories, delivery problems and incomplete history coverage. Server limits and delivery problems come first and make the message a warning. Incomplete history alone is informational: requests without original account or repository evidence are skipped, and the other requests are still reported. Lines fit a 60-column terminal.
 - `/pr-reporting off` cancels delivery and deletes pending payloads. Local work history and revision counters remain. Reports already accepted by the server remain there.
+
+Typing `/pr-reporting ` suggests `on`, `off` and `status`.
 
 For example:
 
 ```text
-PR reporting: on (SaaS default)
-Uploads are skipped in this session: CI environment (GITHUB_ACTIONS). Local attribution continues.
-Queued repositories: 2 (1 waiting for the 5-minute upload window)
-Acknowledged repositories: 3
-PR cost reporting paused for this organization: organization limit reached (requests 50000 of 50000). Ask an admin to free space or wait; next try in about 5 h.
-owner/repo is partially reported: 1200 requests left out to fit the upload limits.
+Delivery problems
+- PR cost reporting paused for this organization:
+  organization limit reached (requests 50,000 of 50,000).
+  Ask an admin to free space or wait.
+  Next try in about 5 h.
+- owner/repo is partially reported: 1,200 requests left
+  out to fit the upload limits.
+
+PR reporting   Enabled (SaaS default)
+This session   No uploads; local attribution continues
+               Reason: CI environment (GITHUB_ACTIONS)
+Repositories   2 queued · 3 acknowledged
+               1 waiting for the 5-minute upload window
+
+History coverage incomplete
+  3,693 requests skipped without original account or
+  repository evidence. Other requests are still reported.
 ```
 
 Only main sessions with work tracking run this extension. Child sessions contribute their existing request records through the local calculator; they do not start upload workers. Turning Cost per PR off in `/resources` turns off work tracking, PR/MR status and reporting together.
@@ -109,7 +122,7 @@ GitHub IDs come from the PR's `id` and target `base.repo.id`. GitLab IDs come fr
 
 The inventory comes from the original journals through the same billing validation and calculator used by local cost summaries. It does not concatenate per-work `costs.json` files. Two works contributing to one PR do not duplicate requests. Cross-repository shared requests are reported as unknown in each repository; the backend handles duplicate billing evidence across snapshots. A request that starts after several PRs merged keeps all candidate IDs as a shared claim. The backend compares its start time with each merge time and places it outside those PR totals.
 
-Records without their original account or repository are skipped; Kimchi never attaches them to today's login. Independent valid repositories can still report with `historyComplete: false`. Only records of work with repository evidence (a scoped request or a commit) count; a question asked outside Git has neither. Records that would fall outside the upload window anyway do not affect completeness. A request in a repository without a GitHub or GitLab identity (no such remote, or the local repository no longer exists) has no snapshot to go to and does not affect completeness either. The same applies to a self-hosted server that Kimchi cannot recognize as GitHub or GitLab, for example because its API cannot be reached without saved credentials; Kimchi checks it again a day later. A repository lookup that failed for another reason, such as a network error or rate limit, leaves recent history incomplete until it succeeds. Missing earlier requests or conflicting provider metadata hold the affected repository. A GitLab MR with no merge time leaves its requests unknown while other MRs keep reporting. An unparseable final journal line without a newline is ignored as an interrupted append, as is a cut-off record that later appends moved past (older versions start a new line after it). Other malformed records, including a cut-off final record, and unreadable journals still hold the scan. These cases appear in `/pr-reporting status`. `historyComplete` describes the captured inventory, not activity before tracking was installed or while it was disabled.
+Records without their original account or repository are skipped; Kimchi never attaches them to today's login. Independent valid repositories can still report with `historyComplete: false`. Only records of work with repository evidence (a scoped request or a commit) count; a question asked outside Git has neither. Records that would fall outside the upload window anyway do not affect completeness. A request in a repository without a GitHub or GitLab identity (no such remote, or the local repository no longer exists) has no snapshot to go to and does not affect completeness either. The same applies to a self-hosted server that Kimchi cannot recognize as GitHub or GitLab, for example because its API cannot be reached without saved credentials; Kimchi checks it again a day later. A repository lookup that failed for another reason, such as a network error or rate limit, leaves recent history incomplete until it succeeds. Missing earlier requests or conflicting provider metadata hold the affected repository. A GitLab MR with no merge time leaves its requests unknown while other MRs keep reporting. An unparseable final journal line without a newline is ignored as an interrupted append, as is a cut-off record that later appends moved past (older versions start a new line after it). Other malformed records, including a cut-off final record, and unreadable journals still hold the scan. These cases appear in `/pr-reporting status`: skipped records as incomplete history coverage, held repositories and scans as delivery problems. `historyComplete` describes the captured inventory, not activity before tracking was installed or while it was disabled.
 
 ## Local state and retries
 
@@ -119,7 +132,7 @@ State lives under `getAgentDir()`:
 ~/.config/kimchi/harness/pr-cost-reporting/state.json
 ```
 
-An isolated harness home uses its own directory. The state file contains consent, a producer UUID, account/repository revision bookkeeping, pending snapshots, upload times, the PR states and `/work` correction receipts the server last acknowledged, and validated server limits. It also keeps a salted hash of the operating system's machine ID: a home restored or migrated onto another machine starts a new producer with empty bookkeeping, so two machines never replace each other's claims. The server deduplicates bills across producers, so copied history is not counted twice. Revision bookkeeping includes SHA-256 values of request UUIDs from acknowledged and possibly delivered snapshots, so a later incomplete scan cannot silently remove earlier claims. These hashes shrink to the new membership only when that exact revision is acknowledged. A lost or late acknowledgement leaves the earlier evidence intact. Opt-out retains these membership hashes and revision metadata, but removes pending bodies and raw request/billing IDs. Files are private to the local user. A lock protects concurrent writers; a synced temporary file and rename publish each update before HTTP starts.
+An isolated harness home uses its own directory. The state file contains consent, a producer UUID, account/repository revision bookkeeping, pending snapshots, upload times, the PR states and `/work` correction receipts the server last acknowledged, validated server limits, and how many requests the latest capture skipped for missing evidence. It also keeps a salted hash of the operating system's machine ID: a home restored or migrated onto another machine starts a new producer with empty bookkeeping, so two machines never replace each other's claims. The server deduplicates bills across producers, so copied history is not counted twice. Revision bookkeeping includes SHA-256 values of request UUIDs from acknowledged and possibly delivered snapshots, so a later incomplete scan cannot silently remove earlier claims. These hashes shrink to the new membership only when that exact revision is acknowledged. A lost or late acknowledgement leaves the earlier evidence intact. Opt-out retains these membership hashes and revision metadata, but removes pending bodies and raw request/billing IDs. Files are private to the local user. A lock protects concurrent writers; a synced temporary file and rename publish each update before HTTP starts.
 
 Only the newest pending snapshot for a repository is retained. Corrections and revocations with preserved request membership replace earlier allocations. When all requests move to another verified repository in the same account, an empty higher-revision snapshot withdraws the old group. The old membership remains protected while that withdrawal is pending, including after opt-out and restart. Missing source evidence alone cannot trigger that withdrawal. An acknowledgement for an older in-flight revision cannot delete a newer payload. Restarting resumes durable state instead of adding the same charges again.
 

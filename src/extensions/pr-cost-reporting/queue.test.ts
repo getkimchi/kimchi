@@ -356,6 +356,16 @@ describe("durable reporting queue", () => {
 			"PR reporting held 1 snapshot(s) that are invalid or exceed the upload limits after trimming",
 		)
 	})
+	it("keeps the skipped request count of the latest capture until an explicit choice", async () => {
+		await setReportingEnabled(directory, true)
+		expect((await queueSnapshots(directory, [snapshot([requestId])], true, 3693)).skippedRequests).toBe(3693)
+		expect((await queueSnapshots(directory, [snapshot([requestId])], true)).skippedRequests).toBeUndefined()
+		await queueSnapshots(directory, [snapshot([requestId])], true, 2)
+		expect((await setReportingEnabled(directory, false)).skippedRequests).toBeUndefined()
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, "utf8")), skippedRequests: -1 }))
+		await expect(readReportingState(directory)).rejects.toThrow("unreadable")
+	})
 	it("keeps the retry deadline when new source evidence replaces a rate-limited snapshot", async () => {
 		await setReportingEnabled(directory, true)
 		await queueSnapshots(directory, [snapshot([requestId])])

@@ -36,6 +36,70 @@ const state = (entries: [string, PendingRepository][], fields: Partial<Reporting
 })
 
 describe("/pr-reporting status", () => {
+	it("states the setting plainly and counts repositories on one line", () => {
+		expect(statusText(state([]), undefined, now)).toEqual({
+			text: ["PR reporting   Enabled (SaaS default)", "Repositories   0 queued · 0 acknowledged"].join("\n"),
+			warning: false,
+		})
+	})
+	it("states an explicit opt-out with the repositories acknowledged before it", () => {
+		const acknowledged = { lastAcknowledgedAt: new Date(now).toISOString() }
+		expect(
+			statusText(
+				state([entry("1", acknowledged), entry("2", acknowledged)], { enabled: false, followsTelemetry: undefined }),
+				undefined,
+				now,
+			),
+		).toEqual({
+			text: ["PR reporting   Disabled (explicit choice)", "Repositories   0 queued · 2 acknowledged"].join("\n"),
+			warning: false,
+		})
+	})
+	it("reports incomplete history as information, because the other requests are still reported", () => {
+		expect(
+			statusText(
+				state([entry("1", { pending })], { followsTelemetry: undefined, skippedRequests: 3693 }),
+				undefined,
+				now,
+			),
+		).toEqual({
+			text: [
+				"PR reporting   Enabled (explicit choice)",
+				"Repositories   1 queued · 0 acknowledged",
+				"",
+				"History coverage incomplete",
+				"  3,693 requests skipped without original account or",
+				"  repository evidence. Other requests are still reported.",
+			].join("\n"),
+			warning: false,
+		})
+	})
+	it("leads with delivery problems, each shown once, and warns", () => {
+		expect(
+			statusText(
+				state(
+					[
+						entry("1", { pending, lastError: "PR reporting returned HTTP 503" }),
+						entry("2", { pending, lastError: "PR reporting returned HTTP 503" }),
+					],
+					{ error: "PR reporting held 1 repository snapshot(s) because earlier evidence is missing" },
+				),
+				undefined,
+				now,
+			),
+		).toEqual({
+			text: [
+				"Delivery problems",
+				"- PR reporting held 1 repository snapshot(s) because",
+				"  earlier evidence is missing",
+				"- PR reporting returned HTTP 503",
+				"",
+				"PR reporting   Enabled (SaaS default)",
+				"Repositories   2 queued · 0 acknowledged",
+			].join("\n"),
+			warning: true,
+		})
+	})
 	it("explains a session that does not upload and repositories waiting for their upload window", () => {
 		const status = statusText(
 			state([
@@ -47,10 +111,11 @@ describe("/pr-reporting status", () => {
 		)
 		expect(status).toEqual({
 			text: [
-				"PR reporting: on (SaaS default)",
-				"Uploads are skipped in this session: CI environment (GITHUB_ACTIONS). Local attribution continues.",
-				"Queued repositories: 2 (1 waiting for the 5-minute upload window)",
-				"Acknowledged repositories: 1",
+				"PR reporting   Enabled (SaaS default)",
+				"This session   No uploads; local attribution continues",
+				"               Reason: CI environment (GITHUB_ACTIONS)",
+				"Repositories   2 queued · 1 acknowledged",
+				"               1 waiting for the 5-minute upload window",
 			].join("\n"),
 			warning: false,
 		})
@@ -84,32 +149,57 @@ describe("/pr-reporting status", () => {
 			undefined,
 			now,
 		)
-		expect(text.warning).toBe(true)
-		expect(text.text.split("\n").slice(3)).toEqual([
-			"PR cost reporting paused for this organization: organization limit reached (requests 50000 of 50000). Ask an admin to free space or wait; next try in about 30 min.",
-			"example/1: producer limit reached (repositories 101 of 100). Not reported; next try in about 6 h.",
-			"example/2: snapshot limit reached (requests 12 of 10). Sending a smaller snapshot in about 5 h.",
-			"example/3 is partially reported: 1200 requests left out to fit the upload limits.",
-		])
+		expect(text).toEqual({
+			text: [
+				"Delivery problems",
+				"- PR cost reporting paused for this organization:",
+				"  organization limit reached (requests 50,000 of 50,000).",
+				"  Ask an admin to free space or wait.",
+				"  Next try in about 30 min.",
+				"- example/1: producer limit reached (repositories 101 of",
+				"  100). Not reported; next try in about 6 h.",
+				"- example/2: snapshot limit reached (requests 12 of 10).",
+				"  Sending a smaller snapshot in about 5 h.",
+				"- example/3 is partially reported: 1,200 requests left out",
+				"  to fit the upload limits.",
+				"",
+				"PR reporting   Enabled (SaaS default)",
+				"Repositories   2 queued · 0 acknowledged",
+			].join("\n"),
+			warning: true,
+		})
 	})
-	it("keeps delivery errors visible once", () => {
-		const text = statusText(
+	it("fits a 60-column terminal with every section shown", () => {
+		const { text } = statusText(
 			state(
 				[
-					entry("1", { pending, lastError: "PR reporting returned HTTP 503" }),
-					entry("2", { pending, lastError: "PR reporting returned HTTP 503" }),
+					entry("1", {
+						pending,
+						retryAt: now + 3_600_000,
+						uploadedAt: now - 60_000,
+						limit: { scope: "contributor", limit: "windowedPullRequests", current: 1000, maximum: 1000, at: now },
+					}),
+					entry("2", { trimmed: 31_999, lastAcknowledgedAt: new Date(now).toISOString() }),
 				],
 				{
-					error: "PR reporting held 1 repository snapshot(s) because earlier evidence is missing",
+					paused: { [accountKey(account)]: { limit: { scope: "contributor", at: now }, retryAt: now } },
+					error:
+						"PR reporting held 2 snapshot(s) until queued reports leave room in the local queue. Some queued reports are waiting for their original account endpoint and credentials",
+					skippedRequests: 123_456,
 				},
 			),
-			undefined,
+			"benchmark run (KIMCHI_INFRA_BREAKER_THRESHOLD)",
 			now,
-		).text
-		expect(text.split("\n").slice(3)).toEqual([
-			"PR reporting held 1 repository snapshot(s) because earlier evidence is missing",
-			"PR reporting returned HTTP 503",
-		])
+		)
+		// The TUI pads notifications by one column on each side.
+		expect(text.split("\n").filter((line) => line.length > 58)).toEqual([])
+		expect(text).toContain(
+			[
+				"This session   No uploads; local attribution continues",
+				"               Reason: benchmark run",
+				"               (KIMCHI_INFRA_BREAKER_THRESHOLD)",
+			].join("\n"),
+		)
 	})
 })
 
