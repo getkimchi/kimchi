@@ -374,10 +374,40 @@ describe("bash_control — filtered inspection (handles)", () => {
 		const text = textOf(result)
 		expect(text).toContain(` handle: ${done}`)
 		expect(text).toContain("done-output")
+		expect(text).not.toContain(`Unknown handle '${done}'`)
 		// The live handle appears as running evidence (handle: command).
 		expect(text).toContain(`${live}: live-proc`)
 		expect(result.details.exitedHandles).toEqual([done])
 		expect(result.details.runningHandles).toEqual([live])
+	})
+
+	it.each([
+		"available",
+		"queued",
+	] as const)("reports a retained %s outcome without labelling it unknown", async (phase) => {
+		const { tool } = setup()
+		state.delivery.record("ended", "retained terminal output", "automatic")
+		if (phase === "queued") state.delivery.markQueued("ended", "batch")
+		const result = await callExecute(tool, { handles: ["ended", "unknown"] })
+		expect(textOf(result)).not.toContain("Unknown handle 'ended'")
+		expect(textOf(result)).toContain("Unknown handle 'unknown'")
+		if (phase === "queued") {
+			expect(result.details.pendingHandles).toEqual(["ended"])
+			expect(textOf(result)).toContain("not yet acknowledged")
+		} else {
+			expect(result.details.exitedHandles).toEqual(["ended"])
+			expect(textOf(result)).toContain("retained terminal output")
+		}
+	})
+
+	it("reports a stale cohort handle without a registry entry or retained outcome as unknown", async () => {
+		const { tool } = setup()
+		const handle = spawnRunning("missing-registry-entry")
+		await registry.remove(handle)
+		expect(coordinator.handles()).toContain(handle)
+		const result = await callExecute(tool, { handles: [handle] })
+		expect(textOf(result)).toContain(`Unknown handle '${handle}'`)
+		expect(result.details.runningHandles).toEqual([])
 	})
 
 	it("rejects handles with wait: true before applying any stop", async () => {

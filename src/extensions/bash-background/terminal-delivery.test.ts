@@ -50,21 +50,21 @@ describe("createTerminalDelivery", () => {
 		delivery.record("h2", "p2", "automatic")
 		delivery.markQueued("h1", "batch-1")
 		delivery.markQueued("h2", "batch-1")
-		expect(delivery.acknowledgeAutomatic("batch-1")).toBe("delivered")
+		expect(delivery.acknowledgeAutomatic("batch-1").map((pending) => pending.handle)).toEqual(["h1", "h2"])
 		expect(delivery.hasPending()).toBe(false)
 		// Idempotent for a second arrival of the same identity: superseded,
 		// never delivered twice.
-		expect(delivery.acknowledgeAutomatic("batch-1")).toBe("superseded")
+		expect(delivery.acknowledgeAutomatic("batch-1")).toEqual([])
 	})
 
-	it("acknowledgeAutomatic reports superseded when a control call delivered instead", () => {
+	it("acknowledgeAutomatic returns no payload when a control call owns the outcome", () => {
 		const delivery = createTerminalDelivery()
 		delivery.record("h1", "p1", "automatic")
 		delivery.markQueued("h1", "batch-1")
 		// Abort-release then control claim (the recovery path).
 		delivery.releaseAutomatic()
 		delivery.claimControl("h1", "call-a")
-		expect(delivery.acknowledgeAutomatic("batch-1")).toBe("superseded")
+		expect(delivery.acknowledgeAutomatic("batch-1")).toEqual([])
 		// The pending stays for the control channel to retire.
 		expect(delivery.getPending("h1")).toBeDefined()
 	})
@@ -76,7 +76,7 @@ describe("createTerminalDelivery", () => {
 		// Kimchi dropped the queue on abort; the message arrives late anyway
 		// (a programmatic abort kept it). The payload IS in the conversation.
 		delivery.releaseAutomatic()
-		expect(delivery.acknowledgeAutomatic("batch-1")).toBe("delivered")
+		expect(delivery.acknowledgeAutomatic("batch-1").map((pending) => pending.handle)).toEqual(["h1"])
 		expect(delivery.hasPending()).toBe(false)
 	})
 
@@ -91,6 +91,21 @@ describe("createTerminalDelivery", () => {
 		expect(delivery.getPending("h1")?.owner).toBe("automatic")
 		// Control claims are untouched by the abort release.
 		expect(delivery.getPending("h2")?.owner).toEqual({ controlCallId: "call-a" })
+	})
+
+	it.each([false, true])("acknowledges a partially recovered batch (control retired: %s)", (retired) => {
+		const delivery = createTerminalDelivery()
+		for (const handle of ["h1", "h2"]) {
+			delivery.record(handle, `payload-${handle}`, "automatic")
+			delivery.markQueued(handle, "batch")
+		}
+		delivery.releaseAutomatic()
+		delivery.claimControl("h1", "recovery")
+		if (retired) delivery.acknowledgeControl(["h1"])
+		const outcomes = delivery.acknowledgeAutomatic("batch")
+		expect(outcomes.map((pending) => pending.payload)).toEqual(["payload-h2"])
+		expect(delivery.pendingHandles()).toEqual(retired ? [] : ["h1"])
+		expect(delivery.acknowledgeAutomatic("batch")).toEqual([])
 	})
 
 	it("acknowledgeControl retires handles idempotently", () => {

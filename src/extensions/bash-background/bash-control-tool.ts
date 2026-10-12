@@ -423,14 +423,19 @@ async function collectCohortSnapshot(
 		)
 	}
 	for (const [handle, cursor] of pendingMarks) registry.markDelivered(handle, cursor)
-	// Unknown filter entries: no registry entry, not in the cohort, and no
-	// retained outcome — reported individually so the model knows the handle
+	// Unknown filter entries: no registry entry, retained outcome, or result
+	// in this snapshot — reported individually so the model knows the handle
 	// is not inspectable (stops already reported their own outcomes above,
 	// so stop-listed handles were dropped from the filter at normalization).
 	if (filter) {
-		const cohort = new Set(coordinator.handles())
 		for (const handle of filter) {
-			if (cohort.has(handle) || registry.getEntry(handle)) continue
+			if (
+				registry.getEntry(handle) ||
+				delivery.getPending(handle) ||
+				snapshot.exitedHandles.includes(handle) ||
+				snapshot.pendingHandles.includes(handle)
+			)
+				continue
 			snapshot.unknownBlocks.push(unknownHandleText(handle))
 		}
 	}

@@ -44,11 +44,11 @@
  *  therefore released back to `available` (`releaseAutomatic`) so a later
  *  explicit inspection can deliver it. If the message was NOT actually
  *  dropped (a programmatic abort keeps the queue) and arrives late, the
- *  pending was already claimed/delivered by the control channel: the
- *  extension's `message_end` handler then REPLACES the stale message with
- *  a suppression note (the SDK's message_end replacement hook mutates the
- *  message in place for context AND persistence), so the authoritative
- *  payload is never repeated.
+ *  control channel may already have claimed/delivered some of its outcomes:
+ *  the extension's `message_end` handler then REPLACES the stale batch with
+ *  only the remaining automatic-owned payloads, or a suppression note when
+ *  none remain. The SDK's replacement hook mutates the message in place for
+ *  context AND persistence, so no authoritative payload is repeated.
  *
  * This module is intentionally free of any `ExtensionAPI` dependency so it
  * stays unit-testable.
@@ -83,9 +83,6 @@ export interface BashExitMessageDetails {
 	handles: string[]
 }
 
-/** Result of acknowledging an automatic message by delivery identity. */
-export type AcknowledgeResult = "delivered" | "superseded"
-
 export interface TerminalDelivery {
 	/** Unique identity of this state instance (session generation guard for message acknowledgements). */
 	readonly sessionId: string
@@ -109,12 +106,12 @@ export interface TerminalDelivery {
 	markQueued(handle: string, deliveryId: string): PendingTerminal | undefined
 	/**
 	 * Acknowledge the automatic message identified by `deliveryId`.
-	 * "delivered": its outcomes were still automatic-owned — retire them.
-	 * "superseded": no live entry matches (already retired, control-claimed,
-	 * or an unknown/stale identity) — the caller must suppress the message
-	 * payload so it is not repeated.
+	 * Retire and return only its still automatic-owned outcomes. The caller
+	 * must replace a partially superseded batch with these payloads, or
+	 * suppress it when none remain. Control-owned outcomes stay pending for
+	 * their tool result to acknowledge.
 	 */
-	acknowledgeAutomatic(deliveryId: string): AcknowledgeResult
+	acknowledgeAutomatic(deliveryId: string): PendingTerminal[]
 	/**
 	 * Acknowledge tool-owned delivery of `handles` (the consolidated
 	 * bash_control result carried them). Idempotent; ignores automatic
@@ -187,15 +184,12 @@ export function createTerminalDelivery(): TerminalDelivery {
 		return pending
 	}
 
-	function acknowledgeAutomatic(deliveryId: string): AcknowledgeResult {
-		const entries = [...pendings.values()].filter((p) => p.deliveryId === deliveryId)
-		if (entries.length === 0) return "superseded"
-		// An outcome claimed by a control call after an abort-release is
-		// delivered by that call's tool result: the arriving automatic
-		// message is stale and must be suppressed.
-		if (entries.some((p) => p.owner !== "automatic")) return "superseded"
+	function acknowledgeAutomatic(deliveryId: string): PendingTerminal[] {
+		const entries = [...pendings.values()].filter((p) => p.deliveryId === deliveryId && p.owner === "automatic")
+		// Filter per outcome: cancellation recovery may have claimed or
+		// delivered only part of the original batch through a control call.
 		for (const entry of entries) pendings.delete(entry.handle)
-		return "delivered"
+		return entries
 	}
 
 	function acknowledgeControl(handles: readonly string[]): void {

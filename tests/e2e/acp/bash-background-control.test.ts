@@ -7,6 +7,74 @@ import { newSession, prompt, waitForSessionUpdate } from "./support/scenarios.js
 const STEER_METHOD = "_kimchi.dev/steering"
 
 it(
+	"filtered inspection reports a queued exit as pending until its notice is consumed",
+	async () => {
+		const fixture = await startAcpFixture({
+			artifactName: "bash-background-filtered-pending-exit",
+			responses: [
+				{
+					toolCalls: [
+						{
+							id: "spawn",
+							function: { name: "bash", arguments: JSON.stringify({ command: "sleep 6 && echo queued-output" }) },
+						},
+					],
+				},
+				{ stream: Array.from({ length: 10 }, (_, i) => `Drafting section ${i + 1}. `), textDelayMs: 800 },
+				{
+					toolCalls: [
+						{
+							id: "inspect",
+							function: { name: "bash_control", arguments: JSON.stringify({ handles: ["__BASH_HANDLE__"] }) },
+						},
+					],
+				},
+				{ stream: ["The inspected exit was pending and has now been delivered."] },
+			],
+		})
+		try {
+			const sessionId = await newSession(fixture, fixture.workDir)
+			const pending = fixture.conn.prompt({
+				sessionId,
+				prompt: [{ type: "text", text: "Run a command and draft while it finishes" }],
+			})
+			await waitForSessionUpdate(
+				fixture,
+				sessionId,
+				(update) =>
+					update.sessionUpdate === "agent_message_chunk" &&
+					update.content.type === "text" &&
+					update.content.text.includes("Drafting section 1"),
+			)
+			expect(
+				await fixture.conn.extMethod(STEER_METHOD, { sessionId, prompt: "Inspect just the command before continuing" }),
+			).toMatchObject({ status: "injected" })
+			expect((await pending).stopReason).toBe("end_turn")
+			const messages =
+				(fixture.fake.requests.at(-1)?.body as { messages?: Array<Record<string, unknown>> } | undefined)?.messages ??
+				[]
+			const inspection = messages.find((message) => message.role === "tool" && message.tool_call_id === "inspect")
+			expect(String(inspection?.content)).toContain("not yet acknowledged")
+			expect(String(inspection?.content)).not.toContain("Unknown handle")
+			expect(JSON.stringify(messages).split("[Background bash process ended").length - 1).toBe(1)
+			expect(fixture.client.sessionUpdates.map(({ update }) => update)).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						sessionUpdate: "tool_call_update",
+						rawOutput: expect.objectContaining({
+							details: expect.objectContaining({ pendingHandles: [expect.any(String)] }),
+						}),
+					}),
+				]),
+			)
+		} finally {
+			await fixture.stop()
+		}
+	},
+	STARTUP_TIMEOUT_MS,
+)
+
+it(
 	"runs independent work during background Bash, checkpoints the group, and stops selected processes",
 	async () => {
 		const stopSurvivor = { id: "stop_survivor", function: { name: "bash_control", arguments: "" } }

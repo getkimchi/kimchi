@@ -4,6 +4,51 @@ import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
+test("background bash cohort: filtered inspection keeps a queued exit pending until delivery", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "bash-background-cohort-filtered-pending-exit",
+			responses: [
+				{
+					toolCalls: [
+						{
+							id: "spawn",
+							function: { name: "bash", arguments: JSON.stringify({ command: "sleep 6 && echo queued-output" }) },
+						},
+					],
+				},
+				{ stream: Array.from({ length: 10 }, (_, i) => `Drafting section ${i + 1}. `), textDelayMs: 800 },
+				{
+					toolCalls: [
+						{
+							id: "inspect",
+							function: { name: "bash_control", arguments: JSON.stringify({ handles: ["__BASH_HANDLE__"] }) },
+						},
+					],
+				},
+				{ stream: ["The inspected exit was pending and has now been delivered."] },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Run a command and draft while it finishes")
+			await waitForText(terminal, "Drafting section 1", { timeoutMs: STREAM_TIMEOUT_MS })
+			terminal.submit("Inspect just the command before continuing")
+			trace.step("inspection steering queued before the exit notice")
+			await waitForText(terminal, "has now been delivered", { timeoutMs: STREAM_TIMEOUT_MS * 3 })
+			await waitForTurnToSettle(fixture.fake.requests)
+			const messages =
+				(fixture.fake.requests.at(-1)?.body as { messages?: Array<Record<string, unknown>> } | undefined)?.messages ??
+				[]
+			const inspection = messages.find((message) => message.role === "tool" && message.tool_call_id === "inspect")
+			expect(String(inspection?.content)).toContain("not yet acknowledged")
+			expect(String(inspection?.content)).not.toContain("Unknown handle")
+			expect(JSON.stringify(messages).split("[Background bash process ended").length - 1).toBe(1)
+			trace.step("filtered inspection reported pending; terminal outcome delivered once")
+		},
+	)
+})
+
 // Human-designed workflow spec for the bounded background bash control.
 // One workflow per test:
 //   1. unattended exit wakes an idle agent; the survivor is stopped in one call

@@ -631,8 +631,21 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		// Session-identity guard: a message from a replaced/bash session
 		// generation must not retire or mutate this session's state.
 		if (!details || details.sessionId !== state.delivery.sessionId) return undefined
-		const result = state.delivery.acknowledgeAutomatic(details.deliveryId)
-		if (result === "delivered") return undefined
+		const delivered = state.delivery.acknowledgeAutomatic(details.deliveryId)
+		const deliveredHandles = delivered.map((pending) => pending.handle)
+		if (sameHandles(details.handles, deliveredHandles)) return undefined
+		if (delivered.length > 0) {
+			// A filtered recovery can supersede only part of this batch. Keep
+			// every remaining payload, and omit outcomes already owned by a
+			// control result, in both the provider context and persisted history.
+			return {
+				message: {
+					...message,
+					content: [{ type: "text", text: markHarnessSteer(delivered.map((pending) => pending.payload).join("\n\n")) }],
+					details: { ...details, handles: deliveredHandles },
+				},
+			}
+		}
 		// Superseded: the outcomes were already delivered authoritatively
 		// (a control result claimed them after an abort-release, or this is
 		// a late duplicate). Replace the stale message with a suppression

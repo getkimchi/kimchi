@@ -344,6 +344,64 @@ describe("background bash delivery contract (real AgentSession)", () => {
 		await harness.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 	})
 
+	it("recovers one outcome from a cancelled batch without duplicating it in the late notification", async () => {
+		const inspectArgs = { handles: [] as string[] }
+		const firstMarker = "PARTIAL-RECOVERY-FIRST"
+		const secondMarker = "PARTIAL-RECOVERY-SECOND"
+		const harness = await setupSession([
+			{
+				stopReason: "toolUse",
+				toolCalls: [
+					{ id: "spawn-a", name: "bash", arguments: { command: "process-a" } },
+					{ id: "spawn-b", name: "bash", arguments: { command: "process-b" } },
+				],
+			},
+			{ stopReason: "stop", text: "Waiting for the processes to finish while drafting the answer.", textDelayMs: 300 },
+			{ stopReason: "toolUse", toolCalls: [{ id: "recover-a", name: "bash_control", arguments: inspectArgs }] },
+			{ stopReason: "stop", text: "Both outcomes received." },
+		])
+		try {
+			const pending = harness.session.prompt("Run two commands, then finish")
+			while (harness.requests.length < 2) await delay(20)
+			const state = getSessionState()
+			if (!state) throw new Error("background state missing")
+			const firstHandle = state.coordinator
+				.handles()
+				.find((handle) => state.registry.getEntry(handle)?.commandSummary === "process-a")
+			if (!firstHandle) throw new Error("first process missing")
+			inspectArgs.handles.push(firstHandle)
+			await harness.session.steer("Inspect only the first process")
+			harness.ops.emitMatching("process-a", `${firstMarker}\n`)
+			harness.ops.emitMatching("process-b", `${secondMarker}\n`)
+			await harness.ops.exitMatching("process-a", 0)
+			await harness.ops.exitMatching("process-b", 7)
+			while (!state.delivery.hasQueuedAutomatic()) await delay(20)
+			expect(
+				new Set(state.delivery.pendingHandles().map((handle) => state.delivery.getPending(handle)?.deliveryId)).size,
+			).toBe(1)
+			await harness.session.abort()
+			await pending
+
+			const lastRequest = harness.requests.at(-1)
+			if (!lastRequest) throw new Error("provider request missing")
+			for (const marker of [firstMarker, secondMarker]) {
+				expect(inRequest(lastRequest, marker)).toBe(1)
+				expect(JSON.stringify(harness.session.messages).split(marker).length - 1).toBe(1)
+				expect((await exportJsonl(harness)).split(marker).length - 1).toBe(1)
+			}
+			const exitNotice = harness.session.messages.find(
+				(message) => message.role === "custom" && message.customType === "bash-background-exit",
+			)
+			expect(JSON.stringify(exitNotice)).not.toContain(firstMarker)
+			expect(JSON.stringify(exitNotice)).toContain(secondMarker)
+			expect(JSON.stringify(exitNotice)).toContain("exit code 7")
+			expect(state.delivery.hasPending()).toBe(false)
+		} finally {
+			await harness.session.abort()
+			await harness.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
+		}
+	}, 20_000)
+
 	it("recovers a dropped notification after cancellation through an explicit inspection", async () => {
 		// Kimchi's TUI (Escape) and ACP (cancel) DROP queued steering on
 		// abort. The outcome must stay pending+recoverable, never restart
