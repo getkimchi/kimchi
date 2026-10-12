@@ -164,9 +164,28 @@ testWithJsDebug(
 							},
 						],
 					},
+					// Same visibility-deferral flow as the degraded test: debug_state_at
+					// is hidden at session start, so scripted call 1 returns "Tool
+					// debug_state_at not found", the hidden-tool-guidance backstop
+					// reveals it, and scripted call 2 executes against the real adapter.
+					{
+						toolCalls: [
+							{
+								function: {
+									name: "debug_state_at",
+									arguments: JSON.stringify({ file: "app.js", line: 2, evaluated: ["a + b"] }),
+								},
+							},
+						],
+					},
 					{ stream: ["State captured at the breakpoint."] },
 				],
-				env: { KIMCHI_DAP_BINARIES: "" }, // keep other machine adapters inert
+				// Whitelist ONLY js-debug: the empty override used to inert other
+				// adapters also disabled js-debug's script-path detection, so the
+				// footer rendered "js-debug not installed" and the happy path never
+				// exercised a real adapter. Naming js-debug whitelists its custom
+				// script-path probe; dlv/debugpy/lldb-dap stay inert.
+				env: { KIMCHI_DAP_BINARIES: "js-debug" },
 				seedHome: (_homeDir, workDir) => {
 					writeFileSync(join(workDir, "package.json"), '{"name":"debugme","version":"1.0.0"}\n')
 					// Breakpoint at line 2 stops inside add() with a=2, b=3.
@@ -178,15 +197,28 @@ testWithJsDebug(
 			},
 			async (fixture, trace) => {
 				trace.step("checking status footer for active js-debug")
-				expect(viewText(terminal)).toContain("DAP: js-debug")
+				// Poll instead of snapshotting — the footer status is applied
+				// asynchronously after session_start detection (same pattern as the
+				// degraded test above); an immediate snapshot races and fails even
+				// when detection is correct.
+				await waitForText(terminal, "DAP: js-debug", { full: false })
 
 				terminal.submit("capture state at app.js line 2")
 				trace.step("submitted prompt")
-				await waitForTurnToSettle(fixture.fake.requests)
-				trace.step("settled")
+				// waitForTurnToSettle is the wrong tool here: it returns after the
+				// request count is stable for 1.2s, but the real debug_state_at runs
+				// js-debug for ~10-30s without any provider traffic — the settle
+				// returns while the tool is still executing and the assertion below
+				// races it. Wait directly for the tool RESULT to reach the model:
+				// the program's stdout rides inside the next request body.
+				await waitForText(terminal, "Debug State At", { full: false })
+				const deadline = Date.now() + 90_000
+				while (!anyRequestContains(fixture, "result=5")) {
+					if (Date.now() > deadline) break
+					await new Promise((resolve) => setTimeout(resolve, 250))
+				}
+				trace.step("tool result reached the model")
 
-				const view = viewText(terminal)
-				expect(view).toContain("Debug State At")
 				// The program ran to completion after the breakpoint — its stdout is
 				// part of the captured state, which must reach the model as the tool
 				// result (visible tool output is collapsed in the TUI).

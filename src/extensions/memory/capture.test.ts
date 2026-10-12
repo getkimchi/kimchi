@@ -113,7 +113,7 @@ describe("wireMemoryCapture — capture kill-switch", () => {
 	it("KIMCHI_MEMORY_CAPTURE=off: no handlers registered, no job files, no spawns", () => {
 		process.env.KIMCHI_MEMORY_CAPTURE = "off"
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api)
+		wireMemoryCapture(api, () => true)
 		// The gate returns before registering: no handlers exist at all.
 		expect(() => getHandler("session_shutdown")).toThrow()
 		expect(() => getHandler("session_before_compact")).toThrow()
@@ -126,7 +126,7 @@ describe("wireMemoryCapture — capture kill-switch", () => {
 	it("default (unset) keeps normal capture", () => {
 		delete process.env.KIMCHI_MEMORY_CAPTURE
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api)
+		wireMemoryCapture(api, () => true)
 		const shutdown = getHandler("session_shutdown")
 		const child = new EventEmitter() as unknown as ChildProcess
 		child.unref = vi.fn()
@@ -1222,7 +1222,7 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 
 	it("session_shutdown writes a deterministic job file and spawns the worker", () => {
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api)
+		wireMemoryCapture(api, () => true)
 		const shutdown = getHandler("session_shutdown")
 		const child = new EventEmitter() as unknown as ChildProcess
 		child.unref = vi.fn()
@@ -1249,6 +1249,42 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 		// the same job file instead of queueing a duplicate.
 		shutdown({ type: "session_shutdown" }, ctx)
 		expect(readdirSync(join(home, ".config", "kimchi", "memory", "pending"))).toHaveLength(1)
+	})
+
+	it("an isActive gate of false skips capture entirely", () => {
+		const { api, getHandler } = createExtensionApi()
+		wireMemoryCapture(api, () => false)
+		const shutdown = getHandler("session_shutdown")
+		const child = new EventEmitter() as unknown as ChildProcess
+		child.unref = vi.fn()
+		vi.mocked(spawn).mockImplementation(() => child)
+		const entry = { type: "message", message: { role: "user", content: "remember this" } } as unknown as SessionEntry
+		const ctx = createContext({ sessionManager: { getEntries: () => [entry] } })
+
+		shutdown({ type: "session_shutdown" }, ctx)
+
+		const pendingDir = join(home, ".config", "kimchi", "memory", "pending")
+		expect(existsSync(pendingDir) ? readdirSync(pendingDir) : []).toHaveLength(0)
+		expect(spawn).not.toHaveBeenCalled()
+	})
+
+	it("an isActive gate of false skips before-compaction capture too", () => {
+		const { api, getHandler } = createExtensionApi()
+		wireMemoryCapture(api, () => false)
+		const beforeCompact = getHandler<{ type: "session_before_compact"; branchEntries: SessionEntry[] }>(
+			"session_before_compact",
+		)
+		const child = new EventEmitter() as unknown as ChildProcess
+		child.unref = vi.fn()
+		vi.mocked(spawn).mockImplementation(() => child)
+		const entry = { type: "message", message: { role: "user", content: "remember this" } } as unknown as SessionEntry
+		const ctx = createContext({ sessionManager: { getEntries: () => [entry] } })
+
+		beforeCompact({ type: "session_before_compact", branchEntries: [entry] }, ctx)
+
+		const pendingDir = join(home, ".config", "kimchi", "memory", "pending")
+		expect(existsSync(pendingDir) ? readdirSync(pendingDir) : []).toHaveLength(0)
+		expect(spawn).not.toHaveBeenCalled()
 	})
 })
 
