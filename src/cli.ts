@@ -137,6 +137,7 @@ import promptSummaryExtension from "./extensions/prompt-summary.js"
 import pullRequestStatusExtension from "./extensions/pull-request-status/index.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
+import refusedTurnPruningExtension from "./extensions/refused-turn-pruning.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
@@ -931,6 +932,7 @@ async function cliMain(): Promise<void> {
 				modelGuardExtension,
 				orphanToolResultRepairExtension,
 				orphanToolResultSanitizerExtension,
+				refusedTurnPruningExtension,
 				idleGcExtension,
 				sessionMemoryStatsExtension,
 				piiRedactionExtension,
