@@ -191,11 +191,9 @@ describe("automatic exact work cost lookup", () => {
 		billOneThenTwo(first.requestId)
 		await sync()
 		const lines = workCostDetails(dir, first.workId)
-		expect(lines).toContain("Cost: $3.000000000 USD — https://github.com/example/repo/pull/1")
+		expect(lines).toContain("Cost: $3.00 — https://github.com/example/repo/pull/1")
 		// Without an input record, the request counts as inferred.
-		expect(lines).toContain(
-			"Prices: 1/1 requests priced, $1.000000000 USD. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
-		)
+		expect(lines).toContain("Prices: 1/1 requests priced, $1.00. PR assignments: 0 unresolved, 1 inferred, 0 shared.")
 	})
 
 	it("saves only the selected work's unrelated requests in its aggregate buckets", async () => {
@@ -293,12 +291,76 @@ describe("automatic exact work cost lookup", () => {
 		}
 		save([])
 		expect(workCostDetails(dir, workId)).toContain(
-			"Cost so far: unknown; $0.000000000 USD priced (open) — https://github.com/example/repo/pull/1",
+			"Cost so far: unknown; $0.00 priced (open) — https://github.com/example/repo/pull/1",
 		)
 		save([{ requestId: "open", billingRecordId: ROW, costUsd: "0.5", account }])
 		const lines = workCostDetails(dir, workId)
-		expect(lines).toContain("Cost so far: $0.500000000 USD (open) — https://github.com/example/repo/pull/1")
+		expect(lines).toContain("Cost so far: $0.50 (open) — https://github.com/example/repo/pull/1")
 		expect(lines.join("\n")).not.toContain("Confirmed:")
+	})
+
+	it("shows readable prices in /work while costs.json keeps the exact amounts", () => {
+		const workId = randomUUID()
+		const account = { apiUrl: API, organizationId: ORG, userId: PROMPT }
+		const url = "https://github.com/example/repo/pull/1"
+		const request = (requestId: string, segment: Record<string, string>): WorkRecord => ({
+			version: 1,
+			type: "request",
+			workId,
+			sessionId: "session",
+			requestId,
+			recordedAt: "2026-10-01T08:00:00Z",
+			scope: { account, repository: join(dir, ".git") },
+			segment: { id: requestId, ...segment },
+		})
+		const costs = calculatePullRequestCosts(
+			[
+				request("plan", { attribution: "explicit", reason: "work-command" }),
+				request("chat", { attribution: "inferred", reason: "model-continue" }),
+				{
+					version: 1,
+					type: "commit",
+					workId,
+					sessionId: "session",
+					sha: "a".repeat(40),
+					repository: join(dir, ".git"),
+					worktree: dir,
+					recordedAt: "2026-10-01T09:00:00Z",
+					pullRequests: [
+						{
+							provider: "github",
+							host: "github.com",
+							repository: "example/repo",
+							number: 1,
+							url,
+							state: "merged",
+							headSha: "a".repeat(40),
+							mergeCommitSha: "b".repeat(40),
+							mergedAt: "2026-10-01T09:30:00Z",
+							closedAt: "2026-10-01T09:30:00Z",
+							checkedAt: "2026-10-01T10:00:00Z",
+						},
+					],
+				},
+			],
+			[
+				{ requestId: "plan", billingRecordId: ROW, costUsd: "0.028616240", account },
+				{ requestId: "chat", billingRecordId: ORG, costUsd: "0.000581110", account },
+			],
+		)
+		mkdirSync(join(dir, "work", workId), { recursive: true })
+		writeFileSync(join(dir, "work", workId, "costs.json"), JSON.stringify({ version: 1, workId, ...costs }))
+		expect(report(workId).pullRequests[0]).toMatchObject({
+			totalCostUsd: "0.029197350",
+			explicit: { totalCostUsd: "0.028616240" },
+			inferred: { totalCostUsd: "0.000581110" },
+		})
+		expect(workCostDetails(dir, workId)).toEqual([
+			`Cost: $0.0292 — ${url}`,
+			"Confirmed: $0.0286; inferred: $0.000581.",
+			"Prices: 2/2 requests priced, $0.0292. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
+			`Cost details: ${join(dir, "work", workId, "costs.json")}`,
+		])
 	})
 
 	it("keeps a legacy request's exact price without assigning today's account to its work", async () => {
@@ -379,11 +441,11 @@ describe("automatic exact work cost lookup", () => {
 			allocation: "inferred",
 			totalCostUsd: "0.123456789",
 		})
-		expect(workCostDetails(dir, workId)).toContain("Cost: $0.123456789 USD — https://github.com/example/repo/pull/1")
+		expect(workCostDetails(dir, workId)).toContain("Cost: $0.123 — https://github.com/example/repo/pull/1")
 		expect(workCostDetails(dir, workId)).toContain(
-			"Prices: 1/1 requests priced, $0.123456789 USD. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
+			"Prices: 1/1 requests priced, $0.123. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
 		)
-		expect(workCostDetails(dir, workId)).toContain("Confirmed: $0.000000000 USD; inferred: $0.123456789 USD.")
+		expect(workCostDetails(dir, workId)).toContain("Confirmed: $0.00; inferred: $0.123.")
 	})
 
 	it("counts requests sent without a billing tag by reason in work details", async () => {
@@ -452,7 +514,7 @@ describe("automatic exact work cost lookup", () => {
 		appendWorkRecord(ctx, { type: "request", requestId: "not-billed", startedAt: "2026-10-01T08:00:00Z" })
 		await sync()
 		expect(workCostDetails(dir, workId)).toContain(
-			"Prices: 1/2 requests priced, $0.123456789 USD known so far. PR assignments: 2 unresolved, 0 inferred, 0 shared.",
+			"Prices: 1/2 requests priced, $0.123 known so far. PR assignments: 2 unresolved, 0 inferred, 0 shared.",
 		)
 	})
 	it("refreshes both work views after a correction and revocation without duplicating bills", async () => {
@@ -485,11 +547,11 @@ describe("automatic exact work cost lookup", () => {
 		})
 		// The linked request counts for both works; the plan does not count the implementation's own request.
 		expect(workCostDetails(dir, plan.workId)).toContain(
-			"Prices: 1/1 requests priced, $1.000000000 USD. PR assignments: 0 unresolved, 0 inferred, 0 shared.",
+			"Prices: 1/1 requests priced, $1.00. PR assignments: 0 unresolved, 0 inferred, 0 shared.",
 		)
 		// The implementation's own request has no input record; the linked one is confirmed by the link.
 		expect(workCostDetails(dir, implementation.workId)).toContain(
-			"Prices: 2/2 requests priced, $3.000000000 USD. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
+			"Prices: 2/2 requests priced, $3.00. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
 		)
 		appendWorkRecord(implementation.ctx, { ...link, revision: 2, status: "revoked" })
 		await sync()
@@ -1458,7 +1520,7 @@ describe("automatic exact work cost lookup", () => {
 		expect(summary.requests).toHaveLength(1)
 		expect(summary.requests[0].billingRows).toEqual([{ id: ROW, costUsd: "0.123456789" }])
 		expect(JSON.stringify(readWorkRecords(dir))).not.toContain(currentKey)
-		expect(workCostDetails(dir, workId).join("\n")).toContain("$0.123456789")
+		expect(workCostDetails(dir, workId)).toContain("Cost: $0.123 — https://github.com/example/repo/pull/1")
 	})
 	it("allocates a PR across two works and counts repeated sync only once", async () => {
 		const first = tagged("planning")

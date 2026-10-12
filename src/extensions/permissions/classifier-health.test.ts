@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { createModel } from "../__mocks__/model-registry.js"
+import { DEFAULT_CLASSIFIER_CANDIDATE_REFS } from "../model-catalog/classifier-models.js"
 import { classifierHealth } from "./classifier-health.js"
-import { DEFAULT_CLASSIFIER_CANDIDATE_REFS } from "./classifier-models.js"
 import { PERMISSION_EVENTS } from "./permissions-events.js"
 import type { ClassifierFailureCode, ClassifierResult } from "./types.js"
 

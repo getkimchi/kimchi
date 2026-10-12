@@ -31,7 +31,7 @@ export interface WorkScopeSnapshot {
 }
 
 const execFileAsync = promisify(execFile)
-export async function workRepository(cwd: string): Promise<string> {
+async function readRepository(cwd: string): Promise<string> {
 	const { GIT_DIR: _dir, GIT_COMMON_DIR: _common, GIT_WORK_TREE: _tree, GIT_INDEX_FILE: _index, ...env } = process.env
 	const result = await execFileAsync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
 		cwd,
@@ -40,6 +40,23 @@ export async function workRepository(cwd: string): Promise<string> {
 		maxBuffer: 4096,
 	})
 	return realpath(result.stdout.trim())
+}
+
+/** How long a working folder's repository is reused before Git is asked again. */
+const REPOSITORY_TTL_MS = 30_000
+const repositories = new Map<string, { checkedAt: number; repository: Promise<string> }>()
+
+/** Every sent message needs it, so one Git process answers each working folder for a while. */
+export function workRepository(cwd: string): Promise<string> {
+	const known = repositories.get(cwd)
+	if (known && Date.now() - known.checkedAt < REPOSITORY_TTL_MS) return known.repository
+	const repository = readRepository(cwd)
+	repositories.set(cwd, { checkedAt: Date.now(), repository })
+	// A failure is not remembered, so a folder that becomes a repository is found on the next message.
+	repository.catch(() => {
+		if (repositories.get(cwd)?.repository === repository) repositories.delete(cwd)
+	})
+	return repository
 }
 
 export function sameWorkScope(left: WorkScope, right: WorkScope): boolean {
@@ -98,7 +115,37 @@ export function saveNewWorkScope(workId: string, scope: WorkScope): void {
 	}
 }
 
-let cached: { key: string; apiUrl: string; expiresAt: number; identity: Promise<VerifyApiKeyResponse> } | undefined
+interface CachedIdentity {
+	key: string
+	apiUrl: string
+	expiresAt: number
+	/** The verification in flight, if any. */
+	pending?: Promise<VerifyApiKeyResponse>
+	/** The last identity this key and endpoint verified. */
+	verified?: VerifyApiKeyResponse
+}
+let cached: CachedIdentity | undefined
+
+function verifyIdentity(entry: CachedIdentity): void {
+	const pending = verifyApiKey(entry.key, {
+		endpoint: entry.apiUrl,
+		signal: AbortSignal.timeout(1000),
+		retry: { maxRetries: 0 },
+	})
+	entry.pending = pending
+	entry.expiresAt = Date.now() + 60_000
+	pending.then(
+		(identity) => {
+			if (entry.pending !== pending) return
+			entry.verified = identity
+			entry.pending = undefined
+		},
+		() => {
+			// A failed check, first or refresh, forgets the identity: the next message verifies again.
+			if (cached === entry && entry.pending === pending) cached = undefined
+		},
+	)
+}
 
 export function isWorkAccount(value: unknown): value is WorkAccount {
 	return object(value) && typeof value.apiUrl === "string" && isWorkId(value.organizationId) && isWorkId(value.userId)
@@ -113,35 +160,44 @@ export function platformApiUrl(cwd: string): string {
 	return resolveEndpoints({ cwd }).platformApiUrl.replace(/\/+$/, "")
 }
 
+/** The configured API key and platform API, from one read of the configuration. */
+function credentialOf(cwd: string): { key: string; apiUrl: string } {
+	const config = loadConfig({ cwd })
+	return {
+		key: config.apiKey ?? "",
+		apiUrl: resolveEndpoints({ cwd, config }).platformApiUrl.replace(/\/+$/, ""),
+	}
+}
+
 /** Identifies the configured API key and endpoint without keeping the key. */
 export function workCredential(cwd: string): string {
-	const apiUrl = platformApiUrl(cwd)
+	const { key, apiUrl } = credentialOf(cwd)
 	return createHash("sha256")
-		.update(JSON.stringify([apiUrl, loadConfig({ cwd }).apiKey ?? ""]))
+		.update(JSON.stringify([apiUrl, key]))
 		.digest("hex")
 }
 
-/** A short auth cache avoids verifying the same key for every retained intent. */
+/**
+ * The verified account of the configured key. Only the first check of a key and endpoint is awaited, so a new
+ * session's first message can still continue saved work; after a minute the last verified identity keeps answering
+ * while one background check refreshes it.
+ */
 export async function captureWorkAccount(cwd: string): Promise<WorkAccountSnapshot | undefined> {
-	const key = loadConfig({ cwd }).apiKey
-	const apiUrl = platformApiUrl(cwd)
+	const { key, apiUrl } = credentialOf(cwd)
 	if (!key) return
-	const isCurrent = () => loadConfig({ cwd }).apiKey === key && platformApiUrl(cwd) === apiUrl
+	const isCurrent = () => {
+		const current = credentialOf(cwd)
+		return current.key === key && current.apiUrl === apiUrl
+	}
 	try {
-		if (!cached || cached.key !== key || cached.apiUrl !== apiUrl || cached.expiresAt <= Date.now()) {
-			cached = {
-				key,
-				apiUrl,
-				expiresAt: Date.now() + 60_000,
-				identity: verifyApiKey(key, { endpoint: apiUrl, signal: AbortSignal.timeout(1000), retry: { maxRetries: 0 } }),
-			}
-		}
-		const identity = await cached.identity
-		if (!isCurrent()) return
+		if (!cached || cached.key !== key || cached.apiUrl !== apiUrl) cached = { key, apiUrl, expiresAt: 0 }
+		const entry = cached
+		if (!entry.pending && entry.expiresAt <= Date.now()) verifyIdentity(entry)
+		const identity = entry.verified ?? (await entry.pending)
+		if (!identity || !isCurrent()) return
 		const account = { apiUrl, ...identity }
 		if (isWorkAccount(account)) return { account, isCurrent }
 	} catch {
 		// Unknown identity disables cross-work inference; ordinary local tracking can continue.
-		if (cached?.key === key && cached.apiUrl === apiUrl) cached = undefined
 	}
 }

@@ -283,7 +283,10 @@ describe("account-fenced reporting delivery", () => {
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		expect(sent).toMatchObject({ coverage: { observedRequests: 1, historyComplete: false } })
 		expect(JSON.stringify(sent)).not.toContain("77777777-7777-4777-8777-777777777777")
-		expect((await readReportingState(directory)).error).toContain("skipped")
+		// Skipped history is coverage, not a delivery problem.
+		const { error, skippedRequests } = await readReportingState(directory)
+		expect(error).toBeUndefined()
+		expect(skippedRequests).toBe(1)
 	})
 	it("holds a broken known group while uploading an independent healthy repository", async () => {
 		await seedLinked()
@@ -698,6 +701,8 @@ const limitDetail = (scope: string, limit: string, current: string, maximum: str
 	domain: "ai-optimizer",
 	metadata: { scope, limit, current, maximum },
 })
+/** Status items wrap with a two-column indent; reading them as prose keeps these checks about content. */
+const unwrapped = (text: string) => text.replaceAll("\n  ", " ")
 const limited = (scope: string, limit: string, current: string, maximum: string) =>
 	Response.json(
 		{
@@ -727,7 +732,7 @@ describe("server limits", () => {
 		expect((await entryFor("43"))?.pending).toBeUndefined()
 		const state = await readReportingState(directory)
 		expect(JSON.stringify(state)).not.toContain("resource limit exceeded")
-		expect(statusText(state, undefined).text).toContain(
+		expect(unwrapped(statusText(state, undefined).text)).toContain(
 			"github.com repository 42: producer limit reached (repositories 101 of 100). Not reported; next try in about 6 h.",
 		)
 		http.mockClear()
@@ -744,8 +749,8 @@ describe("server limits", () => {
 		expect(posts()).toHaveLength(1)
 		const state = await readReportingState(directory)
 		expect(Object.values(state.paused ?? {})).toMatchObject([{ limit: { scope, limit: "requests" } }])
-		expect(statusText(state, undefined).text).toContain(
-			`PR cost reporting paused for ${owner}: ${scope} limit reached (requests 50000 of 50000). Ask an admin to free space or wait; next try in about`,
+		expect(unwrapped(statusText(state, undefined).text)).toContain(
+			`PR cost reporting paused for ${owner}: ${scope} limit reached (requests 50,000 of 50,000). Ask an admin to free space or wait. Next try in about`,
 		)
 		// The request moves to repository 43, so repository 42 is withdrawn; the withdrawal frees space.
 		http.mockClear()
@@ -875,9 +880,9 @@ describe("repository identity for work without a PR", () => {
 		expect(posts().map((payload) => [payload.repository.id, payload.coverage.historyComplete])).toEqual([
 			["42", complete],
 		])
-		const { error } = await readReportingState(directory)
-		if (complete) expect(error).toBeUndefined()
-		else expect(error).toContain("skipped 1 request(s) without original account or repository evidence")
+		const { error, skippedRequests } = await readReportingState(directory)
+		expect(error).toBeUndefined()
+		expect(skippedRequests).toBe(complete ? undefined : 1)
 	})
 	it("delivers a known repository while another lookup times out, then retries that lookup after cooldown", async () => {
 		await seedLinked()

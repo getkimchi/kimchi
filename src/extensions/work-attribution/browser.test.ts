@@ -201,7 +201,7 @@ describe("work browser rows", () => {
 		})
 		expect(spend).toBe("$1.31 known so far")
 		expect(rows.find((row) => row.workId === ids[1])?.description).toContain(
-			"Prices: 1/2 requests priced, $0.012300000 USD known so far.",
+			"Prices: 1/2 requests priced, $0.0123 known so far.",
 		)
 	})
 
@@ -414,10 +414,10 @@ describe("work browser rows", () => {
 		])
 		const details = (id: string) => rows.find((row) => row.workId === id)?.details
 
-		expect(details(first)).toContain("Prices: 1/1 requests priced, $0.500000000 USD.")
+		expect(details(first)).toContain("Prices: 1/1 requests priced, $0.50.")
 		expect(details(first)).not.toContain("untagged")
 		expect(details(first)).not.toContain("Last billing refresh failed")
-		expect(details(second)).toContain("Prices: 0/1 requests priced, $0.000000000 USD known so far.")
+		expect(details(second)).toContain("Prices: 0/1 requests priced, $0.00 known so far.")
 		expect(details(second)).toContain("1 request untagged: tag limit")
 		expect(details(second)).toContain("Last billing refresh failed for 1 request: Billing lookup unavailable.")
 	})
