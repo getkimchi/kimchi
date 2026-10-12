@@ -133,8 +133,8 @@ it("shows an open MR's pending cost, then its confirmed and inferred total once 
 	expect((await prompt(fixture, sessionId, "/work .kimchi/plans/costs.md")).stopReason).toBe("end_turn")
 	await waitFor(costs, (value) => value?.requests?.length === 1, 45_000)
 	const pending = await workDetails(fixture, sessionId)
-	expect(pending).toContain("Cost so far: unknown; $0.000000000 USD priced (open)")
-	expect(pending).toContain("Prices: 0/1 requests priced, $0.000000000 USD known so far.")
+	expect(pending).toContain("Cost so far: unknown; $0.00 priced (open)")
+	expect(pending).toContain("Prices: 0/1 requests priced, $0.00 known so far.")
 
 	billed = true
 	setGitLab("merged")
@@ -144,9 +144,9 @@ it("shows an open MR's pending cost, then its confirmed and inferred total once 
 		75_000,
 	)
 	const priced = await workDetails(fixture, sessionId)
-	expect(priced).toContain(`Cost: $0.000166000 USD — ${url}`)
-	expect(priced).toContain("Confirmed: $0.000000000 USD; inferred: $0.000166000 USD.")
-	expect(priced).toContain("Prices: 1/1 requests priced, $0.000166000 USD.")
+	expect(priced).toContain(`Cost: $0.000166 — ${url}`)
+	expect(priced).toContain("Confirmed: $0.00; inferred: $0.000166.")
+	expect(priced).toContain("Prices: 1/1 requests priced, $0.000166.")
 	const modelRequests = fixture.fake.requests.filter((request) => request.url.includes("/chat/completions"))
 	expect(modelRequests, "commands and background pricing must not ask a model").toHaveLength(0)
 })

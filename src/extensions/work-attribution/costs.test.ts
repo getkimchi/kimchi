@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
-import { calculatePullRequestCosts, type RequestCostObservation } from "./costs.js"
+import { calculatePullRequestCosts, decimalNanos, type RequestCostObservation, roundedUsd, usd } from "./costs.js"
 import type { WorkRecord } from "./summary.js"
 
 const time = (minutes: number) => new Date(Date.UTC(2026, 9, 2, 10, minutes)).toISOString()
@@ -1448,5 +1448,38 @@ describe("work-matching side calls", () => {
 		)
 		expect(report.pullRequests[0].unknownRequestIds).toEqual([])
 		expect(report.pullRequests[0].totalCostUsd).not.toBeNull()
+	})
+})
+
+describe("roundedUsd", () => {
+	it.each([
+		["0.000000000", "$0.00"],
+		["0.000000001", "<$0.000001"],
+		["0.000000999", "<$0.000001"],
+		["0.000001000", "$0.000001"],
+		["0.000001499", "$0.000001"],
+		["0.000001500", "$0.000002"],
+		["0.000012340", "$0.000012"],
+		["0.000581110", "$0.000581"],
+		// As binary floats 0.0005815 and 1.2345 sit just below the half, so toFixed() would round them down.
+		["0.000581500", "$0.000582"],
+		["0.028600000", "$0.0286"],
+		["0.035443340", "$0.0354"],
+		["0.375000000", "$0.375"],
+		["0.500000000", "$0.50"],
+		["0.999499999", "$0.999"],
+		["0.999500000", "$1.00"],
+		["1.234500000", "$1.235"],
+		["1.374500000", "$1.375"],
+		["1.500000000", "$1.50"],
+		["9.999500000", "$10.00"],
+		["10.666666000", "$10.67"],
+		["12.500000000", "$12.50"],
+		["999.995000000", "$1,000.00"],
+		["1234.500000000", "$1,234.50"],
+	])("shows $0 USD as $1 and keeps the exact amount", (amount, text) => {
+		const nanos = decimalNanos(amount) ?? -1n
+		expect(usd(nanos)).toBe(amount)
+		expect(roundedUsd(nanos)).toBe(text)
 	})
 })
