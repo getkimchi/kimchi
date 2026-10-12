@@ -1228,6 +1228,10 @@ describe("completion continuation", () => {
 		expect(followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(1)
 
 		// Completion attempts while b still runs: exactly one guard queues.
+		// (Guard GENERATION is counted from the sendMessage mock — persisted
+		// custom_message timestamps only describe DELIVERY, never generation,
+		// so they must never be used to count guards; consumption is asserted
+		// separately through the message_end replacements below.)
 		for (let i = 0; i < 3; i++) {
 			await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
 		}
