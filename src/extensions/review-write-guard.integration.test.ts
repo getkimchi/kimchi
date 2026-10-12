@@ -4,16 +4,27 @@
  * using a mock ExtensionAPI.
  */
 import type { ToolCallEventResult } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import reviewWriteGuardExtension, { STEER_MESSAGE_TYPE } from "./review-write-guard.js"
 
 let mockPhase: string | undefined = "review"
+let mockMultiModel = true
 
 vi.mock("./tags.js", () => ({
 	getCurrentPhase: () => mockPhase,
 }))
+
+vi.mock("./multi-model.js", () => ({
+	resolveMultiModelEnabled: () => ({ value: mockMultiModel, source: "global" as const }),
+}))
+
+afterEach(() => {
+	mockPhase = "review"
+	mockMultiModel = true
+	delete process.env.KIMCHI_DISABLE_GUARD_REVIEW_WRITE
+})
 
 function createMockPI(options?: Parameters<typeof reviewWriteGuardExtension>[1]) {
 	const pi = createExtensionApi()
@@ -368,5 +379,67 @@ describe("reviewWriteGuardExtension wiring", () => {
 		emit(pi, "tool_call", { toolName: "edit" }, ctx)
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 		expect(pi.blockResult).toBeUndefined()
+	})
+
+	it("single-model sessions downgrade the build-phase block to a one-time advisory steer", () => {
+		const pi = createMockPI({ buildPhaseThreshold: 2, buildPhaseBlockThreshold: 4 })
+		mockPhase = "build"
+		mockMultiModel = false
+
+		emit(pi, "tool_result", { toolName: "Agent" })
+		emit(pi, "tool_call", { toolName: "edit" }) // 1 — allowed
+		emit(pi, "tool_call", { toolName: "edit" }) // 2 — normal steer
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		emit(pi, "tool_call", { toolName: "edit" }) // 3 — allowed
+		emit(pi, "tool_call", { toolName: "edit" }) // 4 — block threshold, downgraded
+
+		// No block, and a second (advisory) steer fired instead.
+		expect(pi.blockResult).toBeUndefined()
+		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
+		expect(pi.sendMessage).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				customType: STEER_MESSAGE_TYPE,
+				content: [expect.objectContaining({ text: expect.stringContaining("advisory only") })],
+			}),
+			{ deliverAs: "steer" },
+		)
+
+		// Further edits neither block nor repeat the advisory.
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "write" })
+		expect(pi.blockResult).toBeUndefined()
+		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
+	})
+
+	it("multi-model sessions keep the build-phase hard block", () => {
+		const pi = createMockPI({ buildPhaseThreshold: 2, buildPhaseBlockThreshold: 4 })
+		mockPhase = "build"
+		mockMultiModel = true
+
+		emit(pi, "tool_result", { toolName: "Agent" })
+		emit(pi, "tool_call", { toolName: "edit" }) // 1
+		emit(pi, "tool_call", { toolName: "edit" }) // 2 — steer
+		emit(pi, "tool_call", { toolName: "edit" }) // 3
+		emit(pi, "tool_call", { toolName: "edit" }) // 4 — block
+		expect(pi.blockResult).toMatchObject({ block: true, reason: expect.stringContaining("BLOCKED") })
+	})
+
+	it("KIMCHI_DISABLE_GUARD_REVIEW_WRITE disables the entire guard — no steer, no block", () => {
+		process.env.KIMCHI_DISABLE_GUARD_REVIEW_WRITE = "1"
+		const pi = createMockPI({ buildPhaseThreshold: 2, buildPhaseBlockThreshold: 4 })
+		mockPhase = "build"
+		mockMultiModel = true
+
+		emit(pi, "tool_result", { toolName: "Agent" })
+		for (let i = 0; i < 6; i++) emit(pi, "tool_call", { toolName: "edit" })
+
+		expect(pi.blockResult).toBeUndefined()
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+
+		// The review-phase steer is suppressed too.
+		mockPhase = "review"
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 })

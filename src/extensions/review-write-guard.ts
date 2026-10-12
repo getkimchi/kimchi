@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { AgentOutcomeKind, AgentRecord, SubagentType } from "./agents/personas/types.js"
-import { sendSteer } from "./steer-events.js"
+import { resolveMultiModelEnabled } from "./multi-model.js"
+import { isSteerDisabled, sendSteer } from "./steer-events.js"
 import { getCurrentPhase } from "./tags.js"
 
 const IMPLEMENTATION_TOOLS = new Set(["edit", "write"])
@@ -24,6 +25,14 @@ export interface OrchestratorWriteGuardOptions {
 	 * before a hard block fires. Default: 6.
 	 */
 	buildPhaseTriageBlockThreshold?: number
+	/**
+	 * When set and returning true, build-phase hard blocks are downgraded to a
+	 * one-time advisory steer instead. Wired by default to the session's
+	 * multi-model state: single-model sessions keep the delegation signal but
+	 * never hard-block, because the user — not the harness — owns delegation
+	 * decisions when they merely asked for "some subagents".
+	 */
+	downgradeBlockToSteer?: () => boolean
 }
 
 export const STEER_MESSAGE_TYPE = "review-write-guard-steer"
@@ -44,6 +53,12 @@ const BUILD_STEER_MESSAGE =
 const BUILD_BLOCK_REASON =
 	"BLOCKED: You have continued editing subagent output after being warned. " +
 	"The orchestrator must not do a subagent's job. Spawn a fix Agent with the remaining work."
+
+const BUILD_DOWNGRADED_STEER_MESSAGE =
+	"Delegation guard: you are well past the direct-edit allowance after a subagent returned. " +
+	"Spawn a fix Agent with the remaining work, or finish quickly if the user explicitly directed these edits. " +
+	"Single-model sessions are advisory only — the user owns the delegation decision — " +
+	"but repeated direct fixes on subagent output still burn context."
 
 /** Subagent outcome shape exposed in the Agent tool's result details. */
 interface AgentOutcomeSummary {
@@ -81,10 +96,12 @@ export class OrchestratorWriteGuard {
 	private readonly buildPhaseBlockThreshold: number
 	private readonly buildPhaseTriageThreshold: number
 	private readonly buildPhaseTriageBlockThreshold: number
+	private readonly downgradeBlockToSteer?: () => boolean
 	private subagentReturnedInBuild = false
 	private lastSubagentSuccessful = false
 	private buildWriteCount = 0
 	private buildSteered = false
+	private buildBlockDowngraded = false
 	private reviewWriteCount = 0
 	private reviewSteered = false
 	private lastPhase: ReturnType<typeof getCurrentPhase>
@@ -97,6 +114,7 @@ export class OrchestratorWriteGuard {
 		this.buildPhaseBlockThreshold = options.buildPhaseBlockThreshold ?? 5
 		this.buildPhaseTriageThreshold = options.buildPhaseTriageThreshold ?? 3
 		this.buildPhaseTriageBlockThreshold = options.buildPhaseTriageBlockThreshold ?? 6
+		this.downgradeBlockToSteer = options.downgradeBlockToSteer
 		if (this.buildPhaseThreshold >= this.buildPhaseBlockThreshold) {
 			throw new Error("buildPhaseBlockThreshold must be greater than buildPhaseThreshold")
 		}
@@ -122,6 +140,7 @@ export class OrchestratorWriteGuard {
 		this.lastSubagentSuccessful = false
 		this.buildWriteCount = 0
 		this.buildSteered = false
+		this.buildBlockDowngraded = false
 	}
 
 	private resetReviewState(): void {
@@ -162,6 +181,14 @@ export class OrchestratorWriteGuard {
 			const { steerThreshold, blockThreshold } = this.currentThresholds()
 
 			if (this.buildWriteCount >= blockThreshold) {
+				if (this.downgradeBlockToSteer?.()) {
+					// Advisory mode: emit the downgrade steer once per arm, then stay
+					// silent — every call beyond the block threshold must not spam a
+					// message. The flag resets with the next subagent return.
+					if (this.buildBlockDowngraded) return undefined
+					this.buildBlockDowngraded = true
+					return { steer: BUILD_DOWNGRADED_STEER_MESSAGE }
+				}
 				return { block: true, reason: BUILD_BLOCK_REASON }
 			}
 			if (this.buildWriteCount >= steerThreshold && !this.buildSteered) {
@@ -186,6 +213,7 @@ export class OrchestratorWriteGuard {
 
 		this.buildWriteCount = 0
 		this.buildSteered = false
+		this.buildBlockDowngraded = false
 
 		if (isTriageOutcome(outcome)) {
 			// Subagent did not complete successfully. The orchestrator is doing triage
@@ -286,7 +314,11 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 		const sessionId = ctx.sessionManager.getSessionId()
 		let guard = guardMap.get(sessionId)
 		if (!guard) {
-			guard = new OrchestratorWriteGuard(ctx, options)
+			guard = new OrchestratorWriteGuard(ctx, {
+				...options,
+				downgradeBlockToSteer:
+					options?.downgradeBlockToSteer ?? (() => !resolveMultiModelEnabled(ctx.sessionManager).value),
+			})
 			guardMap.set(sessionId, guard)
 		}
 		return guard
@@ -313,6 +345,14 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 			return { block: false }
 		}
 
+		// KIMCHI_DISABLE_GUARD_REVIEW_WRITE disables the entire guard — steer AND
+		// block — matching the bash/loop guard kill switches. Before this check
+		// existed, the flag only suppressed the steer message while the hard
+		// block kept firing.
+		if (isSteerDisabled("review_write_guard")) {
+			return { block: false }
+		}
+
 		const guard = getOrchestratorWriteGuard(ctx)
 		const result = guard.checkToolCall(event.toolName)
 		if (!result) return { block: false }
@@ -322,7 +362,7 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 		}
 
 		// sendSteer no-ops (returns false) when the kill switch is on; the
-		// call is never blocked either way.
+		// tool call proceeds either way.
 		sendSteer(pi, ctx, {
 			kind: "review_write_guard",
 			reason: "steer",
