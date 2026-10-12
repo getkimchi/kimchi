@@ -63,7 +63,9 @@ describe("dispatchSubcommand", () => {
 		expect(printed).toContain("--provider")
 		expect(printed).toContain("--mode")
 		expect(printed).toContain("Environment variables:")
-		expect(printed).toContain("KIMCHI_API_KEY")
+		expect(printed).toContain("kimchi env")
+		// Env var details are delegated to `kimchi env`, not listed in help.
+		expect(printed).not.toContain("KIMCHI_API_KEY")
 		// Pi-internal commands must NOT leak into kimchi's help (we no longer
 		// delegate to pi.main for the lower section).
 		expect(printed).not.toContain("install <source>")

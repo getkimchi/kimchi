@@ -9,6 +9,7 @@ import { runClaude } from "./claude.js"
 import { runCodex } from "./codex.js"
 import { runConfig } from "./config.js"
 import { runCursor } from "./cursor.js"
+import { runEnv } from "./env.js"
 import { runGsd2 } from "./gsd2.js"
 import { runLogin } from "./login.js"
 import { runMcp } from "./mcp.js"
@@ -36,6 +37,7 @@ export const COMMANDS: CommandDefinition[] = [
 	{ name: "resources", summary: "Enable or disable Kimchi hooks, tools, extensions, and plugins", run: runResources },
 	{ name: "mcp", summary: "MCP server utilities (probe and diagnostics)", run: runMcp },
 	{ name: "memory", summary: "Manage persistent memory (list, search, delete, reset)", run: runMemory },
+	{ name: "env", summary: "List environment variables recognised by kimchi", run: runEnv },
 	{ name: "version", summary: "Print the kimchi version", run: runVersion },
 ]
 
