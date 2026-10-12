@@ -12,6 +12,7 @@ describe("memory_search tool", () => {
 				{ memory: "prefers pnpm", score: 0.55 },
 				{ memory: "vim keybindings", score: undefined },
 			],
+			isEnabled: () => true,
 		}
 		const tool = createMemorySearchTool(deps)
 		const result = await tool.execute("call-1", { query: "package manager" }, undefined, undefined, {} as never)
@@ -24,7 +25,7 @@ describe("memory_search tool", () => {
 	})
 
 	it("reports an explicit miss when nothing matches", async () => {
-		const deps: MemorySearchDeps = { search: async () => [] }
+		const deps: MemorySearchDeps = { search: async () => [], isEnabled: () => true }
 		const tool = createMemorySearchTool(deps)
 		const result = await tool.execute("call-1", { query: "anything" }, undefined, undefined, {} as never)
 		expect(textOf(result)).toBe("No memories matched that query.")
@@ -35,10 +36,21 @@ describe("memory_search tool", () => {
 			search: async () => {
 				throw new Error("store unavailable")
 			},
+			isEnabled: () => true,
 		}
 		const tool = createMemorySearchTool(deps)
 		await expect(tool.execute("call-1", { query: "anything" }, undefined, undefined, {} as never)).rejects.toThrow(
 			"store unavailable",
 		)
+	})
+
+	it("reports the disabled state instead of searching when the toggle is off", async () => {
+		const search = async () => {
+			throw new Error("must not be called")
+		}
+		const tool = createMemorySearchTool({ search, isEnabled: () => false })
+		const result = await tool.execute("call-1", { query: "anything" }, undefined, undefined, {} as never)
+		expect(textOf(result)).toContain("currently disabled")
+		expect(textOf(result)).toContain("/memory enable")
 	})
 })
