@@ -194,12 +194,12 @@ describe("work browser rows", () => {
 			[ids[0]]: "$0.0623 · no PR",
 			[ids[1]]: "$0.0123 known so far · no PR",
 			[ids[2]]: "cost unknown · no PR",
-			[ids[3]]: "$1.23 known so far · no PR",
+			[ids[3]]: "$1.235 known so far · no PR",
 			[ids[4]]: "no requests · no PR",
 			// A billed zero is a known price.
-			[ids[5]]: "$0 · no PR",
+			[ids[5]]: "$0.00 · no PR",
 		})
-		expect(spend).toBe("$1.31 known so far")
+		expect(spend).toBe("$1.309 known so far")
 		expect(rows.find((row) => row.workId === ids[1])?.description).toContain(
 			"Prices: 1/2 requests priced, $0.0123 known so far.",
 		)
@@ -221,7 +221,7 @@ describe("work browser rows", () => {
 			},
 		])
 
-		expect(spend).toBe("$0.8750")
+		expect(spend).toBe("$0.875")
 	})
 
 	it("shows each work's own spend while the saved reports repeat their connected works", () => {
@@ -245,8 +245,8 @@ describe("work browser rows", () => {
 			},
 		])
 
-		expect(rows.map((row) => row.value.split(" · ")[0])).toEqual(["$0.7500", "$0.3750"])
-		expect(spend).toBe("$0.8750")
+		expect(rows.map((row) => row.value.split(" · ")[0])).toEqual(["$0.75", "$0.375"])
+		expect(spend).toBe("$0.875")
 	})
 
 	it("names each work's PR state from its saved links", () => {
@@ -359,10 +359,10 @@ describe("work browser rows", () => {
 				"Cost: unknown; waiting for billing",
 			].join("\n"),
 		)
-		expect(row(damaged)).toMatchObject({ label: "  00000002 summary unavailable", value: "$0.1000 · no PR" })
+		expect(row(damaged)).toMatchObject({ label: "  00000002 summary unavailable", value: "$0.10 · no PR" })
 		expect(row(wrongCosts)).toMatchObject({ label: "  00000003 kimchi", value: "cost unknown · no PR" })
 		expect(row(wrongCosts)?.description).toContain("Cost: unknown; waiting for billing")
-		expect(spend).toBe("$0.1000 known so far")
+		expect(spend).toBe("$0.10 known so far")
 	})
 
 	it("describes a work with the details /work prints plus where and when it ran", async () => {

@@ -8,7 +8,7 @@ import { storedPullRequests } from "../pull-request-status/provider-records.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import type { WorkDetailsRequest } from "../work-attribution.js"
 import { costDetailLines, knownSpend, ownRequests } from "./cost-details.js"
-import { time } from "./costs.js"
+import { roundedUsd, time } from "./costs.js"
 import { object } from "./summary.js"
 
 /** Besides the current work, the panel lists works with activity this recent. */
@@ -216,16 +216,6 @@ function spendText(spend: Spend | undefined, partial = false): string {
 	if (complete && !spend.total) return "no requests"
 	if (!spend.nanos && !complete) return "cost unknown"
 	return `${roundedUsd(spend.nanos)}${complete ? "" : " known so far"}`
-}
-
-function roundedUsd(nanos: bigint): string {
-	if (!nanos) return "$0"
-	const places = nanos < 1_000_000_000n ? 4 : 2
-	const step = 10n ** BigInt(9 - places)
-	const rounded = (nanos + step / 2n) / step
-	if (!rounded) return "<$0.0001"
-	const digits = rounded.toString().padStart(places + 1, "0")
-	return `$${digits.slice(0, -places)}.${digits.slice(-places)}`
 }
 
 function pullRequestState(links: WorkPullRequest[]): string {
