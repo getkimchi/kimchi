@@ -1,3 +1,4 @@
+import { wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import {
 	inUploadWindow,
 	type LimitNotices,
@@ -8,7 +9,8 @@ import {
 import type { ReportingRepository } from "./snapshot.js"
 
 const name = (repository: ReportingRepository) => repository.name ?? `${repository.host} repository ${repository.id}`
-const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`
+const formatCount = (count: number) => count.toLocaleString("en-US")
+const plural = (count: number, noun: string) => `${formatCount(count)} ${noun}${count === 1 ? "" : "s"}`
 
 function inAbout(ms: number): string {
 	if (ms <= 0) return "at the next upload"
@@ -18,7 +20,9 @@ function inAbout(ms: number): string {
 
 function reached(limit: ServerLimit): string {
 	const values =
-		limit.current !== undefined && limit.maximum !== undefined ? ` ${limit.current} of ${limit.maximum}` : ""
+		limit.current !== undefined && limit.maximum !== undefined
+			? ` ${formatCount(limit.current)} of ${formatCount(limit.maximum)}`
+			: ""
 	return `${limit.scope ?? "server"} limit reached${limit.limit ? ` (${limit.limit}${values})` : ""}`
 }
 
@@ -47,7 +51,25 @@ export function limitNoticeTexts(notices: LimitNotices): string[] {
 	]
 }
 
-/** The `/pr-reporting status` text. `skipReason` describes this session, not the saved choice. */
+/** Lines fit a 60-column TUI, which pads notifications by one column on each side. */
+const WIDTH = 58
+/** "Repositories" and a three-space gutter. */
+const LABEL_WIDTH = 15
+
+/** A label and its values, each starting a line of the value column. */
+const row = (label: string, ...values: string[]) =>
+	values
+		.flatMap((value) => wrapTextWithAnsi(value, WIDTH - LABEL_WIDTH))
+		.map((line, index) => `${(index ? "" : label).padEnd(LABEL_WIDTH)}${line}`)
+/** Section text wrapped two columns in; `first` starts its first line. */
+const wrap = (text: string, first: string) =>
+	wrapTextWithAnsi(text, WIDTH - 2).map((line, index) => `${index ? "  " : first}${line}`)
+
+/**
+ * The `/pr-reporting status` text. `skipReason` describes this session, not the saved choice. Server limits and
+ * delivery problems come first and make it a warning; skipped history alone is information, because the other
+ * requests still report.
+ */
 export function statusText(
 	state: ReportingState,
 	skipReason: string | undefined,
@@ -56,10 +78,12 @@ export function statusText(
 	const entries = Object.values(state.entries)
 	const pending = entries.filter((entry) => entry.pending)
 	const waiting = pending.filter((entry) => inUploadWindow(entry, now)).length
+	const acknowledged = entries.filter((entry) => entry.lastAcknowledgedAt).length
 	const problems = [
+		// The advice is long, so the retry time keeps a line of its own.
 		...Object.values(state.paused ?? {}).map(
 			(pause) =>
-				`PR cost reporting paused for ${owner(pause.limit)}: ${reached(pause.limit)}. Ask an admin to free space or wait; next try ${inAbout(pause.retryAt - now)}.`,
+				`PR cost reporting paused for ${owner(pause.limit)}: ${reached(pause.limit)}. Ask an admin to free space or wait.\nNext try ${inAbout(pause.retryAt - now)}.`,
 		),
 		...entries.flatMap((entry) => {
 			const lines: string[] = []
@@ -77,14 +101,31 @@ export function statusText(
 			[state.error, ...pending.map((entry) => entry.lastError)].filter((value): value is string => value !== undefined),
 		),
 	]
-	return {
-		text: [
-			`PR reporting: ${state.enabled ? "on" : "off"} (${state.followsTelemetry ? "SaaS default" : "explicit choice"})`,
-			...(skipReason ? [`Uploads are skipped in this session: ${skipReason}. Local attribution continues.`] : []),
-			`Queued repositories: ${pending.length}${waiting ? ` (${waiting} waiting for the 5-minute upload window)` : ""}`,
-			`Acknowledged repositories: ${entries.filter((entry) => entry.lastAcknowledgedAt).length}`,
-			...problems,
-		].join("\n"),
-		warning: problems.length > 0,
-	}
+	const sections = [
+		...(problems.length ? [["Delivery problems", ...problems.flatMap((problem) => wrap(problem, "- "))]] : []),
+		[
+			...row(
+				"PR reporting",
+				`${state.enabled ? "Enabled" : "Disabled"} (${state.followsTelemetry ? "SaaS default" : "explicit choice"})`,
+			),
+			...(skipReason ? row("This session", "No uploads; local attribution continues", `Reason: ${skipReason}`) : []),
+			...row(
+				"Repositories",
+				`${formatCount(pending.length)} queued · ${formatCount(acknowledged)} acknowledged`,
+				...(waiting ? [`${formatCount(waiting)} waiting for the 5-minute upload window`] : []),
+			),
+		],
+		...(state.skippedRequests
+			? [
+					[
+						"History coverage incomplete",
+						...wrap(
+							`${plural(state.skippedRequests, "request")} skipped without original account or repository evidence. Other requests are still reported.`,
+							"  ",
+						),
+					],
+				]
+			: []),
+	]
+	return { text: sections.map((lines) => lines.join("\n")).join("\n\n"), warning: problems.length > 0 }
 }

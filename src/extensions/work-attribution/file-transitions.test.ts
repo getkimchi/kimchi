@@ -9,6 +9,7 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -81,9 +82,9 @@ function contributions() {
 async function write(path: string, content: string, ctx = context()) {
 	await createTrackedWriteTool(ctx, "write-call").execute("write-call", { path, content })
 }
-async function edit(oldText: string, newText: string, ctx = context()) {
+async function edit(oldText: string, newText: string, ctx = context(), path = "file.txt") {
 	await createTrackedEditTool(ctx, "edit-call").execute("edit-call", {
-		path: "file.txt",
+		path,
 		edits: [{ oldText, newText }],
 	})
 }
@@ -1119,6 +1120,153 @@ describe("manual commit reconciliation", () => {
 			join(repo, "file.txt"),
 			readFileSync(join(repo, "file.txt"), "utf8").replace("human-before", "human-after"),
 		)
+		commit()
+		await reconcileFileTransitions(context("reopened"))
+		expect(contributions()).toEqual([])
+	})
+	it.each([
+		"after",
+		"before",
+		"edited",
+		"committed empty",
+	])("joins a native write into a new or empty file when its lines survive beside human lines (%s)", async (kind) => {
+		baseline()
+		if (kind === "committed empty") {
+			writeFileSync(join(repo, "new.txt"), "")
+			commit()
+		}
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		await write("new.txt", "alpha\nbeta\n", ctx)
+		if (kind === "edited") await edit("beta", "gamma", ctx, "new.txt")
+		const written = readFileSync(join(repo, "new.txt"), "utf8")
+		writeFileSync(join(repo, "new.txt"), kind === "before" ? `human\n${written}` : `${written}human\n`)
+		const sha = commit()
+		await reconcileFileTransitions(context("reopened"))
+		await reconcileFileTransitions(context("again"))
+		expect(contributions()).toEqual([
+			expect.objectContaining({
+				sha,
+				workId,
+				sessionId: "original",
+				fileMatches: [
+					{
+						path: "new.txt",
+						method: "file-hunks",
+						worktree: realpathSync(repo),
+						transitionIds: rows()
+							.filter((row) => row.type === "file_transition")
+							.map((row) => row.transitionId),
+					},
+				],
+			}),
+		])
+	})
+	it("keeps whole-file evidence for a created file committed unchanged", async () => {
+		baseline()
+		await write("new.txt", "alpha\nbeta\n")
+		git("stash", "push", "-qu")
+		git("stash", "pop", "-q")
+		const sha = commit()
+		await reconcileFileTransitions(context("reopened"))
+		expect(contributions()).toEqual([
+			expect.objectContaining({ sha, fileMatches: [expect.objectContaining({ method: "path-blob" })] }),
+		])
+	})
+	it("retains a created file's text in Kimchi's store unless Git ignores it", async () => {
+		baseline()
+		writeFileSync(join(repo, ".gitignore"), "*.log\n")
+		await write("new.txt", "alpha\n")
+		await write("debug.log", "secret\n")
+		const written = (path: string) =>
+			rows().find((row) => row.type === "file_transition" && row.path === path).after.blob
+		const stored = (blob: string) => existsSync(join(snapshots(), blob.slice(0, 2), blob.slice(2)))
+		expect(stored(written("new.txt"))).toBe(true)
+		expect(() => git("cat-file", "-e", written("new.txt"))).toThrow()
+		expect(stored(written("debug.log"))).toBe(false)
+	})
+	it.each([
+		"renamed",
+		"deleted",
+	])("claims only the commit that adds a created file, not one where it is later %s", async (kind) => {
+		baseline()
+		await write("new.txt", "alpha\nbeta\n")
+		writeFileSync(join(repo, "new.txt"), "alpha\nbeta\nhuman\n")
+		const added = commit()
+		if (kind === "renamed") git("mv", "new.txt", "renamed.txt")
+		else git("rm", "-q", "new.txt")
+		git("commit", "-qm", kind)
+		await reconcileFileTransitions(context("reopened"))
+		expect(contributions().map((row) => row.sha)).toEqual([added])
+	})
+	it("matches identical content that two works created to the file each work wrote", async () => {
+		baseline()
+		const first = getWorkId(context())
+		await write("first.txt", "shared\ncontent\n")
+		const second = setWorkId(context())
+		await write("second.txt", "shared\ncontent\n")
+		for (const path of ["first.txt", "second.txt"]) writeFileSync(join(repo, path), `shared\ncontent\n${path}\n`)
+		const sha = commit()
+		await reconcileFileTransitions(context("reopened"))
+		expect(contributions()).toHaveLength(2)
+		expect(contributions()).toEqual(
+			expect.arrayContaining(
+				[
+					[first, "first.txt"],
+					[second, "second.txt"],
+				].map(([workId, path]) =>
+					expect.objectContaining({
+						sha,
+						workId,
+						paths: [path],
+						fileMatches: [expect.objectContaining({ method: "file-hunks" })],
+					}),
+				),
+			),
+		)
+	})
+	it.each([
+		"edited",
+		"repeated",
+		"empty",
+		"blank",
+		"mode",
+		"oversized",
+		"binary",
+		"non-UTF-8",
+		"renamed",
+		"deleted",
+		"ignored",
+		"two works",
+	])("leaves created-file evidence unresolved (%s)", async (kind) => {
+		baseline()
+		const path = kind === "ignored" ? "debug.log" : "new.txt"
+		if (kind === "ignored") writeFileSync(join(repo, ".gitignore"), "*.log\n")
+		const contents: Record<string, string> = {
+			empty: "",
+			blank: "\n\n",
+			oversized: "line\n".repeat(64 * 1024),
+			binary: "alpha\0\nbeta\n",
+		}
+		const content = contents[kind] ?? "alpha\nbeta\n"
+		await write(path, content)
+		if (kind === "two works") {
+			rmSync(join(repo, path))
+			setWorkId(context())
+			await write(path, content)
+		}
+		let kept = content
+		if (kind === "edited") kept = content.replace("beta", "human-beta")
+		if (kind === "repeated") kept = `${content}${content}`
+		writeFileSync(join(repo, path), `human\n${kept}more\n`)
+		if (kind === "non-UTF-8") writeFileSync(join(repo, path), Buffer.from([0xe9, 0x0a]), { flag: "a" })
+		if (kind === "mode") chmodSync(join(repo, path), 0o755)
+		if (kind === "renamed") renameSync(join(repo, path), join(repo, "renamed.txt"))
+		if (kind === "deleted") {
+			rmSync(join(repo, path))
+			writeFileSync(join(repo, "other.txt"), "other\n")
+		}
+		if (kind === "ignored") git("add", "-f", path)
 		commit()
 		await reconcileFileTransitions(context("reopened"))
 		expect(contributions()).toEqual([])

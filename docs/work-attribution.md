@@ -50,7 +50,7 @@ flowchart LR
 
 1. **Start working.** Kimchi creates a work ID and records model requests under it.
 2. **Save a plan or write an ADR.** Native plans get retained copies. A Markdown file written through Kimchi's native write/edit tools keeps its work identity in the local edit journal.
-3. **Continue in a fresh session.** Name the saved file, for example `Implement docs/adr/search.md`, or paste a native plan with its work-ID header. Pasted text must match a retained version. If you enabled model matching, a separate call to the selected model can also recognize a paraphrased task. Without matching evidence, the new session keeps its own work ID, even on the same branch.
+3. **Continue in a fresh session.** Name the saved file, for example `Implement docs/adr/search.md`, or paste a native plan with its work-ID header. Pasted text must match a retained version. If you enabled model matching, a separate model call can also recognize a paraphrased task. Without matching evidence, the new session keeps its own work ID, even on the same branch.
 4. **Implement and commit.** Kimchi adds requests, edits and linked commits to the work's summary. A native plan still works after its original worktree is deleted: use its retained path or paste its saved text.
 
 ## Browse works with `/work`
@@ -99,7 +99,7 @@ flowchart LR
 
 The summary records whether continuation came from a named plan, pasted plan, named artifact, or a model decision. Pasted-plan evidence points to the retained file. Semantic evidence names the model and decision and saves a hash of the input, without copying its text. Older branch-inference records remain readable; Kimchi does not rewrite their history.
 
-Naming one eligible file can select its work even when asking to compare it. Reading a file through a tool does not select its work. Pasting an ordinary document supplies no exact link; the selected model may still infer one from the user's message. Earlier requests keep their original work IDs. A verified continuation can also confirm the input that produced the selected plan or artifact, as described below.
+Naming one eligible file can select its work even when asking to compare it. Reading a file through a tool does not select its work. Pasting an ordinary document supplies no exact link; model matching may still infer one from the user's message. Earlier requests keep their original work IDs. A verified continuation can also confirm the input that produced the selected plan or artifact, as described below.
 
 Other cases use these rules:
 
@@ -113,11 +113,11 @@ Other cases use these rules:
 
 Kimchi does not search other worktrees by filename. One work can span several sessions; one session can contribute to several works.
 
-#### A separate call to the selected model
+#### A separate model call
 
-Model matching is off by default. `/work matching on` allows saved task text to be sent to the selected provider. `/work matching off` cancels a pending comparison without waiting for the main model to finish. The setting is `workSemanticMatching` in `~/.config/kimchi/harness/settings.json`; local tracking and explicit saved-plan continuation work while it is off. This setting does not enable report uploads.
+Model matching is off by default. `/work matching on` allows saved task text to be sent to Kimchi's classifier models, or to the selected model when none of them is available. `/work matching off` cancels a pending comparison without waiting for the main model to finish. The setting is `workSemanticMatching` in `~/.config/kimchi/harness/settings.json`; local tracking and explicit saved-plan continuation work while it is off. This setting does not enable report uploads.
 
-Kimchi captures the model selected when you submit a message, then uses that model for separate matching calls before the main reply. These calls use its normal authentication and provider connection. They have no tools and do not enter the chat history. No local model, extra model setting or `judge` role is required. With no saved task to compare, the first message needs no matching call.
+Matching calls run before the main reply on the same small models as permission checks, in order: `kimchi-dev/deepseek-v4-flash-0731`, `kimchi-dev/glm-5.3-flash`, `kimchi-dev/minimax-m3`. When one cannot answer (no credentials, a provider error or an unusable reply), the next one decides. When the catalog has none of them, the model selected when you submit the message decides. These calls use the model's normal authentication and provider connection. They have no tools and do not enter the chat history. No local model, extra model setting or `judge` role is required. With no saved task to compare, the first message needs no matching call.
 
 While matching is enabled, the first user message is kept in `work/<workId>/intent.json` after its account is verified. Later checks use that text and the latest retained native plan. Candidates must belong to the same Git repository, API endpoint, organization and authenticated user. Rotating a key for the same account keeps that identity. Missing user identity or legacy text without an account prevents automatic semantic continuation; old text is not assigned to whoever is logged in now. Enabled redaction applies before sending. Raw text and credentials are not copied into the work summary.
 
@@ -133,7 +133,7 @@ flowchart TD
     C -->|Exactly one earlier task matches| A["Saved work ID; send main request"]
 ```
 
-Model checks share a three-second limit, including provider authentication and redaction. Account verification has a separate one-second limit and a short in-memory cache. Cancellation, opt-out, account or model changes, a session change or a newer delivered message prevents a late result from changing work. Unresolved references to recorded work are never overridden by a model guess. Explicit choices and local children keep the rules above.
+Model checks share a three-second limit, including provider authentication and redaction. Account verification has a separate one-second limit; after a minute the verified identity keeps answering while it is checked again in the background. A folder's Git repository is looked up again after 30 seconds. Cancellation, opt-out, account or model changes, a session change or a newer delivered message prevents a late result from changing work. Unresolved references to recorded work are never overridden by a model guess. Explicit choices and local children keep the rules above.
 
 Comparisons stop rather than omit evidence above 256 saved task texts, 32 retained plan versions per work, a latest retained plan over 16,000 bytes or 12,000 serialized input characters. Work directories without saved task text do not count. When any of these limits stops matching, `/work` says so instead of warning on every prompt. Large histories, slow providers and unsupported output formats can therefore remain unresolved. Earlier works without saved task text are not backfilled.
 
@@ -233,9 +233,9 @@ flowchart LR
 
 New edit records reference a snapshot of the visible Git references and worktree heads to exclude commits that already existed before the edit. Edits share a saved snapshot while those references stay the same. Matching can survive removal of the original linked worktree while the repository and new commit remain available. It cannot recover a repository that was deleted entirely.
 
-`file-hunks` handles disjoint human and agent edits in the same text file, including inserted lines that shift the agent's change. Every native changed section must appear completely, with unique unchanged context. Overlap, partial staging, repeated ambiguous context, broken edit chains and missing objects stay unmatched. Whole-file evidence takes precedence; a later hunk match cannot weaken it.
+`file-hunks` handles disjoint human and agent edits in the same text file, including inserted lines that shift the agent's change. Every native changed section must appear completely, with unique unchanged context. A file that native writes created has no such context, so all of its final text is one section: it must appear exactly once, as complete lines, in the commit that adds the file. Lines a person adds before or after it still match; blank text, a changed or inserted line inside it, or text that appears twice does not. A committed empty file that native writes fill is treated the same way. Overlap, partial staging, repeated ambiguous context, broken edit chains and missing objects stay unmatched. Whole-file evidence takes precedence; a later hunk match cannot weaken it.
 
-Native writes retain eligible before/after file contents for this comparison in Kimchi's own Git object store, `work-attribution/objects/<repository hash>/` under the agent directory, never in your repository, so Git's automatic garbage collection there never sees them. Eligible files are tracked UTF-8 text, no larger than 256 KiB; matching allows up to 64 changed sections. The journal still stores hashes and IDs. Kimchi keeps these snapshots and deletes none by age, so the store grows by one object per distinct edited content: the committed version an edit starts from is read from your repository instead of being copied, and identical content is stored once. A missing snapshot only means that file is not matched by hunks. Reading a file for continuation does not create a snapshot. A failed optional snapshot leaves ordinary whole-file tracking available.
+Native writes retain eligible before/after file contents for this comparison in Kimchi's own Git object store, `work-attribution/objects/<repository hash>/` under the agent directory, never in your repository, so Git's automatic garbage collection there never sees them. Eligible files are UTF-8 text, no larger than 256 KiB, that are tracked or new; a new file that Git ignores keeps no snapshot. Matching allows up to 64 changed sections. The journal still stores hashes and IDs. Kimchi keeps these snapshots and deletes none by age, so the store grows by one object per distinct edited content: the committed version an edit starts from is read from your repository instead of being copied, and identical content is stored once. A missing snapshot only means that file is not matched by hunks. Reading a file for continuation does not create a snapshot. A failed optional snapshot leaves ordinary whole-file tracking available.
 
 ### 4. Find pull requests and merge requests
 
@@ -377,7 +377,7 @@ All paths below are inside the agent directory.
 
 **Background commit matching**
 
-- Partial staging, overlapping human edits, competing work, Bash/MCP-only edits, unsupported filters and symlinks can leave files unmatched. Disjoint human edits can match through `file-hunks`.
+- Partial staging, overlapping human edits, competing work, Bash/MCP-only edits, unsupported filters and symlinks can leave files unmatched. Disjoint human edits, including lines added around the text of a file Kimchi created, can match through `file-hunks`.
 - The scan checks up to 512 recent commits within a time budget. Files, journals and logs have 8 MiB limits. Finished candidates are checkpointed; changed evidence allows another attempt.
 - `historyBoundaryId` connects an edit to its saved Git reference snapshot. Large snapshots share the journal's size limits; when the required history is unavailable, Kimchi leaves the weaker match unresolved. Old journals can only use the history they actually recorded.
 - Top-level sessions in one process share a worker. Separate processes take turns through a nonblocking lease. Children neither start scans nor wait for a parent's scan at shutdown. Closing the last owning session stops its worker; no separate daemon runs after Kimchi exits.
@@ -430,6 +430,8 @@ Automatic confirmation also checks the input's Bash and MCP activity, including 
 Pending prices, including never-checked and failed lookups, are checked after 30 seconds, slowing to five minutes after a day. Known prices and settled no-charge attempts are rechecked less often as they age: after a sixteenth of the request's age, at least five minutes and at most a day apart. Each pass looks up never-checked, pending and failed requests before rechecking known results, so rechecks cannot delay a new price. Each pass has time and request limits, so a backlog can take several passes. Polling stops once a lookup at or beyond the end of the fixed 32-day window reaches the billing API. Kimchi records that final result in the journal even when it is unchanged. A late launch can make that final check; one that fails before any billing page is retried hourly. Polling times survive restarts without adding unchanged billing rows to the journal. `/work` reads the saved result without waiting for the network.
 
 Prices are USD decimal strings with up to nine decimal places. `knownCostUsd` is the known subtotal; `totalCostUsd` includes confirmed and inferred spend and is `null` while required prices or PR ownership remain unresolved. `explicit` and `inferred` hold the two portions. An explicit billed zero is valid. A complete empty lookup also settles to zero once the attempt is 24 hours old, with `billingLookup.status: "no-charge"` and no invented billing ID. Errors, incomplete pages and missing account evidence cannot settle a request. A later bill replaces the zero.
+
+`/work` rounds these amounts for reading; `costs.json` keeps them exact. Amounts below $1 keep about three significant digits, for example `$0.000581` or `$0.0286`. Amounts below $10 keep three decimals and larger ones show cents. A positive amount below one millionth of a dollar shows as `<$0.000001`; only an exact zero shows as `$0.00`.
 
 An exact price does not confirm a model's task match. Inferred requests remain listed under `inferredRequestIds` and in the `inferred` cost portion. `/work` shows the combined total and its confirmed/inferred split. Shared requests stay outside individual PR totals. Requests started after all linked PRs merged also stay outside those totals, including when their billing or task match is unresolved.
 

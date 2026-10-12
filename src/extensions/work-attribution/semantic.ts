@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto"
 import { mkdir, open, opendir, readFile, stat } from "node:fs/promises"
 import { join } from "node:path"
+import type { Api, Model } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
 import { readConfigSetting } from "../../config/settings.js"
 import { isKimchiProvider } from "../../kimchi-provider.js"
 import { readPlanWorkId } from "../../shared/planning/plan-markdown.js"
 import { isWorkId } from "../../shared/work-id.js"
+import { resolveClassifierCandidates } from "../model-catalog/classifier-models.js"
 import { refFromModel } from "../model-catalog/ref-utils.js"
 import { getRedactionConfig } from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
@@ -82,7 +84,7 @@ export interface WorkIntentInput {
 }
 type IntentDecision = { decision: "same" | "new" | "unknown" } | { decision: "continue"; workId: string }
 
-/** Sending retained task text to the selected provider is independent of local tracking. */
+/** Sending retained task text to a model is independent of local tracking. */
 export function workMatchingEnabled(): boolean {
 	return readConfigSetting("workSemanticMatching", (value): value is boolean => typeof value === "boolean", false)
 }
@@ -219,16 +221,21 @@ export async function loadWorkIntents(cwd: string, workId: string, text: string,
 	}
 }
 
-/** Separate inference using the model selected at input time; never changes the chat model. */
+/**
+ * Separate inference on the shared classifier models, the next one deciding when one cannot answer, or on the model
+ * selected at input time when the catalog has none of them; never changes the chat model.
+ */
 export async function classifyWorkIntent(
 	ctx: WorkContext & Pick<ExtensionContext, "model" | "modelRegistry">,
 	input: WorkIntentInput,
 	signal?: AbortSignal,
 	isCurrentAccount?: () => boolean,
 ): Promise<(IntentDecision & { model: string }) | undefined> {
-	const { model, modelRegistry } = ctx
-	if (!model) return
-	const unknown = { decision: "unknown" as const, model: refFromModel(model) }
+	const { modelRegistry } = ctx
+	if (!ctx.model) return
+	const { candidates } = resolveClassifierCandidates(modelRegistry)
+	const models = candidates.length ? candidates : [ctx.model]
+	let unknown = { decision: "unknown" as const, model: refFromModel(models[0]) }
 	if (!workMatchingEnabled()) return unknown
 	if (!input.message.trim() || signal?.aborted) return unknown
 	// /work reports a limit; an unknown decision would be recorded as the model's uncertainty.
@@ -256,11 +263,12 @@ export async function classifyWorkIntent(
 		onAbort = () => reject(abort.reason)
 		abort.addEventListener("abort", onAbort, { once: true })
 	})
-	const classify = async () => {
+	const classify = async (model: Model<Api>) => {
+		const uncertain = { decision: "unknown" as const, model: refFromModel(model) }
 		assertAllowed()
 		const auth = await modelRegistry.getApiKeyAndHeaders(model)
 		assertAllowed()
-		if (!auth.ok) return unknown
+		if (!auth.ok) throw new Error(auth.error)
 		const ask = async (
 			data: (WorkIntentInput & { selectedWorkId?: string }) | { message: string },
 			systemPrompt: string,
@@ -320,7 +328,9 @@ export async function classifyWorkIntent(
 				},
 			)
 			assertAllowed()
-			if (response.stopReason !== "stop") return
+			// Only a complete decision object is the model's answer; anything else leaves the decision to the next model.
+			if (response.stopReason !== "stop")
+				throw new Error(response.errorMessage ?? `Reply ended: ${response.stopReason}`)
 			const value: unknown = JSON.parse(
 				response.content
 					.filter((part) => part.type === "text")
@@ -328,30 +338,38 @@ export async function classifyWorkIntent(
 					.join(""),
 			)
 			if (object(value) && Object.keys(value).length === 1 && typeof value.decision === "string") return value.decision
+			throw new Error("Reply is not a decision")
 		}
 		if (input.current) {
 			const decision = await ask({ ...input, candidates: [] }, WORK_CURRENT_PROMPT)
-			if (decision === "same") return { decision: "same" as const, model: unknown.model }
-			if (decision !== "new") return unknown
+			if (decision === "same") return { decision: "same" as const, model: uncertain.model }
+			if (decision !== "new") return uncertain
 		}
 		// Check the message alone before a saved task can supply its missing context.
 		if (input.candidates.length && (await ask({ message: input.message }, WORK_MESSAGE_PROMPT)) !== "specific")
-			return unknown
+			return uncertain
 		let matched: string | undefined
 		for (const candidate of input.candidates) {
 			const decision = await ask({ ...input, selectedWorkId: candidate.workId }, WORK_CANDIDATE_PROMPT)
 			if (decision === "different") continue
 			// An uncertain competitor or second match cannot establish unique ownership.
-			if (decision !== "match" || matched) return unknown
+			if (decision !== "match" || matched) return uncertain
 			matched = candidate.workId
 		}
 		return matched
-			? { decision: "continue" as const, workId: matched, model: unknown.model }
-			: { decision: "new" as const, model: unknown.model }
+			? { decision: "continue" as const, workId: matched, model: uncertain.model }
+			: { decision: "new" as const, model: uncertain.model }
 	}
 	try {
-		return await Promise.race([classify(), cancelled])
-	} catch {
+		for (const model of models) {
+			unknown = { decision: "unknown", model: refFromModel(model) }
+			try {
+				return await Promise.race([classify(model), cancelled])
+			} catch {
+				// Cancellation, revoked permission and the deadline end matching for every model.
+				if (abort.aborted) break
+			}
+		}
 		return unknown
 	} finally {
 		clearInterval(permissionCheck)

@@ -201,10 +201,13 @@ describe("optional PR reporting", () => {
 		const commandCtx = { ...createCommandContext(), mode }
 		await api.getRegisteredCommand("pr-reporting").handler("status", commandCtx)
 		const [[text]] = vi.mocked(commandCtx.ui.notify).mock.calls
-		if (deliver) expect(text).not.toContain("Uploads are skipped")
+		if (deliver) expect(text).not.toContain("This session")
 		else
 			expect(text).toContain(
-				`Uploads are skipped in this session: non-interactive ${mode === "json" ? "JSON" : "print"} mode. Local attribution continues.`,
+				[
+					"This session   No uploads; local attribution continues",
+					`               Reason: non-interactive ${mode === "json" ? "JSON" : "print"} mode`,
+				].join("\n"),
 			)
 		await api.getHandler("session_shutdown")({}, ctx)
 	})
@@ -216,13 +219,30 @@ describe("optional PR reporting", () => {
 		await api.getRegisteredCommand("pr-reporting").handler("status", commandCtx)
 		expect(commandCtx.ui.notify).toHaveBeenCalledWith(
 			[
-				"PR reporting: on (SaaS default)",
-				"Uploads are skipped in this session: CI environment (GITHUB_ACTIONS). Local attribution continues.",
-				"Queued repositories: 0",
-				"Acknowledged repositories: 0",
+				"PR reporting   Enabled (SaaS default)",
+				"This session   No uploads; local attribution continues",
+				"               Reason: CI environment (GITHUB_ACTIONS)",
+				"Repositories   0 queued · 0 acknowledged",
 			].join("\n"),
 			"info",
 		)
+	})
+	it("suggests on, off and status after /pr-reporting and narrows them as the user types", async () => {
+		const api = createExtensionApi()
+		reportingExtension(api.api)
+		const { getArgumentCompletions } = api.getRegisteredCommand("pr-reporting")
+		const values = async (prefix: string) =>
+			(await getArgumentCompletions?.(prefix))?.map((item) => [item.value, item.label]) ?? []
+		expect(await getArgumentCompletions?.("")).toEqual(
+			["on", "off", "status"].map((value) => ({ value, label: value, description: expect.any(String) })),
+		)
+		expect(await values("o")).toEqual([
+			["on", "on"],
+			["off", "off"],
+		])
+		expect(await values("OF")).toEqual([["off", "off"]])
+		expect(await values(" st")).toEqual([["status", "status"]])
+		expect(await values("x")).toEqual([])
 	})
 	it.each([false, true])("warns once that a repository is partially reported (Studio=%s)", async (acp) => {
 		mode.acp = acp

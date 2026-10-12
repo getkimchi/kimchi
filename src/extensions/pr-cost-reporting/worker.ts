@@ -376,12 +376,7 @@ async function captureSnapshots(
 
 	const built = buildSnapshots(records, report, repositories, costRefreshes, learnedLimits(state))
 	check()
-	const queued = await queueSnapshots(agentDir, built.snapshots, !built.incomplete)
-	if (built.skippedRequests)
-		await recordReportingError(
-			agentDir,
-			`${queued.error ? `${queued.error}. ` : ""}PR reporting skipped ${built.skippedRequests} request(s) without original account or repository evidence; history coverage is incomplete`,
-		)
+	await queueSnapshots(agentDir, built.snapshots, !built.incomplete, built.skippedRequests)
 	// A repository lookup that failed or ran out of time is retried by the next pass.
 	if ([...needed].every((repository) => repositories.has(repository)))
 		lastCapture = { inputs: await inputs(), at: startedAt }

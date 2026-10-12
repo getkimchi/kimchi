@@ -112,6 +112,8 @@ export interface ReportingState {
 	/** Account-wide limit pauses, keyed by account. */
 	paused?: Record<string, AccountPause>
 	error?: string
+	/** Requests the latest capture left out without original account or repository evidence; others still report. */
+	skippedRequests?: number
 }
 
 export function reportingDirectory(agentDir: string): string {
@@ -212,6 +214,7 @@ async function loadReportingState(agentDir: string): Promise<{ state: ReportingS
 			(value.defaultNoticeShown !== undefined && value.defaultNoticeShown !== true) ||
 			!isWorkId(value.producerId) ||
 			(value.machine !== undefined && !SHA256_HEX.test(value.machine)) ||
+			(value.skippedRequests !== undefined && !count(value.skippedRequests)) ||
 			!value.entries ||
 			typeof value.entries !== "object" ||
 			Array.isArray(value.entries)
@@ -322,6 +325,7 @@ export function setReportingEnabled(agentDir: string, enabled: boolean): Promise
 		state.enabled = enabled
 		state.followsTelemetry = undefined
 		state.error = undefined
+		state.skippedRequests = undefined
 		state.paused = undefined
 		for (const entry of Object.values(state.entries)) {
 			entry.uploadedAt = undefined
@@ -365,6 +369,7 @@ export async function queueSnapshots(
 	agentDir: string,
 	snapshots: RepositorySnapshot[],
 	completeInventory = false,
+	skippedRequests = 0,
 ): Promise<ReportingState> {
 	let largest: { requests: number; bytes: number } | undefined
 	const state = await update(agentDir, (state) => {
@@ -529,6 +534,7 @@ export async function queueSnapshots(
 					? [`PR reporting held ${tooLarge} snapshot(s) until queued reports leave room in the local queue`]
 					: []),
 			].join(". ") || undefined
+		state.skippedRequests = skippedRequests || undefined
 	})
 	if (largest) {
 		trackPRCostMetric({ kind: "snapshotRequests", value: largest.requests })

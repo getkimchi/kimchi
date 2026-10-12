@@ -17,6 +17,12 @@ import {
 import { limitNoticeTexts, statusText } from "./status.js"
 import { reconcileReporting } from "./worker.js"
 
+const ARGUMENT_COMPLETIONS = [
+	{ value: "on", label: "on", description: "Report PR costs to your account" },
+	{ value: "off", label: "off", description: "Stop reporting and delete pending uploads" },
+	{ value: "status", label: "status", description: "Show the setting, queued reports and problems" },
+]
+
 export default function prCostReportingExtension(pi: ExtensionAPI): void {
 	// A custom entry preserves other startup notices and stays out of model context.
 	pi.registerEntryRenderer<string>("pr-cost-reporting-notice", (entry, _options, theme) =>
@@ -101,6 +107,8 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 
 	pi.registerCommand("pr-reporting", {
 		description: "PR cost reporting: on, off, or status (defaults to the SaaS telemetry setting)",
+		getArgumentCompletions: (prefix) =>
+			ARGUMENT_COMPLETIONS.filter((item) => item.value.startsWith(prefix.trimStart().toLowerCase())),
 		handler: async (args, ctx) => {
 			const command = args.trim() || "status"
 			if (!["on", "off", "status"].includes(command)) {

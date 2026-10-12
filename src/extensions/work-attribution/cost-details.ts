@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { isWorkId } from "../../shared/work-id.js"
 import type { BillingDisplay } from "./billing-evidence.js"
-import { decimalNanos, type PullRequestCost, type RequestCostAllocation, usd } from "./costs.js"
+import { decimalNanos, type PullRequestCost, type RequestCostAllocation, roundedUsd, usd } from "./costs.js"
 import { PRICED_TAG_LIMIT } from "./request-tags.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
 import { object } from "./summary.js"
@@ -190,6 +190,12 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 	}
 }
 
+/** A saved exact amount as /work shows it; a damaged amount reads as unknown. */
+function price(value: unknown): string {
+	const nanos = decimalNanos(value)
+	return nanos === undefined ? "unknown" : roundedUsd(nanos)
+}
+
 /** `/work` cost lines for saved `cost-totals.json` content; `path` names the full report. */
 export function costDetailLines(value: unknown, path: string): string[] {
 	if (!object(value) || !Array.isArray(value.pullRequests) || !object(value.requests))
@@ -208,14 +214,14 @@ export function costDetailLines(value: unknown, path: string): string[] {
 		if (state && object(row.soFar))
 			lines.push(
 				row.soFar.complete === true
-					? `Cost so far: $${row.soFar.knownCostUsd} USD (${state}) — ${label}`
-					: `Cost so far: unknown; $${row.soFar.knownCostUsd} USD priced (${state}) — ${label}`,
+					? `Cost so far: ${price(row.soFar.knownCostUsd)} (${state}) — ${label}`
+					: `Cost so far: unknown; ${price(row.soFar.knownCostUsd)} priced (${state}) — ${label}`,
 			)
-		else if (typeof row.totalCostUsd === "string") lines.push(`Cost: $${row.totalCostUsd} USD — ${label}`)
-		else lines.push(`Cost: unknown; $${row.knownCostUsd} USD priced so far — ${label}`)
+		else if (typeof row.totalCostUsd === "string") lines.push(`Cost: ${price(row.totalCostUsd)} — ${label}`)
+		else lines.push(`Cost: unknown; ${price(row.knownCostUsd)} priced so far — ${label}`)
 		if (!state && typeof row.explicit === "string" && typeof row.inferred === "string")
 			lines.push(
-				`Confirmed: $${row.explicit} USD; inferred: $${row.inferred} USD${row.totalCostUsd === null ? " known so far" : ""}.`,
+				`Confirmed: ${price(row.explicit)}; inferred: ${price(row.inferred)}${row.totalCostUsd === null ? " known so far" : ""}.`,
 			)
 	}
 
@@ -223,7 +229,7 @@ export function costDetailLines(value: unknown, path: string): string[] {
 	const { priced, total, knownCostUsd, unresolved, inferred, shared } = value.requests
 	if (typeof priced === "number" && typeof total === "number")
 		lines.push(
-			`Prices: ${priced}/${total} requests priced, $${knownCostUsd} USD${priced < total ? " known so far" : ""}. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
+			`Prices: ${priced}/${total} requests priced, ${price(knownCostUsd)}${priced < total ? " known so far" : ""}. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
 		)
 	// Untagged requests and failed refreshes of the work's own requests explain unknown prices.
 	if (object(value.requests.untagged)) {

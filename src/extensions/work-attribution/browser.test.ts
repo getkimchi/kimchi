@@ -244,14 +244,14 @@ describe("work browser rows", () => {
 			[ids[0]]: "$0.0623 · no PR",
 			[ids[1]]: "$0.0123 known so far · no PR",
 			[ids[2]]: "cost unknown · no PR",
-			[ids[3]]: "$1.23 known so far · no PR",
+			[ids[3]]: "$1.235 known so far · no PR",
 			[ids[4]]: "no requests · no PR",
 			// A billed zero is a known price.
-			[ids[5]]: "$0 · no PR",
+			[ids[5]]: "$0.00 · no PR",
 		})
-		expect(spend).toBe("$1.31 known so far")
+		expect(spend).toBe("$1.309 known so far")
 		expect(rows.find((row) => row.workId === ids[1])?.description).toContain(
-			"Prices: 1/2 requests priced, $0.012300000 USD known so far.",
+			"Prices: 1/2 requests priced, $0.0123 known so far.",
 		)
 	})
 
@@ -293,14 +293,14 @@ describe("work browser rows", () => {
 		])
 		const row = (id: string) => rows.find((candidate) => candidate.workId === id)
 
-		expect(row(first)?.value).toBe("$0.7500 · no PR")
-		expect(row(second)?.value).toBe("$0.3750 · no PR")
-		expect(row(first)?.description).toContain("Prices: 2/2 requests priced, $0.750000000 USD.")
-		expect(row(second)?.description).toContain("Prices: 2/2 requests priced, $0.375000000 USD.")
+		expect(row(first)?.value).toBe("$0.75 · no PR")
+		expect(row(second)?.value).toBe("$0.375 · no PR")
+		expect(row(first)?.description).toContain("Prices: 2/2 requests priced, $0.75.")
+		expect(row(second)?.description).toContain("Prices: 2/2 requests priced, $0.375.")
 		// The PR's total covers every contributing work.
-		expect(row(second)?.description).toContain("Cost: $0.875000000 USD — https://github.com/example/kimchi/pull/7")
+		expect(row(second)?.description).toContain("Cost: $0.875 — https://github.com/example/kimchi/pull/7")
 		// The header counts requests the group shares once, as deduplicating by request ID did.
-		expect(spend).toBe("$0.8750")
+		expect(spend).toBe("$0.875")
 	})
 
 	it("shows each work's own spend while the saved reports repeat their connected works", async () => {
@@ -324,8 +324,8 @@ describe("work browser rows", () => {
 			},
 		])
 
-		expect(rows.map((row) => row.value.split(" · ")[0])).toEqual(["$0.7500", "$0.3750"])
-		expect(spend).toBe("$0.8750")
+		expect(rows.map((row) => row.value.split(" · ")[0])).toEqual(["$0.75", "$0.375"])
+		expect(spend).toBe("$0.875")
 	})
 
 	it("counts a listed work's whole connected report in the header, unlisted works included", async () => {
@@ -342,8 +342,8 @@ describe("work browser rows", () => {
 			},
 		])
 
-		expect(rows[0].value).toBe("$0.5000 · no PR")
-		expect(spend).toBe("$0.6250")
+		expect(rows[0].value).toBe("$0.50 · no PR")
+		expect(spend).toBe("$0.625")
 	})
 
 	it("names each work's PR state from its saved links", async () => {
@@ -562,10 +562,10 @@ describe("work browser rows", () => {
 		])
 		const details = (id: string) => rows.find((row) => row.workId === id)?.details
 
-		expect(details(first)).toContain("Prices: 1/1 requests priced, $0.500000000 USD.")
+		expect(details(first)).toContain("Prices: 1/1 requests priced, $0.50.")
 		expect(details(first)).not.toContain("untagged")
 		expect(details(first)).not.toContain("Last billing refresh failed")
-		expect(details(second)).toContain("Prices: 0/1 requests priced, $0.000000000 USD known so far.")
+		expect(details(second)).toContain("Prices: 0/1 requests priced, $0.00 known so far.")
 		expect(details(second)).toContain("1 request untagged: tag limit")
 		expect(details(second)).toContain("Last billing refresh failed for 1 request: Billing lookup unavailable.")
 	})

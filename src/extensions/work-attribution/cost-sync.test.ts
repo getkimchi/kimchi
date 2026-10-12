@@ -25,7 +25,7 @@ import { readWorkBrowser } from "./browser.js"
 import { costDetailLines, workCostDetails, workCostTotals } from "./cost-details.js"
 import { readWorkCostReport, reconcileWorkCosts } from "./cost-sync.js"
 import * as costs from "./costs.js"
-import { calculatePullRequestCosts, decimalNanos, usd } from "./costs.js"
+import { calculatePullRequestCosts, decimalNanos, roundedUsd } from "./costs.js"
 import { PRICED_TAG_LIMIT } from "./request-tags.js"
 import { isWorkAccount, sameWorkAccount } from "./scope.js"
 import * as summary from "./summary.js"
@@ -75,6 +75,12 @@ beforeEach(() => {
 	)
 	vi.stubGlobal("fetch", fetchMock)
 })
+/** A saved exact amount as /work shows it. */
+const price = (value: unknown) => {
+	const nanos = decimalNanos(value)
+	return nanos === undefined ? "unknown" : roundedUsd(nanos)
+}
+
 /** The `/work` cost lines the previous release printed from a whole `costs.json`. */
 function previousCostDetailLines(value: unknown, path: string): string[] {
 	if (!object(value) || !Array.isArray(value.pullRequests)) return ["Cost: unknown; waiting for billing"]
@@ -101,7 +107,7 @@ function previousCostDetailLines(value: unknown, path: string): string[] {
 						? sameWorkAccount(request.account, row.account)
 						: request.account === row.account),
 			)
-			const spent = usd(counted.reduce((sum, request) => sum + (decimalNanos(request.knownCostUsd) ?? 0n), 0n))
+			const spent = roundedUsd(counted.reduce((sum, request) => sum + (decimalNanos(request.knownCostUsd) ?? 0n), 0n))
 			// Unpriced, shared or unresolved requests may still belong to this PR.
 			const complete =
 				isWorkAccount(row.account) &&
@@ -111,14 +117,14 @@ function previousCostDetailLines(value: unknown, path: string): string[] {
 				)
 			lines.push(
 				complete
-					? `Cost so far: $${spent} USD (${state}) — ${label}`
-					: `Cost so far: unknown; $${spent} USD priced (${state}) — ${label}`,
+					? `Cost so far: ${spent} (${state}) — ${label}`
+					: `Cost so far: unknown; ${spent} priced (${state}) — ${label}`,
 			)
-		} else if (typeof row.totalCostUsd === "string") lines.push(`Cost: $${row.totalCostUsd} USD — ${label}`)
-		else lines.push(`Cost: unknown; $${row.knownCostUsd} USD priced so far — ${label}`)
+		} else if (typeof row.totalCostUsd === "string") lines.push(`Cost: ${price(row.totalCostUsd)} — ${label}`)
+		else lines.push(`Cost: unknown; ${price(row.knownCostUsd)} priced so far — ${label}`)
 		if (!state && object(row.explicit) && object(row.inferred))
 			lines.push(
-				`Confirmed: $${row.explicit.knownCostUsd} USD; inferred: $${row.inferred.knownCostUsd} USD${row.totalCostUsd === null ? " known so far" : ""}.`,
+				`Confirmed: ${price(row.explicit.knownCostUsd)}; inferred: ${price(row.inferred.knownCostUsd)}${row.totalCostUsd === null ? " known so far" : ""}.`,
 			)
 	}
 	if (Array.isArray(value.requests)) {
@@ -136,7 +142,7 @@ function previousCostDetailLines(value: unknown, path: string): string[] {
 		const inferred = own.filter((row) => row.allocation === "inferred").length
 		const shared = own.filter((row) => row.allocation === "shared").length
 		lines.push(
-			`Prices: ${priced}/${own.length} requests priced, $${usd(nanos)} USD${priced < own.length ? " known so far" : ""}. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
+			`Prices: ${priced}/${own.length} requests priced, ${roundedUsd(nanos)}${priced < own.length ? " known so far" : ""}. PR assignments: ${unresolved} unresolved, ${inferred} inferred, ${shared} shared.`,
 		)
 		const untagged = new Map<string, number>()
 		for (const row of own)
@@ -306,11 +312,9 @@ describe("automatic exact work cost lookup", () => {
 		billOneThenTwo(first.requestId)
 		await sync()
 		const lines = workCostDetails(dir, first.workId)
-		expect(lines).toContain("Cost: $3.000000000 USD — https://github.com/example/repo/pull/1")
+		expect(lines).toContain("Cost: $3.00 — https://github.com/example/repo/pull/1")
 		// Without an input record, the request counts as inferred.
-		expect(lines).toContain(
-			"Prices: 1/1 requests priced, $1.000000000 USD. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
-		)
+		expect(lines).toContain("Prices: 1/1 requests priced, $1.00. PR assignments: 0 unresolved, 1 inferred, 0 shared.")
 	})
 
 	it("prints each connected work's own spend while their PR total counts every contributor", async () => {
@@ -324,13 +328,13 @@ describe("automatic exact work cost lookup", () => {
 		})
 		await sync()
 		for (const [{ workId }, own] of [
-			[first, "1.000000000"],
-			[second, "2.000000000"],
+			[first, "$1.00"],
+			[second, "$2.00"],
 		] as const) {
 			const lines = workCostDetails(dir, workId)
-			expect(lines).toContain("Cost: $3.000000000 USD — https://github.com/example/repo/pull/1")
+			expect(lines).toContain("Cost: $3.00 — https://github.com/example/repo/pull/1")
 			expect(lines.find((line) => line.startsWith("Prices:"))).toMatch(
-				new RegExp(`^Prices: 1/1 requests priced, \\$${own.replace(".", "\\.")} USD\\.`),
+				new RegExp(`^Prices: 1/1 requests priced, \\$${own.slice(1).replace(".", "\\.")}\\.`),
 			)
 			// The bounded totals name the same connected group in each member's folder.
 			expect(JSON.parse(readFileSync(join(dir, "work", workId, "cost-totals.json"), "utf8")).group).toEqual(
@@ -447,12 +451,78 @@ describe("automatic exact work cost lookup", () => {
 		}
 		save([])
 		expect(workCostDetails(dir, workId)).toContain(
-			"Cost so far: unknown; $0.000000000 USD priced (open) — https://github.com/example/repo/pull/1",
+			"Cost so far: unknown; $0.00 priced (open) — https://github.com/example/repo/pull/1",
 		)
 		save([{ requestId: "open", billingRecordId: ROW, costUsd: "0.5", account }])
 		const lines = workCostDetails(dir, workId)
-		expect(lines).toContain("Cost so far: $0.500000000 USD (open) — https://github.com/example/repo/pull/1")
+		expect(lines).toContain("Cost so far: $0.50 (open) — https://github.com/example/repo/pull/1")
 		expect(lines.join("\n")).not.toContain("Confirmed:")
+	})
+
+	it("shows readable prices in /work while costs.json keeps the exact amounts", () => {
+		const workId = randomUUID()
+		const account = { apiUrl: API, organizationId: ORG, userId: PROMPT }
+		const url = "https://github.com/example/repo/pull/1"
+		const request = (requestId: string, segment: Record<string, string>): WorkRecord => ({
+			version: 1,
+			type: "request",
+			workId,
+			sessionId: "session",
+			requestId,
+			recordedAt: "2026-10-01T08:00:00Z",
+			scope: { account, repository: join(dir, ".git") },
+			segment: { id: requestId, ...segment },
+		})
+		const costs = calculatePullRequestCosts(
+			[
+				request("plan", { attribution: "explicit", reason: "work-command" }),
+				request("chat", { attribution: "inferred", reason: "model-continue" }),
+				{
+					version: 1,
+					type: "commit",
+					workId,
+					sessionId: "session",
+					sha: "a".repeat(40),
+					repository: join(dir, ".git"),
+					worktree: dir,
+					recordedAt: "2026-10-01T09:00:00Z",
+					pullRequests: [
+						{
+							provider: "github",
+							host: "github.com",
+							repository: "example/repo",
+							number: 1,
+							url,
+							state: "merged",
+							headSha: "a".repeat(40),
+							mergeCommitSha: "b".repeat(40),
+							mergedAt: "2026-10-01T09:30:00Z",
+							closedAt: "2026-10-01T09:30:00Z",
+							checkedAt: "2026-10-01T10:00:00Z",
+						},
+					],
+				},
+			],
+			[
+				{ requestId: "plan", billingRecordId: ROW, costUsd: "0.028616240", account },
+				{ requestId: "chat", billingRecordId: ORG, costUsd: "0.000581110", account },
+			],
+		)
+		mkdirSync(join(dir, "work", workId), { recursive: true })
+		writeFileSync(join(dir, "work", workId, "costs.json"), JSON.stringify({ version: 1, workId, ...costs }))
+		// /work prints the bounded totals saved beside the report.
+		writeFileSync(join(dir, "work", workId, "cost-totals.json"), JSON.stringify(workCostTotals({ workId, ...costs })))
+		expect(report(workId).pullRequests[0]).toMatchObject({
+			totalCostUsd: "0.029197350",
+			explicit: { totalCostUsd: "0.028616240" },
+			inferred: { totalCostUsd: "0.000581110" },
+		})
+		expect(workCostDetails(dir, workId)).toEqual([
+			`Cost: $0.0292 — ${url}`,
+			"Confirmed: $0.0286; inferred: $0.000581.",
+			"Prices: 2/2 requests priced, $0.0292. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
+			`Cost details: ${join(dir, "work", workId, "costs.json")}`,
+		])
 	})
 
 	it("keeps a legacy request's exact price without assigning today's account to its work", async () => {
@@ -533,11 +603,11 @@ describe("automatic exact work cost lookup", () => {
 			allocation: "inferred",
 			totalCostUsd: "0.123456789",
 		})
-		expect(workCostDetails(dir, workId)).toContain("Cost: $0.123456789 USD — https://github.com/example/repo/pull/1")
+		expect(workCostDetails(dir, workId)).toContain("Cost: $0.123 — https://github.com/example/repo/pull/1")
 		expect(workCostDetails(dir, workId)).toContain(
-			"Prices: 1/1 requests priced, $0.123456789 USD. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
+			"Prices: 1/1 requests priced, $0.123. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
 		)
-		expect(workCostDetails(dir, workId)).toContain("Confirmed: $0.000000000 USD; inferred: $0.123456789 USD.")
+		expect(workCostDetails(dir, workId)).toContain("Confirmed: $0.00; inferred: $0.123.")
 	})
 
 	it("counts requests sent without a billing tag by reason in work details", async () => {
@@ -606,7 +676,7 @@ describe("automatic exact work cost lookup", () => {
 		appendWorkRecord(ctx, { type: "request", requestId: "not-billed", startedAt: "2026-10-01T08:00:00Z" })
 		await sync()
 		expect(workCostDetails(dir, workId)).toContain(
-			"Prices: 1/2 requests priced, $0.123456789 USD known so far. PR assignments: 2 unresolved, 0 inferred, 0 shared.",
+			"Prices: 1/2 requests priced, $0.123 known so far. PR assignments: 2 unresolved, 0 inferred, 0 shared.",
 		)
 	})
 	it("refreshes both work views after a correction and revocation without duplicating bills", async () => {
@@ -639,11 +709,11 @@ describe("automatic exact work cost lookup", () => {
 		})
 		// The linked request counts for both works; the plan does not count the implementation's own request.
 		expect(workCostDetails(dir, plan.workId)).toContain(
-			"Prices: 1/1 requests priced, $1.000000000 USD. PR assignments: 0 unresolved, 0 inferred, 0 shared.",
+			"Prices: 1/1 requests priced, $1.00. PR assignments: 0 unresolved, 0 inferred, 0 shared.",
 		)
 		// The implementation's own request has no input record; the linked one is confirmed by the link.
 		expect(workCostDetails(dir, implementation.workId)).toContain(
-			"Prices: 2/2 requests priced, $3.000000000 USD. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
+			"Prices: 2/2 requests priced, $3.00. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
 		)
 		appendWorkRecord(implementation.ctx, { ...link, revision: 2, status: "revoked" })
 		await sync()
@@ -1608,7 +1678,7 @@ describe("automatic exact work cost lookup", () => {
 		expect(summary.requests).toHaveLength(1)
 		expect(summary.requests[0].billingRows).toEqual([{ id: ROW, costUsd: "0.123456789" }])
 		expect(JSON.stringify(readWorkRecords(dir))).not.toContain(currentKey)
-		expect(workCostDetails(dir, workId).join("\n")).toContain("$0.123456789")
+		expect(workCostDetails(dir, workId)).toContain("Cost: $0.123 — https://github.com/example/repo/pull/1")
 	})
 	it("allocates a PR across two works and counts repeated sync only once", async () => {
 		const first = tagged("planning")
@@ -1688,7 +1758,7 @@ describe("automatic exact work cost lookup", () => {
 			clock.mockReturnValue(now + minutes * 60_000)
 			await sync()
 			expect(readFileSync(path, "utf8")).toBe(pending)
-			expect(workCostDetails(dir, workId)).toContain("Cost: $0.500000000 USD — https://github.com/example/repo/pull/1")
+			expect(workCostDetails(dir, workId)).toContain("Cost: $0.50 — https://github.com/example/repo/pull/1")
 		}
 		clock.mockReturnValue(now + 5 * 60_000)
 		await sync()
