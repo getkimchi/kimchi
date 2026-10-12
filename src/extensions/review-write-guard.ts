@@ -25,14 +25,6 @@ export interface OrchestratorWriteGuardOptions {
 	 * before a hard block fires. Default: 6.
 	 */
 	buildPhaseTriageBlockThreshold?: number
-	/**
-	 * When set and returning true, build-phase hard blocks are downgraded to a
-	 * one-time advisory steer instead. Wired by default to the session's
-	 * multi-model state: single-model sessions keep the delegation signal but
-	 * never hard-block, because the user — not the harness — owns delegation
-	 * decisions when they merely asked for "some subagents".
-	 */
-	downgradeBlockToSteer?: () => boolean
 }
 
 export const STEER_MESSAGE_TYPE = "review-write-guard-steer"
@@ -53,12 +45,6 @@ const BUILD_STEER_MESSAGE =
 const BUILD_BLOCK_REASON =
 	"BLOCKED: You have continued editing subagent output after being warned. " +
 	"The orchestrator must not do a subagent's job. Spawn a fix Agent with the remaining work."
-
-const BUILD_DOWNGRADED_STEER_MESSAGE =
-	"Delegation guard: you are well past the direct-edit allowance after a subagent returned. " +
-	"Spawn a fix Agent with the remaining work, or finish quickly if the user explicitly directed these edits. " +
-	"Single-model sessions are advisory only — the user owns the delegation decision — " +
-	"but repeated direct fixes on subagent output still burn context."
 
 /** Subagent outcome shape exposed in the Agent tool's result details. */
 interface AgentOutcomeSummary {
@@ -96,12 +82,10 @@ export class OrchestratorWriteGuard {
 	private readonly buildPhaseBlockThreshold: number
 	private readonly buildPhaseTriageThreshold: number
 	private readonly buildPhaseTriageBlockThreshold: number
-	private readonly downgradeBlockToSteer: () => boolean
 	private subagentReturnedInBuild = false
 	private lastSubagentSuccessful = false
 	private buildWriteCount = 0
 	private buildSteered = false
-	private buildBlockDowngraded = false
 	private reviewWriteCount = 0
 	private reviewSteered = false
 	private lastPhase: ReturnType<typeof getCurrentPhase>
@@ -114,7 +98,6 @@ export class OrchestratorWriteGuard {
 		this.buildPhaseBlockThreshold = options.buildPhaseBlockThreshold ?? 5
 		this.buildPhaseTriageThreshold = options.buildPhaseTriageThreshold ?? 3
 		this.buildPhaseTriageBlockThreshold = options.buildPhaseTriageBlockThreshold ?? 6
-		this.downgradeBlockToSteer = options.downgradeBlockToSteer ?? (() => false)
 		if (this.buildPhaseThreshold >= this.buildPhaseBlockThreshold) {
 			throw new Error("buildPhaseBlockThreshold must be greater than buildPhaseThreshold")
 		}
@@ -140,7 +123,6 @@ export class OrchestratorWriteGuard {
 		this.lastSubagentSuccessful = false
 		this.buildWriteCount = 0
 		this.buildSteered = false
-		this.buildBlockDowngraded = false
 	}
 
 	private resetReviewState(): void {
@@ -181,14 +163,6 @@ export class OrchestratorWriteGuard {
 			const { steerThreshold, blockThreshold } = this.currentThresholds()
 
 			if (this.buildWriteCount >= blockThreshold) {
-				if (this.downgradeBlockToSteer()) {
-					// Advisory mode: emit the downgrade steer once per arm, then stay
-					// silent — every call beyond the block threshold must not spam a
-					// message. The flag resets with the next subagent return.
-					if (this.buildBlockDowngraded) return undefined
-					this.buildBlockDowngraded = true
-					return { steer: BUILD_DOWNGRADED_STEER_MESSAGE }
-				}
 				return { block: true, reason: BUILD_BLOCK_REASON }
 			}
 			if (this.buildWriteCount >= steerThreshold && !this.buildSteered) {
@@ -315,16 +289,7 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 		const sessionId = ctx.sessionManager.getSessionId()
 		let guard = guardMap.get(sessionId)
 		if (!guard) {
-			// The predicate is invoked per tool call inside checkToolCall, so the
-			// multi-model state re-resolves on every counted edit (runtime toggles,
-			// CLI flags, persisted session values are honored mid-session). Like the
-			// guard's own getCurrentPhase reads, it goes through the ctx captured at
-			// construction; session_shutdown evicts the guard, so resume rebuilds it.
-			guard = new OrchestratorWriteGuard(ctx, {
-				...options,
-				downgradeBlockToSteer:
-					options?.downgradeBlockToSteer ?? (() => !resolveMultiModelEnabled(ctx.sessionManager).value),
-			})
+			guard = new OrchestratorWriteGuard(ctx, options)
 			guardMap.set(sessionId, guard)
 		}
 		return guard
@@ -356,6 +321,15 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 		// existed, the flag only suppressed the steer message while the hard
 		// block kept firing.
 		if (isSteerDisabled("review_write_guard")) {
+			return { block: false }
+		}
+
+		// Single-model sessions do not run this guard at all. The delegation
+		// discipline it enforces belongs to multi-model orchestration; when the
+		// user merely asked for "some subagents", direct edits are the user's
+		// call, not the harness's. Re-resolved per call so a mid-session flip
+		// to multi-model re-arms the guard (recordSubagentReturn keeps state).
+		if (!resolveMultiModelEnabled(ctx.sessionManager).value) {
 			return { block: false }
 		}
 

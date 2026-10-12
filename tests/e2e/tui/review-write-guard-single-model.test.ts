@@ -86,11 +86,11 @@ function orchestrationResponses() {
 	]
 }
 
-test("single-model sessions apply past-threshold writes without a hard block", async ({ terminal }) => {
+test("single-model sessions run no review-write guard at all", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
-			artifactName: "review-write-guard-single-model-downgrade",
+			artifactName: "review-write-guard-single-model-disabled",
 			responses: orchestrationResponses(),
 		},
 		async (fixture, trace) => {
@@ -109,10 +109,11 @@ test("single-model sessions apply past-threshold writes without a hard block", a
 			expect(fullText(terminal)).not.toContain("BLOCKED")
 			trace.step("all six writes applied, no BLOCKED error")
 
-			// The downgraded advisory steer reached the model on a later request.
-			const advisorySeen = fixture.fake.requests.some((request) => requestBodyText(request).includes("advisory only"))
-			expect(advisorySeen).toBe(true)
-			trace.step("advisory downgrade steer delivered to the model")
+			// The guard never engages: no steer text reaches the model either.
+			for (const request of fixture.fake.requests) {
+				expect(requestBodyText(request)).not.toContain("Delegation guard")
+			}
+			trace.step("no guard steer text in any provider request")
 		},
 	)
 })
@@ -136,8 +137,7 @@ test("KIMCHI_DISABLE_GUARD_REVIEW_WRITE disables the guard entirely", async ({ t
 			expect(fullText(terminal)).not.toContain("BLOCKED")
 			trace.step("all six writes applied, no BLOCKED error")
 
-			// With the kill switch on, neither the threshold steer nor the
-			// advisory reaches the model.
+			// With the kill switch on, no guard text reaches the model either.
 			for (const request of fixture.fake.requests) {
 				expect(requestBodyText(request)).not.toContain("Delegation guard")
 			}

@@ -381,34 +381,22 @@ describe("reviewWriteGuardExtension wiring", () => {
 		expect(pi.blockResult).toBeUndefined()
 	})
 
-	it("single-model sessions downgrade the build-phase block to a one-time advisory steer", () => {
+	it("single-model sessions disable the guard entirely — no steer, no block", () => {
 		const pi = createMockPI({ buildPhaseThreshold: 2, buildPhaseBlockThreshold: 4 })
 		mockPhase = "build"
 		mockMultiModel = false
 
 		emit(pi, "tool_result", { toolName: "Agent" })
-		emit(pi, "tool_call", { toolName: "edit" }) // 1 — allowed
-		emit(pi, "tool_call", { toolName: "edit" }) // 2 — normal steer
-		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
-		emit(pi, "tool_call", { toolName: "edit" }) // 3 — allowed
-		emit(pi, "tool_call", { toolName: "edit" }) // 4 — block threshold, downgraded
+		for (let i = 0; i < 6; i++) emit(pi, "tool_call", { toolName: "edit" })
 
-		// No block, and a second (advisory) steer fired instead.
 		expect(pi.blockResult).toBeUndefined()
-		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
-		expect(pi.sendMessage).toHaveBeenLastCalledWith(
-			expect.objectContaining({
-				customType: STEER_MESSAGE_TYPE,
-				content: [expect.objectContaining({ text: expect.stringContaining("advisory only") })],
-			}),
-			{ deliverAs: "steer" },
-		)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
 
-		// Further edits neither block nor repeat the advisory.
+		// The review-phase steer is suppressed too.
+		mockPhase = "review"
 		emit(pi, "tool_call", { toolName: "edit" })
-		emit(pi, "tool_call", { toolName: "write" })
-		expect(pi.blockResult).toBeUndefined()
-		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
 	it("multi-model sessions keep the build-phase hard block", () => {
@@ -429,16 +417,13 @@ describe("reviewWriteGuardExtension wiring", () => {
 		mockPhase = "build"
 		mockMultiModel = false
 
-		// Single-model arm — the block threshold downgrades to an advisory steer.
+		// Single-model arm — the guard stays completely inert.
 		emit(pi, "tool_result", { toolName: "Agent" })
-		emit(pi, "tool_call", { toolName: "edit" }) // 1
-		emit(pi, "tool_call", { toolName: "edit" }) // 2 — normal steer
-		emit(pi, "tool_call", { toolName: "edit" }) // 3
-		emit(pi, "tool_call", { toolName: "edit" }) // 4 — block threshold, downgraded
+		for (let i = 0; i < 6; i++) emit(pi, "tool_call", { toolName: "edit" })
 		expect(pi.blockResult).toBeUndefined()
-		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
 
-		// 2 — flip to multi-model mid-session and re-arm; the hard block must return.
+		// Flip to multi-model mid-session and re-arm; the hard block must return.
 		mockMultiModel = true
 		emit(pi, "tool_result", { toolName: "Agent" })
 		emit(pi, "tool_call", { toolName: "edit" }) // 1
