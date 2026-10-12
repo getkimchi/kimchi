@@ -424,6 +424,30 @@ describe("reviewWriteGuardExtension wiring", () => {
 		expect(pi.blockResult).toMatchObject({ block: true, reason: expect.stringContaining("BLOCKED") })
 	})
 
+	it("re-resolves the multi-model state per tool call (mid-session flip)", () => {
+		const pi = createMockPI({ buildPhaseThreshold: 2, buildPhaseBlockThreshold: 4 })
+		mockPhase = "build"
+		mockMultiModel = false
+
+		// Single-model arm — the block threshold downgrades to an advisory steer.
+		emit(pi, "tool_result", { toolName: "Agent" })
+		emit(pi, "tool_call", { toolName: "edit" }) // 1
+		emit(pi, "tool_call", { toolName: "edit" }) // 2 — normal steer
+		emit(pi, "tool_call", { toolName: "edit" }) // 3
+		emit(pi, "tool_call", { toolName: "edit" }) // 4 — block threshold, downgraded
+		expect(pi.blockResult).toBeUndefined()
+		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
+
+		// 2 — flip to multi-model mid-session and re-arm; the hard block must return.
+		mockMultiModel = true
+		emit(pi, "tool_result", { toolName: "Agent" })
+		emit(pi, "tool_call", { toolName: "edit" }) // 1
+		emit(pi, "tool_call", { toolName: "edit" }) // 2 — steer
+		emit(pi, "tool_call", { toolName: "edit" }) // 3
+		emit(pi, "tool_call", { toolName: "edit" }) // 4 — block
+		expect(pi.blockResult).toMatchObject({ block: true, reason: expect.stringContaining("BLOCKED") })
+	})
+
 	it("KIMCHI_DISABLE_GUARD_REVIEW_WRITE disables the entire guard — no steer, no block", () => {
 		process.env.KIMCHI_DISABLE_GUARD_REVIEW_WRITE = "1"
 		const pi = createMockPI({ buildPhaseThreshold: 2, buildPhaseBlockThreshold: 4 })

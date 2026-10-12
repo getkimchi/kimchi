@@ -96,7 +96,7 @@ export class OrchestratorWriteGuard {
 	private readonly buildPhaseBlockThreshold: number
 	private readonly buildPhaseTriageThreshold: number
 	private readonly buildPhaseTriageBlockThreshold: number
-	private readonly downgradeBlockToSteer?: () => boolean
+	private readonly downgradeBlockToSteer: () => boolean
 	private subagentReturnedInBuild = false
 	private lastSubagentSuccessful = false
 	private buildWriteCount = 0
@@ -114,7 +114,7 @@ export class OrchestratorWriteGuard {
 		this.buildPhaseBlockThreshold = options.buildPhaseBlockThreshold ?? 5
 		this.buildPhaseTriageThreshold = options.buildPhaseTriageThreshold ?? 3
 		this.buildPhaseTriageBlockThreshold = options.buildPhaseTriageBlockThreshold ?? 6
-		this.downgradeBlockToSteer = options.downgradeBlockToSteer
+		this.downgradeBlockToSteer = options.downgradeBlockToSteer ?? (() => false)
 		if (this.buildPhaseThreshold >= this.buildPhaseBlockThreshold) {
 			throw new Error("buildPhaseBlockThreshold must be greater than buildPhaseThreshold")
 		}
@@ -181,7 +181,7 @@ export class OrchestratorWriteGuard {
 			const { steerThreshold, blockThreshold } = this.currentThresholds()
 
 			if (this.buildWriteCount >= blockThreshold) {
-				if (this.downgradeBlockToSteer?.()) {
+				if (this.downgradeBlockToSteer()) {
 					// Advisory mode: emit the downgrade steer once per arm, then stay
 					// silent — every call beyond the block threshold must not spam a
 					// message. The flag resets with the next subagent return.
@@ -211,9 +211,10 @@ export class OrchestratorWriteGuard {
 			return
 		}
 
-		this.buildWriteCount = 0
-		this.buildSteered = false
-		this.buildBlockDowngraded = false
+		// A subagent return in build resets the per-arm counters, then re-arms
+		// (duplicating resetBuildState's clear of the outcome fields, which the
+		// branches below set fresh).
+		this.resetBuildState()
 
 		if (isTriageOutcome(outcome)) {
 			// Subagent did not complete successfully. The orchestrator is doing triage
@@ -314,6 +315,11 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 		const sessionId = ctx.sessionManager.getSessionId()
 		let guard = guardMap.get(sessionId)
 		if (!guard) {
+			// The predicate is invoked per tool call inside checkToolCall, so the
+			// multi-model state re-resolves on every counted edit (runtime toggles,
+			// CLI flags, persisted session values are honored mid-session). Like the
+			// guard's own getCurrentPhase reads, it goes through the ctx captured at
+			// construction; session_shutdown evicts the guard, so resume rebuilds it.
 			guard = new OrchestratorWriteGuard(ctx, {
 				...options,
 				downgradeBlockToSteer:
@@ -361,8 +367,8 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 			return { block: true, reason: result.reason }
 		}
 
-		// sendSteer no-ops (returns false) when the kill switch is on; the
-		// tool call proceeds either way.
+		// Steers are advisory: the tool call proceeds either way. (The kill
+		// switch is handled by the early return above.)
 		sendSteer(pi, ctx, {
 			kind: "review_write_guard",
 			reason: "steer",
