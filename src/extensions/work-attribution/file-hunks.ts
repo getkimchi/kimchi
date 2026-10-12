@@ -38,8 +38,11 @@ function hunks(before: string, after: string): Hunk[] | undefined {
 	return result
 }
 
-/** One unchanged line on either side, or the file boundary, must identify one location. */
-function locate(source: string, start: number, length: number, target: string, checkBudget: () => void) {
+/**
+ * One unchanged line on either side, or the file boundary, must identify one location. Unpinned, text without that
+ * context may leave the file boundary but must still occur once.
+ */
+function locate(source: string, start: number, length: number, target: string, checkBudget: () => void, pinned = true) {
 	const end = start + length
 	const windowStart = start < 2 ? 0 : source.lastIndexOf("\n", start - 2) + 1
 	const nextNewline = source.indexOf("\n", end)
@@ -51,8 +54,8 @@ function locate(source: string, start: number, length: number, target: string, c
 		for (let offset = text.indexOf(window); offset >= 0; offset = text.indexOf(window, offset + 1)) {
 			checkBudget()
 			if (offset > 0 && text[offset - 1] !== "\n") continue
-			if (start === 0 && offset !== 0) continue
-			if (end === source.length && offset + window.length !== text.length) continue
+			if (pinned && start === 0 && offset !== 0) continue
+			if (pinned && end === source.length && offset + window.length !== text.length) continue
 			if (!window.endsWith("\n") && offset + window.length !== text.length) continue
 			if (found !== undefined) return
 			found = offset
@@ -74,6 +77,10 @@ export function matchesFileHunks(
 ): boolean {
 	if ([before, after, parent, committed].some((text) => Buffer.byteLength(text) > MAX_HUNK_BYTES)) return false
 	checkBudget()
+	// Text written into an empty file is one change without context, so human lines may border it on either side.
+	// Blank text would be found almost anywhere.
+	if (!before && !parent)
+		return Boolean(after.trim()) && locate(after, 0, after.length, committed, checkBudget, false) !== undefined
 	const native = hunks(before, after)
 	checkBudget()
 	const changes = hunks(parent, committed)
