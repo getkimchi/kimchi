@@ -306,6 +306,29 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	const terminalDetails = new Map<string, Record<string, unknown>>()
 	let disposed = false
 
+	/** Both reminder creation and consumption use current process and delivery state. */
+	function unresolvedProcesses(): { running: string[]; awaitingDelivery: Set<string> } {
+		const state = getState()
+		const running: string[] = []
+		const awaitingDelivery = new Set<string>()
+		for (const handle of trackedHandles) {
+			if (state?.delivery.getPending(handle)) {
+				awaitingDelivery.add(handle)
+				continue
+			}
+			const cls = classifyTrackedHandle(state, handle, pendingExitDeliveries)
+			if (cls === "running") running.push(handle)
+			else if (cls === "awaiting") awaitingDelivery.add(handle)
+			else if (cls === "resolved") trackedHandles.delete(handle)
+			// Queued exits already have their own continuation.
+		}
+		// Collected automatic outcomes remain accountable after registry removal.
+		for (const handle of state?.delivery.pendingHandles() ?? []) {
+			awaitingDelivery.add(handle)
+		}
+		return { running, awaitingDelivery }
+	}
+
 	pi.on("session_start", () => {
 		terminalDetails.clear()
 		trackedHandles = new Set()
@@ -804,7 +827,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		if (disposed) return
 		const message = event.message
 		if (message?.role !== "assistant") return
-		const stopReason = (message as { stopReason?: unknown }).stopReason
+		const stopReason = message.stopReason
 		if (stopReason === "aborted" || stopReason === "error") {
 			// Cancellation/termination is authoritative: no completion
 			// Cancellation/termination is authoritative: no completion
@@ -834,26 +857,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		// it never existed): it is dropped from tracking (self-heal) and
 		// never counted as running.
 		const state = getState()
-		const running: string[] = []
-		const awaitingDelivery = new Set<string>()
-		for (const handle of trackedHandles) {
-			const pending = state?.delivery.getPending(handle)
-			if (pending) {
-				awaitingDelivery.add(handle)
-				continue
-			}
-			const cls = classifyTrackedHandle(state, handle, pendingExitDeliveries)
-			if (cls === "running") running.push(handle)
-			else if (cls === "awaiting") awaitingDelivery.add(handle)
-			else if (cls === "resolved") trackedHandles.delete(handle)
-			// "queued": the exit notification itself continues the run and
-			// resolves the state — no reminder needed for it.
-		}
-		// Outcomes collected by the automatic channel (registry entry
-		// already removed) stay accountable through the delivery state.
-		for (const handle of state?.delivery.pendingHandles() ?? []) {
-			awaitingDelivery.add(handle)
-		}
+		const { running, awaitingDelivery } = unresolvedProcesses()
 		if (running.length === 0 && awaitingDelivery.size === 0) return
 		// Redundancy suppression: when every unresolved outcome already has
 		// an identified steering notification in progress (queued), the
@@ -915,23 +919,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		// with genuinely unresolved work may queue a fresh one.
 		completionReminderOutstanding = false
 		// Revalidate from current process and delivery state.
-		const state = getState()
-		const running: string[] = []
-		const awaitingDelivery = new Set<string>()
-		for (const handle of trackedHandles) {
-			const pending = state?.delivery.getPending(handle)
-			if (pending) {
-				awaitingDelivery.add(handle)
-				continue
-			}
-			const cls = classifyTrackedHandle(state, handle, pendingExitDeliveries)
-			if (cls === "running") running.push(handle)
-			else if (cls === "awaiting") awaitingDelivery.add(handle)
-			else if (cls === "resolved") trackedHandles.delete(handle)
-		}
-		for (const handle of state?.delivery.pendingHandles() ?? []) {
-			awaitingDelivery.add(handle)
-		}
+		const { running, awaitingDelivery } = unresolvedProcesses()
 		const sameSet = sameHandles(details.running, running) && sameHandles(details.awaiting, [...awaitingDelivery])
 		if (sameSet) return undefined
 		const content =
