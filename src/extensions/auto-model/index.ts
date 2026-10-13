@@ -210,7 +210,10 @@ function persistedDefaultIsRoutedAuto(): boolean {
 export function sessionSelectsRoutedAuto(entries: readonly SessionEntry[]): boolean {
 	let selected = false
 	for (const entry of entries) {
-		if (isRoutedResolutionEntry(entry)) {
+		// Presence only, deliberately without the payload guard: the entry's
+		// existence evidences a routed selection even if its data is malformed
+		// or written by a newer shape version.
+		if (entry.type === "custom" && entry.customType === ROUTED_MODEL_RESOLUTION_ENTRY) {
 			selected = true
 		} else if (entry.type === "model_change") {
 			selected = isAutoRoutedModel({ provider: entry.provider, id: entry.modelId })

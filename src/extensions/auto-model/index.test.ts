@@ -78,6 +78,7 @@ import autoModelExtension, {
 	createAutoModelRoutingExtension,
 	isRoutedResolutionEntry,
 	ROUTED_MODEL_RESOLUTION_ENTRY,
+	sessionSelectsRoutedAuto,
 } from "./index.js"
 import { clearAutoRoutingState, getAutoRoutingState } from "./state.js"
 
@@ -140,6 +141,18 @@ describe("isRoutedResolutionEntry", () => {
 		expect(
 			isRoutedResolutionEntry({ type: "model_change", provider: "kimchi-dev", modelId: "auto" } as SessionEntry),
 		).toBe(false)
+	})
+})
+
+describe("sessionSelectsRoutedAuto", () => {
+	it("counts a routed-resolution entry by presence, even with a malformed payload", () => {
+		const malformed = { ...routedEntry("auto", "kimi-k3"), data: { junk: true } } as SessionEntry
+		expect(sessionSelectsRoutedAuto([malformed])).toBe(true)
+	})
+
+	it("a later concrete model_change overrides an earlier routed selection", () => {
+		const concrete = { type: "model_change", provider: "kimchi-dev", modelId: "some-concrete-model" } as SessionEntry
+		expect(sessionSelectsRoutedAuto([routedEntry("auto", "kimi-k3"), concrete])).toBe(false)
 	})
 })
 
