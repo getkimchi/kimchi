@@ -8,11 +8,11 @@ pnpm exec tsx src/extensions/work-attribution/accuracy-cli.ts report.json refere
 
 The command reads these two files and prints the differences. It makes no network or model calls, reads no credentials and writes nothing. Keep real receipts and labels outside the repository.
 
-By default, Kimchi saves the report at `~/.config/kimchi/harness/work/<workId>/costs.json`. It contains request rows, PR totals and all six unallocated buckets for that work and every work connected to it. Works are connected when they contribute to the same PR or when a work link, such as a `/work link` correction, moves requests between them. Connections are transitive: if work A shares a PR with work B, and B shares another PR with work C, A's report also includes C's requests and PR totals. Prepare reference entries for every request in that file. Do not add per-work reports together: connected works repeat the same requests.
+By default, Kimchi saves the report at `~/.config/kimchi/harness/work/<workId>/costs.json`. It contains request rows, PR totals and all six unallocated buckets for that work and every work connected to it. Kimchi refreshes it at most every five minutes per work, and at once when it is missing, so a report saved right after a price arrived can lag `/work` by a few minutes. Works are connected when they contribute to the same PR or when a work link, such as a `/work link` correction, moves requests between them. Connections are transitive: if work A shares a PR with work B, and B shares another PR with work C, A's report also includes C's requests and PR totals. Prepare reference entries for every request in that file. Do not add per-work reports together: connected works repeat the same requests.
 
 ## Prepare the reference before inspecting matcher output
 
-Use provider or gateway receipts to list requests, their billing accounts and exact billed prices. Label which PR each request belongs to using the task history and Git evidence. Do not generate this reference from `work.json`, `costs.json`, matcher confidence or the allocator under test: that would repeat the same mistakes on both sides.
+Use provider or gateway receipts to list requests, their billing accounts and exact billed prices. Label which PR each request belongs to using the task history and Git evidence. Do not generate this reference from the work summary, `costs.json`, matcher confidence or the allocator under test: that would repeat the same mistakes on both sides.
 
 The version 1 reference has one entry per request:
 

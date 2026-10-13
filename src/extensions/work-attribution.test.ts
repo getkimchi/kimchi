@@ -1,13 +1,14 @@
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { complete, getModel } from "@earendil-works/pi-ai/compat"
 import {
 	type BeforeProviderHeadersEvent,
 	createLocalBashOperations,
+	type ExtensionUIContext,
 	findCutPoint,
 	type InputEvent,
 	type SessionBeforeCompactEvent,
@@ -16,13 +17,17 @@ import {
 	type SessionStartEvent,
 	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent"
+import { type Component, stripTerminalSequences, type TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { installGlobalFetchInstrumentation } from "../http/instrument-fetch.js"
 import { readPlanWorkId, savePlanMarkdown } from "../shared/planning/plan-markdown.js"
 import { createCommandContext, createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
+import { testTheme } from "./__mocks__/theme.js"
 import { createWorkScopeSnapshot } from "./__mocks__/work-scope.js"
+import { savedWorkSummary } from "./__mocks__/work-summary.js"
 import requestTimingExtension from "./request-timing.js"
+import { copySessionFileAndAddHandoffNote, removeTempDir } from "./teleport/provisioning/handoff-note.js"
 import * as billingSource from "./work-attribution/billing-source.js"
 import { createWorkCommitTrackingOperations } from "./work-attribution/commits.js"
 import * as continuation from "./work-attribution/continuation.js"
@@ -43,6 +48,8 @@ import {
 	tryWorkAttribution,
 	tryWorkAttributionAsync,
 	WORK_CHANGED_EVENT,
+	WORK_DETAILS_REQUEST_EVENT,
+	type WorkDetailsRequest,
 } from "./work-attribution.js"
 
 let dir: string
@@ -201,11 +208,11 @@ describe("local work attribution", () => {
 		expect(getWorkId(ctx)).toBe(target.workId)
 		await flushWorkSummaries()
 		const path = join(dir, "work", target.workId, "work.json")
-		expect(JSON.parse(readFileSync(path, "utf8")).workLinks).toHaveLength(1)
+		expect(savedWorkSummary(dir, target.workId).workLinks).toHaveLength(1)
 		writeFileSync(path, "damaged")
 		recoverWorkSummaries()
 		await flushWorkSummaries()
-		expect(JSON.parse(readFileSync(path, "utf8")).workLinks).toHaveLength(1)
+		expect(savedWorkSummary(dir, target.workId).workLinks).toHaveLength(1)
 		await command.handler(`unlink ${links[0].linkId}`, ctx)
 		expect(records().filter((row) => row.type === "work_link")).toEqual([
 			links[0],
@@ -453,11 +460,11 @@ describe("local work attribution", () => {
 			requestId: calls[1].requestId,
 		})
 		await flushWorkSummaries()
-		const requests = JSON.parse(readFileSync(join(dir, "work", getWorkId(ctx), "work.json"), "utf8")).requests
+		const { requests } = savedWorkSummary(dir, getWorkId(ctx))
 		expect(requests).toHaveLength(2)
 		expect(records().filter((row) => row.type === "request")).toHaveLength(2)
 		expect(records().filter((row) => row.type === "request_dispatch")).toHaveLength(2)
-		expect(requests[0].billingSelector.tag).toBe(calls[0].tag)
+		expect(requests[0].billingSelector).toMatchObject({ tag: calls[0].tag })
 		expect(requests[1]).toMatchObject({
 			requestId: calls[1].requestId,
 			parentRequestId: logicalId,
@@ -596,7 +603,7 @@ describe("local work attribution", () => {
 		})
 		recordProviderResponse(attempt.requestId, { status: 500, headers: new Headers() })
 		await flushWorkSummaries()
-		const summary = JSON.parse(readFileSync(join(dir, "work", attempt.workId, "work.json"), "utf8"))
+		const summary = savedWorkSummary(dir, attempt.workId)
 		expect(summary.requests).toHaveLength(1)
 		expect(summary.requests[0]).toMatchObject({
 			requestId: attempt.requestId,
@@ -619,7 +626,7 @@ describe("local work attribution", () => {
 		})
 		recordProviderResponse("unknown-request", { status: 200, headers: new Headers() })
 		await flushWorkSummaries()
-		const summary = JSON.parse(readFileSync(join(dir, "work", attempt.workId, "work.json"), "utf8"))
+		const summary = savedWorkSummary(dir, attempt.workId)
 		expect(summary.requests).toHaveLength(1)
 		expect(summary.requests[0].response).toEqual({ status: 503, receivedAt: expect.any(String) })
 	})
@@ -636,7 +643,7 @@ describe("local work attribution", () => {
 		vi.spyOn(continuation, "findWorkContinuation").mockImplementation(async () => {
 			// Count only what the adoption announces, after the input bound the session.
 			api.api.events.on(WORK_CHANGED_EVENT, announced)
-			return selected
+			return { match: selected, owned: true }
 		})
 		createWorkAttributionExtension()(api.api)
 		await api.getHandler<InputEvent>("input")({ type: "input", text: "Implement ADR.md", source: "rpc" }, ctx)
@@ -644,23 +651,32 @@ describe("local work attribution", () => {
 		const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
 		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(event, ctx)
 		expect(records().find((row) => row.requestId === event.headers["X-Request-Id"]).workId).toBe(workId)
+		const accepted = {
+			source: selected.source,
+			evidence: {
+				...selected.evidence,
+				...createWorkScopeSnapshot(join(dir, ".git")).scope,
+				segmentId: getWorkSegment(ctx)?.id,
+			},
+		}
 		expect(records()).toContainEqual(
 			expect.objectContaining({
 				type: "work",
 				workId,
-				continuation: { source: selected.source, evidence: selected.evidence },
+				continuation: accepted,
 			}),
 		)
 		expect(api.getAppendedEntries("work_identity")).toContainEqual({
 			workId,
-			continuation: { source: selected.source, evidence: selected.evidence },
+			continuation: accepted,
 		})
 	})
 	it("keeps an accepted plan continuation for later inputs until a reference to other work ends it", async () => {
 		const planned = getWorkId(createContext({ cwd: dir, sessionManager: { getSessionId: () => "planning" } }))
-		const find = vi
-			.spyOn(continuation, "findWorkContinuation")
-			.mockResolvedValueOnce({ workId: planned, source: "saved-plan", evidence: { path: "/plan.md" } })
+		const find = vi.spyOn(continuation, "findWorkContinuation").mockResolvedValueOnce({
+			match: { workId: planned, source: "saved-plan", evidence: { path: "/plan.md" } },
+			owned: true,
+		})
 		const manager = SessionManager.inMemory(dir)
 		const ctx = { ...createContext({ cwd: dir }), sessionManager: manager }
 		const api = createExtensionApi()
@@ -691,19 +707,23 @@ describe("local work attribution", () => {
 		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "explicit", reason: "saved-plan" })
 		expect(find).toHaveBeenCalledOnce()
 
-		// Naming a file this work wrote keeps the continuation, even after a command changed it and it no longer
-		// matches the recorded edit.
-		mkdirSync(join(dir, "work-attribution"), { recursive: true })
-		appendFileSync(
-			join(dir, "work-attribution", "edits.jsonl"),
-			`${JSON.stringify({ version: 1, type: "file_transition", workId: planned, sessionId: "implementer", transitionId: "write-notes", toolCallId: "write-notes", repository: join(dir, ".git"), worktree: dir, path: "notes.md" })}\n`,
-		)
-		find.mockResolvedValueOnce(undefined)
+		// Naming a file only this work recorded keeps the continuation, even after a command changed it and it no
+		// longer matches the recorded edit.
+		find.mockResolvedValueOnce({ owned: false })
 		await input({ type: "input", text: "What does notes.md contain now?", source: "interactive" }, ctx)
+		expect(find).toHaveBeenLastCalledWith(
+			expect.anything(),
+			"What does notes.md contain now?",
+			expect.anything(),
+			planned,
+		)
 		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "explicit", reason: "saved-plan" })
 
 		const other = "22222222-2222-4222-8222-222222222222"
-		find.mockResolvedValueOnce({ workId: other, source: "saved-plan", evidence: { path: "/other.md" } })
+		find.mockResolvedValueOnce({
+			match: { workId: other, source: "saved-plan", evidence: { path: "/other.md" } },
+			owned: true,
+		})
 		await input({ type: "input", text: "Implement /other.md", source: "interactive" }, ctx)
 		expect(getWorkId(ctx)).toBe(planned)
 		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "unknown", reason: "unresolved-reference" })
@@ -712,7 +732,7 @@ describe("local work attribution", () => {
 		await api.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
 	})
 	it("resolves external input before work output and ignores extension input", async () => {
-		const find = vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue(undefined)
+		const find = vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue({ owned: false })
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
 		const input = api.getHandler<InputEvent>("input")
@@ -720,25 +740,45 @@ describe("local work attribution", () => {
 		await input({ type: "input", text: "Implement", source: "extension" }, ctx)
 		expect(find).not.toHaveBeenCalled()
 		await input({ type: "input", text: "Implement", source: "interactive" }, ctx)
-		expect(find).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: dir }), "Implement", expect.any(Object))
+		expect(find).toHaveBeenLastCalledWith(
+			expect.objectContaining({ cwd: dir }),
+			"Implement",
+			expect.any(Object),
+			expect.any(String),
+		)
 		await input({ type: "input", text: "Continue", source: "interactive" }, ctx)
-		expect(find).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: dir }), "Continue", expect.any(Object))
+		expect(find).toHaveBeenLastCalledWith(
+			expect.objectContaining({ cwd: dir }),
+			"Continue",
+			expect.any(Object),
+			expect.any(String),
+		)
 		const started = createContext({ cwd: dir, sessionManager: { getSessionId: () => "requested" } })
 		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(
 			{ type: "before_provider_headers", headers: {} },
 			started,
 		)
 		await input({ type: "input", text: "Later", source: "interactive" }, started)
-		expect(find).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: dir }), "Later", expect.any(Object))
+		expect(find).toHaveBeenLastCalledWith(
+			expect.objectContaining({ cwd: dir }),
+			"Later",
+			expect.any(Object),
+			expect.any(String),
+		)
 	})
 	it("allows fresh continuation after an earlier startup hook allocated the ledger", async () => {
 		const ctx = createContext({ cwd: dir })
 		getWorkId(ctx)
-		const find = vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue(undefined)
+		const find = vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue({ owned: false })
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
 		await api.getHandler<InputEvent>("input")({ type: "input", text: "Implement", source: "rpc" }, ctx)
-		expect(find).toHaveBeenCalledWith(expect.objectContaining({ cwd: dir }), "Implement", expect.any(Object))
+		expect(find).toHaveBeenCalledWith(
+			expect.objectContaining({ cwd: dir }),
+			"Implement",
+			expect.any(Object),
+			expect.any(String),
+		)
 	})
 	it("preserves restored identity even when a crash left no native tool result", async () => {
 		const ctx = createContext({ cwd: dir })
@@ -749,9 +789,10 @@ describe("local work attribution", () => {
 		// An earlier startup hook may restore the ledger before attribution binds.
 		expect(getWorkId(ctx)).toBe(original)
 		const selected = "11111111-1111-4111-8111-111111111111"
-		const find = vi
-			.spyOn(continuation, "findWorkContinuation")
-			.mockResolvedValue({ workId: selected, source: "named-artifact", evidence: { path: "/project/ADR.md" } })
+		const find = vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue({
+			match: { workId: selected, source: "named-artifact", evidence: { path: "/project/ADR.md" } },
+			owned: true,
+		})
 		const resumed = createExtensionApi()
 		createWorkAttributionExtension()(resumed.api)
 		await resumed.getHandler<InputEvent>("input")({ type: "input", text: "Implement ADR.md", source: "rpc" }, ctx)
@@ -764,9 +805,10 @@ describe("local work attribution", () => {
 	})
 	it("preserves explicit work selection and historical native output without a summary", async () => {
 		const selected = "11111111-1111-4111-8111-111111111111"
-		const find = vi
-			.spyOn(continuation, "findWorkContinuation")
-			.mockResolvedValue({ workId: selected, source: "saved-plan", evidence: { path: "/plan.md" } })
+		const find = vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue({
+			match: { workId: selected, source: "saved-plan", evidence: { path: "/plan.md" } },
+			owned: true,
+		})
 		const manager = SessionManager.inMemory(dir)
 		const ctx = { ...createContext({ cwd: dir }), sessionManager: manager }
 		const api = createExtensionApi()
@@ -802,7 +844,7 @@ describe("local work attribution", () => {
 	})
 	it("does not switch work after an asynchronous continuation lookup became stale", async () => {
 		const ctx = createContext({ cwd: dir })
-		let release!: (value: continuation.WorkContinuation) => void
+		let release!: (value: Awaited<ReturnType<typeof continuation.findWorkContinuation>>) => void
 		vi.spyOn(continuation, "findWorkContinuation").mockImplementation(
 			() =>
 				new Promise((resolve) => {
@@ -817,9 +859,12 @@ describe("local work attribution", () => {
 		await api.getRegisteredCommand("work").handler("new", { ...createCommandContext(), ...ctx })
 		const chosen = getWorkId(ctx)
 		release({
-			workId: "11111111-1111-4111-8111-111111111111",
-			source: "named-artifact",
-			evidence: { path: "/plan.md" },
+			match: {
+				workId: "11111111-1111-4111-8111-111111111111",
+				source: "named-artifact",
+				evidence: { path: "/plan.md" },
+			},
+			owned: true,
 		})
 		await input
 		expect(getWorkId(ctx)).toBe(chosen)
@@ -964,9 +1009,8 @@ describe("local work attribution", () => {
 	it("never adopts a plan automatically in a child whose inherited identity was unavailable", async () => {
 		const selected = "11111111-1111-4111-8111-111111111111"
 		const find = vi.spyOn(continuation, "findWorkContinuation").mockResolvedValue({
-			workId: selected,
-			source: "saved-plan",
-			evidence: { path: "/plan.md" },
+			match: { workId: selected, source: "saved-plan", evidence: { path: "/plan.md" } },
+			owned: true,
 		})
 		const api = createExtensionApi()
 		createWorkAttributionExtension(null)(api.api)
@@ -1110,6 +1154,55 @@ describe("local work attribution", () => {
 		expect(getWorkSegment(resumedCtx)).toEqual(originalSegment)
 	})
 
+	it.each([
+		false,
+		true,
+	])("does not invent accounting history from a teleported conversation (explicit: %s)", async (explicit) => {
+		vi.mocked(scope.readWorkScope).mockRestore()
+		const captured = createWorkScopeSnapshot(join(dir, "sandbox", ".git"))
+		vi.mocked(scope.captureWorkScope).mockResolvedValue(captured)
+		const original = randomUUID()
+		const oldRequest = randomUUID()
+		const local = SessionManager.inMemory("/local/project")
+		local.appendMessage({ role: "user", content: "Plan a small change", timestamp: 1 })
+		local.appendCustomEntry("work_identity", { workId: original, explicit })
+		local.appendCustomEntry("request_diagnostics", { requestId: oldRequest })
+		const source = join(dir, "local-session.jsonl")
+		const text = `${[local.getHeader(), ...local.getEntries()].map((entry) => JSON.stringify(entry)).join("\n")}\n`
+		writeFileSync(source, text)
+		const copy = copySessionFileAndAddHandoffNote(source, "[Teleport] Moved to a fresh sandbox.")
+		if (!copy) throw new Error("Expected annotated session copy")
+		try {
+			const sessionManager = SessionManager.open(copy)
+			const ctx = { ...createContext({ cwd: join(dir, "sandbox") }), sessionManager }
+			const api = createExtensionApi()
+			api.appendEntry.mockImplementation((type, data) => sessionManager.appendCustomEntry(type, data))
+			createWorkAttributionExtension()(api.api)
+			await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "resume" }, ctx)
+			expect(getWorkId(ctx)).toBe(original)
+			expect(scope.readWorkScope(original)).toBeUndefined()
+			await api.getHandler<InputEvent>("input")(
+				{ type: "input", source: "interactive", text: "Continue implementing the change" },
+				ctx,
+			)
+			const current = recordProviderRequest(ctx, ctx.model)
+			const request = records().find((row) => row.type === "request" && row.requestId === current.requestId)
+			// Conversation transfer does not carry the original scope or request ledger.
+			if (explicit) {
+				expect(current.workId).toBe(original)
+				expect(request.scope).toBeNull()
+			} else {
+				expect(current.workId).not.toBe(original)
+				expect(request.scope).toEqual(captured.scope)
+			}
+			expect(records().some((row) => row.type === "request" && row.requestId === oldRequest)).toBe(false)
+			expect(readFileSync(source, "utf8")).toBe(text)
+			await api.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
+		} finally {
+			removeTempDir(dirname(copy))
+		}
+	})
+
 	it("ignores malformed copied work metadata and lets the session's ledger win", async () => {
 		const sessionManager = SessionManager.inMemory(dir)
 		sessionManager.appendCustomEntry("work_identity", { workId: "../../not-a-uuid" })
@@ -1127,6 +1220,43 @@ describe("local work attribution", () => {
 		expect(getWorkId(ctx)).toBe(workId)
 	})
 
+	it("opens a work panel in the terminal and prints the chosen work as /work prints it elsewhere", async () => {
+		const panels: Component[] = []
+		const custom = vi.fn().mockImplementation(
+			(factory: Parameters<ExtensionUIContext["custom"]>[0]) =>
+				new Promise((done) => {
+					void Promise.resolve(factory({} as TUI, testTheme, {} as never, done)).then((panel) => panels.push(panel))
+				}),
+		)
+		const ctx = { ...createCommandContext(), ...createContext({ cwd: dir, ui: { custom } }) }
+		const mock = createExtensionApi()
+		createWorkAttributionExtension()(mock.api)
+		mock.api.events.on(WORK_DETAILS_REQUEST_EVENT, (request) => {
+			;(request as WorkDetailsRequest).lines.push("PR #7 open: https://github.com/example/repo/pull/7")
+		})
+		const command = mock.getRegisteredCommand("work")
+		const workId = getWorkId(ctx)
+		await flushWorkSummaries()
+
+		const browsing = command.handler("", ctx)
+		await vi.waitFor(() => expect(panels).toHaveLength(1))
+		const view = panels[0].render(100).map(stripTerminalSequences)
+		expect(view[1]).toBe(" Kimchi work · 1 work · no requests")
+		expect(view).toContain(`  Work ID: ${workId}`)
+		expect(view).toContain("  PR #7 open: https://github.com/example/repo/pull/7")
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		panels[0].handleInput?.("\r")
+		await browsing
+		const printed = vi.mocked(ctx.ui.notify).mock.lastCall
+		expect(printed?.[0]).toMatch(new RegExp(`^Work ID: ${workId}\nPR #7 open: \\S+\nCost: unknown`))
+
+		await command.handler("", { ...ctx, mode: "rpc" })
+		expect(vi.mocked(ctx.ui.notify).mock.lastCall).toEqual(printed)
+		await command.handler("new", ctx)
+		expect(custom).toHaveBeenCalledOnce()
+		expect(vi.mocked(ctx.ui.notify).mock.lastCall?.[0]).toMatch(/^Work ID: /)
+		expect(getWorkId(ctx)).not.toBe(workId)
+	})
 	it("persists plan identity and explicitly continues it in another session", async () => {
 		const parent = createContext({ cwd: dir })
 		const workId = getWorkId(parent)
