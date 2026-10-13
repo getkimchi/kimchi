@@ -159,7 +159,10 @@ export interface LspClient {
 	inFlightWork: number
 	activeProgressTokens: Set<string | number>
 	projectLoaded: Promise<void>
-	resolveProjectLoaded: () => void
+	/** Settle the init wait: with no argument it resolves the project-load
+	 *  wait; passing an error rejects it (used by shutdownAll so awaiting
+	 *  creators throw instead of receiving a dead chain). */
+	settleProjectLoaded: (err?: Error) => void
 }
 
 export interface ServerConfig {

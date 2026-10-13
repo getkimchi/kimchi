@@ -716,6 +716,43 @@ describe("eviction/respawn lifecycle races", () => {
 		endWork()
 	})
 
+	it("never evicts a chain that is still initializing (project-load wait)", async () => {
+		// Race from the review: a chain mid-init (creator suspended at `await
+		// client.projectLoaded` — mechanism documented at getOrCreateClient's
+		// init span) looked idle to the cap filter, and the creating caller got
+		// a dead client back as a normal success.
+		//
+		// Actor 1: chain A mid-init (initialize answered, no $/progress end).
+		const { clientPromise: aPromise, fake: fakeA } = await startMidInitChain(`${CWD}/a`)
+		const aRegistered = getAllClients().find((cl) => cl.cwd === `${CWD}/a`)
+		if (!aRegistered) throw new Error("chain A not registered")
+		aRegistered.lastActivity = 1_000 // oldest by far → pre-fix LRU victim
+
+		// Actor 2: chain B fully initialized and idle, more recently active.
+		await makeClientAt(`${CWD}/b`)
+
+		// Actor 3: a tool touches root C — the cap check runs with A mid-init.
+		await makeClientAt(`${CWD}/c`)
+
+		// A is busy (init span): eviction falls to the next-LRU idle chain B.
+		const cwds = getAllClients()
+			.map((cl) => cl.cwd)
+			.sort()
+		expect(cwds).toEqual([`${CWD}/a`, `${CWD}/c`])
+		expect(fakeA.isKilled()).toBe(false)
+
+		// A's project load completes → the creator must resolve with a live
+		// client, not a chain whose process was killed mid-startup.
+		fakeA.enqueue({
+			jsonrpc: "2.0",
+			method: "$/progress",
+			params: { token: "load", value: { kind: "end" } },
+		})
+		const a = await aPromise
+		expect(fakeA.isKilled()).toBe(false)
+		expect(getAllClients()).toContain(a)
+	})
+
 	it("the reaper skips chains with in-flight lifecycle work", async () => {
 		const client = await makeClientAt(CWD)
 		client.lastActivity = 0 // ancient
@@ -728,6 +765,162 @@ describe("eviction/respawn lifecycle races", () => {
 		// Once the span ends the ancient chain is reaped normally.
 		expect(reapIdleClients(Date.now(), LSP_IDLE_EVICT_MS, (c) => void evicted.push(c.name))).toBe(1)
 		expect(evicted).toEqual([client.name])
+	})
+
+	/** A fake proc whose `exited` promise resolves when killed, like a real
+	 *  process. The default fake's `exited` never settles, so the exited
+	 *  handlers (registry removal, projectLoaded settle) never run in tests
+	 *  that kill. Pushed onto the describe-level `fakes` array. */
+	function spawnKillAwareFake(): FakeProc {
+		const f = createFakeProc()
+		const originalKill = f.proc.kill.bind(f.proc)
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(f.proc as any).exited = new Promise<void>((resolveExited) => {
+			f.proc.kill = () => {
+				resolveExited()
+				originalKill()
+			}
+		})
+		fakes.push(f)
+		return f
+	}
+
+	/** Start a chain and park it mid-init: initialize answered, NO $/progress
+	 *  end — the creator stays suspended at `await client.projectLoaded`.
+	 *  Same microtask-tick contract as answerInitialize: the initialize
+	 *  request is written synchronously inside getOrCreateClient. */
+	async function startMidInitChain(cwd: string) {
+		const spawnIndex = fakes.length
+		const clientPromise = getOrCreateClient(FAKE_CONFIG, cwd)
+		const fake = fakes[spawnIndex]
+		await Promise.resolve()
+		await Promise.resolve()
+		const initReq = parseWrittenRequest(fake.written[0])
+		if (!initReq) throw new Error("no initialize request written")
+		fake.enqueue({ jsonrpc: "2.0", id: initReq.id, result: { capabilities: {} } })
+		// Let the creator reach the projectLoaded wait.
+		await new Promise((r) => setTimeout(r, 20))
+		return { clientPromise, fake }
+	}
+
+	it("shutdownAll rejects an in-flight init instead of resolving with a dead chain", async () => {
+		// Race: shutdownAll kills a chain whose creator is suspended at `await
+		// client.projectLoaded`. The exited handler used to RESOLVE the wait, so
+		// the creating caller received a dead chain as a normal success — while
+		// mid-initialize chains cleanly threw "LSP shutdown".
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(globalThis as any).Bun = { spawn: () => spawnKillAwareFake().proc }
+
+		// Chain A mid-init: initialize answered, NO $/progress end.
+		const { clientPromise: aPromise } = await startMidInitChain(CWD)
+
+		// Shutdown while the creator is suspended on projectLoaded.
+		noteSessionStart()
+		noteSessionEnd()
+
+		// The awaiting creator must throw, not resolve with a dead chain.
+		await expect(aPromise).rejects.toThrow("LSP shutdown")
+	})
+
+	it("after shutdownAll, a same-key caller spawns a fresh chain instead of awaiting the dead one", async () => {
+		// Race: shutdownAll cleared `clients` but not `clientLocks`, so a
+		// same-key getOrCreateClient found the stale lock, awaited the dying
+		// creator, and received the dead chain — breaking the lazy-respawn
+		// invariant documented at the reader-crash cleanup.
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(globalThis as any).Bun = { spawn: () => spawnKillAwareFake().proc }
+
+		// Chain A mid-init: initialize answered, NO $/progress end.
+		const { clientPromise: deadPromise, fake: fakeA } = await startMidInitChain(CWD)
+		deadPromise.catch(() => {}) // rejects post-fix; unhandled rejections fail the run
+
+		// Shutdown kills A and tears down its lock era.
+		noteSessionStart()
+		noteSessionEnd()
+
+		// Same-key retry: must spawn a fresh chain, not await the dying creator.
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(globalThis as any).Bun = { spawn: () => spawnKillAwareFake().proc }
+		const retry = getOrCreateClient(FAKE_CONFIG, CWD)
+		if (!fakes[1]) throw new Error("retry did not spawn a fresh chain")
+		await answerInitialize(fakes[1])
+		const client = await retry
+
+		expect(fakes[1]).toBeDefined()
+		expect(client.proc).not.toBe(fakeA.proc)
+		expect(fakeA.isKilled()).toBe(true)
+		// The dying creator's cleanup runs after the respawn registered; its
+		// identity-checked deletes must not drop the fresh chain.
+		expect(getAllClients()).toContain(client)
+	})
+
+	it("a stale file lock from a shutdown chain cannot drop a fresh chain's lock", async () => {
+		// Race: shutdownAll never cleared fileOperationLocks, so a respawned
+		// same-key chain's ensureFileOpen awaited the DEAD chain's lock and
+		// returned without sending didOpen. And once shutdownAll clears the
+		// locks, a dying chain's by-key finally delete could drop a fresh
+		// chain's replacement lock — deletes must be identity-checked.
+		const FILE = `${CWD}/era.ts`
+		const FILE_URI = fileToUri(FILE)
+		let fileCalls = 0
+		const gates: Array<() => void> = []
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(globalThis as any).Bun = {
+			spawn: () => spawnKillAwareFake().proc,
+			file: (p: string) => {
+				fileCalls++
+				return {
+					text: () =>
+						new Promise<string>((resolve) => {
+							gates.push(() => resolve(`// content of ${p}`))
+						}),
+				}
+			},
+		}
+
+		// (1) Chain A fully initialized; its file open is parked on gate 1.
+		const aPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+		await answerInitialize(fakes[0])
+		const a = await aPromise
+		const open1 = ensureFileOpen(a, FILE)
+		await Promise.resolve()
+		expect(fileCalls).toBe(1)
+
+		// (2) Shutdown: post-fix this clears the stale file lock.
+		noteSessionStart()
+		noteSessionEnd()
+
+		// (3) Fresh chain A' on the same key, full handshake.
+		const retry = getOrCreateClient(FAKE_CONFIG, CWD)
+		if (!fakes[1]) throw new Error("retry did not spawn a fresh chain")
+		await answerInitialize(fakes[1])
+		const aPrime = await retry
+		expect(aPrime).not.toBe(a)
+
+		// (4) The stale lock is gone: this open creates a NEW lock (Bun.file
+		// call #2, gate 2) instead of awaiting the dead chain's lock.
+		const open2 = ensureFileOpen(aPrime, FILE)
+
+		// (5) Release gate 1 and let the dying chain's open settle, so its
+		// finally runs NOW. With by-key deletes it would drop A''s live lock.
+		gates[0]()
+		await open1.catch(() => {})
+
+		// (6) A same-file open arriving AFTER the dead finally must still find
+		// open2's lock (identity-checked delete) and await it — not start a
+		// third read. Assert before releasing gate 2 so a spurious third read
+		// fails here instead of parking on an unreleased gate.
+		const open3 = ensureFileOpen(aPrime, FILE)
+		await Promise.resolve()
+		expect(fileCalls).toBe(2)
+
+		// (7) Release gate 2.
+		gates[1]?.()
+		await Promise.all([open2, open3])
+
+		// open2 really opened the file on the fresh chain (pre-fix the stale
+		// lock made it return without sending didOpen).
+		expect(aPrime.openFiles.has(FILE_URI)).toBe(true)
 	})
 })
 

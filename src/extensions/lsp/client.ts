@@ -185,7 +185,7 @@ async function startMessageReader(client: LspClient): Promise<void> {
 							client.activeProgressTokens.add(params.token)
 						} else if (params.value?.kind === "end") {
 							client.activeProgressTokens.delete(params.token)
-							if (client.activeProgressTokens.size === 0) client.resolveProjectLoaded()
+							if (client.activeProgressTokens.size === 0) client.settleProjectLoaded()
 						}
 					}
 				}
@@ -260,10 +260,22 @@ function isChainBusy(client: LspClient): boolean {
 	return client.pendingRequests.size > 0 || client.diagnosticWaiters.size > 0 || client.inFlightWork > 0
 }
 
+/** Era-safe delete: drop the entry only if it is still `ref`'s. Keys are
+ *  reused across eras (shutdownAll clears, respawns re-register); a by-key
+ *  delete from a dying era would drop the new era's entry under the same
+ *  key. */
+function deleteIfOwned<T>(map: Map<string, T>, key: string, ref: T): void {
+	if (map.get(key) === ref) map.delete(key)
+}
+
 /** Remove a client from the registries only if it is still the registered
  *  entry for its key. Keys are reused by respawns during the eviction grace
  *  window; deleting by key alone can drop a healthy replacement chain that a
- *  dying chain's exited/reader handlers know nothing about. */
+ *  dying chain's exited/reader handlers know nothing about. The clientLocks
+ *  delete inside is covered by the same guard: a respawn registers clients
+ *  and clientLocks in one synchronous tick, so if a respawn owned the slot
+ *  the identity check would already have failed — the lock entry can only be
+ *  this creator's own, never a replacement's. */
 function removeClientFromRegistries(client: LspClient): void {
 	if (clients.get(client.name) === client) {
 		clients.delete(client.name)
@@ -296,7 +308,11 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 		if (evictable) evictClient(evictable)
 	}
 
-	const clientPromise = (async () => {
+	// Hoisted so the creator's finally can identity-check the lock against
+	// this exact promise (a post-shutdown respawn may own the slot by then).
+	// The IIFE body reads it before the assignment lands (deferred execution).
+	let clientPromise!: Promise<LspClient>
+	clientPromise = (async () => {
 		// Bun global available at runtime but not typed — use globalThis cast
 		// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
 		const Bun = (globalThis as any).Bun
@@ -307,16 +323,19 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 			stderr: "pipe",
 		}) as BunProcess
 
-		let resolveProjectLoaded!: () => void
-		const projectLoaded = new Promise<void>((resolve) => {
-			resolveProjectLoaded = resolve
+		let settleProjectLoaded!: (err?: Error) => void
+		const projectLoaded = new Promise<void>((resolve, reject) => {
+			settleProjectLoaded = (err) => {
+				clearTimeout(timeout)
+				if (err) reject(err)
+				else resolve()
+			}
 		})
-		const timeout = setTimeout(resolveProjectLoaded, PROJECT_LOAD_TIMEOUT_MS)
-		const originalResolve = resolveProjectLoaded
-		resolveProjectLoaded = () => {
-			clearTimeout(timeout)
-			originalResolve()
-		}
+		const timeout = setTimeout(() => settleProjectLoaded(), PROJECT_LOAD_TIMEOUT_MS)
+		// Shutdown rejects projectLoaded for chains whose creator has already
+		// returned (skipProjectLoadWait) or is gone — mark a handled branch so the
+		// rejection surfaces only to real awaiters.
+		projectLoaded.catch(() => {})
 
 		const client: LspClient = {
 			name: key,
@@ -335,7 +354,7 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 			activeProgressTokens: new Set(),
 			inFlightWork: 0,
 			projectLoaded,
-			resolveProjectLoaded,
+			settleProjectLoaded,
 		}
 		clients.set(key, client)
 		ensureReaperRunning()
@@ -347,7 +366,7 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 			// took the registry slot. Deleting by key would drop A' from every
 			// registry while its process stays alive (leaked). Remove by identity.
 			removeClientFromRegistries(client)
-			client.resolveProjectLoaded()
+			client.settleProjectLoaded()
 			// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
 			const err = new Error(`LSP server exited (code ${(proc as any).exitCode})`)
 			for (const pending of client.pendingRequests.values()) pending.reject(err)
@@ -367,6 +386,14 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 				reader.releaseLock()
 			}
 		})()
+
+		// Init is a lifecycle span: after the `initialize` response resolves,
+		// nothing registers a pendingRequest until projectLoaded resolves (up to
+		// PROJECT_LOAD_TIMEOUT_MS). Without the span, the evictable filter and the
+		// reaper see a mid-startup chain as idle; evictClient then SIGTERMs it and
+		// its exited handler resolves projectLoaded, so the creating caller
+		// receives a dead client as a normal return.
+		const endInitWork = beginClientWork(client)
 
 		try {
 			const initOpts = { ...(config.initOptions ?? {}) }
@@ -392,12 +419,14 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 			if (!config.skipProjectLoadWait) await client.projectLoaded
 			return client
 		} catch (err) {
-			clients.delete(key)
-			clientLocks.delete(key)
+			// Identity-checked like every registry removal: by the time this
+			// runs, a post-shutdown or post-crash respawn may own the slot.
+			removeClientFromRegistries(client)
 			proc.kill()
 			throw err
 		} finally {
-			clientLocks.delete(key)
+			deleteIfOwned(clientLocks, key, clientPromise)
+			endInitWork()
 		}
 	})()
 
@@ -412,10 +441,18 @@ export function shutdownAll(): void {
 	}
 	const all = Array.from(clients.values())
 	clients.clear()
+	// Era teardown: every lock belongs to a chain that is being killed. A
+	// post-shutdown getOrCreateClient must lazily spawn a fresh chain — same
+	// invariant as the reader-crash zombie cleanup — not await a dying
+	// creator that will return a dead client.
+	clientLocks.clear()
+	fileOperationLocks.clear()
 	const err = new Error("LSP shutdown")
 	for (const client of all) {
 		for (const pending of client.pendingRequests.values()) pending.reject(err)
 		client.pendingRequests.clear()
+		// Awaiting creators must throw, not resolve with a dead chain.
+		client.settleProjectLoaded(err)
 		sendRequest(client, "shutdown", null).catch(() => {})
 		client.proc.kill()
 	}
@@ -584,10 +621,11 @@ async function ensureFileOpenInner(client: LspClient, filePath: string): Promise
 	})()
 
 	fileOperationLocks.set(lockKey, openPromise)
+	// Era-safe: a lock freed early (shutdownAll) may have been replaced by a new chain's lock under the same key.
 	try {
 		await openPromise
 	} finally {
-		fileOperationLocks.delete(lockKey)
+		deleteIfOwned(fileOperationLocks, lockKey, openPromise)
 	}
 }
 
@@ -651,10 +689,11 @@ async function refreshFileInner(client: LspClient, filePath: string): Promise<vo
 	})()
 
 	fileOperationLocks.set(lockKey, refreshPromise)
+	// Era-safe: a lock freed early (shutdownAll) may have been replaced by a new chain's lock under the same key.
 	try {
 		await refreshPromise
 	} finally {
-		fileOperationLocks.delete(lockKey)
+		deleteIfOwned(fileOperationLocks, lockKey, refreshPromise)
 	}
 }
 
