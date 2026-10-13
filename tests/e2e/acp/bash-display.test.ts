@@ -1,4 +1,5 @@
 import { expect, it } from "vitest"
+import { chatRequests, systemPromptOf } from "../tui/support/wire-requests.js"
 import { STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
 
@@ -20,6 +21,10 @@ it(
 		try {
 			const sessionId = await newSession(fixture, fixture.workDir)
 			expect((await prompt(fixture, sessionId, "Run the failure check")).stopReason).toBe("end_turn")
+			const systemPrompt = systemPromptOf(chatRequests(fixture)[0])
+			expect(systemPrompt).toContain("harness-owned safety limit")
+			expect(systemPrompt).not.toContain("the bash tool's `timeout` parameter")
+			expect(systemPrompt).not.toContain("default 60s")
 			const updates = fixture.client.sessionUpdates.map(({ update }) => update)
 			expect(updates).toEqual(
 				expect.arrayContaining([

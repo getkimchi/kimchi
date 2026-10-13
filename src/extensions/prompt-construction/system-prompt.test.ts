@@ -747,7 +747,9 @@ describe("buildSystemPrompt", () => {
 			// The tool-independent safety rules that used to ride the phase payload
 			// are hoisted to CORE_GUIDELINES, so a --print session still sees them.
 			expect(result).toContain("Co-Authored-By: Kimchi <noreply@kimchi.dev>")
-			expect(result).toContain("the bash tool's `timeout` parameter")
+			expect(result).toContain("harness-owned safety limit")
+			expect(result).not.toContain("the bash tool's `timeout` parameter")
+			expect(result).not.toContain("default 60s")
 			expect(result).toContain("never wrap commands in the GNU `timeout` binary")
 			expect(result).toContain("Never run interactive commands")
 		})

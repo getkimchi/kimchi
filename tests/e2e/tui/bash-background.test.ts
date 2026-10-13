@@ -1,6 +1,7 @@
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText, waitForTurnToSettle } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { chatRequests, systemPromptOf } from "./support/wire-requests.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -83,6 +84,10 @@ test("background bash: slow command + independent read + final outcome via one b
 			// tool result (role tool), not as a standalone notification
 			// message (role user), and exactly once.
 			await waitForTurnToSettle(fixture.fake.requests)
+			const systemPrompt = systemPromptOf(chatRequests(fixture)[0])
+			expect(systemPrompt).toContain("harness-owned safety limit")
+			expect(systemPrompt).not.toContain("the bash tool's `timeout` parameter")
+			expect(systemPrompt).not.toContain("default 60s")
 			const messages = fixture.fake.requests.flatMap(
 				(r) => (r.body as { messages?: { role?: string; content?: unknown }[] } | undefined)?.messages ?? [],
 			)
