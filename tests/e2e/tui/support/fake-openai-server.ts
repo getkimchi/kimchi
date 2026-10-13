@@ -122,6 +122,22 @@ interface StartFakeOpenAiServerOptions {
 	responses: FakeResponseScript[]
 	creditsResponses?: unknown[]
 	budgetResponses?: unknown[]
+	/** Org policy served on the platform endpoints the harness queries at startup
+	 *  (api-keys:verify + settings:resolve). Undefined = those endpoints 404, so
+	 *  the policy fetch fails as unreachable and the harness fails open. */
+	policy?: FakeOrgPolicy
+}
+
+/** Org policy served by the fake platform endpoints; `modes: undefined` means "no modes field". */
+export interface FakeOrgPolicy {
+	modes:
+		| {
+				plan: boolean
+				default: boolean
+				auto: boolean
+				yolo: boolean
+		  }
+		| undefined
 }
 
 export const DEFAULT_MODEL: Required<FakeModel> = {
@@ -257,6 +273,36 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 				const budget = budgetQueue.shift() ?? lastBudgetResponse
 				lastBudgetResponse = budget
 				writeJson(res, 200, budget)
+				return
+			}
+
+			if (
+				options.policy !== undefined &&
+				req.method === "POST" &&
+				req.url?.startsWith("/ai-optimizer/v1beta/api-keys:verify")
+			) {
+				writeJson(res, 200, { organizationId: "org-e2e" })
+				return
+			}
+
+			if (options.policy !== undefined && req.method === "GET" && req.url?.includes("/settings:resolve")) {
+				const modes = options.policy.modes
+				writeJson(res, 200, {
+					settings: {
+						// protojson omits false bools; `default` is a proto reserved-ish
+						// name carried as default_mode in snake_case.
+						...(modes
+							? {
+									kimchiAllowedPermissionModes: {
+										...(modes.plan ? { plan: true } : {}),
+										...(modes.default ? { default_mode: true } : {}),
+										...(modes.auto ? { auto: true } : {}),
+										...(modes.yolo ? { yolo: true } : {}),
+									},
+								}
+							: {}),
+					},
+				})
 				return
 			}
 

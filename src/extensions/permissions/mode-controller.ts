@@ -7,6 +7,7 @@ import {
 	getSessionPermissionFlagController,
 	registerSessionPermissionFlagController,
 } from "./mode-controller-registry.js"
+import { clampMode, isModeAllowed } from "./policy.js"
 import type {
 	PermissionMode,
 	PermissionModeState,
@@ -28,6 +29,8 @@ export function createSessionPermissionFlagController(initialFlags: {
 	return {
 		getMode: () => mode,
 		setMode: (newMode, skipNotify) => {
+			// Policy backstop: a disallowed mode is never applied to a session.
+			if (!isModeAllowed(newMode.mode)) return
 			mode = newMode
 			if (!skipNotify) {
 				for (const _l of listeners) _l({ mode })
@@ -53,14 +56,16 @@ export function clearPermissionModeEnv(sessionId: string): void {
 }
 
 export function setPermissionMode(sessionId: string, mode: PermissionModeState, skipNotify?: boolean): void {
+	// Org-policy clamp: the env/controller record the nearest allowed mode.
+	const effective = isModeAllowed(mode.mode) ? mode : { ...mode, mode: clampMode(mode.mode) }
 	const sessionController = getSessionPermissionFlagController(sessionId)
 	if (sessionController) {
-		sessionController.setMode(mode, skipNotify)
+		sessionController.setMode(effective, skipNotify)
 	} else {
-		const controller = createSessionPermissionFlagController({ mode })
+		const controller = createSessionPermissionFlagController({ mode: effective })
 		registerSessionPermissionFlagController(sessionId, controller)
 	}
-	setPermissionModeEnv(sessionId, mode.mode)
+	setPermissionModeEnv(sessionId, effective.mode)
 }
 
 /**
@@ -153,14 +158,14 @@ export function resolveInitialPermissionMode(
 		runtimeMode ?? (inheritedMode ? { mode: inheritedMode, source: "runtime", initiatedBy: "user" } : undefined)
 
 	const persistedMode = getPersistedPermissionMode(sessionManager, (state) => state.initiatedBy === "user")
-	return {
-		...resolveMode({
-			runtime: effectiveRuntime,
-			flag: cliFlag,
-			env: permissionsEnvFlag,
-			persisted: persistedMode,
-			config: config.config.defaultMode,
-		}),
-		initiatedBy: "user",
-	}
+	const resolved = resolveMode({
+		runtime: effectiveRuntime,
+		flag: cliFlag,
+		env: permissionsEnvFlag,
+		persisted: persistedMode,
+		config: config.config.defaultMode,
+	})
+	// Org-policy clamp: a disallowed initial mode (CLI flag, env, persisted entry,
+	// config default) starts clamped to the nearest allowed mode.
+	return { ...resolved, mode: clampMode(resolved.mode), initiatedBy: "user" }
 }

@@ -16,6 +16,7 @@ import {
 	DEFAULT_MODEL,
 	type FakeModel,
 	type FakeOpenAiServer,
+	type FakeOrgPolicy,
 	type FakeResponseScript,
 	resolveModels,
 	startFakeOpenAiServer,
@@ -97,6 +98,9 @@ export interface AcpFixtureOptions {
 	extensionPath?: string
 	/** Seed the isolated Kimchi config with the shared repository-owned MCP fixture. */
 	mcp?: McpFixtureOptions
+	/** Org policy served by the fake platform endpoints (api-keys:verify +
+	 *  settings:resolve). Omit to leave them 404 (fail-open, no policy). */
+	policy?: FakeOrgPolicy
 }
 
 export interface StartAcpFixtureOptions extends AcpFixtureOptions {
@@ -263,6 +267,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		models: configuredModels,
 		account: options.account,
 		billingRows: options.billingRows,
+		policy: options.policy,
 	})
 
 	let proc: ChildProcess | null = null
@@ -417,6 +422,10 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				...process.env,
 				HOME: homeDir,
 				PI_PACKAGE_DIR: PACKAGE_DIR,
+				// Hermetic against the launching harness: drop its parent-session
+				// linkage so the child's mode resolution can't inherit the
+				// harness's runtime permission mode.
+				KIMCHI_PARENT_SESSION_ID: "",
 				KIMCHI_DISABLE_BUILTIN_PROVIDERS: "1",
 				PI_SKIP_VERSION_CHECK: "1",
 				// Disable startup network hooks (self-update probe) so the

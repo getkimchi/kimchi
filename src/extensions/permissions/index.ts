@@ -35,11 +35,24 @@ import { BASH_CONTROL_TOOL_NAME } from "../bash-background/bash-control-tool.js"
 import { readE2eSeam } from "../e2e-seam.js"
 import { createFerment } from "../ferment/create.js"
 import { emitFermentCreated } from "../ferment/domain-events-emitter.js"
+import {
+	applyDegradedFermentStart,
+	clearFermentGateDecision,
+	gateFermentElevation,
+	getFermentGateDecision,
+} from "../ferment/elevation-gate.js"
 import { appendRefEntry } from "../ferment/nudge.js"
 import { CLOUD_DECISION_OPTION, EXECUTE_LOCAL_DECISION_OPTION } from "../ferment/plan-review.js"
 import { defaultFermentRuntime } from "../ferment/runtime.js"
 import { safeSendMessage } from "../ferment/safe-send.js"
-import { hasActiveFerment, notifyFermentActive, onActiveFermentChange, setFermentWorkId } from "../ferment/state.js"
+import {
+	getActive,
+	getActiveId,
+	hasActiveFerment,
+	notifyFermentActive,
+	onActiveFermentChange,
+	setFermentWorkId,
+} from "../ferment/state.js"
 import { createApplyAndPersist, formatNextActionHint, formatNoReplanningGuidance } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
@@ -73,6 +86,7 @@ import {
 } from "./mode-controller.js"
 import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { PERMISSION_EVENTS, type PermissionDecision } from "./permissions-events.js"
+import { hasOrgPolicyRestrictions, highestAllowedHighMode, isFermentRunnable, isModeAllowed } from "./policy.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
 import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import {
@@ -243,6 +257,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	let appliedPermissionMode: PermissionModeState | undefined
 	let applyingPermissionMode = false
 	let preFermentMode: PermissionModeState | undefined
+	let lastActiveFermentId: string | undefined
 	let cliMode: PermissionMode | undefined
 	// Session-held slug of the plan currently being drafted. Kept across rework
 	// turns so rewrites overwrite the same file even if the plan title changes;
@@ -384,6 +399,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		reason: ModeChangeReason,
 		skipNotify?: boolean,
 	): void {
+		if (!isModeAllowed(next.mode)) {
+			// Policy backstop: every entry seam rejects disallowed modes with proper
+			// UX; anything that slips through is dropped here, keeping the current mode.
+			const message = `permissions: mode "${next.mode}" is not allowed by your organization's policy`
+			if (next.initiatedBy === "user" && ctx.hasUI) ctx.ui.notify(message, "warning")
+			else console.error(message)
+			return
+		}
 		const from = appliedPermissionMode ?? getRuntimePermissionMode()
 		applyingPermissionMode = true
 		try {
@@ -409,44 +432,100 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 	function cycleMode(ctx: ExtensionContext): void {
 		const { mode: current } = getRuntimePermissionMode()
-		const idx = MODES.findIndex((m) => m.mode === current)
-		const next = MODES[(idx + 1) % MODES.length].mode
+		const allowedModes = MODES.filter((m) => isModeAllowed(m.mode))
+		const idx = allowedModes.findIndex((m) => m.mode === current)
+		const next = allowedModes[(idx + 1) % allowedModes.length].mode
 		changeMode(ctx, current, { mode: next, initiatedBy: "user", source: "runtime" }, "user_shift_tab")
 	}
 
+	/**
+	 * Release an approved plan from plan mode into the highest execution mode the
+	 * org policy allows. Returns false (with a user-facing message) when the
+	 * policy allows no execution mode, so callers can skip execution. With no
+	 * policy this preserves the historical release to auto.
+	 */
+	function releaseFromPlanForApproval(ctx: ExtensionContext): boolean {
+		const target = hasOrgPolicyRestrictions() ? highestAllowedHighMode() : "auto"
+		if (!target) {
+			ctx.ui?.notify?.(
+				"Your organization's policy does not allow auto or yolo mode, so the approved plan cannot be executed here.",
+				"warning",
+			)
+			return false
+		}
+		if (getRuntimePermissionMode().mode === "plan") {
+			changeMode(ctx, "plan", { mode: target, initiatedBy: "user", source: "runtime" }, "plan_approval")
+		}
+		return true
+	}
+
 	// Ferment calls notifyFermentActive() when a ferment is activated or cleared,
-	// so permissions can switch to/from yolo.
+	// so permissions can switch to/from the highest policy-allowed execution mode.
 	//
 	// FIXME: ferment isn't tracked per session ID, so we assume that active
 	// ferment change applies to the current session. This is fine for CLI usage,
 	// but incorrect for ACP use where a single process may have multiple sessions (and therefore ferments)
 	// running at the same time. Fix this when introducing ferment commands to ACP.
 	onActiveFermentChange((hasActive) => {
-		if (cliMode) return // explicit CLI flag always wins
 		if (!currentCtx) return // No active session
-		const current = getRuntimePermissionMode()
-		if (hasActive) {
-			if (current.initiatedBy === "user") preFermentMode = current
-			changeMode(
-				currentCtx,
-				current.mode,
-				{
-					mode: "yolo",
-					source: "runtime",
-					initiatedBy: "ferment",
-				},
-				"ferment_elevation",
-			)
-		} else if (preFermentMode) {
-			const saved = preFermentMode
-			preFermentMode = undefined
-			// Only restore the pre-ferment mode while the session is still on the
-			// ferment elevation. If the user changed mode manually mid-ferment,
-			// their choice wins over the restore.
-			if (current.initiatedBy === "ferment") {
-				changeMode(currentCtx, current.mode, saved, "ferment_restore")
-			}
+		// Scoped decision teardown runs before any early return (including the
+		// CLI-flag one): a deactivation must drop the deactivated ferment's own
+		// decision — never another ferment's (ACP runs several per process).
+		if (!hasActive) {
+			if (lastActiveFermentId) clearFermentGateDecision(lastActiveFermentId)
+			lastActiveFermentId = undefined
+		} else {
+			lastActiveFermentId = getActiveId()
 		}
+		const current = getRuntimePermissionMode()
+		if (current.source === "flag") return // explicit CLI flag always wins (post-clamp)
+		if (!hasActive) {
+			if (preFermentMode) {
+				const saved = preFermentMode
+				preFermentMode = undefined
+				// Only restore the pre-ferment mode while the session is still on the
+				// ferment elevation. If the user changed mode manually mid-ferment,
+				// their choice wins over the restore.
+				if (current.initiatedBy === "ferment") {
+					changeMode(currentCtx, current.mode, saved, "ferment_restore")
+				}
+			}
+			return
+		}
+		// Policy-aware elevation. Without a policy this preserves the historical
+		// behavior (activation → yolo). With a policy the elevation follows the
+		// gate decision recorded for this ferment (elevation-gate.ts); no decision
+		// (e.g. draft-scoping activation before the execution gate ran) means no
+		// mode change. A degraded decision drops plan → default once the ferment
+		// is actually executing (plan cannot run steps; default is policy-allowed).
+		const restricted = hasOrgPolicyRestrictions()
+		const decision = restricted ? getFermentGateDecision(lastActiveFermentId ?? "") : undefined
+		if (restricted && decision?.kind !== "elevated") {
+			const activeFerment = getActive()
+			const executing = activeFerment?.status === "running" || activeFerment?.status === "planned"
+			if (decision?.kind === "degraded" && executing && current.mode === "plan" && isModeAllowed("default")) {
+				if (current.initiatedBy === "user") preFermentMode = current
+				changeMode(
+					currentCtx,
+					current.mode,
+					{ mode: "default", source: "runtime", initiatedBy: "ferment" },
+					"ferment_elevation",
+				)
+			}
+			return
+		}
+		const target = restricted && decision?.kind === "elevated" ? decision.mode : "yolo"
+		if (current.initiatedBy === "user") preFermentMode = current
+		changeMode(
+			currentCtx,
+			current.mode,
+			{
+				mode: target,
+				source: "runtime",
+				initiatedBy: "ferment",
+			},
+			"ferment_elevation",
+		)
 	})
 
 	function doLoadConfig(ctx: ExtensionContext): { errors: string[] } {
@@ -564,14 +643,20 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 		const current = getInitialPermissionMode(ctx.sessionManager)
 		let next = current
-		// Active ferment → auto-yolo so scoping/lifecycle work can proceed without approval prompts.
-		// The elevation is persisted at the next before_agent_start as a ferment-owned entry;
-		// resume skips ferment-owned entries, so the session restores the previous user mode.
-		// Only applies when no explicit CLI mode flag was given.
-		if (!cliMode && hasActiveFerment()) {
+		// Active ferment → elevate so scoping/lifecycle work can proceed without
+		// approval prompts. With a policy this follows the recorded gate decision;
+		// at session start there is none yet, so the session keeps its resolved
+		// mode and the resume gate (resumeFerment) asks before re-activation.
+		// Without a policy this preserves the historical yolo elevation. The
+		// elevation is persisted at the next before_agent_start as a ferment-owned
+		// entry; resume skips ferment-owned entries, so the session restores the
+		// previous user mode. Only applies when no explicit CLI mode flag was given.
+		const restricted = hasOrgPolicyRestrictions()
+		const gateDecision = restricted ? getFermentGateDecision(lastActiveFermentId ?? "") : undefined
+		if (current.source !== "flag" && hasActiveFerment() && (!restricted || gateDecision?.kind === "elevated")) {
 			if (current.initiatedBy === "user") preFermentMode = current
 			next = {
-				mode: "yolo",
+				mode: restricted && gateDecision?.kind === "elevated" ? gateDecision.mode : "yolo",
 				initiatedBy: "ferment",
 				source: "runtime",
 			}
@@ -804,7 +889,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 				const options: string[] = [EXECUTE_LOCAL_DECISION_OPTION]
 				if (isRemoteRunEnabled()) options.push(CLOUD_DECISION_OPTION)
-				options.push(DECLINE, START_AS_FERMENT)
+				options.push(DECLINE)
+				// Org policy: without an executable mode, ferment cannot run — hide it.
+				if (isFermentRunnable()) options.push(START_AS_FERMENT)
 
 				void withBlocked(pi.events, "Plan complete", () =>
 					withWorkingHidden(ctx, () =>
@@ -877,11 +964,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const { ctx, planPath, planText, rawText, activePlanSlug: reviewedPlanSlug } = reviewCtx
 
 		const executeLocally = async () => {
-			// Plan mode withholds execution until approval — release it to auto.
-			// Submissions made from auto mode are already executable: no transition.
-			if (getRuntimePermissionMode().mode === "plan") {
-				changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
-			}
+			// Plan mode withholds execution until approval — release it to the highest
+			// policy-allowed execution mode. Submissions made from auto mode are
+			// already executable: no transition.
+			if (!releaseFromPlanForApproval(ctx)) return
 			await executePlan(ctx, planPath, planText, reviewedPlanSlug)
 			activePlanSlug = undefined
 		}
@@ -900,9 +986,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// Only plan mode needs the release-to-auto transition; submissions
 			// from auto mode are already in an execution posture.
 			const wasPlanMode = getRuntimePermissionMode().mode === "plan"
-			if (wasPlanMode) {
-				changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
-			}
+			if (wasPlanMode && !releaseFromPlanForApproval(ctx)) return
 			const cloudDescription = `${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
 			try {
 				const { prompt: cloudPrompt, gitWorkflow } = await buildRemotePlanPromptWithIntent(ctx, planText, {
@@ -1031,7 +1115,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					if (pi.events) emitFermentCreated(pi.events, draft)
 					appendRefEntry(pi, draft.id)
 					if (getRuntimePermissionMode().mode === "plan") {
-						changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+						releaseFromPlanForApproval(ctx)
 					}
 					// Draft-only conversion dispatches no follow-up turn: notify.
 					notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
@@ -1083,6 +1167,27 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					phaseId: scoped.ferment.phases[0]?.id ?? "phase-1",
 				})
 				if (!activated.ok) throw new Error(activated.error.message)
+				// Elevation gate: ask before the scoped ferment activates (ladder in
+				// elevation-gate.ts); cancelled/blocked leaves the scoped ferment
+				// inactive for a later /ferment resume.
+				const gate = ctx
+					? await gateFermentElevation(ctx, activated.ferment.id, activated.ferment.name)
+					: ({ kind: "stayed" } as const)
+				if (gate.kind === "cancelled" || gate.kind === "blocked") {
+					defaultFermentRuntime.setActive(undefined)
+					ctx?.ui?.notify?.(
+						gate.kind === "blocked"
+							? "Your organization's policy only allows plan mode — ferment cannot run."
+							: "Ferment start cancelled.",
+						gate.kind === "blocked" ? "warning" : "info",
+					)
+					return
+				}
+				if (gate.kind === "degraded") {
+					// Declined elevation: force manual continuation — background steps
+					// cannot answer approval prompts.
+					applyDegradedFermentStart(ctx, defaultFermentRuntime)
+				}
 				defaultFermentRuntime.setActive(activated.ferment)
 				setActiveFermentAndApplyProfile(pi, defaultFermentRuntime, activated.ferment)
 				appendRefEntry(pi, activated.ferment.id)
@@ -1122,7 +1227,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					{ triggerTurn: true },
 				)
 				if (getRuntimePermissionMode().mode === "plan") {
-					changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+					releaseFromPlanForApproval(ctx)
 				}
 			} catch (err) {
 				// Promotion failed before activation. Keep the planning profile, clear

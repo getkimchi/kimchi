@@ -113,6 +113,7 @@ import {
 	registerSessionPermissionFlagController,
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
+import { getAllowedModes, hasOrgPolicyRestrictions, isModeAllowed } from "../../extensions/permissions/policy.js"
 import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
@@ -748,6 +749,12 @@ export class KimchiAcpAgent implements Agent {
 		const permissionMode = mode as PermissionMode
 		if (!PERMISSION_MODES.includes(permissionMode)) {
 			throw RequestError.invalidParams(undefined, `invalid mode ${permissionMode}`)
+		}
+		if (!isModeAllowed(permissionMode)) {
+			throw RequestError.invalidParams(
+				undefined,
+				`mode "${permissionMode}" is not allowed by your organization's policy. Allowed: ${[...getAllowedModes()].join(", ")}`,
+			)
 		}
 		const sessionId = record.session.sessionId
 		const { sessionManager } = record.session
@@ -2366,15 +2373,20 @@ export class KimchiAcpAgent implements Agent {
  * Exported for testing.
  */
 export function buildPermissionsConfigOption(currentMode: PermissionMode): SessionConfigOption {
+	// Org policy: only allowed modes are advertised, and the description tracks
+	// the advertised set so clients show what can actually be selected. Without
+	// a restricting policy the original (non-derived) description is kept.
+	const allowed = PERMISSION_MODES_WITH_META.filter(({ mode }) => isModeAllowed(mode))
 	return {
 		id: "permissions-mode",
 		name: "Permissions Mode",
 		type: "select",
 		category: "mode",
-		description:
-			"Control tool execution permissions: default (prompt for writes), plan (read-only), auto (classifier-gated), yolo (no restrictions)",
+		description: hasOrgPolicyRestrictions()
+			? `Control tool execution permissions. Allowed modes: ${allowed.map(({ mode }) => mode).join(", ")}`
+			: "Control tool execution permissions: default (prompt for writes), plan (read-only), auto (classifier-gated), yolo (no restrictions)",
 		currentValue: currentMode,
-		options: PERMISSION_MODES_WITH_META.map(({ mode, label, description }) => ({
+		options: allowed.map(({ mode, label, description }) => ({
 			name: label,
 			value: mode,
 			description,

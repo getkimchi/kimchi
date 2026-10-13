@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { appendToConfig, type LoadedConfig, projectConfigPath, userConfigPath } from "./config.js"
 import { parseModeString } from "./mode.js"
+import { getAllowedModes, isModeAllowed } from "./policy.js"
 import { parseRule, stringifyRule } from "./rules.js"
 import { numberedChoices, stripChoiceNumber } from "./select-utils.js"
 import type { SessionMemory } from "./session-memory.js"
@@ -122,35 +123,25 @@ async function openModePicker(ctx: ExtensionContext, deps: CommandDeps): Promise
 	const current = deps.getPermissionMode(ctx)
 	const marker = (m: PermissionMode) => (m === current ? "●" : "○")
 
-	const OPT_DEFAULT = `${marker("default")}  default — ask before each tool call`
-	const OPT_PLAN = `${marker("plan")}  plan — read-only exploration`
-	const OPT_AUTO = `${marker("auto")}  auto — run freely, classifier guards the rest`
-	const OPT_YOLO = `${marker("yolo")}  yolo — run freely, no classifier (DANGER)`
 	const CANCEL = "Cancel"
+	// Only modes the org policy allows are offered.
+	const modeOptions = [
+		{ mode: "default" as const, label: "default — ask before each tool call" },
+		{ mode: "plan" as const, label: "plan — read-only exploration" },
+		{ mode: "auto" as const, label: "auto — run freely, classifier guards the rest" },
+		{ mode: "yolo" as const, label: "yolo — run freely, no classifier (DANGER)" },
+	].filter((o) => isModeAllowed(o.mode))
 
 	const choice = await ctx.ui.select(
 		"Select permission mode",
-		numberedChoices([OPT_DEFAULT, OPT_PLAN, OPT_AUTO, OPT_YOLO, CANCEL]),
+		numberedChoices([...modeOptions.map((o) => `${marker(o.mode)}  ${o.label}`), CANCEL]),
 	)
 	if (!choice) return
 	const selected = stripChoiceNumber(choice)
 	if (selected === CANCEL) return
 
-	let picked: PermissionMode
-	switch (selected) {
-		case OPT_PLAN:
-			picked = "plan"
-			break
-		case OPT_AUTO:
-			picked = "auto"
-			break
-		case OPT_YOLO:
-			picked = "yolo"
-			break
-		default:
-			picked = "default"
-	}
-	handleMode(ctx, deps, picked)
+	const picked = modeOptions.find((o) => selected.includes(o.label))?.mode
+	if (picked) handleMode(ctx, deps, picked)
 }
 
 async function promptForRule(ctx: ExtensionContext, deps: CommandDeps, behavior: "allow" | "deny"): Promise<void> {
@@ -205,6 +196,13 @@ function handleMode(ctx: ExtensionContext, deps: CommandDeps, arg: string): void
 	const mode = parseModeString(arg)
 	if (!mode) {
 		ctx.ui.notify(`unknown mode "${arg}". Valid: default, plan, auto, yolo`, "warning")
+		return
+	}
+	if (!isModeAllowed(mode)) {
+		ctx.ui.notify(
+			`mode "${mode}" is not allowed by your organization's policy. Allowed: ${[...getAllowedModes()].join(", ")}`,
+			"warning",
+		)
 		return
 	}
 	deps.setPermissionMode(ctx, mode)

@@ -12,6 +12,7 @@ import {
 	DEFAULT_MODEL,
 	type FakeModel,
 	type FakeOpenAiServer,
+	type FakeOrgPolicy,
 	type FakeResponseScript,
 	type RecordedRequest,
 	resolveModels,
@@ -98,6 +99,9 @@ export interface CreateKimchiFixtureOptions {
 	initialModel?: string | false
 	creditsResponses?: unknown[]
 	budgetResponses?: unknown[]
+	/** Org policy served by the fake platform endpoints (api-keys:verify +
+	 *  settings:resolve). Omit to leave them 404 (fail-open, no policy). */
+	policy?: FakeOrgPolicy
 	/** `git init` the work dir so repo-checking flows (e.g. ferment) don't prompt to init one. */
 	gitInit?: boolean
 	/**
@@ -313,6 +317,10 @@ export function launchKimchi(
 		"env",
 		`HOME=${sh(fixture.homeDir)}`,
 		`PI_PACKAGE_DIR=${sh(PACKAGE_DIR)}`,
+		// Hermetic against the launching harness: drop its parent-session
+		// linkage so the child's mode resolution can't inherit the harness's
+		// runtime permission mode via KIMCHI_PERMISSIONS_<parent-session>.
+		"KIMCHI_PARENT_SESSION_ID=",
 		"KIMCHI_PERMISSIONS=yolo",
 		// Disable startup network hooks (self-update probe) so the
 		// session boots without background HTTP or synchronous tar/exec

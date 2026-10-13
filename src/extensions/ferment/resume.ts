@@ -4,6 +4,7 @@ import type { Ferment } from "../../ferment/types.js"
 import { setWorkId, tryWorkAttribution } from "../work-attribution.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
 import { emitFermentScopingResumed } from "./domain-events-emitter.js"
+import { applyDegradedFermentStart, gateFermentElevation } from "./elevation-gate.js"
 import { clearLifecycleGuard } from "./lifecycle-obligation-guard.js"
 import { appendRefEntry, resetScopingStopNudgeCount } from "./nudge.js"
 import { loadPendingProposal } from "./pending-proposal-store.js"
@@ -64,13 +65,13 @@ export function loadFermentSilently(
  * Flips paused to running, validates worktree, re-arms the scoping gate for
  * drafts, and schedules the next legal action so the planner picks up work.
  */
-export function resumeFerment(
+export async function resumeFerment(
 	pi: ExtensionAPI,
 	fermentId: string,
 	ctx: ExtensionContext,
 	runtime: FermentRuntime = defaultFermentRuntime,
 	opts: { allowManualPhaseBoundary?: boolean } = {},
-): void {
+): Promise<void> {
 	const storage = runtime.getStorage()
 	const applyAndPersist = createApplyAndPersist(runtime)
 	let existing = storage.get(fermentId)
@@ -83,6 +84,21 @@ export function resumeFerment(
 	if (existing.status === "complete" || existing.status === "abandoned") {
 		setActiveFermentAndApplyProfile(pi, runtime, undefined)
 		return
+	}
+
+	// Elevation gate: ask before the ferment activates (or flips back to
+	// running) under a restricting policy. Drafts skip the gate — their
+	// execution is gated at the plan-review decision instead.
+	if (existing.status !== "draft") {
+		const gate = ctx?.hasUI
+			? await gateFermentElevation(ctx, existing.id, existing.name)
+			: ({ kind: "stayed" } as const)
+		if (gate.kind === "cancelled") return
+		if (gate.kind === "blocked") {
+			ctx?.ui?.notify?.("Your organization's policy only allows plan mode — ferment cannot run.", "warning")
+			return
+		}
+		if (gate.kind === "degraded") applyDegradedFermentStart(ctx, runtime)
 	}
 
 	// Session_shutdown sets running ferments to "paused"; flip back to running

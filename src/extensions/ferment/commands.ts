@@ -6,6 +6,7 @@ import { successCriteriaToAnswer } from "../../ferment/success-criteria.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
 import { HERDR_EVENTS, type HerdrBlockedPayload } from "../herdr-events.js"
 import { getMultiModelEnabled } from "../multi-model.js"
+import { isFermentRunnable } from "../permissions/policy.js"
 import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
@@ -255,6 +256,11 @@ export async function startFermentForIntent({
 		ctx.ui.notify(
 			`A ferment is already running: "${active.name}". Use /ferment progress to check status or /ferment switch to change.`,
 		)
+		return undefined
+	}
+	// Org policy: without an executable mode, ferment cannot run.
+	if (!isFermentRunnable()) {
+		ctx.ui.notify("Your organization's policy only allows plan mode — ferment cannot run.", "warning")
 		return undefined
 	}
 	ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · creating…")
@@ -718,7 +724,7 @@ export class FermentCommandController {
 			if (!action || action === "Back") return { handled: true }
 
 			if (action === actionContinue) {
-				resumeFerment(pi, selected.id, ctx, runtime, { allowManualPhaseBoundary: true })
+				await resumeFerment(pi, selected.id, ctx, runtime, { allowManualPhaseBoundary: true })
 				ctx.ui.notify(`Continuing "${selected.name}"`)
 				return { handled: true }
 			}
@@ -889,7 +895,7 @@ export class FermentCommandController {
 				const previousActiveId = runtime.getActiveId()
 				if (previousActiveId && previousActiveId !== f.id) runtime.clearPendingPlanReview(previousActiveId)
 				sendBreadcrumb(pi, `Switched to "${f.name}" [${f.status}]${wtWarning}`, "ack", "ferment_ack")
-				resumeFerment(pi, f.id, ctx, runtime, { allowManualPhaseBoundary: true })
+				await resumeFerment(pi, f.id, ctx, runtime, { allowManualPhaseBoundary: true })
 			} catch (err) {
 				ctx.ui.notify(err instanceof FermentError ? err.message : "Switch failed.")
 			}

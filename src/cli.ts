@@ -114,6 +114,8 @@ import orphanToolResultSanitizerExtension from "./extensions/orphan-tool-result-
 import packageInstallGuardExtension from "./extensions/package-install-guard.js"
 import permissionsExtension from "./extensions/permissions/index.js"
 import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
+import { parseModeString } from "./extensions/permissions/mode.js"
+import { clampMode } from "./extensions/permissions/policy.js"
 import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup/native-compat.js"
 import piiRedactionExtension from "./extensions/pii-redaction/index.js"
 import plannotatorExtension from "./extensions/plannotator/index.js"
@@ -387,6 +389,27 @@ try {
 		// --print sessions. The ferment-oneshot argv scan is the load-bearing
 		// composition: a headless one-shot planner still needs the suite.
 		setPrintGate(hasPrintFlag(originalArgs), hasFermentOneshotArg(originalArgs))
+
+		// Org policy: a headless one-shot ferment needs an execution mode
+		// (auto/yolo). Refuse — falling back to a plain print session — unless the
+		// EFFECTIVE (post-clamp) permission mode is an allowed high mode, whatever
+		// its origin: an argv flag or the KIMCHI_PERMISSIONS env default.
+		if (hasFermentOneshotArg(originalArgs)) {
+			const requested = originalArgs.includes("--plan")
+				? "plan"
+				: originalArgs.includes("--auto")
+					? "auto"
+					: originalArgs.includes("--yolo") || originalArgs.includes("--dangerously-skip-permissions")
+						? "yolo"
+						: (parseModeString(process.env.KIMCHI_PERMISSIONS) ?? "default")
+			const effective = clampMode(requested)
+			if (effective !== "auto" && effective !== "yolo") {
+				setPrintGate(hasPrintFlag(originalArgs), false)
+				console.error(
+					"ferment-oneshot: refused — your organization's policy does not allow an execution mode for ferment. Pass --auto or --yolo (when allowed) to run a headless one-shot ferment.",
+				)
+			}
+		}
 
 		// Pre-main trust was primed above, before subcommand dispatch; re-prime
 		// is unnecessary (idempotent) but loadConfig below depends on it.

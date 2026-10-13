@@ -37,6 +37,7 @@ import { maybeTriggerFermentCompaction } from "./auto-compaction.js"
 import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
 import { decideContinuation } from "./continuation.js"
+import { applyDegradedFermentStart, gateFermentElevation } from "./elevation-gate.js"
 import { registerFermentEvents } from "./events.js"
 import { registerFermentLifecycleContext } from "./lifecycle-context.js"
 import { deletePendingProposal } from "./pending-proposal-store.js"
@@ -272,13 +273,29 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 		planReviewRunning = false
 
-		const executeLocally = () => {
+		const executeLocally = async () => {
+			// Elevation gate: ask before the ferment activates under a restricting
+			// policy (ladder in elevation-gate.ts). Cancelled/blocked → no execution.
+			const gate = reviewCtx.ctx ? await gateFermentElevation(reviewCtx.ctx, fermentId) : ({ kind: "stayed" } as const)
+			if (gate.kind === "cancelled") {
+				reviewCtx.ctx?.ui?.notify?.("Ferment start cancelled.", "info")
+				runtime.clearPendingPlanReview(fermentId)
+				applyFermentRuntimeToolProfile(pi, runtime)
+				return
+			}
+			if (gate.kind === "blocked") {
+				reviewCtx.ctx?.ui?.notify?.("Your organization's policy only allows plan mode — ferment cannot run.", "warning")
+				runtime.clearPendingPlanReview(fermentId)
+				applyFermentRuntimeToolProfile(pi, runtime)
+				return
+			}
+			if (gate.kind === "degraded" && reviewCtx.ctx) applyDegradedFermentStart(reviewCtx.ctx, runtime)
 			const scopeOutcome = confirmPendingScope(runtime, fermentId, undefined, "turn_end", pi)
 			if (!scopeOutcome.ok) {
 				reviewCtx.ctx?.ui?.notify?.(`Failed to save plan: ${scopeOutcome.error.message}`, "error")
 				return
 			}
-			if (payload.auto) {
+			if (payload.auto && gate.kind !== "degraded") {
 				runtime.setContinuationPolicy("automated")
 				requestSharedStatusLineRender()
 			}
@@ -370,13 +387,13 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				if (choice === CLOUD_DECISION_OPTION) {
 					await startCloudExecution()
 				} else if (choice === EXECUTE_LOCAL_DECISION_OPTION) {
-					executeLocally()
+					await executeLocally()
 				} else {
 					ui?.notify?.("Plan execution deferred — re-open the review to choose again.", "info")
 				}
 				return
 			}
-			executeLocally()
+			await executeLocally()
 		} else if (payload.decision === "start_cloud") {
 			await startCloudExecution()
 		} else if (payload.decision === "feedback") {

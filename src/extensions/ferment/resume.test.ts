@@ -338,7 +338,7 @@ describe("resumeFerment planned state", () => {
 })
 
 describe("resumeFerment running state", () => {
-	it("paused ferment that resumes to running sends one continuation nudge with the resume imperative and next action", () => {
+	it("paused ferment that resumes to running sends one continuation nudge with the resume imperative and next action", async () => {
 		const draft = h.eventStorage.create("Paused Then Running", undefined, process.cwd())
 		h.runtime.setActive(draft)
 
@@ -368,7 +368,7 @@ describe("resumeFerment running state", () => {
 		if (!paused.ok) throw new Error(paused.error.message)
 		expect(paused.ferment.status).toBe("paused")
 
-		resumeFerment(h.pi, draft.id, hasUIContext(), h.runtime)
+		await resumeFerment(h.pi, draft.id, hasUIContext(), h.runtime)
 
 		// After resume, status should be running.
 		const running = h.eventStorage.get(draft.id)
@@ -394,7 +394,7 @@ describe("resumeFerment running state", () => {
 })
 
 describe("resumeFerment still-paused state", () => {
-	it("a failed resume attempt sends the paused notice and no actionable hidden message", () => {
+	it("a failed resume attempt sends the paused notice and no actionable hidden message", async () => {
 		const draft = h.eventStorage.create("Stays Paused", undefined, process.cwd())
 		h.runtime.setActive(draft)
 
@@ -436,7 +436,7 @@ describe("resumeFerment still-paused state", () => {
 			reason: "exhausted",
 		})
 
-		resumeFerment(h.pi, draft.id, hasUIContext(), h.runtime)
+		await resumeFerment(h.pi, draft.id, hasUIContext(), h.runtime)
 
 		// Resume contract: no actionable hidden message is sent.
 		expect(actionableHidden(h.sentMessages)).toHaveLength(0)
