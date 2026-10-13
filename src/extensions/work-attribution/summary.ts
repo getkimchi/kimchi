@@ -1,13 +1,13 @@
 import { createReadStream, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
-import { mkdir, readdir, readFile, stat } from "node:fs/promises"
+import { mkdir, readdir, stat } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { lock } from "proper-lockfile"
-import { writeFileDurably } from "../../config/json.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { mergePullRequestLinks } from "../pull-request-status/links.js"
 import { debugWorkAttribution } from "./diagnostics.js"
+import { type Collection, ROW_KEYS, updateWorkRows, validWorkFiles } from "./row-log.js"
 
 const LOCK_STALE_MS = 5000
 const MERGE_BATCH_SIZE = 1000
@@ -18,37 +18,40 @@ const RECOVERY_VERSION = 5
 const RECOVERY_MTIME_SLACK_MS = 2000
 /** Background reads yield to the event loop after each chunk of this size. */
 const READ_CHUNK_BYTES = 1_048_576
+const BUDGET_CHECK_LINES = 1024
+/** The manifest stays small unless something grows without a bound; say so in diagnostics. */
+const MANIFEST_WARNING_BYTES = 256 * 1024
 interface SummaryEntry {
 	sessionId: string
 	[key: string]: unknown
 }
+const WORK_RECORD_TYPES = [
+	"work",
+	"work_link",
+	"request",
+	"request_dispatch",
+	"request_response",
+	"request_cost",
+	"plan",
+	"commit",
+	"file_transition",
+	"file_observation",
+] as const
+const KNOWN_RECORD_TYPES: ReadonlySet<unknown> = new Set(WORK_RECORD_TYPES)
 export interface WorkRecord extends SummaryEntry {
 	version: 1
-	type:
-		| "work"
-		| "work_link"
-		| "request"
-		| "request_dispatch"
-		| "request_response"
-		| "request_cost"
-		| "plan"
-		| "commit"
-		| "file_transition"
-		| "file_observation"
+	type: (typeof WORK_RECORD_TYPES)[number]
 	workId: string
 }
-interface WorkSummary {
-	version: 1
-	workId: string
-	sessions: string[]
-	workLinks: SummaryEntry[]
-	requests: SummaryEntry[]
-	plans: SummaryEntry[]
-	commits: SummaryEntry[]
-	fileTransitions: SummaryEntry[]
-	fileObservations: SummaryEntry[]
-	continuations: SummaryEntry[]
-}
+/**
+ * A journal line that readWorkRecords did not return. "invalid" is damage: an unparseable line or a record that fails
+ * validation. "unknown-type" is a complete version-1 record of a type this version does not know, usually written by a
+ * newer Kimchi sharing this history. Readers that need complete history, such as PR cost reporting, must treat both
+ * kinds as incomplete history.
+ */
+export type WorkRecordProblem =
+	| { kind: "invalid"; path: string; line: number }
+	| { kind: "unknown-type"; path: string; line: number; record: Record<string, unknown> }
 interface PendingUpdate {
 	records: WorkRecord[]
 	complete: boolean
@@ -102,80 +105,130 @@ function record(value: unknown): value is WorkRecord {
 			return false
 	}
 }
-function validSummary(value: unknown, workId: string): value is WorkSummary {
+function unknownType(value: unknown): value is Record<string, unknown> {
 	return (
 		object(value) &&
 		value.version === 1 &&
-		value.workId === workId &&
-		(value.workLinks === undefined ||
-			(Array.isArray(value.workLinks) &&
-				value.workLinks.every((row) => entry(row, ["linkId", "sourceWorkId", "targetWorkId"])))) &&
-		Array.isArray(value.sessions) &&
-		value.sessions.every((session) => typeof session === "string") &&
-		Array.isArray(value.requests) &&
-		value.requests.every((row) => entry(row, ["requestId"])) &&
-		Array.isArray(value.plans) &&
-		value.plans.every((row) => entry(row, ["path"])) &&
-		Array.isArray(value.commits) &&
-		value.commits.every((row) => entry(row, ["sha", "repository", "worktree"])) &&
-		(value.fileTransitions === undefined ||
-			(Array.isArray(value.fileTransitions) &&
-				value.fileTransitions.every((row) =>
-					entry(row, ["transitionId", "toolCallId", "repository", "worktree", "path"]),
-				))) &&
-		(value.fileObservations === undefined ||
-			(Array.isArray(value.fileObservations) &&
-				value.fileObservations.every(
-					(row) =>
-						entry(row, ["observationId", "toolCallId", "repository", "worktree", "source"]) && Array.isArray(row.files),
-				))) &&
-		(value.continuations === undefined ||
-			(Array.isArray(value.continuations) &&
-				value.continuations.every((row) => entry(row, ["source"]) && object(row.evidence))))
+		isWorkId(value.workId) &&
+		typeof value.sessionId === "string" &&
+		typeof value.type === "string" &&
+		!KNOWN_RECORD_TYPES.has(value.type)
 	)
 }
-async function readSummary(path: string, workId: string): Promise<WorkSummary | undefined> {
-	try {
-		const value = JSON.parse(await readFile(path, "utf8"))
-		if (validSummary(value, workId))
-			return {
-				...value,
-				workLinks: value.workLinks ?? [],
-				fileTransitions: value.fileTransitions ?? [],
-				fileObservations: value.fileObservations ?? [],
-				continuations: value.continuations ?? [],
-			}
-	} catch (error) {
-		if (!(error instanceof SyntaxError) && (!object(error) || error.code !== "ENOENT")) throw error
-	}
+/** Field checks for one committed row of each collection's log. */
+const ROW_CHECKS: Record<Collection, (row: unknown) => boolean> = {
+	workLinks: (row) => entry(row, ["linkId", "sourceWorkId", "targetWorkId"]),
+	requests: (row) => entry(row, ["requestId"]),
+	plans: (row) => entry(row, ["path"]),
+	commits: (row) => entry(row, ["sha", "repository", "worktree"]),
+	fileTransitions: (row) => entry(row, ["transitionId", "toolCallId", "repository", "worktree", "path"]),
+	fileObservations: (row) =>
+		entry(row, ["observationId", "toolCallId", "repository", "worktree", "source"]) && Array.isArray(row.files),
+	continuations: (row) => entry(row, ["source"]) && object(row.evidence),
 }
-function parseRecord(line: string, records: WorkRecord[]): void {
-	try {
-		const value = JSON.parse(line)
+/** An interrupted append leaves a record cut off mid-value; any other unparseable line is damage. */
+function truncated(line: string): boolean {
+	const closing: string[] = []
+	let inString = false
+	// Where an escape sequence such as \n or \u001b began, and how many \u hex digits it still needs.
+	let escapeStart = -1
+	let hexDigits = 0
+	for (let index = 0; index < line.length; index++) {
+		const char = line[index]
+		if (escapeStart >= 0) {
+			if (hexDigits) {
+				if (--hexDigits === 0) escapeStart = -1
+			} else if (char === "u") hexDigits = 4
+			else escapeStart = -1
+		} else if (inString) {
+			if (char === "\\") escapeStart = index
+			else if (char === '"') inString = false
+		} else if (char === '"') inString = true
+		else if (char === "{" || char === "[") closing.push(char === "{" ? "}" : "]")
+		else if ((char === "}" || char === "]") && closing.pop() !== char) return false
+	}
+	if (!closing.length) return false
+	// Close an open string before any partial escape, or drop a partial number or literal in a value position,
+	// then complete the value.
+	const start = inString
+		? `${escapeStart >= 0 ? line.slice(0, escapeStart) : line}"`
+		: line.replace(/(?<=[:[,])[\w.+-]+$/, "")
+	const end = closing.reverse().join("")
+	return ["", "null", ":null", '"":null'].some((value) => {
+		try {
+			JSON.parse(`${start}${value}${end}`)
+			return true
+		} catch {
+			return false
+		}
+	})
+}
+/**
+ * Parses one journal line by line; `final` marks the text after its last newline, which may still be in progress.
+ * A cut-off record that later appends moved past was interrupted; any other unparseable line, including a cut-off
+ * final record, is damage.
+ */
+function journalParser(path: string, records: WorkRecord[], onRecordProblem?: (problem: WorkRecordProblem) => void) {
+	let line = 0
+	let cut: number[] = []
+	return (text: string, final: boolean): void => {
+		line++
+		if (!text.trim()) {
+			if (final) for (const number of cut) onRecordProblem?.({ kind: "invalid", path, line: number })
+			return
+		}
+		// A later line shows that the cut-off records before it were interrupted appends.
+		cut = []
+		let value: unknown
+		try {
+			value = JSON.parse(text)
+		} catch {
+			if (final) return
+			if (truncated(text)) cut.push(line)
+			else onRecordProblem?.({ kind: "invalid", path, line })
+			return
+		}
 		if (record(value)) records.push(value)
-	} catch {
-		/* interrupted append */
+		else
+			onRecordProblem?.(
+				unknownType(value) ? { kind: "unknown-type", path, line, record: value } : { kind: "invalid", path, line },
+			)
 	}
 }
-export function readWorkRecords(agentDir: string, modifiedSince?: number): WorkRecord[] {
+export function readWorkRecords(
+	agentDir: string,
+	modifiedSince?: number,
+	checkBudget: () => void = () => {},
+	onRecordProblem?: (problem: WorkRecordProblem) => void,
+): WorkRecord[] {
+	checkBudget()
 	const directory = join(agentDir, "work-attribution")
 	if (!existsSync(directory)) return []
 	const records: WorkRecord[] = []
 	// Both kinds of source journals feed work.json; there is no second copy of file evidence.
 	for (const source of [directory, join(directory, "transitions")]) {
+		checkBudget()
 		if (!existsSync(source)) continue
 		for (const file of readdirSync(source, { withFileTypes: true })) {
+			checkBudget()
 			if (!file.isFile() || !file.name.endsWith(".jsonl")) continue
 			try {
 				const path = join(source, file.name)
 				if (modifiedSince !== undefined && statSync(path).mtimeMs < modifiedSince) continue
-				for (const line of readFileSync(path, "utf8").split("\n")) parseRecord(line, records)
+				const lines = readFileSync(path, "utf8").split("\n")
+				const parse = journalParser(path, records, onRecordProblem)
+				for (const [index, line] of lines.entries()) {
+					// The first check follows each file read; later ones skip lines, as a clock read per line adds up.
+					if (index % BUDGET_CHECK_LINES === 0) checkBudget()
+					parse(line, index === lines.length - 1)
+				}
 			} catch (error) {
 				// An incomplete scan must not advance recovery past a journal we could not read.
 				throw new Error(`Could not read work ledger ${file.name}`, { cause: error })
 			}
 		}
 	}
+	checkBudget()
 	return records
 }
 /** The journals both readers parse, in the same order. */
@@ -196,19 +249,24 @@ async function workJournals(agentDir: string): Promise<string[]> {
  * Like readWorkRecords, but yields to the event loop after each file chunk so a large history never blocks the UI,
  * and stops there once `signal` aborts so a closing session need not wait for the rest.
  */
-export async function readWorkRecordsAsync(agentDir: string, signal: AbortSignal): Promise<WorkRecord[]> {
+export async function readWorkRecordsAsync(
+	agentDir: string,
+	signal: AbortSignal,
+	onRecordProblem?: (problem: WorkRecordProblem) => void,
+): Promise<WorkRecord[]> {
 	const records: WorkRecord[] = []
 	for (const path of await workJournals(agentDir)) {
 		try {
+			const parse = journalParser(path, records, onRecordProblem)
 			let partial = ""
 			for await (const chunk of createReadStream(path, { encoding: "utf8", highWaterMark: READ_CHUNK_BYTES })) {
 				const lines = `${partial}${chunk}`.split("\n")
 				partial = lines.pop() ?? ""
-				for (const line of lines) parseRecord(line, records)
+				for (const line of lines) parse(line, false)
 				await setImmediate()
 				signal.throwIfAborted()
 			}
-			parseRecord(partial, records)
+			parse(partial, true)
 		} catch (error) {
 			if (signal.aborted) throw error
 			throw new Error(`Could not read work ledger ${basename(path)}`, { cause: error })
@@ -236,15 +294,7 @@ function strings(...values: unknown[]): string[] {
 		),
 	]
 }
-function planKey(row: SummaryEntry): string {
-	return JSON.stringify([row.sessionId, row.path, row.snapshotPath])
-}
-function commitKey(row: SummaryEntry): string {
-	return JSON.stringify([row.sessionId, row.sha, row.repository, row.worktree])
-}
-function continuationKey(row: SummaryEntry): string {
-	return JSON.stringify([row.sessionId, row.source, row.evidence])
-}
+const continuationKey = ROW_KEYS.continuations
 function latestObservation(previous: unknown, current: unknown): Record<string, unknown> | undefined {
 	if (!object(current) || typeof current.checkedAt !== "string" || !Number.isFinite(Date.parse(current.checkedAt)))
 		return object(previous) ? previous : undefined
@@ -294,54 +344,29 @@ function fileMatches(...values: unknown[]) {
 	}
 	return [...matches.values()]
 }
-function recordKey(type: WorkRecord["type"], row: SummaryEntry): string {
-	switch (type) {
-		case "work_link":
-			return JSON.stringify([
-				row.linkId,
-				row.revision,
-				row.sourceWorkId,
-				row.targetWorkId,
-				row.requestIds,
-				row.scope,
-				row.status,
-				row.evidence,
-			])
-		case "request":
-		case "request_dispatch":
-		case "request_response":
-		case "request_cost":
-			return JSON.stringify(row.requestId)
-		case "plan":
-			return planKey(row)
-		case "commit":
-			return commitKey(row)
-		case "file_observation":
-			return JSON.stringify(row.observationId)
-		default:
-			return JSON.stringify(row.transitionId)
-	}
+/** The summary collection each record type merges into. */
+const RECORD_COLLECTIONS: Record<Exclude<WorkRecord["type"], "work">, Collection> = {
+	work_link: "workLinks",
+	request: "requests",
+	request_dispatch: "requests",
+	request_response: "requests",
+	request_cost: "requests",
+	plan: "plans",
+	commit: "commits",
+	file_transition: "fileTransitions",
+	file_observation: "fileObservations",
 }
-async function merge(summary: WorkSummary, records: WorkRecord[]): Promise<void> {
-	const sessions = new Set(summary.sessions)
-	const links = new Map(summary.workLinks.map((row) => [recordKey("work_link", row), row]))
-	const requests = new Map(summary.requests.map((row) => [JSON.stringify(row.requestId), row]))
-	const plans = new Map(summary.plans.map((row) => [planKey(row), row]))
-	const commits = new Map(summary.commits.map((row) => [commitKey(row), row]))
-	const transitions = new Map(summary.fileTransitions.map((row) => [JSON.stringify(row.transitionId), row]))
-	const observations = new Map(summary.fileObservations.map((row) => [JSON.stringify(row.observationId), row]))
-	const continuations = new Map(summary.continuations.map((row) => [continuationKey(row), row]))
-	const entriesByType = {
-		work_link: links,
-		request: requests,
-		request_dispatch: requests,
-		request_response: requests,
-		request_cost: requests,
-		plan: plans,
-		commit: commits,
-		file_transition: transitions,
-		file_observation: observations,
-	}
+/** Rows by key. A store that reads saved rows on demand can stand in for a Map. */
+interface RowMap {
+	get(key: string): SummaryEntry | undefined
+	has(key: string): boolean
+	set(key: string, row: SummaryEntry): unknown
+}
+/** One work's rows while records merge: sessions in first-seen order, each collection by row key. */
+export type SummaryRows = { sessions: { add(sessionId: string): unknown } } & Record<Collection, RowMap>
+/** Merge rules for one batch of records, applied row by row. */
+export async function mergeWorkRecords(summary: SummaryRows, records: WorkRecord[]): Promise<void> {
+	const { sessions, continuations } = summary
 	for (let index = 0; index < records.length; index++) {
 		if (index % MERGE_BATCH_SIZE === 0) await setImmediate()
 		const { type, version: _version, workId: _workId, ...item } = records[index]
@@ -364,8 +389,9 @@ async function merge(summary: WorkSummary, records: WorkRecord[]): Promise<void>
 			}
 			continue
 		}
-		const entries = entriesByType[type]
-		const key = recordKey(type, item)
+		const collection = RECORD_COLLECTIONS[type]
+		const entries = summary[collection]
+		const key = ROW_KEYS[collection](item)
 		const existing = entries.get(key)
 		if (type === "request_cost" && existing?.billingRows !== undefined && Array.isArray(item.billingRows)) {
 			// Each billing ID is listed once, as its latest observation describes it.
@@ -394,17 +420,6 @@ async function merge(summary: WorkSummary, records: WorkRecord[]): Promise<void>
 			if (transitionIds.length) existing.transitionIds = transitionIds
 		} else entries.set(key, item)
 	}
-	summary.sessions = [...sessions]
-	summary.workLinks = [...links.values()]
-	summary.requests = [...requests.values()]
-	summary.plans = [...plans.values()]
-	summary.commits = [...commits.values()]
-	summary.fileTransitions = [...transitions.values()]
-	summary.fileObservations = [...observations.values()]
-	summary.continuations = [...continuations.values()]
-}
-function publish(directory: string, summary: WorkSummary, assertLease: () => void): Promise<void> {
-	return writeFileDurably(join(directory, "work.json"), `${JSON.stringify(summary, null, 2)}\n`, assertLease)
 }
 async function update(
 	agentDir: string,
@@ -414,26 +429,18 @@ async function update(
 	assertLease: () => void,
 ): Promise<void> {
 	assertLease()
-	const directory = join(agentDir, "work", workId)
-	const summary = await readSummary(join(directory, "work.json"), workId)
-	const published = summary && JSON.stringify(summary)
-	const value = summary ?? {
-		version: 1,
+	const head = await updateWorkRows(
+		join(agentDir, "work", workId),
 		workId,
-		sessions: [],
-		workLinks: [],
-		requests: [],
-		plans: [],
-		commits: [],
-		fileTransitions: [],
-		fileObservations: [],
-		continuations: [],
-	}
-	const history = !summary && !complete ? readWorkRecords(agentDir).filter((row) => row.workId === workId) : []
-	await merge(value, history.concat(records))
-	if (published === JSON.stringify(value)) return
-	assertLease()
-	await publish(directory, value, assertLease)
+		{ check: (collection, row) => ROW_CHECKS[collection](row), assertLease },
+		async (rows, rebuild) => {
+			const history = rebuild && !complete ? readWorkRecords(agentDir).filter((row) => row.workId === workId) : []
+			await mergeWorkRecords(rows, history.concat(records))
+		},
+	)
+	const bytes = head && Buffer.byteLength(JSON.stringify(head))
+	if (bytes && bytes > MANIFEST_WARNING_BYTES)
+		debugWorkAttribution(`Work summary manifest for ${workId} is ${bytes} bytes`)
 }
 function refresh(agentDir: string, workId: string, records: WorkRecord[], complete = false): Promise<boolean> {
 	const directory = join(agentDir, "work", workId)
@@ -515,11 +522,12 @@ async function readRecovery(agentDir: string, stamp: string) {
 	const summaries: Record<string, string> = {}
 	for (const [workId, fingerprint] of Object.entries(saved.summaries)) {
 		if (!isWorkId(workId) || typeof fingerprint !== "string") return undefined
-		const path = join(agentDir, "work", workId, "work.json")
+		const directory = join(agentDir, "work", workId)
+		const path = join(directory, "work.json")
 		if (!existsSync(path)) return undefined
 		const current = summaryFingerprint(path)
 		// Missing or damaged output requires all source ledgers, even when none changed.
-		if (current !== fingerprint && !(await readSummary(path, workId))) return undefined
+		if (current !== fingerprint && !(await validWorkFiles(directory, workId))) return undefined
 		summaries[workId] = current
 	}
 	return { startedAt: saved.startedAt, summaries }

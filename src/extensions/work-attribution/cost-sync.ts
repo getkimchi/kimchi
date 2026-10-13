@@ -6,6 +6,8 @@ import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations
 import { writeFileAtomic, writeFileDurably } from "../../config/json.js"
 import { loadConfig } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
+import { readE2eSeam } from "../e2e-seam.js"
+import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { BEFORE_PAGE_TIMEOUT_MESSAGE, type BillingRow, billingResponse, lookupRows } from "./billing-api.js"
 import {
@@ -18,7 +20,15 @@ import {
 	openBilling,
 } from "./billing-evidence.js"
 import { type BillingSource, captureBillingSource, LOOKUP_WINDOW_MS, sameBillingSource } from "./billing-source.js"
-import { calculatePullRequestCosts, type PullRequestCost, type PullRequestCostReport } from "./costs.js"
+import { type SavedRequestCost, workCostTotals } from "./cost-details.js"
+import {
+	type CostTotal,
+	calculatePullRequestCosts,
+	type PullRequestCost,
+	type PullRequestCostReport,
+	type RequestCostAllocation,
+	totalRequestCosts,
+} from "./costs.js"
 import type { WorkAccount } from "./scope.js"
 import { object, readWorkRecords, readWorkRecordsAsync, workJournalFingerprint } from "./summary.js"
 
@@ -119,7 +129,14 @@ export function readWorkCostReport(agentDir: string, records = readWorkRecords(a
 		incomplete,
 		noCharge,
 	)
-	return { records, requests, report }
+	const costRefreshes = new Map(
+		[...requests.values()].flatMap((item) =>
+			!item.invalid && item.substantiveLookup?.status === "priced"
+				? [[item.requestId, item.substantiveLookup.checkedAt] as const]
+				: [],
+		),
+	)
+	return { records, report, requests, costRefreshes }
 }
 
 interface CostState {
@@ -177,51 +194,120 @@ function refreshFailures(state: CostState, polls: Record<string, BillingPoll>): 
 	)
 }
 
-function group<T>(groups: Map<string, T[]>, key: string, value: T): void {
+function group<K, T>(groups: Map<K, T[]>, key: K, value: T): void {
 	const values = groups.get(key)
 	if (values) values.push(value)
 	else groups.set(key, [value])
 }
 
+/** A long work's full report is large; it is refreshed at most this often, and `/work` reads the totals instead. */
+const REPORT_REFRESH_MS = 5 * 60_000
+/** When this process last refreshed each work's full report. Its first pass refreshes every report. */
+const reportRefreshes = new Map<string, number>()
+function reportRefreshMs(): number {
+	const value = Number(readE2eSeam("KIMCHI_E2E_COST_REPORT_REFRESH_MS") ?? Number.NaN)
+	return Number.isSafeInteger(value) && value >= 0 ? value : REPORT_REFRESH_MS
+}
+async function writeChanged(path: string, content: string, assertLease: () => void): Promise<void> {
+	try {
+		if (readFileSync(path, "utf8") === content) return
+	} catch {}
+	await writeFileDurably(path, content, assertLease)
+}
 async function publishReports(
 	agentDir: string,
 	{ displays, report, workIds }: CostState,
 	polls: Record<string, BillingPoll>,
 	assertLease: () => void,
-): Promise<void> {
-	// Group rows by work once instead of filtering every row for every work.
-	const pullRequests = new Map<string, PullRequestCost[]>()
-	for (const row of report.pullRequests) for (const workId of row.workIds) group(pullRequests, workId, row)
-	const workRequests = new Map<string, unknown[]>()
-	for (const row of report.requests) {
+): Promise<boolean> {
+	trackPRCostMetric({
+		kind: "unpriced",
+		value: report.requests.filter((request) => request.priceStatus !== "priced").length,
+	})
+	// Shared PR totals and correction links connect works, transitively; a saved report covers the whole component.
+	const neighbours = new Map<string, Set<string>>()
+	for (const ids of [
+		...report.pullRequests.map((row) => row.workIds),
+		...report.requests.map((row) => [...row.workIds, ...(row.linkedWorkIds ?? [])]),
+	])
+		for (const id of ids) {
+			const linked = neighbours.get(id) ?? new Set<string>()
+			for (const other of ids) linked.add(other)
+			neighbours.set(id, linked)
+		}
+	const components = new Map<string, Set<string>>()
+	const component = (workId: string) => {
+		let found = components.get(workId)
+		if (found) return found
+		found = new Set([workId])
+		// A Set iterator also visits members added during the loop, so this walks the whole component once.
+		for (const id of found) for (const other of neighbours.get(id) ?? []) found.add(other)
+		for (const id of found) components.set(id, found)
+		return found
+	}
+	// Group rows by component once instead of filtering every row for every work.
+	const pullRequests = new Map<Set<string>, PullRequestCost[]>()
+	for (const row of report.pullRequests) if (row.workIds.length) group(pullRequests, component(row.workIds[0]), row)
+	const requests = new Map<Set<string>, RequestCostAllocation[]>()
+	for (const row of report.requests) if (row.workIds.length) group(requests, component(row.workIds[0]), row)
+	const shown = (row: RequestCostAllocation): SavedRequestCost => {
 		const display = displays.get(row.requestId)
 		const failure = shownFailure(display, polls[row.requestId])
-		const shown = {
+		return {
 			...row,
 			...(display?.tagSkipped ? { billingTagSkipped: display.tagSkipped } : {}),
 			billingLookup: failure
 				? { status: "unavailable", checkedAt: failure.checkedAt, ...display?.refresh, reason: failure.reason }
 				: (display?.billingLookup ?? { status: "pending", reason: "No captured billing source or request selector" }),
 		}
-		for (const workId of new Set([...row.workIds, ...(row.linkedWorkIds ?? [])])) group(workRequests, workId, shown)
 	}
+	// Members of one component share the same rows, so build them once per component.
+	const contents = new Map<
+		Set<string>,
+		{ pullRequests: PullRequestCost[]; requests: SavedRequestCost[]; unallocated: Record<string, CostTotal> }
+	>()
+	const content = (included: Set<string>) => {
+		let found = contents.get(included)
+		if (found) return found
+		const workRequests = requests.get(included) ?? []
+		found = {
+			pullRequests: pullRequests.get(included) ?? [],
+			requests: workRequests.map(shown),
+			unallocated: Object.fromEntries(
+				Object.keys(report.unallocated).map((kind) => [
+					kind,
+					totalRequestCosts(workRequests.filter((row) => row.allocation === kind)),
+				]),
+			),
+		}
+		contents.set(included, found)
+		return found
+	}
+	// A full report left for a later pass keeps this calculation unpublished, so that pass still writes it.
+	let deferred = false
 	for (const workId of workIds) {
 		assertLease()
 		const directory = join(agentDir, "work", workId)
 		await mkdir(directory, { recursive: true, mode: 0o700 })
-		const value = {
-			version: 1,
-			workId,
-			pullRequests: pullRequests.get(workId) ?? [],
-			requests: workRequests.get(workId) ?? [],
+		// ponytail: connected works repeat in per-work files; use one shared snapshot if storage growth warrants it.
+		const value = { version: 1, workId, ...content(component(workId)) }
+		// `/work` and its browser read only these bounded totals.
+		await writeChanged(
+			join(directory, "cost-totals.json"),
+			`${JSON.stringify(workCostTotals(value), null, 2)}\n`,
+			assertLease,
+		)
+		// The accuracy CLI and lab read the full report. A missing one is rebuilt at once.
+		const path = join(directory, "costs.json")
+		const now = Date.now()
+		if (now - (reportRefreshes.get(workId) ?? Number.NEGATIVE_INFINITY) < reportRefreshMs() && existsSync(path)) {
+			deferred = true
+			continue
 		}
-
-		const content = `${JSON.stringify(value, null, 2)}\n`
-		try {
-			if (readFileSync(join(directory, "costs.json"), "utf8") === content) continue
-		} catch {}
-		await writeFileDurably(join(directory, "costs.json"), content, assertLease)
+		await writeChanged(path, `${JSON.stringify(value, null, 2)}\n`, assertLease)
+		reportRefreshes.set(workId, now)
 	}
+	return !deferred
 }
 
 /** Called by the shared supervisor's lease holder; model inference never waits for this pass. */
@@ -433,17 +519,19 @@ export async function reconcileWorkCosts(
 		const currentPolls = JSON.stringify(polls)
 		if (currentPolls !== previousPolls) writeFileAtomic(pollingPath, `${currentPolls}\n`)
 		const failures = refreshFailures(latest, polls)
-		// Unchanged inputs give unchanged reports; only a deleted report needs writing again.
+		// Unchanged inputs give unchanged reports; only a deleted report or totals file needs writing again.
 		if (
 			latest.published === failures &&
-			latest.workIds.every((workId) => existsSync(join(agentDir, "work", workId, "costs.json")))
+			latest.workIds.every((workId) =>
+				["costs.json", "cost-totals.json"].every((name) => existsSync(join(agentDir, "work", workId, name))),
+			)
 		)
 			return
-		await publishReports(agentDir, latest, polls, () => {
+		const complete = await publishReports(agentDir, latest, polls, () => {
 			signal.throwIfAborted()
 			assertLease()
 		})
-		latest.published = failures
+		if (complete) latest.published = failures
 	} finally {
 		clearTimeout(timeout)
 	}

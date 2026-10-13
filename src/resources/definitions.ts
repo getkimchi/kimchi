@@ -101,7 +101,8 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		id: COST_PER_PR_RESOURCE_ID,
 		kind: "extensions",
 		label: "Cost per PR",
-		description: "Link model requests to their work and pull requests, and show /work and the PR/MR status.",
+		description:
+			"Link model requests to their work and pull requests, show /work and the PR/MR status, and report PR costs.",
 		defaultEnabled: true,
 		restartRequired: true,
 	},

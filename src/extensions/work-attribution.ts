@@ -29,18 +29,21 @@ import { isResourceEnabled } from "../resources/store.js"
 import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
 import { isHarnessSteer } from "./steer-marker.js"
+import { trackPRCostMetric } from "./telemetry/pr-cost.js"
 import { type BillingSource, captureBillingSource, requestTagSelector } from "./work-attribution/billing-source.js"
+import { readWorkBrowser } from "./work-attribution/browser.js"
+import { WorkBrowserPanel } from "./work-attribution/browser-panel.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
-import {
-	findWorkContinuation,
-	hasOwnedWorkReference,
-	hasWorkReference,
-	type WorkContinuation,
-} from "./work-attribution/continuation.js"
+import { findWorkContinuation, hasWorkReference, type WorkContinuation } from "./work-attribution/continuation.js"
 import { workCostDetails } from "./work-attribution/cost-details.js"
 import { debugWorkAttribution } from "./work-attribution/diagnostics.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
-import { confirmWorkContinuation, correctWorkLink } from "./work-attribution/links.js"
+import {
+	confirmWorkContinuation,
+	correctWorkLink,
+	pinWorkContinuation,
+	readContinuationHistory,
+} from "./work-attribution/links.js"
 import { subscribeCostReconciliation, subscribeFileReconciliation } from "./work-attribution/reconcile-supervisor.js"
 import { prepareBillingTag } from "./work-attribution/request-tags.js"
 import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
@@ -65,7 +68,6 @@ import {
 	flushWorkSummaries,
 	markNewWork,
 	object,
-	readWorkRecords,
 	recoverWorkSummaries,
 	updateWorkSummary,
 } from "./work-attribution/summary.js"
@@ -187,8 +189,10 @@ export function appendWorkRecord(
 		const size = fstatSync(fd).size
 		const last = Buffer.alloc(1)
 		if (size) readSync(fd, last, 0, 1, size - 1)
-		const prefix = size && last[0] !== 10 ? "\n" : ""
-		writeFileSync(fd, `${prefix}${JSON.stringify(record)}\n`)
+		// An unterminated tail is an interrupted append. Start a new line instead of truncating:
+		// another process may be appending, and readers skip only that cut-off record.
+		const repair = size && last[0] !== 10 ? "\n" : ""
+		writeFileSync(fd, `${repair}${JSON.stringify(record)}\n`)
 		fsyncSync(fd)
 	} finally {
 		closeSync(fd)
@@ -638,6 +642,7 @@ export function createWorkAttributionExtension(
 			if (event.source === "extension") return
 			// Optional model matching never interrupts the user; its failures leave the input unresolved.
 			let matching = false
+			let matchingOutcome: "failed" | "limited" | undefined
 			try {
 				bind(ctx)
 				const key = workLedgerPath(ctx)
@@ -712,27 +717,48 @@ export function createWorkAttributionExtension(
 					workLedgerPath(ctx) === key &&
 					getWorkId(ctx) === current &&
 					explicitSelection.get(key) === explicitReason
-				const records = referencesWork ? readWorkRecords(getAgentDir()) : undefined
-				const found =
-					captured && (eligible() || referencesWork)
-						? await findWorkContinuation(pinWorkContext(ctx), event.text, captured)
+				// Ownership needs no scope: an input naming recorded work stays unresolved even without one.
+				const references =
+					referencesWork || (captured && eligible())
+						? await findWorkContinuation(pinWorkContext(ctx), event.text, captured, current)
 						: undefined
 				if (!unchanged()) return
-				if (found && (found.workId === current || eligible())) {
+				const found = references?.match
+				if (found && captured && (found.workId === current || eligible())) {
+					const accepted = { ...found, evidence: { ...found.evidence, segmentId, ...captured.scope } }
+					// One history read serves the pin and the confirmation. If it fails, the receipt stays unpinned and
+					// the confirmation reads again to report why.
+					const history = tryWorkAttribution(() => readContinuationHistory(getAgentDir()))
+					const pinned = (history && tryWorkAttribution(() => pinWorkContinuation(accepted, history))) ?? accepted
+					const continuation = {
+						source: pinned.source,
+						evidence: pinned.evidence,
+					}
 					if (found.workId !== current) {
-						setWorkId(ctx, found.workId, pi, { source: found.source, evidence: found.evidence })
+						setWorkId(ctx, found.workId, pi, continuation)
 						notify(
 							ctx,
 							`Continuing the saved ${found.source === "named-artifact" ? "artifact" : "plan"}'s work: ${found.workId}`,
 						)
-					}
+					} else appendWorkRecord(ctx, { type: "work", continuation }, current)
 					explicitSelection.set(key, found.source)
 					useSegment("explicit", found.source)
-					if (captured) confirmWorkContinuation(ctx, found, captured.scope, records)
+					// Appends since the read are this input's receipt and segment, which confirmation does not use.
+					// Unreadable history blocks only the confirmation; the adopted work still remembers this input.
+					try {
+						confirmWorkContinuation(
+							ctx,
+							{ ...found, ...continuation },
+							captured.scope,
+							history ?? readContinuationHistory(getAgentDir()),
+						)
+					} catch (error) {
+						warnWorkAttribution(ctx, error)
+					}
 					if (model) await rememberWorkIntent(ctx.cwd, found.workId, event.text)
 					return
 				}
-				if (found || (records && hasOwnedWorkReference(ctx, event.text, records, current))) {
+				if (references?.owned) {
 					// A reference this session's continuation cannot account for may start another task.
 					explicitSelection.delete(key)
 					useSegment("unknown", "unresolved-reference")
@@ -802,9 +828,21 @@ export function createWorkAttributionExtension(
 				)
 				await rememberWorkIntent(ctx.cwd, workId, event.text, intents.repository, intents.account)
 			} catch (error) {
-				if (error instanceof WorkMatchingLimit) matchingLimit = error.message
-				if (matching || error instanceof WorkMatchingLimit) debugWorkAttribution("Work matching skipped:", error)
-				else warnWorkAttribution(ctx, error)
+				if (error instanceof WorkMatchingLimit) {
+					matchingLimit = error.message
+					matchingOutcome = "limited"
+					debugWorkAttribution("Work matching skipped:", error)
+				} else {
+					matchingOutcome = "failed"
+					if (matching) debugWorkAttribution("Work matching skipped:", error)
+					else warnWorkAttribution(ctx, error)
+				}
+			} finally {
+				if (generation === inputGeneration)
+					trackPRCostMetric({
+						kind: "matching",
+						outcome: matchingOutcome ?? getWorkSegment(ctx)?.attribution ?? "unknown",
+					})
 			}
 		}
 		pi.on("before_provider_headers", (event, ctx) => {
@@ -931,10 +969,23 @@ export function createWorkAttributionExtension(
 					}
 					const details: WorkDetailsRequest = { workId: getWorkId(ctx), lines: [] }
 					pi.events.emit(WORK_DETAILS_REQUEST_EVENT, details)
-					if (matchingLimit && workMatchingEnabled())
-						details.lines.push(
-							`Work matching stopped: ${matchingLimit}. New inputs stay unresolved in the current work.`,
+					const stopped =
+						matchingLimit && workMatchingEnabled()
+							? `Work matching stopped: ${matchingLimit}. New inputs stay unresolved in the current work.`
+							: undefined
+					if (stopped) details.lines.push(stopped)
+					// The terminal browses recent works; other modes and every subcommand print text.
+					if (!value && ctx.mode === "tui") {
+						// The browser lists works, so say here that matching stopped.
+						if (stopped) notify(ctx, stopped)
+						const browser = await readWorkBrowser(getAgentDir(), details)
+						const selected = await ctx.ui.custom<string | undefined>(
+							(_tui, theme, _keybindings, done) => new WorkBrowserPanel(browser, theme, done),
 						)
+						const row = browser.rows.find((candidate) => candidate.workId === selected)
+						if (row) notify(ctx, row.details)
+						return
+					}
 					details.lines.push(...workCostDetails(getAgentDir(), details.workId))
 					notify(ctx, [`Work ID: ${details.workId}`, ...details.lines].join("\n"))
 				} catch (error) {
