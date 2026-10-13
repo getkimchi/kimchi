@@ -15,6 +15,7 @@ import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createModel, createModelRegistry } from "./__mocks__/model-registry.js"
 import { createWorkScopeSnapshot } from "./__mocks__/work-scope.js"
+import * as health from "./telemetry/pr-cost.js"
 import * as continuation from "./work-attribution/continuation.js"
 import * as supervisor from "./work-attribution/reconcile-supervisor.js"
 import * as scope from "./work-attribution/scope.js"
@@ -384,9 +385,11 @@ it("leaves an input unresolved without a warning when matching history exceeds i
 	const api = createExtensionApi()
 	createWorkAttributionExtension()(api.api)
 	const ctx = createContext({ cwd: dir, model: createModel("chat"), modelRegistry: createModelRegistry() })
+	const metric = vi.spyOn(health, "trackPRCostMetric")
 	await api.getHandler<InputEvent>("input")({ type: "input", text: "Explain closures", source: "interactive" }, ctx)
 	expect(getWorkSegment(ctx)).toMatchObject({ attribution: "unknown" })
 	expect(ctx.ui.notify).not.toHaveBeenCalled()
+	expect(metric).toHaveBeenCalledWith({ kind: "matching", outcome: "limited" })
 })
 
 describe("journal problems during live plan continuation", () => {

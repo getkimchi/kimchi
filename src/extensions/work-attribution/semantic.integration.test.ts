@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type {
@@ -17,6 +17,8 @@ import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
+import { savedWorkSummary } from "../__mocks__/work-summary.js"
+import * as prCostTelemetry from "../telemetry/pr-cost.js"
 import {
 	appendWorkRecord,
 	createWorkAttributionExtension,
@@ -114,6 +116,19 @@ it("keeps explicit plan continuation working when hosted matching is disabled", 
 	expect(getWorkId(ctx)).toBe(planned)
 	expect(classifyWorkIntent).not.toHaveBeenCalled()
 })
+
+it("records only the final matching decision despite provisional segment writes", async () => {
+	const metrics = vi.spyOn(prCostTelemetry, "trackPRCostMetric").mockImplementation(() => {})
+	vi.mocked(readConfigSetting).mockReturnValue(false)
+	const saved = savePlanMarkdown({ cwd, workId: planned, name: "export", planText: "# CSV export" })
+	const ctx = createContext({ cwd, model, modelRegistry })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	await api.getHandler<InputEvent>("input")({ type: "input", source: "rpc", text: `Implement ${saved.path}` }, ctx)
+	expect(metrics.mock.calls.filter(([metric]) => metric.kind === "matching")).toEqual([
+		[{ kind: "matching", outcome: "explicit" }],
+	])
+})
 afterEach(async () => {
 	await flushWorkSummaries()
 	vi.restoreAllMocks()
@@ -145,10 +160,11 @@ it.each([
 		readWorkRecords(join(root, "agent")).find((row) => row.requestId === request.headers["X-Request-Id"])?.workId,
 	).toBe(planned)
 	await flushWorkSummaries()
-	const summary = JSON.parse(readFileSync(join(root, "agent", "work", planned, "work.json"), "utf8"))
-	expect(
-		summary.requests.find((row: { requestId: string }) => row.requestId === request.headers["X-Request-Id"]).segment,
-	).toMatchObject({ attribution: "inferred", reason: "model-continue" })
+	const summary = savedWorkSummary(join(root, "agent"), planned)
+	expect(summary.requests.find((row) => row.requestId === request.headers["X-Request-Id"])?.segment).toMatchObject({
+		attribution: "inferred",
+		reason: "model-continue",
+	})
 	expect(summary.continuations).toContainEqual(
 		expect.objectContaining({
 			source: "semantic",

@@ -29,7 +29,10 @@ import { isResourceEnabled } from "../resources/store.js"
 import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
 import { isHarnessSteer } from "./steer-marker.js"
+import { trackPRCostMetric } from "./telemetry/pr-cost.js"
 import { type BillingSource, captureBillingSource, requestTagSelector } from "./work-attribution/billing-source.js"
+import { readWorkBrowser } from "./work-attribution/browser.js"
+import { WorkBrowserPanel } from "./work-attribution/browser-panel.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
 import { findWorkContinuation, hasWorkReference, type WorkContinuation } from "./work-attribution/continuation.js"
 import { workCostDetails } from "./work-attribution/cost-details.js"
@@ -639,6 +642,7 @@ export function createWorkAttributionExtension(
 			if (event.source === "extension") return
 			// Optional model matching never interrupts the user; its failures leave the input unresolved.
 			let matching = false
+			let matchingOutcome: "failed" | "limited" | undefined
 			try {
 				bind(ctx)
 				const key = workLedgerPath(ctx)
@@ -824,9 +828,21 @@ export function createWorkAttributionExtension(
 				)
 				await rememberWorkIntent(ctx.cwd, workId, event.text, intents.repository, intents.account)
 			} catch (error) {
-				if (error instanceof WorkMatchingLimit) matchingLimit = error.message
-				if (matching || error instanceof WorkMatchingLimit) debugWorkAttribution("Work matching skipped:", error)
-				else warnWorkAttribution(ctx, error)
+				if (error instanceof WorkMatchingLimit) {
+					matchingLimit = error.message
+					matchingOutcome = "limited"
+					debugWorkAttribution("Work matching skipped:", error)
+				} else {
+					matchingOutcome = "failed"
+					if (matching) debugWorkAttribution("Work matching skipped:", error)
+					else warnWorkAttribution(ctx, error)
+				}
+			} finally {
+				if (generation === inputGeneration)
+					trackPRCostMetric({
+						kind: "matching",
+						outcome: matchingOutcome ?? getWorkSegment(ctx)?.attribution ?? "unknown",
+					})
 			}
 		}
 		pi.on("before_provider_headers", (event, ctx) => {
@@ -953,10 +969,23 @@ export function createWorkAttributionExtension(
 					}
 					const details: WorkDetailsRequest = { workId: getWorkId(ctx), lines: [] }
 					pi.events.emit(WORK_DETAILS_REQUEST_EVENT, details)
-					if (matchingLimit && workMatchingEnabled())
-						details.lines.push(
-							`Work matching stopped: ${matchingLimit}. New inputs stay unresolved in the current work.`,
+					const stopped =
+						matchingLimit && workMatchingEnabled()
+							? `Work matching stopped: ${matchingLimit}. New inputs stay unresolved in the current work.`
+							: undefined
+					if (stopped) details.lines.push(stopped)
+					// The terminal browses recent works; other modes and every subcommand print text.
+					if (!value && ctx.mode === "tui") {
+						// The browser lists works, so say here that matching stopped.
+						if (stopped) notify(ctx, stopped)
+						const browser = await readWorkBrowser(getAgentDir(), details)
+						const selected = await ctx.ui.custom<string | undefined>(
+							(_tui, theme, _keybindings, done) => new WorkBrowserPanel(browser, theme, done),
 						)
+						const row = browser.rows.find((candidate) => candidate.workId === selected)
+						if (row) notify(ctx, row.details)
+						return
+					}
 					details.lines.push(...workCostDetails(getAgentDir(), details.workId))
 					notify(ctx, [`Work ID: ${details.workId}`, ...details.lines].join("\n"))
 				} catch (error) {

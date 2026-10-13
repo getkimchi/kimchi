@@ -90,6 +90,8 @@ function seed(overrides: Record<string, unknown> = {}, transitions = false): voi
 }
 function pull(number = 7, overrides: Record<string, unknown> = {}) {
 	return {
+		id: 98000 + number,
+		base: { repo: { id: 42 } },
 		html_url: `https://github.com/team/repo/pull/${number}`,
 		number,
 		state: "open",
@@ -109,6 +111,7 @@ function mr(number = 7, overrides: Record<string, unknown> = {}) {
 		sha,
 		source_branch: "feature",
 		source_project_id: 42,
+		target_project_id: 42,
 		merge_commit_sha: null,
 		...overrides,
 	}
@@ -153,6 +156,7 @@ function replies(handler: (url: URL, options: RequestInit) => unknown = () => []
 		const gitlab = /^\/api\/v4\/projects\/([^/]+)$/.exec(url.pathname)
 		const value = github
 			? {
+					id: 42,
 					full_name: github[1],
 					html_url: `https://${url.host === "api.github.com" ? "github.com" : url.host}/${github[1]}`,
 				}
@@ -201,6 +205,29 @@ afterEach(async () => {
 })
 
 describe("native provider credentials", () => {
+	it.each(providers)("keeps the target %s repository and global PR IDs for fork contributions", async (provider) => {
+		seed()
+		useProvider(provider)
+		replies(() =>
+			provider === "github"
+				? [pull(7, { id: 98731, base: { repo: { id: 42 } }, head: { sha, repo: { id: 999 } } })]
+				: [mr(7, { target_project_id: 42, source_project_id: 999 })],
+		)
+		await lookup()
+		expect(saved().at(-1).pullRequests[0]).toMatchObject({ id: "98731", repositoryId: "42" })
+		expect(readWorkPullRequestUpdates(agentDir)[0].pullRequests[0]).toMatchObject({ id: "98731", repositoryId: "42" })
+	})
+	it("refreshes merged legacy links to obtain stable IDs", async () => {
+		seed({
+			prLookup: { status: "linked", checkedAt: "2026-10-01T12:00:00Z" },
+			pullRequests: [stored("github", { state: "merged", mergedAt: "2026-10-01T11:00:00Z" })],
+		})
+		replies(() => [
+			pull(7, { id: 98731, base: { repo: { id: 42 } }, state: "closed", merged_at: "2026-10-01T11:00:00Z" }),
+		])
+		await lookup()
+		expect(saved().at(-1).pullRequests[0]).toMatchObject({ id: "98731", repositoryId: "42" })
+	})
 	it.each(providers)("matches %s with a saved token and no CLI", async (provider) => {
 		seed()
 		useProvider(provider)

@@ -5,9 +5,10 @@ import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { expect, Key, test } from "@microsoft/tui-test"
 import { check } from "proper-lockfile"
-import { fullText, waitForText } from "./support/assertions.js"
+import { fullText, viewText, waitForText } from "./support/assertions.js"
 import { type FakeResponseRequest, isWorkMatchingRequest } from "./support/fake-openai-server.js"
 import { launchKimchi, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { readWorkSummary } from "./support/work-summary.js"
 
 test.use(TUI_TEST_CONFIG)
 const models = [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }]
@@ -234,16 +235,13 @@ async function waitForSummary(
 	workId: string,
 	minimum: Partial<Record<"sessions" | "requests" | "plans" | "commits" | "workLinks", number>>,
 ) {
-	const path = join(agentDir, "work", workId, "work.json")
 	const deadline = Date.now() + 15_000
 	while (Date.now() < deadline) {
-		try {
-			const summary = JSON.parse(readFileSync(path, "utf8"))
-			if (Object.entries(minimum).every(([key, count]) => summary[key]?.length >= count)) return summary
-		} catch {}
+		const summary = readWorkSummary(agentDir, workId)
+		if (summary && Object.entries(minimum).every(([key, count]) => summary[key]?.length >= count)) return summary
 		await sleep(50)
 	}
-	throw new Error(`Work summary did not become ready: ${path}`)
+	throw new Error(`Work summary did not become ready: ${join(agentDir, "work", workId, "work.json")}`)
 }
 
 test("the next message recovers account tracking after its saved scope is lost", async ({ terminal }) => {
@@ -280,6 +278,11 @@ test("the next message recovers account tracking after its saved scope is lost",
 			expect(existsSync(missing)).toBe(false)
 			terminal.submit("/work")
 			await waitForText(terminal, `Work ID: ${next.workId}`, { full: false })
+			// The work panel selects the new current work and still lists the original work.
+			expect(viewText(terminal)).toContain(`→ ● ${next.workId.slice(0, 8)}`)
+			expect(viewText(terminal)).toContain(`    ${original.workId.slice(0, 8)}`)
+			terminal.keyEscape()
+			await waitForText(terminal, PROMPT_READY, { full: false })
 			trace.step("the next message uses newly scoped work without assigning today's identity to old history")
 		},
 	)
@@ -452,9 +455,12 @@ test("work and request IDs are durable before the first reply, and commits belon
 				await expect(terminal.getByText("Created the attribution test commit.", { full: true })).toBeVisible()
 				const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: fixture.workDir, encoding: "utf8" }).trim()
 				const commits = records().filter((record) => record.type === "commit")
-				expect(commits.length).toBe(1)
-				expect(commits[0].sha).toBe(sha)
-				expect(commits[0].workId).toBe(started[0].workId)
+				// Discovery can append updates; the summary below must still contain only one commit.
+				expect(commits.length).toBeGreaterThan(0)
+				for (const commit of commits) {
+					expect(commit.sha).toBe(sha)
+					expect(commit.workId).toBe(started[0].workId)
+				}
 				const namingDeadline = Date.now() + 15_000
 				const completionRequests = () => fixture.fake.requests.filter((item) => item.url.endsWith("/chat/completions"))
 				const isNamingRequest = (url: string) => url === "/chat/completions"
@@ -476,7 +482,6 @@ test("work and request IDs are durable before the first reply, and commits belon
 				}
 				const summary = await waitForSummary(fixture.agentDir, started[0].workId, { requests: sent.length, commits: 1 })
 				expect(summary).toMatchObject({
-					version: 1,
 					workId: started[0].workId,
 					sessions: [started[0].sessionId],
 					plans: [],
