@@ -708,6 +708,28 @@ describe("adminOverview", () => {
 			{ scope: "a/b", facts: 1, sizeBytes: 0 },
 		])
 		expect(data.pendingJobs).toBe(1)
+		expect(data.failedJobs).toBe(0)
 		expect(data.ledgerEntries).toBe(1)
+	})
+
+	it("surfaces quarantined poison jobs in data and text", async () => {
+		const h = trackedHarness({ personal: [fact("p1", "a fact")] })
+		mkdirSync(join(h.root, "failed"), { recursive: true })
+		writeFileSync(join(h.root, "failed", "poison-a.json"), "{}")
+		writeFileSync(join(h.root, "failed", "poison-b.json"), "{}")
+
+		const data = await adminOverview({
+			memoryRoot: h.root,
+			createBackend: (dbPath) => Promise.resolve(h.backends.get(dbPath)?.backend ?? makeFakeBackend([]).backend),
+			acquireLock: () => Promise.resolve(() => Promise.resolve()),
+		})
+		expect(data.failedJobs).toBe(2)
+
+		const rendered = await h.run([])
+		expect(rendered.text).toContain("Quarantined poison jobs: 2")
+		// The empty state stays quiet — no quarantine line without failed jobs.
+		rmSync(join(h.root, "failed"), { recursive: true, force: true })
+		const quiet = await h.run([])
+		expect(quiet.text).not.toContain("Quarantined poison jobs")
 	})
 })

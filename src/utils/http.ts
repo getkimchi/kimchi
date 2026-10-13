@@ -1,6 +1,16 @@
 // Cloudflare 520-522 (origin failures) are transient for the
 // Cloudflare-fronted gateway, alongside 524 (origin timeout).
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504, 520, 521, 522, 524])
+
+/**
+ * Whether a gateway HTTP status is retryable (rate limit, origin failures,
+ * Cloudflare 5xx family incl. 524). Callers that surface errors use this to
+ * distinguish "retry later" from "will never succeed" — see the memory
+ * capture worker's poison classification.
+ */
+export function isRetryableStatus(status: number): boolean {
+	return RETRYABLE_STATUSES.has(status)
+}
 // Default retry budget for kimchi backend calls when the caller passes no retry
 // option. Deliberately independent of config's RETRY_DEFAULTS, which seeds
 // pi's chat retry policy — a different concern with a much smaller budget.
