@@ -4,7 +4,31 @@
 # Changes:
 #   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
 #     compaction, model selection, extension UI helpers, and compact visuals.
-#   - Startup resource diagnostics: skill conflicts render as a single dim
+# #   - Session-log durability for externalized tool results (Kimchi C2a): the
+#     session manager persists the FULL tool-result content even when an
+#     extension replaced the in-memory message content with a compact lazy
+#     marker (`[kimchi-ext:tool]` JSON handle pointing at a disk-backed
+#     mirror). `_serializableEntry` resolves the original content from the
+#     marker's own file reference at serialization time, so the JSONL stays
+#     the complete, self-contained resume source while the live entry keeps
+#     the marker. Removal: when pi exposes a content-persistence hook or lets
+#     extensions control persisted content.
+#   - Compaction-history display (Kimchi D1): SessionManager gains
+#     buildDisplayEntries() (full leaf path, pre-compaction entries kept) and
+#     the interactive mode renders it at the three transcript call sites
+#     (initial render, rebuild, post-compaction) via a capability probe, so
+#     the TUI keeps the complete history visible after compaction. The model
+#     context source (buildContextEntries) is untouched. Removal: when
+#     upstream exposes a display-entries hook.
+#   - Compaction-history residency (Kimchi D3): after a compaction commits,
+#     pre-cut message entries' in-memory content is evicted to compact
+#     `[kimchi-ext:log]` markers (offsets into the session JSONL); markers
+#     resolve transparently at the sessionEntryToContextMessages read seam
+#     with a bounded LRU, and the serializer keeps the log canonical on
+#     rewrites. Resumed sessions evict at open (_loadEntries) instead of
+#     loading the full history into memory. The session log remains the
+#     durable source of truth.
+  - Startup resource diagnostics: skill conflicts render as a single dim
 #     summary line ("[N skill conflicts] Some skills were found in multiple
 #     directories. <key> to see the full list.") that expands to the full
 #     collision listing via the shared app.tools.expand toggle, instead of a
@@ -1007,3 +1031,375 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..17aaf99f181161f52349d281686403b7
                  this.showStatus(`Session exported to: ${filePath}`);
              }
              else {
+diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
+index 0000000..0000000 100644
+--- a/dist/core/session-manager.js
++++ b/dist/core/session-manager.js
+@@ -711,7 +711,7 @@
+         const fd = openSync(this.sessionFile, "w");
+         try {
+             for (const entry of this.fileEntries) {
+-                writeFileSync(fd, `${JSON.stringify(entry)}\n`);
++                writeFileSync(fd, `${JSON.stringify(this._serializableEntry(entry))}\n`);
+             }
+         }
+         finally {
+@@ -736,13 +736,57 @@
+     getSessionFile() {
+         return this.sessionFile;
+     }
++    /** Kimchi patch (tool-result externalizer C2a): the session log must keep
++     *  the FULL tool-result content so it stays the self-contained resume
++     *  source, while the in-memory message may carry a compact lazy marker
++     *  written by an extension (e.g. a disk-backed externalization handle).
++     *  When serializing such an entry, resolve the original content from the
++     *  marker's own file reference and persist THAT. The in-memory entry
++     *  is untouched (marker stays resident-light).
++     *  Tracking: kimchi C2a; removal: when pi exposes a content-persistence
++     *  hook or extensions control persisted content. */
++    _kimchiOriginalToolContent(message) {
++        if (!message || typeof message !== "object") return undefined;
++        const blocks = message.content;
++        if (!Array.isArray(blocks) || blocks.length !== 1) return undefined;
++        const text = blocks[0]?.text;
++        if (typeof text !== "string" || !text.startsWith("[kimchi-ext:tool]")) return undefined;
++        try {
++            const handle = JSON.parse(text.slice("[kimchi-ext:tool]".length));
++            if (typeof handle?.file !== "string" ||
++                !Number.isInteger(handle.offset) || !Number.isInteger(handle.length) ||
++                handle.offset < 0 || handle.length < 0) return undefined;
++            const fd = openSync(handle.file, "r");
++            try {
++                const buffer = Buffer.alloc(handle.length);
++                const bytes = readSync(fd, buffer, 0, handle.length, handle.offset);
++                return buffer.subarray(0, bytes).toString("utf8");
++            } finally { closeSync(fd); }
++        } catch {
++            return undefined;
++        }
++    }
++    _serializableEntry(entry) {
++        const message = entry?.message;
++        if (!message || typeof message !== "object") return entry;
++        const original = this._kimchiOriginalToolContent(message);
++        if (original === undefined) return entry;
++        return {
++            ...entry,
++            message: {
++                ...message,
++                content: original,
++                __kimchiOriginalToolContent: undefined,
++            },
++        };
++    }
+     _persist(entry) {
+         if (!this.persist || !this.sessionFile)
+             return;
+         const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
+         if (!hasAssistant) {
+             if (this.flushed) {
+-                appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
++                appendFileSync(this.sessionFile, `${JSON.stringify(this._serializableEntry(entry))}\n`);
+             }
+             else {
+                 // Mark as not flushed so when assistant arrives, all entries get written
+@@ -754,7 +798,7 @@
+             const fd = openSync(this.sessionFile, "wx");
+             try {
+                 for (const e of this.fileEntries) {
+-                    writeFileSync(fd, `${JSON.stringify(e)}\n`);
++                    writeFileSync(fd, `${JSON.stringify(this._serializableEntry(e))}\n`);
+                 }
+             }
+             finally {
+@@ -763,7 +807,7 @@
+             this.flushed = true;
+         }
+         else {
+-            appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
++            appendFileSync(this.sessionFile, `${JSON.stringify(this._serializableEntry(entry))}\n`);
+         }
+     }
+     _appendEntry(entry) {
+diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
+--- a/dist/core/session-manager.js
++++ b/dist/core/session-manager.js
+@@ -1018,6 +1018,17 @@
+         return buildContextEntries(this.getEntries(), this.leafId, this.byId);
+     }
+     /**
++     * Kimchi patch (compaction-history D1): full leaf-path entry list for
++     * DISPLAY. Unlike buildContextEntries(), pre-compaction entries are kept
++     * so the TUI transcript can show the complete history; the model context
++     * is unaffected (buildContextEntries remains the context source).
++     * Tracking: kimchi compaction-history plan; removal when upstream exposes
++     * a display-entries hook.
++     */
++    buildDisplayEntries() {
++        return buildSessionPath(this.getEntries(), this.leafId, this.byId);
++    }
++    /**
+      * Build the session context (what gets sent to the LLM).
+      * Uses tree traversal from current leaf.
+      */
+diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
+--- a/dist/modes/interactive/interactive-mode.js
++++ b/dist/modes/interactive/interactive-mode.js
+@@ -2785,15 +2785,24 @@
+                         throw new Error("Completed compaction is missing from the session context");
+                     }
+                     this.chatContainer.clear();
+-                    // The latest compaction is prepended for model context; append it below at its chronological position.
+-                    this.renderSessionEntries(entries.slice(1));
+-                    this.addMessageToChat(createCompactionSummaryMessage(event.result.summary, event.result.tokensBefore, new Date().toISOString()));
+-                    if (event.result.usage) {
+-                        this.addCompactionCostNotice({
+-                            type: "compaction_cost",
+-                            kind: "compaction",
+-                            usage: event.result.usage,
+-                        });
++                    // Kimchi patch (compaction-history D1): render the full path so the
++                    // transcript keeps pre-compaction history; the compaction entry itself
++                    // renders its summary at the chronological position. Falls back to
++                    // upstream behavior when the display source is absent.
++                    if (typeof this.sessionManager.buildDisplayEntries === "function") {
++                        this.renderSessionEntries(this.sessionManager.buildDisplayEntries());
++                    }
++                    else {
++                        // The latest compaction is prepended for model context; append it below at its chronological position.
++                        this.renderSessionEntries(entries.slice(1));
++                        this.addMessageToChat(createCompactionSummaryMessage(event.result.summary, event.result.tokensBefore, new Date().toISOString()));
++                        if (event.result.usage) {
++                            this.addCompactionCostNotice({
++                                type: "compaction_cost",
++                                kind: "compaction",
++                                usage: event.result.usage,
++                            });
++                        }
+                     }
+                     this.footer.invalidate();
+                 }
+@@ -3166,7 +3175,9 @@
+         this.chatContainer.addChild(new Text(text, 1, 0));
+     }
+     renderInitialMessages() {
+-        const entries = this.sessionManager.buildContextEntries();
++        // Kimchi patch (compaction-history D1): full-path display source so the
++        // transcript shows pre-compaction history on resume.
++        const entries = this.sessionManager.buildDisplayEntries?.() ?? this.sessionManager.buildContextEntries();
+         this.renderSessionEntries(entries, {
+             updateFooter: true,
+             populateHistory: true,
+@@ -3203,7 +3214,8 @@
+     }
+     rebuildChatFromMessages() {
+         this.chatContainer.clear();
+-        this.renderSessionEntries(this.sessionManager.buildContextEntries());
++        // Kimchi patch (compaction-history D1): full-path display source.
++        this.renderSessionEntries(this.sessionManager.buildDisplayEntries?.() ?? this.sessionManager.buildContextEntries());
+     }
+     // =========================================================================
+     // Key handlers
+diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
+--- a/dist/core/session-manager.js
++++ b/dist/core/session-manager.js
+@@ -164,6 +164,61 @@
+  * Plain custom entries are display/state entries and do not participate in context.
+  */
+ 
++const KIMCHI_LOG_MARKER_PREFIX = "[kimchi-ext:log]";
++const KIMCHI_LOG_CACHE_LIMIT = 32 * 1024 * 1024;
++let kimchiLogCacheBytes = 0;
++const kimchiLogCache = new Map();
++function kimchiReadRange(file, offset, length) {
++    try {
++        if (!existsSync(file)) return undefined;
++        if (offset < 0 || length < 0 || offset + length > statSync(file).size) return undefined;
++        const fd = openSync(file, "r");
++        try {
++            const buffer = Buffer.alloc(length);
++            const bytes = readSync(fd, buffer, 0, length, offset);
++            return buffer.subarray(0, bytes).toString("utf8");
++        } finally { closeSync(fd); }
++    } catch { return undefined; }
++}
++/**
++ * Kimchi patch (compaction-history D3): resolve a `[kimchi-ext:log]` marker
++ * to its original MESSAGE (the JSONL line parsed once) with a bounded LRU —
++ * repeat reads (per-frame renders) are map hits with no re-parse. Returns
++ * undefined for non-markers or unreadable handles.
++ */
++function resolveKimchiLogMessage(text) {
++    if (typeof text !== "string" || !text.startsWith(KIMCHI_LOG_MARKER_PREFIX)) return undefined;
++    let handle;
++    try { handle = JSON.parse(text.slice(KIMCHI_LOG_MARKER_PREFIX.length)); } catch { return undefined; }
++    if (typeof handle?.file !== "string" ||
++        !Number.isInteger(handle.offset) || !Number.isInteger(handle.length) ||
++        handle.offset < 0 || handle.length < 0) return undefined;
++    const key = `${handle.file}@${handle.offset}:${handle.length}`;
++    const hit = kimchiLogCache.get(key);
++    if (hit) { kimchiLogCache.delete(key); kimchiLogCache.set(key, hit); return hit.message; }
++    const line = kimchiReadRange(handle.file, handle.offset, handle.length);
++    if (line === undefined) return undefined;
++    let message;
++    try {
++        const entry = JSON.parse(line);
++        if (!entry || !entry.message || !Array.isArray(entry.message.content)) return undefined;
++        message = entry.message;
++    } catch { return undefined; }
++    const size = Math.min(handle.length, KIMCHI_LOG_CACHE_LIMIT);
++    if (size > 0) {
++        while (kimchiLogCacheBytes + size > KIMCHI_LOG_CACHE_LIMIT && kimchiLogCache.size > 0) {
++            const oldest = kimchiLogCache.keys().next().value;
++            const cached = kimchiLogCache.get(oldest);
++            kimchiLogCache.delete(oldest);
++            kimchiLogCacheBytes -= cached ? cached.size : 0;
++        }
++        if (kimchiLogCacheBytes + size <= KIMCHI_LOG_CACHE_LIMIT) {
++            kimchiLogCache.set(key, { message, size });
++            kimchiLogCacheBytes += size;
++        }
++    }
++    return message;
++}
+ export function sessionEntryToContextMessages(entry) {
+     if (entry.type === "message") {
+         const message = entry.message;
+@@ -173,6 +228,18 @@
+             message.content == null) {
+             return [{ ...message, content: [] }];
+         }
++        // Kimchi patch (compaction-history D3): resolve lazy log markers so
++        // evicted pre-compaction content reads back transparently. The marker
++        // resolves to the original message (blocks intact), cached for repeat
++        // reads; falls back to the marker when unreadable.
++        if (Array.isArray(message.content) && message.content.length === 1) {
++            const block = message.content[0];
++            if (block && typeof block === "object" && typeof block.text === "string" &&
++                block.text.startsWith(KIMCHI_LOG_MARKER_PREFIX)) {
++                const restored = resolveKimchiLogMessage(block.text);
++                if (restored !== undefined) return [restored];
++            }
++        }
+         return [message];
+     }
+     if (entry.type === "custom_message") {
+@@ -683,6 +750,25 @@
+             this.fileEntries = this.fileEntries.concat(entries);
+         }
+         this._buildIndex();
++        // Kimchi patch (compaction-history D3): evict pre-compaction content
++        // at load so resumed sessions start with bounded residency instead of
++        // loading the full history into memory.
++        try { this.__kimchiEvictOnLoad(); } catch { }
++    }
++    /**
++     * Kimchi patch (compaction-history D3): find the latest compaction on the
++     * current leaf path and evict its pre-cut entries (resume path).
++     */
++    __kimchiEvictOnLoad() {
++        if (!this.persist || !this.sessionFile) return 0;
++        let current = this.byId.get(this.leafId);
++        while (current) {
++            if (current.type === "compaction" && current.firstKeptEntryId) {
++                return this.__kimchiEvictCompactedEntries(current.firstKeptEntryId);
++            }
++            current = current.parentId ? this.byId.get(current.parentId) : undefined;
++        }
++        return 0;
+     }
+     _buildIndex() {
+         this.byId.clear();
+@@ -751,7 +837,8 @@
+         const blocks = message.content;
+         if (!Array.isArray(blocks) || blocks.length !== 1) return undefined;
+         const text = blocks[0]?.text;
+-        if (typeof text !== "string" || !text.startsWith("[kimchi-ext:tool]")) return undefined;
++        if (typeof text !== "string" ||
++            (!text.startsWith("[kimchi-ext:tool]") && !text.startsWith("[kimchi-ext:log]"))) return undefined;
+         try {
+             const handle = JSON.parse(text.slice("[kimchi-ext:tool]".length));
+             if (typeof handle?.file !== "string" ||
+@@ -860,7 +947,71 @@
+         return entry.id;
+     }
+     /** Append a compaction summary as child of current leaf, then advance leaf. Returns entry id. */
+-    /** Append a compaction summary as child of current leaf, then advance leaf. Returns entry id. */
++    /**
++     * Kimchi patch (compaction-history D3): evict pre-compaction entry content
++     * from memory. The session log remains the durable source of truth; the
++     * in-memory message content is replaced with a compact `[kimchi-ext:log]`
++     * marker resolved on demand (see resolveKimchiLogText). Only message
++     * entries whose text exceeds the marker overhead are evicted. The model
++     * context never reads these entries (buildContextEntries omits them);
++     * display/serialization resolve markers transparently.
++     */
++    __kimchiEvictCompactedEntries(firstKeptEntryId) {
++        if (!this.persist || !this.sessionFile || !firstKeptEntryId) return 0;
++        // Build id -> {offset, length} by scanning the log once (compactions
++        // are rare; the scan keeps the index fresh without write-time hooks).
++        let offsets;
++        try {
++            offsets = new Map();
++            const fd = openSync(this.sessionFile, "r");
++            try {
++                const decoder = new StringDecoder("utf8");
++                const buffer = Buffer.allocUnsafe(1024 * 1024);
++                let pending = "";
++                let fileOffset = 0;
++                while (true) {
++                    const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
++                    if (bytesRead === 0) break;
++                    pending += decoder.write(buffer.subarray(0, bytesRead));
++                    let lineStart = 0;
++                    let newlineIndex = pending.indexOf("\n", lineStart);
++                    while (newlineIndex !== -1) {
++                        const line = pending.slice(lineStart, newlineIndex);
++                        const idMatch = line.match(/"id"\s*:\s*"([^"]+)"/);
++                        if (idMatch) offsets.set(idMatch[1], { offset: fileOffset, length: Buffer.byteLength(line, "utf8") });
++                        fileOffset += Buffer.byteLength(line, "utf8") + 1;
++                        lineStart = newlineIndex + 1;
++                        newlineIndex = pending.indexOf("\n", lineStart);
++                    }
++                    pending = pending.slice(lineStart);
++                }
++            } finally { closeSync(fd); }
++        } catch { return 0; }
++        // Walk the leaf path; evict message entries strictly BEFORE firstKeptEntryId.
++        // The pre-cut entries are firstKept's ANCESTORS on the path — keep
++        // walking past the cut point, then evict older message entries.
++        let evicted = 0;
++        let pastCut = false;
++        let current = this.byId.get(this.leafId);
++        while (current) {
++            const entry = current;
++            if (entry.id === firstKeptEntryId) {
++                pastCut = true;
++            } else if (pastCut && entry.type === "message" && entry.message && Array.isArray(entry.message.content)) {
++                const textLen = entry.message.content.reduce((n, b) => n + (b && typeof b.text === "string" ? b.text.length : 0), 0);
++                const loc = offsets.get(entry.id);
++                if (textLen > 256 && loc) {
++                    entry.message.content = [{
++                        type: "text",
++                        text: KIMCHI_LOG_MARKER_PREFIX + JSON.stringify({ file: this.sessionFile, offset: loc.offset, length: loc.length }),
++                    }];
++                    evicted++;
++                }
++            }
++            current = entry.parentId ? this.byId.get(entry.parentId) : undefined;
++        }
++        return evicted;
++    }
+     appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromHook, usage) {
+         const entry = {
+             type: "compaction",
+@@ -875,6 +1026,9 @@
+             fromHook,
+         };
+         this._appendEntry(entry);
++        // Kimchi patch (compaction-history D3): after the compaction is
++        // committed, evict the summarized entries' content from memory.
++        try { this.__kimchiEvictCompactedEntries(firstKeptEntryId); } catch { }
+         return entry.id;
+     }
+     /** Append a custom entry (for extensions) as child of current leaf, then advance leaf. Returns entry id. */

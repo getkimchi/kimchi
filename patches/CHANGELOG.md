@@ -15,6 +15,43 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
 
 ---
 
+## @earendil-works/pi-coding-agent@0.85.1 (additive) — session-log durability for externalized tool results
+
+Kimchi session-memory C2a: the session manager now persists the FULL tool-result
+content to the JSONL even when an extension replaced the in-memory message
+content with a compact lazy marker (`[kimchi-ext:tool]` JSON handle → disk
+mirror). `_serializableEntry` resolves the original from the marker's own file
+reference at serialization time. No rebase trap: the change is additive inside a
+new private method + two call-site swaps; the marker prefix is Kimchi-owned and
+unlikely to collide. Removal: upstream exposes a content-persistence hook or
+lets extensions control persisted content. See the patch header's Changes list.
+
+## @earendil-works/pi-coding-agent@0.85.1 (additive) — compaction-history display (D1)
+
+Kimchi compaction-history plan D1: the TUI transcript keeps pre-compaction
+history visible. SessionManager gains `buildDisplayEntries()` (full leaf
+path); the interactive mode renders it at the three transcript call sites via
+a capability probe, with the post-compaction handler keeping upstream's
+context validation on `buildContextEntries()`. The model context is
+untouched. Rebase trap: the interactive-mode hunks touch the post-compaction
+event handler — keep the `entries[0]?.type !== "compaction"` validation on
+the CONTEXT entries, not the display entries. Removal: upstream exposes a
+display-entries hook.
+
+## @earendil-works/pi-coding-agent@0.85.1 (additive) — compaction-history residency (D3)
+
+Kimchi compaction-history plan D3: after a compaction commits, pre-cut message
+entries' content is evicted from memory to `[kimchi-ext:log]` markers
+(byte-offset references into the session JSONL, one file scan per compaction).
+Markers resolve transparently in `sessionEntryToContextMessages` (bounded LRU)
+so display, ACP replay and any reader see the original blocks; the
+`_serializableEntry` serializer now honors both marker prefixes so log
+rewrites stay canonical. Rebase traps: the eviction walk continues PAST
+`firstKeptEntryId` (pre-cut entries are its ancestors); the marker resolves to
+a full JSONL line — parse it and restore `entry.message`, do not use the raw
+line as content. Removal: when upstream exposes entry-content eviction or a
+lazy content hook.
+
 ## @modelcontextprotocol/client@2.0.0 (mid-version, additive) — OAuth Accept headers
 
 Not an upgrade: a new patch for the v2 client package while the pin stayed put.

@@ -130,6 +130,7 @@ import remoteRunExtension from "./extensions/remote-run/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
+import sessionMemoryStatsExtension from "./extensions/session-memory-stats.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
@@ -156,6 +157,7 @@ import thinkingStepsExtension from "./extensions/thinking-steps/index.js"
 import tipsExtension from "./extensions/tips/index.js"
 import todosExtension from "./extensions/todos/index.js"
 import toolGroupingExtension from "./extensions/tool-grouping.js"
+import toolOutputExternalizerExtension from "./extensions/tool-output-externalizer.js"
 import toolRenderingExtension from "./extensions/tool-rendering.js"
 import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
@@ -839,8 +841,10 @@ try {
 			modelGuardExtension,
 			orphanToolResultRepairExtension,
 			orphanToolResultSanitizerExtension,
+			sessionMemoryStatsExtension,
 			piiRedactionExtension,
 			stripImagesExtension,
+			toolOutputExternalizerExtension,
 			traceIdExtension,
 			contextAssemblyExtension,
 			cacheSummaryExtension,
