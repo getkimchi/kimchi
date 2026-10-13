@@ -62,7 +62,10 @@ export interface AcpMcpFixture extends AcpFixture {
 }
 
 export interface AcpFixtureOptions {
+	/** Enable telemetry against the fixture server, never a shared ingest endpoint. */
+	telemetry?: boolean
 	account?: Parameters<typeof startFakeOpenAiServer>[0]["account"]
+	billingRows?: Parameters<typeof startFakeOpenAiServer>[0]["billingRows"]
 	responses: FakeResponseScript[]
 	models?: FakeModel[]
 	providerId?: string
@@ -251,7 +254,12 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		: [{ ...DEFAULT_MODEL, input: modelInput ?? DEFAULT_MODEL.input, contextWindow: 64_000, maxTokens: 1024 }]
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-acp-home-"))
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-acp-work-"))
-	const fake = await startFakeOpenAiServer({ responses, models: configuredModels, account: options.account })
+	const fake = await startFakeOpenAiServer({
+		responses,
+		models: configuredModels,
+		account: options.account,
+		billingRows: options.billingRows,
+	})
 
 	let proc: ChildProcess | null = null
 	let mcp: McpFixture | undefined
@@ -318,6 +326,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				{
 					apiKey: "fake",
 					llmEndpoint: fake.baseUrl,
+					telemetry: { endpoint: `${fake.baseUrl}/logs`, metricsEndpoint: `${fake.baseUrl}/metrics` },
 					skillPaths: [],
 					migrationState: "done",
 					onboarding: { hideSessionModeDialog: true },
@@ -413,6 +422,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				// Keep the /v1/me identity lookup (telemetry pre-session) on the
 				// fake server; otherwise it would reach the real app API.
 				KIMCHI_REMOTE_ENDPOINT: fake.baseUrl,
+				...(options.telemetry === undefined ? {} : { KIMCHI_TELEMETRY_ENABLED: String(options.telemetry) }),
 				...(mcp?.env ?? {}),
 			},
 			cwd: workDir,

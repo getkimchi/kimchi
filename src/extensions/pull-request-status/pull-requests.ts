@@ -2,14 +2,13 @@
 import { readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { writeFileDurably } from "../../config/json.js"
-import { readWorkRecords } from "../work-attribution/summary.js"
+import { object, readWorkRecords } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { mergePullRequestLinks as mergePullRequests, pullRequestKey } from "./links.js"
 import { api, credential, pages, repositoryIdentity, requestJSON } from "./provider-api.js"
 import {
 	LookupError,
 	lookupFailureReason,
-	object,
 	pullRequest,
 	type Repository,
 	SHA,
@@ -267,7 +266,7 @@ async function scan(
 		const known = mergePullRequests(...commits.map((commit) => commit.pullRequests))
 		if (
 			known.length &&
-			known.every((pr) => pr.state === "merged") &&
+			known.every((pr) => pr.state === "merged" && pr.id && pr.repositoryId) &&
 			commits.every(
 				(commit) =>
 					commit.prLookup?.status === "linked" && JSON.stringify(commit.pullRequests) === JSON.stringify(known),
@@ -312,7 +311,10 @@ async function scan(
 		let refreshedKnown = false
 		let refreshFailure: LookupError | undefined
 		for (const previous of known.sort((a, b) => Date.parse(a.checkedAt) - Date.parse(b.checkedAt))) {
-			if (previous.state === "merged" || found.some((item) => pullRequestKey(item) === pullRequestKey(previous)))
+			if (
+				(previous.state === "merged" && previous.id && previous.repositoryId) ||
+				found.some((item) => pullRequestKey(item) === pullRequestKey(previous))
+			)
 				continue
 			try {
 				let request = refreshed.get(previous.url)

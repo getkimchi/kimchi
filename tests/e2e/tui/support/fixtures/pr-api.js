@@ -48,7 +48,9 @@ export default function prApiFixture() {
 					: { full_name: project, html_url: `https://github.com/${project}` },
 			)
 		if (state.mode === "auth") return Response.json({ message: "Fixture authentication failure" }, { status: 401 })
-		if (state.mode !== "open") throw new Error("The test did not release the API lookup")
+		if (state.mode !== "open" && state.mode !== "merged") throw new Error("The test did not release the API lookup")
+		const mergedAt = state.mode === "merged" ? (state.mergedAt ?? new Date().toISOString()) : null
+		const mergeCommitSha = mergedAt ? "f".repeat(40) : null
 		return Response.json(
 			provider === "gitlab"
 				? [
@@ -57,10 +59,10 @@ export default function prApiFixture() {
 							iid: 731,
 							source_project_id: 42,
 							web_url: `https://gitlab.com/${project}/-/merge_requests/731`,
-							state: "opened",
+							state: mergedAt ? "merged" : "opened",
 							sha: state.headSha,
-							merge_commit_sha: null,
-							merged_at: null,
+							merge_commit_sha: mergeCommitSha,
+							merged_at: mergedAt,
 							closed_at: null,
 						},
 					]
@@ -68,11 +70,11 @@ export default function prApiFixture() {
 						{
 							number: 731,
 							html_url: `https://github.com/${project}/pull/731`,
-							state: "open",
+							state: mergedAt ? "closed" : "open",
 							head: { sha: state.headSha },
-							merge_commit_sha: null,
-							merged_at: null,
-							closed_at: null,
+							merge_commit_sha: mergeCommitSha,
+							merged_at: mergedAt,
+							closed_at: mergedAt,
 						},
 					],
 		)

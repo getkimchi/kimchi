@@ -88,6 +88,7 @@ export interface SeedHomeResult {
 
 export interface CreateKimchiFixtureOptions {
 	account?: Parameters<typeof startFakeOpenAiServer>[0]["account"]
+	billingRows?: Parameters<typeof startFakeOpenAiServer>[0]["billingRows"]
 	rejectedApiKeys?: string[]
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
@@ -116,12 +117,13 @@ export interface CreateKimchiFixtureOptions {
 	 * Runs AFTER homeDir/workDir are created (and git init, if requested) but
 	 * BEFORE kimchi is launched. Use to seed on-disk state (ferment event
 	 * store, sidecar files) that the session must see at startup. Receives the
-	 * resolved homeDir and workDir. May return `{ env, data }` where `env` is
+	 * resolved homeDir and workDir, plus the fake server's base URL for records
+	 * that name it. May return `{ env, data }` where `env` is
 	 * merged into the launched process env (e.g. `KIMCHI_ACTIVE_FERMENT`) and
 	 * `data` is exposed on the fixture as `seedResult`. Returning a plain
 	 * object without this shape is treated as `data` for back-compat.
 	 */
-	seedHome?: (homeDir: string, workDir: string) => SeedHomeResult | unknown
+	seedHome?: (homeDir: string, workDir: string, fakeBaseUrl: string) => SeedHomeResult | unknown
 	/** When provided, start a fake Ollama server alongside the OpenAI fake. The
 	 *  server handles startup model discovery (/api/tags + /api/show) and chat
 	 *  completions (/v1/chat/completions) so the TUI E2E can run without a real
@@ -203,7 +205,7 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 		writeModelsConfig(join(agentDir, "models.json"), fake.baseUrl, options.models, providerId)
 		mcp = options.mcp ? await createMcpFixture(agentDir, options.mcp) : undefined
 
-		const rawSeed = options.seedHome?.(homeDir, workDir)
+		const rawSeed = options.seedHome?.(homeDir, workDir, fake.baseUrl)
 		const seedIsResult =
 			rawSeed !== null &&
 			typeof rawSeed === "object" &&
