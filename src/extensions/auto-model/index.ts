@@ -32,7 +32,9 @@ type PersistedRoutedResolution = {
 	modelId: string
 }
 
-function isPersistedRoutedResolution(data: unknown): data is PersistedRoutedResolution {
+/** Exported for the ACP routed-model mirror; the persisted shape is shared
+ * wire-and-storage truth. */
+export function isPersistedRoutedResolution(data: unknown): data is PersistedRoutedResolution {
 	return (
 		data !== null &&
 		typeof data === "object" &&

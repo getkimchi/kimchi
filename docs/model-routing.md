@@ -43,6 +43,21 @@ routing. Once a pick is known, surfaces that have room for it render
 Surfaces resolve the pick through the shared per-session
 routing state (`state.ts`), keyed by the requested id.
 
+## ACP notification
+
+ACP clients learn about pick changes through a `_kimchi.dev/routed_model`
+ext notification, pushed exactly when the transcript entry above is
+appended — once per change, silent when a later turn lands on the same
+model. The payload is `{ sessionId, requestedId, routedId }`: the requested
+virtual id and the served model's catalog id, or the backend's raw id when
+the catalog doesn't know it. Like all kimchi.dev ext notifications it is
+not advertised in `_meta`; clients that don't know it ignore it per JSON-RPC
+rules.
+
+A client that wants a label on every turn keeps the last pick per session
+and applies it to subsequent messages, the same way it replays the persisted
+entries on reload.
+
 ## Failures
 
 There is no client-side routing step to fail. If the backend cannot serve a

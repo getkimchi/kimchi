@@ -152,6 +152,7 @@ import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { handleSteering } from "./ext-methods/steering.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
+import { emitRoutedModelUpdate } from "./routed-model-updates.js"
 import {
 	type AcpSkillInfo,
 	buildSkillCommandPrompt,
@@ -1308,6 +1309,9 @@ export class KimchiAcpAgent implements Agent {
 		// pin a running turn's pause to its cause. No-op for transcript/tool
 		// events, which carry their own schema updates.
 		emitAgentActivityUpdate(this.conn, sessionId, event)
+		// Routed-model pick changes mirror the transcript entry as an ext
+		// notification; change-only, per the extension's dedup.
+		emitRoutedModelUpdate(this.conn, sessionId, event)
 		switch (event.type) {
 			case "queue_update": {
 				if (!entry.previousQueue) {

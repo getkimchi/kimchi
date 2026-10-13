@@ -20,6 +20,10 @@ export const CAPABILITIES_KEY = "kimchi.dev"
 //   unknown ext notifications per JSON-RPC rules), sessionId carried in the
 //   payload because ext notifications are not session-scoped on the wire.
 //
+// routed_model is an agent→client extNotification mirroring the auto-router's
+//   routed-pick entry, on the project_trust_update precedent: not advertised
+//   in _meta, sessionId carried in the payload.
+//
 // Capability advertising: every entry here is exposed in
 // `_meta["kimchi.dev"][<key>] === true` so clients can discover the methods
 // the agent supports.
@@ -50,6 +54,7 @@ export const AVAILABLE_EXT_NOTIFICATIONS = {
 	queue_dropped: `_${CAPABILITIES_KEY}/queue_dropped`,
 	project_trust_update: `_${CAPABILITIES_KEY}/project_trust_update`,
 	agent_activity: `_${CAPABILITIES_KEY}/agent_activity`,
+	routed_model: `_${CAPABILITIES_KEY}/routed_model`,
 } as const
 
 export type AcpExtMethod = keyof typeof AVAILABLE_EXT_METHODS
