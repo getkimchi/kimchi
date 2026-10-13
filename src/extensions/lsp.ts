@@ -14,12 +14,14 @@ import { isEditToolResult, isReadToolResult, isWriteToolResult } from "@earendil
 import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import {
+	beginClientWork,
 	ensureFileOpen,
 	getOrCreateClient,
+	noteSessionEnd,
+	noteSessionStart,
 	pullDiagnostics,
 	refreshFile,
 	sendRequest,
-	shutdownAll,
 	waitForDiagnostics,
 } from "./lsp/client.js"
 import { applyWorkspaceEdit } from "./lsp/edits.js"
@@ -33,14 +35,14 @@ import type {
 	TextDocumentEdit,
 	WorkspaceEdit,
 } from "./lsp/types.js"
-import { fileToUri, formatDiagnostic, uriToFile } from "./lsp/utils.js"
+import { fileToUri, formatDiagnostic, isPathWithin, normalizePath, uriToFile } from "./lsp/utils.js"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
 import { createToolVisibility } from "./prompt-construction/tool-visibility.js"
 import { markHarnessSteer } from "./steer-marker.js"
 
 export function clientCwd(filePath: string, sessionCwd: string): string {
-	if (filePath.startsWith(sessionCwd + path.sep) || filePath === sessionCwd) return sessionCwd
-	return path.dirname(filePath)
+	if (isPathWithin(filePath, sessionCwd)) return sessionCwd
+	return path.dirname(normalizePath(filePath))
 }
 
 const LSP_DIAGNOSTICS_CUSTOM_TYPE = "lsp_diagnostics"
@@ -215,6 +217,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd
+		noteSessionStart()
 		ui = ctx.hasUI ? ctx.ui : undefined
 		degradedServers = []
 		failedClients = new Map()
@@ -261,7 +264,10 @@ export default function (pi: ExtensionAPI) {
 		degradedServers = []
 		failedClients = new Map()
 		reportedFailures = new Set()
-		shutdownAll()
+		// The client registry is shared by every session in this process (the
+		// ACP server hosts concurrent sessions); chains die only when the LAST
+		// session ends, never at the first session close.
+		noteSessionEnd()
 	})
 
 	// ── File sync: refresh LSP after agent edits files ───────────────────────────
@@ -411,17 +417,25 @@ export default function (pi: ExtensionAPI) {
 
 			const waitMs = Math.min(params.wait_ms ?? 2000, 10000)
 			const uri = fileToUri(filePath)
-			if (server.pullDiagnostics) {
-				// Pull-model servers (e.g. TypeScript 7 native): fetch instead of
-				// waiting for a push notification that never comes.
-				try {
-					await pullDiagnostics(client, uri)
-				} catch {
-					// Best-effort: fall through and report whatever is cached.
+			// Hold the chain busy through the diagnostics wait — the push-model
+			// timed wait registers no request and no waiter, so without this a
+			// concurrent eviction could SIGTERM the chain mid-wait.
+			const endWork = beginClientWork(client)
+			try {
+				if (server.pullDiagnostics) {
+					// Pull-model servers (e.g. TypeScript 7 native): fetch instead of
+					// waiting for a push notification that never comes.
+					try {
+						await pullDiagnostics(client, uri)
+					} catch {
+						// Best-effort: fall through and report whatever is cached.
+					}
+				} else {
+					// Push-model servers: give publishDiagnostics time to arrive.
+					await new Promise((resolve) => setTimeout(resolve, waitMs))
 				}
-			} else {
-				// Push-model servers: give publishDiagnostics time to arrive.
-				await new Promise((resolve) => setTimeout(resolve, waitMs))
+			} finally {
+				endWork()
 			}
 
 			const entry = client.diagnostics.get(uri)
@@ -630,7 +644,15 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "Rename returned no changes." }], details: null }
 			}
 
-			const applied = await applyWorkspaceEdit(edit, cwd)
+			// Keep the chain busy while workspace edits land on disk — a chain
+			// evicted here would make the refresh loop below respawn it cold.
+			const endApplyWork = beginClientWork(client)
+			let applied: string[]
+			try {
+				applied = await applyWorkspaceEdit(edit, cwd)
+			} finally {
+				endApplyWork()
+			}
 
 			// Refresh all modified files in the client that performed the rename
 			const affectedUris = [
@@ -656,9 +678,12 @@ export default function (pi: ExtensionAPI) {
 const OUTSIDE_WORKSPACE_TEXT =
 	"File is outside the session workspace — LSP is disabled for it to avoid spawning a separate language-server chain outside the project. Start a session rooted at that file's project for LSP there."
 
-/** True when filePath is the session cwd or nested inside it. */
+/** True when filePath is the session cwd or nested inside it. Comparisons
+ *  run on normalized paths (symlinks resolved, `~` expanded, case-folded on
+ *  darwin/win32) so a session cwd reached through a symlink and a tool path
+ *  through the real path still match. */
 function inWorkspace(filePath: string, sessionCwd: string): boolean {
-	return filePath === sessionCwd || filePath.startsWith(sessionCwd + path.sep)
+	return isPathWithin(filePath, sessionCwd)
 }
 
 /** Guard result shared by the five lsp_* tools: null when the file is in-workspace. */

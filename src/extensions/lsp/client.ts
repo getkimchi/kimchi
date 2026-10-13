@@ -201,9 +201,9 @@ async function startMessageReader(client: LspClient): Promise<void> {
 		client.pendingRequests.clear()
 		// Remove the zombie client so the next getOrCreateClient spawns a
 		// fresh server instead of returning a dead client whose reader has
-		// stopped. Kill the process in case it's still alive.
-		clients.delete(client.name)
-		clientLocks.delete(client.name)
+		// stopped. Kill the process in case it's still alive. Identity-checked:
+		// a same-key respawn may already own the slot.
+		removeClientFromRegistries(client)
 		client.proc.kill()
 	} finally {
 		reader.releaseLock()
@@ -217,6 +217,59 @@ async function startMessageReader(client: LspClient): Promise<void> {
 
 const PROJECT_LOAD_TIMEOUT_MS = 15_000
 const DEFAULT_TIMEOUT_MS = 30_000
+
+/** Number of live sessions sharing this process's client registry. The TUI
+ *  runs one session per process; the ACP server hosts concurrent sessions,
+ *  and one session's shutdown must never kill chains another session is
+ *  still using. shutdownAll only runs when the LAST session ends. Session
+ *  hooks call noteSessionStart/noteSessionEnd; a crashed session can leak a
+ *  reference and delay shutdown, which the idle reaper backstops. */
+let liveSessions = 0
+
+export function noteSessionStart(): void {
+	liveSessions++
+}
+
+export function noteSessionEnd(): void {
+	liveSessions--
+	if (liveSessions <= 0) {
+		liveSessions = 0
+		shutdownAll()
+	}
+}
+
+/** Mark a client as doing lifecycle work that registers no JSON-RPC request
+ *  (file reads, didOpen/didChange writes, timed diagnostics waits). Without
+ *  this, the evictable filter and the reaper see such a chain as "idle" and
+ *  can SIGTERM it mid-span. Returns the end function — call exactly once. */
+export function beginClientWork(client: LspClient): () => void {
+	client.inFlightWork++
+	let done = false
+	return () => {
+		if (done) return
+		done = true
+		client.inFlightWork--
+	}
+}
+
+/** A chain is busy when it has in-flight requests, diagnostic waiters, or
+ *  non-request lifecycle work (file reads, timed waits). The single source
+ *  for the evictable filter — MAX_CHAINS eviction and the reaper both use
+ *  it, so a busy-chain check added anywhere can't drift between the two. */
+function isChainBusy(client: LspClient): boolean {
+	return client.pendingRequests.size > 0 || client.diagnosticWaiters.size > 0 || client.inFlightWork > 0
+}
+
+/** Remove a client from the registries only if it is still the registered
+ *  entry for its key. Keys are reused by respawns during the eviction grace
+ *  window; deleting by key alone can drop a healthy replacement chain that a
+ *  dying chain's exited/reader handlers know nothing about. */
+function removeClientFromRegistries(client: LspClient): void {
+	if (clients.get(client.name) === client) {
+		clients.delete(client.name)
+		clientLocks.delete(client.name)
+	}
+}
 
 export async function getOrCreateClient(config: ServerConfig, cwd: string): Promise<LspClient> {
 	const key = `${config.command}:${cwd}`
@@ -233,12 +286,12 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 	// Cap concurrent chains. A real server plus its spawned children (two
 	// tsserver processes + typings installer) is a GB-class allocation — the
 	// verified cross-root multiplier. Before spawning chain #MAX_CHAINS+1,
-	// evict the least-recently-active idle chain. Clients with in-flight
-	// requests or diagnostic waiters are never evicted; if every chain is
-	// busy we exceed the cap temporarily rather than breaking active work.
+	// evict the least-recently-active idle chain. Busy chains are never
+	// evicted; if every chain is busy we exceed the cap temporarily rather
+	// than breaking active work.
 	if (clients.size >= MAX_CHAINS) {
 		const evictable = [...clients.values()]
-			.filter((c) => c.pendingRequests.size === 0 && c.diagnosticWaiters.size === 0)
+			.filter((c) => !isChainBusy(c))
 			.sort((a, b) => a.lastActivity - b.lastActivity)[0]
 		if (evictable) evictClient(evictable)
 	}
@@ -280,6 +333,7 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 			isReading: false,
 			lastActivity: Date.now(),
 			activeProgressTokens: new Set(),
+			inFlightWork: 0,
 			projectLoaded,
 			resolveProjectLoaded,
 		}
@@ -288,8 +342,11 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 
 		// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
 		;(proc as any).exited.then(() => {
-			clients.delete(key)
-			clientLocks.delete(key)
+			// This handler runs when the process dies — possibly during/after
+			// an eviction grace window in which a same-key respawn A' already
+			// took the registry slot. Deleting by key would drop A' from every
+			// registry while its process stays alive (leaked). Remove by identity.
+			removeClientFromRegistries(client)
 			client.resolveProjectLoaded()
 			// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
 			const err = new Error(`LSP server exited (code ${(proc as any).exitCode})`)
@@ -383,14 +440,14 @@ let reaperTimer: ReturnType<typeof setInterval> | undefined
  * the time source and threshold are parameters so the sweep logic is
  * exercised without wall-clock waits.
  *
- * Chains with in-flight requests or diagnostic waiters are never reaped:
- * killing mid-request breaks an active operation to save memory that an
- * active chain would immediately re-allocate.
+ * Busy chains (in-flight requests, diagnostic waiters, or lifecycle work)
+ * are never reaped: killing mid-span breaks an active operation to save
+ * memory that an active chain would immediately re-allocate.
  */
 export function reapIdleClients(now: number, idleMs: number, evict: (client: LspClient) => void = evictClient): number {
 	let reaped = 0
 	for (const client of [...clients.values()]) {
-		if (client.pendingRequests.size > 0 || client.diagnosticWaiters.size > 0) continue
+		if (isChainBusy(client)) continue
 		if (now - client.lastActivity < idleMs) continue
 		evict(client)
 		reaped++
@@ -410,8 +467,10 @@ function ensureReaperRunning(): void {
 }
 
 export function evictClient(client: LspClient, graceMs = LSP_EVICT_GRACE_MS): void {
-	clients.delete(client.name)
-	clientLocks.delete(client.name)
+	// Identity-checked like every registry removal — evictClient is called
+	// only for registered clients, but the same guard keeps it robust if a
+	// respawn ever holds the slot at call time.
+	removeClientFromRegistries(client)
 	const err = new Error("LSP client evicted")
 	for (const pending of client.pendingRequests.values()) pending.reject(err)
 	client.pendingRequests.clear()
@@ -486,6 +545,15 @@ export async function pullDiagnostics(client: LspClient, uri: string): Promise<D
 // =============================================================================
 
 export async function ensureFileOpen(client: LspClient, filePath: string): Promise<void> {
+	const endWork = beginClientWork(client)
+	try {
+		await ensureFileOpenInner(client, filePath)
+	} finally {
+		endWork()
+	}
+}
+
+async function ensureFileOpenInner(client: LspClient, filePath: string): Promise<void> {
 	const uri = fileToUri(filePath)
 	if (client.openFiles.has(uri)) return
 
@@ -524,6 +592,15 @@ export async function ensureFileOpen(client: LspClient, filePath: string): Promi
 }
 
 export async function refreshFile(client: LspClient, filePath: string): Promise<void> {
+	const endWork = beginClientWork(client)
+	try {
+		await refreshFileInner(client, filePath)
+	} finally {
+		endWork()
+	}
+}
+
+async function refreshFileInner(client: LspClient, filePath: string): Promise<void> {
 	const uri = fileToUri(filePath)
 	const lockKey = `${client.name}:${uri}`
 

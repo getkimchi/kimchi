@@ -49,6 +49,9 @@ vi.mock("./client.js", () => ({
 	waitForDiagnostics: mocks.waitForDiagnostics,
 	sendRequest: vi.fn(),
 	shutdownAll: vi.fn(),
+	beginClientWork: vi.fn(() => () => {}),
+	noteSessionStart: vi.fn(),
+	noteSessionEnd: vi.fn(),
 }))
 
 vi.mock("./servers.js", () => ({

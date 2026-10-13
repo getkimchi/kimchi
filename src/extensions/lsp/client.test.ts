@@ -17,9 +17,13 @@
 //
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import {
+	beginClientWork,
 	ensureFileOpen,
+	evictClient,
 	getAllClients,
 	getOrCreateClient,
+	noteSessionEnd,
+	noteSessionStart,
 	reapIdleClients,
 	refreshFile,
 	sendRequest,
@@ -615,5 +619,164 @@ describe("idle client reaper", () => {
 		} finally {
 			vi.useRealTimers()
 		}
+	})
+})
+
+describe("eviction/respawn lifecycle races", () => {
+	const fakes: FakeProc[] = []
+
+	beforeEach(() => {
+		fakes.length = 0
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(globalThis as any).Bun = {
+			spawn: () => {
+				const f = createFakeProc()
+				fakes.push(f)
+				return f.proc
+			},
+		}
+	})
+
+	async function makeClientAt(cwd: string) {
+		const spawnIndex = fakes.length
+		const clientPromise = getOrCreateClient(FAKE_CONFIG, cwd)
+		await answerInitialize(fakes[spawnIndex])
+		return clientPromise
+	}
+
+	it("a dying chain's exited handler must not remove a same-key respawn from the registry", async () => {
+		// Race from the review: evictClient drops the registry entries while the
+		// process lives through the grace window; a same-key getOrCreateClient
+		// respawns in that window; when the old process finally exits, its
+		// exited handler ran `clients.delete(key)` by name and removed the
+		// healthy respawn from every registry — orphaned process, permanently
+		// invisible to the reaper and shutdownAll.
+		//
+		// The old proc's exited promise must be controlled BEFORE spawn — the
+		// client attaches its exited handler synchronously in getOrCreateClient.
+		let resolveOldExited: (() => void) | undefined
+		const oldExited = new Promise<void>((r) => {
+			resolveOldExited = r
+		})
+		const oldFake = createFakeProc()
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(oldFake.proc as any).exited = oldExited
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(globalThis as any).Bun = { spawn: () => oldFake.proc }
+		const oldPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+		await answerInitialize(oldFake)
+		const old = await oldPromise
+
+		evictClient(old)
+
+		// Same-key respawn during the grace window: the old process is still
+		// alive (its exited promise hasn't resolved).
+		const freshFake = createFakeProc()
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(globalThis as any).Bun = { spawn: () => freshFake.proc }
+		const freshPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+		await answerInitialize(freshFake)
+		const fresh = await freshPromise
+		expect(fresh).not.toBe(old)
+
+		// The evicted process exits now (grace SIGTERM landed).
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(oldFake.proc as any).exitCode = 143
+		resolveOldExited?.()
+		await new Promise((r) => setTimeout(r, 10))
+
+		// The respawn stays registered — this is the FAILING assertion before
+		// identity-checked deletes.
+		expect(getAllClients()).toContain(fresh)
+		expect(getAllClients()).toHaveLength(1)
+	})
+
+	it("never evicts a chain with in-flight lifecycle work (file reads, timed waits)", async () => {
+		// Race from the review: ensureFileOpen/refreshFile await `Bun.file(...)`
+		// reads and lsp_diagnostics awaits a bare `setTimeout` — neither
+		// registers a pendingRequest nor a diagnosticWaiter, so the old
+		// evictable filter treated the chain as idle and SIGTERMed it mid-span.
+		const a = await makeClientAt(`${CWD}/a`)
+		const b = await makeClientAt(`${CWD}/b`)
+		a.lastActivity = 1_000
+		b.lastActivity = 2_000
+		// Simulate lifecycle work on A (e.g. a file read inside ensureFileOpen;
+		// without the fix A would be the evictable LRU chain).
+		const endWork = beginClientWork(a)
+
+		await makeClientAt(`${CWD}/c`)
+
+		// A is busy: eviction falls to the next-LRU idle chain (B), not A.
+		const cwds = getAllClients()
+			.map((cl) => cl.cwd)
+			.sort()
+		expect(cwds).toEqual([`${CWD}/a`, `${CWD}/c`])
+		expect(fakes[0].isKilled()).toBe(false) // A's process untouched
+
+		endWork()
+	})
+
+	it("the reaper skips chains with in-flight lifecycle work", async () => {
+		const client = await makeClientAt(CWD)
+		client.lastActivity = 0 // ancient
+
+		const endWork = beginClientWork(client)
+		const evicted: string[] = []
+		expect(reapIdleClients(Date.now(), LSP_IDLE_EVICT_MS, (c) => void evicted.push(c.name))).toBe(0)
+		endWork()
+
+		// Once the span ends the ancient chain is reaped normally.
+		expect(reapIdleClients(Date.now(), LSP_IDLE_EVICT_MS, (c) => void evicted.push(c.name))).toBe(1)
+		expect(evicted).toEqual([client.name])
+	})
+})
+
+describe("session ref-counted shutdown", () => {
+	beforeEach(() => {
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(globalThis as any).Bun = {
+			spawn: () => createFakeProc().proc,
+		}
+	})
+
+	it("one session's close keeps another live session's chains; the last close kills them", async () => {
+		// The ACP server hosts concurrent sessions in one process, sharing this
+		// module's registry. Before the ref-count, EVERY session_shutdown ran
+		// shutdownAll and killed the other session's chains mid-use.
+		const doSpawn = () => {
+			const f = createFakeProc()
+			// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+			;(globalThis as any).Bun = { spawn: () => f.proc }
+			return f
+		}
+		const fakeA = doSpawn()
+		const aPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+		await answerInitialize(fakeA)
+		await aPromise
+
+		noteSessionStart() // session 1
+		noteSessionStart() // session 2
+
+		noteSessionEnd() // session 1 closes while session 2 is live
+		expect(fakeA.isKilled()).toBe(false)
+		expect(getAllClients()).toHaveLength(1)
+
+		noteSessionEnd() // last session closes → real shutdown
+		expect(fakeA.isKilled()).toBe(true)
+		expect(getAllClients()).toHaveLength(0)
+	})
+
+	it("a single-session shutdown behaves like the old shutdownAll (TUI)", async () => {
+		const fake = createFakeProc()
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(globalThis as any).Bun = { spawn: () => fake.proc }
+		const clientPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+		await answerInitialize(fake)
+		await clientPromise
+
+		noteSessionStart()
+		noteSessionEnd()
+		expect(fake.isKilled()).toBe(true)
+		expect(getAllClients()).toHaveLength(0)
 	})
 })
