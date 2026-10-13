@@ -1028,27 +1028,57 @@ diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/in
          this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
          this.filteredModels = this.activeModels;
          const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-@@ -262,12 +281,17 @@
-             if (!item)
-                 continue;
-             const isSelected = i === this.selectedIndex;
+@@ -256,21 +275,34 @@
+         const maxVisible = 10;
+         const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filteredModels.length - maxVisible));
+         const endIndex = Math.min(startIndex + maxVisible, this.filteredModels.length);
+-        // Show visible slice of filtered models
+-        for (let i = startIndex; i < endIndex; i++) {
+-            const item = this.filteredModels[i];
+-            if (!item)
+-                continue;
+-            const isSelected = i === this.selectedIndex;
 -            const isCurrent = modelsAreEqual(this.currentModel, item.model);
-+            // kimchi-dev: multi-model virtual row tracking
-+            const isMultiModelEnabled = process.__kimchiMultiModelEnabled instanceof Map ? !!process.__kimchiMultiModelEnabled.get(this.sessionId) : false;
-+            const isCurrent = item._isMultiModel
-+                ? isMultiModelEnabled
-+                : !isMultiModelEnabled && modelsAreEqual(this.currentModel, item.model);
-             const isDefault = this.isDefaultModel(item.model);
-             const defaultBadge = isDefault ? theme.fg("muted", " · default") : "";
-+            const displayId = item._isMultiModel ? 'multi-model' : item.id;
-             const cursor = isSelected ? theme.fg("accent", "→ ") : "  ";
-             const currentMarker = isCurrent ? theme.fg("accent", "✓ ") : "  ";
+-            const isDefault = this.isDefaultModel(item.model);
+-            const defaultBadge = isDefault ? theme.fg("muted", " · default") : "";
+-            const cursor = isSelected ? theme.fg("accent", "→ ") : "  ";
+-            const currentMarker = isCurrent ? theme.fg("accent", "✓ ") : "  ";
 -            const modelText = isSelected ? theme.fg("accent", item.id) : item.id;
-+            const modelText = isSelected ? theme.fg("accent", displayId) : displayId;
-             const providerBadge = theme.fg("muted", `[${item.provider}]`);
-             const line = `${cursor}${currentMarker}${modelText} ${providerBadge}${defaultBadge}`;
-             this.listContainer.addChild(new Text(line, 0, 0));
-@@ -352,6 +376,11 @@
+-            const providerBadge = theme.fg("muted", `[${item.provider}]`);
+-            const line = `${cursor}${currentMarker}${modelText} ${providerBadge}${defaultBadge}`;
+-            this.listContainer.addChild(new Text(line, 0, 0));
++        // Kimchi owns the shared /model and vision-switch table renderer.
++        // Keep a native list fallback for SDK consumers without that adapter.
++        const enabled = process.__kimchiMultiModelEnabled instanceof Map && !!process.__kimchiMultiModelEnabled.get(this.sessionId);
++        const descriptions = process.__kimchiModelDescriptions instanceof Map ? process.__kimchiModelDescriptions : undefined;
++        const rows = this.filteredModels.map((item, index) => ({
++            model: item.model,
++            id: item._isMultiModel ? "multi-model" : item.id,
++            provider: item.provider,
++            selected: index === this.selectedIndex,
++            current: item._isMultiModel ? enabled : !enabled && modelsAreEqual(this.currentModel, item.model),
++            description: descriptions?.get(`${item.model.provider}/${item.model.id}`) ?? "",
++            annotation: item._isMultiModel ? "[Deprecated]" : this.isDefaultModel(item.model) ? "Default for new sessions." : "",
++        }));
++        const renderTable = process.__kimchiRenderModelTable;
++        if (typeof renderTable === "function") {
++            const table = renderTable(rows, this.tui.terminal.columns, theme, true);
++            if (table.length > 0) this.listContainer.addChild(new Text(table[0], 0, 0));
++            for (const line of table.slice(startIndex + 1, endIndex + 1)) {
++                this.listContainer.addChild(new Text(line, 0, 0));
++            }
++        } else {
++            for (const row of rows.slice(startIndex, endIndex)) {
++                const cursor = row.selected ? theme.fg("accent", "→ ") : "  ";
++                const current = row.current ? theme.fg("accent", "✓ ") : "  ";
++                const providerBadge = theme.fg("muted", `[${row.provider}]`);
++                const annotation = row.annotation ? theme.fg("muted", ` ${row.annotation}`) : "";
++                this.listContainer.addChild(new Text(`${cursor}${current}${row.id} ${providerBadge}${annotation}`, 0, 0));
++            }
+         }
+         // Add scroll indicator if needed
+         if (startIndex > 0 || endIndex < this.filteredModels.length) {
+@@ -352,6 +384,11 @@
      }
      handleSelect(model) {
          this.dispose();
