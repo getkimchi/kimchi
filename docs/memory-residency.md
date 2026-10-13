@@ -79,6 +79,28 @@ scroll-driven windowed rendering (D2, deferred — the pi-tui ScrollView renders
 its whole child each frame, so virtualization needs upstream layout work),
 resident-cache observability for evicted entries.
 
+
+## Adaptive GC
+
+The above mechanisms bound *content*; long sessions also accumulate transient
+garbage (streamed output, request serialization, render churn) that JSC's
+lazy collector never reclaims without memory pressure — measured: a 45-minute
+dev session held 383 MiB of JSC heap for 181 KiB of live session content, with
+a 1.5 GiB peak.
+
+Two collection paths (`src/extensions/adaptive-gc.ts`):
+
+1. **Idle**: after the agent is idle for a delay (default 120 s), one full
+   `Bun.gc(true)`.
+2. **Growth**: during long uninterrupted runs, message boundaries check RSS
+   growth above the post-GC baseline (default 128 MiB) and collect when
+   crossed — time-throttled to at most one growth collection per 30 s.
+   Checks run on `message_end` (between messages, never mid-stream); a full
+   collection is ~10–40 ms on a ~100 MiB heap.
+
+Knobs: `KIMCHI_IDLE_GC=off` (disable), `KIMCHI_IDLE_GC_DELAY_MS`,
+`KIMCHI_GC_GROWTH_BYTES`, `KIMCHI_GC_MIN_INTERVAL_MS`.
+
 ## Known follow-ups (tracked in `.kimchi/plans/memory-improvements.md`)
 
 - C2b (assistant/user-message externalization) is **deferred**: a write-time

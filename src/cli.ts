@@ -53,6 +53,7 @@ import {
 import { isBunBinary } from "./env.js"
 import { discoverEnvironmentModels, installEnvironmentModels } from "./environment-models.js"
 import activityExtension from "./extensions/activity.js"
+import idleGcExtension from "./extensions/adaptive-gc.js"
 import agentsExtension from "./extensions/agents/index.js"
 import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
@@ -841,6 +842,7 @@ try {
 			modelGuardExtension,
 			orphanToolResultRepairExtension,
 			orphanToolResultSanitizerExtension,
+			idleGcExtension,
 			sessionMemoryStatsExtension,
 			piiRedactionExtension,
 			stripImagesExtension,
