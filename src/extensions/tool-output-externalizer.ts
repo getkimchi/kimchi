@@ -133,7 +133,6 @@ export function handleToolResult(
 	return externalizeText(text, event.toolCallId, state, "[tool-output-externalizer]")
 }
 
-
 /** Hydrate markers in an outgoing request payload back to full content. */
 export function hydrateMarkers(messages: ReadonlyArray<unknown>, state: ToolOutputExternalizerState): boolean {
 	return transformMessageTexts(messages, (text) => {
@@ -153,7 +152,6 @@ const toolOutputExternalizerExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 	if (!state) return
 
 	pi.on("tool_result", (event: ToolResultEvent) => handleToolResult(event, state))
-
 
 	pi.on("before_provider_request", (event: unknown) => {
 		const payload = (event as Record<string, unknown> | null)?.payload as Record<string, unknown> | null

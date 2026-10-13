@@ -87,7 +87,6 @@ describe("history residency (D3, against the patched SessionManager)", () => {
 		expect(isEvictedContent(contentBlocks(post.message))).toBe(false) // post-compaction stays live
 	})
 
-
 	it("evicts pre-compaction content at RESUME (open) and resolves byte-exact", () => {
 		const bigId = sm.appendMessage({ role: "user", content: [{ type: "text", text: BIG }], timestamp: Date.now() })
 		sm.appendMessage({
@@ -95,7 +94,11 @@ describe("history residency (D3, against the patched SessionManager)", () => {
 			content: [{ type: "text", text: "ans" }],
 			timestamp: Date.now(),
 		} as never)
-		const keptId = sm.appendMessage({ role: "user", content: [{ type: "text", text: "kept question" }], timestamp: Date.now() })
+		const keptId = sm.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "kept question" }],
+			timestamp: Date.now(),
+		})
 		sm.appendCompaction("resume summary", keptId, 1_000)
 		const sessionFile = sm.getSessionFile()
 		expect(sessionFile).toBeDefined()
