@@ -31,6 +31,8 @@ import { isWorkId } from "../shared/work-id.js"
 import { isHarnessSteer } from "./steer-marker.js"
 import { trackPRCostMetric } from "./telemetry/pr-cost.js"
 import { type BillingSource, captureBillingSource, requestTagSelector } from "./work-attribution/billing-source.js"
+import { readWorkBrowser } from "./work-attribution/browser.js"
+import { WorkBrowserPanel } from "./work-attribution/browser-panel.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
 import { findWorkContinuation, hasWorkReference, type WorkContinuation } from "./work-attribution/continuation.js"
 import { workCostDetails } from "./work-attribution/cost-details.js"
@@ -967,10 +969,23 @@ export function createWorkAttributionExtension(
 					}
 					const details: WorkDetailsRequest = { workId: getWorkId(ctx), lines: [] }
 					pi.events.emit(WORK_DETAILS_REQUEST_EVENT, details)
-					if (matchingLimit && workMatchingEnabled())
-						details.lines.push(
-							`Work matching stopped: ${matchingLimit}. New inputs stay unresolved in the current work.`,
+					const stopped =
+						matchingLimit && workMatchingEnabled()
+							? `Work matching stopped: ${matchingLimit}. New inputs stay unresolved in the current work.`
+							: undefined
+					if (stopped) details.lines.push(stopped)
+					// The terminal browses recent works; other modes and every subcommand print text.
+					if (!value && ctx.mode === "tui") {
+						// The browser lists works, so say here that matching stopped.
+						if (stopped) notify(ctx, stopped)
+						const browser = await readWorkBrowser(getAgentDir(), details)
+						const selected = await ctx.ui.custom<string | undefined>(
+							(_tui, theme, _keybindings, done) => new WorkBrowserPanel(browser, theme, done),
 						)
+						const row = browser.rows.find((candidate) => candidate.workId === selected)
+						if (row) notify(ctx, row.details)
+						return
+					}
 					details.lines.push(...workCostDetails(getAgentDir(), details.workId))
 					notify(ctx, [`Work ID: ${details.workId}`, ...details.lines].join("\n"))
 				} catch (error) {

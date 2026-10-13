@@ -80,6 +80,10 @@ function contribution(workId: string): discovery.WorkPullRequestUpdate {
 		pullRequests: [pr],
 	}
 }
+/** Outside the terminal's work panel, `/work` prints its details as text. */
+function textCommandContext() {
+	return { ...createCommandContext(), ...ctx, mode: "rpc" as const }
+}
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "kimchi-pr-status-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", directory)
@@ -197,7 +201,7 @@ describe("PR status extension", () => {
 		})
 		await Promise.resolve()
 		expect(ctx.ui.notify).toHaveBeenCalledTimes(warningCount)
-		const commandCtx = { ...createCommandContext(), ...ctx }
+		const commandCtx = textCommandContext()
 		await api.getRegisteredCommand("work").handler("", commandCtx)
 		expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining(linked.pullRequests[0].url), "info")
 		await api.getRegisteredCommand("work").handler("new", commandCtx)
@@ -326,7 +330,7 @@ describe("PR status extension", () => {
 		const update = vi.mocked(supervisor.subscribePullRequestReconciliation).mock.calls[0][0].onPullRequest
 		update({ ...contribution(getWorkId(ctx)), pullRequests: [mr] })
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "MR !7 open")
-		await work.getRegisteredCommand("work").handler("", { ...createCommandContext(), ...ctx })
+		await work.getRegisteredCommand("work").handler("", textCommandContext())
 		expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining(`MR !7 open: ${mr.url}`), "info")
 	})
 
@@ -456,7 +460,7 @@ describe("PR status extension", () => {
 		update(contribution(getWorkId(ctx)))
 		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-pr", "PR #7 open")
 		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-pr-url", pr.url)
-		const commandCtx = { ...createCommandContext(), ...ctx }
+		const commandCtx = textCommandContext()
 		await work.getRegisteredCommand("work").handler("", commandCtx)
 		expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining(pr.url), "info")
 		await work.getRegisteredCommand("work").handler("new", commandCtx)
@@ -659,7 +663,7 @@ describe("expected lookup failures", () => {
 		await Promise.resolve()
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR/MR waiting")
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
-		await api.getRegisteredCommand("work").handler("", { ...createCommandContext(), ...ctx })
+		await api.getRegisteredCommand("work").handler("", textCommandContext())
 		const shown = vi.mocked(ctx.ui.notify).mock.calls.at(-1)?.[0]
 		expect(shown).toContain("PR/MR lookup: 1 commit waiting")
 		expect(shown).toContain("PR/MR lookup: GitHub is offline.")
@@ -688,7 +692,7 @@ describe("expected lookup failures", () => {
 		update({ ...commit, recordedAt, prLookup: { status: "pending", checkedAt } })
 		expect(ctx.ui.setStatus).not.toHaveBeenCalledWith("work-pr", "PR/MR waiting")
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
-		await api.getRegisteredCommand("work").handler("", { ...createCommandContext(), ...ctx })
+		await api.getRegisteredCommand("work").handler("", textCommandContext())
 		const shown = vi.mocked(ctx.ui.notify).mock.calls.at(-1)?.[0]
 		expect(shown).toContain("PR/MR lookup: 2 commits without a PR after 32 days, no longer checked")
 		// Later PRs add other /work lines, such as costs still waiting for billing; only lookup lines matter here.

@@ -8,6 +8,7 @@ import { complete, getModel } from "@earendil-works/pi-ai/compat"
 import {
 	type BeforeProviderHeadersEvent,
 	createLocalBashOperations,
+	type ExtensionUIContext,
 	findCutPoint,
 	type InputEvent,
 	type SessionBeforeCompactEvent,
@@ -16,12 +17,15 @@ import {
 	type SessionStartEvent,
 	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent"
+import { type Component, stripTerminalSequences, type TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { installGlobalFetchInstrumentation } from "../http/instrument-fetch.js"
 import { readPlanWorkId, savePlanMarkdown } from "../shared/planning/plan-markdown.js"
 import { createCommandContext, createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
+import { testTheme } from "./__mocks__/theme.js"
 import { createWorkScopeSnapshot } from "./__mocks__/work-scope.js"
+import { savedWorkSummary } from "./__mocks__/work-summary.js"
 import requestTimingExtension from "./request-timing.js"
 import { copySessionFileAndAddHandoffNote, removeTempDir } from "./teleport/provisioning/handoff-note.js"
 import * as billingSource from "./work-attribution/billing-source.js"
@@ -44,6 +48,8 @@ import {
 	tryWorkAttribution,
 	tryWorkAttributionAsync,
 	WORK_CHANGED_EVENT,
+	WORK_DETAILS_REQUEST_EVENT,
+	type WorkDetailsRequest,
 } from "./work-attribution.js"
 
 let dir: string
@@ -202,11 +208,11 @@ describe("local work attribution", () => {
 		expect(getWorkId(ctx)).toBe(target.workId)
 		await flushWorkSummaries()
 		const path = join(dir, "work", target.workId, "work.json")
-		expect(JSON.parse(readFileSync(path, "utf8")).workLinks).toHaveLength(1)
+		expect(savedWorkSummary(dir, target.workId).workLinks).toHaveLength(1)
 		writeFileSync(path, "damaged")
 		recoverWorkSummaries()
 		await flushWorkSummaries()
-		expect(JSON.parse(readFileSync(path, "utf8")).workLinks).toHaveLength(1)
+		expect(savedWorkSummary(dir, target.workId).workLinks).toHaveLength(1)
 		await command.handler(`unlink ${links[0].linkId}`, ctx)
 		expect(records().filter((row) => row.type === "work_link")).toEqual([
 			links[0],
@@ -454,11 +460,11 @@ describe("local work attribution", () => {
 			requestId: calls[1].requestId,
 		})
 		await flushWorkSummaries()
-		const requests = JSON.parse(readFileSync(join(dir, "work", getWorkId(ctx), "work.json"), "utf8")).requests
+		const { requests } = savedWorkSummary(dir, getWorkId(ctx))
 		expect(requests).toHaveLength(2)
 		expect(records().filter((row) => row.type === "request")).toHaveLength(2)
 		expect(records().filter((row) => row.type === "request_dispatch")).toHaveLength(2)
-		expect(requests[0].billingSelector.tag).toBe(calls[0].tag)
+		expect(requests[0].billingSelector).toMatchObject({ tag: calls[0].tag })
 		expect(requests[1]).toMatchObject({
 			requestId: calls[1].requestId,
 			parentRequestId: logicalId,
@@ -597,7 +603,7 @@ describe("local work attribution", () => {
 		})
 		recordProviderResponse(attempt.requestId, { status: 500, headers: new Headers() })
 		await flushWorkSummaries()
-		const summary = JSON.parse(readFileSync(join(dir, "work", attempt.workId, "work.json"), "utf8"))
+		const summary = savedWorkSummary(dir, attempt.workId)
 		expect(summary.requests).toHaveLength(1)
 		expect(summary.requests[0]).toMatchObject({
 			requestId: attempt.requestId,
@@ -620,7 +626,7 @@ describe("local work attribution", () => {
 		})
 		recordProviderResponse("unknown-request", { status: 200, headers: new Headers() })
 		await flushWorkSummaries()
-		const summary = JSON.parse(readFileSync(join(dir, "work", attempt.workId, "work.json"), "utf8"))
+		const summary = savedWorkSummary(dir, attempt.workId)
 		expect(summary.requests).toHaveLength(1)
 		expect(summary.requests[0].response).toEqual({ status: 503, receivedAt: expect.any(String) })
 	})
@@ -1214,6 +1220,43 @@ describe("local work attribution", () => {
 		expect(getWorkId(ctx)).toBe(workId)
 	})
 
+	it("opens a work panel in the terminal and prints the chosen work as /work prints it elsewhere", async () => {
+		const panels: Component[] = []
+		const custom = vi.fn().mockImplementation(
+			(factory: Parameters<ExtensionUIContext["custom"]>[0]) =>
+				new Promise((done) => {
+					void Promise.resolve(factory({} as TUI, testTheme, {} as never, done)).then((panel) => panels.push(panel))
+				}),
+		)
+		const ctx = { ...createCommandContext(), ...createContext({ cwd: dir, ui: { custom } }) }
+		const mock = createExtensionApi()
+		createWorkAttributionExtension()(mock.api)
+		mock.api.events.on(WORK_DETAILS_REQUEST_EVENT, (request) => {
+			;(request as WorkDetailsRequest).lines.push("PR #7 open: https://github.com/example/repo/pull/7")
+		})
+		const command = mock.getRegisteredCommand("work")
+		const workId = getWorkId(ctx)
+		await flushWorkSummaries()
+
+		const browsing = command.handler("", ctx)
+		await vi.waitFor(() => expect(panels).toHaveLength(1))
+		const view = panels[0].render(100).map(stripTerminalSequences)
+		expect(view[1]).toBe(" Kimchi work · 1 work · no requests")
+		expect(view).toContain(`  Work ID: ${workId}`)
+		expect(view).toContain("  PR #7 open: https://github.com/example/repo/pull/7")
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		panels[0].handleInput?.("\r")
+		await browsing
+		const printed = vi.mocked(ctx.ui.notify).mock.lastCall
+		expect(printed?.[0]).toMatch(new RegExp(`^Work ID: ${workId}\nPR #7 open: \\S+\nCost: unknown`))
+
+		await command.handler("", { ...ctx, mode: "rpc" })
+		expect(vi.mocked(ctx.ui.notify).mock.lastCall).toEqual(printed)
+		await command.handler("new", ctx)
+		expect(custom).toHaveBeenCalledOnce()
+		expect(vi.mocked(ctx.ui.notify).mock.lastCall?.[0]).toMatch(/^Work ID: /)
+		expect(getWorkId(ctx)).not.toBe(workId)
+	})
 	it("persists plan identity and explicitly continues it in another session", async () => {
 		const parent = createContext({ cwd: dir })
 		const workId = getWorkId(parent)

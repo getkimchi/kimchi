@@ -4,6 +4,7 @@ import { mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } fro
 import { join } from "node:path"
 import { afterEach, expect, it } from "vitest"
 import { isWorkMatchingRequest } from "../tui/support/fake-openai-server.js"
+import { readWorkSummary } from "../tui/support/work-summary.js"
 import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
 
@@ -313,20 +314,25 @@ it("uses separate calls to the selected model to continue and split Studio work 
 		expect(request.body).toMatchObject({ model: "basic" })
 	}
 	await expect
-		.poll(() => {
-			const summary = JSON.parse(readFileSync(join(agentDir, "work", planned.workId, "work.json"), "utf8"))
-			return summary.requests.map((row: { requestId: string }) => row.requestId).sort()
-		})
+		.poll(() =>
+			readWorkSummary(agentDir, planned.workId)
+				?.requests.map((row) => row.requestId)
+				.sort(),
+		)
 		.toEqual([planned.requestId, requestRecord(1).requestId, judgeRequests[2].headers["x-request-id"]].sort())
 	await expect
-		.poll(() => {
-			const summary = JSON.parse(readFileSync(join(agentDir, "work", unrelated.workId, "work.json"), "utf8"))
-			return summary.requests.map((row: { requestId: string }) => row.requestId)
-		})
+		.poll(() => readWorkSummary(agentDir, unrelated.workId)?.requests.map((row) => row.requestId))
 		.toEqual([unrelated.requestId])
+	// Every derived file of a work stays free of prompt text; only its intent and retained plans hold user text.
 	for (const workId of [planned.workId, unrelated.workId]) {
-		const summary = readFileSync(join(agentDir, "work", workId, "work.json"), "utf8")
-		for (const privateText of [planningText, continuationText, unrelatedText, "Decide whether a user's"])
-			expect(summary).not.toContain(privateText)
+		const folder = join(agentDir, "work", workId)
+		const files = readdirSync(folder, { recursive: true, withFileTypes: true })
+			.filter((entry) => entry.isFile())
+			.map((entry) => join(entry.parentPath, entry.name))
+			.filter((path) => path !== join(folder, "intent.json") && !path.startsWith(join(folder, "plans")))
+		expect(files.some((path) => path.startsWith(join(folder, "rows")))).toBe(true)
+		for (const path of files)
+			for (const privateText of [planningText, continuationText, unrelatedText, "Decide whether a user's"])
+				expect(readFileSync(path, "utf8"), path).not.toContain(privateText)
 	}
 })
