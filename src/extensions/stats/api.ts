@@ -7,7 +7,9 @@
 import { resolveEndpoints } from "../../config.js"
 import { fetchWithRetry } from "../../utils/http.js"
 import type {
+	BreakdownDimension,
 	GenerateAnalyticsResponse,
+	GenerateBreakdownResponse,
 	GenerateProductivityMetricsTimeseriesResponse,
 	GetProductivityMetricsResponse,
 } from "./types.js"
@@ -60,6 +62,30 @@ export class CastAiStatsApi {
 		})
 
 		return this.request<GenerateAnalyticsResponse>(`/ai-optimizer/v1beta/analytics?${params.toString()}`)
+	}
+
+	/**
+	 * Breaks the organization's billed cost down by one dimension, most expensive first. The filter is a CEL
+	 * expression, for example `castai_api_key_owner_id == "<user ID>"`.
+	 * Endpoint: GET /ai-optimizer/v1beta/organizations/{organizationId}:generateBreakdown
+	 */
+	async generateBreakdown(
+		organizationId: string,
+		dimension: BreakdownDimension,
+		startTime: Date,
+		endTime: Date,
+		filter: string,
+	): Promise<GenerateBreakdownResponse> {
+		const params = new URLSearchParams({
+			dimension,
+			startTime: startTime.toISOString(),
+			endTime: endTime.toISOString(),
+			filter,
+			pageSize: "1000",
+		})
+		return this.request<GenerateBreakdownResponse>(
+			`/ai-optimizer/v1beta/organizations/${encodeURIComponent(organizationId)}:generateBreakdown?${params.toString()}`,
+		)
 	}
 
 	/**
