@@ -7,22 +7,12 @@
 // process assertion uses a before/after delta so machines with unrelated
 // gopls instances (e.g. VS Code) don't flake it.
 
-import { spawnSync } from "node:child_process"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
+import { goplsOnPath, goplsProcessCount } from "./support/processes.js"
 import { newSession, prompt } from "./support/scenarios.js"
-
-const goplsOnPath = spawnSync("which", ["gopls"], { stdio: "pipe" }).status === 0
-
-function goplsProcessCount(): number {
-	const out = spawnSync("ps", ["-axo", "args"], { stdio: "pipe" })
-	return out.stdout
-		.toString()
-		.split("\n")
-		.filter((l) => l.includes("/gopls")).length
-}
 
 describe("ACP integration — LSP chain spawn", () => {
 	let fixture: AcpFixture

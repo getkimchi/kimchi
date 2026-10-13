@@ -104,6 +104,10 @@ export interface StartAcpFixtureOptions extends AcpFixtureOptions {
 	 * project-trust scenarios) rely on the default.
 	 */
 	pretrustWorkDir?: boolean
+	/** Additional workDirs beyond the fixture's own that need persisted trust
+	 *  (multi-session tests: each newSession gets its own cwd). Keyed by
+	 *  realpath, same as pretrustWorkDir. */
+	extraTrustedWorkDirs?: string[]
 }
 
 /** Bundle of every notification / request the client received, in arrival order. */
@@ -379,11 +383,11 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		// untrusted-MCP scenarios rely on the default (no decision). Keyed by
 		// the realpath of the workDir (pi's trust store canonicalizes paths).
 		if (options.pretrustWorkDir === true) {
-			writeFileSync(
-				join(agentDir, "trust.json"),
-				JSON.stringify({ [realpathSync(workDir)]: true }, null, "\t"),
-				"utf-8",
-			)
+			const trust: Record<string, boolean> = { [realpathSync(workDir)]: true }
+			for (const extra of options.extraTrustedWorkDirs ?? []) {
+				trust[realpathSync(extra)] = true
+			}
+			writeFileSync(join(agentDir, "trust.json"), JSON.stringify(trust, null, "\t"), "utf-8")
 		}
 
 		const modelArgs = defaultModel === undefined ? ["--model", configuredModels[0].slug] : []
