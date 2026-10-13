@@ -136,9 +136,16 @@ describe("fetchOrgPolicy", () => {
 		}
 	})
 
-	it("reports no-access when the key fails verification", async () => {
-		const fetchImpl = (async () => jsonResponse({}, 403)) as unknown as typeof globalThis.fetch
-		await expect(fetchOrgPolicy("key", { fetch: fetchImpl })).resolves.toEqual({ kind: "no-access" })
+	it("reports revoked when the key is rejected on verify", async () => {
+		const fetchImpl = (async () => jsonResponse({}, 401)) as unknown as typeof globalThis.fetch
+		await expect(fetchOrgPolicy("key", { fetch: fetchImpl })).resolves.toEqual({ kind: "revoked" })
+	})
+
+	it("reports no-access on 403 and 404 from verify (no verdict on the key)", async () => {
+		for (const status of [403, 404]) {
+			const fetchImpl = (async () => jsonResponse({}, status)) as unknown as typeof globalThis.fetch
+			await expect(fetchOrgPolicy("key", { fetch: fetchImpl })).resolves.toEqual({ kind: "no-access" })
+		}
 	})
 
 	it("reports no-access on 401, 403 and 404 from resolve", async () => {

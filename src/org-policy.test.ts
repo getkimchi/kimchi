@@ -113,14 +113,15 @@ describe("initOrgPolicy", () => {
 		expect(getOrgPolicy()).toBeUndefined()
 	})
 
-	it("clears the cache on auth failure; the session keeps its policy until relaunch", async () => {
+	it("keeps the cached policy when policy resolution is denied; the session keeps its policy", async () => {
 		const cachePath = cachePathFor({})
 		resolveWithPolicy("org-1", { allowedPermissionModes: PLAN_ONLY })
 		await initOrgPolicy("key-1", { cachePath })
 		expect(getOrgPolicy()).toEqual({ allowedPermissionModes: PLAN_ONLY })
 
-		// The key stopped verifying: the cache is cleared (next launch starts
-		// unrestricted), but this session keeps the policy it started with.
+		// Policy resolution is denied (403/404) without a verdict on the key:
+		// the cached policy survives for the next launch and the session keeps
+		// the policy it started with.
 		mockedFetchOrgPolicy.mockResolvedValue({ kind: "no-access" })
 		await initOrgPolicy("key-1", { cachePath })
 
@@ -129,7 +130,43 @@ describe("initOrgPolicy", () => {
 
 		expect(getOrgPolicy()).toEqual({ allowedPermissionModes: PLAN_ONLY })
 		expect(getOrgPolicyOrgId()).toBe("org-1")
+		expect(readCacheFile(cachePath).policy).toEqual({ allowedPermissionModes: PLAN_ONLY })
+	})
+
+	it("clears the cache when the key itself is rejected; the session keeps its policy until relaunch", async () => {
+		const cachePath = cachePathFor({})
+		resolveWithPolicy("org-1", { allowedPermissionModes: PLAN_ONLY })
+		await initOrgPolicy("key-1", { cachePath })
+		expect(getOrgPolicy()).toEqual({ allowedPermissionModes: PLAN_ONLY })
+
+		// The key stopped verifying (401): a cached policy for it can never
+		// revalidate, so the cache is dropped (next launch starts unrestricted)
+		// but this session keeps the policy it started with.
+		mockedFetchOrgPolicy.mockResolvedValue({ kind: "revoked" })
+		await initOrgPolicy("key-1", { cachePath })
+
+		// Drain the background refresh launched by the cache hit above.
+		await vi.waitFor(() => expect(mockedFetchOrgPolicy.mock.calls.length).toBeGreaterThanOrEqual(2))
+
+		expect(getOrgPolicy()).toEqual({ allowedPermissionModes: PLAN_ONLY })
+		expect(getOrgPolicyOrgId()).toBe("org-1")
 		expect(() => readCacheFile(cachePath)).toThrow()
+	})
+
+	it("keeps another key's cached policy when this key is rejected", async () => {
+		const cachePath = cachePathFor({})
+		writeFileSync(
+			cachePath,
+			`${JSON.stringify({ keyFingerprint: "fingerprint-of-another-key", orgId: "org-1", fetchedAt: 1, policy: { allowedPermissionModes: PLAN_ONLY } })}\n`,
+		)
+
+		// key-1 has no usable cache (fingerprint mismatch → cold path) and its
+		// fetch is rejected: the wipe must not drop the other key's cache.
+		mockedFetchOrgPolicy.mockResolvedValue({ kind: "revoked" })
+		await initOrgPolicy("key-1", { cachePath })
+
+		expect(getOrgPolicy()).toBeUndefined()
+		expect(readCacheFile(cachePath).policy).toEqual({ allowedPermissionModes: PLAN_ONLY })
 	})
 
 	it("keeps the last known good policy when the platform is unreachable", async () => {

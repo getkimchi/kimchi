@@ -16,8 +16,9 @@ import { fetchOrgPolicy, type OrgPolicy } from "./api/org-settings.js"
  *   the next launch. Without a usable cache the fetch blocks startup briefly
  *   (capped at ~1.5s per call) so the session starts under the right policy.
  * - Fetch outcomes: a resolved policy (including "no policy") overwrites the
- *   cache; auth failures (401/403/404) clear it (fail open); network errors
- *   keep the last known good policy.
+ *   cache; a key rejected on verify (401) clears it (fail open, scoped to
+ *   that key); any other failure — denied or missing policy resolution,
+ *   network errors — keeps the last known good policy.
  */
 const ORG_POLICY_CACHE_PATH = resolve(homedir(), ".config", "kimchi", "org-policy.json")
 
@@ -142,12 +143,28 @@ async function refresh(
 			})
 			break
 		}
-		case "no-access": {
+		case "revoked": {
+			// The key no longer verifies, so a cached policy for it can never
+			// revalidate: drop it (fail open on the next launch). The wipe is
+			// scoped to this key's fingerprint so a cache written for another
+			// key — e.g. the user switched keys — survives.
 			if (updateHolder) {
 				currentPolicy = undefined
 				currentOrgId = undefined
 			}
-			clearCache(cachePath)
+			if (readCache(cachePath)?.keyFingerprint === keyFingerprint(apiKey)) {
+				clearCache(cachePath)
+			}
+			break
+		}
+		case "no-access": {
+			// Policy resolution failed without rejecting the key itself: keep
+			// the last known good policy — the cache file always, and the
+			// holder on a cold path (fail open for this session only).
+			if (updateHolder) {
+				currentPolicy = undefined
+				currentOrgId = undefined
+			}
 			break
 		}
 		case "unreachable": {

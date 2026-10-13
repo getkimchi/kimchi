@@ -28,7 +28,10 @@ export interface OrgPolicy {
 
 export type OrgPolicyFetchOutcome =
 	| { kind: "policy"; orgId: string; policy: OrgPolicy | undefined }
-	/** The key is not usable for policy resolution (401/403/404) — treat as no policy. */
+	/** The key itself was rejected (401 on key verify): a cached policy for it can never revalidate. */
+	| { kind: "revoked" }
+	/** Policy resolution is denied or missing (403/404 on verify, auth failure on resolve) —
+	 * no verdict on the key itself; keep any previously known policy. */
 	| { kind: "no-access" }
 	/** Network/timeout/server error — keep any previously known policy. */
 	| { kind: "unreachable" }
@@ -135,8 +138,10 @@ export async function fetchOrgPolicy(
 	}
 
 	if (!verifyResp.ok) {
-		if (verifyResp.status === 401 || verifyResp.status === 403 || verifyResp.status === 404)
-			return { kind: "no-access" }
+		// 401 is a verdict on the key itself; 403/404 may be gateway or platform
+		// state and must not wipe a cached policy.
+		if (verifyResp.status === 401) return { kind: "revoked" }
+		if (verifyResp.status === 403 || verifyResp.status === 404) return { kind: "no-access" }
 		return { kind: "unreachable" }
 	}
 
@@ -164,6 +169,8 @@ export async function fetchOrgPolicy(
 	}
 
 	if (!resp.ok) {
+		// A 401 here — right after a successful verify — is treated like 403/404:
+		// no verdict on the key, so any cached policy is kept.
 		if (resp.status === 401 || resp.status === 403 || resp.status === 404) return { kind: "no-access" }
 		return { kind: "unreachable" }
 	}
