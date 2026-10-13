@@ -1163,7 +1163,74 @@ diff --git a/dist/modes/interactive/components/user-message.js b/dist/modes/inte
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -1900,6 +1900,7 @@
+@@ -1359,8 +1359,65 @@
+         if (showDiagnostics) {
+             const skillDiagnostics = skillsResult.diagnostics;
+             if (skillDiagnostics.length > 0) {
++                // Collapsed by default: a single dim summary line instead of the
++                // full collision listing, so startup stays calm. The detail view
++                // is one keypress away via the shared expand toggle.
+                 const warningLines = this.formatDiagnostics(skillDiagnostics, sourceInfos);
+-                this.loadedResourcesContainer.addChild(new Text(`${theme.fg("warning", "[Skill conflicts]")}\n${warningLines}`, 0, 0));
++                const collisionCount = skillDiagnostics.filter((d) => d.type === "collision" && d.collision).length;
++                const issueCount = skillDiagnostics.length - collisionCount;
++                let summaryText;
++                if (issueCount > 0) {
++                    // Issues first: the skill was not loaded at all and needs
++                    // user attention. Conflicts are informational (a winner is
++                    // selected and still loaded), so they trail as "also".
++                    summaryText = `[${issueCount} skill issue${issueCount === 1 ? "" : "s"}] Some skills were not loaded.` + (collisionCount > 0 ? ` Also: ${collisionCount} skill conflict${collisionCount === 1 ? "" : "s"} in multiple directories (a winner was loaded).` : "");
++                } else {
++                    summaryText = `[${collisionCount} skill conflict${collisionCount === 1 ? "" : "s"}] Some skills were found in multiple directories.`;
++                }
++                // Plain text row (no Box stroke), but with a right-aligned dim
++                // "(ctrl+o to expand|collapse)" hint like a collapsed tool row.
++                // Local expansion state like a single tool row: a click toggles
++                // only this line, while ctrl+o still propagates to it via
++                // setExpanded() from setToolsExpanded().
++                class SkillConflictsLine {
++                    constructor(collapsedLeft, expandedLeft, details, expanded) {
++                        this.collapsedLeft = collapsedLeft;
++                        this.expandedLeft = expandedLeft;
++                        this.details = details;
++                        this.expanded = expanded;
++                    }
++                    headerLine(width) {
++                        const left = this.expanded ? this.expandedLeft : this.collapsedLeft;
++                        // Reserve the hint's width first so it stays visible
++                        // on narrow terminals — the summary text truncates.
++                        const hint = theme.fg("dim", `(${keyText("app.tools.expand")} to ${this.expanded ? "collapse" : "expand"})`);
++                        const hintW = visibleWidth(hint);
++                        const maxLeft = width - hintW - 2;
++                        if (maxLeft < 4)
++                            return TuiLayouts.truncateToWidth(left, width);
++                        const truncated = TuiLayouts.truncateToWidth(left, maxLeft);
++                        const pad = width - visibleWidth(truncated) - hintW;
++                        return truncated + " ".repeat(Math.max(0, pad)) + hint;
++                    }
++                    setExpanded(expanded) {
++                        this.expanded = expanded;
++                    }
++                    handleMouse(event) {
++                        if (event.type !== "click" || event.button !== "left")
++                            return undefined;
++                        this.setExpanded(!this.expanded);
++                        return { handled: true };
++                    }
++                    render(width) {
++                        const lines = [this.headerLine(width)];
++                        if (this.expanded)
++                            lines.push(...this.details.split("\n"));
++                        return lines;
++                    }
++                    invalidate() {
++                    }
++                }
++                this.loadedResourcesContainer.addChild(new SkillConflictsLine(summaryText, "[Skill conflicts]", warningLines, this.getStartupExpansionState()));
+                 this.loadedResourcesContainer.addChild(new Spacer(1));
+             }
+             const promptDiagnostics = promptsResult.diagnostics;
+@@ -1900,6 +1957,7 @@
              confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
              input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
              notify: (message, type) => this.showExtensionNotify(message, type),
@@ -1171,7 +1238,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
              onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
              setStatus: (key, text) => this.setExtensionStatus(key, text),
              setWorkingMessage: (message) => {
-@@ -1945,6 +1946,16 @@
+@@ -1945,6 +2003,16 @@
              },
              getToolsExpanded: () => this.toolOutputExpanded,
              setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
@@ -1188,7 +1255,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
          };
      }
      /**
-@@ -2774,15 +2785,24 @@
+@@ -2774,15 +2842,24 @@
                          throw new Error("Completed compaction is missing from the session context");
                      }
                      this.chatContainer.clear();
@@ -1222,7 +1289,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
                      }
                      this.footer.invalidate();
                  }
-@@ -3155,7 +3175,9 @@
+@@ -3155,7 +3232,9 @@
          this.chatContainer.addChild(new Text(text, 1, 0));
      }
      renderInitialMessages() {
@@ -1233,7 +1300,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
          this.renderSessionEntries(entries, {
              updateFooter: true,
              populateHistory: true,
-@@ -3176,7 +3198,7 @@
+@@ -3176,7 +3255,7 @@
          if (this.chatContainer.children.length > 0) {
              this.chatContainer.addChild(new Spacer(1));
          }
@@ -1242,7 +1309,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
      }
      async getUserInput() {
          const queuedInput = this.pendingUserInputs.shift();
-@@ -3192,7 +3214,8 @@
+@@ -3192,7 +3271,8 @@
      }
      rebuildChatFromMessages() {
          this.chatContainer.clear();
@@ -1252,7 +1319,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
      }
      // =========================================================================
      // Key handlers
-@@ -4036,6 +4059,34 @@
+@@ -4036,6 +4116,34 @@
              this.showModelSelector();
              return;
          }
@@ -1287,7 +1354,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
-@@ -4168,6 +4219,8 @@
+@@ -4168,6 +4276,8 @@
      }
      showModelSelector(initialSearchInput) {
          this.showSelector((done) => {
@@ -1296,7 +1363,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
              const selectModel = async (model, persist) => {
                  try {
                      await this.session.setModel(model, { persist });
-@@ -4186,10 +4239,13 @@
+@@ -4186,10 +4296,13 @@
              };
              const defaultProvider = this.settingsManager.getDefaultProvider();
              const defaultModel = this.settingsManager.getDefaultModel();
@@ -1312,7 +1379,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
              return { component: selector, focus: selector, dispose: () => selector.dispose() };
          });
      }
-@@ -5051,7 +5107,12 @@
+@@ -5051,7 +5164,12 @@
          const outputPath = this.getPathCommandArgument(text, "/export");
          try {
              if (outputPath?.endsWith(".jsonl")) {
