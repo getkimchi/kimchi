@@ -8,12 +8,20 @@ import claudeCodeSkillsExtension from "./index.js"
 
 let dir: string
 let oldHome: string | undefined
+let oldAgentDir: string | undefined
+let oldEnableResources: string | undefined
 
 describe("Claude Code skills extension", () => {
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "kimchi-claude-code-skill-tool-"))
 		oldHome = process.env.HOME
 		process.env.HOME = join(dir, "home")
+		// Pin the resource-settings path to the temp home so bundled-skill
+		// frontmatter gating sees defaults, not the developer's live settings.
+		oldAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+		process.env.KIMCHI_CODING_AGENT_DIR = join(dir, "agent-dir")
+		oldEnableResources = process.env.KIMCHI_ENABLE_RESOURCES
+		delete process.env.KIMCHI_ENABLE_RESOURCES
 		// Project fixtures live under <dir>/project — trusted for the tests
 		// that exercise project .claude/skills; fail-closed cases have their
 		// own tests in definition.test.ts.
@@ -27,6 +35,10 @@ describe("Claude Code skills extension", () => {
 		} else {
 			process.env.HOME = oldHome
 		}
+		if (oldAgentDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
+		else process.env.KIMCHI_CODING_AGENT_DIR = oldAgentDir
+		if (oldEnableResources === undefined) delete process.env.KIMCHI_ENABLE_RESOURCES
+		else process.env.KIMCHI_ENABLE_RESOURCES = oldEnableResources
 		rmSync(dir, { recursive: true, force: true })
 	})
 
@@ -165,6 +177,50 @@ describe("Claude Code skills extension", () => {
 		expect(textResult(result)).toBe('Claude Code skill "missing" was not found.')
 	})
 
+	it("refuses a skill disabled by an enabled bundled skill, naming the declarer", async () => {
+		writeSkill(join(dir, "home", ".claude", "skills", "xlsx", "SKILL.md"), "Office skill instructions.")
+		mkdirSync(join(dir, "project", ".claude"), { recursive: true })
+		// Enables the bundled documents skill, whose disables-skills frontmatter
+		// shadows the Anthropic office skills.
+		process.env.KIMCHI_ENABLE_RESOURCES = "extensions.documents"
+
+		const result = await registeredSkillTool(join(dir, "project")).execute(
+			"call-1",
+			{ skill: "xlsx" },
+			undefined,
+			undefined,
+			{
+				cwd: join(dir, "project"),
+				sessionManager: { getSessionId: () => "session-1" },
+			} as never,
+		)
+
+		expect(result.details).toMatchObject({ success: false, name: "xlsx", disabledBy: "documents" })
+		expect(textResult(result)).toBe(
+			'Claude Code skill "xlsx" is unavailable: it is disabled by the enabled "documents" skill.',
+		)
+		expect(textResult(result)).not.toContain("Office skill instructions.")
+	})
+
+	it("loads a skill shadowed by a bundled skill once the toggle is off", async () => {
+		writeSkill(join(dir, "home", ".claude", "skills", "xlsx", "SKILL.md"), "Office skill instructions.")
+		mkdirSync(join(dir, "project", ".claude"), { recursive: true })
+
+		const result = await registeredSkillTool(join(dir, "project")).execute(
+			"call-1",
+			{ skill: "xlsx" },
+			undefined,
+			undefined,
+			{
+				cwd: join(dir, "project"),
+				sessionManager: { getSessionId: () => "session-1" },
+			} as never,
+		)
+
+		expect(result.details).toMatchObject({ success: true, name: "xlsx" })
+		expect(textResult(result)).toContain("Office skill instructions.")
+	})
+
 	it("contributes sanitized Claude Code skills through resources_discover", async () => {
 		writeRawSkill(join(dir, "project", ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.\n")
 		const { handlers } = registerExtension()
@@ -184,6 +240,32 @@ describe("Claude Code skills extension", () => {
 			{ name: "typescript-safety", description: "Claude Code skill: typescript-safety." },
 		])
 		expect(loaded.diagnostics.map((diagnostic) => diagnostic.message)).not.toContain("description is required")
+	})
+
+	it("omits Claude Code skills disabled by an enabled bundled skill from discovery", async () => {
+		writeRawSkill(join(dir, "home", ".claude", "skills", "xlsx", "SKILL.md"), "Office skill instructions.\n")
+		mkdirSync(join(dir, "project", ".claude"), { recursive: true })
+		const { handlers } = registerExtension()
+
+		process.env.KIMCHI_ENABLE_RESOURCES = "extensions.documents"
+		const disabled = await handlers.resources_discover?.({
+			type: "resources_discover",
+			cwd: join(dir, "project"),
+			reason: "startup",
+		})
+		// The only Claude Code skill is shadowed → nothing left to contribute.
+		expect(disabled).toBeUndefined()
+
+		delete process.env.KIMCHI_ENABLE_RESOURCES
+		const enabled = await handlers.resources_discover?.({
+			type: "resources_discover",
+			cwd: join(dir, "project"),
+			reason: "startup",
+		})
+		const skillPaths = (enabled as { skillPaths?: string[] } | undefined)?.skillPaths ?? []
+		expect(skillPaths).toHaveLength(1)
+		const loaded = loadSkillsFromDir({ dir: skillPaths[0] ?? "", source: "path" })
+		expect(loaded.skills).toMatchObject([{ name: "xlsx" }])
 	})
 
 	it("contributes Claude Code skill resources even when native project skills use the same name", async () => {

@@ -31,7 +31,10 @@ import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { pickReplacementSlug, readModelDeprecations } from "../../model-deprecation.js"
-import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/resolve-skill-roots.js"
+import {
+	collectBundledDisabledSkillNames,
+	resolveSkillPathsForDiscovery,
+} from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -712,7 +715,13 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			// every downstream surface (base prompt skills section, /skill:<name>,
 			// autocomplete, /resources) sees them. All discovery, filtering, and
 			// collision-avoidance logic lives in resolveSkillPathsForDiscovery.
-			const extraPaths = getConfiguredSkillResourcePaths(event.cwd, getSkillPathsFromConfig())
+			const extraPaths = getConfiguredSkillResourcePaths(event.cwd, getSkillPathsFromConfig(), {
+				// Bundled skills may shadow external skills by name while their own
+				// resource toggle is enabled (documents → Anthropic office skills);
+				// configured .claude paths are a second advertisement channel for the
+				// same tree, so the shadowing must gate this channel too.
+				excludeSkillNames: collectBundledDisabledSkillNames().keys(),
+			})
 			const skillPaths = resolveSkillPathsForDiscovery(event.cwd, { extraPaths })
 			if (skillPaths.length === 0) return undefined
 			return { skillPaths }

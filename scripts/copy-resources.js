@@ -91,6 +91,25 @@ if (!isDev) {
 		cpSync(bundledSkillsSrc, bundledSkillsDest, { recursive: true })
 	}
 
+	// Stage PDF.js data assets (cmaps + standard fonts) — the documents
+	// extension resolves them via resolveAuxiliaryFilesDir at runtime; a
+	// compiled binary has no node_modules to find them in.
+	const pdfjsDist = join(projectRoot, "node_modules", "pdfjs-dist")
+	const pdfjsDest = join(projectRoot, "dist", "share", "kimchi", "pdfjs")
+	for (const assetDir of ["cmaps", "standard_fonts"]) {
+		const src = join(pdfjsDist, assetDir)
+		if (!existsSync(src)) throw new Error(`pdfjs-dist assets missing: ${src}`)
+		cpSync(src, join(pdfjsDest, assetDir), { recursive: true })
+	}
+
+	// Stage the pdfium WASM — same story as pdfjs assets: packaged installs
+	// read it via share/kimchi/pdfium/pdfium.wasm (pdfium-wasm.ts).
+	const pdfiumWasmSrc = join(projectRoot, "node_modules", "@hyzyla", "pdfium", "dist", "pdfium.wasm")
+	const pdfiumDest = join(projectRoot, "dist", "share", "kimchi", "pdfium")
+	if (!existsSync(pdfiumWasmSrc)) throw new Error(`pdfium.wasm missing: ${pdfiumWasmSrc}`)
+	mkdirSync(pdfiumDest, { recursive: true })
+	cpSync(pdfiumWasmSrc, join(pdfiumDest, "pdfium.wasm"))
+
 	// Copy custom OAuth page templates
 	const oauthSrc = join(projectRoot, "resources", "oauth")
 	const oauthDest = join(projectRoot, "dist", "share", "kimchi", "oauth")

@@ -76,6 +76,8 @@ import contextAssemblyExtension from "./extensions/context-assembly.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
 import dapExtension from "./extensions/dap.js"
+import { defaultAtFileTmpDir, rewriteDocumentAtFileArgs } from "./extensions/documents/at-file.js"
+import documentsExtension, { DOCUMENTS_RESOURCE_ID } from "./extensions/documents/index.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import feedbackExtension from "./extensions/feedback/index.js"
@@ -184,6 +186,7 @@ import {
 import { syncPiAuth } from "./pi-auth.js"
 import resourcesExtension from "./resources/extension.js"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
+import { isResourceEnabled } from "./resources/store.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
@@ -597,7 +600,18 @@ try {
 			console.error(`Error: @file path must be a file, not a directory: ${atFileArgs.directoryArgs[0]}`)
 			process.exit(1)
 		}
-		const rawArgs = atFileArgs.args
+		let rawArgs = atFileArgs.args
+		// Documents @file rewriting (experimental): with the toggle on, binary
+		// document args are extracted to Markdown temp files before upstream pi
+		// inlines them as text. Toggle off = args pass through byte-identical.
+		if (isResourceEnabled(DOCUMENTS_RESOURCE_ID)) {
+			const rewritten = await rewriteDocumentAtFileArgs(rawArgs, {
+				cwd: process.cwd(),
+				tmpDir: defaultAtFileTmpDir(process.env.KIMCHI_CODING_AGENT_DIR),
+				isAtFileArg: isCliAtFileArg,
+			})
+			rawArgs = rewritten.args
+		}
 
 		// Parse Kimchi-local CLI flags once and strip virtual multi-model args
 		// before upstream pi-mono sees them (it does not recognize "multi-model"
@@ -816,6 +830,7 @@ try {
 				{ id: "tools.web_fetch", factory: webFetchExtension },
 				{ id: "tools.web_search", factory: webSearchExtension },
 				{ id: MEMORY_RESOURCE_ID, factory: memoryExtension },
+				{ id: DOCUMENTS_RESOURCE_ID, factory: documentsExtension },
 			] satisfies ManagedExtensionFactory[]),
 			modelSwitchExtension,
 			modelListExtension,

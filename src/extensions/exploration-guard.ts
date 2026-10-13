@@ -6,6 +6,7 @@ import { sendSteer } from "./steer-events.js"
 
 export const DEFAULT_READ_TOOLS = new Set([
 	"read",
+	"read_document",
 	"grep",
 	"find",
 	"ls",

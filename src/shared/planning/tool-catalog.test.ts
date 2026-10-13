@@ -40,6 +40,7 @@ const TOOL_NAMES = {
 		"grep",
 		"find",
 		"ls",
+		"read_document",
 		"skill",
 		"web_fetch",
 		"web_search",

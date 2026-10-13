@@ -1,9 +1,10 @@
-import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { resolveAuxiliaryFilesDir } from "../../auxiliary-files/resolver.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
+import { isResourceEnabled } from "../../resources/store.js"
 import { findNearestAncestorPath } from "../../utils/find-nearest-ancestor.js"
 
 /**
@@ -136,7 +137,10 @@ export function resolveSkillRoots(options: ResolveSkillRootsOptions): SkillRoot[
 
 	const bundled =
 		options.bundledDir === undefined ? resolveBundledSkillsDir(home, options.execPath) : options.bundledDir
-	if (bundled) pushRoot(bundled, "bundled")
+	if (bundled) {
+		const visible = visibleBundledDir(bundled)
+		if (visible) pushRoot(visible, "bundled")
+	}
 
 	pushRoot(resolveHarnessSkillsDir(home), "harness")
 
@@ -263,17 +267,114 @@ function collectSkillNames(dir: string, out: Set<string>): void {
 	}
 }
 
-function filterBundledSkills(bundledDir: string, existingSkillNames: Set<string>): string | undefined {
-	const bundledSkills = listSkillNames(bundledDir)
-	if (bundledSkills.length === 0) return undefined
-	const newSkills = bundledSkills.filter((name) => !existingSkillNames.has(name))
-	if (newSkills.length === 0) return undefined
+/**
+ * Bundled skills may carry `requires-resource: <id>` in their SKILL.md
+ * frontmatter. Such skills are advertised only while that resource toggle is
+ * enabled (e.g. the documents skill behind `extensions.documents`), which is
+ * what keeps a disabled experimental toggle's skill list identical to a
+ * build without the feature.
+ */
+function bundledSkillDisabledByResource(bundledDir: string, name: string): boolean {
+	try {
+		const frontmatter = readFileSync(join(bundledDir, name, "SKILL.md"), "utf-8")
+			.split("\n")
+			.slice(0, 30)
+			.join("\n")
+		const match = /^requires-resource:\s*(\S+)\s*$/m.exec(frontmatter)
+		if (!match) return false
+		return !isResourceEnabled(match[1])
+	} catch {
+		return false
+	}
+}
+
+/**
+ * Skills hidden on behalf of a visible bundled skill: a bundled skill may
+ * declare `disables-skills: <name, ...>` in its SKILL.md frontmatter to
+ * shadow same-named skills from external sources (the Claude Code skills
+ * path — ~/.claude/skills and trusted project .claude/skills). The list is
+ * inert while the declaring skill's own `requires-resource` toggle is off,
+ * so a disabled experimental toggle stays byte-identical to a build without
+ * the feature. The documents skill uses this to suppress the Anthropic
+ * office skills (xlsx/pdf/docx/pptx) whose pip/LibreOffice workflows
+ * contradict its native read_document guidance.
+ *
+ * Returns skill name → declaring skill name (for Skill-tool refusal text).
+ */
+export function collectBundledDisabledSkillNames(bundledDir?: string): Map<string, string> {
+	const disabled = new Map<string, string>()
+	const dir = bundledDir ?? resolveBundledSkillsDir()
+	if (!dir) return disabled
+	for (const name of listSkillNames(dir)) {
+		if (bundledSkillDisabledByResource(dir, name)) continue
+		for (const target of readDisablesSkillsNames(join(dir, name, "SKILL.md"))) {
+			if (!disabled.has(target)) disabled.set(target, name)
+		}
+	}
+	return disabled
+}
+
+function readDisablesSkillsNames(skillFilePath: string): string[] {
+	try {
+		const frontmatter = readFileSync(skillFilePath, "utf-8").split("\n").slice(0, 30).join("\n")
+		const match = /^disables-skills:[ \t]*(.+?)[ \t]*$/m.exec(frontmatter)
+		if (!match) return []
+		return match[1]
+			.split(",")
+			.map(normalizeDisablesSkillName)
+			.filter((name) => name !== "")
+	} catch {
+		return []
+	}
+}
+
+/** Mirror of the claude-code-skills name normalization so declared names
+ * match the names discovered from materialized skill dirs. */
+function normalizeDisablesSkillName(name: string): string {
+	return name
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+}
+
+function copySkillsToTempDir(bundledDir: string, names: string[]): string {
 	const tempDir = mkdtempSync(join(tmpdir(), "kimchi-bundled-skills-"))
 	process.once("exit", () => {
 		rmSync(tempDir, { recursive: true, force: true })
 	})
-	for (const name of newSkills) {
+	for (const name of names) {
 		cpSync(join(bundledDir, name), join(tempDir, name), { recursive: true })
 	}
 	return tempDir
+}
+
+/**
+ * The bundled root as it should be scanned: when any skill is gated off by
+ * `requires-resource`, route discovery through a STABLE temp copy without
+ * those skills (the raw dir would leak them into the prompt). Stability
+ * matters: fs watchers and palette-refresh dedupes key off the path, so a
+ * fresh mkdtemp per call re-triggers them on every resolve. The cache key
+ * includes the visible-skill set so a toggle flip computes a new path.
+ */
+const visibleBundledDirCache = new Map<string, string | undefined>()
+
+function visibleBundledDir(bundledDir: string): string | undefined {
+	const gated = listSkillNames(bundledDir).filter((name) => bundledSkillDisabledByResource(bundledDir, name))
+	if (gated.length === 0) return bundledDir
+	const visible = listSkillNames(bundledDir).filter((name) => !bundledSkillDisabledByResource(bundledDir, name))
+	if (visible.length === 0) return undefined
+	const key = `${resolve(bundledDir)}|${visible.slice().sort().join(",")}`
+	if (visibleBundledDirCache.has(key)) return visibleBundledDirCache.get(key)
+	const value = copySkillsToTempDir(bundledDir, visible)
+	visibleBundledDirCache.set(key, value)
+	return value
+}
+
+function filterBundledSkills(bundledDir: string, existingSkillNames: Set<string>): string | undefined {
+	const bundledSkills = listSkillNames(bundledDir).filter((name) => !bundledSkillDisabledByResource(bundledDir, name))
+	if (bundledSkills.length === 0) return undefined
+	const newSkills = bundledSkills.filter((name) => !existingSkillNames.has(name))
+	if (newSkills.length === 0) return undefined
+	return copySkillsToTempDir(bundledDir, newSkills)
 }

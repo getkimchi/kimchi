@@ -96,6 +96,10 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	{ name: "grep", modes: ["shared"] },
 	{ name: "find", modes: ["shared"] },
 	{ name: "ls", modes: ["shared"] },
+	// Document reading (PDF/DOCX/PPTX/XLSX). Registered only when the
+	// experimental `extensions.documents` resource is enabled — the catalog
+	// entry is a no-op against a tool set that doesn't contain it.
+	{ name: "read_document", modes: ["shared"] },
 	// claude-code-skills `Skill` loader — readFileSync on a skill file only, no
 	// writes. Read-only discovery tool, available in every mode/profile.
 	{ name: "skill", modes: ["shared"] },

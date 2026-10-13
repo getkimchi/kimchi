@@ -41,6 +41,7 @@ export function hasPendingPlanReview(runtime: FermentRuntime): boolean {
 export const PLANNING_TOOL_NAMES: ReadonlySet<string> = new Set([
 	// Read-only discovery tools
 	"read",
+	"read_document",
 	"grep",
 	"find",
 	"ls",
