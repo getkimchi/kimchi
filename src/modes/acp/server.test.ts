@@ -6072,20 +6072,20 @@ describe("newSession model state", () => {
 		expect(res.models).toBeDefined()
 		expect(res.models?.currentModelId).toBe("openai/gpt-4")
 		expect(res.models?.availableModels).toHaveLength(3)
-		// Sorted by modelId; the routing entry carries a description, the concrete models do not.
+		// Concrete models sorted by modelId; the deprecated routing entry sits last.
 		expect(res.models?.availableModels[0]).toEqual({
 			modelId: "anthropic/claude-3",
 			name: "Claude 3",
 		})
 		expect(res.models?.availableModels[1]).toEqual({
+			modelId: "openai/gpt-4",
+			name: "GPT-4",
+		})
+		expect(res.models?.availableModels[2]).toEqual({
 			modelId: "multi-model",
 			name: "Multi-model (kimi-k2.7)",
 			// Harness-side deprecation label + routing one-liner.
 			description: "[Deprecated] Routes each task to the best model, with an orchestrator and workers.",
-		})
-		expect(res.models?.availableModels[2]).toEqual({
-			modelId: "openai/gpt-4",
-			name: "GPT-4",
 		})
 	})
 
@@ -8860,11 +8860,11 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(res.models).toMatchObject({
 			currentModelId: "test/test-model",
 			availableModels: [
+				{ modelId: "test/test-model", name: "Test Model" },
 				{
 					modelId: "multi-model",
 					name: expect.stringMatching(/^Multi-model \(/),
 				},
-				{ modelId: "test/test-model", name: "Test Model" },
 			],
 		})
 	})

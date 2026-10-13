@@ -2412,18 +2412,25 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 	// self-describing — and a client that ignores the field still shows the name.
 	// Multi-model's deprecation label is harness-side: the virtual selection does
 	// not exist in the platform catalog, so no backend marker can carry it.
-	const options = [
-		{
-			value: "multi-model",
-			name: `Multi-model (${orchName})`,
-			description: `${MULTI_MODEL_DEPRECATION_LABEL} Routes each task to the best model, with an orchestrator and workers.`,
-		},
+	// Ordering mirrors sortModels() in src/models.ts: active entries sorted by
+	// ref first, deprecated entries last — deprecated lands at the bottom by
+	// flag, not by pinning a specific value.
+	const options: Array<{ value: string; name: string; description?: string | null; deprecated?: boolean }> = [
 		...modelRegistry
 			.getAvailable()
 			.map((m) =>
 				isAutoRoutedModel(m) ? autoModelOption(m, session.sessionId) : { value: refFromModel(m), name: m.name },
 			),
-	].sort((a, b) => a.value.localeCompare(b.value))
+		{
+			value: "multi-model",
+			name: `Multi-model (${orchName})`,
+			description: `${MULTI_MODEL_DEPRECATION_LABEL} Routes each task to the best model, with an orchestrator and workers.`,
+			deprecated: true,
+		},
+	]
+	options.sort(
+		(a, b) => Number(a.deprecated ?? false) - Number(b.deprecated ?? false) || a.value.localeCompare(b.value),
+	)
 	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
 	const currentValue = multiModelEnabled ? "multi-model" : refFromModel(session.model!)
 	return {
