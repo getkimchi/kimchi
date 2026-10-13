@@ -14,6 +14,10 @@
  * Mid-run safety: growth checks run on message_end (between messages, never
  * mid-stream), are time-throttled (default 30 s minimum between growth
  * collections), and a full collection is ~10–40 ms on a ~100 MiB heap.
+ * Cross-session safety: a module-level active-agent registry gates every
+ * collection on "no other session has a request in flight", so one session's
+ * checkpoint can never freeze another mid-request (Bun.gc is stop-the-world);
+ * idle timers are unref()ed so they never hold the event loop open.
  *
  * Knobs:
  *   - KIMCHI_IDLE_GC=off           disable entirely (escape hatch)
@@ -40,6 +44,19 @@ export function gcMinIntervalMs(): number {
 	return parseEnvInt("KIMCHI_GC_MIN_INTERVAL_MS", GC_MIN_INTERVAL_MS)
 }
 
+/**
+ * Module-level registry of agents with an in-flight turn. Every scheduler
+ * instance (one per session) registers its agent here; a collection only
+ * runs when no OTHER agent is mid-request — `Bun.gc(true)` is stop-the-world
+ * and would freeze any concurrent session (e.g. a second ACP session).
+ */
+const activeAgents = new Set<symbol>()
+
+/** Test-only: clear the cross-session registry so tests cannot pollute each other. */
+export function resetAdaptiveGcForTests(): void {
+	activeAgents.clear()
+}
+
 export function idleGcEnabled(): boolean {
 	return process.env.KIMCHI_IDLE_GC !== "off"
 }
@@ -53,6 +70,8 @@ export interface AdaptiveGcOptions {
 	minIntervalMs?: number
 	/** RSS reader, injectable for tests. */
 	rssOf?: () => number
+	/** Test hook: cross-session activity gate (defaults to the module registry). */
+	othersActive?: () => boolean
 }
 
 /**
@@ -71,6 +90,8 @@ export function createAdaptiveGcScheduler(
 	const growthBytes = options.growthBytes ?? gcGrowthBytes()
 	const minIntervalMs = options.minIntervalMs ?? gcMinIntervalMs()
 	const rssOf = options.rssOf ?? (() => process.memoryUsage().rss)
+	const othersActive = options.othersActive ?? (() => activeAgents.size > 1)
+	const agentToken = Symbol("adaptive-gc-agent")
 
 	let idleTimer: ReturnType<typeof setTimeout> | undefined
 	let baseline = rssOf()
@@ -94,19 +115,33 @@ export function createAdaptiveGcScheduler(
 		baseline = rssOf()
 	}
 
+	const armIdle = () => {
+		idleTimer = setTimeout(() => {
+			idleTimer = undefined
+			// Another session is mid-request: a stop-the-world collection now
+			// would freeze it. Re-arm and try again after the idle delay.
+			if (othersActive()) {
+				armIdle()
+				return
+			}
+			collect()
+		}, idleDelayMs)
+		// Never hold the event loop open just for a pending collection.
+		idleTimer.unref?.()
+	}
+
 	return {
 		onAgentEnd: () => {
+			activeAgents.delete(agentToken)
 			clearIdle()
 			if (idleDelayMs === 0) {
 				collect()
 				return
 			}
-			idleTimer = setTimeout(() => {
-				idleTimer = undefined
-				collect()
-			}, idleDelayMs)
+			armIdle()
 		},
 		onAgentStart: () => {
+			activeAgents.add(agentToken)
 			clearIdle()
 		},
 		onMessageEnd: () => {
@@ -115,6 +150,10 @@ export function createAdaptiveGcScheduler(
 			const now = Date.now()
 			if (now - lastGrowthGcAt < minIntervalMs) return
 			if (rssOf() - baseline >= growthBytes) {
+				// Cross-session gate: this session is between messages (a safe
+				// checkpoint for itself), but a full collection is stop-the-world —
+				// skip while any other session has a request in flight.
+				if (othersActive()) return
 				lastGrowthGcAt = now
 				collect()
 			}
@@ -137,8 +176,8 @@ const adaptiveGcExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 	// message_end is between messages — a safe mid-run checkpoint for the
 	// growth path (never mid-stream).
 	pi.on("message_end", () => scheduler.onMessageEnd())
-	// Session shutdown: nothing to collect into, just drop the timer.
-	pi.on("session_shutdown", () => scheduler.onAgentStart())
+	// Session shutdown: unregister the agent and drop any pending idle timer.
+	pi.on("session_shutdown", () => scheduler.onAgentEnd())
 }
 
 export default adaptiveGcExtension

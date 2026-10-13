@@ -45,6 +45,7 @@ import * as Diff from "diff"
 import type { BundledLanguage, BundledTheme } from "shiki"
 import type { TSchema } from "typebox"
 import { formatDuration } from "../extensions/format.js"
+import { resolveMarkerForDisplay } from "./display-budget.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
 import { TODO_TOOL_NAMES } from "./todos/tool.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
@@ -674,34 +675,42 @@ function patchToolExecutionRenderers(): void {
 
 	proto.getResultRenderer = function patchedGetResultRenderer() {
 		const toolName = typeof this?.toolName === "string" ? this.toolName : ""
+		let renderer: UpstreamResultRenderer | undefined
 		if (toolName === "bash_control" && typeof originalGetResultRenderer === "function") {
-			const renderer = originalGetResultRenderer.call(this)
-			if (renderer) return renderer
+			renderer = originalGetResultRenderer.call(this)
 		}
-		if (toolName === "apply_patch") {
-			return (
+		if (!renderer && toolName === "apply_patch") {
+			renderer = (
 				result: AgentToolResult<unknown>,
 				options: ToolRenderResultOptions,
 				theme: Theme,
 				ctx: ToolRenderContext,
 			) => renderApplyPatchResult({ content: result.content, details: result.details }, options.isPartial, theme, ctx)
 		}
-		if (shouldUseGenericToolRenderer(toolName)) {
-			return (
+		if (!renderer && shouldUseGenericToolRenderer(toolName)) {
+			renderer = (
 				result: AgentToolResult<unknown>,
 				options: ToolRenderResultOptions,
 				theme: Theme,
 				ctx: ToolRenderContext,
 			) => renderGenericToolResult(toolName, result, options, theme, ctx)
 		}
-		if (CORE_ERROR_TRUNCATING_TOOLS.has(toolName) && typeof originalGetResultRenderer === "function") {
+		if (!renderer && CORE_ERROR_TRUNCATING_TOOLS.has(toolName) && typeof originalGetResultRenderer === "function") {
 			// Only wrap when a renderer actually resolved: returning our wrapper for a
 			// tool with no renderer would make upstream render `addChild(undefined)`
 			// instead of its fallback text.
 			const upstreamResultRenderer = originalGetResultRenderer.call(this)
-			return upstreamResultRenderer ? createErrorTruncatingResultRenderer(toolName, upstreamResultRenderer) : undefined
+			renderer = upstreamResultRenderer
+				? createErrorTruncatingResultRenderer(toolName, upstreamResultRenderer)
+				: undefined
 		}
-		return typeof originalGetResultRenderer === "function" ? originalGetResultRenderer.call(this) : undefined
+		if (!renderer && typeof originalGetResultRenderer === "function") {
+			renderer = originalGetResultRenderer.call(this)
+		}
+		// Every renderer (upstream and ours) renders through this wrapper so
+		// externalized tool results never show their raw markers in the
+		// transcript — resolved from the mirror transiently, per render.
+		return renderer ? withMarkerResolution(renderer) : undefined
 	}
 
 	proto[TOOL_EXECUTION_PATCH_FLAG] = true
@@ -735,6 +744,31 @@ export function truncateValidationErrorForDisplay(
 }
 
 type UpstreamResultRenderer = NonNullable<ToolDefinition["renderResult"]>
+
+/**
+ * Wraps any result renderer so externalized tool results render their
+ * mirrored content instead of the raw `[kimchi-ext:tool]` marker. The
+ * resolution is a transient per-render read through the tool-output store
+ * (shallow clone — image blocks and the component's stored result are never
+ * touched), so the transcript stays marker-free without re-residenting the
+ * externalized text in long-lived UI state. Unreadable mirrors render the
+ * mirror-gone caption; non-marker text passes through untouched.
+ */
+export function withMarkerResolution(renderer: UpstreamResultRenderer): UpstreamResultRenderer {
+	return (result, options, theme, ctx) => {
+		if (!Array.isArray(result?.content)) return renderer(result, options, theme, ctx)
+		let changed = false
+		const content = result.content.map((block) => {
+			const text = (block as TextContent | undefined)?.text
+			if (typeof text !== "string") return block
+			const resolved = resolveMarkerForDisplay(text)
+			if (resolved === undefined) return block
+			changed = true
+			return { ...block, text: resolved }
+		})
+		return renderer(changed ? { ...result, content } : result, options, theme, ctx)
+	}
+}
 
 /**
  * Components rendered by the truncation wrapper. Ownership is tracked on the

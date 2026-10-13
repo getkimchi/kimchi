@@ -11,8 +11,14 @@
 #     mirror). `_serializableEntry` resolves the original content from the
 #     marker's own file reference at serialization time, so the JSONL stays
 #     the complete, self-contained resume source while the live entry keeps
-#     the marker. Removal: when pi exposes a content-persistence hook or lets
-#     extensions control persisted content.
+#     the marker. Marker reads are path-confined: tool markers must point at
+#     this process's mirror (globalThis.__kimchiToolOutputFile, published by
+#     kimchi's store) and log markers at a live session file — spoofed
+#     markers in tool output are never resolved. Tool markers restore the
+#     block-array shape. `_rewriteFile` restores marker entries from their
+#     own persisted line (mirror-free) and refreshes in-memory log-marker
+#     offsets to the rewritten layout. Removal: when pi exposes a
+#     content-persistence hook or lets extensions control persisted content.
 #   - Compaction-history display: SessionManager gains
 #     buildDisplayEntries() (full leaf path, pre-compaction entries kept) and
 #     the interactive mode renders it at the three transcript call sites
@@ -464,7 +470,7 @@ diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
 diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
 --- a/dist/core/session-manager.js
 +++ b/dist/core/session-manager.js
-@@ -163,6 +163,62 @@
+@@ -163,6 +163,70 @@
   * Project one selected session entry into LLM/runtime messages.
   * Plain custom entries are display/state entries and do not participate in context.
   */
@@ -486,6 +492,13 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
 +    } catch { return undefined; }
 +}
 +/**
++ * Kimchi patch: live session files owned by SessionManagers in this process.
++ * Marker resolution (log markers here, and the serializer's tool markers)
++ * only reads files in this set — a spoofed marker planted in tool output
++ * cannot read arbitrary local files into the context or session log.
++ */
++const kimchiLiveSessionFiles = new Set();
++/**
 + * Kimchi patch: resolve a `[kimchi-ext:log]` marker
 + * to its original MESSAGE (the JSONL line parsed once) with a bounded LRU —
 + * repeat reads (per-frame renders) are map hits with no re-parse. Returns
@@ -498,6 +511,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
 +    if (typeof handle?.file !== "string" ||
 +        !Number.isInteger(handle.offset) || !Number.isInteger(handle.length) ||
 +        handle.offset < 0 || handle.length < 0) return undefined;
++    if (!kimchiLiveSessionFiles.has(handle.file)) return undefined;
 +    const key = `${handle.file}@${handle.offset}:${handle.length}`;
 +    const hit = kimchiLogCache.get(key);
 +    if (hit) { kimchiLogCache.delete(key); kimchiLogCache.set(key, hit); return hit.message; }
@@ -527,7 +541,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
  export function sessionEntryToContextMessages(entry) {
      if (entry.type === "message") {
          const message = entry.message;
-@@ -172,6 +228,18 @@
+@@ -172,6 +236,18 @@
              message.content == null) {
              return [{ ...message, content: [] }];
          }
@@ -546,7 +560,23 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
          return [message];
      }
      if (entry.type === "custom_message") {
-@@ -682,6 +750,25 @@
+@@ -618,6 +694,7 @@
+     }
+     _setSessionFile(sessionFile, preloadedFileEntries) {
+         this.sessionFile = resolvePath(sessionFile);
++        kimchiLiveSessionFiles.add(this.sessionFile);
+         if (existsSync(this.sessionFile)) {
+             const entries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
+             // If file was empty, initialize it with a valid session header. If it was
+@@ -665,6 +742,7 @@
+         if (this.persist) {
+             const fileTimestamp = timestamp.replace(/[:.]/g, "-");
+             this.sessionFile = join(this.getSessionDir(), `${fileTimestamp}_${this.sessionId}.jsonl`);
++            kimchiLiveSessionFiles.add(this.sessionFile);
+         }
+         return this.sessionFile;
+     }
+@@ -682,6 +760,25 @@
              this.fileEntries = this.fileEntries.concat(entries);
          }
          this._buildIndex();
@@ -572,24 +602,121 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
      }
      _buildIndex() {
          this.byId.clear();
-@@ -705,12 +792,15 @@
+@@ -705,19 +802,111 @@
              }
          }
      }
 +	// Resolve all markers BEFORE truncating the file — log markers reference
-+    // offsets in this very file, which become invalid after truncation.
++    // offsets in this very file, which become invalid after truncation; tool
++    // markers restore from each entry's own persisted line (mirror-free).
      _rewriteFile() {
          if (!this.persist || !this.sessionFile)
              return;
-+        const resolved = this.fileEntries.map((entry) => this._serializableEntry(entry));
++        const offsets = this.__kimchiScanLogOffsets();
++        const resolved = this.fileEntries.map((entry) => this.__kimchiRewriteEntry(entry, offsets));
          const fd = openSync(this.sessionFile, "w");
          try {
 -            for (const entry of this.fileEntries) {
-+            for (const entry of resolved) {
-                 writeFileSync(fd, `${JSON.stringify(entry)}\n`);
+-                writeFileSync(fd, `${JSON.stringify(entry)}\n`);
++            let offset = 0;
++            for (let i = 0; i < resolved.length; i++) {
++                const line = `${JSON.stringify(resolved[i])}\n`;
++                writeFileSync(fd, line);
++                // Refresh in-memory log markers to the new layout — stale
++                // offsets would read another entry's bytes after the rewrite
++                // (visible on a second fork or a later display read).
++                const inMemory = this.fileEntries[i];
++                const block = inMemory && Array.isArray(inMemory.message?.content) && inMemory.message.content.length === 1
++                    ? inMemory.message.content[0] : undefined;
++                if (block && typeof block.text === "string" && block.text.startsWith(KIMCHI_LOG_MARKER_PREFIX)) {
++                    block.text = KIMCHI_LOG_MARKER_PREFIX + JSON.stringify({
++                        file: this.sessionFile,
++                        offset,
++                        length: Buffer.byteLength(line, "utf8") - 1,
++                    });
++                }
++                offset += Buffer.byteLength(line, "utf8");
              }
          }
-@@ -736,13 +826,74 @@
+         finally {
+             closeSync(fd);
+         }
+     }
++    /** Kimchi patch: scan the session log once and index every entry
++     *  line's byte range by entry id. Shared by compaction eviction (marker
++     *  creation) and _rewriteFile (marker restoration). Returns an empty
++     *  map when the file is missing (fresh branch target). */
++    __kimchiScanLogOffsets() {
++        const offsets = new Map();
++        try {
++            const fd = openSync(this.sessionFile, "r");
++            try {
++                const decoder = new StringDecoder("utf8");
++                const buffer = Buffer.allocUnsafe(1024 * 1024);
++                let pending = "";
++                let fileOffset = 0;
++                while (true) {
++                    const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
++                    if (bytesRead === 0) break;
++                    pending += decoder.write(buffer.subarray(0, bytesRead));
++                    let lineStart = 0;
++                    let newlineIndex = pending.indexOf("\n", lineStart);
++                    while (newlineIndex !== -1) {
++                        const line = pending.slice(lineStart, newlineIndex);
++                        const idMatch = line.match(/"id"\s*:\s*"([^"]+)"/);
++                        if (idMatch) offsets.set(idMatch[1], { offset: fileOffset, length: Buffer.byteLength(line, "utf8") });
++                        fileOffset += Buffer.byteLength(line, "utf8") + 1;
++                        lineStart = newlineIndex + 1;
++                        newlineIndex = pending.indexOf("\n", lineStart);
++                    }
++                    pending = pending.slice(lineStart);
++                }
++            } finally { closeSync(fd); }
++        } catch (error) { console.warn("[session-manager] log offset scan failed:", error); }
++        return offsets;
++    }
++    /** Kimchi patch: the rewrite-time counterpart of _serializableEntry.
++     *  Marker-bearing entries restore their full content from their own
++     *  persisted line in the CURRENT file (read before truncation) — the
++     *  session log is the durable source of truth, so the rewrite never
++     *  depends on the tmpdir mirror surviving. Entries without a persisted
++     *  line (never flushed) fall back to _serializableEntry's mirror read. */
++    __kimchiRewriteEntry(entry, offsets) {
++        const message = entry?.message;
++        if (!message || typeof message !== "object" ||
++            !Array.isArray(message.content) || message.content.length !== 1 ||
++            typeof message.content[0]?.text !== "string") {
++            return this._serializableEntry(entry);
++        }
++        const text = message.content[0].text;
++        if (!text.startsWith("[kimchi-ext:tool]") && !text.startsWith(KIMCHI_LOG_MARKER_PREFIX)) {
++            return this._serializableEntry(entry);
++        }
++        const loc = offsets.get(entry.id);
++        if (loc) {
++            const line = kimchiReadRange(this.sessionFile, loc.offset, loc.length);
++            if (line !== undefined) {
++                try {
++                    const parsed = JSON.parse(line);
++                    if (parsed && parsed.message && Array.isArray(parsed.message.content)) {
++                        return {
++                            ...entry,
++                            message: {
++                                ...message,
++                                content: parsed.message.content,
++                                __kimchiOriginalToolContent: undefined,
++                            },
++                        };
++                    }
++                } catch { /* fall through to the mirror fallback */ }
++            }
++        }
++        return this._serializableEntry(entry);
++    }
+     isPersisted() {
+         return this.persist;
+     }
+@@ -736,13 +925,82 @@
      getSessionFile() {
          return this.sessionFile;
      }
@@ -619,6 +746,12 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
 +            if (typeof handle?.file !== "string" ||
 +                !Number.isInteger(handle.offset) || !Number.isInteger(handle.length) ||
 +                handle.offset < 0 || handle.length < 0) return undefined;
++            // Path confinement: tool markers must point at this process's
++            // tool-output mirror (published by the kimchi store), and log
++            // markers at a live session file — spoofed markers planted in
++            // tool output are left as-is, never read.
++            if (isToolMarker && handle.file !== globalThis.__kimchiToolOutputFile) return undefined;
++            if (isLogMarker && !kimchiLiveSessionFiles.has(handle.file)) return undefined;
 +            const fd = openSync(handle.file, "r");
 +            let line;
 +            try {
@@ -626,7 +759,9 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
 +                const bytes = readSync(fd, buffer, 0, handle.length, handle.offset);
 +                line = buffer.subarray(0, bytes).toString("utf8");
 +            } finally { closeSync(fd); }
-+            if (isToolMarker) return line;
++            // Tool markers restore the block shape the original content had
++            // (a text-block array), matching the log-marker restoration.
++            if (isToolMarker) return [{ type: "text", text: line }];
 +            // Log markers reference the entry's JSONL line; the original
 +            // content is the parsed entry's message blocks, not the raw line.
 +            try {
@@ -665,7 +800,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
              }
              else {
                  // Mark as not flushed so when assistant arrives, all entries get written
-@@ -754,7 +905,7 @@
+@@ -754,7 +1012,7 @@
              const fd = openSync(this.sessionFile, "wx");
              try {
                  for (const e of this.fileEntries) {
@@ -674,7 +809,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
                  }
              }
              finally {
-@@ -763,7 +914,7 @@
+@@ -763,7 +1021,7 @@
              this.flushed = true;
          }
          else {
@@ -683,7 +818,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
          }
      }
      _appendEntry(entry) {
-@@ -815,6 +966,71 @@
+@@ -815,6 +1073,45 @@
          return entry.id;
      }
      /** Append a compaction summary as child of current leaf, then advance leaf. Returns entry id. */
@@ -698,35 +833,9 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
 +     */
 +    __kimchiEvictCompactedEntries(firstKeptEntryId) {
 +        if (!this.persist || !this.sessionFile || !firstKeptEntryId) return 0;
-+        // Build id -> {offset, length} by scanning the log once (compactions
++        // Index id -> {offset, length} by scanning the log once (compactions
 +        // are rare; the scan keeps the index fresh without write-time hooks).
-+        let offsets;
-+        try {
-+            offsets = new Map();
-+            const fd = openSync(this.sessionFile, "r");
-+            try {
-+                const decoder = new StringDecoder("utf8");
-+                const buffer = Buffer.allocUnsafe(1024 * 1024);
-+                let pending = "";
-+                let fileOffset = 0;
-+                while (true) {
-+                    const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
-+                    if (bytesRead === 0) break;
-+                    pending += decoder.write(buffer.subarray(0, bytesRead));
-+                    let lineStart = 0;
-+                    let newlineIndex = pending.indexOf("\n", lineStart);
-+                    while (newlineIndex !== -1) {
-+                        const line = pending.slice(lineStart, newlineIndex);
-+                        const idMatch = line.match(/"id"\s*:\s*"([^"]+)"/);
-+                        if (idMatch) offsets.set(idMatch[1], { offset: fileOffset, length: Buffer.byteLength(line, "utf8") });
-+                        fileOffset += Buffer.byteLength(line, "utf8") + 1;
-+                        lineStart = newlineIndex + 1;
-+                        newlineIndex = pending.indexOf("\n", lineStart);
-+                    }
-+                    pending = pending.slice(lineStart);
-+                }
-+            } finally { closeSync(fd); }
-+        } catch (error) { console.warn("[session-manager] eviction offset scan failed:", error); return 0; }
++        const offsets = this.__kimchiScanLogOffsets();
 +        // Walk the leaf path; evict message entries strictly BEFORE firstKeptEntryId.
 +        // The pre-cut entries are firstKept's ANCESTORS on the path — keep
 +        // walking past the cut point, then evict older message entries.
@@ -755,7 +864,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
      appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromHook, usage) {
          const entry = {
              type: "compaction",
-@@ -829,6 +1045,9 @@
+@@ -829,6 +1126,9 @@
              fromHook,
          };
          this._appendEntry(entry);
@@ -765,7 +874,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
          return entry.id;
      }
      /** Append a custom entry (for extensions) as child of current leaf, then advance leaf. Returns entry id. */
-@@ -974,6 +1193,17 @@
+@@ -974,6 +1274,17 @@
          return buildContextEntries(this.getEntries(), this.leafId, this.byId);
      }
      /**
@@ -783,6 +892,14 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
       * Build the session context (what gets sent to the LLM).
       * Uses tree traversal from current leaf.
       */
+@@ -1162,6 +1473,7 @@
+             this.fileEntries = [header, ...pathWithoutLabels, ...labelEntries];
+             this.sessionId = newSessionId;
+             this.sessionFile = newSessionFile;
++            kimchiLiveSessionFiles.add(this.sessionFile);
+             this._buildIndex();
+             // Only write the file now if it contains an assistant message.
+             // Otherwise defer to _persist(), which creates the file on the
 diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
 --- a/dist/core/tools/bash.js
 +++ b/dist/core/tools/bash.js

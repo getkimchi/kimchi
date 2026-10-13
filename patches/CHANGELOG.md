@@ -15,6 +15,40 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
 
 ---
 
+## @earendil-works/pi-coding-agent@0.85.1 (mid-version, additive) — marker confinement, rewrite offset refresh, mirror-free rewrite
+
+Not an upgrade: PR #1405 review round 2 hardened the session-manager patch while
+the pin stayed at 0.85.1. Rebasers can ignore this section; it exists to record
+the review-round decisions and the new traps.
+
+- **NEW — live-session-file registry + marker path confinement.** `resolveKimchiLogMessage`
+  and `_kimchiOriginalToolContent` now refuse markers whose file is not (a) a live
+  session file owned by a `SessionManager` in this process (module-level
+  `kimchiLiveSessionFiles`, registered in `_setSessionFile`/`newSession`/
+  `createBranchedSession`), or (b) for tool markers, exactly
+  `globalThis.__kimchiToolOutputFile` (published by kimchi's
+  `createToolOutputStore`). Spoofed markers planted in tool output can no longer
+  read arbitrary local files into the session log or context. Trap: the store
+  seam global is set lazily at first store creation — the serializer must treat
+  `undefined` as "reject all tool markers", never as "allow".
+- **CHANGED — tool markers restore the block-array shape.** `_kimchiOriginalToolContent`
+  returns `[{ type: "text", text: line }]` for tool markers, matching the log-marker
+  restoration, instead of the raw string. Structure survives the round trip now.
+- **CHANGED — `_rewriteFile` is mirror-free and refreshes in-memory markers.** Marker
+  entries restore their full content from their OWN persisted line (id-indexed byte
+  scan of the current file, pre-truncation) instead of the tmpdir mirror — the log
+  is the durable source of truth, so a dead mirror can no longer leak raw markers
+  into a forked log. While writing, in-memory `[kimchi-ext:log]` markers are
+  refreshed to the new offsets — stale offsets made a second fork (or post-rewrite
+  display reads) resolve ANOTHER entry's bytes. The id→offset scan is extracted as
+  `__kimchiScanLogOffsets()` and shared with the compaction eviction. Trap: the
+  branch flow reassigns `this.sessionFile` BEFORE `_rewriteFile`, so the scan of the
+  fresh target file is empty by design — the per-marker `_serializableEntry`
+  fallback (old file, still intact) covers that path; do not "fix" the scan to read
+  the old file.
+
+---
+
 ## @earendil-works/pi-coding-agent@0.85.1 (additive) — session-log durability for externalized tool results
 
 Kimchi session-memory work: the session manager now persists the FULL tool-result

@@ -1,61 +1,61 @@
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { DISPLAY_OUTPUT_MAX_CHARS, displayBudgetText } from "./display-budget.js"
-import { getToolOutputStore, makeMarker, resetToolOutputStoreForTests } from "./tool-output-store.js"
+import { resolveMarkerForDisplay } from "./display-budget.js"
+import {
+	createToolOutputStore,
+	makeMarker,
+	resetToolOutputStoreForTests,
+	setToolOutputStoreForTests,
+} from "./tool-output-store.js"
 
 describe("display-budget", () => {
+	let dir: string
+
 	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "display-budget-"))
 		delete process.env.KIMCHI_TOOL_OUTPUT_STORE
 		resetToolOutputStoreForTests()
 	})
 	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true })
 		resetToolOutputStoreForTests()
 	})
 
-	it("passes small text through unchanged", () => {
-		expect(displayBudgetText("hello")).toEqual({ display: "hello" })
-		expect(displayBudgetText("")).toEqual({ display: "" })
-	})
-
-	it("caps oversized text into a preview with the full value available", () => {
-		const big = "x".repeat(DISPLAY_OUTPUT_MAX_CHARS * 2)
-		const result = displayBudgetText(big)
-		expect(result.full).toBe(big)
-		expect(result.display.length).toBeLessThan(big.length)
-		expect(result.display).toContain("expand to view")
-	})
-
-	it("resolves externalized markers to their mirrored text (no raw marker in UI)", () => {
-		const store = getToolOutputStore()
-		if (!store) throw new Error("store disabled")
-		const text = `mirrored-copy-${"y".repeat(10_000)}`
+	it("resolves a store-issued marker to the full mirrored text", () => {
+		const store = createToolOutputStore(dir)
+		setToolOutputStoreForTests(store)
+		const text = "x".repeat(300_000)
 		const marker = makeMarker(store.record(text))
-		const result = displayBudgetText(marker)
-		expect(result.resolvedMirror).toBe(true)
-		expect(result.display).toBe(text)
-		expect(result.full).toBeUndefined()
+		expect(resolveMarkerForDisplay(marker)).toBe(text)
 	})
 
-	it("applies the display cap to resolved mirror content too", () => {
-		const store = getToolOutputStore()
-		if (!store) throw new Error("store disabled")
-		const text = `mirrored-copy-${"y".repeat(100_000)}`
-		const marker = makeMarker(store.record(text))
-		const result = displayBudgetText(marker)
-		expect(result.resolvedMirror).toBe(true)
-		expect(result.full).toBe(text)
-		expect(result.display).toContain("expand to view")
+	it("returns the mirror-gone caption when the mirror is unreadable", () => {
+		const store = createToolOutputStore(dir)
+		setToolOutputStoreForTests(store)
+		const marker = makeMarker(store.record("y".repeat(1_024)))
+		rmSync(store.stats().file, { force: true })
+		expect(resolveMarkerForDisplay(marker)).toBe("mirrored content unavailable (1024 bytes, source no longer readable)")
 	})
 
-	it("shows a caption instead of the raw marker when the mirror is gone", () => {
-		const store = getToolOutputStore()
-		if (!store) throw new Error("store disabled")
-		const handle = store.record("gone")
-		// Corrupt the mirror on disk.
-		const { rmSync } = require("node:fs") as typeof import("node:fs")
-		rmSync(handle.file, { force: true })
-		const result = displayBudgetText(makeMarker(handle))
-		expect(result.resolvedMirror).toBe(true)
-		expect(result.display).not.toContain("[kimchi-ext:tool]")
-		expect(result.display).toContain("unavailable")
+	it("rejects spoofed markers whose file is not the store's own artifacts file", () => {
+		const store = createToolOutputStore(dir)
+		setToolOutputStoreForTests(store)
+		store.record("real")
+		const spoofed = makeMarker({ file: "/etc/passwd", offset: 0, length: 128 })
+		// Not resolvable to file bytes: the caption path fires (no mirror there).
+		const resolved = resolveMarkerForDisplay(spoofed)
+		expect(resolved).toBe("mirrored content unavailable (128 bytes, source no longer readable)")
+		expect(resolved).not.toContain("root:")
+	})
+
+	it("returns undefined for non-marker text (including mid-text markers)", () => {
+		const store = createToolOutputStore(dir)
+		setToolOutputStoreForTests(store)
+		const marker = makeMarker(store.record("z".repeat(2_048)))
+		expect(resolveMarkerForDisplay("ordinary text")).toBeUndefined()
+		expect(resolveMarkerForDisplay(`prefix ${marker} suffix`)).toBeUndefined()
+		expect(resolveMarkerForDisplay("")).toBeUndefined()
 	})
 })

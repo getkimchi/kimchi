@@ -23,14 +23,14 @@ byte-identical to a session that never externalized anything.
 At write time, content above a threshold is **mirrored to disk** and the
 in-memory message carries only a compact marker (`[kimchi-ext:tool]{file,
 offset, length}`). The big string is never a long-lived JSC string — reads
-materialize it transiently (refcount-aware LRU cache) and release it.
+materialize it transiently (bounded LRU cache) and release it.
 
 | Surface | Behavior |
 |---|---|
 | `tool_result` | oversized tool output → marker (content-replacement result) |
-| `before_provider_request` | markers hydrated to full content (byte-identical) |
-| Session log | full content always (pi patch resolves markers at serialization) |
-| TUI display | `displayBudgetText` resolves markers and caps oversized previews (never shows raw markers) |
+| `before_provider_request` | markers hydrated to full content (byte-identical); the walk is shape-agnostic over the provider-native payload, so nested tool-result blocks (anthropic `tool_result.content`, gemini `functionResponse.response.output`, openai-responses `function_call_output.output`) hydrate the same as flat shapes |
+| Session log | full content always (pi patch resolves markers at serialization; at rewrite it restores from the log itself, so the invariant holds even if the mirror is gone) |
+| TUI display | every result renderer is wrapped (`withMarkerResolution`) — markers resolve to mirrored content (or a mirror-gone caption) at render time, transiently; the raw marker never reaches the transcript |
 | `/memory-residency` | shows mirror bytes, resident cache size, entry counts |
 
 Messages with tool calls, images, or thinking blocks are never externalized
@@ -97,6 +97,12 @@ Two collection paths (`src/extensions/adaptive-gc.ts`):
    Checks run on `message_end` (between messages, never mid-stream); a full
    collection is ~10–40 ms on a ~100 MiB heap.
 
+Cross-session safety: `Bun.gc(true)` is stop-the-world, and a long-lived
+process (the ACP server) can host several sessions. Every collection is
+gated on "no other session has a request in flight" (a module-level
+active-agent registry), and idle timers are `unref()`ed so they never hold
+the event loop open.
+
 Knobs: `KIMCHI_IDLE_GC=off` (disable), `KIMCHI_IDLE_GC_DELAY_MS`,
 `KIMCHI_GC_GROWTH_BYTES`, `KIMCHI_GC_MIN_INTERVAL_MS`.
 
@@ -115,6 +121,10 @@ Knobs: `KIMCHI_IDLE_GC=off` (disable), `KIMCHI_IDLE_GC_DELAY_MS`,
   `message_end` replacement was found to break live turns (the turn never
   completes after the content is replaced), so it was reverted. It needs an
   upstream content hook that does not disturb the stream pipeline.
+- Mirror co-location with the session file (survives OS temp cleaners
+  end-to-end, not just at rewrite). Needs per-session store lifecycle for
+  ACP multi-session correctness; today the mirror lives in `tmpdir()` and
+  the log-restore at rewrite covers the durable invariant.
 - "Expand full content" UI affordance in the transcript/tool panes.
 - ACP ext-method mirror for residency stats (`_kimchi.dev/memory_residency`).
 - True mmap accessor spike.

@@ -3,10 +3,17 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { initTheme, type Theme, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent"
 import { ProcessTerminal, Text, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui"
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createToolRenderContext } from "./__mocks__/tool-render-context.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
+import {
+	createToolOutputStore,
+	makeMarker,
+	resetToolOutputStoreForTests,
+	setToolOutputStoreForTests,
+	type ToolOutputStore,
+} from "./tool-output-store.js"
 import toolRenderingExtension, {
 	createErrorTruncatingResultRenderer,
 	formatToolTimer,
@@ -21,6 +28,7 @@ import toolRenderingExtension, {
 	summarizeOpenAiToolCall,
 	type ToolRenderContext,
 	toolHeader,
+	withMarkerResolution,
 	wrapMarkedLine,
 } from "./tool-rendering.js"
 
@@ -902,15 +910,23 @@ describe("validation error display truncation", () => {
 			expect(renderer).not.toBe(upstream)
 		})
 
-		it("does not wrap renderers for tools outside the truncating set", () => {
-			const upstream = () => new Text("upstream", 0, 0)
+		it("wraps renderers for tools outside the truncating set with the marker resolver only", () => {
+			const upstream = vi.fn((..._args: unknown[]) => new Text("upstream", 0, 0))
 			const renderer = resolveResultRenderer({
 				toolName: "bash",
 				builtInToolDefinition: undefined,
 				toolDefinition: { name: "bash", renderResult: upstream },
 			})
 
-			expect(renderer).toBe(upstream)
+			// Every renderer now goes through the marker-resolution wrapper (so
+			// externalized results never render raw markers) — but NOT the error
+			// truncator. Marker-free content delegates to upstream untouched, by
+			// reference.
+			expect(renderer).not.toBe(upstream)
+			const result = { content: [{ type: "text", text: "plain output" }] }
+			renderer(result, { expanded: false, isPartial: false }, plainTheme, makeErrorCtx())
+			expect(upstream).toHaveBeenCalledTimes(1)
+			expect(upstream.mock.calls[0]?.[0]).toBe(result)
 		})
 	})
 
@@ -922,5 +938,92 @@ describe("validation error display truncation", () => {
 		const second = renderer(errorResult(validationError), { expanded: false, isPartial: false }, plainTheme, errorCtx)
 
 		expect(second).toBe(first)
+	})
+})
+
+describe("tool-rendering marker resolution", () => {
+	let dir: string
+	let store: ToolOutputStore
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "tool-rendering-marker-"))
+		delete process.env.KIMCHI_TOOL_OUTPUT_STORE
+		store = createToolOutputStore(dir)
+		setToolOutputStoreForTests(store)
+	})
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true })
+		resetToolOutputStoreForTests()
+		delete process.env.KIMCHI_TOOL_OUTPUT_STORE
+	})
+
+	interface CaptureBlock {
+		type?: string
+		text?: string
+		[key: string]: unknown
+	}
+
+	/** Capture the result the wrapped renderer receives; render a stub component. */
+	function captureRenderer() {
+		const received: Array<{ content: CaptureBlock[]; details?: unknown }> = []
+		const renderer = (result: { content: CaptureBlock[]; details?: unknown }) => {
+			received.push(result)
+			return {} as never
+		}
+		return { received, renderer: renderer as never }
+	}
+
+	it("resolves an externalized tool result's marker to the mirrored full text", () => {
+		const text = "x".repeat(300_000)
+		const marker = makeMarker(store.record(text))
+		const { received, renderer } = captureRenderer()
+		const wrapped = withMarkerResolution(renderer)
+		const result = { content: [{ type: "text", text: marker }], details: undefined }
+		wrapped(result as never, { expanded: false, isPartial: false } as never, {} as never, {} as never)
+		expect(received[0].content).toEqual([{ type: "text", text }])
+		// The caller's result object is never mutated (transient shallow clone).
+		expect(String(result.content[0]?.text)).toBe(marker)
+	})
+
+	it("renders the mirror-gone caption instead of the raw marker when the mirror is unreadable", () => {
+		const marker = makeMarker(store.record("y".repeat(2_048)))
+		rmSync(store.stats().file, { force: true })
+		const { received, renderer } = captureRenderer()
+		const wrapped = withMarkerResolution(renderer)
+		wrapped(
+			{ content: [{ type: "text", text: marker }] } as never,
+			{ expanded: false, isPartial: false } as never,
+			{} as never,
+			{} as never,
+		)
+		expect(received[0].content).toEqual([
+			{ type: "text", text: "mirrored content unavailable (2048 bytes, source no longer readable)" },
+		])
+	})
+
+	it("passes non-marker content through untouched and by reference", () => {
+		const { received, renderer } = captureRenderer()
+		const wrapped = withMarkerResolution(renderer)
+		const imageBlock = { type: "image", mimeType: "image/png", data: "AAAA" }
+		const textBlock = { type: "text", text: "ordinary output" }
+		const result = { content: [textBlock, imageBlock] }
+		wrapped(result as never, { expanded: false, isPartial: false } as never, {} as never, {} as never)
+		expect(received[0]).toBe(result) // no clone when nothing resolved
+		expect(received[0].content[0]).toBe(textBlock)
+		expect(received[0].content[1]).toBe(imageBlock)
+	})
+
+	it("leaves mid-text markers untouched (exact-marker contract)", () => {
+		const marker = makeMarker(store.record("z".repeat(2_048)))
+		const { received, renderer } = captureRenderer()
+		const wrapped = withMarkerResolution(renderer)
+		const withMidText = `prefix ${marker} suffix`
+		wrapped(
+			{ content: [{ type: "text", text: withMidText }] } as never,
+			{ expanded: false, isPartial: false } as never,
+			{} as never,
+			{} as never,
+		)
+		expect(received[0].content).toEqual([{ type: "text", text: withMidText }])
 	})
 })

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { createAdaptiveGcScheduler, idleGcEnabled } from "./adaptive-gc.js"
+import { createAdaptiveGcScheduler, idleGcEnabled, resetAdaptiveGcForTests } from "./adaptive-gc.js"
 
 describe("adaptive-gc", () => {
 	beforeEach(() => {
@@ -7,6 +7,7 @@ describe("adaptive-gc", () => {
 		delete process.env.KIMCHI_IDLE_GC_DELAY_MS
 		delete process.env.KIMCHI_GC_GROWTH_BYTES
 		delete process.env.KIMCHI_GC_MIN_INTERVAL_MS
+		resetAdaptiveGcForTests()
 	})
 	afterEach(() => {
 		vi.useRealTimers()
@@ -54,6 +55,50 @@ describe("adaptive-gc", () => {
 			const gather = vi.fn()
 			const scheduler = createAdaptiveGcScheduler(gather, { idleDelayMs: 0, rssOf: () => 100 })
 			scheduler.onAgentEnd()
+			expect(gather).toHaveBeenCalledTimes(1)
+		})
+
+		it("unrefs the idle timer so it never holds the event loop open", () => {
+			// Stub setTimeout (no fake timers — we need to observe the real
+			// unref() call on the object the scheduler receives).
+			const realSetTimeout = globalThis.setTimeout
+			let unrefCalls = 0
+			let armed: unknown
+			const stub = ((handler: TimerHandler, timeout?: number) => {
+				armed = realSetTimeout(handler, timeout ?? 0)
+				return {
+					unref: () => {
+						unrefCalls += 1
+					},
+				}
+			}) as unknown as typeof setTimeout
+			const globalScope = globalThis as { setTimeout: typeof setTimeout }
+			const saved = globalScope.setTimeout
+			globalScope.setTimeout = stub
+			try {
+				const gather = vi.fn()
+				createAdaptiveGcScheduler(gather, { idleDelayMs: 5_000, rssOf: () => 100 }).onAgentEnd()
+				expect(unrefCalls).toBe(1)
+			} finally {
+				globalScope.setTimeout = saved
+				if (armed !== undefined) clearTimeout(armed as Parameters<typeof clearTimeout>[0])
+			}
+		})
+
+		it("defers the idle collection while another session is active, then collects once alone", () => {
+			vi.useFakeTimers()
+			const gather = vi.fn()
+			let othersActive = true
+			const scheduler = createAdaptiveGcScheduler(gather, {
+				idleDelayMs: 5_000,
+				rssOf: () => 100,
+				othersActive: () => othersActive,
+			})
+			scheduler.onAgentEnd()
+			vi.advanceTimersByTime(5_000) // fires into a busy window: re-arms, no collection
+			expect(gather).not.toHaveBeenCalled()
+			othersActive = false
+			vi.advanceTimersByTime(5_000) // next window: alone → collects
 			expect(gather).toHaveBeenCalledTimes(1)
 		})
 	})
@@ -122,6 +167,41 @@ describe("adaptive-gc", () => {
 			vi.advanceTimersByTime(25_000)
 			scheduler.onMessageEnd() // 35s later: fires
 			expect(gather).toHaveBeenCalledTimes(2)
+		})
+
+		it("gates growth collections while another session has a request in flight", () => {
+			const gather = vi.fn()
+			let rss = 100
+			let othersActive = true
+			const scheduler = createAdaptiveGcScheduler(gather, {
+				growthBytes: 50,
+				minIntervalMs: 0,
+				rssOf: () => rss,
+				othersActive: () => othersActive,
+			})
+			rss = 200 // crosses the threshold
+			scheduler.onMessageEnd() // another session mid-request: deferred
+			expect(gather).not.toHaveBeenCalled()
+			othersActive = false
+			scheduler.onMessageEnd() // alone now: collects
+			expect(gather).toHaveBeenCalledTimes(1)
+		})
+
+		it("two real schedulers gate each other through the module registry", () => {
+			const gatherA = vi.fn()
+			const gatherB = vi.fn()
+			let rss = 100
+			const a = createAdaptiveGcScheduler(gatherA, { growthBytes: 50, minIntervalMs: 0, rssOf: () => rss })
+			const b = createAdaptiveGcScheduler(gatherB, { growthBytes: 50, minIntervalMs: 0, rssOf: () => rss })
+			a.onAgentStart()
+			b.onAgentStart() // both sessions mid-turn → registry size 2
+			rss = 200 // crosses the threshold
+			a.onMessageEnd() // A is between messages, but B is mid-request: gated
+			expect(gatherA).not.toHaveBeenCalled()
+			b.onAgentEnd() // B goes idle → registry size 1
+			a.onMessageEnd() // now A is the only active agent: collects
+			expect(gatherA).toHaveBeenCalledTimes(1)
+			a.onAgentEnd() // cleanup
 		})
 
 		it("a collection error is surfaced, not swallowed", () => {

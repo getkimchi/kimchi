@@ -78,28 +78,36 @@ export function parseMarker(text: string): ToolOutputHandle | undefined {
 interface CacheEntry {
 	text: string
 	lastUsed: number
-	pins: number
 }
 
 export interface ToolOutputStore {
 	/** Append `text` to the artifacts file and return its mirror handle. */
 	record(text: string): ToolOutputHandle
 	/**
-	 * Lazy range read of a handle's content through the refcount-aware LRU
+	 * Lazy range read of a handle's content through the bounded LRU
 	 * cache. Returns `undefined` when the mirror is missing or out of range
 	 * (caller falls back to the session log).
 	 */
 	read(handle: ToolOutputHandle): string | undefined
-	/** Prevent an entry from being evicted while a caller holds the text. */
-	pin(handle: ToolOutputHandle): void
-	/** Release a previously pinned entry so it can be evicted again. */
-	unpin(handle: ToolOutputHandle): void
 	stats(): { file: string; size: number; cacheEntries: number; cacheBytes: number }
+}
+
+/**
+ * Global seam consumed by the pi patch (session-manager serializer): the one
+ * file this process's store issues handles into. The patch's persistence
+ * path only resolves `[kimchi-ext:tool]` markers pointing at this exact file,
+ * so spoofed markers in tool output cannot exfiltrate arbitrary files into
+ * the session log.
+ */
+declare global {
+	var __kimchiToolOutputFile: string | undefined
 }
 
 export function createToolOutputStore(dir: string, cacheBytes = toolOutputCacheBytes()): ToolOutputStore {
 	mkdirSync(dir, { recursive: true })
 	const file = join(dir, `tool-outputs-${process.pid}.log`)
+	// Publish the confinement anchor for the patch-side serializer (see above).
+	globalThis.__kimchiToolOutputFile = file
 	let size = existsSync(file) ? statSync(file).size : 0
 	const cache = new Map<string, CacheEntry>()
 	let cacheBytesUsed = 0
@@ -108,9 +116,7 @@ export function createToolOutputStore(dir: string, cacheBytes = toolOutputCacheB
 
 	const evictUntilFits = (incomingBytes: number): void => {
 		if (cacheBytes <= 0 || cacheBytesUsed + incomingBytes <= cacheBytes) return
-		const victims = [...cache.entries()]
-			.filter(([, entry]) => entry.pins === 0)
-			.sort((a, b) => a[1].lastUsed - b[1].lastUsed)
+		const victims = [...cache.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed)
 		for (const [key, entry] of victims) {
 			if (cacheBytesUsed + incomingBytes <= cacheBytes) break
 			cache.delete(key)
@@ -159,19 +165,11 @@ export function createToolOutputStore(dir: string, cacheBytes = toolOutputCacheB
 			if (cacheBytes > 0 && handle.length <= cacheBytes) {
 				evictUntilFits(handle.length)
 				if (cacheBytesUsed + handle.length <= cacheBytes) {
-					cache.set(key, { text, lastUsed: Date.now(), pins: 0 })
+					cache.set(key, { text, lastUsed: Date.now() })
 					cacheBytesUsed += handle.length
 				}
 			}
 			return text
-		},
-		pin(handle) {
-			const entry = cache.get(keyOf(handle))
-			if (entry) entry.pins += 1
-		},
-		unpin(handle) {
-			const entry = cache.get(keyOf(handle))
-			if (entry && entry.pins > 0) entry.pins -= 1
 		},
 		stats() {
 			return { file, size, cacheEntries: cache.size, cacheBytes: cacheBytesUsed }
@@ -208,7 +206,14 @@ export function readMarkerText(text: string): string | undefined {
 	return store.read(handle)
 }
 
-/** Test-only: forget the singleton so a fresh store (and tmp dir) is created. */
+/** Test-only: forget the singleton (and the published confinement anchor) so a fresh store is created. */
 export function resetToolOutputStoreForTests(): void {
 	singletonStore = undefined
+	globalThis.__kimchiToolOutputFile = undefined
+}
+
+/** Test-only: install a specific store as the process singleton (read seam). */
+export function setToolOutputStoreForTests(store: ToolOutputStore | undefined): void {
+	singletonStore = store
+	globalThis.__kimchiToolOutputFile = store?.stats().file
 }

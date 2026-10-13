@@ -58,23 +58,20 @@ describe("tool-output-store", () => {
 		expect(store.read(h3)).toBe(big)
 	})
 
-	it("pinned entries survive eviction until unpinned", () => {
+	it("pinned-entry behavior removed: LRU eviction applies to every cached entry", () => {
+		// The pin/unpin refcount mechanism was dead code (no production callers)
+		// and was removed. What remains observable: pure LRU eviction by age.
 		const store = createToolOutputStore(dir, 50)
 		const h1 = store.record("y".repeat(40))
-		store.read(h1) // cache h1 (40B ≤ 50)
-		store.pin(h1)
+		store.read(h1) // cached (40B ≤ 50)
 		const h2 = store.record("q".repeat(40))
-		store.read(h2) // must evict h1 to fit h2 — but h1 is pinned
-		// h1 stays cached despite h2's read; h2 could not be cached (h1 pinned
-		// fills the budget) or h2 replaced nothing. Verify h1 remains in cache.
-		expect(store.read(h1)).toBe("y".repeat(40))
-		// The distinguishing assertion: with pin active, h1 is still in the
-		// cache (read from cache, not disk). Remove pin and verify h2's read
-		// can now evict h1.
-		store.unpin(h1)
+		store.read(h2) // evicts h1 (older) to fit the 50-byte budget
+		expect(store.stats().cacheEntries).toBe(1)
 		const h3 = store.record("r".repeat(40))
-		store.read(h3) // evicts h1 (now unpinned, oldest)
-		expect(store.stats().cacheEntries).toBeLessThanOrEqual(1)
+		store.read(h3) // evicts h2 (older)
+		expect(store.stats().cacheEntries).toBe(1)
+		// evicted handles stay readable through direct reads
+		expect(store.read(h1)).toBe("y".repeat(40))
 	})
 
 	it("does not cache entries larger than the budget (direct read only)", () => {
@@ -120,6 +117,11 @@ describe("tool-output-store", () => {
 		expect(parseMarker(`${TOOL_OUTPUT_MARKER_PREFIX}not-json`)).toBeUndefined()
 		expect(parseMarker(`${TOOL_OUTPUT_MARKER_PREFIX}{"file":"/x","offset":-1,"length":3}`)).toBeUndefined()
 		expect(parseMarker(`${TOOL_OUTPUT_MARKER_PREFIX}{"file":"/x","offset":0,"length":1.5}`)).toBeUndefined()
+	})
+
+	it("publishes the artifacts file as the patch-serializer confinement anchor", () => {
+		const store = createToolOutputStore(dir)
+		expect(globalThis.__kimchiToolOutputFile).toBe(store.stats().file)
 	})
 
 	it("persists records to the artifacts file on disk (mirror durability)", () => {

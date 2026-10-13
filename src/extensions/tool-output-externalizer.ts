@@ -5,9 +5,15 @@
  *   1. `tool_result` — oversized tool results are mirrored to disk (ToolOutputStore)
  *      and the in-memory message content is replaced with a compact marker
  *      (returned through the event's content-replacement contract).
- *   3. `before_provider_request` — any marker in an outgoing payload is hydrated
- *      back to the full text before the request leaves, so the model always sees
- *      byte-identical content (the agent quality invariant).
+ *   2. `before_provider_request` — any byte-exact marker anywhere in the outgoing
+ *      payload is hydrated back to the full text before the request leaves, so
+ *      the model always sees byte-identical content (the agent quality invariant).
+ *      The walk is a graph traversal rather than a per-provider shape match:
+ *      provider conversions nest tool results differently (anthropic tucks them
+ *      into `tool_result.content`, gemini into `functionResponse.response.output`,
+ *      openai keeps a flat string), and the marker grammar itself (prefix + strict
+ *      JSON.parse of the remainder) only ever matches whole strings — text merely
+ *      containing a marker is left untouched.
  *
  * Durability: the session log keeps the full content (a companion pi patch — see
  * `patches/@earendil-works__pi-coding-agent` — resolves markers at serialization
@@ -51,39 +57,61 @@ function allTextContent(content: unknown[]): string | undefined {
 }
 
 /**
- * Walk every text-bearing block of the converted messages in place and apply
- * `transform` to each text value. Returns true when at least one text was
- * replaced with a different value.
+ * Walk an object graph in place and apply `transform` to every string value.
+ * Provider payloads are plain JSON-serializable trees (they are about to be
+ * stringified for the request), so a recursive walk is safe; `transform` only
+ * fires on strings it rewrites, and marker hydration only ever matches whole
+ * strings (see parseMarker). Returns true when at least one string changed.
  */
-export function transformMessageTexts(messages: ReadonlyArray<unknown>, transform: (text: string) => string): boolean {
+export function transformGraphTexts(root: unknown, transform: (text: string) => string): boolean {
 	let changed = false
-	for (const raw of messages) {
-		if (!raw || typeof raw !== "object") continue
-		const message = raw as { content?: unknown }
-		if (typeof message.content === "string") {
-			const next = transform(message.content)
-			if (next !== message.content) {
-				message.content = next
-				changed = true
+	const visit = (node: unknown): void => {
+		if (Array.isArray(node)) {
+			for (let i = 0; i < node.length; i++) {
+				const value = node[i]
+				if (typeof value === "string") {
+					const next = transform(value)
+					if (next !== value) {
+						node[i] = next
+						changed = true
+					}
+				} else if (value !== null && typeof value === "object") {
+					visit(value)
+				}
 			}
-			continue
+			return
 		}
-		if (!Array.isArray(message.content)) continue
-		for (const block of message.content) {
-			if (!isTextBlock(block) || typeof block.text !== "string") continue
-			const next = transform(block.text)
-			if (next !== block.text) {
-				block.text = next
-				changed = true
+		if (node !== null && typeof node === "object") {
+			for (const key of Object.keys(node)) {
+				const holder = node as Record<string, unknown>
+				const value = holder[key]
+				if (typeof value === "string") {
+					const next = transform(value)
+					if (next !== value) {
+						holder[key] = next
+						changed = true
+					}
+				} else if (value !== null && typeof value === "object") {
+					visit(value)
+				}
 			}
 		}
 	}
+	visit(root)
 	return changed
+}
+
+/**
+ * Hydrate markers in a messages array (unified or provider-converted shape).
+ * Kept for callers/tests that operate on the message list; the graph walk
+ * handles any nesting the provider conversion introduced.
+ */
+export function transformMessageTexts(messages: ReadonlyArray<unknown>, transform: (text: string) => string): boolean {
+	return transformGraphTexts(messages, transform)
 }
 
 export interface ToolOutputExternalizerState {
 	store: ToolOutputStore
-	handlesByToolCallId: Map<string, ToolOutputHandle>
 }
 
 /**
@@ -94,8 +122,7 @@ export function createToolOutputExternalizer(): ToolOutputExternalizerState | un
 	if (!toolOutputStoreEnabled()) return undefined
 	const store = getToolOutputStore()
 	if (!store) return undefined
-	const handlesByToolCallId = new Map<string, ToolOutputHandle>()
-	return { store, handlesByToolCallId }
+	return { store }
 }
 
 /**
@@ -104,7 +131,6 @@ export function createToolOutputExternalizer(): ToolOutputExternalizerState | un
  */
 function externalizeText(
 	text: string,
-	key: string,
 	state: ToolOutputExternalizerState,
 	errorPrefix: string,
 ): { content: [{ type: "text"; text: string }] } | undefined {
@@ -116,7 +142,6 @@ function externalizeText(
 		console.error(`${errorPrefix} mirror write failed:`, error)
 		return undefined
 	}
-	state.handlesByToolCallId.set(key, handle)
 	return { content: [{ type: "text", text: makeMarker(handle) }] }
 }
 
@@ -130,12 +155,30 @@ export function handleToolResult(
 ): { content: [{ type: "text"; text: string }] } | undefined {
 	const text = allTextContent(event.content)
 	if (text === undefined) return undefined
-	return externalizeText(text, event.toolCallId, state, "[tool-output-externalizer]")
+	return externalizeText(text, state, "[tool-output-externalizer]")
 }
 
 /** Hydrate markers in an outgoing request payload back to full content. */
 export function hydrateMarkers(messages: ReadonlyArray<unknown>, state: ToolOutputExternalizerState): boolean {
-	return transformMessageTexts(messages, (text) => {
+	return transformGraphTexts(messages, (text) => {
+		const handle = parseMarker(text)
+		if (!handle) return text
+		const full = state.store.read(handle)
+		if (full === undefined) {
+			console.warn(`[tool-output-externalizer] mirror read failed for ${handle.file}@${handle.offset}; leaving marker`)
+			return text
+		}
+		return full
+	})
+}
+
+/**
+ * Hydrate markers anywhere in a full provider request payload (messages,
+ * contents, system, tools — wherever the provider conversion nested the text).
+ * See transformGraphTexts for why the walk is shape-agnostic.
+ */
+export function hydratePayloadMarkers(payload: Record<string, unknown>, state: ToolOutputExternalizerState): boolean {
+	return transformGraphTexts(payload, (text) => {
 		const handle = parseMarker(text)
 		if (!handle) return text
 		const full = state.store.read(handle)
@@ -156,9 +199,7 @@ const toolOutputExternalizerExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 	pi.on("before_provider_request", (event: unknown) => {
 		const payload = (event as Record<string, unknown> | null)?.payload as Record<string, unknown> | null
 		if (!payload || typeof payload !== "object") return
-		const messages = payload.messages
-		if (!Array.isArray(messages)) return
-		if (hydrateMarkers(messages, state)) return payload
+		if (hydratePayloadMarkers(payload, state)) return payload
 		return undefined
 	})
 }

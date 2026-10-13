@@ -3,7 +3,12 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ToolResultEvent } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { handleToolResult, hydrateMarkers, type ToolOutputExternalizerState } from "./tool-output-externalizer.js"
+import {
+	handleToolResult,
+	hydrateMarkers,
+	hydratePayloadMarkers,
+	type ToolOutputExternalizerState,
+} from "./tool-output-externalizer.js"
 import { createToolOutputStore, parseMarker, TOOL_OUTPUT_EXTERNALIZE_BYTES } from "./tool-output-store.js"
 
 const ENV_KEYS = ["KIMCHI_TOOL_OUTPUT_STORE", "KIMCHI_TOOL_OUTPUT_EXTERNALIZE_BYTES"]
@@ -22,7 +27,7 @@ describe("tool-output-externalizer", () => {
 		dir = mkdtempSync(join(tmpdir(), "tool-output-externalizer-"))
 		delete process.env.KIMCHI_TOOL_OUTPUT_STORE
 		process.env.KIMCHI_TOOL_OUTPUT_EXTERNALIZE_BYTES = String(TOOL_OUTPUT_EXTERNALIZE_BYTES)
-		state = { store: createToolOutputStore(dir), handlesByToolCallId: new Map() }
+		state = { store: createToolOutputStore(dir) }
 	})
 	afterEach(() => {
 		rmSync(dir, { recursive: true, force: true })
@@ -37,13 +42,11 @@ describe("tool-output-externalizer", () => {
 		const handle = parseMarker(marker)
 		expect(handle).toBeDefined()
 		expect(handle ? state.store.read(handle) : undefined).toBe(above)
-		expect(state.handlesByToolCallId.get("call_1")).toEqual(handle)
 	})
 
 	it("leaves below-threshold results untouched", () => {
 		const event = resultEvent("call_small", [{ type: "text", text: below }])
 		expect(handleToolResult(event, state)).toBeUndefined()
-		expect(state.handlesByToolCallId.size).toBe(0)
 	})
 
 	it("does not externalize mixed content (text + image blocks)", () => {
@@ -74,6 +77,103 @@ describe("tool-output-externalizer", () => {
 		const blocks2 = messages[2].content as Array<{ type: string; text: string }>
 		expect(blocks0[0].text).toBe(above)
 		expect(blocks2[0].text).toBe(above)
+	})
+
+	it("hydrates markers nested in anthropic-shaped payloads (tool_result.content)", () => {
+		const event = resultEvent("call_anthropic", [{ type: "text", text: above }])
+		const marker = handleToolResult(event, state)?.content[0].text ?? ""
+		// Anthropic conversion nests the tool result inside a user message's
+		// tool_result block; content may be a plain string or a text-block array.
+		const payload = {
+			model: "claude-x",
+			system: "You are a harness.",
+			messages: [
+				{
+					role: "user",
+					content: [
+						{
+							type: "tool_result",
+							tool_use_id: "call_anthropic",
+							content: [{ type: "text", text: marker }],
+						},
+						{ type: "text", text: "what did the tool say?" },
+					],
+				},
+			],
+		}
+		expect(hydratePayloadMarkers(payload, state)).toBe(true)
+		const nested = payload.messages[0].content[0].content as Array<{ type: string; text: string }>
+		expect(nested[0].text).toBe(above)
+		expect(JSON.stringify(payload)).not.toContain(marker)
+	})
+
+	it("hydrates markers nested in anthropic-shaped payloads (string content)", () => {
+		const event = resultEvent("call_str", [{ type: "text", text: above }])
+		const marker = handleToolResult(event, state)?.content[0].text ?? ""
+		const payload = {
+			messages: [
+				{
+					role: "user",
+					content: [{ type: "tool_result", tool_use_id: "call_str", content: marker }],
+				},
+			],
+		}
+		expect(hydratePayloadMarkers(payload, state)).toBe(true)
+		expect(payload.messages[0].content[0].content).toBe(above)
+	})
+
+	it("hydrates markers nested in gemini-shaped payloads (functionResponse.output)", () => {
+		const event = resultEvent("call_gemini", [{ type: "text", text: above }])
+		const marker = handleToolResult(event, state)?.content[0].text ?? ""
+		// Gemini conversion lives under payload.contents with functionResponse
+		// parts — payload.messages does not even exist for this shape.
+		const payload = {
+			contents: [
+				{
+					role: "user",
+					parts: [
+						{
+							functionResponse: {
+								name: "read",
+								response: { output: marker },
+							},
+						},
+					],
+				},
+			],
+		}
+		expect(hydratePayloadMarkers(payload, state)).toBe(true)
+		expect(payload.contents[0].parts[0].functionResponse.response.output).toBe(above)
+		expect(JSON.stringify(payload)).not.toContain(marker)
+	})
+
+	it("hydrates markers nested in openai-responses-shaped payloads (function_call_output.output)", () => {
+		const event = resultEvent("call_oai", [{ type: "text", text: above }])
+		const marker = handleToolResult(event, state)?.content[0].text ?? ""
+		const payload = {
+			input: [{ type: "function_call_output", call_id: "call_oai", output: marker }],
+		}
+		expect(hydratePayloadMarkers(payload, state)).toBe(true)
+		expect(payload.input[0].output).toBe(above)
+	})
+
+	it("leaves marker-adjacent strings (schemas, prompts) and mid-text markers untouched", () => {
+		const event = resultEvent("call_adj", [{ type: "text", text: above }])
+		const marker = handleToolResult(event, state)?.content[0].text ?? ""
+		const payload = {
+			tools: [
+				{
+					name: "read",
+					description: "reads files",
+					parameters: { type: "object", properties: { path: { type: "string", description: "a path" } } },
+				},
+			],
+			system: [{ type: "text", text: `system ${marker} prompt` }],
+			messages: [{ role: "user", content: `prefix ${marker} suffix` }],
+		}
+		const snapshot = JSON.stringify(payload)
+		expect(hydratePayloadMarkers(payload, state)).toBe(false)
+		expect(JSON.stringify(payload)).toBe(snapshot)
 	})
 
 	it("does not hydrate markers embedded mid-text (exact-placeholder contract)", () => {
@@ -113,7 +213,6 @@ describe("tool-output-externalizer", () => {
 						throw new Error("disk full")
 					},
 				} as never,
-				handlesByToolCallId: new Map(),
 			}
 			const error = vi.spyOn(console, "error").mockImplementation(() => {})
 			const event = resultEvent("call_fail", [{ type: "text", text: above }])
