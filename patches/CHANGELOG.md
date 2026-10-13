@@ -47,9 +47,10 @@ Markers resolve transparently in `sessionEntryToContextMessages` (bounded LRU)
 so display, ACP replay and any reader see the original blocks; the
 `_serializableEntry` serializer now honors both marker prefixes so log
 rewrites stay canonical. Rebase traps: the eviction walk continues PAST
-`firstKeptEntryId` (pre-cut entries are its ancestors); the marker resolves to
-a full JSONL line — parse it and restore `entry.message`, do not use the raw
-line as content. Removal: when upstream exposes entry-content eviction or a
+`firstKeptEntryId` (pre-cut entries are its ancestors); the serializer must
+parse by the MATCHED prefix's own length (tool=17, log=16 chars — an
+off-by-one silently persists raw markers on rewrites) and for log markers
+return the parsed `entry.message` blocks, not the raw JSONL line. Removal: when upstream exposes entry-content eviction or a
 lazy content hook.
 
 ## @modelcontextprotocol/client@2.0.0 (mid-version, additive) — OAuth Accept headers

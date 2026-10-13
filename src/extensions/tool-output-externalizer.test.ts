@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ToolResultEvent } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { handleToolResult, hydrateMarkers, type ToolOutputExternalizerState } from "./tool-output-externalizer.js"
 import { createToolOutputStore, parseMarker, TOOL_OUTPUT_EXTERNALIZE_BYTES } from "./tool-output-store.js"
 
@@ -33,10 +33,10 @@ describe("tool-output-externalizer", () => {
 		const event = resultEvent("call_1", [{ type: "text", text: above }])
 		const result = handleToolResult(event, state)
 		expect(result).toBeDefined()
-		const marker = result!.content[0].text
+		const marker = result?.content[0].text ?? ""
 		const handle = parseMarker(marker)
 		expect(handle).toBeDefined()
-		expect(state.store.read(handle!)).toBe(above)
+		expect(handle ? state.store.read(handle) : undefined).toBe(above)
 		expect(state.handlesByToolCallId.get("call_1")).toEqual(handle)
 	})
 
@@ -56,7 +56,8 @@ describe("tool-output-externalizer", () => {
 
 	it("round-trips exact bytes through marker hydration in request payloads", () => {
 		const event = resultEvent("call_1", [{ type: "text", text: above }])
-		const result = handleToolResult(event, state)!
+		const result = handleToolResult(event, state)
+		if (!result) throw new Error("expected externalization")
 		const marker = result.content[0].text
 
 		const messages: Array<{
@@ -77,7 +78,7 @@ describe("tool-output-externalizer", () => {
 
 	it("does not hydrate markers embedded mid-text (exact-placeholder contract)", () => {
 		const event = resultEvent("call_1", [{ type: "text", text: above }])
-		const marker = handleToolResult(event, state)!.content[0].text
+		const marker = handleToolResult(event, state)?.content[0].text ?? ""
 		const message = { role: "user", content: `prefix ${marker} suffix` }
 		const messages: Array<{ role: string; content: string | Array<{ type: string; text: string }> }> = [message]
 		expect(hydrateMarkers(messages, state)).toBe(false)
@@ -86,7 +87,7 @@ describe("tool-output-externalizer", () => {
 
 	it("hydrates string-shaped message content too", () => {
 		const event = resultEvent("call_x", [{ type: "text", text: above }])
-		const marker = handleToolResult(event, state)!.content[0].text
+		const marker = handleToolResult(event, state)?.content[0].text ?? ""
 		const messages = [{ role: "user", content: marker }]
 		expect(hydrateMarkers(messages, state)).toBe(true)
 		expect(messages[0].content).toBe(above)
@@ -94,13 +95,41 @@ describe("tool-output-externalizer", () => {
 
 	it("returns false and leaves markers when the mirror is gone (log fallback path)", () => {
 		const event = resultEvent("call_1", [{ type: "text", text: above }])
-		const marker = handleToolResult(event, state)!.content[0].text
+		const marker = handleToolResult(event, state)?.content[0].text ?? ""
 		// Corrupt the mirror handle on disk by removing the file.
-		const handle = parseMarker(marker)!
+		const handle = parseMarker(marker)
+		if (!handle) throw new Error("expected valid marker")
 		rmSync(handle.file, { force: true })
 		const messages = [{ role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: marker }] }]
 		expect(hydrateMarkers(messages, state)).toBe(false)
 		expect(messages[0].content[0].text).toBe(marker)
+	})
+
+	describe("error branches and the escape hatch", () => {
+		it("leaves the tool result unchanged when the mirror write fails", () => {
+			const state = {
+				store: {
+					record: () => {
+						throw new Error("disk full")
+					},
+				} as never,
+				handlesByToolCallId: new Map(),
+			}
+			const error = vi.spyOn(console, "error").mockImplementation(() => {})
+			const event = resultEvent("call_fail", [{ type: "text", text: above }])
+			const result = handleToolResult(event, state as never)
+			expect(result).toBeUndefined()
+			expect(error).toHaveBeenCalledWith("[tool-output-externalizer] mirror write failed:", expect.any(Error))
+			error.mockRestore()
+		})
+
+		it("KIMCHI_TOOL_OUTPUT_STORE=off disables externalization at the factory seam", async () => {
+			process.env.KIMCHI_TOOL_OUTPUT_STORE = "off"
+			const mod = await import("./tool-output-externalizer.js")
+			const factory = (mod as { createToolOutputExternalizer: () => unknown }).createToolOutputExternalizer
+			expect(factory()).toBeUndefined()
+			delete process.env.KIMCHI_TOOL_OUTPUT_STORE
+		})
 	})
 
 	it("handles non-marker text and malformed shapes without mutation", () => {

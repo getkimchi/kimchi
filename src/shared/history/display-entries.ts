@@ -4,8 +4,10 @@
  * The TUI transcript renders the full leaf path (the SessionManager's
  * `buildDisplayEntries()`), so pre-compaction history stays visible. This
  * module tags each entry with whether it sits before the latest compaction's
- * cut point — the signal windowed rendering and content eviction use to
- * decide what stays resident. Pure; unit-testable against any entry path.
+ * cut point — a pure utility for consumers that need the compaction boundary
+ * (e.g. future windowed rendering or display grouping). Not currently wired
+ * to a production consumer; the shipped eviction walks the leaf path
+ * directly in the SessionManager patch.
  */
 
 /** The entry subset the SessionManager exposes (structural, no upstream import needed). */

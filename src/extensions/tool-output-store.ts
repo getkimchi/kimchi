@@ -23,6 +23,7 @@
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { parseEnvInt } from "../shared/env-int.js"
 
 /** A lazy reference into an artifacts file: the mirror location of one tool result. */
 export interface ToolOutputHandle {
@@ -34,14 +35,6 @@ export interface ToolOutputHandle {
 export const TOOL_OUTPUT_MARKER_PREFIX = "[kimchi-ext:tool]"
 export const TOOL_OUTPUT_EXTERNALIZE_BYTES = 64 * 1024
 export const TOOL_OUTPUT_CACHE_BYTES = 16 * 1024 * 1024
-
-function parseEnvInt(name: string, fallback: number): number {
-	const raw = process.env[name]
-	if (raw === undefined || raw === "") return fallback
-	const value = Number(raw)
-	if (!Number.isFinite(value) || value < 0) return fallback
-	return Math.floor(value)
-}
 
 export function toolOutputStoreEnabled(): boolean {
 	return process.env.KIMCHI_TOOL_OUTPUT_STORE !== "off"
@@ -134,6 +127,10 @@ export function createToolOutputStore(dir: string, cacheBytes = toolOutputCacheB
 			return { file, offset, length }
 		},
 		read(handle) {
+			// Path confinement: only markers this store issued (pointing at its
+			// own artifacts file) may be hydrated — a spoofed marker in tool output
+			// must not read arbitrary files into the provider payload or TUI.
+			if (handle.file !== file) return undefined
 			const key = keyOf(handle)
 			const hit = cache.get(key)
 			if (hit) {

@@ -116,6 +116,36 @@ describe("history residency (against the patched SessionManager)", () => {
 		expect(display.length).toBeGreaterThan(3)
 	})
 
+	it("log-marker serializer resolves markers through _rewriteFile (branch path)", () => {
+		const bigId = sm.appendMessage({ role: "user", content: [{ type: "text", text: BIG }], timestamp: Date.now() })
+		sm.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "ans" }],
+			timestamp: Date.now(),
+		} as never)
+		const keptId = sm.appendMessage({ role: "user", content: [{ type: "text", text: "kept" }], timestamp: Date.now() })
+		sm.appendCompaction("branch summary", keptId, 1_000)
+
+		// The evicted entry's in-memory content is a log marker. Trigger a file
+		// rewrite (the branch path) and verify the JSONL still contains the
+		// FULL content — not the raw marker.
+		const smAny = sm as unknown as { _rewriteFile?: () => void; setSessionFile?: (f: string) => void }
+		if (typeof smAny._rewriteFile === "function") {
+			smAny._rewriteFile()
+			const sessionFile = sm.getSessionFile()
+			expect(sessionFile).toBeDefined()
+			const log = sessionFile ? readFileSync(sessionFile, "utf8") : ""
+			expect(log).toContain(BIG)
+			expect(log).not.toContain("[kimchi-ext:log]")
+		}
+		// The entry is still resolvable through the read seam.
+		const entry = sm.getEntries().find((e) => e.id === bigId)
+		expect(entry?.type).toBe("message")
+		if (entry?.type !== "message") return
+		const resolved = sessionEntryToContextMessages(entry)
+		expect(textOf(resolved[0])).toBe(BIG)
+	})
+
 	it("parseLogMarker round-trips and rejects malformed text", () => {
 		const handle = { file: "/tmp/x.jsonl", offset: 12, length: 99 }
 		const marker = `[kimchi-ext:log]${JSON.stringify(handle)}`

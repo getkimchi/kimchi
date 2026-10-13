@@ -1,6 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { Container, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
-import { displayBudgetText } from "../extensions/display-budget.js"
 import { formatDuration } from "../extensions/format.js"
 
 const MIN_GAP = 2
@@ -163,9 +162,5 @@ export function getTextContent(result: { content: Array<{ type: string; text?: s
 	const block = result.content.find(
 		(c): c is { type: "text"; text: string } => c.type === "text" && typeof c.text === "string",
 	)
-	const text = block?.text ?? ""
-	// Display budget: never render the raw lazy marker for mirrored output;
-	// resolve it through the store (transient read) or show a caption. Pane-level
-	// truncation to the terminal width still applies downstream (truncateToWidth).
-	return displayBudgetText(text).display
+	return block?.text ?? ""
 }

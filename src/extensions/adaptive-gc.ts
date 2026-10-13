@@ -22,18 +22,11 @@
  *   - KIMCHI_GC_MIN_INTERVAL_MS    min interval between growth GCs (default 30000)
  */
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent"
+import { parseEnvInt } from "../shared/env-int.js"
 
 export const IDLE_GC_DELAY_MS = 120_000
 export const GC_GROWTH_BYTES = 128 * 1024 * 1024
 export const GC_MIN_INTERVAL_MS = 30_000
-
-function parseEnvInt(name: string, fallback: number): number {
-	const raw = process.env[name]
-	if (raw === undefined || raw === "") return fallback
-	const value = Number(raw)
-	if (!Number.isFinite(value) || value < 0) return fallback
-	return Math.floor(value)
-}
 
 export function idleGcDelayMs(): number {
 	return parseEnvInt("KIMCHI_IDLE_GC_DELAY_MS", IDLE_GC_DELAY_MS)

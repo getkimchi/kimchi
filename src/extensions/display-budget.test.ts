@@ -25,8 +25,9 @@ describe("display-budget", () => {
 	})
 
 	it("resolves externalized markers to their mirrored text (no raw marker in UI)", () => {
-		const store = getToolOutputStore()!
-		const text = "mirrored-copy-" + "y".repeat(10_000)
+		const store = getToolOutputStore()
+		if (!store) throw new Error("store disabled")
+		const text = `mirrored-copy-${"y".repeat(10_000)}`
 		const marker = makeMarker(store.record(text))
 		const result = displayBudgetText(marker)
 		expect(result.resolvedMirror).toBe(true)
@@ -35,8 +36,9 @@ describe("display-budget", () => {
 	})
 
 	it("applies the display cap to resolved mirror content too", () => {
-		const store = getToolOutputStore()!
-		const text = "mirrored-copy-" + "y".repeat(100_000)
+		const store = getToolOutputStore()
+		if (!store) throw new Error("store disabled")
+		const text = `mirrored-copy-${"y".repeat(100_000)}`
 		const marker = makeMarker(store.record(text))
 		const result = displayBudgetText(marker)
 		expect(result.resolvedMirror).toBe(true)
@@ -45,7 +47,8 @@ describe("display-budget", () => {
 	})
 
 	it("shows a caption instead of the raw marker when the mirror is gone", () => {
-		const store = getToolOutputStore()!
+		const store = getToolOutputStore()
+		if (!store) throw new Error("store disabled")
 		const handle = store.record("gone")
 		// Corrupt the mirror on disk.
 		const { rmSync } = require("node:fs") as typeof import("node:fs")

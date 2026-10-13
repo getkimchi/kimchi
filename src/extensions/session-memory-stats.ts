@@ -32,7 +32,7 @@ export function getSessionMemoryStats(): SessionMemoryStats {
 	}
 }
 
-function formatStats(stats: SessionMemoryStats): string {
+export function formatStats(stats: SessionMemoryStats): string {
 	if (!stats.storeEnabled) {
 		return "session-memory externalization: off (KIMCHI_TOOL_OUTPUT_STORE=off)"
 	}

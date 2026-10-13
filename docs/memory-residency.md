@@ -30,7 +30,7 @@ materialize it transiently (refcount-aware LRU cache) and release it.
 | `tool_result` | oversized tool output → marker (content-replacement result) |
 | `before_provider_request` | markers hydrated to full content (byte-identical) |
 | Session log | full content always (pi patch resolves markers at serialization) |
-| TUI display | `displayBudgetText` resolves markers and caps oversized previews (never shows raw markers); `getTextContent` resolves via the store |
+| TUI display | `displayBudgetText` resolves markers and caps oversized previews (never shows raw markers) |
 | `/memory-residency` | shows mirror bytes, resident cache size, entry counts |
 
 Messages with tool calls, images, or thinking blocks are never externalized
@@ -101,6 +101,15 @@ Knobs: `KIMCHI_IDLE_GC=off` (disable), `KIMCHI_IDLE_GC_DELAY_MS`,
 `KIMCHI_GC_GROWTH_BYTES`, `KIMCHI_GC_MIN_INTERVAL_MS`.
 
 ## Known follow-ups
+
+> ACP coverage: the `sessionEntryToContextMessages` read seam is unit-tested
+> (byte-exact resolution of both marker types); a dedicated ACP e2e for
+> history replay of evicted sessions is a follow-up. The ACP surface reads
+> through the same patched seam as the TUI.
+
+> Docs copy-resources: `scripts/copy-resources.js` has no `docs/` path and
+> no runtime code references this file; `/docs` changes are exempt from the
+> copy-resources pairing.
 
 - Assistant/user-message externalization is **deferred**: a write-time
   `message_end` replacement was found to break live turns (the turn never

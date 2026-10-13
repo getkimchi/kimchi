@@ -4,7 +4,7 @@
 # Changes:
 #   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
 #     compaction, model selection, extension UI helpers, and compact visuals.
-# #   - Session-log durability for externalized tool results : the
+#   - Session-log durability for externalized tool results: the
 #     session manager persists the FULL tool-result content even when an
 #     extension replaced the in-memory message content with a compact lazy
 #     marker (`[kimchi-ext:tool]` JSON handle pointing at a disk-backed
@@ -13,14 +13,14 @@
 #     the complete, self-contained resume source while the live entry keeps
 #     the marker. Removal: when pi exposes a content-persistence hook or lets
 #     extensions control persisted content.
-#   - Compaction-history display : SessionManager gains
+#   - Compaction-history display: SessionManager gains
 #     buildDisplayEntries() (full leaf path, pre-compaction entries kept) and
 #     the interactive mode renders it at the three transcript call sites
 #     (initial render, rebuild, post-compaction) via a capability probe, so
 #     the TUI keeps the complete history visible after compaction. The model
 #     context source (buildContextEntries) is untouched. Removal: when
 #     upstream exposes a display-entries hook.
-#   - Compaction-history residency : after a compaction commits,
+#   - Compaction-history residency: after a compaction commits,
 #     pre-cut message entries' in-memory content is evicted to compact
 #     `[kimchi-ext:log]` markers (offsets into the session JSONL); markers
 #     resolve transparently at the sessionEntryToContextMessages read seam
@@ -553,7 +553,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
 +        // Kimchi patch: evict pre-compaction content
 +        // at load so resumed sessions start with bounded residency instead of
 +        // loading the full history into memory.
-+        try { this.__kimchiEvictOnLoad(); } catch { }
++        try { this.__kimchiEvictOnLoad(); } catch (error) { console.warn("[session-manager] compaction eviction at load failed:", error); }
 +    }
 +    /**
 +     * Kimchi patch: find the latest compaction on the
@@ -572,16 +572,24 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
      }
      _buildIndex() {
          this.byId.clear();
-@@ -711,7 +798,7 @@
-         const fd = openSync(this.sessionFile, "w");
-         try {
-             for (const entry of this.fileEntries) {
--                writeFileSync(fd, `${JSON.stringify(entry)}\n`);
-+                writeFileSync(fd, `${JSON.stringify(this._serializableEntry(entry))}\n`);
+@@ -705,12 +792,15 @@
              }
          }
-         finally {
-@@ -736,13 +823,58 @@
+     }
++	// Resolve all markers BEFORE truncating the file — log markers reference
++    // offsets in this very file, which become invalid after truncation.
+     _rewriteFile() {
+         if (!this.persist || !this.sessionFile)
+             return;
++        const resolved = this.fileEntries.map((entry) => this._serializableEntry(entry));
+         const fd = openSync(this.sessionFile, "w");
+         try {
+-            for (const entry of this.fileEntries) {
++            for (const entry of resolved) {
+                 writeFileSync(fd, `${JSON.stringify(entry)}\n`);
+             }
+         }
+@@ -736,13 +826,74 @@
      getSessionFile() {
          return this.sessionFile;
      }
@@ -599,19 +607,35 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
 +        const blocks = message.content;
 +        if (!Array.isArray(blocks) || blocks.length !== 1) return undefined;
 +        const text = blocks[0]?.text;
-+        if (typeof text !== "string" ||
-+            (!text.startsWith("[kimchi-ext:tool]") && !text.startsWith("[kimchi-ext:log]"))) return undefined;
++        if (typeof text !== "string") return undefined;
++        const TOOL_PREFIX = "[kimchi-ext:tool]";
++        const LOG_PREFIX = "[kimchi-ext:log]";
++        const isToolMarker = text.startsWith(TOOL_PREFIX);
++        const isLogMarker = text.startsWith(LOG_PREFIX);
++        if (!isToolMarker && !isLogMarker) return undefined;
 +        try {
-+            const handle = JSON.parse(text.slice("[kimchi-ext:tool]".length));
++            const prefixLen = isToolMarker ? TOOL_PREFIX.length : LOG_PREFIX.length;
++            const handle = JSON.parse(text.slice(prefixLen));
 +            if (typeof handle?.file !== "string" ||
 +                !Number.isInteger(handle.offset) || !Number.isInteger(handle.length) ||
 +                handle.offset < 0 || handle.length < 0) return undefined;
 +            const fd = openSync(handle.file, "r");
++            let line;
 +            try {
 +                const buffer = Buffer.alloc(handle.length);
 +                const bytes = readSync(fd, buffer, 0, handle.length, handle.offset);
-+                return buffer.subarray(0, bytes).toString("utf8");
++                line = buffer.subarray(0, bytes).toString("utf8");
 +            } finally { closeSync(fd); }
++            if (isToolMarker) return line;
++            // Log markers reference the entry's JSONL line; the original
++            // content is the parsed entry's message blocks, not the raw line.
++            try {
++                const parsed = JSON.parse(line);
++                if (parsed && parsed.message && Array.isArray(parsed.message.content)) {
++                    return parsed.message.content;
++                }
++            } catch { }
++            return undefined;
 +        } catch {
 +            return undefined;
 +        }
@@ -641,7 +665,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
              }
              else {
                  // Mark as not flushed so when assistant arrives, all entries get written
-@@ -754,7 +886,7 @@
+@@ -754,7 +905,7 @@
              const fd = openSync(this.sessionFile, "wx");
              try {
                  for (const e of this.fileEntries) {
@@ -650,7 +674,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
                  }
              }
              finally {
-@@ -763,7 +895,7 @@
+@@ -763,7 +914,7 @@
              this.flushed = true;
          }
          else {
@@ -659,7 +683,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
          }
      }
      _appendEntry(entry) {
-@@ -815,6 +947,71 @@
+@@ -815,6 +966,71 @@
          return entry.id;
      }
      /** Append a compaction summary as child of current leaf, then advance leaf. Returns entry id. */
@@ -702,7 +726,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
 +                    pending = pending.slice(lineStart);
 +                }
 +            } finally { closeSync(fd); }
-+        } catch { return 0; }
++        } catch (error) { console.warn("[session-manager] eviction offset scan failed:", error); return 0; }
 +        // Walk the leaf path; evict message entries strictly BEFORE firstKeptEntryId.
 +        // The pre-cut entries are firstKept's ANCESTORS on the path — keep
 +        // walking past the cut point, then evict older message entries.
@@ -731,17 +755,17 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
      appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromHook, usage) {
          const entry = {
              type: "compaction",
-@@ -829,6 +1026,9 @@
+@@ -829,6 +1045,9 @@
              fromHook,
          };
          this._appendEntry(entry);
 +        // Kimchi patch: after the compaction is
 +        // committed, evict the summarized entries' content from memory.
-+        try { this.__kimchiEvictCompactedEntries(firstKeptEntryId); } catch { }
++        try { this.__kimchiEvictCompactedEntries(firstKeptEntryId); } catch (error) { console.warn("[session-manager] compaction eviction failed:", error); }
          return entry.id;
      }
      /** Append a custom entry (for extensions) as child of current leaf, then advance leaf. Returns entry id. */
-@@ -974,6 +1174,17 @@
+@@ -974,6 +1193,17 @@
          return buildContextEntries(this.getEntries(), this.leafId, this.byId);
      }
      /**
