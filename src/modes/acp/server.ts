@@ -2407,11 +2407,8 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 		modelId: orchId,
 	} = getOrchestratorModel(session.sessionId, modelRegistry)
 	const orchName = orchestrator?.name ?? orchId ?? orchRef
-	// `description` is the optional secondary line ACP clients render beneath an
-	// option's name. Only the two routing entries carry one — concrete models are
-	// self-describing — and a client that ignores the field still shows the name.
-	// Multi-model's deprecation label is harness-side: the virtual selection does
-	// not exist in the platform catalog, so no backend marker can carry it.
+	// Multi-model's deprecation label is harness-side: the virtual selection has
+	// no platform-catalog entry to carry a backend marker.
 	// Ordering mirrors sortModels() in src/models.ts: active entries sorted by
 	// ref first, deprecated entries last — deprecated lands at the bottom by
 	// flag, not by pinning a specific value.
