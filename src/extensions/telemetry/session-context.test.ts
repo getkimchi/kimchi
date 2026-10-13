@@ -854,6 +854,49 @@ describe("SessionContext", () => {
 		expect(ctx.resolveSessionId()).toBe(ctx.telemetryId)
 	})
 
+	describe("turn accounting", () => {
+		it("advanceTurn counts LLM turns 1-based and never resets", () => {
+			const ctx = new TelemetryContext(makeConfig())
+			expect(ctx.advanceTurn()).toBe(1)
+			expect(ctx.advanceTurn()).toBe(2)
+			expect(ctx.advanceTurn()).toBe(3)
+		})
+
+		it("stampUserMessageTurn and advanceTurn share one strictly-increasing counter", () => {
+			const ctx = new TelemetryContext(makeConfig())
+			// First prompt is stamped with the turn its run will start in; the
+			// run's first turn_start returns the same number.
+			expect(ctx.stampUserMessageTurn()).toBe(1)
+			expect(ctx.advanceTurn()).toBe(1)
+			expect(ctx.advanceTurn()).toBe(2)
+			expect(ctx.advanceTurn()).toBe(3)
+			// Next prompt: stamped with the turn its run starts in (4).
+			expect(ctx.stampUserMessageTurn()).toBe(4)
+			expect(ctx.advanceTurn()).toBe(4)
+		})
+
+		it("a prompt that never starts a turn does not break strict monotonicity", () => {
+			const ctx = new TelemetryContext(makeConfig())
+			expect(ctx.advanceTurn()).toBe(1)
+			expect(ctx.advanceTurn()).toBe(2)
+			// Prompt submitted but the run fails before any turn starts.
+			expect(ctx.stampUserMessageTurn()).toBe(3)
+			// The next real turn and the next prompt's stamp move past it.
+			expect(ctx.advanceTurn()).toBe(3)
+			expect(ctx.stampUserMessageTurn()).toBe(4)
+			expect(ctx.advanceTurn()).toBe(4)
+		})
+
+		it("reset() zeroes the turn counters", () => {
+			const ctx = new TelemetryContext(makeConfig())
+			ctx.advanceTurn()
+			ctx.stampUserMessageTurn()
+			ctx.reset()
+			expect(ctx.stampUserMessageTurn()).toBe(1)
+			expect(ctx.advanceTurn()).toBe(1)
+		})
+	})
+
 	it("handleSessionStart captures the pi session id from ctx", async () => {
 		const { handleSessionStart } = await import("./handlers/session.js")
 		const tm = new TelemetryContext(makeConfig())

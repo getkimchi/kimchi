@@ -31,9 +31,9 @@ const MODEL_SWITCH_SURVEY: SurveyTelemetryDefinition = {
 //
 // Correlation to the rated run uses the standard request trace attrs
 // ("request.trace_id" / "request.span_id", same as api_request/error events)
-// stamped from the most recent provider request. Upstream's turn_index counts
-// LLM round-trips per agent run and resets on every prompt, so it cannot
-// identify the rated prompt — it is deliberately not sent here.
+// stamped from the most recent provider request. turn_index is a 1-based
+// session-scoped turn counter — it identifies the turn, not the rated prompt —
+// and is deliberately not sent here.
 const routingModelAttr = "routing_model"
 const reasonTypeAttr = "reason_type"
 const modelIDAttr = "model_id"

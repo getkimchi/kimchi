@@ -991,18 +991,17 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.on("agent_end", async (event, ctx) => {
 			handleAgentEnd(telemetryCtx, ctx, event)
 		})
-		pi.on("turn_start", async (event) => {
-			const incoming = event.turnIndex
-			if (incoming !== undefined) {
-				telemetryCtx.turnIndex = incoming
-			} else {
-				console.warn("[telemetry] turn_start received without turnIndex field — telemetryCtx.turnIndex unchanged")
-			}
+		pi.on("turn_start", async () => {
+			// One LLM turn (round-trip) per turn_start, counted session-wide:
+			// upstream's event.turnIndex resets per agent run, so it is ignored
+			// in favor of kimchi's own 1-based strictly-increasing counter.
+			telemetryCtx.advanceTurn()
 		})
 		pi.on("before_provider_headers", (event) => {
 			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.sessionId] = telemetryCtx.resolveSessionId()
 			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.conversationId] = conversationId
-			// 0 means "before first turn" (sentinel); backend should treat it accordingly.
+			// 1-based session turn counter; 0 only on requests issued before the
+			// session's first LLM turn (e.g. warmup calls) — treat as pre-turn.
 			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.turnIndex] = String(telemetryCtx.turnIndex)
 
 			// Requests issued from inside a subagent run carry the parent session's

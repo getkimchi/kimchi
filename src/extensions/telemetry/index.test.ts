@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
@@ -450,14 +450,74 @@ describe("telemetryExtension integration", () => {
 		expect(dismissedAttrs.survey_id).toBe("019e87cc-5033-0000-d9bd-5e6501640b6e")
 	})
 
-	it("turn_start event updates ctx.turnIndex", async () => {
+	it("turn_start advances the session turn counter, ignoring upstream's per-run value", async () => {
 		const { handlers, api, ctx } = createMockApi()
 		telemetryExtension(makeConfig())(api)
 		await getHandler(handlers, "session_start")({}, ctx)
 
-		await getHandler(handlers, "turn_start")({ turnIndex: 3 })
+		// Upstream's turnIndex is 0-based and resets per agent run; kimchi counts
+		// turns itself, session-wide and 1-based.
+		await getHandler(handlers, "turn_start")({ turnIndex: 0 })
+		await getHandler(handlers, "turn_start")({ turnIndex: 1 })
 
-		// Verify via before_provider_headers which exposes ctx.turnIndex
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+		expect(event.headers["X-Turn-Index"]).toBe("2")
+	})
+
+	it("turn_index is session-scoped and strictly increasing across agent runs", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		// Run 1: three turns (upstream indices 0,1,2) → session turns 1,2,3.
+		for (const upstreamIndex of [0, 1, 2]) {
+			await getHandler(handlers, "turn_start")({ turnIndex: upstreamIndex })
+		}
+		// Run 2 restarts upstream's counter at 0 (its agent_start has no
+		// telemetry handler — by design); the session counter must not reset.
+		await getHandler(handlers, "turn_start")({ turnIndex: 0 })
+
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+		expect(event.headers["X-Turn-Index"]).toBe("4")
+	})
+
+	it("real AgentSession relay: one turn_start per LLM round keeps the session counter in step", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		// The real relay owns upstream's per-run counter: agent_start resets it,
+		// turn_start forwards it, turn_end increments after emitting. Drive the
+		// actual _emitExtensionEvent so the counting contract is pinned against
+		// the real emission points (one turn_start per LLM round-trip).
+		const relay = Object.create(AgentSession.prototype) as {
+			_turnIndex: number
+			_extensionRunner: {
+				emit: (e: { type: string }) => Promise<void>
+				emitMessageEnd: (e: { type: string }) => Promise<unknown>
+			}
+			_emitExtensionEvent(event: { type: string } & Record<string, unknown>): Promise<void>
+		}
+		const dispatch = async (event: { type: string }) => {
+			for (const h of handlers.get(event.type) ?? []) await h(event)
+		}
+		relay._turnIndex = 0
+		relay._extensionRunner = {
+			emit: dispatch,
+			emitMessageEnd: (e) => dispatch(e),
+		}
+
+		// Run 1: two rounds; run 2: one round (upstream resets its own counter).
+		await relay._emitExtensionEvent({ type: "agent_start" })
+		await relay._emitExtensionEvent({ type: "turn_start" })
+		await relay._emitExtensionEvent({ type: "turn_end", message: {}, toolResults: [] })
+		await relay._emitExtensionEvent({ type: "turn_start" })
+		await relay._emitExtensionEvent({ type: "turn_end", message: {}, toolResults: [] })
+		await relay._emitExtensionEvent({ type: "agent_start" })
+		await relay._emitExtensionEvent({ type: "turn_start" })
+
 		const event = { headers: {} as Record<string, string> }
 		getHandler(handlers, "before_provider_headers")(event)
 		expect(event.headers["X-Turn-Index"]).toBe("3")
@@ -469,7 +529,7 @@ describe("telemetryExtension integration", () => {
 		await getHandler(handlers, "session_start")({}, ctx)
 
 		// Set a known turn index via the turn_start handler
-		await getHandler(handlers, "turn_start")({ turnIndex: 4 })
+		await getHandler(handlers, "turn_start")({ turnIndex: 0 })
 
 		const event = { headers: { "User-Agent": "kimchi/1.0" } as Record<string, string> }
 		getHandler(handlers, "before_provider_headers")(event)
@@ -477,7 +537,7 @@ describe("telemetryExtension integration", () => {
 
 		expect(headers["User-Agent"]).toBe("kimchi/1.0")
 		expect(headers["X-Session-Id"]).toBe("test-session")
-		expect(headers["X-Turn-Index"]).toBe("4")
+		expect(headers["X-Turn-Index"]).toBe("1")
 	})
 
 	it("before_provider_headers injects X-Parent-Session-Id inside a subagent run", async () => {

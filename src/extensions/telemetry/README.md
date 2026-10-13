@@ -111,7 +111,7 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 |-------|------|------------|
 | `session.start` | Session begins | `model` |
 | `session.end` | Session ends | `model`, `duration_ms`, `ended_by`, `source`, `mode` |
-| `user_message` | User sends a message | `model`, `message_length` |
+| `user_message` | User sends a message | `model`, `message_length`, `turn_index` *(the 1-based session turn this prompt's run starts in)* |
 | `api_request` | Assistant response completes | `model`, `provider`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `cost_usd`, `duration_ms`, `request.trace_id`, `request.span_id` *(trace of the request that produced it — present when a provider request has been issued)* |
 | `tool_result` | Any tool finishes | `tool_name`, `model`, `success`, `duration_ms` |
 | `file_read` | `read` tool succeeds | `model`, `language`, `file_hash`, `duration_ms` |
@@ -143,6 +143,8 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 > **Tool decisions:** `decision_source` is the official Claude Code `source` attribute, renamed because `source` already holds the session origin (`cli` / `acp`). `source_detail` is a kimchi-specific refinement (see `PermissionDecisionSourceDetail` in `permissions/permissions-events.ts`). Acceptance rate = `accept / (accept + reject)`.
 >
 > **Interruptions:** `session.end{ended_by}` never observes mid-turn aborts — pi's `ended_by` vocabulary (`fork|manual|new|overflow|quit|reload|resume|startup`) is session-scoped. `agent.interrupted` is emitted once per aborted agent run instead, detected from the final assistant message's `stopReason === "aborted"`: an aborted message with streamed content means the cancel landed mid-LLM-stream (`phase: "llm"`); an empty aborted message preceded by an errored tool result means the cancel landed during that tool's execution (`phase: "tool"`). Follow-up prompts (steering) are intentionally NOT interruptions: they already produce a `user_message` record, so they are detectable by turn ordering downstream. Join interruptions to the turn's `user_message` / `tool_result` records via (`session.id`, `turn_index`).
+>
+> **Turn indexing:** `turn_index` is 1-based, session-scoped, and strictly increasing — one LLM round-trip per turn, never reset across prompts. `0` appears only on records emitted before the session's first LLM turn (treat as pre-turn). `user_message` records carry the turn their run starts in, so depth-into-run is derivable: `turn_index − (the run's user_message turn_index) + 1`.
 
 ## Workflow Events
 

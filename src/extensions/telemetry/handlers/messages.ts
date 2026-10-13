@@ -99,7 +99,10 @@ export function handleBeforeAgentStart(tm: TelemetryContext, ctx: ExtensionConte
 		"user_message",
 		{
 			message_length: event.prompt.length,
-			turn_index: tm.turnIndex,
+			// The 1-based session turn this prompt's run starts in — not the
+			// current counter value, which at before_agent_start time still
+			// reflects the previous run's last turn.
+			turn_index: tm.stampUserMessageTurn(),
 		},
 		ctx,
 	)

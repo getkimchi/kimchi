@@ -408,7 +408,7 @@ describe("handleBeforeAgentStart", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("emits kimchi.user_message with message_length and model", () => {
+	it("emits kimchi.user_message with message_length, model, and the turn slot its run starts in", () => {
 		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
 		const emitSpy = vi.spyOn(ctx, "emit")
 
@@ -419,6 +419,20 @@ describe("handleBeforeAgentStart", () => {
 		const [eventName, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
 		expect(eventName).toBe("user_message")
 		expect(attrs.message_length).toBe(12)
+		// First prompt of the session occupies session turn 1.
+		expect(attrs.turn_index).toBe(1)
+
+		// Three turns run; the next prompt's message must be stamped with the
+		// turn its run starts in (4), not the stale last-turn counter (3).
+		ctx.advanceTurn()
+		ctx.advanceTurn()
+		ctx.advanceTurn()
+		emitSpy.mockClear()
+		handleBeforeAgentStart(ctx, piCtx, { prompt: "And now?" })
+
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [, attrs2] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(attrs2.turn_index).toBe(4)
 	})
 })
 

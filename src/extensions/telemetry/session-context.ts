@@ -81,12 +81,15 @@ export class TelemetryContext {
 	 */
 	currentModel = "unknown"
 	/**
-	 * Current turn index, updated on each turn_start event.
-	 * `0` is a sentinel meaning "before the first turn" (e.g. a provider call
-	 * made during session warmup before any user message). Backends should treat
-	 * `0` as "unknown / pre-turn" rather than a valid 1-based turn number.
+	 * Current turn index: a 1-based, strictly increasing count of LLM turns
+	 * (round-trips) in this session — one per turn_start, across all agent
+	 * runs (prompts), never reset mid-session. Events are stamped with the
+	 * turn they occurred in. `0` occurs only before the session's first turn
+	 * (e.g. a warmup provider call); treat it as "pre-turn", not a turn number.
 	 */
 	turnIndex = 0
+	/** Turn slot allocated to the last user_message (see stampUserMessageTurn). */
+	private lastUserMessageTurn = 0
 	/**
 	 * Wall-clock ms when the current user prompt began (set by
 	 * handleBeforeAgentStart). Anchor for agent.interrupted's ms_into_turn —
@@ -150,6 +153,7 @@ export class TelemetryContext {
 		this.telemetryStartMs = Date.now()
 		this.currentModel = "unknown"
 		this.turnIndex = 0
+		this.lastUserMessageTurn = 0
 		this.promptStartMs = 0
 		this.lastTraceContext = undefined
 		this.sentMessages.clear()
@@ -163,6 +167,27 @@ export class TelemetryContext {
 		this.shuttingDown = false
 		this.logBuffer = []
 		this.stopLogFlushTimer()
+	}
+
+	/**
+	 * Advance the session turn counter for a new LLM turn (called on every
+	 * turn_start) and return it. Merges with the user-message slot so values
+	 * stay strictly increasing even when a prompt failed to start a turn.
+	 */
+	advanceTurn(): number {
+		this.turnIndex = Math.max(this.turnIndex + 1, this.lastUserMessageTurn)
+		return this.turnIndex
+	}
+
+	/**
+	 * Turn slot the run started by this prompt will occupy — stamped on its
+	 * user_message record (before_agent_start fires before the first
+	 * turn_start). Strictly increasing even when the prompt never starts a
+	 * turn (blocked or failed before the agent loop).
+	 */
+	stampUserMessageTurn(): number {
+		this.lastUserMessageTurn = Math.max(this.lastUserMessageTurn + 1, this.turnIndex + 1)
+		return this.lastUserMessageTurn
 	}
 
 	/** Capture the pi session id for this context. Called from session_start. */
