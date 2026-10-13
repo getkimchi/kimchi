@@ -85,8 +85,25 @@ export function decimalNanos(value: unknown): bigint | undefined {
 	return match ? BigInt(match[1]) * NANOS_PER_USD + BigInt((match[2] ?? "").padEnd(9, "0")) : undefined
 }
 
+/** Render nanos as USD with nine decimals; a negative amount, such as a signed error, keeps its sign. */
 export function usd(nanos: bigint): string {
-	return `${nanos / NANOS_PER_USD}.${(nanos % NANOS_PER_USD).toString().padStart(9, "0")}`
+	const absolute = nanos < 0n ? -nanos : nanos
+	return `${nanos < 0n ? "-" : ""}${absolute / NANOS_PER_USD}.${(absolute % NANOS_PER_USD).toString().padStart(9, "0")}`
+}
+
+/** Sum calculated request amounts without imposing the API's per-bill size limit on their subtotal. */
+export function totalRequestCosts(rows: readonly RequestCostAllocation[]): CostTotal {
+	const knownCostUsd = usd(
+		rows.reduce((sum, row) => {
+			const [whole, fraction = ""] = row.knownCostUsd.split(".")
+			return sum + BigInt(whole) * NANOS_PER_USD + BigInt(fraction.padEnd(9, "0"))
+		}, 0n),
+	)
+	return {
+		requestIds: rows.map((row) => row.requestId),
+		knownCostUsd,
+		totalCostUsd: rows.every((row) => row.priceStatus === "priced") ? knownCostUsd : null,
+	}
 }
 
 /**
@@ -269,10 +286,14 @@ function exclusiveRequestPulls(
 		}
 	>()
 	const requestTransitions = new Map<string, Set<string>>()
+	const requestCommitPulls = new Map<string, Set<string>>()
 	const unresolvedRequests = new Set<string>()
 	const unresolvedWorks = new Set<string>()
 	const rewritten = new Set<string>()
+	const observations: { requestId: string; row: WorkRecord }[] = []
 	for (const row of records) {
+		if (row.type === "file_observation" && typeof row.requestId === "string")
+			observations.push({ requestId: row.requestId, row })
 		if (row.type === "commit" && typeof row.rewrittenFrom === "string")
 			rewritten.add(JSON.stringify([row.workId, row.repository, row.rewrittenFrom]))
 		if (row.type !== "file_transition") continue
@@ -296,14 +317,39 @@ function exclusiveRequestPulls(
 				pulls: new Set(),
 			})
 	}
+	// Tool windows can overlap human edits, so an observation never proves ownership. It blocks native proof only where
+	// it could have altered that evidence: an incomplete or truncated scan, or a file natively edited in the same work and
+	// worktree. A tool change to any other file, such as build output, leaves the proof alone.
+	const nativePaths = new Set(
+		[...transitions.values()].map(({ row }) => JSON.stringify([row.workId, row.worktree, row.path])),
+	)
+	for (const { requestId, row } of observations) {
+		const files = Array.isArray(row.files) ? row.files : []
+		if (
+			row.complete !== true ||
+			row.truncated === true ||
+			files.some(
+				(file) =>
+					!object(file) ||
+					typeof file.path !== "string" ||
+					nativePaths.has(JSON.stringify([row.workId, row.worktree, file.path])),
+			)
+		)
+			unresolvedRequests.add(requestId)
+	}
 	for (const row of records) {
-		if (row.type !== "commit" || (row.fileMatches === undefined && row.source !== "native-file-transition")) continue
+		if (row.type !== "commit") continue
+		const key = commitIdentity(row)
+		if (typeof row.requestId === "string" && !rewritten.has(JSON.stringify([row.workId, row.repository, row.sha]))) {
+			const links = key === undefined ? undefined : commitPulls.get(key)
+			if (links?.size) for (const pull of links) add(requestCommitPulls, row.requestId, pull)
+			else unresolvedRequests.add(row.requestId)
+		}
+		if (row.fileMatches === undefined && row.source !== "native-file-transition") continue
 		if (!Array.isArray(row.fileMatches) || !row.fileMatches.length) {
 			unresolvedWorks.add(row.workId)
 			continue
 		}
-
-		const key = commitIdentity(row)
 		for (const match of row.fileMatches) {
 			if (!object(match) || !Array.isArray(match.transitionIds) || !match.transitionIds.length) {
 				unresolvedWorks.add(row.workId)
@@ -321,7 +367,7 @@ function exclusiveRequestPulls(
 				row.source === "native-file-transition" &&
 				ids.length === match.transitionIds.length &&
 				evidence.length === ids.length &&
-				(match.method === "file-chain" || match.method === "path-blob") &&
+				(match.method === "file-chain" || match.method === "path-blob" || match.method === "file-hunks") &&
 				match.worktree === row.worktree &&
 				evidence.every(
 					({ row: edit, fingerprint }) =>
@@ -355,6 +401,7 @@ function exclusiveRequestPulls(
 		if (!owner || unresolvedRequests.has(requestId) || owner.workIds.size !== 1 || owner.sessionIds.size !== 1) continue
 		const pulls = new Set<string>()
 		let complete = true
+		let proven = false
 		for (const id of ids) {
 			const value = transitions.get(id)
 			if (
@@ -377,11 +424,14 @@ function exclusiveRequestPulls(
 				complete = false
 				break
 			}
+			proven = true
 			for (const pull of value.pulls) pulls.add(pull)
 		}
+		for (const pull of requestCommitPulls.get(requestId) ?? []) pulls.add(pull)
 		if (!complete) continue
-		if (pulls.size === 1) for (const pull of pulls) exclusive.set(requestId, pull)
-		else if (!pulls.size) neutral.add(requestId)
+		// A tool commit names its PR but proves no edit of its own; the input still counts its PR below.
+		if (!proven) neutral.add(requestId)
+		else if (pulls.size === 1) for (const pull of pulls) exclusive.set(requestId, pull)
 	}
 
 	// One input can require several requests or local children before producing its edits.
@@ -398,6 +448,7 @@ function exclusiveRequestPulls(
 
 		const input = inputs.get(key) ?? { requests: [], pulls: new Set<string>(), complete: true }
 		input.requests.push(requestId)
+		for (const pull of requestCommitPulls.get(requestId) ?? []) input.pulls.add(pull)
 		if (requestTransitions.has(requestId) || unresolvedRequests.has(requestId)) {
 			const pull = exclusive.get(requestId)
 			if (pull) input.pulls.add(pull)
@@ -406,9 +457,11 @@ function exclusiveRequestPulls(
 		inputs.set(key, input)
 	}
 	for (const input of inputs.values()) {
+		const nativeEvidence = input.requests.some((requestId) => exclusive.has(requestId))
 		for (const requestId of input.requests) {
 			exclusive.delete(requestId)
-			if (input.complete && input.pulls.size === 1) for (const pull of input.pulls) exclusive.set(requestId, pull)
+			if (nativeEvidence && input.complete && input.pulls.size === 1)
+				for (const pull of input.pulls) exclusive.set(requestId, pull)
 		}
 	}
 	return exclusive
@@ -600,7 +653,13 @@ export function calculatePullRequestCosts(
 			if (!previous || checkedAt > previous.checkedAt) pulls.set(key, { checkedAt, pullRequest: pull })
 			else if (checkedAt === previous.checkedAt && previous.pullRequest) {
 				const other = previous.pullRequest
-				if (other.state !== pull.state || time(other.mergedAt) !== time(pull.mergedAt)) previous.pullRequest = null
+				if (
+					other.state !== pull.state ||
+					time(other.mergedAt) !== time(pull.mergedAt) ||
+					(other.id && pull.id && other.id !== pull.id) ||
+					(other.repositoryId && pull.repositoryId && other.repositoryId !== pull.repositoryId)
+				)
+					previous.pullRequest = null
 				// Equivalent cost evidence may still carry different display metadata. Keep output stable.
 				else if (JSON.stringify(pull) < JSON.stringify(other)) previous.pullRequest = pull
 			}
@@ -636,7 +695,6 @@ export function calculatePullRequestCosts(
 		billingAccounts.set(row.requestId, accounts)
 	}
 
-	const amounts = new Map<string, bigint>()
 	const requests: RequestCostAllocation[] = [...ownership]
 		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
 		.map(([requestId, owner]) => {
@@ -705,7 +763,6 @@ export function calculatePullRequestCosts(
 			if (reason) allocated = postMerge ? { ...allocated, reason } : { allocation: "unknown", reason }
 			const { nanos, ...price } = priceFor(requestId)
 			if (incompleteRequestIds.has(requestId) && price.priceStatus === "priced") price.priceStatus = "missing"
-			amounts.set(requestId, nanos)
 			return {
 				requestId,
 				account: owner.unverifiedAccount ? null : (owner.account ?? null),
@@ -738,15 +795,6 @@ export function calculatePullRequestCosts(
 		}
 	}
 
-	function total(rows: RequestCostAllocation[]): CostTotal {
-		const knownCostUsd = usd(rows.reduce((sum, row) => sum + (amounts.get(row.requestId) ?? 0n), 0n))
-		return {
-			requestIds: rows.map((row) => row.requestId),
-			knownCostUsd,
-			totalCostUsd: rows.every((row) => row.priceStatus === "priced") ? knownCostUsd : null,
-		}
-	}
-
 	const pullRequests = [...pulls]
 		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
 		.flatMap(([key, { pullRequest }]) => {
@@ -773,15 +821,15 @@ export function calculatePullRequestCosts(
 
 					const confirmedRows = assigned.filter((row) => row.allocation === "pull-request")
 					const inferredRows = assigned.filter((row) => row.allocation === "inferred")
-					const cost = total(assigned)
+					const cost = totalRequestCosts(assigned)
 					return {
 						key,
 						account,
 						pullRequest,
 						workIds: [...workIds].sort(),
 						...cost,
-						explicit: total(confirmedRows),
-						inferred: total(inferredRows),
+						explicit: totalRequestCosts(confirmedRows),
+						inferred: totalRequestCosts(inferredRows),
 						totalCostUsd:
 							account &&
 							pullRequest?.state === "merged" &&
@@ -796,7 +844,7 @@ export function calculatePullRequestCosts(
 					}
 				})
 		})
-	const bucket = (kind: Allocation) => total(requests.filter((row) => row.allocation === kind))
+	const bucket = (kind: Allocation) => totalRequestCosts(requests.filter((row) => row.allocation === kind))
 	return {
 		pullRequests,
 		requests,

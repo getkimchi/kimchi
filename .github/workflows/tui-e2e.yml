@@ -47,6 +47,13 @@ jobs:
           go-version-file: tools/proxy-helper/go.mod
           cache-dependency-path: tools/proxy-helper/go.sum
 
+      # Fresh test homes otherwise download these before the editor accepts input.
+      - name: Install search tools
+        timeout-minutes: 3
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends ripgrep fd-find
+
       - name: Build proxy-helper
         run: make copy-for-dev # Builds the binary and copies it to bin/ where the tests expect it
         working-directory: tools/proxy-helper
