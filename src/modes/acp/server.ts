@@ -2431,6 +2431,9 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 	options.sort(
 		(a, b) => Number(a.deprecated ?? false) - Number(b.deprecated ?? false) || a.value.localeCompare(b.value),
 	)
+	// `deprecated` is an internal ordering key — not part of SessionConfigSelectOption
+	// — so strip it before the list goes on the wire.
+	const wireOptions = options.map(({ deprecated: _, ...opt }) => opt)
 	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
 	const currentValue = multiModelEnabled ? "multi-model" : refFromModel(session.model!)
 	return {
@@ -2440,7 +2443,7 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 		category: "model",
 		description: "Select the active AI model: single-model or multi-model (orchestrator + workers).",
 		currentValue,
-		options,
+		options: wireOptions,
 	}
 }
 
