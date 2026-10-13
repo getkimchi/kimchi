@@ -6072,16 +6072,16 @@ describe("newSession model state", () => {
 		expect(res.models).toBeDefined()
 		expect(res.models?.currentModelId).toBe("openai/gpt-4")
 		expect(res.models?.availableModels).toHaveLength(3)
-		// Routing entries carry a description; the concrete models below do not.
+		// Sorted by modelId; the routing entry carries a description, the concrete models do not.
 		expect(res.models?.availableModels[0]).toEqual({
+			modelId: "anthropic/claude-3",
+			name: "Claude 3",
+		})
+		expect(res.models?.availableModels[1]).toEqual({
 			modelId: "multi-model",
 			name: "Multi-model (kimi-k2.7)",
 			// Harness-side deprecation label + routing one-liner.
 			description: "[Deprecated] Routes each task to the best model, with an orchestrator and workers.",
-		})
-		expect(res.models?.availableModels[1]).toEqual({
-			modelId: "anthropic/claude-3",
-			name: "Claude 3",
 		})
 		expect(res.models?.availableModels[2]).toEqual({
 			modelId: "openai/gpt-4",

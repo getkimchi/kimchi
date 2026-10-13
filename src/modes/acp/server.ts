@@ -2422,9 +2422,8 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 			.getAvailable()
 			.map((m) =>
 				isAutoRoutedModel(m) ? autoModelOption(m, session.sessionId) : { value: refFromModel(m), name: m.name },
-			)
-			.sort((a, b) => a.value.localeCompare(b.value)),
-	]
+			),
+	].sort((a, b) => a.value.localeCompare(b.value))
 	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
 	const currentValue = multiModelEnabled ? "multi-model" : refFromModel(session.model!)
 	return {
