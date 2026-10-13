@@ -15,24 +15,26 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { testTheme } from "../__mocks__/theme.js"
+import { createFakeOps } from "./__mocks__/fake-bash-ops.js"
 import { CommandsPanel } from "./commands-panel.js"
 import bashBackgroundExtension from "./index.js"
 import { DEFAULT_BASH_PROCESS_LIMIT_SECONDS } from "./process-registry.js"
 import { type BashSessionState, getSessionState, setSessionState } from "./session-registry.js"
 
 const sessionCtx = createContext({ cwd: "/tmp" })
+const sessionId = sessionCtx.sessionManager.getSessionId()
 
 describe("bashBackgroundExtension — shutdown drain ordering", () => {
 	afterEach(() => {
-		// The session state is a module singleton — never leak it.
-		setSessionState(undefined)
+		// Never leave state published after the test session ends.
+		setSessionState(sessionId, undefined)
 	})
 
 	it("unpublishes the session state before awaiting the drain", async () => {
 		const { api, emit } = createExtensionApi()
 		bashBackgroundExtension(api)
 		await emit("session_start", {}, sessionCtx)
-		expect(getSessionState()).toBeDefined()
+		expect(getSessionState(sessionId)).toBeDefined()
 
 		// Swap in a sentinel that records what the accessor returns while the
 		// drain is in progress.
@@ -47,16 +49,16 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 			},
 			registry: {
 				async shutdown(): Promise<void> {
-					observed.publishedDuringDrain = getSessionState()?.registry
+					observed.publishedDuringDrain = getSessionState(sessionId)?.registry
 				},
 			},
 		}
-		setSessionState(sentinel as unknown as BashSessionState)
+		setSessionState(sessionId, sentinel as unknown as BashSessionState)
 
-		await emit("session_shutdown", {})
+		await emit("session_shutdown", {}, sessionCtx)
 
 		expect(observed.publishedDuringDrain).toBeUndefined()
-		expect(getSessionState()).toBeUndefined()
+		expect(getSessionState(sessionId)).toBeUndefined()
 	})
 
 	it("session_start installs fresh state that callers can resolve", async () => {
@@ -64,7 +66,7 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 		bashBackgroundExtension(api)
 
 		await emit("session_start", {}, sessionCtx)
-		const first = getSessionState()
+		const first = getSessionState(sessionId)
 		expect(first).toBeDefined()
 		expect(first?.limitSeconds).toBe(DEFAULT_BASH_PROCESS_LIMIT_SECONDS)
 		expect(first?.cwd).toBe("/tmp")
@@ -77,18 +79,52 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 		// session are not reusable (the registry is rebuilt).
 		const firstRegistry = first?.registry
 		await emit("session_start", {}, sessionCtx)
-		const second = getSessionState()
+		const second = getSessionState(sessionId)
 		expect(second).toBeDefined()
 		expect(second?.registry).not.toBe(firstRegistry)
 
-		await emit("session_shutdown", {})
-		expect(getSessionState()).toBeUndefined()
+		await emit("session_shutdown", {}, sessionCtx)
+		expect(getSessionState(sessionId)).toBeUndefined()
+	})
+
+	it("shutdown unpublishes and drains only its own session while another cohort runs", async () => {
+		const a = createExtensionApi()
+		const b = createExtensionApi()
+		const ctxA = createContext({ sessionManager: { getSessionId: () => "session-a" } })
+		const ctxB = createContext({ sessionManager: { getSessionId: () => "session-b" } })
+		bashBackgroundExtension(a.api)
+		bashBackgroundExtension(b.api)
+		await a.emit("session_start", {}, ctxA)
+		await b.emit("session_start", {}, ctxB)
+		const stateA = getSessionState("session-a")
+		const stateB = getSessionState("session-b")
+		if (!stateA || !stateB) throw new Error("Missing session state")
+		const opsA = createFakeOps()
+		const opsB = createFakeOps()
+		const handleA = stateA.registry.spawn(opsA, "process-a", "/tmp", undefined, { limitSeconds: 60 })
+		const handleB = stateB.registry.spawn(opsB, "process-b", "/tmp", undefined, { limitSeconds: 60 })
+		stateA.coordinator.handleSpawned(handleA)
+		stateB.coordinator.handleSpawned(handleB)
+		const shutdown = vi.spyOn(stateA.registry, "shutdown")
+		try {
+			await a.emit("session_shutdown", {}, ctxA)
+			expect(shutdown).toHaveBeenCalledOnce()
+			expect(getSessionState("session-a")).toBeUndefined()
+			expect(stateA.registry.size).toBe(0)
+			expect(opsA.aborted).toBe(true)
+			expect(getSessionState("session-b")).toBe(stateB)
+			expect(stateB.registry.getEntry(handleB)?.state).toBe("running")
+			expect(opsB.aborted).toBe(false)
+		} finally {
+			await a.emit("session_shutdown", {}, ctxA)
+			await b.emit("session_shutdown", {}, ctxB)
+		}
 	})
 })
 
 describe("bashBackgroundExtension — production description composition", () => {
 	afterEach(() => {
-		setSessionState(undefined)
+		setSessionState(sessionId, undefined)
 	})
 
 	it("registers the bash tool with the cohort guidance from bashToolDescription", async () => {
@@ -109,7 +145,7 @@ describe("bashBackgroundExtension — production description composition", () =>
 		expect(bash?.description).not.toContain("checkin_interval")
 		expect(bash?.description).not.toContain("extend_seconds")
 
-		await emit("session_shutdown", {})
+		await emit("session_shutdown", {}, sessionCtx)
 	})
 
 	it("registers the bash tool with the background-execute function", async () => {
@@ -122,7 +158,7 @@ describe("bashBackgroundExtension — production description composition", () =>
 		expect(bash).toBeDefined()
 		expect(typeof bash?.execute).toBe("function")
 
-		await emit("session_shutdown", {})
+		await emit("session_shutdown", {}, sessionCtx)
 	})
 
 	it.each([

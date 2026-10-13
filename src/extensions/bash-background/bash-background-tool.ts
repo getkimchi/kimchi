@@ -24,7 +24,7 @@ import type { BashOperations, BashToolDetails, BashToolOptions, ToolDefinition }
 import { createBashToolDefinition, createLocalBashOperations } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
 import { createWorkCommitTrackingOperations } from "../work-attribution/commits.js"
-import { renderBashCall, renderBashResult } from "./bash-display.js"
+import { createBashRenderers } from "./bash-display.js"
 import {
 	createProcessRegistry,
 	DEFAULT_BASH_PROCESS_LIMIT_SECONDS,
@@ -33,7 +33,7 @@ import {
 	type ProcessRegistry,
 } from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
-import { type BashSessionState, getSessionState } from "./session-registry.js"
+import type { BashSessionState } from "./session-registry.js"
 import { handoffGuidanceText, runningResultText, terminalResultText } from "./status-text.js"
 import { createTerminalDelivery } from "./terminal-delivery.js"
 import { throwIfTerminal } from "./terminal-status.js"
@@ -68,9 +68,9 @@ const backgroundBashSchema = Type.Object({
 export type BackgroundBashInput = Static<typeof backgroundBashSchema>
 
 export interface CreateBackgroundBashToolOptions extends BashToolOptions {
-	/** Override the session state (tests inject a fake). Defaults to the session-scoped state. */
+	/** State owned by the calling session; omission creates an isolated tool-owned registry. */
 	state?: BashSessionState
-	/** Safety limit used only when `state` is omitted and no session state exists. */
+	/** Safety limit used by this tool's isolated fallback when `state` is omitted. */
 	limitSeconds?: number
 }
 
@@ -102,7 +102,7 @@ export function createBackgroundBashToolDefinition(
 	// Wrap the upstream definition once — we reuse its promptSnippet and
 	// renderCall/renderResult. Only schema/description/execute are replaced.
 	const wrapped = createBashToolDefinition(cwd, options)
-	const fallback = options?.state ? undefined : fallbackState(options?.limitSeconds, cwd)
+	const state = options?.state ?? fallbackState(options?.limitSeconds, cwd).state
 
 	// The production registration site (./index.ts) overwrites this
 	// description with bashToolDescription() so tool-selection steering and
@@ -122,10 +122,6 @@ export function createBackgroundBashToolDefinition(
 		details: BackgroundBashToolDetails | undefined
 	}> {
 		const { command } = params
-		const state = options?.state ?? getSessionState() ?? fallback?.state
-		if (!state) {
-			throw new Error("bash background state unavailable: no active session registry")
-		}
 		const { registry, coordinator } = state
 
 		const handle = registry.spawn(
@@ -268,8 +264,7 @@ export function createBackgroundBashToolDefinition(
 			| undefined,
 		executionMode: wrapped.executionMode,
 		execute: execute as ToolDefinition<typeof backgroundBashSchema, BackgroundBashToolDetails | undefined>["execute"],
-		renderCall: renderBashCall,
-		renderResult: renderBashResult,
+		...createBashRenderers(() => state.registry),
 	}
 }
 

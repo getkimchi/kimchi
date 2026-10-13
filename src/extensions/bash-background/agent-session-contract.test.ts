@@ -148,13 +148,13 @@ function backgroundBashFactory(ops: FakeOps) {
 				limitSeconds: 600,
 				cwd: sessionCtx.cwd,
 			}
-			setSessionState(state)
+			setSessionState(sessionCtx.sessionManager.getSessionId(), state)
 			pi.registerTool(createBackgroundBashToolDefinition(sessionCtx.cwd, { state, operations: ops }) as ToolDefinition)
 		})
-		pi.on("session_shutdown", async () => {
-			const state = getSessionState()
+		pi.on("session_shutdown", async (_event, ctx) => {
+			const state = getSessionState(ctx.sessionManager.getSessionId())
 			if (state) {
-				setSessionState(undefined)
+				setSessionState(ctx.sessionManager.getSessionId(), undefined)
 				state.coordinator.dispose()
 				await state.registry.shutdown()
 			}
@@ -269,7 +269,7 @@ describe("background bash delivery contract (real AgentSession)", () => {
 		expect(jsonl.split(MARKER).length - 1).toBe(1)
 
 		// The outcome retired: nothing pending, nothing tracked.
-		const state = getSessionState()
+		const state = getSessionState(harness.session.sessionManager.getSessionId())
 		expect(state?.delivery.hasPending()).toBe(false)
 		expect(state?.registry.size).toBe(0)
 
@@ -309,7 +309,8 @@ describe("background bash delivery contract (real AgentSession)", () => {
 		// as steering BEHIND the advisory.
 		harness.ops.emitMatching("train", `${MARKER}\n`)
 		await harness.ops.exitMatching("train", 0)
-		while (!getSessionState()?.delivery.hasQueuedAutomatic()) await delay(20)
+		while (!getSessionState(harness.session.sessionManager.getSessionId())?.delivery.hasQueuedAutomatic())
+			await delay(20)
 
 		// Abort the run programmatically (queues are NOT dropped). The real
 		// AgentSession chains a continuation after the aborted run: it consumes
@@ -339,7 +340,7 @@ describe("background bash delivery contract (real AgentSession)", () => {
 		expect(jsonl.split(MARKER).length - 1).toBe(1)
 
 		// Retired everywhere.
-		expect(getSessionState()?.delivery.hasPending()).toBe(false)
+		expect(getSessionState(harness.session.sessionManager.getSessionId())?.delivery.hasPending()).toBe(false)
 
 		await harness.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 	})
@@ -363,7 +364,7 @@ describe("background bash delivery contract (real AgentSession)", () => {
 		try {
 			const pending = harness.session.prompt("Run two commands, then finish")
 			while (harness.requests.length < 2) await delay(20)
-			const state = getSessionState()
+			const state = getSessionState(harness.session.sessionManager.getSessionId())
 			if (!state) throw new Error("background state missing")
 			const firstHandle = state.coordinator
 				.handles()
@@ -421,7 +422,8 @@ describe("background bash delivery contract (real AgentSession)", () => {
 		// The independent tool exits the process mid-run; the notification
 		// queues while the turn is still streaming tool results.
 		while (harness.requests.length < 2) await delay(20)
-		while (!getSessionState()?.delivery.hasQueuedAutomatic()) await delay(20)
+		while (!getSessionState(harness.session.sessionManager.getSessionId())?.delivery.hasQueuedAutomatic())
+			await delay(20)
 
 		// The user aborts; the surface drops the queued steering (mirrored
 		// by clearQueue before abort).
@@ -431,10 +433,14 @@ describe("background bash delivery contract (real AgentSession)", () => {
 		expect(harness.session.isStreaming).toBe(false)
 
 		// The outcome survived as recoverable (available), process gone.
-		const handle = getSessionState()?.delivery.pendingHandles()[0]
+		const handle = getSessionState(harness.session.sessionManager.getSessionId())?.delivery.pendingHandles()[0]
 		expect(handle).toBeTruthy()
-		expect(getSessionState()?.delivery.getPending(handle as string)?.phase).toBe("available")
-		expect(getSessionState()?.registry.getEntry(handle as string)).toBeUndefined()
+		expect(
+			getSessionState(harness.session.sessionManager.getSessionId())?.delivery.getPending(handle as string)?.phase,
+		).toBe("available")
+		expect(
+			getSessionState(harness.session.sessionManager.getSessionId())?.registry.getEntry(handle as string),
+		).toBeUndefined()
 		expect(harness.session.isStreaming).toBe(false)
 
 		// No provider request saw the payload yet.
@@ -450,7 +456,7 @@ describe("background bash delivery contract (real AgentSession)", () => {
 		expect(conversation.split(MARKER).length - 1).toBe(1)
 		const jsonl = await exportJsonl(harness)
 		expect(jsonl.split(MARKER).length - 1).toBe(1)
-		expect(getSessionState()?.delivery.hasPending()).toBe(false)
+		expect(getSessionState(harness.session.sessionManager.getSessionId())?.delivery.hasPending()).toBe(false)
 
 		await harness.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 	}, 20_000)
@@ -485,7 +491,7 @@ describe("background bash delivery contract (real AgentSession)", () => {
 		while (harness.requests.length < 2) await delay(20)
 		// Fill the stop arguments with the live handle (the handoff has
 		// happened by the second request) and queue the steer.
-		const handle = getSessionState()?.coordinator.handles()[0]
+		const handle = getSessionState(harness.session.sessionManager.getSessionId())?.coordinator.handles()[0]
 		expect(handle).toBeTruthy()
 		stopArgs.stop_handles = [handle as string]
 		await harness.session.steer("Actually, stop the background command")

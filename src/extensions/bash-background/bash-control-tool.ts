@@ -482,16 +482,17 @@ function snapshotBlocks(mode: SnapshotMode, snapshot: CohortSnapshot): string[] 
  * Build the `bash_control` ToolDefinition.
  *
  * @param getState Override the state accessor (tests inject a fake).
- *                 Defaults to the session-scoped `getSessionState()`.
+ *                 Defaults to resolving the executing context's session ID.
  */
 export function createBashControlToolDefinition(
-	getState: () => BashSessionState | undefined = getSessionState,
+	getState?: () => BashSessionState | undefined,
 ): ToolDefinition<typeof bashControlSchema, BashControlDetails> {
 	async function execute(
 		toolCallId: string,
 		params: BashControlInput,
 		signal: AbortSignal | undefined,
 		_onUpdate: Parameters<ToolDefinition["execute"]>[3] | undefined,
+		ctx: Parameters<ToolDefinition["execute"]>[4],
 	): Promise<{
 		content: { type: "text"; text: string }[]
 		details: BashControlDetails
@@ -529,7 +530,7 @@ export function createBashControlToolDefinition(
 		}
 		if (wait) effectiveWaitSeconds ??= DEFAULT_WAIT_SECONDS
 
-		const state = getState()
+		const state = getState ? getState() : getSessionState(ctx.sessionManager.getSessionId())
 		if (!state) {
 			return errorResult("No active bash session state. Start a background bash command first.", "no-registry")
 		}

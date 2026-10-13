@@ -6,7 +6,7 @@
  * barrel — which would make the folder's module graph bidirectional.
  *
  * Lifecycle: `bashBackgroundExtension` (index.ts) installs fresh state on
- * `session_start` and clears it on `session_shutdown` after draining it.
+ * `session_start` and removes that session's state before shutdown drains it.
  */
 import type { ProcessRegistry } from "./process-registry.js"
 import type { ReviewCoordinator } from "./review-coordinator.js"
@@ -36,14 +36,15 @@ export interface BashSessionState {
 	cwd?: string
 }
 
-let sessionState: BashSessionState | undefined
+const sessionStates = new Map<string, BashSessionState>()
 
-/** The active session's background-bash state, or undefined outside a session. */
-export function getSessionState(): BashSessionState | undefined {
-	return sessionState
+/** Background-bash state belonging to this session, never another ACP session. */
+export function getSessionState(sessionId: string): BashSessionState | undefined {
+	return sessionStates.get(sessionId)
 }
 
 /** Install (or clear) the session-scoped state. Owned by bashBackgroundExtension. */
-export function setSessionState(state: BashSessionState | undefined): void {
-	sessionState = state
+export function setSessionState(sessionId: string, state: BashSessionState | undefined): void {
+	if (state) sessionStates.set(sessionId, state)
+	else sessionStates.delete(sessionId)
 }

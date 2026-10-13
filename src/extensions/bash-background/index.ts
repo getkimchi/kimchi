@@ -48,7 +48,12 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 			let openedPanel: CommandsPanel | undefined
 			try {
 				await ctx.ui.custom<void>((tui, theme, _keys, done) => {
-					openedPanel = new CommandsPanel(getSessionState()?.registry, tui, () => done(), theme)
+					openedPanel = new CommandsPanel(
+						getSessionState(ctx.sessionManager.getSessionId())?.registry,
+						tui,
+						() => done(),
+						theme,
+					)
 					panel = openedPanel
 					return openedPanel
 				})
@@ -69,14 +74,15 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 		const limitSeconds = resolveBashProcessLimitSeconds() ?? DEFAULT_BASH_PROCESS_LIMIT_SECONDS
 		const coordinator = createReviewCoordinator({ registry })
 		const delivery = createTerminalDelivery()
-		setSessionState({ registry, coordinator, delivery, limitSeconds, cwd: sessionCtx.cwd })
+		const state = { registry, coordinator, delivery, limitSeconds, cwd: sessionCtx.cwd }
+		setSessionState(sessionCtx.sessionManager.getSessionId(), state)
 
 		// Re-register `bash` with the background execution definition.
 		// The description is the bash-tool-guard steering text so the
 		// tool-selection preference still reaches the system prompt even
 		// though our registration wins the tool-name slot.
 		const tool = createBackgroundBashToolDefinition(sessionCtx.cwd, {
-			state: getSessionState(),
+			state,
 		})
 		const toolWithSteering = {
 			...tool,
@@ -89,16 +95,17 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 		pi.registerTool(toolWithSteering)
 	})
 
-	pi.on("session_shutdown", async (_event: SessionShutdownEvent) => {
+	pi.on("session_shutdown", async (_event: SessionShutdownEvent, ctx) => {
 		panel?.close()
 		panel = undefined
-		const state = getSessionState()
+		const sessionId = ctx.sessionManager.getSessionId()
+		const state = getSessionState(sessionId)
 		if (state) {
 			// Unpublish BEFORE draining: shutdown() kills pending processes,
 			// which settles their whenExited promises — and a still-published
 			// registry would let bashControlExtension's exit watcher emit an
 			// "exited on its own" notice into the closing session.
-			setSessionState(undefined)
+			setSessionState(sessionId, undefined)
 			state.coordinator.dispose()
 			await state.registry.shutdown()
 		}
