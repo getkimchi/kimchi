@@ -11,6 +11,7 @@ import type { AgentSideConnection } from "@agentclientprotocol/sdk"
 import type { AgentSessionEvent, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { isPersistedRoutedResolution, ROUTED_MODEL_RESOLUTION_ENTRY } from "../../extensions/auto-model/index.js"
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
+import { emitExtNotification } from "./ext-notifications.js"
 
 function routedPickOf(entry: SessionEntry): { requestedId: string; routedId: string } | undefined {
 	if (entry.type !== "custom" || entry.customType !== ROUTED_MODEL_RESOLUTION_ENTRY) return undefined
@@ -28,7 +29,5 @@ export function emitRoutedModelUpdate(conn: AgentSideConnection, sessionId: stri
 	if (event.type !== "entry_appended") return
 	const pick = routedPickOf(event.entry)
 	if (!pick) return
-	conn.extNotification(AVAILABLE_EXT_NOTIFICATIONS.routed_model, { ...pick, sessionId }).catch((err: unknown) => {
-		process.stderr.write(`acp routed_model notification failed: ${String(err)}\n`)
-	})
+	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.routed_model, { ...pick, sessionId })
 }
