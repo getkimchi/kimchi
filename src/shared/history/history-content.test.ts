@@ -20,7 +20,7 @@ const textOf = (m: unknown): string | undefined => {
 	return first?.text
 }
 
-describe("history residency (D3, against the patched SessionManager)", () => {
+describe("history residency (against the patched SessionManager)", () => {
 	let dir: string
 	let sm: SessionManager
 

@@ -1,7 +1,7 @@
 /**
  * Tool-output externalization store.
  *
- * C2a of the session-memory plan: large tool results are written to a
+ * Large tool results are written to a
  * per-process append-only artifacts file at write time, and RAM keeps only a
  * small handle (`{ file, offset, length }`). Reads go through a lazy range
  * read with a bounded, refcount-aware LRU cache, so the big string is never a

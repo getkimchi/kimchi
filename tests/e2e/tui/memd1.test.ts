@@ -1,4 +1,4 @@
-// TRANSIENT e2e (not for commit): D1 — pre-compaction history stays visible
+// e2e: pre-compaction history stays visible
 // in the TUI after a compaction fires. Deterministic trigger: tiny turns keep
 // the estimate below the threshold; the final turn's huge user message pushes
 // it over, so auto-compaction fires exactly once, before the final model call.
@@ -67,7 +67,7 @@ test("memd1: history visible after compaction", async ({ terminal }) => {
 		terminal.submit("post compaction turn")
 		await waitForText(terminal, "MARKER_AFTER_COMPACTION delta", { timeoutMs: 150_000, full: true })
 
-		// D1 acceptance: pre-compaction history still visible in the full buffer.
+		// Acceptance: pre-compaction history still visible in the full buffer.
 		await waitForText(terminal, "MARKER_TURN_ONE alpha", { timeoutMs: 10_000, full: true })
 		log("PASS: pre-compaction history visible in full buffer after compaction")
 	} finally {

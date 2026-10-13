@@ -1,11 +1,11 @@
 /**
- * Display-entry tagging (compaction-history plan, D1).
+ * Display-entry tagging for compaction-aware rendering.
  *
- * The TUI transcript renders the full leaf path (SessionManager's patched
+ * The TUI transcript renders the full leaf path (the SessionManager's
  * `buildDisplayEntries()`), so pre-compaction history stays visible. This
  * module tags each entry with whether it sits before the latest compaction's
- * cut point — the signal later chunks use for windowing (D2) and content
- * eviction (D3). Pure; unit-testable against any entry path.
+ * cut point — the signal windowed rendering and content eviction use to
+ * decide what stays resident. Pure; unit-testable against any entry path.
  */
 
 /** The entry subset the SessionManager exposes (structural, no upstream import needed). */

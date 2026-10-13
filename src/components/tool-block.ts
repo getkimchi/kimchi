@@ -164,7 +164,7 @@ export function getTextContent(result: { content: Array<{ type: string; text?: s
 		(c): c is { type: "text"; text: string } => c.type === "text" && typeof c.text === "string",
 	)
 	const text = block?.text ?? ""
-	// C3 display budget: never render the raw lazy marker for mirrored output;
+	// Display budget: never render the raw lazy marker for mirrored output;
 	// resolve it through the store (transient read) or show a caption. Pane-level
 	// truncation to the terminal width still applies downstream (truncateToWidth).
 	return displayBudgetText(text).display

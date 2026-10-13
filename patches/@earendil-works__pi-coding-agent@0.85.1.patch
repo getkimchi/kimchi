@@ -4,7 +4,7 @@
 # Changes:
 #   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
 #     compaction, model selection, extension UI helpers, and compact visuals.
-# #   - Session-log durability for externalized tool results (Kimchi C2a): the
+# #   - Session-log durability for externalized tool results : the
 #     session manager persists the FULL tool-result content even when an
 #     extension replaced the in-memory message content with a compact lazy
 #     marker (`[kimchi-ext:tool]` JSON handle pointing at a disk-backed
@@ -13,14 +13,14 @@
 #     the complete, self-contained resume source while the live entry keeps
 #     the marker. Removal: when pi exposes a content-persistence hook or lets
 #     extensions control persisted content.
-#   - Compaction-history display (Kimchi D1): SessionManager gains
+#   - Compaction-history display : SessionManager gains
 #     buildDisplayEntries() (full leaf path, pre-compaction entries kept) and
 #     the interactive mode renders it at the three transcript call sites
 #     (initial render, rebuild, post-compaction) via a capability probe, so
 #     the TUI keeps the complete history visible after compaction. The model
 #     context source (buildContextEntries) is untouched. Removal: when
 #     upstream exposes a display-entries hook.
-#   - Compaction-history residency (Kimchi D3): after a compaction commits,
+#   - Compaction-history residency : after a compaction commits,
 #     pre-cut message entries' in-memory content is evicted to compact
 #     `[kimchi-ext:log]` markers (offsets into the session JSONL); markers
 #     resolve transparently at the sessionEntryToContextMessages read seam
@@ -486,7 +486,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
 +    } catch { return undefined; }
 +}
 +/**
-+ * Kimchi patch (compaction-history D3): resolve a `[kimchi-ext:log]` marker
++ * Kimchi patch: resolve a `[kimchi-ext:log]` marker
 + * to its original MESSAGE (the JSONL line parsed once) with a bounded LRU —
 + * repeat reads (per-frame renders) are map hits with no re-parse. Returns
 + * undefined for non-markers or unreadable handles.
@@ -531,7 +531,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
              message.content == null) {
              return [{ ...message, content: [] }];
          }
-+        // Kimchi patch (compaction-history D3): resolve lazy log markers so
++        // Kimchi patch: resolve lazy log markers so
 +        // evicted pre-compaction content reads back transparently. The marker
 +        // resolves to the original message (blocks intact), cached for repeat
 +        // reads; falls back to the marker when unreadable.
@@ -550,13 +550,13 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
              this.fileEntries = this.fileEntries.concat(entries);
          }
          this._buildIndex();
-+        // Kimchi patch (compaction-history D3): evict pre-compaction content
++        // Kimchi patch: evict pre-compaction content
 +        // at load so resumed sessions start with bounded residency instead of
 +        // loading the full history into memory.
 +        try { this.__kimchiEvictOnLoad(); } catch { }
 +    }
 +    /**
-+     * Kimchi patch (compaction-history D3): find the latest compaction on the
++     * Kimchi patch: find the latest compaction on the
 +     * current leaf path and evict its pre-cut entries (resume path).
 +     */
 +    __kimchiEvictOnLoad() {
@@ -585,14 +585,14 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
      getSessionFile() {
          return this.sessionFile;
      }
-+    /** Kimchi patch (tool-result externalizer C2a): the session log must keep
++    /** Kimchi patch: the session log must keep
 +     *  the FULL tool-result content so it stays the self-contained resume
 +     *  source, while the in-memory message may carry a compact lazy marker
 +     *  written by an extension (e.g. a disk-backed externalization handle).
 +     *  When serializing such an entry, resolve the original content from the
 +     *  marker's own file reference and persist THAT. The in-memory entry
 +     *  is untouched (marker stays resident-light).
-+     *  Tracking: kimchi C2a; removal: when pi exposes a content-persistence
++     *  Tracking: kimchi; removal: when pi exposes a content-persistence
 +     *  hook or extensions control persisted content. */
 +    _kimchiOriginalToolContent(message) {
 +        if (!message || typeof message !== "object") return undefined;
@@ -664,7 +664,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
      }
      /** Append a compaction summary as child of current leaf, then advance leaf. Returns entry id. */
 +    /**
-+     * Kimchi patch (compaction-history D3): evict pre-compaction entry content
++     * Kimchi patch: evict pre-compaction entry content
 +     * from memory. The session log remains the durable source of truth; the
 +     * in-memory message content is replaced with a compact `[kimchi-ext:log]`
 +     * marker resolved on demand (see resolveKimchiLogText). Only message
@@ -735,7 +735,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
              fromHook,
          };
          this._appendEntry(entry);
-+        // Kimchi patch (compaction-history D3): after the compaction is
++        // Kimchi patch: after the compaction is
 +        // committed, evict the summarized entries' content from memory.
 +        try { this.__kimchiEvictCompactedEntries(firstKeptEntryId); } catch { }
          return entry.id;
@@ -745,11 +745,11 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
          return buildContextEntries(this.getEntries(), this.leafId, this.byId);
      }
      /**
-+     * Kimchi patch (compaction-history D1): full leaf-path entry list for
++     * Kimchi patch: full leaf-path entry list for
 +     * DISPLAY. Unlike buildContextEntries(), pre-compaction entries are kept
 +     * so the TUI transcript can show the complete history; the model context
 +     * is unaffected (buildContextEntries remains the context source).
-+     * Tracking: kimchi compaction-history plan; removal when upstream exposes
++     * Tracking: kimchi; removal when upstream exposes
 +     * a display-entries hook.
 +     */
 +    buildDisplayEntries() {
@@ -1268,7 +1268,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
 -                            kind: "compaction",
 -                            usage: event.result.usage,
 -                        });
-+                    // Kimchi patch (compaction-history D1): render the full path so the
++                    // Kimchi patch: render the full path so the
 +                    // transcript keeps pre-compaction history; the compaction entry itself
 +                    // renders its summary at the chronological position. Falls back to
 +                    // upstream behavior when the display source is absent.
@@ -1294,7 +1294,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
      }
      renderInitialMessages() {
 -        const entries = this.sessionManager.buildContextEntries();
-+        // Kimchi patch (compaction-history D1): full-path display source so the
++        // Kimchi patch: full-path display source so the
 +        // transcript shows pre-compaction history on resume.
 +        const entries = this.sessionManager.buildDisplayEntries?.() ?? this.sessionManager.buildContextEntries();
          this.renderSessionEntries(entries, {
@@ -1314,7 +1314,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
      rebuildChatFromMessages() {
          this.chatContainer.clear();
 -        this.renderSessionEntries(this.sessionManager.buildContextEntries());
-+        // Kimchi patch (compaction-history D1): full-path display source.
++        // Kimchi patch: full-path display source.
 +        this.renderSessionEntries(this.sessionManager.buildDisplayEntries?.() ?? this.sessionManager.buildContextEntries());
      }
      // =========================================================================

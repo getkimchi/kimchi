@@ -1,5 +1,5 @@
 /**
- * Tool-output externalizer — C2a/C2b of the session-memory plan.
+ * Tool-output externalizer: keep large tool-result text off the JSC heap.
  *
  * Intercepts large content at write time:
  *   1. `tool_result` — oversized tool results are mirrored to disk (ToolOutputStore)

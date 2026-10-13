@@ -1,5 +1,5 @@
 /**
- * Adaptive GC (memory plan follow-up): bound JSC heap growth in long
+ * Adaptive GC: bound JSC heap growth in long
  * sessions with two collection paths:
  *
  * 1. Idle collection — after the agent has been idle for a delay

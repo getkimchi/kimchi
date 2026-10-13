@@ -1,5 +1,5 @@
 /**
- * History residency (compaction-history plan, D3) — kimchi-side surface.
+ * History residency — kimchi-side surface.
  *
  * The eviction itself lives in the pi patch (SessionManager
  * `appendCompaction` → `__kimchiEvictCompactedEntries`): after a compaction

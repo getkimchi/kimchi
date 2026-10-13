@@ -1,5 +1,5 @@
 /**
- * Session-memory observability (C5 of the session-memory plan).
+ * Session-memory observability.
  *
  * Exposes the tool-output store's residency statistics and the number of
  * live lazy markers so users (and tests) can see how much session content is

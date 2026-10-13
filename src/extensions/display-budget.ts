@@ -1,5 +1,5 @@
 /**
- * Display-side budget helpers (C3 of the session-memory plan).
+ * Display-side budget helpers for the TUI.
  *
  * The TUI must never hold long-lived copies of mirrored content, and must
  * never render the raw lazy marker text that externalized messages carry in
@@ -7,7 +7,7 @@
  * resolving markers through the tool-output store (transient read) and
  * capping oversized text with an expandable preview.
  *
- * Display is allowed to be capped — the model-facing content is hydrated
+ * Display may be capped — the model-facing content is hydrated
  * separately (see tool-output-externalizer) and stays byte-identical.
  */
 import { parseMarker, readMarkerText } from "./tool-output-store.js"

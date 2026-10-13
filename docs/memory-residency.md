@@ -74,10 +74,9 @@ Small messages (under ~256 chars) and post-compaction entries stay resident.
 Eviction is in-memory only; resume re-hydrates from the log, and the first
 compaction in a resumed session evicts the pre-cut history again.
 
-**Known follow-ups** (tracked in `.kimchi/plans/compaction-history.md`):
-scroll-driven windowed rendering (D2, deferred — the pi-tui ScrollView renders
-its whole child each frame, so virtualization needs upstream layout work),
-resident-cache observability for evicted entries.
+**Known follow-ups**: scroll-driven windowed rendering (deferred — the pi-tui
+ScrollView renders its whole child each frame, so virtualization needs upstream
+layout work), resident-cache observability for evicted entries.
 
 
 ## Adaptive GC
@@ -101,13 +100,13 @@ Two collection paths (`src/extensions/adaptive-gc.ts`):
 Knobs: `KIMCHI_IDLE_GC=off` (disable), `KIMCHI_IDLE_GC_DELAY_MS`,
 `KIMCHI_GC_GROWTH_BYTES`, `KIMCHI_GC_MIN_INTERVAL_MS`.
 
-## Known follow-ups (tracked in `.kimchi/plans/memory-improvements.md`)
+## Known follow-ups
 
-- C2b (assistant/user-message externalization) is **deferred**: a write-time
+- Assistant/user-message externalization is **deferred**: a write-time
   `message_end` replacement was found to break live turns (the turn never
   completes after the content is replaced), so it was reverted. It needs an
   upstream content hook that does not disturb the stream pipeline.
-- C3 "expand full content" UI affordance in the transcript/tool panes.
+- "Expand full content" UI affordance in the transcript/tool panes.
 - ACP ext-method mirror for residency stats (`_kimchi.dev/memory_residency`).
 - True mmap accessor spike.
 - User-prompt externalization (no upstream content-replacement hook exists
