@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type {
@@ -17,6 +17,7 @@ import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
+import { savedWorkSummary } from "../__mocks__/work-summary.js"
 import * as prCostTelemetry from "../telemetry/pr-cost.js"
 import {
 	appendWorkRecord,
@@ -159,10 +160,11 @@ it.each([
 		readWorkRecords(join(root, "agent")).find((row) => row.requestId === request.headers["X-Request-Id"])?.workId,
 	).toBe(planned)
 	await flushWorkSummaries()
-	const summary = JSON.parse(readFileSync(join(root, "agent", "work", planned, "work.json"), "utf8"))
-	expect(
-		summary.requests.find((row: { requestId: string }) => row.requestId === request.headers["X-Request-Id"]).segment,
-	).toMatchObject({ attribution: "inferred", reason: "model-continue" })
+	const summary = savedWorkSummary(join(root, "agent"), planned)
+	expect(summary.requests.find((row) => row.requestId === request.headers["X-Request-Id"])?.segment).toMatchObject({
+		attribution: "inferred",
+		reason: "model-continue",
+	})
 	expect(summary.continuations).toContainEqual(
 		expect.objectContaining({
 			source: "semantic",

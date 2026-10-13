@@ -6,6 +6,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent"
 import { expect, Key, test } from "@microsoft/tui-test"
 import { viewText, waitForText } from "./support/assertions.js"
 import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { readWorkSummary } from "./support/work-summary.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -133,9 +134,9 @@ test("pending work survives a GitHub login error and finds a PR while coding con
 			expect(printed).toContain(`Work ID: ${workId}`)
 			expect(printed).toContain("PR #731 open: https://github.com/example/kimchi-lab/pull/731")
 			trace.step("the next background check finds the PR; Enter prints the work's details")
-			const summary = JSON.parse(readFileSync(join(fixture.agentDir, "work", workId, "work.json"), "utf8"))
-			expect(summary.commits).toHaveLength(1)
-			expect(summary.commits[0]).toMatchObject({
+			const summary = readWorkSummary(fixture.agentDir, workId)
+			expect(summary?.commits).toHaveLength(1)
+			expect(summary?.commits[0]).toMatchObject({
 				sha: headSha,
 				prLookup: { status: "linked" },
 				pullRequests: [{ number: 731, state: "open", headSha, repository: "example/kimchi-lab", host: "github.com" }],

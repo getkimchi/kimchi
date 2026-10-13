@@ -1,9 +1,16 @@
+import * as fs from "node:fs"
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
+import * as asyncFs from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { saveWorkSummary } from "../__mocks__/work-summary.js"
 import { buildWorkBrowser, readWorkBrowser, type SavedWork } from "./browser.js"
-import { workCostDetails } from "./cost-details.js"
+import { type WorkCostReport, workCostDetails, workCostTotals } from "./cost-details.js"
+import type { PullRequestCost } from "./costs.js"
+import { type Collection, type Row, readWorkHead, type WorkHead } from "./row-log.js"
+
+vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
 
 const NOW = Date.parse("2026-10-08T12:00:00Z")
 const HOUR = 60 * 60_000
@@ -15,6 +22,7 @@ beforeEach(() => {
 	vi.stubEnv("TZ", "UTC")
 })
 afterEach(() => {
+	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
 	rmSync(agentDir, { recursive: true, force: true })
 })
@@ -22,17 +30,9 @@ afterEach(() => {
 function workId(index: number): string {
 	return `${String(index).padStart(8, "0")}-0000-4000-8000-000000000000`
 }
-function summary(id: string, fields: Record<string, unknown[]> = {}) {
-	return {
-		version: 1,
-		workId: id,
-		sessions: ["session"],
-		requests: [],
-		plans: [],
-		commits: [],
-		fileTransitions: [],
-		...fields,
-	}
+type Summary = Parameters<typeof saveWorkSummary>[1]
+function summary(id: string, rows: Partial<Record<Collection, Row[]>> = {}): Summary {
+	return { workId: id, sessions: ["session"], ...rows }
 }
 function request(requestId: string, startedAt = "2026-10-08T09:00:00Z") {
 	return { requestId, sessionId: "session", startedAt, cwd: "/src/kimchi", scope: { repository: "/src/kimchi/.git" } }
@@ -40,21 +40,42 @@ function request(requestId: string, startedAt = "2026-10-08T09:00:00Z") {
 function costs(
 	id: string,
 	requests: { requestId: string; usd?: string; priced?: boolean; workIds?: string[]; linkedWorkIds?: string[] }[],
-) {
+	pullRequests: PullRequestCost[] = [],
+): WorkCostReport {
 	return {
-		version: 1,
 		workId: id,
-		pullRequests: [],
+		pullRequests,
 		requests: requests.map(({ requestId, usd = "0", priced = true, workIds = [id], linkedWorkIds }) => ({
 			requestId,
+			account: null,
 			workIds,
 			...(linkedWorkIds ? { linkedWorkIds } : {}),
-			allocation: "unlinked",
+			sessionIds: ["session"],
+			startedAt: null,
 			pullRequestIds: [],
+			allocation: "unlinked",
+			billingRecordIds: [],
 			priceStatus: priced ? "priced" : "missing",
 			knownCostUsd: usd,
 			totalCostUsd: priced ? usd : null,
 		})),
+	}
+}
+/** A saved PR total; request lists and portions not given are empty. */
+function pullRequestCost(
+	row: Pick<PullRequestCost, "key" | "pullRequest" | "workIds" | "knownCostUsd" | "totalCostUsd"> &
+		Partial<PullRequestCost>,
+): PullRequestCost {
+	const empty = { requestIds: [], knownCostUsd: "0.000000000", totalCostUsd: "0.000000000" }
+	return {
+		account: null,
+		requestIds: [],
+		explicit: empty,
+		inferred: empty,
+		sharedRequestIds: [],
+		inferredRequestIds: [],
+		unknownRequestIds: [],
+		...row,
 	}
 }
 function pullRequest(number: number, state: "open" | "closed" | "merged", provider: "github" | "gitlab" = "github") {
@@ -85,32 +106,57 @@ function commit(sha: string, pullRequests: unknown[]) {
 		pullRequests,
 	}
 }
-function save(id: string, files: { summary?: unknown; costs?: unknown; plans?: Record<string, string> }, at = NOW) {
+/** Saves a work's files; a summary given as text is written to work.json as is. */
+async function save(
+	id: string,
+	files: { summary?: Summary | string; costs?: WorkCostReport; totals?: string; plans?: Record<string, string> },
+	at = NOW,
+) {
 	const folder = join(agentDir, "work", id)
 	mkdirSync(join(folder, "plans"), { recursive: true })
+	if (typeof files.summary === "string") writeFileSync(join(folder, "work.json"), files.summary)
+	else if (files.summary) await saveWorkSummary(agentDir, files.summary)
+	const totals = files.totals ?? (files.costs === undefined ? undefined : JSON.stringify(workCostTotals(files.costs)))
 	for (const [name, value] of [
-		["work.json", files.summary],
 		["costs.json", files.costs],
+		["cost-totals.json", totals],
 	] as const)
 		if (value !== undefined)
 			writeFileSync(join(folder, name), typeof value === "string" ? value : JSON.stringify(value))
 	for (const [name, text] of Object.entries(files.plans ?? {})) writeFileSync(join(folder, "plans", name), text)
 	if (files.summary !== undefined) utimesSync(join(folder, "work.json"), new Date(at), new Date(at))
 }
-function browse(works: SavedWork[], lines: string[] = []) {
-	return buildWorkBrowser(agentDir, { workId: works[0].workId, lines }, works)
+async function browse(works: { workId: string; summary?: Summary; costs?: WorkCostReport }[], lines: string[] = []) {
+	const saved: SavedWork[] = []
+	for (const work of works) {
+		if (work.summary) await saveWorkSummary(agentDir, work.summary)
+		saved.push({
+			workId: work.workId,
+			head: await readWorkHead(agentDir, work.workId),
+			totals: work.costs && workCostTotals(work.costs),
+		})
+	}
+	return buildWorkBrowser(agentDir, { workId: works[0].workId, lines }, saved)
 }
 
 describe("work browser rows", () => {
 	it("lists the current work first, then recent works by last activity, and leaves out old works", async () => {
 		const [current, older, newer, stale, idle] = [1, 2, 3, 4, 5].map(workId)
-		save(current, { summary: summary(current, { requests: [request("r1", "2026-09-20T09:00:00Z")] }) }, NOW - DAY)
+		await save(current, { summary: summary(current, { requests: [request("r1", "2026-09-20T09:00:00Z")] }) }, NOW - DAY)
 		// A later background update does not make older work more recent than newer activity.
-		save(older, { summary: summary(older, { requests: [request("r2", "2026-10-07T10:00:00Z")] }) }, NOW - HOUR)
-		save(newer, { summary: summary(newer, { requests: [request("r3", "2026-10-08T09:00:00Z")] }) }, NOW - 2 * HOUR)
-		save(stale, { summary: summary(stale, { requests: [request("r4", "2026-08-20T09:00:00Z")] }) }, NOW - 40 * DAY)
+		await save(older, { summary: summary(older, { requests: [request("r2", "2026-10-07T10:00:00Z")] }) }, NOW - HOUR)
+		await save(
+			newer,
+			{ summary: summary(newer, { requests: [request("r3", "2026-10-08T09:00:00Z")] }) },
+			NOW - 2 * HOUR,
+		)
+		await save(
+			stale,
+			{ summary: summary(stale, { requests: [request("r4", "2026-08-20T09:00:00Z")] }) },
+			NOW - 40 * DAY,
+		)
 		// A request's final cost record rewrites the summary of work idle for over a month.
-		save(idle, { summary: summary(idle, { requests: [request("r5", "2026-08-19T09:00:00Z")] }) }, NOW - HOUR)
+		await save(idle, { summary: summary(idle, { requests: [request("r5", "2026-08-19T09:00:00Z")] }) }, NOW - HOUR)
 		mkdirSync(join(agentDir, "work", "not-a-work"))
 
 		const { rows } = await readWorkBrowser(agentDir, { workId: current, lines: [] }, NOW)
@@ -122,7 +168,7 @@ describe("work browser rows", () => {
 
 	it("reads at most 30 works", async () => {
 		for (let index = 1; index <= 35; index++)
-			save(workId(index), { summary: summary(workId(index)) }, NOW - index * HOUR)
+			await save(workId(index), { summary: summary(workId(index)) }, NOW - index * HOUR)
 
 		const { rows } = await readWorkBrowser(agentDir, { workId: workId(35), lines: [] }, NOW)
 
@@ -134,16 +180,20 @@ describe("work browser rows", () => {
 
 	it("keeps the most recently active works when more works changed recently", async () => {
 		const current = workId(1)
-		save(current, { summary: summary(current) })
+		await save(current, { summary: summary(current) })
 		// Background cost and PR updates rewrote these summaries after their last activity.
 		for (let index = 2; index <= 30; index++)
-			save(
+			await save(
 				workId(index),
 				{ summary: summary(workId(index), { requests: [request(`r${index}`, "2026-09-28T09:00:00Z")] }) },
 				NOW - HOUR,
 			)
 		const active = workId(31)
-		save(active, { summary: summary(active, { requests: [request("active", "2026-10-07T09:00:00Z")] }) }, NOW - DAY)
+		await save(
+			active,
+			{ summary: summary(active, { requests: [request("active", "2026-10-07T09:00:00Z")] }) },
+			NOW - DAY,
+		)
 
 		const { rows } = await readWorkBrowser(agentDir, { workId: current, lines: [] }, NOW)
 
@@ -152,9 +202,9 @@ describe("work browser rows", () => {
 		expect(rows.map((row) => row.workId)).not.toContain(workId(30))
 	})
 
-	it("shows priced spend and never shows unpriced spend as $0", () => {
+	it("shows priced spend and never shows unpriced spend as $0", async () => {
 		const ids = [1, 2, 3, 4, 5, 6].map(workId)
-		const { rows, spend } = browse([
+		const { rows, spend } = await browse([
 			{
 				workId: ids[0],
 				summary: summary(ids[0], { requests: [request("a1"), request("a2")] }),
@@ -205,26 +255,55 @@ describe("work browser rows", () => {
 		)
 	})
 
-	it("counts requests that connected works both saved once", () => {
+	it("shows each connected work's own spend and counts their shared report once", async () => {
 		const [first, second] = [1, 2].map(workId)
-		const shared = { requestId: "shared", usd: "0.250000000" }
-		const { spend } = browse([
+		// The cost pass saves the whole connected group in each member's costs.json.
+		const group = (id: string) =>
+			costs(
+				id,
+				[
+					{ requestId: "own", usd: "0.500000000", workIds: [first] },
+					// A correction linked this planning request into the second work.
+					{ requestId: "linked", usd: "0.250000000", workIds: [first], linkedWorkIds: [second] },
+					{ requestId: "other", usd: "0.125000000", workIds: [second] },
+				],
+				[
+					pullRequestCost({
+						key: '["github","github.com","7"]',
+						pullRequest: pullRequest(7, "merged"),
+						workIds: [first, second],
+						requestIds: ["own", "linked", "other"],
+						knownCostUsd: "0.875000000",
+						totalCostUsd: "0.875000000",
+						explicit: {
+							requestIds: ["own", "linked", "other"],
+							knownCostUsd: "0.875000000",
+							totalCostUsd: "0.875000000",
+						},
+					}),
+				],
+			)
+		const { rows, spend } = await browse([
 			{
 				workId: first,
-				summary: summary(first, { requests: [request("own"), request("shared")] }),
-				costs: costs(first, [{ requestId: "own", usd: "0.500000000" }, shared]),
+				summary: summary(first, { requests: [request("own"), request("linked")] }),
+				costs: group(first),
 			},
-			{
-				workId: second,
-				summary: summary(second, { requests: [request("other")] }),
-				costs: costs(second, [shared, { requestId: "other", usd: "0.125000000" }]),
-			},
+			{ workId: second, summary: summary(second, { requests: [request("other")] }), costs: group(second) },
 		])
+		const row = (id: string) => rows.find((candidate) => candidate.workId === id)
 
+		expect(row(first)?.value).toBe("$0.75 · no PR")
+		expect(row(second)?.value).toBe("$0.375 · no PR")
+		expect(row(first)?.description).toContain("Prices: 2/2 requests priced, $0.75.")
+		expect(row(second)?.description).toContain("Prices: 2/2 requests priced, $0.375.")
+		// The PR's total covers every contributing work.
+		expect(row(second)?.description).toContain("Cost: $0.875 — https://github.com/example/kimchi/pull/7")
+		// The header counts requests the group shares once, as deduplicating by request ID did.
 		expect(spend).toBe("$0.875")
 	})
 
-	it("shows each work's own spend while the saved reports repeat their connected works", () => {
+	it("shows each work's own spend while the saved reports repeat their connected works", async () => {
 		const [first, second] = [1, 2].map(workId)
 		// The cost pass saves the whole connected group in each member's costs.json.
 		const group = [
@@ -232,7 +311,7 @@ describe("work browser rows", () => {
 			{ requestId: "linked", usd: "0.250000000", workIds: [first], linkedWorkIds: [second] },
 			{ requestId: "implementation", usd: "0.125000000", workIds: [second] },
 		]
-		const { rows, spend } = browse([
+		const { rows, spend } = await browse([
 			{
 				workId: first,
 				summary: summary(first, { requests: [request("planning"), request("linked")] }),
@@ -249,9 +328,27 @@ describe("work browser rows", () => {
 		expect(spend).toBe("$0.875")
 	})
 
-	it("names each work's PR state from its saved links", () => {
+	it("counts a listed work's whole connected report in the header, unlisted works included", async () => {
+		const [listed, older] = [1, 2].map(workId)
+		const { rows, spend } = await browse([
+			{
+				workId: listed,
+				summary: summary(listed, { requests: [request("listed")] }),
+				costs: costs(listed, [
+					{ requestId: "listed", usd: "0.500000000", workIds: [listed] },
+					// A connected work too old to be listed.
+					{ requestId: "older", usd: "0.125000000", workIds: [older] },
+				]),
+			},
+		])
+
+		expect(rows[0].value).toBe("$0.50 · no PR")
+		expect(spend).toBe("$0.625")
+	})
+
+	it("names each work's PR state from its saved links", async () => {
 		const ids = [1, 2, 3, 4, 5].map(workId)
-		const { rows } = browse(
+		const { rows } = await browse(
 			[
 				{ workId: ids[0], summary: summary(ids[0], { commits: [commit("1", [pullRequest(731, "open")])] }) },
 				{ workId: ids[1], summary: summary(ids[1], { commits: [commit("2", [])] }) },
@@ -300,21 +397,25 @@ describe("work browser rows", () => {
 			snapshotPath: `/old/agent/work/${planned}/plans/csv-abc.md`,
 			recordedAt: "2026-10-08T08:00:00Z",
 		}
-		save(planned, {
+		await save(planned, {
 			summary: summary(planned, { plans: [planRecord] }),
 			plans: { "csv-abc.md": `<!-- kimchi-work-id: ${planned} -->\n# Add CSV\u001b[31m export\n\nSteps\n` },
 		})
-		save(edited, {
+		await save(edited, {
 			summary: summary(edited, {
 				requests: [request("e1")],
 				fileTransitions: [
 					{
+						sessionId: "session",
+						transitionId: "t1",
 						repository: "/src/kimchi/.git",
 						worktree: "/src/kimchi-csv",
 						branch: "main",
 						recordedAt: "2026-10-07T08:00:00Z",
 					},
 					{
+						sessionId: "session",
+						transitionId: "t2",
 						repository: "/src/kimchi/.git",
 						worktree: "/src/kimchi-csv",
 						branch: "feat/csv",
@@ -323,7 +424,7 @@ describe("work browser rows", () => {
 				],
 			}),
 		})
-		save(asked, {
+		await save(asked, {
 			summary: summary(asked, { requests: [{ ...request("a1"), scope: { repository: "/srv/app.git" } }] }),
 		})
 
@@ -335,22 +436,23 @@ describe("work browser rows", () => {
 		expect(label(asked)).toBe("  00000003 app")
 	})
 
-	it("keeps missing and damaged files visible as unknown", async () => {
+	it("shows a missing summary and damaged totals as unknown, and deletes a damaged work.json", async () => {
 		const [missing, damaged, wrongCosts] = [1, 2, 3].map(workId)
-		save(damaged, { summary: "{", costs: costs(damaged, [{ requestId: "x1", usd: "0.100000000" }]) })
-		save(wrongCosts, {
+		await save(damaged, { summary: "{", costs: costs(damaged, [{ requestId: "x1", usd: "0.100000000" }]) })
+		await save(wrongCosts, {
 			summary: summary(wrongCosts, {
 				requests: [request("y1")],
 				plans: [{ sessionId: "session", path: "/gone.md", snapshotPath: "/gone/plans/missing.md" }],
 			}),
-			costs: '{"requests":"not a list"}',
+			totals: '{"requests":"not a list"}',
 		})
 
 		const { rows, spend } = await readWorkBrowser(agentDir, { workId: missing, lines: [] }, NOW)
 		const row = (id: string) => rows.find((candidate) => candidate.workId === id)
 
-		// A damaged summary has no activity times, so its file time orders it.
-		expect(rows.map((candidate) => candidate.workId)).toEqual([missing, damaged, wrongCosts])
+		// The damaged work has no summary now and is listed again once an update rebuilds it; its costs stay.
+		expect(rows.map((candidate) => candidate.workId)).toEqual([missing, wrongCosts])
+		expect(fs.readdirSync(join(agentDir, "work", damaged)).sort()).toEqual(["cost-totals.json", "costs.json", "plans"])
 		expect(row(missing)).toMatchObject({ label: "● 00000001 summary unavailable", value: "cost unknown · no PR" })
 		expect(row(missing)?.description).toBe(
 			[
@@ -359,18 +461,64 @@ describe("work browser rows", () => {
 				"Cost: unknown; waiting for billing",
 			].join("\n"),
 		)
-		expect(row(damaged)).toMatchObject({ label: "  00000002 summary unavailable", value: "$0.10 · no PR" })
 		expect(row(wrongCosts)).toMatchObject({ label: "  00000003 kimchi", value: "cost unknown · no PR" })
 		expect(row(wrongCosts)?.description).toContain("Cost: unknown; waiting for billing")
-		expect(spend).toBe("$0.10 known so far")
+		expect(spend).toBe("cost unknown")
+	})
+
+	it("opens 30 long works from their manifests and cost totals alone", async () => {
+		const ids = Array.from({ length: 30 }, (_, index) => workId(index + 1))
+		for (const [index, id] of ids.entries()) {
+			const folder = join(agentDir, "work", id)
+			mkdirSync(join(folder, "rows"), { recursive: true })
+			const manifest: WorkHead = {
+				version: 2,
+				workId: id,
+				updatedAt: new Date(NOW).toISOString(),
+				logs: { requests: { generation: 3, bytes: 33_441_207, rows: 15_000 } },
+				latest: {
+					activityAt: new Date(NOW - index * HOUR).toISOString(),
+					request: { startedAt: new Date(NOW - index * HOUR).toISOString(), repository: "/src/kimchi/.git" },
+					branch: { recordedAt: "2026-10-08T08:00:00Z", branch: "feat/search" },
+				},
+				pullRequests: [pullRequest(700 + index, "open")],
+			}
+			writeFileSync(join(folder, "work.json"), JSON.stringify(manifest))
+			// The logs and the full report are large; the panel must not open them.
+			writeFileSync(join(folder, "rows", "requests.3.jsonl"), "")
+			writeFileSync(join(folder, "costs.json"), "")
+			const priced = Array.from({ length: 14_990 }, (_, at) => ({ requestId: `${id}-${at}`, usd: "0.001000000" }))
+			writeFileSync(join(folder, "cost-totals.json"), JSON.stringify(workCostTotals(costs(id, priced))))
+		}
+		const reads = vi.spyOn(asyncFs, "readFile")
+		const opened = vi.spyOn(asyncFs, "open")
+
+		const { rows, spend } = await readWorkBrowser(agentDir, { workId: ids[0], lines: [] }, NOW)
+
+		expect(rows).toHaveLength(30)
+		expect(rows[0].value).toBe("$14.99 known so far · PR #700 open")
+		expect(rows[0].description).toContain("Repository: kimchi · branch feat/search")
+		expect(rows[0].description).toContain("· 15000 requests")
+		expect(spend).toBe("$449.70 known so far")
+		const files = reads.mock.calls.map(([path]) => String(path))
+		expect(files.every((path) => path.endsWith("work.json") || path.endsWith("cost-totals.json"))).toBe(true)
+		expect(opened).not.toHaveBeenCalled()
 	})
 
 	it("describes a work with the details /work prints plus where and when it ran", async () => {
 		const id = workId(1)
-		save(id, {
+		await save(id, {
 			summary: summary(id, {
 				requests: [request("r1", "2026-10-08T08:00:00Z"), request("r2", "2026-10-08T09:30:00Z")],
-				fileTransitions: [{ repository: "/src/kimchi/.git", branch: "feat/csv", recordedAt: "2026-10-08T09:00:00Z" }],
+				fileTransitions: [
+					{
+						sessionId: "session",
+						transitionId: "t1",
+						repository: "/src/kimchi/.git",
+						branch: "feat/csv",
+						recordedAt: "2026-10-08T09:00:00Z",
+					},
+				],
 			}),
 			costs: costs(id, [{ requestId: "r1", usd: "0.031133200" }]),
 		})
@@ -390,7 +538,7 @@ describe("work browser rows", () => {
 		)
 	})
 
-	it("explains unknown prices with the work's own untagged requests and failed refreshes only", () => {
+	it("explains unknown prices with the work's own untagged requests and failed refreshes only", async () => {
 		const [first, second] = [1, 2].map(workId)
 		// The cost pass saves the whole connected group in each member's costs.json.
 		const group = (id: string) => {
@@ -408,7 +556,7 @@ describe("work browser rows", () => {
 			})
 			return report
 		}
-		const { rows } = browse([
+		const { rows } = await browse([
 			{ workId: first, summary: summary(first, { requests: [request("planning")] }), costs: group(first) },
 			{ workId: second, summary: summary(second, { requests: [request("untagged")] }), costs: group(second) },
 		])
