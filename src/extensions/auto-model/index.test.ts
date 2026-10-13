@@ -76,6 +76,7 @@ import { getProcessMultiModelEnabled, setProcessMultiModelEnabled } from "../kim
 import autoModelExtension, {
 	_resetAutoModelNoticeCache,
 	createAutoModelRoutingExtension,
+	isRoutedResolutionEntry,
 	ROUTED_MODEL_RESOLUTION_ENTRY,
 } from "./index.js"
 import { clearAutoRoutingState, getAutoRoutingState } from "./state.js"
@@ -122,6 +123,25 @@ function routedEntry(requestedId: string, modelId: string): SessionEntry {
 		data: { version: 1, requestedId, provider: "kimchi-dev", modelId },
 	}
 }
+
+describe("isRoutedResolutionEntry", () => {
+	it("narrows a valid routed-resolution entry to its data", () => {
+		const entry = routedEntry("auto", "kimi-k3")
+		expect(isRoutedResolutionEntry(entry)).toBe(true)
+		if (isRoutedResolutionEntry(entry)) {
+			expect(entry.data).toEqual({ version: 1, requestedId: "auto", provider: "kimchi-dev", modelId: "kimi-k3" })
+		}
+	})
+
+	it("rejects other custom types, malformed data, and non-custom entries", () => {
+		const valid = routedEntry("auto", "kimi-k3")
+		expect(isRoutedResolutionEntry({ ...valid, customType: "other_entry" } as SessionEntry)).toBe(false)
+		expect(isRoutedResolutionEntry({ ...valid, data: { version: 1, requestedId: 7 } } as SessionEntry)).toBe(false)
+		expect(
+			isRoutedResolutionEntry({ type: "model_change", provider: "kimchi-dev", modelId: "auto" } as SessionEntry),
+		).toBe(false)
+	})
+})
 
 function setup() {
 	const { api, getHandler, getAppendedEntries, setModel, getEntryRenderer } = createExtensionApi()

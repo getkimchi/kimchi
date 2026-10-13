@@ -8,26 +8,21 @@
 // raw id, like the transcript notice does.
 
 import type { AgentSideConnection } from "@agentclientprotocol/sdk"
-import type { AgentSessionEvent, SessionEntry } from "@earendil-works/pi-coding-agent"
-import { isPersistedRoutedResolution, ROUTED_MODEL_RESOLUTION_ENTRY } from "../../extensions/auto-model/index.js"
+import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent"
+import { isRoutedResolutionEntry } from "../../extensions/auto-model/index.js"
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
 import { emitExtNotification } from "./ext-notifications.js"
-
-function routedPickOf(entry: SessionEntry): { requestedId: string; routedId: string } | undefined {
-	if (entry.type !== "custom" || entry.customType !== ROUTED_MODEL_RESOLUTION_ENTRY) return undefined
-	if (!isPersistedRoutedResolution(entry.data)) return undefined
-	return { requestedId: entry.data.requestedId, routedId: entry.data.modelId }
-}
 
 /**
  * Fire-and-forget, like emitAgentActivityUpdate: a failed or unsupported ext
  * notification must never disturb the turn. Payload keys are built
  * explicitly (never spread from entry data) so a future entry field can
- * never clobber `sessionId`.
+ * never clobber `sessionId`; `routedId` is the wire name for the entry's
+ * `modelId`, matching the frozen consumer contract.
  */
 export function emitRoutedModelUpdate(conn: AgentSideConnection, sessionId: string, event: AgentSessionEvent): void {
 	if (event.type !== "entry_appended") return
-	const pick = routedPickOf(event.entry)
-	if (!pick) return
-	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.routed_model, { ...pick, sessionId })
+	if (!isRoutedResolutionEntry(event.entry)) return
+	const { requestedId, modelId } = event.entry.data
+	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.routed_model, { requestedId, routedId: modelId, sessionId })
 }
