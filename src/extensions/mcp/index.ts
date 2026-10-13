@@ -11,11 +11,12 @@ import { getParsedCliArgs } from "../../cli-args.js"
 import { getConfiguredLegacyMcpKeys } from "../../config.js"
 import {
 	applyCooperativeTweak,
+	debugToolSurface,
 	getCurrentProfile,
-	isToolSurfaceDebugEnabled,
 	reapplyCurrentProfile,
 	registerReadOnlyToolProvider,
 } from "../../shared/planning/tool-profile-manager.js"
+import { isActionBlockedError } from "../deferred-action.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { loadKimchiMcpConfig } from "./config.js"
@@ -330,34 +331,25 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		for (const handler of upstreamHandlers.session_start) await handler(event, ctx)
 	})
 
-	// Status events arrive in bursts; one resnapshot after the burst settles
-	// avoids re-deriving the active set (and re-setting the snapshot flag) on
-	// every transition. registerTool stays synchronous — it is the
-	// self-correction path for late registrations.
 	pi.events.on(MCP_STATUS_EVENT, () => {
 		if (statusResyncTimer !== undefined) clearTimeout(statusResyncTimer)
 		statusResyncTimer = setTimeout(() => {
 			statusResyncTimer = undefined
-			if (isToolSurfaceDebugEnabled()) {
-				console.debug("[tool-surface] mcp status burst settled; resnapshotting active profile")
-			}
+			debugToolSurface(() => "[tool-surface] mcp status burst settled; resnapshotting active profile")
 			try {
 				reapplyCurrentProfile(pi)
 			} catch (error) {
 				// The captured pi can be action-blocked when the timer fires: the
 				// extension is still loading, or the session was replaced/reloaded
 				// after the status event. Dropping is correct — the active session's
-				// own startup re-derives the set. Anything else is a real error.
-				const message = error instanceof Error ? error.message : String(error)
-				if (
-					!message.includes("Extension runtime not initialized") &&
-					!message.includes("stale after session replacement")
-				) {
-					throw error
+				// own startup re-derives the set. Anything else is a real error, but
+				// rethrowing inside a timer callback would crash the process, so log it.
+				if (isActionBlockedError(error)) {
+					const message = error instanceof Error ? error.message : String(error)
+					debugToolSurface(() => `[tool-surface] resnapshot dropped: ${message}`)
+					return
 				}
-				if (isToolSurfaceDebugEnabled()) {
-					console.debug(`[tool-surface] resnapshot dropped: ${message}`)
-				}
+				console.error("[tool-surface] mcp status resnapshot failed:", error)
 			}
 		}, STATUS_RESYNC_DEBOUNCE_MS)
 	})

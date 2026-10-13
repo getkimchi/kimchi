@@ -58,7 +58,7 @@ describe("apply", () => {
 
 		expect(pi.setActiveTools).toHaveBeenCalledOnce()
 		expect(pi.setActiveTools).toHaveBeenCalledWith(expectedTools)
-		expect(isSnapshotAppliedThisTurn()).toBe(true)
+		expect(isSnapshotAppliedThisTurn(pi)).toBe(true)
 	})
 
 	it("planning profiles admit read-only-qualified provider names", () => {
@@ -305,11 +305,11 @@ describe("installTurnBoundaryReset", () => {
 		const pi = makeMockPi()
 
 		// Confirm the flag is initially false.
-		expect(isSnapshotAppliedThisTurn()).toBe(false)
+		expect(isSnapshotAppliedThisTurn(pi)).toBe(false)
 
 		// Apply a snapshot (calls installTurnBoundaryReset internally).
 		apply("planning-adhoc", "adhoc", pi)
-		expect(isSnapshotAppliedThisTurn()).toBe(true)
+		expect(isSnapshotAppliedThisTurn(pi)).toBe(true)
 
 		// The handler was registered as pi.on('turn_start', <handler>).
 		// Capture it from the mock call.
@@ -323,7 +323,40 @@ describe("installTurnBoundaryReset", () => {
 		turnStartHandler()
 
 		// Flag must be cleared.
-		expect(isSnapshotAppliedThisTurn()).toBe(false)
+		expect(isSnapshotAppliedThisTurn(pi)).toBe(false)
+	})
+})
+
+describe("per-session snapshot flag", () => {
+	it("a snapshot in one session does not suppress another session's cooperative tweaks", () => {
+		const piA = makeMockPi()
+		const piB = makeMockPi()
+
+		apply("planning-adhoc", "adhoc", piA)
+
+		expect(isSnapshotAppliedThisTurn(piA)).toBe(true)
+		expect(isSnapshotAppliedThisTurn(piB)).toBe(false)
+		// Regression: the flag used to be process-global, so a deferred
+		// resnapshot in one session dropped another session's cooperative tweaks.
+		expect(applyCooperativeTweak(piB, ["b_tool"])).toBe(true)
+	})
+
+	it("turn_start resets only the session whose turn started", () => {
+		const piA = makeMockPi()
+		const piB = makeMockPi()
+		apply("planning-adhoc", "adhoc", piA)
+		apply("planning-adhoc", "adhoc", piB)
+
+		const lastTurnStartHandler = (pi: ExtensionAPI) => {
+			const mockOn = pi.on as unknown as { mock: { calls: Array<[string, () => void]> } }
+			const found = mockOn.mock.calls.filter((call) => call[0] === "turn_start").at(-1)
+			if (!found) throw new Error("pi.on was not called with 'turn_start'")
+			return found[1]
+		}
+		lastTurnStartHandler(piA)()
+
+		expect(isSnapshotAppliedThisTurn(piA)).toBe(false)
+		expect(isSnapshotAppliedThisTurn(piB)).toBe(true)
 	})
 })
 

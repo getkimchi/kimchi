@@ -14,14 +14,16 @@
  *
  * 2. **Cooperative layer** (`applyCooperativeTweak()`) — a vote-based
  *    mechanism that allows third-party extensions to narrow tool visibility
- *    before the snapshot takes effect.  When `isSnapshotAppliedThisTurn()` is
+ *    before the snapshot takes effect.  When `isSnapshotAppliedThisTurn(pi)` is
  *    `true` the cooperative call is silently dropped, preserving the snapshot.
- *    The flag resets at turn boundaries so the next turn starts fresh.
+ *    The flag is tracked per session scope, so each session's own turn
+ *    boundaries reset its flag and the next turn starts fresh.
  *    The layering design is: snapshot is canonical, cooperative is a hint.
  *
  * The `snapshot-applied-this-turn` flag tracks whether `apply()` ran in the
- * current turn.  It is reset at turn boundaries (via `installTurnBoundaryReset`).
- * When the flag is set, the cooperative layer must not overwrite the snapshot.
+ * current turn, per session scope.  Each session's own turn boundaries reset
+ * its flag (via `installTurnBoundaryReset`), so one session's deferred
+ * resnapshot can never suppress another session's cooperative tweaks.
  *
  * ## Consumer contract
  *
@@ -44,17 +46,20 @@ import { getToolSessionScope } from "./tool-session-scope.js"
 // ---------------------------------------------------------------------------
 
 /**
- * Set to `true` whenever `apply()` runs in the current turn.
- * Reset at turn boundaries (see `installTurnBoundaryReset`).
+ * Tracks, per session scope, whether `apply()` ran in that session's current
+ * turn.  Each session's own turn boundaries reset its entry (see
+ * `installTurnBoundaryReset`).
  *
  * This flag is the mechanism by which the snapshot layer outranks the
  * cooperative layer: after `apply()` runs, `applyCooperativeTweak()` callers
- * check this flag and become no-ops for the remainder of the turn.
+ * check this flag and become no-ops for the remainder of the turn. Per-session
+ * scoping keeps a deferred resnapshot in one session from suppressing
+ * another session's cooperative tweaks.
  */
-let snapshotAppliedThisTurn = false
+let snapshotAppliedByScope = new WeakMap<object, boolean>()
 
-/** Guards `installTurnBoundaryReset` so the `turn_start` listener is registered at most once. */
-let turnListenerInstalled = false
+/** Guards `installTurnBoundaryReset` so each pi registers its `turn_start` listener at most once. */
+let turnListenersByPi = new WeakSet<object>()
 
 /**
  * Tracks the last profile applied per session so extensions that register
@@ -118,14 +123,23 @@ export function isProviderReadOnlyTool(pi: ExtensionAPI, name: string): boolean 
 	return collectReadOnlyProviderNames(pi).includes(name)
 }
 
+/** What caused a tool-profile snapshot: a deliberate apply, or a deferred resnapshot. */
+export type ProfileApplyTrigger = "apply" | "resnapshot"
+
 /** Active tool names carried over — only on the resnapshot path; a deliberate apply replaces. */
-function carryOverNames(trigger: string, pi: ExtensionAPI): string[] {
+function carryOverNames(trigger: ProfileApplyTrigger, pi: ExtensionAPI): string[] {
 	return trigger === "resnapshot" ? pi.getActiveTools() : []
 }
 
 /** Whether KIMCHI_DEBUG_TOOL_SURFACE=1 requests active-set transition logging. */
-export function isToolSurfaceDebugEnabled(): boolean {
+function isToolSurfaceDebugEnabled(): boolean {
 	return process.env.KIMCHI_DEBUG_TOOL_SURFACE === "1"
+}
+
+/** Log a tool-surface transition when KIMCHI_DEBUG_TOOL_SURFACE=1. The line is built lazily so gated-off runs pay nothing. */
+export function debugToolSurface(line: () => string): void {
+	if (!isToolSurfaceDebugEnabled()) return
+	console.debug(line())
 }
 
 /**
@@ -151,7 +165,7 @@ export function isToolSurfaceDebugEnabled(): boolean {
  *
  * @internal — not for direct use outside the tool-profile and ferment layers.
  */
-export function applyCore(profile: ToolProfile, pi: ExtensionAPI, trigger = "apply"): void {
+export function applyCore(profile: ToolProfile, pi: ExtensionAPI, trigger: ProfileApplyTrigger = "apply"): void {
 	installTurnBoundaryReset(pi)
 	const disabled = getDisabledToolNames(pi)
 
@@ -203,20 +217,20 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI, trigger = "app
 		allowedNames = allowedNames.filter((name) => !disabled.has(name))
 	}
 
-	if (isToolSurfaceDebugEnabled()) {
-		// Sampled only when logging is on, so gated-off runs pay nothing.
+	debugToolSurface(() => {
+		// Diff sampled only when logging is on, so gated-off runs pay nothing.
 		const previous = new Set(pi.getActiveTools())
 		const added = allowedNames.filter((name) => !previous.has(name))
 		const removed = [...previous].filter((name) => !allowedNames.includes(name))
-		console.debug(
+		return (
 			`[tool-surface] apply profile=${profile} trigger=${trigger} count=${allowedNames.length}` +
-				(added.length ? ` added=[${added.join(",")}]` : "") +
-				(removed.length ? ` removed=[${removed.join(",")}]` : ""),
+			(added.length ? ` added=[${added.join(",")}]` : "") +
+			(removed.length ? ` removed=[${removed.join(",")}]` : "")
 		)
-	}
+	})
 
 	pi.setActiveTools(allowedNames)
-	snapshotAppliedThisTurn = true
+	snapshotAppliedByScope.set(getToolSessionScope(pi), true)
 	lastProfileByScope.set(getToolSessionScope(pi), profile)
 }
 
@@ -242,38 +256,32 @@ export function apply(profile: ToolProfile, mode: "adhoc" | "ferment", pi: Exten
 }
 
 /**
- * Returns `true` if `apply()` has already run in the current turn.
- * Used by the cooperative layer (`tweakTools` / `createToolVisibility`) to
- * detect that the snapshot has taken effect and must not be overwritten.
+ * Returns `true` if `apply()` has already run in the current turn for the
+ * session `pi` belongs to. Used by the cooperative layer (`tweakTools` /
+ * `createToolVisibility`) to detect that the snapshot has taken effect and
+ * must not be overwritten.
  *
- * The flag is reset at turn boundaries (see `installTurnBoundaryReset`).
- */
-export function isSnapshotAppliedThisTurn(): boolean {
-	return snapshotAppliedThisTurn
-}
-
-/**
- * Reset the snapshot-applied flag at turn boundaries.
+ * The flag is tracked per session scope and reset at that session's own turn
+ * boundaries (see `installTurnBoundaryReset`).
  *
- * @internal — exported only for the `turn_start` wiring in
- *             `installTurnBoundaryReset`.
+ * @param pi - The pi-mono `ExtensionAPI` instance whose session to check.
  */
-export function resetSnapshotFlag(): void {
-	snapshotAppliedThisTurn = false
+export function isSnapshotAppliedThisTurn(pi: ExtensionAPI): boolean {
+	return snapshotAppliedByScope.get(getToolSessionScope(pi)) === true
 }
 
 /**
  * Reset ALL module-level state.
  *
  * Exported for test isolation: vitest re-evaluates the ESM module once per
- * VM context, so both `snapshotAppliedThisTurn` and `turnListenerInstalled`
- * must be reset between tests.
+ * VM context, so the per-scope snapshot flag, the per-pi turn listeners, and
+ * the per-scope profile memory must all be recreated between tests.
  *
  * @internal — test-only; not used in production code.
  */
 export function resetAll(): void {
-	snapshotAppliedThisTurn = false
-	turnListenerInstalled = false
+	snapshotAppliedByScope = new WeakMap()
+	turnListenersByPi = new WeakSet()
 	lastProfileByScope = new WeakMap()
 }
 
@@ -281,7 +289,7 @@ export function resetAll(): void {
  * Cooperative-layer no-op wrapper.
  *
  * Wraps `pi.setActiveTools()` with a guard: if the snapshot layer has already
- * been applied this turn (`isSnapshotAppliedThisTurn() === true`), the call is
+ * been applied this turn (`isSnapshotAppliedThisTurn(pi) === true`), the call is
  * silently dropped and `false` is returned.  This preserves plan-mode
  * restrictions — third-party extensions that call `applyCooperativeTweak()`
  * after the snapshot has taken effect cannot accidentally override it.
@@ -298,7 +306,7 @@ export function resetAll(): void {
  *          snapshot layer already ran this turn.
  */
 export function applyCooperativeTweak(pi: ExtensionAPI, tools: Array<{ name: string }> | string[]): boolean {
-	if (isSnapshotAppliedThisTurn()) {
+	if (isSnapshotAppliedThisTurn(pi)) {
 		return false
 	}
 
@@ -312,16 +320,17 @@ export function applyCooperativeTweak(pi: ExtensionAPI, tools: Array<{ name: str
 
 /**
  * Register a `turn_start` listener that resets the snapshot-applied flag.
- * Idempotent — the listener is installed at most once regardless of how many
- * times `apply()` is called.
+ * Per pi: each pi registers the listener at most once, so every session's
+ * turn boundaries reset that session's flag (not just the first caller's).
  *
  * @param pi - The pi-mono `ExtensionAPI` instance.
  */
 export function installTurnBoundaryReset(pi: ExtensionAPI): void {
-	if (turnListenerInstalled) return
-
-	pi.on("turn_start", () => resetSnapshotFlag())
-	turnListenerInstalled = true
+	if (turnListenersByPi.has(pi)) return
+	pi.on("turn_start", () => {
+		snapshotAppliedByScope.delete(getToolSessionScope(pi))
+	})
+	turnListenersByPi.add(pi)
 }
 
 /**

@@ -80,8 +80,8 @@ vi.mock("../../config.js", () => ({
 
 vi.mock("../../shared/planning/tool-profile-manager.js", () => ({
 	applyCooperativeTweak: planning.applyCooperativeTweak,
+	debugToolSurface: vi.fn(),
 	getCurrentProfile: () => planning.currentProfile,
-	isToolSurfaceDebugEnabled: () => false,
 	reapplyCurrentProfile: planning.reapplyCurrentProfile,
 	registerReadOnlyToolProvider: planning.registerReadOnlyToolProvider,
 }))
@@ -636,6 +636,76 @@ describe("upstream MCP adapter facade", () => {
 		} finally {
 			vi.useRealTimers()
 		}
+	})
+
+	it("drops a deferred resnapshot that hits an action-blocked pi instead of crashing", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+
+		vi.useFakeTimers()
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			planning.reapplyCurrentProfile.mockImplementation(() => {
+				throw new Error("This extension ctx is stale after session replacement or reload")
+			})
+			harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
+			// The old code rethrew inside the timer callback: this would reject.
+			await expect(vi.advanceTimersByTimeAsync(250)).resolves.toBeDefined()
+			expect(errorSpy).not.toHaveBeenCalled()
+		} finally {
+			errorSpy.mockRestore()
+			vi.useRealTimers()
+		}
+	})
+
+	it("logs and drops an unknown deferred-resnapshot error instead of crashing", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+
+		vi.useFakeTimers()
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			planning.reapplyCurrentProfile.mockImplementation(() => {
+				throw new Error("registry exploded")
+			})
+			harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
+			await expect(vi.advanceTimersByTimeAsync(250)).resolves.toBeDefined()
+			expect(errorSpy).toHaveBeenCalledTimes(1)
+			expect(errorSpy.mock.calls[0]?.[0]).toContain("[tool-surface]")
+		} finally {
+			errorSpy.mockRestore()
+			vi.useRealTimers()
+		}
+	})
+
+	it("keeps the registerTool self-correction additive like the resnapshot path", async () => {
+		const profiles = await vi.importActual<typeof ToolProfileManager>("../../shared/planning/tool-profile-manager.js")
+		profiles.resetAll()
+		planning.reapplyCurrentProfile.mockImplementation(profiles.reapplyCurrentProfile)
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		const harness = createExtensionApi()
+		harness.api.registerTool(tool("read", "Read"))
+		harness.api.registerTool(tool("write", "Write"))
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		profiles.apply("idle", "adhoc", harness.api)
+		expect(harness.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "write"]))
+
+		const api = upstream.api
+		if (!api) throw new Error("Adapter was not installed")
+		// Mid-rebuild: the registry briefly exposes only the newly registering tool.
+		const getAllTools = harness.api.getAllTools as ReturnType<typeof vi.fn>
+		const fullImplementation = getAllTools.getMockImplementation()
+		getAllTools.mockImplementation(() => [{ name: "docs_get_issue" }])
+		api.registerTool(tool("docs_get_issue", "MCP: get_issue"))
+		getAllTools.mockImplementation(fullImplementation ?? (() => []))
+
+		// registerTool rides the resnapshot path, so the partial registry sample
+		// must union into the previous active set rather than narrow it.
+		expect(harness.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "write", "docs_get_issue"]))
+		profiles.resetAll()
 	})
 
 	it("surfaces compatibility warnings when the session starts", async () => {
