@@ -90,8 +90,8 @@ describe("ResourceManagerComponent", () => {
 		expect(extensions.render(160).join("\n")).not.toContain("extensions.ferment-v2")
 	})
 
-	it("org-locked resources show an org-locked value and cannot be toggled", () => {
-		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
+	it("org-locked resources show an org-locked value and cannot be toggled", async () => {
+		await setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
 		const theme = {
 			fg: (_color: string, text: string) => text,
 			bg: (_color: string, text: string) => text,
@@ -113,8 +113,8 @@ describe("ResourceManagerComponent", () => {
 		expect(getResourceOverride("tools.web_search")).toBeUndefined()
 	})
 
-	it("aligns the value column across rows", () => {
-		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
+	it("aligns the value column across rows", async () => {
+		await setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
 		const theme = {
 			fg: (_color: string, text: string) => text,
 			bg: (_color: string, text: string) => text,

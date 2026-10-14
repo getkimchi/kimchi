@@ -73,8 +73,8 @@ describe("handleListResources", () => {
 		expect(memory).toMatchObject({ enabled: true, overridden: true })
 	})
 
-	it("carries the org policy and lock state per resource", () => {
-		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF", "extensions.memory": "ON" } })
+	it("carries the org policy and lock state per resource", async () => {
+		await setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF", "extensions.memory": "ON" } })
 
 		const result = handleListResources({ settingsPath }) as {
 			resources: Array<{ id: string; orgPolicy?: string; locked?: boolean; enabled: boolean }>
@@ -155,8 +155,8 @@ describe("handleSetResourceEnabled", () => {
 		expect(existsSync(settingsPath)).toBe(false)
 	})
 
-	it("rejects an org-locked resource with invalidRequest and writes nothing", () => {
-		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
+	it("rejects an org-locked resource with invalidRequest and writes nothing", async () => {
+		await setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
 
 		const err = thrownRequestError(() =>
 			handleSetResourceEnabled({ settingsPath }, { resourceId: "tools.web_search", enabled: true }),

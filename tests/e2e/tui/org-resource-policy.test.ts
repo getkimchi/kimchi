@@ -6,10 +6,11 @@
  *
  * Seeding: the fixture writes apiKey "fake" into the isolated home's
  * ~/.config/kimchi/config.json, and initOrgPolicy keys its cache by the
- * sha256 of that key. Writing org-policy.json with the matching fingerprint
- * makes the session take the cache-hit path (holder = seeded policy); the
- * background refresh 404s against the fake server and fails open without
- * touching the holder, so the scenario is deterministic.
+ * sha256 of that key. Under fetch-first delivery the startup fetch 404s
+ * against the fake server (a fast, local no-access), and the session falls
+ * back to this key's cached policy — so writing org-policy.json with the
+ * matching fingerprint deterministically puts the session under the seeded
+ * policy.
  *
  * Enforcement note: tool resources are restart-gated — FORCE_OFF filters the
  * extension factory out at session load, so the tool is never registered and

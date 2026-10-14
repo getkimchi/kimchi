@@ -6,19 +6,18 @@ import { dirname, resolve } from "node:path"
 import { fetchOrgPolicy, type OrgPolicy, parseResourcePolicyMap, parseResourcePolicyName } from "./api/org-settings.js"
 
 /**
- * Org-policy delivery (stale-while-revalidate):
+ * Org-policy delivery (fetch-first; the cache is only the offline fallback):
  *
- * - The effective org policy is fetched once per API key and cached in
- *   ~/.config/kimchi/org-policy.json.
- * - On startup with a cache matching the current key, the cached policy is
- *   applied for the whole session and refreshed in the background; the
- *   refresh only updates the cache file so a policy change takes effect on
- *   the next launch. Without a usable cache the fetch blocks startup briefly
- *   (capped at ~1.5s per call) so the session starts under the right policy.
- * - Fetch outcomes: a resolved policy (including "no policy") overwrites the
- *   cache; a key rejected on verify (401) clears it (fail open, scoped to
- *   that key); any other failure — denied or missing policy resolution,
- *   network errors — keeps the last known good policy.
+ * - Every startup fetches the effective org policy for the API key BEFORE any
+ *   cached policy is read, with a bounded wait: a resolved policy — including
+ *   "no policy" — is applied for the whole session and written to
+ *   ~/.config/kimchi/org-policy.json, overwriting whatever was on disk. A
+ *   locally edited or stale cache therefore never survives an online launch.
+ * - When the fetch cannot produce a fresh answer (offline, endpoint down,
+ *   resolution denied), the session falls back to the last policy cached for
+ *   this exact key and the cache file is left untouched.
+ * - A key rejected on verify (401) clears the holder and wipes this key's
+ *   cache (fail open, scoped to that key).
  */
 const ORG_POLICY_CACHE_PATH = resolve(homedir(), ".config", "kimchi", "org-policy.json")
 
@@ -125,74 +124,12 @@ function clearCache(cachePath: string): void {
 	}
 }
 
-async function refresh(
-	apiKey: string,
-	cachePath: string,
-	fetchImpl: typeof globalThis.fetch | undefined,
-	updateHolder: boolean,
-): Promise<void> {
-	const outcome = await fetchOrgPolicy(apiKey, { fetch: fetchImpl })
-
-	switch (outcome.kind) {
-		case "policy": {
-			// Background refreshes only update the cache: a session keeps the
-			// policy it started with, and the new one applies next launch.
-			if (updateHolder) {
-				currentPolicy = outcome.policy
-				currentOrgId = outcome.orgId
-			}
-			writeCache(cachePath, {
-				keyFingerprint: keyFingerprint(apiKey),
-				orgId: outcome.orgId,
-				fetchedAt: Date.now(),
-				policy: outcome.policy,
-			})
-			break
-		}
-		case "revoked": {
-			// The key no longer verifies, so a cached policy for it can never
-			// revalidate: drop it (fail open on the next launch). The wipe is
-			// scoped to this key's fingerprint so a cache written for another
-			// key — e.g. the user switched keys — survives.
-			if (updateHolder) {
-				currentPolicy = undefined
-				currentOrgId = undefined
-			}
-			if (readCache(cachePath)?.keyFingerprint === keyFingerprint(apiKey)) {
-				clearCache(cachePath)
-			}
-			break
-		}
-		case "no-access": {
-			// Policy resolution failed without rejecting the key itself: keep
-			// the last known good policy — the cache file always, and the
-			// holder on a cold path (fail open for this session only).
-			if (updateHolder) {
-				currentPolicy = undefined
-				currentOrgId = undefined
-			}
-			break
-		}
-		case "unreachable": {
-			// Keep the current holder state and the cache as-is.
-			break
-		}
-	}
-}
-
 /**
- * Initialize the org policy for this session:
- *
- * - With a cache matching the current API key, the cached policy is applied
- *   to the in-memory holder and a background refresh updates only the cache
- *   file (the refreshed policy takes effect on the next launch).
- * - Without a usable cache, the fetch runs and is awaited so the session
- *   starts under the correct policy, then populates holder and cache.
- * - An empty API key means the session has no policy: the holder is cleared,
- *   but the cache file is kept so the next keyed run still starts warm.
- *
- * The returned promise resolves once the (possibly background) refresh has
- * settled; mainly useful for tests. An empty API key resolves immediately.
+ * Initialize the org policy for this session (see the delivery notes at the
+ * top of the file). The fetch is always attempted first: a resolution
+ * overwrites both the holder and the cache before either can be read, so
+ * local edits or a stale cache lose to the platform's answer. Only a failed
+ * fetch falls back to this key's cached policy.
  */
 export async function initOrgPolicy(
 	apiKey: string,
@@ -207,16 +144,45 @@ export async function initOrgPolicy(
 	}
 
 	const fingerprint = keyFingerprint(apiKey)
-	const cached = readCache(cachePath)
-	if (cached?.keyFingerprint === fingerprint) {
-		currentPolicy = cached.policy
-		currentOrgId = cached.orgId
-		// Background refresh: errors are swallowed by design (fail open).
-		void refresh(apiKey, cachePath, options?.fetch, false).catch(() => {})
-		return
+	const outcome = await fetchOrgPolicy(apiKey, { fetch: options?.fetch })
+	switch (outcome.kind) {
+		case "policy":
+			// Wire truth wins over anything on disk: the fresh policy replaces
+			// the holder and the cache before either can be read.
+			currentPolicy = outcome.policy
+			currentOrgId = outcome.orgId
+			writeCache(cachePath, {
+				keyFingerprint: fingerprint,
+				orgId: outcome.orgId,
+				fetchedAt: Date.now(),
+				policy: outcome.policy,
+			})
+			return
+		case "revoked":
+			// The key no longer verifies, so a cached policy for it can never
+			// revalidate: drop both (fail open). The wipe is scoped to this key's
+			// fingerprint so a cache written for another key — e.g. the user
+			// switched keys — survives.
+			currentPolicy = undefined
+			currentOrgId = undefined
+			if (readCache(cachePath)?.keyFingerprint === fingerprint) clearCache(cachePath)
+			return
+		case "no-access":
+		case "unreachable": {
+			// No fresh answer: fall back to the last policy cached for this
+			// exact key (best-effort enforcement for the session). The cache
+			// file is kept untouched.
+			const cached = readCache(cachePath)
+			if (cached?.keyFingerprint === fingerprint) {
+				currentPolicy = cached.policy
+				currentOrgId = cached.orgId
+			} else {
+				currentPolicy = undefined
+				currentOrgId = undefined
+			}
+			return
+		}
 	}
-
-	await refresh(apiKey, cachePath, options?.fetch, true)
 }
 
 /** Reset the in-memory holder. Test-only. */

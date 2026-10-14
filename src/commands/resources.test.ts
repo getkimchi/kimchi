@@ -34,7 +34,7 @@ describe("runResources org-policy refusals", () => {
 	})
 
 	it("enable on a FORCE_OFF resource is refused with exit 1 and nothing is written", async () => {
-		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
+		await setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
 
 		await expect(runResources(["enable", "tools.web_search"])).resolves.toBe(1)
 
@@ -45,7 +45,7 @@ describe("runResources org-policy refusals", () => {
 	})
 
 	it("disable on a FORCE_ON resource is refused with exit 1", async () => {
-		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_ON" } })
+		await setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_ON" } })
 
 		await expect(runResources(["disable", "tools.web_search"])).resolves.toBe(1)
 		await expect(runResources(["set", "tools.web_search", "off"])).resolves.toBe(1)
@@ -55,7 +55,7 @@ describe("runResources org-policy refusals", () => {
 	})
 
 	it("enable on an unlocked resource still works", async () => {
-		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
+		await setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
 
 		await expect(runResources(["enable", "extensions.ferment-v2"])).resolves.toBe(0)
 
@@ -63,7 +63,7 @@ describe("runResources org-policy refusals", () => {
 	})
 
 	it("the list marks org-locked entries", async () => {
-		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
+		await setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
 
 		await expect(runResources(["list"])).resolves.toBe(0)
 

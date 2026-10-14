@@ -75,27 +75,25 @@ describe("initOrgPolicy", () => {
 		expect(cached.policy).toBeUndefined()
 	})
 
-	it("keeps the session policy stable while the background refresh updates only the cache", async () => {
+	it("overwrites a stale or locally edited cache with the fresh resolution before it is read", async () => {
 		const cachePath = cachePathFor({})
 		const { createHash } = await import("node:crypto")
 		const fingerprint = createHash("sha256").update("key-1").digest("hex")
+		// A cache edited by hand to lock a resource the org never restricted.
 		writeFileSync(
 			cachePath,
-			`${JSON.stringify({ keyFingerprint: fingerprint, orgId: "org-1", fetchedAt: 1, policy: { allowedPermissionModes: PLAN_ONLY } })}\n`,
+			`${JSON.stringify({ keyFingerprint: fingerprint, orgId: "org-1", fetchedAt: 1, policy: { allowedPermissionModes: PLAN_ONLY, resources: { "tools.web_search": "FORCE_OFF" } } })}\n`,
 		)
 
-		// The background refresh returns a stricter policy: it must land in the
-		// cache but NOT change the in-session holder.
+		// The platform's current answer differs: it wins immediately, and the
+		// cache file is rewritten in the same startup — the edited lock never
+		// applies to this or any later session.
 		resolveWithPolicy("org-1", { allowedPermissionModes: DEFAULT_ONLY, usageReporting: "FORCE_OFF" })
 
 		await initOrgPolicy("key-1", { cachePath })
 
-		// The cached value applies for the whole session...
-		expect(getOrgPolicy()).toEqual({ allowedPermissionModes: PLAN_ONLY })
-
-		// ...and the refresh has settled into the cache file only.
-		await vi.waitFor(() => expect(mockedFetchOrgPolicy.mock.calls.length).toBeGreaterThanOrEqual(1))
-		expect(getOrgPolicy()).toEqual({ allowedPermissionModes: PLAN_ONLY })
+		expect(getOrgPolicy()).toEqual({ allowedPermissionModes: DEFAULT_ONLY, usageReporting: "FORCE_OFF" })
+		expect(getOrgPolicyOrgId()).toBe("org-1")
 		expect(readCacheFile(cachePath).policy).toEqual({
 			allowedPermissionModes: DEFAULT_ONLY,
 			usageReporting: "FORCE_OFF",
@@ -111,48 +109,45 @@ describe("initOrgPolicy", () => {
 			`${JSON.stringify({ keyFingerprint: fingerprint, orgId: "org-1", fetchedAt: 1, policy: { allowedPermissionModes: { plan: "yes", auto: 1 }, usageReporting: "SURE" } })}\n`,
 		)
 
+		// No fresh answer: the fallback reads the cache through
+		// validateCachedPolicy, so the corrupted values cannot impose anything.
+		mockedFetchOrgPolicy.mockResolvedValue({ kind: "unreachable" })
+
 		await initOrgPolicy("key-1", { cachePath })
 
 		expect(getOrgPolicy()).toBeUndefined()
 	})
 
-	it("keeps the cached policy when policy resolution is denied; the session keeps its policy", async () => {
+	it("falls back to the cached policy when policy resolution is denied", async () => {
 		const cachePath = cachePathFor({})
 		resolveWithPolicy("org-1", { allowedPermissionModes: PLAN_ONLY })
 		await initOrgPolicy("key-1", { cachePath })
 		expect(getOrgPolicy()).toEqual({ allowedPermissionModes: PLAN_ONLY })
 
 		// Policy resolution is denied (403/404) without a verdict on the key:
-		// the cached policy survives for the next launch and the session keeps
-		// the policy it started with.
+		// no fresh answer, so the session falls back to the cached policy and
+		// the cache file is left untouched.
 		mockedFetchOrgPolicy.mockResolvedValue({ kind: "no-access" })
 		await initOrgPolicy("key-1", { cachePath })
-
-		// Drain the background refresh launched by the cache hit above.
-		await vi.waitFor(() => expect(mockedFetchOrgPolicy.mock.calls.length).toBeGreaterThanOrEqual(2))
 
 		expect(getOrgPolicy()).toEqual({ allowedPermissionModes: PLAN_ONLY })
 		expect(getOrgPolicyOrgId()).toBe("org-1")
 		expect(readCacheFile(cachePath).policy).toEqual({ allowedPermissionModes: PLAN_ONLY })
 	})
 
-	it("clears the cache when the key itself is rejected; the session keeps its policy until relaunch", async () => {
+	it("clears the holder and wipes the cache when the key itself is rejected", async () => {
 		const cachePath = cachePathFor({})
 		resolveWithPolicy("org-1", { allowedPermissionModes: PLAN_ONLY })
 		await initOrgPolicy("key-1", { cachePath })
 		expect(getOrgPolicy()).toEqual({ allowedPermissionModes: PLAN_ONLY })
 
 		// The key stopped verifying (401): a cached policy for it can never
-		// revalidate, so the cache is dropped (next launch starts unrestricted)
-		// but this session keeps the policy it started with.
+		// revalidate, so both the session and this key's cache start
+		// unrestricted (fail open, scoped to this key).
 		mockedFetchOrgPolicy.mockResolvedValue({ kind: "revoked" })
 		await initOrgPolicy("key-1", { cachePath })
 
-		// Drain the background refresh launched by the cache hit above.
-		await vi.waitFor(() => expect(mockedFetchOrgPolicy.mock.calls.length).toBeGreaterThanOrEqual(2))
-
-		expect(getOrgPolicy()).toEqual({ allowedPermissionModes: PLAN_ONLY })
-		expect(getOrgPolicyOrgId()).toBe("org-1")
+		expect(getOrgPolicy()).toBeUndefined()
 		expect(() => readCacheFile(cachePath)).toThrow()
 	})
 
@@ -177,11 +172,10 @@ describe("initOrgPolicy", () => {
 		resolveWithPolicy("org-1", { allowedPermissionModes: PLAN_ONLY })
 		await initOrgPolicy("key-1", { cachePath })
 
+		// Offline: the session falls back to the cached policy and the cache
+		// file is left untouched.
 		mockedFetchOrgPolicy.mockResolvedValue({ kind: "unreachable" })
 		await initOrgPolicy("key-1", { cachePath })
-
-		// Drain the background refresh launched by the cache hit above.
-		await vi.waitFor(() => expect(mockedFetchOrgPolicy.mock.calls.length).toBeGreaterThanOrEqual(2))
 
 		expect(getOrgPolicy()).toEqual({ allowedPermissionModes: PLAN_ONLY })
 		expect(readCacheFile(cachePath).policy).toEqual({ allowedPermissionModes: PLAN_ONLY })
@@ -218,7 +212,10 @@ describe("initOrgPolicy", () => {
 			})}\n`,
 		)
 
-		// Cache hit: the holder comes from validateCachedPolicy, not the fetch.
+		// No fresh answer: the fallback validates the cache the same way the
+		// wire parser would.
+		mockedFetchOrgPolicy.mockResolvedValue({ kind: "unreachable" })
+
 		await initOrgPolicy("key-1", { cachePath })
 
 		expect(getOrgPolicy()).toEqual({ resources: { "tools.web_search": "FORCE_OFF" } })
@@ -237,6 +234,8 @@ describe("initOrgPolicy", () => {
 				policy: { resources: { "tools.web_search": "NOPE" } },
 			})}\n`,
 		)
+
+		mockedFetchOrgPolicy.mockResolvedValue({ kind: "unreachable" })
 
 		await initOrgPolicy("key-1", { cachePath })
 

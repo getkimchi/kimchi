@@ -74,11 +74,11 @@ describe("org resource policy", () => {
 		delete process.env.KIMCHI_ENABLE_RESOURCES
 	})
 
-	it("exposes the policy entry and lock state for a resource", () => {
+	it("exposes the policy entry and lock state for a resource", async () => {
 		expect(getResourcePolicy("tools.web_search")).toBeUndefined()
 		expect(isResourceLocked("tools.web_search")).toBe(false)
 
-		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF", "extensions.memory": "ON" } })
+		await setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF", "extensions.memory": "ON" } })
 
 		expect(getResourcePolicy("tools.web_search")).toBe("FORCE_OFF")
 		expect(isResourceLocked("tools.web_search")).toBe(true)
@@ -88,33 +88,33 @@ describe("org resource policy", () => {
 		expect(isResourceLocked("extensions.ferment-v2")).toBe(false)
 	})
 
-	it("FORCE_OFF beats a pre-existing local override and the env enable", () => {
+	it("FORCE_OFF beats a pre-existing local override and the env enable", async () => {
 		// Overrides accumulate while the resource is user-controlled; the policy
 		// arrives at the next launch and must mask them.
 		setResourceOverride("tools.web_search", true, settingsPath)
 		process.env.KIMCHI_ENABLE_RESOURCES = "tools.web_search"
-		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
+		await setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
 
 		expect(isResourceEnabled("tools.web_search", settingsPath)).toBe(false)
 	})
 
-	it("FORCE_ON beats a pre-existing disable", () => {
+	it("FORCE_ON beats a pre-existing disable", async () => {
 		setResourceOverride("extensions.memory", false, settingsPath)
-		setOrgPolicyForTests({ resources: { "extensions.memory": "FORCE_ON" } })
+		await setOrgPolicyForTests({ resources: { "extensions.memory": "FORCE_ON" } })
 
 		expect(isResourceEnabled("extensions.memory", settingsPath)).toBe(true)
 	})
 
-	it("ON is a soft default: a local disable still wins", () => {
-		setOrgPolicyForTests({ resources: { "tools.web_search": "ON" } })
+	it("ON is a soft default: a local disable still wins", async () => {
+		await setOrgPolicyForTests({ resources: { "tools.web_search": "ON" } })
 
 		expect(isResourceEnabled("tools.web_search", settingsPath)).toBe(true)
 		setResourceOverride("tools.web_search", false, settingsPath)
 		expect(isResourceEnabled("tools.web_search", settingsPath)).toBe(false)
 	})
 
-	it("OFF is a soft default: the env var and a local enable still win", () => {
-		setOrgPolicyForTests({ resources: { "extensions.ferment-v2": "OFF" } })
+	it("OFF is a soft default: the env var and a local enable still win", async () => {
+		await setOrgPolicyForTests({ resources: { "extensions.ferment-v2": "OFF" } })
 
 		expect(isResourceEnabled("extensions.ferment-v2", settingsPath)).toBe(false)
 		process.env.KIMCHI_ENABLE_RESOURCES = "extensions.ferment-v2"
@@ -124,8 +124,8 @@ describe("org resource policy", () => {
 		expect(isResourceEnabled("extensions.ferment-v2", settingsPath)).toBe(true)
 	})
 
-	it("entries for unknown resource ids do not affect known resources", () => {
-		setOrgPolicyForTests({ resources: { "tools.future_thing": "FORCE_ON", "extensions.memory": "FORCE_OFF" } })
+	it("entries for unknown resource ids do not affect known resources", async () => {
+		await setOrgPolicyForTests({ resources: { "tools.future_thing": "FORCE_ON", "extensions.memory": "FORCE_OFF" } })
 
 		// Unknown ids are inert in practice: nothing in the harness consults
 		// them. If something did ask, the org's answer still applies.
@@ -134,8 +134,8 @@ describe("org resource policy", () => {
 		expect(isResourceEnabled("tools.future_thing", settingsPath)).toBe(true)
 	})
 
-	it("refuses override writes to locked resources and works again when the policy lifts", () => {
-		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
+	it("refuses override writes to locked resources and works again when the policy lifts", async () => {
+		await setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
 
 		expect(() => setResourceOverride("tools.web_search", true, settingsPath)).toThrow(/locked off by your organization/)
 		expect(() => resetResourceOverride("tools.web_search", settingsPath)).toThrow(/locked off by your organization/)

@@ -26,14 +26,14 @@ const unreachableFetch = (async () => {
  * Seed the in-memory org-policy holder for a test.
  *
  * Writes a cache file matching the seed key's fingerprint and runs
- * initOrgPolicy, whose cache-hit branch assigns the holder synchronously
- * (no await precedes the assignment); the background refresh is fired
- * against an unreachable fetch and fails open without touching the holder.
- * Passing `undefined` clears the holder (the empty-key path).
+ * initOrgPolicy with an unreachable fetch: the startup fetch fails and the
+ * session falls back to the seeded cache — the same offline-fallback path a
+ * real client takes. Passing `undefined` clears the holder (the empty-key
+ * path). Await the call: the fallback is applied asynchronously.
  */
-export function setOrgPolicyForTests(policy: OrgPolicy | undefined): void {
+export async function setOrgPolicyForTests(policy: OrgPolicy | undefined): Promise<void> {
 	if (policy === undefined) {
-		void initOrgPolicy("", { fetch: unreachableFetch })
+		await initOrgPolicy("", { fetch: unreachableFetch })
 		return
 	}
 	const cachePath = join(mkdtempSync(join(tmpdir(), "org-policy-seed-")), "org-policy.json")
@@ -42,5 +42,5 @@ export function setOrgPolicyForTests(policy: OrgPolicy | undefined): void {
 		cachePath,
 		`${JSON.stringify({ keyFingerprint: fingerprint, orgId: "test-org", fetchedAt: 1, policy })}\n`,
 	)
-	void initOrgPolicy(SEED_API_KEY, { cachePath, fetch: unreachableFetch })
+	await initOrgPolicy(SEED_API_KEY, { cachePath, fetch: unreachableFetch })
 }
