@@ -30,9 +30,15 @@ describe("Claude Code skills extension", () => {
 		rmSync(dir, { recursive: true, force: true })
 	})
 
-	it("registers a Claude-compatible Skill tool", () => {
-		const { tools } = registerExtension()
+	it("registers a Claude-compatible Skill tool, gated on .claude skills existing", () => {
+		writeSkill(join(dir, "home", ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.")
+		// Discovery only serves a cwd that contains .claude (user skills are then
+		// user-level); mirror the real reachability rule.
+		mkdirSync(join(dir, "project", ".claude"), { recursive: true })
+		const { tools, fireSessionStart } = registerExtension()
 
+		expect(tools).toHaveLength(0)
+		fireSessionStart(join(dir, "project"))
 		expect(tools).toHaveLength(1)
 		expect(tools[0]).toMatchObject({
 			name: "Skill",
@@ -45,15 +51,35 @@ describe("Claude Code skills extension", () => {
 		})
 	})
 
+	it("does not register the Skill tool when no .claude skills dir exists", () => {
+		const { tools, fireSessionStart } = registerExtension()
+		fireSessionStart(join(dir, "project"))
+		expect(tools).toHaveLength(0)
+	})
+
+	it("does not register the Skill tool on an untrusted project's .claude/skills alone", () => {
+		// Project .claude/skills is trust-gated; with the project untrusted and no
+		// user-level skills, the tool must stay unregistered (fail closed).
+		resetProjectScopeTrustForTests()
+		writeSkill(join(dir, "project", ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.")
+		const { tools, fireSessionStart } = registerExtension()
+		fireSessionStart(join(dir, "project"))
+		expect(tools).toHaveLength(0)
+	})
+
 	it("loads a project Claude Code skill by name", async () => {
 		const skillPath = join(dir, "project", ".claude", "skills", "typescript-safety", "SKILL.md")
 		writeSkill(skillPath, "Use generated types and avoid unsafe casts.")
-		const { tools } = registerExtension()
-
-		const result = await tools[0].execute("call-1", { skill: "typescript-safety" }, undefined, undefined, {
-			cwd: join(dir, "project"),
-			sessionManager: { getSessionId: () => "session-1" },
-		} as never)
+		const result = await registeredSkillTool(join(dir, "project")).execute(
+			"call-1",
+			{ skill: "typescript-safety" },
+			undefined,
+			undefined,
+			{
+				cwd: join(dir, "project"),
+				sessionManager: { getSessionId: () => "session-1" },
+			} as never,
+		)
 
 		expect(textResult(result)).toContain('Loaded Skill("typescript-safety")')
 		expect(textResult(result)).toContain("Use generated types")
@@ -70,12 +96,19 @@ describe("Claude Code skills extension", () => {
 			join(dir, "project", ".agents", "skills", "best-practices", "SKILL.md"),
 			"Project-native skill instructions.",
 		)
-		const { tools } = registerExtension()
+		writeSkill(join(dir, "home", ".claude", "skills", "typescript-safety", "SKILL.md"), "User skill.")
+		mkdirSync(join(dir, "project", "src", "feature", ".claude"), { recursive: true })
 
-		const result = await tools[0].execute("call-1", { skill: "best-practices" }, undefined, undefined, {
-			cwd: join(dir, "project", "src", "feature"),
-			sessionManager: { getSessionId: () => "session-1" },
-		} as never)
+		const result = await registeredSkillTool(join(dir, "project", "src", "feature")).execute(
+			"call-1",
+			{ skill: "best-practices" },
+			undefined,
+			undefined,
+			{
+				cwd: join(dir, "project", "src", "feature"),
+				sessionManager: { getSessionId: () => "session-1" },
+			} as never,
+		)
 
 		expect(result.details).toEqual({
 			success: false,
@@ -92,12 +125,17 @@ describe("Claude Code skills extension", () => {
 			"Kimchi project skill instructions.",
 		)
 		writeSkill(join(dir, "project", ".claude", "skills", "best-practices", "SKILL.md"), "Claude skill instructions.")
-		const { tools } = registerExtension()
 
-		const result = await tools[0].execute("call-1", { skill: "best-practices" }, undefined, undefined, {
-			cwd: join(dir, "project"),
-			sessionManager: { getSessionId: () => "session-1" },
-		} as never)
+		const result = await registeredSkillTool(join(dir, "project")).execute(
+			"call-1",
+			{ skill: "best-practices" },
+			undefined,
+			undefined,
+			{
+				cwd: join(dir, "project"),
+				sessionManager: { getSessionId: () => "session-1" },
+			} as never,
+		)
 
 		expect(textResult(result)).toContain("Claude skill instructions.")
 		expect(textResult(result)).not.toContain("Kimchi project skill instructions.")
@@ -105,12 +143,19 @@ describe("Claude Code skills extension", () => {
 	})
 
 	it("returns an error when the skill is missing", async () => {
-		const { tools } = registerExtension()
+		writeSkill(join(dir, "home", ".claude", "skills", "typescript-safety", "SKILL.md"), "User skill.")
+		mkdirSync(join(dir, "project", ".claude"), { recursive: true })
 
-		const result = await tools[0].execute("call-1", { skill: "missing" }, undefined, undefined, {
-			cwd: join(dir, "project"),
-			sessionManager: { getSessionId: () => "session-1" },
-		} as never)
+		const result = await registeredSkillTool(join(dir, "project")).execute(
+			"call-1",
+			{ skill: "missing" },
+			undefined,
+			undefined,
+			{
+				cwd: join(dir, "project"),
+				sessionManager: { getSessionId: () => "session-1" },
+			} as never,
+		)
 
 		expect(result.details).toEqual({
 			success: false,
@@ -192,24 +237,41 @@ describe("Claude Code skills extension", () => {
 
 type RegisteredHandlers = {
 	resources_discover?: (event: { type: "resources_discover"; cwd: string; reason: string }) => unknown
+	session_start?: (event: { type: "session_start" }, ctx: { cwd: string }) => unknown
 }
 
 function registerExtension(configuredSkillPaths: () => string[] = () => []): {
 	tools: ToolDefinition[]
 	handlers: RegisteredHandlers
+	fireSessionStart: (cwd: string) => void
 } {
 	const tools: ToolDefinition[] = []
 	const handlers: RegisteredHandlers = {}
 	claudeCodeSkillsExtension(
 		{
 			registerTool: (tool: ToolDefinition) => tools.push(tool),
-			on: (event: keyof RegisteredHandlers, handler: RegisteredHandlers[keyof RegisteredHandlers]) => {
-				handlers[event] = handler
+			on: (event: keyof RegisteredHandlers, handler: NonNullable<RegisteredHandlers[keyof RegisteredHandlers]>) => {
+				handlers[event] = handler as never
 			},
 		} as unknown as ExtensionAPI,
 		configuredSkillPaths,
 	)
-	return { tools, handlers }
+	return {
+		tools,
+		handlers,
+		fireSessionStart: (cwd: string) => {
+			handlers.session_start?.({ type: "session_start" }, { cwd })
+		},
+	}
+}
+
+/** Register the extension, fire session_start in `cwd` and return the Skill
+ *  tool — fails fast if the gate withheld registration. */
+function registeredSkillTool(cwd: string): ToolDefinition {
+	const { tools, fireSessionStart } = registerExtension()
+	fireSessionStart(cwd)
+	expect(tools, `Skill tool must register on session start in ${cwd}`).toHaveLength(1)
+	return tools[0]
 }
 
 function textResult(result: { content: Array<{ type: string; text?: string }> }): string {

@@ -44,6 +44,7 @@ import {
 	loadConfig,
 	RETRY_DEFAULTS,
 	readTelemetryConfig,
+	resolveEffectiveApiKey,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
 	writeMigrationState,
@@ -52,6 +53,7 @@ import {
 import { isBunBinary } from "./env.js"
 import { discoverEnvironmentModels, installEnvironmentModels } from "./environment-models.js"
 import activityExtension from "./extensions/activity.js"
+import idleGcExtension from "./extensions/adaptive-gc.js"
 import agentsExtension from "./extensions/agents/index.js"
 import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
@@ -116,15 +118,19 @@ import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup
 import piiRedactionExtension from "./extensions/pii-redaction/index.js"
 import plannotatorExtension from "./extensions/plannotator/index.js"
 import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/index.js"
+import powershellGateExtension from "./extensions/powershell-gate.js"
+import prCostReportingExtension from "./extensions/pr-cost-reporting/index.js"
 import { setPrintGate } from "./extensions/print-mode.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
+import pullRequestStatusExtension from "./extensions/pull-request-status/index.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
+import sessionMemoryStatsExtension from "./extensions/session-memory-stats.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
@@ -151,12 +157,18 @@ import thinkingStepsExtension from "./extensions/thinking-steps/index.js"
 import tipsExtension from "./extensions/tips/index.js"
 import todosExtension from "./extensions/todos/index.js"
 import toolGroupingExtension from "./extensions/tool-grouping.js"
+import toolOutputExternalizerExtension from "./extensions/tool-output-externalizer.js"
 import toolRenderingExtension from "./extensions/tool-rendering.js"
 import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
-import { createWorkAttributionExtension } from "./extensions/work-attribution.js"
+import { COST_PER_PR_RESOURCE_ID } from "./extensions/work-attribution/resource.js"
+import {
+	createWorkAttributionExtension,
+	prepareProviderRequest,
+	recordProviderResponse,
+} from "./extensions/work-attribution.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import { installGlobalFetchInstrumentation } from "./http/instrument-fetch.js"
 import {
@@ -178,6 +190,7 @@ import {
 	readOllamaModelsFromConfig,
 	resolveOllamaHost,
 } from "./ollama.js"
+import { initOrgPolicy } from "./org-policy.js"
 import { syncPiAuth } from "./pi-auth.js"
 import resourcesExtension from "./resources/extension.js"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
@@ -185,6 +198,7 @@ import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
+import { installTuiConsoleLogging } from "./tui-console.js"
 import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
 import { installCompactionRecoveryPatch, installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
 import {
@@ -250,6 +264,13 @@ if (originalArgs[0] === "memory-import") {
 // Observes provider transport failures in-process (via message_end) so the
 // exit path can reclassify a failed run as infrastructure (exit 74).
 const infrastructureErrorTracker = createInfrastructureErrorTracker()
+
+// --- Org policy ---
+// Resolve the organization's harness policy (permission modes, usage
+// reporting) before telemetry and session setup so both read the same view.
+// Blocking only on the first run per API key (cache miss, capped at 1.5s);
+// afterwards the cached policy applies and refreshes in the background.
+await initOrgPolicy(resolveEffectiveApiKey() ?? "")
 
 // --- Telemetry ---
 const telemetryConfig = readTelemetryConfig()
@@ -606,6 +627,7 @@ try {
 		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
 		const terminalStartupOutputAllowed = isTerminalUiMode(rawArgs, terminalIo)
 		if (terminalStartupOutputAllowed) {
+			installTuiConsoleLogging()
 			await probeTerminalBackground()
 			await probeKittyKeyboardSupport()
 		}
@@ -651,6 +673,8 @@ try {
 
 		installGlobalFetchInstrumentation({
 			userAgent: `kimchi/${getVersion()}`,
+			onModelRequest: prepareProviderRequest,
+			onModelResponse: recordProviderResponse,
 			onModelCompletionSettled: (originalFetch) =>
 				refreshBillingStatusFromConfig({ fetch: originalFetch, mode: "automatic" }),
 		})
@@ -740,6 +764,9 @@ try {
 			// steer:aborted — emits when the user Esc-aborts the turn immediately
 			// following a harness steer (the "user vetoed the nudge" signal).
 			steerAbortTrackerExtension,
+			// Powershell is Windows-only: hide it when a config activates it on
+			// another platform (dead schema weight otherwise).
+			powershellGateExtension,
 			hiddenToolGuidanceExtension,
 			...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
 			ideAdapterExtension,
@@ -812,12 +839,19 @@ try {
 			modelGuardExtension,
 			orphanToolResultRepairExtension,
 			orphanToolResultSanitizerExtension,
+			idleGcExtension,
+			sessionMemoryStatsExtension,
 			piiRedactionExtension,
 			stripImagesExtension,
+			toolOutputExternalizerExtension,
 			traceIdExtension,
 			contextAssemblyExtension,
 			cacheSummaryExtension,
-			createWorkAttributionExtension(),
+			...enabledExtensionFactories([
+				{ id: COST_PER_PR_RESOURCE_ID, factory: createWorkAttributionExtension() },
+				{ id: COST_PER_PR_RESOURCE_ID, factory: pullRequestStatusExtension },
+				{ id: COST_PER_PR_RESOURCE_ID, factory: prCostReportingExtension },
+			] satisfies ManagedExtensionFactory[]),
 			requestTimingExtension,
 			llmResponseLogExtension,
 			activityExtension,

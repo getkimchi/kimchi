@@ -31,11 +31,13 @@ import {
 	type SessionInfo as PiSessionInfo,
 	ProjectTrustStore,
 	type ResourceLoader,
+	type SessionEntry,
 	type SessionManager,
 	type Skill,
 	type Theme,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
+import { ROUTED_MODEL_RESOLUTION_ENTRY } from "../../extensions/auto-model/index.js"
 import {
 	isProjectScopeAllowed,
 	resetProjectScopeTrustForTests,
@@ -130,6 +132,7 @@ import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTest
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "../../extensions/auto-model/state.js"
+import { preserveRawErrorMessage } from "../../extensions/error-preservation.js"
 import { setExperimentalFeaturesEnabled } from "../../extensions/experimental.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
@@ -143,6 +146,7 @@ import {
 import { applyWriteTodos, clearTodoStore } from "../../extensions/todos/store.js"
 import { updateModelsConfig } from "../../models.js"
 import { ACP_LIFETIME_USAGE_META_KEY, ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
+import { notifyPlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
@@ -2603,7 +2607,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(getAcpPrompter("session-permission")).toBeUndefined()
 	})
 
-	it("maps ACP permission cancellation to an aborted prompt result", async () => {
+	it("maps ACP permission cancellation to a client-denial outcome", async () => {
 		const requests: RequestPermissionRequest[] = []
 		const conn = {
 			sessionUpdate: async (_p: SessionNotification) => {},
@@ -2631,7 +2635,12 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			choices: [{ kind: "allow-once", label: "Allow once" }],
 		})
 
-		expect(result).toEqual({ kind: "aborted" })
+		// A cancelled permission response is the CLIENT denying (headless
+		// hosts cancel fail-safe) — it must NOT report "aborted", which the
+		// permission gate's re-evaluation loop treats as "mode changed,
+		// retry", looping to its cap and failing with the misleading
+		// "Permission mode changed too many times during prompt".
+		expect(result).toEqual({ kind: "denied-by-client" })
 		expect(requests).toHaveLength(1)
 
 		const abort = new AbortController()
@@ -2644,6 +2653,8 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			signal: abort.signal,
 		})
 
+		// A true abort (the request signal fired, e.g. turn cancelled) still
+		// reports aborted — that remains the re-evaluate/mode-change path.
 		expect(skippedResult).toEqual({ kind: "aborted" })
 		expect(requests).toHaveLength(1)
 		await localAgent.shutdown()
@@ -5756,6 +5767,71 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		expect((err as { data?: unknown }).data).toBeUndefined()
 	})
 
+	// A retried turn that terminally fails must transmit the raw provider
+	// text — never the "Retrying…" display placeholder the
+	// interactive-error-surface extension writes into errorMessage. The
+	// placeholder defeats classifyLLMGatewayError, so data.kind/retryAtMs
+	// would be lost as well.
+	it("uses the preserved raw error text, not the retry placeholder, as the terminal turn error", async () => {
+		const fake = new FakeAgentSession("session-raw-error-after-retry")
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const rawError = "Request failed with status code 503: Service Unavailable"
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			const event = assistantErrorEvent(rawError)
+			if (event.type !== "message_end") throw new Error("unreachable")
+			// Mimic interactive-error-surface's message_end mutation: preserve
+			// the raw text first, then replace the display text. The final
+			// attempt ends with the placeholder still in place.
+			const message = event.message as AssistantMessage
+			preserveRawErrorMessage(message)
+			message.errorMessage = "Retrying…"
+			fake.emit(event)
+			fake.emit(agentEnd())
+		}
+
+		const err = await agent
+			.prompt({ sessionId: "session-raw-error-after-retry", prompt: [{ type: "text", text: "hello" }] })
+			.catch((e) => e)
+		expect((err as Error).message).toMatch(/503/)
+		expect((err as Error).message).not.toMatch(/Retrying/)
+		expect((err as { data?: unknown }).data).toEqual({ kind: "provider_5xx", httpStatusCode: 503 })
+	})
+
+	// Each retry attempt carries its own message object, and preservation is
+	// write-once per object — so the terminal error must come from the FINAL
+	// attempt's preserved raw text, never a stale first-attempt error.
+	it("uses the last retry attempt's preserved raw text when each attempt fails differently", async () => {
+		const fake = new FakeAgentSession("session-raw-error-last-attempt")
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			// First attempt: 429, mutated to placeholder by the extension.
+			const first = assistantErrorEvent("Request failed with status code 429: rate limited")
+			if (first.type !== "message_end") throw new Error("unreachable")
+			preserveRawErrorMessage(first.message as AssistantMessage)
+			;(first.message as AssistantMessage).errorMessage = "Retrying…"
+			fake.emit(first)
+			fake.emit({ type: "agent_start" })
+			// Final attempt: 503 with different raw text, also placeholder-mutated.
+			const second = assistantErrorEvent("Request failed with status code 503: Service Unavailable")
+			if (second.type !== "message_end") throw new Error("unreachable")
+			preserveRawErrorMessage(second.message as AssistantMessage)
+			;(second.message as AssistantMessage).errorMessage = "Retrying…"
+			fake.emit(second)
+			fake.emit(agentEnd())
+		}
+
+		const err = await agent
+			.prompt({ sessionId: "session-raw-error-last-attempt", prompt: [{ type: "text", text: "hello" }] })
+			.catch((e) => e)
+		expect((err as Error).message).toMatch(/503/)
+		expect((err as Error).message).not.toMatch(/429/)
+		expect((err as { data?: unknown }).data).toEqual({ kind: "provider_5xx", httpStatusCode: 503 })
+	})
+
 	it("does not fail the turn when the final assistant message was aborted", async () => {
 		const fake = new FakeAgentSession("session-aborted-msg")
 		const agent = makeAgent(fake)
@@ -5778,6 +5854,186 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 // the wire — an outstanding prompt with no updates, indistinguishable from a
 // hang. Those pi events go out as _kimchi.dev/agent_activity notifications so
 // the client can pin the stall (and its session) to a cause.
+describe("routed model notifications", () => {
+	function routedModelEntry(modelId: string): SessionEntry {
+		return {
+			type: "custom",
+			id: "routed-entry",
+			parentId: null,
+			timestamp: "2026-01-01T00:00:00.000Z",
+			customType: ROUTED_MODEL_RESOLUTION_ENTRY,
+			data: { version: 1, requestedId: "auto", provider: "kimchi-dev", modelId },
+		}
+	}
+
+	async function startRoutedTestSession(fake: FakeAgentSession, conn: AgentSideConnection): Promise<KimchiAcpAgent> {
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		return agent
+	}
+
+	function messageEndEvent(): AgentSessionEvent {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "reply" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 10,
+				output: 5,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 15,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	async function runTurn(agent: KimchiAcpAgent, sessionId: string): Promise<void> {
+		const result = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "hello" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+	}
+
+	it("forwards a routed pick change with requested and routed ids", async () => {
+		const fake = new FakeAgentSession("session-routed-1")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRoutedTestSession(fake, conn)
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "entry_appended", entry: routedModelEntry("glm-5.3") })
+			fake.emit(agentEnd())
+		}
+
+		await runTurn(agent, "session-routed-1")
+		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/routed_model")).toEqual([
+			{
+				method: "_kimchi.dev/routed_model",
+				params: { sessionId: "session-routed-1", requestedId: "auto", routedId: "glm-5.3" },
+			},
+		])
+	})
+
+	it("notifies again on a mid-turn reroute — the mirror adds no dedup", async () => {
+		const fake = new FakeAgentSession("session-routed-6")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRoutedTestSession(fake, conn)
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "entry_appended", entry: routedModelEntry("glm-5.3") })
+			fake.emit({ type: "entry_appended", entry: routedModelEntry("kimi-k3") })
+			fake.emit(agentEnd())
+		}
+
+		await runTurn(agent, "session-routed-6")
+		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/routed_model")).toEqual([
+			{
+				method: "_kimchi.dev/routed_model",
+				params: { sessionId: "session-routed-6", requestedId: "auto", routedId: "glm-5.3" },
+			},
+			{
+				method: "_kimchi.dev/routed_model",
+				params: { sessionId: "session-routed-6", requestedId: "auto", routedId: "kimi-k3" },
+			},
+		])
+	})
+
+	it("does not re-notify when no new routed entry is appended", async () => {
+		const fake = new FakeAgentSession("session-routed-2")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRoutedTestSession(fake, conn)
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "entry_appended", entry: routedModelEntry("glm-5.3") })
+			fake.emit(agentEnd())
+		}
+		await runTurn(agent, "session-routed-2")
+
+		// Second turn lands on the same model: the extension's change-only dedup
+		// appends no entry, so the mirror must stay silent.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(agentEnd())
+		}
+		await runTurn(agent, "session-routed-2")
+
+		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/routed_model")).toEqual([
+			{
+				method: "_kimchi.dev/routed_model",
+				params: { sessionId: "session-routed-2", requestedId: "auto", routedId: "glm-5.3" },
+			},
+		])
+	})
+
+	it("forwards unknown-model picks with the raw backend id", async () => {
+		const fake = new FakeAgentSession("session-routed-3")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRoutedTestSession(fake, conn)
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "entry_appended", entry: routedModelEntry("brand-new-backend-model") })
+			fake.emit(agentEnd())
+		}
+
+		await runTurn(agent, "session-routed-3")
+		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/routed_model")).toEqual([
+			{
+				method: "_kimchi.dev/routed_model",
+				params: { sessionId: "session-routed-3", requestedId: "auto", routedId: "brand-new-backend-model" },
+			},
+		])
+	})
+
+	it("stays silent for non-routed entries and message events", async () => {
+		const fake = new FakeAgentSession("session-routed-4")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRoutedTestSession(fake, conn)
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "entry_appended",
+				entry: {
+					type: "custom",
+					id: "other-entry",
+					parentId: null,
+					timestamp: "2026-01-01T00:00:00.000Z",
+					customType: "some_other_entry",
+					data: { version: 1 },
+				},
+			})
+			fake.emit(messageEndEvent())
+			fake.emit(agentEnd())
+		}
+
+		await runTurn(agent, "session-routed-4")
+		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/routed_model")).toEqual([])
+	})
+
+	it("a client that ignores the notification sees no error", async () => {
+		const fake = new FakeAgentSession("session-routed-5")
+		const conn = makeConn()
+		const agent = await startRoutedTestSession(fake, conn)
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "entry_appended", entry: routedModelEntry("glm-5.3") })
+			fake.emit(agentEnd())
+		}
+
+		// No-op extNotification: the fire-and-forget push must not reject the turn.
+		await expect(runTurn(agent, "session-routed-5")).resolves.toBeUndefined()
+	})
+})
+
 describe("agent activity notifications", () => {
 	function successEvent(): AgentSessionEvent {
 		const message: AssistantMessage = {
@@ -6071,20 +6327,20 @@ describe("newSession model state", () => {
 		expect(res.models).toBeDefined()
 		expect(res.models?.currentModelId).toBe("openai/gpt-4")
 		expect(res.models?.availableModels).toHaveLength(3)
-		// Routing entries carry a description; the concrete models below do not.
+		// Concrete models sorted by modelId; the deprecated routing entry sits last.
 		expect(res.models?.availableModels[0]).toEqual({
+			modelId: "anthropic/claude-3",
+			name: "Claude 3",
+		})
+		expect(res.models?.availableModels[1]).toEqual({
+			modelId: "openai/gpt-4",
+			name: "GPT-4",
+		})
+		expect(res.models?.availableModels[2]).toEqual({
 			modelId: "multi-model",
 			name: "Multi-model (kimi-k2.7)",
 			// Harness-side deprecation label + routing one-liner.
 			description: "[Deprecated] Routes each task to the best model, with an orchestrator and workers.",
-		})
-		expect(res.models?.availableModels[1]).toEqual({
-			modelId: "anthropic/claude-3",
-			name: "Claude 3",
-		})
-		expect(res.models?.availableModels[2]).toEqual({
-			modelId: "openai/gpt-4",
-			name: "GPT-4",
 		})
 	})
 
@@ -7589,7 +7845,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 		// Should be blocked in plan mode
 		expect(result).toBeDefined()
 		expect(result?.block).toBe(true)
-		expect(result?.reason).toContain("Plan")
+		expect(result?.reason).toContain("Blocked: the session is in plan mode")
 
 		// Cleanup
 		await agent.unstable_closeSession({ sessionId })
@@ -7734,7 +7990,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 			mockCtx,
 		)) as { block: boolean; reason: string }
 		expect(writeBlockedResult?.block).toBe(true)
-		expect(writeBlockedResult?.reason).toContain("Plan mode")
+		expect(writeBlockedResult?.reason).toContain("Blocked: the session is in plan mode")
 
 		// Clear notifications from entering plan mode
 		updates.length = 0
@@ -8859,11 +9115,11 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(res.models).toMatchObject({
 			currentModelId: "test/test-model",
 			availableModels: [
+				{ modelId: "test/test-model", name: "Test Model" },
 				{
 					modelId: "multi-model",
 					name: expect.stringMatching(/^Multi-model \(/),
 				},
-				{ modelId: "test/test-model", name: "Test Model" },
 			],
 		})
 	})
@@ -10292,5 +10548,201 @@ describe("KimchiAcpAgent set_project_trust pin sweep", () => {
 		expect(result).toMatchObject({ trusted: false })
 		expect(isProjectScopeAllowed(parentDir)).toBe(false)
 		expect(existsSync(join(agentDir, "trust.json"))).toBe(false)
+	})
+})
+
+// =============================================================================
+// Plan-review held prompts (submit_plan): the model turn ends in a plan
+// review — the PromptRequest must stay OPEN (single end_turn) until the
+// decision's follow-up turn drains, the review closes without work, or the
+// client cancels. See .kimchi/plans/acp-plan-review-turn-lifecycle.md.
+// =============================================================================
+
+describe("plan-review held prompt", () => {
+	function makeHeldAgent() {
+		const { conn, updates } = makeRecordingConn()
+		const heldFake = new FakeAgentSession("session-plan-review")
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(heldFake),
+		})
+		return { localAgent, heldFake, updates }
+	}
+
+	/** pi's message_end for a failed assistant response (retries exhausted). */
+	function assistantErrorEvent(errorMessage: string): AgentSessionEvent {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error",
+			errorMessage,
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	/** Emit the submit_plan tool lifecycle pi-mono fires when a plan is
+	 * submitted: the tool executes and the model turn ends. */
+	function emitSubmitPlan(heldFake: FakeAgentSession): void {
+		heldFake.emit({
+			type: "tool_execution_start",
+			toolCallId: "tc-submit-plan",
+			toolName: "submit_plan",
+			args: { planContent: "# Plan" },
+		})
+		heldFake.emit({
+			type: "tool_execution_end",
+			toolCallId: "tc-submit-plan",
+			toolName: "submit_plan",
+			result: { content: [{ type: "text", text: "Plan submitted." }] },
+			isError: false,
+		})
+	}
+
+	/** Start a prompt whose model turn ends in submit_plan; returns the pending
+	 * PromptRequest promise plus a flag flipped when it settles. */
+	async function startHeldPrompt(localAgent: KimchiAcpAgent, heldFake: FakeAgentSession) {
+		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		heldFake.promptImpl = async () => {
+			heldFake.emit({ type: "agent_start" })
+			emitSubmitPlan(heldFake)
+			// Turn ends here — session.prompt resolves. The review is pending.
+		}
+		let settled: { ok: boolean; value?: unknown; error?: unknown } | undefined
+		const promptPromise = localAgent
+			.prompt({ sessionId: res.sessionId, prompt: [{ type: "text", text: "plan it" }] })
+			.then(
+				(value) => {
+					settled = { ok: true, value }
+				},
+				(error) => {
+					settled = { ok: false, error }
+				},
+			)
+		// Let session.prompt() resolve inside the agent. The PromptRequest must
+		// stay pending: no early end_turn while the review is undecided.
+		await vi.waitFor(() => {
+			expect(heldFake.promptCalls).toHaveLength(1)
+		})
+		await delay(30)
+		return { sessionId: res.sessionId, promptPromise, isSettled: () => settled, settledValue: () => settled }
+	}
+
+	it("holds the prompt open while the review is undecided (no early end_turn)", async () => {
+		const { localAgent, heldFake } = makeHeldAgent()
+		const { promptPromise, isSettled } = await startHeldPrompt(localAgent, heldFake)
+		expect(isSettled()).toBeUndefined()
+
+		// Permissions reports the review closed without a follow-up turn
+		// (rework / dismissal) → the prompt resolves with exactly one end_turn.
+		notifyPlanReviewClosed(heldFake.sessionId)
+		await promptPromise
+		const settled = isSettled()
+		expect(settled?.ok).toBe(true)
+		expect((settled?.value as { stopReason: string })?.stopReason).toBe("end_turn")
+	})
+
+	it("streams the execution turn into the held prompt and ends it once, after agent_settled", async () => {
+		const { localAgent, heldFake, updates } = makeHeldAgent()
+		const { promptPromise, isSettled } = await startHeldPrompt(localAgent, heldFake)
+		expect(isSettled()).toBeUndefined()
+		const updatesBefore = updates.length
+
+		// Decision approved → the follow-up turn starts as an internal pi turn.
+		heldFake.emit({ type: "agent_start" })
+		heldFake.emit({
+			type: "message_update",
+			assistantMessageEvent: {
+				type: "text_delta",
+				delta: "executing the plan",
+				contentIndex: 0,
+				partial: {} as unknown as AssistantMessage,
+			},
+			message: {} as unknown as AssistantMessage,
+		})
+		heldFake.emit(agentEnd())
+		// Still in flight: agent_end alone must not finalize (chained continues).
+		await delay(10)
+		expect(isSettled()).toBeUndefined()
+
+		heldFake.emit({ type: "agent_settled" })
+		await promptPromise
+		const settled = isSettled()
+		expect(settled?.ok).toBe(true)
+		expect((settled?.value as { stopReason: string })?.stopReason).toBe("end_turn")
+		// Execution chunks were forwarded into the same prompt's update stream.
+		expect(updates.slice(updatesBefore).some((u) => u.update.sessionUpdate === "agent_message_chunk")).toBe(true)
+	})
+
+	it("delivers a single end_turn across chained continue cycles of the execution turn", async () => {
+		const { localAgent, heldFake } = makeHeldAgent()
+		const { promptPromise, isSettled } = await startHeldPrompt(localAgent, heldFake)
+
+		heldFake.emit({ type: "agent_start" })
+		heldFake.emit(agentEnd())
+		await delay(5)
+		expect(isSettled()).toBeUndefined()
+		// Chained continue (retry / queued message): second cycle in the same run.
+		heldFake.emit({ type: "agent_start" })
+		heldFake.emit(agentEnd())
+		await delay(5)
+		expect(isSettled()).toBeUndefined()
+
+		heldFake.emit({ type: "agent_settled" })
+		await promptPromise
+		expect(isSettled()?.ok).toBe(true)
+	})
+
+	it("finalizes immediately when the review closes without a follow-up turn", async () => {
+		const { localAgent, heldFake } = makeHeldAgent()
+		const { promptPromise, isSettled } = await startHeldPrompt(localAgent, heldFake)
+		notifyPlanReviewClosed(heldFake.sessionId)
+		await promptPromise
+		expect(isSettled()?.ok).toBe(true)
+	})
+
+	it("ignores close notifications for other sessions and non-held turns", async () => {
+		const { localAgent, heldFake } = makeHeldAgent()
+		const { promptPromise, isSettled } = await startHeldPrompt(localAgent, heldFake)
+		notifyPlanReviewClosed("some-other-session")
+		await delay(20)
+		expect(isSettled()).toBeUndefined()
+		notifyPlanReviewClosed(heldFake.sessionId)
+		await promptPromise
+		expect(isSettled()?.ok).toBe(true)
+	})
+
+	it("cancel during the review pause resolves with stopReason cancelled", async () => {
+		const { localAgent, heldFake } = makeHeldAgent()
+		const { sessionId, promptPromise, isSettled } = await startHeldPrompt(localAgent, heldFake)
+		await localAgent.cancel({ sessionId })
+		await promptPromise
+		const settled = isSettled()
+		expect(settled?.ok).toBe(true)
+		expect((settled?.value as { stopReason: string })?.stopReason).toBe("cancelled")
+	})
+
+	it("surfaces a terminal execution error as a JSON-RPC failure, not a silent end_turn", async () => {
+		const { localAgent, heldFake } = makeHeldAgent()
+		const { promptPromise, isSettled } = await startHeldPrompt(localAgent, heldFake)
+
+		heldFake.emit({ type: "agent_start" })
+		heldFake.emit(assistantErrorEvent("boom"))
+		heldFake.emit(agentEnd())
+		heldFake.emit({ type: "agent_settled" })
+		await promptPromise
+		expect(isSettled()?.ok).toBe(false)
 	})
 })

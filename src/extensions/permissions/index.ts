@@ -11,11 +11,12 @@ import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
-import { derivePlanTitle, savePlanMarkdown, slugifyPlanName } from "../../shared/planning/plan-markdown.js"
+import { derivePlanTitle, slugifyPlanName } from "../../shared/planning/plan-markdown.js"
 import {
 	consumePlanReviewContext,
 	emitPlanReviewDecision,
 	emitPlanReviewRequest,
+	notifyPlanReviewClosed,
 	onPlanReviewDecision,
 	type PlanReviewDecisionPayload,
 } from "../../shared/planning/plan-review-bus.js"
@@ -46,7 +47,9 @@ import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/con
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
+import { resolveClassifierCandidates } from "../model-catalog/classifier-models.js"
 import { getMultiModelEnabled } from "../multi-model.js"
+import { shouldSuppressFermentModeTools } from "../print-mode.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
 import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
@@ -55,10 +58,9 @@ import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
-import { appendWorkRecord, getWorkId, tryWorkAttribution } from "../work-attribution.js"
+import { getWorkId, saveToolPlan, tryWorkAttribution } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
-import { resolveClassifierCandidates } from "./classifier-models.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import { BUILTIN_DENY, DEFAULT_CONFIG, PERMISSION_MODES_WITH_META as MODES, PERMISSIONS_ENV_KEY } from "./constants.js"
@@ -70,7 +72,7 @@ import {
 	setPermissionMode,
 } from "./mode-controller.js"
 import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
-import { type ModeChangeReason, PERMISSION_EVENTS, type PermissionDecision } from "./permissions-events.js"
+import { PERMISSION_EVENTS, type PermissionDecision } from "./permissions-events.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
 import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import {
@@ -91,7 +93,7 @@ import {
 	splitCompoundCommand,
 } from "./taxonomy.js"
 import { emitOutcomeDecision, emitToolDecision, ruleSourceDetail } from "./tool-decision-emitter.js"
-import type { PermissionMode, PermissionModeState, RiskScore, Rule, RuleSource } from "./types.js"
+import type { ModeChangeReason, PermissionMode, PermissionModeState, RiskScore, Rule, RuleSource } from "./types.js"
 
 /**
  * Check whether a file path is within .kimchi/plans/ relative to cwd.
@@ -305,8 +307,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	 * Persist the current permission mode to the session log if it diverges from
 	 * the last logged value, or if there is no logged value yet.
 	 */
-	function maybePersistPermissionMode(ctx: ExtensionContext): void {
-		persistPermissionModeIfChanged(ctx.sessionManager, pi.appendEntry, getRuntimePermissionMode())
+	function maybePersistPermissionMode(ctx: ExtensionContext, reason?: ModeChangeReason): void {
+		persistPermissionModeIfChanged(ctx.sessionManager, pi.appendEntry, getRuntimePermissionMode(), reason)
 	}
 
 	function allRules(): Rule[] {
@@ -401,7 +403,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		updateStatus(ctx)
 		maybeShowYoloWarning(ctx)
 		appliedPermissionMode = next
-		if (reason !== "session_start" && next.initiatedBy === "user") maybePersistPermissionMode(ctx)
+		if (reason !== "session_start" && next.initiatedBy === "user") maybePersistPermissionMode(ctx, reason)
 		pi.events.emit(PERMISSION_EVENTS.MODE_CHANGED, { from, to: next, reason })
 	}
 
@@ -691,175 +693,180 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// tool catalog). The model calls it when the plan is ready for review.
 	// For ferment, the model should call propose_ferment_scoping first (to
 	// populate the structured scope), then submit_plan to trigger the review.
-	pi.registerTool({
-		name: SUBMIT_PLAN_TOOL_NAME,
-		label: "Submit Plan",
-		description:
-			"Submit your completed plan for user review. Call this only after the plan " +
-			"is fully written and all open questions are resolved. The plan will be " +
-			"saved to disk and the user will review it in a visual UI before execution. " +
-			"If the plan is denied with feedback, revise and call this again.",
-		parameters: Type.Object({
-			plan: Type.String({
-				description:
-					"The complete plan as markdown. Must follow the required structure: " +
-					"Goal, Constraints, Chunks (with Files Changed, Depends On, Accept When, " +
-					"Test Coverage, Open Questions), Verification Strategy, Decision Log, Risks.",
+	// The review is a TUI flow, so the tool is dead surface in plain --print
+	// runs — suppress it there like the ferment-mode gate does for set_phase.
+	// ferment-oneshot print runs keep it (submit_plan is part of their
+	// planning catalog).
+	if (!shouldSuppressFermentModeTools()) {
+		pi.registerTool({
+			name: SUBMIT_PLAN_TOOL_NAME,
+			label: "Submit Plan",
+			description:
+				"Submit your completed plan for user review. Call this only after the plan " +
+				"is fully written and all open questions are resolved. The plan will be " +
+				"saved to disk and the user will review it in a visual UI before execution. " +
+				"If the plan is denied with feedback, revise and call this again.",
+			parameters: Type.Object({
+				plan: Type.String({
+					description:
+						"The complete plan as markdown. Must follow the required structure: " +
+						"Goal, Constraints, Chunks (with Files Changed, Depends On, Accept When, " +
+						"Test Coverage, Open Questions), Verification Strategy, Decision Log, Risks.",
+				}),
 			}),
-		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const planText = (params as { plan?: string })?.plan
-			if (!planText?.trim()) {
-				return {
-					content: [{ type: "text", text: "Error: plan text is empty." }],
-					details: { submitted: false },
+			async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+				const planText = (params as { plan?: string })?.plan
+				if (!planText?.trim()) {
+					return {
+						content: [{ type: "text", text: "Error: plan text is empty." }],
+						details: { submitted: false },
+					}
 				}
-			}
 
-			// Available in every permission mode. Plan mode is the only one that
-			// transitions on approval (released into auto); submissions from
-			// default/auto/yolo continue in their current mode.
+				// Available in every permission mode. Plan mode is the only one that
+				// transitions on approval (released into auto); submissions from
+				// default/auto/yolo continue in their current mode.
 
-			// Save plan to disk
-			if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
-			let planPath: string | undefined
-			let snapshotPath: string | undefined
-			const workId = tryWorkAttribution(() => getWorkId(ctx))
-			try {
-				const saved = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText, workId })
-				planPath = saved.path
-				snapshotPath = saved.snapshotPath
-				if (workId) tryWorkAttribution(() => appendWorkRecord(ctx, { type: "plan", ...saved }, workId))
-			} catch (err) {
-				const detail = err instanceof Error ? err.message : String(err)
-				if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
-				else console.error(`permissions: failed to save plan file: ${detail}`)
-			}
-			const retainedPlanNote = snapshotPath ? `\nContinue from another worktree using: ${snapshotPath}` : ""
+				// Save plan to disk
+				if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
+				const saved = saveToolPlan(ctx, ctx, toolCallId, "permissions", { name: activePlanSlug, planText })
+				const planPath = saved?.path
+				const snapshotPath = saved?.snapshotPath
+				const retainedPlanNote = snapshotPath ? `\nContinue from another worktree using: ${snapshotPath}` : ""
 
-			// Agent worker: silent submit. Saves the plan and terminates the turn
-			// with no review emit — workers have no review surface, the parent
-			// orchestrator evaluates the plan, and the plannotator adapter skips
-			// worker sessions. agent-runner surfaces planPath back to the parent
-			// from this tool result.
-			if (isAgentWorker()) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: (planPath ? `Plan submitted and saved to ${planPath}.` : "Plan submitted.") + retainedPlanNote,
-						},
-					],
-					details: { submitted: true, source: "worker", planPath, snapshotPath },
-					terminate: true,
+				// Agent worker: silent submit. Saves the plan and terminates the turn
+				// with no review emit — workers have no review surface, the parent
+				// orchestrator evaluates the plan, and the plannotator adapter skips
+				// worker sessions. agent-runner surfaces planPath back to the parent
+				// from this tool result.
+				if (isAgentWorker()) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: (planPath ? `Plan submitted and saved to ${planPath}.` : "Plan submitted.") + retainedPlanNote,
+							},
+						],
+						details: { submitted: true, source: "worker", planPath, snapshotPath },
+						terminate: true,
+					}
 				}
-			}
 
-			// Emit plan-review request once — TUI popup, plannotator browser, and
-			// future integrations all listen on the same channel. Subscribers
-			// self-select: the plannotator adapter skips non-interactive sessions.
-			emitPlanReviewRequest(
-				pi,
-				{ planContent: planText, planFilePath: planPath, source: "adhoc" },
-				{ ctx, planPath, planText, rawText: planText, activePlanSlug },
-			)
+				// Emit plan-review request once — TUI popup, plannotator browser, and
+				// future integrations all listen on the same channel. Subscribers
+				// self-select: the plannotator adapter skips non-interactive sessions.
+				emitPlanReviewRequest(
+					pi,
+					{ planContent: planText, planFilePath: planPath, source: "adhoc" },
+					{ ctx, planPath, planText, rawText: planText, activePlanSlug },
+				)
 
-			// TUI-E2E seam (KIMCHI_E2E_FAKE_PLANNOTATOR_DECISION): when set to a
-			// PlanReviewDecision value (e.g. "execute"), emits a fake plannotator
-			// decision shortly after the review request so TUI e2e tests drive the
-			// plannotator decision route — including the "where should it run?"
-			// dialog — without a browser. Test-only; never set in production.
-			const fakeDecision = readE2eSeam("KIMCHI_E2E_FAKE_PLANNOTATOR_DECISION")
-			if (fakeDecision) {
-				setTimeout(() => {
-					emitPlanReviewDecision(pi, {
-						decision: fakeDecision as PlanReviewDecisionPayload["decision"],
-						source: "plannotator",
-						planReviewSource: "adhoc",
+				// TUI-E2E seam (KIMCHI_E2E_FAKE_PLANNOTATOR_DECISION): when set to a
+				// PlanReviewDecision value (e.g. "execute"), emits a fake plannotator
+				// decision shortly after the review request so TUI e2e tests drive the
+				// plannotator decision route — including the "where should it run?"
+				// dialog — without a browser. Test-only; never set in production.
+				const fakeDecision = readE2eSeam("KIMCHI_E2E_FAKE_PLANNOTATOR_DECISION")
+				if (fakeDecision) {
+					setTimeout(() => {
+						emitPlanReviewDecision(pi, {
+							decision: fakeDecision as PlanReviewDecisionPayload["decision"],
+							source: "plannotator",
+							planReviewSource: "adhoc",
+						})
+					}, 1_000)
+				}
+
+				// Non-TUI / oneshot: no popup to show — end the turn. The emit above
+				// is a no-op today (adapter skips subscribing), but future integrations
+				// (logging, CI reviewers, alternative UIs) can hook in without changes.
+				if (!ctx.hasUI || pi.getFlag?.("ferment-oneshot") === true) {
+					return {
+						content: [{ type: "text", text: `Plan submitted.${retainedPlanNote}` }],
+						details: { submitted: true, planPath, snapshotPath },
+						terminate: true,
+					}
+				}
+
+				// AbortSignal lets the decision handler dismiss the menu when
+				// plannotator decides first (select returns undefined on abort).
+				// The listener is unsubscribed when the menu resolves — it is
+				// per-review and must not accumulate on the shared event bus.
+				const planMenuAbort = new AbortController()
+				const unsubscribeAbortListener = onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
+					if (payload.planReviewSource !== "adhoc") return
+					if (payload.source !== "plannotator") return
+					planMenuAbort.abort()
+				})
+
+				const DECLINE = "Rework the plan"
+				const START_AS_FERMENT = "Start as ferment"
+
+				const options: string[] = [EXECUTE_LOCAL_DECISION_OPTION]
+				if (isRemoteRunEnabled()) options.push(CLOUD_DECISION_OPTION)
+				options.push(DECLINE, START_AS_FERMENT)
+
+				void withBlocked(pi.events, "Plan complete", () =>
+					withWorkingHidden(ctx, () =>
+						ctx.ui.select("Plan complete. How would you like to proceed?", options, {
+							signal: planMenuAbort.signal,
+						}),
+					),
+				)
+					.then((choice) => {
+						unsubscribeAbortListener()
+						// select returns undefined when aborted — plannotator already decided.
+						if (choice === undefined) {
+							// An abort means plannotator raced and its decision handler may
+							// still dispatch a follow-up turn — not a close. A genuine
+							// dismissal (escape / client cancel) ends the review WITHOUT any
+							// further turn, a fact pi session events never surface: notify.
+							if (!planMenuAbort.signal.aborted) {
+								notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
+							}
+							return
+						}
+						if (choice === EXECUTE_LOCAL_DECISION_OPTION) {
+							emitPlanReviewDecision(pi, {
+								decision: "execute",
+								source: "kimchi-tui",
+								planReviewSource: "adhoc",
+							})
+						} else if (choice === START_AS_FERMENT) {
+							emitPlanReviewDecision(pi, {
+								decision: "start_ferment",
+								source: "kimchi-tui",
+								planReviewSource: "adhoc",
+							})
+						} else if (choice === CLOUD_DECISION_OPTION) {
+							emitPlanReviewDecision(pi, {
+								decision: "start_cloud",
+								source: "kimchi-tui",
+								planReviewSource: "adhoc",
+							})
+						} else {
+							emitPlanReviewDecision(pi, {
+								decision: "rework",
+								source: "kimchi-tui",
+								planReviewSource: "adhoc",
+							})
+						}
 					})
-				}, 1_000)
-			}
+					.catch(() => {
+						// select rejects when the AbortSignal fires (plannotator decided
+						// first) or on unexpected UI errors. Either way, ensure the
+						// abort-listener is cleaned up so it doesn't leak on the bus.
+						unsubscribeAbortListener()
+					})
 
-			// Non-TUI / oneshot: no popup to show — end the turn. The emit above
-			// is a no-op today (adapter skips subscribing), but future integrations
-			// (logging, CI reviewers, alternative UIs) can hook in without changes.
-			if (!ctx.hasUI || pi.getFlag?.("ferment-oneshot") === true) {
 				return {
-					content: [{ type: "text", text: `Plan submitted.${retainedPlanNote}` }],
+					content: [{ type: "text", text: `Plan submitted for review. Waiting for user decision.${retainedPlanNote}` }],
 					details: { submitted: true, planPath, snapshotPath },
 					terminate: true,
 				}
-			}
-
-			// AbortSignal lets the decision handler dismiss the menu when
-			// plannotator decides first (select returns undefined on abort).
-			// The listener is unsubscribed when the menu resolves — it is
-			// per-review and must not accumulate on the shared event bus.
-			const planMenuAbort = new AbortController()
-			const unsubscribeAbortListener = onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
-				if (payload.planReviewSource !== "adhoc") return
-				if (payload.source !== "plannotator") return
-				planMenuAbort.abort()
-			})
-
-			const DECLINE = "Rework the plan"
-			const START_AS_FERMENT = "Start as ferment"
-
-			const options: string[] = [EXECUTE_LOCAL_DECISION_OPTION]
-			if (isRemoteRunEnabled()) options.push(CLOUD_DECISION_OPTION)
-			options.push(DECLINE, START_AS_FERMENT)
-
-			void withBlocked(pi.events, "Plan complete", () =>
-				withWorkingHidden(ctx, () =>
-					ctx.ui.select("Plan complete. How would you like to proceed?", options, {
-						signal: planMenuAbort.signal,
-					}),
-				),
-			)
-				.then((choice) => {
-					unsubscribeAbortListener()
-					// select returns undefined when aborted — plannotator already decided.
-					if (choice === undefined) return
-					if (choice === EXECUTE_LOCAL_DECISION_OPTION) {
-						emitPlanReviewDecision(pi, {
-							decision: "execute",
-							source: "kimchi-tui",
-							planReviewSource: "adhoc",
-						})
-					} else if (choice === START_AS_FERMENT) {
-						emitPlanReviewDecision(pi, {
-							decision: "start_ferment",
-							source: "kimchi-tui",
-							planReviewSource: "adhoc",
-						})
-					} else if (choice === CLOUD_DECISION_OPTION) {
-						emitPlanReviewDecision(pi, {
-							decision: "start_cloud",
-							source: "kimchi-tui",
-							planReviewSource: "adhoc",
-						})
-					} else {
-						emitPlanReviewDecision(pi, {
-							decision: "rework",
-							source: "kimchi-tui",
-							planReviewSource: "adhoc",
-						})
-					}
-				})
-				.catch(() => {
-					// select rejects when the AbortSignal fires (plannotator decided
-					// first) or on unexpected UI errors. Either way, ensure the
-					// abort-listener is cleaned up so it doesn't leak on the bus.
-					unsubscribeAbortListener()
-				})
-
-			return {
-				content: [{ type: "text", text: `Plan submitted for review. Waiting for user decision.${retainedPlanNote}` }],
-				details: { submitted: true, planPath, snapshotPath },
-				terminate: true,
-			}
-		},
-	})
+			},
+		})
+	}
 
 	// Decision handler for adhoc plan reviews — handles decisions from both
 	// the TUI menu and plannotator's browser UI (first decision wins).
@@ -913,6 +920,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					changeMode(ctx, "auto", { mode: "plan", initiatedBy: "user", source: "runtime" }, "cloud_spawn_failed")
 				}
 			}
+			// Cloud execution never starts a local follow-up turn (the remote run
+			// reports back asynchronously) — the review is over either way: notify.
+			notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 		}
 
 		if (payload.decision === "execute") {
@@ -942,6 +952,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					await executeLocally()
 				} else {
 					ctx.ui?.notify?.("Plan execution deferred — re-open the review to choose again.", "info")
+					// Deferral ends the review with no follow-up turn: notify surfaces
+					// (e.g. ACP holds the originating prompt open across the review).
+					notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 				}
 				return
 			}
@@ -1011,6 +1024,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						goal: parsed.goal || (rawText ?? planText).trim(),
 						hasUI: ctx.hasUI,
 						isOneShot: pi.getFlag("ferment-oneshot") === true,
+						cwd: ctx.cwd,
 					})
 					tryWorkAttribution(() => setFermentWorkId(draft.id, getWorkId(ctx), fermentDir))
 					defaultFermentRuntime.setActive(draft)
@@ -1019,6 +1033,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					if (getRuntimePermissionMode().mode === "plan") {
 						changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
 					}
+					// Draft-only conversion dispatches no follow-up turn: notify.
+					notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 					ctx.ui?.notify?.(
 						`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment list to resume and scope it interactively.`,
 					)
@@ -1034,6 +1050,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					goal: parsed.goal,
 					hasUI: ctx.hasUI,
 					isOneShot: pi.getFlag("ferment-oneshot") === true,
+					cwd: ctx.cwd,
 				})
 				// Set the draft active before emitting STARTED so telemetry can capture
 				// the scoping baseline. Keep planning tools until activation succeeds.
@@ -1113,6 +1130,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				defaultFermentRuntime.setActive(undefined)
 				const message = err instanceof Error ? err.message : String(err)
 				ctx.ui?.notify?.(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`)
+				// Promotion failed — the review is over with no follow-up turn: notify.
+				notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 			}
 		} else if (payload.decision === "start_cloud") {
 			await executeInCloud()
@@ -1126,8 +1145,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				},
 				{ triggerTurn: true },
 			)
+		} else {
+			// "rework" (and any future no-op decision) — the review ends here
+			// without dispatching a follow-up turn. Notify surfaces that hold
+			// state across the review (ACP keeps the prompt open so execution
+			// lands inside it; a no-turn close must still end it).
+			notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 		}
-		// "rework" = stay in plan mode, no action needed
 	})
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -1186,7 +1210,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						emitToolDecision(pi, event, mode, "reject", "plan_gate")
 						return {
 							block: true,
-							reason: `Plan mode: bash command "${command}" is not in the read-only allowlist. Use /permissions mode default (or auto) to run writes.`,
+							reason:
+								"Blocked: the session is in plan mode (read-only). Do not retry writes — present the plan to the user; if they want it executed now, they can switch mode (/permissions mode default or auto).",
 						}
 					}
 					emitToolDecision(pi, event, mode, "accept", "plan_readonly")
@@ -1196,7 +1221,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					emitToolDecision(pi, event, mode, "reject", "plan_gate")
 					return {
 						block: true,
-						reason: `Plan mode: tool ${toolName} is not available. Use /permissions mode default to enable writes.`,
+						reason: `Blocked: the session is in plan mode (read-only) — tool ${toolName} is unavailable. Do not retry; present the plan to the user.`,
 					}
 				}
 				emitToolDecision(pi, event, mode, "accept", "plan_readonly")
@@ -1607,6 +1632,13 @@ function applyApprovalOutcome(
 	session: SessionMemory,
 ): { block: true; reason: string } | "aborted" | undefined {
 	if (outcome.kind === "aborted") return "aborted"
+	if (outcome.kind === "denied-by-client") {
+		return {
+			block: true,
+			reason:
+				"Denied by the connected client's permission policy (the request was cancelled without approval). Ask the user to approve this action in the client, or use an approach the client permits.",
+		}
+	}
 	if (outcome.kind === "allow-once") return undefined
 	if (outcome.kind === "allow-remember") {
 		session.addMany(outcome.rules)
@@ -1648,6 +1680,8 @@ function approvalOutcomeToDecision(outcome: ApprovalOutcome): PermissionDecision
 			return "deny_with_feedback"
 		case "deny":
 			return "deny"
+		case "denied-by-client":
+			return "denied_by_client"
 		case "aborted":
 			return "aborted"
 		default: {
@@ -1669,6 +1703,8 @@ function compoundOutcomeToDecision(outcome: CompoundApprovalOutcome): Permission
 			return "deny_with_feedback"
 		case "deny":
 			return "deny"
+		case "denied-by-client":
+			return "denied_by_client"
 		case "aborted":
 			return "aborted"
 		default: {

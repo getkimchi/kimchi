@@ -258,7 +258,7 @@ describe("fermentExtension session resume", () => {
 			getStorage: () => storage,
 		}
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("Completed Resume")
+		const draft = storage.create("Completed Resume", undefined, process.cwd())
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
@@ -473,7 +473,7 @@ describe("fermentExtension question dropdown", () => {
 		}
 		runtime.setContinuationPolicy("automated")
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("Reactive Turn")
+		const draft = storage.create("Reactive Turn", undefined, process.cwd())
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
@@ -515,7 +515,7 @@ describe("fermentExtension question dropdown", () => {
 		}
 		runtime.setContinuationPolicy("automated")
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("Boundary Turn")
+		const draft = storage.create("Boundary Turn", undefined, process.cwd())
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
@@ -568,7 +568,7 @@ describe("fermentExtension question dropdown", () => {
 		}
 		runtime.setContinuationPolicy("automated")
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("Final Completion")
+		const draft = storage.create("Final Completion", undefined, process.cwd())
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
@@ -687,7 +687,7 @@ describe("fermentExtension question dropdown", () => {
 			getStorage: () => storage,
 		}
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("Subagent Turn")
+		const draft = storage.create("Subagent Turn", undefined, process.cwd())
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
@@ -722,7 +722,7 @@ describe("fermentExtension question dropdown", () => {
 			getStorage: () => storage,
 		}
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("Completed Turn")
+		const draft = storage.create("Completed Turn", undefined, process.cwd())
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
@@ -872,7 +872,7 @@ describe("fermentExtension question dropdown", () => {
 		}
 		runtime.setContinuationPolicy("manual")
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("Manual Boundary")
+		const draft = storage.create("Manual Boundary", undefined, process.cwd())
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
@@ -970,7 +970,7 @@ describe("fermentExtension question dropdown", () => {
 		}
 		runtime.setContinuationPolicy("automated")
 		createApplyAndPersist(runtime)
-		const draft = storage.create("Plan Handoff")
+		const draft = storage.create("Plan Handoff", undefined, process.cwd())
 		setActive(draft)
 		const { pi } = registerFermentExtension(runtime)
 
@@ -1007,7 +1007,7 @@ describe("fermentExtension question dropdown", () => {
 			getStorage: () => storage,
 		}
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("No Nudge From Turn End")
+		const draft = storage.create("No Nudge From Turn End", undefined, process.cwd())
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
@@ -1053,7 +1053,7 @@ describe("fermentExtension question dropdown", () => {
 			getStorage: () => storage,
 		}
 		runtime.setContinuationPolicy("automated")
-		const draft = storage.create("Turn End Guard")
+		const draft = storage.create("Turn End Guard", undefined, process.cwd())
 		runtime.setActive(draft)
 		runtime.setPendingScope(draft.id, {
 			goal: "Goal",
@@ -1117,7 +1117,7 @@ describe("fermentExtension question dropdown", () => {
 				getStorage: () => storage,
 			}
 			runtime.setContinuationPolicy("automated")
-			const draft = storage.create("Deferred Review")
+			const draft = storage.create("Deferred Review", undefined, process.cwd())
 			runtime.setActive(draft)
 			runtime.setPendingScope(draft.id, {
 				goal: "Goal",
@@ -1171,7 +1171,7 @@ describe("fermentExtension question dropdown", () => {
 				getStorage: () => storage,
 			}
 			runtime.setContinuationPolicy("manual")
-			const draft = storage.create("Auto Deferred Review")
+			const draft = storage.create("Auto Deferred Review", undefined, process.cwd())
 			runtime.setActive(draft)
 			runtime.setPendingScope(draft.id, {
 				goal: "Goal",
@@ -1218,8 +1218,8 @@ describe("fermentExtension question dropdown", () => {
 				getStorage: () => storage,
 			}
 			runtime.setContinuationPolicy("automated")
-			const firstDraft = storage.create("First Deferred Review")
-			const secondDraft = storage.create("Second Deferred Review")
+			const firstDraft = storage.create("First Deferred Review", undefined, process.cwd())
+			const secondDraft = storage.create("Second Deferred Review", undefined, process.cwd())
 			runtime.setActive(firstDraft)
 			runtime.setPendingScope(firstDraft.id, {
 				goal: "First goal",
@@ -1268,7 +1268,7 @@ describe("fermentExtension question dropdown", () => {
 				...createDefaultFermentRuntime(),
 				getStorage: () => storage,
 			}
-			const draft = storage.create("Deferred Feedback")
+			const draft = storage.create("Deferred Feedback", undefined, process.cwd())
 			runtime.setActive(draft)
 			runtime.setPendingScope(draft.id, {
 				goal: "Goal",
@@ -1328,7 +1328,7 @@ describe("fermentExtension question dropdown", () => {
 				...createDefaultFermentRuntime(),
 				getStorage: () => storage,
 			}
-			const draft = storage.create("Cancelled Review")
+			const draft = storage.create("Cancelled Review", undefined, process.cwd())
 			runtime.setActive(draft)
 			runtime.setPendingScope(draft.id, {
 				goal: "Goal",
@@ -1372,7 +1372,7 @@ describe("fermentExtension question dropdown", () => {
 				...createDefaultFermentRuntime(),
 				getStorage: () => storage,
 			}
-			const draft = storage.create("Failed Confirmation")
+			const draft = storage.create("Failed Confirmation", undefined, process.cwd())
 			runtime.setActive(draft)
 			runtime.setPendingScope(draft.id, {
 				goal: "Goal",
@@ -1492,7 +1492,7 @@ Does this plan look right?`,
 				...createDefaultFermentRuntime(),
 				getStorage: () => storage,
 			}
-			const draft = storage.create("Compaction Trigger Test")
+			const draft = storage.create("Compaction Trigger Test", undefined, process.cwd())
 			runtime.setActive(draft)
 			setPendingCompaction(draft.id, {
 				kind: "step",
@@ -1531,7 +1531,7 @@ Does this plan look right?`,
 				...createDefaultFermentRuntime(),
 				getStorage: () => storage,
 			}
-			const draft = storage.create("No Compaction Test")
+			const draft = storage.create("No Compaction Test", undefined, process.cwd())
 			runtime.setActive(draft)
 			// Intentionally do NOT set a pending compaction
 
@@ -1575,7 +1575,7 @@ describe("fermentExtension abort handling", () => {
 		const applyAndPersist = createApplyAndPersist(runtime)
 
 		const scopeAndPlan = (label: string): Ferment => {
-			const draft = storage.create(label)
+			const draft = storage.create(label, undefined, process.cwd())
 			const scoped = applyAndPersist(draft.id, {
 				type: "scope",
 				goal: "Goal",
@@ -1632,7 +1632,7 @@ describe("fermentExtension abort handling", () => {
 	it.each(["draft", "paused", "complete"] as const)("does not mutate a %s ferment on abort", async (status) => {
 		const { storage, pi, turnEnd, ctx, notify, scopeAndPlan, activate, pause, complete } = setupAbortFixture("noop")
 		let ferment: Ferment
-		if (status === "draft") ferment = storage.create("Abort")
+		if (status === "draft") ferment = storage.create("Abort", undefined, process.cwd())
 		else if (status === "paused") ferment = pause(scopeAndPlan("Abort"))
 		else ferment = complete(activate(scopeAndPlan("Abort")))
 		setActive(ferment)
@@ -1772,7 +1772,7 @@ describe("fermentExtension plannotator decision routing", () => {
 			getStorage: () => storage,
 		}
 		runtime.setContinuationPolicy("automated")
-		const draft = storage.create(label)
+		const draft = storage.create(label, undefined, process.cwd())
 		runtime.setActive(draft)
 		runtime.setPendingScope(draft.id, {
 			goal: "Goal",

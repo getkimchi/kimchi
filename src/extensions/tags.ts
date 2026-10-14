@@ -26,11 +26,14 @@ import { Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { readConfigSetting } from "../config/settings.js"
 import { isValidTag, parseTag, resolveDefaultTags, type TagTier } from "../config/tags.js"
+import { isResourceEnabled } from "../resources/store.js"
 import type { ThinkingLevel } from "./agents/personas/types.js"
 import { getEffectiveModel } from "./auto-model/state.js"
 import { resolveMultiModelEnabled } from "./multi-model.js"
 import { shouldSuppressFermentModeTools } from "./print-mode.js"
 import { isStaleCtxError } from "./stale-ctx.js"
+import { GATEWAY_TAG_LIMIT, PRICED_TAG_LIMIT } from "./work-attribution/request-tags.js"
+import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -384,7 +387,20 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 				lines.push(`  ${ctx.ui.theme.fg("error", "✗")} ${ctx.ui.theme.fg("accent", tag)}: ${error}`)
 			}
 		}
-		ctx.ui.notify(lines.join("\n"), failed.length > 0 && succeeded.length === 0 ? "error" : "info")
+		const total = tagManager.getAllTags().length
+		const unpriced = succeeded.length > 0 && total > PRICED_TAG_LIMIT && isResourceEnabled(COST_PER_PR_RESOURCE_ID)
+		if (unpriced)
+			lines.push(
+				"",
+				ctx.ui.theme.fg(
+					"warning",
+					`With ${total} tags plus the model and phase tags, Kimchi requests reach the gateway's ${GATEWAY_TAG_LIMIT}-tag limit. They cannot carry a billing tag, so /work cannot price them. Keep at most ${PRICED_TAG_LIMIT} tags to see their costs.`,
+				),
+			)
+		ctx.ui.notify(
+			lines.join("\n"),
+			failed.length > 0 && succeeded.length === 0 ? "error" : unpriced ? "warning" : "info",
+		)
 		return
 	}
 

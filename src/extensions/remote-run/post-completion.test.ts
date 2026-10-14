@@ -3,6 +3,7 @@ import { tmpdir as osTmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { resolveEndpoints } from "../../config.js"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
 import type { RemoteSessionMeta } from "../agents/manager/remote-agent-runner.js"
 import { runRsync } from "../teleport/provisioning/rsync-runner.js"
@@ -10,7 +11,10 @@ import { handleRemoteCompletion, handleRemoteFailure } from "./post-completion.j
 
 // Mock all external dependencies — we only care about the steer message
 // that gets injected into the local session via pi.sendMessage.
-vi.mock("../../config.js", () => ({ loadConfig: vi.fn(() => ({ apiKey: "fake-key" })) }))
+vi.mock("../../config.js", () => ({
+	loadConfig: vi.fn(() => ({ apiKey: "fake-key" })),
+	resolveEndpoints: vi.fn(() => ({ webAppUrl: "https://app.kimchi.dev" })),
+}))
 vi.mock("../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: vi.fn() }))
 vi.mock("../ferment/prompt-ui.js", () => ({ withWorkingHidden: vi.fn((_ui, fn) => fn()) }))
 vi.mock("../herdr-events.js", () => ({ withBlocked: vi.fn((_events, _label, fn) => fn()) }))
@@ -252,10 +256,48 @@ describe("handleRemoteCompletion", () => {
 			},
 		})
 
-		expect(mockOpen).toHaveBeenCalledWith("https://worker.example.com/public/ide/#/home/sandbox/acp-x")
+		expect(mockOpen).toHaveBeenCalledWith(
+			"https://app.kimchi.dev/remote-sessions/ws-1/ide?sidebarClosed=true&direct=true",
+		)
 		// Non-terminal: the menu was re-offered, and the sync path still ran after.
 		expect(ctx.ui.select).toHaveBeenCalledTimes(2)
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("Open in IDE honours the configured web app URL (region/env override)", async () => {
+		// mockReturnValue + restore (not *Once): the override must hold no matter
+		// how many times the flow calls resolveEndpoints — a *Once value would be
+		// consumed by any earlier call and the test would fail for a misleading
+		// reason. Restored explicitly: clearAllMocks keeps implementations.
+		const mockedResolveEndpoints = vi.mocked(resolveEndpoints)
+		mockedResolveEndpoints.mockReturnValue({
+			webAppUrl: "https://console.dev.example.com",
+		} as ReturnType<typeof resolveEndpoints>)
+		try {
+			const pi = makePi()
+			const ctx = makeCtx()
+			// Second select is undefined (menu dismissed) — we only care about the opened URL.
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Open in IDE")
+
+			await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
+				agentId: "agent-1",
+				remoteSession: {
+					workspaceId: "ws-1",
+					sessionName: "acp-x",
+					wsUrl: "wss://worker.example.com/ws-1/remote",
+					host: "worker.example.com",
+					cwd: "/home/sandbox/acp-x",
+				},
+			})
+
+			expect(mockOpen).toHaveBeenCalledWith(
+				"https://console.dev.example.com/remote-sessions/ws-1/ide?sidebarClosed=true&direct=true",
+			)
+		} finally {
+			mockedResolveEndpoints.mockReturnValue({
+				webAppUrl: "https://app.kimchi.dev",
+			} as ReturnType<typeof resolveEndpoints>)
+		}
 	})
 
 	describe("syncRemoteChanges", () => {
@@ -688,7 +730,9 @@ describe("handleRemoteCompletion — PR intent", () => {
 			gitWorkflow: GIT,
 		})
 
-		expect(mockOpen).toHaveBeenCalledWith("https://worker.example.com/public/ide/#/home/sandbox/acp-x")
+		expect(mockOpen).toHaveBeenCalledWith(
+			"https://app.kimchi.dev/remote-sessions/ws-1/ide?sidebarClosed=true&direct=true",
+		)
 		expect(mockDeleteRemoteSession).toHaveBeenCalled()
 	})
 

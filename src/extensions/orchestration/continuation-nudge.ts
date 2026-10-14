@@ -27,7 +27,23 @@
  * bare token; it should not produce an unexplained second answer after the
  * assistant's original response. Detection stays an exact match
  * (`trim() === DONE_SIGNAL`); responses with extra prose still rely on the
- * existing `stopReason === "stop"` escape in the turn_end handler.
+ * existing `stopReason === "stop"` escape in the turn_end handler. As
+ * defence in depth, a bare token is never re-nudged even when pending
+ * bookkeeping was lost: `evaluateTurn` suppresses it directly, and the
+ * prompt-enrichment `message_end` handler blanks a non-pending bare token
+ * from the stored message and marks it withheld.
+ *
+ * The recovery state machine is retry-aware: a provider error during a
+ * nudge round is an attempt-level failure — the upstream agent loop
+ * auto-retries inside the same agent run, and the retry's eventual response
+ * is still the answer to the armed nudge. Pending state therefore survives
+ * errored attempts (discarding only that attempt's partial text via
+ * `discardFailedResponseAttempt`) and is cleared at turn_end (consumed) or
+ * at settlement (abandoned run — see the agent_settled handler in
+ * prompt-enrichment.ts). The old attempt-level `agent_end` cleanup is what
+ * broke retried nudge rounds: it disarmed the recovery mid-round, leaking
+ * the retry's `<done>` acknowledgement to the UI and drawing a second nudge
+ * at a model that had just complied.
  *
  * Both are orchestrator-only concerns — wired in `prompt-enrichment.ts`
  * inside the `if (!subagentMode)` guard.
@@ -107,6 +123,17 @@ export function isAwaitingUserAnswer(message: AssistantMessage): boolean {
 		.map((c) => c.text)
 		.join("")
 	return text.includes("?") || AWAITING_USER_PHRASES.some((r) => r.test(text))
+}
+
+/** True when the message's joined text is exactly the done signal — a bare
+ *  protocol acknowledgement. Prose containing the token ("Done. <done>")
+ *  and tool-bearing responses must not match. */
+export function isBareDoneSignal(message: AssistantMessage): boolean {
+	const text = message.content
+		.filter((c) => c.type === "text")
+		.map((c) => c.text)
+		.join("")
+	return text.trim() === DONE_SIGNAL
 }
 
 /** Post-turn state machine for the "text-only drift" nudge.
@@ -214,12 +241,27 @@ export class ContinuationNudge {
 
 	/** Clears the pending recovery state (flag and accumulated response
 	 *  text). Called when a recovery response is consumed at `turn_end`, and
-	 *  as a fallback at `agent_end` for an abandoned recovery run — a stop
-	 *  that is respected, an abort, a provider error, budget exhaustion, or
-	 *  a suppressed evaluation must not leave stale state that blanks the
-	 *  next unrelated extension-triggered response. */
+	 *  as a fallback at settlement (`agent_settled`) for an abandoned recovery
+	 *  run — a terminal provider error (non-retryable, retries exhausted, or
+	 *  a retry cancelled during backoff) or any other teardown that never runs
+	 *  turn_end must not leave stale state that blanks the next unrelated
+	 *  extension-triggered response. Attempt-level cleanup lives in
+	 *  `discardFailedResponseAttempt` — `agent_end` fires after every errored
+	 *  attempt, mid-nudge-round, so it cannot host this cleanup. */
 	clearNudgeResponsePending(): void {
 		this.nudgeResponsePending = false
+		this.accumulatedResponseText = ""
+	}
+
+	/** Discards the accumulated text of a failed attempt while keeping the
+	 *  recovery armed. Called at `turn_end` when `stopReason` is "error": the
+	 *  upstream agent loop auto-retries the request inside the same agent
+	 *  run, and the retry's eventual response is still the answer to the
+	 *  armed nudge. Partial text from the failed attempt must not
+	 *  contaminate the next attempt's exact-match done-signal check. The
+	 *  pending flag, nudge budget, and tool/delegation state are all
+	 *  preserved; repeated errors therefore consume no additional budget. */
+	discardFailedResponseAttempt(): void {
 		this.accumulatedResponseText = ""
 	}
 
@@ -240,6 +282,13 @@ export class ContinuationNudge {
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
 		if (hasToolCalls || !hasText) return false
+		// A bare done token is always a nudge acknowledgement, never drift —
+		// never re-nudge a compliant model even when pending bookkeeping was
+		// lost (e.g. state cleared by an attempt-level cleanup on a retried
+		// provider error). The tool-call guard above still applies, and only an
+		// exact trim matches: prose containing the token is not a bare
+		// acknowledgement and keeps its existing handling.
+		if (isBareDoneSignal(message)) return false
 		// If the assistant just asked the user a question, do not nudge: the
 		// model is legitimately waiting for an answer and a "call it now" steer
 		// would be misread as the user saying yes (the core failure mode in the

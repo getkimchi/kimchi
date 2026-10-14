@@ -22,3 +22,25 @@ export function claimRawInputCapture(): () => void {
 export function isRawInputCaptureActive(): boolean {
 	return rawInputCaptureCount > 0
 }
+
+/**
+ * Claim raw input capture for the duration of an async operation (typically
+ * an interactive prompt that owns the keyboard). Use this when a focused form
+ * handles navigation keys — Shift+Tab, Ctrl+P — that are ALSO bound to global
+ * shortcuts registered via ctx.ui.onTerminalInput. Upstream pi-tui dispatches
+ * raw input to onTerminalInput listeners BEFORE the focused component, so
+ * without this claim a Shift+Tab inside a questionnaire both navigates the
+ * form and gets consumed by the permissions mode-cycle listener (the mode
+ * flips and the form never sees the key).
+ *
+ * Permission prompts deliberately do NOT claim: Shift+Tab cycling while a
+ * permission prompt is open is a feature (LLM-1454).
+ */
+export async function withRawInputCapture<T>(fn: () => Promise<T>): Promise<T> {
+	const release = claimRawInputCapture()
+	try {
+		return await fn()
+	} finally {
+		release()
+	}
+}

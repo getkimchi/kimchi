@@ -17,6 +17,7 @@ export type ApprovalOutcome =
 	| { kind: "allow-remember-wildcard"; rules: Rule[] }
 	| { kind: "deny-with-feedback"; feedback: string }
 	| { kind: "deny" }
+	| { kind: "denied-by-client" }
 	| { kind: "aborted" }
 
 export type CompoundApprovalOutcome =
@@ -25,6 +26,7 @@ export type CompoundApprovalOutcome =
 	| { kind: "pick-per-subcommand" }
 	| { kind: "deny-with-feedback"; feedback: string }
 	| { kind: "deny" }
+	| { kind: "denied-by-client" }
 	| { kind: "aborted" }
 
 interface PromptOptions {

@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { AgentOutcomeKind, AgentRecord, SubagentType } from "./agents/personas/types.js"
-import { sendSteer } from "./steer-events.js"
+import { resolveMultiModelEnabled } from "./multi-model.js"
+import { isSteerDisabled, sendSteer } from "./steer-events.js"
 import { getCurrentPhase } from "./tags.js"
 
 const IMPLEMENTATION_TOOLS = new Set(["edit", "write"])
@@ -184,8 +185,10 @@ export class OrchestratorWriteGuard {
 			return
 		}
 
-		this.buildWriteCount = 0
-		this.buildSteered = false
+		// A subagent return in build resets the per-arm counters, then re-arms
+		// (duplicating resetBuildState's clear of the outcome fields, which the
+		// branches below set fresh).
+		this.resetBuildState()
 
 		if (isTriageOutcome(outcome)) {
 			// Subagent did not complete successfully. The orchestrator is doing triage
@@ -313,6 +316,23 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 			return { block: false }
 		}
 
+		// KIMCHI_DISABLE_GUARD_REVIEW_WRITE disables the entire guard — steer AND
+		// block — matching the bash/loop guard kill switches. Before this check
+		// existed, the flag only suppressed the steer message while the hard
+		// block kept firing.
+		if (isSteerDisabled("review_write_guard")) {
+			return { block: false }
+		}
+
+		// Single-model sessions do not run this guard at all. The delegation
+		// discipline it enforces belongs to multi-model orchestration; when the
+		// user merely asked for "some subagents", direct edits are the user's
+		// call, not the harness's. Re-resolved per call so a mid-session flip
+		// to multi-model re-arms the guard (recordSubagentReturn keeps state).
+		if (!resolveMultiModelEnabled(ctx.sessionManager).value) {
+			return { block: false }
+		}
+
 		const guard = getOrchestratorWriteGuard(ctx)
 		const result = guard.checkToolCall(event.toolName)
 		if (!result) return { block: false }
@@ -321,8 +341,8 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 			return { block: true, reason: result.reason }
 		}
 
-		// sendSteer no-ops (returns false) when the kill switch is on; the
-		// call is never blocked either way.
+		// Steers are advisory: the tool call proceeds either way. (The kill
+		// switch is handled by the early return above.)
 		sendSteer(pi, ctx, {
 			kind: "review_write_guard",
 			reason: "steer",

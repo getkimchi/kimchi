@@ -31,6 +31,11 @@ function formatDuration(ms: number): string {
 }
 
 export default function webFetchExtension(pi: ExtensionAPI): void {
+	// web_fetch is part of the static session surface (registered and
+	// advertised from session start): a mid-session reveal would invalidate the
+	// prompt cache for the whole history after the tools block — worth far more
+	// than the schema tokens the deferral saved. web_search's description names
+	// web_fetch for discovery.
 	pi.registerTool({
 		name: "web_fetch",
 		label: "Web Fetch",

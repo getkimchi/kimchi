@@ -59,6 +59,9 @@ export function emitOutcomeDecision(
 		case "deny":
 			emitToolDecision(pi, event, permissionMode, "reject", "deny")
 			return
+		case "denied-by-client":
+			emitToolDecision(pi, event, permissionMode, "reject", "denied_by_client")
+			return
 		case "deny-with-feedback":
 			emitToolDecision(pi, event, permissionMode, "reject", "deny_with_feedback")
 			return

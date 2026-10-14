@@ -1,6 +1,7 @@
 // extensions/dap/client.ts
 import { spawn } from "node:child_process"
 import net from "node:net"
+import { debuglog } from "node:util"
 import type { BunProcess } from "../lsp/types.js"
 import { resolveJsDebugScript } from "./adapters.js"
 import type {
@@ -15,6 +16,11 @@ import type {
 	StoppedEvent,
 	TerminatedEvent,
 } from "./types.js"
+
+/** Diagnostic log for non-fatal async failures — silent unless
+ *  NODE_DEBUG=kimchi:dap. Raw console writes corrupt the interactive TUI
+ *  (see logSwallow below). */
+const debug = debuglog("kimchi:dap")
 
 // =============================================================================
 // TCP transport (js-debug): spawn server, connect socket, wrap as BunProcess
@@ -421,6 +427,22 @@ async function startMessageReader(client: DapClient, stateTarget?: DapClient): P
 						case "terminated": {
 							const body = message.body as TerminatedEvent
 							state.terminated = true
+							// The debuggee is gone — stop waiters will never see a `stopped`
+							// event. Reject them with a "terminated"-classified error so
+							// callers waiting for the next stop (continue/step) treat
+							// program exit as termination instead of hanging until their
+							// timeout. Without this, a run-to-completion after the final
+							// breakpoint deadlocks the session layer.
+							const termErr = new Error("DAP session terminated")
+							while (state.stoppedWaiters.length > 0) {
+								const waiter = state.stoppedWaiters.shift()
+								if (!waiter) continue
+								try {
+									waiter.reject(termErr)
+								} catch {
+									// Waiter already settled — ignore.
+								}
+							}
 							while (state.terminatedWaiters.length > 0) {
 								const waiter = state.terminatedWaiters.shift()
 								if (!waiter) continue
@@ -429,6 +451,23 @@ async function startMessageReader(client: DapClient, stateTarget?: DapClient): P
 								} catch (err) {
 									waiter.reject(err as Error)
 								}
+							}
+							break
+						}
+						case "breakpoint": {
+							// js-debug binds provisional breakpoints asynchronously once the
+							// target source loads; surface the bound state so callers can
+							// wait before continuing (tiny programs otherwise complete
+							// before the breakpoint binds).
+							const body = message.body as { breakpoint?: { id?: number; verified?: boolean } }
+							const id = body.breakpoint?.id
+							if (id != null && body.breakpoint?.verified) {
+								state.boundBreakpointIds.add(id)
+								state.breakpointBoundWaiters = state.breakpointBoundWaiters.filter((w) => {
+									if (w.id !== id) return true
+									w.resolve()
+									return false
+								})
 							}
 							break
 						}
@@ -605,6 +644,8 @@ async function startChildSession(parent: DapClient, configuration: Record<string
 		threadId: null,
 		stoppedEvent: null,
 		stoppedWaiters: [],
+		boundBreakpointIds: new Set(),
+		breakpointBoundWaiters: [],
 		terminatedWaiters: [],
 		outputLines: [],
 		terminated: false,
@@ -656,6 +697,14 @@ async function startChildSession(parent: DapClient, configuration: Record<string
 	// Wait for the child's `initialized` event (per-connection) before sending
 	// configurationDone, matching the DAP ordering: initialized → configurationDone.
 	await Promise.race([child.initializedPromise, new Promise((r) => setTimeout(r, 5000))])
+	// Replay any breakpoints the session layer already sent to the parent —
+	// they targeted a parent that has no debuggee, and the debuggee only
+	// starts running at the child's configurationDone below, so re-applying
+	// them here lands them before execution begins (mirrors how VS Code
+	// re-applies breakpoints to child debug sessions).
+	if (parent.replayBreakpoints) {
+		await parent.replayBreakpoints(child)
+	}
 	try {
 		await sendRequest(child, "configurationDone", {}, 10_000)
 	} catch {
@@ -701,7 +750,12 @@ export class DapClientRegistry {
 
 		const existing = this.clients.get(key)
 		if (existing) {
-			return existing
+			// A terminated client's adapter process is gone (SIGKILLed by
+			// terminate, or exited on its own) — serving it back would hang or
+			// ECONNRESET every later session on the same (command, cwd). Evict
+			// the stale entry and spawn a fresh adapter below.
+			if (!existing.terminated) return existing
+			this.clients.delete(key)
 		}
 
 		const existingLock = this.clientLocks.get(key)
@@ -732,6 +786,8 @@ export class DapClientRegistry {
 				threadId: null,
 				stoppedEvent: null,
 				stoppedWaiters: [],
+				boundBreakpointIds: new Set(),
+				breakpointBoundWaiters: [],
 				terminatedWaiters: [],
 				outputLines: [],
 				terminated: false,
@@ -929,9 +985,11 @@ export async function sendResponse(
 
 /** Non-fatal async failures (reverse-request replies, child-session setup) must
  *  be observable without crashing the reader loop — log instead of silently
- *  swallowing. */
-function logSwallow(label: string): (err: unknown) => void {
+ *  swallowing. Routed through debuglog (silent unless NODE_DEBUG=kimchi:dap):
+ *  a raw console write corrupts the interactive TUI. Exported for direct
+ *  routing tests. */
+export function logSwallow(label: string): (err: unknown) => void {
 	return (err: unknown) => {
-		console.error(`[dap] ${label} failed: ${err instanceof Error ? err.message : String(err)}`)
+		debug(`[dap] ${label} failed: ${err instanceof Error ? err.message : String(err)}`)
 	}
 }

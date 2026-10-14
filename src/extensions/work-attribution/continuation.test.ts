@@ -1,22 +1,21 @@
 import { randomUUID } from "node:crypto"
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
+import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import { findWorkContinuation } from "./continuation.js"
 import { type FileTransition, readAttributedFileState, readRepositoryTransitions } from "./file-transitions.js"
+import * as scope from "./scope.js"
 
 vi.mock("./file-transitions.js", () => ({
 	readRepositoryTransitions: vi.fn(),
 	readAttributedFileState: vi.fn(),
 }))
-const git = vi.hoisted(() => ({ defaults: "refs/remotes/origin/trunk\n" }))
-vi.mock("node:child_process", () => ({
-	execFile: vi.fn((_command, _args, _options, callback) => callback(null, git.defaults, "")),
-}))
 
 let cwd: string
+let captured: scope.WorkScopeSnapshot
 const planningWork = "11111111-1111-4111-8111-111111111111"
 const otherWork = "22222222-2222-4222-8222-222222222222"
 const after = { blob: "b".repeat(40), mode: "100644" }
@@ -44,8 +43,10 @@ function artifact(overrides: Partial<FileTransition> = {}): FileTransition {
 }
 beforeEach(() => {
 	cwd = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-continuation-")))
-	git.defaults = "refs/remotes/origin/trunk\n"
 	vi.stubEnv("PI_CODING_AGENT_DIR", join(cwd, "agent"))
+	captured = createWorkScopeSnapshot(join(cwd, ".git"))
+	vi.spyOn(scope, "captureWorkScope").mockResolvedValue(captured)
+	vi.spyOn(scope, "readWorkScope").mockReturnValue(captured.scope)
 	mkdirSync(join(cwd, "docs/adr"), { recursive: true })
 	writeFileSync(join(cwd, "docs/adr/decision.md"), "# Decision\n")
 	transitions = [artifact()]
@@ -57,20 +58,129 @@ beforeEach(() => {
 	}))
 	vi.mocked(readAttributedFileState).mockResolvedValue(after)
 })
+/** The work an input continues; ownership of what it names has its own tests. */
+async function find(text: string) {
+	return (await findWorkContinuation({ cwd }, text, captured)).match
+}
 afterEach(() => {
 	vi.clearAllMocks()
+	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
 	rmSync(cwd, { recursive: true, force: true })
 })
 
 describe("continuing saved work", () => {
-	it("continues a named native plan without requiring a Git repository", async () => {
+	it.each([
+		"path",
+		"paste",
+	])("keeps the accepted %s bytes when the file changes during the final account check", async (kind) => {
+		const saved = savePlanMarkdown({
+			cwd,
+			name: "accepted",
+			planText: "# Accepted\r\nOriginal bytes.\r\n",
+			workId: planningWork,
+		})
+		const content = readFileSync(saved.path, "utf8")
+		const captured = createWorkScopeSnapshot(join(cwd, ".git"))
+		vi.mocked(scope.captureWorkScope).mockImplementation(async () => {
+			const path = kind === "path" ? saved.path : saved.snapshotPath
+			if (!path) throw new Error("Missing retained plan")
+			writeFileSync(path, `<!-- kimchi-work-id: ${planningWork} -->\n# Replacement\n`)
+			return captured
+		})
+		expect(
+			(await findWorkContinuation({ cwd }, kind === "path" ? `Implement ${saved.path}` : content, captured)).match,
+		).toMatchObject({
+			workId: planningWork,
+			evidence: { contentHash: saved.contentHash },
+		})
+	})
+
+	it.each(["plain", "fenced", "skill"])("continues a %s pasted retained plan without its path", async (wrapper) => {
+		const saved = savePlanMarkdown({
+			cwd,
+			name: "pasted",
+			planText: `# Add export\nCreate docs/new.md and src/export.ts.\n\nExample metadata:\n<!-- kimchi-work-id: ${otherWork} -->\n`,
+			workId: planningWork,
+		})
+		const content = readFileSync(saved.path, "utf8")
+		rmSync(saved.path)
+		const prompt =
+			wrapper === "fenced"
+				? `Implement this plan:\n\n\`\`\`markdown\n${content}\`\`\`\nThen run tests.`
+				: wrapper === "skill"
+					? `<skill name="implement" location="/skills/implement/SKILL.md">\nSee examples/template.md.\n</skill>\n\n${content}`
+					: `Implement this plan:\n${content}`
+		expect(await find(prompt.replaceAll("\n", "\r\n"))).toMatchObject({
+			workId: planningWork,
+			source: "pasted-plan",
+			evidence: { path: saved.snapshotPath },
+		})
+	})
+	it("does not use a saved plan pasted into the skill template", async () => {
+		const saved = savePlanMarkdown({ cwd, name: "template", planText: "# Template\n", workId: planningWork })
+		const prompt = `<skill name="implement" location="/skills/implement/SKILL.md">\n${readFileSync(saved.path, "utf8")}\n</skill>`
+		expect(await find(prompt)).toBeUndefined()
+	})
+	it.each(["unknown", "changed", "marker-only"])("does not adopt a %s pasted plan", async (kind) => {
+		const saved = savePlanMarkdown({
+			cwd,
+			name: "known",
+			planText: "# Known plan\nAdd export.\n",
+			workId: planningWork,
+		})
+		const content = readFileSync(saved.path, "utf8")
+		const prompt =
+			kind === "unknown"
+				? content.replace(planningWork, otherWork)
+				: kind === "changed"
+					? content.replace("Add export.", "Remove authentication.")
+					: content.split("\n")[0]
+		expect(await find(prompt)).toBeUndefined()
+	})
+	it("ignores an unowned output but does not choose between conflicting plan owners", async () => {
+		const first = savePlanMarkdown({ cwd, name: "first", planText: "# First\n", workId: planningWork })
+		const second = savePlanMarkdown({ cwd, name: "second", planText: "# Second\n", workId: otherWork })
+		const content = readFileSync(first.path, "utf8")
+		expect(await find(`${content}\n${readFileSync(second.path, "utf8")}`)).toBeUndefined()
+		expect(await find(`${content}\nAlso write missing.md`)).toMatchObject({
+			workId: planningWork,
+		})
+		expect(await find(`${content}\nAlso follow ${second.path}`)).toBeUndefined()
+	})
+	it("resolves a scoped native plan without requiring file-transition evidence", async () => {
 		const saved = savePlanMarkdown({ cwd, name: "feature", planText: "# Plan", workId: planningWork })
 		vi.mocked(readRepositoryTransitions).mockResolvedValue(undefined)
-		expect(await findWorkContinuation({ cwd }, `Implement ${saved.path}`)).toMatchObject({
+		expect(await find(`Implement ${saved.path}`)).toMatchObject({
 			workId: planningWork,
 			source: "saved-plan",
 			evidence: { path: saved.path },
+		})
+	})
+	it("does not select a modified native plan from its work marker alone", async () => {
+		const saved = savePlanMarkdown({ cwd, name: "feature", planText: "# Plan", workId: planningWork })
+		writeFileSync(saved.path, `${readFileSync(saved.path, "utf8")}\nUnrecorded changes.`)
+		expect(await find(`Implement ${saved.path} and write missing.md`)).toBeUndefined()
+	})
+	it.each([
+		"src/new.ts",
+		"data/new.json",
+		"build/Makefile",
+		"Makefile",
+		"Dockerfile",
+		"`LICENSE`",
+	])("does not ignore a competing owner of the named output %s", async (output) => {
+		const saved = savePlanMarkdown({ cwd, name: "feature", planText: "# Plan", workId: planningWork })
+		const prompt = `Implement ${saved.path} and write ${output}`
+		expect(await find(prompt)).toMatchObject({ workId: planningWork })
+		transitions.push(artifact({ path: output.replaceAll("`", ""), workId: otherWork }))
+		expect(await find(prompt)).toBeUndefined()
+	})
+	it("keeps a named output on its existing work even if its contents changed", async () => {
+		const saved = savePlanMarkdown({ cwd, name: "feature", planText: "# Plan", workId: planningWork })
+		vi.mocked(readAttributedFileState).mockResolvedValue({ ...after, blob: "changed" })
+		expect(await find(`Implement ${saved.path} and update docs/adr/decision.md`)).toMatchObject({
+			workId: planningWork,
 		})
 	})
 	it.each([
@@ -79,7 +189,7 @@ describe("continuing saved work", () => {
 		"Follow [the ADR](docs/adr/decision.md).",
 		"Follow [the ADR section](docs/adr/decision.md#steps).",
 	])("continues the exact saved artifact named by the user: %s", async (text) => {
-		expect(await findWorkContinuation({ cwd }, text)).toMatchObject({
+		expect(await find(text)).toMatchObject({
 			workId: planningWork,
 			source: "named-artifact",
 			evidence: { path: join(cwd, "docs/adr/decision.md"), transitionId: transitions[0].transitionId },
@@ -88,80 +198,35 @@ describe("continuing saved work", () => {
 	it("uses user arguments after skill expansion and ignores paths in the skill body", async () => {
 		const prompt =
 			'<skill name="implement" location="/skills/implement/SKILL.md">\nImplement examples/example.md.\n</skill>'
-		expect(await findWorkContinuation({ cwd }, prompt)).toBeUndefined()
-		expect(await findWorkContinuation({ cwd }, `${prompt}\n\ndocs/adr/decision.md`)).toMatchObject({
+		expect(await find(prompt)).toBeUndefined()
+		expect(await find(`${prompt}\n\ndocs/adr/decision.md`)).toMatchObject({
 			workId: planningWork,
 			source: "named-artifact",
 		})
 	})
 	it("requires the saved artifact to remain unchanged", async () => {
 		vi.mocked(readAttributedFileState).mockResolvedValue({ ...after, blob: "changed" })
-		expect(await findWorkContinuation({ cwd }, "Implement docs/adr/decision.md")).toBeUndefined()
+		expect(await find("Implement docs/adr/decision.md")).toBeUndefined()
 	})
 	it("does not choose an artifact that multiple works edited", async () => {
 		transitions.push(artifact({ workId: otherWork }))
-		expect(await findWorkContinuation({ cwd }, "Implement docs/adr/decision.md")).toBeUndefined()
+		expect(await find("Implement docs/adr/decision.md")).toBeUndefined()
 	})
 	it("does not resolve conflicting saved-plan and artifact owners", async () => {
 		const plan = savePlanMarkdown({ cwd, name: "other", planText: "# Other", workId: otherWork })
-		expect(await findWorkContinuation({ cwd }, `Implement docs/adr/decision.md and ${plan.path}`)).toBeUndefined()
+		expect(await find(`Implement docs/adr/decision.md and ${plan.path}`)).toBeUndefined()
 	})
-	it("does not use branch fallback for an explicit unknown artifact", async () => {
-		expect(
-			await findWorkContinuation({ cwd }, "Implement docs/adr/missing.md", { allowBranchFallback: true }),
-		).toBeUndefined()
+	it("leaves an unknown artifact unresolved", async () => {
+		expect(await find("Implement docs/adr/missing.md")).toBeUndefined()
 	})
 	it("does not ignore an unknown Markdown link with a section fragment", async () => {
-		expect(
-			await findWorkContinuation({ cwd }, "Implement [the other design](docs/adr/missing.md#details).", {
-				allowBranchFallback: true,
-			}),
-		).toBeUndefined()
-	})
-	it("requires callers to allow the branch fallback", async () => {
-		expect(await findWorkContinuation({ cwd }, "/skill:implement")).toBeUndefined()
-	})
-	it("labels missing-path continuation as a recent branch match", async () => {
-		expect(await findWorkContinuation({ cwd }, "/skill:implement", { allowBranchFallback: true })).toMatchObject({
-			workId: planningWork,
-			source: "recent-branch",
-			evidence: {
-				branch: "feature",
-				path: join(cwd, "docs/adr/decision.md"),
-				transitionId: transitions[0].transitionId,
-			},
-		})
+		expect(await find("Implement [the other design](docs/adr/missing.md#details).")).toBeUndefined()
 	})
 	it.each([
-		{ branch: "trunk" },
-		{ branch: undefined },
-		{ branch: "different-feature" },
-		{ recordedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString() },
-		{ recordedAt: undefined },
-		{ worktree: "/other-worktree" },
-	])("does not guess from ineligible planning evidence: %j", async (fields) => {
-		transitions = [artifact(fields)]
-		expect(await findWorkContinuation({ cwd }, "/skill:implement", { allowBranchFallback: true })).toBeUndefined()
-	})
-	it("leaves two recent planning works separate", async () => {
-		transitions.push(artifact({ workId: otherWork, path: "docs/adr/another.md" }))
-		expect(await findWorkContinuation({ cwd }, "/skill:implement", { allowBranchFallback: true })).toBeUndefined()
-	})
-	it("does not let a later human change become a branch match", async () => {
-		vi.mocked(readAttributedFileState).mockResolvedValue({ ...after, blob: "human-edit" })
-		expect(await findWorkContinuation({ cwd }, "/skill:implement", { allowBranchFallback: true })).toBeUndefined()
-	})
-	it("does not guess when the repository default branch is unknown", async () => {
-		git.defaults = ""
-		expect(await findWorkContinuation({ cwd }, "/skill:implement", { allowBranchFallback: true })).toBeUndefined()
-	})
-	it("does not continue planning on the repository default branch", async () => {
-		git.defaults = "refs/remotes/origin/feature\n"
-		expect(await findWorkContinuation({ cwd }, "/skill:implement", { allowBranchFallback: true })).toBeUndefined()
-	})
-	it("leaves unrelated recent source edits out of a planning work", async () => {
-		transitions.push(artifact({ workId: otherWork, path: "src/other.ts" }))
-		expect(await findWorkContinuation({ cwd }, "/skill:implement", { allowBranchFallback: true })).toBeUndefined()
+		"Explain what a closure is.",
+		"/skill:implement",
+	])("leaves a message without a saved file unresolved: %s", async (text) => {
+		expect(await find(text)).toBeUndefined()
 	})
 	it("does not forget an older competing artifact owner", async () => {
 		transitions.unshift(
@@ -170,6 +235,24 @@ describe("continuing saved work", () => {
 				recordedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
 			}),
 		)
-		expect(await findWorkContinuation({ cwd }, "/skill:implement", { allowBranchFallback: true })).toBeUndefined()
+		expect(await find("Implement docs/adr/decision.md")).toBeUndefined()
+	})
+	it("resolves paths, URLs and dotted words in this worktree from one read of its evidence", async () => {
+		await findWorkContinuation(
+			{ cwd },
+			"Implement docs/adr/decision.md, e.g. per https://example.com/guide, after Module._compile failed at src/a.ts:12:5",
+			createWorkScopeSnapshot(join(cwd, ".git")),
+		)
+		expect(readRepositoryTransitions).toHaveBeenCalledOnce()
+		expect(readAttributedFileState).toHaveBeenCalledWith(join(cwd, "docs/adr/decision.md"))
+	})
+	it("reads a repository nested in this worktree separately", async () => {
+		mkdirSync(join(cwd, "vendor/lib/.git"), { recursive: true })
+		await findWorkContinuation(
+			{ cwd },
+			"Implement docs/adr/decision.md and update vendor/lib/README.md",
+			createWorkScopeSnapshot(join(cwd, ".git")),
+		)
+		expect(readRepositoryTransitions).toHaveBeenCalledWith(join(cwd, "vendor/lib"))
 	})
 })

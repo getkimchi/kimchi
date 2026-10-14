@@ -1,4 +1,4 @@
-import { appendWorkRecord, getWorkId, tryWorkAttribution } from "../../work-attribution.js"
+import { pinWorkContext, saveToolPlan, tryWorkAttribution } from "../../work-attribution.js"
 /**
  * Ferment lifecycle tools: list, scope, update fields, complete.
  *
@@ -29,7 +29,7 @@ import {
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
-import { fermentPlanFileName, savePlanMarkdown } from "../../../shared/planning/plan-markdown.js"
+import { fermentPlanFileName } from "../../../shared/planning/plan-markdown.js"
 import { emitPlanReviewRequest } from "../../../shared/planning/plan-review-bus.js"
 import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
 import { withBlocked } from "../../herdr-events.js"
@@ -657,6 +657,7 @@ async function resolveProposeFermentTarget(
 		goal,
 		hasUI: ctx.hasUI,
 		isOneShot: pi.getFlag("ferment-oneshot") === true,
+		cwd: ctx.cwd,
 	})
 	setActiveFermentAndApplyProfile(pi, runtime, f)
 	if (pi.events) {
@@ -925,7 +926,7 @@ export async function completeFerment(
 	// only measures HOW WELL the work was done.
 	const ferment = fSnapshot
 	const phaseReviews = readLatestPhaseReviews(ferment.id)
-	const totalDiff = ferment.worktree.commit ? gatherPhaseEvidence(ferment.worktree.commit) : undefined
+	const totalDiff = ferment.worktree.commit ? gatherPhaseEvidence(ferment.worktree.commit, ctx.cwd) : undefined
 	// Hoisted before the judge input so the grader call below can include the
 	// journey's own prior refusal (retries carry it as delta context).
 	const FERMENT_GRADE_KEY = "__ferment__"
@@ -933,6 +934,7 @@ export async function completeFerment(
 		judgeJourneyGradeViaSubagent(
 			{
 				fermentName: ferment.name,
+				cwd: ctx.cwd,
 				goal: ferment.goal ?? "",
 				charter: ferment.charter,
 				successCriteria: renderSuccessCriteria(ferment.successCriteria, ""),
@@ -1085,7 +1087,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
-		async execute(_, rawParams, _signal, _onUpdate, ctx) {
+		async execute(toolCallId, rawParams, _signal, _onUpdate, ctx) {
 			clearScopingStatus(ctx)
 			const normalized = normalizeProposeScopingParams(rawParams)
 			if (!normalized.ok) return normalized.error
@@ -1106,6 +1108,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			const questions = params.questions ?? []
 			const questionValidationError = validateScopingQuestions(questions)
 			if (questionValidationError) return toolErr(questionValidationError)
+			const pinned = pinWorkContext(ctx)
 
 			// 3. Resolve the target ferment. If no id is given and no active ferment
 			// exists, bootstrap a new draft from the proposal.
@@ -1173,29 +1176,14 @@ ${renderGateGuidance("scope_ferment")}`,
 			// filename is stable for this ferment so re-proposals overwrite the
 			// same file. Failures are non-fatal but warned so the review flow
 			// can continue without a path.
-			let planPath: string | undefined
-			let snapshotPath: string | undefined
-			const workId = tryWorkAttribution(() => getWorkId(ctx))
-			try {
-				const saved = savePlanMarkdown({
-					cwd: ctx.cwd,
-					name: fermentPlanFileName(ferment.name, fermentId),
-					planText: planEntry,
-					workId,
-				})
-				planPath = saved.path
-				snapshotPath = saved.snapshotPath
-				if (workId) {
-					tryWorkAttribution(() => {
-						setFermentWorkId(fermentId, workId)
-						appendWorkRecord(ctx, { type: "plan", ...saved }, workId)
-					})
-				}
-			} catch (err) {
-				const detail = err instanceof Error ? err.message : String(err)
-				if (ctx.hasUI) ctx.ui.notify(`ferment: failed to save plan file: ${detail}`, "warning")
-				else console.error(`ferment: failed to save plan file: ${detail}`)
-			}
+			const saved = saveToolPlan(ctx, pinned, toolCallId, "ferment", {
+				name: fermentPlanFileName(ferment.name, fermentId),
+				planText: planEntry,
+			})
+			const workId = saved?.workId
+			if (workId) tryWorkAttribution(() => setFermentWorkId(fermentId, workId))
+			const planPath = saved?.path
+			const snapshotPath = saved?.snapshotPath
 			const savedPlanNote =
 				(planPath ? `\n\nPlan file: ${planPath}` : "") +
 				(snapshotPath ? `\nContinue from another worktree using: ${snapshotPath}` : "")

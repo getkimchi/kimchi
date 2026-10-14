@@ -68,9 +68,40 @@ describe("deriveDeprecationState", () => {
 		expect(deriveDeprecationState(info, NOW)).toBe("announced")
 	})
 
+	it("returns announced for a sunset-only record: a dated vendor retirement is the signal itself", () => {
+		expect(deriveDeprecationState({ sunset_at: "2026-10-23T00:00:00Z" }, NOW)).toBe("announced")
+	})
+
+	it("returns sunset for a sunset-only record once the date has passed", () => {
+		expect(deriveDeprecationState({ sunset_at: "2026-08-01T00:00:00Z" }, NOW)).toBe("sunset")
+	})
+
 	it("invalid dates fail open to none", () => {
 		expect(deriveDeprecationState({ deprecated_at: "not-a-date" }, NOW)).toBe("none")
 		expect(deriveDeprecationState({ deprecated_at: "2026-09-29T00:00:00Z", sunset_at: "junk" }, NOW)).toBe("announced")
+	})
+
+	describe("Claude conservative guard", () => {
+		it("ignores a past deprecated_at for Claude models", () => {
+			expect(deriveDeprecationState({ deprecated_at: "2026-09-01T00:00:00Z" }, NOW, "claude-sonnet-4-5")).toBe("none")
+		})
+
+		it("ignores a future deprecated_at for Claude models", () => {
+			expect(deriveDeprecationState({ deprecated_at: "2027-05-28T00:00:00Z" }, NOW, "claude-opus-4-8")).toBe("none")
+		})
+
+		it("still respects sunset_at for Claude models", () => {
+			expect(deriveDeprecationState({ sunset_at: "2026-09-01T00:00:00Z" }, NOW, "claude-opus-4-8")).toBe("sunset")
+		})
+
+		it("still respects sunset_at over ignored deprecated_at for Claude models", () => {
+			const info = { deprecated_at: "2026-09-01T00:00:00Z", sunset_at: "2026-10-01T00:00:00Z" }
+			expect(deriveDeprecationState(info, NOW, "claude-sonnet-4-5")).toBe("announced")
+		})
+
+		it("does not affect non-Claude models", () => {
+			expect(deriveDeprecationState({ deprecated_at: "2026-09-01T00:00:00Z" }, NOW, "kimi-k2.7")).toBe("past")
+		})
 	})
 })
 

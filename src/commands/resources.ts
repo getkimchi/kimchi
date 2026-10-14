@@ -1,5 +1,11 @@
 import { getResourceDefinitions } from "../resources/definitions.js"
-import { isResourceEnabled, resetResourceOverride, setResourceOverride } from "../resources/store.js"
+import {
+	isResourceEnabled,
+	isResourceLocked,
+	orgLockMessage,
+	resetResourceOverride,
+	setResourceOverride,
+} from "../resources/store.js"
 
 export async function runResources(args: string[]): Promise<number> {
 	const [sub, id, value] = args
@@ -12,6 +18,7 @@ export async function runResources(args: string[]): Promise<number> {
 		case "enable":
 		case "disable":
 			if (!id) return usage(2)
+			if (refuseOrgLocked(id)) return 1
 			setResourceOverride(id, sub === "enable")
 			console.log(`${id}: ${sub === "enable" ? "enabled" : "disabled"}`)
 			return 0
@@ -20,12 +27,14 @@ export async function runResources(args: string[]): Promise<number> {
 			{
 				const enabled = parseSwitch(value)
 				if (enabled === null) return usage(2)
+				if (refuseOrgLocked(id)) return 1
 				setResourceOverride(id, enabled)
 				console.log(`${id}: ${enabled ? "enabled" : "disabled"}`)
 				return 0
 			}
 		case "reset":
 			if (!id) return usage(2)
+			if (refuseOrgLocked(id)) return 1
 			resetResourceOverride(id)
 			console.log(`${id}: reset`)
 			return 0
@@ -41,8 +50,16 @@ export async function runResources(args: string[]): Promise<number> {
 function printResources(): void {
 	for (const resource of getResourceDefinitions()) {
 		const status = isResourceEnabled(resource.id) ? "enabled " : "disabled"
-		console.log(`${status}  ${resource.id}  ${resource.description}`)
+		const lock = isResourceLocked(resource.id) ? " [org-locked]" : ""
+		console.log(`${status}  ${resource.id}${lock}  ${resource.description}`)
 	}
+}
+
+/** Print a clear refusal for org-locked resources; the caller exits nonzero. */
+function refuseOrgLocked(id: string): boolean {
+	if (!isResourceLocked(id)) return false
+	console.error(orgLockMessage(id))
+	return true
 }
 
 function parseSwitch(value: string): boolean | null {

@@ -1,6 +1,8 @@
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
+import type { ResourcePolicy } from "../api/org-settings.js"
 import { readJson, readJsonCached, writeJson } from "../config/json.js"
+import { getOrgPolicy } from "../org-policy.js"
 import { getResourceDefinition } from "./definitions.js"
 import { type ListedResourceSetting, RESOURCE_KINDS, type ResourceId, type ResourceSettings } from "./types.js"
 
@@ -32,14 +34,69 @@ export function getResourceOverride(id: string, path = getResourceSettingsPath()
 	return readResourceSettings(path).resources[id]
 }
 
+/**
+ * The org-policy entry for a resource, if any. The API treats map keys as
+ * free-form resource ids, so the map may hold ids this harness does not
+ * know; those are inert — they only matter when something asks about that
+ * id by name, and then only if a definition or gate consults it.
+ */
+export function getResourcePolicy(id: string): ResourcePolicy | undefined {
+	assertResourceId(id)
+	return getOrgPolicy()?.resources?.[id]
+}
+
+/** Whether the org policy locks the resource (FORCE_ON / FORCE_OFF). */
+export function isResourceLocked(id: string): boolean {
+	const policy = getResourcePolicy(id)
+	return policy === "FORCE_ON" || policy === "FORCE_OFF"
+}
+
+/**
+ * Human wording for a forced policy — the raw FORCE_* enum names are API
+ * values and mean nothing to users, so no user-facing surface prints them.
+ */
+export function describeOrgLock(policy: ResourcePolicy): "locked on" | "locked off" {
+	return policy === "FORCE_ON" ? "locked on" : "locked off"
+}
+
+/**
+ * The one org-lock refusal sentence, shared by every surface (store guard,
+ * CLI, /resources command, ACP) so the wording cannot drift.
+ */
+export function orgLockMessage(id: string): string {
+	const policy = getResourcePolicy(id)
+	if (policy === "FORCE_ON") {
+		return `${id} is ${describeOrgLock(policy)} by your organization; it cannot be disabled locally.`
+	}
+	if (policy === "FORCE_OFF") {
+		return `${id} is ${describeOrgLock(policy)} by your organization; it cannot be enabled locally.`
+	}
+	return `${id} is managed by your organization; it cannot be changed locally.`
+}
+
+/**
+ * Effective enablement. Precedence, highest first:
+ *
+ * 1. org FORCE_ON / FORCE_OFF — locked; beats every local choice
+ * 2. local settings.json override — the user's persistent choice
+ * 3. KIMCHI_ENABLE_RESOURCES env — a transient local choice
+ * 4. org ON / OFF — soft defaults a local choice (2 or 3) may override
+ * 5. the definition's defaultEnabled
+ */
 export function isResourceEnabled(id: string, path = getResourceSettingsPath()): boolean {
 	assertResourceId(id)
+	const orgPolicy = getResourcePolicy(id)
+	if (orgPolicy === "FORCE_ON") return true
+	if (orgPolicy === "FORCE_OFF") return false
+
 	const override = getResourceOverride(id, path)
 	if (override !== undefined) return override
 	if (envEnabledResources().has(id)) return true
+
+	if (orgPolicy === "ON") return true
+	if (orgPolicy === "OFF") return false
 	const definition = getResourceDefinition(id)
-	const fallback = definition?.defaultEnabled ?? true
-	return fallback
+	return definition?.defaultEnabled ?? true
 }
 
 /**
@@ -68,6 +125,14 @@ export function listResourceSettings(path = getResourceSettingsPath()): ListedRe
 
 export function setResourceOverride(id: string, enabled: boolean | undefined, path = getResourceSettingsPath()): void {
 	assertResourceId(id)
+	// Fail closed on org-locked resources: while a lock is in force, no new
+	// override entries are written, so choices made during the lock never
+	// outlive it. Overrides written before the lock was applied are left in
+	// place (they record the user's prior choice) but have no effect while the
+	// lock holds — they resurface if the org later lifts the policy.
+	if (isResourceLocked(id)) {
+		throw new Error(orgLockMessage(id))
+	}
 	const settings = readJson(path)
 	const resources = asRecord(settings[SETTINGS_KEY])
 	if (enabled === undefined) delete resources[id]

@@ -16,9 +16,23 @@ export async function listWorkspaces(apiKey: string, options?: ListWorkspacesOpt
 
 	try {
 		// Callers that already verified the key (e.g. /remote-sessions, which
-		// caches orgId for its refresh loop) pass it through to skip the
-		// duplicate verifyKey round-trip.
-		const orgId = options?.orgId ?? (await verifyApiKey(apiKey, { ...options, fetch: fetchImpl }))
+		// caches both ids for its refresh loop) pass them through to skip the
+		// duplicate verifyKey round-trip. The pair is atomic: partial ids are
+		// discarded and a fresh verify supplies both from the same key.
+		let orgId = options?.orgId
+		let userId = options?.userId
+		if (!orgId || !userId) {
+			const verified = await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })
+			orgId = verified.organizationId
+			userId = verified.userId
+		}
+		if (!userId) {
+			// creatorId is the only line of defense against listing teammates'
+			// workspaces — fail rather than silently degrade to an unfiltered list.
+			throw new RemoteNetworkError(
+				`Missing userId in verify response from ${endpoint} — cannot creator-filter the listing`,
+			)
+		}
 
 		const results: Workspace[] = []
 		let cursor = ""
@@ -27,6 +41,8 @@ export async function listWorkspaces(apiKey: string, options?: ListWorkspacesOpt
 			const params = new URLSearchParams()
 			params.set("page.limit", String(LIST_WORKSPACES_PAGE_LIMIT))
 			params.set("clientType", HARNESS_CLIENT_TYPE)
+			// Own workspaces only: filter server-side by the key owner's id.
+			params.set("creatorId", userId)
 			if (cursor) params.set("page.cursor", cursor)
 
 			const url = `${endpoint}/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/workspaces?${params.toString()}`

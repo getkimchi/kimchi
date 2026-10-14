@@ -5,13 +5,15 @@
  *   - deprecated_at  — model enters the announcement window; still served.
  *   - sunset_at      — hard retirement date; model is removed from serving.
  *   - replacement_model — drop-in replacement the proxy routes to transparently.
- *   - alternatives   — human-facing migration hints (slug, reason, priority).
+ *   - alternatives   — human-facing migration hints (slug, reason).
  *   - deprecation_note — URL with deprecation details.
  *
- * The backend excludes models past `deprecated_at` from default responses,
- * comparing against a UTC-midnight-truncated date. deriveDeprecationState
- * mirrors that comparison so the harness and backend agree on window
- * boundaries by the day.
+ * Deprecation is a signalling boundary; sunset is the serving boundary: the
+ * proxy keeps serving deprecated models (translating to a configured
+ * replacement, or passing through when none is set) until `sunset_at`, and
+ * the metadata endpoint lists them until then. Window comparisons use a
+ * UTC-midnight-truncated date; deriveDeprecationState mirrors that so the
+ * harness and backend agree on boundaries by the day.
  *
  * Deprecation data is persisted to a sidecar (model-deprecations.json next to
  * models.json) rather than inside models.json, which is an upstream-Pi
@@ -24,10 +26,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
+/** Mirrors the metadata API's ModelAlternative contract ({slug, reason}). */
 export interface ModelAlternative {
 	slug: string
 	reason?: string
-	priority?: number
 }
 
 export interface ModelDeprecationInfo {
@@ -42,8 +44,7 @@ export type DeprecationState = "none" | "announced" | "past" | "sunset"
 
 /**
  * Best replacement target for a deprecated model: the explicit replacement,
- * falling back to the first listed alternative. Alternatives are used in
- * feed order — the informational `priority` field is not interpreted here.
+ * falling back to the first listed alternative — used in feed order.
  */
 export function pickReplacementSlug(info: ModelDeprecationInfo): string | undefined {
 	return info.replacement_model ?? info.alternatives?.[0]?.slug
@@ -69,10 +70,14 @@ function parseIsoDate(value: string | undefined, fieldName: string, slug?: strin
 /**
  * Deprecation lifecycle state at `nowMs`:
  *   - "none"      — no deprecation signal; model is plain-active.
- *   - "announced" — deprecated_at is in the future; still served, warn users.
- *   - "past"      — deprecated_at date reached; backend no longer lists it.
- *   - "sunset"    — sunset_at date reached; hard retirement, excluded even
- *                   from deprecation responses.
+ *   - "announced" — deprecation signal active, nothing past: deprecated_at
+ *                   is in the future, OR only a future sunset_at is known
+ *                   (vendor retirement without an announcement — the sunset
+ *                   date itself is the signal). Still served; warn users.
+ *   - "past"      — deprecated_at date reached; still listed and served
+ *                   (translated to replacement_model when set) until sunset.
+ *   - "sunset"    — sunset_at date reached; hard retirement, requests 410
+ *                   and the model is excluded from metadata responses.
  * Invalid date strings fail open to "none" (after warning) so a malformed
  * record never silently hides a working model.
  */
@@ -85,7 +90,18 @@ export function deriveDeprecationState(
 	const sunsetAt = parseIsoDate(m.sunset_at, "sunset_at", slug)
 	const deprecatedAt = parseIsoDate(m.deprecated_at, "deprecated_at", slug)
 	if (sunsetAt !== undefined && sunsetAt <= today) return "sunset"
-	if (deprecatedAt !== undefined) return deprecatedAt > today ? "announced" : "past"
+	// LiteLLM-derived deprecation dates for Anthropic models are provider
+	// floors ("not sooner than"), not retirements, and they stay stale in the
+	// catalogue for weeks (claude-sonnet-4-5 showed a past date while the
+	// model was still active). Don't let a deprecated_at date steer routing
+	// or warnings for Claude models; only a sunset_at (vendor retirement)
+	// should.
+	if (deprecatedAt !== undefined && !slug?.startsWith("claude-")) {
+		return deprecatedAt > today ? "announced" : "past"
+	}
+	// Sunset-only record (vendor retirement date, no announced deprecation):
+	// a dated removal is a deprecation signal in itself.
+	if (sunsetAt !== undefined) return "announced"
 	return "none"
 }
 

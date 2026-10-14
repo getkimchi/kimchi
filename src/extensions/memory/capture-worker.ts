@@ -34,9 +34,19 @@
  * duplicate job is a no-op.
  */
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs"
 import { basename, dirname, join } from "node:path"
-import { fetchWithRetry } from "../../utils/http.js"
+import { fetchWithRetry, isRetryableStatus } from "../../utils/http.js"
 import { redactText } from "../pii-redaction/redactor.js"
 import {
 	createMemoryBackend,
@@ -52,6 +62,8 @@ import {
 	MEMORY_SUPERSEDE_BATCH_FACTS,
 	MEMORY_USER_ID,
 	PENDING_JOB_MAX_AGE_MS,
+	POISON_JOB_MAX_ATTEMPTS,
+	POISON_JOB_TTL_MS,
 	SUPERSEDE_SEARCH_TOPK,
 } from "./config.js"
 import { acquireCaptureLock } from "./lock.js"
@@ -254,6 +266,16 @@ interface GatewayLlmOptions {
 }
 
 /**
+ * Deterministic extraction failure — the same call at temperature 0 will
+ * fail the same way, so draining again is wasted tokens. Raised for
+ * non-retryable gateway statuses (plain 4xx; retry-exhausted 429/5xx stays
+ * transient) and for responses that stay unparseable across the strict
+ * retry. The drain converts these into bounded job drain attempts and
+ * eventual quarantine; every other failure class retries normally.
+ */
+export class PoisonExtractionError extends Error {}
+
+/**
  * One chat-completion call. HTTP + retry are delegated to the shared gateway
  * reliability utility (src/utils/http.ts): jittered backoff, retry-after
  * honoring (seconds and HTTP-date), and the shared retryable-status set
@@ -301,7 +323,12 @@ export async function chatJson(
 		},
 	)
 	if (!response.ok) {
-		throw new Error(`gateway rejected the request: HTTP ${response.status}`)
+		// fetchWithRetry returns retryable statuses only after exhausting its
+		// budget (still transient); anything else failed deterministically.
+		if (isRetryableStatus(response.status)) {
+			throw new Error(`gateway rejected the request: HTTP ${response.status}`)
+		}
+		throw new PoisonExtractionError(`gateway rejected the request: HTTP ${response.status}`)
 	}
 	const body = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> }
 	const content = body.choices?.[0]?.message?.content
@@ -345,8 +372,9 @@ export function parseIdArray(text: string): string[] {
 /**
  * One chat call whose response must parse; an unparseable (prose) response
  * is retried once with the strict-format suffix before giving up. Bounded:
- * two attempts total, then the error propagates and the job stays for a
- * later retry.
+ * two attempts total — then the throw is a PoisonExtractionError (same
+ * model + temperature 0 + same input will fail the same way on the next
+ * drain) and the drain counts the window toward poison quarantine.
  */
 export async function chatWithRetry<T>(
 	llm: GatewayLlmOptions,
@@ -360,7 +388,9 @@ export async function chatWithRetry<T>(
 			return parse(text)
 		} catch (err) {
 			if (attempt >= 1) {
-				throw new Error(`unparseable response after strict retry: ${text.slice(0, 120)}`, { cause: err })
+				throw new PoisonExtractionError(`unparseable response after strict retry: ${text.slice(0, 120)}`, {
+					cause: err,
+				})
 			}
 			console.error("[memory-capture] response not parseable, retrying with strict prompt:", text.slice(0, 80))
 		}
@@ -819,15 +849,23 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
  * the commit phase (C) applies them to the stores in job order. */
 interface JobPlan {
 	jobFile: string
+	/** Raw parsed job JSON — re-serialized with the bumped drainAttempts
+	 * counter when poison bookkeeping persists a failed drain. */
+	jobObject: CaptureJob & { drainAttempts?: number }
 	project: CaptureJob["project"]
 	/** Session id from the job — scopes the hashes marked at commit. */
 	session: string | undefined
+	/** Cross-drain poison bookkeeping, persisted on the job JSON. */
+	drainAttempts: number
 	windows: CaptureMessage[][]
 	personalFacts: string[]
 	projectFacts: string[]
 	/** Windows whose extraction succeeded — hash-marked at commit (a failed
 	 * window's hashes stay unmarked for a future drain). */
 	extractedWindows: CaptureMessage[][]
+	/** Phase-B failure classes — poisoned counts toward quarantine. */
+	poisonedWindowCount: number
+	transientWindowCount: number
 }
 
 /** One extraction unit for phase B: a window with a pointer back to its plan. */
@@ -835,6 +873,10 @@ interface ExtractionTask {
 	plan: JobPlan
 	window: CaptureMessage[]
 }
+
+/** Per-window phase-B outcome — the poison/transient split drives the
+ * inline retry round (transient only) and cross-drain quarantine. */
+type ExtractionOutcome = { ok: true; facts: TaggedFacts } | { ok: false; kind: "poison" | "transient" }
 
 /**
  * Process every pending capture job, pipelined in three phases (see the
@@ -882,23 +924,30 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	// back onto their plan chronologically.
 	const tasks: ExtractionTask[] = plans.flatMap((plan) => plan.windows.map((window) => ({ plan, window })))
 	const drainConcurrency = Math.max(1, Number(process.env.KIMCHI_MEMORY_DRAIN_CONCURRENCY) || MEMORY_DRAIN_CONCURRENCY)
-	const extractTask = async (task: ExtractionTask): Promise<TaggedFacts | null> => {
+	const extractTask = async (task: ExtractionTask): Promise<ExtractionOutcome> => {
 		try {
-			return await extractFacts(llm, task.window, task.plan.project?.contextLine ?? null)
+			return { ok: true, facts: await extractFacts(llm, task.window, task.plan.project?.contextLine ?? null) }
 		} catch (err) {
+			const kind = err instanceof PoisonExtractionError ? "poison" : "transient"
 			// Fail-soft: hashes stay unmarked so a future drain reprocesses.
+			// Poison failures are deterministic — the drain counts the job toward
+			// quarantine instead of re-running the window forever.
 			console.error(
-				"[memory-capture] window extraction failed (hashes left unmarked for retry):",
+				`[memory-capture] window extraction failed (${kind}; hashes left unmarked for retry):`,
 				err instanceof Error ? err.message : err,
 			)
-			return null
+			return { ok: false, kind }
 		}
 	}
 	const results = await mapWithConcurrency(tasks, drainConcurrency, extractTask)
 	// One retry round for transient failures — the pre-pipeline drain relied
 	// on a later superset job re-carrying the messages; the claim pass now
-	// dedupes those, so the retry lives here instead.
-	const retryIndices = results.map((result, index) => (result === null ? index : -1)).filter((index) => index >= 0)
+	// dedupes those, so the retry lives here instead. Poisoned windows sit
+	// this out: same model + temperature 0 + same input reproduces the same
+	// answer, so re-running them in this drain is wasted tokens.
+	const retryIndices = results
+		.map((result, index) => (!result.ok && result.kind === "transient" ? index : -1))
+		.filter((index) => index >= 0)
 	if (retryIndices.length > 0) {
 		console.error(`[memory-capture] retrying ${retryIndices.length} window extraction failure(s)`)
 		const retried = await mapWithConcurrency(
@@ -908,21 +957,27 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 		)
 		for (let k = 0; k < retryIndices.length; k++) {
 			const outcome = retried[k]
-			if (outcome !== null) results[retryIndices[k] as number] = outcome
+			if (outcome !== undefined) results[retryIndices[k] as number] = outcome
 		}
 	}
 	// Ordered distribution: walk plans → windows in task order; a window that
-	// failed twice stays unmarked (its plan's facts skip it).
+	// failed stays unmarked (its plan's facts skip it) and its failure class
+	// feeds the cross-drain poison bookkeeping.
 	{
 		let index = 0
 		for (const plan of plans) {
 			for (const window of plan.windows) {
-				const facts = results[index]
+				const outcome = results[index] as ExtractionOutcome
 				index += 1
-				if (facts === null) continue
-				plan.extractedWindows.push(window)
-				plan.personalFacts.push(...facts.personal)
-				plan.projectFacts.push(...facts.project)
+				if (outcome.ok) {
+					plan.extractedWindows.push(window)
+					plan.personalFacts.push(...outcome.facts.personal)
+					plan.projectFacts.push(...outcome.facts.project)
+				} else if (outcome.kind === "poison") {
+					plan.poisonedWindowCount += 1
+				} else {
+					plan.transientWindowCount += 1
+				}
 			}
 		}
 	}
@@ -959,6 +1014,22 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 		console.info(`[memory-capture] ${skippedNonDurable} non-durable fact(s) skipped, ${redacted} fact(s) redacted`)
 	}
 
+	// Cross-drain poison bookkeeping: jobs left behind by deterministic
+	// window failures count toward quarantine; transient-only failures keep
+	// retrying normally (their file is already left by commitPlan). A fully
+	// extracted job's file was removed at commit — the existsSync guard
+	// skips it without re-stating that connection.
+	let quarantined = 0
+	for (const plan of plans) {
+		if (plan.poisonedWindowCount === 0 || !existsSync(plan.jobFile)) continue
+		if (recordPoisonAttempt(plan)) quarantined += 1
+	}
+	if (quarantined > 0) {
+		console.info(
+			`[memory-capture] ${quarantined} poison job(s) quarantined to failed/ (requeue: mv back into pending/)`,
+		)
+	}
+
 	// Batched supersede: ONE judge pass per store across the whole drain —
 	// a single chronological view makes cross-session conflicts explicit
 	// (per-job judges never saw two sessions' conflicting facts side by
@@ -990,18 +1061,30 @@ async function resolveWorkerLlm(options: RunCaptureWorkerOptions): Promise<Gatew
 	}
 }
 
+/** Quarantine dir for poison jobs — a sibling of pending/, swept like it. */
+function failedJobsDir(): string {
+	return join(defaultMemoryDir(), "failed")
+}
+
 /** The reaper: sweep pending jobs too old to be worth retrying — bounds
- * accumulation when capture persistently fails. */
+ * accumulation when capture persistently fails. Quarantined jobs get a
+ * longer post-mortem TTL in failed/ before the same sweep. */
 function sweepStaleJobs(pendingDir: string): void {
-	const cutoff = Date.now() - PENDING_JOB_MAX_AGE_MS
-	for (const name of readdirSync(pendingDir)) {
+	sweepJobsDir(pendingDir, PENDING_JOB_MAX_AGE_MS, "pending job")
+	const failedDir = failedJobsDir()
+	if (existsSync(failedDir)) sweepJobsDir(failedDir, POISON_JOB_TTL_MS, "quarantined job")
+}
+
+function sweepJobsDir(dir: string, maxAgeMs: number, label: string): void {
+	const cutoff = Date.now() - maxAgeMs
+	for (const name of readdirSync(dir)) {
 		if (!name.endsWith(".json")) continue
-		const path = join(pendingDir, name)
+		const path = join(dir, name)
 		try {
 			if (statSync(path).mtimeMs < cutoff) {
 				rmSync(path, { force: true })
 				console.error(
-					`[memory-capture] swept stale pending job (older than ${Math.round(PENDING_JOB_MAX_AGE_MS / 86_400_000)} days): ${name}`,
+					`[memory-capture] swept stale ${label} (older than ${Math.round(maxAgeMs / 86_400_000)} days): ${name}`,
 				)
 			}
 		} catch {
@@ -1017,9 +1100,9 @@ function sweepStaleJobs(pendingDir: string): void {
  * dedupe here. Returns null when nothing is fresh (the job file is
  * removed); throws on a poison job (also removed). */
 function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): JobPlan | null {
-	let job: CaptureJob
+	let job: CaptureJob & { drainAttempts?: number }
 	try {
-		job = JSON.parse(readFileSync(jobFile, "utf-8")) as CaptureJob
+		job = JSON.parse(readFileSync(jobFile, "utf-8")) as CaptureJob & { drainAttempts?: number }
 	} catch (err) {
 		// Poison job: an unparseable file can never be processed — remove it
 		// so it doesn't fail every future drain (the session JSONL keeps the
@@ -1047,15 +1130,71 @@ function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): Jo
 		rmSync(jobFile, { force: true })
 		return null
 	}
+	// Poison bookkeeping rides on the job JSON, defaulting to a fresh job.
+	const drainAttempts =
+		typeof job.drainAttempts === "number" && Number.isFinite(job.drainAttempts) && job.drainAttempts > 0
+			? Math.floor(job.drainAttempts)
+			: 0
 	return {
 		jobFile,
+		jobObject: job,
 		project: job.project ?? null,
 		session: job.session,
+		drainAttempts,
 		windows: windowByBudget(fresh),
 		personalFacts: [],
 		projectFacts: [],
 		extractedWindows: [],
+		poisonedWindowCount: 0,
+		transientWindowCount: 0,
 	}
+}
+
+/**
+ * Cross-drain poison accounting for one failed job. Under the
+ * POISON_JOB_MAX_ATTEMPTS cap the job JSON is rewritten with the
+ * incremented drainAttempts counter (atomic tmp+rename; the original mtime
+ * restored so both mtime-sorted drain order and the 7-day sweep keep their
+ * semantics). At the cap the job moves to failed/ — kept for post-mortems,
+ * requeued only by a deliberate manual mv back into pending/ (e.g. after an
+ * extraction-model upgrade). Returns true when the job was quarantined.
+ * Never throws: bookkeeping must not break a drain.
+ */
+function recordPoisonAttempt(plan: JobPlan): boolean {
+	try {
+		const attempts = plan.drainAttempts + 1
+		// Persist the count BEFORE the cap decision: a quarantined (and later
+		// manually requeued) job keeps its history — a requeued poison job
+		// dies on its very next proven-poison drain instead of earning a fresh
+		// cap's worth of LLM calls.
+		const mtime = statSync(plan.jobFile).mtime
+		const tmp = `${plan.jobFile}.${process.pid}.tmp`
+		writeFileSync(tmp, `${JSON.stringify({ ...plan.jobObject, drainAttempts: attempts }, null, 0)}\n`, "utf-8")
+		renameSync(tmp, plan.jobFile)
+		try {
+			utimesSync(plan.jobFile, new Date(), mtime)
+		} catch (err) {
+			console.warn(
+				"[memory-capture] could not restore job mtime (drain order / sweep age may shift):",
+				err instanceof Error ? err.message : err,
+			)
+		}
+		if (attempts >= POISON_JOB_MAX_ATTEMPTS) {
+			const failedDir = failedJobsDir()
+			mkdirSync(failedDir, { recursive: true })
+			renameSync(plan.jobFile, join(failedDir, basename(plan.jobFile)))
+			console.error(
+				`[memory-capture] quarantined poison job after ${attempts} attempts: ${basename(plan.jobFile)} → failed/`,
+			)
+			return true
+		}
+	} catch (err) {
+		console.warn(
+			`[memory-capture] poison bookkeeping failed for ${basename(plan.jobFile)} (retrying without counting):`,
+			err instanceof Error ? err.message : err,
+		)
+	}
+	return false
 }
 
 /** Commit one job's extracted facts (phase C): adds per store with the

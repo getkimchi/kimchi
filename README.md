@@ -1,4 +1,15 @@
-# kimchi
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/kimchi-logo-dark.svg">
+    <img alt="kimchi" src=".github/assets/kimchi-logo.svg" width="320">
+  </picture>
+</p>
+
+<p align="center">
+  <a href="https://discord.gg/UxdTZzxTKM"><img alt="Discord" src="https://dcbadge.limes.pink/api/server/UxdTZzxTKM?style=for-the-badge"></a>
+  <a href="https://github.com/getkimchi/kimchi/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/getkimchi/kimchi?style=for-the-badge&color=FF521D"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/getkimchi/kimchi?style=for-the-badge"></a>
+</p>
 
 A coding agent CLI powered by [kimchi](https://kimchi.dev/). Built on the [pi-mono](https://github.com/badlogic/pi-mono) coding agent SDK, kimchi gives you an AI-powered development assistant in your terminal that connects to kimchi's LLM infrastructure.
 

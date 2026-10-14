@@ -1,7 +1,8 @@
+import { isUtf8 } from "node:buffer"
 import { execFile } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { constants, existsSync, lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs"
-import { access, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
+import { access, mkdir, open, readdir, readFile, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative } from "node:path"
 import {
 	createEditTool,
@@ -10,7 +11,9 @@ import {
 	getAgentDir,
 	type WriteOperations,
 } from "@earendil-works/pi-coding-agent"
+import { writeFileDurably } from "../../config/json.js"
 import { isWorkId } from "../../shared/work-id.js"
+import { SHA } from "../pull-request-status/provider-records.js"
 import {
 	appendWorkRecord,
 	getToolRequest,
@@ -21,6 +24,8 @@ import {
 	type WorkContext,
 	workLedgerPath,
 } from "../work-attribution.js"
+import { MAX_HUNK_BYTES, matchesFileHunks } from "./file-hunks.js"
+import { fileMatchStrength, SHA256_HEX } from "./summary.js"
 
 const GIT_TIMEOUT_MS = 2000
 const MAX_FILE_BYTES = 8 * 1024 * 1024
@@ -58,20 +63,31 @@ export interface FileTransition {
 }
 type Transition = FileTransition
 /** Asynchronous so attribution never blocks the event loop that renders the TUI. */
-function git(cwd: string, args: string[], options: { input?: Buffer; signal?: AbortSignal } = {}): Promise<string> {
-	const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1" }
+function gitBytes(
+	cwd: string,
+	args: string[],
+	options: { input?: Buffer; signal?: AbortSignal; env?: Record<string, string> } = {},
+): Promise<Buffer> {
+	const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1", ...options.env }
 	for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"]) delete env[key]
 	return new Promise((resolve, reject) => {
 		const child = execFile(
 			"git",
 			["-C", cwd, ...args],
-			{ encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: MAX_FILE_BYTES, env, signal: options.signal },
-			(error, stdout) => (error ? reject(error) : resolve(stdout.trimEnd())),
+			{ encoding: "buffer", timeout: GIT_TIMEOUT_MS, maxBuffer: MAX_FILE_BYTES, env, signal: options.signal },
+			(error, stdout) => (error ? reject(error) : resolve(stdout)),
 		)
 		// Git may exit before reading stdin; the command's own result reports any failure.
 		child.stdin?.on("error", () => {})
 		child.stdin?.end(options.input)
 	})
+}
+async function git(
+	cwd: string,
+	args: string[],
+	options: { input?: Buffer; signal?: AbortSignal; env?: Record<string, string> } = {},
+): Promise<string> {
+	return (await gitBytes(cwd, args, options)).toString("utf8").trimEnd()
 }
 function digest(data: Buffer): string {
 	return createHash("sha256").update(data).digest("hex")
@@ -79,27 +95,131 @@ function digest(data: Buffer): string {
 function same(a: FileState | null, b: FileState | null): boolean {
 	return a?.blob === b?.blob && a?.mode === b?.mode
 }
+/** Paths whose filter or working-tree encoding would need Git conversions Kimchi does not run. */
+async function unsupportedAttributes(cwd: string, paths: string[], signal?: AbortSignal): Promise<Set<string>> {
+	const attrs = (
+		await git(cwd, ["check-attr", "--stdin", "-z", "filter", "working-tree-encoding"], {
+			input: Buffer.from(paths.map((path) => `${path}\0`).join("")),
+			signal,
+		})
+	).split("\0")
+	const unsupported = new Set<string>()
+	for (let i = 2; i < attrs.length; i += 3)
+		if (attrs[i] !== "unspecified" && attrs[i] !== "unset") unsupported.add(attrs[i - 2])
+	return unsupported
+}
 async function supportsGitAttributes(path: string): Promise<boolean> {
 	// Attribute files may themselves have changed during the native write.
-	const attrs = (await git(dirname(path), ["check-attr", "-z", "filter", "working-tree-encoding", "--", path])).split(
-		"\0",
-	)
-	for (let i = 2; i < attrs.length; i += 3) if (attrs[i] !== "unspecified" && attrs[i] !== "unset") return false
-	return true
+	return !(await unsupportedAttributes(dirname(path), [path])).size
 }
-/** `data` is the file content already read by the caller, so the hash matches what it checked. */
-async function diskState(path: string, data?: Buffer): Promise<FileState | null | undefined> {
+/**
+ * Retained snapshots live in Kimchi's own object store for each repository, never as unreachable loose objects in
+ * the user's repository, where Git's automatic gc would keep repacking them and warn.
+ */
+function snapshotObjects(repository: string): string {
+	return join(getAgentDir(), "work-attribution", "objects", createHash("sha256").update(repository).digest("hex"))
+}
+/** Git commits an ignored file only when forced, so its text is not worth keeping. A failed check keeps none either. */
+async function ignored(worktree: string, path: string): Promise<boolean> {
+	try {
+		return Boolean(await git(worktree, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", path]))
+	} catch {
+		return true
+	}
+}
+/**
+ * `data` is the file content already read by the caller, so the hash matches what it checked. With `retainIn`, the
+ * repository's Git directory, a small text snapshot is kept for later hunk matching. With `committed`, the file's blob
+ * in HEAD, it is hashed first and kept only when neither the repository nor the store has it yet.
+ */
+async function diskState(
+	path: string,
+	data?: Buffer,
+	retainIn?: string,
+	committed?: string,
+): Promise<FileState | null | undefined> {
 	if (!existsSync(path)) return null
 	const stat = lstatSync(path)
-	if (!stat.isFile() || stat.size > MAX_FILE_BYTES) throw new Error("Unsupported file for work attribution")
-	if (!(await supportsGitAttributes(path))) return undefined
-	const parent = dirname(path)
+	if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return undefined
+	// Git resolves a symlinked directory to the repository it points into, as repositoryFile does.
+	const parent = realpathSync(dirname(path))
+	const file = join(parent, basename(path))
+	if (!(await supportsGitAttributes(file))) return undefined
 	let mode = stat.mode & 0o111 ? "100755" : "100644"
 	if ((await git(parent, ["config", "--type=bool", "--default=true", "--get", "core.filemode"])) === "false") {
-		mode = (await git(parent, ["ls-files", "--stage", "--", path])).split(" ")[0] || "100644"
+		mode = (await git(parent, ["ls-files", "--stage", "--", file])).split(" ")[0] || "100644"
 	}
 	const input = data ?? readFileSync(path)
-	return { blob: await git(parent, ["hash-object", "--stdin", `--path=${path}`], { input }), mode }
+	const retain = retainIn !== undefined && input.length <= MAX_HUNK_BYTES && isUtf8(input) && !input.includes(0)
+	if (retain) {
+		try {
+			const objects = snapshotObjects(retainIn)
+			if (committed !== undefined) {
+				const blob = await git(parent, ["hash-object", "--stdin", `--path=${file}`], { input })
+				if (blob === committed || existsSync(join(objects, blob.slice(0, 2), blob.slice(2)))) return { blob, mode }
+			}
+			await mkdir(objects, { recursive: true, mode: 0o700 })
+			return {
+				blob: await git(parent, ["hash-object", "-w", "--stdin", `--path=${file}`], {
+					input,
+					env: { GIT_OBJECT_DIRECTORY: objects },
+				}),
+				mode,
+			}
+		} catch {
+			// Snapshot storage is optional; a dry hash still supports whole-file attribution.
+			if (!(await supportsGitAttributes(file))) return undefined
+		}
+	}
+	return { blob: await git(parent, ["hash-object", "--stdin", `--path=${file}`], { input }), mode }
+}
+/** diskState without retained blobs for many paths below one worktree, in a fixed number of Git processes. */
+async function diskStates(
+	worktree: string,
+	paths: string[],
+	signal?: AbortSignal,
+): Promise<Map<string, FileState | null | undefined>> {
+	const states = new Map<string, FileState | null | undefined>()
+	const files: { path: string; file: string; mode: string }[] = []
+	for (const path of paths) {
+		const file = join(worktree, path)
+		const stat = existsSync(file) ? lstatSync(file) : undefined
+		if (!stat) states.set(path, null)
+		else if (!stat.isFile() || stat.size > MAX_FILE_BYTES) states.set(path, undefined)
+		else files.push({ path, file, mode: stat.mode & 0o111 ? "100755" : "100644" })
+	}
+	if (!files.length) return states
+	const unsupported = await unsupportedAttributes(
+		worktree,
+		files.map(({ file }) => file),
+		signal,
+	)
+	for (const { path, file } of files) if (unsupported.has(file)) states.set(path, undefined)
+	const hashed = files.filter(({ file }) => !unsupported.has(file))
+	if (!hashed.length) return states
+	if (
+		(await git(worktree, ["config", "--type=bool", "--default=true", "--get", "core.filemode"], { signal })) === "false"
+	) {
+		const index = (
+			await git(worktree, ["ls-files", "--stage", "-z", "--", ...hashed.map(({ file }) => file)], { signal })
+		).split("\0")
+		for (const entry of hashed) {
+			// Like `ls-files -- <path>` for each path: the first entry at or below it.
+			const row = index.find((line) => {
+				const path = line.slice(line.indexOf("\t") + 1)
+				return path === entry.path || path.startsWith(`${entry.path}/`)
+			})
+			entry.mode = row?.split(" ")[0] || "100644"
+		}
+	}
+	// One path per line; C-style quotes keep quotes, backslashes and newlines in names intact.
+	const input = Buffer.from(
+		hashed.map(({ file }) => `"${file.replace(/["\\]/g, "\\$&").replaceAll("\n", "\\n")}"\n`).join(""),
+	)
+	const blobs = (await git(worktree, ["hash-object", "--stdin-paths"], { input, signal })).split("\n")
+	if (blobs.length !== hashed.length) throw new Error("Invalid Git hash response")
+	for (const [index, { path, mode }] of hashed.entries()) states.set(path, { blob: blobs[index], mode })
+	return states
 }
 async function treeState(
 	cwd: string,
@@ -194,19 +314,7 @@ async function saveHistoryBoundary(refTips: string[]): Promise<string> {
 	}
 	const path = historyBoundaryPath(id)
 	await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-	const temporary = join(dirname(path), `.${id}-${randomUUID()}.tmp`)
-	try {
-		const file = await open(temporary, "wx", 0o600)
-		try {
-			await file.writeFile(`${JSON.stringify({ version: 1, refTips })}\n`)
-			await file.sync()
-		} finally {
-			await file.close()
-		}
-		await rename(temporary, path)
-	} finally {
-		await rm(temporary, { force: true })
-	}
+	await writeFileDurably(path, `${JSON.stringify({ version: 1, refTips })}\n`)
 	return id
 }
 /** Native tools invoke these operations inside their existing file mutation queue. */
@@ -230,7 +338,12 @@ function operations(ctx: WorkContext, toolCallId: string): EditOperations & Writ
 				? await tryWorkAttributionAsync(async () => {
 						const repo = await repositoryFile(path)
 						if (!repo) return
-						const before = await diskState(path)
+						const before = await diskState(
+							path,
+							undefined,
+							repo.baselineFile !== null ? repo.repository : undefined,
+							repo.baselineFile?.blob,
+						)
 						if (before === undefined) return
 						if (readDigest !== undefined && readDigest !== digest(readFileSync(path))) return
 						return { ...repo, before }
@@ -241,7 +354,12 @@ function operations(ctx: WorkContext, toolCallId: string): EditOperations & Writ
 				await tryWorkAttributionAsync(async () => {
 					const written = existsSync(path) ? readFileSync(path) : undefined
 					if (!written?.equals(Buffer.from(content))) return
-					const after = await diskState(path, written)
+					// A file absent from HEAD keeps its text from the write that creates it, for when it is first committed.
+					const retain =
+						evidence.baselineFile === null
+							? !(await ignored(evidence.worktree, evidence.path))
+							: evidence.before !== null
+					const after = await diskState(path, written, retain ? evidence.repository : undefined)
 					if (!after || same(evidence.before, after)) return
 					const log = await reflog(evidence.worktree)
 					// A cursor after the successful mutation excludes pre-existing matching history.
@@ -294,7 +412,7 @@ function isTransition(value: Record<string, unknown>): value is Record<string, u
 		(value.recordedAt === undefined || typeof value.recordedAt === "string") &&
 		(value.refTips === undefined || validRefTips(value.refTips)) &&
 		(value.historyBoundaryId === undefined ||
-			(typeof value.historyBoundaryId === "string" && /^[a-f0-9]{64}$/.test(value.historyBoundaryId))) &&
+			(typeof value.historyBoundaryId === "string" && SHA256_HEX.test(value.historyBoundaryId))) &&
 		["transitionId", "toolCallId", "sessionId", "cwd", "repository", "worktree", "path"].every(
 			(key) => typeof value[key] === "string",
 		) &&
@@ -410,7 +528,7 @@ async function readJournals(repository: string, checkBudget: () => void): Promis
 	}
 	return journals
 }
-/** Read all ownership evidence for one repository; never return a truncated set. */
+/** Read all ownership evidence for one repository; never return a truncated set. Null outside any Git worktree. */
 export async function readRepositoryTransitions(cwd: string): Promise<
 	| {
 			repository: string
@@ -418,6 +536,7 @@ export async function readRepositoryTransitions(cwd: string): Promise<
 			branch?: string
 			transitions: FileTransition[]
 	  }
+	| null
 	| undefined
 > {
 	return tryWorkAttributionAsync(async () => {
@@ -425,8 +544,10 @@ export async function readRepositoryTransitions(cwd: string): Promise<
 		let worktree: string
 		try {
 			worktree = realpathSync(await git(cwd, ["rev-parse", "--show-toplevel"]))
-		} catch {
-			return
+		} catch (error) {
+			// Git exits with 128 outside a worktree. Any other failure leaves ownership unknown.
+			if (error instanceof Error && "code" in error && error.code === 128) return null
+			throw error
 		}
 		const repository = realpathSync(await git(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
 		let branch: string | undefined
@@ -442,6 +563,20 @@ export async function readRepositoryTransitions(cwd: string): Promise<
 /** The same normalization used when native tools captured the edit. Unsupported attributes stay unknown. */
 export async function readAttributedFileState(path: string): Promise<FileState | null | undefined> {
 	return tryWorkAttributionAsync(() => diskState(path))
+}
+/** readAttributedFileState for many worktree-relative paths, using a fixed number of Git processes. */
+export async function readAttributedFileStates(
+	worktree: string,
+	paths: string[],
+	signal?: AbortSignal,
+): Promise<Map<string, FileState | null | undefined> | undefined> {
+	return tryWorkAttributionAsync(async () => {
+		try {
+			return await diskStates(worktree, paths, signal)
+		} catch (error) {
+			if (!signal?.aborted) throw error
+		}
+	})
 }
 interface CommitCandidate {
 	sha: string
@@ -519,7 +654,7 @@ function appendCommitContributions(
 	sha: string,
 	transitions: Transition[],
 	recordedCommits: Record<string, unknown>[],
-	method: "file-chain" | "path-blob" = "file-chain",
+	method: "file-chain" | "path-blob" | "file-hunks" = "file-chain",
 	assertLease: () => void = () => {},
 ): void {
 	const contributions = new Map<string, { owner: Transition; paths: string[]; transitionIds: string[] }>()
@@ -536,9 +671,10 @@ function appendCommitContributions(
 					(match) =>
 						match.path === transition.path &&
 						match.worktree === transition.worktree &&
-						(method === "path-blob" || match.method === "file-chain") &&
-						((method === "path-blob" && match.method === "file-chain") ||
-							(Array.isArray(match.transitionIds) && match.transitionIds.includes(transition.transitionId))),
+						(fileMatchStrength(match.method) > fileMatchStrength(method) ||
+							(match.method === method &&
+								Array.isArray(match.transitionIds) &&
+								match.transitionIds.includes(transition.transitionId))),
 				),
 		)
 		if (recorded) continue
@@ -725,6 +861,57 @@ async function contentCandidates(
 	for (const rows of candidates.values()) rows.push(...uncertain)
 	return candidates
 }
+async function matchesCommittedHunks(
+	repository: string,
+	chain: FileTransition[],
+	parent: FileState | null,
+	committed: FileState | null,
+	checkBudget: () => void,
+	signal?: AbortSignal,
+): Promise<boolean> {
+	const before = chain[0].before
+	const after = chain[chain.length - 1].after
+	// A chain that created the file starts from empty text, which only a commit adding the file can share.
+	if (!committed || (before === null) !== (parent === null)) return false
+	const states = before && parent ? [before, after, parent, committed] : [after, committed]
+	if (states.some((state) => state.mode !== after.mode)) return false
+	const blobs = states.map((state) => state.blob)
+	if (!blobs.every((blob) => SHA.test(blob))) return false
+	// Snapshots come from Kimchi's store; the parent and committed blobs, and snapshots of older builds, from the repository.
+	const options = {
+		input: Buffer.from(blobs.map((blob) => `${blob}\n`).join("")),
+		signal,
+		env: { GIT_ALTERNATE_OBJECT_DIRECTORIES: snapshotObjects(repository) },
+	}
+	checkBudget()
+	const info = (await git(repository, ["cat-file", "--batch-check=%(objecttype) %(objectsize)"], options)).split("\n")
+	checkBudget()
+	for (const [index, blob] of blobs.entries()) {
+		// Git reports optional snapshots removed by GC separately from interrupted or failed reads.
+		if (info[index] === `${blob} missing`) return false
+		const size = /^blob (\d+)$/.exec(info[index] ?? "")
+		if (!size) throw new Error("Invalid Git snapshot response")
+		// Check the declared size before reading a commit that may contain a large human addition.
+		if (Number(size[1]) > MAX_HUNK_BYTES) return false
+	}
+	const data = await gitBytes(repository, ["cat-file", "--batch"], options)
+	checkBudget()
+	const texts: string[] = []
+	let offset = 0
+	for (const blob of blobs) {
+		// Each object is `<id> blob <size>\n<content>\n`.
+		const header = data.indexOf(10, offset)
+		const [id, type, size] = data.subarray(offset, header).toString("utf8").split(" ")
+		if (header < 0 || id !== blob || type !== "blob" || !/^\d+$/.test(size))
+			throw new Error("Invalid Git snapshot response")
+		const text = data.subarray(header + 1, header + 1 + Number(size))
+		offset = header + 2 + Number(size)
+		if (!isUtf8(text) || text.includes(0)) return false
+		texts.push(text.toString("utf8"))
+	}
+	const text = (state: FileState | null) => (state ? texts[states.indexOf(state)] : "")
+	return matchesFileHunks(text(before), text(after), text(parent), text(committed), checkBudget)
+}
 /** Content identity is weaker than a complete reflog chain; retain that distinction per file. */
 async function matchContentTransitions(
 	repository: string,
@@ -732,9 +919,10 @@ async function matchContentTransitions(
 	evidence: ContentEvidence[],
 	checkBudget: () => void,
 	signal?: AbortSignal,
-): Promise<FileTransition[]> {
+): Promise<{ blobs: FileTransition[]; hunks: FileTransition[] }> {
+	const matched: { blobs: FileTransition[]; hunks: FileTransition[] } = { blobs: [], hunks: [] }
 	const parents = (await git(repository, ["rev-list", "--parents", "-n", "1", sha], { signal })).split(" ").slice(1)
-	if (parents.length > 1) return []
+	if (parents.length > 1) return matched
 	const parent = parents[0] ?? null
 	const changedPaths = new Set(
 		(
@@ -770,7 +958,6 @@ async function matchContentTransitions(
 		rows.push(row)
 		byPath.set(row.path, rows)
 	}
-	const matched: FileTransition[] = []
 	for (const [path, rows] of byPath) {
 		checkBudget()
 		if (new Set(rows.map((row) => row.workId)).size !== 1) continue
@@ -786,9 +973,11 @@ async function matchContentTransitions(
 			if (starts.length === 1) chain = chain.slice(chain.indexOf(starts[0]))
 			if (chain.some((row) => uncertain.has(row))) continue
 			const last = chain[chain.length - 1]
-			if (!same(chain[0].before, chain[0].baselineFile) || same(chain[0].before, last.after)) continue
+			if (same(chain[0].before, last.after)) continue
 			if (!chain.every((row, index) => index === 0 || same(row.before, chain[index - 1].after))) continue
-			if (same(last.after, after)) matched.push(...chain)
+			if (same(chain[0].before, chain[0].baselineFile) && same(last.after, after)) matched.blobs.push(...chain)
+			else if (await matchesCommittedHunks(repository, chain, before, after, checkBudget, signal))
+				matched.hunks.push(...chain)
 		}
 	}
 	return matched
@@ -804,7 +993,7 @@ async function reconcileContentHistory(
 	// Missing ownership evidence must neither produce a partial match nor advance the weak-match checkpoint.
 	if (histories.some(({ journal }) => journal.transitions.some((row) => row.historyBoundaryId && !row.refTips))) return
 	const candidates = await contentCandidates(repository, histories, checkBudget, signal)
-	const evidence = `${histories.map(({ journal, log }) => `${journal.digest}:${log ? digest(log) : "deleted"}`).join(":")}:${[...candidates.keys()].join(":")}`
+	const evidence = `content-v3:${histories.map(({ journal, log }) => `${journal.digest}:${log ? digest(log) : "deleted"}`).join(":")}:${[...candidates.keys()].join(":")}`
 	const progressPath = `${histories[0].journal.path}.content-checkpoint`
 	const progress = records(progressPath).at(-1)
 	const entries = [...candidates]
@@ -812,7 +1001,8 @@ async function reconcileContentHistory(
 	for (const [sha, transitions] of entries.slice(completed + 1)) {
 		checkBudget()
 		const matched = await matchContentTransitions(repository, sha, transitions, checkBudget, signal)
-		appendCommitContributions(sha, matched, recordedCommits, "path-blob", assertLease)
+		appendCommitContributions(sha, matched.blobs, recordedCommits, "path-blob", assertLease)
+		appendCommitContributions(sha, matched.hunks, recordedCommits, "file-hunks", assertLease)
 		assertLease()
 		writeFileSync(progressPath, JSON.stringify({ evidence, sha }))
 	}

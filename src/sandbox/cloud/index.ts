@@ -7,6 +7,7 @@ export { waitForWorkspaceReady } from "./readiness.js"
 export type {
 	AuthenticateOptions,
 	ListWorkspacesOptions,
+	VerifiedKey,
 	WaitForWorkspaceReadyOptions,
 	Workspace,
 	WorkspaceCredentials,

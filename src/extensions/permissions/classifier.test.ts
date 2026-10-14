@@ -5,11 +5,12 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
+import { resolveClassifierCandidates } from "../model-catalog/classifier-models.js"
+import * as diagnostics from "../work-attribution/diagnostics.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { getWorkId } from "../work-attribution.js"
 import { classifyToolCall, parseClassifierOutput } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
-import { resolveClassifierCandidates } from "./classifier-models.js"
 
 const completeMock = vi.fn()
 vi.mock("@earendil-works/pi-ai/compat", () => ({
@@ -43,6 +44,7 @@ describe("classifyToolCall", () => {
 		}
 		writeFileSync(join(attributionDir, "work-attribution"), "blocked")
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const diagnostic = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		completeMock.mockResolvedValue(response())
 		const registry = createModelRegistry()
 		const success = classifyToolCall([primary], registry, call, options)
@@ -51,7 +53,8 @@ describe("classifyToolCall", () => {
 		expect(result).toMatchObject({ ok: true, verdict: "safe", usedModelId: primary.id })
 		expect(completeMock).toHaveBeenCalledTimes(1)
 		expect(completeMock.mock.calls[0][2].headers).not.toHaveProperty("X-Request-Id")
-		expect(warn).toHaveBeenCalled()
+		expect(diagnostic).toHaveBeenCalled()
+		expect(warn).not.toHaveBeenCalled()
 
 		completeMock.mockReset().mockRejectedValue(new Error("provider unavailable"))
 		const failure = classifyToolCall([primary], registry, call, options)

@@ -83,6 +83,8 @@ import {
 	splitModelDisplayName,
 } from "../../extensions/auto-model/constants.js"
 import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/state.js"
+import { resolveMarkerForDisplay } from "../../extensions/display-budget.js"
+import { getRawErrorMessage } from "../../extensions/error-preservation.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
@@ -127,6 +129,7 @@ import {
 	ACP_REATTACH_MID_TURN_META_KEY,
 	buildToolCallId,
 } from "../../sandbox/worker/acp-protocol.js"
+import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
@@ -134,14 +137,26 @@ import { emitAgentActivityUpdate } from "./activity-updates.js"
 import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { composeAvailableCommands, createCommandsRefresher, discoverSkillCommandsMap } from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
+import { handleCompact } from "./ext-methods/compact.js"
+import { handleCompactAbort } from "./ext-methods/compact-abort.js"
 import { handleImportApply } from "./ext-methods/import-apply.js"
 import { importDiscover } from "./ext-methods/import-discover.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
+import {
+	handleMemoryDelete,
+	handleMemoryList,
+	handleMemoryReset,
+	handleMemorySearch,
+	handleMemoryStatus,
+	handleSetMemoryEnabled,
+} from "./ext-methods/memory.js"
+import { handleListResources, handleSetResourceEnabled } from "./ext-methods/resources.js"
 import { handleSetOnboardingFlag } from "./ext-methods/set-onboarding-flag.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { handleSteering } from "./ext-methods/steering.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
+import { emitRoutedModelUpdate } from "./routed-model-updates.js"
 import {
 	type AcpSkillInfo,
 	buildSkillCommandPrompt,
@@ -366,6 +381,15 @@ export class KimchiAcpAgent implements Agent {
 	// earlier session record.
 	private loadingSessions = new Map<string, Promise<LoadSessionResponse>>()
 	private shutdownPromise: Promise<void> | undefined
+	/** Held-prompt plan reviews finalize when permissions reports the review
+	 * closed without a follow-up turn (rework / menu dismissal). Execution
+	 * decisions are pi-observable (agent_start) and never notify. */
+	private readonly unsubPlanReviewClosed: () => void = subscribePlanReviewClosed((notifiedSessionId) => {
+		const entry = this.sessions.get(notifiedSessionId)
+		const turn = entry?.turn
+		if (!entry || !turn?.planReviewHeld || turn.planReviewExecuting) return
+		this.finalizeHeldPlanReviewTurn(entry, turn)
+	})
 
 	/**
 	 * Resolve the initial permission mode for a session.
@@ -946,6 +970,18 @@ export class KimchiAcpAgent implements Agent {
 		if (entry.turn) {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
 		}
+		// Compaction runs outside the main agent loop (its lifecycle streams via
+		// the agent_activity notification, not the turn's session updates), so a
+		// prompt accepted mid-compaction would only die deep inside
+		// session.prompt() with an internal-looking "Cannot submit a prompt …"
+		// throw. Gate here instead: an immediate, clearly worded rejection the
+		// client can retry after the compaction_end activity notification.
+		if (entry.session.isCompacting) {
+			throw RequestError.invalidRequest(
+				undefined,
+				"compaction is in progress for this session — wait for the compaction_end activity notification and retry",
+			)
+		}
 		const supportsImages = modelSupportsImages(entry.session.model)
 		// Warn about unsupported block types (audio, embeddedContext) once per
 		// type. Dropped images do NOT join this dedupe — they additionally surface
@@ -1039,6 +1075,15 @@ export class KimchiAcpAgent implements Agent {
 				// running the chained continues. session.prompt() resolves only after
 				// ALL chained calls complete.
 				if (!entry.turn) return
+				// Held plan-review turn: the turn ended in submit_plan and its
+				// follow-up execution hasn't started — keep the prompt OPEN so the
+				// review's outcome lands inside this PromptRequest. Finalization is
+				// driven by agent_settled (execution drained), the plan-review-closed
+				// notification (rework / dismissal), or cancel during the review
+				// pause — never here. If a decision raced in BEFORE prompt
+				// resolution, the follow-up chained into this same prompt run
+				// (planReviewExecuting already true) and finalization proceeds below.
+				if (entry.turn.planReviewHeld && !entry.turn.planReviewExecuting) return
 				// Resolved with terminal "error" (retries exhausted): do not report
 				// end_turn — the client would show a silent empty reply.
 				if (entry.turn.lastAssistantError && !entry.turn.cancelled) {
@@ -1086,6 +1131,13 @@ export class KimchiAcpAgent implements Agent {
 		const droppedQueue = this.drainQueue(entry)
 		notifyDroppedQueue(this.conn, params.sessionId, droppedQueue, "cancelled")
 		await entry.session.abort()
+		// Held plan-review turn still in the review pause: abort() above was a
+		// no-op (nothing is streaming) and no agent_settled is coming — finalize
+		// here. Held-executing turns finalize via agent_settled after the abort.
+		const heldTurn = entry.turn
+		if (heldTurn?.planReviewHeld && !heldTurn.planReviewExecuting) {
+			this.finalizeTurn(entry, "cancelled")
+		}
 	}
 
 	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -1149,6 +1201,48 @@ export class KimchiAcpAgent implements Agent {
 				// capability), then live-refresh affected sessions. See
 				// handleSetPathTrust.
 				return this.handleSetPathTrust(params)
+			case AVAILABLE_EXT_METHODS.list_resources:
+				// Sessionless read: every known resource with its effective state
+				// — the /resources machinery for client-built settings UIs.
+				return handleListResources()
+			case AVAILABLE_EXT_METHODS.set_resource_enabled:
+				// Sessionless write: the persistent resource override; the response
+				// carries restartRequired so the client can surface the hint.
+				return handleSetResourceEnabled({}, params)
+			case AVAILABLE_EXT_METHODS.memory_status:
+				// Session-scoped: the session's memory toggle state plus the
+				// sessionless store overview (adminOverview).
+				return handleMemoryStatus((sessionId) => this.sessions.get(sessionId)?.session, {}, params)
+			case AVAILABLE_EXT_METHODS.set_memory_enabled:
+				// Session-scoped: flip the session's runtime memory toggle — the
+				// memory extension reads it at its next agent start.
+				return handleSetMemoryEnabled((sessionId) => this.sessions.get(sessionId)?.session, params)
+			case AVAILABLE_EXT_METHODS.memory_list:
+				// Sessionless store op: paginated facts across the selected scopes.
+				return handleMemoryList({}, params)
+			case AVAILABLE_EXT_METHODS.memory_search:
+				// Sessionless store op: ranked search across the selected scopes.
+				return handleMemorySearch({}, params)
+			case AVAILABLE_EXT_METHODS.memory_delete:
+				// Sessionless store op: delete facts by id across all stores.
+				return handleMemoryDelete({}, params)
+			case AVAILABLE_EXT_METHODS.memory_reset:
+				// Sessionless store op: wipe a scope — the client-confirmed
+				// destructive op (the required confirm param mirrors --yes).
+				return handleMemoryReset({}, params)
+			case AVAILABLE_EXT_METHODS.compact:
+				// Session-scoped manual compaction. turnActive mirrors the turn
+				// bookkeeping prompt() uses: upstream compact() would silently abort
+				// the running turn, so the handler requires an idle session.
+				return handleCompact((sessionId) => {
+					const entry = this.sessions.get(sessionId)
+					if (!entry) return undefined
+					return { session: entry.session, turnActive: entry.turn !== undefined && !entry.turn.cancelled }
+				}, params)
+			case AVAILABLE_EXT_METHODS.compact_abort:
+				// Compaction-specific abort (not the whole-turn kill switch): stops
+				// only the summarization; idempotent when nothing is compacting.
+				return handleCompactAbort((sessionId) => this.sessions.get(sessionId)?.session, params)
 			default:
 				throw RequestError.methodNotFound(method)
 		}
@@ -1163,6 +1257,7 @@ export class KimchiAcpAgent implements Agent {
 	private async doShutdown(_cause: "signal" | "disconnect"): Promise<void> {
 		this.commandsRefresher.cancel()
 		this.skillWatcher.close()
+		this.unsubPlanReviewClosed()
 		// Drain any in-flight turn promises before tearing down the session.
 		// On the signal path we process.exit immediately so this is mostly
 		// cosmetic, but runAcpMode's finally also calls shutdown when conn.closed
@@ -1243,6 +1338,9 @@ export class KimchiAcpAgent implements Agent {
 		// pin a running turn's pause to its cause. No-op for transcript/tool
 		// events, which carry their own schema updates.
 		emitAgentActivityUpdate(this.conn, sessionId, event)
+		// Routed-model pick changes mirror the transcript entry as an ext
+		// notification; change-only, per the extension's dedup.
+		emitRoutedModelUpdate(this.conn, sessionId, event)
 		switch (event.type) {
 			case "queue_update": {
 				if (!entry.previousQueue) {
@@ -1267,6 +1365,19 @@ export class KimchiAcpAgent implements Agent {
 				entry.contentIndexToBlockId.clear()
 				entry.streamedText.clear()
 				entry.toolCallIdMap.clear()
+				// A held plan-review turn seeing the follow-up turn begin: pi events
+				// derive "decision applied with work" — no extension notification.
+				if (turn?.planReviewHeld) turn.planReviewExecuting = true
+				return
+			}
+			case "agent_settled": {
+				// Held plan-review execution drained: pi-mono emits agent_settled
+				// exactly once, after the FULL run chain (chained continues, retries,
+				// compaction) completes — the deterministic end point for an internal
+				// turn that has no session.prompt() promise to await.
+				if (turn?.planReviewHeld && turn.planReviewExecuting) {
+					this.finalizeHeldPlanReviewTurn(entry, turn)
+				}
 				return
 			}
 			case "message_start": {
@@ -1419,7 +1530,14 @@ export class KimchiAcpAgent implements Agent {
 				// pi auto-retries is superseded by the retry's message_end, which
 				// lands here and clears the flag.
 				if (msg.stopReason === "error") {
-					turn.lastAssistantError = { stopReason: "error", errorMessage: msg.errorMessage }
+					// Capture the preserved raw text, not the display placeholder: the
+					// interactive-error-surface extension may have mutated errorMessage
+					// to "Retrying…" in an earlier message_end handler. The placeholder
+					// must not become the terminal turn error: it would reach the
+					// JSON-RPC error message, defeat classifyLLMGatewayError (so
+					// data.kind/retryAtMs are lost), and pollute the persisted log the
+					// Studio error restore reads.
+					turn.lastAssistantError = { stopReason: "error", errorMessage: getRawErrorMessage(msg) }
 				} else if (msg.stopReason !== "aborted") {
 					turn.lastAssistantError = undefined
 				}
@@ -1534,6 +1652,12 @@ export class KimchiAcpAgent implements Agent {
 			}
 			case "tool_execution_end": {
 				if (!turn) return
+				// submit_plan ends the model turn while the review is still open:
+				// mark the hold so prompt() resolution skips finalizeTurn and the
+				// review's outcome drives finalization instead. A FAILED execution
+				// (validation error, worker path...) never opens a review — holding
+				// would strand the prompt forever.
+				if (event.toolName === "submit_plan" && !event.isError) turn.planReviewHeld = true
 				if (turn.hiddenToolCallIds.has(event.toolCallId)) {
 					this.retireToolCall(entry, turn, event.toolCallId, { removeFromHidden: true })
 					return
@@ -1554,7 +1678,7 @@ export class KimchiAcpAgent implements Agent {
 					piToolCallId: event.toolCallId,
 					status: event.isError ? "failed" : "completed",
 					content: [...toolResultContent(event.result), ...diffs],
-					rawOutput: event.result,
+					rawOutput: wireSafeToolResult(event.result),
 				})
 				this.send({ sessionId, update })
 				// Upstream ids can repeat after compaction or even within a turn. Retire
@@ -1772,7 +1896,7 @@ export class KimchiAcpAgent implements Agent {
 						piToolCallId: tc.id,
 						status,
 						content: result ? toolResultContent(result) : [],
-						rawOutput: result,
+						rawOutput: result ? wireSafeToolResult(result) : undefined,
 					}),
 				})
 				// The branch may contain multiple toolCalls with the same upstream id
@@ -2167,6 +2291,23 @@ export class KimchiAcpAgent implements Agent {
 		})
 	}
 
+	/**
+	 * Finalize a held plan-review turn, mirroring the outcome rules of the
+	 * normal prompt-resolution path: client cancel → "cancelled", terminal
+	 * assistant error → JSON-RPC failure (never a silent end_turn), otherwise
+	 * a clean end_turn. Invoked from agent_settled (execution drained) and the
+	 * plan-review-closed notification (rework / menu dismissal).
+	 */
+	private finalizeHeldPlanReviewTurn(entry: SessionRecord, turn: TurnContext): void {
+		if (turn.cancelled) {
+			this.finalizeTurn(entry, "cancelled")
+		} else if (turn.lastAssistantError) {
+			this.failTurn(entry, toTurnError(turn.lastAssistantError))
+		} else {
+			this.finalizeTurn(entry, "end_turn")
+		}
+	}
+
 	private finalizeTurn(entry: SessionRecord, stopReason: PromptResponse["stopReason"]): void {
 		const turn = entry.turn
 		if (!turn) return
@@ -2306,24 +2447,30 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 		modelId: orchId,
 	} = getOrchestratorModel(session.sessionId, modelRegistry)
 	const orchName = orchestrator?.name ?? orchId ?? orchRef
-	// `description` is the optional secondary line ACP clients render beneath an
-	// option's name. Only the two routing entries carry one — concrete models are
-	// self-describing — and a client that ignores the field still shows the name.
-	// Multi-model's deprecation label is harness-side: the virtual selection does
-	// not exist in the platform catalog, so no backend marker can carry it.
-	const options = [
-		{
-			value: "multi-model",
-			name: `Multi-model (${orchName})`,
-			description: `${MULTI_MODEL_DEPRECATION_LABEL} Routes each task to the best model, with an orchestrator and workers.`,
-		},
+	// Multi-model's deprecation label is harness-side: the virtual selection has
+	// no platform-catalog entry to carry a backend marker.
+	// Ordering mirrors sortModels() in src/models.ts: active entries sorted by
+	// ref first, deprecated entries last — deprecated lands at the bottom by
+	// flag, not by pinning a specific value.
+	const options: Array<{ value: string; name: string; description?: string | null; deprecated?: boolean }> = [
 		...modelRegistry
 			.getAvailable()
 			.map((m) =>
 				isAutoRoutedModel(m) ? autoModelOption(m, session.sessionId) : { value: refFromModel(m), name: m.name },
-			)
-			.sort((a, b) => a.value.localeCompare(b.value)),
+			),
+		{
+			value: "multi-model",
+			name: `Multi-model (${orchName})`,
+			description: `${MULTI_MODEL_DEPRECATION_LABEL} Routes each task to the best model, with an orchestrator and workers.`,
+			deprecated: true,
+		},
 	]
+	options.sort(
+		(a, b) => Number(a.deprecated ?? false) - Number(b.deprecated ?? false) || a.value.localeCompare(b.value),
+	)
+	// `deprecated` is an internal ordering key — not part of SessionConfigSelectOption
+	// — so strip it before the list goes on the wire.
+	const wireOptions = options.map(({ deprecated: _, ...opt }) => opt)
 	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
 	const currentValue = multiModelEnabled ? "multi-model" : refFromModel(session.model!)
 	return {
@@ -2333,7 +2480,7 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 		category: "model",
 		description: "Select the active AI model: single-model or multi-model (orchestrator + workers).",
 		currentValue,
-		options,
+		options: wireOptions,
 	}
 }
 
@@ -3013,6 +3160,11 @@ function toolResultContent(result: unknown): ToolCallContent[] {
 	// (transformMcpContent) already flattens them to text, because pi-ai tool
 	// results only model text and image. Forwarding them as native ACP resource
 	// blocks would require widening pi-ai's tool-result content type upstream.
+	//
+	// Externalized tool results carry a compact `[kimchi-ext:tool]` marker in
+	// the in-memory message (memory-residency). Resolve it to the mirrored
+	// content (or the mirror-gone caption) so the client never receives raw
+	// marker text — the same seam withMarkerResolution applies on the TUI side.
 	const r = result as { content?: unknown } | null | undefined
 	const content = r?.content
 	if (!Array.isArray(content)) return []
@@ -3021,12 +3173,38 @@ function toolResultContent(result: unknown): ToolCallContent[] {
 		if (!block || typeof block !== "object") continue
 		const b = block as { type?: string; text?: string; data?: string; mimeType?: string }
 		if (b.type === "text" && typeof b.text === "string") {
-			out.push({ type: "content", content: { type: "text", text: b.text } })
+			const text = resolveMarkerForDisplay(b.text) ?? b.text
+			out.push({ type: "content", content: { type: "text", text } })
 		} else if (b.type === "image" && typeof b.data === "string" && typeof b.mimeType === "string") {
 			out.push({ type: "content", content: { type: "image", data: b.data, mimeType: b.mimeType } })
 		}
 	}
 	return out
+}
+
+/**
+ * A tool result safe to place on the wire as `rawOutput`: content text blocks
+ * with externalization markers resolved (see toolResultContent). The in-memory
+ * result itself is never mutated — clients keying UI off rawOutput
+ * (e.g. rawOutput.details) keep the same shape.
+ */
+function wireSafeToolResult(result: unknown): Record<string, unknown> | undefined {
+	if (!result || typeof result !== "object") return undefined
+	const r = result as { content?: unknown }
+	if (!Array.isArray(r.content)) return result as Record<string, unknown>
+	let changed = false
+	const content = r.content.map((block) => {
+		const b = block as { type?: string; text?: string } | null
+		if (b && typeof b === "object" && b.type === "text" && typeof b.text === "string") {
+			const text = resolveMarkerForDisplay(b.text)
+			if (text !== undefined) {
+				changed = true
+				return { ...b, text }
+			}
+		}
+		return block
+	})
+	return changed ? ({ ...r, content } as Record<string, unknown>) : (result as Record<string, unknown>)
 }
 
 export async function runAcpMode(options: RunAcpOptions): Promise<void> {

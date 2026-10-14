@@ -49,7 +49,7 @@ function makeCtx(inputResponses: (string | undefined)[]): ExtensionCommandContex
 describe("attachPendingProposal", () => {
 	it("replaces pending buffer wholesale — omitted fields become undefined", () => {
 		const { runtime, storage } = createRuntime()
-		const ferment = storage.create("Test")
+		const ferment = storage.create("Test", undefined, process.cwd())
 		// Seed a full buffer
 		runtime.setPendingScope(ferment.id, {
 			goal: "old goal",
@@ -86,7 +86,7 @@ describe("attachPendingProposal", () => {
 describe("runScopingFlow", () => {
 	it("single non-empty input → markScopingInteractive called + sendMessage fired with intent embedded in content", async () => {
 		const { runtime, storage } = createRuntime()
-		const ferment = storage.create("My Ferment")
+		const ferment = storage.create("My Ferment", undefined, process.cwd())
 		const pi = makePi()
 		const ctx = makeCtx(["I want to build a login system"])
 
@@ -140,7 +140,7 @@ describe("runScopingFlow", () => {
 
 	it("prefers ctx.ui.editor for the free-form scoping prompt", async () => {
 		const { runtime, storage } = createRuntime()
-		const ferment = storage.create("My Ferment")
+		const ferment = storage.create("My Ferment", undefined, process.cwd())
 		const pi = makePi()
 		const ctx = createContext({
 			ui: {
@@ -164,7 +164,7 @@ describe("runScopingFlow", () => {
 
 	it("undefined input (Esc) → no sendMessage, no markScopingInteractive, no pendingScope", async () => {
 		const { runtime, storage } = createRuntime()
-		const ferment = storage.create("My Ferment")
+		const ferment = storage.create("My Ferment", undefined, process.cwd())
 		const pi = makePi()
 		const ctx = makeCtx([undefined])
 
@@ -179,7 +179,7 @@ describe("runScopingFlow", () => {
 
 	it("empty string input → no sendMessage, no markScopingInteractive (rejected pre-LLM)", async () => {
 		const { runtime, storage } = createRuntime()
-		const ferment = storage.create("My Ferment")
+		const ferment = storage.create("My Ferment", undefined, process.cwd())
 		const pi = makePi()
 		const ctx = makeCtx([""])
 
@@ -193,7 +193,7 @@ describe("runScopingFlow", () => {
 
 	it("headless (no ctx.ui.input) → falls through to existing nudge path (sendMessage fired)", async () => {
 		const { runtime, storage } = createRuntime()
-		const ferment = storage.create("My Ferment")
+		const ferment = storage.create("My Ferment", undefined, process.cwd())
 		const pi = makePi()
 		// Headless: ctx with no input function
 		const ctx = createContext({
@@ -207,7 +207,7 @@ describe("runScopingFlow", () => {
 
 	it("pre-captured intent → does NOT call ctx.ui.input and proceeds directly to sendMessage", async () => {
 		const { runtime, storage } = createRuntime()
-		const ferment = storage.create("My Ferment")
+		const ferment = storage.create("My Ferment", undefined, process.cwd())
 		const pi = makePi()
 		const ctx = makeCtx([])
 		// biome-ignore lint/style/noNonNullAssertion: makeCtx always populates ctx.ui.input

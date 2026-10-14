@@ -35,6 +35,7 @@ import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/reso
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { getEffectiveModel } from "../auto-model/state.js"
 import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
 import { bumpStallCounter, fireStepStallSteerIfStalled } from "../ferment/todo-sync.js"
@@ -42,10 +43,12 @@ import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-
 import { findModelByRef } from "../model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
+	ASSISTANT_OUTPUT_WITHHELD,
 	brandUnmarkedSteers,
 	ContinuationNudge,
 	EMPTY_TURN_NUDGE_TEXT,
 	EmptyTurnNudge,
+	isBareDoneSignal,
 	NUDGE_CUSTOM_TYPE,
 	type OrchestratorMessages,
 	stripStaleNudges,
@@ -103,9 +106,10 @@ const deprecatedNotificationFired = new Set<string>()
 
 /**
  * How close a model's retirement must be (in days) before session-start
- * warnings fire. Anthropic lifecycle dates run 1–2 years out; curated Kimchi
- * deprecations run on a 30-day deprecation window. 30 days keeps urgent
- * notices loud and far-future lifespan announcements silent.
+ * warnings fire. Far-future lifespan signals (vendor retirement dates years
+ * out, with or without an announced deprecation) stay silent until they get
+ * close; curated Kimchi deprecations run on a 30-day deprecation window.
+ * 30 days keeps urgent notices loud and distant dates quiet.
  */
 const DEPRECATION_NOTIFY_WINDOW_DAYS = 30
 
@@ -156,6 +160,24 @@ function isToolCallBlock(block: AssistantMessage["content"][number]): block is T
 
 function isEmptyToolCallBlock(block: AssistantMessage["content"][number]): block is ToolCall {
 	return isToolCallBlock(block) && block.name.trim() === ""
+}
+
+/** Builds the `message_end` replacement for withheld protocol output: text
+ *  blocks dropped, the withheld marker set. Uses the same symbol the
+ *  exploration guard and `EmptyTurnNudge` already treat as neutral and that
+ *  ferment-v2's final-answer reader classifies as invisible — it means
+ *  "output the harness actually withheld", never a visible answer or a
+ *  tool-bearing message. The SDK applies the replacement in place to the
+ *  stored message, so persistence and every later consumer (`turn_end`, the
+ *  guard, the LLM context) see the blanked, marked message. */
+function withheldReplacement(message: AssistantMessage) {
+	return {
+		message: {
+			...message,
+			[ASSISTANT_OUTPUT_WITHHELD]: true,
+			content: message.content.filter((block) => block.type !== "text"),
+		},
+	}
 }
 
 /**
@@ -249,14 +271,31 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 		// Evaluated once per process: the notice window, like the rest of the
 		// catalog snapshot, is startup-bound.
 		const notifyCutoff = Date.now() + DEPRECATION_NOTIFY_WINDOW_DAYS * 86_400_000
-		const deprecatedWarnings = new Map<string, { replacement?: string; deprecatedAt?: string; note?: string }>()
+		const deprecatedWarnings = new Map<
+			string,
+			{ replacement?: string; deprecatedAt?: string; sunsetAt?: string; isPast?: boolean; note?: string }
+		>()
+		// Gate on whichever date exists: curated deprecations carry
+		// deprecated_at, vendor retirement-only records carry sunset_at.
+		// Unparseable dates count as absent — ?? would keep a NaN from
+		// Date.parse and fire the warning immediately.
+		const parseMs = (value: string | undefined): number | undefined => {
+			if (!value) return undefined
+			const ms = Date.parse(value)
+			return Number.isNaN(ms) ? undefined : ms
+		}
 		for (const w of registry.warnings) {
 			if (w.kind !== "deprecated_model") continue
-			const deprecatedAtMs = w.deprecatedAt ? Date.parse(w.deprecatedAt) : undefined
-			if (deprecatedAtMs !== undefined && deprecatedAtMs > notifyCutoff) continue
+			// Prefer deprecated_at over sunset_at: the window warns at
+			// announcement, which is when the deprecation copy cites —
+			// sunset-only records fall back to the retirement date.
+			const effectiveMs = parseMs(w.deprecatedAt) ?? parseMs(w.sunsetAt)
+			if (effectiveMs !== undefined && effectiveMs > notifyCutoff) continue
 			deprecatedWarnings.set(w.modelId, {
 				replacement: w.replacement,
 				deprecatedAt: w.deprecatedAt,
+				sunsetAt: w.sunsetAt,
+				isPast: w.isPast,
 				note: w.note,
 			})
 		}
@@ -285,12 +324,34 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				const info = deprecatedWarnings.get(modelId)
 				if (!info) return undefined
 				const { replacement } = info
-				const datePart = info.deprecatedAt ? ` and will be retired on ${info.deprecatedAt.slice(0, 10)}` : ""
-				const notePart = info.note ? ` Docs: ${info.note}` : ""
-				if (replacement && registry.getAll().some((m) => m.id === replacement)) {
-					return `Model "${modelId}" is deprecated${datePart}. Switch to "${replacement}" via /model.${notePart}`
+				const notePart = info.note ? ` Details: ${info.note}` : ""
+				const switchPart =
+					replacement && registry.getAll().some((m) => m.id === replacement)
+						? `Switch to "${replacement}" using your client's model selector (/model in the terminal).`
+						: "Pick a replacement using your client's model selector (/model in the terminal)."
+				// Retirement-only record (no announced deprecation, e.g. a vendor
+				// sunset the catalog carries without a curation pass): state the
+				// date plainly rather than claiming an announced deprecation.
+				if (info.deprecatedAt === undefined && info.sunsetAt) {
+					return `Model "${modelId}" stops being served on ${info.sunsetAt.slice(0, 10)} (vendor retirement). ${switchPart}${notePart}`
 				}
-				return `Model "${modelId}" is deprecated${datePart}. Pick a replacement via /model.${notePart}`
+				// Sunset is the serving boundary: cite it when known. Before
+				// deprecated_at the model is "deprecated, serves until sunset";
+				// after, it's "still served (translated when a replacement exists)
+				// until sunset". Fall back to deprecated_at only when no sunset
+				// date is announced.
+				const sunsetPart = info.sunsetAt ? ` and stops being served on ${info.sunsetAt.slice(0, 10)}` : ""
+				// Past its deprecation date with no sunset announced: never cite the
+				// past deprecated_at as a future retirement.
+				if (info.isPast && !info.sunsetAt) {
+					return `Model "${modelId}" is deprecated (past its deprecation date) but still served. ${switchPart}${notePart}`
+				}
+				const datePart =
+					info.sunsetAt === undefined && info.deprecatedAt
+						? ` and will be retired on ${info.deprecatedAt.slice(0, 10)}`
+						: ""
+				const pastPart = info.isPast ? ". Still served until then" : ""
+				return `Model "${modelId}" is deprecated${sunsetPart}${datePart}${pastPart}. ${switchPart}${notePart}`
 			}
 
 			/**
@@ -517,6 +578,59 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				ame.delta = ""
 			})
 
+			// Mark withheld recovery output at `message_end`, while pending state
+			// and the accumulated response text are still available. Registration
+			// order matters: the exploration guard is registered BEFORE this
+			// extension and counts no-tool turns at `turn_end` — marking here (the
+			// last chance before that counter runs) keeps protocol responses
+			// neutral for the guard without exempting ordinary visible text-only
+			// turns.
+			//
+			// Two cases reach the replacement:
+			//  1. A successful text-only recovery response (pending armed, stop
+			//     reason "stop"/"length") — the response the message_update
+			//     handler blanked: `<done>`, empty acknowledgements, hidden prose.
+			//     Any text that reached the final message without a text_delta
+			//     (non-streaming providers) is folded into the accumulator first
+			//     so the turn_end done-signal check still sees it.
+			//  2. A non-pending bare done token (lost bookkeeping — e.g. state
+			//     cleared while the response was in flight). The token may have
+			//     already streamed to the UI (message_end cannot retract streamed
+			//     deltas; preventing that leak is Fix 1's job); this fallback
+			//     guarantees the token is neither stored nor re-nudged.
+			// Tool-bearing responses and errored/aborted attempts are never
+			// marked: the guard must keep counting them.
+			pi.on("message_end", (event, ctx) => {
+				if (event.message.role !== "assistant") return
+				const message = event.message as AssistantMessage
+				const sessionId = ctx.sessionManager.getSessionId()
+				const continuationNudge = getContinuationNudge(sessionId)
+
+				const isTextOnly = message.content.every((block) => block.type !== "toolCall")
+				const isSuccessfulStop = message.stopReason === "stop" || message.stopReason === "length"
+				if (!isTextOnly || !isSuccessfulStop) return
+
+				if (continuationNudge.isNudgeResponsePending()) {
+					// Normal protocol path. Streamed deltas were blanked and
+					// accumulated one by one by message_update; anything left in
+					// the final text blocks arrived without a delta event.
+					for (const block of message.content) {
+						if (block.type === "text" && block.text.length > 0) {
+							continuationNudge.accumulateResponse(block.text)
+						}
+					}
+					return withheldReplacement(message)
+				}
+
+				// Lost-state fallback: a bare token is always a protocol
+				// acknowledgement, never content. Blank it from the stored
+				// message and mark it withheld so no evaluator reacts to the
+				// now-empty message.
+				if (isBareDoneSignal(message)) {
+					return withheldReplacement(message)
+				}
+			})
+
 			pi.on("turn_end", async (event, ctx) => {
 				if (event.message.role !== "assistant") return
 				// Safe after the role guard: AgentMessage with role "assistant" is AssistantMessage.
@@ -539,6 +653,21 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 					if (c.type === "toolCall" && isDelegationToolCallName((c as { name?: string }).name)) {
 						continuationNudge.markDelegationCall()
 					}
+				}
+
+				// A provider error ends this attempt, not the nudge round: the
+				// upstream agent loop auto-retries the request inside the same agent
+				// run, and the retry's eventual response is still the answer to the
+				// armed nudge. Preserve pending (so the retry's response stays blanked
+				// and its done signal recognized), discard only this attempt's partial
+				// text so it cannot contaminate the retry's exact-match check, and send
+				// no nudge for the errored attempt. Neither evaluator would fire for an
+				// errored turn anyway (NON_NUDGE_STOP_REASONS). A terminal failure
+				// (non-retryable, retries exhausted, cancelled during backoff) settles
+				// the run — the agent_settled handler below clears pending there.
+				if (assistantMsg.stopReason === "error") {
+					continuationNudge.discardFailedResponseAttempt()
+					return
 				}
 
 				// Consume the pending recovery state before any terminal decision:
@@ -601,20 +730,29 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				emitSteerFired(pi, "continuation_nudge", "continuation", { interactive: ctx.hasUI, sessionId })
 			})
 
-			// Fallback cleanup for an abandoned recovery run: if the response to a
-			// queued nudge errors out before its turn_end fires (or the run is
-			// torn down some other way), the pending/accumulation state would
-			// otherwise survive until the next user input or tool call and blank
-			// any unrelated extension-triggered response in between. The normal
-			// path clears pending at turn_end; this guard covers the case where
-			// that never runs. It cannot race an in-flight nudge: the agent loop's
-			// continue-while-queued check keeps the loop alive while the followUp
-			// queue is non-empty, so agent_end only fires after a queued nudge's
-			// turn has run. That upstream invariant is guarded end-to-end by the
-			// continuation-nudge TUI test: it asserts the streamed <done> token
-			// stays blanked, which fails if agent_end ever cleared pending while
-			// a queued nudge's response was still in flight.
-			pi.on("agent_end", async (_event, ctx) => {
+			// Fallback cleanup at settlement: `agent_settled` fires after the
+			// prompt, all automatic retries, compaction recovery, and queued
+			// continuations have settled — the exact boundary after which no
+			// response can still be "the answer to an armed nudge". This cleanup
+			// must NOT run at `agent_end`: that event fires after every errored
+			// attempt, mid-nudge-round, and the extension payload carries no
+			// `willRetry` field to distinguish a retrying attempt from a settled
+			// run — clearing there disarms the recovery and breaks retried nudge
+			// rounds (the retry's `<done>` leaks to the UI and draws a second
+			// nudge at a compliant model). Terminal failures reach this handler
+			// with pending still armed; clearing here guarantees the next
+			// unrelated extension-triggered response streams normally.
+			//
+			// Residual, accepted: after a terminal error, the upstream loop still
+			// continues when another extension has a queued followUp/steer, so
+			// that continuation can run before settlement with pending armed —
+			// its text-only response is blanked like a protocol response for one
+			// turn and heals at its own turn_end (respected stop → consumed, no
+			// re-nudge). Tool execution clears pending for later turns but cannot
+			// restore the current response's already-blanked text. The clean
+			// long-term fix is an upstream signal exposing retry state to
+			// extension `agent_end` handlers; out of scope (no upstream patch).
+			pi.on("agent_settled", async (_event, ctx) => {
 				const sessionId = ctx.sessionManager.getSessionId()
 				const continuationNudge = getContinuationNudge(sessionId)
 				continuationNudge.clearNudgeResponsePending()
@@ -734,6 +872,10 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				skills: skills,
 				currentModelId: mode === "orchestrator" ? getOrchestratorModelId(sessionId) : effectiveModel?.id,
 				registry: registry,
+				// Auto-routed sessions resolve to the concrete pick's descriptor once a
+				// request has been routed; until then the virtual model's advertised
+				// window may not reflect the routed pool, so keep the floor budget.
+				contextWindow: effectiveModel && !isAutoRoutedModel(effectiveModel) ? effectiveModel.contextWindow : undefined,
 				mode,
 				roles,
 				customConfigs,

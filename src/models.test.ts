@@ -252,10 +252,27 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev/anthropic"].headers["X-Provider-Type"]).toBe("anthropic")
 	})
 
-	it("does not set compat for non-anthropic ai-enabler models", async () => {
+	it("sets no compat for kimi-* ai-enabler models (in-band tools unsupported by the gateway)", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		// Verified against the live gateway (2026-09-30): the ai-enabler path
+		// rejects upstream's content-less in-band system message with HTTP 400
+		// and silently drops in-band tools even when content is present. Until
+		// the gateway honors them, deferredToolsMode would break every stamped
+		// reveal — see the note in metadataToModel.
+		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
+	})
+
+	it("does not set compat for non-kimi non-claude ai-enabler models", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [GLM] }),
 		} as Response)
 
 		await updateModelsConfig(modelsJsonPath, "test-key")
@@ -377,7 +394,7 @@ describe("updateModelsConfig", () => {
 
 		const result = await updateModelsConfig(modelsJsonPath, "test-key")
 
-		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5", "glm-5-fp8"])
+		expect(result.models.map((m) => m.slug)).toEqual(["glm-5-fp8", "kimi-k2.5"])
 	})
 
 	it("preserves user-added providers when updating models.json", async () => {
@@ -641,7 +658,9 @@ describe("updateModelsConfig", () => {
 
 		const result = await updateModelsConfig(modelsJsonPath, "test-key")
 
-		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5", "claude-sonnet-4-6", "gpt-4"])
+		// Cache round-trip loses is_serverless, so all entries land in the
+		// non-serverless group and order alphabetically.
+		expect(result.models.map((m) => m.slug)).toEqual(["claude-sonnet-4-6", "gpt-4", "kimi-k2.5"])
 	})
 
 	it("falls back to cached metadata after exhausting network retries", async () => {
@@ -672,8 +691,9 @@ describe("updateModelsConfig", () => {
 
 		const result = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} })
 
-		// Cache + custom provider are returned
-		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5", "claude-sonnet-4-6", "gpt-4"])
+		// Cache + custom provider are returned (alphabetical within the
+		// non-serverless group — is_serverless is not persisted).
+		expect(result.models.map((m) => m.slug)).toEqual(["claude-sonnet-4-6", "gpt-4", "kimi-k2.5"])
 		// Confirms retry exhaustion actually happened (3 attempts, no success)
 		expect(fetch).toHaveBeenCalledTimes(3)
 	})
@@ -951,7 +971,16 @@ describe("updateModelsConfig", () => {
 		expect(result.models.map((m) => m.slug)).toContain("deprecated-model")
 	})
 
-	it("keeps announced-deprecated models, excludes past-deprecated, and persists deprecation to the sidecar", async () => {
+	it("keeps announced and past-deprecated models until sunset, drops only sunset, and persists deprecation to the sidecar", async () => {
+		const freshModel = {
+			slug: "fresh-model",
+			display_name: "Fresh Model",
+			provider: "ai-enabler",
+			reasoning: false,
+			input_modalities: ["text"],
+			is_serverless: true,
+			limits: { context_window: 100_000, max_output_tokens: 4096 },
+		}
 		const announcedModel = {
 			slug: "old-model",
 			display_name: "Old Model",
@@ -963,10 +992,27 @@ describe("updateModelsConfig", () => {
 			deprecated_at: "2099-01-01T00:00:00Z",
 			replacement_model: "new-model",
 		}
-		const pastDeprecatedModel = { ...announcedModel, slug: "gone-model", deprecated_at: "2020-01-01T00:00:00Z" }
+		// Past deprecated_at, future sunset_at: still listed and served
+		// (proxy translates to the replacement), so the harness keeps it.
+		const pastDeprecatedModel = {
+			...announcedModel,
+			slug: "in-window-model",
+			deprecated_at: "2020-01-01T00:00:00Z",
+			sunset_at: "2099-01-01T00:00:00Z",
+		}
+		const sunsetModel = { ...announcedModel, slug: "gone-model", sunset_at: "2020-01-01T00:00:00Z" }
+		// Sunset-only record (vendor retirement, no announced deprecation):
+		// joins the de-emphasized tail with the deprecated entries.
+		const retiringModel = {
+			...announcedModel,
+			slug: "aaa-retiring-model",
+			deprecated_at: undefined,
+			replacement_model: undefined,
+			sunset_at: "2099-01-01T00:00:00Z",
+		}
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
-			json: async () => ({ models: [announcedModel, pastDeprecatedModel] }),
+			json: async () => ({ models: [announcedModel, pastDeprecatedModel, sunsetModel, freshModel, retiringModel] }),
 		} as Response)
 
 		const result = await updateModelsConfig(modelsJsonPath, "test-key")
@@ -975,12 +1021,20 @@ describe("updateModelsConfig", () => {
 		const model = result.models.find((m) => m.slug === "old-model")
 		expect(model?.deprecated_at).toBe("2099-01-01T00:00:00Z")
 		expect(model?.replacement_model).toBe("new-model")
-		// Past-deprecated models are excluded from the active list.
+		// Past-deprecated-but-not-sunset models stay listed (served until sunset).
+		const inWindow = result.models.find((m) => m.slug === "in-window-model")
+		expect(inWindow?.sunset_at).toBe("2099-01-01T00:00:00Z")
+		// Entries with any deprecation signal (announced, past, or
+		// sunset-only) sort after active ones, alphabetically within the group.
+		const slugs = result.models.map((m) => m.slug)
+		expect(slugs).toEqual(["fresh-model", "aaa-retiring-model", "in-window-model", "old-model"])
+		// Past-sunset models are excluded from the active list.
 		expect(result.models.some((m) => m.slug === "gone-model")).toBe(false)
 
-		// Sidecar holds both entries: vanishing models keep replacement info.
+		// Sidecar holds all entries: vanishing models keep replacement info.
 		const sidecar = readModelDeprecations(modelsJsonPath)
 		expect(sidecar.get("old-model")?.replacement_model).toBe("new-model")
+		expect(sidecar.get("in-window-model")?.replacement_model).toBe("new-model")
 		expect(sidecar.get("gone-model")?.replacement_model).toBe("new-model")
 	})
 })

@@ -11,6 +11,7 @@
 import type { AgentSideConnection } from "@agentclientprotocol/sdk"
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent"
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
+import { emitExtNotification } from "./ext-notifications.js"
 
 /** pi-mono event types forwarded as agent activity. Everything else is already
  * covered by schema session updates (messages, tools) or is internal-only. */
@@ -35,11 +36,5 @@ const FORWARDED_KINDS: ReadonlySet<string> = new Set([
 export function emitAgentActivityUpdate(conn: AgentSideConnection, sessionId: string, event: AgentSessionEvent): void {
 	if (!FORWARDED_KINDS.has(event.type)) return
 	const { type, ...fields } = event as { type: string } & Record<string, unknown>
-	conn
-		.extNotification(AVAILABLE_EXT_NOTIFICATIONS.agent_activity, { ...fields, sessionId, kind: type })
-		.catch((err: unknown) => {
-			// Dropped delivery is itself an invisible-stall bug (the client never
-			// learns why the turn paused), so log it like notifyDroppedQueue does.
-			process.stderr.write(`acp agent_activity notification failed: ${String(err)}\n`)
-		})
+	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.agent_activity, { ...fields, sessionId, kind: type })
 }

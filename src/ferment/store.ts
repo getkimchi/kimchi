@@ -105,7 +105,7 @@ export function resolveFermentsDir(cwd?: string): string {
 
 // ─── Git worktree capture ─────────────────────────────────────────────────────
 
-export function captureWorktree(cwd?: string): import("./types.js").FermentWorktree {
+export function captureWorktree(cwd: string): import("./types.js").FermentWorktree {
 	const path = detectProjectRoot(cwd) ?? process.cwd()
 	let branch: string | undefined
 	let commit: string | undefined
@@ -369,8 +369,11 @@ export class FermentStorage {
 		return undefined
 	}
 
-	/** Accepts a name. Caller should already have shortened it if desired. */
-	create(name: string, description?: string): Ferment {
+	/** Accepts a name. Caller should already have shortened it if desired.
+	 *  `description` may be undefined but must be given explicitly so `cwd`
+	 *  cannot be positionally skipped — `cwd` is the session cwd the ferment
+	 *  anchors to. */
+	create(name: string, description: string | undefined, cwd: string): Ferment {
 		let shortName = name.trim()
 		// De-duplicate: if name collides, append a counter
 		const all = this.list()
@@ -386,7 +389,7 @@ export class FermentStorage {
 			name: shortName,
 			description,
 			status: "draft",
-			worktree: captureWorktree(),
+			worktree: captureWorktree(cwd),
 			scoping: {},
 			phases: [],
 			decisions: [],

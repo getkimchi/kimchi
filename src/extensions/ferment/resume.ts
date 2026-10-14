@@ -32,6 +32,7 @@ export function loadFermentSilently(
 	pi: ExtensionAPI,
 	fermentId: string,
 	runtime: FermentRuntime = defaultFermentRuntime,
+	cwd: string,
 ): Ferment | undefined {
 	const storage = runtime.getStorage()
 	const existing = storage.get(fermentId)
@@ -42,7 +43,7 @@ export function loadFermentSilently(
 	setActiveFermentAndApplyProfile(pi, runtime, existing)
 	appendRefEntry(pi, existing.id)
 
-	const wtCheck = checkWorktree(existing)
+	const wtCheck = checkWorktree(existing, cwd)
 	if (wtCheck.severity !== "ok" && wtCheck.message) {
 		safeSendMessage(
 			pi,
@@ -101,7 +102,7 @@ export function resumeFerment(
 		emitFermentScopingResumed(pi.events, existing)
 	}
 
-	const wtCheck = checkWorktree(existing)
+	const wtCheck = checkWorktree(existing, ctx.cwd)
 	if (wtCheck.severity !== "ok" && wtCheck.message) {
 		safeSendMessage(
 			pi,

@@ -1,6 +1,7 @@
 import type { AgentSideConnection, SessionUpdate } from "@agentclientprotocol/sdk"
 
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
+import { emitExtNotification } from "./ext-notifications.js"
 
 export type DroppedQueueReason = "cancelled" | "shutdown"
 
@@ -25,16 +26,12 @@ export function notifyDroppedQueue(
 	reason: DroppedQueueReason,
 ): void {
 	if (!droppedQueue.steering.length && !droppedQueue.followUp.length) return
-	conn
-		.extNotification(AVAILABLE_EXT_NOTIFICATIONS.queue_dropped, {
-			sessionId,
-			steering: droppedQueue.steering,
-			followUp: droppedQueue.followUp,
-			reason,
-		})
-		.catch((err: unknown) => {
-			process.stderr.write(`acp queue_dropped notification failed: ${String(err)}\n`)
-		})
+	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.queue_dropped, {
+		sessionId,
+		steering: droppedQueue.steering,
+		followUp: droppedQueue.followUp,
+		reason,
+	})
 }
 export function reconcileQueue(
 	previous: string[],

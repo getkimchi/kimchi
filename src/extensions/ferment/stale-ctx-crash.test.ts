@@ -81,7 +81,7 @@ describe("stale-ctx crash on ferment oneshot transition", () => {
 		// returned by getStorage() always reflects the latest in-memory ferment
 		// so refreshActiveFermentFromStorage sees the running/activated state.
 		const realStorage = new FermentEventStore(tmpDir)
-		let ferment = realStorage.create("stale-ctx repro")
+		let ferment = realStorage.create("stale-ctx repro", undefined, process.cwd())
 		writeFermentLock(ferment.id)
 
 		const now = new Date().toISOString()

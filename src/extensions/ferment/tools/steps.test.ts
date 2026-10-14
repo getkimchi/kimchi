@@ -76,7 +76,7 @@ function createHarness(
 		]),
 		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
-	const ferment = storage.create("Step Test")
+	const ferment = storage.create("Step Test", undefined, process.cwd())
 	const scope = applyAndPersist(ferment.id, {
 		type: "scope",
 		goal: options.goal ?? "Goal",

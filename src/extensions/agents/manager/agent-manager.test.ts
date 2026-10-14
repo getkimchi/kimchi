@@ -59,9 +59,12 @@ import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-wor
 import { loadWorkspaceFile, WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
+import { createContext } from "../../__mocks__/context.js"
+import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { captureBaseline, resolveSandboxGitConnection, SandboxGitError } from "../../remote-run/sandbox-git.js"
 import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
+import { flushWorkSummaries } from "../../work-attribution/summary.js"
 import type { AgentRecord } from "../personas/types.js"
 import type { PersistedGitWorkflow, RemoteRunState } from "../remote-run-persistence.js"
 import { AgentManager, buildAgentOutcome } from "./agent-manager.js"
@@ -87,12 +90,16 @@ const mockLoadWorkspaceFile = vi.mocked(loadWorkspaceFile)
 const mockResolveSandboxGitConnection = vi.mocked(resolveSandboxGitConnection)
 const mockCaptureBaseline = vi.mocked(captureBaseline)
 
+afterEach(async () => {
+	await flushWorkSummaries()
+})
+
 function fakePi(): ExtensionAPI {
-	return {} as ExtensionAPI
+	return createExtensionApi().api
 }
 
 function fakeCtx(): ExtensionContext {
-	return {} as ExtensionContext
+	return createContext()
 }
 
 describe("AgentManager", () => {
@@ -930,11 +937,11 @@ describe("AgentManager visibility", () => {
 	it("stores system visibility on queued records", () => {
 		const manager = new AgentManager(undefined, 0)
 		try {
-			const first = manager.spawn({} as never, {} as never, "General-Purpose", "one", {
+			const first = manager.spawn(fakePi(), fakeCtx(), "General-Purpose", "one", {
 				description: "visible agent",
 				isBackground: true,
 			})
-			const second = manager.spawn({} as never, {} as never, "General-Purpose", "two", {
+			const second = manager.spawn(fakePi(), fakeCtx(), "General-Purpose", "two", {
 				description: "system agent",
 				isBackground: true,
 				visibility: "system",

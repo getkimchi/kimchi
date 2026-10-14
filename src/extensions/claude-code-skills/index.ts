@@ -3,7 +3,11 @@ import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent"
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import { Type } from "typebox"
-import { getClaudeCodeSkillResourcePaths, getConfiguredNativeSkillNames } from "./definition.js"
+import {
+	discoverClaudeCodeSkillDirs,
+	getClaudeCodeSkillResourcePaths,
+	getConfiguredNativeSkillNames,
+} from "./definition.js"
 
 interface SkillToolDetails {
 	success: boolean
@@ -33,6 +37,25 @@ export default function claudeCodeSkillsExtension(pi: ExtensionAPI, getSkillPath
 		return { skillPaths }
 	})
 
+	// Register the Skill tool only when a Claude Code skill directory exists:
+	// with no .claude/skills (user or trusted project) the tool is dead weight
+	// on the wire. Registration is per session_start (idempotent — registerTool
+	// replaces by name), so a directory created or a project trusted mid-session
+	// is picked up at the next session.
+	//
+	// NOTE: registration is permanent within the process — once registered for
+	// one session, a later session (same process) without reachable skill dirs
+	// keeps the tool (there is no public unregister). That trade is deliberate:
+	// in practice sessions are one-per-process, and a vote-based hide would add
+	// state tracking for a rare path.
+	pi.on("session_start", (_event, ctx) => {
+		if (discoverClaudeCodeSkillDirs(ctx.cwd).length === 0) return undefined
+		registerSkillTool(pi)
+		return undefined
+	})
+}
+
+function registerSkillTool(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "Skill",
 		label: "Skill",

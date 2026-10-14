@@ -1,10 +1,21 @@
-import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
+import { execFileSync } from "node:child_process"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import type { BeforeProviderHeadersEvent, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import type { McpAdapterOptions, McpConfig } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
+import type * as CliArgs from "../../cli-args.js"
 import type * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { observeToolFiles } from "../work-attribution/file-observations.js"
+import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary.js"
+import { createWorkAttributionExtension, getWorkId } from "../work-attribution.js"
+
+// Spies keep the real observer, so an attributed MCP write reaches Git snapshots and the work ledger.
+vi.mock("../work-attribution/file-observations.js", { spy: true })
 
 const upstream = vi.hoisted(() => ({
 	api: undefined as ExtensionAPI | undefined,
@@ -50,7 +61,9 @@ vi.mock("pi-mcp-adapter", () => ({
 	}),
 }))
 
-vi.mock("../../cli-args.js", () => ({
+// The real work-attribution chain reads other CLI helpers, so only the parsed arguments are replaced.
+vi.mock("../../cli-args.js", async (importOriginal) => ({
+	...(await importOriginal<typeof CliArgs>()),
 	getParsedCliArgs: () => ({
 		options: {
 			"mcp-config": cliState.mcpConfig,
@@ -85,8 +98,10 @@ vi.mock("../../shared/planning/tool-profile-manager.js", () => ({
 	registerReadOnlyToolProvider: planning.registerReadOnlyToolProvider,
 }))
 
+// Wire names carry their server's prefix, as with the adapter's default "server" prefix mode.
 vi.mock("./read-only.js", () => ({
-	collectReadOnlyMcpWireNames: () => [...readOnlyState.wireNames],
+	collectReadOnlyMcpWireNames: (_config: McpConfig, server?: string) =>
+		[...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`)),
 }))
 
 vi.mock("../permissions/mode-controller.js", () => ({
@@ -329,6 +344,120 @@ describe("upstream MCP adapter facade", () => {
 		api.registerTool(tool("docs_delete_issue", "MCP: delete_issue"))
 		expect(harness.getActiveToolNames()).toContain("docs_delete_issue")
 		profiles.resetAll()
+	})
+
+	it("observes local file changes for write-capable MCP tools but skips qualified read-only tools", async () => {
+		vi.mocked(observeToolFiles).mockClear()
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		readOnlyState.wireNames.add("docs_get_issue")
+		upstream.api?.registerTool(tool("docs_get_issue", "Read"))
+		upstream.api?.registerTool(tool("docs_write", "Write"))
+		const ctx = createContext()
+		for (const registered of harness.getRegisteredTools())
+			await registered.execute(registered.name, {}, undefined, undefined, ctx)
+		expect(observeToolFiles).toHaveBeenCalledExactlyOnceWith(ctx, "docs_write", "mcp", expect.any(Function))
+	})
+
+	it("observes gateway calls only when an action or a tool not qualified read-only can write", async () => {
+		vi.mocked(observeToolFiles).mockClear()
+		configState.config = { mcpServers: { docs: { command: "docs" }, other: { command: "other" } } }
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		readOnlyState.wireNames.add("docs_get_issue")
+		upstream.api?.registerTool(tool("mcp", "MCP"))
+		const calls = {
+			search: { search: "issue" },
+			describe: { describe: "docs_write" },
+			instructions: { instructions: "docs" },
+			list: { server: "docs" },
+			status: {},
+			read: { tool: "docs_get_issue", args: {} },
+			"read-on-server": { tool: "docs_get_issue", server: "docs" },
+			"another-server": { tool: "docs_get_issue", server: "other" },
+			write: { tool: "docs_write", args: {} },
+			install: { action: "install", url: "https://example.test/mcp" },
+		}
+		const ctx = createContext()
+		for (const [id, params] of Object.entries(calls))
+			await harness.getRegisteredTool("mcp").execute(id, params, undefined, undefined, ctx)
+		expect(vi.mocked(observeToolFiles).mock.calls.map((call) => call[1])).toEqual([
+			"another-server",
+			"write",
+			"install",
+		])
+	})
+
+	it("records a proxied MCP tool's real file write under its model request and work", async () => {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-mcp-write-")))
+		onTestFinished(async () => {
+			await flushWorkSummaries()
+			vi.unstubAllEnvs()
+			rmSync(root, { recursive: true, force: true })
+		})
+		const cwd = join(root, "repo")
+		const agentDir = join(root, "agent")
+		vi.stubEnv("PI_CODING_AGENT_DIR", agentDir)
+		const git = (...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim()
+		mkdirSync(cwd)
+		git("init", "-q")
+		git("config", "user.name", "MCP Test")
+		git("config", "user.email", "mcp@example.invalid")
+		git("config", "commit.gpgSign", "false")
+		git("commit", "-q", "--allow-empty", "-m", "base")
+		const ctx = createContext({ cwd, sessionManager: { getSessionId: () => "mcp-write" } })
+		// Pi reports the assistant response before running its tool calls; that pins each call to its request.
+		const work = createExtensionApi()
+		createWorkAttributionExtension()(work.api)
+		const request: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await work.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(request, ctx)
+		const workId = getWorkId(ctx)
+		await work.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "write-notes", name: "docs_write" }],
+				},
+			},
+			ctx,
+		)
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		const api = upstream.api
+		if (!api) throw new Error("Adapter was not installed")
+		api.registerTool({
+			...tool("docs_write", "Write"),
+			execute: async () => {
+				mkdirSync(join(cwd, "docs"))
+				writeFileSync(join(cwd, "docs", "notes.md"), "# Notes\n")
+				return { content: [{ type: "text", text: "written" }], details: {} }
+			},
+		})
+
+		await harness.getRegisteredTool("docs_write").execute("write-notes", {}, undefined, undefined, ctx)
+
+		expect(readWorkRecords(agentDir).filter((row) => row.type === "file_observation")).toEqual([
+			expect.objectContaining({
+				source: "mcp",
+				toolCallId: "write-notes",
+				requestId: request.headers["X-Request-Id"],
+				workId,
+				complete: true,
+				files: [
+					{
+						path: "docs/notes.md",
+						before: null,
+						after: { blob: git("hash-object", "docs/notes.md"), mode: "100644" },
+					},
+				],
+			}),
+		])
 	})
 
 	it("blocks all direct and gateway MCP calls while the live permission mode is plan", async () => {
