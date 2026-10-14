@@ -9,19 +9,19 @@ test.use(TUI_TEST_CONFIG)
 /**
  * Chatting must keep working while another process syncs the shared
  * auth.json concurrently (second session, `auth check`, upstream OAuth
- * refresh). The auth-storage lock-free-reads hunk resolves every
- * file-backed credential read without the write lock; the first read after
- * an external revision change must yield the bare credential map (see the
- * seam tests in src/pi-auth-storage.test.ts for the wrapper-shape bug this
- * hunk introduced and #1424 consumer-fixed).
+ * refresh). Every chat request resolves the provider credential, so a
+ * running session re-reads auth.json on every turn. The lock-free read in
+ * dist/core/auth-storage.js is the path that must heal transient tears
+ * (see the regression tests in src/pi-auth-storage.test.ts).
  *
- * The churner rewrites auth.json with a truncated document every 25ms, so a
- * session that DID re-read credentials mid-sync would observe a partial
- * file — torn reads heal to the last valid snapshot instead of surfacing
- * "JSON Parse error" or "API key auth failed".
+ * The churner models an upstream modify() truncate-then-write cycle: it
+ * writes a partial document, waits 5ms (inside the lock-free retry
+ * backoff), writes the valid snapshot back, and repeats every 25ms. A
+ * reading session SHOULD never surface "Credential store read failed" or
+ * "API key auth failed".
  */
 test("chat session keeps working while auth.json is synced concurrently", async ({ terminal }) => {
-	const responses = [1, 2, 3].map((n) => ({ stream: [`Turn ${n}`, " completed."] }))
+	const responses = [1, 2, 3, 4, 5, 6].map((n) => ({ stream: [`Turn ${n}`, " completed."] }))
 	await runKimchiSession(
 		terminal,
 		{
@@ -54,12 +54,21 @@ test("chat session keeps working while auth.json is synced concurrently", async 
 					"-e",
 					`const fs = require("node:fs");
 const p = process.argv[1];
+// Snapshot the valid auth.json once at start; persist across the loop.
+const valid = fs.readFileSync(p);
 const partial = '{ "kimchi-dev/openai": { "type": "api_key", "key": "fa';
-const end = Date.now() + 60000;
+const wait = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const end = Date.now() + 90000;
 while (Date.now() < end) {
+  // Simulate upstream modify() truncate-then-write under lock: partial,
+  // hold 5ms, then completed write. A lock-free read inside the 5ms
+  // window observes the tear; the lock-free retry backoff (10ms) must
+  // outlive it.
   fs.writeFileSync(p, partial);
+  wait(5);
+  fs.writeFileSync(p, valid);
   fs.chmodSync(p, 0o600);
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+  wait(25);
 }`,
 					authPath,
 				],
