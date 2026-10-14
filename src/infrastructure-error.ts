@@ -78,9 +78,8 @@ export function createInfrastructureErrorTracker(): InfrastructureErrorTracker {
 						// placeholder, which classifies as nothing and would silently
 						// drop terminal post-retry failures. Registration order happens
 						// to shield this today, but the guard must not depend on it.
-						// (fallback keeps the narrowed string type; errorMessage is already
-						// a string here, so this is the same read with type narrowing)
-						const rawMessage = getRawErrorMessage(message) ?? message.errorMessage
+						const rawMessage = getRawErrorMessage(message)
+						if (typeof rawMessage !== "string") return
 						error = classifyLLMGatewayError(rawMessage)
 						recordClassificationAudit(pi, rawMessage, error)
 					}

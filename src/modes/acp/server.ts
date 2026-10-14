@@ -1427,7 +1427,7 @@ export class KimchiAcpAgent implements Agent {
 					// JSON-RPC error message, defeat classifyLLMGatewayError (so
 					// data.kind/retryAtMs are lost), and pollute the persisted log the
 					// Studio error restore reads.
-					turn.lastAssistantError = { stopReason: "error", errorMessage: getRawErrorMessage(msg) ?? msg.errorMessage }
+					turn.lastAssistantError = { stopReason: "error", errorMessage: getRawErrorMessage(msg) }
 				} else if (msg.stopReason !== "aborted") {
 					turn.lastAssistantError = undefined
 				}
