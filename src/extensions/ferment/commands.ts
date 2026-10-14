@@ -10,10 +10,11 @@ import { isFermentRunnable } from "../permissions/policy.js"
 import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
-import { decideContinuation } from "./continuation.js"
+import { clearFermentDegraded, decideContinuation, effectiveContinuationPolicy } from "./continuation.js"
 import { createFerment } from "./create.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import { emitFermentCreated } from "./domain-events-emitter.js"
+import { FERMENT_PLAN_ONLY_MESSAGE } from "./elevation-gate.js"
 import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { clearLifecycleGuard } from "./lifecycle-obligation-guard.js"
@@ -260,7 +261,7 @@ export async function startFermentForIntent({
 	}
 	// Org policy: without an executable mode, ferment cannot run.
 	if (!isFermentRunnable()) {
-		ctx.ui.notify("Your organization's policy only allows plan mode — ferment cannot run.", "warning")
+		ctx.ui.notify(FERMENT_PLAN_ONLY_MESSAGE, "warning")
 		return undefined
 	}
 	ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · creating…")
@@ -322,7 +323,7 @@ function recordManualBoundaryBreadcrumb(
 	active: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
 	runtime: FermentRuntime,
 ): void {
-	const decision = decideContinuation(active, runtime.getContinuationPolicy())
+	const decision = decideContinuation(active, effectiveContinuationPolicy(active.id, runtime.getContinuationPolicy()))
 	if (decision.type !== "wait_manual_boundary") return
 	sendBreadcrumb(pi, `Manual policy waiting at phase boundary for "${active.name}".`, "step")
 }
@@ -335,6 +336,10 @@ function setAutomatedContinuationPolicy(pi: ExtensionAPI, ctx: ExtensionContext,
 		applyFermentRuntimeToolProfile(pi, runtime)
 		return
 	}
+
+	// The user explicitly automated this ferment: lift a stale degraded marker
+	// (from a declined elevation gate) so it follows the new policy.
+	clearFermentDegraded(active.id)
 
 	if (active.status === "paused") {
 		ctx.ui.notify(`Continuation policy set to automated. "${active.name}" is paused; run /ferment resume to resume.`)
@@ -352,7 +357,7 @@ async function confirmManualPhaseBoundaryForCommand(
 	runtime: FermentRuntime,
 	active: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
 ): Promise<boolean> {
-	const decision = decideContinuation(active, runtime.getContinuationPolicy())
+	const decision = decideContinuation(active, effectiveContinuationPolicy(active.id, runtime.getContinuationPolicy()))
 	if (decision.type !== "wait_manual_boundary") return false
 	recordManualBoundaryBreadcrumb(pi, active, runtime)
 
@@ -403,7 +408,7 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: ExtensionContext, runt
 	}
 
 	if (!ctx.hasUI) {
-		ctx.ui.notify(formatFermentStatus(active, runtime.getContinuationPolicy()))
+		ctx.ui.notify(formatFermentStatus(active, effectiveContinuationPolicy(active.id, runtime.getContinuationPolicy())))
 		return
 	}
 	const select = ctx.ui.select.bind(ctx.ui)
@@ -837,7 +842,7 @@ export class FermentCommandController {
 
 			clearLifecycleGuard(active.id)
 			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
-			const message = `Resumed "${outcome.ferment.name}". Continuation policy: ${runtime.getContinuationPolicy()}.`
+			const message = `Resumed "${outcome.ferment.name}". Continuation policy: ${effectiveContinuationPolicy(outcome.ferment.id, runtime.getContinuationPolicy())}.`
 			sendBreadcrumb(pi, message, "ack")
 			ctx.ui.notify(message)
 			restoreFermentWork(pi, outcome.ferment.id, ctx)
@@ -1034,6 +1039,12 @@ export class FermentCommandController {
 				ctx.ui.notify(`A ferment is already running: "${active.name}". Use /ferment progress to check status.`)
 				return { handled: true }
 			}
+			// Org policy: without an executable mode, ferment cannot run — refuse
+			// up front, before prompting or creating anything.
+			if (!isFermentRunnable()) {
+				ctx.ui.notify(FERMENT_PLAN_ONLY_MESSAGE, "warning")
+				return { handled: true }
+			}
 			const intent = command.intent
 			let resolvedIntent = intent
 			if (!resolvedIntent) {
@@ -1104,6 +1115,12 @@ export class FermentCommandController {
 		}
 		if (command.type !== "new") {
 			ctx.ui.notify(FERMENT_COMMAND_USAGE)
+			return { handled: true }
+		}
+		// Org policy: without an executable mode, ferment cannot run — refuse up
+		// front, before prompting or creating anything.
+		if (!isFermentRunnable()) {
+			ctx.ui.notify(FERMENT_PLAN_ONLY_MESSAGE, "warning")
 			return { handled: true }
 		}
 		let rawName = command.title

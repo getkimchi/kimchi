@@ -2,6 +2,13 @@ import type { PermissionMode, PermissionModeMeta, PermissionsConfig } from "./ty
 
 export const PERMISSIONS_ENV_KEY = "KIMCHI_PERMISSIONS"
 
+/**
+ * DANGER: Bypass flag that disables ALL permission checks.
+ * WARNING: This skips denylist, rules, classifier, and prompts.
+ * For throwaway/sandboxed environments ONLY.
+ */
+export const DANGEROUS_BYPASS_FLAG = "dangerously-skip-permissions"
+
 export const PERMISSION_MODES: readonly PermissionMode[] = ["default", "plan", "auto", "yolo"] as const
 
 export const PERMISSION_MODE_META: Record<PermissionMode, PermissionModeMeta> = {

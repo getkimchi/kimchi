@@ -18,10 +18,12 @@ import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
 import { deleteRemoteSession, type RemoteSessionMeta } from "../agents/manager/remote-agent-runner.js"
 import type { PersistedGitWorkflow } from "../agents/remote-run-persistence.js"
 import { readE2eSeam } from "../e2e-seam.js"
+import { FERMENT_PLAN_ONLY_MESSAGE } from "../ferment/elevation-gate.js"
 import { withWorkingHidden } from "../ferment/prompt-ui.js"
 import { defaultFermentRuntime } from "../ferment/runtime.js"
 import { createApplyAndPersist } from "../ferment/tool-helpers.js"
 import { withBlocked } from "../herdr-events.js"
+import { isFermentRunnable } from "../permissions/policy.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { trackRemoteExecution } from "../telemetry/index.js"
 import { SANDBOX_USER } from "../teleport/provisioning/constants.js"
@@ -413,10 +415,15 @@ function completeFerment(fermentId?: string): void {
  * Resumes the ferment so the user can continue locally after the remote agent
  * finishes. Called for Review and Custom choices — the remote agent's
  * work is available in the transcript, but the ferment stays open for local
- * follow-up.
+ * follow-up. A plan-only policy refuses the resume (ferment cannot run);
+ * the ferment stays paused for the user.
  */
 function resumeFerment(fermentId?: string): void {
 	if (!fermentId) return
+	if (!isFermentRunnable()) {
+		console.error(FERMENT_PLAN_ONLY_MESSAGE)
+		return
+	}
 	const applyAndPersist = createApplyAndPersist(defaultFermentRuntime)
 	const outcome = applyAndPersist(fermentId, { type: "resume" })
 	if (outcome.ok) {
@@ -431,6 +438,11 @@ function resumeFerment(fermentId?: string): void {
  */
 async function confirmResumeFerment(ctx: ExtensionContext, fermentId?: string): Promise<void> {
 	if (!fermentId) return
+	// A plan-only policy refuses ferment entirely — don't ask, just say why.
+	if (!isFermentRunnable()) {
+		ctx.ui.notify(FERMENT_PLAN_ONLY_MESSAGE, "warning")
+		return
+	}
 	const confirmed = await withWorkingHidden(ctx.ui, () =>
 		ctx.ui.confirm("Resume ferment?", "The ferment is paused. Resume it now to continue locally?"),
 	)

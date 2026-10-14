@@ -36,8 +36,13 @@ import { registerAgentSpawnGuard } from "./agent-spawn-guard.js"
 import { maybeTriggerFermentCompaction } from "./auto-compaction.js"
 import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
-import { decideContinuation } from "./continuation.js"
-import { applyDegradedFermentStart, gateFermentElevation } from "./elevation-gate.js"
+import { clearFermentDegraded, decideContinuation } from "./continuation.js"
+import {
+	applyDegradedFermentStart,
+	deactivateIfStillActive,
+	FERMENT_PLAN_ONLY_MESSAGE,
+	gateFermentElevation,
+} from "./elevation-gate.js"
 import { registerFermentEvents } from "./events.js"
 import { registerFermentLifecycleContext } from "./lifecycle-context.js"
 import { deletePendingProposal } from "./pending-proposal-store.js"
@@ -118,6 +123,9 @@ function registerFermentStopPolicyShortcut(pi: ExtensionAPI, runtime: FermentRun
 
 			const next = runtime.getContinuationPolicy() === "manual" ? "automated" : "manual"
 			runtime.setContinuationPolicy(next)
+			// Automating the active ferment is an explicit user choice: lift a stale
+			// degraded marker (from a declined elevation gate) so it follows.
+			if (next === "automated" && active) clearFermentDegraded(active.id)
 			applyFermentRuntimeToolProfile(pi, runtime)
 			requestSharedStatusLineRender()
 		},
@@ -277,19 +285,20 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 			// Elevation gate: ask before the ferment activates under a restricting
 			// policy (ladder in elevation-gate.ts). Cancelled/blocked → no execution.
 			const gate = reviewCtx.ctx ? await gateFermentElevation(reviewCtx.ctx, fermentId) : ({ kind: "stayed" } as const)
-			if (gate.kind === "cancelled") {
-				reviewCtx.ctx?.ui?.notify?.("Ferment start cancelled.", "info")
+			if (gate.kind === "cancelled" || gate.kind === "blocked") {
+				reviewCtx.ctx?.ui?.notify?.(
+					gate.kind === "blocked" ? FERMENT_PLAN_ONLY_MESSAGE : "Ferment start cancelled.",
+					gate.kind === "blocked" ? "warning" : "info",
+				)
 				runtime.clearPendingPlanReview(fermentId)
+				// Leave the scoped ferment INACTIVE for a later /ferment resume —
+				// but only if it still owns the global active slot (another
+				// ferment may have claimed it while the dialog was open).
+				deactivateIfStillActive(runtime, fermentId)
 				applyFermentRuntimeToolProfile(pi, runtime)
 				return
 			}
-			if (gate.kind === "blocked") {
-				reviewCtx.ctx?.ui?.notify?.("Your organization's policy only allows plan mode — ferment cannot run.", "warning")
-				runtime.clearPendingPlanReview(fermentId)
-				applyFermentRuntimeToolProfile(pi, runtime)
-				return
-			}
-			if (gate.kind === "degraded" && reviewCtx.ctx) applyDegradedFermentStart(reviewCtx.ctx, runtime)
+			if (gate.kind === "degraded" && reviewCtx.ctx) applyDegradedFermentStart(reviewCtx.ctx, fermentId)
 			const scopeOutcome = confirmPendingScope(runtime, fermentId, undefined, "turn_end", pi)
 			if (!scopeOutcome.ok) {
 				reviewCtx.ctx?.ui?.notify?.(`Failed to save plan: ${scopeOutcome.error.message}`, "error")

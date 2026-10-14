@@ -41,7 +41,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { DeclarativeAction } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
-import { decideContinuation } from "./continuation.js"
+import { decideContinuation, effectiveContinuationPolicy } from "./continuation.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import { refreshActiveFermentFromStorage } from "./nudge.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -335,7 +335,7 @@ export function maybeInjectLifecycleObligationGuard(
 		return false
 	}
 
-	const obligation = deriveObligation(fresh, runtime.getContinuationPolicy())
+	const obligation = deriveObligation(fresh, effectiveContinuationPolicy(fresh.id, runtime.getContinuationPolicy()))
 	if (!obligation) return false
 
 	const decision = evaluateLifecycleStop(obligation)

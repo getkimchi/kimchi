@@ -1,10 +1,8 @@
-import { mkdtempSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-
+import type { CustomEntry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { type AllowedPermissionModes, fetchOrgPolicy } from "../../api/org-settings.js"
-import { initOrgPolicy, resetOrgPolicyForTests } from "../../org-policy.js"
+import { resetOrgPolicyForTests } from "../../org-policy.js"
+import { seedOrgPolicy } from "../__mocks__/org-policy.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import type { LoadedConfig } from "./config.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "./mode.js"
@@ -32,12 +30,9 @@ const TEST_CONFIG: LoadedConfig = {
 	paths: {},
 }
 
-/** Install a policy in the holder through the public API (throwaway cache file — never the real ~/.config one). */
+/** Install a policy in the holder through the public API (mocked fetch, throwaway cache file — never the real ~/.config one). */
 async function allowModes(modes: AllowedPermissionModes) {
-	mockedFetchOrgPolicy.mockResolvedValue({ kind: "policy", orgId: "org-1", policy: { allowedPermissionModes: modes } })
-	await initOrgPolicy("key", {
-		cachePath: join(mkdtempSync(join(tmpdir(), "mode-controller-test-")), "org-policy.json"),
-	})
+	await seedOrgPolicy(modes)
 }
 
 afterEach(() => {
@@ -45,13 +40,12 @@ afterEach(() => {
 	mockedFetchOrgPolicy.mockReset()
 })
 
-function makeEntries(modes: PermissionMode[]): Array<{
-	type: "custom"
-	customType: string
-	data: PermissionModeState
-}> {
-	return modes.map((mode) => ({
+function makeEntries(modes: PermissionMode[]): CustomEntry[] {
+	return modes.map((mode, i) => ({
 		type: "custom",
+		id: `mode-entry-${i}`,
+		parentId: null,
+		timestamp: "2026-01-01T00:00:00.000Z",
 		customType: PERMISSION_MODE_SESSION_ENTRY_TYPE,
 		data: { mode, source: "runtime", initiatedBy: "user" },
 	}))
@@ -59,8 +53,7 @@ function makeEntries(modes: PermissionMode[]): Array<{
 
 function makeSessionManager(modes: PermissionMode[]) {
 	return {
-		getEntries: () =>
-			makeEntries(modes) as unknown as ReturnType<Parameters<typeof getPersistedPermissionMode>[0]["getEntries"]>,
+		getEntries: () => makeEntries(modes),
 	}
 }
 
@@ -320,8 +313,7 @@ describe("org-policy mode clamping", () => {
 	function sessionManagerWith(modes: PermissionMode[]) {
 		return {
 			getSessionId: () => "sess-clamp",
-			getEntries: () =>
-				makeEntries(modes) as unknown as ReturnType<Parameters<typeof getPersistedPermissionMode>[0]["getEntries"]>,
+			getEntries: () => makeEntries(modes),
 		}
 	}
 
@@ -370,8 +362,7 @@ describe("org-policy mode clamping", () => {
 	})
 
 	it("leaves everything allowed when no policy is set (fail open)", async () => {
-		mockedFetchOrgPolicy.mockResolvedValue({ kind: "policy", orgId: "org-1", policy: undefined })
-		await initOrgPolicy("key", { cachePath: join(mkdtempSync(join(tmpdir(), "mode-controller-test-")), "o.json") })
+		await seedOrgPolicy(undefined)
 		const resolved = resolveInitialPermissionMode(sessionManagerWith([]), undefined, "yolo", TEST_CONFIG)
 		expect(resolved.mode).toBe("yolo")
 	})

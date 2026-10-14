@@ -1,6 +1,12 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 import type { Ferment, Phase } from "../../ferment/types.js"
-import { decideContinuation } from "./continuation.js"
+import {
+	clearFermentDegraded,
+	decideContinuation,
+	effectiveContinuationPolicy,
+	isFermentDegraded,
+	markFermentDegraded,
+} from "./continuation.js"
 
 function phase(overrides: Partial<Phase>): Phase {
 	return {
@@ -137,5 +143,48 @@ describe("decideContinuation", () => {
 
 		expect(decideContinuation(paused, "automated").type).toBe("paused")
 		expect(decideContinuation(complete, "automated").type).toBe("idle")
+	})
+})
+
+describe("per-ferment degraded state", () => {
+	afterEach(() => clearFermentDegraded("ferment-1"))
+
+	// Phase 1 complete, phase 2 planned: the boundary decideContinuation gates on.
+	const boundaryFerment = () =>
+		ferment({
+			phases: [
+				phase({ id: "phase-1", index: 1, status: "completed" }),
+				phase({ id: "phase-2", index: 2, status: "planned" }),
+			],
+		})
+
+	it("a degraded ferment waits at the manual boundary even under an automated session policy", () => {
+		markFermentDegraded("ferment-1")
+
+		expect(isFermentDegraded("ferment-1")).toBe(true)
+		expect(effectiveContinuationPolicy("ferment-1", "automated")).toBe("manual")
+		expect(decideContinuation(boundaryFerment(), "automated").type).toBe("wait_manual_boundary")
+	})
+
+	it("only the marked ferment is degraded — a concurrent ferment keeps the session policy", () => {
+		markFermentDegraded("ferment-1")
+
+		expect(effectiveContinuationPolicy("ferment-other", "automated")).toBe("automated")
+		expect(decideContinuation({ ...boundaryFerment(), id: "ferment-other" }, "automated").type).toBe("continue")
+	})
+
+	it("clearing the marker restores the session policy", () => {
+		markFermentDegraded("ferment-1")
+		clearFermentDegraded("ferment-1")
+
+		expect(isFermentDegraded("ferment-1")).toBe(false)
+		expect(effectiveContinuationPolicy("ferment-1", "automated")).toBe("automated")
+		expect(decideContinuation(boundaryFerment(), "automated").type).toBe("continue")
+	})
+
+	it("degraded state changes nothing under a manual session policy", () => {
+		markFermentDegraded("ferment-1")
+
+		expect(decideContinuation(boundaryFerment(), "manual").type).toBe("wait_manual_boundary")
 	})
 })

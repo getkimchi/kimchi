@@ -3,10 +3,13 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createEventBus, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { fetchOrgPolicy } from "../../api/org-settings.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
 import { createContext } from "../__mocks__/context.js"
+import { seedOrgPolicy } from "../__mocks__/org-policy.js"
 import { HERDR_EVENTS, withBlocked } from "../herdr-events.js"
 import {
 	FermentCommandController,
@@ -16,12 +19,17 @@ import {
 	startInteractiveFerment,
 } from "./commands.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
+import { FERMENT_PLAN_ONLY_MESSAGE } from "./elevation-gate.js"
 import { clearAllLifecycleGuards, maybeInjectLifecycleObligationGuard } from "./lifecycle-obligation-guard.js"
 import { maybeInjectScopingStopNudge, resetAllScopingStopNudgeCounts } from "./nudge.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
+
+vi.mock("../../api/org-settings.js", () => ({
+	fetchOrgPolicy: vi.fn(),
+}))
 
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>()
@@ -62,6 +70,8 @@ afterEach(() => {
 	clearAllPendingPlanReviews()
 	clearAllLifecycleGuards()
 	resetAllScopingStopNudgeCounts()
+	resetOrgPolicyForTests()
+	vi.mocked(fetchOrgPolicy).mockReset()
 })
 
 interface RegisteredCommand {
@@ -1963,5 +1973,39 @@ describe("registerFermentCommands", () => {
 			}),
 			{ triggerTurn: true },
 		)
+	})
+})
+
+describe("FermentCommandController org-policy refusals", () => {
+	it("refuses /ferment new up front under a plan-only policy", async () => {
+		const h = createHarness()
+		await seedOrgPolicy({ plan: true, default: false, auto: false, yolo: false })
+		const controller = new FermentCommandController()
+
+		const result = await controller.execute(
+			{ type: "new", title: "Should Not Exist" },
+			{ raw: 'new "Should Not Exist"', pi: h.pi, ctx: h.ctx, runtime: h.runtime },
+		)
+
+		expect(result).toEqual({ handled: true })
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith(FERMENT_PLAN_ONLY_MESSAGE, "warning")
+		expect(h.storage.list().find((f) => f.name === "Should Not Exist")).toBeUndefined()
+		expect(h.runtime.setActive).not.toHaveBeenCalled()
+	})
+
+	it("refuses /ferment one-shot under a plan-only policy", async () => {
+		const h = createHarness()
+		await seedOrgPolicy({ plan: true, default: false, auto: false, yolo: false })
+		const controller = new FermentCommandController()
+
+		const result = await controller.execute(
+			{ type: "one-shot", intent: "Should not run" },
+			{ raw: 'one-shot "Should not run"', pi: h.pi, ctx: h.ctx, runtime: h.runtime },
+		)
+
+		expect(result).toEqual({ handled: true })
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith(FERMENT_PLAN_ONLY_MESSAGE, "warning")
+		expect(h.storage.list()).toHaveLength(0)
+		expect(h.runtime.setActive).not.toHaveBeenCalled()
 	})
 })

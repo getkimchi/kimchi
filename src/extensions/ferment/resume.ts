@@ -1,10 +1,12 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
+import { isFermentRunnable } from "../permissions/policy.js"
 import { setWorkId, tryWorkAttribution } from "../work-attribution.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
+import { effectiveContinuationPolicy } from "./continuation.js"
 import { emitFermentScopingResumed } from "./domain-events-emitter.js"
-import { applyDegradedFermentStart, gateFermentElevation } from "./elevation-gate.js"
+import { applyDegradedFermentStart, FERMENT_PLAN_ONLY_MESSAGE, gateFermentElevation } from "./elevation-gate.js"
 import { clearLifecycleGuard } from "./lifecycle-obligation-guard.js"
 import { appendRefEntry, resetScopingStopNudgeCount } from "./nudge.js"
 import { loadPendingProposal } from "./pending-proposal-store.js"
@@ -90,15 +92,22 @@ export async function resumeFerment(
 	// running) under a restricting policy. Drafts skip the gate — their
 	// execution is gated at the plan-review decision instead.
 	if (existing.status !== "draft") {
-		const gate = ctx?.hasUI
-			? await gateFermentElevation(ctx, existing.id, existing.name)
-			: ({ kind: "stayed" } as const)
-		if (gate.kind === "cancelled") return
-		if (gate.kind === "blocked") {
-			ctx?.ui?.notify?.("Your organization's policy only allows plan mode — ferment cannot run.", "warning")
+		// Plan-only policies refuse headless resumes too. Checked synchronously so
+		// headless resumes stay sync up to the wake-up nudge (the gate itself only
+		// ever stays or blocks without a UI).
+		if (!isFermentRunnable()) {
+			ctx.ui.notify(FERMENT_PLAN_ONLY_MESSAGE, "warning")
 			return
 		}
-		if (gate.kind === "degraded") applyDegradedFermentStart(ctx, runtime)
+		if (ctx.hasUI) {
+			const gate = await gateFermentElevation(ctx, existing.id, existing.name)
+			if (gate.kind === "cancelled") return
+			if (gate.kind === "blocked") {
+				ctx.ui.notify(FERMENT_PLAN_ONLY_MESSAGE, "warning")
+				return
+			}
+			if (gate.kind === "degraded") applyDegradedFermentStart(ctx, existing.id)
+		}
 	}
 
 	// Session_shutdown sets running ferments to "paused"; flip back to running
@@ -188,7 +197,7 @@ export async function resumeFerment(
 		}
 	}
 
-	const breadcrumb = `Resumed ferment: "${existing.name}" [${existing.status}] ${runtime.getContinuationPolicy()} policy`
+	const breadcrumb = `Resumed ferment: "${existing.name}" [${existing.status}] ${effectiveContinuationPolicy(existing.id, runtime.getContinuationPolicy())} policy`
 
 	safeSendMessage(
 		pi,

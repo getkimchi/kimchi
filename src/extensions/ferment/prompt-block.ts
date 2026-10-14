@@ -5,6 +5,7 @@ import { getAgentConfig, getDefaultAgentNames } from "../agents/personas/agent-t
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { SCOPING_DISCOVERY_GUIDANCE, SCOPING_EXPLORE_TOKEN_BUDGET } from "./constants.js"
+import { effectiveContinuationPolicy } from "./continuation.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "./format.js"
 import type { FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
@@ -241,11 +242,17 @@ export function buildFermentPromptBlock(
 
 	switch (f.status) {
 		case "draft":
-			if (oneshot) return buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot, delegationMode).trim()
+			if (oneshot)
+				return buildPlannerSupplement(
+					f,
+					effectiveContinuationPolicy(f.id, runtime.getContinuationPolicy()),
+					oneshot,
+					delegationMode,
+				).trim()
 			return undefined
 		case "planned":
 		case "running":
-			return `${buildCurrentStateSection(f)}\n${buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot, delegationMode).trim()}`
+			return `${buildCurrentStateSection(f)}\n${buildPlannerSupplement(f, effectiveContinuationPolicy(f.id, runtime.getContinuationPolicy()), oneshot, delegationMode).trim()}`
 		case "paused":
 			return buildPausedWarning(f).trim()
 		case "complete":

@@ -38,6 +38,8 @@ import { emitFermentCreated } from "../ferment/domain-events-emitter.js"
 import {
 	applyDegradedFermentStart,
 	clearFermentGateDecision,
+	deactivateIfStillActive,
+	FERMENT_PLAN_ONLY_MESSAGE,
 	gateFermentElevation,
 	getFermentGateDecision,
 } from "../ferment/elevation-gate.js"
@@ -76,8 +78,14 @@ import { classifyToolCall } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
-import { BUILTIN_DENY, DEFAULT_CONFIG, PERMISSION_MODES_WITH_META as MODES, PERMISSIONS_ENV_KEY } from "./constants.js"
-import { resolveMode } from "./mode.js"
+import {
+	BUILTIN_DENY,
+	DANGEROUS_BYPASS_FLAG,
+	DEFAULT_CONFIG,
+	PERMISSION_MODES_WITH_META as MODES,
+	PERMISSIONS_ENV_KEY,
+} from "./constants.js"
+import { flagModeFromOptions, resolveMode } from "./mode.js"
 import {
 	getPermissionMode,
 	persistPermissionModeIfChanged,
@@ -123,13 +131,6 @@ export function isWithinKimchiPlans(filePath: string, cwd: string): boolean {
 	const abs = resolve(cwd, filePath)
 	return abs.startsWith(plansDir)
 }
-
-/**
- * DANGER: Bypass flag that disables ALL permission checks.
- * WARNING: This skips denylist, rules, classifier, and prompts.
- * For throwaway/sandboxed environments ONLY.
- */
-const DANGEROUS_BYPASS_FLAG = "dangerously-skip-permissions"
 
 // Safe default so any event that fires before session_start (and therefore
 // before doLoadConfig) doesn't crash reading `loaded.config.*`.
@@ -447,7 +448,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	function releaseFromPlanForApproval(ctx: ExtensionContext): boolean {
 		const target = hasOrgPolicyRestrictions() ? highestAllowedHighMode() : "auto"
 		if (!target) {
-			ctx.ui?.notify?.(
+			ctx.ui.notify(
 				"Your organization's policy does not allow auto or yolo mode, so the approved plan cannot be executed here.",
 				"warning",
 			)
@@ -467,16 +468,24 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// but incorrect for ACP use where a single process may have multiple sessions (and therefore ferments)
 	// running at the same time. Fix this when introducing ferment commands to ACP.
 	onActiveFermentChange((hasActive) => {
-		if (!currentCtx) return // No active session
-		// Scoped decision teardown runs before any early return (including the
-		// CLI-flag one): a deactivation must drop the deactivated ferment's own
-		// decision — never another ferment's (ACP runs several per process).
+		// Scoped decision teardown runs before ANY early return (including the
+		// no-session and CLI-flag ones): a deactivation or an A→B active-ferment
+		// switch must drop the deactivated ferment's own decision and degraded
+		// marker — never another ferment's (ACP runs several per process).
 		if (!hasActive) {
 			if (lastActiveFermentId) clearFermentGateDecision(lastActiveFermentId)
 			lastActiveFermentId = undefined
 		} else {
-			lastActiveFermentId = getActiveId()
+			const nextId = getActiveId()
+			// A→B switch: no deactivation event fires for A, so without this its
+			// decision would leak — it is never read again (only the active
+			// ferment's decision is) and never torn down.
+			if (lastActiveFermentId && lastActiveFermentId !== nextId) {
+				clearFermentGateDecision(lastActiveFermentId)
+			}
+			lastActiveFermentId = nextId
 		}
+		if (!currentCtx) return // No active session
 		const current = getRuntimePermissionMode()
 		if (current.source === "flag") return // explicit CLI flag always wins (post-clamp)
 		if (!hasActive) {
@@ -499,7 +508,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// mode change. A degraded decision drops plan → default once the ferment
 		// is actually executing (plan cannot run steps; default is policy-allowed).
 		const restricted = hasOrgPolicyRestrictions()
-		const decision = restricted ? getFermentGateDecision(lastActiveFermentId ?? "") : undefined
+		const decision = restricted ? getFermentGateDecision(lastActiveFermentId) : undefined
 		if (restricted && decision?.kind !== "elevated") {
 			const activeFerment = getActive()
 			const executing = activeFerment?.status === "running" || activeFerment?.status === "planned"
@@ -635,11 +644,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		session.addMany(parseRules(loaded.allowBySource.cli, "allow", "cli"))
 		session.addMany(parseRules(loaded.denyBySource.cli, "deny", "cli"))
 
-		const modeFlags = getParsedCliArgs().options
-		if (modeFlags.plan) cliMode = "plan"
-		else if (modeFlags.auto) cliMode = "auto"
 		// YOLO mode: --yolo and --dangerously-skip-permissions both set yolo mode (no classifier, auto-approve all)
-		else if (modeFlags.yolo || modeFlags[DANGEROUS_BYPASS_FLAG]) cliMode = "yolo"
+		cliMode = flagModeFromOptions(getParsedCliArgs().options)
 
 		const current = getInitialPermissionMode(ctx.sessionManager)
 		let next = current
@@ -652,7 +658,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// entry; resume skips ferment-owned entries, so the session restores the
 		// previous user mode. Only applies when no explicit CLI mode flag was given.
 		const restricted = hasOrgPolicyRestrictions()
-		const gateDecision = restricted ? getFermentGateDecision(lastActiveFermentId ?? "") : undefined
+		const gateDecision = restricted ? getFermentGateDecision(lastActiveFermentId) : undefined
 		if (current.source !== "flag" && hasActiveFerment() && (!restricted || gateDecision?.kind === "elevated")) {
 			if (current.initiatedBy === "user") preFermentMode = current
 			next = {
@@ -1174,19 +1180,20 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					? await gateFermentElevation(ctx, activated.ferment.id, activated.ferment.name)
 					: ({ kind: "stayed" } as const)
 				if (gate.kind === "cancelled" || gate.kind === "blocked") {
-					defaultFermentRuntime.setActive(undefined)
-					ctx?.ui?.notify?.(
-						gate.kind === "blocked"
-							? "Your organization's policy only allows plan mode — ferment cannot run."
-							: "Ferment start cancelled.",
+					// Deactivate only the draft this flow activated: while the gate was
+					// open, another ferment (e.g. another session's wake-up) may have
+					// claimed the process-global active slot — never tear that one down.
+					deactivateIfStillActive(defaultFermentRuntime, draft.id)
+					ctx.ui.notify(
+						gate.kind === "blocked" ? FERMENT_PLAN_ONLY_MESSAGE : "Ferment start cancelled.",
 						gate.kind === "blocked" ? "warning" : "info",
 					)
 					return
 				}
 				if (gate.kind === "degraded") {
-					// Declined elevation: force manual continuation — background steps
-					// cannot answer approval prompts.
-					applyDegradedFermentStart(ctx, defaultFermentRuntime)
+					// Declined elevation: keep THIS ferment on manual continuation —
+					// background steps cannot answer approval prompts.
+					applyDegradedFermentStart(ctx, activated.ferment.id)
 				}
 				defaultFermentRuntime.setActive(activated.ferment)
 				setActiveFermentAndApplyProfile(pi, defaultFermentRuntime, activated.ferment)

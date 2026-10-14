@@ -251,3 +251,40 @@ test("plan-only policy refuses /ferment", async ({ terminal }) => {
 		},
 	)
 })
+
+// Regression: /ferment new "Title" used to create + activate a ferment without
+// the isFermentRunnable refusal (only the bare-intent path checked the policy).
+test("plan-only policy refuses /ferment new with an inline title", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "org-policy-ferment-gate-plan-only-new",
+			gitInit: true,
+			policy: { modes: { plan: true, default: false, auto: false, yolo: false } },
+			env: { KIMCHI_PERMISSIONS: "default" },
+			responses: [{ stream: ["Session ready."] }],
+		},
+		async (_fixture, trace) => {
+			// Stage 1: ready prompt.
+			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
+			trace.step("ready prompt visible")
+
+			// Stage 2: start a ferment with an inline title (skips the intent prompt).
+			terminal.write('/ferment new "Add a cache layer"')
+			await waitForText(terminal, '/ferment new "Add a cache layer"', { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+			trace.step("ran /ferment new with inline title")
+
+			// Stage 3: the refusal — up front, before anything is created.
+			await waitForText(terminal, "Your organization's policy only allows plan mode", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+			trace.step("refusal visible — /ferment new refused under a plan-only policy")
+
+			// Stage 4: no scoping editor prompt and no plan-review dialog.
+			expect(viewText(terminal)).not.toContain("What would you like to ferment?")
+			expect(viewText(terminal)).not.toContain("Proceed with this plan?")
+			trace.step("no scoping prompt, no plan-review dialog")
+		},
+	)
+})

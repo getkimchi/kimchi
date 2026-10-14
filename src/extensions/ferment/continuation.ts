@@ -4,6 +4,35 @@ import type { ContinuationPolicy } from "./state.js"
 
 type ActivatePhaseAction = Extract<DeclarativeAction, { kind: "activate_phase" }>
 
+// ─── Per-ferment degraded state ───────────────────────────────────────────────
+
+// The continuation policy is process-global (state.ts): one knob shared by every
+// ferment in every session of this process. When a ferment's elevation gate is
+// declined, that ONE ferment must continue manually — writing the global policy
+// would silently stop a concurrent ferment's automated wake-ups (cross-session
+// clobber). Degraded ferments are therefore tracked per-id and override the
+// session policy at read time.
+const degradedFerments = new Set<string>()
+
+/** Mark a ferment as degraded (elevation declined): it continues manually regardless of the session policy. */
+export function markFermentDegraded(fermentId: string): void {
+	degradedFerments.add(fermentId)
+}
+
+export function isFermentDegraded(fermentId: string): boolean {
+	return degradedFerments.has(fermentId)
+}
+
+/** Drop one ferment's degraded marker — never another ferment's. */
+export function clearFermentDegraded(fermentId: string): void {
+	degradedFerments.delete(fermentId)
+}
+
+/** The continuation policy that actually governs a ferment: a degraded (declined-elevation) ferment always continues manual; everyone else follows the session policy. */
+export function effectiveContinuationPolicy(fermentId: string, sessionPolicy: ContinuationPolicy): ContinuationPolicy {
+	return degradedFerments.has(fermentId) ? "manual" : sessionPolicy
+}
+
 export type ContinuationDecision =
 	| { type: "continue"; action: DeclarativeAction }
 	| { type: "wait_manual_boundary"; action: ActivatePhaseAction }
@@ -36,8 +65,13 @@ export function decideContinuation(
 		return { type: "idle", action }
 	}
 
+	// Degraded ferments (declined elevation) continue manually even when the
+	// session policy is automated — the policy knob is process-global and must
+	// not be flipped for one ferment's decline.
+	const effectivePolicy = effectiveContinuationPolicy(ferment.id, policy)
+
 	if (
-		policy === "manual" &&
+		effectivePolicy === "manual" &&
 		action.kind === "activate_phase" &&
 		isManualPhaseBoundary(ferment, action) &&
 		!opts.allowManualPhaseBoundary

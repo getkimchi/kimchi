@@ -112,9 +112,11 @@ import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/s
 import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
 import orphanToolResultSanitizerExtension from "./extensions/orphan-tool-result-sanitizer.js"
 import packageInstallGuardExtension from "./extensions/package-install-guard.js"
+import { loadConfig as loadPermissionsConfig } from "./extensions/permissions/config.js"
+import { PERMISSIONS_ENV_KEY } from "./extensions/permissions/constants.js"
 import permissionsExtension from "./extensions/permissions/index.js"
 import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
-import { parseModeString } from "./extensions/permissions/mode.js"
+import { flagModeFromOptions, resolveMode } from "./extensions/permissions/mode.js"
 import { clampMode } from "./extensions/permissions/policy.js"
 import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup/native-compat.js"
 import piiRedactionExtension from "./extensions/pii-redaction/index.js"
@@ -393,15 +395,20 @@ try {
 		// Org policy: a headless one-shot ferment needs an execution mode
 		// (auto/yolo). Refuse — falling back to a plain print session — unless the
 		// EFFECTIVE (post-clamp) permission mode is an allowed high mode, whatever
-		// its origin: an argv flag or the KIMCHI_PERMISSIONS env default.
+		// its origin: an argv flag, the KIMCHI_PERMISSIONS env default, or the
+		// merged permissions config default (same resolution the session applies,
+		// through the shared flag→mode mapping).
 		if (hasFermentOneshotArg(originalArgs)) {
-			const requested = originalArgs.includes("--plan")
-				? "plan"
-				: originalArgs.includes("--auto")
-					? "auto"
-					: originalArgs.includes("--yolo") || originalArgs.includes("--dangerously-skip-permissions")
-						? "yolo"
-						: (parseModeString(process.env.KIMCHI_PERMISSIONS) ?? "default")
+			const cliOptions = getParsedCliArgs().options
+			const configPath =
+				typeof cliOptions["permissions-config"] === "string" ? cliOptions["permissions-config"] : undefined
+			const requested = resolveMode({
+				flag: flagModeFromOptions(cliOptions),
+				env: process.env[PERMISSIONS_ENV_KEY],
+				// Trust-aware: project/local config files only count once the
+				// pre-main trust priming above has run.
+				config: loadPermissionsConfig({ cwd: process.cwd(), cliConfigPath: configPath }).loaded.config.defaultMode,
+			}).mode
 			const effective = clampMode(requested)
 			if (effective !== "auto" && effective !== "yolo") {
 				setPrintGate(hasPrintFlag(originalArgs), false)

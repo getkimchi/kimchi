@@ -3,7 +3,7 @@ import type { DeclarativeAction } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
 import { renderCharterCompact } from "./charter.js"
-import { decideContinuation } from "./continuation.js"
+import { decideContinuation, effectiveContinuationPolicy } from "./continuation.js"
 import type { FermentRuntime } from "./runtime.js"
 import { safeSendMessage, tryPiAction } from "./safe-send.js"
 import { type ContinuationPolicy, isInactiveOrPaused, isTerminal } from "./state.js"
@@ -191,7 +191,10 @@ export function scheduleNextFermentAction(
 	}
 	runtime.setActive(ferment)
 
-	const decision = decideContinuation(ferment, runtime.getContinuationPolicy(), opts)
+	// A degraded (declined-elevation) ferment continues manually even when the
+	// session policy is automated — the policy knob is process-global.
+	const policy = effectiveContinuationPolicy(ferment.id, runtime.getContinuationPolicy())
+	const decision = decideContinuation(ferment, policy, opts)
 	if (decision.type === "wait_manual_boundary") {
 		tryPiAction(() => {
 			pi.appendEntry("ferment_breadcrumb", {
@@ -203,7 +206,7 @@ export function scheduleNextFermentAction(
 	if (decision.type !== "continue") return
 
 	const action = decision.action
-	if (shouldSuppressHiddenNudge(action, runtime.getContinuationPolicy())) return
+	if (shouldSuppressHiddenNudge(action, policy)) return
 	const actionPhase = "phaseId" in action ? ferment.phases.find((p) => p.id === action.phaseId) : undefined
 	const activePhase = ferment.phases.find((p) => p.id === ferment.activePhaseId)
 	const displayPhase = actionPhase ?? activePhase
@@ -223,7 +226,7 @@ export function scheduleNextFermentAction(
 
 	tryPiAction(() => {
 		pi.appendEntry("ferment_breadcrumb", {
-			text: `${breadcrumb} · policy ${runtime.getContinuationPolicy()}`,
+			text: `${breadcrumb} · policy ${policy}`,
 		})
 		safeSendMessage(
 			pi,
@@ -249,9 +252,12 @@ export function scheduleFermentWakeUp(
 		return
 	}
 
-	const decision = decideContinuation(ferment, runtime.getContinuationPolicy(), opts)
+	// A degraded (declined-elevation) ferment continues manually even when the
+	// session policy is automated — the policy knob is process-global.
+	const policy = effectiveContinuationPolicy(ferment.id, runtime.getContinuationPolicy())
+	const decision = decideContinuation(ferment, policy, opts)
 	if (decision.type !== "continue") return
-	if (shouldSuppressHiddenNudge(decision.action, runtime.getContinuationPolicy())) return
+	if (shouldSuppressHiddenNudge(decision.action, policy)) return
 
 	const tag = opts.tag ?? "Wake-up"
 	const baseNudge = buildContextualNudge(ferment, decision.action)
@@ -259,7 +265,7 @@ export function scheduleFermentWakeUp(
 	tryPiAction(() => {
 		if (!opts.skipBreadcrumb) {
 			pi.appendEntry("ferment_breadcrumb", {
-				text: `${tag} [${decision.action.kind}]: "${ferment.name}" [${ferment.status}] · policy ${runtime.getContinuationPolicy()}`,
+				text: `${tag} [${decision.action.kind}]: "${ferment.name}" [${ferment.status}] · policy ${policy}`,
 			})
 		}
 		safeSendMessage(
