@@ -4,6 +4,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { resetOrgPolicyForTests } from "../../org-policy.js"
+import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import * as health from "../telemetry/pr-cost.js"
 import { calculatePullRequestCosts } from "../work-attribution/costs.js"
@@ -64,6 +66,53 @@ afterEach(async () => {
 	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
 	await rm(directory, { recursive: true, force: true })
+})
+
+describe("org usage-reporting policy", () => {
+	afterEach(() => {
+		resetOrgPolicyForTests()
+	})
+
+	it("creates fresh queues disabled under FORCE_OFF", async () => {
+		await setOrgPolicyForTests({ usageReporting: "FORCE_OFF" })
+		const state = await readReportingState(directory)
+		expect(state.enabled).toBe(false)
+	})
+
+	it("re-clamps follow-telemetry queues to disabled on load under FORCE_OFF", async () => {
+		await setOrgPolicyForTests({ usageReporting: "FORCE_OFF" })
+		await files.mkdir(join(directory, "pr-cost-reporting"), { recursive: true })
+		await writeFile(
+			join(directory, "pr-cost-reporting/state.json"),
+			JSON.stringify({
+				version: 1,
+				enabled: true,
+				followsTelemetry: true,
+				producerId: "55555555-5555-4555-8555-555555555555",
+				entries: {},
+			}),
+		)
+		const state = await readReportingState(directory)
+		expect(state.enabled).toBe(false)
+	})
+
+	it("re-clamps follow-telemetry queues to enabled on load under FORCE_ON", async () => {
+		await setOrgPolicyForTests({ usageReporting: "FORCE_ON" })
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+		await files.mkdir(join(directory, "pr-cost-reporting"), { recursive: true })
+		await writeFile(
+			join(directory, "pr-cost-reporting/state.json"),
+			JSON.stringify({
+				version: 1,
+				enabled: false,
+				followsTelemetry: true,
+				producerId: "55555555-5555-4555-8555-555555555555",
+				entries: {},
+			}),
+		)
+		const state = await readReportingState(directory)
+		expect(state.enabled).toBe(true)
+	})
 })
 
 describe("durable reporting queue", () => {

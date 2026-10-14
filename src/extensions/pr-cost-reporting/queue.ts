@@ -3,8 +3,8 @@ import { mkdir, open, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { lock } from "proper-lockfile"
 import { writeFileDurably } from "../../config/json.js"
-import { readTelemetryConfig } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
+import { isTelemetryEnabled } from "../../telemetry-policy.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { isWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
 import { object, SHA256_HEX } from "../work-attribution/summary.js"
@@ -177,7 +177,7 @@ export function snapshotMarkers(content: SnapshotContent): string[] {
 function empty(): ReportingState {
 	return {
 		version: 1,
-		enabled: readTelemetryConfig().enabled,
+		enabled: isTelemetryEnabled(),
 		followsTelemetry: true,
 		producerId: randomUUID(),
 		entries: {},
@@ -256,7 +256,7 @@ async function loadReportingState(agentDir: string): Promise<{ state: ReportingS
 				))
 		)
 			throw new Error("Invalid PR reporting state")
-		if (value.followsTelemetry) value.enabled = readTelemetryConfig().enabled
+		if (value.followsTelemetry) value.enabled = isTelemetryEnabled()
 		const machine = await machineFingerprint()
 		// Two machines sharing a producer would keep replacing each other's claims; the server deduplicates bills across producers.
 		if (machine && value.machine && value.machine !== machine) {

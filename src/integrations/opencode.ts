@@ -2,8 +2,9 @@ import { execFileSync } from "node:child_process"
 import { readJson, writeJson } from "../config/json.js"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
-import { readTelemetryConfig, resolveEndpoints, THIRD_PARTY_MAX_RETRIES } from "../config.js"
+import { resolveEndpoints, THIRD_PARTY_MAX_RETRIES } from "../config.js"
 import type { ModelMetadata } from "../models.js"
+import { isTelemetryEnabled } from "../telemetry-policy.js"
 import { fetchWithRetry } from "../utils/http.js"
 import {
 	NPM_REGISTRY_BASE_URL,
@@ -199,7 +200,7 @@ async function writeOpenCode(
 		existing.compaction = { auto: true }
 	}
 
-	const telemetryEnabled = readTelemetryConfig().enabled
+	const telemetryEnabled = isTelemetryEnabled()
 	const currentPlugins = Array.isArray(existing.plugin) ? existing.plugin : []
 	const latestVersion = await getLatestNpmVersion(OPENCODE_PLUGIN_PACKAGE)
 	const { plugins } = buildUpdatedPlugins({ plugins: currentPlugins, telemetryEnabled, latestVersion })

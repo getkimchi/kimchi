@@ -202,6 +202,7 @@ import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resou
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
+import { applyTelemetryPolicy } from "./telemetry-policy.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installTuiConsoleLogging } from "./tui-console.js"
 import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
@@ -278,7 +279,21 @@ const infrastructureErrorTracker = createInfrastructureErrorTracker()
 await initOrgPolicy(resolveEffectiveApiKey() ?? "")
 
 // --- Telemetry ---
-const telemetryConfig = readTelemetryConfig()
+// The org usage-reporting policy clamp applies at this single construction
+// site: every telemetry consumer below (pre-session events, session
+// accumulator, the in-session extension on both TUI and ACP) reads this one
+// object. Unenforced sessions get the config untouched (fail open).
+const userTelemetryConfig = readTelemetryConfig()
+const telemetryConfig = applyTelemetryPolicy(userTelemetryConfig)
+if (telemetryConfig !== userTelemetryConfig) {
+	// The policy flipped the effective state: FORCE_ON beats an opt-out,
+	// FORCE_OFF beats an opt-in (or the default-on). One stderr line keeps
+	// --print stdout clean; the persisted preference stays for a later
+	// USER_CHOICE transition.
+	console.error(
+		`[policy] usage reporting is enforced ${telemetryConfig.enabled ? "on" : "off"} by your organization; effective telemetry is ${telemetryConfig.enabled ? "enabled" : "disabled"} this session.`,
+	)
+}
 
 // Fire-and-forget app_started on every invocation (respects telemetry opt-out).
 // The promise is tracked internally; drain before process.exit() to reduce

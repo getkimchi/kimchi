@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
+import * as config from "../../config.js"
+import { resetOrgPolicyForTests } from "../../org-policy.js"
+import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import type { MetricData } from "./transport.js"
 import { buildLogRecord, sendLog, sendLogBatch, sendMetrics } from "./transport.js"
 
 vi.mock("../../utils/http.js", () => ({
-	fetchWithRetry: (url: string, init?: RequestInit) => globalThis.fetch(url, init),
+	fetchWithRetry: (url: string, init?: RequestInit, options?: { fetchImpl?: typeof globalThis.fetch }) =>
+		(options?.fetchImpl ?? globalThis.fetch)(url, init),
 }))
 
 const BASE_NS = String(new Date("2026-06-02T10:00:00.000Z").getTime() * 1_000_000)
@@ -225,6 +229,30 @@ describe("sendMetrics", () => {
 		expect(JSON.stringify(body)).not.toContain("private-session")
 	})
 
+	it("aborts aggregate metrics under FORCE_OFF even when the user opted in", async () => {
+		await setOrgPolicyForTests({ usageReporting: "FORCE_OFF" })
+		vi.spyOn(config, "readTelemetryConfig").mockReturnValue(makeConfig())
+		const metrics: MetricData[] = [
+			{ name: "kimchi.pr_cost.queue.depth", type: "Gauge", value: 1, attrs: {}, scope: "aggregate" },
+		]
+
+		await sendMetrics(makeConfig(), "session-abc", metrics, BASE_NS)
+
+		expect(globalThis.fetch).not.toHaveBeenCalled()
+	})
+
+	it("sends aggregate metrics under FORCE_ON even when the user opted out", async () => {
+		await setOrgPolicyForTests({ usageReporting: "FORCE_ON" })
+		vi.spyOn(config, "readTelemetryConfig").mockReturnValue(makeConfig({ enabled: false }))
+		const metrics: MetricData[] = [
+			{ name: "kimchi.pr_cost.queue.depth", type: "Gauge", value: 1, attrs: {}, scope: "aggregate" },
+		]
+
+		await sendMetrics(makeConfig(), "session-abc", metrics, BASE_NS)
+
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+	})
+
 	let originalFetch: typeof globalThis.fetch
 
 	beforeEach(() => {
@@ -239,6 +267,7 @@ describe("sendMetrics", () => {
 	afterEach(() => {
 		globalThis.fetch = originalFetch
 		vi.restoreAllMocks()
+		resetOrgPolicyForTests()
 	})
 
 	it("sends correct OTLP metrics structure with Sum type, isMonotonic, asInt", async () => {

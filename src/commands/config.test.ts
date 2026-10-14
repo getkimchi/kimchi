@@ -20,7 +20,17 @@ vi.mock("../extensions/telemetry/pre-session.js", () => ({
 	sendPreSessionEvent: vi.fn(),
 }))
 
+// Passthrough default (no org enforcement); policy tests steer with
+// enforceTelemetryPolicyForTests. clearAllMocks does not reset
+// implementations, so defaults are restored per test via resetTelemetryPolicyMock.
+vi.mock("../telemetry-policy.js", () => telemetryPolicyMock)
+
 import { loadConfig, readTelemetryConfig, writeTelemetryEnabled, writeTuiWheelScrollLines } from "../config.js"
+import {
+	enforceTelemetryPolicyForTests,
+	resetTelemetryPolicyMock,
+	telemetryPolicyMock,
+} from "../extensions/__mocks__/telemetry-policy.js"
 import { withExperimentalFeatures } from "../extensions/experimental.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { runConfig } from "./config.js"
@@ -148,6 +158,109 @@ describe("kimchi config telemetry — config_changed event", () => {
 		// biome-ignore lint/style/noNonNullAssertion: length asserted above
 		const configArg = vi.mocked(sendPreSessionEvent).mock.calls[0]![0]
 		expect(configArg).toBe(cfg)
+	})
+})
+
+describe("kimchi config telemetry — org policy enforcement", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.spyOn(console, "log").mockImplementation(() => {})
+		// Reset to passthrough defaults; per-test overrides follow.
+		resetTelemetryPolicyMock()
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
+	})
+
+	it("status shows the effective state and the policy source under FORCE_OFF", async () => {
+		enforceTelemetryPolicyForTests("FORCE_OFF")
+		vi.mocked(readTelemetryConfig).mockReturnValue(makeTelemetryConfig({ enabled: true }))
+
+		const exit = await runConfig(["telemetry"])
+
+		expect(exit).toBe(0)
+		expect(console.log).toHaveBeenCalledWith("Telemetry: disabled (enforced off by your organization's policy)")
+	})
+
+	it("status shows the effective state and the policy source under FORCE_ON", async () => {
+		enforceTelemetryPolicyForTests("FORCE_ON")
+		vi.mocked(readTelemetryConfig).mockReturnValue(makeTelemetryConfig({ enabled: false }))
+
+		const exit = await runConfig(["telemetry"])
+
+		expect(exit).toBe(0)
+		expect(console.log).toHaveBeenCalledWith("Telemetry: enabled (enforced on by your organization's policy)")
+	})
+
+	it("status under FORCE_ON composes the policy and env-var notes", async () => {
+		enforceTelemetryPolicyForTests("FORCE_ON")
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "0")
+		vi.mocked(readTelemetryConfig).mockReturnValue(makeTelemetryConfig({ enabled: true }))
+
+		const exit = await runConfig(["telemetry"])
+
+		expect(exit).toBe(0)
+		expect(console.log).toHaveBeenCalledWith(
+			"Telemetry: enabled (enforced on by your organization's policy; from KIMCHI_TELEMETRY_ENABLED=0, overrides config)",
+		)
+	})
+
+	it("FORCE_OFF: writes persist but emit no config_changed, and an opted-in write warns", async () => {
+		enforceTelemetryPolicyForTests("FORCE_OFF")
+
+		const exit = await runConfig(["telemetry", "on"])
+
+		expect(exit).toBe(0)
+		expect(writeTelemetryEnabled).toHaveBeenCalledWith(true)
+		expect(sendPreSessionEvent).not.toHaveBeenCalled()
+		expect(console.log).toHaveBeenCalledWith("Telemetry enabled")
+		expect(console.log).toHaveBeenCalledWith(
+			"Note: your organization's policy enforces telemetry off; effective state unchanged.",
+		)
+	})
+
+	it("FORCE_OFF: an opted-out write is aligned and stays silent", async () => {
+		enforceTelemetryPolicyForTests("FORCE_OFF")
+
+		const exit = await runConfig(["telemetry", "off"])
+
+		expect(exit).toBe(0)
+		expect(writeTelemetryEnabled).toHaveBeenCalledWith(false)
+		expect(sendPreSessionEvent).not.toHaveBeenCalled()
+		expect(console.log).toHaveBeenCalledTimes(1)
+		expect(console.log).toHaveBeenCalledWith("Telemetry disabled")
+	})
+
+	it("FORCE_ON: an opted-out write still emits config_changed and warns about enforcement", async () => {
+		enforceTelemetryPolicyForTests("FORCE_ON")
+		vi.mocked(readTelemetryConfig).mockReturnValue(makeTelemetryConfig({ enabled: false }))
+
+		const exit = await runConfig(["telemetry", "off"])
+
+		expect(exit).toBe(0)
+		expect(writeTelemetryEnabled).toHaveBeenCalledWith(false)
+		expect(sendPreSessionEvent).toHaveBeenCalledTimes(1)
+		expect(lastCall().properties).toEqual({ key: "telemetry.enabled", value: false })
+		// The force-enable hack still applies: reporting is permitted under FORCE_ON.
+		// biome-ignore lint/style/noNonNullAssertion: length asserted above
+		expect(vi.mocked(sendPreSessionEvent).mock.calls[0]![0].enabled).toBe(true)
+		expect(console.log).toHaveBeenCalledWith(
+			"Note: your organization's policy enforces telemetry on; effective state unchanged.",
+		)
+	})
+
+	it("FORCE_ON: an opted-in write is aligned and stays silent", async () => {
+		enforceTelemetryPolicyForTests("FORCE_ON")
+		vi.mocked(readTelemetryConfig).mockReturnValue(makeTelemetryConfig({ enabled: true }))
+
+		const exit = await runConfig(["telemetry", "on"])
+
+		expect(exit).toBe(0)
+		expect(sendPreSessionEvent).toHaveBeenCalledTimes(1)
+		expect(console.log).toHaveBeenCalledTimes(1)
+		expect(console.log).toHaveBeenCalledWith("Telemetry enabled")
 	})
 })
 

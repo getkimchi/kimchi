@@ -33,7 +33,16 @@ vi.mock("../extensions/telemetry/pre-session.js", () => ({
 	drain: vi.fn().mockResolvedValue(undefined),
 }))
 
+// Passthrough default (no org enforcement); policy tests steer with
+// enforceTelemetryPolicyForTests.
+vi.mock("../telemetry-policy.js", () => telemetryPolicyMock)
+
 import { getApiKeyMismatchWarning, isTelemetryExplicitlyConfigured, readTelemetryConfig } from "../config.js"
+import {
+	enforceTelemetryPolicyForTests,
+	resetTelemetryPolicyMock,
+	telemetryPolicyMock,
+} from "../extensions/__mocks__/telemetry-policy.js"
 import { drain, sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { updateModelsConfig } from "../models.js"
 import { applyToolConfigs } from "../setup-wizard/apply-tools.js"
@@ -62,6 +71,8 @@ describe("runSetupTools", () => {
 		vi.mocked(readTelemetryConfig).mockReturnValue(mockTelemetryConfig)
 		vi.mocked(sendPreSessionEvent).mockClear()
 		vi.mocked(drain as ReturnType<typeof vi.fn>).mockClear()
+		// Restore unenforced policy defaults (clearAllMocks keeps implementations).
+		resetTelemetryPolicyMock()
 	})
 
 	afterEach(() => {
@@ -243,5 +254,44 @@ describe("runSetupTools", () => {
 			mode: "override",
 			failures: 0,
 		})
+	})
+
+	it("FORCE_OFF: skips the consent prompt, resolves tools telemetry off, sends nothing", async () => {
+		vi.mocked(resolveApiKey).mockReturnValue("test-key")
+		vi.mocked(promptToolSelection).mockResolvedValue({ kind: "next", value: ["cursor"] })
+		vi.mocked(isTelemetryExplicitlyConfigured).mockReturnValue(false)
+		enforceTelemetryPolicyForTests("FORCE_OFF")
+		vi.mocked(updateModelsConfig).mockResolvedValue({
+			models: [{ id: "kimi-k2.5" }],
+			// biome-ignore lint/suspicious/noExplicitAny: test data
+		} as any)
+		vi.mocked(applyToolConfigs).mockResolvedValue({ successes: ["Cursor"], failures: [] })
+
+		const result = await runSetupTools([])
+
+		expect(result).toBe(0)
+		expect(promptTelemetry).not.toHaveBeenCalled()
+		// The effective (enforced) value flows into the configured tools.
+		expect(vi.mocked(applyToolConfigs).mock.calls[0]?.[0].telemetryEnabled).toBe(false)
+		// The org forbids reporting: not a single pre-session event goes out.
+		expect(sendPreSessionEvent).not.toHaveBeenCalled()
+	})
+
+	it("FORCE_ON: skips the consent prompt and resolves tools telemetry on", async () => {
+		vi.mocked(resolveApiKey).mockReturnValue("test-key")
+		vi.mocked(promptToolSelection).mockResolvedValue({ kind: "next", value: ["cursor"] })
+		vi.mocked(isTelemetryExplicitlyConfigured).mockReturnValue(false)
+		enforceTelemetryPolicyForTests("FORCE_ON")
+		vi.mocked(updateModelsConfig).mockResolvedValue({
+			models: [{ id: "kimi-k2.5" }],
+			// biome-ignore lint/suspicious/noExplicitAny: test data
+		} as any)
+		vi.mocked(applyToolConfigs).mockResolvedValue({ successes: ["Cursor"], failures: [] })
+
+		const result = await runSetupTools([])
+
+		expect(result).toBe(0)
+		expect(promptTelemetry).not.toHaveBeenCalled()
+		expect(vi.mocked(applyToolConfigs).mock.calls[0]?.[0].telemetryEnabled).toBe(true)
 	})
 })

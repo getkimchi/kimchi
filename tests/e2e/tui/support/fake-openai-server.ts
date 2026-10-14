@@ -138,6 +138,8 @@ export interface FakeOrgPolicy {
 				yolo: boolean
 		  }
 		| undefined
+	/** Usage reporting directive; undefined omits the field from settings:resolve. */
+	usageReporting?: "USER_CHOICE" | "FORCE_ON" | "FORCE_OFF"
 }
 
 export const DEFAULT_MODEL: Required<FakeModel> = {
@@ -287,6 +289,7 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 
 			if (options.policy !== undefined && req.method === "GET" && req.url?.includes("/settings:resolve")) {
 				const modes = options.policy.modes
+				const usageReporting = options.policy.usageReporting
 				writeJson(res, 200, {
 					settings: {
 						// protojson omits false bools; `default` is a proto reserved-ish
@@ -301,6 +304,7 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 									},
 								}
 							: {}),
+						...(usageReporting ? { kimchiUsageReporting: `KIMCHI_USAGE_REPORTING_${usageReporting}` } : {}),
 					},
 				})
 				return

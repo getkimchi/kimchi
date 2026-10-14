@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
+import { resetOrgPolicyForTests } from "../../org-policy.js"
+import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import { collectMetrics, createCumulativeState } from "./accumulator.js"
 import { trackPRCostMetric } from "./pr-cost.js"
 import type { TelemetryContext } from "./session-context.js"
@@ -8,7 +10,10 @@ const fixture = vi.hoisted(() => ({
 	context: undefined as Pick<TelemetryContext, "config" | "cumulative"> | undefined,
 }))
 vi.mock("./index.js", () => ({ _getTelemetryCtx: () => fixture.context }))
-vi.mock("../../config.js", () => ({ readTelemetryConfig: () => ({ enabled: fixture.enabled }) }))
+vi.mock("../../config.js", () => ({
+	readTelemetryConfig: () => ({ enabled: fixture.enabled }),
+	resolveEndpoints: () => ({ platformApiUrl: "https://policy.test" }),
+}))
 
 beforeEach(() => {
 	fixture.enabled = true
@@ -17,7 +22,17 @@ beforeEach(() => {
 		cumulative: createCumulativeState(),
 	}
 })
-afterEach(() => vi.useRealTimers())
+afterEach(() => {
+	vi.useRealTimers()
+	resetOrgPolicyForTests()
+})
+
+it("tracks health counts under FORCE_ON even when the user config disables telemetry", async () => {
+	await setOrgPolicyForTests({ usageReporting: "FORCE_ON" })
+	fixture.enabled = false
+	trackPRCostMetric({ kind: "matching", outcome: "explicit" })
+	expect(fixture.context?.cumulative.prCost?.matching).toEqual({ explicit: 1 })
+})
 
 it("counts decisions and attempts while replacing queue and price gauges", () => {
 	trackPRCostMetric({ kind: "matching", outcome: "explicit" })

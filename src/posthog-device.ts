@@ -9,21 +9,24 @@
 
 import { randomUUID } from "node:crypto"
 import { loadConfig, readTelemetryConfig, writeDeviceId } from "./config.js"
+import { enforceTelemetryEnabled } from "./telemetry-policy.js"
 
 /**
  * Return the persisted device ID, generating and saving one if it doesn't
  * exist yet. Only generates a new ID when telemetry is enabled — opted-out
- * users do not get a device ID persisted.
+ * users do not get a device ID persisted. The org usage-reporting policy
+ * applies here too: FORCE_OFF never mints an ID even when the user's
+ * config enables telemetry.
  *
- * Returns an empty string when telemetry is disabled and no device ID was
- * previously persisted.
+ * Returns an empty string when telemetry is (effectively) disabled and no
+ * device ID was previously persisted.
  */
 export function ensureDeviceId(): string {
 	const config = loadConfig()
 	if (config.deviceId) return config.deviceId
 
 	const telemetry = readTelemetryConfig()
-	if (!telemetry.enabled) return ""
+	if (!enforceTelemetryEnabled(telemetry.enabled)) return ""
 
 	const id = randomUUID()
 	writeDeviceId(id)

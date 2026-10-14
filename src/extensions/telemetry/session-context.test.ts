@@ -4,6 +4,8 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
 import * as config from "../../config.js"
+import { resetOrgPolicyForTests } from "../../org-policy.js"
+import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import * as osMetadata from "../../utils/os-metadata.js"
 import { createContext } from "../__mocks__/context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
@@ -48,6 +50,7 @@ describe("SessionContext", () => {
 		_resetSharedAccumulators()
 		vi.restoreAllMocks()
 		vi.unstubAllEnvs()
+		resetOrgPolicyForTests()
 		// session.parent_id simulation env — never leak the subagent worker flag
 		// or the parent session id into sibling tests.
 		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
@@ -96,6 +99,23 @@ describe("SessionContext", () => {
 		await Promise.allSettled([...ctx.inFlight])
 		expect(globalThis.fetch).not.toHaveBeenCalled()
 		expect(ctx.cumulative.prCost).toBeUndefined()
+	})
+
+	it("keeps PR health metrics under FORCE_ON even when the user opts out", async () => {
+		await setOrgPolicyForTests({ usageReporting: "FORCE_ON" })
+		vi.spyOn(config, "readTelemetryConfig").mockReturnValue(makeConfig({ enabled: false, consentVersion: "consent-7" }))
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.cumulative.prCost = {
+			matching: { explicit: 1 },
+			delivery: {},
+			consentVersion: "consent-7",
+			startTimeUnixNano: "1000000000",
+		}
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const body = JSON.parse(String(vi.mocked(globalThis.fetch).mock.calls[0][1]?.body))
+		expect(JSON.stringify(body)).toContain("pr_cost")
 	})
 
 	it("does not retry a PR health batch after telemetry is turned off", async () => {

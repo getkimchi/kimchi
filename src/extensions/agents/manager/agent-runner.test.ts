@@ -119,6 +119,7 @@ vi.mock("../../../config.js", () => ({
 		headers: { Authorization: "Bearer test" },
 		apiKey: "",
 	}),
+	resolveEndpoints: vi.fn(() => ({ platformApiUrl: "https://policy.test" })),
 }))
 
 vi.mock("../../orchestration/model-registry/guidelines/guidelines-resolver.js", () => ({
@@ -139,6 +140,8 @@ import {
 	type InlineExtension,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
+import { resetOrgPolicyForTests } from "../../../org-policy.js"
+import { setOrgPolicyForTests } from "../../../org-policy.test-utils.js"
 import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../agents/subagent-bash-clamp.js"
 import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
@@ -400,6 +403,54 @@ describe("runAgent — telemetry extension", () => {
 		expect(readWorkRecords(attributionDir)).toContainEqual(
 			expect.objectContaining({ type: "request", sessionId: "child-segment", segment }),
 		)
+	})
+
+	describe("subagent telemetry policy", () => {
+		afterEach(() => {
+			resetOrgPolicyForTests()
+		})
+
+		it("clamps the subagent telemetry config to FORCE_OFF", async () => {
+			await setOrgPolicyForTests({ usageReporting: "FORCE_OFF" })
+			const session = makeFakeSession({})
+			mockCreateAgentSession.mockResolvedValue({
+				session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			})
+
+			await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+				pi: pi as unknown as RunOptions["pi"],
+			})
+
+			expect(mockTelemetryExtension).toHaveBeenCalledTimes(1)
+			expect(mockTelemetryExtension.mock.calls[0]?.[0]?.enabled).toBe(false)
+		})
+
+		it("clamps the subagent telemetry config to FORCE_ON even when telemetry is opted out", async () => {
+			await setOrgPolicyForTests({ usageReporting: "FORCE_ON" })
+			mockReadTelemetryConfig.mockReturnValue({
+				enabled: false,
+				endpoint: "https://test/logs",
+				metricsEndpoint: "https://test/metrics",
+				headers: { Authorization: "Bearer test" },
+				apiKey: "",
+			})
+			const session = makeFakeSession({})
+			mockCreateAgentSession.mockResolvedValue({
+				session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			})
+
+			await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+				pi: pi as unknown as RunOptions["pi"],
+			})
+
+			expect(mockTelemetryExtension.mock.calls[0]?.[0]?.enabled).toBe(true)
+		})
 	})
 
 	it("starts a child when attribution storage is unavailable", async () => {

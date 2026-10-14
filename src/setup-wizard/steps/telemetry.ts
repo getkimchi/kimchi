@@ -1,5 +1,6 @@
 import { note } from "@clack/prompts"
 import { writeTelemetryEnabled } from "../../config.js"
+import { isTelemetryPolicyEnforced, usageReportingPolicy } from "../../telemetry-policy.js"
 import type { Outcome } from "../prompt.js"
 import type { WizardState } from "../state.js"
 
@@ -8,8 +9,21 @@ import type { WizardState } from "../state.js"
  * and by standalone commands that need to inform users about telemetry.
  *
  * Automatically enables telemetry and persists the choice to config.json.
+ * When an org usage-reporting policy is enforced, the choice is not the
+ * user's to make: show the managed state and return it without persisting
+ * anything — the user's stored preference (if any) applies again once the
+ * policy relaxes to USER_CHOICE.
  */
 export async function promptTelemetry(_opts: { backable: boolean }): Promise<Outcome<boolean>> {
+	if (isTelemetryPolicyEnforced()) {
+		const enforced = usageReportingPolicy() === "FORCE_ON"
+		note(
+			`Usage telemetry is managed by your organization (enforced ${enforced ? "on" : "off"}). Any config preference you have stays untouched and applies again if the policy relaxes.`,
+			"Usage telemetry",
+		)
+		return { kind: "next", value: enforced }
+	}
+
 	note(
 		"Kimchi collects usage data (commands run, models used, error rates) to improve the product. This data is associated with your account. No prompt content or code is collected.",
 		"Usage telemetry",

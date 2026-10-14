@@ -36,7 +36,8 @@ const KIMCHI_ENV: FlagDoc[] = [
 	{ name: "KIMCHI_PERMISSIONS", description: "Initial permissions mode: default | plan | auto | yolo" },
 	{
 		name: "KIMCHI_TELEMETRY_ENABLED",
-		description: "Override telemetry (1/true to enable, 0/false to disable). On by default.",
+		description:
+			"Override telemetry (1/true to enable, 0/false to disable). On by default; an organization policy can enforce the effective state.",
 	},
 	{ name: "KIMCHI_TAGS", description: "Comma-separated `key:value` tags applied to every LLM request" },
 	{ name: "KIMCHI_NO_UPDATE_CHECK", description: "Disable the background self-update probe" },

@@ -1,4 +1,4 @@
-import { readTelemetryConfig } from "../../config.js"
+import { readEffectiveTelemetryConfig } from "../../telemetry-policy.js"
 import type { WorkSegment } from "../work-attribution.js"
 import { nowNano } from "./helpers.js"
 import { _getTelemetryCtx } from "./index.js"
@@ -14,7 +14,7 @@ export type PRCostMetric =
 export function trackPRCostMetric(metric: PRCostMetric): void {
 	const ctx = _getTelemetryCtx()
 	if (!ctx) return
-	const consent = readTelemetryConfig()
+	const consent = readEffectiveTelemetryConfig()
 	if (!ctx.config.enabled || !ctx.config.metricsEndpoint || !consent.enabled) {
 		ctx.cumulative.prCost = undefined
 		return

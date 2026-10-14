@@ -1,8 +1,9 @@
 import crypto from "node:crypto"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getMe } from "../../api/me.js"
-import { readTelemetryConfig, type TelemetryConfig } from "../../config.js"
+import type { TelemetryConfig } from "../../config.js"
 import { IS_ACP_MODE } from "../../modes/acp/state.js"
+import { readEffectiveTelemetryConfig } from "../../telemetry-policy.js"
 import { getOsMetadata } from "../../utils/os-metadata.js"
 import { getVersion } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -327,7 +328,7 @@ export class TelemetryContext {
 	}
 
 	flushMetrics(): void {
-		const consent = readTelemetryConfig()
+		const consent = readEffectiveTelemetryConfig()
 		if (!this.config.enabled || !consent.enabled || this.cumulative.prCost?.consentVersion !== consent.consentVersion)
 			this.cumulative.prCost = undefined
 		const prCost = this.cumulative.prCost
@@ -335,7 +336,7 @@ export class TelemetryContext {
 		if (metrics.length > 0) {
 			this.track(
 				this.userEmailReady.then(() => {
-					const currentConsent = readTelemetryConfig()
+					const currentConsent = readEffectiveTelemetryConfig()
 					const allowPRCostMetrics =
 						this.config.enabled && currentConsent.enabled && prCost?.consentVersion === currentConsent.consentVersion
 					if (!allowPRCostMetrics && prCost === this.cumulative.prCost) this.cumulative.prCost = undefined

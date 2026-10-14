@@ -16,9 +16,9 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
-import { readTelemetryConfig } from "../../../config.js"
 import { isResourceEnabled } from "../../../resources/store.js"
 import { getAvailableModels } from "../../../startup-context.js"
+import { readEffectiveTelemetryConfig } from "../../../telemetry-policy.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import { isAutoRoutedModel } from "../../auto-model/constants.js"
 import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
@@ -497,7 +497,7 @@ ${skillLines}`
 			]
 		: []
 	const extensionFactories: InlineExtension[] = [
-		telemetryExtension(readTelemetryConfig()),
+		telemetryExtension(readEffectiveTelemetryConfig()),
 		...(isResourceEnabled(COST_PER_PR_RESOURCE_ID)
 			? [createWorkAttributionExtension(inheritedWorkId ?? null, inheritedSegment)]
 			: []),

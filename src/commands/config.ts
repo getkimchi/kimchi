@@ -1,6 +1,7 @@
 import { loadConfig, readTelemetryConfig, writeTelemetryEnabled, writeTuiWheelScrollLines } from "../config.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { isRegionId, REGION_ENV, REGIONS, SELF_HOSTED_URL_ENV, selectableRegions } from "../regions.js"
+import { isTelemetryPolicyEnforced, readEffectiveTelemetryConfig, usageReportingPolicy } from "../telemetry-policy.js"
 
 const TELEMETRY_ENV = "KIMCHI_TELEMETRY_ENABLED"
 const WHEEL_SCROLL_ENV = "KIMCHI_WHEEL_SCROLL_LINES"
@@ -34,8 +35,10 @@ const WRITABLE_KEYS: Record<string, WritableKeyDef> = {
 
 /**
  * `kimchi config telemetry [on|off]` — show or set telemetry.enabled in
- * config.json. With no value, prints the current state (and notes when
- * an env-var override is in effect).
+ * config.json. With no value, prints the effective state (and notes when
+ * an env-var override or an org usage-reporting policy is in effect).
+ * Policy enforcement never rewrites the persisted preference — it applies
+ * per session, so a later USER_CHOICE transition restores the user's choice.
  *
  * Anything else under `kimchi config <subcommand>` is unrecognised; we
  * print a usage line and return 2 (POSIX "incorrect invocation").
@@ -66,10 +69,22 @@ export async function runConfig(args: string[]): Promise<number> {
 }
 
 function handleTelemetry(args: string[]): number {
+	const policy = usageReportingPolicy()
+	const policyEnforced = isTelemetryPolicyEnforced()
+
 	if (args.length === 0) {
-		const cfg = readTelemetryConfig()
+		const cfg = readEffectiveTelemetryConfig()
 		const status = cfg.enabled ? "enabled" : "disabled"
 		const envVal = process.env[TELEMETRY_ENV]
+		if (policyEnforced) {
+			const enforcedNote = `enforced ${cfg.enabled ? "on" : "off"} by your organization's policy`
+			console.log(
+				envVal !== undefined && envVal !== ""
+					? `Telemetry: ${status} (${enforcedNote}; from ${TELEMETRY_ENV}=${envVal}, overrides config)`
+					: `Telemetry: ${status} (${enforcedNote})`,
+			)
+			return 0
+		}
 		if (envVal !== undefined && envVal !== "") {
 			console.log(`Telemetry: ${status} (from ${TELEMETRY_ENV}=${envVal}, overrides config)`)
 		} else {
@@ -84,7 +99,19 @@ function handleTelemetry(args: string[]): number {
 		console.error(`kimchi config telemetry: expected "on" or "off", got "${args[0]}"`)
 		return 2
 	}
+	// Persist the user's choice even when the org policy overrides it: a later
+	// USER_CHOICE transition restores their agency, mirroring how the env var
+	// already wins over the persisted value.
 	writeTelemetryEnabled(enabled)
+	console.log(`Telemetry ${enabled ? "enabled" : "disabled"}`)
+
+	if (policy === "FORCE_OFF") {
+		// Reporting is org-forbidden: no config_changed signal at all — the
+		// force-enable hack below must never fire under FORCE_OFF.
+		if (enabled) notePolicyEnforcement("off")
+		return 0
+	}
+
 	// Emit config_changed telemetry so we can track telemetry opt-in/out.
 	// Re-read config to pick up the updated state + auth headers.
 	const telemetryConfig = readTelemetryConfig()
@@ -92,14 +119,19 @@ function handleTelemetry(args: string[]): number {
 	// would cause sendPreSessionEvent to no-op and silently drop the opt-out
 	// signal. Temporarily force enabled=true on the config passed to
 	// sendPreSessionEvent so the event reaches the backend; the actual new
-	// state is carried in the `value` property.
+	// state is carried in the `value` property. Under FORCE_ON this stays —
+	// reporting is permitted and the opt-out attempt is the wanted signal.
 	if (!enabled) telemetryConfig.enabled = true
 	sendPreSessionEvent(telemetryConfig, "config_changed", {
 		key: "telemetry.enabled",
 		value: enabled,
 	})
-	console.log(`Telemetry ${enabled ? "enabled" : "disabled"}`)
+	if (policy === "FORCE_ON" && !enabled) notePolicyEnforcement("on")
 	return 0
+}
+
+function notePolicyEnforcement(state: "on" | "off"): void {
+	console.log(`Note: your organization's policy enforces telemetry ${state}; effective state unchanged.`)
 }
 
 /**
@@ -185,7 +217,7 @@ function printWritableKeys(): void {
 
 function printUsage(): void {
 	console.error("Usage: kimchi config telemetry [on|off]")
-	console.error("       kimchi config telemetry           # show current status")
+	console.error("       kimchi config telemetry           # show effective status (an org policy may enforce it)")
 	console.error("       kimchi config region              # show the endpoint region (chosen at login)")
 	console.error("       kimchi config set <key> <value>   # write a config key")
 	console.error("       kimchi config get <key>           # show a config key's effective value")

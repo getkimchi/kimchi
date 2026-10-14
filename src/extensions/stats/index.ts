@@ -13,7 +13,8 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { getMe } from "../../api/me.js"
 import { verifyApiKey } from "../../api/organizations.js"
-import { loadConfig, readTelemetryConfig } from "../../config.js"
+import { loadConfig } from "../../config.js"
+import { isTelemetryEnabled } from "../../telemetry-policy.js"
 import { CastAiStatsApi, getTimeRange } from "./api.js"
 import {
 	COST_VIEWS,
@@ -149,8 +150,7 @@ async function handleCostCommand(args: string, ctx: ExtensionCommandContext): Pr
 		const key = apiKey()
 		const [{ organizationId }, { id: userId }] = await Promise.all([verifyApiKey(key), getMe(key)])
 		// Kimchi sends the session id only with telemetry on; only the sessions view looks for this session.
-		const sessionId =
-			view === "sessions" && readTelemetryConfig().enabled ? ctx.sessionManager.getSessionId() : undefined
+		const sessionId = view === "sessions" && isTelemetryEnabled() ? ctx.sessionManager.getSessionId() : undefined
 		const window = costWindow(days, sessionId)
 		ctx.ui.notify(`Fetching billed costs for the last ${window.days} days...`, "info")
 		const response = await new CastAiStatsApi({ apiKey: key }).generateBreakdown(

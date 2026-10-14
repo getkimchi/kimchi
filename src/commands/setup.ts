@@ -1,9 +1,9 @@
-import { readTelemetryConfig } from "../config.js"
 import { drain as drainPreSessionTelemetry, sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { runWizard } from "../setup-wizard/index.js"
+import { readEffectiveTelemetryConfig } from "../telemetry-policy.js"
 
 export async function runSetup(_args: string[]): Promise<number> {
-	const telemetryConfig = readTelemetryConfig()
+	const telemetryConfig = readEffectiveTelemetryConfig()
 	const result = await runWizard()
 
 	if (!telemetryConfig.enabled) {

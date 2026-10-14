@@ -17,6 +17,14 @@ You are editing the kimchi coding harness. This repo extends the pi-mono SDK (`@
 - **Test files**: Co-locate as `*.test.ts` alongside source (NOT in a separate test/ folder)
 - **Use `ctx.cwd` instead of `process.cwd()`** for session-relative paths — the ACP server is a long-lived process whose cwd is unrelated to any session. Thread `ExtensionContext`/`ExtensionCommandContext` through tool factories, delegates, and anything anchoring to the project, and pass the cwd as a required parameter (an optional fallback silently reintroduces the bug).
 
+## Org policy (resources, modes, usage reporting)
+
+Org policy is fetched at startup and held for the session; each field has one enforcement module — route all consumption through it:
+
+- **Resources** — `isResourceEnabled()` in `src/resources/store.ts`.
+- **Permission modes** — `src/extensions/permissions/policy.ts`.
+- **Usage reporting (telemetry)** — `isTelemetryEnabled()` / `readEffectiveTelemetryConfig()` in `src/telemetry-policy.ts`. Raw `readTelemetryConfig()` is only for surfaces showing or persisting the user's raw preference (`config telemetry`, the wizard consent prompt, `cli.ts` startup).
+
 ## Development patterns
 
 - **Auto-formatting**: `lint:fix` runs automatically after file edits (PostToolUse hook) — don't run manually

@@ -17,6 +17,7 @@ import { applyToolConfigs } from "../setup-wizard/apply-tools.js"
 import type { ConfigMode } from "../setup-wizard/state.js"
 import { promptTelemetry } from "../setup-wizard/steps/telemetry.js"
 import { promptToolSelection } from "../setup-wizard/steps/tools.js"
+import { isTelemetryPolicyEnforced, readEffectiveTelemetryConfig } from "../telemetry-policy.js"
 import { popScope, resolveApiKey } from "./_helpers.js"
 
 /**
@@ -28,7 +29,8 @@ import { popScope, resolveApiKey } from "./_helpers.js"
  * through the full setup flow again.
  */
 export async function runSetupTools(args: string[]): Promise<number> {
-	const telemetryConfig = readTelemetryConfig()
+	// The org usage-reporting policy clamps every send in this command.
+	const telemetryConfig = readEffectiveTelemetryConfig()
 
 	// Parse flags.
 	let mode: ConfigMode = "override"
@@ -76,9 +78,14 @@ export async function runSetupTools(args: string[]): Promise<number> {
 
 	// Resolve telemetry preference. If the user has already chosen (via
 	// `kimchi setup`, `kimchi config telemetry`, or $KIMCHI_TELEMETRY_ENABLED)
-	// we respect that. Otherwise we auto-enable and show a notice.
+	// we respect that. Otherwise we auto-enable and show a notice. An org
+	// policy forces the outcome and skips the consent prompt — the
+	// effective value flows into the configured tools' telemetry flags.
 	let telemetryEnabled: boolean
-	if (isTelemetryExplicitlyConfigured()) {
+	if (isTelemetryPolicyEnforced()) {
+		// Same value the command already clamped into telemetryConfig above.
+		telemetryEnabled = telemetryConfig.enabled
+	} else if (isTelemetryExplicitlyConfigured()) {
 		telemetryEnabled = readTelemetryConfig().enabled
 	} else {
 		await promptTelemetry({ backable: false })

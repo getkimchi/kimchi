@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { readTelemetryConfig, type TelemetryConfig } from "../../config.js"
+import type { TelemetryConfig } from "../../config.js"
+import { readEffectiveTelemetryConfig } from "../../telemetry-policy.js"
 import { fetchWithRetry } from "../../utils/http.js"
 import { getVersion } from "../../utils.js"
 import { nowNano, strAttr } from "./helpers.js"
@@ -210,7 +211,7 @@ export async function sendMetrics(
 				signal: consent.signal,
 				fetchImpl: (url, init) => {
 					if (aggregate) {
-						const current = readTelemetryConfig()
+						const current = readEffectiveTelemetryConfig()
 						if (!current.enabled || canSendAggregate?.(current) === false) consent.abort()
 					}
 					consent.signal.throwIfAborted()
