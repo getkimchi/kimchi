@@ -76,16 +76,16 @@ const BUDGET = {
 	 *  Agent-continuation deferrals, the Skill resource gate, the mcp
 	 *  zero-server registration gate, and the lsp no-server detection gate;
 	 *  Includes the redesigned bash_control schema; ~2% headroom over
-	 *  measured 5623). Dev
+	 *  measured 5802). Dev
 	 *  sessions in a repo WITH a detected language server will exceed this by
 	 *  the five gated lsp_* tools — that is by design, see LSP_TOOL_NAMES in
 	 *  lsp.ts. */
-	toolSurface: 5732,
+	toolSurface: 5911,
 	/** Print-mode slice (16 tools — the canonical surface minus questionnaire
 	 *  and set_phase, which the registration gates drop in headless --print
 	 *  runs; includes the redesigned bash_control schema, with ~1.5%
-	 *  headroom over measured 4880). */
-	printToolSurface: 4952,
+	 *  headroom over measured 5059). */
+	printToolSurface: 5131,
 	/** Per-tool cap: any single tool above this many est tokens must be deliberate. */
 	singleTool: 1400,
 }

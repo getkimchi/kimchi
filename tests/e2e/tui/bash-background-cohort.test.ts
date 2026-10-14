@@ -38,8 +38,11 @@ test("background bash cohort: filtered inspection keeps a queued exit pending un
 			await waitForText(terminal, "has now been delivered", { timeoutMs: STREAM_TIMEOUT_MS * 3 })
 			await waitForTurnToSettle(fixture.fake.requests)
 			const messages =
-				(fixture.fake.requests.at(-1)?.body as { messages?: Array<Record<string, unknown>> } | undefined)?.messages ??
-				[]
+				(
+					fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body as
+						| { messages?: Array<Record<string, unknown>> }
+						| undefined
+				)?.messages ?? []
 			const inspection = messages.find((message) => message.role === "tool" && message.tool_call_id === "inspect")
 			expect(String(inspection?.content)).toContain("not yet acknowledged")
 			expect(String(inspection?.content)).not.toContain("Unknown handle")

@@ -88,7 +88,9 @@ it(
 			expect(JSON.stringify(waitResult)).not.toContain(MARKER)
 			expect(JSON.stringify(waitResult)).not.toContain("Wait checkpoint")
 			expect((await pending).stopReason).toBe("end_turn")
-			const finalHistory = JSON.stringify(fixture.fake.requests.at(-1)?.body)
+			const finalHistory = JSON.stringify(
+				fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body,
+			)
 			expect(finalHistory).toContain(MARKER)
 			// One automatically delivered exit plus the explicitly stopped survivor.
 			expect(finalHistory.split("[Background bash process ended")).toHaveLength(3)
@@ -222,7 +224,9 @@ it(
 					}),
 				]),
 			)
-			const finalHistory = JSON.stringify(fixture.fake.requests.at(-1)?.body)
+			const finalHistory = JSON.stringify(
+				fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body,
+			)
 			expect(finalHistory).toContain(MARKER)
 			expect(finalHistory.split("[Background bash process ended")).toHaveLength(2)
 			expect(finalHistory).not.toContain("Task completion requires a disposition")
