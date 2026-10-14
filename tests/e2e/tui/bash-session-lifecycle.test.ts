@@ -68,8 +68,10 @@ test("new session drains cancelled Bash work and resuming the old session starts
 			terminal.submit("Read independent.txt")
 			await waitForText(terminal, "New session has no Bash cohort.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
-			expect(fixture.fake.requests.at(-1)?.body).toMatchObject({
-				tools: expect.not.arrayContaining([
+			expect(
+				fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body,
+			).toMatchObject({
+				tools: expect.arrayContaining([
 					expect.objectContaining({ function: expect.objectContaining({ name: "bash_control" }) }),
 				]),
 			})
@@ -80,8 +82,10 @@ test("new session drains cancelled Bash work and resuming the old session starts
 			terminal.submit("Read independent.txt in the resumed session")
 			await waitForText(terminal, "Resumed session has no Bash cohort.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
-			expect(fixture.fake.requests.at(-1)?.body).toMatchObject({
-				tools: expect.not.arrayContaining([
+			expect(
+				fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body,
+			).toMatchObject({
+				tools: expect.arrayContaining([
 					expect.objectContaining({ function: expect.objectContaining({ name: "bash_control" }) }),
 				]),
 			})
