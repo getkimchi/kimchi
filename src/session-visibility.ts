@@ -1,5 +1,6 @@
 import { open } from "node:fs/promises"
 import { parseSessionEntries, type SessionInfo } from "@earendil-works/pi-coding-agent"
+import { refFromParts } from "./extensions/model-catalog/ref-utils.js"
 
 export const INTERNAL_SESSION_ENTRY = "kimchi:internal-session"
 
@@ -100,7 +101,7 @@ export async function getSessionRoleInfo(session: SessionInfo): Promise<SessionR
 				}
 			}
 			const model = entries.find((entry) => entry.type === "model_change")
-			if (info && model) info.model = `${model.provider}/${model.modelId}`
+			if (info && model) info.model = refFromParts(model.provider, model.modelId)
 		} finally {
 			await file.close()
 		}

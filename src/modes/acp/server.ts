@@ -132,7 +132,7 @@ import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { emitAgentActivityUpdate } from "./activity-updates.js"
-import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
+import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, kimchiDevMeta } from "./capabilities.js"
 import { composeAvailableCommands, createCommandsRefresher, discoverSkillCommandsMap } from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
 import { handleCompact } from "./ext-methods/compact.js"
@@ -485,12 +485,10 @@ export class KimchiAcpAgent implements Agent {
 				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
 				mcpCapabilities: { http: true, sse: false },
 				// Extended capabilities
-				_meta: {
-					[CAPABILITIES_KEY]: {
-						...ADVERTISED_CAPABILITIES,
-						...(this.mcpProbe ? {} : { probe_mcp_server: false }),
-					},
-				},
+				_meta: kimchiDevMeta({
+					...ADVERTISED_CAPABILITIES,
+					...(this.mcpProbe ? {} : { probe_mcp_server: false }),
+				}),
 			},
 			authMethods,
 		}

@@ -5,7 +5,17 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
  * Combines model provider and id into a ref string.
  */
 export function refFromModel(model: Model<Api>): string {
-	return `${model.provider}/${model.id}`
+	return refFromParts(model.provider, model.id)
+}
+
+/**
+ * Combines a provider id and a bare model id into a ref string — the
+ * parts-based counterpart of refFromModel, for composing refs from
+ * provider-reported pieces (a response's provider + model/responseModel, a
+ * model_change entry) where no Model object exists.
+ */
+export function refFromParts(provider: string, modelId: string): string {
+	return `${provider}/${modelId}`
 }
 
 /** Resolve the exact canonical ref without assuming providers or model IDs contain no slashes. */

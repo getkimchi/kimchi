@@ -14,9 +14,8 @@
 // notification's bare ids deliberately: different surface, frozen separately.
 
 import type { AssistantMessage } from "@earendil-works/pi-ai"
-
-/** The `_meta` key all kimchi.dev extensions are namespaced under. */
-export const MODEL_ATTRIBUTION_META_KEY = "kimchi.dev"
+import { refFromParts } from "../../extensions/model-catalog/ref-utils.js"
+import { CAPABILITIES_KEY, kimchiDevMeta } from "./capabilities.js"
 
 export interface ModelAttribution {
 	/** Ref of the model that served the response: `provider/responseModel` when the backend reported one, else `provider/model`. */
@@ -24,6 +23,9 @@ export interface ModelAttribution {
 	/** Ref of the model the request was addressed to: `provider/model` — the virtual id when routed. */
 	requestedModelId: string
 }
+
+/** The `_meta` value a chunk carries: the attribution namespaced under the kimchi.dev key. */
+export type ModelMeta = { [CAPABILITIES_KEY]: ModelAttribution }
 
 /**
  * Compose the attribution for one assistant message. `responseModel` is the
@@ -35,8 +37,8 @@ export function modelAttributionFrom(
 	message: Pick<AssistantMessage, "provider" | "model" | "responseModel">,
 ): ModelAttribution {
 	return {
-		modelId: `${message.provider}/${message.responseModel ?? message.model}`,
-		requestedModelId: `${message.provider}/${message.model}`,
+		modelId: refFromParts(message.provider, message.responseModel ?? message.model),
+		requestedModelId: refFromParts(message.provider, message.model),
 	}
 }
 
@@ -53,16 +55,16 @@ export function modelMetaFor(
 	seen: Map<string, ModelAttribution> | undefined,
 	messageId: string | undefined,
 	attribution: ModelAttribution,
-): { [MODEL_ATTRIBUTION_META_KEY]: ModelAttribution } | undefined {
+): ModelMeta | undefined {
 	if (messageId === undefined || seen === undefined) {
-		return { [MODEL_ATTRIBUTION_META_KEY]: attribution }
+		return kimchiDevMeta(attribution)
 	}
 	const previous = seen.get(messageId)
 	if (previous?.modelId === attribution.modelId && previous.requestedModelId === attribution.requestedModelId) {
 		return undefined
 	}
 	seen.set(messageId, attribution)
-	return { [MODEL_ATTRIBUTION_META_KEY]: attribution }
+	return kimchiDevMeta(attribution)
 }
 
 /**
@@ -70,8 +72,6 @@ export function modelMetaFor(
  * a value, `{}` when the chunk should carry none — emit sites read
  * `...spreadModelMeta(modelMetaFor(...))` and stay one line each.
  */
-export function spreadModelMeta(modelMeta: { [MODEL_ATTRIBUTION_META_KEY]: ModelAttribution } | undefined): {
-	_meta?: { [MODEL_ATTRIBUTION_META_KEY]: ModelAttribution }
-} {
+export function spreadModelMeta(modelMeta: ModelMeta | undefined): { _meta?: ModelMeta } {
 	return modelMeta === undefined ? {} : { _meta: modelMeta }
 }

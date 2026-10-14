@@ -6,12 +6,8 @@
 
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { describe, expect, it } from "vitest"
-import {
-	MODEL_ATTRIBUTION_META_KEY,
-	type ModelAttribution,
-	modelAttributionFrom,
-	modelMetaFor,
-} from "./model-attribution.js"
+import { CAPABILITIES_KEY } from "./capabilities.js"
+import { type ModelAttribution, modelAttributionFrom, modelMetaFor } from "./model-attribution.js"
 
 function message(fields: Partial<AssistantMessage>): AssistantMessage {
 	return {
@@ -69,7 +65,7 @@ describe("modelMetaFor", () => {
 
 	it("attaches _meta on the first chunk seen for a messageId and records it", () => {
 		const seen = new Map<string, ModelAttribution>()
-		expect(modelMetaFor(seen, "km.0", routed)).toEqual({ [MODEL_ATTRIBUTION_META_KEY]: routed })
+		expect(modelMetaFor(seen, "km.0", routed)).toEqual({ [CAPABILITIES_KEY]: routed })
 		expect(seen.get("km.0")).toEqual(routed)
 	})
 
@@ -83,7 +79,7 @@ describe("modelMetaFor", () => {
 		const seen = new Map<string, ModelAttribution>()
 		modelMetaFor(seen, "km.0", routed)
 		const corrected: ModelAttribution = { modelId: "kimchi-dev/kimi-k3", requestedModelId: "kimchi-dev/auto" }
-		expect(modelMetaFor(seen, "km.0", corrected)).toEqual({ [MODEL_ATTRIBUTION_META_KEY]: corrected })
+		expect(modelMetaFor(seen, "km.0", corrected)).toEqual({ [CAPABILITIES_KEY]: corrected })
 		expect(seen.get("km.0")).toEqual(corrected)
 	})
 
@@ -91,11 +87,11 @@ describe("modelMetaFor", () => {
 		const seen = new Map<string, ModelAttribution>()
 		modelMetaFor(seen, "km.0", routed)
 		const pinned: ModelAttribution = { modelId: "kimchi-dev/glm-5.3", requestedModelId: "kimchi-dev/glm-5.3" }
-		expect(modelMetaFor(seen, "km.1", pinned)).toEqual({ [MODEL_ATTRIBUTION_META_KEY]: pinned })
+		expect(modelMetaFor(seen, "km.1", pinned)).toEqual({ [CAPABILITIES_KEY]: pinned })
 	})
 
 	it("always attaches when it cannot dedup — no messageId or no seen-map", () => {
-		expect(modelMetaFor(new Map(), undefined, routed)).toEqual({ [MODEL_ATTRIBUTION_META_KEY]: routed })
-		expect(modelMetaFor(undefined, "km.0", routed)).toEqual({ [MODEL_ATTRIBUTION_META_KEY]: routed })
+		expect(modelMetaFor(new Map(), undefined, routed)).toEqual({ [CAPABILITIES_KEY]: routed })
+		expect(modelMetaFor(undefined, "km.0", routed)).toEqual({ [CAPABILITIES_KEY]: routed })
 	})
 })
