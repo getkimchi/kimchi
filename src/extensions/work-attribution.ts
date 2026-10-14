@@ -53,6 +53,7 @@ import {
 	sameWorkScope,
 	saveNewWorkScope,
 	type WorkScope,
+	type WorkScopeSnapshot,
 	workCredential,
 	workRepository,
 } from "./work-attribution/scope.js"
@@ -112,8 +113,22 @@ export interface WorkDetailsRequest {
 const WORK_IDENTITY_ENTRY = "work_identity"
 const identities = new Map<string, string>()
 const activeSegments = new Map<string, WorkSegment>()
-/** New works waiting for their first verified scope, with the credential of their first input. */
+/** New works waiting for their first verified scope, with the credential of their first input or turn. */
 const newWorksToScope = new Map<string, string | undefined>()
+/** A pending work keeps waiting only under the credential of its first input or turn. */
+function scopePending(workId: string, credential: string): boolean {
+	if (!newWorksToScope.has(workId)) return false
+	const started = newWorksToScope.get(workId) ?? credential
+	newWorksToScope.set(workId, started)
+	return started === credential
+}
+/** A new work waits for its first verified capture; until then its requests stay unscoped. */
+function saveFirstScope(workId: string, credential: string, captured: WorkScopeSnapshot | undefined): void {
+	if (scopePending(workId, credential) && captured?.isCurrent()) {
+		newWorksToScope.delete(workId)
+		saveNewWorkScope(workId, captured.scope)
+	}
+}
 const workOutputs = new Map<string, Set<string>>()
 /** Earlier startup hooks can allocate a fresh ledger before the extension binds it. */
 const freshSessionLedgers = new Set<string>()
@@ -457,6 +472,7 @@ export function createWorkAttributionExtension(
 	const isChild = inheritedWorkId !== undefined
 	return (pi) => {
 		let preparedInput = false
+		let inputCheckedScope = false
 		// Mirrors Pi's queues: it matches a delivered message by text, steering first.
 		const queued: Record<"steer" | "followUp", { text: string; extension: boolean }[]> = { steer: [], followUp: [] }
 		// Pi dequeues a message before every message_start handler finishes; keep it until the run settles.
@@ -502,6 +518,7 @@ export function createWorkAttributionExtension(
 		})
 		pi.on("session_start", (_event, ctx) => {
 			preparedInput = false
+			inputCheckedScope = false
 			clearQueued()
 			inputGeneration++
 			semanticAbort?.abort()
@@ -603,11 +620,29 @@ export function createWorkAttributionExtension(
 				queued[event.streamingBehavior].push({ text: event.text, extension: event.source === "extension" })
 				return
 			}
+			// attributeInput checks a new work's scope for the turn this input starts.
+			inputCheckedScope = event.source !== "extension"
 			return attributeInput(event, ctx)
 		})
-		pi.on("before_agent_start", () => {
+		pi.on("before_agent_start", async (_event, ctx) => {
 			// The initial prompt was handled before skill/template expansion by the input hook.
 			preparedInput = true
+			const checked = inputCheckedScope
+			inputCheckedScope = false
+			// Commands such as /ferment and extension messages start turns without an input that scopes a new work. A child
+			// may work in another folder, and a second check after an input only doubles the wait for an unreachable API.
+			if (isChild || checked) return
+			try {
+				bind(ctx)
+				const cwd = ctx.cwd
+				const workId = getWorkId(ctx)
+				const credential = workCredential(cwd)
+				if (!scopePending(workId, credential)) return
+				const captured = await captureWorkScope(cwd)
+				if (ctx.cwd === cwd && getWorkId(ctx) === workId) saveFirstScope(workId, credential, captured)
+			} catch (error) {
+				warnWorkAttribution(ctx, error)
+			}
 		})
 		pi.on("message_start", async (event, ctx) => {
 			if (event.message.role !== "user") return
@@ -632,6 +667,7 @@ export function createWorkAttributionExtension(
 		})
 		pi.on("agent_settled", () => {
 			preparedInput = false
+			inputCheckedScope = false
 			clearQueued()
 		})
 		async function attributeInput(event: InputEvent, ctx: ExtensionContext): Promise<void> {
@@ -672,15 +708,8 @@ export function createWorkAttributionExtension(
 				)
 					return
 				const previousScope = readWorkScope(current)
-				// A pending work keeps waiting only under the credential of its first input.
 				const credential = workCredential(cwd)
-				const pending = (workId: string) => {
-					if (!newWorksToScope.has(workId)) return false
-					const started = newWorksToScope.get(workId) ?? credential
-					newWorksToScope.set(workId, started)
-					return started === credential
-				}
-				const missingOriginalScope = !previousScope && !pending(current) && !explicitSelection.has(key)
+				const missingOriginalScope = !previousScope && !scopePending(current, credential) && !explicitSelection.has(key)
 				if (
 					captured?.isCurrent() &&
 					(missingOriginalScope || (previousScope && !sameWorkScope(previousScope, captured.scope)))
@@ -690,13 +719,7 @@ export function createWorkAttributionExtension(
 					explicitSelection.delete(key)
 					useSegment(workMatchingEnabled() ? "unknown" : "session", previousScope ? "scope-changed" : "scope-recovered")
 				}
-				// A new work waits for its first verified capture; until then its requests stay unscoped.
-				const saveScope = (workId: string) => {
-					if (pending(workId) && captured?.isCurrent()) {
-						newWorksToScope.delete(workId)
-						saveNewWorkScope(workId, captured.scope)
-					}
-				}
+				const saveScope = (workId: string) => saveFirstScope(workId, credential, captured)
 				saveScope(current)
 				const explicitReason = explicitSelection.get(key)
 				const referencesWork = hasWorkReference(event.text)
@@ -883,6 +906,7 @@ export function createWorkAttributionExtension(
 		})
 		pi.on("session_shutdown", async (_event, ctx) => {
 			preparedInput = false
+			inputCheckedScope = false
 			clearQueued()
 			inputGeneration++
 			semanticAbort?.abort()

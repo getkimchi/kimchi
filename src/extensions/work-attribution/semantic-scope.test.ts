@@ -12,7 +12,12 @@ import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
-import { createWorkAttributionExtension, getWorkId, recordProviderRequest } from "../work-attribution.js"
+import {
+	createWorkAttributionExtension,
+	getWorkId,
+	recordProviderRequest,
+	workLedgerPath,
+} from "../work-attribution.js"
 import * as scope from "./scope.js"
 import { loadWorkIntents, rememberWorkIntent, workIntentPath } from "./semantic.js"
 import { flushWorkSummaries, readWorkRecords } from "./summary.js"
@@ -163,6 +168,93 @@ it("starts separate work when the account changes before a new work's first veri
 	expect(readWorkRecords(join(root, "agent")).find((row) => row.requestId === next.requestId)?.scope).toMatchObject({
 		account: { organizationId: CURRENT },
 	})
+})
+
+it.each([
+	"a command",
+	"an extension message",
+])("scopes a new work before the first request of a turn started by %s", async (start) => {
+	vi.mocked(settings.readConfigSetting).mockReturnValue(false)
+	const ctx = createContext({ cwd })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	// Pi runs a command such as /ferment before any input event; an extension message arrives as an "extension" input.
+	if (start === "an extension message")
+		await api.getHandler<InputEvent>("input")({ type: "input", source: "extension", text: "Run the next step" }, ctx)
+	await api.getHandler("before_agent_start")({}, ctx)
+	const request = recordProviderRequest(ctx)
+	expect(readWorkRecords(join(root, "agent")).find((row) => row.requestId === request.requestId)?.scope).toEqual({
+		account: { apiUrl: endpoint, organizationId: ORG, userId: USER },
+		repository: realpathSync(join(cwd, ".git")),
+	})
+})
+
+it("starts separate work when the account changes after an extension-started turn could not verify it", async () => {
+	vi.mocked(settings.readConfigSetting).mockReturnValue(false)
+	vi.mocked(organizations.verifyApiKey).mockRejectedValueOnce(new Error("Offline"))
+	const ctx = createContext({ cwd })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	await api.getHandler("before_agent_start")({}, ctx)
+	const first = recordProviderRequest(ctx)
+	// The first turn was sent with the earlier key, so the next account must not become this work's scope.
+	key = randomUUID()
+	identity = { organizationId: CURRENT, userId: USER }
+	await api.getHandler<InputEvent>("input")(
+		{ type: "input", source: "rpc", text: "Implement something for this account" },
+		ctx,
+	)
+	const next = recordProviderRequest(ctx)
+	expect(next.workId).not.toBe(first.workId)
+	expect(existsSync(join(root, "agent", "work", first.workId, "scope.json"))).toBe(false)
+	expect(readWorkRecords(join(root, "agent")).find((row) => row.requestId === next.requestId)?.scope).toMatchObject({
+		account: { organizationId: CURRENT },
+	})
+})
+
+it("leaves a restored unscoped work unscoped when an extension starts its turn", async () => {
+	const ctx = createContext({ cwd })
+	// Written by an earlier Kimchi process; that work's original account is unknown.
+	mkdirSync(dirname(workLedgerPath(ctx)), { recursive: true })
+	writeFileSync(
+		workLedgerPath(ctx),
+		`${JSON.stringify({ version: 1, type: "work", workId: WORK, sessionId: "test-session", cwd, recordedAt: new Date(0).toISOString() })}\n`,
+	)
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	await api.getHandler("before_agent_start")({}, ctx)
+	const request = recordProviderRequest(ctx)
+	expect(request.workId).toBe(WORK)
+	expect(existsSync(join(root, "agent", "work", WORK, "scope.json"))).toBe(false)
+	expect(readWorkRecords(join(root, "agent")).find((row) => row.requestId === request.requestId)?.scope).toBeNull()
+})
+
+it("scopes a new work from its own session, not from a child working in another folder", async () => {
+	vi.mocked(settings.readConfigSetting).mockReturnValue(false)
+	const parent = createContext({ cwd })
+	const parentApi = createExtensionApi()
+	createWorkAttributionExtension()(parentApi.api)
+	const workId = getWorkId(parent)
+	const other = join(root, "other")
+	execFileSync("git", ["init", "-q", other])
+	const child = createContext({ cwd: other, sessionManager: { getSessionId: () => "child-session" } })
+	const childApi = createExtensionApi()
+	createWorkAttributionExtension(workId)(childApi.api)
+	await childApi.getHandler("before_agent_start")({}, child)
+	expect(existsSync(join(root, "agent", "work", workId, "scope.json"))).toBe(false)
+	await parentApi.getHandler("before_agent_start")({}, parent)
+	expect(scope.readWorkScope(workId)?.repository).toBe(realpathSync(join(cwd, ".git")))
+})
+
+it("verifies the account once for an input and the turn it starts", async () => {
+	vi.mocked(settings.readConfigSetting).mockReturnValue(false)
+	vi.mocked(organizations.verifyApiKey).mockRejectedValue(new Error("Offline"))
+	const ctx = createContext({ cwd })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	await api.getHandler<InputEvent>("input")({ type: "input", source: "interactive", text: "Plan the export" }, ctx)
+	await api.getHandler("before_agent_start")({}, ctx)
+	expect(organizations.verifyApiKey).toHaveBeenCalledOnce()
 })
 
 it("keeps a Git failure during optional matching off the screen and the input unresolved", async () => {
