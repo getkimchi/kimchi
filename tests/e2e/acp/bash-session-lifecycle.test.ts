@@ -71,12 +71,18 @@ for (const otherSession of [false, true]) {
 				if (otherSession) {
 					const b = await newSession(fixture, fixture.workDir)
 					expect((await prompt(fixture, b, "Inspect session B's Bash cohort")).stopReason).toBe("end_turn")
-					expect(fixture.fake.requests.at(-1)?.body).toMatchObject({
-						tools: expect.not.arrayContaining([
+					expect(
+						fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body,
+					).toMatchObject({
+						tools: expect.arrayContaining([
 							expect.objectContaining({ function: expect.objectContaining({ name: "bash_control" }) }),
 						]),
 					})
-					expect(JSON.stringify(fixture.fake.requests.at(-1)?.body)).not.toContain("lifecycle.pid")
+					expect(
+						JSON.stringify(
+							fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body,
+						),
+					).not.toContain("lifecycle.pid")
 				}
 				process.kill(pid, 0)
 				await fixture.conn.unstable_closeSession({ sessionId: a })
@@ -95,14 +101,18 @@ for (const otherSession of [false, true]) {
 				)
 				await fixture.conn.loadSession({ sessionId: a, cwd: fixture.workDir, mcpServers: [] })
 				expect((await prompt(fixture, a, "Inspect the resumed Bash cohort")).stopReason).toBe("end_turn")
-				expect(fixture.fake.requests.at(-1)?.body).toMatchObject({
-					tools: expect.not.arrayContaining([
+				expect(
+					fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body,
+				).toMatchObject({
+					tools: expect.arrayContaining([
 						expect.objectContaining({ function: expect.objectContaining({ name: "bash_control" }) }),
 					]),
 				})
-				expect(JSON.stringify(fixture.fake.requests.at(-1)?.body)).not.toContain(
-					"Task completion requires a disposition",
-				)
+				expect(
+					JSON.stringify(
+						fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body,
+					),
+				).not.toContain("Task completion requires a disposition")
 			} finally {
 				await fixture.stop()
 				if (pid) {
@@ -203,7 +213,9 @@ it(
 					update.content.type === "text" &&
 					update.content.text.includes("Second draft in A"),
 			)
-			const requestA = JSON.stringify(fixture.fake.requests.at(-1)?.body)
+			const requestA = JSON.stringify(
+				fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body,
+			)
 			expect(requestA).toContain("Inspection of 1 background bash process")
 			expect(requestA).toContain("a.pid")
 			expect(requestA).not.toContain("b.pid")
@@ -227,7 +239,9 @@ it(
 			writeFileSync(join(fixture.workDir, "exit-b"), "")
 			await waitFor(() => existsSync(join(fixture.workDir, "b-exited")), Boolean)
 			expect((await workingB).stopReason).toBe("end_turn")
-			const finalB = JSON.stringify(fixture.fake.requests.at(-1)?.body)
+			const finalB = JSON.stringify(
+				fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body,
+			)
 			expect(finalB.split("B-OWNED-EXIT")).toHaveLength(2)
 			expect(finalB).not.toContain("a.pid")
 			expect(finalB).not.toContain("Task completion requires a disposition")

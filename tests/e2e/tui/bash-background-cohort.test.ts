@@ -313,8 +313,15 @@ test("background bash cohort: filtered inspection returns only the selected hand
 			// Isolate each tool result from the FINAL request's history by
 			// tool_call_id (earlier requests repeat the same messages).
 			const lastMessages =
-				(fixture.fake.requests.at(-1)?.body as { messages?: Array<Record<string, unknown>> } | undefined)?.messages ??
-				[]
+				(
+					fixture.fake.requests
+						.filter((request) =>
+							(request.body as { messages?: Array<{ tool_call_id?: string }> } | undefined)?.messages?.some(
+								(message) => message.tool_call_id === "call_stop",
+							),
+						)
+						.at(-1)?.body as { messages?: Array<Record<string, unknown>> } | undefined
+				)?.messages ?? []
 			const toolText = (id: string): string => {
 				const message = lastMessages.find((m) => m.role === "tool" && m.tool_call_id === id)
 				return typeof message?.content === "string" ? message.content : JSON.stringify(message?.content ?? "")
@@ -415,7 +422,15 @@ test("background bash cohort: a queued completion reminder is suppressed when th
 
 			await waitForTurnToSettle(fixture.fake.requests)
 			const lastConversation = JSON.stringify(
-				(fixture.fake.requests.at(-1)?.body as { messages?: unknown[] } | undefined)?.messages ?? [],
+				(
+					fixture.fake.requests
+						.filter((request) =>
+							(request.body as { messages?: Array<{ tool_call_id?: string }> } | undefined)?.messages?.some(
+								(message) => message.tool_call_id === "call_stop",
+							),
+						)
+						.at(-1)?.body as { messages?: unknown[] } | undefined
+				)?.messages ?? [],
 			)
 			const conversation = JSON.stringify(
 				fixture.fake.requests.flatMap((r) => (r.body as { messages?: unknown[] } | undefined)?.messages ?? []),
