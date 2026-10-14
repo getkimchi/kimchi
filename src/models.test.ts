@@ -615,6 +615,21 @@ describe("updateModelsConfig", () => {
 		expect(fetch).toHaveBeenCalledTimes(1)
 	})
 
+	it("classifies a 403 as a non-transient error and does not retry", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: false,
+			status: 403,
+			statusText: "Forbidden",
+		} as Response)
+
+		const error = await updateModelsConfig(modelsJsonPath, "scopeless-key").catch((e) => e)
+
+		expect(error).toBeInstanceOf(ModelsFetchError)
+		expect(isTransientModelsError(error)).toBe(false)
+		expect((error as Error).message).toContain("403")
+		expect(fetch).toHaveBeenCalledTimes(1)
+	})
+
 	it("throws on unexpected response shape when no cached config exists", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,

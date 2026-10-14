@@ -177,6 +177,7 @@ import {
 import {
 	injectExperimentalProvider,
 	isTransientModelsError,
+	ModelsFetchError,
 	readExperimentalModels,
 	updateModelsConfig,
 } from "./models.js"
@@ -483,12 +484,19 @@ try {
 				models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
 			}
 		} catch (err) {
-			const is401 = err instanceof Error && err.message.includes("401")
-			if (is401 && envKey) {
+			// A key the models API rejects cannot drive a session: 401 = dead key,
+			// 403 = key without the scopes the harness needs (e.g. a token minted by
+			// another Kimchi surface). Route both to a login flow instead of crashing.
+			const isKeyRejected = err instanceof ModelsFetchError && (err.status === 401 || err.status === 403)
+			if (isKeyRejected && envKey) {
 				throw new Error(rejectedEnvironmentKeyMessage)
 			}
-			if (is401 && process.stdin.isTTY) {
-				console.warn("API key is invalid or expired. Redirecting to setup...")
+			if (isKeyRejected && process.stdin.isTTY) {
+				console.warn(
+					err.status === 403
+						? "API key does not have the required permissions. Redirecting to setup..."
+						: "API key is invalid or expired. Redirecting to setup...",
+				)
 				writeApiKey("")
 				config = loadConfig()
 				const { runWizard } = await import("./setup-wizard/index.js")
