@@ -136,8 +136,8 @@ describe("org resource policy", () => {
 	it("refuses override writes to locked resources and works again when the policy lifts", () => {
 		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
 
-		expect(() => setResourceOverride("tools.web_search", true, settingsPath)).toThrow(/locked by organization policy/)
-		expect(() => resetResourceOverride("tools.web_search", settingsPath)).toThrow(/locked by organization policy/)
+		expect(() => setResourceOverride("tools.web_search", true, settingsPath)).toThrow(/managed by your organization/)
+		expect(() => resetResourceOverride("tools.web_search", settingsPath)).toThrow(/managed by your organization/)
 		// Nothing was written.
 		expect(getResourceOverride("tools.web_search", settingsPath)).toBeUndefined()
 

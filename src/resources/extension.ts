@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getResourceDefinition, getResourceDefinitions } from "./definitions.js"
-import { getResourcePolicy, isResourceEnabled, isResourceLocked, setResourceOverride } from "./store.js"
+import { isResourceEnabled, isResourceLocked, orgLockMessage, setResourceOverride } from "./store.js"
 import type { ResourceKind } from "./types.js"
 import { createResourceManager } from "./ui.js"
 
@@ -82,10 +82,7 @@ function showResourceStatus(ctx: ExtensionContext): void {
 /** Warn and refuse when the resource is locked by the organization policy. */
 function refuseOrgLocked(id: string, ctx: ExtensionContext): boolean {
 	if (!isResourceLocked(id)) return false
-	ctx.ui.notify(
-		`${id} is managed by your organization (${getResourcePolicy(id)}); it cannot be changed locally.`,
-		"warning",
-	)
+	ctx.ui.notify(orgLockMessage(id), "warning")
 	return true
 }
 

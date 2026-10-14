@@ -52,6 +52,14 @@ export function isResourceLocked(id: string): boolean {
 }
 
 /**
+ * The one org-lock refusal sentence, shared by every surface (store guard,
+ * CLI, /resources command, ACP) so the wording cannot drift.
+ */
+export function orgLockMessage(id: string): string {
+	return `${id} is managed by your organization (${getResourcePolicy(id)}); it cannot be changed locally.`
+}
+
+/**
  * Effective enablement. Precedence, highest first:
  *
  * 1. org FORCE_ON / FORCE_OFF — locked; beats every local choice
@@ -106,9 +114,7 @@ export function setResourceOverride(id: string, enabled: boolean | undefined, pa
 	// them, so lifting the policy later returns the resource to user control
 	// with no stale local state.
 	if (isResourceLocked(id)) {
-		throw new Error(
-			`Resource "${id}" is locked by organization policy (${getResourcePolicy(id)}); it cannot be changed locally.`,
-		)
+		throw new Error(orgLockMessage(id))
 	}
 	const settings = readJson(path)
 	const resources = asRecord(settings[SETTINGS_KEY])

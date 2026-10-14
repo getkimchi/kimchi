@@ -20,6 +20,7 @@ import {
 	getResourcePolicy,
 	isResourceEnabled,
 	isResourceLocked,
+	orgLockMessage,
 	setResourceOverride,
 } from "../../../resources/store.js"
 
@@ -59,7 +60,7 @@ export function handleListResources(paths: ResourceMethodPaths = {}): Record<str
 			experimental: resource.experimental === true,
 			overridden: getResourceOverride(resource.id, paths.settingsPath) !== undefined,
 			orgPolicy,
-			locked: orgPolicy === "FORCE_ON" || orgPolicy === "FORCE_OFF",
+			locked: isResourceLocked(resource.id),
 		}
 	})
 	return { resources }
@@ -92,10 +93,7 @@ export function handleSetResourceEnabled(
 	// (the set-onboarding-flag precedent).
 	const { id, enabled } = resolveSetResourceParams(params)
 	if (isResourceLocked(id)) {
-		throw RequestError.invalidRequest(
-			undefined,
-			`resource ${id} is locked by organization policy (${getResourcePolicy(id)}); it cannot be changed locally`,
-		)
+		throw RequestError.invalidRequest(undefined, orgLockMessage(id))
 	}
 	try {
 		setResourceOverride(id, enabled, paths.settingsPath)

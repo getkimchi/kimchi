@@ -1,8 +1,8 @@
 import { getResourceDefinitions } from "../resources/definitions.js"
 import {
-	getResourcePolicy,
 	isResourceEnabled,
 	isResourceLocked,
+	orgLockMessage,
 	resetResourceOverride,
 	setResourceOverride,
 } from "../resources/store.js"
@@ -58,7 +58,7 @@ function printResources(): void {
 /** Print a clear refusal for org-locked resources; the caller exits nonzero. */
 function refuseOrgLocked(id: string): boolean {
 	if (!isResourceLocked(id)) return false
-	console.error(`${id} is managed by your organization (${getResourcePolicy(id)}); it cannot be changed locally.`)
+	console.error(orgLockMessage(id))
 	return true
 }
 
