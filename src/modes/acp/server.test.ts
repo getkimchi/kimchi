@@ -3290,6 +3290,246 @@ describe("KimchiAcpAgent messageId on streaming chunks", () => {
 	})
 })
 
+// Per-message model attribution (docs/acp-model-attribution.md): the first
+// chunk emitted for a messageId carries `_meta["kimchi.dev"]` naming the
+// served and requested models as provider refs; later chunks of the same id
+// carry none unless the value changed (a mid-stream responseModel
+// correction). Replay after loadSession re-emits it from the persisted
+// message tuple, so attribution survives reload.
+describe("KimchiAcpAgent per-message model attribution", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+
+	beforeEach(async () => {
+		fake = new FakeAgentSession("session-model-meta")
+		const rec = makeRecordingConn()
+		updates = rec.updates
+		agent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		sessionId = res.sessionId
+	})
+
+	function partialMessage(fields: Partial<AssistantMessage>): AssistantMessage {
+		return {
+			role: "assistant",
+			content: [],
+			api: "anthropic-messages",
+			provider: "kimchi-dev",
+			model: "auto",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+			...fields,
+		}
+	}
+
+	function emitDelta(
+		type: "text_delta" | "thinking_delta",
+		contentIndex: number,
+		delta: string,
+		message: AssistantMessage,
+	): void {
+		fake.emit({
+			type: "message_update",
+			assistantMessageEvent: {
+				type,
+				delta,
+				contentIndex,
+				partial: {} as unknown as AssistantMessage,
+			},
+			message,
+		})
+	}
+
+	function metasFor(update: string): Array<{ [key: string]: unknown } | null | undefined> {
+		return updates.filter((u) => u.update.sessionUpdate === update).map((u) => u.update._meta)
+	}
+
+	it("attaches _meta on the first chunk of a message and not on later chunks", async () => {
+		const routed = partialMessage({ model: "auto", responseModel: "glm-5.3" })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitDelta("text_delta", 0, "hel", routed)
+			emitDelta("text_delta", 0, "lo", routed)
+			fake.emit(agentEnd())
+		}
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+		expect(result.stopReason).toBe("end_turn")
+		expect(metasFor("agent_message_chunk")).toEqual([
+			{
+				"kimchi.dev": {
+					modelId: "kimchi-dev/glm-5.3",
+					requestedModelId: "kimchi-dev/auto",
+				},
+			},
+			undefined,
+		])
+	})
+
+	it("attaches the same _meta on the first agent_thought_chunk", async () => {
+		const routed = partialMessage({ model: "auto", responseModel: "glm-5.3" })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitDelta("thinking_delta", 0, "pondering", routed)
+			emitDelta("thinking_delta", 0, " more", routed)
+			fake.emit(agentEnd())
+		}
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+		expect(metasFor("agent_thought_chunk")).toEqual([
+			{
+				"kimchi.dev": {
+					modelId: "kimchi-dev/glm-5.3",
+					requestedModelId: "kimchi-dev/auto",
+				},
+			},
+			undefined,
+		])
+	})
+
+	it("re-attaches a corrected _meta when responseModel arrives mid-stream", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			// First delta: the pick is not yet known — attribution falls back to
+			// the requested ref.
+			emitDelta("text_delta", 0, "hel", partialMessage({ model: "auto" }))
+			// The backend reports the served model with a later chunk.
+			emitDelta("text_delta", 0, "lo", partialMessage({ model: "auto", responseModel: "glm-5.3" }))
+			emitDelta("text_delta", 0, "!", partialMessage({ model: "auto", responseModel: "glm-5.3" }))
+			fake.emit(agentEnd())
+		}
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+		expect(metasFor("agent_message_chunk")).toEqual([
+			{
+				"kimchi.dev": {
+					modelId: "kimchi-dev/auto",
+					requestedModelId: "kimchi-dev/auto",
+				},
+			},
+			{
+				"kimchi.dev": {
+					modelId: "kimchi-dev/glm-5.3",
+					requestedModelId: "kimchi-dev/auto",
+				},
+			},
+			undefined,
+		])
+	})
+
+	it("emits identical refs for a pinned model (no responseModel)", async () => {
+		const pinned = partialMessage({ provider: "anthropic", model: "claude" })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitDelta("text_delta", 0, "hi", pinned)
+			fake.emit(agentEnd())
+		}
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+		expect(metasFor("agent_message_chunk")).toEqual([
+			{
+				"kimchi.dev": {
+					modelId: "anthropic/claude",
+					requestedModelId: "anthropic/claude",
+				},
+			},
+		])
+	})
+
+	it("attaches _meta on message_end's un-streamed text chunks", async () => {
+		// A provider that skips incremental deltas entirely: the full text
+		// surfaces only in message_end's returned message.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_end",
+				message: partialMessage({
+					model: "auto",
+					responseModel: "glm-5.3",
+					content: [{ type: "text", text: "full reply" }],
+				}),
+			})
+			fake.emit(agentEnd())
+		}
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+		expect(metasFor("agent_message_chunk")).toEqual([
+			{
+				"kimchi.dev": {
+					modelId: "kimchi-dev/glm-5.3",
+					requestedModelId: "kimchi-dev/auto",
+				},
+			},
+		])
+	})
+
+	it("re-emits _meta from the persisted tuple when replaying a loaded session", async () => {
+		const loaded = new FakeAgentSession("session-model-meta-load")
+		loaded.branch = [
+			{
+				type: "message",
+				id: "e1",
+				parentId: null,
+				timestamp: "2026-01-01T00:00:00.000Z",
+				message: { role: "user", content: "hi", timestamp: 0 },
+			},
+			{
+				type: "message",
+				id: "e2",
+				parentId: "e1",
+				timestamp: "2026-01-01T00:00:01.000Z",
+				message: partialMessage({
+					model: "auto",
+					responseModel: "glm-5.3",
+					content: [{ type: "text", text: "reply" }],
+				}),
+			},
+			{
+				type: "message",
+				id: "e3",
+				parentId: "e2",
+				timestamp: "2026-01-01T00:00:02.000Z",
+				message: partialMessage({
+					provider: "anthropic",
+					model: "claude",
+					content: [{ type: "text", text: "pinned reply" }],
+				}),
+			},
+		]
+		const rec = makeRecordingConn()
+		const loadAgent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionLoader: async () => asSession(loaded),
+		})
+		await loadAgent.loadSession({ sessionId: "session-model-meta-load", cwd: "/tmp", mcpServers: [] })
+		const replayed = replayOnly(rec.updates).filter((u) => u.update.sessionUpdate === "agent_message_chunk")
+		expect(replayed.map((u) => u.update._meta)).toEqual([
+			{
+				"kimchi.dev": {
+					modelId: "kimchi-dev/glm-5.3",
+					requestedModelId: "kimchi-dev/auto",
+				},
+			},
+			{
+				"kimchi.dev": {
+					modelId: "anthropic/claude",
+					requestedModelId: "anthropic/claude",
+				},
+			},
+		])
+	})
+})
+
 // ACP is the only transport that reads assistant text solely from
 // message_update's text_delta stream — the TUI, the session journal, and
 // --print / --mode json all re-read message_end's returned message instead.
