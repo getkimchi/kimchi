@@ -11,7 +11,7 @@ import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
-import { derivePlanTitle, savePlanMarkdown, slugifyPlanName } from "../../shared/planning/plan-markdown.js"
+import { derivePlanTitle, slugifyPlanName } from "../../shared/planning/plan-markdown.js"
 import {
 	consumePlanReviewContext,
 	emitPlanReviewDecision,
@@ -47,6 +47,7 @@ import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/con
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
+import { resolveClassifierCandidates } from "../model-catalog/classifier-models.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { shouldSuppressFermentModeTools } from "../print-mode.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
@@ -57,10 +58,9 @@ import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
-import { appendWorkRecord, getWorkId, tryWorkAttribution } from "../work-attribution.js"
+import { getWorkId, saveToolPlan, tryWorkAttribution } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
-import { resolveClassifierCandidates } from "./classifier-models.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import { BUILTIN_DENY, DEFAULT_CONFIG, PERMISSION_MODES_WITH_META as MODES, PERMISSIONS_ENV_KEY } from "./constants.js"
@@ -714,7 +714,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						"Test Coverage, Open Questions), Verification Strategy, Decision Log, Risks.",
 				}),
 			}),
-			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 				const planText = (params as { plan?: string })?.plan
 				if (!planText?.trim()) {
 					return {
@@ -729,19 +729,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 				// Save plan to disk
 				if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
-				let planPath: string | undefined
-				let snapshotPath: string | undefined
-				const workId = tryWorkAttribution(() => getWorkId(ctx))
-				try {
-					const saved = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText, workId })
-					planPath = saved.path
-					snapshotPath = saved.snapshotPath
-					if (workId) tryWorkAttribution(() => appendWorkRecord(ctx, { type: "plan", ...saved }, workId))
-				} catch (err) {
-					const detail = err instanceof Error ? err.message : String(err)
-					if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
-					else console.error(`permissions: failed to save plan file: ${detail}`)
-				}
+				const saved = saveToolPlan(ctx, ctx, toolCallId, "permissions", { name: activePlanSlug, planText })
+				const planPath = saved?.path
+				const snapshotPath = saved?.snapshotPath
 				const retainedPlanNote = snapshotPath ? `\nContinue from another worktree using: ${snapshotPath}` : ""
 
 				// Agent worker: silent submit. Saves the plan and terminates the turn

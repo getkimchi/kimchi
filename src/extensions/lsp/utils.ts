@@ -1,6 +1,60 @@
 // extensions/lsp/utils.ts
+import { realpathSync } from "node:fs"
+import { homedir } from "node:os"
 import path from "node:path"
 import type { Diagnostic } from "./types.js"
+
+// =============================================================================
+// Path Normalization
+// =============================================================================
+
+/** True when the platform's default filesystem is case-insensitive, so
+ *  containment checks compare case-folded paths. */
+const CASE_INSENSITIVE_FS = process.platform === "darwin" || process.platform === "win32"
+
+/** Normalize a filesystem path for comparison: expand a leading `~`, resolve
+ *  to absolute, and collapse symlinks via realpath when the path exists (the
+ *  pre-realpath resolved form otherwise, so missing paths still compare).
+ *
+ *  Without this, a session cwd reached through a symlink (macOS `/var` →
+ *  `/private/var`, symlinked repo dirs) never string-matches a tool-supplied
+ *  path through the real path, and an in-workspace file gets classified as
+ *  outside. */
+export function normalizePath(p: string): string {
+	const expanded =
+		p === "~" || p.startsWith(`~${path.sep}`) || p.startsWith("~/") ? path.join(homedir(), p.slice(1)) : p
+	const resolved = path.resolve(expanded)
+	// Realpath the nearest existing ancestor and re-append the missing tail,
+	// so paths under symlinked directories canonicalize even when the file
+	// itself doesn't exist yet (write flows).
+	const tail: string[] = []
+	let current = resolved
+	while (true) {
+		try {
+			return tail.length === 0 ? realpathSync(current) : path.join(realpathSync(current), ...tail)
+		} catch {
+			const parent = path.dirname(current)
+			if (parent === current) return resolved
+			tail.unshift(path.basename(current))
+			current = parent
+		}
+	}
+}
+
+/** True when filePath is the given directory or nested inside it, comparing
+ *  normalized paths (symlinks resolved, case-folded on darwin/win32). Both
+ *  the session-cwd containment guard in lsp.ts and clientCwd key derivation
+ *  must use the same comparison so the same files land in the same buckets
+ *  whichever path a caller took. */
+export function isPathWithin(filePath: string, dir: string): boolean {
+	let file = normalizePath(filePath)
+	let root = normalizePath(dir)
+	if (CASE_INSENSITIVE_FS) {
+		file = file.toLowerCase()
+		root = root.toLowerCase()
+	}
+	return file === root || file.startsWith(root + path.sep)
+}
 
 // =============================================================================
 // URI Handling

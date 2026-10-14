@@ -1,6 +1,16 @@
 // Cloudflare 520-522 (origin failures) are transient for the
 // Cloudflare-fronted gateway, alongside 524 (origin timeout).
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504, 520, 521, 522, 524])
+
+/**
+ * Whether a gateway HTTP status is retryable (rate limit, origin failures,
+ * Cloudflare 5xx family incl. 524). Callers that surface errors use this to
+ * distinguish "retry later" from "will never succeed" — see the memory
+ * capture worker's poison classification.
+ */
+export function isRetryableStatus(status: number): boolean {
+	return RETRYABLE_STATUSES.has(status)
+}
 // Default retry budget for kimchi backend calls when the caller passes no retry
 // option. Deliberately independent of config's RETRY_DEFAULTS, which seeds
 // pi's chat retry policy — a different concern with a much smaller budget.
@@ -31,7 +41,7 @@ function isRetryableResponse(response: Response): boolean {
 	return RETRYABLE_STATUSES.has(response.status)
 }
 
-function parseRetryAfterMs(response: Response): number | null {
+export function parseRetryAfterMs(response: Response): number | null {
 	const header = response.headers.get("retry-after")
 	if (!header) return null
 	const seconds = Number(header)
@@ -109,4 +119,36 @@ export async function fetchWithRetry(
 	}
 
 	throw lastError
+}
+
+/** Reads at most `limit` bytes, keeping status and headers; abort or an oversized body stops the stream. */
+export async function boundedResponse(
+	response: Response,
+	limit: number,
+	signal: AbortSignal,
+	message: string,
+): Promise<Response> {
+	const reader = response.body?.getReader()
+	if (!reader) return response
+	let abort: (() => void) | undefined
+	const aborted = new Promise<never>((_resolve, reject) => {
+		abort = () => reject(signal.reason)
+		signal.addEventListener("abort", abort, { once: true })
+	})
+	const chunks: Uint8Array[] = []
+	let size = 0
+	try {
+		for (;;) {
+			signal.throwIfAborted()
+			const chunk = await Promise.race([reader.read(), aborted])
+			if (chunk.done) break
+			size += chunk.value.byteLength
+			if (size > limit) throw new Error(message)
+			chunks.push(chunk.value)
+		}
+		return new Response(Buffer.concat(chunks), { status: response.status, headers: response.headers })
+	} finally {
+		if (abort) signal.removeEventListener("abort", abort)
+		void reader.cancel().catch(() => {})
+	}
 }

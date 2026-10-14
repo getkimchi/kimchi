@@ -32,7 +32,9 @@ type PersistedRoutedResolution = {
 	modelId: string
 }
 
-function isPersistedRoutedResolution(data: unknown): data is PersistedRoutedResolution {
+/** Exported for the ACP routed-model mirror; the persisted shape is shared
+ * wire-and-storage truth. */
+export function isPersistedRoutedResolution(data: unknown): data is PersistedRoutedResolution {
 	return (
 		data !== null &&
 		typeof data === "object" &&
@@ -44,6 +46,21 @@ function isPersistedRoutedResolution(data: unknown): data is PersistedRoutedReso
 		typeof data.provider === "string" &&
 		"modelId" in data &&
 		typeof data.modelId === "string"
+	)
+}
+
+/** A custom entry carrying a validated routed-resolution payload. */
+type RoutedResolutionEntry = Extract<SessionEntry, { type: "custom" }> & {
+	data: PersistedRoutedResolution
+}
+
+/** Match a routed-resolution entry in one step — type, customType, and payload
+ * guard — so callers get validated `entry.data` without re-sequencing checks. */
+export function isRoutedResolutionEntry(entry: SessionEntry): entry is RoutedResolutionEntry {
+	return (
+		entry.type === "custom" &&
+		entry.customType === ROUTED_MODEL_RESOLUTION_ENTRY &&
+		isPersistedRoutedResolution(entry.data)
 	)
 }
 
@@ -193,6 +210,9 @@ function persistedDefaultIsRoutedAuto(): boolean {
 export function sessionSelectsRoutedAuto(entries: readonly SessionEntry[]): boolean {
 	let selected = false
 	for (const entry of entries) {
+		// Presence only, deliberately without the payload guard: the entry's
+		// existence evidences a routed selection even if its data is malformed
+		// or written by a newer shape version.
 		if (entry.type === "custom" && entry.customType === ROUTED_MODEL_RESOLUTION_ENTRY) {
 			selected = true
 		} else if (entry.type === "model_change") {
@@ -264,7 +284,7 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 		// `<requested> picked <routed>.` is visible on resume without leaking into
 		// future model requests.
 		pi.registerEntryRenderer(ROUTED_MODEL_RESOLUTION_ENTRY, (entry, _options, theme) => {
-			if (!isPersistedRoutedResolution(entry.data)) return undefined
+			if (!isRoutedResolutionEntry(entry)) return undefined
 			return new Text(theme.fg("dim", formatRoutedPickNotice(entry.data.requestedId, entry.data.modelId)), 0, 0)
 		})
 
@@ -514,15 +534,7 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			// multi-model.
 			setMultiModelEnabled(sessionId, false)
 
-			const last = ctx.sessionManager
-				.getEntries()
-				.findLast(
-					(candidate) =>
-						candidate.type === "custom" &&
-						candidate.customType === ROUTED_MODEL_RESOLUTION_ENTRY &&
-						isPersistedRoutedResolution(candidate.data),
-				)
-			const data = last?.type === "custom" ? (last.data as PersistedRoutedResolution) : undefined
+			const data = ctx.sessionManager.getEntries().findLast(isRoutedResolutionEntry)?.data
 			if (!data || data.requestedId !== ctx.model.id) {
 				resetLastNotified(sessionId)
 				return

@@ -14,6 +14,7 @@ import { lockSync } from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { savedWorkSummary, saveWorkSummary } from "../__mocks__/work-summary.js"
 import {
 	appendWorkRecord,
 	createWorkAttributionExtension,
@@ -23,7 +24,7 @@ import {
 } from "../work-attribution.js"
 
 import * as diagnostics from "./diagnostics.js"
-import { flushWorkSummaries, recoverWorkSummaries } from "./summary.js"
+import { flushWorkSummaries, readWorkRecords, readWorkRecordsAsync, recoverWorkSummaries } from "./summary.js"
 
 vi.mock("proper-lockfile", async (importOriginal) => ({ ...(await importOriginal<typeof locks>()) }))
 vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
@@ -53,7 +54,7 @@ function path(workId: string) {
 	return join(dir, "work", workId, "work.json")
 }
 function summary(workId: string) {
-	return JSON.parse(fs.readFileSync(path(workId), "utf8"))
+	return savedWorkSummary(dir, workId)
 }
 
 describe("readable work summaries", () => {
@@ -83,6 +84,89 @@ describe("readable work summaries", () => {
 		await flushWorkSummaries()
 		expect(summary(workId).commits[0].pullRequests).toEqual([renamed])
 	})
+	it("reports malformed nonblank ledger rows without treating a trailing newline as lost history", () => {
+		const ctx = context()
+		recordProviderRequest(ctx)
+		const invalid = vi.fn()
+		const ledger = join(dir, "work-attribution", "parent.jsonl")
+		readWorkRecords(dir, undefined, () => {}, invalid)
+		expect(invalid).not.toHaveBeenCalled()
+		fs.appendFileSync(ledger, '\n{broken\n{"type":"request"}\n')
+		readWorkRecords(dir, undefined, () => {}, invalid)
+		expect(invalid).toHaveBeenCalledTimes(2)
+	})
+	it.each(["", "transitions"])("skips only interrupted appends in %s journals", async (source) => {
+		const row = { version: 1, type: "work", workId: randomUUID(), sessionId: "writer" }
+		const complete = JSON.stringify(row)
+		const directory = join(dir, "work-attribution", source)
+		fs.mkdirSync(directory, { recursive: true })
+		const ledger = join(directory, "interrupted.jsonl")
+		for (const [suffix, invalidCount, rows] of [
+			['{"type":"request"', 0, [row]],
+			['{"type":"request"\n', 1, [row]],
+			// Released writers start a new line after a cut-off record and append the next one.
+			['{"type":"request"}', 1, [row]],
+			[`{"type":"request"\n${complete}`, 0, [row, row]],
+			[`{"type":"request","workId":"12\n${complete}`, 0, [row, row]],
+			[`{"type":"request"}x\n${complete}`, 1, [row, row]],
+			[complete, 0, [row, row]],
+		] as const) {
+			fs.writeFileSync(ledger, `${complete}\n${suffix}`)
+			const invalid = vi.fn()
+			expect(readWorkRecords(dir, undefined, () => {}, invalid)).toEqual(rows)
+			expect(invalid).toHaveBeenCalledTimes(invalidCount)
+			// The background reader sees the same damage.
+			const background = vi.fn()
+			expect(await readWorkRecordsAsync(dir, new AbortController().signal, background)).toEqual(rows)
+			expect(background.mock.calls).toEqual(invalid.mock.calls)
+		}
+	})
+	it("reports damage and complete records of unknown types as separate problems", async () => {
+		const row = { version: 1, type: "work", workId: randomUUID(), sessionId: "writer" }
+		// A newer Kimchi sharing this history can add record types that this version cannot interpret.
+		const newer = { ...row, type: "work_checkpoint", sessionId: "newer", requestIds: [randomUUID()] }
+		const ledger = join(dir, "work-attribution", "mixed.jsonl")
+		fs.mkdirSync(dirname(ledger), { recursive: true })
+		const lines = [row, newer, { ...newer, workId: "not-a-work-id" }, { ...row, type: "request" }].map((value) =>
+			JSON.stringify(value),
+		)
+		fs.writeFileSync(ledger, `${lines.join("\n")}\n{broken\n${JSON.stringify(row)}\n`)
+		const problems = vi.fn()
+		expect(readWorkRecords(dir, undefined, () => {}, problems)).toEqual([row, row])
+		// Both kinds reach the callback, so readers that need complete history still see an unknown type.
+		expect(problems.mock.calls).toEqual([
+			[{ kind: "unknown-type", path: ledger, line: 2, record: newer }],
+			[{ kind: "invalid", path: ledger, line: 3 }],
+			[{ kind: "invalid", path: ledger, line: 4 }],
+			[{ kind: "invalid", path: ledger, line: 5 }],
+		])
+		const background = vi.fn()
+		expect(await readWorkRecordsAsync(dir, new AbortController().signal, background)).toEqual([row, row])
+		expect(background.mock.calls).toEqual(problems.mock.calls)
+	})
+	it("skips a record cut at any position, including inside a \\u escape", () => {
+		const row = { version: 1, type: "work", workId: randomUUID(), sessionId: "writer" }
+		const complete = JSON.stringify(row)
+		// Provider and Git errors keep terminal colours, which JSON writes as \u001b escapes.
+		const cut = JSON.stringify({
+			...row,
+			type: "commit",
+			sha: "a".repeat(40),
+			prLookup: { status: "error", error: '\u001b[31mGitHub said "no"\u001b[0m\tC:\\repo\n', attempts: [1, -1.5e3] },
+			complete: false,
+		})
+		const escapes = [...cut.matchAll(/\\u001b/g)].map((match) => match.index)
+		expect(escapes).toHaveLength(2)
+		const ledger = join(dir, "work-attribution", "interrupted.jsonl")
+		fs.mkdirSync(dirname(ledger), { recursive: true })
+		for (let end = 1; end < cut.length; end++) {
+			fs.writeFileSync(ledger, `${complete}\n${cut.slice(0, end)}\n${complete}\n`)
+			const invalid = vi.fn()
+			expect(readWorkRecords(dir, undefined, () => {}, invalid)).toEqual([row, row])
+			expect({ end, invalid: invalid.mock.calls.length }).toEqual({ end, invalid: 0 })
+		}
+	})
+
 	it("retains PR links and their newest state through failed lookups and source replay", async () => {
 		const ctx = context()
 		const workId = getWorkId(ctx)
@@ -125,6 +209,165 @@ describe("readable work summaries", () => {
 		await flushWorkSummaries()
 		expect(summary(workId).commits[0]).toMatchObject({ pullRequests: [merged], prLookup: failure })
 	})
+	it.each(["priced", "unavailable"])("keeps newer billing status (%s) through delayed recovery", async (status) => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const request = recordProviderRequest(ctx)
+		const charge = { id: randomUUID(), costUsd: "0.25" }
+		const priced = { status: "priced" }
+		const unavailable = { status: "unavailable", reason: "Billing API returned HTTP 503" }
+		const older = { ...(status === "priced" ? unavailable : priced), checkedAt: "2026-10-04T09:00:00Z" }
+		const newer = { ...(status === "priced" ? priced : unavailable), checkedAt: "2026-10-04T09:05:00Z" }
+		appendWorkRecord(ctx, {
+			type: "request_cost",
+			requestId: request.requestId,
+			billingRows: older.status === "priced" ? [charge] : [],
+			billingLookup: older,
+		})
+		await flushWorkSummaries()
+		// A second process can capture an older ledger before waiting for the summary lock.
+		vi.resetModules()
+		const recovering = await import("./summary.js")
+		const originalLock = locks.lock
+		let release!: () => void
+		let waiting!: () => void
+		const blocked = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const entered = new Promise<void>((resolve) => {
+			waiting = resolve
+		})
+		vi.spyOn(locks, "lock").mockImplementationOnce(async (...args) => {
+			waiting()
+			await blocked
+			return originalLock(...args)
+		})
+		recovering.recoverWorkSummaries()
+		try {
+			await entered
+			appendWorkRecord(ctx, {
+				type: "request_cost",
+				requestId: request.requestId,
+				billingRows: newer.status === "priced" ? [charge] : [],
+				billingLookup: newer,
+			})
+			await flushWorkSummaries()
+			expect(summary(workId).requests[0].billingLookup).toEqual(newer)
+		} finally {
+			release()
+			await recovering.flushWorkSummaries()
+		}
+		expect(summary(workId).requests[0]).toMatchObject({ billingLookup: newer, billingRows: [charge] })
+	})
+	it("reads large journals in the background without blocking the event loop", async () => {
+		const ledgers = join(dir, "work-attribution")
+		fs.mkdirSync(join(ledgers, "transitions"), { recursive: true })
+		const workId = randomUUID()
+		const row = (requestId: string, note = "") =>
+			JSON.stringify({ version: 1, type: "request", workId, sessionId: "large", requestId, note })
+		// About 6 MiB in several files; one multi-byte note crosses a read chunk boundary.
+		const lines = Array.from({ length: 20_000 }, () => row(randomUUID(), "x".repeat(200)))
+		fs.writeFileSync(join(ledgers, "large.jsonl"), `${row(randomUUID(), "é".repeat(700_000))}\n${lines.join("\n")}\n`)
+		fs.writeFileSync(join(ledgers, "transitions", "edits.jsonl"), `${lines.slice(0, 1000).join("\n")}\ninterrupted`)
+		let turns = 0
+		let reading = true
+		const spin = () => {
+			turns++
+			if (reading) setImmediate(spin)
+		}
+		setImmediate(spin)
+		const records = await readWorkRecordsAsync(dir, new AbortController().signal)
+		reading = false
+		expect(records).toHaveLength(21_001)
+		expect(records).toEqual(readWorkRecords(dir))
+		// The synchronous reader would let no other callback run until it finished.
+		expect(turns).toBeGreaterThanOrEqual(6)
+	})
+	it("lists each billing ID once with its latest observation, including after a replay", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const { requestId } = recordProviderRequest(ctx)
+		const id = randomUUID()
+		const other = randomUUID()
+		const pending = {
+			type: "request_cost",
+			requestId,
+			billingRows: [{ id, costUsd: null, createTime: "2026-10-08T10:00:01Z" }],
+			billingLookup: { status: "pending", checkedAt: "2026-10-08T10:00:30.000Z" },
+		}
+		const priced = {
+			type: "request_cost",
+			requestId,
+			billingRows: [{ id, costUsd: "0.000166000", createTime: "2026-10-08T10:00:01Z", model: "glm-5.3" }],
+			billingLookup: { status: "priced", checkedAt: "2026-10-08T10:05:30.000Z" },
+		}
+		appendWorkRecord(ctx, pending)
+		appendWorkRecord(ctx, priced)
+		// A delayed older observation neither duplicates nor replaces the later price.
+		appendWorkRecord(ctx, {
+			...pending,
+			billingRows: [...pending.billingRows, { id: other, costUsd: null }],
+		})
+		await flushWorkSummaries()
+		const expected = [priced.billingRows[0], { id: other, costUsd: null }]
+		expect(summary(workId).requests[0]).toMatchObject({ billingRows: expected, billingLookup: priced.billingLookup })
+		fs.unlinkSync(path(workId))
+		recoverWorkSummaries()
+		await flushWorkSummaries()
+		expect(summary(workId).requests[0].billingRows).toEqual(expected)
+	})
+	it.each([
+		"billingLookup",
+		"prLookup",
+		"pullRequests",
+	])("recovers %s from a malformed observation timestamp", async (field) => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const base =
+			field === "billingLookup"
+				? { type: "request_cost", requestId: recordProviderRequest(ctx).requestId }
+				: { type: "commit", sha: "a".repeat(40), repository: "/project/.git", worktree: "/project" }
+		const invalid = {
+			url: "https://github.com/example/repo/pull/7",
+			status: "unavailable",
+			checkedAt: "invalid-history",
+		}
+		const valid = { ...invalid, status: "complete", checkedAt: "2026-10-04T10:00:00Z" }
+		for (const observation of [invalid, valid, invalid]) {
+			appendWorkRecord(ctx, { ...base, [field]: field === "pullRequests" ? [observation] : observation })
+			await flushWorkSummaries()
+		}
+		const row = field === "billingLookup" ? summary(workId).requests[0] : summary(workId).commits[0]
+		expect(row[field]).toEqual(field === "pullRequests" ? [valid] : valid)
+	})
+	it("retains hunk matches and lets only stronger file evidence replace them", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const commit = { type: "commit", sha: "a".repeat(40), repository: "/project/.git", worktree: "/project" }
+		const record = async (method: string, transitionId: string) => {
+			appendWorkRecord(ctx, {
+				...commit,
+				fileMatches: [{ path: "file.ts", method, transitionIds: [transitionId], worktree: "/project" }],
+			})
+			await flushWorkSummaries()
+		}
+		await record("file-hunks", "hunk-one")
+		await record("file-hunks", "hunk-two")
+		expect(summary(workId).commits[0].fileMatches).toEqual([
+			{ path: "file.ts", method: "file-hunks", transitionIds: ["hunk-one", "hunk-two"], worktree: "/project" },
+		])
+		await record("path-blob", "blob")
+		await record("file-hunks", "late-hunk")
+		expect(summary(workId).commits[0].fileMatches).toEqual([
+			{ path: "file.ts", method: "path-blob", transitionIds: ["blob"], worktree: "/project" },
+		])
+		await record("file-chain", "exact")
+		await record("path-blob", "late-blob")
+		await record("file-hunks", "last-hunk")
+		expect(summary(workId).commits[0].fileMatches).toEqual([
+			{ path: "file.ts", method: "file-chain", transitionIds: ["exact"], worktree: "/project" },
+		])
+	})
 	it("shows why a session continued another work without changing request timestamps", async () => {
 		const ctx = context()
 		const workId = getWorkId(ctx)
@@ -155,10 +398,7 @@ describe("readable work summaries", () => {
 		for (const snapshotPath of ["/work/plans/v1.md", "/work/plans/v2.md", "/work/plans/v2.md"])
 			appendWorkRecord(ctx, { type: "plan", path: "/project/.kimchi/plans/feature.md", snapshotPath })
 		await flushWorkSummaries()
-		expect(summary(workId).plans.map((plan: { snapshotPath: string }) => plan.snapshotPath)).toEqual([
-			"/work/plans/v1.md",
-			"/work/plans/v2.md",
-		])
+		expect(summary(workId).plans.map((plan) => plan.snapshotPath)).toEqual(["/work/plans/v1.md", "/work/plans/v2.md"])
 	})
 	it("finishes the turn while summary publication is pending, but drains it on shutdown", async () => {
 		const originalRename = asyncFs.rename
@@ -217,7 +457,7 @@ describe("readable work summaries", () => {
 		recordProviderRequest(parent)
 		await flushWorkSummaries()
 		const value = summary(workId)
-		expect(value).toMatchObject({ version: 1, workId, sessions: expect.arrayContaining(["parent", "child"]) })
+		expect(value).toMatchObject({ workId, sessions: expect.arrayContaining(["parent", "child"]) })
 		expect(value.requests).toHaveLength(2)
 		expect(value.requests).toEqual(
 			expect.arrayContaining([
@@ -238,7 +478,6 @@ describe("readable work summaries", () => {
 		expect(value.requests[0]).not.toHaveProperty("version")
 		expect(value.requests[0]).not.toHaveProperty("type")
 		expect(summary(next).requests).toHaveLength(1)
-		expect(fs.readFileSync(path(workId), "utf8")).toContain('\n  "workId":')
 	})
 	it("retains request-to-file links and different originating sessions for the same commit", async () => {
 		const workId = getWorkId(context())
@@ -267,7 +506,7 @@ describe("readable work summaries", () => {
 		await flushWorkSummaries()
 		expect(
 			summary(workId)
-				.commits.map((entry: { sessionId: string }) => entry.sessionId)
+				.commits.map((entry) => entry.sessionId)
 				.sort(),
 		).toEqual(["child", "parent"])
 		expect(summary(workId).fileTransitions).toEqual([
@@ -311,8 +550,6 @@ describe("readable work summaries", () => {
 		const request = recordProviderRequest(ctx)
 		await flushWorkSummaries()
 		const existing = summary(request.workId)
-		existing.fileTransitions = undefined
-		fs.writeFileSync(path(request.workId), JSON.stringify(existing))
 		const journal = join(dir, "work-attribution", "transitions", "old.jsonl")
 		fs.mkdirSync(dirname(journal), { recursive: true })
 		fs.writeFileSync(
@@ -332,7 +569,7 @@ describe("readable work summaries", () => {
 			expect.objectContaining({ transitionId: "old-transition", toolCallId: "old-tool" }),
 		])
 		expect(summary(request.workId).fileTransitions[0]).not.toHaveProperty("requestId")
-		expect(JSON.parse(fs.readFileSync(join(dir, "work-attribution", ".recovered.json"), "utf8")).version).toBe(2)
+		expect(JSON.parse(fs.readFileSync(join(dir, "work-attribution", ".recovered.json"), "utf8")).version).toBe(5)
 		fs.rmSync(path(request.workId))
 		vi.resetModules()
 		const relaunched = await import("./summary.js")
@@ -340,6 +577,50 @@ describe("readable work summaries", () => {
 		await relaunched.flushWorkSummaries()
 		expect(summary(request.workId).fileTransitions).toHaveLength(1)
 		expect(summary(request.workId).requests[0]).toEqual(existing.requests[0])
+	})
+	it("replays unchanged version-4 ledgers to restore observations and hunk evidence", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		const fileMatch = { path: "file.ts", worktree: "/project", method: "file-hunks", transitionIds: ["native-edit"] }
+		appendWorkRecord(ctx, {
+			type: "commit",
+			sha: "a".repeat(40),
+			repository: "/project/.git",
+			worktree: "/project",
+			fileMatches: [fileMatch],
+		})
+		appendWorkRecord(ctx, {
+			type: "file_observation",
+			observationId: "shell-window",
+			toolCallId: "shell-tool",
+			source: "bash",
+			repository: "/project/.git",
+			worktree: "/project",
+			files: [],
+			complete: false,
+		})
+		await flushWorkSummaries()
+		// A summary saved by a build that did not merge observations or hunk evidence.
+		const { fileObservations: _, ...old } = summary(workId)
+		old.commits[0].fileMatches = []
+		fs.rmSync(dirname(path(workId)), { recursive: true })
+		await saveWorkSummary(dir, old)
+		const { size, mtimeMs } = fs.statSync(path(workId))
+		const ledger = join(dir, "work-attribution", "parent.jsonl")
+		const past = new Date(Date.now() - 60 * 60 * 1000)
+		fs.utimesSync(ledger, past, past)
+		const ledgerMtime = fs.statSync(ledger).mtimeMs
+		fs.writeFileSync(
+			join(dir, "work-attribution", ".recovered.json"),
+			JSON.stringify({ version: 4, startedAt: Date.now(), summaries: { [workId]: `${size}:${mtimeMs}` } }),
+		)
+		recoverWorkSummaries()
+		await flushWorkSummaries()
+		expect(summary(workId).fileObservations).toEqual([
+			expect.objectContaining({ observationId: "shell-window", complete: false }),
+		])
+		expect(summary(workId).commits[0].fileMatches).toEqual([fileMatch])
+		expect(fs.statSync(ledger).mtimeMs).toBe(ledgerMtime)
 	})
 	it.each([
 		undefined,
@@ -442,7 +723,7 @@ describe("readable work summaries", () => {
 			`${JSON.stringify({ type: "request", requestId: "unpublished", version: 1, sessionId: "parent", workId, cwd: "/project", recordedAt: new Date().toISOString() })}\n`,
 		)
 		expect((await launch()).ledgerReads).toBe(1)
-		expect(summary(workId).requests.map((row: { requestId: string }) => row.requestId)).toContain("unpublished")
+		expect(summary(workId).requests.map((row) => row.requestId)).toContain("unpublished")
 		// Recovered ledgers may be unchanged even when their derived output disappears or is damaged.
 		fs.utimesSync(ledger, past, past)
 		for (const damaged of [undefined, "{"]) {
@@ -508,10 +789,7 @@ describe("readable work summaries", () => {
 		appendWorkRecord(ctx, { type: "request", requestId: "queued" }, workId)
 		release()
 		await flushWorkSummaries()
-		expect(summary(workId).requests.map((row: { requestId: string }) => row.requestId)).toEqual([
-			"queued",
-			"during-release",
-		])
+		expect(summary(workId).requests.map((row) => row.requestId)).toEqual(["queued", "during-release"])
 	})
 	it("does one recovery scan per agent directory despite child session fanout", async () => {
 		const workId = getWorkId(context())
@@ -653,11 +931,7 @@ console.log("durable"); await flushWorkSummaries();`,
 	it("serializes simultaneous processes without lost updates or truncated publication", async () => {
 		const workId = randomUUID()
 		const directory = dirname(path(workId))
-		fs.mkdirSync(directory, { recursive: true })
-		fs.writeFileSync(
-			path(workId),
-			JSON.stringify({ version: 1, workId, sessions: [], requests: [], plans: [], commits: [] }),
-		)
+		await saveWorkSummary(dir, { workId, sessions: [] })
 		const release = lockSync(directory)
 		const script = join(dir, "writer.mts")
 		fs.writeFileSync(
@@ -708,6 +982,18 @@ console.log("ready"); await flushWorkSummaries();`,
 			expect(errors).toEqual([])
 			expect(summary(workId).requests).toHaveLength(24)
 			expect(summary(workId).sessions.sort()).toEqual(["session-0", "session-1", "session-2"])
+			// Every append landed on a committed line boundary.
+			const head = JSON.parse(fs.readFileSync(path(workId), "utf8"))
+			const log = fs.readFileSync(join(directory, "rows", `requests.${head.logs.requests.generation}.jsonl`))
+			expect(head).toMatchObject({
+				version: 2,
+				logs: { requests: { rows: 24, bytes: log.length }, sessions: { rows: 3 } },
+			})
+			expect(log.at(-1)).toBe(10)
+			expect(fs.readdirSync(join(directory, "rows")).sort()).toEqual([
+				`requests.${head.logs.requests.generation}.jsonl`,
+				`sessions.${head.logs.sessions.generation}.jsonl`,
+			])
 		} finally {
 			if (reading) clearInterval(reading)
 			for (const { child } of children) child.kill()

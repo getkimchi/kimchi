@@ -152,9 +152,17 @@ export interface LspClient {
 	messageBuffer: Buffer
 	isReading: boolean
 	lastActivity: number
+	/** In-flight lifecycle spans (file reads, didOpen/didChange writes, timed
+	 *  waits) that register no JSON-RPC request. Eviction and the reaper treat
+	 *  a chain with inFlightWork > 0 as busy even when pendingRequests and
+	 *  diagnosticWaiters are empty. */
+	inFlightWork: number
 	activeProgressTokens: Set<string | number>
 	projectLoaded: Promise<void>
-	resolveProjectLoaded: () => void
+	/** Settle the init wait: with no argument it resolves the project-load
+	 *  wait; passing an error rejects it (used by shutdownAll so awaiting
+	 *  creators throw instead of receiving a dead chain). */
+	settleProjectLoaded: (err?: Error) => void
 }
 
 export interface ServerConfig {

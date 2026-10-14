@@ -584,6 +584,9 @@ export interface MemoryOverview {
 	root: string
 	stores: Array<{ scope: string; facts: number; sizeBytes: number }>
 	pendingJobs: number
+	/** Quarantined poison capture jobs (deterministic extraction failures,
+	 * moved aside after POISON_JOB_MAX_ATTEMPTS drains). */
+	failedJobs: number
 	ledgerEntries: number
 }
 
@@ -605,6 +608,7 @@ export async function adminOverview(deps?: AdminDeps): Promise<MemoryOverview> {
 		root: resolved.memoryRoot,
 		stores: entries,
 		pendingJobs: countDirEntries(join(resolved.memoryRoot, "pending")),
+		failedJobs: countDirEntries(join(resolved.memoryRoot, "failed")),
 		ledgerEntries: ledgerEntryCount(join(resolved.memoryRoot, "captured-hashes.json")),
 	}
 }
@@ -628,13 +632,11 @@ async function opOverview(deps: ResolvedDeps, memoryState?: MemoryStateHandle): 
 			)
 		}
 	}
-	lines.push(
-		"",
-		`Pending capture jobs: ${data.pendingJobs}`,
-		`Captured-message ledger entries: ${data.ledgerEntries}`,
-		"",
-		USAGE,
-	)
+	lines.push("", `Pending capture jobs: ${data.pendingJobs}`)
+	if (data.failedJobs > 0) {
+		lines.push(`Quarantined poison jobs: ${data.failedJobs} (in failed/ — requeue one with: mv failed/<file> pending/)`)
+	}
+	lines.push("", `Captured-message ledger entries: ${data.ledgerEntries}`, "", USAGE)
 	return result({ text: lines.join("\n"), data })
 }
 

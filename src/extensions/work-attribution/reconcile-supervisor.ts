@@ -7,26 +7,61 @@ import {
 	reconcileWorkPullRequests,
 	type WorkPullRequestUpdate,
 } from "../pull-request-status/pull-requests.js"
+import { trackPRCostMetric } from "../telemetry/pr-cost.js"
+import { reconcileWorkCosts } from "./cost-sync.js"
 import { debugWorkAttribution as debug } from "./diagnostics.js"
 import { knownTransitionRepositories, reconcileRepositoryTransitions } from "./file-transitions.js"
+import { type ContinuationProgress, reconcileWorkContinuations } from "./links.js"
 
 export const RECONCILIATION_INTERVAL_MS = 30_000
 const PASS_BUDGET_MS = 3000
-interface Supervisor {
+type ChannelKind = "pull-requests" | "costs" | "reporting"
+/** Optional work with its own cancellation; unsubscribing waits only for that channel's pass. */
+interface Channel {
+	controller: AbortController
+	running?: Promise<void>
+}
+interface Supervisor extends ContinuationProgress {
 	subscribers: Set<ReconciliationSubscriber>
 	controller: AbortController
 	timer?: ReturnType<typeof setInterval>
 	running?: Promise<void>
+	requested?: boolean
 	nextRepository?: string
-	pullRequestController?: AbortController
-	pullRequestRunning?: Promise<void>
+	channels: Map<ChannelKind, Channel>
 }
 interface ReconciliationSubscriber {
-	kind: "files" | "pull-requests"
+	kind: "files" | ChannelKind
+	onReport?: (agentDir: string, signal: AbortSignal, assertLease: () => void) => Promise<void>
 	onPullRequest?: (update: WorkPullRequestUpdate) => void
 	onError?: (error: unknown) => void
 }
 const supervisors = new Map<string, Supervisor>()
+
+async function runChannel(
+	owner: Supervisor,
+	kind: ChannelKind,
+	leaseSignal: AbortSignal,
+	assertLease: () => void,
+	run: (signal: AbortSignal, assertLease: () => void) => Promise<void>,
+	onError: (error: unknown) => void,
+): Promise<void> {
+	const channel = owner.channels.get(kind)
+	if (!channel || channel.controller.signal.aborted) return
+	const signal = AbortSignal.any([leaseSignal, channel.controller.signal])
+	const pending = run(signal, () => {
+		assertLease()
+		signal.throwIfAborted()
+	}).catch((error) => {
+		if (!signal.aborted) onError(error)
+	})
+	channel.running = pending
+	try {
+		await pending
+	} finally {
+		if (channel.running === pending) channel.running = undefined
+	}
+}
 
 async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 	const directory = join(agentDir, "work-attribution")
@@ -54,6 +89,7 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 		if (compromised) throw compromised
 	}
 	const deadline = Date.now() + PASS_BUDGET_MS
+	trackPRCostMetric({ kind: "reconciliation" })
 	const exhausted = new Error("Work attribution reconciliation time limit exceeded")
 	const checkBudget = () => {
 		assertLease()
@@ -82,25 +118,43 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 		}
 		// Network lookup has its own deadline. A slow local repository must not starve it,
 		// and Bash-only commits have no transition repository to visit above.
-		const controller = owner.pullRequestController
-		if (controller && !controller.signal.aborted) {
-			const prSignal = AbortSignal.any([signal, controller.signal])
-			const assertPullRequestLease = () => {
-				assertLease()
-				prSignal.throwIfAborted()
-			}
-			const pending = reconcileWorkPullRequests(agentDir, prSignal, assertPullRequestLease, (update) => {
-				for (const subscriber of owner.subscribers) subscriber.onPullRequest?.(update)
-			}).catch((error) => {
-				if (!prSignal.aborted) reportError(owner, error)
-			})
-			owner.pullRequestRunning = pending
+		await runChannel(
+			owner,
+			"pull-requests",
+			signal,
+			assertLease,
+			(channelSignal, assertChannel) =>
+				reconcileWorkPullRequests(agentDir, channelSignal, assertChannel, (update) => {
+					for (const subscriber of owner.subscribers) subscriber.onPullRequest?.(update)
+				}),
+			(error) => reportError(owner, error),
+		)
+		await runChannel(
+			owner,
+			"costs",
+			signal,
+			assertLease,
+			(channelSignal, assertChannel) => reconcileWorkCosts(agentDir, channelSignal, assertChannel),
+			(error) => debug("Could not reconcile costs: %o", error),
+		)
+		// Historical repair is local and has its own budget; PR and billing work run first.
+		if ([...owner.subscribers].some((subscriber) => subscriber.kind === "files")) {
 			try {
-				await pending
-			} finally {
-				if (owner.pullRequestRunning === pending) owner.pullRequestRunning = undefined
+				await reconcileWorkContinuations(agentDir, signal, assertLease, owner)
+			} catch (error) {
+				if (!signal.aborted) debug("Could not reconcile work continuations: %o", error)
 			}
 		}
+		const report = [...owner.subscribers].find((subscriber) => subscriber.kind === "reporting")?.onReport
+		if (report)
+			await runChannel(
+				owner,
+				"reporting",
+				signal,
+				assertLease,
+				(channelSignal, assertChannel) => report(agentDir, channelSignal, assertChannel),
+				(error) => debug("Could not report PR costs: %o", error),
+			)
 	} finally {
 		if (!compromised) await release()
 	}
@@ -121,7 +175,7 @@ function tick(agentDir: string, owner: Supervisor): void {
 	// Every process can display durable results, even while another process owns
 	// the lease for Git and GitHub queries.
 	try {
-		if (owner.pullRequestController && !owner.pullRequestController.signal.aborted)
+		if (owner.channels.has("pull-requests"))
 			for (const update of readWorkPullRequestUpdates(agentDir))
 				for (const subscriber of owner.subscribers) subscriber.onPullRequest?.(update)
 	} catch (error) {
@@ -134,7 +188,20 @@ function tick(agentDir: string, owner: Supervisor): void {
 		})
 		.finally(() => {
 			owner.running = undefined
+			if (owner.requested) {
+				owner.requested = false
+				tick(agentDir, owner)
+			}
 		})
+}
+
+/** Refresh existing subscribers now, or once the current leased pass finishes. */
+export function requestWorkReconciliation(): void {
+	const agentDir = resolve(getAgentDir())
+	const owner = supervisors.get(agentDir)
+	if (!owner || owner.controller.signal.aborted) return
+	if (owner.running) owner.requested = true
+	else tick(agentDir, owner)
 }
 
 /** One optional worker per harness directory. Local children never subscribe. */
@@ -142,7 +209,7 @@ function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Pr
 	const agentDir = resolve(getAgentDir())
 	let owner = supervisors.get(agentDir)
 	if (!owner || owner.controller.signal.aborted) {
-		owner = { subscribers: new Set(), controller: new AbortController() }
+		owner = { subscribers: new Set(), controller: new AbortController(), channels: new Map() }
 		supervisors.set(agentDir, owner)
 		const current = owner
 		current.timer = setInterval(() => tick(agentDir, current), RECONCILIATION_INTERVAL_MS)
@@ -150,11 +217,8 @@ function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Pr
 	}
 	const subscription = { ...subscriber }
 	owner.subscribers.add(subscription)
-	if (
-		subscriber.kind === "pull-requests" &&
-		(!owner.pullRequestController || owner.pullRequestController.signal.aborted)
-	)
-		owner.pullRequestController = new AbortController()
+	if (subscriber.kind !== "files" && !owner.channels.has(subscriber.kind))
+		owner.channels.set(subscriber.kind, { controller: new AbortController() })
 	tick(agentDir, owner)
 	const current = owner
 	let stopped = false
@@ -162,14 +226,15 @@ function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Pr
 		if (stopped) return
 		stopped = true
 		current.subscribers.delete(subscription)
-		let pendingPullRequests: Promise<void> | undefined
-		if (![...current.subscribers].some((entry) => entry.kind === "pull-requests")) {
-			current.pullRequestController?.abort()
-			current.pullRequestController = undefined
-			pendingPullRequests = current.pullRequestRunning
-		}
+		const pending: (Promise<void> | undefined)[] = []
+		for (const [kind, channel] of current.channels)
+			if (![...current.subscribers].some((entry) => entry.kind === kind)) {
+				channel.controller.abort()
+				current.channels.delete(kind)
+				pending.push(channel.running)
+			}
 		if (current.subscribers.size) {
-			await pendingPullRequests
+			await Promise.all(pending)
 			return
 		}
 		clearInterval(current.timer)
@@ -189,4 +254,15 @@ export function subscribePullRequestReconciliation(subscriber: {
 	onError?: (error: unknown) => void
 }): () => Promise<void> {
 	return subscribeReconciliation({ ...subscriber, kind: "pull-requests" })
+}
+
+/** Price lookups share the timer and lease; only main work-tracking sessions subscribe. */
+export function subscribeCostReconciliation(): () => Promise<void> {
+	return subscribeReconciliation({ kind: "costs" })
+}
+/** An optional extension supplies delivery; work tracking has no reporting dependency. */
+export function subscribeReportingReconciliation(
+	onReport: NonNullable<ReconciliationSubscriber["onReport"]>,
+): () => Promise<void> {
+	return subscribeReconciliation({ kind: "reporting", onReport })
 }

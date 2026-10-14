@@ -1,16 +1,14 @@
 /** Discovers the PRs and MRs of recorded commits: lookup scheduling, the check cache and the journal updates. */
-import { randomUUID } from "node:crypto"
 import { readFileSync } from "node:fs"
-import { open, rename, rm } from "node:fs/promises"
 import { join, resolve } from "node:path"
-import { readWorkRecords } from "../work-attribution/summary.js"
+import { writeFileDurably } from "../../config/json.js"
+import { object, readWorkRecords } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { mergePullRequestLinks as mergePullRequests, pullRequestKey } from "./links.js"
 import { api, credential, pages, repositoryIdentity, requestJSON } from "./provider-api.js"
 import {
 	LookupError,
 	lookupFailureReason,
-	object,
 	pullRequest,
 	type Repository,
 	SHA,
@@ -169,21 +167,7 @@ async function saveLookupChecks(
 
 	const contents = `${JSON.stringify(value)}\n`
 	if (contents === (checks.saved ?? "{}\n")) return
-	const directory = join(agentDir, "work-attribution")
-	const temporary = join(directory, `.${LOOKUP_CHECKS}-${randomUUID()}.tmp`)
-	try {
-		const file = await open(temporary, "wx", 0o600)
-		try {
-			await file.writeFile(contents)
-			await file.sync()
-		} finally {
-			await file.close()
-		}
-		assertLease()
-		await rename(temporary, join(directory, LOOKUP_CHECKS))
-	} finally {
-		await rm(temporary, { force: true })
-	}
+	await writeFileDurably(join(agentDir, "work-attribution", LOOKUP_CHECKS), contents, assertLease)
 }
 
 function commitKey(row: WorkPullRequestUpdate): string {
@@ -282,7 +266,7 @@ async function scan(
 		const known = mergePullRequests(...commits.map((commit) => commit.pullRequests))
 		if (
 			known.length &&
-			known.every((pr) => pr.state === "merged") &&
+			known.every((pr) => pr.state === "merged" && pr.id && pr.repositoryId) &&
 			commits.every(
 				(commit) =>
 					commit.prLookup?.status === "linked" && JSON.stringify(commit.pullRequests) === JSON.stringify(known),
@@ -327,7 +311,10 @@ async function scan(
 		let refreshedKnown = false
 		let refreshFailure: LookupError | undefined
 		for (const previous of known.sort((a, b) => Date.parse(a.checkedAt) - Date.parse(b.checkedAt))) {
-			if (previous.state === "merged" || found.some((item) => pullRequestKey(item) === pullRequestKey(previous)))
+			if (
+				(previous.state === "merged" && previous.id && previous.repositoryId) ||
+				found.some((item) => pullRequestKey(item) === pullRequestKey(previous))
+			)
 				continue
 			try {
 				let request = refreshed.get(previous.url)

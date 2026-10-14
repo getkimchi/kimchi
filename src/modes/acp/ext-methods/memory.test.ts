@@ -151,12 +151,14 @@ describe("handleMemoryStatus", () => {
 			root: string
 			stores: Array<{ scope: string; facts: number }>
 			pendingJobs: number
+			failedJobs: number
 		}
 		expect(result.featureEnabled).toBe(true)
 		expect(result.sessionOverride).toBeNull()
 		expect(result.sessionActive).toBe(true)
 		expect(result.stores).toEqual([{ scope: "personal", facts: 1, sizeBytes: 0 }])
 		expect(result.pendingJobs).toBe(0)
+		expect(result.failedJobs).toBe(0)
 
 		// The toggle state follows the shared override keyed by the session's
 		// manager — exactly what set_memory_enabled writes.

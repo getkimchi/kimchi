@@ -31,11 +31,13 @@ import {
 	type SessionInfo as PiSessionInfo,
 	ProjectTrustStore,
 	type ResourceLoader,
+	type SessionEntry,
 	type SessionManager,
 	type Skill,
 	type Theme,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
+import { ROUTED_MODEL_RESOLUTION_ENTRY } from "../../extensions/auto-model/index.js"
 import {
 	isProjectScopeAllowed,
 	resetProjectScopeTrustForTests,
@@ -5786,6 +5788,186 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 // the wire — an outstanding prompt with no updates, indistinguishable from a
 // hang. Those pi events go out as _kimchi.dev/agent_activity notifications so
 // the client can pin the stall (and its session) to a cause.
+describe("routed model notifications", () => {
+	function routedModelEntry(modelId: string): SessionEntry {
+		return {
+			type: "custom",
+			id: "routed-entry",
+			parentId: null,
+			timestamp: "2026-01-01T00:00:00.000Z",
+			customType: ROUTED_MODEL_RESOLUTION_ENTRY,
+			data: { version: 1, requestedId: "auto", provider: "kimchi-dev", modelId },
+		}
+	}
+
+	async function startRoutedTestSession(fake: FakeAgentSession, conn: AgentSideConnection): Promise<KimchiAcpAgent> {
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		return agent
+	}
+
+	function messageEndEvent(): AgentSessionEvent {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "reply" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 10,
+				output: 5,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 15,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	async function runTurn(agent: KimchiAcpAgent, sessionId: string): Promise<void> {
+		const result = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "hello" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+	}
+
+	it("forwards a routed pick change with requested and routed ids", async () => {
+		const fake = new FakeAgentSession("session-routed-1")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRoutedTestSession(fake, conn)
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "entry_appended", entry: routedModelEntry("glm-5.3") })
+			fake.emit(agentEnd())
+		}
+
+		await runTurn(agent, "session-routed-1")
+		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/routed_model")).toEqual([
+			{
+				method: "_kimchi.dev/routed_model",
+				params: { sessionId: "session-routed-1", requestedId: "auto", routedId: "glm-5.3" },
+			},
+		])
+	})
+
+	it("notifies again on a mid-turn reroute — the mirror adds no dedup", async () => {
+		const fake = new FakeAgentSession("session-routed-6")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRoutedTestSession(fake, conn)
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "entry_appended", entry: routedModelEntry("glm-5.3") })
+			fake.emit({ type: "entry_appended", entry: routedModelEntry("kimi-k3") })
+			fake.emit(agentEnd())
+		}
+
+		await runTurn(agent, "session-routed-6")
+		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/routed_model")).toEqual([
+			{
+				method: "_kimchi.dev/routed_model",
+				params: { sessionId: "session-routed-6", requestedId: "auto", routedId: "glm-5.3" },
+			},
+			{
+				method: "_kimchi.dev/routed_model",
+				params: { sessionId: "session-routed-6", requestedId: "auto", routedId: "kimi-k3" },
+			},
+		])
+	})
+
+	it("does not re-notify when no new routed entry is appended", async () => {
+		const fake = new FakeAgentSession("session-routed-2")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRoutedTestSession(fake, conn)
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "entry_appended", entry: routedModelEntry("glm-5.3") })
+			fake.emit(agentEnd())
+		}
+		await runTurn(agent, "session-routed-2")
+
+		// Second turn lands on the same model: the extension's change-only dedup
+		// appends no entry, so the mirror must stay silent.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(agentEnd())
+		}
+		await runTurn(agent, "session-routed-2")
+
+		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/routed_model")).toEqual([
+			{
+				method: "_kimchi.dev/routed_model",
+				params: { sessionId: "session-routed-2", requestedId: "auto", routedId: "glm-5.3" },
+			},
+		])
+	})
+
+	it("forwards unknown-model picks with the raw backend id", async () => {
+		const fake = new FakeAgentSession("session-routed-3")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRoutedTestSession(fake, conn)
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "entry_appended", entry: routedModelEntry("brand-new-backend-model") })
+			fake.emit(agentEnd())
+		}
+
+		await runTurn(agent, "session-routed-3")
+		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/routed_model")).toEqual([
+			{
+				method: "_kimchi.dev/routed_model",
+				params: { sessionId: "session-routed-3", requestedId: "auto", routedId: "brand-new-backend-model" },
+			},
+		])
+	})
+
+	it("stays silent for non-routed entries and message events", async () => {
+		const fake = new FakeAgentSession("session-routed-4")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRoutedTestSession(fake, conn)
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "entry_appended",
+				entry: {
+					type: "custom",
+					id: "other-entry",
+					parentId: null,
+					timestamp: "2026-01-01T00:00:00.000Z",
+					customType: "some_other_entry",
+					data: { version: 1 },
+				},
+			})
+			fake.emit(messageEndEvent())
+			fake.emit(agentEnd())
+		}
+
+		await runTurn(agent, "session-routed-4")
+		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/routed_model")).toEqual([])
+	})
+
+	it("a client that ignores the notification sees no error", async () => {
+		const fake = new FakeAgentSession("session-routed-5")
+		const conn = makeConn()
+		const agent = await startRoutedTestSession(fake, conn)
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "entry_appended", entry: routedModelEntry("glm-5.3") })
+			fake.emit(agentEnd())
+		}
+
+		// No-op extNotification: the fire-and-forget push must not reject the turn.
+		await expect(runTurn(agent, "session-routed-5")).resolves.toBeUndefined()
+	})
+})
+
 describe("agent activity notifications", () => {
 	function successEvent(): AgentSessionEvent {
 		const message: AssistantMessage = {

@@ -1,5 +1,12 @@
 // extensions/lsp/client.ts
 import { debuglog } from "node:util"
+import {
+	EFFECTIVE_IDLE_EVICT_MS,
+	LSP_EVICT_GRACE_MS,
+	LSP_REAPER_SWEEP_MS,
+	MAX_CHAINS,
+	OPEN_DOCS_MAX,
+} from "./lifecycle-constants.js"
 import { resolveTsserverPath } from "./servers.js"
 import type {
 	BunProcess,
@@ -178,7 +185,7 @@ async function startMessageReader(client: LspClient): Promise<void> {
 							client.activeProgressTokens.add(params.token)
 						} else if (params.value?.kind === "end") {
 							client.activeProgressTokens.delete(params.token)
-							if (client.activeProgressTokens.size === 0) client.resolveProjectLoaded()
+							if (client.activeProgressTokens.size === 0) client.settleProjectLoaded()
 						}
 					}
 				}
@@ -194,9 +201,9 @@ async function startMessageReader(client: LspClient): Promise<void> {
 		client.pendingRequests.clear()
 		// Remove the zombie client so the next getOrCreateClient spawns a
 		// fresh server instead of returning a dead client whose reader has
-		// stopped. Kill the process in case it's still alive.
-		clients.delete(client.name)
-		clientLocks.delete(client.name)
+		// stopped. Kill the process in case it's still alive. Identity-checked:
+		// a same-key respawn may already own the slot.
+		removeClientFromRegistries(client)
 		client.proc.kill()
 	} finally {
 		reader.releaseLock()
@@ -211,6 +218,71 @@ async function startMessageReader(client: LspClient): Promise<void> {
 const PROJECT_LOAD_TIMEOUT_MS = 15_000
 const DEFAULT_TIMEOUT_MS = 30_000
 
+/** Number of live sessions sharing this process's client registry. The TUI
+ *  runs one session per process; the ACP server hosts concurrent sessions,
+ *  and one session's shutdown must never kill chains another session is
+ *  still using. shutdownAll only runs when the LAST session ends. Session
+ *  hooks call noteSessionStart/noteSessionEnd; a crashed session can leak a
+ *  reference and delay shutdown, which the idle reaper backstops. */
+let liveSessions = 0
+
+export function noteSessionStart(): void {
+	liveSessions++
+}
+
+export function noteSessionEnd(): void {
+	liveSessions--
+	if (liveSessions <= 0) {
+		liveSessions = 0
+		shutdownAll()
+	}
+}
+
+/** Mark a client as doing lifecycle work that registers no JSON-RPC request
+ *  (file reads, didOpen/didChange writes, timed diagnostics waits). Without
+ *  this, the evictable filter and the reaper see such a chain as "idle" and
+ *  can SIGTERM it mid-span. Returns the end function — call exactly once. */
+export function beginClientWork(client: LspClient): () => void {
+	client.inFlightWork++
+	let done = false
+	return () => {
+		if (done) return
+		done = true
+		client.inFlightWork--
+	}
+}
+
+/** A chain is busy when it has in-flight requests, diagnostic waiters, or
+ *  non-request lifecycle work (file reads, timed waits). The single source
+ *  for the evictable filter — MAX_CHAINS eviction and the reaper both use
+ *  it, so a busy-chain check added anywhere can't drift between the two. */
+function isChainBusy(client: LspClient): boolean {
+	return client.pendingRequests.size > 0 || client.diagnosticWaiters.size > 0 || client.inFlightWork > 0
+}
+
+/** Era-safe delete: drop the entry only if it is still `ref`'s. Keys are
+ *  reused across eras (shutdownAll clears, respawns re-register); a by-key
+ *  delete from a dying era would drop the new era's entry under the same
+ *  key. */
+function deleteIfOwned<T>(map: Map<string, T>, key: string, ref: T): void {
+	if (map.get(key) === ref) map.delete(key)
+}
+
+/** Remove a client from the registries only if it is still the registered
+ *  entry for its key. Keys are reused by respawns during the eviction grace
+ *  window; deleting by key alone can drop a healthy replacement chain that a
+ *  dying chain's exited/reader handlers know nothing about. The clientLocks
+ *  delete inside is covered by the same guard: a respawn registers clients
+ *  and clientLocks in one synchronous tick, so if a respawn owned the slot
+ *  the identity check would already have failed — the lock entry can only be
+ *  this creator's own, never a replacement's. */
+function removeClientFromRegistries(client: LspClient): void {
+	if (clients.get(client.name) === client) {
+		clients.delete(client.name)
+		clientLocks.delete(client.name)
+	}
+}
+
 export async function getOrCreateClient(config: ServerConfig, cwd: string): Promise<LspClient> {
 	const key = `${config.command}:${cwd}`
 
@@ -223,7 +295,24 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 	const existingLock = clientLocks.get(key)
 	if (existingLock) return existingLock
 
-	const clientPromise = (async () => {
+	// Cap concurrent chains. A real server plus its spawned children (two
+	// tsserver processes + typings installer) is a GB-class allocation — the
+	// verified cross-root multiplier. Before spawning chain #MAX_CHAINS+1,
+	// evict the least-recently-active idle chain. Busy chains are never
+	// evicted; if every chain is busy we exceed the cap temporarily rather
+	// than breaking active work.
+	if (clients.size >= MAX_CHAINS) {
+		const evictable = [...clients.values()]
+			.filter((c) => !isChainBusy(c))
+			.sort((a, b) => a.lastActivity - b.lastActivity)[0]
+		if (evictable) evictClient(evictable)
+	}
+
+	// Hoisted so the creator's finally can identity-check the lock against
+	// this exact promise (a post-shutdown respawn may own the slot by then).
+	// The IIFE body reads it before the assignment lands (deferred execution).
+	let clientPromise!: Promise<LspClient>
+	clientPromise = (async () => {
 		// Bun global available at runtime but not typed — use globalThis cast
 		// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
 		const Bun = (globalThis as any).Bun
@@ -234,16 +323,19 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 			stderr: "pipe",
 		}) as BunProcess
 
-		let resolveProjectLoaded!: () => void
-		const projectLoaded = new Promise<void>((resolve) => {
-			resolveProjectLoaded = resolve
+		let settleProjectLoaded!: (err?: Error) => void
+		const projectLoaded = new Promise<void>((resolve, reject) => {
+			settleProjectLoaded = (err) => {
+				clearTimeout(timeout)
+				if (err) reject(err)
+				else resolve()
+			}
 		})
-		const timeout = setTimeout(resolveProjectLoaded, PROJECT_LOAD_TIMEOUT_MS)
-		const originalResolve = resolveProjectLoaded
-		resolveProjectLoaded = () => {
-			clearTimeout(timeout)
-			originalResolve()
-		}
+		const timeout = setTimeout(() => settleProjectLoaded(), PROJECT_LOAD_TIMEOUT_MS)
+		// Shutdown rejects projectLoaded for chains whose creator has already
+		// returned (skipProjectLoadWait) or is gone — mark a handled branch so the
+		// rejection surfaces only to real awaiters.
+		projectLoaded.catch(() => {})
 
 		const client: LspClient = {
 			name: key,
@@ -260,16 +352,21 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 			isReading: false,
 			lastActivity: Date.now(),
 			activeProgressTokens: new Set(),
+			inFlightWork: 0,
 			projectLoaded,
-			resolveProjectLoaded,
+			settleProjectLoaded,
 		}
 		clients.set(key, client)
+		ensureReaperRunning()
 
 		// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
 		;(proc as any).exited.then(() => {
-			clients.delete(key)
-			clientLocks.delete(key)
-			client.resolveProjectLoaded()
+			// This handler runs when the process dies — possibly during/after
+			// an eviction grace window in which a same-key respawn A' already
+			// took the registry slot. Deleting by key would drop A' from every
+			// registry while its process stays alive (leaked). Remove by identity.
+			removeClientFromRegistries(client)
+			client.settleProjectLoaded()
 			// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
 			const err = new Error(`LSP server exited (code ${(proc as any).exitCode})`)
 			for (const pending of client.pendingRequests.values()) pending.reject(err)
@@ -289,6 +386,14 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 				reader.releaseLock()
 			}
 		})()
+
+		// Init is a lifecycle span: after the `initialize` response resolves,
+		// nothing registers a pendingRequest until projectLoaded resolves (up to
+		// PROJECT_LOAD_TIMEOUT_MS). Without the span, the evictable filter and the
+		// reaper see a mid-startup chain as idle; evictClient then SIGTERMs it and
+		// its exited handler resolves projectLoaded, so the creating caller
+		// receives a dead client as a normal return.
+		const endInitWork = beginClientWork(client)
 
 		try {
 			const initOpts = { ...(config.initOptions ?? {}) }
@@ -314,12 +419,14 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 			if (!config.skipProjectLoadWait) await client.projectLoaded
 			return client
 		} catch (err) {
-			clients.delete(key)
-			clientLocks.delete(key)
+			// Identity-checked like every registry removal: by the time this
+			// runs, a post-shutdown or post-crash respawn may own the slot.
+			removeClientFromRegistries(client)
 			proc.kill()
 			throw err
 		} finally {
-			clientLocks.delete(key)
+			deleteIfOwned(clientLocks, key, clientPromise)
+			endInitWork()
 		}
 	})()
 
@@ -328,15 +435,87 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 }
 
 export function shutdownAll(): void {
+	if (reaperTimer) {
+		clearInterval(reaperTimer)
+		reaperTimer = undefined
+	}
 	const all = Array.from(clients.values())
 	clients.clear()
+	// Era teardown: every lock belongs to a chain that is being killed. A
+	// post-shutdown getOrCreateClient must lazily spawn a fresh chain — same
+	// invariant as the reader-crash zombie cleanup — not await a dying
+	// creator that will return a dead client.
+	clientLocks.clear()
+	fileOperationLocks.clear()
 	const err = new Error("LSP shutdown")
 	for (const client of all) {
 		for (const pending of client.pendingRequests.values()) pending.reject(err)
 		client.pendingRequests.clear()
+		// Awaiting creators must throw, not resolve with a dead chain.
+		client.settleProjectLoaded(err)
 		sendRequest(client, "shutdown", null).catch(() => {})
 		client.proc.kill()
 	}
+}
+
+/**
+ * Evict a single client: drop it from the registry, reject its pending
+ * requests, ask the server politely to shut down, then SIGTERM after a
+ * grace period. Backstopped by the server's stdio-EOF self-termination
+ * (verified 2026-10-09: a SIGKILLed harness's chain dies within ~10s even
+ * when nothing sends shutdown).
+ */
+// =============================================================================
+// Idle Reaper
+// =============================================================================
+
+let reaperTimer: ReturnType<typeof setInterval> | undefined
+
+/**
+ * Reap every chain idle for at least `idleMs`, using `evict` (defaults to
+ * evictClient). Returns the number of reaped chains. Exported for tests —
+ * the time source and threshold are parameters so the sweep logic is
+ * exercised without wall-clock waits.
+ *
+ * Busy chains (in-flight requests, diagnostic waiters, or lifecycle work)
+ * are never reaped: killing mid-span breaks an active operation to save
+ * memory that an active chain would immediately re-allocate.
+ */
+export function reapIdleClients(now: number, idleMs: number, evict: (client: LspClient) => void = evictClient): number {
+	let reaped = 0
+	for (const client of [...clients.values()]) {
+		if (isChainBusy(client)) continue
+		if (now - client.lastActivity < idleMs) continue
+		evict(client)
+		reaped++
+	}
+	return reaped
+}
+
+/**
+ * Start the sweep on first client creation. unref'd: the reaper must never
+ * keep a host process (ACP server, headless run) alive to manage children.
+ * Cleared by shutdownAll so a new session starts with no stale interval.
+ */
+function ensureReaperRunning(): void {
+	if (reaperTimer) return
+	reaperTimer = setInterval(() => reapIdleClients(Date.now(), EFFECTIVE_IDLE_EVICT_MS), LSP_REAPER_SWEEP_MS)
+	reaperTimer.unref?.()
+}
+
+export function evictClient(client: LspClient, graceMs = LSP_EVICT_GRACE_MS): void {
+	// Identity-checked like every registry removal — evictClient is called
+	// only for registered clients, but the same guard keeps it robust if a
+	// respawn ever holds the slot at call time.
+	removeClientFromRegistries(client)
+	const err = new Error("LSP client evicted")
+	for (const pending of client.pendingRequests.values()) pending.reject(err)
+	client.pendingRequests.clear()
+	sendRequest(client, "shutdown", null).catch(() => {})
+	const timer = setTimeout(() => client.proc.kill(), graceMs)
+	// The kill timer must never keep a host process (ACP server, headless
+	// run) alive just to terminate a child.
+	timer.unref?.()
 }
 
 // =============================================================================
@@ -403,6 +582,15 @@ export async function pullDiagnostics(client: LspClient, uri: string): Promise<D
 // =============================================================================
 
 export async function ensureFileOpen(client: LspClient, filePath: string): Promise<void> {
+	const endWork = beginClientWork(client)
+	try {
+		await ensureFileOpenInner(client, filePath)
+	} finally {
+		endWork()
+	}
+}
+
+async function ensureFileOpenInner(client: LspClient, filePath: string): Promise<void> {
 	const uri = fileToUri(filePath)
 	if (client.openFiles.has(uri)) return
 
@@ -428,18 +616,29 @@ export async function ensureFileOpen(client: LspClient, filePath: string): Promi
 			textDocument: { uri, languageId, version: 1, text: content },
 		})
 		client.openFiles.set(uri, { version: 1, languageId })
+		evictLRUOpenDocuments(client)
 		client.lastActivity = Date.now()
 	})()
 
 	fileOperationLocks.set(lockKey, openPromise)
+	// Era-safe: a lock freed early (shutdownAll) may have been replaced by a new chain's lock under the same key.
 	try {
 		await openPromise
 	} finally {
-		fileOperationLocks.delete(lockKey)
+		deleteIfOwned(fileOperationLocks, lockKey, openPromise)
 	}
 }
 
 export async function refreshFile(client: LspClient, filePath: string): Promise<void> {
+	const endWork = beginClientWork(client)
+	try {
+		await refreshFileInner(client, filePath)
+	} finally {
+		endWork()
+	}
+}
+
+async function refreshFileInner(client: LspClient, filePath: string): Promise<void> {
 	const uri = fileToUri(filePath)
 	const lockKey = `${client.name}:${uri}`
 
@@ -453,6 +652,12 @@ export async function refreshFile(client: LspClient, filePath: string): Promise<
 		client.pendingDiagBaseline.set(uri, client.diagnosticsVersion)
 		client.diagnostics.delete(uri)
 		const info = client.openFiles.get(uri)
+		// Bump recency: open-and-refresh both re-insert at the Map tail, so the
+		// first key is always the least-recently-used document.
+		if (info) {
+			client.openFiles.delete(uri)
+			client.openFiles.set(uri, info)
+		}
 
 		if (!info) {
 			await ensureFileOpen(client, filePath)
@@ -484,15 +689,36 @@ export async function refreshFile(client: LspClient, filePath: string): Promise<
 	})()
 
 	fileOperationLocks.set(lockKey, refreshPromise)
+	// Era-safe: a lock freed early (shutdownAll) may have been replaced by a new chain's lock under the same key.
 	try {
 		await refreshPromise
 	} finally {
-		fileOperationLocks.delete(lockKey)
+		deleteIfOwned(fileOperationLocks, lockKey, refreshPromise)
 	}
 }
 
 export function getAllClients(): LspClient[] {
 	return Array.from(clients.values())
+}
+
+/**
+ * Bound the per-client open-document set. Documents were historically never
+ * closed (didClose was never sent), so every synced file stayed pinned in
+ * the server for the session's life. Map insertion order doubles as recency
+ * — ensuresFileOpen and refreshFile both (re-)insert at the tail, so the
+ * first key is the least-recently-used document. Eviction beyond
+ * OPEN_DOCS_MAX drops the oldest entry plus its cached diagnostics and
+ * notifies the server with didClose so it can release the file.
+ */
+function evictLRUOpenDocuments(client: LspClient): void {
+	while (client.openFiles.size > OPEN_DOCS_MAX) {
+		const oldest = client.openFiles.keys().next().value
+		if (oldest === undefined) return
+		client.openFiles.delete(oldest)
+		client.diagnostics.delete(oldest)
+		client.pendingDiagBaseline.delete(oldest)
+		sendNotification(client, "textDocument/didClose", { textDocument: { uri: oldest } }).catch(() => {})
+	}
 }
 
 // =============================================================================

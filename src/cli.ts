@@ -119,6 +119,7 @@ import piiRedactionExtension from "./extensions/pii-redaction/index.js"
 import plannotatorExtension from "./extensions/plannotator/index.js"
 import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/index.js"
 import powershellGateExtension from "./extensions/powershell-gate.js"
+import prCostReportingExtension from "./extensions/pr-cost-reporting/index.js"
 import { setPrintGate } from "./extensions/print-mode.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
@@ -160,7 +161,12 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
-import { createWorkAttributionExtension } from "./extensions/work-attribution.js"
+import { COST_PER_PR_RESOURCE_ID } from "./extensions/work-attribution/resource.js"
+import {
+	createWorkAttributionExtension,
+	prepareProviderRequest,
+	recordProviderResponse,
+} from "./extensions/work-attribution.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import { installGlobalFetchInstrumentation } from "./http/instrument-fetch.js"
 import {
@@ -665,6 +671,8 @@ try {
 
 		installGlobalFetchInstrumentation({
 			userAgent: `kimchi/${getVersion()}`,
+			onModelRequest: prepareProviderRequest,
+			onModelResponse: recordProviderResponse,
 			onModelCompletionSettled: (originalFetch) =>
 				refreshBillingStatusFromConfig({ fetch: originalFetch, mode: "automatic" }),
 		})
@@ -836,8 +844,11 @@ try {
 			traceIdExtension,
 			contextAssemblyExtension,
 			cacheSummaryExtension,
-			createWorkAttributionExtension(),
-			pullRequestStatusExtension,
+			...enabledExtensionFactories([
+				{ id: COST_PER_PR_RESOURCE_ID, factory: createWorkAttributionExtension() },
+				{ id: COST_PER_PR_RESOURCE_ID, factory: pullRequestStatusExtension },
+				{ id: COST_PER_PR_RESOURCE_ID, factory: prCostReportingExtension },
+			] satisfies ManagedExtensionFactory[]),
 			requestTimingExtension,
 			llmResponseLogExtension,
 			activityExtension,

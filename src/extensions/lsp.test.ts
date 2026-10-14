@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -20,6 +23,9 @@ vi.mock("./lsp/client.js", () => ({
 	sendRequest: vi.fn(),
 	shutdownAll: vi.fn(),
 	waitForDiagnostics: vi.fn(),
+	beginClientWork: vi.fn(),
+	noteSessionStart: vi.fn(),
+	noteSessionEnd: vi.fn(),
 }))
 
 vi.mock("./lsp/edits.js", () => ({
@@ -220,6 +226,11 @@ beforeEach(() => {
 	// override this with mockResolvedValue(true) to exercise the diag path.
 	vi.mocked(clientMod.waitForDiagnostics).mockResolvedValue(false)
 	vi.mocked(editsMod.applyWorkspaceEdit).mockResolvedValue([])
+	// beginClientWork returns the end function; tools call it around in-flight
+	// lifecycle spans. A no-op end keeps tool tests focused on tool behavior.
+	vi.mocked(clientMod.beginClientWork).mockReturnValue(() => {})
+	vi.mocked(clientMod.noteSessionStart).mockReturnValue(undefined)
+	vi.mocked(clientMod.noteSessionEnd).mockReturnValue(undefined)
 })
 
 afterEach(() => {
@@ -337,11 +348,49 @@ describe("session hooks", () => {
 		expect(serversMod.detectServers).toHaveBeenCalledWith(DEFAULT_CWD)
 	})
 
-	it("registers a session_shutdown handler that calls shutdownAll", async () => {
+	it("registers a session_shutdown handler that releases the session", async () => {
 		const pi = makePi()
 		lspExtension(pi)
 		await pi.fireShutdown()
-		expect(clientMod.shutdownAll).toHaveBeenCalledTimes(1)
+		// Chains are destroyed via ref-counted noteSessionEnd — the registry is
+		// shared across sessions in one process (ACP), so a single session's
+		// shutdown must only tear down clients when it was the last one.
+		expect(clientMod.noteSessionEnd).toHaveBeenCalledTimes(1)
+	})
+
+	it("session_start registers the session with the shared registry", async () => {
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+		expect(clientMod.noteSessionStart).toHaveBeenCalledTimes(1)
+	})
+
+	it("accepts in-workspace files when the session cwd is reached through a symlink", async () => {
+		// The workspace guard used to compare raw path strings: a session cwd
+		// given via a symlink (common on macOS, e.g. /var → /private/var) never
+		// matched a tool path through the real path, and in-workspace files were
+		// silently refused. Normalized comparison accepts both directions.
+		const real = mkdtempSync(path.join(tmpdir(), "lsp-ws-"))
+		const alias = `${real}-alias`
+		symlinkSync(real, alias)
+		writeFileSync(path.join(real, "foo.ts"), "const x = 1\n")
+		try {
+			vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+			vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_SERVER)
+			const pi = makePi()
+			lspExtension(pi)
+			await pi.fireSessionStart({ cwd: alias })
+			const result = await callTool(pi, "lsp_hover", {
+				file_path: path.join(real, "foo.ts"),
+				line: 0,
+				character: 0,
+			})
+			expect(result.content[0].text).not.toContain("outside the session workspace")
+			expect(result.content[0].text).toContain("No hover information")
+		} finally {
+			rmSync(alias, { force: true })
+			rmSync(real, { recursive: true, force: true })
+		}
 	})
 
 	it("session_shutdown clears the status bar when UI is present", async () => {
@@ -595,7 +644,7 @@ describe("tool_result handler", () => {
 		expect(clientMod.getOrCreateClient).not.toHaveBeenCalled()
 	})
 
-	it("calls ensureFileOpen for a read event", async () => {
+	it("ignores read events entirely — reads never spawn servers or open documents", async () => {
 		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
 		vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_SERVER)
 		const fakeClient = makeClient()
@@ -604,7 +653,34 @@ describe("tool_result handler", () => {
 		lspExtension(pi)
 		await pi.fireSessionStart()
 		await pi.fireToolResult({ toolName: "read", isError: false, input: { path: "/project/a.ts" } })
-		expect(clientMod.ensureFileOpen).toHaveBeenCalledWith(fakeClient, "/project/a.ts")
+		// Reading browsed files used to didOpen each one into the server — the
+		// chain growth vector (one pinned doc per read, never closed). Reads
+		// must not create clients or open documents.
+		expect(clientMod.getOrCreateClient).not.toHaveBeenCalled()
+		expect(clientMod.ensureFileOpen).not.toHaveBeenCalled()
+		expect(clientMod.refreshFile).not.toHaveBeenCalled()
+	})
+
+	it("all lsp_* tools refuse out-of-workspace files without spawning a chain", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_SERVER)
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+
+		const calls: Array<[string, Record<string, unknown>]> = [
+			["lsp_diagnostics", { file_path: "/elsewhere/foo.ts" }],
+			["lsp_hover", { file_path: "/elsewhere/foo.ts", line: 0, character: 0 }],
+			["lsp_definition", { file_path: "/elsewhere/foo.ts", line: 0, character: 0 }],
+			["lsp_references", { file_path: "/elsewhere/foo.ts", line: 0, character: 0 }],
+			["lsp_rename", { file_path: "/elsewhere/foo.ts", line: 0, character: 0, new_name: "x" }],
+		]
+		for (const [name, params] of calls) {
+			const result = await callTool(pi, name, params)
+			expect(result.content[0].text).toContain("outside the session workspace")
+		}
+		// No server was ever started for the out-of-workspace path.
+		expect(clientMod.getOrCreateClient).not.toHaveBeenCalled()
 	})
 
 	it("calls refreshFile for an edit event", async () => {

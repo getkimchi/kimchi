@@ -10,9 +10,19 @@ import {
 	createLocalBashOperations,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
-
-import { appendWorkRecord, getWorkId, pinWorkContext, type WorkContext, workLedgerPath } from "../work-attribution.js"
+import { isResourceEnabled } from "../../resources/store.js"
+import {
+	appendWorkRecord,
+	getToolRequest,
+	getWorkId,
+	pinWorkContext,
+	type WorkContext,
+	workLedgerPath,
+} from "../work-attribution.js"
 import { debugWorkAttribution } from "./diagnostics.js"
+import { observeToolFiles } from "./file-observations.js"
+import { COST_PER_PR_RESOURCE_ID } from "./resource.js"
+import { readWorkRows } from "./row-log.js"
 
 const GIT_LOOKUP_TIMEOUT_MS = 2000
 
@@ -301,7 +311,9 @@ function recordedCommits(ctx: WorkContext, workId: string): Set<string> {
 		} catch {}
 	}
 	try {
-		for (const row of JSON.parse(readText(join(getAgentDir(), "work", workId, "work.json"))).commits) shas.add(row.sha)
+		// Only the commit rows: a long work's summary holds many more request rows.
+		for (const row of readWorkRows(getAgentDir(), workId, "commits") ?? [])
+			if (typeof row.sha === "string") shas.add(row.sha)
 	} catch {}
 	return shas
 }
@@ -312,14 +324,23 @@ export function createWorkCommitTrackingOperations(
 	toolCallId: string,
 	local: BashOperations = createLocalBashOperations(),
 ): BashOperations {
+	if (!isResourceEnabled(COST_PER_PR_RESOURCE_ID)) return local
 	const pinned = pinWorkContext(ctx)
 	try {
-		const workId = getWorkId(pinned)
+		const origin = getToolRequest(pinned, toolCallId)
+		const workId = origin?.workId ?? getWorkId(pinned)
+		const observed: BashOperations = {
+			exec: (command, cwd, options) =>
+				observeToolFiles(pinned, toolCallId, "bash", () => local.exec(command, cwd, options), {
+					workId,
+					requestId: origin?.requestId,
+				}),
+		}
 		return createCommitTrackingOperations((commit) => {
 			// Follow only copies of this work's own commits, not unrelated commits a rebase or pick replays.
 			if (commit.rewrittenFrom && !recordedCommits(pinned, workId).has(commit.rewrittenFrom)) return
-			appendWorkRecord(pinned, { type: "commit", ...commit, toolCallId }, workId)
-		}, local)
+			appendWorkRecord(pinned, { type: "commit", ...commit, toolCallId, requestId: origin?.requestId }, workId)
+		}, observed)
 	} catch (error) {
 		debugWorkAttribution("Could not initialize Git attribution:", error)
 		return local

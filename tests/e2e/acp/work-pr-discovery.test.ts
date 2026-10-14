@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, expect, it, vi } from "vitest"
+import { readWorkSummary } from "../tui/support/work-summary.js"
 import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
 
@@ -110,7 +111,11 @@ it("shows pending and discovered GitLab MR details over ACP without a model requ
 	await expectNotification(
 		fixture,
 		sessionId,
-		{ method: "notify", notifyType: "info", message: `Work ID: ${workId}\nPR/MR lookup: 1 commit waiting` },
+		{
+			method: "notify",
+			notifyType: "info",
+			message: expect.stringContaining(`Work ID: ${workId}\nPR/MR lookup: 1 commit waiting\nCost`),
+		},
 		beforePending,
 	)
 
@@ -137,11 +142,15 @@ it("shows pending and discovered GitLab MR details over ACP without a model requ
 	await expectNotification(
 		fixture,
 		sessionId,
-		{ method: "notify", notifyType: "info", message: `Work ID: ${workId}\nMR !731 open: ${url}` },
+		{
+			method: "notify",
+			notifyType: "info",
+			message: expect.stringContaining(`Work ID: ${workId}\nMR !731 open: ${url}\nCost`),
+		},
 		beforeLinked,
 	)
 	await expect
-		.poll(() => JSON.parse(readFileSync(join(agentDir, "work", workId, "work.json"), "utf8")).commits)
+		.poll(() => readWorkSummary(agentDir, workId)?.commits)
 		.toEqual([
 			expect.objectContaining({
 				sha,

@@ -7,6 +7,7 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs"
@@ -38,6 +39,7 @@ import {
 	mapWithConcurrency,
 	messageHash,
 	normalizeFactText,
+	PoisonExtractionError,
 	parseIdArray,
 	parseTaggedFacts,
 	runCaptureWorker,
@@ -664,6 +666,37 @@ describe("chatJson retry behavior", () => {
 		expect(fetchImpl).toHaveBeenCalledTimes(1)
 	})
 
+	it("classifies non-retryable 4xx as poison (deterministic — never re-drained)", async () => {
+		const fetchImpl = vi.fn().mockResolvedValue(new Response("bad request", { status: 400 }))
+		await expect(
+			chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u"),
+		).rejects.toBeInstanceOf(PoisonExtractionError)
+	})
+
+	it("keeps retry-exhausted retryable statuses transient", async () => {
+		const fetchImpl = vi.fn().mockResolvedValue(new Response("rate limited", { status: 429 }))
+		const error = await chatJson(
+			{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			"s",
+			"u",
+			1, // one attempt — exhausts immediately
+		).catch((err: unknown) => err)
+		expect(error).toBeInstanceOf(Error)
+		expect(error).not.toBeInstanceOf(PoisonExtractionError)
+	})
+
+	it("keeps network failures transient", async () => {
+		const fetchImpl = vi.fn().mockRejectedValue(new TypeError("fetch failed"))
+		const error = await chatJson(
+			{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			"s",
+			"u",
+			1,
+		).catch((err: unknown) => err)
+		expect(error).toBeInstanceOf(Error)
+		expect(error).not.toBeInstanceOf(PoisonExtractionError)
+	})
+
 	it("gives up after max attempts on persistent 5xx", async () => {
 		const fetchImpl = vi.fn().mockResolvedValue(new Response("still down", { status: 503 }))
 		await expect(
@@ -721,7 +754,15 @@ describe("chatWithRetry (prose responses are retryable)", () => {
 					parseStringArray,
 				),
 			).rejects.toThrow(/unparseable response after strict retry/)
-			expect(fetchImpl).toHaveBeenCalledTimes(2)
+			// Same model + temperature 0 + same input fails identically next drain.
+			const attempt = chatWithRetry(
+				{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				"system",
+				"user",
+				parseStringArray,
+			)
+			await expect(attempt).rejects.toBeInstanceOf(PoisonExtractionError)
+			expect(fetchImpl).toHaveBeenCalledTimes(4)
 		} finally {
 			consoleError.mockRestore()
 		}
@@ -1315,5 +1356,335 @@ describe("messageHash v2 scoping", () => {
 		const v1 = messageHash(m)
 		const v2 = messageHash(m, { session: "", project: null })
 		expect(v1).not.toBe(v2)
+	})
+})
+
+describe("poison job quarantine (runCaptureWorker, temp HOME)", () => {
+	const realHome = process.env.HOME
+	let home: string
+	let consoleError: ReturnType<typeof vi.spyOn>
+
+	beforeEach(() => {
+		home = mkdtempSync(join(tmpdir(), "kimchi-capture-poison-"))
+		process.env.HOME = home
+		mkdirSync(join(home, ".config", "kimchi", "memory", "pending"), { recursive: true })
+		consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+	})
+	afterEach(() => {
+		process.env.HOME = realHome
+		rmSync(home, { recursive: true, force: true })
+		consoleError.mockRestore()
+	})
+
+	const pendingDir = () => join(home, ".config", "kimchi", "memory", "pending")
+	const failedDir = () => join(home, ".config", "kimchi", "memory", "failed")
+	const dbPath = () => join(home, ".config", "kimchi", "memory", "personal", "memory.db")
+
+	const writeJob = (name: string, messages: CaptureMessage[]): string => {
+		const file = join(pendingDir(), `${name}.json`)
+		writeFileSync(file, JSON.stringify({ messages, project: null }))
+		return file
+	}
+
+	const fakeBackend = (): CaptureBackend => ({
+		add: async () => ({}),
+		delete: async () => ({}),
+		getAll: async () => ({ results: [] }),
+		search: async () => ({ results: [] }),
+	})
+
+	/** Gateway stub: the judge (if ever called) deletes nothing; every
+	 * extraction window gets prose back — the model "does the task" instead
+	 * of emitting the fact JSON, mirroring the Oct-9 pile-up. */
+	const makeProseLlm = (callCount: { n: number }) => {
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const system = body.messages[0]?.content ?? ""
+			if (system.includes("must decide which stored memories")) {
+				return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+			}
+			callCount.n += 1
+			return new Response(
+				JSON.stringify({
+					choices: [{ message: { content: "I'll review the committed change from the merge base to head." } }],
+				}),
+				{ status: 200 },
+			)
+		}
+		return { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }
+	}
+
+	const runWorker = (jobFile: string, llm: ReturnType<typeof makeProseLlm>) =>
+		runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm,
+			createBackend: () => Promise.resolve(fakeBackend()),
+		})
+
+	it("a poison window skips the inline retry round (normal + strict only)", async () => {
+		const calls = { n: 0 }
+		const llm = makeProseLlm(calls)
+		const jobFile = writeJob("poison", [msg("user", "review this giant diff…")])
+		await expect(runWorker(jobFile, llm)).resolves.toBe(0)
+		// User pass: normal + strict = 2 calls; the inline retry round must NOT
+		// fire for a deterministic failure (would be 4).
+		expect(calls.n).toBe(2)
+		expect(existsSync(jobFile)).toBe(true)
+	})
+
+	it("counts poison attempts on the job JSON and quarantines at the cap", async () => {
+		const calls = { n: 0 }
+		const llm = makeProseLlm(calls)
+		const jobFile = writeJob("poison", [msg("user", "review this giant diff…")])
+		// Backdate the job (within the pending sweep TTL) so the bookkeeping
+		// rewrite has a real mtime to preserve.
+		const original = new Date(Date.now() - 3 * 86_400_000)
+		utimesSync(jobFile, original, original)
+
+		// Drain 1: fails, job kept with drainAttempts=1 and the original mtime.
+		await expect(runWorker(jobFile, llm)).resolves.toBe(0)
+		expect(existsSync(jobFile)).toBe(true)
+		const afterFirst = JSON.parse(readFileSync(jobFile, "utf-8")) as { drainAttempts?: number }
+		expect(afterFirst.drainAttempts).toBe(1)
+		expect(Math.abs(statSync(jobFile).mtimeMs - original.getTime())).toBeLessThan(1_000)
+
+		// Drain 2: fails again, hits the cap → moved to failed/, drain still
+		// exits clean (a handled job is not a drain failure).
+		await expect(runWorker(jobFile, llm)).resolves.toBe(0)
+		expect(existsSync(jobFile)).toBe(false)
+		const quarantined = join(failedDir(), "poison.json")
+		expect(existsSync(quarantined)).toBe(true)
+		expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("quarantined poison job after 2 attempts"))
+
+		// Drain 3: nothing fresh in pending → no extraction calls at all.
+		const callsBefore = calls.n
+		await expect(runWorker(jobFile, llm)).resolves.toBe(0)
+		expect(calls.n).toBe(callsBefore)
+
+		// Re-queue is a plain mv: the counter survives, so the next proven
+		// poison drain quarantines it immediately.
+		writeFileSync(jobFile, readFileSync(quarantined))
+		await expect(runWorker(jobFile, llm)).resolves.toBe(0)
+		expect(existsSync(jobFile)).toBe(false)
+		expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("quarantined poison job after 3 attempts"))
+	})
+
+	it("transient failures never count toward quarantine", async () => {
+		// Zero-delay backoff: computeRetryDelayMs floors at 100ms with random() = 0.
+		const random = vi.spyOn(Math, "random").mockReturnValue(0)
+		try {
+			const fetchImpl: typeof fetch = async () => {
+				throw new TypeError("fetch failed")
+			}
+			const llm = { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }
+			const jobFile = writeJob("flaky", [msg("user", "my dog's name is Fred")])
+			for (let drain = 0; drain < 3; drain++) {
+				await expect(
+					runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+						llm,
+						createBackend: () => Promise.resolve(fakeBackend()),
+					}),
+				).resolves.toBe(0)
+			}
+			expect(existsSync(jobFile)).toBe(true)
+			expect(existsSync(join(failedDir(), "flaky.json"))).toBe(false)
+			const job = JSON.parse(readFileSync(jobFile, "utf-8")) as { drainAttempts?: number }
+			expect(job.drainAttempts).toBeUndefined()
+		} finally {
+			random.mockRestore()
+		}
+	})
+
+	it("sweeps only quarantined jobs older than the failed/ TTL", async () => {
+		mkdirSync(failedDir(), { recursive: true })
+		const oldFile = join(failedDir(), "old.json")
+		const freshFile = join(failedDir(), "fresh.json")
+		writeFileSync(oldFile, "{}")
+		writeFileSync(freshFile, "{}")
+		const ancient = new Date(Date.now() - 31 * 86_400_000)
+		utimesSync(oldFile, ancient, ancient)
+
+		// Empty pending dir; the drain still runs the sweep.
+		const calls = { n: 0 }
+		await expect(runWorker(join(pendingDir(), "none.json"), makeProseLlm(calls))).resolves.toBe(0)
+		expect(existsSync(oldFile)).toBe(false)
+		expect(existsSync(freshFile)).toBe(true)
+	})
+
+	it("commits healthy windows while the poisoned one counts toward quarantine", async () => {
+		const poisonMarker = "BADMARKER"
+		// Two >2000-char user messages → two windows, healthy first, poison second.
+		const good = `my dog's name is Fred ${"a".repeat(1600)}`
+		const bad = `${poisonMarker} ${"b".repeat(1600)}`
+		const jobFile = join(pendingDir(), "mixed.json")
+		// Session + project ride the job JSON — the bookkeeping rewrite must not drop them.
+		writeFileSync(
+			jobFile,
+			JSON.stringify({
+				messages: [msg("user", good), msg("user", bad)],
+				session: "sess-1",
+				project: { id: "owner/repo", contextLine: "repo ctx" },
+			}),
+		)
+		const transcripts: string[] = []
+		const added: string[] = []
+		const backend: CaptureBackend = {
+			add: async (fact) => {
+				added.push(fact)
+				return {}
+			},
+			delete: async () => ({}),
+			getAll: async () => ({ results: added.map((memory, i) => ({ id: `m${i}`, memory })) }),
+			search: async () => ({ results: [] }),
+		}
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const system = body.messages[0]?.content ?? ""
+			if (system.includes("must decide which stored memories")) {
+				return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+			}
+			const transcript = body.messages[1]?.content ?? ""
+			transcripts.push(transcript)
+			const content = transcript.includes(poisonMarker)
+				? "I'll review the committed change from the merge base to head."
+				: JSON.stringify({ personal: ["my dog's name is Fred"], project: [] })
+			return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 })
+		}
+		const run = () =>
+			runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(backend),
+			})
+
+		// Drain 1: healthy window commits (1 call), poison window fails twice
+		// (normal + strict = 2 calls) — the counter moves to 1, metadata intact.
+		await expect(run()).resolves.toBe(1)
+		expect(transcripts).toHaveLength(3)
+		expect(added).toEqual(["my dog's name is Fred"])
+		const afterFirst = JSON.parse(readFileSync(jobFile, "utf-8")) as {
+			drainAttempts?: number
+			session?: string
+			project?: { id: string; contextLine: string } | null
+		}
+		expect(afterFirst.drainAttempts).toBe(1)
+		expect(afterFirst.session).toBe("sess-1")
+		expect(afterFirst.project).toEqual({ id: "owner/repo", contextLine: "repo ctx" })
+
+		// Drain 2: the committed message is ledger-filtered — the LLM only ever
+		// re-sees the poison window — and the second proof quarantines the job.
+		const callsBefore = transcripts.length
+		await expect(run()).resolves.toBe(0)
+		const secondDrainCalls = transcripts.slice(callsBefore)
+		expect(secondDrainCalls).toHaveLength(2)
+		for (const transcript of secondDrainCalls) expect(transcript).toContain(poisonMarker)
+		expect(added).toEqual(["my dog's name is Fred"])
+		expect(existsSync(jobFile)).toBe(false)
+		const quarantined = JSON.parse(readFileSync(join(failedDir(), "mixed.json"), "utf-8")) as {
+			drainAttempts?: number
+			session?: string
+			project?: { id: string; contextLine: string } | null
+		}
+		expect(quarantined.drainAttempts).toBe(2)
+		expect(quarantined.session).toBe("sess-1")
+		expect(quarantined.project).toEqual({ id: "owner/repo", contextLine: "repo ctx" })
+	})
+
+	it("a transient window failure fires the inline retry round", async () => {
+		// Zero-delay backoff: computeRetryDelayMs floors at 100ms with random() = 0.
+		const random = vi.spyOn(Math, "random").mockReturnValue(0)
+		try {
+			let calls = 0
+			const added: string[] = []
+			const fetchImpl: typeof fetch = async (_input, init) => {
+				const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+				const system = body.messages[0]?.content ?? ""
+				if (system.includes("must decide which stored memories")) {
+					return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+				}
+				calls += 1
+				// The first chatJson exhausts its own 4 attempts; call 5 can only be
+				// made by the drain's inline retry round re-running the window.
+				if (calls <= 4) throw new TypeError("fetch failed")
+				return new Response(
+					JSON.stringify({
+						choices: [{ message: { content: JSON.stringify({ personal: ["my dog's name is Fred"], project: [] }) } }],
+					}),
+					{ status: 200 },
+				)
+			}
+			const jobFile = writeJob("flaky-once", [msg("user", "my dog's name is Fred")])
+			const backend: CaptureBackend = {
+				add: async (fact) => {
+					added.push(fact)
+					return {}
+				},
+				delete: async () => ({}),
+				getAll: async () => ({ results: [] }),
+				search: async () => ({ results: [] }),
+			}
+			const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(backend),
+			})
+			// Without the retry round: 4 calls total, 0 facts, job kept for a
+			// later drain. With it: 5th call succeeds and the job completes.
+			expect(calls).toBe(5)
+			expect(captured).toBe(1)
+			expect(added).toEqual(["my dog's name is Fred"])
+			expect(existsSync(jobFile)).toBe(false)
+		} finally {
+			random.mockRestore()
+		}
+	})
+
+	it("a poison bookkeeping failure warns but never breaks the drain", async () => {
+		const calls = { n: 0 }
+		const llm = makeProseLlm(calls)
+		const jobFile = writeJob("poison", [msg("user", "review this giant diff…")])
+		await expect(runWorker(jobFile, llm)).resolves.toBe(0)
+		// Squat the quarantine target with a non-empty directory: the failed/
+		// move throws and recordPoisonAttempt's never-throws contract kicks in.
+		mkdirSync(join(failedDir(), "poison.json"), { recursive: true })
+		writeFileSync(join(failedDir(), "poison.json", "decoy"), "x")
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			await expect(runWorker(jobFile, llm)).resolves.toBe(0)
+			// Assert before mockRestore — restoring also resets the call history.
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining("poison bookkeeping failed for poison.json"),
+				expect.anything(),
+			)
+		} finally {
+			warn.mockRestore()
+		}
+		// The attempt was counted (counter rewrite happens before the move);
+		// only the quarantine move was deferred — the job stays in pending/.
+		const job = JSON.parse(readFileSync(jobFile, "utf-8")) as { drainAttempts?: number }
+		expect(job.drainAttempts).toBe(2)
+		expect(existsSync(jobFile)).toBe(true)
+	})
+
+	it("malformed drainAttempts counters are treated as a fresh job", async () => {
+		const calls = { n: 0 }
+		const llm = makeProseLlm(calls)
+		const cases = [
+			["stringy", "3"],
+			["nullish", null],
+			["negative", -1],
+		] as const
+		for (const [name, counter] of cases) {
+			writeFileSync(
+				join(pendingDir(), `${name}.json`),
+				JSON.stringify({ messages: [msg("user", `review ${name}`)], drainAttempts: counter }),
+			)
+		}
+		await expect(runWorker(join(pendingDir(), "stringy.json"), llm)).resolves.toBe(0)
+		for (const [name] of cases) {
+			const job = JSON.parse(readFileSync(join(pendingDir(), `${name}.json`), "utf-8")) as {
+				drainAttempts?: number
+			}
+			expect(job.drainAttempts).toBe(1)
+		}
+		// A sanitized counter never jumps to quarantine in one drain.
+		expect(existsSync(failedDir())).toBe(false)
 	})
 })

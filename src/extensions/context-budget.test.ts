@@ -59,8 +59,9 @@ const BUDGET = {
 	 *  orient-the-user). ~7% headroom over measured 1430. */
 	systemPromptInteractive: 1530,
 	/** buildSystemPrompt, headless variant (hasUserLoop: false — --print, json,
-	 *  piped IO; what TB2.1 exercises). ~7% headroom over measured 981. */
-	systemPromptHeadless: 1050,
+	 *  piped IO; what TB2.1 exercises). ~5% headroom over measured 1071
+	 *  (includes the ## Language section). */
+	systemPromptHeadless: 1120,
 	/** Sum of name + description chars across resources/skills frontmatter,
 	 * including create-skill (gh/glab guidance lives in behaviour bodies, not
 	 * bundled skills). Rendered as a Codex-style markdown catalog (name +
@@ -68,9 +69,9 @@ const BUDGET = {
 	 * authored lengths, capped only at render time. ~13% headroom over
 	 * measured (97). */
 	skillsCatalog: 110,
-	/** Total canonical system-prompt + skills surface (~7% headroom over
-	 *  measured 1425). */
-	total: 1530,
+	/** Total canonical system-prompt + skills surface (~4% headroom over
+	 *  measured 1580 — includes the ## Language section). */
+	total: 1650,
 	/** Total canonical tool surface (18 tools after the DAP entry/session and
 	 *  Agent-continuation deferrals, the Skill resource gate, the mcp
 	 *  zero-server registration gate, and the lsp no-server detection gate;

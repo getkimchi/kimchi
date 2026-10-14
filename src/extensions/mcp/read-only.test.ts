@@ -103,6 +103,13 @@ describe("collectReadOnlyMcpWireNames", () => {
 			beta: [{ name: "get_access", annotations: { readOnlyHint: true } }],
 		})
 		expect(collectReadOnlyMcpWireNames(collisionConfig)).toEqual([])
+		expect(collectReadOnlyMcpWireNames(collisionConfig, "beta")).toEqual([])
+	})
+
+	it("qualifies only the named server's tools for a gateway call that names one", () => {
+		expect(collectReadOnlyMcpWireNames(config, "alpha").sort()).toEqual(["alpha_get_issue", "alpha_stats"])
+		expect(collectReadOnlyMcpWireNames(config, "beta")).toEqual(["fetch_items"])
+		expect(collectReadOnlyMcpWireNames(config, "missing")).toEqual([])
 	})
 
 	it("ignores metadata from another endpoint or an expired cache", () => {
