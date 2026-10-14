@@ -233,8 +233,8 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 				"original-work",
 			)
 		} finally {
-			await getSessionState()?.registry.shutdown()
-			setSessionState(undefined)
+			await getSessionState(ctx.sessionManager.getSessionId())?.registry.shutdown()
+			setSessionState(ctx.sessionManager.getSessionId(), undefined)
 		}
 	})
 

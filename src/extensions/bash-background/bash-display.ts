@@ -7,9 +7,10 @@ import {
 import { stripTerminalSequences, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { ToolText, toolHeader, withBranch } from "../tool-rendering.js"
 import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry.js"
-import { getSessionState } from "./session-registry.js"
 
-type BashResult = Parameters<NonNullable<ToolDefinition["renderResult"]>>[0]
+type BashCallRenderer = NonNullable<ToolDefinition["renderCall"]>
+type BashResultRenderer = NonNullable<ToolDefinition["renderResult"]>
+type BashResult = Parameters<BashResultRenderer>[0]
 type BashRow = {
 	source: BashResult
 	result: BashResult
@@ -22,8 +23,7 @@ type BashRow = {
 // into the original row, while controls without that row keep their own display.
 const sessionRows = new WeakMap<ProcessRegistry, Map<string, BashRow>>()
 
-function rowsForSession(): Map<string, BashRow> | undefined {
-	const registry = getSessionState()?.registry
+function rowsForSession(registry: ProcessRegistry | undefined): Map<string, BashRow> | undefined {
 	if (!registry) return undefined
 	let rows = sessionRows.get(registry)
 	if (!rows) {
@@ -33,8 +33,8 @@ function rowsForSession(): Map<string, BashRow> | undefined {
 	return rows
 }
 
-function hiddenControl(ctx: Parameters<NonNullable<ToolDefinition["renderCall"]>>[2]): boolean {
-	return !ctx.state.bashControlError && !!rowsForSession()?.has(stringArg(ctx.args, "handle"))
+function hiddenControl(ctx: Parameters<BashCallRenderer>[2], registry: ProcessRegistry | undefined): boolean {
+	return !ctx.state.bashControlError && !!rowsForSession(registry)?.has(stringArg(ctx.args, "handle"))
 }
 
 /** Shell text is data: never send its terminal controls to the user's terminal. */
@@ -84,10 +84,12 @@ function stringArg(args: unknown, key: string): string {
 
 let upstreamBash: ReturnType<typeof createBashToolDefinition> | undefined
 
-export const renderBashCall: NonNullable<ToolDefinition["renderCall"]> = (args, theme, ctx) => ({
+const renderBashCall: (
+	...args: [...Parameters<BashCallRenderer>, ProcessRegistry | undefined]
+) => ReturnType<BashCallRenderer> = (args, theme, ctx, registry) => ({
 	invalidate() {},
 	render(width) {
-		if (hiddenControl(ctx)) return []
+		if (hiddenControl(ctx, registry)) return []
 		const display: ProcessDisplaySnapshot | undefined = ctx.state.bashDisplay
 		const purpose = safeBashText(stringArg(args, "description") || display?.description || "").replace(/\s+/g, " ")
 		const command = safeBashText(stringArg(args, "command") || display?.command || "")
@@ -101,10 +103,11 @@ export const renderBashCall: NonNullable<ToolDefinition["renderCall"]> = (args, 
 	},
 })
 
-export const renderBashResult: NonNullable<ToolDefinition["renderResult"]> = (result, options, theme, ctx) => {
+const renderBashResult: (
+	...args: [...Parameters<BashResultRenderer>, ProcessRegistry | undefined]
+) => ReturnType<BashResultRenderer> = (result, options, theme, ctx, registry) => {
 	const display = (result.details as { display?: ProcessDisplaySnapshot } | undefined)?.display
-	const registry = getSessionState()?.registry
-	const rows = rowsForSession()
+	const rows = rowsForSession(registry)
 	if (stringArg(ctx.args, "handle")) {
 		ctx.state.bashControlError = !display
 		const original = display && rows?.get(display.handle)
@@ -148,7 +151,17 @@ export const renderBashResult: NonNullable<ToolDefinition["renderResult"]> = (re
 	return renderBashOutput(result, options, theme, ctx)
 }
 
-const renderBashOutput: NonNullable<ToolDefinition["renderResult"]> = (result, options, theme, ctx) => {
+/** Renderers bind to their owning registry, including asynchronous live redraws. */
+export function createBashRenderers(
+	getRegistry: () => ProcessRegistry | undefined,
+): Required<Pick<ToolDefinition, "renderCall" | "renderResult">> {
+	return {
+		renderCall: (args, theme, ctx) => renderBashCall(args, theme, ctx, getRegistry()),
+		renderResult: (result, options, theme, ctx) => renderBashResult(result, options, theme, ctx, getRegistry()),
+	}
+}
+
+const renderBashOutput: BashResultRenderer = (result, options, theme, ctx) => {
 	upstreamBash ??= createBashToolDefinition(process.cwd())
 	const details = result.details as (BashToolDetails & { display?: ProcessDisplaySnapshot }) | undefined
 	const display = details?.display

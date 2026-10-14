@@ -3,10 +3,16 @@ import { ProcessTerminal, stripTerminalSequences, TuiMainScreen, visibleWidth } 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { testTheme as theme } from "../__mocks__/theme.js"
 import { createToolRenderContext } from "../__mocks__/tool-render-context.js"
-import { bashStatus, bashStatusColor, renderBashCall, renderBashResult, safeBashText } from "./bash-display.js"
+import { createFakeOps } from "./__mocks__/fake-bash-ops.js"
+import { bashStatus, bashStatusColor, createBashRenderers, safeBashText } from "./bash-display.js"
 import { createProcessRegistry, type ProcessDisplaySnapshot } from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
 import { getSessionState, setSessionState } from "./session-registry.js"
+
+const sessionId = "display-test"
+const { renderCall: renderBashCall, renderResult: renderBashResult } = createBashRenderers(
+	() => getSessionState(sessionId)?.registry,
+)
 
 function makeState(registry: ReturnType<typeof createProcessRegistry>) {
 	return {
@@ -35,10 +41,52 @@ const display: ProcessDisplaySnapshot = {
 
 beforeAll(() => initTheme("default"))
 afterEach(async () => {
-	await getSessionState()?.registry.shutdown()
-	setSessionState(undefined)
+	await getSessionState(sessionId)?.registry.shutdown()
+	setSessionState(sessionId, undefined)
 })
 describe("Bash display", () => {
+	it("bound renderers keep each session's live output separate", async () => {
+		const registryA = createProcessRegistry()
+		const registryB = createProcessRegistry()
+		const opsA = createFakeOps()
+		const opsB = createFakeOps()
+		const handleA = registryA.spawn(opsA, "process-a", "/tmp", undefined, { limitSeconds: 60 })
+		const handleB = registryB.spawn(opsB, "process-b", "/tmp", undefined, { limitSeconds: 60 })
+		const a = createBashRenderers(() => registryA)
+		const b = createBashRenderers(() => registryB)
+		const resultA = { content: [], details: { display: registryA.displaySnapshot(handleA) } }
+		const resultB = { content: [], details: { display: registryB.displaySnapshot(handleB) } }
+		const options = { expanded: true, isPartial: true }
+		const ctxA = createToolRenderContext({ args: { command: "process-a" } })
+		const ctxB = createToolRenderContext({ args: { command: "process-b" } })
+		let cardA: ReturnType<typeof a.renderResult>
+		let cardB: ReturnType<typeof b.renderResult>
+		ctxA.invalidate = () => {
+			cardA = a.renderResult(resultA, options, theme, ctxA)
+		}
+		ctxB.invalidate = () => {
+			cardB = b.renderResult(resultB, options, theme, ctxB)
+		}
+		try {
+			cardA = a.renderResult(resultA, options, theme, ctxA)
+			cardB = b.renderResult(resultB, options, theme, ctxB)
+			opsA.emit("only-A\n")
+			opsB.emit("only-B\n")
+			expect(cardA.render(100).join("\n")).toContain("only-A")
+			expect(cardA.render(100).join("\n")).not.toContain("only-B")
+			expect(cardB.render(100).join("\n")).toContain("only-B")
+			expect(cardB.render(100).join("\n")).not.toContain("only-A")
+			await opsA.exit(0)
+			await registryA.whenExited(handleA)
+			await registryA.remove(handleA)
+			expect(cardA.render(100).join("\n")).toContain("Exited 0")
+			expect(cardB.render(100).join("\n")).toContain("Running")
+		} finally {
+			await registryA.shutdown()
+			await registryB.shutdown()
+		}
+	})
+
 	it.each([false, true])("renders no empty foreground result row (partial: %s)", (isPartial) => {
 		const result = renderBashResult(
 			{ content: [], details: undefined },
@@ -161,7 +209,7 @@ describe("Bash display", () => {
 	})
 
 	it("folds repeated historical check-ins into the original row, retaining final expansion and errors", () => {
-		setSessionState(makeState(createProcessRegistry()))
+		setSessionState(sessionId, makeState(createProcessRegistry()))
 		const initial = { content: [], details: { display } }
 		const options = { expanded: true, isPartial: false }
 		const ctx = createToolRenderContext({ args: { command: display.command } })
@@ -209,13 +257,13 @@ describe("Bash display", () => {
 		)
 		expect(call.render(100).join("\n")).toContain("Bash")
 		expect(error.render(100).join("\n")).toContain("Error: unknown handle")
-		setSessionState(makeState(createProcessRegistry()))
+		setSessionState(sessionId, makeState(createProcessRegistry()))
 		expect(renderBashCall(control.args, theme, control).render(100).join("\n")).toContain("Bash")
 	})
 
 	it("keeps the original card live between check-ins and preserves settlement after removal", async () => {
 		const registry = createProcessRegistry()
-		setSessionState(makeState(registry))
+		setSessionState(sessionId, makeState(registry))
 		let emit!: (data: Buffer) => void
 		let exit!: (result: { exitCode: number }) => void
 		const handle = registry.spawn(

@@ -204,7 +204,8 @@ interface ActiveControlCall {
 }
 
 export default function bashControlExtension(pi: ExtensionAPI, options?: BashControlExtensionOptions): void {
-	const getState = options?.getState ?? getSessionState
+	let sessionId: string | undefined
+	const getState = options?.getState ?? (() => (sessionId === undefined ? undefined : getSessionState(sessionId)))
 	// Tracked background handles whose lifecycle is not yet resolved.
 	// Non-blocking: the extension steers on conflicts but never blocks tools.
 	let trackedHandles = new Set<string>()
@@ -269,7 +270,8 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		return { running, awaitingDelivery }
 	}
 
-	pi.on("session_start", () => {
+	pi.on("session_start", (_event, ctx) => {
+		if (!options?.getState) sessionId = ctx.sessionManager.getSessionId()
 		terminalDetails.clear()
 		trackedHandles = new Set()
 		activeControlCalls = new Map()
