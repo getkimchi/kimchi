@@ -9,6 +9,7 @@
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
+import { markerPresent } from "../lsp/servers.js"
 import type { DapAdapterConfig } from "./types.js"
 
 /** Resolve the js-debug dapDebugServer.js script path. Searches common install
@@ -275,28 +276,31 @@ function detectBinaryOf(adapter: DapAdapterConfig): string {
 /**
  * Returns debug adapters whose binary is available on PATH AND whose project
  * marker (go.mod, package.json, pyproject.toml, Cargo.toml, ...) exists in cwd
- * or a parent directory. Only adapters relevant to the current project are
- * activated — e.g. a Go project won't activate js-debug even if it's installed.
+ * or any parent directory, falling back to a bounded downward scan for
+ * nested-module monorepos (see markerPresent in lsp/servers.ts). Only
+ * adapters relevant to the current project are activated — e.g. a Go
+ * project won't activate js-debug even if it's installed.
  * Mirrors lsp/servers.ts detectServers.
  */
 export function detectAdapters(cwd: string): DapAdapterConfig[] {
 	return ADAPTERS.filter((a) => {
 		const markers = ROOT_MARKERS[a.name] ?? []
-		return findMarkerUp(cwd, markers) && adapterExists(a)
+		return markerPresent(cwd, markers) && adapterExists(a)
 	})
 }
 
 /**
  * Returns debug adapters whose project marker is present in cwd or any parent
- * directory, but whose binary is NOT on PATH — i.e. adapters this project
- * would use if installed. Used to surface a degraded DAP state (status footer
- * shows "DAP: <name> not installed") instead of silently no-op'ing. Mirrors
+ * directory (with the same nested-module downward fallback as detectAdapters),
+ * but whose binary is NOT on PATH — i.e. adapters this project would use if
+ * installed. Used to surface a degraded DAP state (status footer shows
+ * "DAP: <name> not installed") instead of silently no-op'ing. Mirrors
  * lsp/servers.ts detectMissingCandidates.
  */
 export function detectMissingAdapters(cwd: string): DapAdapterConfig[] {
 	return ADAPTERS.filter((a) => {
 		const markers = ROOT_MARKERS[a.name] ?? []
-		const hasMarker = findMarkerUp(cwd, markers)
+		const hasMarker = markerPresent(cwd, markers)
 		return hasMarker && !adapterExists(a)
 	})
 }
@@ -430,20 +434,4 @@ export function adapterForDirectory(dirPath: string, adapters: DapAdapterConfig[
 		// Not a directory or unreadable — fall through to null
 	}
 	return null
-}
-
-/**
- * Walk up from `cwd` to the filesystem root, returning true if any of the
- * given marker files is found in cwd or a parent directory. Mirrors
- * lsp/servers.ts findMarkerUp.
- */
-function findMarkerUp(cwd: string, markers: string[]): boolean {
-	let dir = path.resolve(cwd)
-	while (true) {
-		if (markers.some((m) => fs.existsSync(path.join(dir, m)))) return true
-		const parent = path.dirname(dir)
-		if (dir === parent) break
-		dir = parent
-	}
-	return false
 }

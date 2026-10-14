@@ -23,6 +23,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { writeFileAtomic } from "../../config/json.js"
+import { debugWorkAttribution } from "../../extensions/work-attribution/diagnostics.js"
 import { isWorkId } from "../work-id.js"
 
 /** Canonical directory (relative to the project cwd) for plan markdown files. */
@@ -56,7 +57,8 @@ export function generatePlanPersistenceNote(opts: {
 	return `Write the completed plan to ${location} — one file per plan, updated in place when the plan changes. The file path must be returned in the \`files\` array of your response.`
 }
 
-const DEFAULT_SLUG = "untitled-plan"
+/** Fallback slug, also returned by {@link derivePlanTitle} for a plan without a title. */
+export const DEFAULT_SLUG = "untitled-plan"
 const MAX_SLUG_LENGTH = 48
 
 /**
@@ -124,12 +126,20 @@ export interface SavePlanMarkdownOptions {
 	readonly workId?: string
 }
 
+/** Shown after {@link savePlanMarkdown} kept an attributed plan without its retained copy. */
+export const UNRETAINED_PLAN_NOTICE =
+	"plan saved without its retained copy; naming or pasting it later will not continue its work, but /work <plan path> still selects it"
+
 /**
  * Write (or overwrite in place) a plan markdown file under
  * `<cwd>/.kimchi/plans/<slug(name)>.md` and retain its version when attributed.
  * Local save errors propagate; a failed retained copy warns without blocking review.
  */
-export function savePlanMarkdown(opts: SavePlanMarkdownOptions): { path: string; snapshotPath?: string } {
+export function savePlanMarkdown(opts: SavePlanMarkdownOptions): {
+	path: string
+	snapshotPath?: string
+	contentHash?: string
+} {
 	const plansDir = resolve(opts.cwd, PLAN_DIR)
 	mkdirSync(plansDir, { recursive: true })
 	const filePath = resolve(plansDir, `${slugifyPlanName(opts.name)}.md`)
@@ -150,9 +160,10 @@ export function savePlanMarkdown(opts: SavePlanMarkdownOptions): { path: string;
 			const hash = createHash("sha256").update(content).digest("hex")
 			const snapshotPath = join(plans, `${slugifyPlanName(opts.name)}-${hash}.md`)
 			writeFileAtomic(snapshotPath, content)
-			return { path: filePath, snapshotPath }
+			return { path: filePath, snapshotPath, contentHash: hash }
 		} catch (error) {
-			console.warn("[work-attribution] Could not retain plan version:", error)
+			// Callers show their own notice; terminal output would corrupt the TUI.
+			debugWorkAttribution("Could not retain plan version:", error)
 		}
 	}
 	return { path: filePath }

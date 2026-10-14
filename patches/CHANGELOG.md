@@ -55,6 +55,141 @@ pipe-cleanup hunk grew into the shared termination helper).
   pinned as expected failure with explicit teardown.
 - Removal: delete the hunk when the pinned Pi release ships equivalent bounded
   abort cleanup (upstream: pi#10929) and keep the Kimchi regression tests.
+## @earendil-works/pi-coding-agent@0.85.1 (mid-version, additive) — bounded confinement registry, session-file publication
+
+Follow-up to the review-round-2 hardening above, from PR #1405 review round 3.
+
+- **CHANGED — the live-session-file registry is bounded (LRU, 16 files).** It only
+  ever grew, so old closed sessions stayed in the confinement window forever and a
+  spoofed log marker pointing at an old file passed the check. Registration goes
+  through `kimchiRegisterLiveSessionFile` (delete + re-add refreshes LRU position;
+  oldest evicted beyond 16). A process with more than 16 concurrent sessions would
+  see marker-resolution degrade (not corrupt) — acceptable, documented.
+- **NEW — `globalThis.__kimchiSessionFile`.** The most recently active session file
+  is published at each registration point; kimchi's tool-output-externalizer uses
+  it for the mirror-loss hydration fallback (read the session log by toolCallId
+  when the tmpdir mirror is gone). Best-effort: last-loaded session wins in
+  ulti-session processes.
+
+---
+
+## @earendil-works/pi-coding-agent@0.85.1 (mid-version, additive) — marker confinement, rewrite offset refresh, mirror-free rewrite
+
+Not an upgrade: PR #1405 review round 2 hardened the session-manager patch while
+the pin stayed at 0.85.1. Rebasers can ignore this section; it exists to record
+the review-round decisions and the new traps.
+
+- **NEW — live-session-file registry + marker path confinement.** `resolveKimchiLogMessage`
+  and `_kimchiOriginalToolContent` now refuse markers whose file is not (a) a live
+  session file owned by a `SessionManager` in this process (module-level
+  `kimchiLiveSessionFiles`, registered in `_setSessionFile`/`newSession`/
+  `createBranchedSession`), or (b) for tool markers, exactly
+  `globalThis.__kimchiToolOutputFile` (published by kimchi's
+  `createToolOutputStore`). Spoofed markers planted in tool output can no longer
+  read arbitrary local files into the session log or context. Trap: the store
+  seam global is set lazily at first store creation — the serializer must treat
+  `undefined` as "reject all tool markers", never as "allow".
+- **CHANGED — tool markers restore the block-array shape.** `_kimchiOriginalToolContent`
+  returns `[{ type: "text", text: line }]` for tool markers, matching the log-marker
+  restoration, instead of the raw string. Structure survives the round trip now.
+- **CHANGED — `_rewriteFile` is mirror-free and refreshes in-memory markers.** Marker
+  entries restore their full content from their OWN persisted line (id-indexed byte
+  scan of the current file, pre-truncation) instead of the tmpdir mirror — the log
+  is the durable source of truth, so a dead mirror can no longer leak raw markers
+  into a forked log. While writing, in-memory `[kimchi-ext:log]` markers are
+  refreshed to the new offsets — stale offsets made a second fork (or post-rewrite
+  display reads) resolve ANOTHER entry's bytes. The id→offset scan is extracted as
+  `__kimchiScanLogOffsets()` and shared with the compaction eviction. Trap: the
+  branch flow reassigns `this.sessionFile` BEFORE `_rewriteFile`, so the scan of the
+  fresh target file is empty by design — the per-marker `_serializableEntry`
+  fallback (old file, still intact) covers that path; do not "fix" the scan to read
+  the old file.
+
+---
+
+## @earendil-works/pi-coding-agent@0.85.1 (additive) — session-log durability for externalized tool results
+
+Kimchi session-memory work: the session manager now persists the FULL tool-result
+content to the JSONL even when an extension replaced the in-memory message
+content with a compact lazy marker (`[kimchi-ext:tool]` JSON handle → disk
+mirror). `_serializableEntry` resolves the original from the marker's own file
+reference at serialization time. No rebase trap: the change is additive inside a
+new private method + two call-site swaps; the marker prefix is Kimchi-owned and
+unlikely to collide. Removal: upstream exposes a content-persistence hook or
+lets extensions control persisted content. See the patch header's Changes list.
+
+## @earendil-works/pi-coding-agent@0.85.1 (additive) — compaction-history display
+
+The TUI transcript keeps pre-compaction
+history visible. SessionManager gains `buildDisplayEntries()` (full leaf
+path); the interactive mode renders it at the three transcript call sites via
+a capability probe, with the post-compaction handler keeping upstream's
+context validation on `buildContextEntries()`. The model context is
+untouched. Rebase trap: the interactive-mode hunks touch the post-compaction
+event handler — keep the `entries[0]?.type !== "compaction"` validation on
+the CONTEXT entries, not the display entries. Removal: upstream exposes a
+display-entries hook.
+
+## @earendil-works/pi-coding-agent@0.85.1 (additive) — compaction-history residency
+
+After a compaction commits, pre-cut message
+entries' content is evicted from memory to `[kimchi-ext:log]` markers
+(byte-offset references into the session JSONL, one file scan per compaction).
+Markers resolve transparently in `sessionEntryToContextMessages` (bounded LRU)
+so display, ACP replay and any reader see the original blocks; the
+`_serializableEntry` serializer now honors both marker prefixes so log
+rewrites stay canonical. Rebase traps: the eviction walk continues PAST
+`firstKeptEntryId` (pre-cut entries are its ancestors); the serializer must
+parse by the MATCHED prefix's own length (tool=17, log=16 chars — an
+off-by-one silently persists raw markers on rewrites) and for log markers
+return the parsed `entry.message` blocks, not the raw JSONL line. Removal: when upstream exposes entry-content eviction or a
+lazy content hook.
+
+## @modelcontextprotocol/client@2.0.0 (mid-version, additive) — OAuth Accept headers
+
+Not an upgrade: a new patch for the v2 client package while the pin stayed put.
+This is the package that performs the harness's MCP OAuth flows at runtime (a
+pi-mcp-adapter dependency), verified by the spec-strict gateway e2e
+(`tests/e2e/tui/mcp-oauth-strict-accept.test.ts`, fixture `strictAccept` mode
+answering 406 without `text/event-stream`): with this patch the strict-gateway
+login completes; on master it fails with HTTP 406 on the metadata/DCR
+endpoints. The sdk 1.29.0 patch below covers entry points that still import
+the legacy 1.x package; the harness's own MCP OAuth path uses this one.
+
+### `@modelcontextprotocol/client` (new patch)
+
+- **NEW — `dist/index.{mjs,cjs}`.** `tryMetadataDiscovery` (protected-resource
+  metadata, previously no Accept header), `discoverAuthorizationServerMetadata`
+  (was json-only), and `registerClient` / DCR (previously no Accept header) now
+  send `Accept: application/json, text/event-stream`. The token POST
+  (`executeTokenRequest`) is deliberately unchanged, matching the sdk patch's
+  residual-risk note.
+
+---
+
+## pi-mcp-adapter@2.34.0 / @modelcontextprotocol/sdk@1.29.0 (mid-version, additive) — OAuth Accept headers + DCR version
+
+Not an upgrade: new hunks added to the adapter patch and a new SDK patch while both
+pins stayed put. Rebasers can ignore this section; it exists only to explain where
+the OAuth hunks came from.
+
+### `pi-mcp-adapter`
+
+- **NEW — `mcp-oauth-provider.ts`: Accept header on configured-discovery metadata
+  fetch.** Now sends `application/json, text/event-stream` (was json-only);
+  spec-strict gateways (agentgateway) answer 406 otherwise.
+- **NEW — `mcp-auth-flow.ts`: DCR clientInfo version.** Bumped stale hardcoded
+  `"2.11.0"` to `"2.34.0"` so registered OAuth clients report the real package
+  version (the stale string caused a misdiagnosed incident report).
+
+### `@modelcontextprotocol/sdk` (new patch)
+
+- **NEW — `dist/{esm,cjs}/client/auth.js`.** `discoverAuthorizationServerMetadata`
+  GET and `registerClient` (DCR) POST now send `Accept: application/json,
+  text/event-stream` (DCR previously sent no Accept header). The token POST
+  (`executeTokenRequest`) is deliberately unchanged — it is a plain JSON endpoint
+  and worked in the affected environment. Trap for rebasers: patch both the esm
+  and cjs mirrors; line numbers differ between them.
 
 ---
 

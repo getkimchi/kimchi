@@ -86,6 +86,24 @@ export const CAPTURE_LOCK_UPDATE_MS = 30_000
 export const PENDING_JOB_MAX_AGE_MS = 7 * 86_400_000
 
 /**
+ * Drains a capture job with a deterministic (poison) extraction failure
+ * gets before quarantine. Each drain already pays the strict-format retry
+ * per poisoned window, so the second failed drain confirms determinism and
+ * the job moves to failed/ — 4 wasted LLM calls per poisoned window over
+ * its lifetime instead of weeks of repeats (the Oct-9 pile-up). Transient
+ * failures (network, timeouts, retry-exhausted 5xx) never quarantine — the
+ * 7-day sweep above stays their backstop.
+ */
+export const POISON_JOB_MAX_ATTEMPTS = 2
+
+/**
+ * How long quarantined jobs are kept in failed/ for post-mortems before
+ * the drain sweeps them — long enough to notice and requeue after a model
+ * upgrade (mv back into pending/), not so long they decay into noise.
+ */
+export const POISON_JOB_TTL_MS = 30 * 86_400_000
+
+/**
  * Length bound for the assistant-capture gate: assistant turns enter capture
  * jobs only when pure text (no tool-call blocks, no thinking), ≤ this many
  * characters. Kills the ~93% work-product share of real coding sessions

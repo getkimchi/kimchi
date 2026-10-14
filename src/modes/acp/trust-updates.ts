@@ -23,6 +23,7 @@ import type { ProjectTrustStore } from "@earendil-works/pi-coding-agent"
 
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
+import { emitExtNotification } from "./ext-notifications.js"
 
 /** Coarse categories the project-trust gate can hold back for a cwd. */
 export type BlockedTrustCategory = "skills" | "project_config" | "pi_settings"
@@ -112,15 +113,11 @@ export function buildProjectTrustUpdate(sessionId: string, cwd: string): Project
  * without awaiting. Unaware clients ignore unknown ext notifications.
  */
 export function notifyProjectTrustUpdate(conn: AgentSideConnection, update: ProjectTrustUpdate): void {
-	conn
-		.extNotification(AVAILABLE_EXT_NOTIFICATIONS.project_trust_update, {
-			sessionId: update.sessionId,
-			trusted: update.trusted,
-			blocked: [...update.blocked],
-		})
-		.catch((err: unknown) => {
-			process.stderr.write(`acp project_trust_update notification failed: ${String(err)}\n`)
-		})
+	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.project_trust_update, {
+		sessionId: update.sessionId,
+		trusted: update.trusted,
+		blocked: [...update.blocked],
+	})
 }
 
 /**

@@ -119,8 +119,8 @@ export interface VerificationResult {
 }
 
 export interface StepHandlerServices {
-	captureGitHead(): string | undefined
-	gatherEvidence(ref: string): PhaseEvidence | undefined
+	captureGitHead(cwd: string): string | undefined
+	gatherEvidence(ref: string, cwd: string): PhaseEvidence | undefined
 	judgeStepVerification(
 		stepDescription: string,
 		verificationCommand: string,
@@ -344,7 +344,7 @@ Do NOT call start_ferment_step again without user input.`,
 		return failedToolResult(outcome.error, f, multiModelEnabled)
 	}
 
-	const stepHeadRef = services.captureGitHead()
+	const stepHeadRef = services.captureGitHead(ctx.cwd)
 	if (stepHeadRef) runtime.setStepStartRef(params.ferment_id, phase.id, step.id, stepHeadRef)
 
 	const freshPhase = outcome.ferment.phases.find((p) => p.id === phase.id)

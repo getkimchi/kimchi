@@ -403,7 +403,7 @@ export function registerFermentEvents(
 					// User explicitly declined to resume — emit stalled telemetry.
 					pi.events.emit(FERMENT_EVENTS.STALLED, buildStalledPayload(ferment, runtime.now().getTime()))
 					deferExtensionAction(() => {
-						loadFermentSilently(pi, envId, runtime)
+						loadFermentSilently(pi, envId, runtime, ctx.cwd)
 					})
 				}
 			} else {
@@ -448,7 +448,7 @@ export function registerFermentEvents(
 		removeFermentLock(f.id)
 	})
 
-	pi.on("input", async (event, handler) => {
+	pi.on("input", async (event, ctx) => {
 		if (event.source === "interactive") {
 			runtime.markHumanInput()
 		}
@@ -471,6 +471,7 @@ export function registerFermentEvents(
 				goal: intent,
 				hasUI: false,
 				isOneShot: true,
+				cwd: ctx.cwd,
 			})
 			const updated = f
 			runtime.setActive(updated)
@@ -489,7 +490,7 @@ export function registerFermentEvents(
 			)
 			return {
 				action: "transform" as const,
-				text: buildOneshotNudge(updated, intent, getMultiModelEnabled(handler.sessionManager)),
+				text: buildOneshotNudge(updated, intent, getMultiModelEnabled(ctx.sessionManager)),
 				images: event.images,
 			}
 		} catch (err) {

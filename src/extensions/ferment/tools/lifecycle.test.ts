@@ -5,9 +5,11 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
+import { UNRETAINED_PLAN_NOTICE } from "../../../shared/planning/plan-markdown.js"
 import { createContext } from "../../__mocks__/context.js"
-import { flushWorkSummaries } from "../../work-attribution/summary.js"
-import { getWorkId } from "../../work-attribution.js"
+import { createExtensionApi } from "../../__mocks__/extension-api.js"
+import { flushWorkSummaries, readWorkRecords } from "../../work-attribution/summary.js"
+import { createWorkAttributionExtension, getWorkId, setWorkId } from "../../work-attribution.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { loadRuntimeState } from "../runtime-state-store.js"
 import { captureJudgeContext, setRuntimeStatePersistRoot } from "../state.js"
@@ -90,7 +92,7 @@ function createHarness() {
 		getActiveTools: vi.fn(() => []),
 		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
-	const ferment = storage.create("Lifecycle Test")
+	const ferment = storage.create("Lifecycle Test", undefined, process.cwd())
 	// Isolation: tests should set their own active ferment rather than inherit
 	// module-level state from earlier tests.
 	runtime.setActive(undefined)
@@ -604,6 +606,79 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			expect(loadRuntimeState(active.id, attributionDir).workId).toBe(originalWorkId ?? getWorkId(ctx))
 	})
 
+	it.each(["saved", "blocked"])("warns only when the plan's retained copy cannot be saved (%s)", async (outcome) => {
+		const { execute } = createProposeHarness()
+		const ctx = createContext({ hasUI: true, cwd: attributionDir })
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		if (outcome === "blocked") {
+			// Retained copies live under <agent>/work/<workId>/plans.
+			rmSync(join(attributionDir, "work"), { recursive: true, force: true })
+			writeFileSync(join(attributionDir, "work"), "blocked")
+		}
+		const result = await execute(
+			"tool-call-1",
+			{
+				title: "Retained Proposal",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "P1", goal: "Build it", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+		warn.mockRestore()
+		expect(okText(result)).toContain(join(attributionDir, ".kimchi", "plans"))
+		const notice = [`ferment: ${UNRETAINED_PLAN_NOTICE}`, "warning"]
+		if (outcome === "blocked") expect(ctx.ui.notify).toHaveBeenCalledWith(...notice)
+		else expect(ctx.ui.notify).not.toHaveBeenCalledWith(...notice)
+	})
+
+	it("saves the proposal's originating request even if work changed before the tool ran", async () => {
+		const { execute } = createProposeHarness()
+		const ctx = createContext({ hasUI: false, cwd: attributionDir })
+		const tracing = createExtensionApi()
+		createWorkAttributionExtension()(tracing.api)
+		const headers: Record<string, string> = {}
+		await tracing.getHandler("before_provider_headers")({ headers }, ctx)
+		const workId = getWorkId(ctx)
+		await tracing.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "tool-call-1", name: "propose_ferment_scoping" }],
+				},
+			},
+			ctx,
+		)
+		setWorkId(ctx)
+		const result = await execute(
+			"tool-call-1",
+			{
+				title: "Pinned Proposal",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "P1", goal: "Build it", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+		expect(okText(result)).toContain("Plan saved")
+		expect(readWorkRecords(attributionDir)).toContainEqual(
+			expect.objectContaining({
+				type: "plan",
+				workId,
+				requestId: headers["X-Request-Id"],
+			}),
+		)
+	})
+
 	it("creates a new draft ferment when an unknown ferment_id is provided and no active ferment exists", async () => {
 		const { h, execute } = createProposeHarness()
 		const beforeCount = h.storage.list().length
@@ -730,7 +805,7 @@ describe("propose_ferment_scoping continuation policy reset", () => {
 	it("re-proposing for an existing draft does not reset its policy", async () => {
 		const h = createHarness()
 		h.runtime.setContinuationPolicy("automated")
-		const draft = h.storage.create("Existing Draft")
+		const draft = h.storage.create("Existing Draft", undefined, process.cwd())
 		h.runtime.setActive(draft)
 		const tools = new Map<string, RegisteredTool>()
 		const pi = {
@@ -1091,7 +1166,7 @@ describe("update_ferment_scope_field via registerLifecycleTools", () => {
 		registerLifecycleTools(pi, runtime)
 		// Create and scope a ferment so update_ferment_scope_field has something to revise.
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const ferment = storage.create("Update Scope Test")
+		const ferment = storage.create("Update Scope Test", undefined, process.cwd())
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Original goal",

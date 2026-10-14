@@ -75,8 +75,27 @@ export interface SessionPermissionFlagChanges {
 	mode?: PermissionModeState
 }
 
+/** Why the permission mode changed. Persisted on permission_mode session
+ * entries so exports/forensics can tell `user_shift_tab` apart from
+ * programmatic transitions (ferment elevation, plan approval, …). The
+ * in-process event bus already carries this on MODE_CHANGED; session log
+ * entries historically dropped it, making accidental flips look
+ * indistinguishable from deliberate ones. */
+export type ModeChangeReason =
+	| "user_shift_tab"
+	| "ferment_elevation"
+	| "ferment_restore"
+	| "plan_approval"
+	| "questionnaire_promotion"
+	| "cloud_spawn_failed" // revert to plan mode when a cloud-agent spawn fails
+	| "command"
+	| "session_start"
+	| "controller" // ACP/IDE SessionPermissionFlagController setMode callback
+
 export interface PermissionModeState {
 	mode: PermissionMode
 	source: PermissionModeSource
 	initiatedBy: PermissionModeInitiatedBy
+	/** Set only on persisted session entries; runtime state may omit it. */
+	reason?: ModeChangeReason
 }

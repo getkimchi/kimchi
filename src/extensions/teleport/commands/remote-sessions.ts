@@ -26,12 +26,15 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 
 	const fallbackName = basename(ctx.cwd) || "kimchi"
 
-	// Verify once for orgId; cache for the loop (needed for rename/delete
-	// workspace) — also shared with listWorkspaces/getQuotaUsage below so both
-	// skip their own duplicate verifyKey round-trip.
+	// Verify once for orgId + userId; cache for the loop (orgId is needed for
+	// rename/delete workspace) — also shared with listWorkspaces/getQuotaUsage
+	// below so both skip their own duplicate verifyKey round-trip.
 	let orgId: string
+	let userId: string | undefined
 	try {
-		orgId = await verifyApiKey(ctx.apiKey, { endpoint: ctx.endpoint })
+		const verified = await verifyApiKey(ctx.apiKey, { endpoint: ctx.endpoint })
+		orgId = verified.organizationId
+		userId = verified.userId
 	} catch (err) {
 		refuse(ctx, `Could not verify API key: ${err instanceof Error ? err.message : String(err)}`)
 	}
@@ -49,7 +52,7 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 		)
 		let workspaces: Workspace[]
 		try {
-			workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId })
+			workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId, userId })
 		} catch (err) {
 			status(ctx, undefined)
 			refuse(ctx, `Could not list workspaces: ${err instanceof Error ? err.message : String(err)}`)

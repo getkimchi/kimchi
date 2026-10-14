@@ -241,48 +241,23 @@ describe("session_start", () => {
 	})
 })
 
-describe("bash_control deferral (token optimization)", () => {
-	it("registers bash_control but keeps it hidden at session_start in main sessions", async () => {
-		workerState.isWorker = false
+describe("bash_control static tool surface", () => {
+	it("registers and advertises bash_control at session_start", async () => {
 		const harness = makePiWithState()
 		await fireSessionStart(harness)
-
-		// Registered (availability preserved) but not advertised (surface reduced).
 		expect(harness.getRegisteredTools().map((tool) => tool.name)).toContain("bash_control")
-		expect(harness.getActiveToolNames()).not.toContain("bash_control")
-	})
-
-	it("reveals bash_control on the first tracked background handle", async () => {
-		workerState.isWorker = false
-		const harness = makePiWithState()
-		await fireSessionStart(harness)
-		expect(harness.getActiveToolNames()).not.toContain("bash_control")
-
-		// A short-task bash result (no handle) must NOT reveal.
-		await fireToolResult(harness, {
-			type: "tool_result",
-			toolName: "bash",
-			toolCallId: "c0",
-			input: { command: "echo hi" },
-			content: [{ type: "text", text: "hi" }],
-			isError: false,
-			details: {},
-		})
-		expect(harness.getActiveToolNames()).not.toContain("bash_control")
-
-		const handle = spawnRunning()
-		await startTrackedSession(harness, handle)
 		expect(harness.getActiveToolNames()).toContain("bash_control")
+		expect(harness.setActiveTools).not.toHaveBeenCalled()
 	})
 
-	it("reveal is one-way: a second handle does not re-transition visibility", async () => {
+	it("background handles never change the advertised tool set", async () => {
 		workerState.isWorker = false
 		const harness = makePiWithState()
 		await fireSessionStart(harness)
 		const a = spawnRunning("first-proc")
 		await startTrackedSession(harness, a)
-		const transitionsAfterReveal = harness.setActiveTools.mock.calls.length
-		expect(transitionsAfterReveal).toBeGreaterThan(0)
+		const transitionsAtStart = harness.setActiveTools.mock.calls.length
+		expect(transitionsAtStart).toBe(0)
 
 		const b = spawnRunning("second-proc")
 		await fireToolResult(harness, {
@@ -294,7 +269,7 @@ describe("bash_control deferral (token optimization)", () => {
 			isError: false,
 			details: { handle: b, handoff: true, exited: false },
 		})
-		expect(harness.setActiveTools.mock.calls.length).toBe(transitionsAfterReveal)
+		expect(harness.setActiveTools.mock.calls.length).toBe(transitionsAtStart)
 	})
 
 	it("keeps bash_control visible in agent workers (carve-out)", async () => {
@@ -305,7 +280,7 @@ describe("bash_control deferral (token optimization)", () => {
 		workerState.isWorker = false
 	})
 
-	it("a re-entered session_start after reveal does not re-hide bash_control", async () => {
+	it("a re-entered session_start keeps bash_control visible", async () => {
 		workerState.isWorker = false
 		const harness = makePiWithState()
 		await fireSessionStart(harness)
@@ -313,7 +288,7 @@ describe("bash_control deferral (token optimization)", () => {
 		await startTrackedSession(harness, handle)
 		expect(harness.getActiveToolNames()).toContain("bash_control")
 
-		// Resume/fork re-enters session_start; reveal is one-way per factory lifetime.
+		// Resume/fork re-enters session_start; the static tool surface stays visible.
 		const transitions = harness.setActiveTools.mock.calls.length
 		await fireSessionStart(harness)
 		expect(harness.getActiveToolNames()).toContain("bash_control")

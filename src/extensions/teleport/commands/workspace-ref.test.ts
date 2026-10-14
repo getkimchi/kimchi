@@ -83,7 +83,7 @@ beforeEach(() => {
 	listWorkspacesMock.mockReset().mockResolvedValue([])
 	pickWorkspaceMock.mockReset()
 	getQuotaUsageMock.mockReset().mockResolvedValue(undefined)
-	verifyApiKeyMock.mockReset().mockResolvedValue("org-1")
+	verifyApiKeyMock.mockReset().mockResolvedValue({ organizationId: "org-1", userId: "user-1" })
 })
 
 describe("isUuid", () => {
@@ -337,7 +337,10 @@ describe("resolveWorkspaceRef", () => {
 		const { ctx } = makeCtx()
 		await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
 		expect(verifyApiKeyMock).toHaveBeenCalledOnce()
-		expect(listWorkspacesMock).toHaveBeenCalledWith(ctx.apiKey, expect.objectContaining({ orgId: "org-1" }))
+		expect(listWorkspacesMock).toHaveBeenCalledWith(
+			ctx.apiKey,
+			expect.objectContaining({ orgId: "org-1", userId: "user-1" }),
+		)
 		expect(getQuotaUsageMock).toHaveBeenCalledWith(ctx.apiKey, expect.objectContaining({ orgId: "org-1" }))
 	})
 

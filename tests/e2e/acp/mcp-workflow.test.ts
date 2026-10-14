@@ -218,6 +218,68 @@ describe("ACP integration — OAuth MCP", () => {
 	})
 })
 
+describe("ACP integration — OAuth MCP with a remote https redirect", () => {
+	let fixture: AcpMcpFixture
+	const echo = gatewayMcpCall("echo", { message: "acp-oauth-remote-redirect" })
+
+	beforeEach(async () => {
+		fixture = await startAcpMcpFixture({
+			artifactName: "acp-mcp-oauth-remote-redirect",
+			mcp: {
+				transport: "oauth",
+				oauth: { redirectUri: "https://app.kimchi.dev/mcp-oauth/callback-v2" },
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: acp-oauth-remote-redirect" }] },
+							{ message: "acp-oauth-remote-redirect" },
+						),
+					],
+				},
+			},
+			responses: [echo.response, modelReply("ACP used the OAuth-protected MCP tool after the remote redirect.")],
+		})
+	}, STARTUP_TIMEOUT_MS)
+
+	afterEach(async () => {
+		await fixture.stop()
+	})
+
+	it("authenticates through the loopback bounce without a manual paste", async () => {
+		const server = fixture.mcp.serverDefinition
+		const unauthenticatedProbe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+			server,
+			serverName: "fixture",
+			skipAuth: true,
+		})
+		expect(unauthenticatedProbe.needsAuth).toBe(true)
+
+		const authenticatedProbe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+			server,
+			serverName: "fixture",
+		})
+		expect(authenticatedProbe.error).toBeNull()
+		expect(authenticatedProbe.needsAuth).toBe(false)
+		expect(authenticatedProbe.tools).toEqual(expect.arrayContaining([expect.objectContaining({ name: "echo" })]))
+
+		await fixture.mcp.waitForEvent("oauth_authorized", {
+			where: { redirectUri: "https://app.kimchi.dev/mcp-oauth/callback-v2" },
+		})
+		await fixture.mcp.waitForEvent("oauth_token_issued", { where: { grantType: "authorization_code" } })
+		expect(fixture.mcp.hasEvent("oauth_browser_completed")).toBe(true)
+
+		const sessionId = await newSession(fixture, fixture.workDir)
+		const result = await prompt(fixture, sessionId, "Call the OAuth-protected configured MCP tool")
+		expect(result.stopReason).toBe("end_turn")
+		expect(result.chunks).toContain("ACP used the OAuth-protected MCP tool after the remote redirect.")
+		await fixture.mcp.waitForEvent("tool_called", {
+			where: { name: "echo", arguments: { message: "acp-oauth-remote-redirect" } },
+		})
+		expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: acp-oauth-remote-redirect")
+	})
+})
+
 describe("ACP integration — project MCP trust", () => {
 	it(
 		"does not execute repository MCP configuration in a headless session without trust",

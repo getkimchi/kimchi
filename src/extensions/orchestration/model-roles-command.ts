@@ -17,6 +17,7 @@ import { findModelByRef } from "../model-catalog/ref-utils.js"
 import { withSuppressedModelSelectGuard } from "../model-switch.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createQuestionForm, type Question, type QuestionFormResult, YES_NO_OPTIONS } from "../questionnaire/index.js"
+import { withRawInputCapture } from "../shared-input.js"
 import {
 	deleteModelMetadata,
 	getModelMetadata,
@@ -40,20 +41,32 @@ function syncOrchestratorRef(sessionId: string, roles: ModelRoles): void {
 
 /**
  * Picker tags for a model ref: "unavailable" when the API no longer serves
- * it (gone from /v1/models/metadata), "deprecated" during the announced
- * deprecation window. The auto-model pseudo-ref is exempt.
+ * it (gone from /v1/models/metadata), "deprecated" while the model is past
+ * or approaching deprecated_at but still served — deprecation is a
+ * signalling boundary, sunset is the serving boundary. When the proxy
+ * translates calls to a configured replacement, the tag names it
+ * ("deprecated: serves via X"). The auto-model pseudo-ref is exempt.
  */
 export function modelRefTags(
 	ref: string,
 	apiSlugs: ReadonlySet<string>,
 	deprecatedSlugs: ReadonlySet<string>,
+	servesVia?: ReadonlyMap<string, string>,
+	retiringDates?: ReadonlyMap<string, string>,
 ): string[] {
 	// Routed virtual models (kimchi-dev ids starting with `auto`) are neither
 	// concrete catalog slugs nor deprecated — no tags.
 	if (isAutoRoutedRef(ref)) return []
 	const slug = modelIdFromRef(ref)
 	if (!apiSlugs.has(slug)) return ["unavailable"]
-	if (deprecatedSlugs.has(slug)) return ["deprecated"]
+	if (deprecatedSlugs.has(slug)) {
+		const via = servesVia?.get(slug)
+		if (via) return [`deprecated: serves via ${via}`]
+		// Sunset-only record (vendor retirement, no announced deprecation):
+		// cite the date instead of claiming an invented deprecation.
+		const retiring = retiringDates?.get(slug)
+		return [retiring ? `retiring ${retiring}` : "deprecated"]
+	}
 	return []
 }
 
@@ -178,8 +191,10 @@ export async function collectModelMetadata(
 		},
 	]
 
-	const result = await ctx.ui.custom<QuestionFormResult>((tui, theme, _kb, done) =>
-		createQuestionForm(tui, theme, questions, { title: ref }, done),
+	const result = await withRawInputCapture(() =>
+		ctx.ui.custom<QuestionFormResult>((tui, theme, _kb, done) =>
+			createQuestionForm(tui, theme, questions, { title: ref }, done),
+		),
 	)
 	if (result.cancelled) return undefined
 
@@ -360,11 +375,28 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 			availableModelRefs.sort()
 
 			const apiSlugSet = new Set(apiModels.map((m) => m.slug))
-			const deprecatedSlugs = new Set(
-				apiModels.filter((m) => deriveDeprecationState(m) === "announced").map((m) => m.slug),
-			)
+			// One pass over the catalog derives all three deprecation signals:
+			//  - deprecatedSlugs: announced or past-deprecation slugs
+			//  - servesVia: slugs the proxy translates to a configured replacement → tag names it
+			//  - retiringDates: sunset-only records (vendor retirement date, no announced
+			//    deprecation) → tag cites the retirement date
+			const deprecatedSlugs = new Set<string>()
+			const servesVia = new Map<string, string>()
+			const retiringDates = new Map<string, string>()
+			for (const m of apiModels) {
+				const state = deriveDeprecationState(m)
+				if (state === "announced" || state === "past") {
+					deprecatedSlugs.add(m.slug)
+				}
+				if (state === "past" && m.replacement_model) {
+					servesVia.set(m.slug, m.replacement_model)
+				}
+				if (state === "announced" && m.deprecated_at === undefined && m.sunset_at) {
+					retiringDates.set(m.slug, m.sunset_at.slice(0, 10))
+				}
+			}
 			const refSuffix = (ref: string): string => {
-				const tags = modelRefTags(ref, apiSlugSet, deprecatedSlugs)
+				const tags = modelRefTags(ref, apiSlugSet, deprecatedSlugs, servesVia, retiringDates)
 				return tags.length > 0 ? ` (${tags.join(", ")})` : ""
 			}
 
@@ -437,7 +469,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					const tags: string[] = []
 					if (isCurrent) tags.push("current")
 					if (isDefault) tags.push("default")
-					tags.push(...modelRefTags(ref, apiSlugSet, deprecatedSlugs))
+					tags.push(...modelRefTags(ref, apiSlugSet, deprecatedSlugs, servesVia, retiringDates))
 					const suffix = tags.length > 0 ? ` (${tags.join(", ")})` : ""
 					return `${ref}${suffix}`
 				})

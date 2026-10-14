@@ -3,7 +3,7 @@ import { join, resolve } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
 import { readJsonCached } from "../config/json.js"
 import { readStatusLineConfig } from "../config/status-line-config.js"
@@ -35,6 +35,7 @@ export type SegmentId =
 	| "budget"
 	| "lsp"
 	| "dap"
+	| "work-pr"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -50,6 +51,7 @@ type SegmentRaw =
 	| { kind: "budget"; percentage: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
 	| { kind: "ferment-v2"; state: string }
+	| { kind: "work-pr"; compact: string }
 
 /** A single piece of the status line. */
 export interface Segment {
@@ -289,6 +291,15 @@ function recompactSegment<K extends SegmentRaw["kind"]>(
 /** The ordered compaction steps */
 const STEPS: CompactionStep[] = [
 	{
+		name: "drop-work-pr-state",
+		apply: (segs) =>
+			recompactSegment(segs, "work-pr", "work-pr", (raw) => ({
+				id: "work-pr",
+				text: raw.compact,
+				width: visibleWidth(raw.compact),
+			})),
+	},
+	{
 		name: "drop-context-bar",
 		apply: (segs, ctx) =>
 			recompactSegment(segs, "context", "context", (raw) => buildContextCompact(ctx, raw.percent, raw.pctColor)),
@@ -343,6 +354,7 @@ function joinSegments(segments: Segment[], sep: string): string {
 const SHED_ORDER: SegmentId[] = [
 	"dap",
 	"lsp",
+	"work-pr",
 	"team",
 	"tags",
 	"phase",
@@ -595,6 +607,35 @@ function buildCreditsSegment(theme: Theme, pinned: boolean): Segment | null {
 	return { id: "credits", text, width: visibleWidth(text) }
 }
 
+/** `PR #7 open` or `MR !7 merged`, as the PR status extension sets it. */
+const WORK_PR_STATUS = /^(PR|MR) ([#!]\d+)(?: (.+))?$/
+
+/**
+ * Only the PR number stands out, accented and underlined as the link; the label and state stay muted. The state
+ * is extra detail, so the compaction ladder drops it first (`PR #7 open` → `PR #7`).
+ */
+function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
+	const statuses = statusLineData.getExtensionStatuses()
+	const status = statuses.get("work-pr")
+	if (!status) return null
+	const match = WORK_PR_STATUS.exec(status)
+	if (!match) {
+		// Waiting, several links or a lookup problem: a muted label and an accented value.
+		const space = status.indexOf(" ")
+		const text =
+			space === -1
+				? accentText(theme, status)
+				: `${dimText(theme, status.slice(0, space))} ${accentText(theme, status.slice(space + 1))}`
+		return { id: "work-pr", text, width: visibleWidth(text) }
+	}
+	const [, label, number, state] = match
+	const url = statuses.get("work-pr-url")
+	const compact = `${dimText(theme, label)} ${theme.underline(accentText(theme, url ? hyperlink(number, url) : number))}`
+	if (!state) return { id: "work-pr", text: compact, width: visibleWidth(compact) }
+	const text = `${compact} ${dimText(theme, state)}`
+	return { id: "work-pr", text, width: visibleWidth(text), raw: { kind: "work-pr", compact } }
+}
+
 function buildBudgetSegment(theme: Theme, pinned: boolean): Segment | null {
 	if (!pinned) return null
 	const budget = getBillingStatusLine()?.budget
@@ -689,6 +730,7 @@ export function buildStatusLineSegments(
 		buildTeamSegment(theme, tags, pinned.has("team")),
 		buildLspSegment(theme, statusLineData),
 		buildDapSegment(theme, statusLineData),
+		buildWorkPrSegment(theme, statusLineData),
 	].filter((s): s is Segment => s !== null)
 }
 
@@ -697,7 +739,14 @@ export function buildStatusLineSegments(
  *  usually covers context/usage itself, so the controls line carries
  *  permissions, model, ferment, and billing — in pool order so permissions
  *  and model lead — fitted through the same compaction/shed pipeline. */
-const CONTROLS_LINE_IDS: ReadonlySet<SegmentId> = new Set(["permissions", "model", "ferment", "credits", "budget"])
+const CONTROLS_LINE_IDS: ReadonlySet<SegmentId> = new Set([
+	"permissions",
+	"model",
+	"ferment",
+	"credits",
+	"budget",
+	"work-pr",
+])
 const CONTROLS_LINE_PINNED: ReadonlySet<SegmentId> = new Set(["credits", "budget"])
 
 export function buildControlsLineSegments(buildCtx: StatusLineBuildContext): Segment[] {

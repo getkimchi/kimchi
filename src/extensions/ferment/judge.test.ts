@@ -6,6 +6,7 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createModel } from "../__mocks__/model-registry.js"
+import * as diagnostics from "../work-attribution/diagnostics.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { getWorkId, setWorkId } from "../work-attribution.js"
 import {
@@ -43,6 +44,7 @@ describe("isGrade", () => {
 function makeInput(overrides: Partial<JudgeJourneyGradeInput> = {}): JudgeJourneyGradeInput {
 	return {
 		fermentName: "Test Ferment",
+		cwd: "/test",
 		goal: "Ship the feature.",
 		successCriteria: "Tests pass; lint clean.",
 		finalSummary: "Implemented retry logic with tests.",
@@ -426,6 +428,7 @@ describe("judgePhaseGrade", () => {
 	function makePhaseInput(overrides: Partial<JudgePhaseInput> = {}): JudgePhaseInput {
 		return {
 			fermentName: "Test Ferment",
+			cwd: "/test",
 			phaseName: "Phase 1",
 			phaseGoal: "Build retry plumbing.",
 			phaseSummary: "Implemented retry logic with tests.",
@@ -633,6 +636,7 @@ describe("judgePhaseGradeViaSubagent", () => {
 	function makePhaseInput(overrides: Partial<JudgePhaseInput> = {}): JudgePhaseInput {
 		return {
 			fermentName: "Test Ferment",
+			cwd: "/test",
 			phaseName: "Phase 1",
 			phaseGoal: "Build retry plumbing.",
 			phaseSummary: "Implemented retry logic with tests.",
@@ -1084,6 +1088,7 @@ describe("judge renders intent charter", () => {
 		await judgePhaseGrade(
 			{
 				fermentName: "F",
+				cwd: "/test",
 				phaseName: "P1",
 				phaseGoal: "g",
 				charter: { intent: "Recreate the Tahoe desktop" },
@@ -1105,6 +1110,7 @@ describe("judge renders intent charter", () => {
 		await judgePhaseGradeViaSubagent(
 			{
 				fermentName: "F",
+				cwd: "/test",
 				phaseName: "P1",
 				phaseGoal: "g",
 				charter: { intent: "Recreate the Tahoe desktop", demoScript: "Boot; look" },
@@ -1179,7 +1185,7 @@ describe("judgeApiCall", () => {
 		}).modelRegistry
 		captureJudgeContext(model, registry, false, ctx)
 		completeMock.mockResolvedValue({ content: [{ type: "text", text: "grade evidence" }], stopReason: "stop" })
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		try {
 			expect(await judgeApiCall("system", "user")).toEqual({ ok: true, text: "grade evidence" })
 			expect(completeMock).toHaveBeenCalledOnce()
@@ -1276,7 +1282,7 @@ describe("recommendation contract (producible-evidence whitelist)", () => {
 			return ok('{"grade":"B","rationale":"x","recommendations":["y"]}')
 		})
 		await judgePhaseGrade(
-			{ fermentName: "F", phaseName: "P1", phaseGoal: "g", phaseSummary: "done", gateVerdicts: [] },
+			{ fermentName: "F", cwd: "/test", phaseName: "P1", phaseGoal: "g", phaseSummary: "done", gateVerdicts: [] },
 			apiCall,
 		)
 		expect(system).not.toBe("")
@@ -1301,7 +1307,7 @@ describe("recommendation contract (producible-evidence whitelist)", () => {
 			return { text: '{"grade":"A","rationale":"x"}', status: "completed" }
 		})
 		await judgePhaseGradeViaSubagent(
-			{ fermentName: "F", phaseName: "P1", phaseGoal: "g", phaseSummary: "done", gateVerdicts: [] },
+			{ fermentName: "F", cwd: "/test", phaseName: "P1", phaseGoal: "g", phaseSummary: "done", gateVerdicts: [] },
 			spawn,
 		)
 		expect(prompt).not.toBe("")

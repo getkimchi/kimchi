@@ -609,12 +609,12 @@ export class FermentEventStore {
 
 	// ─── Core CRUD (dual-write) ────────────────────────────────────────────────
 
-	create(name: string, description?: string): Ferment {
+	create(name: string, description: string | undefined, cwd: string): Ferment {
 		// storage.create allocates the UUID; we don't know it until after the call
 		// runs. So the lock for the genesis event covers only the emit, not the
 		// snapshot creation itself. That's safe because the snapshot path can't
 		// collide before the UUID is assigned.
-		const ferment = this.storage.create(name, description)
+		const ferment = this.storage.create(name, description, cwd)
 		return this.withLock(ferment.id, () => {
 			// `pre` for ferment_created is conceptually empty — we use the post to anchor
 			// the chain at a deterministic value (preStateHash := postStateHash for the

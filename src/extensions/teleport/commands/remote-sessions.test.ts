@@ -177,7 +177,7 @@ function workspaceNode(over: Partial<RemoteWorkspaceNode> = {}): RemoteWorkspace
 
 beforeEach(() => {
 	authMock.mockReset().mockResolvedValue(CREDS)
-	verifyApiKeyMock.mockReset().mockResolvedValue("org-1")
+	verifyApiKeyMock.mockReset().mockResolvedValue({ organizationId: "org-1", userId: "user-1" })
 	listWorkspacesMock.mockReset().mockResolvedValue([])
 	deleteWorkspaceMock.mockReset().mockResolvedValue(undefined)
 	getQuotaUsageMock.mockReset().mockResolvedValue(undefined)
@@ -628,9 +628,12 @@ describe("runRemoteSessions", () => {
 			ctx.apiKey,
 			expect.objectContaining({ endpoint: ctx.endpoint, orgId: "org-1" }),
 		)
-		// The cached orgId is also shared with the refresh loop's list call so
+		// The cached ids are also shared with the refresh loop's list call so
 		// listWorkspaces skips its own duplicate verifyKey round-trip.
-		expect(listWorkspacesMock).toHaveBeenCalledWith(ctx.apiKey, expect.objectContaining({ orgId: "org-1" }))
+		expect(listWorkspacesMock).toHaveBeenCalledWith(
+			ctx.apiKey,
+			expect.objectContaining({ orgId: "org-1", userId: "user-1" }),
+		)
 	})
 
 	it("still opens the picker when the quota fetch fails (summary omitted)", async () => {

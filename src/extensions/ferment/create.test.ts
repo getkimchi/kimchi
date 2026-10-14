@@ -22,9 +22,10 @@ describe("createFerment", () => {
 			goal: "Ship it",
 			hasUI: entry.hasUI,
 			isOneShot: entry.isOneShot,
+			cwd: "/session/cwd",
 		})
 
-		expect(create).toHaveBeenCalledWith("Test", "Ship it")
+		expect(create).toHaveBeenCalledWith("Test", "Ship it", "/session/cwd")
 		expect(setContinuationPolicy).toHaveBeenCalledWith(entry.expected)
 		expect(result).toBe(ferment)
 	})
@@ -47,6 +48,7 @@ describe("createFerment", () => {
 				goal: "Ship it",
 				hasUI: true,
 				isOneShot: false,
+				cwd: "/session/cwd",
 			}),
 		).toThrow(error)
 		expect(setContinuationPolicy).not.toHaveBeenCalled()

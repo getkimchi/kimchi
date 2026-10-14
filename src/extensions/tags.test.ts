@@ -19,6 +19,8 @@ import * as configTags from "../config/tags.js"
 import { isValidTag, parseTag } from "../config/tags.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../project-scope-trust.js"
 import tagsExtension, { getCurrentPhase, peekActiveTags, setCurrentPhase, TagManager } from "./tags.js"
+import { prepareBillingTag } from "./work-attribution/request-tags.js"
+import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
 
 const MOCK_HOME = join(tmpdir(), `kimchi-tags-mock-home-${process.pid}`)
 
@@ -535,6 +537,85 @@ function commandContext(sessionId: string) {
 		},
 	})
 }
+
+describe("room for the per-request billing tag", () => {
+	beforeEach(() => {
+		rmSync(MOCK_HOME, { recursive: true, force: true })
+		mkdirSync(MOCK_HOME, { recursive: true })
+		vi.stubEnv("KIMCHI_TAGS", "")
+		clearSessionEntriesStore()
+	})
+
+	afterEach(() => {
+		rmSync(MOCK_HOME, { recursive: true, force: true })
+		vi.unstubAllEnvs()
+	})
+
+	const configured = (count: number) => Array.from({ length: count }, (_, index) => `team${index}:value`)
+	function notifyingContext(sessionId: string, messages: { message: string; type?: string }[]) {
+		return createContext({
+			hasUI: false,
+			sessionManager: makeSessionManager(sessionId),
+			ui: {
+				theme: {
+					fg: (_color: string, text: string) => text,
+					bold: (text: string) => text,
+				} as unknown as ExtensionUIContext["theme"],
+				notify: ((message: string, type?: string) => {
+					messages.push({ message, type })
+				}) as unknown as ExtensionUIContext["notify"],
+			},
+		})
+	}
+
+	it.each([7, 8])("leaves room for the billing tag in a Kimchi request only up to seven tags (%i)", async (count) => {
+		const sessionId = `billing-room-${count}`
+		const pi = makePi()
+		tagsExtension(pi)
+		await pi.runCommand("tags", `add ${configured(count).join(" ")}`, notifyingContext(sessionId, []))
+		setCurrentPhase(sessionId, "build")
+		const payload: Record<string, unknown> = { messages: [] }
+		const request = createContext({
+			model: { provider: "kimchi-dev", id: "glm-5.3" },
+			sessionManager: makeSessionManager(sessionId),
+		})
+		await pi.fire("before_provider_request", { type: "before_provider_request", payload }, request)
+		expect(payload.tags).toEqual(["model:glm-5.3", "phase:build", ...configured(count)])
+		const result = prepareBillingTag(
+			new Headers(),
+			payload.tags as string[],
+			"11111111-1111-4111-8111-111111111111",
+			() => false,
+		)
+		expect(result.billingTagSkipped).toBe(count > 7 ? "tag-limit" : undefined)
+	})
+
+	it("warns when an added tag leaves no room for the billing tag", async () => {
+		const pi = makePi()
+		tagsExtension(pi)
+		const messages: { message: string; type?: string }[] = []
+		const ctx = notifyingContext("billing-warning", messages)
+		await pi.runCommand("tags", `add ${configured(7).join(" ")}`, ctx)
+		expect(messages[0]).toMatchObject({ type: "info" })
+		expect(messages[0].message).not.toContain("billing tag")
+		await pi.runCommand("tags", "add team7:value", ctx)
+		expect(messages[1]).toMatchObject({ type: "warning" })
+		expect(messages[1].message).toContain(
+			"With 8 tags plus the model and phase tags, Kimchi requests reach the gateway's 10-tag limit. They cannot carry a billing tag, so /work cannot price them. Keep at most 7 tags to see their costs.",
+		)
+	})
+
+	it("does not warn about the billing tag while Cost per PR is disabled", async () => {
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", MOCK_HOME)
+		writeFileSync(join(MOCK_HOME, "settings.json"), JSON.stringify({ resources: { [COST_PER_PR_RESOURCE_ID]: false } }))
+		const pi = makePi()
+		tagsExtension(pi)
+		const messages: { message: string; type?: string }[] = []
+		await pi.runCommand("tags", `add ${configured(8).join(" ")}`, notifyingContext("billing-disabled", messages))
+		expect(messages[0]).toMatchObject({ type: "info" })
+		expect(messages[0].message).not.toContain("billing tag")
+	})
+})
 
 describe("getCurrentPhase", () => {
 	beforeEach(() => {

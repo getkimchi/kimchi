@@ -162,7 +162,7 @@ export function createBashRenderers(
 }
 
 const renderBashOutput: BashResultRenderer = (result, options, theme, ctx) => {
-	upstreamBash ??= createBashToolDefinition(process.cwd())
+	upstreamBash ??= createBashToolDefinition(ctx.cwd)
 	const details = result.details as (BashToolDetails & { display?: ProcessDisplaySnapshot }) | undefined
 	const display = details?.display
 	ctx.state.bashDisplay = display

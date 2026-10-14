@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { getRawErrorMessage } from "./extensions/error-preservation.js"
 import {
 	classifyLLMGatewayError,
 	LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE,
@@ -66,8 +67,22 @@ export function createInfrastructureErrorTracker(): InfrastructureErrorTracker {
 
 				let error: LLMGatewayError | undefined
 				if (message.stopReason === "error" && typeof message.errorMessage === "string") {
-					error = classifyLLMGatewayError(message.errorMessage)
-					recordClassificationAudit(pi, message.errorMessage, error)
+					// An explicit user abort ends the turn with stopReason "error" and
+					// a stock AbortError text — not a provider failure, so no audit.
+					// The cancel signal (not the text) identifies the abort; keyed
+					// this way it covers every abort wording variant and never
+					// swallows a genuine network error with the same stock message.
+					if (!ctx.signal?.aborted) {
+						// Classify the preserved raw text: the interactive-error-surface
+						// extension may mutate errorMessage to the "Retrying…" display
+						// placeholder, which classifies as nothing and would silently
+						// drop terminal post-retry failures. Registration order happens
+						// to shield this today, but the guard must not depend on it.
+						const rawMessage = getRawErrorMessage(message)
+						if (typeof rawMessage !== "string") return
+						error = classifyLLMGatewayError(rawMessage)
+						recordClassificationAudit(pi, rawMessage, error)
+					}
 				}
 
 				if (error?.isInfrastructure) {

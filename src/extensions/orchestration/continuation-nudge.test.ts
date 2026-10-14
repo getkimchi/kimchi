@@ -9,6 +9,7 @@ import {
 	DONE_SIGNAL,
 	EmptyTurnNudge,
 	isAwaitingUserAnswer,
+	isBareDoneSignal,
 	type OrchestratorMessages,
 	SECOND_NUDGE_TEXT,
 	stripStaleNudges,
@@ -324,6 +325,48 @@ describe("ContinuationNudge session-level tool tracking", () => {
 		guard.resetForNewUserInput()
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
 	})
+
+	it("never nudges a bare done token, even when bookkeeping was lost", () => {
+		// Lost-state defence in depth: a compliant bare <done> must never be
+		// re-nudged even if pending state was cleared while the response was
+		// in flight (e.g. by an attempt-level cleanup on a retried provider
+		// error — the exact failure in the retry-unaware bug).
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const bareDone = makeAssistant([{ type: "text", text: "<done>" }])
+		expect(guard.evaluateTurn(bareDone)).toBe(false)
+		expect(guard.isNudgeResponsePending()).toBe(false)
+		expect(guard.isBudgetExhausted()).toBe(false)
+	})
+
+	it("never nudges a bare done token with surrounding whitespace", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const bareDone = makeAssistant([{ type: "text", text: "  <done>\n" }])
+		expect(guard.evaluateTurn(bareDone)).toBe(false)
+		expect(guard.isNudgeResponsePending()).toBe(false)
+	})
+
+	it("still nudges prose containing the done token", () => {
+		// Not a bare acknowledgement — the model appended prose, so the
+		// existing drift handling applies unchanged.
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const prose = makeAssistant([{ type: "text", text: "Done. <done>" }])
+		expect(guard.evaluateTurn(prose)).toBe(true)
+	})
+
+	it("does not treat a done token alongside a tool call as an acknowledgement", () => {
+		// The tool-call guard is retained: a tool-bearing message is never a
+		// bare acknowledgement, and tool-bearing turns are never nudged.
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const withTool = makeAssistant([
+			{ type: "text", text: "<done>" },
+			{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "a.ts" } },
+		])
+		expect(guard.evaluateTurn(withTool)).toBe(false)
+	})
 })
 
 describe("ContinuationNudge.isDoneSignalReceived", () => {
@@ -426,6 +469,81 @@ describe("ContinuationNudge nudge-response-pending state", () => {
 		expect(guard.isNudgeResponsePending()).toBe(true)
 		guard.recordToolCall() // model obeyed the nudge
 		expect(guard.isNudgeResponsePending()).toBe(false)
+	})
+})
+
+describe("isBareDoneSignal", () => {
+	it("recognizes a bare done token with surrounding whitespace", () => {
+		expect(isBareDoneSignal(makeAssistant([{ type: "text", text: "<done>" }]))).toBe(true)
+		expect(isBareDoneSignal(makeAssistant([{ type: "text", text: "  <done>\n" }]))).toBe(true)
+	})
+
+	it("joins multiple text blocks before matching", () => {
+		expect(
+			isBareDoneSignal(
+				makeAssistant([
+					{ type: "text", text: "<do" },
+					{ type: "text", text: "ne>" },
+				]),
+			),
+		).toBe(true)
+	})
+
+	it("does not match prose containing the token", () => {
+		expect(isBareDoneSignal(makeAssistant([{ type: "text", text: "Stopped. <done>" }]))).toBe(false)
+		expect(isBareDoneSignal(makeAssistant([{ type: "text", text: "<done>." }]))).toBe(false)
+	})
+
+	it("does not match malformed or plain-word tokens", () => {
+		expect(isBareDoneSignal(makeAssistant([{ type: "text", text: "<Done>" }]))).toBe(false)
+		expect(isBareDoneSignal(makeAssistant([{ type: "text", text: "<DONE>" }]))).toBe(false)
+		expect(isBareDoneSignal(makeAssistant([{ type: "text", text: "done" }]))).toBe(false)
+	})
+})
+
+describe("ContinuationNudge.discardFailedResponseAttempt", () => {
+	it("discards the accumulated text while keeping the recovery armed", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		guard.evaluateTurn(textOnlyMessage)
+		guard.accumulateResponse("Partial answ")
+		expect(guard.isNudgeResponsePending()).toBe(true)
+
+		guard.discardFailedResponseAttempt()
+
+		// Pending survives for the retry; the failed attempt's partial text
+		// must not contaminate the retry's exact-match done check.
+		expect(guard.isNudgeResponsePending()).toBe(true)
+		expect(guard.isDoneSignalReceived()).toBe(false)
+
+		// The retry streams the token: still recognized as the done signal.
+		guard.accumulateResponse(DONE_SIGNAL)
+		expect(guard.isDoneSignalReceived()).toBe(true)
+	})
+
+	it("does not consume nudge budget: a post-error drift response can still be nudged", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		guard.evaluateTurn(textOnlyMessage) // nudge #1, pending armed
+
+		// Errored attempts come and go.
+		guard.discardFailedResponseAttempt()
+		guard.discardFailedResponseAttempt()
+		guard.discardFailedResponseAttempt()
+		expect(guard.isNudgeResponsePending()).toBe(true)
+
+		// The retry's response is drift text, not a done signal — it consumes
+		// the second (and final) nudge, proving errors consumed no budget.
+		guard.discardFailedResponseAttempt()
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.isBudgetExhausted()).toBe(true)
+	})
+
+	it("is safe when nothing is pending", () => {
+		const guard = new ContinuationNudge()
+		guard.discardFailedResponseAttempt()
+		expect(guard.isNudgeResponsePending()).toBe(false)
+		expect(guard.isDoneSignalReceived()).toBe(false)
 	})
 })
 

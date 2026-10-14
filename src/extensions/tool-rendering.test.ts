@@ -1,9 +1,19 @@
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { initTheme, type Theme, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent"
 import { ProcessTerminal, Text, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui"
-import { beforeAll, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createToolRenderContext } from "./__mocks__/tool-render-context.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
+import {
+	createToolOutputStore,
+	makeMarker,
+	resetToolOutputStoreForTests,
+	setToolOutputStoreForTests,
+	type ToolOutputStore,
+} from "./tool-output-store.js"
 import toolRenderingExtension, {
 	createErrorTruncatingResultRenderer,
 	formatToolTimer,
@@ -18,6 +28,7 @@ import toolRenderingExtension, {
 	summarizeOpenAiToolCall,
 	type ToolRenderContext,
 	toolHeader,
+	withMarkerResolution,
 	wrapMarkedLine,
 } from "./tool-rendering.js"
 
@@ -312,6 +323,90 @@ describe("grep result rendering", () => {
 		})
 		expect(text).toContain("1 matches")
 		expect(text).not.toContain("no matches")
+	})
+})
+
+describe("registered workspace tools resolve against the session cwd", () => {
+	// The re-registered wrappers must forward the per-call ctx so relative paths
+	// resolve against the session cwd, not the harness process cwd.
+	let mockApi: ReturnType<typeof createExtensionApi>
+	let sessionCwd: string
+	beforeAll(() => {
+		mockApi = createExtensionApi()
+		toolRenderingExtension(mockApi.api)
+		sessionCwd = mkdtempSync(join(tmpdir(), "kimchi-tool-cwd-"))
+		writeFileSync(join(sessionCwd, "probe.txt"), "needle-in-session-cwd")
+	})
+	afterAll(() => {
+		rmSync(sessionCwd, { recursive: true, force: true })
+	})
+
+	function registeredDef(name: string) {
+		// biome-ignore lint/suspicious/noExplicitAny: registerTool is a vi mock in the shared double
+		const def = ((mockApi.api as any).registerTool as any).mock.calls
+			.map((call: unknown[]) => call[0])
+			.find((tool: { name?: string }) => tool?.name === name)
+		expect(def, `${name} tool definition registered`).toBeDefined()
+		// biome-ignore lint/suspicious/noExplicitAny: minimal definition shape under test
+		return def as { execute: (...args: any[]) => Promise<any> }
+	}
+
+	const execute = (name: string, params: unknown) =>
+		registeredDef(name).execute(`tc-${name}`, params, undefined, undefined, {
+			cwd: sessionCwd,
+			sessionManager: { getSessionId: () => "test-session", getSessionFile: () => null },
+			model: undefined,
+			thinkingLevel: undefined,
+		})
+	const resultText = (result: { content: Array<{ type: string; text?: string }> }) =>
+		result.content.find((block) => block.type === "text")?.text ?? ""
+
+	it("read uses the ExtensionContext cwd over the process cwd", async () => {
+		const result = await execute("read", { path: "probe.txt" })
+		expect(resultText(result)).toContain("needle-in-session-cwd")
+		expect(result.isError ?? false).toBe(false)
+	})
+
+	it("grep uses the ExtensionContext cwd over the process cwd", async () => {
+		const result = await execute("grep", { pattern: "needle-in-session-cwd" })
+		expect(resultText(result)).toContain("probe.txt")
+		expect(resultText(result)).not.toContain(GREP_NO_MATCHES_SENTINEL)
+	})
+
+	it("find uses the ExtensionContext cwd over the process cwd", async () => {
+		const result = await execute("find", { pattern: "probe.txt" })
+		expect(resultText(result)).toContain("probe.txt")
+	})
+
+	it("ls uses the ExtensionContext cwd over the process cwd", async () => {
+		const result = await execute("ls", {})
+		expect(resultText(result)).toContain("probe.txt")
+	})
+
+	it("bash runs in the ExtensionContext cwd", async () => {
+		const result = await execute("bash", { command: "pwd" })
+		// macOS temp dirs live under /private/...; compare realpaths.
+		expect(realpathSync(resultText(result).trim())).toBe(realpathSync(sessionCwd))
+	})
+
+	it("edit modifies the file under the ExtensionContext cwd", async () => {
+		const result = await execute("edit", {
+			path: "probe.txt",
+			edits: [{ oldText: "needle-in-session-cwd", newText: "edited-in-session-cwd" }],
+		})
+		expect(result.isError ?? false).toBe(false)
+		expect(readFileSync(join(sessionCwd, "probe.txt"), "utf8")).toBe("edited-in-session-cwd")
+	})
+
+	it("write creates the file under the ExtensionContext cwd and reports pre-existing files", async () => {
+		const overwrite = await execute("write", { path: "probe.txt", content: "rewritten" })
+		expect(readFileSync(join(sessionCwd, "probe.txt"), "utf8")).toBe("rewritten")
+		// The file existed before, so the result carries the edit-style diff, not "new file".
+		expect((overwrite.details as { _type?: string } | undefined)?._type).toBe("diff")
+
+		const created = await execute("write", { path: "created-by-write.txt", content: "hello" })
+		expect(readFileSync(join(sessionCwd, "created-by-write.txt"), "utf8")).toBe("hello")
+		expect((created.details as { _type?: string } | undefined)?._type).toBe("new")
 	})
 })
 
@@ -815,15 +910,23 @@ describe("validation error display truncation", () => {
 			expect(renderer).not.toBe(upstream)
 		})
 
-		it("does not wrap renderers for tools outside the truncating set", () => {
-			const upstream = () => new Text("upstream", 0, 0)
+		it("wraps renderers for tools outside the truncating set with the marker resolver only", () => {
+			const upstream = vi.fn((..._args: unknown[]) => new Text("upstream", 0, 0))
 			const renderer = resolveResultRenderer({
 				toolName: "bash",
 				builtInToolDefinition: undefined,
 				toolDefinition: { name: "bash", renderResult: upstream },
 			})
 
-			expect(renderer).toBe(upstream)
+			// Every renderer now goes through the marker-resolution wrapper (so
+			// externalized results never render raw markers) — but NOT the error
+			// truncator. Marker-free content delegates to upstream untouched, by
+			// reference.
+			expect(renderer).not.toBe(upstream)
+			const result = { content: [{ type: "text", text: "plain output" }] }
+			renderer(result, { expanded: false, isPartial: false }, plainTheme, makeErrorCtx())
+			expect(upstream).toHaveBeenCalledTimes(1)
+			expect(upstream.mock.calls[0]?.[0]).toBe(result)
 		})
 	})
 
@@ -835,5 +938,92 @@ describe("validation error display truncation", () => {
 		const second = renderer(errorResult(validationError), { expanded: false, isPartial: false }, plainTheme, errorCtx)
 
 		expect(second).toBe(first)
+	})
+})
+
+describe("tool-rendering marker resolution", () => {
+	let dir: string
+	let store: ToolOutputStore
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "tool-rendering-marker-"))
+		delete process.env.KIMCHI_TOOL_OUTPUT_STORE
+		store = createToolOutputStore(dir)
+		setToolOutputStoreForTests(store)
+	})
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true })
+		resetToolOutputStoreForTests()
+		delete process.env.KIMCHI_TOOL_OUTPUT_STORE
+	})
+
+	interface CaptureBlock {
+		type?: string
+		text?: string
+		[key: string]: unknown
+	}
+
+	/** Capture the result the wrapped renderer receives; render a stub component. */
+	function captureRenderer() {
+		const received: Array<{ content: CaptureBlock[]; details?: unknown }> = []
+		const renderer = (result: { content: CaptureBlock[]; details?: unknown }) => {
+			received.push(result)
+			return {} as never
+		}
+		return { received, renderer: renderer as never }
+	}
+
+	it("resolves an externalized tool result's marker to the mirrored full text", () => {
+		const text = "x".repeat(300_000)
+		const marker = makeMarker(store.record(text))
+		const { received, renderer } = captureRenderer()
+		const wrapped = withMarkerResolution(renderer)
+		const result = { content: [{ type: "text", text: marker }], details: undefined }
+		wrapped(result as never, { expanded: false, isPartial: false } as never, {} as never, {} as never)
+		expect(received[0].content).toEqual([{ type: "text", text }])
+		// The caller's result object is never mutated (transient shallow clone).
+		expect(String(result.content[0]?.text)).toBe(marker)
+	})
+
+	it("renders the mirror-gone caption instead of the raw marker when the mirror is unreadable", () => {
+		const marker = makeMarker(store.record("y".repeat(2_048)))
+		rmSync(store.stats().file, { force: true })
+		const { received, renderer } = captureRenderer()
+		const wrapped = withMarkerResolution(renderer)
+		wrapped(
+			{ content: [{ type: "text", text: marker }] } as never,
+			{ expanded: false, isPartial: false } as never,
+			{} as never,
+			{} as never,
+		)
+		expect(received[0].content).toEqual([
+			{ type: "text", text: "mirrored content unavailable (2048 bytes, source no longer readable)" },
+		])
+	})
+
+	it("passes non-marker content through untouched and by reference", () => {
+		const { received, renderer } = captureRenderer()
+		const wrapped = withMarkerResolution(renderer)
+		const imageBlock = { type: "image", mimeType: "image/png", data: "AAAA" }
+		const textBlock = { type: "text", text: "ordinary output" }
+		const result = { content: [textBlock, imageBlock] }
+		wrapped(result as never, { expanded: false, isPartial: false } as never, {} as never, {} as never)
+		expect(received[0]).toBe(result) // no clone when nothing resolved
+		expect(received[0].content[0]).toBe(textBlock)
+		expect(received[0].content[1]).toBe(imageBlock)
+	})
+
+	it("leaves mid-text markers untouched (exact-marker contract)", () => {
+		const marker = makeMarker(store.record("z".repeat(2_048)))
+		const { received, renderer } = captureRenderer()
+		const wrapped = withMarkerResolution(renderer)
+		const withMidText = `prefix ${marker} suffix`
+		wrapped(
+			{ content: [{ type: "text", text: withMidText }] } as never,
+			{ expanded: false, isPartial: false } as never,
+			{} as never,
+			{} as never,
+		)
+		expect(received[0].content).toEqual([{ type: "text", text: withMidText }])
 	})
 })

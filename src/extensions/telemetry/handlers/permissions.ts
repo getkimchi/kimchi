@@ -42,6 +42,7 @@ const DECISION_SOURCE: Record<PermissionDecisionSourceDetail, DecisionSource> = 
 	allow_remember_wildcard: "user_permanent",
 	deny: "user_reject",
 	deny_with_feedback: "user_reject",
+	denied_by_client: "user_reject",
 	abort: "user_abort",
 }
 

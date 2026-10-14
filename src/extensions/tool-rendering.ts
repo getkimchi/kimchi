@@ -16,13 +16,13 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import {
 	AssistantMessageComponent,
-	createBashTool,
-	createEditTool,
-	createFindTool,
-	createGrepTool,
-	createLsTool,
-	createReadTool,
-	createWriteTool,
+	createBashToolDefinition,
+	createEditToolDefinition,
+	createFindToolDefinition,
+	createGrepToolDefinition,
+	createLsToolDefinition,
+	createReadToolDefinition,
+	createWriteToolDefinition,
 	getMarkdownTheme,
 	ToolExecutionComponent,
 	UserMessageComponent,
@@ -45,6 +45,7 @@ import * as Diff from "diff"
 import type { BundledLanguage, BundledTheme } from "shiki"
 import type { TSchema } from "typebox"
 import { formatDuration } from "../extensions/format.js"
+import { resolveMarkerForDisplay } from "./display-budget.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
 import { TODO_TOOL_NAMES } from "./todos/tool.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
@@ -674,34 +675,42 @@ function patchToolExecutionRenderers(): void {
 
 	proto.getResultRenderer = function patchedGetResultRenderer() {
 		const toolName = typeof this?.toolName === "string" ? this.toolName : ""
+		let renderer: UpstreamResultRenderer | undefined
 		if (toolName === "bash_control" && typeof originalGetResultRenderer === "function") {
-			const renderer = originalGetResultRenderer.call(this)
-			if (renderer) return renderer
+			renderer = originalGetResultRenderer.call(this)
 		}
-		if (toolName === "apply_patch") {
-			return (
+		if (!renderer && toolName === "apply_patch") {
+			renderer = (
 				result: AgentToolResult<unknown>,
 				options: ToolRenderResultOptions,
 				theme: Theme,
 				ctx: ToolRenderContext,
 			) => renderApplyPatchResult({ content: result.content, details: result.details }, options.isPartial, theme, ctx)
 		}
-		if (shouldUseGenericToolRenderer(toolName)) {
-			return (
+		if (!renderer && shouldUseGenericToolRenderer(toolName)) {
+			renderer = (
 				result: AgentToolResult<unknown>,
 				options: ToolRenderResultOptions,
 				theme: Theme,
 				ctx: ToolRenderContext,
 			) => renderGenericToolResult(toolName, result, options, theme, ctx)
 		}
-		if (CORE_ERROR_TRUNCATING_TOOLS.has(toolName) && typeof originalGetResultRenderer === "function") {
+		if (!renderer && CORE_ERROR_TRUNCATING_TOOLS.has(toolName) && typeof originalGetResultRenderer === "function") {
 			// Only wrap when a renderer actually resolved: returning our wrapper for a
 			// tool with no renderer would make upstream render `addChild(undefined)`
 			// instead of its fallback text.
 			const upstreamResultRenderer = originalGetResultRenderer.call(this)
-			return upstreamResultRenderer ? createErrorTruncatingResultRenderer(toolName, upstreamResultRenderer) : undefined
+			renderer = upstreamResultRenderer
+				? createErrorTruncatingResultRenderer(toolName, upstreamResultRenderer)
+				: undefined
 		}
-		return typeof originalGetResultRenderer === "function" ? originalGetResultRenderer.call(this) : undefined
+		if (!renderer && typeof originalGetResultRenderer === "function") {
+			renderer = originalGetResultRenderer.call(this)
+		}
+		// Every renderer (upstream and ours) renders through this wrapper so
+		// externalized tool results never show their raw markers in the
+		// transcript — resolved from the mirror transiently, per render.
+		return renderer ? withMarkerResolution(renderer) : undefined
 	}
 
 	proto[TOOL_EXECUTION_PATCH_FLAG] = true
@@ -735,6 +744,31 @@ export function truncateValidationErrorForDisplay(
 }
 
 type UpstreamResultRenderer = NonNullable<ToolDefinition["renderResult"]>
+
+/**
+ * Wraps any result renderer so externalized tool results render their
+ * mirrored content instead of the raw `[kimchi-ext:tool]` marker. The
+ * resolution is a transient per-render read through the tool-output store
+ * (shallow clone — image blocks and the component's stored result are never
+ * touched), so the transcript stays marker-free without re-residenting the
+ * externalized text in long-lived UI state. Unreadable mirrors render the
+ * mirror-gone caption; non-marker text passes through untouched.
+ */
+export function withMarkerResolution(renderer: UpstreamResultRenderer): UpstreamResultRenderer {
+	return (result, options, theme, ctx) => {
+		if (!Array.isArray(result?.content)) return renderer(result, options, theme, ctx)
+		let changed = false
+		const content = result.content.map((block) => {
+			const text = (block as TextContent | undefined)?.text
+			if (typeof text !== "string") return block
+			const resolved = resolveMarkerForDisplay(text)
+			if (resolved === undefined) return block
+			changed = true
+			return { ...block, text: resolved }
+		})
+		return renderer(changed ? { ...result, content } : result, options, theme, ctx)
+	}
+}
 
 /**
  * Components rendered by the truncation wrapper. Ownership is tracked on the
@@ -4164,14 +4198,14 @@ export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd()
 	const sp = (path: string) => shortPath(cwd, path)
 
-	const readTool = createReadTool(cwd)
+	const readTool = createReadToolDefinition(cwd)
 	pi.registerTool({
 		name: "read",
 		label: "read",
 		description: readTool.description,
 		parameters: readTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return readTool.execute(toolCallId, params, signal, onUpdate)
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			return readTool.execute(toolCallId, params, signal, onUpdate, ctx)
 		},
 		renderCall(args, theme, ctx) {
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
@@ -4219,14 +4253,14 @@ export default function (pi: ExtensionAPI) {
 		},
 	})
 
-	const bashTool = createBashTool(cwd)
+	const bashTool = createBashToolDefinition(cwd)
 	pi.registerTool({
 		name: "bash",
 		label: "bash",
 		description: bashTool.description,
 		parameters: bashTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return bashTool.execute(toolCallId, params, signal, onUpdate)
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			return bashTool.execute(toolCallId, params, signal, onUpdate, ctx)
 		},
 		renderCall(args, theme, ctx) {
 			const command = args.command
@@ -4284,14 +4318,14 @@ export default function (pi: ExtensionAPI) {
 		},
 	})
 
-	const grepTool = createGrepTool(cwd)
+	const grepTool = createGrepToolDefinition(cwd)
 	pi.registerTool({
 		name: "grep",
 		label: "grep",
 		description: grepTool.description,
 		parameters: grepTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return grepTool.execute(toolCallId, params, signal, onUpdate)
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			return grepTool.execute(toolCallId, params, signal, onUpdate, ctx)
 		},
 		renderCall(args, theme, ctx) {
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
@@ -4332,14 +4366,14 @@ export default function (pi: ExtensionAPI) {
 		},
 	})
 
-	const findTool = createFindTool(cwd)
+	const findTool = createFindToolDefinition(cwd)
 	pi.registerTool({
 		name: "find",
 		label: "find",
 		description: findTool.description,
 		parameters: findTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return findTool.execute(toolCallId, params, signal, onUpdate)
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			return findTool.execute(toolCallId, params, signal, onUpdate, ctx)
 		},
 		renderCall(args, theme, ctx) {
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
@@ -4381,14 +4415,14 @@ export default function (pi: ExtensionAPI) {
 		},
 	})
 
-	const lsTool = createLsTool(cwd)
+	const lsTool = createLsToolDefinition(cwd)
 	pi.registerTool({
 		name: "ls",
 		label: "ls",
 		description: lsTool.description,
 		parameters: lsTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return lsTool.execute(toolCallId, params, signal, onUpdate)
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			return lsTool.execute(toolCallId, params, signal, onUpdate, ctx)
 		},
 		renderCall(args, theme, ctx) {
 			const summary = stableCallSummary(ctx, "_callSummary", () => sp(args.path ?? "."))
@@ -4431,16 +4465,17 @@ export default function (pi: ExtensionAPI) {
 		},
 	})
 
-	const writeTool = createWriteTool(cwd)
+	const writeTool = createWriteToolDefinition(cwd)
 	pi.registerTool({
 		name: "write",
 		label: "write",
 		description: writeTool.description,
 		parameters: writeTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, _ctx) {
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
-			const fullPath = fp ? resolve(cwd, fp) : ""
-			const existedBefore = !!fullPath && fileExistsForTool(cwd, fp)
+			const sessionCwd = ctx.cwd
+			const fullPath = fp ? resolve(sessionCwd, fp) : ""
+			const existedBefore = !!fullPath && fileExistsForTool(sessionCwd, fp)
 			WRITE_EXISTED_BEFORE.set(toolCallId, existedBefore)
 			let old: string | null = null
 			try {
@@ -4448,7 +4483,7 @@ export default function (pi: ExtensionAPI) {
 			} catch {
 				old = null
 			}
-			const result = await createTrackedWriteTool(_ctx, toolCallId).execute(toolCallId, params, signal, onUpdate)
+			const result = await createTrackedWriteTool(ctx, toolCallId).execute(toolCallId, params, signal, onUpdate)
 			const content = params.content ?? ""
 			if (old !== null && old !== content) {
 				const diff = parseDiff(old, content)
@@ -4562,17 +4597,17 @@ export default function (pi: ExtensionAPI) {
 		},
 	})
 
-	const editTool = createEditTool(cwd)
+	const editTool = createEditToolDefinition(cwd)
 	pi.registerTool({
 		name: "edit",
 		label: "edit",
 		description: editTool.description,
 		parameters: editTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, _ctx) {
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
-			const trackedTool = createTrackedEditTool(_ctx, toolCallId)
+			const trackedTool = createTrackedEditTool(ctx, toolCallId)
 			const operations = getEditOperations(params)
-			const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, cwd) : null
+			const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, ctx.cwd) : null
 			const result = await trackedTool.execute(toolCallId, params, signal, onUpdate)
 			if (operations.length === 0) return result
 			const { diffs, summary, totalLines, totalHunks } = summarizeEditOperations(operations)

@@ -38,7 +38,16 @@ export function createAcpPermissionPrompter(
 			})
 			const response = await requestWithAbort(conn.requestPermission({ sessionId, toolCall, options }), req.signal)
 
-			if (response === "aborted" || response.outcome.outcome === "cancelled") return { kind: "aborted" }
+			// A cancelled response means the CLIENT denied without a human
+			// choice — headless ACP hosts fail permission requests
+			// fail-safe. This must NOT report "aborted": the caller's
+			// re-evaluation loop treats aborted as "permission mode changed,
+			// retry under the new mode", so a deterministic denial would
+			// loop to its cap and surface the misleading "Permission mode
+			// changed too many times during prompt" error. Report a clean
+			// denial so the model gets one actionable rejection.
+			if (response === "aborted") return { kind: "aborted" }
+			if (response.outcome.outcome === "cancelled") return { kind: "denied-by-client" }
 
 			const selected = optionById.get(response.outcome.optionId)
 			if (!selected) return { kind: "deny" }

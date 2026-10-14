@@ -34,14 +34,15 @@ interface McpFixtureEventDetails {
 	sse_session_initialized: { sessionId: string }
 	sse_session_closed: { sessionId: string }
 	sse_message: { sessionId: string }
-	oauth_resource_metadata_requested: { path: string }
-	oauth_server_metadata_requested: Record<string, never>
-	oauth_client_registered: { redirectUris?: string[] }
+	oauth_resource_metadata_requested: { path: string; accept?: string }
+	oauth_server_metadata_requested: { accept?: string }
+	oauth_client_registered: { redirectUris?: string[]; accept?: string }
+	oauth_strict_accept_rejected: { path: string; accept?: string }
 	oauth_authorization_denied: { redirectUri: string }
 	oauth_authorized: { redirectUri: string; state: string; codeChallengeMethod: string }
 	oauth_token_issued: { grantType: string; expiresIn: number; pkceVerified?: boolean }
 	oauth_token_rejected: { grantType?: string }
-	oauth_browser_opened: Record<string, never>
+	oauth_browser_opened: { target: string }
 	oauth_browser_completed: {
 		status: number
 		hasKimchiBranding: boolean
@@ -155,6 +156,8 @@ export interface McpServerFixtureOptions {
 	toolPrefix?: McpSettings["toolPrefix"]
 	autoAuth?: boolean
 	oauthPreauthorized?: boolean
+	/** Spec-strict gateway mode: OAuth metadata/DCR endpoints 406 unless Accept advertises text/event-stream. */
+	strictAccept?: boolean
 	behavior?: McpFixtureBehavior
 }
 
@@ -391,6 +394,7 @@ export async function createMcpFixture(agentDir: string, options: McpFixtureOpti
 			...fixtureBehaviorEnv(options.behavior),
 			...(oauth ? { KIMCHI_MCP_FIXTURE_OAUTH: "1" } : {}),
 			...(oauth && options.oauthPreauthorized ? { KIMCHI_MCP_FIXTURE_OAUTH_PREAUTHORIZED: "1" } : {}),
+			...(oauth && options.strictAccept ? { KIMCHI_MCP_FIXTURE_STRICT_ACCEPT: "1" } : {}),
 			...(oauth && options.oauth?.grantType ? { KIMCHI_MCP_FIXTURE_OAUTH_GRANT_TYPE: options.oauth.grantType } : {}),
 			...(oauth && options.oauth?.clientId ? { KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_ID: options.oauth.clientId } : {}),
 			...(oauth && options.oauth?.clientSecret
@@ -571,18 +575,14 @@ if (!response.ok) throw new Error(\`MCP UI browser driver received HTTP \${respo
 	}
 }
 
-function createOAuthBrowserDriver(agentDir: string, eventPath: string): Record<string, string> {
-	const browserBinDir = resolve(agentDir, "mcp-oauth-browser")
-	const browserPath = resolve(browserBinDir, "open")
-	mkdirSync(browserBinDir, { recursive: true })
-	writeFileSync(
-		browserPath,
-		`#!/usr/bin/env node
-import { appendFileSync } from "node:fs"
-const eventPath = ${JSON.stringify(eventPath)}
-const target = process.argv.find((argument) => argument.startsWith("http://") || argument.startsWith("https://"))
-if (!target) throw new Error("OAuth browser driver did not receive an HTTP URL")
-appendFileSync(eventPath, JSON.stringify({ type: "oauth_browser_opened", at: new Date().toISOString(), pid: process.pid, scenario: "oauth" }) + "\\n")
+/**
+ * Browser driver script shared by the OAuth fixture and tests that override it.
+ * Both modes append an `oauth_browser_opened` event carrying the authorize URL;
+ * auto-complete mode additionally fetches the URL so the flow completes on its own.
+ */
+export function oauthBrowserDriverScript(eventPath: string, options: { autoComplete: boolean }): string {
+	const autoCompleteBody = options.autoComplete
+		? `
 const response = await fetch(target, { redirect: "follow" })
 const body = await Promise.race([
   response.text().catch(() => ""),
@@ -599,10 +599,22 @@ appendFileSync(eventPath, JSON.stringify({
   hasMcpSuccessCopy: body.includes('<title>MCP Authorization Successful</title>') && body.includes('You can close this window and return to Kimchi.'),
   hasGenericAdapterBadge: body.includes('class="badge ok"') || body.includes('class="badge bad"'),
 }) + "\\n")
-if (!response.ok) throw new Error(\`OAuth browser driver received HTTP \${response.status}\`)
-`,
-		"utf-8",
-	)
+if (!response.ok) throw new Error(\`OAuth browser driver received HTTP \${response.status}\`)`
+		: ""
+	return `#!/usr/bin/env node
+import { appendFileSync } from "node:fs"
+const eventPath = ${JSON.stringify(eventPath)}
+const target = process.argv.find((argument) => argument.startsWith("http://") || argument.startsWith("https://"))
+if (!target) throw new Error("OAuth browser driver did not receive an HTTP URL")
+appendFileSync(eventPath, JSON.stringify({ type: "oauth_browser_opened", at: new Date().toISOString(), pid: process.pid, scenario: "oauth", target }) + "\\n")${autoCompleteBody}
+`
+}
+
+function createOAuthBrowserDriver(agentDir: string, eventPath: string): Record<string, string> {
+	const browserBinDir = resolve(agentDir, "mcp-oauth-browser")
+	const browserPath = resolve(browserBinDir, "open")
+	mkdirSync(browserBinDir, { recursive: true })
+	writeFileSync(browserPath, oauthBrowserDriverScript(eventPath, { autoComplete: true }), "utf-8")
 	chmodSync(browserPath, 0o755)
 	return {
 		BROWSER: browserPath,

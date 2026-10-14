@@ -1,20 +1,29 @@
 import { execFile, execFileSync } from "node:child_process"
-import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs"
+import { createReadStream, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { debuglog, promisify } from "node:util"
+import { createInterface } from "node:readline"
+import { promisify } from "node:util"
 import {
 	type BashOperations,
 	createBashToolDefinition,
 	createLocalBashOperations,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
+import { isResourceEnabled } from "../../resources/store.js"
+import {
+	appendWorkRecord,
+	getToolRequest,
+	getWorkId,
+	pinWorkContext,
+	type WorkContext,
+	workLedgerPath,
+} from "../work-attribution.js"
+import { debugWorkAttribution } from "./diagnostics.js"
+import { observeToolFiles } from "./file-observations.js"
+import { COST_PER_PR_RESOURCE_ID } from "./resource.js"
+import { readWorkRows } from "./row-log.js"
 
-import { appendWorkRecord, getWorkId, pinWorkContext, type WorkContext, workLedgerPath } from "../work-attribution.js"
-
-const debug = debuglog("kimchi:work-attribution")
-
-const MAX_TRACE_BYTES = 8 * 1024 * 1024
 const GIT_LOOKUP_TIMEOUT_MS = 2000
 
 export interface ObservedCommit {
@@ -89,9 +98,9 @@ function instant(value: string): number {
 	return Date.parse(value) * 1000 + Number(/\.(\d{6})Z$/.exec(value)?.[1].slice(3) ?? 0)
 }
 
-function processes(trace: string): GitProcess[] {
+async function processes(trace: string): Promise<GitProcess[]> {
 	const byId = new Map<string, GitProcess>()
-	for (const line of trace.split("\n")) {
+	for await (const line of readTrace(trace)) {
 		if (!line) continue
 		const event = JSON.parse(line)
 		if (typeof event.sid !== "string" || typeof event.time !== "string") continue
@@ -124,7 +133,11 @@ function within(process: GitProcess, ancestor: GitProcess): boolean {
 
 /** Nested Git processes (hooks, sequencer commits) own the moment; unrelated concurrent ones make it ambiguous. */
 function ownerAt(time: string, running: GitProcess[]): GitProcess | undefined {
-	const candidates = running.filter((process) => localTimeInProcess(time, process) !== undefined)
+	// Housekeeping controllers never move HEAD. Keep their children: hooks can run real Git mutations.
+	const candidates = running.filter(
+		(process) =>
+			process.command !== "maintenance" && process.command !== "gc" && localTimeInProcess(time, process) !== undefined,
+	)
 	return candidates.find((process) => candidates.every((other) => within(process, other)))
 }
 
@@ -143,13 +156,17 @@ function headCommit(line: string, owner: GitProcess | undefined, replayed: strin
 }
 
 /** Ref transactions are attributable only when exactly one traced Git process owns their interval. */
-function collectCommits(trace: string, refs: string, stopped?: { worktree: string; sha: string }): ObservedCommit[] {
-	const running = processes(trace)
+async function collectCommits(
+	trace: string,
+	refs: string,
+	stopped?: { worktree: string; sha: string },
+): Promise<ObservedCommit[]> {
+	const running = await processes(trace)
 	const commits: ObservedCommit[] = []
 	const repositories = new Map<string, string>()
 	let pending: { sha: string; rewrittenFrom?: string; owner: GitProcess } | undefined
 	let replayed: { sha: string; owner: GitProcess } | undefined
-	for (const line of refs.split("\n")) {
+	for await (const line of readTrace(refs)) {
 		const time = /^(\d{2}:\d{2}:\d{2}\.\d{6})\s/.exec(line)?.[1]
 		if (!time) continue
 		if (/\btransaction \{$/.test(line)) pending = undefined
@@ -201,7 +218,7 @@ function collectCommits(trace: string, refs: string, stopped?: { worktree: strin
 							}).trim(),
 						)
 					} catch (error) {
-						debug("Could not resolve Git commit repository: %o", error)
+						debugWorkAttribution("Could not resolve Git commit repository:", error)
 						pending = undefined
 						continue
 					}
@@ -220,14 +237,18 @@ function collectCommits(trace: string, refs: string, stopped?: { worktree: strin
 	return commits
 }
 
-function readTrace(path: string): string {
+/** Large repositories produce large traces; retain process metadata, not the whole capture. */
+async function* readTrace(path: string): AsyncGenerator<string> {
+	const input = createReadStream(path, { encoding: "utf8" })
+	const lines = createInterface({ input, crlfDelay: Infinity })
 	try {
-		// ponytail: cap transient captures at 8 MiB; stream parsing if large Git commands need attribution.
-		if (statSync(path).size > MAX_TRACE_BYTES) throw new Error("Git attribution trace exceeds 8 MiB")
-		return readFileSync(path, "utf8")
+		yield* lines
 	} catch (error) {
-		if (error instanceof Error && "code" in error && error.code === "ENOENT") return ""
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return
 		throw error
+	} finally {
+		lines.close()
+		input.destroy()
 	}
 }
 
@@ -242,7 +263,7 @@ export function createCommitTrackingOperations(
 			try {
 				directory = mkdtempSync(join(tmpdir(), "kimchi-git-attribution-"))
 			} catch (error) {
-				debug("Could not initialize Git trace: %o", error)
+				debugWorkAttribution("Could not initialize Git trace:", error)
 				return local.exec(command, cwd, options)
 			}
 			const trace = join(directory, "events")
@@ -258,14 +279,14 @@ export function createCommitTrackingOperations(
 				)
 			} finally {
 				try {
-					for (const commit of collectCommits(readTrace(trace), readTrace(refs), stopped)) record(commit)
+					for (const commit of await collectCommits(trace, refs, stopped)) record(commit)
 				} catch (error) {
-					debug("Could not record Git commits: %o", error)
+					debugWorkAttribution("Could not record Git commits:", error)
 				} finally {
 					try {
 						rmSync(directory, { recursive: true, force: true })
 					} catch (error) {
-						debug("Could not remove Git trace: %o", error)
+						debugWorkAttribution("Could not remove Git trace:", error)
 					}
 				}
 			}
@@ -290,7 +311,9 @@ function recordedCommits(ctx: WorkContext, workId: string): Set<string> {
 		} catch {}
 	}
 	try {
-		for (const row of JSON.parse(readText(join(getAgentDir(), "work", workId, "work.json"))).commits) shas.add(row.sha)
+		// Only the commit rows: a long work's summary holds many more request rows.
+		for (const row of readWorkRows(getAgentDir(), workId, "commits") ?? [])
+			if (typeof row.sha === "string") shas.add(row.sha)
 	} catch {}
 	return shas
 }
@@ -301,16 +324,25 @@ export function createWorkCommitTrackingOperations(
 	toolCallId: string,
 	local: BashOperations = createLocalBashOperations(),
 ): BashOperations {
+	if (!isResourceEnabled(COST_PER_PR_RESOURCE_ID)) return local
 	const pinned = pinWorkContext(ctx)
 	try {
-		const workId = getWorkId(pinned)
+		const origin = getToolRequest(pinned, toolCallId)
+		const workId = origin?.workId ?? getWorkId(pinned)
+		const observed: BashOperations = {
+			exec: (command, cwd, options) =>
+				observeToolFiles(pinned, toolCallId, "bash", () => local.exec(command, cwd, options), {
+					workId,
+					requestId: origin?.requestId,
+				}),
+		}
 		return createCommitTrackingOperations((commit) => {
 			// Follow only copies of this work's own commits, not unrelated commits a rebase or pick replays.
 			if (commit.rewrittenFrom && !recordedCommits(pinned, workId).has(commit.rewrittenFrom)) return
-			appendWorkRecord(pinned, { type: "commit", ...commit, toolCallId }, workId)
-		}, local)
+			appendWorkRecord(pinned, { type: "commit", ...commit, toolCallId, requestId: origin?.requestId }, workId)
+		}, observed)
 	} catch (error) {
-		debug("Could not initialize Git attribution: %o", error)
+		debugWorkAttribution("Could not initialize Git attribution:", error)
 		return local
 	}
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { computeRetryDelayMs, fetchWithRetry } from "./http.js"
+import { boundedResponse, computeRetryDelayMs, fetchWithRetry } from "./http.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -312,5 +312,24 @@ describe("fetchWithRetry", () => {
 
 		expect(response.status).toBe(status)
 		expect(fetchImpl).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe("boundedResponse", () => {
+	it("keeps status and headers of a body within the limit", async () => {
+		const response = new Response("{}", { status: 202, headers: { "Retry-After": "5" } })
+		const bounded = await boundedResponse(response, 2, new AbortController().signal, "too large")
+		expect(bounded.status).toBe(202)
+		expect(bounded.headers.get("retry-after")).toBe("5")
+		expect(await bounded.text()).toBe("{}")
+	})
+	it("stops an oversized body and an aborted unfinished stream", async () => {
+		await expect(boundedResponse(new Response("abc"), 2, new AbortController().signal, "too large")).rejects.toThrow(
+			"too large",
+		)
+		const controller = new AbortController()
+		const reading = boundedResponse(new Response(new ReadableStream()), 2, controller.signal, "too large")
+		controller.abort(new Error("stopped"))
+		await expect(reading).rejects.toThrow("stopped")
 	})
 })

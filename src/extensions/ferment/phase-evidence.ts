@@ -39,7 +39,7 @@ export interface PhaseEvidence {
  * commit, or HEAD~N as a fallback). Returns a structured evidence object
  * suitable for embedding in a judge prompt.
  */
-export function gatherPhaseEvidence(sinceRef = "HEAD~10", cwd = process.cwd()): PhaseEvidence {
+export function gatherPhaseEvidence(sinceRef: string, cwd: string): PhaseEvidence {
 	try {
 		const stat = run(`git diff --stat ${sinceRef}`, cwd)
 		const untracked = gatherUntrackedFiles(cwd)
@@ -140,7 +140,7 @@ function diffUntrackedFile(cwd: string, filePath: string): string {
 }
 
 /** Capture git HEAD as a SHA. Best-effort; returns undefined on non-git or git failure. */
-export function captureGitHead(cwd: string = process.cwd()): string | undefined {
+export function captureGitHead(cwd: string): string | undefined {
 	try {
 		return run("git rev-parse HEAD", cwd).trim()
 	} catch {

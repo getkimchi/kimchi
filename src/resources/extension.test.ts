@@ -7,7 +7,9 @@ const createResourceManagerMock = vi.hoisted(() =>
 )
 const storeMocks = vi.hoisted(() => ({
 	isResourceEnabled: vi.fn(),
+	isResourceLocked: vi.fn(),
 	setResourceOverride: vi.fn(),
+	orgLockMessage: vi.fn(),
 }))
 
 vi.mock("./ui.js", () => ({ createResourceManager: createResourceManagerMock }))
@@ -21,6 +23,7 @@ describe("resourcesExtension", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 		storeMocks.isResourceEnabled.mockReturnValue(true)
+		storeMocks.isResourceLocked.mockReturnValue(false)
 	})
 
 	it.each([
@@ -39,6 +42,47 @@ describe("resourcesExtension", () => {
 			expect.any(Function),
 			kind,
 		)
+	})
+
+	describe("org-lock refusals", () => {
+		const LOCKED_WARNING = "tools.web_search is locked off by your organization; it cannot be enabled locally."
+
+		// mockReturnValue implementations survive clearAllMocks, so each test in
+		// this group re-pins the unlocked default; refusals override to locked.
+		beforeEach(() => {
+			storeMocks.isResourceLocked.mockReturnValue(false)
+		})
+
+		it.each([
+			"enable tools.web_search",
+			"disable tools.web_search",
+			"set tools.web_search on",
+		])("refuses '%s' on an org-locked resource with a warning and no write", async (args) => {
+			storeMocks.isResourceLocked.mockReturnValue(true)
+			storeMocks.orgLockMessage.mockImplementation(
+				(id: string) => `${id} is locked off by your organization; it cannot be enabled locally.`,
+			)
+			const { api, commands } = makeMockPi()
+			const ctx = makeUIContext()
+			resourcesExtension(api)
+
+			await commands.get("resources")?.handler(args, ctx)
+
+			expect(ctx.ui.notify).toHaveBeenCalledWith(LOCKED_WARNING, "warning")
+			// The refusal preempts the write: the store guard is never reached.
+			expect(storeMocks.setResourceOverride).not.toHaveBeenCalled()
+		})
+
+		it("still toggles resources the org policy does not lock", async () => {
+			const { api, commands } = makeMockPi()
+			const ctx = makeUIContext()
+			resourcesExtension(api)
+
+			await commands.get("resources")?.handler("enable tools.web_search", ctx)
+
+			expect(storeMocks.setResourceOverride).toHaveBeenCalledWith("tools.web_search", true)
+			expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("by your organization"), "warning")
+		})
 	})
 })
 
