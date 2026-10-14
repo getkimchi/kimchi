@@ -4,7 +4,8 @@ import { join } from "node:path"
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { isResourceEnabled } from "./store.js"
+import { resetOrgPolicyForTests, setOrgPolicyForTests } from "../org-policy.js"
+import { getResourceOverride, isResourceEnabled } from "./store.js"
 import { createResourceManager } from "./ui.js"
 
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
@@ -39,6 +40,7 @@ describe("ResourceManagerComponent", () => {
 	})
 
 	afterEach(() => {
+		resetOrgPolicyForTests()
 		process.chdir(oldCwd)
 		if (oldAgentDir === undefined) {
 			delete process.env.KIMCHI_CODING_AGENT_DIR
@@ -85,6 +87,28 @@ describe("ResourceManagerComponent", () => {
 		expect(isResourceEnabled("extensions.ferment-v2")).toBe(true)
 		const extensions = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, theme, vi.fn(), "extensions")
 		expect(extensions.render(160).join("\n")).not.toContain("extensions.ferment-v2")
+	})
+
+	it("org-locked resources render a lock marker and cannot be toggled", () => {
+		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+		} as unknown as Theme
+		const component = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, theme, vi.fn(), "tools")
+
+		const rendered = component.render(160).join("\n")
+		expect(rendered).toContain("🔒")
+		// The selected (locked) row explains why it cannot be toggled.
+		expect(rendered).toContain("Managed by organization policy (FORCE_OFF); local toggle disabled.")
+		expect(rendered).toContain("org-locked")
+
+		// Toggle attempt on the selected locked row: no values to cycle, so the
+		// write never happens and the effective state stays forced off.
+		component.handleInput(" ")
+		expect(isResourceEnabled("tools.web_search")).toBe(false)
+		expect(getResourceOverride("tools.web_search")).toBeUndefined()
 	})
 })
 

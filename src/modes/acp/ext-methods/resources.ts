@@ -15,7 +15,13 @@
 
 import { RequestError } from "@agentclientprotocol/sdk"
 import { getResourceDefinition, getResourceDefinitions } from "../../../resources/definitions.js"
-import { getResourceOverride, isResourceEnabled, setResourceOverride } from "../../../resources/store.js"
+import {
+	getResourceOverride,
+	getResourcePolicy,
+	isResourceEnabled,
+	isResourceLocked,
+	setResourceOverride,
+} from "../../../resources/store.js"
 
 /**
  * Config locations the handlers target. Only the harness settings override is
@@ -32,21 +38,30 @@ export type ResourceMethodPaths = {
  * Read-only snapshot of every known resource with its effective enabled
  * state, its default, and whether a persistent override exists — everything
  * an IDE needs to render a toggle list. The enabled value comes from the
- * store's full precedence (override → env → default), so it matches what the
- * running process actually consults.
+ * store's full precedence (org lock → override → env → org soft default →
+ * default), so it matches what the running process actually consults.
+ * `orgPolicy`/`locked` carry the organization's per-resource policy: FORCE_*
+ * values lock the toggle (clients should render it disabled); ON/OFF are
+ * soft defaults already reflected in `enabled`; the fields are absent when
+ * the org sets no policy for the resource.
  */
 export function handleListResources(paths: ResourceMethodPaths = {}): Record<string, unknown> {
-	const resources = getResourceDefinitions().map((resource) => ({
-		id: resource.id,
-		kind: resource.kind,
-		label: resource.label,
-		description: resource.description,
-		enabled: isResourceEnabled(resource.id, paths.settingsPath),
-		defaultEnabled: resource.defaultEnabled,
-		restartRequired: resource.restartRequired,
-		experimental: resource.experimental === true,
-		overridden: getResourceOverride(resource.id, paths.settingsPath) !== undefined,
-	}))
+	const resources = getResourceDefinitions().map((resource) => {
+		const orgPolicy = getResourcePolicy(resource.id)
+		return {
+			id: resource.id,
+			kind: resource.kind,
+			label: resource.label,
+			description: resource.description,
+			enabled: isResourceEnabled(resource.id, paths.settingsPath),
+			defaultEnabled: resource.defaultEnabled,
+			restartRequired: resource.restartRequired,
+			experimental: resource.experimental === true,
+			overridden: getResourceOverride(resource.id, paths.settingsPath) !== undefined,
+			orgPolicy,
+			locked: orgPolicy === "FORCE_ON" || orgPolicy === "FORCE_OFF",
+		}
+	})
 	return { resources }
 }
 
@@ -56,10 +71,14 @@ export function handleListResources(paths: ResourceMethodPaths = {}): Record<str
  * Persists a resource override (the same write the /resources command makes).
  * Returns `restartRequired` from the definition so the client can surface
  * the restart hint. Unknown-but-well-formed ids are rejected: an inert
- * override the /resources UI never shows is a silent failure mode.
+ * override the /resources UI never shows is a silent failure mode. Org-locked
+ * resources (FORCE_ON/FORCE_OFF) are rejected too — the request is well-formed
+ * but the organization policy does not permit the change.
  *
  * @throws RequestError.invalidParams when `resourceId`/`enabled` are missing
  *   or mistyped, or the id names no known resource.
+ * @throws RequestError.invalidRequest when the resource is locked by the
+ *   organization policy (the error message names the resource and its policy).
  * @throws RequestError.internalError when the settings write fails
  *   (e.g. EACCES, ENOSPC), so the client can tell a persistence failure
  *   apart from a params rejection.
@@ -72,6 +91,12 @@ export function handleSetResourceEnabled(
 	// -32602, not be re-wrapped into the write-failure internalError below
 	// (the set-onboarding-flag precedent).
 	const { id, enabled } = resolveSetResourceParams(params)
+	if (isResourceLocked(id)) {
+		throw RequestError.invalidRequest(
+			undefined,
+			`resource ${id} is locked by organization policy (${getResourcePolicy(id)}); it cannot be changed locally`,
+		)
+	}
 	try {
 		setResourceOverride(id, enabled, paths.settingsPath)
 	} catch (error) {

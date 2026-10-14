@@ -15,16 +15,31 @@ export interface AllowedPermissionModes {
 
 /**
  * Organization policy for the Kimchi harness, resolved by the platform from
- * org → team → API key (finer scope wins, per field). Both fields are
+ * org → team → API key (finer scope wins, per field). All fields are
  * optional: an absent field means no restriction applies (all modes allowed,
- * user's choice on reporting).
+ * user's choice on reporting, resources keep their client-side defaults).
  */
 export interface OrgPolicy {
 	/** The permission modes users may run. */
 	allowedPermissionModes?: AllowedPermissionModes
 	/** Usage reporting (telemetry) control. */
 	usageReporting?: "USER_CHOICE" | "FORCE_ON" | "FORCE_OFF"
+	/**
+	 * Per-resource control (resource id → policy) from the platform's
+	 * kimchiResources map. FORCE_ON/FORCE_OFF lock the resource; ON/OFF are
+	 * soft defaults the user's local choice may override. Ids are free-form
+	 * per the API contract: entries for resources this harness does not know
+	 * are kept here but treated as inert by the resources store.
+	 */
+	resources?: Record<string, ResourcePolicy>
 }
+
+/**
+ * Per-resource policy carried by the platform's KimchiResourcePolicy enum
+ * (proto names minus the KIMCHI_RESOURCE_POLICY_ prefix). UNSPECIFIED means
+ * "no restriction" and is dropped at parse time, never surfaced to callers.
+ */
+export type ResourcePolicy = "ON" | "OFF" | "FORCE_ON" | "FORCE_OFF"
 
 export type OrgPolicyFetchOutcome =
 	| { kind: "policy"; orgId: string; policy: OrgPolicy | undefined }
@@ -37,12 +52,28 @@ export type OrgPolicyFetchOutcome =
 	| { kind: "unreachable" }
 
 const USAGE_REPORTING = new Set(["USER_CHOICE", "FORCE_ON", "FORCE_OFF"] as const)
+const RESOURCE_POLICIES = new Set(["ON", "OFF", "FORCE_ON", "FORCE_OFF"] as const)
+const KIMCHI_RESOURCE_POLICY_PREFIX = "KIMCHI_RESOURCE_POLICY_"
 
 function parseEnumName<T extends string>(raw: unknown, prefix: string, known: ReadonlySet<T>): T | undefined {
 	if (typeof raw !== "string" || !raw.startsWith(prefix)) return undefined
 	const value = raw.slice(prefix.length)
 	for (const candidate of known) {
 		if (candidate === value) return candidate
+	}
+	return undefined
+}
+
+/**
+ * Validate a bare resource policy name ("FORCE_OFF") — the representation
+ * OrgPolicy carries and the org-policy cache persists. Returns undefined for
+ * anything else; callers drop invalid entries rather than rejecting. The
+ * wire form carries the enum-name prefix, so strip that before calling.
+ */
+export function parseResourcePolicyName(raw: unknown): ResourcePolicy | undefined {
+	if (typeof raw !== "string") return undefined
+	for (const candidate of RESOURCE_POLICIES) {
+		if (candidate === raw) return candidate
 	}
 	return undefined
 }
@@ -67,14 +98,35 @@ function parseAllowedModes(raw: unknown): AllowedPermissionModes | undefined {
 }
 
 /**
+ * Parse the kimchiResources map (resource id → policy). Values are proto
+ * enum name strings ("KIMCHI_RESOURCE_POLICY_FORCE_OFF"); UNSPECIFIED,
+ * unknown names, and non-string values are dropped — a resource with no
+ * surviving entry simply has no restriction. Keys are free-form per the API
+ * contract, so ids this harness does not know are kept: a newer platform's
+ * entries survive parse and cache round trips, and the resources store
+ * treats unknown ids as inert.
+ */
+function parseResourcePolicies(raw: unknown): Record<string, ResourcePolicy> | undefined {
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined
+	const source = raw as Record<string, unknown>
+	const policies: Record<string, ResourcePolicy> = {}
+	for (const [id, value] of Object.entries(source)) {
+		if (typeof value !== "string" || !value.startsWith(KIMCHI_RESOURCE_POLICY_PREFIX)) continue
+		const policy = parseResourcePolicyName(value.slice(KIMCHI_RESOURCE_POLICY_PREFIX.length))
+		if (policy) policies[id] = policy
+	}
+	return Object.keys(policies).length > 0 ? policies : undefined
+}
+
+/**
  * Parse the harness policy from a settings:resolve response. The policy is
- * carried as two fields on the Settings message
- * (kimchi_allowed_permission_modes / kimchi_usage_reporting); the gateway
- * marshals proto3 JSON with camelCase names by default, and snake_case is
- * accepted too so self-hosted gateways configured with UseProtoNames keep
- * working. Unknown or malformed values are dropped rather than rejected, so
- * a policy set by a newer platform version degrades to "no restriction"
- * instead of failing.
+ * carried as three fields on the Settings message
+ * (kimchi_allowed_permission_modes / kimchi_usage_reporting /
+ * kimchi_resources); the gateway marshals proto3 JSON with camelCase names
+ * by default, and snake_case is accepted too so self-hosted gateways
+ * configured with UseProtoNames keep working. Unknown or malformed values
+ * are dropped rather than rejected, so a policy set by a newer platform
+ * version degrades to "no restriction" instead of failing.
  */
 export function parseOrgPolicy(settings: unknown): OrgPolicy | undefined {
 	if (settings === null || typeof settings !== "object" || Array.isArray(settings)) return undefined
@@ -91,7 +143,10 @@ export function parseOrgPolicy(settings: unknown): OrgPolicy | undefined {
 	)
 	if (reporting) policy.usageReporting = reporting
 
-	if (!policy.allowedPermissionModes && policy.usageReporting === undefined) return undefined
+	const resources = parseResourcePolicies(source.kimchiResources ?? source.kimchi_resources)
+	if (resources) policy.resources = resources
+
+	if (!policy.allowedPermissionModes && policy.usageReporting === undefined && !policy.resources) return undefined
 	return policy
 }
 

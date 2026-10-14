@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 
-import { fetchOrgPolicy, type OrgPolicy } from "./api/org-settings.js"
+import { fetchOrgPolicy, type OrgPolicy, parseResourcePolicyName } from "./api/org-settings.js"
 
 /**
  * Org-policy delivery (stale-while-revalidate):
@@ -79,8 +79,20 @@ function validateCachedPolicy(raw: unknown): OrgPolicy | undefined {
 	if (typeof source.usageReporting === "string" && KNOWN_USAGE_REPORTING.has(source.usageReporting)) {
 		policy.usageReporting = source.usageReporting as OrgPolicy["usageReporting"]
 	}
+	// Same rules as the wire parser: unknown policy values are dropped, unknown
+	// resource ids are kept (they are inert — the store only resolves ids it is
+	// asked about) so a newer platform's entries survive the cache round trip.
+	const resources = source.resources
+	if (resources !== null && typeof resources === "object" && !Array.isArray(resources)) {
+		const policies: NonNullable<OrgPolicy["resources"]> = {}
+		for (const [id, value] of Object.entries(resources)) {
+			const resourcePolicy = parseResourcePolicyName(value)
+			if (resourcePolicy) policies[id] = resourcePolicy
+		}
+		if (Object.keys(policies).length > 0) policy.resources = policies
+	}
 
-	if (!policy.allowedPermissionModes && policy.usageReporting === undefined) return undefined
+	if (!policy.allowedPermissionModes && policy.usageReporting === undefined && !policy.resources) return undefined
 	return policy
 }
 
@@ -217,4 +229,10 @@ export async function initOrgPolicy(
 export function resetOrgPolicyForTests(): void {
 	currentPolicy = undefined
 	currentOrgId = undefined
+}
+
+/** Seed the in-memory holder directly, skipping the fetch/cache path. Test-only. */
+export function setOrgPolicyForTests(policy: OrgPolicy | undefined): void {
+	currentPolicy = policy
+	currentOrgId = policy ? "test-org" : undefined
 }

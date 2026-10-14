@@ -8,6 +8,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { RequestError } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { resetOrgPolicyForTests, setOrgPolicyForTests } from "../../../org-policy.js"
 import { handleListResources, handleSetResourceEnabled } from "./resources.js"
 
 /** Runs fn, returns the thrown RequestError, or fails the test if nothing threw. */
@@ -34,6 +35,7 @@ describe("handleListResources", () => {
 	})
 
 	afterEach(() => {
+		resetOrgPolicyForTests()
 		rmSync(tempDir, { recursive: true, force: true })
 	})
 
@@ -69,6 +71,24 @@ describe("handleListResources", () => {
 		const memory = result.resources.find((r) => r.id === "extensions.memory")
 		expect(memory).toMatchObject({ enabled: true, overridden: true })
 	})
+
+	it("carries the org policy and lock state per resource", () => {
+		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF", "extensions.memory": "ON" } })
+
+		const result = handleListResources({ settingsPath }) as {
+			resources: Array<{ id: string; orgPolicy?: string; locked?: boolean; enabled: boolean }>
+		}
+
+		const webSearch = result.resources.find((r) => r.id === "tools.web_search")
+		expect(webSearch).toMatchObject({ orgPolicy: "FORCE_OFF", locked: true, enabled: false })
+		// A soft ON default is not a lock: the field is reported, the toggle is free.
+		const memory = result.resources.find((r) => r.id === "extensions.memory")
+		expect(memory).toMatchObject({ orgPolicy: "ON", locked: false, enabled: true })
+		// Unmentioned resources carry no policy fields.
+		const ferment = result.resources.find((r) => r.id === "extensions.ferment-v2")
+		expect(ferment?.orgPolicy).toBeUndefined()
+		expect(ferment?.locked).toBe(false)
+	})
 })
 
 describe("handleSetResourceEnabled", () => {
@@ -81,6 +101,7 @@ describe("handleSetResourceEnabled", () => {
 	})
 
 	afterEach(() => {
+		resetOrgPolicyForTests()
 		rmSync(tempDir, { recursive: true, force: true })
 	})
 
@@ -130,6 +151,19 @@ describe("handleSetResourceEnabled", () => {
 		expect(err.message).toContain("extensions.no-such-thing")
 		// Nothing was written for the unknown id — the settings file was never
 		// created.
+		expect(existsSync(settingsPath)).toBe(false)
+	})
+
+	it("rejects an org-locked resource with invalidRequest and writes nothing", () => {
+		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
+
+		const err = thrownRequestError(() =>
+			handleSetResourceEnabled({ settingsPath }, { resourceId: "tools.web_search", enabled: true }),
+		)
+
+		expect(err.code).toBe(-32600)
+		expect(err.message).toContain("tools.web_search")
+		expect(err.message).toContain("FORCE_OFF")
 		expect(existsSync(settingsPath)).toBe(false)
 	})
 

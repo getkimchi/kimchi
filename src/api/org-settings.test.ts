@@ -89,6 +89,64 @@ describe("parseOrgPolicy", () => {
 			usageReporting: "USER_CHOICE",
 		})
 	})
+
+	it("parses the resources map from the gateway's camelCase JSON", () => {
+		expect(
+			parseOrgPolicy({
+				kimchiResources: {
+					"tools.web_search": "KIMCHI_RESOURCE_POLICY_FORCE_OFF",
+					"extensions.ferment": "KIMCHI_RESOURCE_POLICY_ON",
+				},
+			}),
+		).toEqual({
+			resources: { "tools.web_search": "FORCE_OFF", "extensions.ferment": "ON" },
+		})
+	})
+
+	it("accepts the snake_case resources field (UseProtoNames gateways)", () => {
+		expect(parseOrgPolicy({ kimchi_resources: { "tools.web_fetch": "KIMCHI_RESOURCE_POLICY_FORCE_ON" } })).toEqual({
+			resources: { "tools.web_fetch": "FORCE_ON" },
+		})
+	})
+
+	it("drops UNSPECIFIED, unknown, and non-string resource values, keeping the rest", () => {
+		expect(
+			parseOrgPolicy({
+				kimchiResources: {
+					"tools.web_search": "KIMCHI_RESOURCE_POLICY_UNSPECIFIED",
+					"extensions.memory": "KIMCHI_RESOURCE_POLICY_NOPE",
+					"extensions.agents": 3,
+					"extensions.todos": "KIMCHI_RESOURCE_POLICY_OFF",
+					// Unknown ids are free-form per the API contract and survive as inert entries.
+					"future.resource": "KIMCHI_RESOURCE_POLICY_ON",
+				},
+			}),
+		).toEqual({
+			resources: { "extensions.todos": "OFF", "future.resource": "ON" },
+		})
+	})
+
+	it("omits the resources field when no entry survives", () => {
+		expect(parseOrgPolicy({ kimchiResources: {} })).toBeUndefined()
+		expect(
+			parseOrgPolicy({ kimchiResources: { "tools.web_search": "KIMCHI_RESOURCE_POLICY_UNSPECIFIED" } }),
+		).toBeUndefined()
+		expect(parseOrgPolicy({ kimchiResources: "nope" })).toBeUndefined()
+		expect(parseOrgPolicy({ kimchiResources: null })).toBeUndefined()
+		expect(parseOrgPolicy({ kimchiResources: ["KIMCHI_RESOURCE_POLICY_ON"] })).toBeUndefined()
+	})
+
+	it("keeps the resources map alongside the other policy fields", () => {
+		expect(
+			parseOrgPolicy({
+				kimchiUsageReporting: "KIMCHI_USAGE_REPORTING_FORCE_OFF",
+				kimchiResources: { "tools.web_search": "KIMCHI_RESOURCE_POLICY_OFF" },
+			}),
+		).toEqual({
+			usageReporting: "FORCE_OFF",
+			resources: { "tools.web_search": "OFF" },
+		})
+	})
 })
 
 describe("fetchOrgPolicy", () => {
@@ -113,6 +171,25 @@ describe("fetchOrgPolicy", () => {
 			kind: "policy",
 			orgId: "org-1",
 			policy: { allowedPermissionModes: { plan: false, default: false, auto: false, yolo: true } },
+		})
+	})
+
+	it("returns the resources map from the resolve response", async () => {
+		const fetchImpl = routeFetch(
+			{ organizationId: "org-1" },
+			{
+				settings: {
+					kimchiResources: {
+						"tools.web_fetch": "KIMCHI_RESOURCE_POLICY_FORCE_ON",
+						"extensions.memory": "KIMCHI_RESOURCE_POLICY_FORCE_OFF",
+					},
+				},
+			},
+		)
+		await expect(fetchOrgPolicy("key", { fetch: fetchImpl })).resolves.toEqual({
+			kind: "policy",
+			orgId: "org-1",
+			policy: { resources: { "tools.web_fetch": "FORCE_ON", "extensions.memory": "FORCE_OFF" } },
 		})
 	})
 

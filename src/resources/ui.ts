@@ -1,7 +1,7 @@
 import { getSettingsListTheme, type Theme } from "@earendil-works/pi-coding-agent"
 import { Key, matchesKey, type SettingItem, SettingsList, type TUI, truncateToWidth } from "@earendil-works/pi-tui"
 import { getResourceDefinitions, getResourcesByKind, RESOURCE_KINDS } from "./definitions.js"
-import { isResourceEnabled, setResourceOverride } from "./store.js"
+import { getResourcePolicy, isResourceEnabled, isResourceLocked, setResourceOverride } from "./store.js"
 import type { ResourceDefinition, ResourceKind } from "./types.js"
 
 const VALUE_ENABLED = "enabled"
@@ -99,12 +99,15 @@ export class ResourceManagerComponent {
 		const enabled = resources.filter((resource) => isResourceEnabled(resource.id)).length
 		const disabled = resources.length - enabled
 		const restarts = resources.filter((resource) => resource.restartRequired && isResourceEnabled(resource.id)).length
+		const locked = resources.filter((resource) => isResourceLocked(resource.id)).length
 		const enabledText = this.theme.fg("success", `${enabled} enabled`)
 		const disabledText =
 			disabled > 0 ? this.theme.fg("warning", `${disabled} disabled`) : this.theme.fg("dim", "0 disabled")
 		const restartText =
 			restarts > 0 ? this.theme.fg("muted", `${restarts} restart-gated`) : this.theme.fg("dim", "live")
-		return this.theme.fg("dim", "· ") + [enabledText, disabledText, restartText].join(this.theme.fg("dim", " · "))
+		const parts = [enabledText, disabledText, restartText]
+		if (locked > 0) parts.push(this.theme.fg("warning", `${locked} org-locked`))
+		return this.theme.fg("dim", "· ") + parts.join(this.theme.fg("dim", " · "))
 	}
 }
 
@@ -118,13 +121,19 @@ export function createResourceManager(
 }
 
 function resourceItems(tab: ResourceTab): SettingItem[] {
-	return resourcesForTab(tab).map((resource) => ({
-		id: resource.id,
-		label: resourceLabel(resource, tab),
-		description: resourceDescription(resource),
-		currentValue: isResourceEnabled(resource.id) ? VALUE_ENABLED : VALUE_DISABLED,
-		values: [VALUE_ENABLED, VALUE_DISABLED],
-	}))
+	return resourcesForTab(tab).map((resource) => {
+		const locked = isResourceLocked(resource.id)
+		return {
+			id: resource.id,
+			label: resourceLabel(resource, tab, locked),
+			description: resourceDescription(resource, locked),
+			currentValue: isResourceEnabled(resource.id) ? VALUE_ENABLED : VALUE_DISABLED,
+			// Org-locked rows carry no toggle values: SettingsList treats an
+			// item without `values` as inert on Enter/Space, so the locked state
+			// cannot be changed from the list.
+			values: locked ? undefined : [VALUE_ENABLED, VALUE_DISABLED],
+		}
+	})
 }
 
 function enabledCount(tab: ResourceTab): string {
@@ -183,15 +192,18 @@ function tabDescription(tab: ResourceTab): string {
 	}
 }
 
-function resourceLabel(resource: ResourceDefinition, tab: ResourceTab): string {
+function resourceLabel(resource: ResourceDefinition, tab: ResourceTab, locked = false): string {
 	const status = isResourceEnabled(resource.id) ? "●" : "○"
 	const restart = resource.restartRequired ? " ↻" : ""
-	return `${status} ${kindPrefix(resource.kind, tab)}${resource.label}${restart}`
+	const lock = locked ? " 🔒" : ""
+	return `${status} ${kindPrefix(resource.kind, tab)}${resource.label}${restart}${lock}`
 }
 
-function resourceDescription(resource: ResourceDefinition): string {
+function resourceDescription(resource: ResourceDefinition, locked = false): string {
 	const scope = resource.restartRequired ? "Applies after restart." : "Applies immediately."
-	return `${resource.id} — ${scope} ${resource.description}`
+	const orgPolicy = getResourcePolicy(resource.id)
+	const managed = locked && orgPolicy ? ` Managed by organization policy (${orgPolicy}); local toggle disabled.` : ""
+	return `${resource.id} — ${scope} ${resource.description}${managed}`
 }
 
 function setSelectedResource(list: SettingsList, items: SettingItem[], id: string | undefined): void {

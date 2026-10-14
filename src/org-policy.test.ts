@@ -20,7 +20,10 @@ function readCacheFile(path: string): Record<string, unknown> {
 	return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
 }
 
-vi.mock("./api/org-settings.js", () => ({
+vi.mock("./api/org-settings.js", async (importOriginal) => ({
+	// Keep the real module (parseOrgPolicy helpers) and only replace the fetch:
+	// cache validation must exercise the genuine parse logic, not a mock.
+	...(await importOriginal<typeof import("./api/org-settings.js")>()),
 	fetchOrgPolicy: vi.fn(),
 }))
 
@@ -182,6 +185,62 @@ describe("initOrgPolicy", () => {
 
 		expect(getOrgPolicy()).toEqual({ allowedPermissionModes: PLAN_ONLY })
 		expect(readCacheFile(cachePath).policy).toEqual({ allowedPermissionModes: PLAN_ONLY })
+	})
+
+	it("fetches, stores, and caches the resources map", async () => {
+		const cachePath = cachePathFor({})
+		const policy: OrgPolicy = { resources: { "tools.web_search": "FORCE_OFF", "future.resource": "ON" } }
+		resolveWithPolicy("org-1", policy)
+
+		await initOrgPolicy("key-1", { cachePath })
+
+		expect(getOrgPolicy()).toEqual(policy)
+		expect(readCacheFile(cachePath).policy).toEqual(policy)
+	})
+
+	it("drops corrupted cached resource values, keeping valid ones", async () => {
+		const cachePath = cachePathFor({})
+		const { createHash } = await import("node:crypto")
+		const fingerprint = createHash("sha256").update("key-1").digest("hex")
+		writeFileSync(
+			cachePath,
+			`${JSON.stringify({
+				keyFingerprint: fingerprint,
+				orgId: "org-1",
+				fetchedAt: 1,
+				policy: {
+					resources: {
+						"tools.web_search": "FORCE_OFF",
+						"extensions.memory": "WHATEVER",
+						"extensions.agents": true,
+					},
+				},
+			})}\n`,
+		)
+
+		// Cache hit: the holder comes from validateCachedPolicy, not the fetch.
+		await initOrgPolicy("key-1", { cachePath })
+
+		expect(getOrgPolicy()).toEqual({ resources: { "tools.web_search": "FORCE_OFF" } })
+	})
+
+	it("treats a cached policy with only invalid resources as absent", async () => {
+		const cachePath = cachePathFor({})
+		const { createHash } = await import("node:crypto")
+		const fingerprint = createHash("sha256").update("key-1").digest("hex")
+		writeFileSync(
+			cachePath,
+			`${JSON.stringify({
+				keyFingerprint: fingerprint,
+				orgId: "org-1",
+				fetchedAt: 1,
+				policy: { resources: { "tools.web_search": "NOPE" } },
+			})}\n`,
+		)
+
+		await initOrgPolicy("key-1", { cachePath })
+
+		expect(getOrgPolicy()).toBeUndefined()
 	})
 
 	it("clears the holder without an API key but keeps the cache file warm", async () => {
