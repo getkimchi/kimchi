@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Kimchi terminal replay</title>
+<style>/* PLAYER_CSS */</style>
+<style>
+  :root { color-scheme: dark; --accent: #8abeb7; --title: #00d7ff; --muted: #9999a5; --line: #383842; --page: #18181e; --card: #1e1e24; --text: #c4c4cf; }
+  * { box-sizing: border-box; }
+  body { display: flex; flex-direction: column; height: 100vh; margin: 0; background: var(--page); color: var(--text); font: 12px/18px ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace; }
+  .page-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-shrink: 0; padding: 12px 18px; background: var(--card); border-bottom: 1px solid var(--line); }
+  h1 { margin: 0; color: var(--title); font-size: 12px; font-weight: bold; }
+  .heading-actions { display: flex; align-items: center; gap: 16px; }
+  .raw-badge { color: #d6ba79; font-size: 10px; }
+  details { position: relative; }
+  summary { cursor: pointer; color: var(--muted); font-size: 11px; padding: 6px 0; }
+  summary:hover, details[open] summary { color: var(--accent); }
+  .details-body { position: absolute; z-index: 50; right: 0; top: 100%; width: min(360px, calc(100vw - 36px)); margin-top: 8px; padding: 16px; background: var(--card); border: 1px solid #505050; border-radius: 4px; color: var(--text); font-size: 11px; line-height: 1.6; }
+  .details-body p { margin: 0 0 12px; }
+  .details-body p:last-child { margin-bottom: 0; }
+  .details-body strong { color: #d6ba79; }
+  .stage { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+  .controls { display: flex; align-items: center; gap: 12px; flex-shrink: 0; padding: 10px 18px; border-bottom: 1px solid var(--line); }
+  .controls label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
+  .controls label:last-child { margin-left: auto; }
+  button, select { padding: 3px 8px; border: 1px solid #5f87ff; border-radius: 3px; background: var(--card); color: var(--text); font: inherit; font-size: 10px; line-height: 18px; cursor: pointer; }
+  select { max-width: 100%; }
+  button:hover:not(:disabled), select:hover { background: #282832; border-color: var(--title); }
+  button:focus-visible, select:focus-visible, summary:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button:disabled { opacity: .35; cursor: default; }
+  select:disabled { opacity: .55; cursor: progress; }
+  #download { white-space: nowrap; }
+  .workspace { display: grid; grid-template-columns: 400px minmax(0, 1fr); flex: 1; min-height: 0; }
+  .terminal-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  #player { display: grid; flex: 1; grid-template-rows: minmax(0, 1fr); padding: 18px; min-height: 240px; min-width: 0; }
+  #player > div { grid-area: 1 / 1; min-width: 0; min-height: 0; }
+  #playback-controls { display: flex; align-items: center; gap: 12px; padding: 10px 18px; border-top: 1px solid var(--line); }
+  #playback-toggle { min-width: 56px; }
+  #playback-seek { flex: 1; min-width: 0; accent-color: var(--accent); }
+  #playback-time { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+  #trace { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid #505050; background: var(--card); }
+  .trace-heading { display: flex; align-items: baseline; justify-content: space-between; padding: 13px 14px 10px; }
+  .trace-heading h2 { margin: 0; color: var(--accent); font-size: 12px; }
+  #trace-count { color: var(--muted); font-size: 10px; }
+  .trace-controls { display: flex; gap: 6px; padding: 0 14px 10px; }
+  .trace-controls button { flex: 1; padding: 2px 5px; }
+  #trace button:focus-visible { outline-offset: -2px; }
+  .trace-options { display: flex; align-items: center; gap: 7px; padding: 0 14px 12px; color: var(--muted); font-size: 10px; }
+  .trace-options input { accent-color: var(--accent); margin: 0; }
+  #trace-list { flex: 1; min-height: 70px; overflow: auto; margin: 0; padding: 0 6px 8px; list-style: none; border-bottom: 1px solid var(--line); }
+  .trace-step { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; width: 100%; height: 38px; border: 1px solid transparent; border-radius: 3px; background: transparent; color: var(--text); padding: 9px 8px; text-align: left; font-size: 11px; }
+  .trace-step time { color: var(--muted); font-size: 10px; }
+  .trace-step span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trace-step:hover:not(:disabled) { background: #282832; border-color: transparent; }
+  .trace-step[aria-current="true"] { background: #343541; border-color: #505050; color: var(--accent); }
+  .trace-step[data-error="true"] span::before { content: '● '; color: #cc6666; font-size: 9px; }
+  .trace-inspector { display: flex; flex-direction: column; flex: 1; min-height: 130px; padding: 14px; overflow: auto; }
+  #trace-title { margin: 0 0 7px; color: var(--title); font-size: 12px; }
+  #trace-state { margin: 0 0 12px; color: var(--muted); font-size: 10px; line-height: 1.6; white-space: pre-line; overflow-wrap: anywhere; }
+  .trace-inspector > * { flex-shrink: 0; }
+  .trace-inspector pre { margin: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 11px; line-height: 1.65; }
+  .trace-inspector details { border-top: 1px solid var(--line); padding: 3px 0; }
+  .trace-inspector details pre { padding: 7px 0 12px; }
+  .trace-inspector details p { margin: 7px 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
+  #trace-fields { display: grid; grid-template-columns: minmax(80px, .8fr) minmax(0, 1.2fr); gap: 7px 12px; margin: 8px 0 12px; font-size: 11px; line-height: 1.5; }
+  #trace-fields dt { color: var(--muted); }
+  #trace-fields dd { margin: 0; overflow-wrap: anywhere; }
+  #trace-extra-state { margin: 7px 0 13px; color: var(--muted); font-size: 10px; line-height: 1.6; }
+  #trace-extra-state:empty { display: none; }
+  .trace-empty { padding: 16px 8px; color: var(--muted); font-size: 11px; }
+  #coverage { display: flex; align-items: baseline; gap: 8px; flex-shrink: 0; margin: 0; padding: 7px 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
+  #coverage::before { content: ''; flex-shrink: 0; width: 5px; height: 5px; border-radius: 50%; background: #d6ba79; }
+  #coverage[data-status="complete"]::before { background: #b5bd68; }
+  #coverage[data-status$="limit"], #coverage[data-status="storage-error"] { color: #d6ba79; }
+  .page-footer { display: flex; flex-shrink: 0; justify-content: space-between; gap: 12px; padding: 7px 18px; color: var(--muted); font-size: 10px; background: var(--card); }
+  #recording-summary { font-variant-numeric: tabular-nums; }
+  .kimchi-terminal { display: flex; align-items: center; justify-content: center; overflow: hidden; width: 100%; height: 100%; border-radius: 3px; background: #101010; }
+  .kimchi-terminal > div { flex-shrink: 0; transform-origin: center; }
+  @media (max-width: 900px) {
+    .workspace { display: flex; flex-direction: column; overflow: auto; }
+    .terminal-pane { flex-shrink: 0; min-height: 300px; }
+    #trace { order: 1; flex-shrink: 0; height: 500px; border-right: 0; border-top: 1px solid var(--line); }
+    .controls { flex-wrap: wrap; }
+    .controls label:first-child { flex: 1 1 100%; }
+    .page-heading, .heading-actions { gap: 8px; }
+    .page-heading, .controls, #playback-controls { padding: 10px 12px; }
+    #player { padding: 12px; }
+    .page-footer { flex-wrap: wrap; gap: 0 12px; }
+  }
+</style>
+<header class="page-heading">
+  <div>
+    <h1>Session replay</h1>
+  </div>
+  <div class="heading-actions">
+    <span class="raw-badge">Unredacted</span>
+    <details>
+      <summary>Recording details</summary>
+      <div class="details-body">
+        <p><strong>Raw, unredacted output. Review before sharing.</strong> Includes visible drafts and cleared text. The conversation transcript is redacted separately.</p>
+        <p>Linked steps include prompt and response text, tool arguments and results. Their captured text is bounded and unredacted. Saved session details and request diagnostics are added from the separately redacted transcript when an exact match exists.</p>
+        <p>Long recordings continue in numbered parts. Only retained parts are included; older parts may have expired or been replaced.</p>
+        <p>A step links to the next completed terminal frame. Several steps can share a frame, and collapsed or offscreen content may not be visible.</p>
+        <p>Fonts, images and terminal-specific effects can differ from the original screen.</p>
+      </div>
+    </details>
+  </div>
+</header>
+<main class="stage">
+  <div class="controls">
+    <label>Recording part <select id="visit" aria-label="Recording part"></select></label>
+    <button id="download" type="button" title="Save this part as an offline HTML replay">Download part</button>
+    <label>Speed <select id="speed" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
+  </div>
+  <div class="workspace">
+    <aside id="trace" aria-label="Harness steps">
+      <div class="trace-heading"><h2>Harness steps</h2><span id="trace-count"></span></div>
+      <div class="trace-controls">
+        <button id="trace-prev" type="button" disabled>Previous step</button>
+        <button id="trace-next" type="button" disabled>Next step</button>
+        <button id="trace-error" type="button" title="Next captured error in this part" disabled>Next error</button>
+      </div>
+      <label class="trace-options"><input id="pause-errors" type="checkbox" checked>Pause on errors</label>
+      <ol id="trace-list" aria-label="Recorded steps"></ol>
+      <div class="trace-inspector">
+        <h3 id="trace-title">Select a step</h3>
+        <p id="trace-state" role="status">Playback follows the steps in this part.</p>
+        <details id="trace-metadata" hidden><summary>Session details</summary><dl id="trace-fields"></dl></details>
+        <details id="trace-saved" hidden><summary>Saved session content</summary><pre id="trace-content"></pre></details>
+        <details id="trace-diagnostics" hidden><summary id="trace-diagnostic-label">Request diagnostics</summary><p id="trace-diagnostic-note">Request timing ends at HTTP headers. Response streaming continues afterward.</p><pre id="trace-diagnostic-detail"></pre></details>
+        <p id="trace-extra-state"></p>
+        <pre id="trace-detail"></pre>
+      </div>
+    </aside>
+    <div class="terminal-pane">
+      <div id="player"></div>
+      <div id="playback-controls">
+        <button id="playback-toggle" type="button">Play</button>
+        <input id="playback-seek" type="range" aria-label="Seek recording" min="0" max="1" step="0.001" value="0">
+        <output id="playback-time"></output>
+      </div>
+    </div>
+  </div>
+  <p id="coverage" role="status"></p>
+</main>
+<footer class="page-footer"><span id="recording-summary"></span><span>Original pauses preserved</span></footer>
+<script id="recordings" type="application/json">/* RECORDINGS */</script>
+<script>/* PLAYER_JS */</script>
+<script>
+(() => {
+  const recordings = JSON.parse(document.getElementById('recordings').textContent);
+  const downloadDocument = document.documentElement.cloneNode(true);
+  downloadDocument.querySelector('#recordings').textContent = '[]';
+  const visit = document.getElementById('visit');
+  const speed = document.getElementById('speed');
+  const coverage = document.getElementById('coverage');
+  const container = document.getElementById('player');
+  const traceList = document.getElementById('trace-list');
+  const traceTitle = document.getElementById('trace-title');
+  const traceState = document.getElementById('trace-state');
+  const traceDetail = document.getElementById('trace-detail');
+  const traceMetadata = document.getElementById('trace-metadata');
+  const traceFields = document.getElementById('trace-fields');
+  const traceSaved = document.getElementById('trace-saved');
+  const traceContent = document.getElementById('trace-content');
+  const traceDiagnostics = document.getElementById('trace-diagnostics');
+  const traceDiagnosticLabel = document.getElementById('trace-diagnostic-label');
+  const traceDiagnosticNote = document.getElementById('trace-diagnostic-note');
+  const traceDiagnosticDetail = document.getElementById('trace-diagnostic-detail');
+  const traceExtraState = document.getElementById('trace-extra-state');
+  const previousStep = document.getElementById('trace-prev');
+  const nextStep = document.getElementById('trace-next');
+  const nextError = document.getElementById('trace-error');
+  const pauseErrors = document.getElementById('pause-errors');
+  const playbackToggle = document.getElementById('playback-toggle');
+  const playbackSeek = document.getElementById('playback-seek');
+  const playbackTime = document.getElementById('playback-time');
+  let player;
+  let playing = false;
+  let cachedVisit;
+  let cachedCast;
+  let cachedDetails;
+  let generation = 0;
+  let steps = [];
+  const stepButtons = new Map();
+  let visibleStart = -1, visibleEnd = -1;
+  let selected = -1;
+  let selecting = false;
+  let selectionRequest = 0;
+  let lastFollowTime = -1;
+  const clock = time => Math.floor(time / 60) + ':' + String(Math.floor(time % 60)).padStart(2, '0');
+  function readTrace(cast) {
+    const lines = cast.trimEnd().split('\n');
+    const header = JSON.parse(lines[0]);
+    if (![2, 3].includes(header.version)) throw new Error('Unsupported recording format');
+    const cols = header.term?.cols ?? header.width;
+    const rows = header.term?.rows ?? header.height;
+    if (!Number.isSafeInteger(cols) || !Number.isSafeInteger(rows) || cols < 1 || rows < 1) throw new Error('Invalid terminal size');
+    const trace = [];
+    const markers = [];
+    const events = [];
+    let time = 0;
+    for (let i = 1; i < lines.length; i++) {
+      if (!lines[i].trim()) continue;
+      const event = JSON.parse(lines[i]);
+      if (!Array.isArray(event) || !Number.isFinite(event[0]) || event[0] < 0 || typeof event[2] !== 'string') throw new Error('Invalid recording event');
+      const previousTime = time;
+      time = header.version === 3 ? time + event[0] * 1000 : event[0] * 1000;
+      if (!Number.isFinite(time) || time < previousTime) throw new Error('Invalid recording time');
+      if (event[1] !== 'm') {
+        if (event[1] === 'o' || event[1] === 'r') events.push([time / 1000, event[1], event[2]]);
+        continue;
+      }
+      let step;
+      try { step = JSON.parse(event[2]); } catch {}
+      if (step?.type === 'kimchi.trace' && step.version === 1 && Number.isSafeInteger(step.step)
+        && typeof step.title === 'string' && typeof step.detail === 'string' && typeof step.frame === 'boolean'
+        && ['prompt', 'response', 'tool_call', 'tool_result', 'error'].includes(step.kind)) {
+        const entry = { ...step, time: time / 1000, title: step.title.slice(0, 120), detail: step.detail.slice(0, 8192) };
+        trace.push(entry);
+        if (step.frame) {
+          events.push([time / 1000, 'm', markers.length]);
+          markers.push(entry);
+        }
+      } else {
+        events.push([time / 1000, 'm', markers.length]);
+        markers.push(undefined);
+      }
+    }
+    return { cols, rows, events, steps: trace, markers };
+  }
+  function errorAfter(index) {
+    return steps.findIndex((step, i) => i > index && step.frame && step.error === true);
+  }
+  function showSavedDetails(step) {
+    const recording = recordings[Number(visit.value)];
+    const detail = step && cachedDetails?.[String(step.step)];
+    traceFields.replaceChildren();
+    if (detail?.fields && typeof detail.fields === 'object') {
+      for (const [label, value] of Object.entries(detail.fields).slice(0, 40)) {
+        if (typeof value !== 'string') continue;
+        const name = document.createElement('dt');
+        const content = document.createElement('dd');
+        name.textContent = label.slice(0, 120);
+        content.textContent = value.slice(0, 8192);
+        traceFields.append(name, content);
+      }
+    }
+    traceMetadata.hidden = !traceFields.childElementCount;
+    traceContent.textContent = typeof detail?.content === 'string' ? detail.content.slice(0, 65536) : '';
+    traceDiagnosticDetail.textContent = typeof detail?.diagnostics === 'string' ? detail.diagnostics.slice(0, 65536) : '';
+    traceSaved.hidden = !traceContent.textContent;
+    traceDiagnostics.hidden = !traceDiagnosticDetail.textContent;
+    traceDiagnosticLabel.textContent = step?.kind === 'tool_result' ? 'Tool diagnostics' : 'Request diagnostics';
+    traceDiagnosticNote.hidden = step?.kind === 'tool_result';
+    traceExtraState.textContent = !step ? '' : detail
+      ? 'Saved session data. Final content can differ from the captured output below.' + (detail.truncated ? ' Some details were shortened.' : '')
+      : recording.traceDetailsOmitted > 0 ? 'Saved session details are unavailable for this step.' : 'No exact saved-session match is available for this step.';
+    if (step && recording.traceDetailsOmitted > 0) traceExtraState.textContent += ' Extra details for ' + recording.traceDetailsOmitted + ' steps were omitted at the part size limit.';
+  }
+  function selectRow(index) {
+    stepButtons.get(selected)?.removeAttribute('aria-current');
+    selected = index;
+    const step = steps[index];
+    previousStep.disabled = index <= 0;
+    nextStep.disabled = index >= steps.length - 1;
+    nextError.disabled = errorAfter(index) < 0;
+    traceTitle.textContent = step ? step.title : 'Select a step';
+    traceDetail.textContent = step ? step.detail : '';
+    showSavedDetails(step);
+    traceState.textContent = !step ? 'Playback follows the steps in this part.' : !step.frame
+      ? 'No completed frame captured for this step.'
+      : 'Frame at ' + clock(step.time) + (Number.isFinite(step.delayMs) ? ' · ' + Math.round(step.delayMs) + ' ms after the event' : '')
+        + (step.toolCallId ? '\nTool call: ' + step.toolCallId : '');
+    if (step) {
+      const top = index * 38;
+      if (top < traceList.scrollTop) traceList.scrollTop = top;
+      else if (top + 38 > traceList.scrollTop + traceList.clientHeight) traceList.scrollTop = top + 38 - traceList.clientHeight;
+      renderRows();
+      stepButtons.get(index)?.setAttribute('aria-current', 'true');
+    }
+  }
+  function renderRows() {
+    if (!steps.length) return;
+    const start = Math.max(0, Math.floor(traceList.scrollTop / 38) - 8);
+    const end = Math.min(steps.length, start + Math.ceil(traceList.clientHeight / 38) + 16);
+    if (start === visibleStart && end === visibleEnd) return;
+    visibleStart = start; visibleEnd = end;
+    const focused = [...stepButtons].find(([, button]) => button === document.activeElement)?.[0];
+    stepButtons.clear();
+    const rows = document.createDocumentFragment();
+    function spacer(height) {
+      const row = document.createElement('li');
+      row.style.height = height + 'px';
+      row.setAttribute('aria-hidden', 'true');
+      rows.append(row);
+    }
+    spacer(start * 38);
+    for (let i = start; i < end; i++) {
+      const step = steps[i];
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'trace-step';
+      button.dataset.step = String(step.step);
+      button.dataset.error = String(step.error === true);
+      const time = document.createElement('time');
+      time.textContent = step.frame ? clock(step.time) : '—';
+      const title = document.createElement('span');
+      title.textContent = step.title;
+      button.append(time, title);
+      button.addEventListener('click', () => jumpToStep(i));
+      if (i === selected) button.setAttribute('aria-current', 'true');
+      stepButtons.set(i, button);
+      const row = document.createElement('li');
+      row.setAttribute('aria-posinset', String(i + 1));
+      row.setAttribute('aria-setsize', String(steps.length));
+      row.append(button);
+      rows.append(row);
+    }
+    spacer((steps.length - end) * 38);
+    traceList.replaceChildren(rows);
+    if (focused !== undefined) stepButtons.get(focused)?.focus({ preventScroll: true });
+  }
+  function renderTrace(index) {
+    stepButtons.clear();
+    visibleStart = visibleEnd = -1;
+    traceList.replaceChildren();
+    traceList.scrollTop = 0;
+    traceMetadata.open = traceSaved.open = traceDiagnostics.open = false;
+    renderRows();
+    if (!steps.length) {
+      const empty = document.createElement('li');
+      empty.className = 'trace-empty';
+      empty.textContent = 'No linked steps in this recording.';
+      traceList.append(empty);
+    }
+    document.getElementById('trace-count').textContent = steps.length + ' in this part';
+    pauseErrors.disabled = !steps.some(step => step.frame && step.error === true);
+    selected = -1;
+    selectRow(index);
+  }
+  traceList.addEventListener('scroll', renderRows);
+  new ResizeObserver(renderRows).observe(traceList);
+  function followPlayback() {
+    if (!player || selecting || container.getAttribute('aria-busy') === 'true') return;
+    const time = player.getCurrentTime();
+    playbackSeek.value = time;
+    playbackTime.textContent = clock(time) + ' / ' + clock(Number(playbackSeek.max));
+    if (time === lastFollowTime) return;
+    lastFollowTime = time;
+    let low = 0, high = steps.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (steps[middle].time <= time) low = middle + 1;
+      else high = middle;
+    }
+    if (selected !== low - 1) selectRow(low - 1);
+  }
+  async function jumpToStep(index) {
+    const step = steps[index];
+    if (!step || !player || container.getAttribute('aria-busy') === 'true') return;
+    const current = generation;
+    const request = ++selectionRequest;
+    const target = player;
+    selecting = true;
+    playing = false;
+    try {
+      await target.pause();
+      if (current !== generation || request !== selectionRequest) return;
+      // Counter floating-point roundoff without crossing the recorder's 1 µs frame boundary.
+      if (step.frame) await target.seek(step.time + Number.EPSILON * Math.max(1, step.time));
+      if (current !== generation || request !== selectionRequest) return;
+      lastFollowTime = target.getCurrentTime();
+      container.dataset.inspecting = 'true';
+      selectRow(index);
+    } catch {
+      if (current === generation) traceState.textContent = 'This step could not be opened.';
+    } finally {
+      if (request === selectionRequest) selecting = false;
+    }
+  }
+  previousStep.addEventListener('click', () => jumpToStep(selected - 1));
+  nextStep.addEventListener('click', () => jumpToStep(selected + 1));
+  nextError.addEventListener('click', () => jumpToStep(errorAfter(selected)));
+  playbackToggle.addEventListener('click', () => playing ? player?.pause() : player?.play());
+  playbackSeek.addEventListener('input', () => player?.seek(Number(playbackSeek.value)));
+  setInterval(followPlayback, 100);
+  function downloadPart() {
+    const recording = recordings[Number(visit.value)];
+    const documentCopy = downloadDocument.cloneNode(true);
+    documentCopy.querySelector('#recordings').textContent = JSON.stringify([recording]).replaceAll('<', '\\u003c');
+    const url = URL.createObjectURL(new Blob(['<!doctype html>', documentCopy.outerHTML], { type: 'text/html;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'kimchi-replay-' + recording.metadata.startedAt.replace(/[^0-9T]/g, '-') + '-part-' + (recording.metadata.part || 1) + '.html';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  document.getElementById('download').addEventListener('click', downloadPart);
+  for (const [index, recording] of recordings.entries()) {
+    const option = document.createElement('option');
+    option.value = String(index);
+    option.textContent = 'Part ' + (recording.metadata.part || 1) + ' · ' + new Date(recording.metadata.startedAt).toLocaleString();
+    visit.appendChild(option);
+  }
+  visit.value = String(recordings.length - 1);
+  async function unpack(gzip) {
+    const bytes = Uint8Array.from(atob(gzip), c => c.charCodeAt(0));
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+    return new Response(stream).text();
+  }
+  async function mount() {
+    const current = ++generation;
+    const previous = player;
+    playing = false;
+    playbackToggle.textContent = playing ? 'Pause' : 'Play';
+    delete container.dataset.inspecting;
+    visit.disabled = speed.disabled = true;
+    container.setAttribute('aria-busy', 'true');
+    const host = document.createElement('div');
+    host.style.visibility = 'hidden';
+    let next;
+    const { metadata, gzip, traceDetails, traceDetailsGzip } = recordings[Number(visit.value)];
+    const reasons = {
+      'recording': 'Captured up to export or interruption; the final unsaved fraction may be missing.',
+      'complete': 'Recording completed.',
+      'continued': 'This part reached its limit. Recording continued in another part.',
+      'size-limit': 'Incomplete: recording stopped at the storage limit.',
+      'queue-limit': 'Incomplete: recording stopped because output exceeded the buffer limit.',
+      'storage-error': 'Incomplete: recording stopped after a storage error.'
+    };
+    coverage.textContent = reasons[metadata.status] || 'Partial recording.';
+    coverage.dataset.status = metadata.status;
+    document.getElementById('recording-summary').textContent = metadata.duration.toFixed(1) + ' seconds · ' + metadata.cols + '×' + metadata.rows + ' initially';
+    try {
+      await previous?.pause();
+      // Keep only the selected part decoded.
+      if (cachedVisit !== visit.value) {
+        cachedVisit = visit.value;
+        cachedDetails = undefined;
+        cachedCast = Promise.all([
+          unpack(gzip).then(readTrace),
+          traceDetailsGzip ? unpack(traceDetailsGzip).then(JSON.parse) : traceDetails
+        ]);
+      }
+      const [recording, details] = await cachedCast;
+      if (current !== generation) return;
+      cachedDetails = details;
+      steps = recording.steps;
+      playbackSeek.max = metadata.duration;
+      renderTrace(-1);
+      container.appendChild(host);
+      next = createTerminalReplay(recording, host, { duration: metadata.duration, speed: Number(speed.value) });
+      next.addEventListener('playing', () => { if (current === generation) { playing = true; playbackToggle.textContent = 'Pause'; } });
+      for (const event of ['pause', 'ended']) {
+        next.addEventListener(event, () => { if (current === generation) { playing = false; playbackToggle.textContent = 'Play'; } });
+      }
+      next.addEventListener('marker', ({ index }) => {
+        const step = recording.markers[index];
+        if (current === generation && step?.error === true && pauseErrors.checked && !selecting) {
+          jumpToStep(steps.indexOf(step));
+        }
+      });
+      next.addEventListener('error', () => {
+        if (current === generation) coverage.textContent = 'This recording could not be played. The conversation transcript is still available.';
+      });
+      await next.seek(0);
+      if (current !== generation) { next.dispose(); host.remove(); return; }
+      // Keep the previous part visible until the replacement is positioned.
+      previous?.dispose();
+      container.replaceChildren(host);
+      host.style.visibility = '';
+      player = next;
+      lastFollowTime = -1;
+    } catch {
+      next?.dispose();
+      host.remove();
+      if (current !== generation) return;
+      playing = false;
+      coverage.textContent = 'Replay could not load. Open this file in a recent browser. The conversation transcript is still available.';
+    } finally {
+      if (current === generation) {
+        visit.disabled = speed.disabled = false;
+        container.setAttribute('aria-busy', 'false');
+      }
+    }
+  }
+  window.addEventListener('message', event => {
+    if (event.source !== parent || event.data !== 'kimchi-replay-pause') return;
+    playing = false;
+    player?.pause();
+  });
+  visit.addEventListener('change', () => mount());
+  speed.addEventListener('change', () => player?.setSpeed(Number(speed.value)));
+  mount();
+})();
+</script>
+</html>

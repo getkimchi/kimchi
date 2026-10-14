@@ -922,6 +922,11 @@ describe("postProcessHtmlExport", () => {
 })
 
 describe("appendBeforeBody", () => {
+	it("inserts replacement-like JavaScript and text literally", () => {
+		const snippet = '<script>const text = "$& $$ $` $\'";</script>'
+		expect(appendBeforeBody("<body>before</body>after", snippet)).toBe(`<body>before${snippet}\n</body>after`)
+	})
+
 	it("inserts before </body> when present", () => {
 		const result = appendBeforeBody("<div></body>", "<footer></footer>")
 		expect(result).toBe("<div><footer></footer>\n</body>")

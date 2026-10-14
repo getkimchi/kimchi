@@ -85,6 +85,12 @@ describe("resource definitions", () => {
 		expect(resource?.restartRequired).toBeFalsy()
 	})
 
+	it("lists terminal recording as enabled by default with a live toggle", () => {
+		const resource = getResourceDefinitions().find((item) => item.id === "extensions.terminal-recording")
+		expect(resource).toMatchObject({ kind: "extensions", label: "Terminal recording", defaultEnabled: true })
+		expect(resource?.restartRequired).toBeFalsy()
+	})
+
 	it("registers Ferment V2 as an opt-in experimental feature", () => {
 		expect(getResourceDefinitions().find((resource) => resource.id === "extensions.ferment-v2")).toMatchObject({
 			kind: "extensions",

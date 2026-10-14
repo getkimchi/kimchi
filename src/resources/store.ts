@@ -2,9 +2,22 @@ import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { readJson, readJsonCached, writeJson } from "../config/json.js"
 import { getResourceDefinition } from "./definitions.js"
-import { type ListedResourceSetting, RESOURCE_KINDS, type ResourceId, type ResourceSettings } from "./types.js"
+import {
+	type ListedResourceSetting,
+	RESOURCE_KINDS,
+	type ResourceId,
+	type ResourceSettings,
+	TERMINAL_RECORDING_RESOURCE_ID,
+} from "./types.js"
 
 const SETTINGS_KEY = "resources"
+const recordingListeners = new Set<(path: string) => void>()
+
+/** Apply recording toggles in this TUI without reloading its session or watching settings files. */
+export function onTerminalRecordingChange(listener: (path: string) => void): () => void {
+	recordingListeners.add(listener)
+	return () => recordingListeners.delete(listener)
+}
 
 export function getResourceSettingsPath(): string {
 	return process.env.KIMCHI_CODING_AGENT_DIR
@@ -24,6 +37,9 @@ export function readResourceSettings(path = getResourceSettingsPath()): Resource
 	for (const [id, value] of Object.entries(raw)) {
 		if (isResourceId(id) && typeof value === "boolean") resources[id] = value
 	}
+	// Keep the existing setting authoritative; the resource is another way to edit it.
+	if (typeof settings.terminalRecording === "boolean")
+		resources[TERMINAL_RECORDING_RESOURCE_ID] = settings.terminalRecording
 	return { resources }
 }
 
@@ -70,7 +86,10 @@ export function setResourceOverride(id: string, enabled: boolean | undefined, pa
 	assertResourceId(id)
 	const settings = readJson(path)
 	const resources = asRecord(settings[SETTINGS_KEY])
-	if (enabled === undefined) delete resources[id]
+	if (id === TERMINAL_RECORDING_RESOURCE_ID) {
+		settings.terminalRecording = enabled
+		delete resources[id]
+	} else if (enabled === undefined) delete resources[id]
 	else resources[id] = enabled
 
 	if (Object.keys(resources).length > 0) {
@@ -79,6 +98,15 @@ export function setResourceOverride(id: string, enabled: boolean | undefined, pa
 		delete settings[SETTINGS_KEY]
 	}
 	writeJson(path, settings)
+	if (id === TERMINAL_RECORDING_RESOURCE_ID) {
+		for (const listener of recordingListeners) {
+			try {
+				listener(resolve(path))
+			} catch {
+				// Optional live capture must not turn a successful settings write into a failure.
+			}
+		}
+	}
 }
 
 export function resetResourceOverride(id: string, path = getResourceSettingsPath()): void {

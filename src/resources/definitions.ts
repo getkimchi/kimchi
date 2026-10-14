@@ -7,7 +7,7 @@ import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { discoverClaudeCodeHookResourceDefinitions } from "./claude-code-hook-resources.js"
 import { discoverKimchiHookResourceDefinitions } from "./kimchi-hook-resources.js"
 import { discoverPackageResources } from "./package-resources.js"
-import type { ResourceDefinition, ResourceKind } from "./types.js"
+import { type ResourceDefinition, type ResourceKind, TERMINAL_RECORDING_RESOURCE_ID } from "./types.js"
 
 export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 	{
@@ -48,6 +48,13 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		description: "Enable guided project workflow tools.",
 		defaultEnabled: true,
 		restartRequired: true,
+	},
+	{
+		id: TERMINAL_RECORDING_RESOURCE_ID,
+		kind: "extensions",
+		label: "Terminal recording",
+		description: "Automatically record terminal output for session replay. Disabling keeps existing recordings.",
+		defaultEnabled: true,
 	},
 	{
 		id: "extensions.todos",

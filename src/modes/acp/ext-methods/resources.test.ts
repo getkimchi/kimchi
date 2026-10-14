@@ -90,6 +90,25 @@ describe("handleSetResourceEnabled", () => {
 		expect(readSettings(settingsPath)).toEqual({ resources: { "extensions.memory": true } })
 	})
 
+	it("exposes the terminal recording preference and updates its existing setting without a restart", () => {
+		writeFileSync(settingsPath, JSON.stringify({ terminalRecording: false }))
+		const listed = handleListResources({ settingsPath }) as { resources: Array<{ id: string }> }
+		expect(listed.resources.find((resource) => resource.id === "extensions.terminal-recording")).toMatchObject({
+			enabled: false,
+			defaultEnabled: true,
+			overridden: true,
+			restartRequired: undefined,
+		})
+		expect(
+			handleSetResourceEnabled({ settingsPath }, { resourceId: "extensions.terminal-recording", enabled: true }),
+		).toEqual({
+			id: "extensions.terminal-recording",
+			enabled: true,
+			restartRequired: false,
+		})
+		expect(readSettings(settingsPath)).toEqual({ terminalRecording: true })
+	})
+
 	it("a second write with the same value is idempotent, a different value updates", () => {
 		handleSetResourceEnabled({ settingsPath }, { resourceId: "extensions.memory", enabled: true })
 		handleSetResourceEnabled({ settingsPath }, { resourceId: "extensions.memory", enabled: true })

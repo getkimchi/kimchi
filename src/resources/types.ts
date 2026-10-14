@@ -2,6 +2,7 @@ export const RESOURCE_KINDS = ["hooks", "extensions", "tools", "plugins"] as con
 
 export type ResourceKind = (typeof RESOURCE_KINDS)[number]
 export type ResourceId = `${ResourceKind}.${string}`
+export const TERMINAL_RECORDING_RESOURCE_ID = "extensions.terminal-recording"
 
 export interface ResourceDefinition {
 	id: string

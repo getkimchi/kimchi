@@ -8,7 +8,7 @@ import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./trace-id-
 /** Append a snippet before `</body>` if present, otherwise append to the end of the document. */
 export function appendBeforeBody(html: string, snippet: string): string {
 	if (html.includes("</body>")) {
-		return html.replace("</body>", `${snippet}\n</body>`)
+		return html.replace("</body>", () => `${snippet}\n</body>`)
 	}
 	return `${html}\n${snippet}\n`
 }
@@ -251,6 +251,7 @@ export function postProcessHtmlExport(filePath: string): void {
 					'    var switcher = clone.querySelector("#subagent-tab-switcher");',
 					"    if (switcher) switcher.remove();",
 					'    clone.querySelectorAll("[id^=subagent-data-]").forEach(function(el) { el.remove(); });',
+					'    clone.querySelectorAll("[id^=terminal-replay-]").forEach(function(el) { el.remove(); });',
 					"    // Remove injected renderer elements that should not appear in the iframe.",
 					"    // Unwrap #app from #sa-body before removing the wrapper.",
 					'    var saBody = clone.querySelector("#sa-body");',

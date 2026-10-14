@@ -12,7 +12,7 @@
 //                                   so the compiled binary resolves assets from the shared data directory
 
 import { execFileSync } from "node:child_process"
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { platform } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -29,6 +29,38 @@ const exportHtmlSkipSuffixes = [".d.ts", ".d.ts.map", ".js.map"]
 const exportHtmlSrc = join(piAgentDist, "core", "export-html")
 
 const isDev = process.argv.includes("--dev")
+const replaySource = join(projectRoot, "resources", "terminal-replay")
+const replayDest = isDev ? join(replaySource, "generated") : join(projectRoot, "dist/share/kimchi/terminal-replay")
+const xtermSource = join(projectRoot, "node_modules", "@xterm", "xterm")
+// Replace only generated replay assets so previous engines cannot remain in the distribution.
+rmSync(replayDest, { recursive: true, force: true })
+mkdirSync(replayDest, { recursive: true })
+// A self-contained worker also runs in compiled binaries without node_modules.
+execFileSync(
+	"bun",
+	[
+		"build",
+		join(projectRoot, "src/terminal-replay/checkpoint-worker.ts"),
+		"--target=node",
+		"--format=esm",
+		"--minify",
+		"--outfile",
+		join(replayDest, "checkpoint-worker.mjs"),
+	],
+	{ stdio: "inherit" },
+)
+cpSync(join(replaySource, "player.html"), join(replayDest, "player.html"))
+cpSync(join(xtermSource, "css/xterm.css"), join(replayDest, "player.css"))
+writeFileSync(
+	join(replayDest, "player.js"),
+	["xterm", "addon-unicode11"]
+		.map((name) => {
+			const source = join(projectRoot, "node_modules", "@xterm", name)
+			return `/*!\n${readFileSync(join(source, "LICENSE"), "utf8")}\n*/\n${readFileSync(join(source, `lib/${name}.js`), "utf8")}`
+		})
+		.concat(readFileSync(join(replaySource, "playback.js"), "utf8"))
+		.join("\n"),
+)
 const themeDest = isDev
 	? join(projectRoot, "src", "modes", "interactive", "theme")
 	: join(projectRoot, "dist", "share", "kimchi", "theme")

@@ -190,6 +190,12 @@ import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
+import { appendTerminalReplayExport } from "./terminal-replay/export.js"
+import {
+	installTerminalRecording,
+	recordingsForExport,
+	terminalRecordingExtension,
+} from "./terminal-replay/integration.js"
 import { installTuiConsoleLogging } from "./tui-console.js"
 import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
 import { installCompactionRecoveryPatch, installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
@@ -212,6 +218,7 @@ installPiNativeCompatibilityShim()
 // InteractiveMode instance is constructed.
 applyInteractiveErrorSurfacePatch()
 applyInteractiveModelSessionPatch()
+installTerminalRecording()
 
 function getSubcommand(args: string[]): string {
 	if (args.includes("--version") || args.includes("-v")) return "version"
@@ -313,6 +320,8 @@ const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
 	}
 	// Redaction is awaited and throws on failure — fail closed.
 	await redactHtmlExport(filePath)
+	const recordings = await recordingsForExport(this.sessionManager.getSessionId())
+	if (recordings) await appendTerminalReplayExport(filePath, recordings)
 	return filePath
 }
 const helpOrVersion = isHelpOrVersionArgs(originalArgs)
@@ -685,7 +694,7 @@ try {
 		})
 		// Terminal chrome extensions need an actual TUI, not just an extension UI protocol.
 		const terminalUiExtensionFactories = isTerminalUiMode(rawArgs, terminalIo)
-			? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
+			? [terminalRecordingExtension, terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
 			: []
 		// Config-derived skill paths resolve lazily: the trust prompt is answered
 		// inside pi's main() (after this point), and resource discovery re-runs
