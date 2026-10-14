@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
+import { spawn } from "node:child_process"
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent"
@@ -113,6 +114,65 @@ describe("syncPiAuth", () => {
 			ollama: { type: "api_key", key: "keep" },
 		})
 	})
+
+	it("writes auth.json atomically so a concurrent lock-free reader never observes a torn file", async () => {
+		// POSIX rename is the invariant under test; Windows replace semantics differ.
+		if (process.platform === "win32") return
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-atomic-"))
+		tempDirs.push(dir)
+		const authPath = join(dir, "auth.json")
+		const modelsPath = join(dir, "models.json")
+
+		// A large payload widens the write window so a pre-fix truncated write is
+		// observable; auth.json readers skip the write lock by design.
+		const providers: Record<string, unknown> = {}
+		for (let i = 0; i < 3000; i++) providers[`kimchi-dev/upstream-${i.toString().padStart(4, "0")}`] = {}
+		writeFileSync(modelsPath, JSON.stringify({ providers }))
+
+		await syncPiAuth(authPath, modelsPath, "seed-key")
+
+		const reader = spawn(
+			process.execPath,
+			[
+				"-e",
+				`const fs = require("node:fs");
+const path = process.argv[1];
+const deadline = Date.now() + Number(process.argv[2]);
+let reads = 0, bad = 0;
+while (Date.now() < deadline) {
+	let raw;
+	try { raw = fs.readFileSync(path, "utf-8"); } catch { bad++; continue; }
+	reads++;
+	try { JSON.parse(raw); } catch { bad++; }
+}
+process.stdout.write(JSON.stringify({ reads, bad }));`,
+				authPath,
+				"4000",
+			],
+			{ stdio: ["ignore", "pipe", "inherit"] },
+		)
+
+		for (let i = 0; i < 60; i++) {
+			await syncPiAuth(authPath, modelsPath, `key-${i}`)
+		}
+
+		const result = await new Promise<{ reads: number; bad: number }>((resolve, reject) => {
+			let out = ""
+			reader.stdout?.on("data", (chunk) => (out += chunk))
+			reader.on("exit", () => {
+				try {
+					resolve(JSON.parse(out.trim()))
+				} catch (error) {
+					reject(error)
+				}
+			})
+			reader.on("error", reject)
+		})
+
+		expect(result.reads).toBeGreaterThan(0)
+		expect(result.bad).toBe(0)
+		expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([])
+	}, 30_000)
 
 	it("does not rewrite auth storage when Kimchi credentials are unchanged", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-"))

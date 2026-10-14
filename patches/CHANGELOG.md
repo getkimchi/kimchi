@@ -55,31 +55,41 @@ pipe-cleanup hunk grew into the shared termination helper).
   pinned as expected failure with explicit teardown.
 - Removal: delete the hunk when the pinned Pi release ships equivalent bounded
   abort cleanup (upstream: pi#10929) and keep the Kimchi regression tests.
-## @earendil-works/pi-coding-agent@0.85.1 (mid-version, additive) — auth-storage reload unwrap
+## @earendil-works/pi-coding-agent@0.85.1 (mid-version, corrective) — auth-storage lock-free read shape + torn-read tolerance
+ (fix(auth): root-fix lock-free read shape and torn reads in auth-storage)
 
-Bug fix, not an upgrade: `readLatestData` in dist/core/auth-storage.js returned the
-raw resolution of `reloadFromStorageAsync` — the wrapper `{ result: data }`, not
-the credential map. The first credential read after an external auth.json revision
-change (another kimchi process's `syncPiAuth` write or chmod) resolved to the
-wrapper, so `read(provider)` returned undefined and request auth fell back to
-models.json's `$KIMCHI_API_KEY` — which kimchi strips from process.env at startup —
-failing with `API key auth failed for provider kimchi-dev: Failed to resolve API
-key ... from environment variable: KIMCHI_API_KEY`. Both `readLatestData` branches
-now unwrap `.result`.
+Corrects the "reload unwrap" fix this section previously described. Exposure
+bisection (concurrent `kimchi auth check` loops against chmod-churned auth.json:
+25/25 ok pre-#1405, 10/25 on master, 25/25 with the previous consumer-side
+unwrap) and source archaeology showed the wrapper leak was introduced by our own
+lock-free-reads hunk from #1405, not upstream: upstream `withLockAsync`
+destructures `{ result, next }` from the reload callback and returns the bare
+credential map, while the #1405 hunk copied the callback's `{ result }` shape
+and returned it directly from `reloadFromStorageAsync`. Upstream 0.84.1/0.85.1
+dists byte-verified: no bug. No upstream issue needs filing.
 
-- Reproduction was deterministic: a reader looping `AuthStorage.read` against a
-  file being chmod/rewrite-cycled by a concurrent process failed exactly one read
-  per cycle (the first after each revision change), with a valid file and valid
-  snapshot at the moment of failure.
-- Paired kimchi-side change: `syncPiAuth` no longer chmods auth.json
-  unconditionally on the no-op path (src/pi-auth.ts) — the ctime bump armed this
-  race in every other running session at every startup. Kimchi also relies on the
-  fix for its own reads after a login-gate `syncKimchiAuth`.
-- Regression tests: `src/pi-auth-storage.test.ts` (fails without this hunk), and a
-  ctime-preservation test in `src/pi-auth.test.ts` for the chmod skip.
-- Rebasers: if upstream fixed `readLatestData`'s unwrap in a later pin, drop this
-  hunk and the patch-header entry; keep the lock-free-reads hunk below it (separate
-  change, still unmerged).
+The hunk now returns the bare map (`return currentData`), the `readLatestData`
+unwrap hunks from the previous fix are dropped (upstream shape restored), and
+the branch gains torn-read tolerance: writers on both sides (kimchi
+`syncPiAuth`, upstream `modify()`) write truncate-then-writeFileSync, so a
+lock-free read can observe a partial file; on parse failure it keeps the last
+valid snapshot instead of surfacing `Unexpected EOF` at request time.
+
+- Regression tests: `src/pi-auth-storage.test.ts` (external rewrite + chmod-only
+  + torn-read cases) and the atomicity test in `src/pi-auth.test.ts`.
+- Rebasers: this entry replaces the earlier "reload unwrap" guidance. If
+  upstream ever adds lock-free reads, drop the whole lock-free hunk; there is no
+  upstream defect to track.
+
+- Reproduction was deterministic: a reader looping reads against a file being
+  chmod/rewrite-cycled by a concurrent process failed exactly one read per cycle
+  (the first after each revision change), with a valid file and valid snapshot
+  at the moment of failure. Exposure bisect across three builds pinned the
+  introduction to the #1405 hunk itself.
+- Kept from the previous fix: `syncPiAuth` no longer chmods auth.json
+  unconditionally on the no-op path (src/pi-auth.ts) — fewer arming events at
+  the source. Both prior seam tests still cover the behavior and pass against
+  the corrected root fix.
 
 ---
 

@@ -43,22 +43,22 @@
 #     loading the full history into memory. The session log remains the
 #     durable source of truth.
 #   - Auth-storage lock-free reads: reloadFromStorageAsync reads auth.json
-#     directly (atomic single writeFileSync) instead of taking the exclusive
-#     lock — avoids 30s startup stalls when an orphaned lock from a crashed
-#     process is held. Modify paths keep the lock.
-#   - Auth-storage reload unwrap (bug fix): readLatestData returned the raw
-#     resolution of reloadFromStorageAsync — which is the wrapper
-#     { result: data }, not the credential map. The first credential read
-#     after an external auth.json revision change (another kimchi process's
-#     syncPiAuth write or chmod) resolved to { result: ... }, so
-#     read(provider) returned undefined and request auth fell back to
-#     models.json's $KIMCHI_API_KEY — which kimchi strips from process.env
-#     at startup — producing "API key auth failed for provider kimchi-dev:
-#     Failed to resolve API key ... from environment variable: KIMCHI_API_KEY".
-#     Both readLatestData branches now unwrap .result before returning.
-#     Regression test: src/pi-auth-storage.test.ts (fails without this
-#     hunk). Removal: when upstream fixes readLatestData's unwrap — file an
-#     upstream issue for pi-coding-agent and link it here, then drop the hunk.
+#     directly instead of taking the exclusive lock — avoids 30s startup
+#     stalls when an orphaned lock from a crashed process is held. Modify
+#     paths keep the lock. The branch returns the bare credential map (the
+#     contract withLockAsync's destructure normally produces; returning the
+#     { result } callback shape instead made readLatestData hand the wrapper
+#     to read(), so the first credential read after an external ctime/revision
+#     change resolved to undefined and request auth fell back to models.json's
+#     $KIMCHI_API_KEY — "API key auth failed for provider kimchi-dev").
+#     Torn-read tolerance: kimchi's syncPiAuth and upstream modify() write
+#     truncate-then-writeFileSync (NOT atomic), so a lock-free read can
+#     observe a partial file; on parse failure the branch keeps the last
+#     valid snapshot instead of rejecting, and the next revision change
+#     re-arms a reload. Regression tests: src/pi-auth-storage.test.ts.
+#     Removal: when upstream provides lock-free reads with a bare-map return
+#     and torn-read tolerance (or when kimchi writes auth.json atomically and
+#     retakes the read lock).
   - Startup resource diagnostics: skill conflicts render as a single dim
 #     summary line ("[N skill conflicts] Some skills were found in multiple
 #     directories. <key> to see the full list.") that expands to the full
@@ -268,51 +268,42 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..904f51ac130b695e5c0f5180528fdc78
                      }
                      catch (error) {
 diff --git a/dist/core/auth-storage.js b/dist/core/auth-storage.js
-index 11f225b204b2d22ba2d37ecdda58e82fa23c6f0b..4ecefa9e45d04512968f5a8e49b5e0a4ae8cc85b 100644
+index 11f225b204b2d22ba2d37ecdda58e82fa23c6f0b..b9c2b1525d718e659ef0338884220002ffe9e55e 100644
 --- a/dist/core/auth-storage.js
 +++ b/dist/core/auth-storage.js
-@@ -320,6 +320,21 @@ export class AuthStorage {
+@@ -320,6 +320,32 @@ export class AuthStorage {
          }
      }
      async reloadFromStorageAsync(options) {
-+        // Reads do not need the exclusive lock when backed by a file:
-+        // auth.json is a small file written atomically via a single
-+        // writeFileSync. The lock is only needed for modify()'s
-+        // read-modify-write cycle. Reading directly avoids 30s lock-wait
-+        // stalls when another process (or an orphaned lock from a crashed
-+        // process) holds the write lock during startup.
++        // Reads do not need the exclusive lock when backed by a file.
++        // The lock is only needed for modify()'s read-modify-write cycle.
++        // Reading directly avoids 30s lock-wait stalls when another process
++        // (or an orphaned lock from a crashed process) holds the write lock
++        // during startup. Must return the bare credential map — the same
++        // shape withLockAsync produces after destructuring { result, next } —
++        // readLatestData has no wrapper handling.
 +        if (this.authPath) {
 +            options?.signal?.throwIfAborted();
-+            const content = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
-+            const currentData = this.parseStorageData(content);
++            let currentData;
++            try {
++                const content = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
++                currentData = this.parseStorageData(content);
++            }
++            catch {
++                // Torn read: writers (kimchi syncPiAuth, upstream modify) are
++                // truncate-then-writeFileSync, not atomic, so a lock-free read
++                // can observe a partial file. Keep the last valid snapshot;
++                // the next revision change re-arms a reload.
++                return this.readState.data;
++            }
 +            const revision = getFileRevision(this.authPath);
 +            this.updateReadState(currentData, revision);
-+            return { result: currentData };
++            return currentData;
 +        }
 +        // In-memory storage: no file, no lock contention — use the backend.
          return this.storage.withLockAsync(async (content) => {
              const currentData = this.parseStorageData(content);
              const revision = this.authPath ? getFileRevision(this.authPath) : undefined;
-@@ -330,7 +345,8 @@ export class AuthStorage {
-     async readLatestData(options) {
-         options?.signal?.throwIfAborted();
-         if (!this.authPath) {
--            const reload = this.reloadFromStorageAsync(options);
-+            // Kimchi patch: unwrap { result: data } so callers receive the credential map.
-+            const reload = this.reloadFromStorageAsync(options).then((outcome) => outcome.result);
-             return options?.signal ? reload : reload.catch(() => this.readState.data);
-         }
-         const revision = getFileRevision(this.authPath);
-@@ -355,7 +371,8 @@ export class AuthStorage {
-         const reload = this.readState.reload;
-         reload.readers++;
-         try {
--            const result = raceWithAbortSignal(reload.promise, options?.signal);
-+            // Kimchi patch: unwrap { result: data } so callers receive the credential map.
-+            const result = raceWithAbortSignal(reload.promise.then((outcome) => outcome.result), options?.signal);
-             return options?.signal ? await result : await result.catch(() => this.readState.data);
-         }
-         finally {
 diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
 index e8e8859ae1e64ef0cdc50b0d31e2927d1fa0082f..4a40f8a045287a5d3099b903fcd7dd13591282aa 100644
 --- a/dist/core/extensions/loader.js

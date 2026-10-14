@@ -1,5 +1,18 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
-import { dirname } from "node:path"
+import { randomUUID } from "node:crypto"
+import {
+	chmodSync,
+	closeSync,
+	existsSync,
+	fsyncSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs"
+import { basename, dirname, join } from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { lock } from "proper-lockfile"
 import { isKimchiProvider } from "./kimchi-provider.js"
@@ -13,6 +26,32 @@ import { isKimchiProvider } from "./kimchi-provider.js"
  */
 function ensureAuthFileMode(authPath: string): void {
 	if ((statSync(authPath).mode & 0o777) !== 0o600) chmodSync(authPath, 0o600)
+}
+
+/**
+ * Write `content` to `path` atomically (same-directory temp file, fsync,
+ * rename). auth.json readers are lock-free (see the Auth-storage lock-free
+ * reads patch) while writers only lock against other writers, so a plain
+ * truncate-then-writeFileSync lets a concurrent reader observe an empty or
+ * partial file — surfacing as request-time credential loss against models.json's
+ * $KIMCHI_API_KEY template. With rename, readers only ever see the old or the
+ * new complete document.
+ */
+function writeFileAtomicSync(path: string, content: string, mode: number): void {
+	const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`)
+	try {
+		const fd = openSync(tmp, "w", mode)
+		try {
+			writeFileSync(fd, content, { encoding: "utf-8" })
+			fsyncSync(fd)
+		} finally {
+			closeSync(fd)
+		}
+		renameSync(tmp, path)
+	} catch (error) {
+		rmSync(tmp, { force: true })
+		throw error
+	}
 }
 
 /** Remove all Kimchi credentials from auth.json — kimchi-dev, kimchi-dev/*, kimchi-experimental. */
@@ -50,7 +89,7 @@ export async function syncPiAuth(authPath: string, modelsPath: string, apiKey: s
 			return
 		}
 
-		writeFileSync(authPath, `${JSON.stringify(nextCredentials, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 })
+		writeFileAtomicSync(authPath, `${JSON.stringify(nextCredentials, null, 2)}\n`, 0o600)
 		ensureAuthFileMode(authPath)
 	} finally {
 		await release()
