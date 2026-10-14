@@ -83,6 +83,7 @@ import {
 	splitModelDisplayName,
 } from "../../extensions/auto-model/constants.js"
 import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/state.js"
+import { resolveMarkerForDisplay } from "../../extensions/display-budget.js"
 import { getRawErrorMessage } from "../../extensions/error-preservation.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
@@ -1677,7 +1678,7 @@ export class KimchiAcpAgent implements Agent {
 					piToolCallId: event.toolCallId,
 					status: event.isError ? "failed" : "completed",
 					content: [...toolResultContent(event.result), ...diffs],
-					rawOutput: event.result,
+					rawOutput: wireSafeToolResult(event.result),
 				})
 				this.send({ sessionId, update })
 				// Upstream ids can repeat after compaction or even within a turn. Retire
@@ -1895,7 +1896,7 @@ export class KimchiAcpAgent implements Agent {
 						piToolCallId: tc.id,
 						status,
 						content: result ? toolResultContent(result) : [],
-						rawOutput: result,
+						rawOutput: result ? wireSafeToolResult(result) : undefined,
 					}),
 				})
 				// The branch may contain multiple toolCalls with the same upstream id
@@ -3159,6 +3160,11 @@ function toolResultContent(result: unknown): ToolCallContent[] {
 	// (transformMcpContent) already flattens them to text, because pi-ai tool
 	// results only model text and image. Forwarding them as native ACP resource
 	// blocks would require widening pi-ai's tool-result content type upstream.
+	//
+	// Externalized tool results carry a compact `[kimchi-ext:tool]` marker in
+	// the in-memory message (memory-residency). Resolve it to the mirrored
+	// content (or the mirror-gone caption) so the client never receives raw
+	// marker text — the same seam withMarkerResolution applies on the TUI side.
 	const r = result as { content?: unknown } | null | undefined
 	const content = r?.content
 	if (!Array.isArray(content)) return []
@@ -3167,12 +3173,38 @@ function toolResultContent(result: unknown): ToolCallContent[] {
 		if (!block || typeof block !== "object") continue
 		const b = block as { type?: string; text?: string; data?: string; mimeType?: string }
 		if (b.type === "text" && typeof b.text === "string") {
-			out.push({ type: "content", content: { type: "text", text: b.text } })
+			const text = resolveMarkerForDisplay(b.text) ?? b.text
+			out.push({ type: "content", content: { type: "text", text } })
 		} else if (b.type === "image" && typeof b.data === "string" && typeof b.mimeType === "string") {
 			out.push({ type: "content", content: { type: "image", data: b.data, mimeType: b.mimeType } })
 		}
 	}
 	return out
+}
+
+/**
+ * A tool result safe to place on the wire as `rawOutput`: content text blocks
+ * with externalization markers resolved (see toolResultContent). The in-memory
+ * result itself is never mutated — clients keying UI off rawOutput
+ * (e.g. rawOutput.details) keep the same shape.
+ */
+function wireSafeToolResult(result: unknown): Record<string, unknown> | undefined {
+	if (!result || typeof result !== "object") return undefined
+	const r = result as { content?: unknown }
+	if (!Array.isArray(r.content)) return result as Record<string, unknown>
+	let changed = false
+	const content = r.content.map((block) => {
+		const b = block as { type?: string; text?: string } | null
+		if (b && typeof b === "object" && b.type === "text" && typeof b.text === "string") {
+			const text = resolveMarkerForDisplay(b.text)
+			if (text !== undefined) {
+				changed = true
+				return { ...b, text }
+			}
+		}
+		return block
+	})
+	return changed ? ({ ...r, content } as Record<string, unknown>) : (result as Record<string, unknown>)
 }
 
 export async function runAcpMode(options: RunAcpOptions): Promise<void> {

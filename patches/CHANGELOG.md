@@ -15,6 +15,24 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
 
 ---
 
+## @earendil-works/pi-coding-agent@0.85.1 (mid-version, additive) — bounded confinement registry, session-file publication
+
+Follow-up to the review-round-2 hardening above, from PR #1405 review round 3.
+
+- **CHANGED — the live-session-file registry is bounded (LRU, 16 files).** It only
+  ever grew, so old closed sessions stayed in the confinement window forever and a
+  spoofed log marker pointing at an old file passed the check. Registration goes
+  through `kimchiRegisterLiveSessionFile` (delete + re-add refreshes LRU position;
+  oldest evicted beyond 16). A process with more than 16 concurrent sessions would
+  see marker-resolution degrade (not corrupt) — acceptable, documented.
+- **NEW — `globalThis.__kimchiSessionFile`.** The most recently active session file
+  is published at each registration point; kimchi's tool-output-externalizer uses
+  it for the mirror-loss hydration fallback (read the session log by toolCallId
+  when the tmpdir mirror is gone). Best-effort: last-loaded session wins in
+  ulti-session processes.
+
+---
+
 ## @earendil-works/pi-coding-agent@0.85.1 (mid-version, additive) — marker confinement, rewrite offset refresh, mirror-free rewrite
 
 Not an upgrade: PR #1405 review round 2 hardened the session-manager patch while

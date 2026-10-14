@@ -14,10 +14,14 @@
  * Mid-run safety: growth checks run on message_end (between messages, never
  * mid-stream), are time-throttled (default 30 s minimum between growth
  * collections), and a full collection is ~10–40 ms on a ~100 MiB heap.
- * Cross-session safety: a module-level active-agent registry gates every
- * collection on "no other session has a request in flight", so one session's
- * checkpoint can never freeze another mid-request (Bun.gc is stop-the-world);
- * idle timers are unref()ed so they never hold the event loop open.
+ * Cross-session safety: a module-level registry tracks every session's
+ * agent (busy while a turn is in flight); EVERY collection — idle, zero-delay
+ * and growth — is gated on "no OTHER session is mid-request" because
+ * `Bun.gc(true)` is stop-the-world and would freeze it. Idle timers are
+ * unref()ed so they never hold the event loop open. A session that vanishes
+ * without firing agent_end (crash, aborted request) is evicted by a
+ * staleness watchdog after `staleBusyMs` (default 10 min) so one dead
+ * session cannot gate the whole process forever.
  *
  * Knobs:
  *   - KIMCHI_IDLE_GC=off           disable entirely (escape hatch)
@@ -45,12 +49,19 @@ export function gcMinIntervalMs(): number {
 }
 
 /**
- * Module-level registry of agents with an in-flight turn. Every scheduler
- * instance (one per session) registers its agent here; a collection only
- * runs when no OTHER agent is mid-request — `Bun.gc(true)` is stop-the-world
- * and would freeze any concurrent session (e.g. a second ACP session).
+ * Module-level registry of every session's agent (one entry per scheduler
+ * instance). `busy` tracks whether that session has a turn in flight; the
+ * token stays registered for the session's lifetime (removed on
+ * session_shutdown) so the gate can exclude SELF rather than count heads.
  */
-const activeAgents = new Set<symbol>()
+interface ActiveAgentEntry {
+	busy: boolean
+	busySince: number
+}
+const activeAgents = new Map<symbol, ActiveAgentEntry>()
+
+/** A busy entry older than this is treated as a vanished session and evicted. */
+export const GC_STALE_BUSY_MS = 10 * 60_000
 
 /** Test-only: clear the cross-session registry so tests cannot pollute each other. */
 export function resetAdaptiveGcForTests(): void {
@@ -72,6 +83,8 @@ export interface AdaptiveGcOptions {
 	rssOf?: () => number
 	/** Test hook: cross-session activity gate (defaults to the module registry). */
 	othersActive?: () => boolean
+	/** How long a foreign busy entry may block collections before it is treated as a vanished session (default 10 min). */
+	staleBusyMs?: number
 }
 
 /**
@@ -85,13 +98,37 @@ export function createAdaptiveGcScheduler(
 	onAgentEnd: () => void
 	onAgentStart: () => void
 	onMessageEnd: () => void
+	onSessionShutdown: () => void
 } {
 	const idleDelayMs = options.idleDelayMs ?? idleGcDelayMs()
 	const growthBytes = options.growthBytes ?? gcGrowthBytes()
 	const minIntervalMs = options.minIntervalMs ?? gcMinIntervalMs()
 	const rssOf = options.rssOf ?? (() => process.memoryUsage().rss)
-	const othersActive = options.othersActive ?? (() => activeAgents.size > 1)
+	const staleBusyMs = options.staleBusyMs ?? GC_STALE_BUSY_MS
 	const agentToken = Symbol("adaptive-gc-agent")
+
+	/**
+	 * True when any OTHER session has a request in flight. Stale entries
+	 * (busy for longer than `staleBusyMs`, i.e. a session that vanished
+	 * without firing agent_end) are evicted with a warning so one dead
+	 * session cannot gate the whole process forever.
+	 */
+	const othersActive =
+		options.othersActive ??
+		(() => {
+			const now = Date.now()
+			let blocked = false
+			for (const [token, entry] of activeAgents) {
+				if (token === agentToken || !entry.busy) continue
+				if (now - entry.busySince > staleBusyMs) {
+					console.warn("[adaptive-gc] evicting a stale busy session from the GC gate (no agent_end for a while)")
+					activeAgents.delete(token)
+					continue
+				}
+				blocked = true
+			}
+			return blocked
+		})
 
 	let idleTimer: ReturnType<typeof setTimeout> | undefined
 	let baseline = rssOf()
@@ -119,9 +156,17 @@ export function createAdaptiveGcScheduler(
 		idleTimer = setTimeout(() => {
 			idleTimer = undefined
 			// Another session is mid-request: a stop-the-world collection now
-			// would freeze it. Re-arm and try again after the idle delay.
+			// would freeze it. Re-arm and try again (never a 0 ms spin — at
+			// least 1 s between checks while blocked).
 			if (othersActive()) {
-				armIdle()
+				idleTimer = setTimeout(
+					() => {
+						idleTimer = undefined
+						if (!othersActive()) collect()
+					},
+					Math.max(idleDelayMs, 1_000),
+				)
+				idleTimer.unref?.()
 				return
 			}
 			collect()
@@ -132,16 +177,26 @@ export function createAdaptiveGcScheduler(
 
 	return {
 		onAgentEnd: () => {
-			activeAgents.delete(agentToken)
+			const entry = activeAgents.get(agentToken)
+			if (entry) entry.busy = false
 			clearIdle()
 			if (idleDelayMs === 0) {
-				collect()
+				// Zero-delay is a debug knob; when another session is mid-request
+				// skip (the next boundary retries) rather than spin.
+				if (!othersActive()) collect()
 				return
 			}
 			armIdle()
 		},
 		onAgentStart: () => {
-			activeAgents.add(agentToken)
+			const now = Date.now()
+			const entry = activeAgents.get(agentToken)
+			if (entry) {
+				entry.busy = true
+				entry.busySince = now
+			} else {
+				activeAgents.set(agentToken, { busy: true, busySince: now })
+			}
 			clearIdle()
 		},
 		onMessageEnd: () => {
@@ -157,6 +212,12 @@ export function createAdaptiveGcScheduler(
 				lastGrowthGcAt = now
 				collect()
 			}
+		},
+		onSessionShutdown: () => {
+			// The session is gone: drop its token and any pending timer. Unlike
+			// agent_end this must NOT re-arm a collection for a dead session.
+			activeAgents.delete(agentToken)
+			clearIdle()
 		},
 	}
 }
@@ -176,8 +237,9 @@ const adaptiveGcExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 	// message_end is between messages — a safe mid-run checkpoint for the
 	// growth path (never mid-stream).
 	pi.on("message_end", () => scheduler.onMessageEnd())
-	// Session shutdown: unregister the agent and drop any pending idle timer.
-	pi.on("session_shutdown", () => scheduler.onAgentEnd())
+	// Session shutdown: the session is gone — drop its registry token and any
+	// pending idle timer (no collection, no re-arm).
+	pi.on("session_shutdown", () => scheduler.onSessionShutdown())
 }
 
 export default adaptiveGcExtension

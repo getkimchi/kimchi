@@ -194,14 +194,90 @@ describe("adaptive-gc", () => {
 			const a = createAdaptiveGcScheduler(gatherA, { growthBytes: 50, minIntervalMs: 0, rssOf: () => rss })
 			const b = createAdaptiveGcScheduler(gatherB, { growthBytes: 50, minIntervalMs: 0, rssOf: () => rss })
 			a.onAgentStart()
-			b.onAgentStart() // both sessions mid-turn → registry size 2
+			b.onAgentStart() // both sessions mid-turn
 			rss = 200 // crosses the threshold
 			a.onMessageEnd() // A is between messages, but B is mid-request: gated
 			expect(gatherA).not.toHaveBeenCalled()
-			b.onAgentEnd() // B goes idle → registry size 1
-			a.onMessageEnd() // now A is the only active agent: collects
+			b.onAgentEnd() // B goes idle (stays registered, not busy)
+			a.onMessageEnd() // now no other session is busy: collects
 			expect(gatherA).toHaveBeenCalledTimes(1)
-			a.onAgentEnd() // cleanup
+			a.onSessionShutdown()
+			b.onSessionShutdown() // cleanup
+		})
+
+		it("an IDLE session's collection is gated while exactly one other session is mid-request", () => {
+			// The regression case: A finished its turn (idle, still registered),
+			// B is mid-request. A's idle collection must not freeze B — counting
+			// heads (size > 1) would pass here because A removed itself.
+			vi.useFakeTimers()
+			const gatherA = vi.fn()
+			const gatherB = vi.fn()
+			const a = createAdaptiveGcScheduler(gatherA, { idleDelayMs: 5_000, rssOf: () => 100 })
+			const b = createAdaptiveGcScheduler(gatherB, { idleDelayMs: 5_000, rssOf: () => 100 })
+			a.onAgentStart()
+			a.onAgentEnd() // A goes idle
+			b.onAgentStart() // B starts a request and (crash-like) never ends it
+			vi.advanceTimersByTime(5_000) // A's idle window elapses while B runs
+			expect(gatherA).not.toHaveBeenCalled()
+			b.onAgentEnd() // B finally goes idle
+			vi.advanceTimersByTime(5_000) // A's next idle window: alone → collects
+			expect(gatherA).toHaveBeenCalledTimes(1)
+			a.onSessionShutdown()
+			b.onSessionShutdown() // cleanup
+		})
+
+		it("a session that vanishes mid-request is evicted by the staleness watchdog", () => {
+			vi.useFakeTimers()
+			vi.setSystemTime(1_000_000)
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+			const gatherA = vi.fn()
+			const gatherB = vi.fn()
+			let rss = 100
+			const a = createAdaptiveGcScheduler(gatherA, {
+				idleDelayMs: 5_000,
+				growthBytes: 50,
+				minIntervalMs: 0,
+				staleBusyMs: 10 * 60_000,
+				rssOf: () => rss,
+			})
+			const b = createAdaptiveGcScheduler(gatherB, { idleDelayMs: 5_000, rssOf: () => 100 })
+			a.onAgentStart()
+			b.onAgentStart() // B goes mid-request and (vanishes: no agent_end, no shutdown)
+			rss = 200
+			a.onMessageEnd() // gated: B is busy
+			expect(gatherA).not.toHaveBeenCalled()
+			vi.advanceTimersByTime(11 * 60_000) // past the staleness window
+			a.onMessageEnd() // B's stale entry evicted; A collects
+			expect(gatherA).toHaveBeenCalledTimes(1)
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining("stale busy session"))
+			warn.mockRestore()
+			a.onSessionShutdown()
+		})
+
+		it("session_shutdown drops the registry token and never re-arms a collection", () => {
+			vi.useFakeTimers()
+			const gather = vi.fn()
+			const scheduler = createAdaptiveGcScheduler(gather, { idleDelayMs: 5_000, rssOf: () => 100 })
+			scheduler.onAgentStart()
+			scheduler.onAgentEnd() // idle: would arm a 5 s collection
+			scheduler.onSessionShutdown() // session gone: cancel it
+			vi.advanceTimersByTime(60_000)
+			expect(gather).not.toHaveBeenCalled()
+		})
+
+		it("the zero-delay idle path is gated too (no ungated shortcut)", () => {
+			const gatherA = vi.fn()
+			const gatherB = vi.fn()
+			const a = createAdaptiveGcScheduler(gatherA, { idleDelayMs: 0, rssOf: () => 100 })
+			const b = createAdaptiveGcScheduler(gatherB, { idleDelayMs: 5_000, rssOf: () => 100 })
+			b.onAgentStart() // B mid-request
+			a.onAgentEnd() // A idle with zero delay: must NOT collect under B
+			expect(gatherA).not.toHaveBeenCalled()
+			b.onAgentEnd()
+			a.onAgentEnd() // alone now: collects immediately
+			expect(gatherA).toHaveBeenCalledTimes(1)
+			a.onSessionShutdown()
+			b.onSessionShutdown() // cleanup
 		})
 
 		it("a collection error is surfaced, not swallowed", () => {

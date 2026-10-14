@@ -250,6 +250,34 @@ describe("history residency (against the patched SessionManager)", () => {
 		expect(textOf(resolved[0])).toBe(spoofedLog)
 	})
 
+	it("drops old session files from the log-marker confinement window (bounded registry)", () => {
+		const bigId = sm.appendMessage({ role: "user", content: [{ type: "text", text: BIG }], timestamp: Date.now() })
+		sm.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "ans" }],
+			timestamp: Date.now(),
+		} as never)
+		const keptId = sm.appendMessage({ role: "user", content: [{ type: "text", text: "kept" }], timestamp: Date.now() })
+		sm.appendCompaction("bounded registry summary", keptId, 1_000)
+		const entry = sm.getEntries().find((e) => e.id === bigId)
+		expect(entry?.type).toBe("message")
+		if (entry?.type !== "message") throw new Error("evicted entry missing")
+		// Marker resolves while its file is inside the live-session window.
+		expect(textOf(sessionEntryToContextMessages(entry)?.[0])).toBe(BIG)
+
+		// Switch the manager through more session files than the registry cap
+		// (16): the original file falls out of the confinement window, so its
+		// markers stop resolving instead of staying readable forever.
+		const smAny = sm as unknown as { setSessionFile?: (f: string) => void }
+		if (typeof smAny.setSessionFile !== "function") return
+		for (let i = 0; i < 17; i++) {
+			smAny.setSessionFile(join(dir, `switch-${i}.jsonl`))
+		}
+		const text = textOf(sessionEntryToContextMessages(entry)?.[0]) ?? ""
+		expect(text).not.toBe(BIG)
+		expect(text).toContain("[kimchi-ext:log]")
+	})
+
 	it("parseLogMarker round-trips and rejects malformed text", () => {
 		const handle = { file: "/tmp/x.jsonl", offset: 12, length: 99 }
 		const marker = `[kimchi-ext:log]${JSON.stringify(handle)}`

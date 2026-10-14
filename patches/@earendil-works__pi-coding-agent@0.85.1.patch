@@ -13,11 +13,14 @@
 #     the complete, self-contained resume source while the live entry keeps
 #     the marker. Marker reads are path-confined: tool markers must point at
 #     this process's mirror (globalThis.__kimchiToolOutputFile, published by
-#     kimchi's store) and log markers at a live session file — spoofed
+#     kimchi's store) and log markers at a live session file (bounded LRU
+#     registry, 16 files: closed sessions drop out of the window). Spoofed
 #     markers in tool output are never resolved. Tool markers restore the
 #     block-array shape. `_rewriteFile` restores marker entries from their
 #     own persisted line (mirror-free) and refreshes in-memory log-marker
-#     offsets to the rewritten layout. Removal: when pi exposes a
+#     offsets to the rewritten layout. The most recently active session file
+#     is published as globalThis.__kimchiSessionFile for the kimchi-side
+#     mirror-loss hydration fallback. Removal: when pi exposes a
 #     content-persistence hook or lets extensions control persisted content.
 #   - Compaction-history display: SessionManager gains
 #     buildDisplayEntries() (full leaf path, pre-compaction entries kept) and
@@ -470,7 +473,7 @@ diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
 diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
 --- a/dist/core/session-manager.js
 +++ b/dist/core/session-manager.js
-@@ -163,6 +163,70 @@
+@@ -163,6 +163,86 @@
   * Project one selected session entry into LLM/runtime messages.
   * Plain custom entries are display/state entries and do not participate in context.
   */
@@ -496,8 +499,24 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
 + * Marker resolution (log markers here, and the serializer's tool markers)
 + * only reads files in this set — a spoofed marker planted in tool output
 + * cannot read arbitrary local files into the context or session log.
++ * The set is bounded (LRU, 16 files) so closed sessions drop out of the
++ * confinement window instead of accumulating for the process lifetime.
 + */
++const KIMCHI_LIVE_SESSION_FILE_LIMIT = 16;
 +const kimchiLiveSessionFiles = new Set();
++function kimchiRegisterLiveSessionFile(file) {
++    kimchiLiveSessionFiles.delete(file);
++    kimchiLiveSessionFiles.add(file);
++    if (kimchiLiveSessionFiles.size > KIMCHI_LIVE_SESSION_FILE_LIMIT) {
++        const oldest = kimchiLiveSessionFiles.values().next().value;
++        kimchiLiveSessionFiles.delete(oldest);
++    }
++    // Publish the most recently active session file for the kimchi-side
++    // mirror-loss hydration fallback (reads the log when the tmpdir mirror
++    // is gone). Best-effort: the last-loaded session wins in multi-session
++    // processes.
++    globalThis.__kimchiSessionFile = file;
++}
 +/**
 + * Kimchi patch: resolve a `[kimchi-ext:log]` marker
 + * to its original MESSAGE (the JSONL line parsed once) with a bounded LRU —
@@ -541,7 +560,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
  export function sessionEntryToContextMessages(entry) {
      if (entry.type === "message") {
          const message = entry.message;
-@@ -172,6 +236,18 @@
+@@ -172,6 +252,18 @@
              message.content == null) {
              return [{ ...message, content: [] }];
          }
@@ -560,23 +579,23 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
          return [message];
      }
      if (entry.type === "custom_message") {
-@@ -618,6 +694,7 @@
+@@ -618,6 +710,7 @@
      }
      _setSessionFile(sessionFile, preloadedFileEntries) {
          this.sessionFile = resolvePath(sessionFile);
-+        kimchiLiveSessionFiles.add(this.sessionFile);
++        kimchiRegisterLiveSessionFile(this.sessionFile);
          if (existsSync(this.sessionFile)) {
              const entries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
              // If file was empty, initialize it with a valid session header. If it was
-@@ -665,6 +742,7 @@
+@@ -665,6 +758,7 @@
          if (this.persist) {
              const fileTimestamp = timestamp.replace(/[:.]/g, "-");
              this.sessionFile = join(this.getSessionDir(), `${fileTimestamp}_${this.sessionId}.jsonl`);
-+            kimchiLiveSessionFiles.add(this.sessionFile);
++            kimchiRegisterLiveSessionFile(this.sessionFile);
          }
          return this.sessionFile;
      }
-@@ -682,6 +760,25 @@
+@@ -682,6 +776,25 @@
              this.fileEntries = this.fileEntries.concat(entries);
          }
          this._buildIndex();
@@ -602,7 +621,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
      }
      _buildIndex() {
          this.byId.clear();
-@@ -705,19 +802,111 @@
+@@ -705,19 +818,111 @@
              }
          }
      }
@@ -716,7 +735,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
      isPersisted() {
          return this.persist;
      }
-@@ -736,13 +925,82 @@
+@@ -736,13 +941,82 @@
      getSessionFile() {
          return this.sessionFile;
      }
@@ -800,7 +819,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
              }
              else {
                  // Mark as not flushed so when assistant arrives, all entries get written
-@@ -754,7 +1012,7 @@
+@@ -754,7 +1028,7 @@
              const fd = openSync(this.sessionFile, "wx");
              try {
                  for (const e of this.fileEntries) {
@@ -809,7 +828,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
                  }
              }
              finally {
-@@ -763,7 +1021,7 @@
+@@ -763,7 +1037,7 @@
              this.flushed = true;
          }
          else {
@@ -818,7 +837,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
          }
      }
      _appendEntry(entry) {
-@@ -815,6 +1073,45 @@
+@@ -815,6 +1089,45 @@
          return entry.id;
      }
      /** Append a compaction summary as child of current leaf, then advance leaf. Returns entry id. */
@@ -864,7 +883,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
      appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromHook, usage) {
          const entry = {
              type: "compaction",
-@@ -829,6 +1126,9 @@
+@@ -829,6 +1142,9 @@
              fromHook,
          };
          this._appendEntry(entry);
@@ -874,7 +893,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
          return entry.id;
      }
      /** Append a custom entry (for extensions) as child of current leaf, then advance leaf. Returns entry id. */
-@@ -974,6 +1274,17 @@
+@@ -974,6 +1290,17 @@
          return buildContextEntries(this.getEntries(), this.leafId, this.byId);
      }
      /**
@@ -892,11 +911,11 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
       * Build the session context (what gets sent to the LLM).
       * Uses tree traversal from current leaf.
       */
-@@ -1162,6 +1473,7 @@
+@@ -1162,6 +1489,7 @@
              this.fileEntries = [header, ...pathWithoutLabels, ...labelEntries];
              this.sessionId = newSessionId;
              this.sessionFile = newSessionFile;
-+            kimchiLiveSessionFiles.add(this.sessionFile);
++            kimchiRegisterLiveSessionFile(this.sessionFile);
              this._buildIndex();
              // Only write the file now if it contains an assistant message.
              // Otherwise defer to _persist(), which creates the file on the

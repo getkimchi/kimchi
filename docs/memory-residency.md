@@ -28,9 +28,10 @@ materialize it transiently (bounded LRU cache) and release it.
 | Surface | Behavior |
 |---|---|
 | `tool_result` | oversized tool output → marker (content-replacement result) |
-| `before_provider_request` | markers hydrated to full content (byte-identical); the walk is shape-agnostic over the provider-native payload, so nested tool-result blocks (anthropic `tool_result.content`, gemini `functionResponse.response.output`, openai-responses `function_call_output.output`) hydrate the same as flat shapes |
+| `before_provider_request` | markers hydrated to full content (byte-identical); the walk is shape-agnostic over the provider-native payload, so nested tool-result blocks (anthropic `tool_result.content`, gemini `functionResponse.response.output`, openai-responses `function_call_output.output`) hydrate the same as flat shapes; when the mirror is gone, hydration falls back to the session log (by toolCallId) before leaving a marker |
 | Session log | full content always (pi patch resolves markers at serialization; at rewrite it restores from the log itself, so the invariant holds even if the mirror is gone) |
 | TUI display | every result renderer is wrapped (`withMarkerResolution`) — markers resolve to mirrored content (or a mirror-gone caption) at render time, transiently; the raw marker never reaches the transcript |
+| ACP client | `toolResultContent` and the wire `rawOutput` resolve markers before any `tool_call_update` leaves — the IDE never receives raw marker text (e2e-pinned) |
 | `/memory-residency` | shows mirror bytes, resident cache size, entry counts |
 
 Messages with tool calls, images, or thinking blocks are never externalized
@@ -109,9 +110,11 @@ Knobs: `KIMCHI_IDLE_GC=off` (disable), `KIMCHI_IDLE_GC_DELAY_MS`,
 ## Known follow-ups
 
 > ACP coverage: the `sessionEntryToContextMessages` read seam is unit-tested
-> (byte-exact resolution of both marker types); a dedicated ACP e2e for
-> history replay of evicted sessions is a follow-up. The ACP surface reads
-> through the same patched seam as the TUI.
+> (byte-exact resolution of both marker types), live tool results are covered
+> end-to-end by `tests/e2e/acp/tool-output-externalization.test.ts` (the
+> client never receives marker text and gets the real output). A dedicated
+> ACP e2e for history replay of evicted (pre-compaction) sessions remains a
+> follow-up; that path reads through the same patched seam as the TUI.
 
 > Docs copy-resources: `scripts/copy-resources.js` has no `docs/` path and
 > no runtime code references this file; `/docs` changes are exempt from the
@@ -121,10 +124,12 @@ Knobs: `KIMCHI_IDLE_GC=off` (disable), `KIMCHI_IDLE_GC_DELAY_MS`,
   `message_end` replacement was found to break live turns (the turn never
   completes after the content is replaced), so it was reverted. It needs an
   upstream content hook that does not disturb the stream pipeline.
-- Mirror co-location with the session file (survives OS temp cleaners
-  end-to-end, not just at rewrite). Needs per-session store lifecycle for
-  ACP multi-session correctness; today the mirror lives in `tmpdir()` and
-  the log-restore at rewrite covers the durable invariant.
+- Mirror co-location with the session file. Largely mitigated: rewrites
+  restore from the log itself and payload hydration falls back to the log
+  (by toolCallId) when the tmpdir mirror dies, so a lost mirror no longer
+  degrades the model-visible content. Co-location would still remove the
+  fallback's scan cost and the ms-scale first-persist window; it needs
+  per-session store lifecycle for ACP multi-session correctness.
 - "Expand full content" UI affordance in the transcript/tool panes.
 - ACP ext-method mirror for residency stats (`_kimchi.dev/memory_residency`).
 - True mmap accessor spike.

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ToolResultEvent } from "@earendil-works/pi-coding-agent"
@@ -27,11 +27,17 @@ describe("tool-output-externalizer", () => {
 		dir = mkdtempSync(join(tmpdir(), "tool-output-externalizer-"))
 		delete process.env.KIMCHI_TOOL_OUTPUT_STORE
 		process.env.KIMCHI_TOOL_OUTPUT_EXTERNALIZE_BYTES = String(TOOL_OUTPUT_EXTERNALIZE_BYTES)
-		state = { store: createToolOutputStore(dir) }
+		state = {
+			store: createToolOutputStore(dir),
+			toolCallIdsByMarker: new Map(),
+			logFallbackTexts: new Map(),
+		}
+		globalThis.__kimchiSessionFile = undefined
 	})
 	afterEach(() => {
 		rmSync(dir, { recursive: true, force: true })
 		for (const key of ENV_KEYS) delete process.env[key]
+		globalThis.__kimchiSessionFile = undefined
 	})
 
 	it("externalizes oversized pure-text tool results with a marker replacement", () => {
@@ -193,13 +199,36 @@ describe("tool-output-externalizer", () => {
 		expect(messages[0].content).toBe(above)
 	})
 
-	it("returns false and leaves markers when the mirror is gone (log fallback path)", () => {
+	it("hydrates from the session log when the mirror is gone (log fallback)", () => {
 		const event = resultEvent("call_1", [{ type: "text", text: above }])
 		const marker = handleToolResult(event, state)?.content[0].text ?? ""
-		// Corrupt the mirror handle on disk by removing the file.
+		// What _persist wrote: the toolResult entry with the FULL content.
+		const sessionFile = join(dir, "session.jsonl")
+		writeFileSync(
+			sessionFile,
+			`${JSON.stringify({
+				type: "message",
+				id: "m1",
+				message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: above }] },
+			})}\n`,
+		)
+		globalThis.__kimchiSessionFile = sessionFile
+		// Kill the mirror, then hydrate: the log restores the full text.
 		const handle = parseMarker(marker)
 		if (!handle) throw new Error("expected valid marker")
 		rmSync(handle.file, { force: true })
+		const messages = [{ role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: marker }] }]
+		expect(hydrateMarkers(messages, state)).toBe(true)
+		expect(messages[0].content[0].text).toBe(above)
+	})
+
+	it("leaves the marker when the mirror AND the log are both unavailable", () => {
+		const event = resultEvent("call_1", [{ type: "text", text: above }])
+		const marker = handleToolResult(event, state)?.content[0].text ?? ""
+		const handle = parseMarker(marker)
+		if (!handle) throw new Error("expected valid marker")
+		rmSync(handle.file, { force: true })
+		// No session file published → nothing to fall back to.
 		const messages = [{ role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: marker }] }]
 		expect(hydrateMarkers(messages, state)).toBe(false)
 		expect(messages[0].content[0].text).toBe(marker)
