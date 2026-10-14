@@ -3528,6 +3528,50 @@ describe("KimchiAcpAgent per-message model attribution", () => {
 			},
 		])
 	})
+
+	it("still attributes replayed chunks when the session record is missing", async () => {
+		// The defensive no-record replay branch (replayAssistantBlocks with an
+		// unloaded SessionRecord): messageIds stay off the wire, and since
+		// first-chunk dedup is impossible without the record's seen-map, `_meta`
+		// must attach anyway — attribution never silently drops. Reached by
+		// diverging the session's id from its registration key, so
+		// replayTranscript's record lookup misses.
+		const fake = new FakeAgentSession("session-model-meta-norecord")
+		fake.branch = [
+			{
+				type: "message",
+				id: "e1",
+				parentId: null,
+				timestamp: "2026-01-01T00:00:00.000Z",
+				message: partialMessage({
+					model: "auto",
+					responseModel: "glm-5.3",
+					content: [{ type: "text", text: "reply" }],
+				}),
+			},
+		]
+		const rec = makeRecordingConn()
+		const agent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		// The record stays registered under the original id; the session now
+		// reports a different one, so replay's record lookup misses.
+		;(fake as { sessionId: string }).sessionId = "session-model-meta-norecord-moved"
+		await agent.loadSession({ sessionId: "session-model-meta-norecord", cwd: "/tmp", mcpServers: [] })
+		const replayed = replayOnly(rec.updates).filter((u) => u.update.sessionUpdate === "agent_message_chunk")
+		expect(replayed).toHaveLength(1)
+		// No record → no messageId, but the attribution still lands.
+		expect((replayed[0].update as { messageId?: string | null }).messageId).toBeUndefined()
+		expect(replayed[0].update._meta).toEqual({
+			"kimchi.dev": {
+				modelId: "kimchi-dev/glm-5.3",
+				requestedModelId: "kimchi-dev/auto",
+			},
+		})
+	})
 })
 
 // ACP is the only transport that reads assistant text solely from
