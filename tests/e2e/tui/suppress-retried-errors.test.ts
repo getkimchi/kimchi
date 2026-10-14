@@ -17,6 +17,9 @@
  *    sanitized message with "Run /ferment resume to continue."
  * 6. Audit retention — the raw provider error is retained in the session log
  *    even when the user-facing message is sanitized.
+ * 7. Cancellation is not an error — pressing Esc mid-stream writes NO
+ *    kimchi_error_classification audit entry: an intentional stop must never
+ *    be recorded (or restored) as a provider failure.
  *
  * The vLLM error body contains all the sensitive tokens that must never
  * surface: 'vllm', '.svc.cluster.local', 'SSLContext', '0x' hex pointers,
@@ -400,6 +403,83 @@ test("raw provider error retained in session log audit entry when user message i
 			// Verify the terminal doesn't show the raw error.
 			assertNoForbiddenLeaks(viewText(terminal))
 			trace.step("terminal sanitized but raw retained in session log")
+		},
+	)
+})
+
+// ---------------------------------------------------------------------------
+// Test 7: Cancellation (Esc) writes no error classification audit entry
+// ---------------------------------------------------------------------------
+
+test("pressing Esc mid-stream aborts the request and writes no error classification audit entry", async ({
+	terminal,
+}) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "suppress-retried-errors-esc-no-audit",
+			gitInit: true,
+			models: [NO_COMPACTION_MODEL],
+			seedHome: seedFastRetries,
+			responses: [
+				// Trickles one chunk per 500ms so the turn stays in flight long
+				// enough for the Esc keypress to land while the request is live.
+				{ stream: ["This", " response", " keeps", " streaming", " slowly", " forever"], delayMs: 500 },
+			],
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
+			trace.step("ready prompt visible")
+
+			terminal.submit("Tell me a story")
+			trace.step("submitted prompt")
+
+			await waitForText(terminal, "This response", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("response is streaming")
+
+			terminal.keyEscape()
+			trace.step("pressed Escape to cancel the turn")
+
+			// Wait until the fake server observed the request abort — direct
+			// evidence the cancel actually interrupted the in-flight request.
+			const abortDeadline = Date.now() + STREAM_TIMEOUT_MS
+			let requestAborted = false
+			while (Date.now() < abortDeadline && !requestAborted) {
+				requestAborted =
+					fixture.fake.requests.find((request) => request.url.includes("/chat/completions"))?.aborted === true
+				if (!requestAborted) await new Promise((resolve) => setTimeout(resolve, 50))
+			}
+			expect(requestAborted).toBe(true)
+			trace.step("in-flight request was aborted")
+
+			// Give the final message_end/entry writes a moment to settle, then scan
+			// the session log: an explicit user abort must not produce an error
+			// classification audit (previously written as "The operation was
+			// aborted.", which Studio restored as an error popup on reopen).
+			await new Promise((resolve) => setTimeout(resolve, 500))
+			const agentDir = fixture.agentDir
+			let foundAudit = false
+			const scanDir = (dir: string) => {
+				for (const file of readdirSync(dir, { withFileTypes: true })) {
+					const fullPath = join(dir, file.name)
+					if (file.isDirectory()) {
+						scanDir(fullPath)
+					} else if (
+						file.name.endsWith(".jsonl") &&
+						readFileSync(fullPath, "utf-8").includes("kimchi_error_classification")
+					) {
+						foundAudit = true
+					}
+				}
+			}
+			scanDir(agentDir)
+			expect(foundAudit).toBe(false)
+			trace.step("no kimchi_error_classification audit entry for an intentional abort")
+
+			// No error surface either: the sanitized exhaustion message is for
+			// retries running out, not for cancellations.
+			expect(fullText(terminal)).not.toContain("The model provider is temporarily unavailable")
+			trace.step("no provider-error message rendered for the cancelled turn")
 		},
 	)
 })
