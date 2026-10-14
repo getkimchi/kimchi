@@ -17,6 +17,11 @@
  *     a later extension-triggered turn (injected by the nudge-waiter fixture
  *     extension, with no intervening user input or tool call) streams
  *     normally — the exact path stale recovery state used to blank.
+ *  4. A retried acknowledgement: the nudge round hits two retryable provider
+ *     500s before the retry succeeds with the token. The token stays hidden
+ *     (blanking survives the attempt boundary), no second/empty-turn nudge or
+ *     exploration-guard steer fires, and the later extension-triggered turn
+ *     streams normally.
  *
  * Every scenario first runs a real tool cycle so the session-level tool latch
  * is armed — without it, fresh-session suppression would mask the bug these
@@ -88,6 +93,37 @@ function seedNotesAndWaiterExtension(_homeDir: string, workDir: string): void {
 	writeFileSync(
 		join(extensionsDir, "nudge-waiter.js"),
 		readFileSync(new URL("./support/fixtures/nudge-waiter.js", import.meta.url), "utf-8"),
+	)
+}
+
+/** Same as `seedNotesAndWaiterExtension`, plus fast AgentSession-level retry
+ *  settings. pi's retry settings live in the harness settings.json (agentDir),
+ *  NOT kimchi's config.json — writing them there is a no-op. Seeding the file
+ *  preempts cli.ts's first-run defaults write (the upgrade pass leaves a
+ *  provider-bearing retry block untouched). baseDelayMs 50 keeps each retry
+ *  backoff inside the settle-detector's window so waitForTurnToSettle cannot
+ *  return mid-round, and provider.maxRetries 0 disables the pi-ai fetch-level
+ *  retry so the 500s surface to the session layer that fires turn_end and
+ *  agent_end per attempt — the exact layer the retry-aware nudge state machine
+ *  must survive. */
+function seedNotesWaiterAndFastRetries(homeDir: string, workDir: string): void {
+	seedNotesAndWaiterExtension(homeDir, workDir)
+	const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+	writeFileSync(
+		settingsPath,
+		JSON.stringify(
+			{
+				retry: {
+					enabled: true,
+					maxRetries: 2,
+					baseDelayMs: 50,
+					provider: { timeoutMs: 600_000, maxRetries: 0, maxRetryDelayMs: 60_000 },
+				},
+			},
+			null,
+			"\t",
+		),
+		"utf-8",
 	)
 }
 
@@ -222,6 +258,71 @@ test("a token-only done acknowledgement ends recovery silently and later extensi
 			await waitForTurnToSettle(fixture.fake.requests)
 			// The extension-triggered response streams visibly and is not
 			// drift-nudged itself.
+			expect(countRequestsContaining(fixture, CONTINUATION_NUDGE_PHRASE)).toBe(nudgeRequestCount)
+			trace.step("extension-triggered turn streams visibly without a new nudge")
+		},
+	)
+})
+
+test("a provider-error-retried done acknowledgement stays hidden and draws no second nudge or guard steer", async ({
+	terminal,
+}) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "continuation-nudge-retry-done",
+			seedHome: seedNotesWaiterAndFastRetries,
+			trustWorkDir: true,
+			responses: [
+				READ_TOOL_CALL,
+				{ stream: ["The notes list three tasks for today."] },
+				// Text-only drift in a fresh user-input cycle: statement-only,
+				// no question, no waiting phrase — this must trigger the nudge.
+				{ stream: ["I will delegate the implementation to a builder agent next."] },
+				// The acknowledgement round errors twice (retryable 500s). The
+				// upstream agent loop retries inside the same agent run; the
+				// retry's response is still the answer to the armed nudge.
+				{ status: 500 },
+				{ status: 500 },
+				// The retry succeeds with exactly the token, split across deltas.
+				{ stream: ["<do", "ne>"] },
+				// The extension-triggered turn's response. The trailing hand-back
+				// phrase keeps it from being drift-nudged itself.
+				{ stream: ["The background watcher finished: build passed. Let me know if you want the full log."] },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("read notes.txt")
+			await waitForText(terminal, "three tasks", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("tool cycle completed, session latch armed")
+
+			// Text-only drift triggers the real continuation nudge as a followUp.
+			terminal.submit("continue with the implementation")
+			await waitForText(terminal, "delegate the implementation", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForRequestContaining(fixture, CONTINUATION_NUDGE_PHRASE)
+			trace.step("drift response visible, continuation nudge delivered")
+
+			// The acknowledgement round runs through both 500 retries and the
+			// successful token response, then settles.
+			await waitForTurnToSettle(fixture.fake.requests)
+
+			// The retried token-only acknowledgement is a silent end-of-turn:
+			// the token never renders (not even a partial delta), and no second
+			// nudge, empty-turn nudge, or exploration-guard steer follows.
+			const text = fullText(terminal)
+			expect(text).not.toContain("<done>")
+			expect(text).not.toContain("ne>")
+			expect(anyRequestContains(fixture, SECOND_NUDGE_PHRASE)).toBe(false)
+			expect(anyRequestContains(fixture, EMPTY_TURN_NUDGE_PHRASE)).toBe(false)
+			expect(anyRequestContains(fixture, "Exploration guard:")).toBe(false)
+			trace.step("retried token acknowledgement hidden, no re-nudge or guard steer")
+
+			// A later extension-triggered turn with NO intervening user input or
+			// tool call must stream visibly — stale recovery state may not blank it.
+			const nudgeRequestCount = countRequestsContaining(fixture, CONTINUATION_NUDGE_PHRASE)
+			terminal.keyPress("q", { alt: true })
+			await waitForText(terminal, "build passed", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForTurnToSettle(fixture.fake.requests)
 			expect(countRequestsContaining(fixture, CONTINUATION_NUDGE_PHRASE)).toBe(nudgeRequestCount)
 			trace.step("extension-triggered turn streams visibly without a new nudge")
 		},
