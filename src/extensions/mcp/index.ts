@@ -11,10 +11,12 @@ import { getParsedCliArgs } from "../../cli-args.js"
 import { getConfiguredLegacyMcpKeys } from "../../config.js"
 import {
 	applyCooperativeTweak,
+	debugToolSurface,
 	getCurrentProfile,
 	reapplyCurrentProfile,
 	registerReadOnlyToolProvider,
 } from "../../shared/planning/tool-profile-manager.js"
+import { isActionBlockedError } from "../deferred-action.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { observeToolFiles } from "../work-attribution/file-observations.js"
@@ -262,6 +264,21 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	}
 	let warnings: string[] = []
 
+	// MCP status events arrive in bursts; one resnapshot after the burst settles
+	// avoids re-deriving the active set (and re-setting the snapshot flag) on
+	// every transition. Pending resnapshots are dropped on session boundaries:
+	// after a replacement the captured pi is stale, and the new session's own
+	// startup re-derives the set. registerTool stays synchronous — it is the
+	// self-correction path for late registrations.
+	const STATUS_RESYNC_DEBOUNCE_MS = 250
+	let statusResyncTimer: ReturnType<typeof setTimeout> | undefined
+	const clearStatusResync = (): void => {
+		if (statusResyncTimer !== undefined) {
+			clearTimeout(statusResyncTimer)
+			statusResyncTimer = undefined
+		}
+	}
+
 	// The adapter is installed after trust resolves, but its input readiness hook
 	// must exist before extension event dispatch begins. Forward through this
 	// eagerly registered handler so cold-cache direct tools are ready for the
@@ -271,6 +288,9 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	})
 
 	pi.on("session_start", async (event, ctx) => {
+		// A replacement path (new/fork/switch/resume) just invalidated the old pi;
+		// its pending resnapshot is obsolete.
+		clearStatusResync()
 		if (!policy) {
 			const cliOptions = getParsedCliArgs().options
 			const overridePath = cliOptions["mcp-config"]
@@ -331,8 +351,28 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	})
 
 	pi.events.on(MCP_STATUS_EVENT, () => {
-		reapplyCurrentProfile(pi)
+		if (statusResyncTimer !== undefined) clearTimeout(statusResyncTimer)
+		statusResyncTimer = setTimeout(() => {
+			statusResyncTimer = undefined
+			debugToolSurface(() => "[tool-surface] mcp status burst settled; resnapshotting active profile")
+			try {
+				reapplyCurrentProfile(pi)
+			} catch (error) {
+				// The captured pi can be action-blocked when the timer fires: the
+				// extension is still loading, or the session was replaced/reloaded
+				// after the status event. Dropping is correct — the active session's
+				// own startup re-derives the set. Anything else is a real error, but
+				// rethrowing inside a timer callback would crash the process, so log it.
+				if (isActionBlockedError(error)) {
+					const message = error instanceof Error ? error.message : String(error)
+					debugToolSurface(() => `[tool-surface] resnapshot dropped: ${message}`)
+					return
+				}
+				console.error("[tool-surface] mcp status resnapshot failed:", error)
+			}
+		}, STATUS_RESYNC_DEBOUNCE_MS)
 	})
+	pi.on("session_shutdown", clearStatusResync)
 }
 
 export default function mcpAdapterExtension(pi: ExtensionAPI): void {

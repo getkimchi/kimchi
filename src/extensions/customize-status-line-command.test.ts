@@ -1,16 +1,18 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { StatusLine } from "../components/status-line.js"
 import {
 	_invalidateStatusLineConfigCache,
 	DEFAULT_STATUS_LINE_PINNED,
+	readStatusLineConfig,
+	setStatusLineElementHidden,
 	setStatusLineElementPinned,
 } from "../config/status-line-config.js"
 import * as AGENTS from "./agents/index.js"
-import { CustomizeStatusLineComponent } from "./customize-status-line-command.js"
+import customizeStatusLineExtension, { CustomizeStatusLineComponent } from "./customize-status-line-command.js"
 import * as FERMENT from "./ferment/index.js"
 import * as MULTI_MODEL from "./multi-model.js"
 import * as TAGS from "./tags.js"
@@ -267,6 +269,90 @@ describe("customize-status-line popover", () => {
 
 		expect(strip(component.render(80).join("\n"))).toContain("○ Context")
 		expect(renderStatusLine()).not.toContain("ctx")
+	})
+})
+
+// ── 4. defaultVisible rows (LSP/DAP): hide via `hidden`, not `pinned` ──────
+
+describe("customize-status-line popover: defaultVisible LSP/DAP rows", () => {
+	it("shows LSP and DAP rows checked (●) by default", () => {
+		const text = strip(makeComponent().render(80).join("\n"))
+		expect(text).toContain("● LSP")
+		expect(text).toContain("● DAP")
+	})
+
+	it("pressing space on LSP hides it: row goes ○, settings gain hidden:[lsp], pinned untouched", () => {
+		const component = makeComponent(12) // lsp at STATUS_LINE_ELEMENTS index 12
+		component.handleInput(" ")
+
+		expect(strip(component.render(80).join("\n"))).toContain("○ LSP")
+		expect(readStatusLineConfig().hidden).toEqual(["lsp"])
+		expect(readStatusLineConfig().pinned).toEqual(DEFAULT_STATUS_LINE_PINNED)
+	})
+
+	it("pressing space on LSP again restores it without touching pinned", () => {
+		const component = makeComponent(12)
+		component.handleInput(" ")
+		component.handleInput(" ")
+
+		expect(strip(component.render(80).join("\n"))).toContain("● LSP")
+		expect(readStatusLineConfig().hidden).toEqual([])
+		expect(readStatusLineConfig().pinned).toEqual(DEFAULT_STATUS_LINE_PINNED)
+	})
+
+	it("pressing space on DAP hides only dap: ○ DAP while LSP stays ●", () => {
+		const component = makeComponent(13) // dap at STATUS_LINE_ELEMENTS index 13
+		component.handleInput(" ")
+
+		const text = strip(component.render(80).join("\n"))
+		expect(text).toContain("○ DAP")
+		expect(text).toContain("● LSP")
+		expect(readStatusLineConfig().hidden).toEqual(["dap"])
+	})
+
+	it("hiding lsp via Space removes its status line segment but keeps dap's", () => {
+		const component = makeComponent(12)
+		component.handleInput(" ")
+
+		const statuses = new Map([
+			["lsp", "LSP:typescript-language-server"],
+			["dap", "DAP:js-debug"],
+		])
+		const data = { getExtensionStatuses: () => statuses } as unknown as ReadonlyFooterDataProvider
+		const visible = strip(new StatusLine(createMockContext(), theme, data).render(200).at(-1) ?? "")
+
+		expect(visible).not.toContain("typescript-language-server")
+		expect(visible).toContain("js-debug")
+	})
+})
+
+/** Run the command's no-UI branch (hasUI=false) and return the notified text. */
+async function runNoUiCommand(): Promise<string> {
+	let handler: ((args: string, ctx: unknown) => unknown) | undefined
+	const pi = {
+		registerCommand: (name: string, command: { handler: typeof handler }) => {
+			if (name === "customize-status-line") handler = command.handler
+		},
+	}
+	customizeStatusLineExtension(pi as unknown as ExtensionAPI)
+	const notify = vi.fn()
+	await handler?.("", { hasUI: false, ui: { notify } })
+	return String(vi.mocked(notify).mock.calls[0]?.[0] ?? "")
+}
+
+describe("customize-status-line command: no-UI branch", () => {
+	it("lists LSP and DAP rows checked ([●]) by default", async () => {
+		const text = await runNoUiCommand()
+		expect(text).toContain("Customize Status Line")
+		expect(text).toContain("[●] LSP")
+		expect(text).toContain("[●] DAP")
+	})
+
+	it("mirrors hidden state: [○] LSP after hiding via config, DAP stays [●]", async () => {
+		setStatusLineElementHidden("lsp", true)
+		const text = await runNoUiCommand()
+		expect(text).toContain("[○] LSP")
+		expect(text).toContain("[●] DAP")
 	})
 })
 

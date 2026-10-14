@@ -28,9 +28,18 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
-import { afterAll, describe, expect, it } from "vitest"
+import { afterAll, describe, expect, it, vi } from "vitest"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import dapExtension from "../../dap.js"
+import { shouldRegisterDapForTools } from "./agent-runner.js"
+
+vi.mock("../../../resources/store.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("../../../resources/store.js")>()
+	return { ...original, isResourceEnabled: vi.fn(original.isResourceEnabled) }
+})
+
+// After the vi.mock above resolves, this binding is the controlled mock.
+const { isResourceEnabled } = await import("../../../resources/store.js")
 
 /** Minimal model stub — the session never streams in this test, so the model
  *  and runtime only need to satisfy construction-time shape checks. */
@@ -166,5 +175,24 @@ describe("DAP tools in subagent sessions", () => {
 		expect(active).not.toContain("debug_launch")
 
 		await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
+	})
+})
+
+describe("shouldRegisterDapForTools (extensions.dap resource gate)", () => {
+	it("allows DAP registration for debug tool requests when the resource is enabled", () => {
+		vi.mocked(isResourceEnabled).mockReturnValue(true)
+		expect(shouldRegisterDapForTools(["read", "debug_launch"])).toBe(true)
+		expect(shouldRegisterDapForTools(["step_in"])).toBe(true)
+	})
+
+	it("skips DAP registration when extensions.dap is disabled in /resources", () => {
+		vi.mocked(isResourceEnabled).mockReturnValue(false)
+		expect(shouldRegisterDapForTools(["debug_launch", "debug_state_at"])).toBe(false)
+		vi.mocked(isResourceEnabled).mockReturnValue(true)
+	})
+
+	it("skips DAP registration for tool sets without debug tools", () => {
+		vi.mocked(isResourceEnabled).mockReturnValue(true)
+		expect(shouldRegisterDapForTools(["read", "grep", "bash"])).toBe(false)
 	})
 })

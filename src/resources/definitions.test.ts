@@ -85,6 +85,20 @@ describe("resource definitions", () => {
 		expect(resource?.restartRequired).toBeFalsy()
 	})
 
+	it("registers LSP and DAP as default-on, restart-gated extensions", () => {
+		const resources = getResourceDefinitions()
+		expect(resources.find((resource) => resource.id === "extensions.lsp")).toMatchObject({
+			kind: "extensions",
+			defaultEnabled: true,
+			restartRequired: true,
+		})
+		expect(resources.find((resource) => resource.id === "extensions.dap")).toMatchObject({
+			kind: "extensions",
+			defaultEnabled: true,
+			restartRequired: true,
+		})
+	})
+
 	it("registers Ferment V2 as an opt-in experimental feature", () => {
 		expect(getResourceDefinitions().find((resource) => resource.id === "extensions.ferment-v2")).toMatchObject({
 			kind: "extensions",

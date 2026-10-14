@@ -572,7 +572,8 @@ function buildPermissionsSegment(
 	return { id: "permissions", text: mode, width: visibleWidth(mode) }
 }
 
-function buildDapSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
+function buildDapSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
+	if (hidden) return null
 	const dapStatus = statusLineData.getExtensionStatuses().get("dap")
 	if (!dapStatus) return null
 	// Same label/value styling as the LSP segment: dim the "DAP:" label,
@@ -585,7 +586,8 @@ function buildDapSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvide
 	return { id: "dap", text, width: visibleWidth(text) }
 }
 
-function buildLspSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
+function buildLspSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
+	if (hidden) return null
 	const lspStatus = statusLineData.getExtensionStatuses().get("lsp")
 	if (!lspStatus) return null
 	// Style "LSP:" as dimmed label, server names as accent. Preserve the
@@ -710,6 +712,10 @@ export interface StatusLineBuildContext {
 export function buildStatusLineSegments(
 	{ ctx, theme, statusLineData }: StatusLineBuildContext,
 	pinned: ReadonlySet<SegmentId>,
+	// Opt-out set for defaultVisible, extension-status-driven segments
+	// (lsp/dap): they render whenever their extension sets a status, so the
+	// customize UI hides them here instead of through pinning.
+	hidden: ReadonlySet<SegmentId> = new Set<SegmentId>(),
 ): Segment[] {
 	const tags = peekActiveTags(ctx.sessionManager)
 		.map(parseTag)
@@ -728,8 +734,8 @@ export function buildStatusLineSegments(
 		buildPhaseSegment(ctx, theme, pinned.has("phase")),
 		buildTagsSegment(theme, tags, pinned.has("tags")),
 		buildTeamSegment(theme, tags, pinned.has("team")),
-		buildLspSegment(theme, statusLineData),
-		buildDapSegment(theme, statusLineData),
+		buildLspSegment(theme, statusLineData, hidden.has("lsp")),
+		buildDapSegment(theme, statusLineData, hidden.has("dap")),
 		buildWorkPrSegment(theme, statusLineData),
 	].filter((s): s is Segment => s !== null)
 }
@@ -785,9 +791,11 @@ export class StatusLine implements Component {
 	render(width: number): string[] {
 		const config = readStatusLineConfig()
 		const pinnedSet = new Set<SegmentId>(config.pinned)
+		const hiddenSet = new Set<SegmentId>(config.hidden)
 		const allSegments = buildStatusLineSegments(
 			{ ctx: this.ctx, theme: this.theme, statusLineData: this.statusLineData },
 			pinnedSet,
+			hiddenSet,
 		)
 
 		const sep = ` ${this.dim("·")} `

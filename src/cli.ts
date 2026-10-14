@@ -736,8 +736,10 @@ try {
 			loopGuardExtension,
 			explorationGuardExtension,
 			reviewWriteGuardExtension,
-			lspExtension,
-			dapExtension,
+			...enabledExtensionFactories([
+				{ id: "extensions.lsp", factory: lspExtension },
+				{ id: "extensions.dap", factory: dapExtension },
+			] satisfies ManagedExtensionFactory[]),
 			// Background bash: MUST register before bashToolGuard so its background
 			// `execute` wins the first-registration-per-name race (runner.js).
 			// Carries the bash-tool-guard description so the steering composes.

@@ -506,12 +506,7 @@ ${skillLines}`
 		bashExtension,
 		infrastructureBreakerExtension,
 	]
-	// Personas that request DAP debugger tools (e.g. Debugger) need the dap
-	// extension registered in the child session: repo-native extensions wired
-	// directly in cli.ts are not discovered by a child DefaultResourceLoader.
-	// The extension registers its tools on the child's session_start, and the
-	// SDK activates them because their names are in the session's tool allowlist.
-	if (toolNames.some((n) => n.startsWith("debug_") || n.startsWith("step_"))) {
+	if (shouldRegisterDapForTools(toolNames)) {
 		extensionFactories.push(dapExtension)
 	}
 	if (options.workerReport) {
@@ -1069,4 +1064,14 @@ export function getAgentConversation(session: AgentSession): string {
 	}
 
 	return parts.join("\n\n")
+}
+
+// Personas that request DAP debugger tools (e.g. Debugger) need the dap
+// extension registered in the child session: repo-native extensions wired
+// directly in cli.ts are not discovered by a child DefaultResourceLoader.
+// The extension registers its tools on the child's session_start, and the SDK
+// activates them because their names are in the session's tool allowlist.
+// Honors the extensions.dap /resources toggle: off means off for subagents too.
+export function shouldRegisterDapForTools(toolNames: readonly string[]): boolean {
+	return isResourceEnabled("extensions.dap") && toolNames.some((n) => n.startsWith("debug_") || n.startsWith("step_"))
 }
