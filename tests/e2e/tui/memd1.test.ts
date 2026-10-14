@@ -29,11 +29,12 @@ test("memd1: history visible after compaction", async ({ terminal }) => {
 		{ stream: ["MARKER_TURN_THREE charlie"] },
 		// The big turn's model response (compaction fires AFTER it, at turn end).
 		{ stream: ["BIG_TURN_RESPONSE echo"] },
-		// The compaction summarization phase (may issue more than one LLM call).
+		// The compaction summarization call (exactly one LLM request).
 		{ stream: ["SUMMARY_OF_EARLIER_CONVERSATION gamma"] },
-		{ stream: ["SUMMARY_SPARE epsilon"] },
-		// A post-compaction turn (duplicate in case the compaction phase
-		// consumes an extra response).
+		// A post-compaction turn, duplicated in case the compaction phase ever
+		// consumes an extra response (the duplicate doubles as that buffer —
+		// scripting a spare SUMMARY instead would desync the queue when
+		// compaction makes exactly one call).
 		{ stream: ["MARKER_AFTER_COMPACTION delta"] },
 		{ stream: ["MARKER_AFTER_COMPACTION delta"] },
 	]
