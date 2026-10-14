@@ -69,21 +69,21 @@ test("org-locked resources show as locked in /resources and a FORCE_OFF tool is 
 			// carry the lock marker. (A FORCE_ON row counting here proves locks
 			// are not only rendered for disabled resources.)
 			expect(viewText(terminal)).toContain("2 org-locked")
-			expect(viewText(terminal)).toContain("🔒")
+			expect(viewText(terminal)).toContain("org-locked)")
 			trace.step("locked rows visible")
 
 			// Selection starts on the first row (hooks.bash); step down to
 			// tools.web_search and read its org-policy note.
 			terminal.keyDown()
-			await waitForText(terminal, "(FORCE_OFF)", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("FORCE_OFF row selected, policy note visible")
+			await waitForText(terminal, "locked off", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("locked-off row selected, policy note visible")
 
 			// The toggle is inert: Enter/Space does not change the locked row's
 			// state — the policy note stays on screen and no override is written
 			// (proven by the unavailable-tool assertions below, which need
 			// FORCE_OFF intact).
 			terminal.submit("")
-			expect(viewText(terminal)).toContain("(FORCE_OFF)")
+			expect(viewText(terminal)).toContain("locked off")
 			trace.step("toggle on the locked row is a no-op")
 
 			terminal.keyEscape()

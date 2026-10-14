@@ -52,11 +52,26 @@ export function isResourceLocked(id: string): boolean {
 }
 
 /**
+ * Human wording for a forced policy — the raw FORCE_* enum names are API
+ * values and mean nothing to users, so no user-facing surface prints them.
+ */
+export function describeOrgLock(policy: ResourcePolicy): "locked on" | "locked off" {
+	return policy === "FORCE_ON" ? "locked on" : "locked off"
+}
+
+/**
  * The one org-lock refusal sentence, shared by every surface (store guard,
  * CLI, /resources command, ACP) so the wording cannot drift.
  */
 export function orgLockMessage(id: string): string {
-	return `${id} is managed by your organization (${getResourcePolicy(id)}); it cannot be changed locally.`
+	const policy = getResourcePolicy(id)
+	if (policy === "FORCE_ON") {
+		return `${id} is ${describeOrgLock(policy)} by your organization; it cannot be disabled locally.`
+	}
+	if (policy === "FORCE_OFF") {
+		return `${id} is ${describeOrgLock(policy)} by your organization; it cannot be enabled locally.`
+	}
+	return `${id} is managed by your organization; it cannot be changed locally.`
 }
 
 /**

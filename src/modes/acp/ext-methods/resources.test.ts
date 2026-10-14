@@ -163,7 +163,7 @@ describe("handleSetResourceEnabled", () => {
 
 		expect(err.code).toBe(-32600)
 		expect(err.message).toContain("tools.web_search")
-		expect(err.message).toContain("FORCE_OFF")
+		expect(err.message).toContain("locked off")
 		expect(existsSync(settingsPath)).toBe(false)
 	})
 

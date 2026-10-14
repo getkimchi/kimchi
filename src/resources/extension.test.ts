@@ -45,7 +45,7 @@ describe("resourcesExtension", () => {
 	})
 
 	describe("org-lock refusals", () => {
-		const LOCKED_WARNING = "tools.web_search is managed by your organization (FORCE_OFF); it cannot be changed locally."
+		const LOCKED_WARNING = "tools.web_search is locked off by your organization; it cannot be enabled locally."
 
 		// mockReturnValue implementations survive clearAllMocks, so each test in
 		// this group re-pins the unlocked default; refusals override to locked.
@@ -60,7 +60,7 @@ describe("resourcesExtension", () => {
 		])("refuses '%s' on an org-locked resource with a warning and no write", async (args) => {
 			storeMocks.isResourceLocked.mockReturnValue(true)
 			storeMocks.orgLockMessage.mockImplementation(
-				(id: string) => `${id} is managed by your organization (FORCE_OFF); it cannot be changed locally.`,
+				(id: string) => `${id} is locked off by your organization; it cannot be enabled locally.`,
 			)
 			const { api, commands } = makeMockPi()
 			const ctx = makeUIContext()
@@ -81,7 +81,7 @@ describe("resourcesExtension", () => {
 			await commands.get("resources")?.handler("enable tools.web_search", ctx)
 
 			expect(storeMocks.setResourceOverride).toHaveBeenCalledWith("tools.web_search", true)
-			expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("managed by your organization"), "warning")
+			expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("by your organization"), "warning")
 		})
 	})
 })

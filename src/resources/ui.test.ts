@@ -89,7 +89,7 @@ describe("ResourceManagerComponent", () => {
 		expect(extensions.render(160).join("\n")).not.toContain("extensions.ferment-v2")
 	})
 
-	it("org-locked resources render a lock marker and cannot be toggled", () => {
+	it("org-locked resources show an org-locked value and cannot be toggled", () => {
 		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
 		const theme = {
 			fg: (_color: string, text: string) => text,
@@ -99,9 +99,10 @@ describe("ResourceManagerComponent", () => {
 		const component = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, theme, vi.fn(), "tools")
 
 		const rendered = component.render(160).join("\n")
-		expect(rendered).toContain("🔒")
+		// The value column names the org, not the raw API enum.
+		expect(rendered).toContain("disabled (org-locked)")
 		// The selected (locked) row explains why it cannot be toggled.
-		expect(rendered).toContain("Managed by organization policy (FORCE_OFF); local toggle disabled.")
+		expect(rendered).toContain("Managed by your organization: locked off (it cannot be enabled locally).")
 		expect(rendered).toContain("org-locked")
 
 		// Toggle attempt on the selected locked row: no values to cycle, so the
@@ -109,6 +110,27 @@ describe("ResourceManagerComponent", () => {
 		component.handleInput(" ")
 		expect(isResourceEnabled("tools.web_search")).toBe(false)
 		expect(getResourceOverride("tools.web_search")).toBeUndefined()
+	})
+
+	it("aligns the value column across rows", () => {
+		setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+		} as unknown as Theme
+		const component = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, theme, vi.fn(), "tools")
+
+		const lines = component.render(160).filter((line) => /Web (search|fetch)/.test(line))
+		expect(lines).toHaveLength(2)
+		// Every row's value starts at the same column, locked or not.
+		const columns = lines.map((line) => {
+			const enabled = line.indexOf("enabled")
+			const disabled = line.indexOf("disabled")
+			return enabled >= 0 ? enabled : disabled
+		})
+		expect(columns[0]).toBeGreaterThan(0)
+		expect(new Set(columns).size).toBe(1)
 	})
 })
 

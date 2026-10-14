@@ -38,7 +38,7 @@ describe("runResources org-policy refusals", () => {
 		await expect(runResources(["enable", "tools.web_search"])).resolves.toBe(1)
 
 		expect(error).toHaveBeenCalledWith(
-			"tools.web_search is managed by your organization (FORCE_OFF); it cannot be changed locally.",
+			"tools.web_search is locked off by your organization; it cannot be enabled locally.",
 		)
 		expect(getResourceOverride("tools.web_search", join(tempDir, "settings.json"))).toBeUndefined()
 	})

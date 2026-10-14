@@ -1,7 +1,22 @@
 import { getSettingsListTheme, type Theme } from "@earendil-works/pi-coding-agent"
-import { Key, matchesKey, type SettingItem, SettingsList, type TUI, truncateToWidth } from "@earendil-works/pi-tui"
+import {
+	Key,
+	matchesKey,
+	type SettingItem,
+	SettingsList,
+	type TUI,
+	truncateToWidth,
+	visibleWidth,
+} from "@earendil-works/pi-tui"
+import type { ResourcePolicy } from "../api/org-settings.js"
 import { getResourceDefinitions, getResourcesByKind, RESOURCE_KINDS } from "./definitions.js"
-import { getResourcePolicy, isResourceEnabled, isResourceLocked, setResourceOverride } from "./store.js"
+import {
+	describeOrgLock,
+	getResourcePolicy,
+	isResourceEnabled,
+	isResourceLocked,
+	setResourceOverride,
+} from "./store.js"
 import type { ResourceDefinition, ResourceKind } from "./types.js"
 
 const VALUE_ENABLED = "enabled"
@@ -121,19 +136,24 @@ export function createResourceManager(
 }
 
 function resourceItems(tab: ResourceTab): SettingItem[] {
-	return resourcesForTab(tab).map((resource) => {
+	const rows = resourcesForTab(tab).map((resource) => {
 		const locked = isResourceLocked(resource.id)
 		return {
 			id: resource.id,
-			label: resourceLabel(resource, tab, locked),
+			label: resourceLabel(resource, tab),
 			description: resourceDescription(resource, locked),
-			currentValue: isResourceEnabled(resource.id) ? VALUE_ENABLED : VALUE_DISABLED,
+			currentValue: resourceValue(resource, locked),
 			// Org-locked rows carry no toggle values: SettingsList treats an
 			// item without `values` as inert on Enter/Space, so the locked state
 			// cannot be changed from the list.
 			values: locked ? undefined : [VALUE_ENABLED, VALUE_DISABLED],
 		}
 	})
+	// Pad every label to one shared visible width so the value column starts
+	// at the same column in every row. SettingsList only pads up to a
+	// 36-column cap, which these labels overflow.
+	const width = Math.max(...rows.map((row) => visibleWidth(row.label)))
+	return rows.map((row) => ({ ...row, label: row.label + " ".repeat(Math.max(0, width - visibleWidth(row.label))) }))
 }
 
 function enabledCount(tab: ResourceTab): string {
@@ -192,18 +212,31 @@ function tabDescription(tab: ResourceTab): string {
 	}
 }
 
-function resourceLabel(resource: ResourceDefinition, tab: ResourceTab, locked = false): string {
+function resourceLabel(resource: ResourceDefinition, tab: ResourceTab): string {
 	const status = isResourceEnabled(resource.id) ? "●" : "○"
 	const restart = resource.restartRequired ? " ↻" : ""
-	const lock = locked ? " 🔒" : ""
-	return `${status} ${kindPrefix(resource.kind, tab)}${resource.label}${restart}${lock}`
+	return `${status} ${kindPrefix(resource.kind, tab)}${resource.label}${restart}`
 }
 
-function resourceDescription(resource: ResourceDefinition, locked = false): string {
+/** The effective state, plus who controls it when the org locks the resource. */
+function resourceValue(resource: ResourceDefinition, locked: boolean): string {
+	const state = isResourceEnabled(resource.id) ? VALUE_ENABLED : VALUE_DISABLED
+	return locked ? `${state} (org-locked)` : state
+}
+
+function resourceDescription(resource: ResourceDefinition, locked: boolean): string {
 	const scope = resource.restartRequired ? "Applies after restart." : "Applies immediately."
-	const orgPolicy = getResourcePolicy(resource.id)
-	const managed = locked && orgPolicy ? ` Managed by organization policy (${orgPolicy}); local toggle disabled.` : ""
+	const managed = locked ? ` ${orgLockNote(getResourcePolicy(resource.id))}` : ""
 	return `${resource.id} — ${scope} ${resource.description}${managed}`
+}
+
+/** Human phrasing for the forced policy — raw enum names are API values. */
+function orgLockNote(policy: ResourcePolicy | undefined): string {
+	if (policy === "FORCE_ON" || policy === "FORCE_OFF") {
+		const tail = policy === "FORCE_ON" ? "it cannot be disabled locally" : "it cannot be enabled locally"
+		return `Managed by your organization: ${describeOrgLock(policy)} (${tail}).`
+	}
+	return ""
 }
 
 function setSelectedResource(list: SettingsList, items: SettingItem[], id: string | undefined): void {
