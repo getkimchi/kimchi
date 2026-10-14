@@ -503,7 +503,7 @@ export function createBashControlToolDefinition(
 			// Abort cancels only this wait — the cohort keeps running. No
 			// checkpoint count is committed and no cursor advances: the
 			// cohort was not observed.
-			const running = coordinator.handles()
+			const running = coordinator.handles().filter((handle) => state.registry.getEntry(handle)?.state === "running")
 			blocks.push(
 				`Wait cancelled after ${waitedSeconds}s. ${running.length} background process${running.length === 1 ? "" : "es"} still running; ` +
 					"their exit results will continue to arrive automatically.",

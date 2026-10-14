@@ -789,6 +789,23 @@ describe("bash_control — wait", () => {
 		expect(ops.aborted).toBe(false)
 	})
 
+	it("a cancelled wait counts only live registry entries, excluding stale cohort handles", async () => {
+		const { tool } = setup()
+		const gone = spawnRunning("gone-proc")
+		await ops.exitMatching("gone-proc", 0)
+		await registry.whenExited(gone)
+		await registry.remove(gone)
+		const live = spawnRunning("live-proc")
+		const controller = new AbortController()
+		controller.abort()
+
+		const result = await callExecute(tool, { wait: true }, controller.signal)
+		expect(textOf(result)).toContain("1 background process still running")
+		expect(textOf(result)).not.toContain("2 background processes still running")
+		expect(registry.getEntry(live)?.state).toBe("running")
+		expect(ops.aborted).toBe(false)
+	})
+
 	it("an aborted wait does not increment checkpoint streaks", async () => {
 		const { tool } = setup()
 		const handle = spawnRunning("streaky")
