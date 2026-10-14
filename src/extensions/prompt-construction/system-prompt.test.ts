@@ -158,6 +158,22 @@ describe("buildSystemPrompt", () => {
 		expect(result).toContain("verbatim quote of your own previous assistant message")
 	})
 
+	it("instructs the model to match the user's language and default to English", () => {
+		const result = buildSystemPrompt({
+			tools,
+			env: testEnv,
+			mode: "single",
+		})
+
+		expect(result).toContain("## Language")
+		expect(result).toContain("Respond in the language the user writes in")
+		expect(result).toContain("default to English when unclear")
+		// The rule must reach every artifact that lands in user-facing UI, e.g. the todo panel.
+		expect(result).toContain("todo items")
+		// Identifiers survive language matching (Claude Code / Codex convention).
+		expect(result).toContain("keep code, file paths, and technical terms unchanged")
+	})
+
 	it("leaves gh/glab output-capping guidance to the bundled skills", () => {
 		const result = buildSystemPrompt({
 			tools,

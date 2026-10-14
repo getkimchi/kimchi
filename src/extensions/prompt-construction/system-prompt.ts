@@ -138,6 +138,15 @@ interface PromptParts {
 const BASE_INSTRUCTIONS =
 	"You are Kimchi, an AI coding agent. Your goal is to help users with software engineering tasks using the tools available to you — use only those, never guess or invent tool names."
 
+/** Output-language rule, applied to every mode and every user-facing artifact
+ *  (todos, plan titles, phase/step names and descriptions, summaries, commit
+ *  messages). Code, file paths, and technical terms stay in their original
+ *  form. */
+const LANGUAGE_SECTION = `## Language
+
+- Respond in the language the user writes in; default to English when unclear.
+- Match that language in everything the user reads — todo items, plan titles, phase and step names, step descriptions, summaries, and commit messages — but keep code, file paths, and technical terms unchanged.`
+
 const SINGLE_INTRO = BASE_INSTRUCTIONS
 
 const ORCHESTRATOR_INTRO = BASE_INSTRUCTIONS
@@ -434,6 +443,7 @@ function buildPrompt(parts: PromptParts): string {
 	// 1. Intro
 	const intro = parts.mode === "orchestrator" ? ORCHESTRATOR_INTRO : SINGLE_INTRO
 	sections.push(intro)
+	sections.push(LANGUAGE_SECTION)
 
 	// 2. Orchestration (team, roles, workflow, delegation — orchestrator mode only)
 	if (!parts.suppressed.has("orchestration") && parts.orchestrationSection) {
