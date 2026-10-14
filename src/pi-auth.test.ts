@@ -1,5 +1,15 @@
 import { spawn } from "node:child_process"
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
+import {
+	lstatSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent"
@@ -173,6 +183,34 @@ process.stdout.write(JSON.stringify({ reads, bad }));`,
 		expect(result.bad).toBe(0)
 		expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([])
 	}, 30_000)
+
+	it("preserves a symlinked auth.json when rewriting credentials", async () => {
+		// POSIX-only: symlink semantics differ on Windows.
+		if (process.platform === "win32") return
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-symlink-"))
+		const otherDir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-symlink-target-"))
+		tempDirs.push(dir, otherDir)
+		const authPath = join(dir, "auth.json")
+		const realPath = join(otherDir, "real-auth.json")
+		const modelsPath = join(dir, "models.json")
+
+		writeFileSync(realPath, JSON.stringify({ "kimchi-dev": { type: "api_key", key: "old-key" } }), { mode: 0o600 })
+		writeFileSync(modelsPath, JSON.stringify({ providers: { "kimchi-dev": {} } }))
+		symlinkSync(realPath, authPath)
+
+		await syncPiAuth(authPath, modelsPath, "rotated-key")
+
+		expect(lstatSync(authPath).isSymbolicLink()).toBe(true)
+		expect(JSON.parse(readFileSync(realPath, "utf-8"))).toEqual({
+			"kimchi-dev": { type: "api_key", key: "rotated-key" },
+		})
+		expect(statSync(realPath).mode & 0o777).toBe(0o600)
+		expect(
+			readdirSync(dir)
+				.concat(readdirSync(otherDir))
+				.filter((f) => f.endsWith(".tmp")),
+		).toEqual([])
+	})
 
 	it("does not rewrite auth storage when Kimchi credentials are unchanged", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-"))

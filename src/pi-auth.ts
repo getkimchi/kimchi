@@ -7,6 +7,7 @@ import {
 	mkdirSync,
 	openSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
 	statSync,
@@ -22,7 +23,7 @@ import { isKimchiProvider } from "./kimchi-provider.js"
  * auth.json's ctime on every startup — auth.json is shared by all kimchi
  * processes, so each bump forces every other running session to re-read the
  * file (revision check includes ctime) and arms the readLatestData race fixed
- * by the Auth-storage reload unwrap patch.
+ * by the Auth-storage lock-free reads hunk.
  */
 function ensureAuthFileMode(authPath: string): void {
 	if ((statSync(authPath).mode & 0o777) !== 0o600) chmodSync(authPath, 0o600)
@@ -38,7 +39,12 @@ function ensureAuthFileMode(authPath: string): void {
  * new complete document.
  */
 function writeFileAtomicSync(path: string, content: string, mode: number): void {
-	const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`)
+	// Resolve a symlinked auth.json so the tmp/rename lands beside the real
+	// file and the symlink is preserved; a bare rename over the symlink path
+	// would replace it with a regular file. realpathSync throws ENOENT
+	// when the file does not exist — fall back to `path` in that case.
+	const target = existsSync(path) ? realpathSync(path) : path
+	const tmp = join(dirname(target), `.${basename(target)}.${process.pid}.${randomUUID()}.tmp`)
 	try {
 		const fd = openSync(tmp, "w", mode)
 		try {
@@ -47,7 +53,7 @@ function writeFileAtomicSync(path: string, content: string, mode: number): void 
 		} finally {
 			closeSync(fd)
 		}
-		renameSync(tmp, path)
+		renameSync(tmp, target)
 	} catch (error) {
 		rmSync(tmp, { force: true })
 		throw error

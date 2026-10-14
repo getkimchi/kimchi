@@ -55,8 +55,7 @@ pipe-cleanup hunk grew into the shared termination helper).
   pinned as expected failure with explicit teardown.
 - Removal: delete the hunk when the pinned Pi release ships equivalent bounded
   abort cleanup (upstream: pi#10929) and keep the Kimchi regression tests.
-## @earendil-works/pi-coding-agent@0.85.1 (mid-version, corrective) — auth-storage lock-free read shape + torn-read tolerance
- (fix(auth): root-fix lock-free read shape and torn reads in auth-storage)
+## @earendil-works/pi-coding-agent@0.85.1 (mid-version, corrective) — auth-storage lock-free read shape + torn-read retry
 
 Corrects the "reload unwrap" fix this section previously described. Exposure
 bisection (concurrent `kimchi auth check` loops against chmod-churned auth.json:
@@ -70,16 +69,25 @@ dists byte-verified: no bug. No upstream issue needs filing.
 
 The hunk now returns the bare map (`return currentData`), the `readLatestData`
 unwrap hunks from the previous fix are dropped (upstream shape restored), and
-the branch gains torn-read tolerance: writers on both sides (kimchi
-`syncPiAuth`, upstream `modify()`) write truncate-then-writeFileSync, so a
-lock-free read can observe a partial file; on parse failure it keeps the last
-valid snapshot instead of surfacing `Unexpected EOF` at request time.
+the branch retries torn lock-free reads with a short backoff: upstream
+`modify()` is truncate-then-writeFileSync (non-atomic) while holding the lock;
+kimchi's `syncPiAuth` writes atomically (tmp + fsync + rename), so a lock-free
+read can only observe a partial file during an upstream modify(). The retry
+heals the tear inside the backoff window. A persistently corrupt file
+resolves undefined (the upstream `readLatestData` caller swallows the reload
+failure and serves `readState.data`; a fresh per-read AuthStorage always
+holds undefined), request auth falls back to `$KIMCHI_API_KEY`, and the next
+revision change re-arms the reload. End state after this branch: kimchi
+writes are atomic, upstream writes hold the shared proper-lockfile `syncPiAuth`
+also takes, and lock-free readers retry transient tears.
 
-- Regression tests: `src/pi-auth-storage.test.ts` (external rewrite + chmod-only
-  + torn-read cases) and the atomicity test in `src/pi-auth.test.ts`.
+- Regression tests: `src/pi-auth-storage.test.ts` (external rewrite +
+  chmod-only + transient-torn and persistent-corruption cases) and the
+  atomicity test in `src/pi-auth.test.ts`.
 - Rebasers: this entry replaces the earlier "reload unwrap" guidance. If
-  upstream ever adds lock-free reads, drop the whole lock-free hunk; there is no
-  upstream defect to track.
+  upstream ever adds lock-free reads (with a bare-map return and torn-read
+  tolerance), drop the whole lock-free hunk; there is no upstream defect
+  to track.
 
 - Reproduction was deterministic: a reader looping reads against a file being
   chmod/rewrite-cycled by a concurrent process failed exactly one read per cycle

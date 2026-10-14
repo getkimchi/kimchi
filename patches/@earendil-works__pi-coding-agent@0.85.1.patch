@@ -6,6 +6,7 @@
 #   source change and regression tests is planned against it). The /model
 #   selector and remaining runtime/UI hunks are still publication pending; no
 #   upstream issue or PR has been filed for those.
+# Removal: each hunk below declares its own Removal field (see per-hunk entries).
 # Changes:
 #   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
 #     compaction, model selection, extension UI helpers, and compact visuals.
@@ -51,14 +52,19 @@
 #     to read(), so the first credential read after an external ctime/revision
 #     change resolved to undefined and request auth fell back to models.json's
 #     $KIMCHI_API_KEY — "API key auth failed for provider kimchi-dev").
-#     Torn-read tolerance: kimchi's syncPiAuth and upstream modify() write
-#     truncate-then-writeFileSync (NOT atomic), so a lock-free read can
-#     observe a partial file; on parse failure the branch keeps the last
-#     valid snapshot instead of rejecting, and the next revision change
-#     re-arms a reload. Regression tests: src/pi-auth-storage.test.ts.
-#     Removal: when upstream provides lock-free reads with a bare-map return
-#     and torn-read tolerance (or when kimchi writes auth.json atomically and
-#     retakes the read lock).
+#     Torn-read tolerance: upstream modify() is truncate-then-writeFileSync
+#     (non-atomic) while holding the lock; kimchi's syncPiAuth writes
+#     atomically (tmp + fsync + rename). A lock-free read can therefore
+#     observe a partial file only during an upstream modify(); the branch
+#     retries with a short backoff so a transient tear heals inside the
+#     retry window. A persistently corrupt file still resolves undefined
+#     (the readLatestData caller swallows the reload failure and serves
+#     readState.data; a fresh per-read AuthStorage always holds undefined),
+#     request auth falls back to $KIMCHI_API_KEY, and the next revision
+#     change re-arms the reload. Regression tests: src/pi-auth-storage.test.ts.
+#     Removal: when upstream provides lock-free reads with a bare-map
+#     return and torn-read tolerance, when upstream modify() writes
+#     atomically, or when kimchi retakes the read lock.
   - Startup resource diagnostics: skill conflicts render as a single dim
 #     summary line ("[N skill conflicts] Some skills were found in multiple
 #     directories. <key> to see the full list.") that expands to the full
@@ -268,10 +274,10 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..904f51ac130b695e5c0f5180528fdc78
                      }
                      catch (error) {
 diff --git a/dist/core/auth-storage.js b/dist/core/auth-storage.js
-index 11f225b204b2d22ba2d37ecdda58e82fa23c6f0b..b9c2b1525d718e659ef0338884220002ffe9e55e 100644
+index 11f225b204b2d22ba2d37ecdda58e82fa23c6f0b..073e0d22d71c71d8ed5e9db5f4fb299cdd66bc7e 100644
 --- a/dist/core/auth-storage.js
 +++ b/dist/core/auth-storage.js
-@@ -320,6 +320,32 @@ export class AuthStorage {
+@@ -320,6 +320,39 @@ export class AuthStorage {
          }
      }
      async reloadFromStorageAsync(options) {
@@ -283,22 +289,29 @@ index 11f225b204b2d22ba2d37ecdda58e82fa23c6f0b..b9c2b1525d718e659ef0338884220002
 +        // shape withLockAsync produces after destructuring { result, next } —
 +        // readLatestData has no wrapper handling.
 +        if (this.authPath) {
-+            options?.signal?.throwIfAborted();
-+            let currentData;
-+            try {
-+                const content = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
-+                currentData = this.parseStorageData(content);
++            // Reads do not need the exclusive lock, but a lock-free read can
++            // observe a partial file mid-write: upstream modify() (kimchi's
++            // syncPiAuth writes are atomic, so this is the remaining writer)
++            // is truncate-then-writeFileSync while it holds the lock. A torn
++            // read is transient, so retry with a short backoff. A persistently
++            // corrupt file must surface (the next revision change re-arms the
++            // reload) instead of serving a stale credential or undefined.
++            const RETRIES = 3;
++            const BACKOFF_MS = 10;
++            for (let attempt = 0; ; attempt++) {
++                options?.signal?.throwIfAborted();
++                try {
++                    const content = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
++                    const currentData = this.parseStorageData(content);
++                    this.updateReadState(currentData, getFileRevision(this.authPath));
++                    return currentData;
++                }
++                catch (error) {
++                    if (attempt >= RETRIES)
++                        throw error;
++                    await new Promise((resolve) => setTimeout(resolve, BACKOFF_MS));
++                }
 +            }
-+            catch {
-+                // Torn read: writers (kimchi syncPiAuth, upstream modify) are
-+                // truncate-then-writeFileSync, not atomic, so a lock-free read
-+                // can observe a partial file. Keep the last valid snapshot;
-+                // the next revision change re-arms a reload.
-+                return this.readState.data;
-+            }
-+            const revision = getFileRevision(this.authPath);
-+            this.updateReadState(currentData, revision);
-+            return currentData;
 +        }
 +        // In-memory storage: no file, no lock contention — use the backend.
          return this.storage.withLockAsync(async (content) => {
