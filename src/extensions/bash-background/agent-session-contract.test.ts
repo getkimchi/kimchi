@@ -24,7 +24,9 @@
  *     notification and a control call delivers the outcome first, the late
  *     automatic message is REPLACED with a suppression note in place;
  *  3. recovery after cancellation — abort + dropped steering leaves the
- *     outcome recoverable; an explicit inspection delivers it exactly once.
+ *     outcome recoverable; an explicit inspection delivers it exactly once;
+ *  4. idle append after cancellation — an exit is persisted and retired
+ *     without restarting inference, then appears once in the resumed context.
  */
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -460,6 +462,47 @@ describe("background bash delivery contract (real AgentSession)", () => {
 
 		await harness.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 	}, 20_000)
+
+	it("appends a post-abort exit once without restarting inference and retires its delivery", async () => {
+		const harness = await setupSession([
+			{ stopReason: "toolUse", toolCalls: [{ id: "c1", name: "bash", arguments: { command: "train" } }] },
+			{ stopReason: "stop", text: "Still considering the background command.", textDelayMs: 1000 },
+			{ stopReason: "stop", text: "The saved background result is available." },
+		])
+		try {
+			const pending = harness.session.prompt("Start the background command and consider the result")
+			await expect.poll(() => harness.requests.length, { timeout: 5000 }).toBe(2)
+			await harness.session.clearQueue()
+			await harness.session.abort()
+			await pending
+			const state = getSessionState(harness.session.sessionManager.getSessionId())
+			if (!state) throw new Error("Missing session state")
+			expect(state.registry.size).toBe(1)
+			expect(harness.session.isStreaming).toBe(false)
+			const requestsBeforeExit = harness.requests.length
+
+			harness.ops.emitMatching("train", `${MARKER}\n`)
+			await harness.ops.exitMatching("train", 0)
+			await expect
+				.poll(() => JSON.stringify(harness.session.messages).split(MARKER).length - 1, { timeout: 3000 })
+				.toBe(1)
+			expect((await exportJsonl(harness)).split(MARKER).length - 1).toBe(1)
+			expect(state.delivery.hasPending()).toBe(false)
+			expect(state.registry.size).toBe(0)
+			await delay(150)
+			expect(harness.session.isStreaming).toBe(false)
+			expect(harness.requests).toHaveLength(requestsBeforeExit)
+
+			await harness.session.prompt("Continue using the saved result")
+			expect(harness.requests).toHaveLength(requestsBeforeExit + 1)
+			expect(inRequest(harness.requests[requestsBeforeExit] as RecordedRequest, MARKER)).toBe(1)
+			expect(JSON.stringify(harness.session.messages).split(MARKER).length - 1).toBe(1)
+			expect((await exportJsonl(harness)).split(MARKER).length - 1).toBe(1)
+		} finally {
+			await harness.session.abort()
+			await harness.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
+		}
+	}, 15_000)
 
 	it("drains a queued completion guard through the real follow-up queue, replacing the obsolete one", async () => {
 		// The model ends its turn with a process running (one completion
