@@ -1168,6 +1168,68 @@ describe("durable work pull request discovery", () => {
 	})
 })
 
+describe("PR titles and author logins", () => {
+	const titled = (provider: Provider) =>
+		provider === "github"
+			? pull(7, { title: "Fix the login redirect", user: { login: "octocat", id: 1 } })
+			: mr(7, { title: "Fix the login redirect", author: { username: "octocat", id: 1 } })
+	it.each(providers)("keeps the %s title and author it already receives across a restart", async (provider) => {
+		seed()
+		useProvider(provider)
+		replies(() => [titled(provider)])
+		await lookup()
+		// The repository identity and the commit's associations; display metadata needs no request of its own.
+		expect(http).toHaveBeenCalledTimes(2)
+		expect(saved().at(-1).pullRequests).toEqual([
+			expect.objectContaining({ number: 7, title: "Fix the login redirect", author: "octocat" }),
+		])
+		vi.resetModules()
+		const relaunched = await import("./pull-requests.js")
+		expect(relaunched.readWorkPullRequestUpdates(agentDir)[0].pullRequests).toEqual([
+			expect.objectContaining({ provider, number: 7, title: "Fix the login redirect", author: "octocat" }),
+		])
+	})
+	it.each([
+		["github", {}],
+		["github", { title: "", user: { login: "" } }],
+		["github", { title: 42, user: "octocat" }],
+		["github", { title: null, user: { login: "a".repeat(256) } }],
+		["gitlab", {}],
+		["gitlab", { title: "", author: { username: "" } }],
+		["gitlab", { title: 42, author: "octocat" }],
+		["gitlab", { title: null, author: { username: "a".repeat(256) } }],
+	] as const)("links a %s PR and leaves out a missing or malformed title and author: %j", async (provider, fields) => {
+		seed()
+		useProvider(provider)
+		replies(() => [provider === "github" ? pull(7, fields) : mr(7, fields)])
+		await lookup()
+		const [link] = saved().at(-1).pullRequests
+		expect(saved().at(-1).prLookup.status).toBe("linked")
+		expect(link).toMatchObject({ provider, number: 7, state: "open" })
+		expect(link).not.toHaveProperty("title")
+		expect(link).not.toHaveProperty("author")
+	})
+	it.each(providers)("keeps reading %s links saved without them and adds them on the next check", async (provider) => {
+		const id = String(provider === "github" ? pull().id : mr().id)
+		// A link saved by an earlier version.
+		seed({
+			prLookup: { status: "linked", checkedAt: "2026-10-01T12:00:00Z" },
+			pullRequests: [stored(provider, { id, repositoryId: "42" })],
+		})
+		useProvider(provider)
+		const [before] = readWorkPullRequestUpdates(agentDir)[0].pullRequests
+		expect(before).toMatchObject({ provider, id, number: 7, state: "open" })
+		expect(before).not.toHaveProperty("title")
+		expect(before).not.toHaveProperty("author")
+		replies(() => [titled(provider)])
+		await lookup()
+		expect(saved().at(-1)).toMatchObject({
+			prLookup: { status: "linked" },
+			pullRequests: [{ id, number: 7, title: "Fix the login redirect", author: "octocat" }],
+		})
+	})
+})
+
 describe("self-managed GitLab credentials", () => {
 	it.each([
 		["GITLAB_HOST", "http://gitlab.internal.example"],

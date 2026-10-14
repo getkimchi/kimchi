@@ -127,6 +127,22 @@ describe("PR status extension", () => {
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR #7 open")
 		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-pr-url", renamed.url)
 	})
+	it("keeps PR titles and author logins out of the footer and /work", async () => {
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const status = createExtensionApi()
+		pullRequestStatusExtension({ ...status.api, events: api.api.events })
+		await start(api)
+		await start(status)
+		const update = vi.mocked(supervisor.subscribePullRequestReconciliation).mock.calls[0][0].onPullRequest
+		update({ ...contribution(getWorkId(ctx)), pullRequests: [{ ...pr, title: "Private roadmap", author: "octocat" }] })
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR #7 open")
+		await api.getRegisteredCommand("work").handler("", textCommandContext())
+		expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining(`PR #7 open: ${pr.url}`), "info")
+		const shown = JSON.stringify([vi.mocked(ctx.ui.setStatus).mock.calls, vi.mocked(ctx.ui.notify).mock.calls])
+		expect(shown).not.toContain("Private roadmap")
+		expect(shown).not.toContain("octocat")
+	})
 	it("shows pending PRs, explains errors once, and clears the status when work changes", async () => {
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)

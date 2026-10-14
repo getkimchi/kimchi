@@ -38,6 +38,10 @@ export interface WorkPullRequest {
 	repositoryId?: string
 	url: string
 	number: number
+	/** The provider's title, cut to 1,024 characters. Display metadata for PR cost uploads only; older links omit it. */
+	title?: string
+	/** The author's login: GitHub `user.login`, GitLab `author.username`. Like `title`, uploaded only. */
+	author?: string
 	state: "open" | "closed" | "merged"
 	repository: string
 	host: string

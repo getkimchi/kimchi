@@ -1676,6 +1676,31 @@ describe("exclusive allocation with tool-observed edits", () => {
 	})
 })
 
+describe("PR titles and author logins", () => {
+	const plain = () => calculatePullRequestCosts([request("a"), commit()], [charge("a", "1")])
+	it("carries a saved title and author into the report without changing any total", () => {
+		const titled = pullRequest({ title: "Fix the login redirect", author: "octocat" })
+		const report = calculatePullRequestCosts([request("a"), commit("work-a", [titled])], [charge("a", "1")])
+		expect(report.pullRequests[0].pullRequest).toMatchObject({ title: "Fix the login redirect", author: "octocat" })
+		expect(report.requests).toEqual(plain().requests)
+		expect(report.pullRequests[0].totalCostUsd).toBe("1.000000000")
+	})
+	it.each([
+		{},
+		{ title: "", author: "" },
+		{ title: 42, author: { login: "octocat" } },
+		{ title: null, author: "a".repeat(256) },
+	])("leaves out a missing or malformed title and author %j without invalidating the link", (fields) => {
+		const report = calculatePullRequestCosts(
+			[request("a"), commit(undefined, undefined, undefined, { pullRequests: [{ ...pullRequest(), ...fields }] })],
+			[charge("a", "1")],
+		)
+		expect(report.pullRequests[0].pullRequest).not.toHaveProperty("title")
+		expect(report.pullRequests[0].pullRequest).not.toHaveProperty("author")
+		expect(report).toEqual(plain())
+	})
+})
+
 describe("roundedUsd", () => {
 	it.each([
 		["0.000000000", "$0.00"],

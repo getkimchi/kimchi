@@ -1,6 +1,12 @@
 import { plainURL } from "../../utils/url.js"
 import { pullRequestKey } from "../pull-request-status/links.js"
-import { providerId, repositoryPath, SHA } from "../pull-request-status/provider-records.js"
+import {
+	providerId,
+	pullRequestAuthor,
+	pullRequestTitle,
+	repositoryPath,
+	SHA,
+} from "../pull-request-status/provider-records.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import { isWorkSegment, type WorkSegment } from "../work-attribution.js"
 import { requestWorkLinks } from "./links.js"
@@ -188,10 +194,15 @@ function storedPullRequest(row: unknown): { identity: PullIdentity; pullRequest:
 		(row.mergeCommitSha !== null && (typeof row.mergeCommitSha !== "string" || !SHA.test(row.mergeCommitSha)))
 	)
 		return { identity, pullRequest: null }
+	// Display metadata never affects allocation: a malformed title or author is only left out.
+	const title = pullRequestTitle(row.title)
+	const author = pullRequestAuthor(row.author)
 	return {
 		identity,
 		pullRequest: {
 			...identity,
+			...(title ? { title } : {}),
+			...(author ? { author } : {}),
 			state: row.state,
 			headSha: row.headSha,
 			mergeCommitSha: row.mergeCommitSha,

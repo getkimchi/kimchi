@@ -279,6 +279,7 @@ Each commit keeps two extra fields, `prLookup` and `pullRequests[]`. The rows af
 | `pullRequests[]` | Confirmed GitHub or GitLab links. The existing field name stays the same for compatibility; later errors do not erase links. |
 | `provider` / `number` | `github` uses the PR number; `gitlab` uses the project's MR number (`iid`), not its global ID. Older links without `provider` mean GitHub. |
 | `id` / `repositoryId` | Stable provider IDs for the PR or MR and its target repository, when returned. These survive repository renames; older records can omit them. |
+| `title` / `author` | The provider's title, cut to 1,024 characters, and the author's login (GitHub `user.login`, GitLab `author.username`), read from the responses lookup already receives. Only PR cost reporting uploads them; `/work` and the footer do not show them. Empty or malformed values are left out. Older records omit both and gain them on the link's next check; a merged link with stable IDs is no longer checked, so one saved by an earlier version usually keeps omitting them. |
 | `headSha` / `mergeCommitSha` | The head commit and the provider's merge hash. GitHub may return a test-merge hash before merging; use `state` to establish an actual merge. |
 | `mergedAt` / `closedAt` / `checkedAt` | Provider event times, or `null` when unavailable, and when Kimchi checked the link. GitLab's state can be `merged` even when its response omits `mergedAt`. |
 
