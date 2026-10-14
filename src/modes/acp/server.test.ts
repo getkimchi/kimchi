@@ -5851,6 +5851,30 @@ describe("routed model notifications", () => {
 		])
 	})
 
+	it("notifies again on a mid-turn reroute — the mirror adds no dedup", async () => {
+		const fake = new FakeAgentSession("session-routed-6")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRoutedTestSession(fake, conn)
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "entry_appended", entry: routedModelEntry("glm-5.3") })
+			fake.emit({ type: "entry_appended", entry: routedModelEntry("kimi-k3") })
+			fake.emit(agentEnd())
+		}
+
+		await runTurn(agent, "session-routed-6")
+		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/routed_model")).toEqual([
+			{
+				method: "_kimchi.dev/routed_model",
+				params: { sessionId: "session-routed-6", requestedId: "auto", routedId: "glm-5.3" },
+			},
+			{
+				method: "_kimchi.dev/routed_model",
+				params: { sessionId: "session-routed-6", requestedId: "auto", routedId: "kimi-k3" },
+			},
+		])
+	})
+
 	it("does not re-notify when no new routed entry is appended", async () => {
 		const fake = new FakeAgentSession("session-routed-2")
 		const { conn, extNotifications } = makeRecordingConn()

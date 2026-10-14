@@ -386,6 +386,22 @@ describe("auto-model extension", () => {
 		expect(setModel).toHaveBeenCalledTimes(1)
 	})
 
+	it("resumed session: the hydrated pick re-seeds dedup so the same response appends nothing", async () => {
+		const { getHandler, getAppendedEntries } = setup()
+		const onSessionStart = getHandler<"session_start">("session_start")
+		const c = ctx({
+			modelRegistry: { find: () => model("kimi-k3") },
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [routedEntry("auto-beta", "kimi-k3")] },
+		})
+
+		await onSessionStart({ type: "session_start" } as never, c as never)
+		getHandler<MessageEndEvent>("message_end")(messageEnd({ model: "auto-beta", responseModel: "kimi-k3" }), c as never)
+
+		// The reload silence comes from the re-seeded dedup state, not from any
+		// mirror-side dedup — this pins exactly that.
+		expect(getAppendedEntries(ROUTED_MODEL_RESOLUTION_ENTRY)).toHaveLength(0)
+	})
+
 	it("renders the pick notice as a dim '<requested> picked <routed>.'", () => {
 		const { getEntryRenderer } = setup()
 		const renderer = getEntryRenderer(ROUTED_MODEL_RESOLUTION_ENTRY)
