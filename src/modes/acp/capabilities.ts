@@ -84,11 +84,17 @@ export function getClientSupportsMethod(capabilities: ClientCapabilities | undef
 }
 
 /**
+ * A `_meta` payload namespaced under the kimchi.dev capability key — the
+ * shape `kimchiDevMetaOf` produces and `_meta` readers consume.
+ */
+export type KimchiDevMeta<T> = { [CAPABILITIES_KEY]: T }
+
+/**
  * Wrap a payload in the nested `_meta` object namespaced under the kimchi.dev
  * capability key — the shared shape of the initialize capability
  * advertisement and per-chunk model attribution.
  */
-export function kimchiDevMetaOf<T>(payload: T): { [CAPABILITIES_KEY]: T } {
+export function kimchiDevMetaOf<T>(payload: T): KimchiDevMeta<T> {
 	return { [CAPABILITIES_KEY]: payload }
 }
 

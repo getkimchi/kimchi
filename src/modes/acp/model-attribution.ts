@@ -15,7 +15,7 @@
 
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { refFromParts } from "../../extensions/model-catalog/ref-utils.js"
-import { CAPABILITIES_KEY, kimchiDevMetaOf } from "./capabilities.js"
+import { type KimchiDevMeta, kimchiDevMetaOf } from "./capabilities.js"
 
 export interface ModelAttribution {
 	/** Ref of the model that served the response: `provider/responseModel` when the backend reported one, else `provider/model`. */
@@ -25,7 +25,7 @@ export interface ModelAttribution {
 }
 
 /** The `_meta` value a chunk carries: the attribution namespaced under the kimchi.dev key. */
-export type ModelMeta = { [CAPABILITIES_KEY]: ModelAttribution }
+export type ModelMeta = KimchiDevMeta<ModelAttribution>
 
 /**
  * Compose the attribution for one assistant message. `responseModel` is the
