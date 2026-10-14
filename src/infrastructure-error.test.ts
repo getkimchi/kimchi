@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { preserveRawErrorMessage } from "./extensions/error-preservation.js"
 import {
 	applyInfrastructureExitPolicy,
 	createInfrastructureErrorTracker,
@@ -151,13 +152,35 @@ describe("infrastructure error tracker", () => {
 		const controller = new AbortController()
 		const ctx = { sessionManager: { getSessionFile: () => sessionFile }, signal: controller.signal }
 
-		// A genuine network AbortError from the provider (signal not aborted).
-		emit(assistantError("fetch failed"), ctx)
+		// Identical stock AbortError wording, but no aborted signal: a genuine
+		// network abort must still be audited. Pairing identical texts proves
+		// the guard is signal-keyed, not text-keyed.
+		emit(assistantError("The operation was aborted."), ctx)
 
 		expect(auditEntries).toHaveLength(1)
-		// The abort wording guard is signal-keyed, so it cannot swallow a real
-		// failure that happens after a disruption the user did not request.
-		expect(tracker.getFailure()).toMatchObject({ error: { reason: "transport_failure" } })
+		expect(auditEntries[0]?.data).toMatchObject({ rawMessage: "The operation was aborted." })
+		// The stock abort text is not an infrastructure error, so no failure is
+		// tracked — the audit alone is the observable signal here.
+		expect(tracker.getFailure()).toBeUndefined()
+	})
+
+	it("audits and tracks the preserved raw error when the display text was mutated to the retry placeholder", () => {
+		const { tracker, emit, auditEntries } = createTrackerHarness()
+		// interactive-error-surface mutates errorMessage to "Retrying…" per
+		// attempt; if this handler runs after that mutation it still must
+		// classify the real provider text.
+		const message = assistantError("503 Service Unavailable")
+		preserveRawErrorMessage(message)
+		message.errorMessage = "Retrying…"
+		emit(message)
+
+		expect(auditEntries).toEqual([
+			{
+				customType: GATEWAY_CLASSIFICATION_AUDIT_TYPE,
+				data: expect.objectContaining({ rawMessage: "503 Service Unavailable", reason: "provider_5xx" }),
+			},
+		])
+		expect(tracker.getFailure()).toMatchObject({ error: { reason: "provider_5xx" } })
 	})
 
 	it("does not audit successful or non-error assistant messages", () => {

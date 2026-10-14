@@ -5789,6 +5789,39 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		expect((err as { data?: unknown }).data).toEqual({ kind: "provider_5xx", httpStatusCode: 503 })
 	})
 
+	// Each retry attempt carries its own message object, and preservation is
+	// write-once per object — so the terminal error must come from the FINAL
+	// attempt's preserved raw text, never a stale first-attempt error.
+	it("uses the last retry attempt's preserved raw text when each attempt fails differently", async () => {
+		const fake = new FakeAgentSession("session-raw-error-last-attempt")
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			// First attempt: 429, mutated to placeholder by the extension.
+			const first = assistantErrorEvent("Request failed with status code 429: rate limited")
+			if (first.type !== "message_end") throw new Error("unreachable")
+			preserveRawErrorMessage(first.message as AssistantMessage)
+			;(first.message as AssistantMessage).errorMessage = "Retrying…"
+			fake.emit(first)
+			fake.emit({ type: "agent_start" })
+			// Final attempt: 503 with different raw text, also placeholder-mutated.
+			const second = assistantErrorEvent("Request failed with status code 503: Service Unavailable")
+			if (second.type !== "message_end") throw new Error("unreachable")
+			preserveRawErrorMessage(second.message as AssistantMessage)
+			;(second.message as AssistantMessage).errorMessage = "Retrying…"
+			fake.emit(second)
+			fake.emit(agentEnd())
+		}
+
+		const err = await agent
+			.prompt({ sessionId: "session-raw-error-last-attempt", prompt: [{ type: "text", text: "hello" }] })
+			.catch((e) => e)
+		expect((err as Error).message).toMatch(/503/)
+		expect((err as Error).message).not.toMatch(/429/)
+		expect((err as { data?: unknown }).data).toEqual({ kind: "provider_5xx", httpStatusCode: 503 })
+	})
+
 	it("does not fail the turn when the final assistant message was aborted", async () => {
 		const fake = new FakeAgentSession("session-aborted-msg")
 		const agent = makeAgent(fake)
