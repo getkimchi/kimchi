@@ -641,6 +641,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	pi.on("input", (event, ctx) => {
 		if (isBareExitAlias(event.text)) {
 			ctx.shutdown()
+			return { action: "handled" as const }
 		}
 	})
 
