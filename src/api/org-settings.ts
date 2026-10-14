@@ -101,9 +101,9 @@ function parseAllowedModes(raw: unknown): AllowedPermissionModes | undefined {
  * Shared walker for the resources policy map: validates the JSON object
  * shape, applies a per-value parser, and drops entries whose value does not
  * parse. The wire parser and the cache validator share these rules so their
- * acceptance behavior cannot drift; dropping is fail-open (an unknown value
- * degrades to "no restriction") but logged so platform/harness version skew
- * is observable in diagnostics instead of silent.
+ * acceptance behavior cannot drift. Dropping is fail-open (an unknown value
+ * degrades to "no restriction") and silent: an org pushing an enum this
+ * client does not know simply has no effect on the client's decisions.
  */
 export function parseResourcePolicyMap(
 	raw: unknown,
@@ -114,11 +114,7 @@ export function parseResourcePolicyMap(
 	const policies: Record<string, ResourcePolicy> = {}
 	for (const [id, value] of Object.entries(source)) {
 		const policy = parseValue(value)
-		if (policy) {
-			policies[id] = policy
-		} else {
-			console.warn(`[org-policy] dropping resource policy entry for "${id}": unparsable value ${JSON.stringify(value)}`)
-		}
+		if (policy) policies[id] = policy
 	}
 	return Object.keys(policies).length > 0 ? policies : undefined
 }
