@@ -124,7 +124,7 @@ describe("formatSessionCosts", () => {
 			requestCount: "1",
 		}))
 		const lines = formatSessionCosts({ items, totals: {}, nextPageToken: "12" }, current, 7, theme)
-		expect(lines[0]).toContain("not among the sessions loaded; try a shorter window such as /cost 1")
+		expect(lines[0]).toContain("not among the sessions loaded; try a shorter window such as /session-costs 1")
 		expect(lines.join("\n")).toContain("… at least 2 more")
 	})
 

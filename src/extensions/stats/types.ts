@@ -264,7 +264,7 @@ export interface TimeSeriesDataPoint {
 
 // ─── Cost Breakdown API Types ────────────────────────────────────────────────
 
-/** Breakdown dimensions /cost reads; see GET /ai-optimizer/v1beta/organizations/{id}:generateBreakdown. */
+/** Breakdown dimensions /session-costs reads; see GET /ai-optimizer/v1beta/organizations/{id}:generateBreakdown. */
 export type BreakdownDimension =
 	| "BREAKDOWN_DIMENSION_SESSION"
 	| "BREAKDOWN_DIMENSION_MODEL"

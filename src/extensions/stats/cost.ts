@@ -1,5 +1,5 @@
 /**
- * /cost: billed cost from the backend's cost breakdown. Unlike the catalog prices a session's own messages carry,
+ * /session-costs: billed cost from the backend's cost breakdown. Unlike the catalog prices a session's own messages carry,
  * billing prices every request the session sent: compaction summaries, its subagents and Auto requests, which bill
  * at the price of the model the router chose.
  */
@@ -21,7 +21,7 @@ const SESSION_ROWS = 10
 /** GenerateBreakdown rejects longer windows. */
 const MAX_DAYS = 33
 
-/** Parses `/cost [sessions|models|workspaces] [days]`; the sessions of the last 7 days by default. */
+/** Parses `/session-costs [sessions|models|workspaces] [days]`; the sessions of the last 7 days by default. */
 export function parseCostArgs(args: string): { view: CostView; days: number } {
 	let view: CostView = "sessions"
 	let days = 7
@@ -40,8 +40,8 @@ export function sessionStartedAt(sessionId: string): Date | undefined {
 }
 
 /**
- * The last `days` days. With a session id it reaches back to an hour before that session started when that is
- * earlier, within the backend's limit, so the session's whole cost counts; `days` then says how far it reaches.
+ * The last `days` days, or from an hour before the given session started when that is earlier, so the session's whole
+ * cost counts. It never exceeds the backend's limit. The returned `days` is the span it covers.
  */
 export function costWindow(
 	days: number,
@@ -102,7 +102,9 @@ function sessionHeadline(item: BreakdownItem | undefined, tracked: boolean, more
 	if (!tracked) return "not tracked while telemetry is off"
 	// The response is the costliest page of sessions, so a cheap current session can be on a later one.
 	if (!item)
-		return morePages ? "not among the sessions loaded; try a shorter window such as /cost 1" : "no billed requests yet"
+		return morePages
+			? "not among the sessions loaded; try a shorter window such as /session-costs 1"
+			: "no billed requests yet"
 	return [
 		`${formatCurrency(item.totalCostUsd)} billed`,
 		requests(item.requestCount),

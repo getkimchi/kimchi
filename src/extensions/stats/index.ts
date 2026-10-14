@@ -6,7 +6,7 @@
  * - Analytics API (generateAnalyticsReport)
  * - Productivity Metrics API (getProductivityMetrics)
  *
- * Provides /cost for the billed cost of this session and the user's recent sessions, models and workspaces, from the
+ * Provides /session-costs for the billed cost of this session and the user's recent sessions, models and workspaces, from the
  * cost breakdown API (generateBreakdown).
  */
 
@@ -174,12 +174,13 @@ async function handleCostCommand(args: string, ctx: ExtensionCommandContext): Pr
 }
 
 export default function statsExtension(pi: ExtensionAPI) {
-	pi.registerCommand("cost", {
-		description: "Billed cost of this session and your recent sessions (/cost models, /cost workspaces, /cost 30)",
+	pi.registerCommand("session-costs", {
+		description:
+			"Billed cost of this session and your recent sessions (/session-costs models, /session-costs workspaces, /session-costs 30)",
 		getArgumentCompletions: (prefix) =>
 			(Object.keys(COST_VIEWS) as CostView[])
 				.filter((view) => view.startsWith(prefix.trimStart().toLowerCase()))
-				.map((view) => ({ value: view, label: view, description: `/cost ${view}` })),
+				.map((view) => ({ value: view, label: view, description: `/session-costs ${view}` })),
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			await handleCostCommand(args, ctx)
 		},
