@@ -31,9 +31,9 @@ concurrency:
 jobs:
   tui-e2e:
     runs-on: ubuntu-latest
-    # Files run serially; allow setup/build plus the roughly 20-minute suite
-    # (25 minutes of headroom for CI variance).
-    timeout-minutes: 25
+    # Files run serially; the full suite exceeded the previous 25-minute
+    # job limit. Allow setup/build and CI variance without weakening tests.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
