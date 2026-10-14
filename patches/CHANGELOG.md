@@ -15,6 +15,49 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
 
 ---
 
+## 0.85.1 (mid-version, additive) — bounded abort/timeout pipe cleanup
+
+Not an upgrade: a new behavior was added to the pi-coding-agent patch while the
+pin stayed at 0.85.1. Rebasers can ignore this section entirely; it exists only
+to explain where the reworked `tools/bash.js` hunk came from (the timeout-only
+pipe-cleanup hunk grew into the shared termination helper).
+
+### `@earendil-works/pi-coding-agent`
+
+- **REWORKED — `tools/bash.js`: abort now shares the timeout's bounded pipe
+  cleanup.** Previously only the timeout path destroyed the inherited
+  stdout/stderr pipe ends (after a 500 ms grace); abort only killed the
+  process group. A detached descendant that escaped that group kill
+  (`setsid`) and kept writing through the inherited pipes re-armed
+  `waitForChildProcess`'s idle timer on every chunk, so an aborted execution
+  stayed pending until the descendant's own exit — Managed Stop, safety
+  expiry, pre-handoff cancellation, and shutdown all hung the same way.
+  Both paths now route through one `terminateGroup()` helper: kill the
+  command group, then destroy the pipe ends after 500 ms. The cleanup timer
+  is scheduled at most once when abort and timeout overlap and is cleared
+  in `finally` when the executor settles first; abort/timeout error messages
+  and precedence and the already-aborted handling are unchanged, and normal
+  completion keeps the idle-drain behavior (post-exit descendant output
+  within the grace) intact.
+  **Escaped descendants are NOT terminated by this** — the patch bounds pipe
+  cleanup after cancellation of the original command group only.
+- Tracking: [earendil-works/pi#10929](https://github.com/earendil-works/pi/issues/10929)
+  (upstream issue with a minimal reproduction of the never-settling abort and
+  the proposed shared termination; an upstream PR submitting the equivalent
+  source change and regression tests is planned against it).
+- Validation: `src/extensions/bash-background/bash-cancellation-settlement.test.ts`
+  covers the executor directly (escaped stdout and stderr writers, the timeout
+  baseline that passes with and without the abort half, abort/timeout overlap
+  in both directions, a pre-aborted signal, normal-completion output
+  preservation, ordinary tree termination, and cleanup-timer clearing);
+  `bash-control-stress.test.ts` keeps the managed-path view — the four
+  settlement regressions pass, while escaped-descendant *termination* stays
+  pinned as expected failure with explicit teardown.
+- Removal: delete the hunk when the pinned Pi release ships equivalent bounded
+  abort cleanup (upstream: pi#10929) and keep the Kimchi regression tests.
+
+---
+
 ## 0.85.1 (mid-version, additive) — configurable wheel-scroll speed
 
 Not an upgrade: a new behavior was added to the pi-tui patch while the pin stayed

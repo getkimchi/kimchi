@@ -1,6 +1,11 @@
 # Patch: Kimchi runtime and UI integrations for pi-coding-agent 0.85.1
 #
-# Tracking: publication pending; no upstream issue or PR has been filed for this selector change.
+# Tracking: tools/bash.js bounded abort/timeout termination: earendil-works/pi#10929
+#   (upstream issue with a minimal reproduction of the never-settling abort and
+#   the proposed shared termination; an upstream PR submitting the equivalent
+#   source change and regression tests is planned against it). The /model
+#   selector and remaining runtime/UI hunks are still publication pending; no
+#   upstream issue or PR has been filed for those.
 # Changes:
 #   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
 #     compaction, model selection, extension UI helpers, and compact visuals.
@@ -41,8 +46,16 @@
 #     wrapper (trace IDs + awaited PII redaction, fail-closed). Upstream's method
 #     is sync, so this hunk looks redundant - it is not. Dropping it prints
 #     [object Promise] and returns before redaction completes.
-#   - tools/bash.js timeout pipe-cleanup lives in createLocalShellOperations, so
-#     it covers the PowerShell tool too (intentional).
+#   - tools/bash.js bounded termination in createLocalShellOperations, shared
+#     by abort AND timeout (covers the PowerShell tool too, intentionally):
+#     kill the command's process group, then destroy the local inherited
+#     stdout/stderr pipe ends after a 500 ms grace so a detached descendant
+#     that keeps writing through them cannot re-arm waitForChildProcess's
+#     idle timer forever (a cancelled execution would otherwise stay pending
+#     until the descendant's own exit). The cleanup timer is scheduled at most
+#     once when abort and timeout overlap, and cleared in finally on earlier
+#     settlement; abort/timeout error messages and precedence and the
+#     already-aborted handling are unchanged. Tracking: earendil-works/pi#10929.
 #   Two fixes for third-party npm extensions (e.g. plannotator):
 #   - Type2 ReferenceError: Bun's bundler renames Google GenAI's `Type` enum to
 #     `Type2` (collision with typebox's `Type`); the pi-ai compat module re-exports
@@ -64,7 +77,7 @@
 # (dist/core/project-trust.js, dist/modes/interactive/interactive-mode.js)
 # mention those resources and speak as Kimchi, not pi.
 # Careful: pasteToEditor is NOT patched here - src/paste-to-editor-patch.ts owns
-# Removal: remove the selector adapter when the pinned Pi release provides equivalent rendering extensibility or native capability columns. Remove other runtime/UI hunks when upstream provides equivalent APIs or Kimchi no longer needs the branded behavior. Remove trust hunks when Pi provides native trust-scan extensibility or Kimchi adopts Pi's config-directory layout. Keep trust resources synchronized with `TRUST_REQUIRING_PROJECT_RESOURCES` in `src/project-scope-trust.ts` until then.
+# Removal: remove the selector adapter when the pinned Pi release provides equivalent rendering extensibility or native capability columns. Remove the tools/bash.js bounded-termination hunk when the pinned Pi release ships equivalent bounded abort cleanup (upstream: earendil-works/pi#10929); keep the Kimchi regression tests in src/extensions/bash-background/ after removal. Remove other runtime/UI hunks when upstream provides equivalent APIs or Kimchi no longer needs the branded behavior. Remove trust hunks when Pi provides native trust-scan extensibility or Kimchi adopts Pi's config-directory layout. Keep trust resources synchronized with `TRUST_REQUIRING_PROJECT_RESOURCES` in `src/project-scope-trust.ts` until then.
 # History: patches/CHANGELOG.md.
 #
 diff --git a/dist/cli/args.js b/dist/cli/args.js
@@ -417,22 +430,68 @@ index c5ed4d72cd596fe384af4c7b9526247e86e4d91b..551ba46e610f90a634ad07ed6b26ca66
                  }
                  else {
 diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
-index b71057ddcf98b8500371f7b91f8ca10f52e7a78d..ac9ac1230792947a4c92421606e12e6fffe20157 100644
+index b71057ddcf98b8500371f7b91f8ca10f52e7a78d..c4ae0edfa1b3c9a83510f3d18adbfd89a8485ed9 100644
 --- a/dist/core/tools/bash.js
 +++ b/dist/core/tools/bash.js
-@@ -73,6 +73,12 @@ export function createLocalShellOperations(shellName, resolveShellConfig) {
+@@ -62,17 +62,31 @@ export function createLocalShellOperations(shellName, resolveShellConfig) {
+                 trackDetachedChildPid(child.pid);
+             let timedOut = false;
+             let timeoutHandle;
+-            const onAbort = () => {
++            // kimchi-dev: bounded termination shared by abort and timeout
++            // (earendil-works/pi#10929). Killing the command group alone is
++            // not enough: a detached descendant that kept the inherited
++            // stdout/stderr pipes re-arms waitForChildProcess's idle timer on
++            // every chunk, so a cancelled execution stays pending indefinitely.
++            // Destroy the local pipe ends after a short grace so the waiter
++            // settles. The cleanup timer is scheduled at most once when abort
++            // and timeout overlap, and cleared in finally when the executor
++            // settles first.
++            let pipeCleanupHandle;
++            const terminateGroup = () => {
+                 if (child.pid)
+                     killProcessTree(child.pid);
++                pipeCleanupHandle ??= setTimeout(() => {
++                    pipeCleanupHandle = undefined;
++                    child.stdout?.destroy();
++                    child.stderr?.destroy();
++                }, 500);
+             };
+             try {
+                 // Set timeout if provided.
+                 if (timeoutMs !== undefined) {
+                     timeoutHandle = setTimeout(() => {
                          timedOut = true;
-                         if (child.pid)
-                             killProcessTree(child.pid);
-+                        // Close inherited pipes after a short grace so detached
-+                        // descendants cannot keep waitForChildProcess pending.
-+                        setTimeout(() => {
-+                            child.stdout?.destroy();
-+                            child.stderr?.destroy();
-+                        }, 500);
+-                        if (child.pid)
+-                            killProcessTree(child.pid);
++                        terminateGroup();
                      }, timeoutMs);
                  }
                  // Stream stdout and stderr.
+@@ -81,9 +95,9 @@ export function createLocalShellOperations(shellName, resolveShellConfig) {
+                 // Handle abort signal by killing the entire process tree.
+                 if (signal) {
+                     if (signal.aborted)
+-                        onAbort();
++                        terminateGroup();
+                     else
+-                        signal.addEventListener("abort", onAbort, { once: true });
++                        signal.addEventListener("abort", terminateGroup, { once: true });
+                 }
+                 // Handle shell spawn errors and wait for the process to terminate without hanging
+                 // on inherited stdio handles held by detached descendants.
+@@ -101,8 +115,10 @@ export function createLocalShellOperations(shellName, resolveShellConfig) {
+                     untrackDetachedChildPid(child.pid);
+                 if (timeoutHandle)
+                     clearTimeout(timeoutHandle);
++                if (pipeCleanupHandle)
++                    clearTimeout(pipeCleanupHandle);
+                 if (signal)
+-                    signal.removeEventListener("abort", onAbort);
++                    signal.removeEventListener("abort", terminateGroup);
+             }
+         },
+     };
 diff --git a/dist/core/tools/renderers/edit.js b/dist/core/tools/renderers/edit.js
 index 4def3e242133187867d60178e3364e26f0dfca4d..a132e8d8196d37ff25adb545021e59838df2fdd4 100644
 --- a/dist/core/tools/renderers/edit.js
