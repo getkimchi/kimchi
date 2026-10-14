@@ -217,7 +217,7 @@ export const CORE_GUIDELINES = `- Be concise; act and move on without restating 
 - Use absolute file paths.
 - Do NOT introduce security vulnerabilities.
 ${TOOL_CALL_DISCIPLINE}
-- Bash commands have a harness-owned safety limit. Long-running commands hand off after about two seconds and continue in the background; use \`bash_control\` to inspect, stop, or wait for them. Legacy \`timeout\` inputs are ignored — never wrap commands in the GNU \`timeout\` binary (missing on macOS/Windows). Never run interactive commands (e.g. \`git rebase\`, \`npm init\`): use non-interactive flags (\`--yes\`, \`GIT_EDITOR=true\`) or redirect stdin from \`/dev/null\`.
+- Bash has a harness-owned safety limit and two-second handoff; use \`bash_control\` to inspect, stop, or wait. Legacy \`timeout\` inputs are ignored; never wrap commands in the GNU \`timeout\` binary (missing on macOS/Windows). Never run interactive commands: use \`--yes\`, \`GIT_EDITOR=true\`, or stdin from \`/dev/null\`.
 - **Git commits**: end the message with a blank line, then \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`
 
 /** The orient-the-user bullet, swapped for a proceed-autonomously variant in
