@@ -292,6 +292,8 @@ GitHub's commit-to-PR endpoint may omit a PR that was closed before Kimchi ever 
 
 Kimchi tries credentials in this order: an environment token for the selected host, a saved Kimchi Git token for that host, then the matching CLI's saved token. It does not prompt, install a CLI, or change your login. A rejected token produces an error instead of silently trying another identity. A `glab` token saved without a host is ignored.
 
+`glab` before 1.115 has no `glab config path`. Kimchi then finds its `config.yml` the way glab 1.76 and later do: `$GLAB_CONFIG_DIR`, then `~/.config/glab-cli`, then the XDG config folder (`~/Library/Application Support/glab-cli` on macOS, `%LOCALAPPDATA%\glab-cli` on Windows). If several of these files exist, glab 1.75 and earlier may use a different one. Keyring logins are read through `glab`, including those saved before 1.84 without a `use_keyring` setting.
+
 | Available access | Result |
 | --- | --- |
 | Signed-in `gh` or `glab` | Uses that host's saved token for API reads. |
