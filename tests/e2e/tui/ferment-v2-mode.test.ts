@@ -463,6 +463,8 @@ test("experimental Ferment V2 edit fences stale output and Todos without cancell
 
 test("experimental Ferment V2 edit updates the revision while a tool is still running", async ({ terminal }) => {
 	const toolMarker = "REVISION_ONE_TOOL_FINISHED"
+	// Keep this command below the two-second Bash handoff: this workflow
+	// exercises an edit during a synchronous tool, without cohort reminders.
 	await runKimchiSession(
 		terminal,
 		{
@@ -478,7 +480,7 @@ test("experimental Ferment V2 edit updates the revision while a tool is still ru
 								name: "bash",
 								arguments: JSON.stringify({
 									command:
-										"sleep 2; printf '\\122\\105\\126\\111\\123\\111\\117\\116\\137\\117\\116\\105\\137\\124\\117\\117\\114\\137\\106\\111\\116\\111\\123\\110\\105\\104\\n'",
+										"sleep 1; printf '\\122\\105\\126\\111\\123\\111\\117\\116\\137\\117\\116\\105\\137\\124\\117\\117\\114\\137\\106\\111\\116\\111\\123\\110\\105\\104\\n'",
 								}),
 							},
 						},
@@ -493,7 +495,7 @@ test("experimental Ferment V2 edit updates the revision while a tool is still ru
 
 			terminal.submit("/ferment-v2 original objective")
 			await waitForText(terminal, "Starting revision one command.", { timeoutMs: 5_000 })
-			await waitForText(terminal, "sleep 2", { timeoutMs: 5_000 })
+			await waitForText(terminal, "sleep 1", { timeoutMs: 5_000 })
 
 			terminal.submit("/ferment-v2 edit revised objective")
 			await waitForText(terminal, "Ferment V2 updated to revision 2.", { timeoutMs: 1_500 })
@@ -501,6 +503,7 @@ test("experimental Ferment V2 edit updates the revision while a tool is still ru
 			await waitForText(terminal, toolMarker, { timeoutMs: 10_000 })
 
 			const revisedRequest = await waitForChatRequest(fixture.fake.requests, 2)
+			expect(JSON.stringify(revisedRequest.body)).toContain(toolMarker)
 			expect(fermentV2Snapshot(revisedRequest)).toMatchObject({
 				objective: "revised objective",
 				status: "active",
