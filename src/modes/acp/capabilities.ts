@@ -88,7 +88,7 @@ export function getClientSupportsMethod(capabilities: ClientCapabilities | undef
  * capability key — the shared shape of the initialize capability
  * advertisement and per-chunk model attribution.
  */
-export function kimchiDevMeta<T>(payload: T): { [CAPABILITIES_KEY]: T } {
+export function kimchiDevMetaOf<T>(payload: T): { [CAPABILITIES_KEY]: T } {
 	return { [CAPABILITIES_KEY]: payload }
 }
 

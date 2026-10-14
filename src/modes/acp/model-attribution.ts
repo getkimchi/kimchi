@@ -15,7 +15,7 @@
 
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { refFromParts } from "../../extensions/model-catalog/ref-utils.js"
-import { CAPABILITIES_KEY, kimchiDevMeta } from "./capabilities.js"
+import { CAPABILITIES_KEY, kimchiDevMetaOf } from "./capabilities.js"
 
 export interface ModelAttribution {
 	/** Ref of the model that served the response: `provider/responseModel` when the backend reported one, else `provider/model`. */
@@ -57,14 +57,14 @@ export function modelMetaFor(
 	attribution: ModelAttribution,
 ): ModelMeta | undefined {
 	if (messageId === undefined || seen === undefined) {
-		return kimchiDevMeta(attribution)
+		return kimchiDevMetaOf(attribution)
 	}
 	const previous = seen.get(messageId)
 	if (previous?.modelId === attribution.modelId && previous.requestedModelId === attribution.requestedModelId) {
 		return undefined
 	}
 	seen.set(messageId, attribution)
-	return kimchiDevMeta(attribution)
+	return kimchiDevMetaOf(attribution)
 }
 
 /**
