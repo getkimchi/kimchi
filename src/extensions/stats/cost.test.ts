@@ -84,6 +84,7 @@ describe("formatSessionCosts", () => {
 				topModels: ["glm-5.3", "kimi-k3"],
 				autoCostUsd: "1.2",
 				autoRequestCount: "3",
+				autoModels: ["kimi-k3"],
 			},
 			{ dimensionValue: current, totalCostUsd: "0.421", requestCount: "7", topModels: ["glm-5.3-flash"] },
 			{ dimensionValue: "", displayName: "No session", totalCostUsd: "0.05", requestCount: "2" },
@@ -106,9 +107,26 @@ describe("formatSessionCosts", () => {
 		const list = text.slice(text.indexOf("Your sessions"))
 		expect(list.indexOf("$4.50")).toBeLessThan(list.indexOf("$0.42"))
 		expect(text).toMatch(/\$0\.42.*this session/)
-		expect(text).toMatch(/\$4\.50.*Auto \$1\.20 \(3\)/)
+		expect(text).toMatch(/\$4\.50.*Auto \(kimi-k3\) \$1\.20 \(3\)/)
 		expect(text).toContain("No session")
 		expect(text).toContain("Total $4.97 · 21 requests · Auto $1.20 (3)")
+	})
+
+	it("names the model Auto picked for this session", () => {
+		const auto = {
+			items: [
+				{
+					dimensionValue: current,
+					totalCostUsd: "0.03",
+					requestCount: "7",
+					autoCostUsd: "0.03",
+					autoRequestCount: "7",
+					autoModels: ["minimax-m3"],
+				},
+			],
+			totals: {},
+		}
+		expect(formatSessionCosts(auto, current, 7, theme)[0]).toContain("Auto (minimax-m3) $0.03 (7)")
 	})
 
 	it("says when this session has no billed requests yet", () => {

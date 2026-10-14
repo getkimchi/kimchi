@@ -280,6 +280,7 @@ export interface BreakdownItem {
 	lastActiveTime?: string
 	autoCostUsd?: string
 	autoRequestCount?: string
+	autoModels?: string[]
 }
 
 export interface BreakdownTotals {

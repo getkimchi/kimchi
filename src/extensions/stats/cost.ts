@@ -75,8 +75,10 @@ function requests(value: string | undefined): string {
 	return `${n} ${n === 1 ? "request" : "requests"}`
 }
 
-function autoShare(cost: string | undefined, autoRequests: string | undefined): string {
-	return count(autoRequests) > 0 ? `Auto ${formatCurrency(cost)} (${count(autoRequests)})` : ""
+function autoShare(cost: string | undefined, autoRequests: string | undefined, models: string[] = []): string {
+	if (count(autoRequests) === 0) return ""
+	const picked = models.length > 0 ? ` (${models.join(", ")})` : ""
+	return `Auto${picked} ${formatCurrency(cost)} (${count(autoRequests)})`
 }
 
 function totalLine(totals: BreakdownTotals | undefined): string {
@@ -109,7 +111,7 @@ function sessionHeadline(item: BreakdownItem | undefined, tracked: boolean, more
 		`${formatCurrency(item.totalCostUsd)} billed`,
 		requests(item.requestCount),
 		(item.topModels ?? []).join(", "),
-		autoShare(item.autoCostUsd, item.autoRequestCount),
+		autoShare(item.autoCostUsd, item.autoRequestCount, item.autoModels),
 	]
 		.filter(Boolean)
 		.join(" · ")
@@ -139,7 +141,7 @@ export function formatSessionCosts(
 				requests(item.requestCount).padStart(13),
 				sessionLabel(item),
 				(item.topModels ?? []).join(", "),
-				autoShare(item.autoCostUsd, item.autoRequestCount),
+				autoShare(item.autoCostUsd, item.autoRequestCount, item.autoModels),
 				marker,
 			),
 		)
