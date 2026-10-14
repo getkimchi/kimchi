@@ -15,6 +15,34 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
 
 ---
 
+## @earendil-works/pi-coding-agent@0.85.1 (mid-version, additive) — auth-storage reload unwrap
+
+Bug fix, not an upgrade: `readLatestData` in dist/core/auth-storage.js returned the
+raw resolution of `reloadFromStorageAsync` — the wrapper `{ result: data }`, not
+the credential map. The first credential read after an external auth.json revision
+change (another kimchi process's `syncPiAuth` write or chmod) resolved to the
+wrapper, so `read(provider)` returned undefined and request auth fell back to
+models.json's `$KIMCHI_API_KEY` — which kimchi strips from process.env at startup —
+failing with `API key auth failed for provider kimchi-dev: Failed to resolve API
+key ... from environment variable: KIMCHI_API_KEY`. Both `readLatestData` branches
+now unwrap `.result`.
+
+- Reproduction was deterministic: a reader looping `AuthStorage.read` against a
+  file being chmod/rewrite-cycled by a concurrent process failed exactly one read
+  per cycle (the first after each revision change), with a valid file and valid
+  snapshot at the moment of failure.
+- Paired kimchi-side change: `syncPiAuth` no longer chmods auth.json
+  unconditionally on the no-op path (src/pi-auth.ts) — the ctime bump armed this
+  race in every other running session at every startup. Kimchi also relies on the
+  fix for its own reads after a login-gate `syncKimchiAuth`.
+- Regression tests: `src/pi-auth-storage.test.ts` (fails without this hunk), and a
+  ctime-preservation test in `src/pi-auth.test.ts` for the chmod skip.
+- Rebasers: if upstream fixed `readLatestData`'s unwrap in a later pin, drop this
+  hunk and the patch-header entry; keep the lock-free-reads hunk below it (separate
+  change, still unmerged).
+
+---
+
 ## @earendil-works/pi-coding-agent@0.85.1 (mid-version, additive) — bounded confinement registry, session-file publication
 
 Follow-up to the review-round-2 hardening above, from PR #1405 review round 3.
