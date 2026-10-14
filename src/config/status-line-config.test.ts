@@ -5,9 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	_invalidateStatusLineConfigCache,
 	DEFAULT_STATUS_LINE_PINNED,
+	isStatusLineElementHidden,
 	isStatusLineElementPinned,
 	readStatusLineConfig,
 	STATUS_LINE_ELEMENTS,
+	setStatusLineElementHidden,
 	setStatusLineElementPinned,
 	writeStatusLineConfig,
 } from "./status-line-config.js"
@@ -52,8 +54,8 @@ afterEach(() => {
 // ── STATUS_LINE_ELEMENTS metadata ────────────────────────────────────────────
 
 describe("STATUS_LINE_ELEMENTS", () => {
-	it("has 12 entries", () => {
-		expect(STATUS_LINE_ELEMENTS).toHaveLength(12)
+	it("has 14 entries", () => {
+		expect(STATUS_LINE_ELEMENTS).toHaveLength(14)
 	})
 
 	it("every entry has id, label, description", () => {
@@ -79,8 +81,18 @@ describe("STATUS_LINE_ELEMENTS", () => {
 			"team",
 			"credits",
 			"budget",
+			"lsp",
+			"dap",
 		].sort()
 		expect(ids).toEqual(expected)
+	})
+
+	it("marks lsp and dap as defaultVisible (shown unless hidden, no pin needed)", () => {
+		for (const id of ["lsp", "dap"] as const) {
+			const el = STATUS_LINE_ELEMENTS.find((element) => element.id === id)
+			expect(el).toBeDefined()
+			expect(el).toMatchObject({ defaultVisible: true })
+		}
 	})
 })
 
@@ -135,24 +147,24 @@ describe("readStatusLineConfig", () => {
 
 describe("writeStatusLineConfig", () => {
 	it("writes statusLine.pinned to disk", () => {
-		writeStatusLineConfig({ pinned: ["model"] })
+		writeStatusLineConfig({ pinned: ["model"], hidden: [] })
 		const stored = JSON.parse(readFileSync(testPath, "utf-8"))
-		expect(stored.statusLine).toEqual({ pinned: ["model"] })
+		expect(stored.statusLine).toEqual({ pinned: ["model"], hidden: [] })
 	})
 
 	it("writing empty pinned keeps the key present so defaults do not re-apply on next read", () => {
-		writeStatusLineConfig({ pinned: [] })
+		writeStatusLineConfig({ pinned: [], hidden: [] })
 		_invalidateStatusLineConfigCache()
 		expect(readStatusLineConfig().pinned).toEqual([])
 	})
 
 	it("merge-safety: does not clobber sibling top-level keys", () => {
 		seed(JSON.stringify({ modelRoles: { orchestrator: "kimi" }, other: "value" }, null, 2))
-		writeStatusLineConfig({ pinned: ["permissions"] })
+		writeStatusLineConfig({ pinned: ["permissions"], hidden: [] })
 		const stored = JSON.parse(readFileSync(testPath, "utf-8"))
 		expect(stored.modelRoles).toEqual({ orchestrator: "kimi" })
 		expect(stored.other).toBe("value")
-		expect(stored.statusLine).toEqual({ pinned: ["permissions"] })
+		expect(stored.statusLine).toEqual({ pinned: ["permissions"], hidden: [] })
 	})
 })
 
@@ -214,6 +226,55 @@ describe("isStatusLineElementPinned", () => {
 	})
 })
 
+// ─── hidden config (opt-out for defaultVisible elements: lsp, dap) ─────────
+
+describe("status line hidden config", () => {
+	it("defaults hidden to [] when no statusLine key exists", () => {
+		seed("{}")
+		expect(readStatusLineConfig().hidden).toEqual([])
+	})
+
+	it("defaults hidden to [] when only pinned is stored — old configs keep lsp/dap visible", () => {
+		seed(JSON.stringify({ statusLine: { pinned: ["context"] } }, null, 2))
+		expect(readStatusLineConfig().hidden).toEqual([])
+	})
+
+	it("parses stored hidden entries and drops unknown ids", () => {
+		seed(JSON.stringify({ statusLine: { hidden: ["lsp", "nosuchthing", "dap", 42] } }, null, 2))
+		expect(readStatusLineConfig().hidden).toEqual(["lsp", "dap"])
+	})
+
+	it("drops non-defaultVisible ids from hidden — hiding them would be silently inert", () => {
+		seed(JSON.stringify({ statusLine: { hidden: ["lsp", "context", "phase"] } }, null, 2))
+		expect(readStatusLineConfig().hidden).toEqual(["lsp"])
+	})
+
+	it("hides and re-shows an element without touching pinned", () => {
+		seed(JSON.stringify({ statusLine: { pinned: ["context"] } }, null, 2))
+		setStatusLineElementHidden("lsp", true)
+		expect(isStatusLineElementHidden("lsp")).toBe(true)
+		expect(readStatusLineConfig().pinned).toEqual(["context"])
+		setStatusLineElementHidden("lsp", false)
+		expect(isStatusLineElementHidden("lsp")).toBe(false)
+		expect(readStatusLineConfig().pinned).toEqual(["context"])
+	})
+
+	it("is idempotent and hides elements independently", () => {
+		setStatusLineElementHidden("lsp", true)
+		setStatusLineElementHidden("lsp", true)
+		expect(readStatusLineConfig().hidden).toEqual(["lsp"])
+		setStatusLineElementHidden("dap", true)
+		expect(readStatusLineConfig().hidden).toEqual(expect.arrayContaining(["lsp", "dap"]))
+	})
+
+	it("pin and hidden writes preserve each other", () => {
+		setStatusLineElementHidden("dap", true)
+		setStatusLineElementPinned("phase", true)
+		expect(readStatusLineConfig().pinned).toContain("phase")
+		expect(readStatusLineConfig().hidden).toContain("dap")
+	})
+})
+
 // ─── stat-gated cache integration ────────────────────────────────────────────
 // These exercise the real readJsonCached/invalidateJsonCache on the temp
 // settings path — the behaviors the module gained with the stat gate.
@@ -231,7 +292,7 @@ describe("readStatusLineConfig (stat cache)", () => {
 	it("writeStatusLineConfig is visible to the next read without explicit invalidation", () => {
 		seed("{}")
 		expect(readStatusLineConfig().pinned).toEqual(DEFAULT_STATUS_LINE_PINNED)
-		writeStatusLineConfig({ pinned: ["phase"] })
+		writeStatusLineConfig({ pinned: ["phase"], hidden: [] })
 		expect(readStatusLineConfig().pinned).toEqual(["phase"])
 	})
 })

@@ -24,10 +24,11 @@ import {
 } from "./status-line.js"
 
 // ── Mock status-line-config.ts ───────────────────────────────────────────────
-// Controls which elements appear as pinned in each test.
+// Controls which elements appear as pinned/hidden in each test.
 let pinnedElements: StatusLineElementId[] = []
+let hiddenElements: StatusLineElementId[] = []
 vi.mock("../config/status-line-config.js", () => ({
-	readStatusLineConfig: () => ({ pinned: pinnedElements }),
+	readStatusLineConfig: () => ({ pinned: pinnedElements, hidden: hiddenElements }),
 }))
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape stripping in test assertions
@@ -113,6 +114,7 @@ function createMockStatusLineData(opts?: {
 	permissionsWarning?: string
 	updateAvailable?: string
 	lsp?: string
+	dap?: string
 	workPr?: string
 	workPrUrl?: string
 }): ReadonlyFooterDataProvider {
@@ -121,6 +123,7 @@ function createMockStatusLineData(opts?: {
 	if (opts?.permissionsWarning) statuses.set("permissions-warning", opts.permissionsWarning)
 	if (opts?.updateAvailable) statuses.set("update-available", opts.updateAvailable)
 	if (opts?.lsp) statuses.set("lsp", opts.lsp)
+	if (opts?.dap) statuses.set("dap", opts.dap)
 	if (opts?.workPr) statuses.set("work-pr", opts.workPr)
 	if (opts?.workPrUrl) statuses.set("work-pr-url", opts.workPrUrl)
 	return {
@@ -930,6 +933,15 @@ function withPinned(ids: StatusLineElementId[], fn: () => void): void {
 	}
 }
 
+function withHidden(ids: StatusLineElementId[], fn: () => void): void {
+	hiddenElements = ids
+	try {
+		fn()
+	} finally {
+		hiddenElements = []
+	}
+}
+
 describe("status line pinning", () => {
 	let theme: Theme
 	let restorePlatform: () => void
@@ -1247,6 +1259,31 @@ describe("status line priority shedding", () => {
 		expect(narrow).not.toContain("typescript-language-server")
 		expect(narrow).toContain("m-m (claude-opus-4-6)")
 		expect(narrow).toContain("● default")
+	})
+
+	it("shows lsp/dap segments by default and hides them via the hidden config", () => {
+		const data = createMockStatusLineData({
+			permissionsMode: "● default",
+			lsp: "LSP:typescript-language-server",
+			dap: "DAP:js-debug",
+		})
+
+		const shown = renderVisibleWith(data, 200)
+		expect(shown).toContain("typescript-language-server")
+		expect(shown).toContain("js-debug")
+
+		// Hidden is an opt-out per segment: hiding lsp leaves dap visible.
+		withHidden(["lsp"], () => {
+			const visible = renderVisibleWith(data, 200)
+			expect(visible).not.toContain("typescript-language-server")
+			expect(visible).toContain("js-debug")
+		})
+
+		withHidden(["lsp", "dap"], () => {
+			const visible = renderVisibleWith(data, 200)
+			expect(visible).not.toContain("typescript-language-server")
+			expect(visible).not.toContain("js-debug")
+		})
 	})
 })
 

@@ -421,3 +421,34 @@ describe("TypeScript 7 native server detection", () => {
 		expect(result.find((s) => s.name === "typescript-language-server")).toBeUndefined()
 	})
 })
+
+describe("marker walk — .git boundary", () => {
+	it("stops at the first .git ancestor — markers above the repo do not bleed", () => {
+		// Umbrella dir above the app repo holds an unrelated pyproject.toml.
+		setFiles(["app/.git", "pyproject.toml"])
+		setBinaries(["pyright-langserver"])
+		expect(detectServers("/project/app/src")).toHaveLength(0)
+	})
+
+	it("finds markers at the git root itself from nested cwds", () => {
+		setFiles(["app/.git", "app/package.json"])
+		setBinaries(["typescript-language-server"])
+		const result = detectServers("/project/app/packages/web")
+		expect(result).toHaveLength(1)
+		expect(result[0].name).toBe("typescript-language-server")
+	})
+
+	it("falls back to the filesystem-root walk when no .git exists above cwd", () => {
+		setFiles(["pyproject.toml"])
+		setBinaries(["pyright-langserver"])
+		const result = detectServers("/project/app/src")
+		expect(result).toHaveLength(1)
+		expect(result[0].name).toBe("pyright")
+	})
+
+	it("stops the missing-candidates report at the .git boundary too", () => {
+		setFiles(["app/.git", "pyproject.toml"])
+		setBinaries([])
+		expect(detectMissingCandidates("/project/app/src")).toHaveLength(0)
+	})
+})

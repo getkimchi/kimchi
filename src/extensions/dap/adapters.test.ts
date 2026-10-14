@@ -608,3 +608,24 @@ describe("resolveAdapterForProgram", () => {
 		).toBeNull()
 	})
 })
+
+describe("marker walk — .git boundary", () => {
+	it("stops at the first .git ancestor — umbrella markers do not bleed", () => {
+		// Umbrella dir above the app repo holds an unrelated pyproject.toml.
+		setFiles(["app/.git", "pyproject.toml"])
+		setBinaries(["python3"])
+		expect(detectAdapters("/project/app/src")).toHaveLength(0)
+	})
+
+	it("finds markers at the git root itself from nested cwds", () => {
+		setFiles(["app/.git", "app/go.mod"])
+		setBinaries(["dlv"])
+		expect(detectAdapters("/project/app/packages/web").map((a) => a.name)).toEqual(["dlv"])
+	})
+
+	it("stops the missing report at the .git boundary too", () => {
+		setFiles(["app/.git", "pyproject.toml"])
+		setBinaries([])
+		expect(detectMissingAdapters("/project/app/src")).toHaveLength(0)
+	})
+})

@@ -58,7 +58,7 @@ describe("apply", () => {
 
 		expect(pi.setActiveTools).toHaveBeenCalledOnce()
 		expect(pi.setActiveTools).toHaveBeenCalledWith(expectedTools)
-		expect(isSnapshotAppliedThisTurn()).toBe(true)
+		expect(isSnapshotAppliedThisTurn(pi)).toBe(true)
 	})
 
 	it("planning profiles admit read-only-qualified provider names", () => {
@@ -305,11 +305,11 @@ describe("installTurnBoundaryReset", () => {
 		const pi = makeMockPi()
 
 		// Confirm the flag is initially false.
-		expect(isSnapshotAppliedThisTurn()).toBe(false)
+		expect(isSnapshotAppliedThisTurn(pi)).toBe(false)
 
 		// Apply a snapshot (calls installTurnBoundaryReset internally).
 		apply("planning-adhoc", "adhoc", pi)
-		expect(isSnapshotAppliedThisTurn()).toBe(true)
+		expect(isSnapshotAppliedThisTurn(pi)).toBe(true)
 
 		// The handler was registered as pi.on('turn_start', <handler>).
 		// Capture it from the mock call.
@@ -323,7 +323,40 @@ describe("installTurnBoundaryReset", () => {
 		turnStartHandler()
 
 		// Flag must be cleared.
-		expect(isSnapshotAppliedThisTurn()).toBe(false)
+		expect(isSnapshotAppliedThisTurn(pi)).toBe(false)
+	})
+})
+
+describe("per-session snapshot flag", () => {
+	it("a snapshot in one session does not suppress another session's cooperative tweaks", () => {
+		const piA = makeMockPi()
+		const piB = makeMockPi()
+
+		apply("planning-adhoc", "adhoc", piA)
+
+		expect(isSnapshotAppliedThisTurn(piA)).toBe(true)
+		expect(isSnapshotAppliedThisTurn(piB)).toBe(false)
+		// Regression: the flag used to be process-global, so a deferred
+		// resnapshot in one session dropped another session's cooperative tweaks.
+		expect(applyCooperativeTweak(piB, ["b_tool"])).toBe(true)
+	})
+
+	it("turn_start resets only the session whose turn started", () => {
+		const piA = makeMockPi()
+		const piB = makeMockPi()
+		apply("planning-adhoc", "adhoc", piA)
+		apply("planning-adhoc", "adhoc", piB)
+
+		const lastTurnStartHandler = (pi: ExtensionAPI) => {
+			const mockOn = pi.on as unknown as { mock: { calls: Array<[string, () => void]> } }
+			const found = mockOn.mock.calls.filter((call) => call[0] === "turn_start").at(-1)
+			if (!found) throw new Error("pi.on was not called with 'turn_start'")
+			return found[1]
+		}
+		lastTurnStartHandler(piA)()
+
+		expect(isSnapshotAppliedThisTurn(piA)).toBe(false)
+		expect(isSnapshotAppliedThisTurn(piB)).toBe(true)
 	})
 })
 
@@ -372,5 +405,138 @@ describe("reapplyCurrentProfile", () => {
 
 		const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
 		expect(calledWith).toContain("server_get_record")
+	})
+})
+
+describe("registry churn resnapshot", () => {
+	// A resnapshot fired while the registry is mid-rebuild must not replace the
+	// active set with the partial getAllTools() sample: dropped tools stay
+	// uncallable for the rest of the turn.
+	const FULL_TOOLS = [
+		"read",
+		"bash",
+		"edit",
+		"write",
+		"grep",
+		"find",
+		"ls",
+		"skill_view",
+		"bash_control",
+		"mcp",
+		"mcp___mcpns_Cast_20_Data_20_Mesh",
+		"mcp___mcpns_Cloud_20_Graph",
+		"mcp____kimchi_studio_connector__atlassian",
+		"mcp__castai",
+		"mcp__context7",
+		"mcp__npm_search",
+		"mcp__sequential_thinking",
+		"list_ferments",
+		"questionnaire",
+		"submit_plan",
+		"create_todos",
+		"update_todos",
+		"add_todo",
+		"mark_todo",
+		"clear_todos",
+		"Agent",
+		"set_phase",
+		"dispatch_to_cloud_agent",
+		"web_fetch",
+		"web_search",
+		"set_model",
+		"list_models",
+	]
+	const PARTIAL_TOOLS_28 = FULL_TOOLS.filter(
+		(n) => !["skill_view", "list_ferments", "set_phase", "list_models"].includes(n),
+	)
+	const PARTIAL_TOOLS_14 = PARTIAL_TOOLS_28.filter(
+		(n) =>
+			!["edit", "write", "bash_control", "mcp", "Agent", "dispatch_to_cloud_agent", "set_model"].includes(n) &&
+			!n.startsWith("mcp__"),
+	)
+
+	const asTools = (names: string[]) => names.map((name) => ({ name }))
+	const lastActiveCall = (pi: ExtensionAPI): string[] => vi.mocked(pi.setActiveTools).mock.calls.at(-1)?.[0] ?? []
+
+	it("a reapply against a mid-rebuild registry preserves the previously active tools", () => {
+		const pi = makeMockPi({ allTools: asTools(FULL_TOOLS) })
+		apply("idle", "adhoc", pi)
+		expect(pi.getActiveTools()).toHaveLength(32)
+
+		// Registry shows 28 of 32.
+		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue(asTools(PARTIAL_TOOLS_28))
+		expect(reapplyCurrentProfile(pi)).toBe(true)
+		expect(lastActiveCall(pi)).toEqual(expect.arrayContaining(FULL_TOOLS))
+		expect(pi.getActiveTools()).toHaveLength(32)
+
+		// Registry down to 14: the narrowing must not stack.
+		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue(asTools(PARTIAL_TOOLS_14))
+		expect(reapplyCurrentProfile(pi)).toBe(true)
+		expect(lastActiveCall(pi)).toEqual(expect.arrayContaining(FULL_TOOLS))
+		expect(pi.getActiveTools()).toHaveLength(32)
+
+		// Registry rebuilt; the next reapply converges.
+		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue(asTools(FULL_TOOLS))
+		expect(reapplyCurrentProfile(pi)).toBe(true)
+		expect(pi.getActiveTools()).toHaveLength(32)
+	})
+
+	it("implementation-ferment preserves previously active tools through a partial rebuild", () => {
+		const pi = makeMockPi({ allTools: asTools(["read", "bash", "questionnaire"]) })
+		apply("implementation-ferment", "ferment", pi)
+		expect(pi.getActiveTools()).toEqual(expect.arrayContaining(["read", "bash"]))
+		expect(pi.getActiveTools()).not.toContain("questionnaire")
+
+		// Mid-rebuild: only `read` re-registered. reapplyCurrentProfile passes
+		// the "resnapshot" trigger, so the active set is unioned back in.
+		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue(asTools(["read"]))
+		expect(reapplyCurrentProfile(pi)).toBe(true)
+
+		const active = lastActiveCall(pi)
+		expect(active).toEqual(expect.arrayContaining(["read", "bash"]))
+		// Deliberate profile constraints still win: adhoc-only tools stay out.
+		expect(active).not.toContain("questionnaire")
+	})
+
+	it("a deliberate profile switch replaces instead of carrying the previous profile over", () => {
+		// Leaving planning for idle must drop planning's read-only provider
+		// admissions rather than carry them through the active set.
+		const pi = makeMockPi({ allTools: asTools(["read", "bash", "edit"]) })
+		registerReadOnlyToolProvider(pi, () => ["srv_get_issue"])
+		apply("planning-adhoc", "adhoc", pi)
+		expect(pi.getActiveTools()).toContain("srv_get_issue")
+
+		apply("idle", "adhoc", pi)
+		expect(lastActiveCall(pi)).not.toContain("srv_get_issue")
+	})
+})
+
+describe("tool-surface debug logging", () => {
+	it("stays silent unless KIMCHI_DEBUG_TOOL_SURFACE=1, then logs the applied diff", () => {
+		const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {})
+		try {
+			// Flag off: no logging.
+			delete process.env.KIMCHI_DEBUG_TOOL_SURFACE
+			apply("idle", "adhoc", makeMockPi({ allTools: [{ name: "read" }, { name: "bash" }] }))
+			expect(debugSpy).not.toHaveBeenCalled()
+
+			// Flag on: first apply logs the addition.
+			process.env.KIMCHI_DEBUG_TOOL_SURFACE = "1"
+			const pi = makeMockPi({ allTools: [{ name: "read" }, { name: "bash" }] })
+			apply("idle", "adhoc", pi)
+			expect(debugSpy).toHaveBeenCalledTimes(1)
+			const line = debugSpy.mock.calls[0]?.[0] as string
+			expect(line).toContain("[tool-surface] apply profile=idle")
+			expect(line).toContain("trigger=apply")
+			expect(line).toContain("added=[read,bash]")
+
+			// Same-profile re-apply: nothing new added.
+			apply("idle", "adhoc", pi)
+			const second = debugSpy.mock.calls[1]?.[0] as string
+			expect(second).not.toContain("added=[")
+		} finally {
+			delete process.env.KIMCHI_DEBUG_TOOL_SURFACE
+			debugSpy.mockRestore()
+		}
 	})
 })

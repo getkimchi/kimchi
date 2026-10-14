@@ -1,7 +1,12 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { isKeyRelease, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
-import { readStatusLineConfig, STATUS_LINE_ELEMENTS, setStatusLineElementPinned } from "../config/status-line-config.js"
+import {
+	isStatusLineElementVisible,
+	readStatusLineConfig,
+	STATUS_LINE_ELEMENTS,
+	toggleStatusLineElement,
+} from "../config/status-line-config.js"
 import { truncateLinesToWidth } from "../truncate-lines.js"
 import { requestSharedStatusLineRender } from "./shared-status-line.js"
 
@@ -49,7 +54,7 @@ export class CustomizeStatusLineComponent implements Component {
 			if (!el) return
 			// Cannot toggle permissions or model — they are always visible.
 			if (el.canPin === false) return
-			setStatusLineElementPinned(el.id, !readStatusLineConfig().pinned.includes(el.id))
+			toggleStatusLineElement(el)
 			this.tui.requestRender()
 			requestSharedStatusLineRender()
 			return
@@ -62,8 +67,8 @@ export class CustomizeStatusLineComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		// Always reads from the config cache (always current; updated by every setPinned write).
-		const pinned = new Set(readStatusLineConfig().pinned)
+		// Always reads from the config cache (always current; updated by every config write).
+		const config = readStatusLineConfig()
 
 		const b = (s: string) => this.theme.fg("border", s)
 		const accent = (s: string) => this.theme.fg("accent", s)
@@ -98,7 +103,11 @@ export class CustomizeStatusLineComponent implements Component {
 			const isSelected = i === this.selectedIndex
 			const isNonPinnable = el.canPin === false
 
-			const checkMark = isNonPinnable ? dimText("× ") : pinned.has(el.id) ? accent("● ") : dimText("○ ")
+			const checkMark = isNonPinnable
+				? dimText("× ")
+				: isStatusLineElementVisible(el, config)
+					? accent("● ")
+					: dimText("○ ")
 
 			const labelRaw = el.label.padEnd(maxLabelW)
 			const labelStyled = isNonPinnable ? mutedColor(labelRaw) : isSelected ? accent(labelRaw) : textColor(labelRaw)
@@ -126,13 +135,13 @@ export class CustomizeStatusLineComponent implements Component {
 
 export default function customizeStatusLineExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("customize-status-line", {
-		description: "Customize which status line elements are pinned",
+		description: "Customize which status line elements are shown",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) {
-				const pinned = new Set(readStatusLineConfig().pinned)
+				const config = readStatusLineConfig()
 				const lines: string[] = ["Customize Status Line"]
 				for (const el of STATUS_LINE_ELEMENTS) {
-					const mark = el.canPin === false ? "[×]" : pinned.has(el.id) ? "[●]" : "[○]"
+					const mark = el.canPin === false ? "[×]" : isStatusLineElementVisible(el, config) ? "[●]" : "[○]"
 					lines.push(`  ${mark} ${el.label}  —  ${el.description}`)
 				}
 				ctx.ui.notify(lines.join("\n"), "info")

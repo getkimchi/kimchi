@@ -351,17 +351,19 @@ export function markerPresent(cwd: string, markers: string[]): boolean {
 
 /**
  * Walk up from `cwd` to the filesystem root, returning true if any of the
- * given marker files is found in cwd or a parent directory.
+ * given marker files is found in cwd or a parent directory. Stops at the
+ * first `.git` ancestor: markers above the repo root belong to unrelated
+ * directories (home, umbrella dirs) and must not bleed into detection.
  */
 function findMarkerUp(cwd: string, markers: string[]): boolean {
 	let dir = path.resolve(cwd)
 	while (true) {
 		if (markers.some((m) => fs.existsSync(path.join(dir, m)))) return true
+		if (fs.existsSync(path.join(dir, ".git"))) return false
 		const parent = path.dirname(dir)
-		if (dir === parent) break
+		if (dir === parent) return false
 		dir = parent
 	}
-	return false
 }
 
 /**
