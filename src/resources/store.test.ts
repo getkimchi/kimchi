@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { resetOrgPolicyForTests, setOrgPolicyForTests } from "../org-policy.js"
+import { resetOrgPolicyForTests } from "../org-policy.js"
+import { setOrgPolicyForTests } from "../org-policy.test-utils.js"
 import {
 	getResourceOverride,
 	getResourcePolicy,

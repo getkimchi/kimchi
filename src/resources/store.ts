@@ -125,9 +125,11 @@ export function listResourceSettings(path = getResourceSettingsPath()): ListedRe
 
 export function setResourceOverride(id: string, enabled: boolean | undefined, path = getResourceSettingsPath()): void {
 	assertResourceId(id)
-	// Fail closed on org-locked resources: no override entries accumulate for
-	// them, so lifting the policy later returns the resource to user control
-	// with no stale local state.
+	// Fail closed on org-locked resources: while a lock is in force, no new
+	// override entries are written, so choices made during the lock never
+	// outlive it. Overrides written before the lock was applied are left in
+	// place (they record the user's prior choice) but have no effect while the
+	// lock holds — they resurface if the org later lifts the policy.
 	if (isResourceLocked(id)) {
 		throw new Error(orgLockMessage(id))
 	}

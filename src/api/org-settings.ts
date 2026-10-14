@@ -98,24 +98,49 @@ function parseAllowedModes(raw: unknown): AllowedPermissionModes | undefined {
 }
 
 /**
- * Parse the kimchiResources map (resource id → policy). Values are proto
- * enum name strings ("KIMCHI_RESOURCE_POLICY_FORCE_OFF"); UNSPECIFIED,
- * unknown names, and non-string values are dropped — a resource with no
- * surviving entry simply has no restriction. Keys are free-form per the API
- * contract, so ids this harness does not know are kept: a newer platform's
- * entries survive parse and cache round trips, and the resources store
- * treats unknown ids as inert.
+ * Shared walker for the resources policy map: validates the JSON object
+ * shape, applies a per-value parser, and drops entries whose value does not
+ * parse. The wire parser and the cache validator share these rules so their
+ * acceptance behavior cannot drift; dropping is fail-open (an unknown value
+ * degrades to "no restriction") but logged so platform/harness version skew
+ * is observable in diagnostics instead of silent.
  */
-function parseResourcePolicies(raw: unknown): Record<string, ResourcePolicy> | undefined {
+export function parseResourcePolicyMap(
+	raw: unknown,
+	parseValue: (value: unknown) => ResourcePolicy | undefined,
+): Record<string, ResourcePolicy> | undefined {
 	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined
 	const source = raw as Record<string, unknown>
 	const policies: Record<string, ResourcePolicy> = {}
 	for (const [id, value] of Object.entries(source)) {
-		if (typeof value !== "string" || !value.startsWith(KIMCHI_RESOURCE_POLICY_PREFIX)) continue
-		const policy = parseResourcePolicyName(value.slice(KIMCHI_RESOURCE_POLICY_PREFIX.length))
-		if (policy) policies[id] = policy
+		const policy = parseValue(value)
+		if (policy) {
+			policies[id] = policy
+		} else {
+			console.warn(`[org-policy] dropping resource policy entry for "${id}": unparsable value ${JSON.stringify(value)}`)
+		}
 	}
 	return Object.keys(policies).length > 0 ? policies : undefined
+}
+
+/** Wire-form value: the proto enum name with its KIMCHI_RESOURCE_POLICY_ prefix. */
+function parseWireResourcePolicyValue(value: unknown): ResourcePolicy | undefined {
+	if (typeof value !== "string" || !value.startsWith(KIMCHI_RESOURCE_POLICY_PREFIX)) return undefined
+	return parseResourcePolicyName(value.slice(KIMCHI_RESOURCE_POLICY_PREFIX.length))
+}
+
+/**
+ * Parse the kimchiResources map (resource id → policy) from a
+ * settings:resolve response. Values are proto enum name strings
+ * ("KIMCHI_RESOURCE_POLICY_FORCE_OFF"); UNSPECIFIED, unknown names, and
+ * non-string values are dropped — a resource with no surviving entry simply
+ * has no restriction. Keys are free-form per the API contract, so ids this
+ * harness does not know are kept: a newer platform's entries survive parse
+ * and cache round trips, and the resources store treats unknown ids as
+ * inert.
+ */
+function parseResourcePolicies(raw: unknown): Record<string, ResourcePolicy> | undefined {
+	return parseResourcePolicyMap(raw, parseWireResourcePolicyValue)
 }
 
 /**

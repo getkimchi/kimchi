@@ -8,7 +8,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { RequestError } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { resetOrgPolicyForTests, setOrgPolicyForTests } from "../../../org-policy.js"
+import { resetOrgPolicyForTests } from "../../../org-policy.js"
+import { setOrgPolicyForTests } from "../../../org-policy.test-utils.js"
 import { handleListResources, handleSetResourceEnabled } from "./resources.js"
 
 /** Runs fn, returns the thrown RequestError, or fails the test if nothing threw. */
