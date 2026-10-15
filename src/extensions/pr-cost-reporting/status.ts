@@ -1,5 +1,8 @@
+import { homedir } from "node:os"
+import { sep } from "node:path"
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import {
+	type BlockedRepository,
 	inUploadWindow,
 	type LimitNotices,
 	type PendingRepository,
@@ -9,6 +12,21 @@ import {
 import type { ReportingRepository } from "./snapshot.js"
 
 const name = (repository: ReportingRepository) => repository.name ?? `${repository.host} repository ${repository.id}`
+
+/** The folder a Git directory belongs to, written from ~ under the home directory. */
+function folder(gitDirectory: string): string {
+	const path = gitDirectory.replace(/[\\/]\.git$/, "")
+	const home = homedir()
+	return path === home || path.startsWith(`${home}${sep}`) ? `~${path.slice(home.length)}` : path
+}
+
+/** The CLI login or token variable that lets Kimchi read a repository the provider refused. */
+const LOGIN = {
+	github: "Run gh auth login or set GH_TOKEN.",
+	gitlab: "Run glab auth login or set GITLAB_TOKEN.",
+}
+const unreported = ({ repository, reason, provider, message }: BlockedRepository) =>
+	`${folder(repository)}: ${message}${reason === "denied" && provider ? ` ${LOGIN[provider]}` : ""}`
 const formatCount = (count: number) => count.toLocaleString("en-US")
 const plural = (count: number, noun: string) => `${formatCount(count)} ${noun}${count === 1 ? "" : "s"}`
 
@@ -66,9 +84,9 @@ const wrap = (text: string, first: string) =>
 	wrapTextWithAnsi(text, WIDTH - 2).map((line, index) => `${index ? "  " : first}${line}`)
 
 /**
- * The `/pr-reporting status` text. `skipReason` describes this session, not the saved choice. Server limits and
- * delivery problems come first and make it a warning; skipped history alone is information, because the other
- * requests still report.
+ * The `/pr-reporting status` text. `skipReason` describes this session, not the saved choice. Server limits,
+ * delivery problems and repositories Kimchi could not identify come first and make it a warning; skipped history
+ * and repositories without a GitHub or GitLab remote alone are information, because the other requests still report.
  */
 export function statusText(
 	state: ReportingState,
@@ -101,8 +119,12 @@ export function statusText(
 			[state.error, ...pending.map((entry) => entry.lastError)].filter((value): value is string => value !== undefined),
 		),
 	]
+	// Turning reporting off by following telemetry keeps the last capture's list; it has nothing to report then.
+	const blocked = state.enabled ? (state.blockedRepositories ?? []).map(unreported) : []
 	const sections = [
 		...(problems.length ? [["Delivery problems", ...problems.flatMap((problem) => wrap(problem, "- "))]] : []),
+		// Their requests stay local until Kimchi can read the repository, so they warn like delivery problems.
+		...(blocked.length ? [["Repositories not reported", ...blocked.flatMap((line) => wrap(line, "- "))]] : []),
 		[
 			...row(
 				"PR reporting",
@@ -113,6 +135,9 @@ export function statusText(
 				"Repositories",
 				`${formatCount(pending.length)} queued · ${formatCount(acknowledged)} acknowledged`,
 				...(waiting ? [`${formatCount(waiting)} waiting for the 5-minute upload window`] : []),
+				...(state.enabled && state.unsupportedRepositories
+					? [`${formatCount(state.unsupportedRepositories)} not reported: no GitHub or GitLab remote`]
+					: []),
 			),
 		],
 		...(state.skippedRequests
@@ -120,12 +145,18 @@ export function statusText(
 					[
 						"History coverage incomplete",
 						...wrap(
-							`${plural(state.skippedRequests, "request")} skipped without original account or repository evidence. Other requests are still reported.`,
+							// Requests held for a repository listed above have their evidence; only its identity is missing.
+							blocked.length
+								? `${plural(state.skippedRequests, "request")} skipped: their repository could not be identified, or they lack original account or repository evidence. Other requests are still reported.`
+								: `${plural(state.skippedRequests, "request")} skipped without original account or repository evidence. Other requests are still reported.`,
 							"  ",
 						),
 					],
 				]
 			: []),
 	]
-	return { text: sections.map((lines) => lines.join("\n")).join("\n\n"), warning: problems.length > 0 }
+	return {
+		text: sections.map((lines) => lines.join("\n")).join("\n\n"),
+		warning: problems.length > 0 || blocked.length > 0,
+	}
 }

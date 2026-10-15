@@ -114,6 +114,48 @@ export interface ReportingState {
 	error?: string
 	/** Requests the latest capture left out without original account or repository evidence; others still report. */
 	skippedRequests?: number
+	/** Repositories the latest capture could not identify with GitHub or GitLab, so their requests were not reported. */
+	blockedRepositories?: BlockedRepository[]
+	/** Repositories the latest capture left out because they have no GitHub or GitLab remote. */
+	unsupportedRepositories?: number
+}
+
+/** A repository whose provider lookup failed, for /pr-reporting status. */
+export interface BlockedRepository {
+	/** The local Git directory the requests were made in. */
+	repository: string
+	/** `denied`: the provider answered 401, 403 or 404, so a login or token with access fixes it. */
+	reason: "denied" | "failed"
+	/** Which provider refused the lookup; absent when no provider answered. */
+	provider?: "github" | "gitlab"
+	message: string
+}
+
+/** Bounds on what the status keeps about repositories it could not report. */
+const MAX_BLOCKED_REPOSITORIES = 20
+const MAX_BLOCKED_MESSAGE = 500
+
+/** Cuts at a whole code point, so a stored message never ends in half a surrogate pair. */
+function boundedMessage(message: string): string {
+	let bounded = ""
+	for (const char of message) {
+		if (bounded.length + char.length > MAX_BLOCKED_MESSAGE) break
+		bounded += char
+	}
+	return bounded
+}
+
+function validBlockedRepository(value: unknown): value is BlockedRepository {
+	return (
+		object(value) &&
+		typeof value.repository === "string" &&
+		value.repository.length > 0 &&
+		value.repository.length <= 4096 &&
+		(value.reason === "denied" || value.reason === "failed") &&
+		(value.provider === undefined || value.provider === "github" || value.provider === "gitlab") &&
+		typeof value.message === "string" &&
+		value.message.length <= MAX_BLOCKED_MESSAGE
+	)
 }
 
 export function reportingDirectory(agentDir: string): string {
@@ -256,6 +298,14 @@ async function loadReportingState(agentDir: string): Promise<{ state: ReportingS
 				))
 		)
 			throw new Error("Invalid PR reporting state")
+		if (
+			(value.blockedRepositories !== undefined &&
+				(!Array.isArray(value.blockedRepositories) ||
+					value.blockedRepositories.length > MAX_BLOCKED_REPOSITORIES ||
+					!value.blockedRepositories.every(validBlockedRepository))) ||
+			(value.unsupportedRepositories !== undefined && !count(value.unsupportedRepositories))
+		)
+			throw new Error("Invalid PR reporting state")
 		if (value.followsTelemetry) value.enabled = readTelemetryConfig().enabled
 		const machine = await machineFingerprint()
 		// Two machines sharing a producer would keep replacing each other's claims; the server deduplicates bills across producers.
@@ -265,6 +315,7 @@ async function loadReportingState(agentDir: string): Promise<{ state: ReportingS
 			value.entries = {}
 			value.paused = undefined
 		}
+		trackPRCostMetric({ kind: "reportingEnabled", value: value.enabled ? 1 : 0 })
 		trackPRCostMetric({
 			kind: "queueDepth",
 			value: Object.values(value.entries).filter((entry) => entry.pending).length,
@@ -272,8 +323,10 @@ async function loadReportingState(agentDir: string): Promise<{ state: ReportingS
 		return { state: value, text }
 	} catch (error) {
 		if (object(error) && error.code === "ENOENT") {
+			const state = empty()
+			trackPRCostMetric({ kind: "reportingEnabled", value: state.enabled ? 1 : 0 })
 			trackPRCostMetric({ kind: "queueDepth", value: 0 })
-			return { state: empty() }
+			return { state }
 		}
 		throw new Error("PR reporting state is unreadable; queued reports were not replaced", { cause: error })
 	}
@@ -326,6 +379,8 @@ export function setReportingEnabled(agentDir: string, enabled: boolean): Promise
 		state.followsTelemetry = undefined
 		state.error = undefined
 		state.skippedRequests = undefined
+		state.blockedRepositories = undefined
+		state.unsupportedRepositories = undefined
 		state.paused = undefined
 		for (const entry of Object.values(state.entries)) {
 			entry.uploadedAt = undefined
@@ -370,6 +425,8 @@ export async function queueSnapshots(
 	snapshots: RepositorySnapshot[],
 	completeInventory = false,
 	skippedRequests = 0,
+	blockedRepositories: BlockedRepository[] = [],
+	unsupportedRepositories = 0,
 ): Promise<ReportingState> {
 	let largest: { requests: number; bytes: number } | undefined
 	const state = await update(agentDir, (state) => {
@@ -535,6 +592,12 @@ export async function queueSnapshots(
 					: []),
 			].join(". ") || undefined
 		state.skippedRequests = skippedRequests || undefined
+		const blocked = blockedRepositories
+			.filter((blocked) => blocked.repository.length > 0 && blocked.repository.length <= 4096)
+			.slice(0, MAX_BLOCKED_REPOSITORIES)
+			.map((blocked) => ({ ...blocked, message: boundedMessage(blocked.message) }))
+		state.blockedRepositories = blocked.length ? blocked : undefined
+		state.unsupportedRepositories = unsupportedRepositories || undefined
 	})
 	if (largest) {
 		trackPRCostMetric({ kind: "snapshotRequests", value: largest.requests })

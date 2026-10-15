@@ -216,13 +216,16 @@ async function writeChanged(path: string, content: string, assertLease: () => vo
 }
 async function publishReports(
 	agentDir: string,
-	{ displays, report, workIds }: CostState,
+	{ displays, open, report, workIds }: CostState,
 	polls: Record<string, BillingPoll>,
 	assertLease: () => void,
 ): Promise<boolean> {
+	// Untagged requests and closed lookup windows can never be priced; counting them would hide a stalled lookup.
+	const lookups = new Set(open.map((item) => item.requestId))
 	trackPRCostMetric({
-		kind: "unpriced",
-		value: report.requests.filter((request) => request.priceStatus !== "priced").length,
+		kind: "pricingPending",
+		value: report.requests.filter((request) => request.priceStatus !== "priced" && lookups.has(request.requestId))
+			.length,
 	})
 	// Shared PR totals and correction links connect works, transitively; a saved report covers the whole component.
 	const neighbours = new Map<string, Set<string>>()

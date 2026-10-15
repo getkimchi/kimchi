@@ -875,14 +875,60 @@ describe("repository identity for work without a PR", () => {
 			})}\n`,
 		)
 		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new LookupError(message, kind))
+		const metric = vi.spyOn(health, "trackPRCostMetric")
 		respond(accepted)
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		expect(posts().map((payload) => [payload.repository.id, payload.coverage.historyComplete])).toEqual([
 			["42", complete],
 		])
-		const { error, skippedRequests } = await readReportingState(directory)
+		const { error, skippedRequests, blockedRepositories, unsupportedRepositories } = await readReportingState(directory)
 		expect(error).toBeUndefined()
 		expect(skippedRequests).toBe(complete ? undefined : 1)
+		// A repository without a GitHub or GitLab remote is expected; a failed lookup is named so it can be fixed.
+		expect([blockedRepositories, unsupportedRepositories]).toEqual(
+			complete ? [undefined, 1] : [[{ repository: "/scratch/.git", reason: "failed", message }], undefined],
+		)
+		expect(metric).toHaveBeenCalledWith({ kind: "lookup", outcome: complete ? "unsupported" : "failed" })
+	})
+	it("names a repository whose lookup the provider refuses in /pr-reporting status until a lookup succeeds", async () => {
+		await seedLinked()
+		const path = join(directory, "work-attribution", "source.jsonl")
+		const startedAt = new Date().toISOString()
+		await writeFile(
+			path,
+			`${await readFile(path, "utf8")}${JSON.stringify({
+				version: 1,
+				type: "request",
+				workId: "77777777-7777-4777-8777-777777777777",
+				sessionId: "private-repository-session",
+				requestId: "66666666-6666-4666-8666-666666666666",
+				startedAt,
+				recordedAt: startedAt,
+				scope: { account: content.account, repository: "/private/app/.git" },
+			})}\n`,
+		)
+		const message =
+			"GitLab team/app could not find this repository, commit or pull request. It may require authentication."
+		const lookup = vi
+			.spyOn(providerApi, "lookupRepositoryIdentity")
+			.mockRejectedValue(new LookupError(message, "missing", true, { status: 404, provider: "gitlab" }))
+		const metric = vi.spyOn(health, "trackPRCostMetric")
+		respond(accepted)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		expect((await readReportingState(directory)).blockedRepositories).toEqual([
+			{ repository: "/private/app/.git", reason: "denied", provider: "gitlab", message },
+		])
+		expect(statusText(await readReportingState(directory), undefined)).toMatchObject({ warning: true })
+		expect(statusText(await readReportingState(directory), undefined).text).toContain("Run glab auth login")
+		expect(metric).toHaveBeenCalledWith({ kind: "lookup", outcome: "denied" })
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31_000)
+		lookup.mockResolvedValue({ provider: "gitlab", host: "gitlab.com", name: "team/app", id: "77" })
+		await run()
+		expect(metric).toHaveBeenCalledWith({ kind: "lookup", outcome: "success" })
+		const state = await readReportingState(directory)
+		expect(state.blockedRepositories).toBeUndefined()
+		expect(Object.values(state.entries).some((entry) => entry.repository.id === "77")).toBe(true)
 	})
 	it("delivers a known repository while another lookup times out, then retries that lookup after cooldown", async () => {
 		await seedLinked()

@@ -5,7 +5,7 @@ PR cost reporting follows the SaaS telemetry setting by default. When SaaS uploa
 The first interactive main session shows one notice that PR costs are reported, with `/pr-reporting off` to disable it. Studio shows it as a notification after the first turn, because notifications sent before a session is registered are dropped. The notice is saved per installation and does not repeat after restart. It is skipped when reporting is off or the user already made an explicit choice.
 
 - `/pr-reporting on` enables uploads for the verified account and requests an immediate update. It also clears upload windows, retry deadlines and account pauses, so the next snapshot of every repository goes out at once.
-- `/pr-reporting status` shows whether reporting is enabled and whether that follows the SaaS default or an explicit choice, whether this session uploads at all, queued and acknowledged repositories (and how many wait for their upload window), server limits, partially reported repositories, delivery problems and incomplete history coverage. Server limits and delivery problems come first and make the message a warning. Incomplete history alone is informational: requests without original account or repository evidence are skipped, and the other requests are still reported. Lines fit a 60-column terminal.
+- `/pr-reporting status` shows whether reporting is enabled and whether that follows the SaaS default or an explicit choice, whether this session uploads at all, queued and acknowledged repositories (and how many wait for their upload window), server limits, partially reported repositories, delivery problems, repositories Kimchi could not identify with GitHub or GitLab, and incomplete history coverage. Server limits, delivery problems and unidentified repositories come first and make the message a warning; a repository the provider refused names the login that fixes it. Incomplete history and repositories without a GitHub or GitLab remote alone are informational: those requests are skipped, and the other requests are still reported. Lines fit a 60-column terminal.
 - `/pr-reporting off` cancels delivery and deletes pending payloads. Local work history and revision counters remain. Reports already accepted by the server remain there.
 
 Typing `/pr-reporting ` suggests `on`, `off` and `status`.
@@ -30,6 +30,19 @@ Repositories   2 queued · 3 acknowledged
 History coverage incomplete
   3,693 requests skipped without original account or
   repository evidence. Other requests are still reported.
+```
+
+A private repository Kimchi cannot read, beside a repository without a GitHub or GitLab remote:
+
+```text
+Repositories not reported
+- ~/code/app: GitHub could not find this repository,
+  commit or pull request. It may require authentication.
+  Run gh auth login or set GH_TOKEN.
+
+PR reporting   Enabled (SaaS default)
+Repositories   0 queued · 1 acknowledged
+               1 not reported: no GitHub or GitLab remote
 ```
 
 Only main sessions with work tracking run this extension. Child sessions contribute their existing request records through the local calculator; they do not start upload workers. Turning Cost per PR off in `/resources` turns off work tracking, PR/MR status and reporting together.
@@ -123,7 +136,7 @@ GitHub IDs come from the PR's `id` and target `base.repo.id`. GitLab IDs come fr
 
 The inventory comes from the original journals through the same billing validation and calculator used by local cost summaries. It does not concatenate per-work `costs.json` files. Two works contributing to one PR do not duplicate requests. Cross-repository shared requests are reported as unknown in each repository; the backend handles duplicate billing evidence across snapshots. A request that starts after several PRs merged keeps all candidate IDs as a shared claim. The backend compares its start time with each merge time and places it outside those PR totals.
 
-Records without their original account or repository are skipped; Kimchi never attaches them to today's login. Independent valid repositories can still report with `historyComplete: false`. Only records of work with repository evidence (a scoped request or a commit) count; a question asked outside Git has neither. Records that would fall outside the upload window anyway do not affect completeness. A request in a repository without a GitHub or GitLab identity (no such remote, or the local repository no longer exists) has no snapshot to go to and does not affect completeness either. The same applies to a self-hosted server that Kimchi cannot recognize as GitHub or GitLab, for example because its API cannot be reached without saved credentials; Kimchi checks it again a day later. A repository lookup that failed for another reason, such as a network error or rate limit, leaves recent history incomplete until it succeeds. Missing earlier requests or conflicting provider metadata hold the affected repository. A GitLab MR with no merge time leaves its requests unknown while other MRs keep reporting. An unparseable final journal line without a newline is ignored as an interrupted append, as is a cut-off record that later appends moved past (older versions start a new line after it). Other malformed records, including a cut-off final record, and unreadable journals still hold the scan. These cases appear in `/pr-reporting status`: skipped records as incomplete history coverage, held repositories and scans as delivery problems. `historyComplete` describes the captured inventory, not activity before tracking was installed or while it was disabled.
+Records without their original account or repository are skipped; Kimchi never attaches them to today's login. Independent valid repositories can still report with `historyComplete: false`. Only records of work with repository evidence (a scoped request or a commit) count; a question asked outside Git has neither. Records that would fall outside the upload window anyway do not affect completeness. A request in a repository without a GitHub or GitLab identity (no such remote, or the local repository no longer exists) has no snapshot to go to and does not affect completeness either. The same applies to a self-hosted server that Kimchi cannot recognize as GitHub or GitLab, for example because its API cannot be reached without saved credentials; Kimchi checks it again a day later. A repository lookup that failed for another reason, such as a network error or rate limit, leaves recent history incomplete until it succeeds. When the provider refuses the lookup with HTTP 401, 403 or 404, for example for a private repository without a GitHub or GitLab login, `/pr-reporting status` names the repository and the login (`gh auth login` or `glab auth login`, or a token variable) until a later lookup succeeds; its requests are reported then. Missing earlier requests or conflicting provider metadata hold the affected repository. A GitLab MR with no merge time leaves its requests unknown while other MRs keep reporting. An unparseable final journal line without a newline is ignored as an interrupted append, as is a cut-off record that later appends moved past (older versions start a new line after it). Other malformed records, including a cut-off final record, and unreadable journals still hold the scan. These cases appear in `/pr-reporting status`: skipped records as incomplete history coverage, held repositories and scans as delivery problems, refused and failed repository lookups as repositories not reported. `historyComplete` describes the captured inventory, not activity before tracking was installed or while it was disabled.
 
 ## Local state and retries
 
@@ -188,7 +201,9 @@ The existing telemetry setting controls these metrics separately from `/pr-repor
 
 - `kimchi.pr_cost.matching.count` counts one final outcome per input: `explicit`, `inferred`, `session`, `unknown`, `limited` (too much history to compare) or `failed`.
 - `kimchi.pr_cost.delivery.count` counts delivery attempts, including account verification: `success`, `failed` or `canceled`.
-- `kimchi.pr_cost.pricing.unpriced` records the unpriced request count from the latest local cost report.
+- `kimchi.pr_cost.lookup.count` counts repository identity lookups by the reporting pass: `success`, `unsupported` (no GitHub or GitLab remote, or the repository is gone), `denied` (the provider answered 401, 403 or 404) or `failed` (anything else, such as a timeout or rate limit).
+- `kimchi.pr_cost.reporting.enabled` records 1 while PR reporting is on and 0 while it is off.
+- `kimchi.pr_cost.pricing.pending` records the unpriced requests in the latest local cost report whose billing lookup can still price them. Requests sent without a billing tag, or whose lookup window has closed, are left out. Versions before it sent `kimchi.pr_cost.pricing.unpriced`, which counted every unpriced request in local history.
 - `kimchi.pr_cost.queue.depth` records repository snapshots waiting for acknowledgement, including zero after the queue clears.
 - `kimchi.pr_cost.snapshot.requests` and `kimchi.pr_cost.snapshot.bytes` record the largest request count and the largest serialized size among the snapshots queued in the latest pass that queued one, after trimming. They show how close clients come to the upload limits.
 - `kimchi.pr_cost.reconciliation.age` records seconds since the worker last started a scan. It measures liveness, not lookup success.

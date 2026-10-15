@@ -366,6 +366,39 @@ describe("durable reporting queue", () => {
 		await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, "utf8")), skippedRequests: -1 }))
 		await expect(readReportingState(directory)).rejects.toThrow("unreadable")
 	})
+	it("reports whether PR reporting is on whenever the queue is read, including before it exists", async () => {
+		const metric = vi.spyOn(health, "trackPRCostMetric")
+		await readReportingState(directory)
+		expect(metric).toHaveBeenCalledWith({ kind: "reportingEnabled", value: 1 })
+		await setReportingEnabled(directory, false)
+		metric.mockClear()
+		await readReportingState(directory)
+		expect(metric).toHaveBeenCalledWith({ kind: "reportingEnabled", value: 0 })
+		expect(metric).not.toHaveBeenCalledWith({ kind: "reportingEnabled", value: 1 })
+	})
+	it("keeps the repositories the latest capture could not report until an explicit choice", async () => {
+		await setReportingEnabled(directory, true)
+		const blocked = [
+			{ repository: "/work/app/.git", reason: "denied" as const, provider: "gitlab" as const, message: "Refused." },
+		]
+		const saved = await queueSnapshots(directory, [snapshot([requestId])], true, 0, blocked, 2)
+		expect([saved.blockedRepositories, saved.unsupportedRepositories]).toEqual([blocked, 2])
+		const later = await queueSnapshots(directory, [snapshot([requestId])], true)
+		expect([later.blockedRepositories, later.unsupportedRepositories]).toEqual([undefined, undefined])
+		await queueSnapshots(directory, [snapshot([requestId])], true, 0, blocked, 2)
+		const off = await setReportingEnabled(directory, false)
+		expect([off.blockedRepositories, off.unsupportedRepositories]).toEqual([undefined, undefined])
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const valid = JSON.parse(await readFile(path, "utf8"))
+		for (const damaged of [
+			{ blockedRepositories: [{ repository: "/work/app/.git", reason: "lost", message: "Refused." }] },
+			{ blockedRepositories: "/work/app/.git" },
+			{ unsupportedRepositories: -1 },
+		]) {
+			await writeFile(path, JSON.stringify({ ...valid, ...damaged }))
+			await expect(readReportingState(directory)).rejects.toThrow("unreadable")
+		}
+	})
 	it("keeps the retry deadline when new source evidence replaces a rate-limited snapshot", async () => {
 		await setReportingEnabled(directory, true)
 		await queueSnapshots(directory, [snapshot([requestId])])

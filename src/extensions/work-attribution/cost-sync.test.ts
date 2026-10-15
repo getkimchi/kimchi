@@ -19,6 +19,7 @@ import * as config from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { createContext } from "../__mocks__/context.js"
 import { savedWorkSummary } from "../__mocks__/work-summary.js"
+import * as health from "../telemetry/pr-cost.js"
 import { appendWorkRecord, getWorkId } from "../work-attribution.js"
 import { captureBillingSource, requestTagSelector } from "./billing-source.js"
 import { readWorkBrowser } from "./browser.js"
@@ -641,6 +642,30 @@ describe("automatic exact work cost lookup", () => {
 		expect(workCostDetails(dir, workId)).toContain(
 			"4 requests untagged: 1 body uninspectable, 3 tag limit (Kimchi adds model and phase tags; keep at most 7 in /tags).",
 		)
+	})
+	it("reports only requests that can still be priced as pending in PR cost health", async () => {
+		const metric = vi.spyOn(health, "trackPRCostMetric")
+		tagged("waiting")
+		const priced = tagged("priced")
+		const untaggedId = randomUUID()
+		const untagged = tracked("untagged", untaggedId)
+		// A request sent without a billing tag can never be priced, so it is not waiting for a price.
+		appendWorkRecord(untagged.ctx, {
+			type: "request_dispatch",
+			requestId: untaggedId,
+			dispatchedAt: "2026-10-01T08:00:00.000Z",
+			billingSource: untagged.source,
+			billingTagSkipped: "tag-limit",
+		})
+		fetchMock.mockImplementation(async (input) => {
+			const url = new URL(String(input))
+			if (url.pathname.endsWith("api-keys:verify")) return Response.json({ organizationId: ORG, userId: PROMPT })
+			const billed = url.searchParams.get("tags") === `kimchi-request:${priced.requestId}`
+			return Response.json({ items: billed ? [{ id: ROW, totalPrice: "1" }] : [], nextPageCursor: "" })
+		})
+		await sync()
+		const pending = metric.mock.calls.flatMap(([value]) => (value.kind === "pricingPending" ? [value.value] : []))
+		expect(pending.at(-1)).toBe(1)
 	})
 	it("counts only the work's own untagged and failed requests in work details of connected works", async () => {
 		const untaggedId = randomUUID()

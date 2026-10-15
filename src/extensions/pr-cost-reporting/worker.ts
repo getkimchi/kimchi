@@ -12,6 +12,7 @@ import { object, readWorkRecordsAsync, workJournalFingerprint } from "../work-at
 import {
 	ACCOUNT_SCOPES,
 	acknowledgeSnapshot,
+	type BlockedRepository,
 	deferSnapshot,
 	inUploadWindow,
 	LIMIT_NAMES,
@@ -79,7 +80,23 @@ export function serverLimit(body: unknown, at = Date.now()): ServerLimit | undef
 }
 
 /** A failed lookup keeps its kind: a repository without a GitHub or GitLab identity is not missing evidence. */
-const repositoryCache = new Map<string, { checkedAt: number; value?: ReportingRepository; unsupported?: true }>()
+const repositoryCache = new Map<
+	string,
+	{
+		checkedAt: number
+		value?: ReportingRepository
+		unsupported?: true
+		/** Why the last lookup failed, kept for /pr-reporting status until the next attempt. */
+		problem?: Omit<BlockedRepository, "repository">
+	}
+>()
+
+/** A provider's 401, 403 or 404 means the current login or token cannot see the repository; retrying does not fix it. */
+function lookupOutcome(error: unknown): "unsupported" | "denied" | "failed" {
+	if (!(error instanceof LookupError)) return "failed"
+	if (error.kind === "unsupported") return "unsupported"
+	return error.response && [401, 403, 404].includes(error.response.status) ? "denied" : "failed"
+}
 
 function safeEndpoint(value: string): boolean {
 	const url = plainURL(value, ["https:", "http:"])
@@ -365,18 +382,43 @@ async function captureSnapshots(
 			)
 			repositoryCache.set(key, { checkedAt: Date.now(), value })
 			repositories.set(repository, value)
+			trackPRCostMetric({ kind: "lookup", outcome: "success" })
 		} catch (error) {
 			// Transient failures (network, timeouts, rate limits) retry and leave the history incomplete meanwhile.
-			const unsupported = error instanceof LookupError && error.kind === "unsupported"
-			repositoryCache.set(key, { checkedAt: Date.now(), ...(unsupported ? { unsupported: true } : {}) })
-			if (unsupported) repositories.set(repository, "unsupported")
+			const outcome = lookupOutcome(error)
+			const problem =
+				outcome === "unsupported"
+					? undefined
+					: {
+							reason: outcome,
+							...(error instanceof LookupError && error.response ? { provider: error.response.provider } : {}),
+							message:
+								error instanceof LookupError
+									? error.message
+									: "The Git provider could not be reached. Kimchi will retry.",
+						}
+			repositoryCache.set(key, {
+				checkedAt: Date.now(),
+				...(outcome === "unsupported" ? { unsupported: true } : { problem }),
+			})
+			if (outcome === "unsupported") repositories.set(repository, "unsupported")
+			if (!signal.aborted) trackPRCostMetric({ kind: "lookup", outcome })
 			check()
 		}
 	}
 
+	// Requests in these repositories wait unreported; /pr-reporting status names them so the user can fix access.
+	const blocked: BlockedRepository[] = []
+	let unsupported = 0
+	for (const repository of [...needed].sort()) {
+		const identity = repositories.get(repository)
+		const problem = repositoryCache.get(cacheKey(repository))?.problem
+		if (identity === "unsupported") unsupported++
+		else if (!identity && problem) blocked.push({ repository, ...problem })
+	}
 	const built = buildSnapshots(records, report, repositories, costRefreshes, learnedLimits(state))
 	check()
-	await queueSnapshots(agentDir, built.snapshots, !built.incomplete, built.skippedRequests)
+	await queueSnapshots(agentDir, built.snapshots, !built.incomplete, built.skippedRequests, blocked, unsupported)
 	// A repository lookup that failed or ran out of time is retried by the next pass.
 	if ([...needed].every((repository) => repositories.has(repository)))
 		lastCapture = { inputs: await inputs(), at: startedAt }

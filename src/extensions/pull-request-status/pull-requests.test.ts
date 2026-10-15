@@ -1628,9 +1628,11 @@ describe("lookup failure reasons", () => {
 		vi.stubEnv("GITLAB_TOKEN", "gitlab-com-token")
 		http.mockImplementation(async () => Response.json({ message: "404 Project Not Found" }, { status: 404 }))
 		const failure = await lookupBranchPullRequest(repository, new AbortController().signal).catch((error) => error)
-		expect({ message: failure.message, reason: lookupFailureReason(failure) }).toEqual({
+		expect({ message: failure.message, reason: lookupFailureReason(failure), response: failure.response }).toEqual({
 			message: expect.stringContaining("GitLab could not find this repository"),
 			reason: undefined,
+			// PR reporting's status names the login that fixes a refused lookup.
+			response: { status: 404, provider: "gitlab" },
 		})
 	})
 	it("keeps an expired saved GitLab token actionable on an unconfigured host", async () => {
@@ -1648,9 +1650,10 @@ describe("lookup failure reasons", () => {
 				: Response.json({ error: "404 Not Found" }, { status: 404 }),
 		)
 		const failure = await lookupBranchPullRequest(repository, new AbortController().signal).catch((error) => error)
-		expect({ message: failure.message, reason: lookupFailureReason(failure) }).toEqual({
+		expect({ message: failure.message, reason: lookupFailureReason(failure), response: failure.response }).toEqual({
 			message: expect.stringContaining("GitLab authentication failed"),
 			reason: undefined,
+			response: { status: 401, provider: "gitlab" },
 		})
 	})
 	it("keeps the remote's own host when SSH config sends it to another address", async () => {

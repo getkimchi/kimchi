@@ -1,3 +1,5 @@
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import type { PendingRepository, ReportingState } from "./queue.js"
 import { accountKey, repositoryKey } from "./snapshot.js"
@@ -98,6 +100,107 @@ describe("/pr-reporting status", () => {
 				"Repositories   2 queued · 0 acknowledged",
 			].join("\n"),
 			warning: true,
+		})
+	})
+	it("names each repository Kimchi could not identify, with the login that fixes a refusal, and warns", () => {
+		expect(
+			statusText(
+				state([], {
+					blockedRepositories: [
+						{
+							repository: "/work/app/.git",
+							reason: "denied",
+							provider: "gitlab",
+							message:
+								"GitLab team/app could not find this repository, commit or pull request. It may require authentication.",
+						},
+						{ repository: "/work/tool/.git", reason: "failed", message: "GitHub lookup timed out. Kimchi will retry." },
+					],
+					unsupportedRepositories: 2,
+				}),
+				undefined,
+				now,
+			),
+		).toEqual({
+			text: [
+				"Repositories not reported",
+				"- /work/app: GitLab team/app could not find this",
+				"  repository, commit or pull request. It may require",
+				"  authentication. Run glab auth login or set GITLAB_TOKEN.",
+				"- /work/tool: GitHub lookup timed out. Kimchi will retry.",
+				"",
+				"PR reporting   Enabled (SaaS default)",
+				"Repositories   0 queued · 0 acknowledged",
+				"               2 not reported: no GitHub or GitLab remote",
+			].join("\n"),
+			warning: true,
+		})
+	})
+	it("shows a home-directory repository from ~ and the GitHub login for a GitHub refusal", () => {
+		const { text } = statusText(
+			state([], {
+				blockedRepositories: [
+					{
+						repository: join(homedir(), "code", "app", ".git"),
+						reason: "denied",
+						provider: "github",
+						message: "GitHub authentication failed.",
+					},
+				],
+			}),
+			undefined,
+			now,
+		)
+		expect(text.split("\n").slice(0, 3)).toEqual([
+			"Repositories not reported",
+			"- ~/code/app: GitHub authentication failed. Run gh auth",
+			"  login or set GH_TOKEN.",
+		])
+	})
+	it("leaves out repositories it could not report while reporting is off", () => {
+		expect(
+			statusText(
+				state([], {
+					enabled: false,
+					blockedRepositories: [
+						{ repository: "/work/app/.git", reason: "denied", provider: "github", message: "GitHub denied access." },
+					],
+					unsupportedRepositories: 1,
+				}),
+				undefined,
+				now,
+			),
+		).toEqual({
+			text: ["PR reporting   Disabled (SaaS default)", "Repositories   0 queued · 0 acknowledged"].join("\n"),
+			warning: false,
+		})
+	})
+	it("does not call requests held for an unidentified repository unevidenced", () => {
+		const { text } = statusText(
+			state([], {
+				blockedRepositories: [
+					{ repository: "/work/app/.git", reason: "failed", message: "GitHub lookup timed out. Kimchi will retry." },
+				],
+				skippedRequests: 2,
+			}),
+			undefined,
+			now,
+		)
+		expect(text.split("\n").slice(-4)).toEqual([
+			"History coverage incomplete",
+			"  2 requests skipped: their repository could not be",
+			"  identified, or they lack original account or repository",
+			"  evidence. Other requests are still reported.",
+		])
+	})
+	it("counts repositories without a GitHub or GitLab remote as information only", () => {
+		expect(statusText(state([], { unsupportedRepositories: 1 }), undefined, now)).toEqual({
+			text: [
+				"PR reporting   Enabled (SaaS default)",
+				"Repositories   0 queued · 0 acknowledged",
+				"               1 not reported: no GitHub or GitLab remote",
+			].join("\n"),
+			warning: false,
 		})
 	})
 	it("explains a session that does not upload and repositories waiting for their upload window", () => {

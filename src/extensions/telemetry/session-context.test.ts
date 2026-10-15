@@ -59,7 +59,13 @@ describe("SessionContext", () => {
 		const ctx = new TelemetryContext(makeConfig())
 		ctx.setPiSessionId("private-session")
 		ctx.userId = "private-user"
-		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, queueDepth: 0, startTimeUnixNano: "1000000000" }
+		ctx.cumulative.prCost = {
+			matching: { explicit: 1 },
+			delivery: {},
+			lookup: {},
+			queueDepth: 0,
+			startTimeUnixNano: "1000000000",
+		}
 		ctx.flushMetrics()
 		await Promise.allSettled([...ctx.inFlight])
 		const [, options] = vi.mocked(globalThis.fetch).mock.calls[0]
@@ -74,7 +80,7 @@ describe("SessionContext", () => {
 
 	it("drops buffered PR health when telemetry is turned off before flush", async () => {
 		const ctx = new TelemetryContext(makeConfig())
-		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, startTimeUnixNano: "1000000000" }
+		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, lookup: {}, startTimeUnixNano: "1000000000" }
 		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
 		ctx.flushMetrics()
 		await Promise.allSettled([...ctx.inFlight])
@@ -89,7 +95,7 @@ describe("SessionContext", () => {
 		ctx.userEmailReady = new Promise<void>((resolve) => {
 			release = resolve
 		})
-		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, startTimeUnixNano: "1000000000" }
+		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, lookup: {}, startTimeUnixNano: "1000000000" }
 		ctx.flushMetrics()
 		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
 		release()
@@ -106,7 +112,7 @@ describe("SessionContext", () => {
 			return new Response(null, { status: 503 })
 		})
 		const ctx = new TelemetryContext(makeConfig())
-		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, startTimeUnixNano: "1000000000" }
+		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, lookup: {}, startTimeUnixNano: "1000000000" }
 		ctx.flushMetrics()
 		await Promise.allSettled([...ctx.inFlight])
 		expect(globalThis.fetch).toHaveBeenCalledOnce()
@@ -119,12 +125,12 @@ describe("SessionContext", () => {
 		ctx.userEmailReady = new Promise<void>((resolve) => {
 			release = resolve
 		})
-		ctx.cumulative.prCost = { matching: { explicit: 4 }, delivery: {}, startTimeUnixNano: "1000000000" }
+		ctx.cumulative.prCost = { matching: { explicit: 4 }, delivery: {}, lookup: {}, startTimeUnixNano: "1000000000" }
 		ctx.flushMetrics()
 		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
 		ctx.flushMetrics()
 		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
-		ctx.cumulative.prCost = { matching: { session: 1 }, delivery: {}, startTimeUnixNano: "2000000000" }
+		ctx.cumulative.prCost = { matching: { session: 1 }, delivery: {}, lookup: {}, startTimeUnixNano: "2000000000" }
 		ctx.flushMetrics()
 		release()
 		await Promise.allSettled([...ctx.inFlight])
@@ -137,12 +143,12 @@ describe("SessionContext", () => {
 		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
 		vi.spyOn(Math, "random").mockReturnValue(0)
 		const ctx = new TelemetryContext(makeConfig())
-		ctx.cumulative.prCost = { matching: { explicit: 4 }, delivery: {}, startTimeUnixNano: "1000000000" }
+		ctx.cumulative.prCost = { matching: { explicit: 4 }, delivery: {}, lookup: {}, startTimeUnixNano: "1000000000" }
 		vi.mocked(globalThis.fetch).mockImplementationOnce(async () => {
 			vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
 			ctx.flushMetrics()
 			vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
-			ctx.cumulative.prCost = { matching: { session: 1 }, delivery: {}, startTimeUnixNano: "2000000000" }
+			ctx.cumulative.prCost = { matching: { session: 1 }, delivery: {}, lookup: {}, startTimeUnixNano: "2000000000" }
 			return new Response(null, { status: 503 })
 		})
 		ctx.flushMetrics()

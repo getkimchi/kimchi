@@ -25,24 +25,39 @@ it("counts decisions and attempts while replacing queue and price gauges", () =>
 	trackPRCostMetric({ kind: "matching", outcome: "unknown" })
 	trackPRCostMetric({ kind: "delivery", outcome: "failed" })
 	trackPRCostMetric({ kind: "delivery", outcome: "success" })
-	trackPRCostMetric({ kind: "unpriced", value: 4 })
-	trackPRCostMetric({ kind: "unpriced", value: 1 })
+	trackPRCostMetric({ kind: "lookup", outcome: "denied" })
+	trackPRCostMetric({ kind: "lookup", outcome: "denied" })
+	trackPRCostMetric({ kind: "lookup", outcome: "success" })
+	trackPRCostMetric({ kind: "pricingPending", value: 4 })
+	trackPRCostMetric({ kind: "pricingPending", value: 1 })
 	trackPRCostMetric({ kind: "queueDepth", value: 2 })
 	trackPRCostMetric({ kind: "queueDepth", value: 0 })
+	trackPRCostMetric({ kind: "reportingEnabled", value: 1 })
 	expect(fixture.context?.cumulative.prCost).toEqual({
 		startTimeUnixNano: expect.any(String),
 		matching: { explicit: 2, unknown: 1 },
 		delivery: { failed: 1, success: 1 },
-		unpriced: 1,
+		lookup: { denied: 2, success: 1 },
+		pricingPending: 1,
 		queueDepth: 0,
+		reportingEnabled: 1,
 	})
 	const state = fixture.context?.cumulative
 	expect(state).toBeDefined()
 	if (!state) throw new Error("Missing test accumulator")
 	const metrics = collectMetrics(state)
-	expect(metrics).toHaveLength(6)
+	expect(metrics.map((metric) => [metric.name, metric.type, metric.attrs, metric.value])).toEqual([
+		["kimchi.pr_cost.matching.count", "Sum", { decision: "explicit" }, 2],
+		["kimchi.pr_cost.matching.count", "Sum", { decision: "unknown" }, 1],
+		["kimchi.pr_cost.delivery.count", "Sum", { decision: "failed" }, 1],
+		["kimchi.pr_cost.delivery.count", "Sum", { decision: "success" }, 1],
+		["kimchi.pr_cost.lookup.count", "Sum", { decision: "denied" }, 2],
+		["kimchi.pr_cost.lookup.count", "Sum", { decision: "success" }, 1],
+		["kimchi.pr_cost.pricing.pending", "Gauge", {}, 1],
+		["kimchi.pr_cost.queue.depth", "Gauge", {}, 0],
+		["kimchi.pr_cost.reporting.enabled", "Gauge", {}, 1],
+	])
 	expect(metrics.every((metric) => metric.scope === "aggregate")).toBe(true)
-	expect(metrics.filter((metric) => metric.type === "Gauge").map((metric) => metric.value)).toEqual([1, 0])
 	expect(collectMetrics(state)).toEqual(metrics)
 })
 

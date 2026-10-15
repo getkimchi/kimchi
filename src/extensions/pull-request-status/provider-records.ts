@@ -18,6 +18,8 @@ export class LookupError extends Error {
 		readonly kind?: "missing" | "invalid" | "retry" | "unsupported",
 		/** The provider's own API error format, which proves an unconfigured host runs that provider. */
 		readonly fromProvider = false,
+		/** The provider's HTTP error status, and which provider the request went to. */
+		readonly response?: { status: number; provider: Repository["provider"] },
 	) {
 		super(message)
 	}

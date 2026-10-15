@@ -324,28 +324,33 @@ export async function requestJSON(
 						? typeof value.documentation_url === "string"
 						: (typeof value.message === "string" && value.message.startsWith(`${response.status} `)) ||
 							(typeof value.error === "string" && typeof value.error_description === "string"))
+				const failure = { status: response.status, provider: repository.provider }
 				if (response.status === 401)
 					throw new LookupError(
 						`${label(repository)} authentication failed. Check the token for ${repository.host}.`,
 						undefined,
 						fromProvider,
+						failure,
 					)
 				if (response.status === 403)
 					throw new LookupError(
 						`${label(repository)} denied access. Check repository permissions for ${repository.host}.`,
 						undefined,
 						fromProvider,
+						failure,
 					)
 				if (response.status === 404)
 					throw new LookupError(
 						`${label(repository)} could not find this repository, commit or pull request. It may require authentication.`,
 						"missing",
 						fromProvider,
+						failure,
 					)
 				throw new LookupError(
 					`${label(repository)} lookup failed (HTTP ${response.status}). Kimchi will retry.`,
 					"retry",
 					fromProvider,
+					failure,
 				)
 			}
 			if (missingCommitSha) {
