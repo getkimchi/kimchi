@@ -78,6 +78,12 @@
 #     auth schema ({provider} bearer) warns on adapter-format configs.
 #     Registering /mcp at load makes pi's loader omit the replaceable
 #     built-in extension (upstream-designed replacement mechanism).
+#   - pi-builtin-mcp: ADAPTER_VERSION read is bundled-runtime-safe: under
+#     Bun single-executable builds import.meta.url has no real package.json
+#     ($bunfs), and the top-level readFileSync threw at import time, so the
+#     built-in MCP was never disabled in compiled binaries (double MCP
+#     stacks, strict-auth-schema warnings). Falls back to "unknown"; the
+#     onboarding-state gate then simply re-checks each start.
 #   - config: writeProjectServerDisabledOverride writes its override through
 #     the server's provenance path (the file it was loaded from), falling
 #     back to the adapter-native project config for unknown servers.
@@ -951,6 +957,29 @@ index 8dc634af1152be3447ae33738b1c6ee9826a9020..d36939cb261d3ccfdc1dae8da6fad3d5
 -    return undefined;
 -  }
 -}
+diff --git a/pi-builtin-mcp.ts b/pi-builtin-mcp.ts
+index 4e3f8775e9e4770d776ed8e92eab80edc5f3f8df..5657644bb7c17ac9c0ead1886dcb20ad1bf644ea 100644
+--- a/pi-builtin-mcp.ts
++++ b/pi-builtin-mcp.ts
+@@ -4,7 +4,17 @@ import { getAgentDir } from "./agent-dir.ts";
+ import { loadOnboardingState, updateOnboardingState } from "./onboarding-state.ts";
+ 
+ const BUILTIN_MCP = "builtin:mcp";
+-const ADAPTER_VERSION: string = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf-8")).version;
++// Bundled builds (e.g. Bun single-executable apps) have no real package.json on
++// disk: import.meta.url points into the virtual filesystem ($bunfs), and the
++// read would throw at import time, silently skipping the built-in MCP turn-off.
++// Treat the version as unknown there; the onboarding-state gate then never
++// short-circuits, which simply re-checks the settings entry on each start.
++let ADAPTER_VERSION: string = "unknown";
++try {
++	ADAPTER_VERSION = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf-8")).version;
++} catch {
++	// no real package.json under bundled runtimes
++}
+ 
+ /**
+  * Once per adapter version, adds `-builtin:mcp` to Pi's user `extensions` unless it already has a
 diff --git a/project-server-trust.ts b/project-server-trust.ts
 index 264573709c2c896fdb88d661fd24cd8f2f4a2327..7620913273acb8cd190bbb992d9e85303b5eabb6 100644
 --- a/project-server-trust.ts

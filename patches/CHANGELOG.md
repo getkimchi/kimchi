@@ -99,6 +99,13 @@ but are only drained by the next fresh run).
   The client 2.3.1 patch carries the spec-strict-gateway Accept fix alone.
 - **DROPPED — tool-annotation caching hunk.** Native in 5.x (metadata-cache
   persists/reconstructs annotations).
+- **NEW — bundled-runtime-safe version read (pi-builtin-mcp.ts).** Under Bun
+  SEA bundles `import.meta.url` is a $bunfs path with no real package.json;
+  the top-level readFileSync threw at import time, so pi's built-in MCP was
+  never disabled in compiled binaries and both MCP stacks ran (double tool
+  registration and strict-auth-schema warnings). Falls back to "unknown",
+  which simply re-checks on each start. Found via CI TUI e2e failures that
+  only reproduce against `dist/bin/kimchi`, not dev-mode runs.
 - **NEW — always register `/mcp` (index.ts).** pi 1.2 ships a built-in native
   MCP extension (`replaceable`) that reads the same mcp.json files with a
   stricter schema (`auth` must be `{provider}` bearer-name, not the adapter's

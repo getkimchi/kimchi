@@ -39,6 +39,7 @@ import {
 	DEFAULT_SKILL_PATHS,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
+	ensureTuiModeDefault,
 	getApiKeyMismatchWarning,
 	loadConfig,
 	RETRY_DEFAULTS,
@@ -611,6 +612,7 @@ try {
 			const existing = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
 			let changed = ensureHideThinkingBlockDefault(existing)
 			if (ensureQuietStartupDefault(existing)) changed = true
+			if (ensureTuiModeDefault(existing)) changed = true
 			const upgraded = upgradeLegacyRetrySettings(existing.retry)
 			if (upgraded) {
 				existing.retry = upgraded
