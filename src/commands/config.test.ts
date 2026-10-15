@@ -467,18 +467,6 @@ describe("kimchi config set tui.wheelScrollLines", () => {
 		expect(await runConfig(["set"])).toBe(2)
 		expect(writeTuiWheelScrollLines).not.toHaveBeenCalled()
 	})
-
-	it("warns when the env override shadows the written value", async () => {
-		vi.stubEnv("KIMCHI_WHEEL_SCROLL_LINES", "5")
-
-		const exit = await runConfig(["set", "tui.wheelScrollLines", "3"])
-
-		expect(exit).toBe(0)
-		expect(writeTuiWheelScrollLines).toHaveBeenCalledWith(3)
-		expect(console.warn).toHaveBeenCalledWith(
-			expect.stringContaining("KIMCHI_WHEEL_SCROLL_LINES=5 is set and overrides this value"),
-		)
-	})
 })
 
 describe("kimchi config get tui.wheelScrollLines", () => {
@@ -507,19 +495,7 @@ describe("kimchi config get tui.wheelScrollLines", () => {
 		const exit = await runConfig(["get", "tui.wheelScrollLines"])
 
 		expect(exit).toBe(0)
-		expect(console.log).toHaveBeenCalledWith("tui.wheelScrollLines: unset (default 1) (from config)")
-	})
-
-	it("notes the env override when it is in effect", async () => {
-		vi.stubEnv("KIMCHI_WHEEL_SCROLL_LINES", "7")
-
-		const exit = await runConfig(["get", "tui.wheelScrollLines"])
-
-		expect(exit).toBe(0)
-		expect(console.log).toHaveBeenCalledWith(
-			"tui.wheelScrollLines: 7 (from KIMCHI_WHEEL_SCROLL_LINES, overrides config)",
-		)
-		expect(loadConfig).not.toHaveBeenCalled()
+		expect(console.log).toHaveBeenCalledWith('tui.wheelScrollLines: unset (default "auto") (from config)')
 	})
 
 	it("refuses unknown keys (exit 2)", async () => {

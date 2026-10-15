@@ -142,7 +142,7 @@
 # History: patches/CHANGELOG.md.
 #
 diff --git a/dist/cli/args.js b/dist/cli/args.js
-index ec17d54..e97f50e 100644
+index ec17d54377ea8ff8d27a338069809cc9f91e46d2..e97f50e3af153f66a5a37cf59989f0c57bf64c8a 100644
 --- a/dist/cli/args.js
 +++ b/dist/cli/args.js
 @@ -409,6 +409,7 @@ ${chalk.bold("Examples:")}
@@ -154,7 +154,7 @@ index ec17d54..e97f50e 100644
    ANTHROPIC_API_KEY                - Anthropic Claude API key
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index c16f5da..cde5b44 100644
+index c16f5da1b0902b04152e4d550f3fe601249e3b42..cde5b444d7a960438ef984076f8f997b25b25ebb 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
 @@ -2197,7 +2197,7 @@ export class AgentSession {
@@ -213,7 +213,7 @@ index c16f5da..cde5b44 100644
                      }
                      catch (error) {
 diff --git a/dist/core/auth-storage.js b/dist/core/auth-storage.js
-index 021c379..c174599 100644
+index 021c379011448cdf5a656294864b4f2f23dd7c13..c1745994528706b870047eeccd25b2d97fb79bc2 100644
 --- a/dist/core/auth-storage.js
 +++ b/dist/core/auth-storage.js
 @@ -327,6 +327,21 @@ export class AuthStorage {
@@ -259,7 +259,7 @@ index 021c379..c174599 100644
          }
          finally {
 diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
-index f9292e8..d44374d 100644
+index f9292e82120e4afbc3702b11d684867ae0ff7033..d44374d5d5847597086b6b592d663aa26ce87a09 100644
 --- a/dist/core/extensions/loader.js
 +++ b/dist/core/extensions/loader.js
 @@ -347,9 +347,9 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
@@ -275,7 +275,7 @@ index f9292e8..d44374d 100644
          getThinkingLevel() {
              assertActive();
 diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
-index 43c7ad4..8c40979 100644
+index 43c7ad43b394c7a9266dbcac0bee1e675b721713..8c409793fa625eeb193c04f6bf5142a58dc4b0f5 100644
 --- a/dist/core/extensions/types.d.ts
 +++ b/dist/core/extensions/types.d.ts
 @@ -193,6 +193,16 @@ export interface ExtensionUIContext {
@@ -334,7 +334,7 @@ index 43c7ad4..8c40979 100644
  export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
  export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
 diff --git a/dist/core/extensions/virtual-modules.js b/dist/core/extensions/virtual-modules.js
-index 77b6d6d..8b45ce5 100644
+index 77b6d6d2627037b93d8eb0b9f7c2369ddffc1cbf..8b45ce56297ef86c4e072682501e2d44c21842cc 100644
 --- a/dist/core/extensions/virtual-modules.js
 +++ b/dist/core/extensions/virtual-modules.js
 @@ -10,6 +10,20 @@ import * as bundledTypeboxValue from "typebox/value";
@@ -379,7 +379,7 @@ index 77b6d6d..8b45ce5 100644
      "@mariozechner/pi-ai/providers/all": bundledPiAiProviders,
      "@mariozechner/pi-coding-agent": bundledPiCodingAgent,
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
-index 7543601..488438e 100644
+index 754360194ec57d5e6d5710592762f05534c4a6a7..488438ef52ce97253fa92601528e988c2a3d78cd 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
 @@ -39,6 +39,7 @@ export const defaultModelPerProvider = {
@@ -391,7 +391,7 @@ index 7543601..488438e 100644
      "cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
      "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
 diff --git a/dist/core/model-runtime.js b/dist/core/model-runtime.js
-index 835de97..5f502c3 100644
+index 835de9763c964ff2577ab4e38384b684ab4970d1..5f502c3fa2143c6eef867fd1cc0adc0aba975647 100644
 --- a/dist/core/model-runtime.js
 +++ b/dist/core/model-runtime.js
 @@ -85,7 +85,10 @@ export class ModelRuntime {
@@ -407,7 +407,7 @@ index 835de97..5f502c3 100644
                  return provider;
              // OpenRouter narrows the catalog to the models, limits and prices of the user's key.
 diff --git a/dist/core/project-trust.js b/dist/core/project-trust.js
-index 0ff35ba..e1ffb4c 100644
+index 0ff35badb1ba62b35c4ba1fd778cedae670a8691..e1ffb4c2ea89e502a1dd6540783bc63c6e2a2a4e 100644
 --- a/dist/core/project-trust.js
 +++ b/dist/core/project-trust.js
 @@ -3,7 +3,10 @@ import { emitProjectTrustEvent } from "./extensions/runner.js";
@@ -423,7 +423,7 @@ index 0ff35ba..e1ffb4c 100644
  async function selectProjectTrustOption(cwd, ctx) {
      const options = getProjectTrustOptions(cwd, { includeSessionOnly: true });
 diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
-index 563d7d5..bdd6d4a 100644
+index 563d7d5ff8b514bd276e16c0243f373769ca8de2..bdd6d4ae0d21e019a8ab969a4a8a21278f08341e 100644
 --- a/dist/core/resource-loader.js
 +++ b/dist/core/resource-loader.js
 @@ -583,9 +583,16 @@ export class DefaultResourceLoader {
@@ -473,7 +473,7 @@ index 563d7d5..bdd6d4a 100644
                  }
                  else {
 diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
-index 62b469b..c34fb4e 100644
+index 62b469b5dc3fcea2aa8f52218cbdfe892d9abed4..c34fb4ea381311f7e8e9cc380b24f1bf10ea255d 100644
 --- a/dist/core/session-manager.js
 +++ b/dist/core/session-manager.js
 @@ -163,6 +163,86 @@ function getSessionContextSettings(path) {
@@ -915,7 +915,7 @@ index 62b469b..c34fb4e 100644
              // Use the same rule as _persist(): write now if the branched path already
              // has a conversation, otherwise let _persist() create the file later.
 diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
-index e52c9d7..397b607 100644
+index e52c9d779bdb50667083810d946e11da6c7e29ba..397b60780d9d49a8eea9aa3bf68e163759dfae34 100644
 --- a/dist/core/tools/bash.js
 +++ b/dist/core/tools/bash.js
 @@ -75,17 +75,31 @@ export function createLocalShellOperations(shellName, resolveShellConfig) {
@@ -978,7 +978,7 @@ index e52c9d7..397b607 100644
          },
      };
 diff --git a/dist/core/tools/renderers/edit.js b/dist/core/tools/renderers/edit.js
-index a64a3d1..daadd5a 100644
+index a64a3d1da0d346cf6df32489c5f1346ad1e173b9..daadd5af284b006a02581899ab28f5fb1f41768e 100644
 --- a/dist/core/tools/renderers/edit.js
 +++ b/dist/core/tools/renderers/edit.js
 @@ -10,7 +10,7 @@ import { renderDiff } from "../../../modes/interactive/components/diff.js";
@@ -1010,7 +1010,7 @@ index a64a3d1..daadd5a 100644
  function buildEditCallComponent(component, args, theme, cwd, outputPad) {
      component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
 diff --git a/dist/core/trust-manager.js b/dist/core/trust-manager.js
-index 5562460..5d5f70a 100644
+index 55624605ababf2f1f129e9963cdbbe3ca27f5566..5d5f70ae62bf0e160567cf1f2b71515420cf3299 100644
 --- a/dist/core/trust-manager.js
 +++ b/dist/core/trust-manager.js
 @@ -1,5 +1,5 @@
@@ -1105,7 +1105,7 @@ index 5562460..5d5f70a 100644
          const agentsSkillsDir = join(currentDir, ".agents", "skills");
          if (agentsSkillsDir !== userAgentsSkillsDir && existsSync(agentsSkillsDir)) {
 diff --git a/dist/modes/interactive/components/branch-summary-message.js b/dist/modes/interactive/components/branch-summary-message.js
-index 95bcc77..7f1b970 100644
+index 95bcc771ad03e99eb11fc44b468014648b4040cc..7f1b970dbdce28ea177134214d633bcc96c34c94 100644
 --- a/dist/modes/interactive/components/branch-summary-message.js
 +++ b/dist/modes/interactive/components/branch-summary-message.js
 @@ -10,7 +10,7 @@ export class BranchSummaryMessageComponent extends Box {
@@ -1118,7 +1118,7 @@ index 95bcc77..7f1b970 100644
          this.markdownTheme = markdownTheme;
          this.updateDisplay();
 diff --git a/dist/modes/interactive/components/compaction-summary-message.js b/dist/modes/interactive/components/compaction-summary-message.js
-index ade3b9a..72d8d71 100644
+index ade3b9acb74d21fd8499e35772ccc24151dc6930..72d8d71ebcd7ab2a246c6825ab13e467802b68c5 100644
 --- a/dist/modes/interactive/components/compaction-summary-message.js
 +++ b/dist/modes/interactive/components/compaction-summary-message.js
 @@ -10,7 +10,7 @@ export class CompactionSummaryMessageComponent extends Box {
@@ -1131,7 +1131,7 @@ index ade3b9a..72d8d71 100644
          this.markdownTheme = markdownTheme;
          this.updateDisplay();
 diff --git a/dist/modes/interactive/components/custom-message.js b/dist/modes/interactive/components/custom-message.js
-index 211e4b8..182916c 100644
+index 211e4b8218728727fb99e4a0e1eb2a5fc9207b5c..182916c171cf74f196304108744656a309d82461 100644
 --- a/dist/modes/interactive/components/custom-message.js
 +++ b/dist/modes/interactive/components/custom-message.js
 @@ -20,7 +20,7 @@ export class CustomMessageComponent extends Container {
@@ -1144,7 +1144,7 @@ index 211e4b8..182916c 100644
      }
      setExpanded(expanded) {
 diff --git a/dist/modes/interactive/components/extension-selector.js b/dist/modes/interactive/components/extension-selector.js
-index 3d88d9e..b3476a7 100644
+index 3d88d9e595c774fe55cb2b991fcc44f0da1716b4..b3476a7e503a6535e7a8ea599ca4548605955822 100644
 --- a/dist/modes/interactive/components/extension-selector.js
 +++ b/dist/modes/interactive/components/extension-selector.js
 @@ -2,7 +2,7 @@
@@ -1174,7 +1174,7 @@ index 3d88d9e..b3476a7 100644
      dispose() {
          this.countdown?.dispose();
 diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
-index bd88940..41dbea5 100644
+index bd8894046f77385541fd9bd7b88268866a34a526..41dbea51183403be34687a00a30352548b8f55dd 100644
 --- a/dist/modes/interactive/components/model-selector.js
 +++ b/dist/modes/interactive/components/model-selector.js
 @@ -34,6 +34,7 @@ export class ModelSelectorComponent extends Container {
@@ -1300,7 +1300,7 @@ index bd88940..41dbea5 100644
      }
      getSearchInput() {
 diff --git a/dist/modes/interactive/components/skill-invocation-message.js b/dist/modes/interactive/components/skill-invocation-message.js
-index 39514bb..15c123c 100644
+index 39514bbcb15ce424b389374980a33e07bcacabe3..15c123c7f01eab190e2929f6ff743179d050b78d 100644
 --- a/dist/modes/interactive/components/skill-invocation-message.js
 +++ b/dist/modes/interactive/components/skill-invocation-message.js
 @@ -11,7 +11,7 @@ export class SkillInvocationMessageComponent extends Box {
@@ -1313,7 +1313,7 @@ index 39514bb..15c123c 100644
          this.markdownTheme = markdownTheme;
          this.updateDisplay();
 diff --git a/dist/modes/interactive/components/tool-execution.js b/dist/modes/interactive/components/tool-execution.js
-index d447db5..57bea7e 100644
+index d447db5ade5e37d6bc91cb91006ea0c711821b29..57bea7e26013ce97db801e80111f0587de058723 100644
 --- a/dist/modes/interactive/components/tool-execution.js
 +++ b/dist/modes/interactive/components/tool-execution.js
 @@ -47,8 +47,8 @@ export class ToolExecutionComponent extends Container {
@@ -1341,20 +1341,8 @@ index d447db5..57bea7e 100644
          let hasContent = false;
          this.hideComponent = false;
          if (this.hasRendererDefinition()) {
-diff --git a/dist/modes/interactive/components/user-message.js b/dist/modes/interactive/components/user-message.js
-index 2316e50..5d7e8a7 100644
---- a/dist/modes/interactive/components/user-message.js
-+++ b/dist/modes/interactive/components/user-message.js
-@@ -11,6 +11,7 @@ export class UserMessageComponent extends Container {
-     text;
-     markdownTheme;
-     outputPad;
-+    contentBox;
-     markdownTransformers;
-     constructor(text, markdownTheme = getMarkdownTheme(), outputPad = 1, markdownTransformers = []) {
-         super();
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 6a5b925..68681c3 100644
+index 6a5b925cbdcfbefc916ae80fc460425f4954d364..68681c3b37c9bb6ff282fe2840c4ca7e8101fc4f 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -1432,8 +1432,64 @@ export class InteractiveMode {

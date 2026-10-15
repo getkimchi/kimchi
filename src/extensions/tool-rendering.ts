@@ -542,16 +542,9 @@ export function patchUserMessageRender(): void {
 				md.defaultTextStyle = { color: md.defaultTextStyle.color }
 			}
 			md.invalidate?.()
-		} else {
-			// Pre-1.2 shape: content wrapped in a Box.
-			const box = (this as any).contentBox
-			if (box) {
-				box.bgFn = null
-				box.paddingY = 0
-				box.paddingX = 0
-				box.invalidateCache?.()
-			}
 		}
+		// Pre-1.2 Box wrapper fallback removed with the 1.2 upgrade (the wrapper
+		// no longer exists at the pinned version; patch-audit-1.2.0.md).
 		const theme = _themePaletteCacheTheme
 		const glyph = typeof theme?.fg === "function" ? theme.fg("accent", "❯") : "❯"
 		const prefix = ` ${glyph} `

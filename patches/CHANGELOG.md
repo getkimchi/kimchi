@@ -36,6 +36,10 @@ but are only drained by the next fresh run).
   child directly; the Kimchi prefix/OSC 133 patch moved extension-side to
   neutralize the Markdown instance's `paddingY`/`paddingX`/`defaultTextStyle`
   (`patchUserMessageRender` in `src/extensions/tool-rendering.ts`).
+- **DROPPED — the leftover `contentBox;` field declaration on
+  `user-message.js`** (2026-10-15). Vestigial after the wrapper removal — its
+  only reader was a guarded pre-1.2 fallback in `patchUserMessageRender`, now
+  also removed. See `.kimchi/docs/patch-audit-1.2.0.md`.
 - **MOVED — Bun `type2`/`bundledPiAiCompatSafe` Proxy compat.** Upstream split the
   virtual-module seam: the hunk now lives in `dist/core/extensions/virtual-modules.js`
   instead of `loader.js`.
@@ -53,10 +57,17 @@ but are only drained by the next fresh run).
 ### `@earendil-works/pi-tui`
 
 - **REBASED — stroke rendering (applyStrokeToLine), scrollback opt-out
-  (PI_TUI_NO_CLEAR_SCROLLBACK), no-truncate width hardening, wheel-scroll
-  speed (KIMCHI_WHEEL_SCROLL_LINES).** 1.2 replaced the editor's caret with an
-  APC cursor marker (`\x1b_pi:c\x07` / FAKE_CURSOR_START/END); the strip sites
-  in Kimchi source were adapted (`\x1b[7m` strokes are now no-ops there).
+  (PI_TUI_NO_CLEAR_SCROLLBACK), no-truncate width hardening.** 1.2 replaced the
+  editor's caret with an APC cursor marker (`\x1b_pi:c\x07` /
+  FAKE_CURSOR_START/END); the strip sites in Kimchi source were adapted
+  (`\x1b[7m` strokes are now no-ops there).
+- **DROPPED — wheel-scroll speed (`KIMCHI_WHEEL_SCROLL_LINES`)** (2026-10-15).
+  pi-tui 1.2 ships a native velocity-based `WheelScrollAccelerator` with an
+  `"auto"` default and a first-class `fullscreenWheelScrollLines` setting; pi
+  always passes an explicit value, so the env fallback was unreachable. Kimchi's
+  `tui.wheelScrollLines` config now syncs into pi's settings.json key
+  (`syncWheelScrollToPiSettings` in `src/config.ts`). See
+  `.kimchi/docs/patch-audit-1.2.0.md`.
   `applyStrokeToLine` gained a hard truncate so narrow widths can no longer
   overflow (fuzz invariant now enforced against line construction).
 
@@ -68,8 +79,12 @@ but are only drained by the next fresh run).
 
 ### `pi-mcp-adapter`
 
-- **BUMPED — 2.34.0 → 5.3.0** (MCP client 2.0.0 → 2.3.1 for GHSA-6qxp-vccf-f47h;
-  the `@modelcontextprotocol/sdk@1.29.0` patch stays, sdk 1.29 is still in the graph).
+- **BUMPED — 2.34.0 → 5.3.0** (MCP client 2.0.0 → 2.3.1 for GHSA-6qxp-vccf-f47h).
+- **DROPPED — `@modelcontextprotocol/sdk@1.29.0` patch.** Adapter 5.3.0's OAuth
+  path imports `@modelcontextprotocol/client` 2.3.1 exclusively; sdk 1.29
+  remains in the graph only as a peer of `@google/genai`/`mem0ai`/`ext-apps`
+  with no `client/auth.js` consumer (audit: `.kimchi/docs/patch-audit-1.2.0.md`).
+  The client 2.3.1 patch carries the spec-strict-gateway Accept fix alone.
 - **DROPPED — tool-annotation caching hunk.** Native in 5.x (metadata-cache
   persists/reconstructs annotations).
 - **RE-DRAFTED — tool-name sanitization** around upstream's new `formatToolName`

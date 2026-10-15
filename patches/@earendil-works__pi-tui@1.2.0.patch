@@ -1,5 +1,5 @@
-# Patch: Kimchi stroke rendering, scrollback behavior, narrow-terminal
-# hardening, and configurable wheel-scroll speed for pi-tui 1.2.0
+# Patch: Kimchi stroke rendering, scrollback behavior, and narrow-terminal
+# hardening for pi-tui 1.2.0
 #
 # Tracking: https://github.com/getkimchi/kimchi/issues/863
 # Changes:
@@ -10,18 +10,17 @@
 #   - Hard-truncate all emitted lines to `width` in Text/Box/Markdown no-bg paths
 #     so that no component can emit a line wider than the terminal (prevents
 #     crashes at widths 1-2 where paddingX margins alone exceed width).
-#   - Configurable fullscreen wheel-scroll speed: TuiAltScreen falls back to the
-#     KIMCHI_WHEEL_SCROLL_LINES env var when no explicit wheelScrollLines option
-#     is passed; invalid/absent values keep the upstream default of 1. Kimchi
-#     maps its tui.wheelScrollLines config onto this env var at startup. A
-#     future upstream contribution would use a PI_TUI_* name instead.
+#   - (Removed 2026-10-15: the KIMCHI_WHEEL_SCROLL_LINES env fallback matched
+#     upstream pi-tui 1.2's native WheelScrollAccelerator/"auto" mode plus the
+#     fullscreenWheelScrollLines setting, making the branch unreachable -
+#     see .kimchi/docs/patch-audit-1.2.0.md.)
 # Careful: text.js layers on upstream's own paddingX clamp - keep the clamp and
 #   thread the clamped local paddingX through the stroke sites when rebasing.
 # Removal: delete when the pinned Pi TUI release provides all four behaviors.
 # History: see patches/CHANGELOG.md.
 #
 diff --git a/dist/components/box.js b/dist/components/box.js
-index 1146b95e5..3cfb69405 100644
+index 1146b95e5c5b2a2d4ff21153364bbf4d3ba8cc71..3cfb694052f9385a7d36386e44facf9601532f5f 100644
 --- a/dist/components/box.js
 +++ b/dist/components/box.js
 @@ -1,5 +1,5 @@
@@ -74,7 +73,7 @@ index 1146b95e5..3cfb69405 100644
  //# sourceMappingURL=box.js.map
 \ No newline at end of file
 diff --git a/dist/components/markdown.js b/dist/components/markdown.js
-index 28709ba45..82fd1d6f2 100644
+index 28709ba4553d4fd3620040d5d23cf7e37b5bd77b..82fd1d6f2fd0fea70161bcedf4be1a74221d8707 100644
 --- a/dist/components/markdown.js
 +++ b/dist/components/markdown.js
 @@ -1,7 +1,7 @@
@@ -126,7 +125,7 @@ index 28709ba45..82fd1d6f2 100644
          }
          // Combine top padding, content, and bottom padding
 diff --git a/dist/components/text.js b/dist/components/text.js
-index 3572668c6..8b0041393 100644
+index 3572668c677bd4d449aff9622273440c8bb103b0..8b0041393be4d813ba6913abf780264d3b38c662 100644
 --- a/dist/components/text.js
 +++ b/dist/components/text.js
 @@ -1,4 +1,4 @@
@@ -175,38 +174,8 @@ index 3572668c6..8b0041393 100644
              emptyLines.push(line);
          }
          const result = [...emptyLines, ...contentLines, ...emptyLines];
-diff --git a/dist/tui-alt-screen.js b/dist/tui-alt-screen.js
-index cc41fea6d..c1ef81c89 100644
---- a/dist/tui-alt-screen.js
-+++ b/dist/tui-alt-screen.js
-@@ -24,6 +24,15 @@ const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
- const OSC133_PROMPT_START = /^\x1b\]133;A(?:\x07|\x1b\\)/;
- const PAGE_SCROLL_OVERLAP = 4;
- const ALT_WHEEL_SCROLL_MULTIPLIER = 5;
-+// Kimchi: configurable fullscreen wheel-scroll speed.
-+// Explicit option (from a future upstream setting) wins; env is the fallback;
-+// invalid/absent env values fall through to the upstream default of 1.
-+function kimchiWheelScrollLines() {
-+    if (process.env.KIMCHI_WHEEL_SCROLL_LINES === undefined)
-+        return undefined;
-+    const parsed = Number.parseInt(process.env.KIMCHI_WHEEL_SCROLL_LINES, 10);
-+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-+}
- const MAX_CACHED_OFFSCREEN_KITTY_IMAGES = 16;
- const MAX_CACHED_OFFSCREEN_KITTY_TRANSMISSION_BYTES = 32 * 1024 * 1024;
- const MAX_CACHED_OFFSCREEN_KITTY_DECODED_BYTES = 64 * 1024 * 1024;
-@@ -92,7 +101,8 @@ export class TuiAltScreen extends TuiBase {
-         };
-         this.implicitScrollView = new ScrollView(this.implicitDocument, { follow: "end", primary: true });
-         this.flashes = new AltScreenFlashContainer(() => this.requestRender());
--        this.wheelScroll = new WheelScrollAccelerator(options.wheelScrollLines ?? 1);
-+        // Kimchi: KIMCHI_WHEEL_SCROLL_LINES is the fallback when no explicit option is passed.
-+        this.wheelScroll = new WheelScrollAccelerator(options.wheelScrollLines ?? kimchiWheelScrollLines() ?? 1);
-         this.mouseEnabled = options.mouse ?? true;
-         this.searchMatchStyle = options.searchMatchStyle ?? ((text) => `\x1b[4m${text}\x1b[24m`);
-         this.searchCurrentMatchStyle = options.searchCurrentMatchStyle ?? ((text) => `\x1b[1;7m${text}\x1b[22;27m`);
 diff --git a/dist/tui-main-screen.js b/dist/tui-main-screen.js
-index 88eca8237..becd489c4 100644
+index 88eca823778ee1d70143bd94588437021f856333..becd489c4d2dd36a043ad96eacd34adff3857494 100644
 --- a/dist/tui-main-screen.js
 +++ b/dist/tui-main-screen.js
 @@ -242,7 +242,10 @@ export class TuiMainScreen extends TuiBase {
@@ -222,7 +191,7 @@ index 88eca8237..becd489c4 100644
              for (let i = 0; i < newLines.length; i++) {
                  if (i > 0)
 diff --git a/dist/utils.js b/dist/utils.js
-index 946da9df9..606b58ce0 100644
+index 946da9df9f098c55272410a78e31363623fdc219..606b58ce0223177388ec89d125bae5117e30be3f 100644
 --- a/dist/utils.js
 +++ b/dist/utils.js
 @@ -1004,6 +1004,34 @@ export function applyBackgroundToLine(line, width, bgFn) {
