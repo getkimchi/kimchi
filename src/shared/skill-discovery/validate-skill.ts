@@ -1,7 +1,3 @@
-// This module may import only Node builtins and "yaml": scripts/copy-resources.js
-// bundles it into the create-skill skill by staging just this file plus a
-// dereferenced copy of node_modules/yaml in a temp dir (bun must not scan the
-// repo's ancestor paths), so any other dependency fails the staged build.
 import { readFileSync, realpathSync } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
