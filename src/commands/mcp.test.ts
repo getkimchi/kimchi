@@ -340,7 +340,14 @@ describe("kimchi mcp forget-grant", () => {
 		expect(forgetMcpOAuthGrant).not.toHaveBeenCalled()
 	})
 
-	it.each(["foo/bar", "foo\\bar", "foo..bar", ".."])("rejects unsafe server name %j", async (name) => {
+	it.each([
+		"foo/bar",
+		"foo\\bar",
+		"foo..bar",
+		"..",
+		"--name=granola",
+		"-x",
+	])("rejects unsafe server name or flag %j", async (name) => {
 		const output = captureStdout()
 		expect(await runMcp(["forget-grant", name, "--json"])).toBe(1)
 		expect(output.json.reason).toBe("invalid-input")

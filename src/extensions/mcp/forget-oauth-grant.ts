@@ -142,9 +142,21 @@ export function forgetMcpOAuthGrant(
 	// fresh macOS dialog per legacy ACL item. The throw propagates to the
 	// caller, which reports `reason: "denied"`.
 	for (const chunkAccount of chunkAccounts) {
-		if (entryFactory(chunkAccount).deleteCredential()) chunksRemoved++
+		const removed = entryFactory(chunkAccount).deleteCredential()
+		// Chunks are written contiguously from index 0, so under manifest-driven
+		// discovery a missing chunk means the rest are gone too — stop instead of
+		// spawning a `security` process per remaining index of a corrupt manifest.
+		if (!removed && listed === null) break
+		if (removed) chunksRemoved++
 	}
-	if (mainExisted) entryFactory(account).deleteCredential()
+	if (mainExisted) {
+		const deleted = entryFactory(account).deleteCredential()
+		// A `false` right after our own read confirmed the entry is a real
+		// delete failure — surface it instead of reporting a silent-grant success.
+		if (!deleted && listed === null) {
+			throw new Error(`Keychain delete for ${serverName} reported no entry after a confirmed grant`)
+		}
+	}
 
 	let legacyFileRemoved = false
 	const legacyEntryDir = join(legacyBaseDir, account)

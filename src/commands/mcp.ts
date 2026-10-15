@@ -106,7 +106,9 @@ async function runForgetGrant(args: string[]): Promise<number> {
 	}
 	const positional = args.filter((arg) => arg !== "--json")
 	const name = positional.length === 1 ? positional[0] : undefined
-	if (name === undefined || !SERVER_NAME_PATTERN.test(name)) {
+	// Reject unknown flags as well: without this, `--name=x` would be treated
+	// as the server name and "successfully" forget a nonexistent server.
+	if (name === undefined || name.startsWith("-") || !SERVER_NAME_PATTERN.test(name)) {
 		return emitForgetGrantFailure(
 			name ?? null,
 			`Expected exactly one server name with no path separators or '..': kimchi mcp forget-grant <server-name> --json`,

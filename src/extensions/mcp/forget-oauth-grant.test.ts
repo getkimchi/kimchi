@@ -259,5 +259,43 @@ describe("forgetMcpOAuthGrant", () => {
 			expect(() => forgetMcpOAuthGrant("deny-delete", options)).toThrow(McpKeychainDeniedError)
 			expect(calls.map((c) => c[0])).toEqual(["find-generic-password", "delete-generic-password"])
 		})
+
+		it("fails loudly when the main delete reports no entry right after a confirmed read", () => {
+			const options = {
+				entryFactory: () => ({ getPassword: () => "{}", deleteCredential: () => false }),
+				listAccounts: () => null,
+				legacyBaseDir: tempDir("kimchi-oauth-"),
+			}
+			// A silent false here would report ok:true while the grant survives —
+			// precisely the silent-reuse bug this operation exists to prevent.
+			expect(() => forgetMcpOAuthGrant("stubborn", options)).toThrow("reported no entry after a confirmed grant")
+		})
+
+		it("stops deleting chunks at the first missing index of a corrupt manifest", () => {
+			const account = credentialAccount("long-manifest")
+			const deletes: string[] = []
+			const store = new Map<string, string>()
+			store.set(
+				account,
+				JSON.stringify({ __piMcpAdapterOAuthChunked: 1, chunkCount: 5, chunkDigest: "0123456789abcdef" }),
+			)
+			store.set(`${account}.chunk.0123456789abcdef.0`, "only-surviving-chunk")
+
+			const result = forgetMcpOAuthGrant("long-manifest", {
+				entryFactory: (acct) => ({
+					getPassword: () => store.get(acct) ?? null,
+					deleteCredential: () => {
+						deletes.push(acct)
+						return store.delete(acct)
+					},
+				}),
+				listAccounts: () => null,
+				legacyBaseDir: tempDir("kimchi-oauth-"),
+			})
+
+			expect(result).toEqual({ found: true, chunksRemoved: 1, legacyFileRemoved: false })
+			// chunk.0 deleted, chunk.1 missing → indices 2-4 were never spawned.
+			expect(deletes).toEqual([`${account}.chunk.0123456789abcdef.0`, `${account}.chunk.0123456789abcdef.1`, account])
+		})
 	})
 })
