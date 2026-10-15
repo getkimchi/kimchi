@@ -70,6 +70,7 @@ import behavioursExtension from "./extensions/behaviours/index.js"
 import budgetCommandExtension from "./extensions/billing/command.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import branchCommandExtension from "./extensions/branch-command.js"
+import bugReportDestinationExtension from "./extensions/bug-report.js"
 import cacheSummaryExtension from "./extensions/cache-summary.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
@@ -132,7 +133,6 @@ import pullRequestStatusExtension from "./extensions/pull-request-status/index.j
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
-import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import sessionMemoryStatsExtension from "./extensions/session-memory-stats.js"
@@ -876,7 +876,7 @@ try {
 			themeSelectorExtension,
 			customizeStatusLineExtension,
 			inputHistoryExtension,
-			reportBugExtension,
+			bugReportDestinationExtension,
 			tagsExtension,
 			teleportExtension,
 			remoteRunExtension,

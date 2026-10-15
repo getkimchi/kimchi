@@ -126,6 +126,16 @@
 #   - Flag conflict crash: when an npm extension registers a flag that kimchi
 #     already provides (e.g. `--plan`), the conflict is downgraded from a hard
 #     error to a warning (kimchi built-in extensions load first and win).
+#   - NEW — bug-report kimchi destination seams (dist/modes/interactive/
+#     bug-report.js): two delegation hooks — __kimchiBugReportScrub (deep
+#     PII/secret scrub of the whole bundle before upload OR zip) and
+#     __kimchiBugReportDeliver (GitHub issue on getkimchi/kimchi instead of
+#     the Radius upload). Both are registered by src/extensions/bug-report.ts;
+#     when absent the built-in Earendil flow runs unchanged. Delivery-menu
+#     wording and the disclaimer reflect the kimchi destination when the hook
+#     is present. Removal criteria: upstream provides bundle-mutation and
+#     destination seams in the bug-report flow (or kimchi stops freighting
+#     /bug to its own tracker).
 # Security (project trust): extends hasTrustRequiringProjectResources
 # (dist/core/trust-manager.js) with Kimchi's project-local .kimchi/ and .claude/
 # resources (config, permissions, hooks, skills, agents, memory, tags, plans,
@@ -1105,6 +1115,68 @@ index 55624605ababf2f1f129e9963cdbbe3ca27f5566..5d5f70ae62bf0e160567cf1f2b715154
      while (true) {
          const agentsSkillsDir = join(currentDir, ".agents", "skills");
          if (agentsSkillsDir !== userAgentsSkillsDir && existsSync(agentsSkillsDir)) {
+diff --git a/dist/modes/interactive/bug-report.js b/dist/modes/interactive/bug-report.js
+index 3918684c7c71d493d977745c8e86d5b7bcb843e1..82a11692064023abc63056bb6f82ea050275c22e 100644
+--- a/dist/modes/interactive/bug-report.js
++++ b/dist/modes/interactive/bug-report.js
+@@ -10,7 +10,9 @@ import { ExtensionEditorComponent } from "./components/extension-editor.js";
+ import { ExtensionSelectorComponent } from "./components/extension-selector.js";
+ import { createShareTrailingEntries } from "./session-share.js";
+ import { theme } from "./theme/theme.js";
+-const DISCLAIMER = "This report goes to the Pi developers (Earendil) and is not shared publicly. It includes your pi version, operating system, the current model and provider configuration (without API keys), loaded extensions, settings, and provider error diagnostics from this session.";
++// kimchi-dev: branding/destination text points at the kimchi tracker; the
++// destination itself is delegated through __kimchiBugReportDeliver (below).
++const DISCLAIMER = "This report is filed on the Kimchi GitHub issue tracker (getkimchi/kimchi). All session data — transcript, summary, diagnostics — is PII/secret-scrubbed before it leaves this machine. It includes your kimchi version, operating system, the current model and provider configuration (without API keys), loaded extensions, settings, and provider error diagnostics from this session.";
+ const TRANSCRIPT_NOTE = "The transcript contains your messages, model output, tool calls and their results, including file contents and command output read during this session.";
+ /** Run the `/bug` flow: consent, optional summary, then upload or export. */
+ export async function reportBug(context, initialHint) {
+@@ -46,6 +48,10 @@ export async function reportBug(context, initialHint) {
+     let bundle;
+     try {
+         bundle = buildBundle(context.session, options, summary);
++        // kimchi-dev hook seam: PII/secret scrub of the entire bundle before
++        // anything (upload OR zip) leaves the session.
++        if (typeof globalThis.__kimchiBugReportScrub === "function")
++            bundle = await globalThis.__kimchiBugReportScrub(bundle);
+     }
+     catch (error) {
+         context.showError(`Failed to build bug report: ${errorMessage(error)}`);
+@@ -80,7 +86,14 @@ async function promptForOptions(context, initialHint) {
+         includeSummary = summary !== "No";
+     }
+     const description = hint.trim();
+-    const delivery = await choose(context, "Bug report", ["Upload Report", "Export as Zip", "Cancel"], `Description: ${description || "none"}\nTranscript: ${includeSession ? "included" : "not included"}\nSummary: ${includeSummary ? `written by ${context.session.model?.name ?? "the current model"}` : "none"}\n\nUpload sends the report to ${new URL(getRadiusGatewayUrl()).host}. Export writes a zip archive to the current directory instead.`);
++    // kimchi-dev: destination menu wording reflects the kimchi destination
++    // hook (GitHub issue on getkimchi/kimchi) instead of the Radius upload.
++    const kimchiDelivery = typeof globalThis.__kimchiBugReportDeliver === "function";
++    const uploadLabel = kimchiDelivery ? "File on GitHub" : "Upload Report";
++    const uploadNote = kimchiDelivery
++        ? "Files the report on github.com/getkimchi/kimchi in your browser."
++        : `Upload sends the report to ${new URL(getRadiusGatewayUrl()).host}.`;
++    const delivery = await choose(context, "Bug report", [uploadLabel, "Export as Zip", "Cancel"], `Description: ${description || "none"}\nTranscript: ${includeSession ? "included" : "not included"}\nSummary: ${includeSummary ? `written by ${context.session.model?.name ?? "the current model"}` : "none"}\n\n${uploadNote} Export writes a zip archive to the current directory instead.`);
+     if (!delivery || delivery === "Cancel")
+         return undefined;
+     return {
+@@ -118,6 +131,19 @@ function buildBundle(session, options, summary) {
+ async function upload(context, bundle) {
+     const loader = showLoader(context, "Uploading bug report...");
+     try {
++        // kimchi-dev destination seam: when the Kimchi destination hook is
++        // registered, deliver through it (GitHub issue on getkimchi/kimchi)
++        // instead of the built-in Radius upload.
++        const kimchiDeliver = typeof globalThis.__kimchiBugReportDeliver === "function" ? globalThis.__kimchiBugReportDeliver : undefined;
++        if (kimchiDeliver) {
++            const outcome = await kimchiDeliver(bundle);
++            restoreEditor(context, loader);
++            recordInSession(context.session, bundle, { delivery: "kimchi" });
++            if (outcome?.failure)
++                return outcome.failure;
++            context.showStatus(outcome?.message ?? "Bug report filed.");
++            return undefined;
++        }
+         const provider = context.session.modelRuntime.getProvider(RADIUS_PROVIDER_ID);
+         const token = provider
+             ? getAuthCredential(await context.session.modelRuntime.getAuth(RADIUS_PROVIDER_ID, { minOAuthValidityMs: 5 * 60_000 }))
 diff --git a/dist/modes/interactive/components/branch-summary-message.js b/dist/modes/interactive/components/branch-summary-message.js
 index 95bcc771ad03e99eb11fc44b468014648b4040cc..7f1b970dbdce28ea177134214d633bcc96c34c94 100644
 --- a/dist/modes/interactive/components/branch-summary-message.js

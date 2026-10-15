@@ -26,6 +26,17 @@ but are only drained by the next fresh run).
 
 ### `@earendil-works/pi-coding-agent`
 
+- **NEW — bug-report kimchi destination seams (interactive bug-report.js).**
+  pi 1.2 shipped a hardcoded builtin `/bug` that shadowed Kimchi's own report
+  extension (removed in the same change — the tip now points at `/bug`). The
+  patch adds two global hook seams: `__kimchiBugReportScrub` deep-redacts
+  every bundle string before upload *or* zip export (PII/secrets, sharing our
+  `pii-redaction` engine), and `__kimchiBugReportDeliver` routes delivery to
+  the getkimchi GitHub issue form (private gist of the scrubbed metadata +
+  transcript) instead of the built-in Radius upload. Both hooks are provided
+  by `src/extensions/bug-report.ts`; with no hook registered the
+  stock Earendil flow runs unchanged. Tracking: none yet — candidates for
+  upstream: bundle-mutation and destination seams in the /bug flow.
 - **DROPPED — triggerTurn `before_agent_start` mirror + `_systemPromptOverride`
   preservation hunks.** Native in 1.2: `_startRun({ messageType: "custom" })` fires
   `emitBeforeAgentStart`, and extension `systemPrompt` results become a
