@@ -10,8 +10,9 @@
 // Wire contract (frozen, documented in docs/acp-model-attribution.md):
 //   _meta: { "kimchi.dev": { modelId, requestedModelId } }
 // Both fields are `provider/modelId` refs, joinable against
-// SessionModelState.availableModels. Diverges from the `routed_model` ext
-// notification's bare ids deliberately: different surface, frozen separately.
+// SessionModelState.availableModels — the same id format the `routed_model`
+// ext notification carries, so every kimchi ACP surface names models
+// identically.
 
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { refFromParts } from "../../extensions/model-catalog/ref-utils.js"

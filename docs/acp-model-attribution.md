@@ -28,8 +28,11 @@ the same `messageId` omit `_meta` — **unless the value changed**, in which cas
 the next chunk re-carries a corrected `_meta`. A client applies the rule
 **last-wins per `messageId`**: the latest `_meta` seen on any chunk of a
 message is that message's attribution; chunks without `_meta` inherit the last
-seen for that id. Since ACP transports are ordered and lossless, every message
-that streams at least one chunk announces its attribution.
+seen for that id. Since ACP transports are ordered and lossless, every **model
+response** that streams at least one chunk announces its attribution.
+Harness-synthesized chunks are not model responses and carry no `_meta` — for
+example the image-refusal warning the agent emits when the selected model has
+no vision input.
 
 `_meta` is the ACP extensibility field; the nested `kimchi.dev` key is
 kimchi's extension namespace (the same one ext methods and notifications
@@ -57,10 +60,12 @@ a provider may report it late. The first chunk may therefore carry
 `modelId === requestedModelId` as the best-known value, corrected by a later
 chunk's `_meta` once the served model is known. The last-wins rule absorbs
 this. When the served model is reported only at the response's end and all
-text was already streamed, the correction arrives as a **zero-length**
-`agent_message_chunk` — no content to append, the corrected `_meta` under
-the same `messageId`. When ACP v2 whole-message upserts land, the correction
-migrates onto them and the zero-length chunk disappears.
+text was already streamed, the correction arrives as a **zero-length chunk
+matching the block's kind** — `agent_message_chunk` for text blocks,
+`agent_thought_chunk` for thinking blocks — no content to append, the
+corrected `_meta` under the same `messageId`. When ACP v2 whole-message
+upserts land, the correction migrates onto them and the zero-length chunk
+disappears.
 
 Refs are composed directly from the provider's report; if the backend routes
 to a model outside kimchi's catalog, the ref still carries the raw id — it

@@ -2303,6 +2303,10 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const warnings = messageChunks(updates).filter((chunk) => chunk.text.includes("does not accept image input"))
 		expect(warnings).toHaveLength(1)
 		expect(warnings[0].text).toContain("remove the image and resend")
+		// The warning is harness-synthesized, not a model response: it carries
+		// no model-attribution _meta (docs/acp-model-attribution.md scopes
+		// attribution to model responses). Frozen by assertion, not accident.
+		expect(updates.find((u) => u.update.sessionUpdate === "agent_message_chunk")?.update._meta).toBeUndefined()
 	})
 
 	// Auto-routed models (kimchi-dev/auto*) have text-only descriptors but
@@ -3514,6 +3518,51 @@ describe("KimchiAcpAgent per-message model attribution", () => {
 		expect((chunks[1].update as { messageId?: string }).messageId).toBe(
 			(chunks[0].update as { messageId?: string }).messageId,
 		)
+	})
+
+	it("corrects a thinking block as agent_thought_chunk, matching the block's streamed kind", async () => {
+		// A correction must not invent a kind: a thinking block's id corrected
+		// via agent_message_chunk would render a spurious empty agent message on
+		// clients keyed by update kind.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitDelta("thinking_delta", 0, "ponder", partialMessage({ model: "auto" }))
+			emitDelta("text_delta", 1, "answer", partialMessage({ model: "auto" }))
+			fake.emit({
+				type: "message_end",
+				message: partialMessage({
+					model: "auto",
+					responseModel: "glm-5.3",
+					content: [
+						{ type: "thinking", thinking: "ponder" },
+						{ type: "text", text: "answer" },
+					],
+				}),
+			})
+			fake.emit(agentEnd())
+		}
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		// Each block's correction matches its streamed kind and reuses its id.
+		const idsFor = (update: string) =>
+			updates
+				.filter((u) => u.update.sessionUpdate === update)
+				.map((u) => (u.update as { messageId?: string | null }).messageId)
+		expect(idsFor("agent_thought_chunk")).toEqual(["km.0", "km.0"])
+		expect(idsFor("agent_message_chunk")).toEqual(["km.1", "km.1"])
+
+		// Both corrections are zero-length and carry the corrected tuple.
+		const corrected = { "kimchi.dev": { modelId: "kimchi-dev/glm-5.3", requestedModelId: "kimchi-dev/auto" } }
+		const emptyChunks = updates.filter((u) => {
+			if (u.update.sessionUpdate !== "agent_message_chunk" && u.update.sessionUpdate !== "agent_thought_chunk")
+				return false
+			const { content } = u.update
+			return content.type === "text" && content.text === ""
+		})
+		expect(emptyChunks.map((u) => [u.update.sessionUpdate, u.update._meta])).toEqual([
+			["agent_thought_chunk", corrected],
+			["agent_message_chunk", corrected],
+		])
 	})
 
 	it("re-emits _meta from the persisted tuple when replaying a loaded session", async () => {

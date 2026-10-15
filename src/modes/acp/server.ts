@@ -1593,17 +1593,23 @@ export class KimchiAcpAgent implements Agent {
 				// is a no-op and the client's last-wins rule (docs/acp-model-attribution.md)
 				// applies the served ref.
 				const authoritativeAttribution = modelAttributionFrom(msg)
-				for (const blockId of entry.contentIndexToBlockId.values()) {
+				for (const [contentIndex, blockId] of entry.contentIndexToBlockId) {
 					// Correction only: ids that already carried an attribution. A block
 					// that streamed without one (malformed partial events) has nothing to
 					// correct, and the restore loop above covers un-streamed text.
 					if (!entry.emittedModelMeta.has(blockId)) continue
 					const modelMeta = modelMetaFor(entry.emittedModelMeta, blockId, authoritativeAttribution)
 					if (modelMeta === undefined) continue
+					// Match the correction's update kind to the block's real chunks — a
+					// thinking block corrected as agent_message_chunk would render a
+					// spurious empty agent message on clients keyed by kind. The final
+					// message's content array is index-aligned with the streamed
+					// contentIndexes (the restore loop above relies on the same pairing).
+					const blockKind = msg.content[contentIndex]?.type
 					this.send({
 						sessionId,
 						update: {
-							sessionUpdate: "agent_message_chunk",
+							sessionUpdate: blockKind === "thinking" ? "agent_thought_chunk" : "agent_message_chunk",
 							content: { type: "text", text: "" },
 							messageId: blockId,
 							...spreadModelMeta(modelMeta),
