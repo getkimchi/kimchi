@@ -570,6 +570,18 @@ ${skillLines}`
 			(name) => session.getToolDefinition(name) !== undefined,
 			disallowedSet,
 		)
+		// pi 1.2: only ACTIVE tools are callable (registered-but-inactive now
+		// fails tool lookup at execution time). The report tool registers for a
+		// ferment-linked worker but the extension-prefix filter above drops it
+		// because workerReport makes effectiveExtensions an empty list — keep it
+		// active explicitly so the worker can submit its report.
+		if (
+			options.workerReport &&
+			!activeTools.includes(WORKER_REPORT_TOOL_NAME) &&
+			session.getToolDefinition(WORKER_REPORT_TOOL_NAME)
+		) {
+			activeTools.push(WORKER_REPORT_TOOL_NAME)
+		}
 		systemPrompt = buildSystemPrompt(activeTools)
 		await loader.reload()
 		session.setActiveToolsByName(activeTools)
