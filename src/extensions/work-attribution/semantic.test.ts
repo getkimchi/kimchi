@@ -103,7 +103,7 @@ async function provider(answer: Answer, status = 200, headers: Record<string, st
 		const delay = typeof reply === "string" ? delays[requests.length - 1] : reply.delay
 		// A stream can also stall after its headers, which the SDK's request timeout no longer covers.
 		const afterHeaders = typeof reply !== "string" && reply.afterHeaders
-		if (afterHeaders) response.writeHead(status, { "content-type": "text/event-stream", ...headers })
+		if (afterHeaders) response.writeHead(status, { "content-type": "text/event-stream", ...headers }).flushHeaders()
 		if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
 		if (!afterHeaders) response.writeHead(status, { "content-type": "text/event-stream", ...headers })
 		response.end(
@@ -199,6 +199,31 @@ it("lets the next matching model decide when a check's stream stalls after its h
 	})
 	expect(Date.now() - started).toBeLessThan(WORK_MATCHING_CALL_TIMEOUT_MS + 1500)
 	expect(stalled.requests).toHaveLength(1)
+})
+
+it("gives the last matching model the rest of the deadline, with no model left to hand over to", async () => {
+	const failing = await provider("{}", 500)
+	const slow = await provider(
+		byCheck({
+			[workId]: {
+				content: JSON.stringify({ decision: "match" }),
+				delay: WORK_MATCHING_CALL_TIMEOUT_MS + 500,
+				afterHeaders: true,
+			},
+		}),
+	)
+	const [broken, last] = WORK_MATCHING_MODEL_REFS.map((ref, index) => {
+		const [name, id] = ref.split("/")
+		return { ...createModel(id, name), baseUrl: [failing, slow][index].model.baseUrl }
+	})
+	const registry = createModelRegistry([slow.model, broken, last])
+	registry.getApiKeyAndHeaders.mockResolvedValue({ ok: true, apiKey: "classifier-key" })
+	const ctx = createContext({ cwd: slow.root, model: slow.model, modelRegistry: registry })
+	expect(await classifyWorkIntent(ctx, input)).toEqual({
+		decision: "continue",
+		workId,
+		model: WORK_MATCHING_MODEL_REFS[1],
+	})
 })
 
 it("never sends a check through backend-routed auto", async () => {

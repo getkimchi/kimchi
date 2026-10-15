@@ -39,7 +39,8 @@ export const WORK_MATCHING_DEADLINE_MS = 5000
 export const MAX_WORK_CANDIDATES = 8
 /**
  * A check normally finishes in under a second. One that stalls past this, even mid-stream, fails so the next matching
- * model decides in the time left instead of the whole deadline running out on the first.
+ * model decides in the time left instead of the whole deadline running out on the first. The last model keeps the rest
+ * of the deadline.
  */
 export const WORK_MATCHING_CALL_TIMEOUT_MS = 2000
 /** Saved task files read while looking for those tasks; older history is left out rather than refused. */
@@ -111,7 +112,7 @@ export function workMatchingEnabled(): boolean {
  * list: on recorded matching inputs minimax-m3 joined unrelated work, and backend-routed auto spread checks across
  * models with reasoning on.
  */
-export const WORK_MATCHING_MODEL_REFS = ["kimchi-dev/glm-5.3-flash", "kimchi-dev/deepseek-v4-flash-0731"] as const
+export const WORK_MATCHING_MODEL_REFS = ["kimchi-dev/glm-5.3-flash", "kimchi-dev/deepseek-v4.1-flash"] as const
 function matchingModels(registry: ExtensionContext["modelRegistry"]): Model<Api>[] {
 	return WORK_MATCHING_MODEL_REFS.flatMap((ref) => findModelByRef(registry, ref) ?? [])
 }
@@ -331,7 +332,7 @@ export async function classifyWorkIntent(
 		onAbort = () => reject(abort.reason)
 		abort.addEventListener("abort", onAbort, { once: true })
 	})
-	const classify = async (model: Model<Api>, attempt: AbortSignal) => {
+	const classify = async (model: Model<Api>, attempt: AbortSignal, handOver: boolean) => {
 		const uncertain = { decision: "unknown" as const, model: refFromModel(model) }
 		assertAllowed()
 		const auth = await modelRegistry.getApiKeyAndHeaders(model)
@@ -365,9 +366,11 @@ export async function classifyWorkIntent(
 						"X-Session-Id": context.sessionManager.getSessionId(),
 						...(request ? { "X-Request-Id": request.requestId } : {}),
 					},
-					signal: attempt,
+					// The SDK's request timeout ends once headers arrive; a reply can stall after them.
+					signal: handOver
+						? AbortSignal.any([attempt, AbortSignal.timeout(Math.min(WORK_MATCHING_CALL_TIMEOUT_MS, deadlineMs))])
+						: attempt,
 					maxRetries: 0,
-					timeoutMs: Math.min(WORK_MATCHING_CALL_TIMEOUT_MS, deadlineMs),
 					maxTokens: 128,
 					temperature: 0,
 					// Kimchi's GLM routes can mix reasoning into text or echo input in JSON-object mode.
@@ -427,11 +430,12 @@ export async function classifyWorkIntent(
 			: { decision: "new" as const, model: uncertain.model }
 	}
 	try {
-		for (const model of models) {
+		for (const [index, model] of models.entries()) {
 			unknown = { decision: "unknown", model: refFromModel(model) }
 			const attempt = new AbortController()
 			try {
-				return await Promise.race([classify(model, AbortSignal.any([abort, attempt.signal])), cancelled])
+				const handOver = index < models.length - 1
+				return await Promise.race([classify(model, AbortSignal.any([abort, attempt.signal]), handOver), cancelled])
 			} catch (error) {
 				if (error instanceof WorkMatchingLimit) throw error
 				// Cancellation, revoked permission and the deadline end matching for every model.
