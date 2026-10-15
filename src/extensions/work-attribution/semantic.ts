@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { mkdir, open, opendir, readFile, stat } from "node:fs/promises"
+import { mkdir, open, opendir, readdir, readFile, stat } from "node:fs/promises"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
@@ -30,8 +30,16 @@ import {
 } from "./scope.js"
 import { object } from "./summary.js"
 
-/** Matching stops rather than compare a partial history; the input simply stays unresolved. */
+/** Matching stops rather than send a partial task; the input keeps the attribution it has with matching off. */
 export class WorkMatchingLimit extends Error {}
+
+/** Matching runs beside the turn; this bounds how long its requests and tools may wait for the decision. */
+export const WORK_MATCHING_DEADLINE_MS = 5000
+/** A fresh input is compared with this many of the most recently active saved tasks, one request each. */
+export const MAX_WORK_CANDIDATES = 8
+/** Saved task files read while looking for those tasks; older history is left out rather than refused. */
+const MAX_SCANNED_INTENTS = 512
+const MAX_MATCHING_INPUT_CHARS = 12000
 
 export const WORK_CURRENT_PROMPT = `Decide whether a user's new message belongs to the current development task.
 
@@ -83,10 +91,23 @@ export interface WorkIntentInput {
 	message: string
 }
 type IntentDecision = { decision: "same" | "new" | "unknown" } | { decision: "continue"; workId: string }
+/** Why matching gave no verdict. An "unknown" decision without a cause is the model's own uncertainty. */
+export type WorkMatchingFailure = "timeout" | "failed"
 
-/** Sending retained task text to a model is independent of local tracking. */
+function matchingSetting(): boolean | undefined {
+	return readConfigSetting("workSemanticMatching", (value): value is boolean => typeof value === "boolean")
+}
+/** Sending retained task text to a model is independent of local tracking. Only `/work matching off` disables it. */
 export function workMatchingEnabled(): boolean {
-	return readConfigSetting("workSemanticMatching", (value): value is boolean => typeof value === "boolean", false)
+	return matchingSetting() ?? true
+}
+/**
+ * Without an explicit choice, matching runs only on Kimchi's shared classifier models. Falling back to the selected
+ * model, which may be billed to the user's own provider, needs `/work matching on`.
+ */
+export function workMatchingAvailable(registry: ExtensionContext["modelRegistry"]): boolean {
+	const setting = matchingSetting()
+	return setting ?? resolveClassifierCandidates(registry).candidates.length > 0
 }
 
 export function workIntentPath(workId: string): string {
@@ -185,7 +206,19 @@ async function addPlan(intent: WorkIntent): Promise<WorkIntent> {
 	return { ...intent, summary: `${intent.summary}\nSaved plan:\n${content.slice(content.indexOf("\n") + 1)}` }
 }
 
-/** Bounded repository scope, with no recency/branch shortcut that could hide another matching task. */
+/** When a work last recorded something: its summary is rewritten with every record, its task text only once. */
+async function lastActive(directory: string): Promise<number> {
+	for (const name of ["work.json", "intent.json"]) {
+		const info = await stat(join(directory, name)).catch(() => undefined)
+		if (info) return info.mtimeMs
+	}
+	return 0
+}
+
+/**
+ * The repository's and account's most recently active saved tasks. A task the user returns to after
+ * MAX_WORK_CANDIDATES newer ones is left out, so the input starts separate work as it would without matching.
+ */
 export async function loadWorkIntents(cwd: string, workId: string, text: string, allowContinuation: boolean) {
 	if (!workMatchingEnabled()) throw new Error("Work matching is disabled")
 	const repo = await workRepository(cwd)
@@ -199,20 +232,26 @@ export async function loadWorkIntents(cwd: string, workId: string, text: string,
 	const current = await readIntent(workId, repo, captured.account)
 	const candidates: WorkIntent[] = []
 	if (allowContinuation) {
-		const files = await opendir(join(getAgentDir(), "work")).catch((error: NodeJS.ErrnoException) => {
+		const directory = join(getAgentDir(), "work")
+		const entries = await readdir(directory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
 			if (error.code !== "ENOENT") throw new Error("Cannot read local work history")
+			return []
 		})
-		let saved = 0
-		if (files)
-			for await (const file of files) {
-				if (!file.isDirectory() || !isWorkId(file.name) || file.name === workId) continue
-				const intent = await readIntent(file.name, repo, captured.account)
-				// Every session creates a work directory; only saved task text counts toward the bound.
-				if (intent === undefined) continue
-				// ponytail: read at most 256 saved tasks; add an index if local history exceeds this bound.
-				if (++saved > 256) throw new WorkMatchingLimit("more than 256 saved tasks to compare")
-				if (intent) candidates.push(await addPlan(intent))
-			}
+		const works = await Promise.all(
+			entries
+				.filter((entry) => entry.isDirectory() && isWorkId(entry.name) && entry.name !== workId)
+				.map(async (entry) => ({ id: entry.name, active: await lastActive(join(directory, entry.name)) })),
+		)
+		works.sort((left, right) => right.active - left.active)
+		let scanned = 0
+		for (const work of works) {
+			if (candidates.length >= MAX_WORK_CANDIDATES || scanned >= MAX_SCANNED_INTENTS) break
+			const intent = await readIntent(work.id, repo, captured.account)
+			// Every session creates a work directory; only saved task text counts as scanned.
+			if (intent === undefined) continue
+			scanned++
+			if (intent) candidates.push(await addPlan(intent))
+		}
 	}
 	return {
 		repository: repo,
@@ -223,30 +262,40 @@ export async function loadWorkIntents(cwd: string, workId: string, text: string,
 
 /**
  * Separate inference on the shared classifier models, the next one deciding when one cannot answer, or on the model
- * selected at input time when the catalog has none of them; never changes the chat model.
+ * selected at input time when the catalog has none of them; never changes the chat model. Each saved task is checked
+ * in its own request and all of them at once; one deadline covers every request and model.
  */
 export async function classifyWorkIntent(
 	ctx: WorkContext & Pick<ExtensionContext, "model" | "modelRegistry">,
 	input: WorkIntentInput,
 	signal?: AbortSignal,
 	isCurrentAccount?: () => boolean,
-): Promise<(IntentDecision & { model: string }) | undefined> {
+	deadlineMs = WORK_MATCHING_DEADLINE_MS,
+): Promise<(IntentDecision & { model: string; cause?: WorkMatchingFailure }) | undefined> {
 	const { modelRegistry } = ctx
 	if (!ctx.model) return
 	const { candidates } = resolveClassifierCandidates(modelRegistry)
 	const models = candidates.length ? candidates : [ctx.model]
 	let unknown = { decision: "unknown" as const, model: refFromModel(models[0]) }
 	if (!workMatchingEnabled()) return unknown
-	if (!input.message.trim() || signal?.aborted) return unknown
+	// Nothing to compare is not the model's uncertainty.
+	if (!input.message.trim() || signal?.aborted) return { ...unknown, cause: "failed" }
+	const currentCheck = { ...input, candidates: [] }
+	const candidateChecks = input.candidates.map((candidate) => ({
+		current: input.current,
+		candidates: [candidate],
+		message: input.message,
+		selectedWorkId: candidate.workId,
+	}))
 	// /work reports a limit; an unknown decision would be recorded as the model's uncertainty.
-	if (JSON.stringify(input).length > 12000)
-		throw new WorkMatchingLimit("the saved tasks and message exceed 12,000 characters")
+	if ([currentCheck, ...candidateChecks].some((data) => JSON.stringify(data).length > MAX_MATCHING_INPUT_CHARS))
+		throw new WorkMatchingLimit("a saved task and the message exceed 12,000 characters")
 	if (!input.current && !input.candidates.length) return { decision: "new", model: unknown.model }
 	const context = pinWorkContext(ctx)
 	// Matching is overhead of the original work, independent of the task decision it produces.
 	context.segment = { id: randomUUID(), attribution: "session", reason: "work-matching" }
 	const workId = tryWorkAttribution(() => getWorkId(context))
-	const deadline = AbortSignal.timeout(3000)
+	const deadline = AbortSignal.timeout(deadlineMs)
 	const permission = new AbortController()
 	const abort = AbortSignal.any([deadline, permission.signal, ...(signal ? [signal] : [])])
 	// Settings can also change outside /work. Watch only while the bounded call is running.
@@ -263,7 +312,7 @@ export async function classifyWorkIntent(
 		onAbort = () => reject(abort.reason)
 		abort.addEventListener("abort", onAbort, { once: true })
 	})
-	const classify = async (model: Model<Api>) => {
+	const classify = async (model: Model<Api>, attempt: AbortSignal) => {
 		const uncertain = { decision: "unknown" as const, model: refFromModel(model) }
 		assertAllowed()
 		const auth = await modelRegistry.getApiKeyAndHeaders(model)
@@ -275,8 +324,9 @@ export async function classifyWorkIntent(
 		): Promise<string | undefined> => {
 			assertAllowed()
 			let content = JSON.stringify(data)
-			if (content.length > 12000) return
 			if (getRedactionConfig().enabled) content = await redactTextOrThrow(content)
+			if (content.length > MAX_MATCHING_INPUT_CHARS)
+				throw new WorkMatchingLimit("a saved task and the message exceed 12,000 characters")
 			assertAllowed()
 			// Matching overhead stays with the work active before the decision.
 			const request = workId
@@ -296,9 +346,9 @@ export async function classifyWorkIntent(
 						"X-Session-Id": context.sessionManager.getSessionId(),
 						...(request ? { "X-Request-Id": request.requestId } : {}),
 					},
-					signal: abort,
+					signal: attempt,
 					maxRetries: 0,
-					timeoutMs: 3000,
+					timeoutMs: deadlineMs,
 					maxTokens: 128,
 					temperature: 0,
 					// Kimchi's GLM routes can mix reasoning into text or echo input in JSON-object mode.
@@ -341,36 +391,38 @@ export async function classifyWorkIntent(
 			throw new Error("Reply is not a decision")
 		}
 		if (input.current) {
-			const decision = await ask({ ...input, candidates: [] }, WORK_CURRENT_PROMPT)
+			const decision = await ask(currentCheck, WORK_CURRENT_PROMPT)
 			if (decision === "same") return { decision: "same" as const, model: uncertain.model }
 			if (decision !== "new") return uncertain
 		}
 		// Check the message alone before a saved task can supply its missing context.
 		if (input.candidates.length && (await ask({ message: input.message }, WORK_MESSAGE_PROMPT)) !== "specific")
 			return uncertain
-		let matched: string | undefined
-		for (const candidate of input.candidates) {
-			const decision = await ask({ ...input, selectedWorkId: candidate.workId }, WORK_CANDIDATE_PROMPT)
-			if (decision === "different") continue
-			// An uncertain competitor or second match cannot establish unique ownership.
-			if (decision !== "match" || matched) return uncertain
-			matched = candidate.workId
-		}
-		return matched
-			? { decision: "continue" as const, workId: matched, model: uncertain.model }
+		const decisions = await Promise.all(candidateChecks.map((data) => ask(data, WORK_CANDIDATE_PROMPT)))
+		const matched = candidateChecks.filter((_, index) => decisions[index] === "match")
+		// An uncertain competitor or second match cannot establish unique ownership.
+		if (matched.length > 1 || decisions.some((decision) => decision !== "match" && decision !== "different"))
+			return uncertain
+		return matched.length
+			? { decision: "continue" as const, workId: matched[0].selectedWorkId, model: uncertain.model }
 			: { decision: "new" as const, model: uncertain.model }
 	}
 	try {
 		for (const model of models) {
 			unknown = { decision: "unknown", model: refFromModel(model) }
+			const attempt = new AbortController()
 			try {
-				return await Promise.race([classify(model), cancelled])
-			} catch {
+				return await Promise.race([classify(model, AbortSignal.any([abort, attempt.signal])), cancelled])
+			} catch (error) {
+				if (error instanceof WorkMatchingLimit) throw error
 				// Cancellation, revoked permission and the deadline end matching for every model.
 				if (abort.aborted) break
+			} finally {
+				// One failed check must not leave the other candidates' requests running while the next model decides.
+				attempt.abort()
 			}
 		}
-		return unknown
+		return { ...unknown, cause: deadline.aborted ? "timeout" : "failed" }
 	} finally {
 		clearInterval(permissionCheck)
 		abort.removeEventListener("abort", onAbort)

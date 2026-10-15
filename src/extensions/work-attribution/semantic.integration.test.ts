@@ -22,10 +22,13 @@ import * as prCostTelemetry from "../telemetry/pr-cost.js"
 import {
 	appendWorkRecord,
 	createWorkAttributionExtension,
+	getToolRequest,
 	getWorkId,
+	getWorkSegment,
 	pinWorkContext,
 	prepareProviderRequest,
 	recordProviderRequest,
+	recordProviderResponse,
 	setWorkId,
 	WORK_CHANGED_EVENT,
 } from "../work-attribution.js"
@@ -33,7 +36,7 @@ import * as supervisor from "./reconcile-supervisor.js"
 import type * as WorkAccounts from "./scope.js"
 import { captureWorkAccount, captureWorkScope, readWorkScope } from "./scope.js"
 import type * as Semantic from "./semantic.js"
-import { classifyWorkIntent, rememberWorkIntent, workIntentPath } from "./semantic.js"
+import { classifyWorkIntent, rememberWorkIntent, WORK_MATCHING_DEADLINE_MS, workIntentPath } from "./semantic.js"
 import { flushWorkSummaries, readWorkRecords } from "./summary.js"
 
 vi.mock("../orchestration/model-roles.js", () => ({
@@ -139,7 +142,7 @@ afterEach(async () => {
 it.each([
 	"interactive",
 	"rpc",
-] as const)("adopts a paraphrased task before the first %s request and splits unrelated chat", async (source) => {
+] as const)("adopts a paraphrased task for the first %s request and splits unrelated chat", async (source) => {
 	await rememberWorkIntent(cwd, planned, first)
 	const ctx = createContext({ cwd, model, modelRegistry, sessionManager: { getSessionId: () => "implement" } })
 	const api = createExtensionApi()
@@ -147,15 +150,18 @@ it.each([
 	const input = api.getHandler<InputEvent>("input")
 	vi.mocked(classifyWorkIntent).mockResolvedValueOnce({ decision: "continue", workId: planned, model: "selected/chat" })
 	await input({ type: "input", source, text: "Build the comma-separated download with quoted cells." }, ctx)
+	// The turn does not wait for matching: its first request goes out first and is written once the work is chosen.
 	const request: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
 	await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(request, ctx)
-	expect(getWorkId(ctx)).toBe(planned)
-	expect(readWorkRecords(join(root, "agent"))).toContainEqual(
-		expect.objectContaining({ type: "request", requestId: request.headers["X-Request-Id"], workId: planned }),
+	await vi.waitFor(() =>
+		expect(readWorkRecords(join(root, "agent"))).toContainEqual(
+			expect.objectContaining({ type: "request", requestId: request.headers["X-Request-Id"], workId: planned }),
+		),
 	)
+	expect(getWorkId(ctx)).toBe(planned)
 	vi.mocked(classifyWorkIntent).mockResolvedValueOnce({ decision: "new", model: "selected/chat" })
 	await input({ type: "input", source, text: "Explain why the sky is blue." }, ctx)
-	expect(getWorkId(ctx)).not.toBe(planned)
+	await vi.waitFor(() => expect(getWorkId(ctx)).not.toBe(planned))
 	expect(
 		readWorkRecords(join(root, "agent")).find((row) => row.requestId === request.headers["X-Request-Id"])?.workId,
 	).toBe(planned)
@@ -171,13 +177,170 @@ it.each([
 			evidence: expect.objectContaining({
 				decision: "continue",
 				model: "selected/chat",
-				promptVersion: 1,
+				promptVersion: 2,
 				candidateWorkIds: [planned],
 				segmentId: expect.any(String),
 			}),
 		}),
 	)
 	expect(JSON.stringify(summary)).not.toContain(first)
+})
+
+it("starts the turn before matching decides and writes its held request with the decided work", async () => {
+	await rememberWorkIntent(cwd, planned, first)
+	const ctx = createContext({ cwd, model, modelRegistry, sessionManager: { getSessionId: () => "async" } })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	let finish!: (value: Awaited<ReturnType<typeof classifyWorkIntent>>) => void
+	vi.mocked(classifyWorkIntent).mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+	// The input returns while the decision is still pending.
+	await api.getHandler<InputEvent>("input")(
+		{ type: "input", source: "interactive", text: "Build the comma-separated download with quoted cells." },
+		ctx,
+	)
+	await vi.waitFor(() => expect(classifyWorkIntent).toHaveBeenCalledOnce())
+	const request: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+	await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(request, ctx)
+	const requestId = request.headers["X-Request-Id"]
+	if (typeof requestId !== "string") throw new Error("Missing request ID")
+	// The provider transport dispatches it, and the response arrives, before the decision.
+	prepareProviderRequest(new Headers({ "X-Request-Id": requestId }), "", { bodyTags: [] })
+	recordProviderResponse(requestId, new Response(null, { status: 200 }))
+	// Its rows wait for the decision instead of naming a work the decision may replace.
+	expect(readWorkRecords(join(root, "agent")).some((row) => row.requestId === requestId)).toBe(false)
+	finish({ decision: "continue", workId: planned, model: "selected/chat" })
+	await vi.waitFor(() =>
+		expect(
+			readWorkRecords(join(root, "agent"))
+				.filter((row) => row.requestId === requestId)
+				.map((row) => row.type),
+		).toEqual(["request", "request_dispatch", "request_response"]),
+	)
+	const rows = readWorkRecords(join(root, "agent")).filter((row) => row.requestId === requestId)
+	expect(rows.every((row) => row.workId === planned)).toBe(true)
+	expect(rows[0].segment).toMatchObject({ attribution: "inferred", reason: "model-continue" })
+})
+
+it("runs a response's tools only after the pending decision, for the decided work", async () => {
+	await rememberWorkIntent(cwd, planned, first)
+	const ctx = createContext({ cwd, model, modelRegistry, sessionManager: { getSessionId: () => "tools" } })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	let finish!: (value: Awaited<ReturnType<typeof classifyWorkIntent>>) => void
+	vi.mocked(classifyWorkIntent).mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+	await api.getHandler<InputEvent>("input")(
+		{ type: "input", source: "interactive", text: "Build the comma-separated download with quoted cells." },
+		ctx,
+	)
+	const request: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+	await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(request, ctx)
+	let ended = false
+	const end = Promise.resolve(
+		api.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "csv", name: "write" }],
+				},
+			},
+			ctx,
+		),
+	).then(() => {
+		ended = true
+	})
+	await new Promise((resolve) => setTimeout(resolve, 50))
+	expect(ended).toBe(false)
+	finish({ decision: "continue", workId: planned, model: "selected/chat" })
+	await end
+	expect(getToolRequest(ctx, "csv")).toEqual({ requestId: request.headers["X-Request-Id"], workId: planned })
+})
+
+it("settles a run only after its held requests are written with the decision", async () => {
+	await rememberWorkIntent(cwd, planned, first)
+	const ctx = createContext({ cwd, model, modelRegistry, sessionManager: { getSessionId: () => "settled" } })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	let finish!: (value: Awaited<ReturnType<typeof classifyWorkIntent>>) => void
+	vi.mocked(classifyWorkIntent).mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+	await api.getHandler<InputEvent>("input")(
+		{ type: "input", source: "interactive", text: "Build the comma-separated download with quoted cells." },
+		ctx,
+	)
+	const request: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+	await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(request, ctx)
+	let settled = false
+	const end = Promise.resolve(api.getHandler("agent_settled")({ type: "agent_settled" }, ctx)).then(() => {
+		settled = true
+	})
+	await new Promise((resolve) => setTimeout(resolve, 50))
+	expect(settled).toBe(false)
+	finish({ decision: "continue", workId: planned, model: "selected/chat" })
+	await end
+	// Print mode and ACP prompts end here, so the reply's request is already written with its work.
+	expect(readWorkRecords(join(root, "agent"))).toContainEqual(
+		expect.objectContaining({ type: "request", requestId: request.headers["X-Request-Id"], workId: planned }),
+	)
+})
+
+it("stops holding a response's tools at the matching deadline", async () => {
+	await rememberWorkIntent(cwd, planned, first)
+	const ctx = createContext({ cwd, model, modelRegistry, sessionManager: { getSessionId: () => "slow" } })
+	const current = getWorkId(ctx)
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	vi.mocked(classifyWorkIntent).mockImplementationOnce(() => new Promise(() => {}))
+	await api.getHandler<InputEvent>("input")({ type: "input", source: "interactive", text: "Add a CSV export" }, ctx)
+	const request: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+	await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(request, ctx)
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+	try {
+		const end = api.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "csv", name: "write" }],
+				},
+			},
+			ctx,
+		)
+		await vi.advanceTimersByTimeAsync(WORK_MATCHING_DEADLINE_MS)
+		await end
+	} finally {
+		vi.useRealTimers()
+	}
+	// The tools act for the work the request was sent with, as with matching off.
+	expect(getToolRequest(ctx, "csv")).toEqual({ requestId: request.headers["X-Request-Id"], workId: current })
+	expect(readWorkRecords(join(root, "agent"))).toContainEqual(
+		expect.objectContaining({
+			type: "request",
+			requestId: request.headers["X-Request-Id"],
+			workId: current,
+			segment: expect.objectContaining({ attribution: "session", reason: "matching-pending" }),
+		}),
+	)
+})
+
+it("counts an input whose matching timed out as with matching off", async () => {
+	await rememberWorkIntent(cwd, planned, first)
+	const ctx = createContext({ cwd, model, modelRegistry, sessionManager: { getSessionId: () => "timeout" } })
+	const current = getWorkId(ctx)
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	vi.mocked(classifyWorkIntent).mockResolvedValueOnce({ decision: "unknown", model: "selected/chat", cause: "timeout" })
+	await api.getHandler<InputEvent>("input")({ type: "input", source: "interactive", text: "Add a CSV export" }, ctx)
+	const request = recordProviderRequest(ctx, model)
+	await vi.waitFor(() =>
+		expect(readWorkRecords(join(root, "agent"))).toContainEqual(
+			expect.objectContaining({
+				type: "request",
+				requestId: request.requestId,
+				workId: current,
+				segment: expect.objectContaining({ attribution: "session", reason: "matching-timeout" }),
+			}),
+		),
+	)
 })
 
 it("keeps ambiguous input on its current work without selecting a candidate", async () => {
@@ -193,12 +356,15 @@ it("keeps ambiguous input on its current work without selecting a candidate", as
 	)
 	expect(getWorkId(ctx)).toBe(current)
 	const request = recordProviderRequest(ctx, model)
-	expect(readWorkRecords(join(root, "agent"))).toContainEqual(
-		expect.objectContaining({
-			type: "request",
-			requestId: request.requestId,
-			segment: expect.objectContaining({ attribution: "unknown", reason: "model-uncertain" }),
-		}),
+	await vi.waitFor(() =>
+		expect(readWorkRecords(join(root, "agent"))).toContainEqual(
+			expect.objectContaining({
+				type: "request",
+				requestId: request.requestId,
+				workId: current,
+				segment: expect.objectContaining({ attribution: "unknown", reason: "model-uncertain" }),
+			}),
+		),
 	)
 })
 
@@ -210,6 +376,7 @@ it("pins the input's segment for delayed side calls and hidden SDK retries", asy
 	const input = api.getHandler<InputEvent>("input")
 	vi.mocked(classifyWorkIntent).mockResolvedValueOnce({ decision: "unknown", model: "selected/chat" })
 	await input({ type: "input", source: "interactive", text: "Which task did you mean?" }, ctx)
+	await vi.waitFor(() => expect(getWorkSegment(ctx)).toMatchObject({ reason: "model-uncertain" }))
 	const originalWork = getWorkId(ctx)
 	const pinned = pinWorkContext(ctx)
 	const original = recordProviderRequest(ctx, model)
@@ -235,13 +402,20 @@ it("keeps the existing work and request available when private metadata is damag
 	await api.getHandler<InputEvent>("input")({ type: "input", source: "interactive", text: "Implement the export" }, ctx)
 	const request: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
 	await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(request, ctx)
+	await vi.waitFor(() =>
+		expect(readWorkRecords(join(root, "agent"))).toContainEqual(
+			expect.objectContaining({
+				type: "request",
+				workId: current,
+				requestId: request.headers["X-Request-Id"],
+				segment: expect.objectContaining({ attribution: "session", reason: "matching-failed" }),
+			}),
+		),
+	)
 	expect(getWorkId(ctx)).toBe(current)
 	expect(classifyWorkIntent).not.toHaveBeenCalled()
 	// Optional matching failures stay in the debug log, so damaged metadata cannot warn on every prompt.
 	expect(ctx.ui.notify).not.toHaveBeenCalled()
-	expect(readWorkRecords(join(root, "agent"))).toContainEqual(
-		expect.objectContaining({ type: "request", workId: current, requestId: request.headers["X-Request-Id"] }),
-	)
 })
 
 it("announces a work change from model matching once", async () => {
@@ -259,7 +433,7 @@ it("announces a work change from model matching once", async () => {
 		{ type: "input", source: "interactive", text: "Build the comma-separated download with quoted cells." },
 		ctx,
 	)
-	expect(getWorkId(ctx)).toBe(planned)
+	await vi.waitFor(() => expect(getWorkId(ctx)).toBe(planned))
 	expect(announced).toHaveBeenCalledOnce()
 })
 
@@ -277,32 +451,36 @@ it("matches a fresh session's input past 256 work directories without saved task
 		{ type: "input", source: "interactive", text: "Build the comma-separated download with quoted cells." },
 		ctx,
 	)
+	await vi.waitFor(() => expect(getWorkId(ctx)).toBe(planned))
 	expect(vi.mocked(classifyWorkIntent).mock.calls[0][1].candidates.map((candidate) => candidate.workId)).toEqual([
 		planned,
 	])
-	expect(getWorkId(ctx)).toBe(planned)
 })
 
-it("reports a reached matching limit in /work instead of on every prompt", async () => {
-	for (let index = 0; index < 257; index++) {
-		const id = `30000000-0000-4000-8000-${String(index).padStart(12, "0")}`
-		mkdirSync(join(root, "agent", "work", id), { recursive: true })
-		writeFileSync(
-			workIntentPath(id),
-			JSON.stringify({ version: 2, workId: id, repository: "/elsewhere/.git", summary: "Other repository task" }),
-		)
-	}
+it("reports a skipped matching limit in /work instead of on every prompt", async () => {
+	await rememberWorkIntent(cwd, planned, first)
+	savePlanMarkdown({
+		cwd,
+		workId: planned,
+		name: "export",
+		planText: `# CSV export\n${"Quote embedded commas.\n".repeat(800)}`,
+	})
 	const ctx = createContext({ cwd, model, modelRegistry })
 	const api = createExtensionApi()
 	createWorkAttributionExtension()(api.api)
 	const input = api.getHandler<InputEvent>("input")
-	for (const text of ["Add a CSV export", "Quote the commas too"])
+	for (const text of ["Add a CSV export", "Quote the commas too"]) {
 		await input({ type: "input", source: "interactive", text }, ctx)
+		// The input keeps the attribution it would have with matching off.
+		await vi.waitFor(() =>
+			expect(getWorkSegment(ctx)).toMatchObject({ attribution: "session", reason: "matching-limited" }),
+		)
+	}
 	expect(classifyWorkIntent).not.toHaveBeenCalled()
 	expect(ctx.ui.notify).not.toHaveBeenCalled()
 	await api.getRegisteredCommand("work").handler("", { ...createCommandContext(), ...ctx })
 	expect(ctx.ui.notify).toHaveBeenCalledExactlyOnceWith(
-		expect.stringContaining("Work matching stopped: more than 256 saved tasks to compare."),
+		expect.stringContaining("Work matching skipped the last input: a saved plan is larger than 16,000 bytes."),
 		"info",
 	)
 })
@@ -361,7 +539,7 @@ it("can split an unrelated task after native output without adopting another pri
 	createWorkAttributionExtension()(api.api)
 	vi.mocked(classifyWorkIntent).mockResolvedValue({ decision: "new", model: "selected/chat" })
 	await api.getHandler<InputEvent>("input")({ type: "input", source: "interactive", text: "Explain tides" }, ctx)
-	expect(getWorkId(ctx)).not.toBe(current)
+	await vi.waitFor(() => expect(getWorkId(ctx)).not.toBe(current))
 	expect(getWorkId(ctx)).not.toBe(planned)
 	expect(vi.mocked(classifyWorkIntent).mock.calls[0][1]).toMatchObject({
 		current: { workId: current },
@@ -404,6 +582,9 @@ it.each([
 	)
 	const pending = input({ type: "input", source: "interactive", text: "Implement CSV export" }, ctx)
 	await vi.waitFor(() => expect(classifyWorkIntent).toHaveBeenCalledOnce())
+	// The turn already sent a request while the answer was pending.
+	const request: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+	await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(request, ctx)
 	let expected = current
 	if (change === "new-input") {
 		vi.mocked(classifyWorkIntent).mockResolvedValueOnce({ decision: "unknown", model: "selected/chat" })
@@ -431,6 +612,12 @@ it.each([
 	else appendWorkRecord(ctx, { type: "plan", path: "/actual-output.md" })
 	finish({ decision: "continue", workId: planned, model: "selected/chat" })
 	await pending
+	// It is written with the work it was sent with, never with the discarded answer's.
+	await vi.waitFor(() =>
+		expect(readWorkRecords(join(root, "agent"))).toContainEqual(
+			expect.objectContaining({ type: "request", requestId: request.headers["X-Request-Id"], workId: current }),
+		),
+	)
 	expect(getWorkId(ctx)).toBe(expected)
 	expect(readWorkRecords(join(root, "agent")).filter((row) => row.type === "work" && row.workId === planned)).toEqual(
 		[],

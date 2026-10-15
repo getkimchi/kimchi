@@ -166,7 +166,7 @@ for (const mode of ["steer", "followUp"] as const) {
 	})
 }
 
-test("a separate check uses the selected model before an unrelated question starts new work", async ({ terminal }) => {
+test("a separate check uses the selected model while an unrelated question starts new work", async ({ terminal }) => {
 	const main = (request: FakeResponseRequest) => !isWorkMatchingRequest(request)
 	await runKimchiSession(
 		terminal,
@@ -192,23 +192,37 @@ test("a separate check uses the selected model before an unrelated question star
 				records().find(
 					(row) => row.type === "request" && row.requestId === chats().filter(main).at(-1)?.headers["x-request-id"],
 				)
+			// The reply does not wait for matching; its request row is written once the decision gives it a work.
+			const decidedMainRecord = async () => {
+				const deadline = Date.now() + 10_000
+				while (Date.now() < deadline) {
+					const row = mainRecord()
+					if (row && row.segment?.reason !== "matching-pending") return row
+					await sleep(50)
+				}
+				throw new Error("The main request was not written with a matching decision")
+			}
 			terminal.submit("/work matching on")
 			await waitForText(terminal, "Task matching enabled")
 			terminal.submit("Plan a CSV export with quoted fields.")
 			await waitForText(terminal, "CSV plan ready.")
-			const original = mainRecord()
+			const original = await decidedMainRecord()
 			expect(original.model).toBe("basic")
 			expect(chats().filter(isWorkMatchingRequest).length).toBe(0)
 			terminal.submit("/model fake/second")
 			await waitForText(terminal, "second", { full: false })
 			terminal.submit("Why is the sky blue?")
 			await waitForText(terminal, "Blue light scatters more strongly.")
-			const unrelated = mainRecord()
+			const unrelated = await decidedMainRecord()
 			expect(unrelated.model).toBe("second")
 			expect(unrelated.workId).not.toBe(original.workId)
+			expect(unrelated.segment).toMatchObject({ attribution: "inferred", reason: "model-new" })
 			terminal.submit("What changes at sunset?")
 			await waitForText(terminal, "Sunset light travels through more atmosphere.")
-			expect(mainRecord().workId).toBe(unrelated.workId)
+			expect(await decidedMainRecord()).toMatchObject({
+				workId: unrelated.workId,
+				segment: { attribution: "inferred", reason: "model-same" },
+			})
 			const checks = chats().filter(isWorkMatchingRequest)
 			expect(checks.length).toBe(2)
 			for (const [index, request] of checks.entries()) {
@@ -216,15 +230,14 @@ test("a separate check uses the selected model before an unrelated question star
 				expect(request.headers.authorization).toBeDefined()
 				const row = records().find((row) => row.type === "request" && row.requestId === request.headers["x-request-id"])
 				expect(row.workId).toBe(index === 0 ? original.workId : unrelated.workId)
-				expect(chats().indexOf(request)).toBeLessThan(chats().indexOf(chats().filter(main)[index + 1]))
 			}
-			trace.step("separate checks follow model selection, retain their original work and precede main replies")
+			trace.step("separate checks follow model selection and keep their original work; replies do not wait for them")
 			terminal.submit("/work matching off")
 			await waitForText(terminal, "Task matching disabled")
 			terminal.submit("Explain ocean tides.")
 			await waitForText(terminal, "Matching disabled; answering another question.")
 			expect(chats().filter(isWorkMatchingRequest).length).toBe(2)
-			expect(mainRecord().segment).toMatchObject({ attribution: "session", reason: "matching-disabled" })
+			expect((await decidedMainRecord()).segment).toMatchObject({ attribution: "session", reason: "matching-disabled" })
 			trace.step("the user can turn matching off without disabling ordinary local request capture")
 		},
 	)

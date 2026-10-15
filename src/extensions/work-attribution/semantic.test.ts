@@ -1,5 +1,14 @@
 import { execFileSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs"
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
@@ -21,6 +30,8 @@ import {
 	rememberWorkIntent,
 	WorkMatchingLimit,
 	workIntentPath,
+	workMatchingAvailable,
+	workMatchingEnabled,
 } from "./semantic.js"
 import { flushWorkSummaries, readWorkRecords } from "./summary.js"
 
@@ -58,7 +69,14 @@ afterEach(async () => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function provider(answer: string | string[], status = 200, headers: Record<string, string> = {}) {
+/** Candidate checks run at once, so a reply is chosen by what was asked rather than by arrival order. */
+type Reply = string | { content: string; delay: number }
+type Answer = string | string[] | ((data: Record<string, unknown>) => Reply)
+function byCheck(candidates: Record<string, Reply>, precheck: Reply = JSON.stringify({ decision: "specific" })) {
+	return (data: Record<string, unknown>) =>
+		typeof data.selectedWorkId === "string" ? (candidates[data.selectedWorkId] ?? "{}") : precheck
+}
+async function provider(answer: Answer, status = 200, headers: Record<string, string> = {}) {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-selected-model-")))
 	roots.push(root)
 	vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent"))
@@ -74,8 +92,14 @@ async function provider(answer: string | string[], status = 200, headers: Record
 				(row) => row.type === "request" && row.requestId === request.headers["x-request-id"],
 			),
 		})
-		const content = Array.isArray(answer) ? (answer[requests.length - 1] ?? "{}") : answer
-		const delay = delays[requests.length - 1]
+		const reply =
+			typeof answer === "function"
+				? answer(JSON.parse(JSON.parse(body).messages.at(-1).content))
+				: Array.isArray(answer)
+					? (answer[requests.length - 1] ?? "{}")
+					: answer
+		const content = typeof reply === "string" ? reply : reply.content
+		const delay = typeof reply === "string" ? delays[requests.length - 1] : reply.delay
 		if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
 		response.writeHead(status, { "content-type": "text/event-stream", ...headers })
 		response.end(
@@ -149,6 +173,23 @@ it("decides on the shared classifier models in order, the next one answering whe
 	expect(server.requests.map((request) => JSON.parse(request.body).model)).toEqual([answering.id, answering.id])
 	const overhead = readWorkRecords(join(server.root, "agent")).filter((row) => row.type === "request")
 	expect(overhead.map((row) => row.model)).toEqual([broken.id, answering.id, answering.id])
+})
+
+it("is on by default only where Kimchi's shared classifier models can decide", () => {
+	const [provider, id] = DEFAULT_CLASSIFIER_CANDIDATE_REFS[0].split("/")
+	const shared = createModelRegistry([createModel(id, provider)])
+	const own = createModelRegistry([createModel("chat", "selected")])
+	vi.mocked(readConfigSetting).mockReturnValue(undefined)
+	expect([workMatchingEnabled(), workMatchingAvailable(shared), workMatchingAvailable(own)]).toEqual([
+		true,
+		true,
+		false,
+	])
+	// Matching on the selected model, which another provider may bill, needs /work matching on.
+	vi.mocked(readConfigSetting).mockReturnValue(true)
+	expect(workMatchingAvailable(own)).toBe(true)
+	vi.mocked(readConfigSetting).mockReturnValue(false)
+	expect([workMatchingEnabled(), workMatchingAvailable(shared)]).toEqual([false, false])
 })
 
 it("does not authenticate or send private task history when matching is disabled", async () => {
@@ -267,8 +308,8 @@ it("does not call auth or inference without history or a selected model", async 
 it("bounds stalled authentication by the shared deadline", async () => {
 	const server = await provider("{}")
 	vi.mocked(server.registry.getApiKeyAndHeaders).mockImplementation(() => new Promise(() => {}))
-	const pending = classifyWorkIntent(server.ctx, input)
-	expect(await pending).toMatchObject({ decision: "unknown" })
+	const pending = classifyWorkIntent(server.ctx, input, undefined, undefined, 200)
+	expect(await pending).toMatchObject({ decision: "unknown", cause: "timeout" })
 	expect(server.requests).toHaveLength(0)
 })
 
@@ -315,22 +356,38 @@ const otherCandidate = { workId: "20000000-0000-4000-8000-000000000002", summary
 
 it("requires every other candidate to be ruled out before adopting one match", async () => {
 	const candidates = [...input.candidates, otherCandidate]
-	const server = await provider([
-		JSON.stringify({ decision: "specific" }),
-		JSON.stringify({ decision: "match" }),
-		JSON.stringify({ decision: "different" }),
-	])
+	const server = await provider(
+		byCheck({
+			[workId]: JSON.stringify({ decision: "match" }),
+			[otherCandidate.workId]: JSON.stringify({ decision: "different" }),
+		}),
+	)
 	expect(await classifyWorkIntent(server.ctx, { ...input, candidates })).toMatchObject({
 		decision: "continue",
 		workId,
 	})
 	expect(server.requests).toHaveLength(3)
-	for (const [index, candidate] of candidates.entries()) {
-		const checked = JSON.parse(JSON.parse(server.requests[index + 1].body).messages.at(-1).content)
-		expect(checked).toEqual({ ...input, candidates, selectedWorkId: candidate.workId })
-	}
-	const precheck = JSON.parse(JSON.parse(server.requests[0].body).messages.at(-1).content)
-	expect(precheck).toEqual({ message: input.message })
+	const sent = server.requests.map((request) => JSON.parse(JSON.parse(request.body).messages.at(-1).content))
+	expect(sent[0]).toEqual({ message: input.message })
+	// Each request carries only the task it checks, so history size cannot crowd out the message.
+	for (const candidate of candidates)
+		expect(sent).toContainEqual({
+			current: null,
+			candidates: [candidate],
+			message: input.message,
+			selectedWorkId: candidate.workId,
+		})
+})
+
+it("checks every saved task at once, within one deadline", async () => {
+	const candidates = [...input.candidates, otherCandidate]
+	const slow = (decision: string) => ({ content: JSON.stringify({ decision }), delay: 600 })
+	const server = await provider(byCheck({ [workId]: slow("match"), [otherCandidate.workId]: slow("different") }))
+	// One after the other, the two 600 ms checks would overrun the 1,000 ms deadline.
+	expect(await classifyWorkIntent(server.ctx, { ...input, candidates }, undefined, undefined, 1000)).toMatchObject({
+		decision: "continue",
+		workId,
+	})
 })
 
 it.each([
@@ -346,23 +403,21 @@ it.each([
 })
 
 it.each(["match", "unknown"])("does not adopt when another candidate is %s", async (decision) => {
-	const server = await provider([
-		JSON.stringify({ decision: "specific" }),
-		JSON.stringify({ decision: "match" }),
-		JSON.stringify({ decision }),
-	])
-	expect(
-		await classifyWorkIntent(server.ctx, { ...input, candidates: [...input.candidates, otherCandidate] }),
-	).toMatchObject({ decision: "unknown" })
+	const server = await provider(
+		byCheck({
+			[workId]: JSON.stringify({ decision: "match" }),
+			[otherCandidate.workId]: JSON.stringify({ decision }),
+		}),
+	)
+	const result = await classifyWorkIntent(server.ctx, { ...input, candidates: [...input.candidates, otherCandidate] })
+	// Ambiguity is the model's verdict, not a failure that falls back to session attribution.
+	expect(result).toEqual({ decision: "unknown", model: "selected/chat" })
 	expect(server.requests).toHaveLength(3)
 })
 
 it("returns new only when every candidate is different", async () => {
-	const server = await provider([
-		JSON.stringify({ decision: "specific" }),
-		JSON.stringify({ decision: "different" }),
-		JSON.stringify({ decision: "different" }),
-	])
+	const different = JSON.stringify({ decision: "different" })
+	const server = await provider(byCheck({ [workId]: different, [otherCandidate.workId]: different }))
 	expect(
 		await classifyWorkIntent(server.ctx, { ...input, candidates: [...input.candidates, otherCandidate] }),
 	).toMatchObject({ decision: "new" })
@@ -396,23 +451,32 @@ it("preserves the original context after ruling out the current task", async () 
 	expect(checked).toEqual({ ...input, current, selectedWorkId: workId })
 })
 
-it("shares one deadline across all candidate checks", async () => {
-	const server = await provider([
-		JSON.stringify({ decision: "specific" }),
-		JSON.stringify({ decision: "match" }),
-		JSON.stringify({ decision: "different" }),
-	])
-	server.delays.push(0, 1700, 1700)
+it("reports a timeout when one candidate check outlasts the shared deadline", async () => {
+	const server = await provider(
+		byCheck({
+			[workId]: JSON.stringify({ decision: "match" }),
+			[otherCandidate.workId]: { content: JSON.stringify({ decision: "different" }), delay: 1500 },
+		}),
+	)
 	expect(
-		await classifyWorkIntent(server.ctx, { ...input, candidates: [...input.candidates, otherCandidate] }),
-	).toMatchObject({ decision: "unknown" })
+		await classifyWorkIntent(
+			server.ctx,
+			{ ...input, candidates: [...input.candidates, otherCandidate] },
+			undefined,
+			undefined,
+			500,
+		),
+	).toEqual({ decision: "unknown", model: "selected/chat", cause: "timeout" })
 	expect(server.requests).toHaveLength(3)
 })
 
 it("shares one deadline between the message precheck and candidate matching", async () => {
 	const server = await provider([JSON.stringify({ decision: "specific" }), JSON.stringify({ decision: "match" })])
-	server.delays.push(1700, 1700)
-	expect(await classifyWorkIntent(server.ctx, input)).toMatchObject({ decision: "unknown" })
+	server.delays.push(400, 400)
+	expect(await classifyWorkIntent(server.ctx, input, undefined, undefined, 600)).toMatchObject({
+		decision: "unknown",
+		cause: "timeout",
+	})
 	expect(server.requests).toHaveLength(2)
 })
 
@@ -481,7 +545,11 @@ it("requests JSON from a selected Kimchi model without loosening decision parsin
 
 it("does not persist or return malformed provider content", async () => {
 	const server = await provider("x".repeat(70000))
-	expect(await classifyWorkIntent(server.ctx, input)).toEqual({ decision: "unknown", model: "selected/chat" })
+	expect(await classifyWorkIntent(server.ctx, input)).toEqual({
+		decision: "unknown",
+		model: "selected/chat",
+		cause: "failed",
+	})
 })
 
 function repositoryFixture() {
@@ -618,18 +686,35 @@ it("compares saved tasks beyond 256 work directories without saved task text", a
 	expect(loaded.input.candidates).toEqual([{ workId, summary: "CSV export" }])
 })
 
-it("refuses an incomplete scan of more than 256 saved tasks", async () => {
+it("compares the repository's most recently active saved tasks, newest first", async () => {
 	const { root, cwd } = repositoryFixture()
-	for (let index = 0; index < 257; index++) {
+	const ids = Array.from({ length: 10 }, (_, index) => `30000000-0000-4000-8000-${String(index).padStart(12, "0")}`)
+	for (const [index, id] of ids.entries()) {
+		await rememberWorkIntent(cwd, id, `Task ${index}`)
+		// A work's summary is rewritten whenever it records something; its age orders the history.
+		const summary = join(root, "agent", "work", id, "work.json")
+		writeFileSync(summary, "{}")
+		utimesSync(summary, 1_700_000_000 + index, 1_700_000_000 + index)
+	}
+	const loaded = await loadWorkIntents(cwd, currentId, input.message, true)
+	expect(loaded.input.candidates.map((candidate) => candidate.summary)).toEqual(
+		[9, 8, 7, 6, 5, 4, 3, 2].map((index) => `Task ${index}`),
+	)
+})
+
+it("leaves older history out instead of refusing to match", async () => {
+	const { root, cwd } = repositoryFixture()
+	await rememberWorkIntent(cwd, workId, "CSV export")
+	for (let index = 0; index < 520; index++) {
 		const id = `30000000-0000-4000-8000-${String(index).padStart(12, "0")}`
 		mkdirSync(join(root, "agent", "work", id), { recursive: true })
-		// Saved task text from any repository counts: each one is read to find this repository's tasks.
 		writeFileSync(
 			workIntentPath(id),
 			JSON.stringify({ version: 2, workId: id, repository: "/elsewhere/.git", summary: "Other repository task" }),
 		)
 	}
-	await expect(loadWorkIntents(cwd, currentId, input.message, true)).rejects.toThrow(
-		"more than 256 saved tasks to compare",
-	)
+	utimesSync(workIntentPath(workId), 1_700_000_000, 1_700_000_000)
+	const loaded = await loadWorkIntents(cwd, currentId, input.message, true)
+	// 520 newer tasks from other repositories exceed the scan, so the old CSV task is not compared.
+	expect(loaded.input.candidates).toEqual([])
 })

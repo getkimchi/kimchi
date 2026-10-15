@@ -257,18 +257,20 @@ it("verifies the account once for an input and the turn it starts", async () => 
 	expect(organizations.verifyApiKey).toHaveBeenCalledOnce()
 })
 
-it("keeps a Git failure during optional matching off the screen and the input unresolved", async () => {
+it("keeps a Git failure during optional matching off the screen and counts the input as with matching off", async () => {
 	vi.spyOn(scope, "workRepository").mockRejectedValue(new Error("Command failed: git rev-parse (timed out)"))
 	const ctx = createContext({ cwd, model: createModel("chat", "selected") })
 	const api = createExtensionApi()
 	createWorkAttributionExtension()(api.api)
 	await api.getHandler<InputEvent>("input")({ type: "input", source: "interactive", text: "Add a CSV export" }, ctx)
-	expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("git rev-parse"), "warning")
 	const { requestId } = recordProviderRequest(ctx)
-	expect(readWorkRecords(join(root, "agent")).find((row) => row.requestId === requestId)?.segment).toMatchObject({
-		attribution: "unknown",
-		reason: "matching-unresolved",
-	})
+	await vi.waitFor(() =>
+		expect(readWorkRecords(join(root, "agent")).find((row) => row.requestId === requestId)?.segment).toMatchObject({
+			attribution: "session",
+			reason: "matching-failed",
+		}),
+	)
+	expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("git rev-parse"), "warning")
 })
 
 it("recovers from a missing scope file without relabelling earlier requests", async () => {

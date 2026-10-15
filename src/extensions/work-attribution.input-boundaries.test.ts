@@ -377,17 +377,20 @@ describe("fresh-session guard after scope recovery", () => {
 	})
 })
 
-it("leaves an input unresolved without a warning when matching history exceeds its limits", async () => {
+it("counts an input as with matching off, without a warning, when matching history exceeds its limits", async () => {
 	vi.spyOn(semantic, "workMatchingEnabled").mockReturnValue(true)
+	vi.spyOn(semantic, "workMatchingAvailable").mockReturnValue(true)
 	vi.spyOn(semantic, "loadWorkIntents").mockRejectedValue(
-		new semantic.WorkMatchingLimit("more than 256 saved tasks to compare"),
+		new semantic.WorkMatchingLimit("a saved plan is larger than 16,000 bytes"),
 	)
 	const api = createExtensionApi()
 	createWorkAttributionExtension()(api.api)
 	const ctx = createContext({ cwd: dir, model: createModel("chat"), modelRegistry: createModelRegistry() })
 	const metric = vi.spyOn(health, "trackPRCostMetric")
 	await api.getHandler<InputEvent>("input")({ type: "input", text: "Explain closures", source: "interactive" }, ctx)
-	expect(getWorkSegment(ctx)).toMatchObject({ attribution: "unknown" })
+	await vi.waitFor(() =>
+		expect(getWorkSegment(ctx)).toMatchObject({ attribution: "session", reason: "matching-limited" }),
+	)
 	expect(ctx.ui.notify).not.toHaveBeenCalled()
 	expect(metric).toHaveBeenCalledWith({ kind: "matching", outcome: "limited" })
 })
@@ -439,6 +442,7 @@ describe("journal problems during live plan continuation", () => {
 			"Work history contains unknown record types",
 		],
 	])("adopts the plan, remembers its input and names the journal with %s in its warning", async (_kind, name, content, problem) => {
+		vi.spyOn(semantic, "workMatchingAvailable").mockReturnValue(true)
 		const remember = vi.spyOn(semantic, "rememberWorkIntent").mockResolvedValue()
 		const { ctx, journal } = await continuePlan(name, content)
 		expect(ctx.ui.notify).toHaveBeenCalledWith(`Work attribution unavailable: ${problem} in ${journal}:1`, "warning")

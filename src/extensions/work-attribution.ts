@@ -61,8 +61,10 @@ import {
 	classifyWorkIntent,
 	loadWorkIntents,
 	rememberWorkIntent,
+	WORK_MATCHING_DEADLINE_MS,
 	WorkMatchingLimit,
 	workIntentPath,
+	workMatchingAvailable,
 	workMatchingEnabled,
 } from "./work-attribution/semantic.js"
 import {
@@ -148,8 +150,80 @@ interface PendingRequest {
 	billingSource?: BillingSource
 	billingTag?: string
 	headers?: BeforeProviderHeadersEvent["headers"]
+	/** Set while the request's input waits for its matching decision; shared by its retries. */
+	deferred?: DeferredRows
 }
 const pendingRequests = new Map<string, PendingRequest>()
+type WorkRecordFields = { type: string; [key: string]: unknown }
+/** Rows of requests sent while their input's matching decision is pending, in the order they were produced. */
+interface DeferredRows {
+	rows: { request: PendingRequest; fields: WorkRecordFields }[]
+	/** After the decision every later row of these requests is written directly. */
+	written: boolean
+}
+interface PendingMatch {
+	/** The session ledger whose requests wait for this decision. */
+	key: string
+	segmentId: string
+	deferred: DeferredRows
+	/** Resolves once the decision or its fallback is applied and the held rows are written. */
+	settled: Promise<void>
+}
+/** Inputs whose matching decision is still running, by session ledger. */
+const pendingMatches = new Map<string, PendingMatch>()
+/** Stop holding an input's requests: they keep the work and attribution they were sent with. */
+function releasePendingMatch(match: PendingMatch): void {
+	if (pendingMatches.get(match.key) === match) pendingMatches.delete(match.key)
+	writeDeferredRows(match)
+}
+/** Wait for the decision that tools of a held request act for, but never past the matching deadline. */
+async function waitForMatch(match: PendingMatch): Promise<void> {
+	let timer: NodeJS.Timeout | undefined
+	await Promise.race([
+		match.settled,
+		new Promise<void>((resolve) => {
+			timer = setTimeout(resolve, WORK_MATCHING_DEADLINE_MS)
+		}),
+	])
+	clearTimeout(timer)
+	// A slower decision may still choose the work of later requests; these already went out.
+	releasePendingMatch(match)
+}
+function appendRequestRecord(request: PendingRequest, fields: WorkRecordFields): void {
+	if (request.deferred && !request.deferred.written) request.deferred.rows.push({ request, fields })
+	else appendWorkRecord(request.ctx, fields, request.workId, request.path)
+}
+/**
+ * Write the rows an input's requests held while matching ran, under the work and attribution it settled on. Without
+ * a decision they keep the work and pending session attribution they were sent with, as with matching off.
+ */
+function writeDeferredRows(match: PendingMatch, decided?: { workId: string; segment: WorkSegment }): void {
+	const { deferred } = match
+	if (deferred.written) return
+	deferred.written = true
+	const scope = decided ? (readWorkScope(decided.workId) ?? null) : undefined
+	// A dispatch replaces a request's in-memory entry, so settle every copy that held or later rows come from.
+	const settle = (request: PendingRequest) => {
+		if (decided) Object.assign(request, { workId: decided.workId, segment: decided.segment, scope })
+	}
+	if (decided) {
+		for (const request of pendingRequests.values()) if (request.deferred === deferred) settle(request)
+		for (const [key, identity] of activeRequests)
+			if (pendingRequests.get(identity.requestId)?.deferred === deferred)
+				activeRequests.set(key, { ...identity, workId: decided.workId })
+	}
+	for (const { request, fields } of deferred.rows.splice(0)) {
+		settle(request)
+		tryWorkAttribution(() =>
+			appendWorkRecord(
+				request.ctx,
+				fields.type === "request" ? { ...fields, segment: request.segment, scope: request.scope } : fields,
+				request.workId,
+				request.path,
+			),
+		)
+	}
+}
 
 function rememberRequest(requestId: string, request: PendingRequest): void {
 	// ponytail: retain at most 1000 attempts for SDK retries; older ledger rows remain durable.
@@ -276,25 +350,26 @@ export function recordProviderRequest(
 	const segment = getWorkSegment(ctx)
 	// New requests must distinguish unknown scope from legacy records that predate account tracking.
 	const scope = readWorkScope(workId) ?? null
-	appendWorkRecord(
-		ctx,
-		{
-			type: "request",
-			requestId,
-			startedAt,
-			provider: model?.provider,
-			model: model?.id,
-			modelSource: "context",
-			segment,
-			scope,
-			purpose,
-		},
-		workId,
-	)
-	rememberRequest(requestId, {
+	const path = workLedgerPath(ctx)
+	const fields = {
+		type: "request",
+		requestId,
+		startedAt,
+		provider: model?.provider,
+		model: model?.id,
+		modelSource: "context",
+		segment,
+		scope,
+		purpose,
+	}
+	// A request of an input whose matching decision is still running is written once that decision is known.
+	const match = pendingMatches.get(path)
+	const deferred = !purpose && match && segment?.id === match.segmentId ? match.deferred : undefined
+	if (!deferred || deferred.written) appendWorkRecord(ctx, fields, workId)
+	const request: PendingRequest = {
 		ctx: pinWorkContext(ctx),
 		workId,
-		path: workLedgerPath(ctx),
+		path,
 		model: model && { provider: model.provider, id: model.id },
 		startedAt,
 		logicalRequestId: requestId,
@@ -303,7 +378,10 @@ export function recordProviderRequest(
 		purpose,
 		dispatched: false,
 		responded: false,
-	})
+		...(deferred && !deferred.written ? { deferred } : {}),
+	}
+	if (request.deferred) request.deferred.rows.push({ request, fields })
+	rememberRequest(requestId, request)
 	return { requestId, workId }
 }
 /** Persist the identity of each HTTP dispatch, including retries inside provider SDKs. */
@@ -328,39 +406,29 @@ export function prepareProviderRequest(headers: Headers, url: string, metadata: 
 	const isActive = active && pendingRequests.get(active.requestId)?.logicalRequestId === request.logicalRequestId
 	try {
 		if (retry)
-			appendWorkRecord(
-				request.ctx,
-				{
-					type: "request",
-					requestId,
-					parentRequestId: request.logicalRequestId,
-					segment: request.segment,
-					scope: request.scope,
-					purpose: request.purpose,
-					startedAt,
-					provider: request.model?.provider,
-					model: request.model?.id,
-					modelSource: "context",
-				},
-				request.workId,
-				request.path,
-			)
-		appendWorkRecord(
-			request.ctx,
-			{
-				type: "request_dispatch",
+			appendRequestRecord(request, {
+				type: "request",
 				requestId,
+				parentRequestId: request.logicalRequestId,
+				segment: request.segment,
+				scope: request.scope,
+				purpose: request.purpose,
 				startedAt,
-				dispatchedAt,
-				billingSource,
-				billingSelector,
-				...(!billingSelector
-					? { billingTagSkipped: billingSource ? tagging.billingTagSkipped : "unsupported-source" }
-					: {}),
-			},
-			request.workId,
-			request.path,
-		)
+				provider: request.model?.provider,
+				model: request.model?.id,
+				modelSource: "context",
+			})
+		appendRequestRecord(request, {
+			type: "request_dispatch",
+			requestId,
+			startedAt,
+			dispatchedAt,
+			billingSource,
+			billingSelector,
+			...(!billingSelector
+				? { billingTagSkipped: billingSource ? tagging.billingTagSkipped : "unsupported-source" }
+				: {}),
+		})
 	} catch (error) {
 		if (isActive) {
 			activeRequests.delete(request.path)
@@ -390,23 +458,18 @@ export function recordProviderResponse(requestId: string, response: Pick<Respons
 	if (!request || request.responded) return
 	const promptId = response.headers.get("x-prompt-id")
 	const traceId = response.headers.get("x-trace-id")
-	appendWorkRecord(
-		request.ctx,
-		{
-			type: "request_response",
-			requestId,
-			startedAt: request.startedAt,
-			billingSource: request.billingSource,
-			response: {
-				status: response.status,
-				receivedAt: new Date().toISOString(),
-				...(isWorkId(promptId) ? { promptId } : {}),
-				...(traceId && /^[a-f\d]{32}$/i.test(traceId) ? { traceId } : {}),
-			},
+	appendRequestRecord(request, {
+		type: "request_response",
+		requestId,
+		startedAt: request.startedAt,
+		billingSource: request.billingSource,
+		response: {
+			status: response.status,
+			receivedAt: new Date().toISOString(),
+			...(isWorkId(promptId) ? { promptId } : {}),
+			...(traceId && /^[a-f\d]{32}$/i.test(traceId) ? { traceId } : {}),
 		},
-		request.workId,
-		request.path,
-	)
+	})
 	request.responded = true
 }
 /** Snapshot the session so later async work stays attributed to it after a session switch. */
@@ -520,8 +583,7 @@ export function createWorkAttributionExtension(
 			preparedInput = false
 			inputCheckedScope = false
 			clearQueued()
-			inputGeneration++
-			semanticAbort?.abort()
+			abortMatching()
 			unregisterWorkState ??= registerWorkState()
 			recoverWorkSummaries()
 			try {
@@ -551,11 +613,18 @@ export function createWorkAttributionExtension(
 		const explicitSelection = new Map<string, string>()
 		let inputGeneration = 0
 		let semanticAbort: AbortController | undefined
+		let activeMatch: PendingMatch | undefined
+		/** Ends the running decision: a late answer is discarded and the rows it held are written as they were sent. */
+		function abortMatching(): void {
+			inputGeneration++
+			semanticAbort?.abort()
+			if (activeMatch) releasePendingMatch(activeMatch)
+			activeMatch = undefined
+		}
 		/** A history limit that stopped model matching; /work reports it instead of every prompt warning. */
 		let matchingLimit: string | undefined
 		pi.on("model_select", () => {
-			inputGeneration++
-			semanticAbort?.abort()
+			abortMatching()
 		})
 		function bind(ctx: ExtensionContext): void {
 			activeContext = ctx
@@ -665,20 +734,25 @@ export function createWorkAttributionExtension(
 			// Pi awaits message_start before sending the request that receives a queued message.
 			await attributeInput({ type: "input", text, source: "interactive" }, ctx)
 		})
-		pi.on("agent_settled", () => {
+		pi.on("agent_settled", async (_event, ctx) => {
 			preparedInput = false
 			inputCheckedScope = false
 			clearQueued()
+			// A run reports done with its requests written; a decision still pending waits no longer than its deadline.
+			const match = pendingMatches.get(workLedgerPath(ctx))
+			if (match) await waitForMatch(match)
 		})
 		async function attributeInput(event: InputEvent, ctx: ExtensionContext): Promise<void> {
 			if (isChild) return
 			const model = ctx.model ? { ...ctx.model } : undefined
-			const generation = ++inputGeneration
-			semanticAbort?.abort()
+			abortMatching()
+			const generation = inputGeneration
 			if (event.source === "extension") return
-			// Optional model matching never interrupts the user; its failures leave the input unresolved.
-			let matching = false
-			let matchingOutcome: "failed" | "limited" | undefined
+			// Model matching runs beside the turn and never delays it. Without a verdict, an input keeps the attribution
+			// it has with matching off.
+			const matchingOn = workMatchingEnabled() && workMatchingAvailable(ctx.modelRegistry)
+			let started = false
+			let matchingOutcome: "failed" | undefined
 			try {
 				bind(ctx)
 				const key = workLedgerPath(ctx)
@@ -695,10 +769,7 @@ export function createWorkAttributionExtension(
 						...(explicitSelection.has(key) ? { explicit: true } : {}),
 					})
 				}
-				useSegment(
-					workMatchingEnabled() ? "unknown" : "session",
-					workMatchingEnabled() ? "matching-unresolved" : "matching-disabled",
-				)
+				useSegment(matchingOn ? "unknown" : "session", matchingOn ? "matching-unresolved" : "matching-disabled")
 				const captured = await captureWorkScope(cwd)
 				if (
 					generation !== inputGeneration ||
@@ -717,7 +788,7 @@ export function createWorkAttributionExtension(
 					// Recovered identity belongs to new inputs, never to earlier unscoped history.
 					current = setWorkId(ctx, undefined, pi)
 					explicitSelection.delete(key)
-					useSegment(workMatchingEnabled() ? "unknown" : "session", previousScope ? "scope-changed" : "scope-recovered")
+					useSegment(matchingOn ? "unknown" : "session", previousScope ? "scope-changed" : "scope-recovered")
 				}
 				const saveScope = (workId: string) => saveFirstScope(workId, credential, captured)
 				saveScope(current)
@@ -778,7 +849,7 @@ export function createWorkAttributionExtension(
 					} catch (error) {
 						warnWorkAttribution(ctx, error)
 					}
-					if (model) await rememberWorkIntent(ctx.cwd, found.workId, event.text)
+					if (model && matchingOn) await rememberWorkIntent(ctx.cwd, found.workId, event.text)
 					return
 				}
 				if (references?.owned) {
@@ -793,75 +864,117 @@ export function createWorkAttributionExtension(
 					return
 				}
 				// Without a verified account and repository, matching stays unresolved.
-				if (!model || !workMatchingEnabled() || !captured) return
-				matching = true
-				const intents = await loadWorkIntents(ctx.cwd, current, event.text, eligible())
-				matchingLimit = undefined
-				if (!unchanged()) return
-				if (!intents.account?.isCurrent()) {
-					useSegment("unknown", "account-unavailable")
-					return
-				}
-				semanticAbort = new AbortController()
-				const decision = await classifyWorkIntent(
-					{ ...pinWorkContext(ctx), model, modelRegistry: ctx.modelRegistry },
-					intents.input,
-					semanticAbort.signal,
-					intents.account.isCurrent,
-				)
-				if ((await workRepository(cwd)) !== intents.repository) return
-				if (
-					!decision ||
-					!unchanged() ||
-					!workMatchingEnabled() ||
-					!intents.account.isCurrent() ||
-					(decision.decision === "continue" && !eligible())
-				)
-					return
-				const workId =
-					decision.decision === "continue"
-						? decision.workId
-						: decision.decision === "new" && intents.input.current
-							? randomUUID()
-							: current
-				const freshTask = decision.decision === "new" && !intents.input.current && !intents.input.candidates.length
-				const evidence: WorkContinuation["evidence"] = {
-					path: workIntentPath(workId),
-					repository: intents.repository,
-					model: decision.model,
-					decision: decision.decision,
-					inputHash: createHash("sha256").update(event.text).digest("hex"),
+				if (!model || !matchingOn || !captured) return
+				started = true
+				// The turn starts now. Its requests are held in memory until the decision gives them their work, so
+				// matching is never on the user's critical path; tools wait for it instead (see message_end).
+				useSegment("session", "matching-pending")
+				const controller = new AbortController()
+				semanticAbort = controller
+				const match: PendingMatch = {
+					key,
 					segmentId,
-					promptVersion: 1,
-					candidateWorkIds: intents.input.candidates.map((candidate) => candidate.workId),
-					account: intents.account.account,
+					deferred: { rows: [], written: false },
+					settled: Promise.resolve(),
 				}
-				if (workId !== current) {
-					if (decision.decision === "new") {
-						newWorksToScope.set(workId, credential)
-						markNewWork(workId)
+				pendingMatches.set(key, match)
+				activeMatch = match
+				const settle = (attribution: WorkSegment["attribution"], reason: string) => {
+					useSegment(attribution, reason)
+					return { workId: getWorkId(ctx), segment: { id: segmentId, attribution, reason } }
+				}
+				const decide = async (): Promise<{ workId: string; segment: WorkSegment } | undefined> => {
+					let outcome: "failed" | "limited" | undefined
+					let decided: { workId: string; segment: WorkSegment } | undefined
+					try {
+						const intents = await loadWorkIntents(cwd, current, event.text, eligible())
+						matchingLimit = undefined
+						if (!unchanged()) return
+						if (!intents.account?.isCurrent()) return settle("unknown", "account-unavailable")
+						const decision = await classifyWorkIntent(
+							{ ...pinWorkContext(ctx), model, modelRegistry: ctx.modelRegistry },
+							intents.input,
+							controller.signal,
+							intents.account.isCurrent,
+						)
+						if ((await workRepository(cwd)) !== intents.repository) return
+						if (
+							!decision ||
+							!unchanged() ||
+							!workMatchingEnabled() ||
+							!intents.account.isCurrent() ||
+							(decision.decision === "continue" && !eligible())
+						)
+							return
+						// A timeout or provider failure is not the model's uncertainty: count the input as with matching off.
+						if (decision.cause) {
+							outcome = "failed"
+							return settle("session", `matching-${decision.cause}`)
+						}
+						const workId =
+							decision.decision === "continue"
+								? decision.workId
+								: decision.decision === "new" && intents.input.current
+									? randomUUID()
+									: current
+						const freshTask = decision.decision === "new" && !intents.input.current && !intents.input.candidates.length
+						const evidence: WorkContinuation["evidence"] = {
+							path: workIntentPath(workId),
+							repository: intents.repository,
+							model: decision.model,
+							decision: decision.decision,
+							inputHash: createHash("sha256").update(event.text).digest("hex"),
+							segmentId,
+							promptVersion: 2,
+							candidateWorkIds: intents.input.candidates.map((candidate) => candidate.workId),
+							account: intents.account.account,
+						}
+						if (workId !== current) {
+							if (decision.decision === "new") {
+								newWorksToScope.set(workId, credential)
+								markNewWork(workId)
+							}
+							setWorkId(ctx, workId, pi, { source: "semantic", evidence })
+							notify(ctx, `Work matching ${decision.decision === "new" ? "started new" : "continued"} work: ${workId}`)
+						} else appendWorkRecord(ctx, { type: "work", continuation: { source: "semantic", evidence } }, current)
+						saveScope(workId)
+						const attribution = decision.decision === "unknown" ? "unknown" : freshTask ? "session" : "inferred"
+						const reason =
+							decision.decision === "unknown"
+								? "model-uncertain"
+								: freshTask
+									? "new-task"
+									: `model-${decision.decision}`
+						useSegment(attribution, reason)
+						decided = { workId, segment: { id: segmentId, attribution, reason } }
+						await rememberWorkIntent(ctx.cwd, workId, event.text, intents.repository, intents.account)
+						return decided
+					} catch (error) {
+						debugWorkAttribution("Work matching skipped:", error)
+						if (error instanceof WorkMatchingLimit) matchingLimit = error.message
+						outcome = error instanceof WorkMatchingLimit ? "limited" : "failed"
+						// An applied decision keeps its segment when only saving the task text fails.
+						if (!decided && unchanged())
+							decided = settle("session", outcome === "limited" ? "matching-limited" : "matching-failed")
+						return decided
+					} finally {
+						if (generation === inputGeneration)
+							trackPRCostMetric({ kind: "matching", outcome: outcome ?? getWorkSegment(ctx)?.attribution ?? "unknown" })
 					}
-					setWorkId(ctx, workId, pi, { source: "semantic", evidence })
-					notify(ctx, `Work matching ${decision.decision === "new" ? "started new" : "continued"} work: ${workId}`)
-				} else appendWorkRecord(ctx, { type: "work", continuation: { source: "semantic", evidence } }, current)
-				saveScope(workId)
-				useSegment(
-					decision.decision === "unknown" ? "unknown" : freshTask ? "session" : "inferred",
-					decision.decision === "unknown" ? "model-uncertain" : freshTask ? "new-task" : `model-${decision.decision}`,
-				)
-				await rememberWorkIntent(ctx.cwd, workId, event.text, intents.repository, intents.account)
-			} catch (error) {
-				if (error instanceof WorkMatchingLimit) {
-					matchingLimit = error.message
-					matchingOutcome = "limited"
-					debugWorkAttribution("Work matching skipped:", error)
-				} else {
-					matchingOutcome = "failed"
-					if (matching) debugWorkAttribution("Work matching skipped:", error)
-					else warnWorkAttribution(ctx, error)
 				}
+				match.settled = decide()
+					.catch(() => undefined)
+					.then((decided) => writeDeferredRows(match, decided))
+					.catch((error) => debugWorkAttribution("Attribution unavailable:", error))
+					.finally(() => {
+						if (pendingMatches.get(key) === match) pendingMatches.delete(key)
+						if (activeMatch === match) activeMatch = undefined
+					})
+			} catch (error) {
+				matchingOutcome = "failed"
+				warnWorkAttribution(ctx, error)
 			} finally {
-				if (generation === inputGeneration)
+				if (!started && generation === inputGeneration)
 					trackPRCostMetric({
 						kind: "matching",
 						outcome: matchingOutcome ?? getWorkSegment(ctx)?.attribution ?? "unknown",
@@ -886,10 +999,21 @@ export function createWorkAttributionExtension(
 			activeRequests.delete(workLedgerPath(ctx))
 			toolRequests.delete(workLedgerPath(ctx))
 		})
-		pi.on("message_end", (event, ctx) => {
+		pi.on("message_end", async (event, ctx) => {
 			if (event.message.role !== "assistant") return
 			const key = workLedgerPath(ctx)
 			toolRequests.delete(key)
+			// Tools act for the work of the response that requested them. While matching still decides that work, they
+			// wait for it; the matching deadline bounds the wait.
+			const match = pendingMatches.get(key)
+			const held = activeRequests.get(key)
+			if (
+				match &&
+				held &&
+				pendingRequests.get(held.requestId)?.deferred === match.deferred &&
+				event.message.content.some((block) => block.type === "toolCall")
+			)
+				await waitForMatch(match)
 			const identity = activeRequests.get(key)
 			if (!identity || event.message.stopReason === "error" || event.message.stopReason === "aborted") return
 			// Pi awaits this event before preparing tools. Keep the response's identity even
@@ -908,8 +1032,7 @@ export function createWorkAttributionExtension(
 			preparedInput = false
 			inputCheckedScope = false
 			clearQueued()
-			inputGeneration++
-			semanticAbort?.abort()
+			abortMatching()
 			activeContext = undefined
 			unregisterWorkState?.()
 			unregisterWorkState = undefined
@@ -938,8 +1061,7 @@ export function createWorkAttributionExtension(
 					const value = args.trim()
 					if (value === "matching on" || value === "matching off") {
 						writeConfigSetting("workSemanticMatching", value === "matching on")
-						inputGeneration++
-						semanticAbort?.abort()
+						abortMatching()
 						notify(
 							ctx,
 							value === "matching on"
@@ -980,8 +1102,7 @@ export function createWorkAttributionExtension(
 							reason: "work-command",
 						})
 						appendWorkRecord(ctx, { type: "work", segment: getWorkSegment(ctx) })
-						inputGeneration++
-						semanticAbort?.abort()
+						abortMatching()
 						explicitSelection.set(workLedgerPath(ctx), "work-command")
 						pi.appendEntry(WORK_IDENTITY_ENTRY, {
 							workId: getWorkId(ctx),
@@ -995,7 +1116,7 @@ export function createWorkAttributionExtension(
 					pi.events.emit(WORK_DETAILS_REQUEST_EVENT, details)
 					const stopped =
 						matchingLimit && workMatchingEnabled()
-							? `Work matching stopped: ${matchingLimit}. New inputs stay unresolved in the current work.`
+							? `Work matching skipped the last input: ${matchingLimit}. It stays in the current work, as with matching off.`
 							: undefined
 					if (stopped) details.lines.push(stopped)
 					// The terminal browses recent works; other modes and every subcommand print text.

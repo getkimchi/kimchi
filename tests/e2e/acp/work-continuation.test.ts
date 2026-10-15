@@ -192,8 +192,8 @@ it("keeps unrelated Studio chat separate until a saved ADR is named, without mov
 	}
 })
 
-it("uses separate calls to the selected model to continue and split Studio work before dispatch", async () => {
-	// This checks ACP ordering and storage. Scripted decisions are not model-accuracy evidence.
+it("uses separate calls to the selected model to continue and split Studio work without delaying replies", async () => {
+	// This checks ACP attribution and storage. Scripted decisions are not model-accuracy evidence.
 	const judge = isWorkMatchingRequest
 	const main = (request: Parameters<typeof judge>[0]) => !judge(request)
 	const held = new Promise<void>((resolve) => {
@@ -256,13 +256,19 @@ it("uses separate calls to the selected model to continue and split Studio work 
 	const continuing = prompt(active, implementer, continuationText)
 	try {
 		await expect.poll(() => mainRequests().length, { timeout: 10_000 }).toBe(2)
+		// The reply is still held: the request went out without waiting, and its row follows the decision.
+		await expect
+			.poll(
+				() =>
+					records().find(
+						(row) => row.type === "request" && row.requestId === mainRequests()[1]?.headers["x-request-id"],
+					)?.workId,
+				{ timeout: 10_000 },
+			)
+			.toBe(planned.workId)
 		const implementation = requestRecord(1)
-		expect(implementation.workId).toBe(planned.workId)
 		expect(implementation.sessionId).not.toBe(planned.sessionId)
-		const comparisons = active.fake.requests.filter(judge)
-		expect(comparisons).toHaveLength(2)
-		for (const comparison of comparisons)
-			expect(active.fake.requests.indexOf(comparison)).toBeLessThan(active.fake.requests.indexOf(mainRequests()[1]))
+		expect(active.fake.requests.filter(judge)).toHaveLength(2)
 		expect(records()).toContainEqual(
 			expect.objectContaining({
 				type: "work",
