@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { makeMockTerminal } from "./pi-tui-fake-terminal.js"
 
 /**
- * Pins the kimchi patch in patches/@earendil-works__pi-tui@0.85.1.patch that
+ * Pins the kimchi patch in patches/@earendil-works__pi-tui@1.2.0.patch that
  * makes the fullscreen wheel-scroll step configurable via the
  * KIMCHI_WHEEL_SCROLL_LINES env var. These tests FAIL against an unpatched
  * pi-tui (env ignored, always 1) — that's intentional: they guard against the
