@@ -3,10 +3,11 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { forgetMcpOAuthGrant } from "./forget-oauth-grant.js"
+import { forgetMcpOAuthGrant, listMcpOAuthAccounts } from "./forget-oauth-grant.js"
 import {
 	MCP_OAUTH_SERVICE,
 	McpKeychainDeniedError,
+	McpKeychainUnavailableError,
 	resetSecurityToolCaches,
 	SecurityToolEntry,
 	type SecurityToolResult,
@@ -175,6 +176,29 @@ describe("forgetMcpOAuthGrant", () => {
 			expect(deletes).toHaveLength(1)
 		})
 
+		it("counts a false main delete as concurrent removal only when the re-read confirms it is gone", () => {
+			const account = credentialAccount("raced-delete")
+
+			// Grant vanished between enumeration and delete: gone is gone.
+			expect(
+				forgetMcpOAuthGrant("raced-delete", {
+					entryFactory: () => ({ getPassword: () => null, deleteCredential: () => false }),
+					listAccounts: () => [account],
+					legacyBaseDir: tempDir("kimchi-oauth-"),
+				}),
+			).toEqual({ found: true, chunksRemoved: 0, legacyFileRemoved: false })
+
+			// Grant still readable after the false delete: a real backend failure,
+			// not a race — reporting success would leave the grant reusable.
+			expect(() =>
+				forgetMcpOAuthGrant("raced-delete", {
+					entryFactory: () => ({ getPassword: () => "{}", deleteCredential: () => false }),
+					listAccounts: () => [account],
+					legacyBaseDir: tempDir("kimchi-oauth-"),
+				}),
+			).toThrow("reported no entry after a confirmed grant")
+		})
+
 		it("reports found from enumeration when nothing needs the main entry", () => {
 			const account = credentialAccount("orphan-chunks")
 			const chunk0 = `${account}.chunk.0123456789abcdef.0`
@@ -297,5 +321,39 @@ describe("forgetMcpOAuthGrant", () => {
 			// chunk.0 deleted, chunk.1 missing → indices 2-4 were never spawned.
 			expect(deletes).toEqual([`${account}.chunk.0123456789abcdef.0`, `${account}.chunk.0123456789abcdef.1`, account])
 		})
+	})
+})
+
+describe("listMcpOAuthAccounts", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals()
+		vi.unstubAllEnvs()
+	})
+
+	it("fails as unavailable on a failed dump instead of falling back to manifest reads", () => {
+		// A macOS read fallback would break the no-reads consent budget: a
+		// legacy item's read shows its own dialog.
+		vi.stubGlobal("process", { ...process, platform: "darwin", env: {} })
+		const failedDump: SecurityToolResult = { status: 1, stdout: "", stderr: "dump failed" }
+
+		expect(() => listMcpOAuthAccounts(() => failedDump)).toThrow(McpKeychainUnavailableError)
+	})
+
+	it("parses accounts from a successful dump", () => {
+		vi.stubGlobal("process", { ...process, platform: "darwin", env: {} })
+		const dump: SecurityToolResult = {
+			status: 0,
+			stdout: [
+				'class: "genp"',
+				`    "svce"<blob>="${MCP_OAUTH_SERVICE}"`,
+				'    "acct"<blob>="sha256-aaaa"',
+				'class: "genp"',
+				'    "svce"<blob>="other.service"',
+				'    "acct"<blob>="unrelated"',
+			].join("\n"),
+			stderr: "",
+		}
+
+		expect(listMcpOAuthAccounts(() => dump)).toEqual(["sha256-aaaa"])
 	})
 })

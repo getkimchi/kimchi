@@ -8,11 +8,13 @@ import {
 	defaultSecurityRunner,
 	type KeyringEntryLike,
 	MCP_OAUTH_SERVICE,
+	McpKeychainUnavailableError,
 	mcpCredentialAccountId,
 	mcpLegacyOAuthBaseDir,
 	mcpOAuthChunkAccountId,
 	type OAuthChunkManifest,
 	parseOAuthChunkManifestRecord,
+	type SecurityToolRunner,
 	TEST_KEYRING_DIR_ENV,
 } from "./keyring-require-bridge.js"
 import { parseDumpedAccounts } from "./stray-oauth-entry-cleanup.js"
@@ -37,10 +39,14 @@ export interface ForgetMcpOAuthGrantOptions {
 }
 
 // Skipped for the file-backed test store, whose hashed on-disk keys can't map back to account names.
-function defaultListAccounts(): string[] | null {
+// A failed dump is a hard failure: falling back to manifest reads on macOS
+// would break the no-reads consent budget.
+export function listMcpOAuthAccounts(runner: SecurityToolRunner = defaultSecurityRunner): string[] | null {
 	if (process.platform !== "darwin" || process.env[TEST_KEYRING_DIR_ENV]) return null
-	const dump = defaultSecurityRunner(["dump-keychain", join(homedir(), "Library", "Keychains", "login.keychain-db")])
-	if (dump.status !== 0) return null
+	const dump = runner(["dump-keychain", join(homedir(), "Library", "Keychains", "login.keychain-db")])
+	if (dump.status !== 0) {
+		throw new McpKeychainUnavailableError(`keychain enumeration failed (dump-keychain exit ${dump.status ?? "?"})`)
+	}
 	return parseDumpedAccounts(dump.stdout, MCP_OAUTH_SERVICE)
 }
 
@@ -51,7 +57,7 @@ export function forgetMcpOAuthGrant(
 	const account = mcpCredentialAccountId(serverName)
 	const entryFactory = options.entryFactory ?? ((acct: string) => createUnderlyingKeyringEntry(MCP_OAUTH_SERVICE, acct))
 	const legacyBaseDir = options.legacyBaseDir ?? mcpLegacyOAuthBaseDir()
-	const listed = (options.listAccounts ?? defaultListAccounts)()
+	const listed = (options.listAccounts ?? (() => listMcpOAuthAccounts()))()
 
 	let found = false
 	let chunksRemoved = 0
@@ -97,10 +103,13 @@ export function forgetMcpOAuthGrant(
 	}
 	if (mainExisted) {
 		const deleted = entryFactory(account).deleteCredential()
-		// A `false` right after our own read confirmed the entry is a real delete
-		// failure; reporting success would make the grant silently survive.
-		if (!deleted && listed === null) {
-			throw new Error(`Keychain delete for ${serverName} reported no entry after a confirmed grant`)
+		if (!deleted) {
+			// Distinguish a concurrent delete (grant gone either way) from a real
+			// backend failure (grant survived → must not report success). One
+			// extra read, error path only.
+			if (listed === null || entryFactory(account).getPassword() !== null) {
+				throw new Error(`Keychain delete for ${serverName} reported no entry after a confirmed grant`)
+			}
 		}
 	}
 

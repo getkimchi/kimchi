@@ -37,8 +37,10 @@ in-process). How the budget is kept:
   discovered by enumerating the service's entries (`dump-keychain`), so a
   legacy item never triggers the read-path ACL self-heal, which would show its
   own dialog. Enumeration also finds chunks when the main entry is corrupt.
-  Where enumeration is not possible (non-macOS), chunk keys come from the
-  manifest inside the main entry, and a corrupt main is forgotten alone.
+  A failed dump is itself a failure (`reason: "unavailable"`), never a reason
+  to start reading. Where enumeration is not possible (non-macOS), chunk keys
+  come from the manifest inside the main entry, and a corrupt main is
+  forgotten alone.
 - The delete loop aborts on the first denial instead of trying every entry,
   which would show a fresh dialog per legacy item. The thrown
   `McpKeychainDeniedError` becomes `reason: "denied"` at the CLI.
