@@ -1,19 +1,18 @@
-# Patch: Kimchi stroke rendering, scrollback behavior, and narrow-terminal
-# hardening for pi-tui 1.2.0
+# Patch: Kimchi stroke rendering and narrow-terminal hardening for pi-tui 1.2.0
 #
 # Tracking: https://github.com/getkimchi/kimchi/issues/863
 # Changes:
 #   - Account for stroke width in Box/Text/Markdown rendering (applyStrokeToLine),
 #     including Box.handleMouse() so mouse hit-testing matches render().
-#   - Make scrollback clearing opt-in (PI_TUI_NO_CLEAR_SCROLLBACK) to avoid
-#     viewport jumps in long iTerm2 sessions.
 #   - Hard-truncate all emitted lines to `width` in Text/Box/Markdown no-bg paths
 #     so that no component can emit a line wider than the terminal (prevents
 #     crashes at widths 1-2 where paddingX margins alone exceed width).
 #   - (Removed 2026-10-15: the KIMCHI_WHEEL_SCROLL_LINES env fallback matched
 #     upstream pi-tui 1.2's native WheelScrollAccelerator/"auto" mode plus the
-#     fullscreenWheelScrollLines setting, making the branch unreachable -
-#     see .kimchi/docs/patch-audit-1.2.0.md.)
+#     fullscreenWheelScrollLines setting, making the branch unreachable.)
+#   - (Removed 2026-10-15: the PI_TUI_NO_CLEAR_SCROLLBACK opt-in; ESC[3J
+#     scrollback clearing is back to upstream's unconditional behavior on full
+#     renders.)
 # Careful: text.js layers on upstream's own paddingX clamp - keep the clamp and
 #   thread the clamped local paddingX through the stroke sites when rebasing.
 # Removal: delete when the pinned Pi TUI release provides all four behaviors.
@@ -174,22 +173,6 @@ index 3572668c677bd4d449aff9622273440c8bb103b0..8b0041393be4d813ba6913abf780264d
              emptyLines.push(line);
          }
          const result = [...emptyLines, ...contentLines, ...emptyLines];
-diff --git a/dist/tui-main-screen.js b/dist/tui-main-screen.js
-index 88eca823778ee1d70143bd94588437021f856333..becd489c4d2dd36a043ad96eacd34adff3857494 100644
---- a/dist/tui-main-screen.js
-+++ b/dist/tui-main-screen.js
-@@ -242,7 +242,10 @@ export class TuiMainScreen extends TuiBase {
-             output.append("\x1b[?2026h"); // Begin synchronized output
-             if (clear) {
-                 output.append(this.deleteKittyImages(this.previousKittyImageIds));
--                output.append("\x1b[2J\x1b[H\x1b[3J"); // Clear screen, home, then clear scrollback
-+                output.append("\x1b[2J\x1b[H"); // Clear screen and home
-+                if (process.env.PI_TUI_NO_CLEAR_SCROLLBACK !== "1") {
-+                    output.append("\x1b[3J"); // Clear scrollback unless disabled to avoid iTerm2 viewport jumps
-+                }
-             }
-             for (let i = 0; i < newLines.length; i++) {
-                 if (i > 0)
 diff --git a/dist/utils.js b/dist/utils.js
 index 946da9df9f098c55272410a78e31363623fdc219..606b58ce0223177388ec89d125bae5117e30be3f 100644
 --- a/dist/utils.js

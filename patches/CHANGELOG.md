@@ -56,11 +56,16 @@ but are only drained by the next fresh run).
 
 ### `@earendil-works/pi-tui`
 
-- **REBASED — stroke rendering (applyStrokeToLine), scrollback opt-out
-  (PI_TUI_NO_CLEAR_SCROLLBACK), no-truncate width hardening.** 1.2 replaced the
+- **REBASED — stroke rendering (applyStrokeToLine), no-truncate width
+  hardening.** 1.2 replaced the
   editor's caret with an APC cursor marker (`\x1b_pi:c\x07` /
   FAKE_CURSOR_START/END); the strip sites in Kimchi source were adapted
   (`\x1b[7m` strokes are now no-ops there).
+- **DROPPED — scrollback opt-out (`PI_TUI_NO_CLEAR_SCROLLBACK`)** (2026-10-15).
+  `ESC[3J` scrollback clearing is back to upstream's unconditional behavior on
+  full renders; `dist/tui-main-screen.js` is no longer patched and
+  `tests/unit/pi-tui-scrollback-flag.test.ts` was deleted with it (mirrors the
+  same removal made at the 0.85.1 pin on `chore/remove-pi-tui-scrollback-flag`).
 - **DROPPED — wheel-scroll speed (`KIMCHI_WHEEL_SCROLL_LINES`)** (2026-10-15).
   pi-tui 1.2 ships a native velocity-based `WheelScrollAccelerator` with an
   `"auto"` default and a first-class `fullscreenWheelScrollLines` setting; pi
@@ -415,10 +420,10 @@ where the `tui-alt-screen.js` hunk came from.
   `paddingX` is threaded through both `applyStrokeToLine` call sites, including the
   empty-line path. Upstream clamped only `Text` — `Box` and `Markdown` still need
   Kimchi's hardening (upstream gap, worth reporting).
-- **`tui-main-screen.js` — hunk rewritten.** The clear sequence moved into the new
-  `BoundedTerminalWriter`; the `PI_TUI_NO_CLEAR_SCROLLBACK` gate was rewritten from
-  `buffer +=` to `output.append(...)`. Guaranteed failure on rebase — the old idiom
-  no longer exists.
+- **`tui-main-screen.js` — no longer patched.** At the 0.85.1 rebase the
+  `PI_TUI_NO_CLEAR_SCROLLBACK` gate's hunk was rewritten from `buffer +=` to the
+  new `BoundedTerminalWriter`'s `output.append(...)`; the gate was later removed
+  (see the top entry), and this file is back to upstream.
 - **`box.js` — extended upstream's new `handleMouse()`.** 0.85.1 added mouse support.
   Upstream is self-consistent (`handleMouse` and `render` both use
   `width - paddingX*2`), but Kimchi's stroke patch changes `render()` to subtract
