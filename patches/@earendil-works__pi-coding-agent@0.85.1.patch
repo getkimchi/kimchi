@@ -44,27 +44,18 @@
 #     loading the full history into memory. The session log remains the
 #     durable source of truth.
 #   - Auth-storage lock-free reads: reloadFromStorageAsync reads auth.json
-#     directly instead of taking the exclusive lock — avoids 30s startup
-#     stalls when an orphaned lock from a crashed process is held. Modify
-#     paths keep the lock. The branch returns the bare credential map (the
-#     contract withLockAsync's destructure normally produces; returning the
-#     { result } callback shape instead made readLatestData hand the wrapper
-#     to read(), so the first credential read after an external ctime/revision
-#     change resolved to undefined and request auth fell back to models.json's
-#     $KIMCHI_API_KEY — "API key auth failed for provider kimchi-dev").
-#     Torn-read tolerance: upstream modify() is truncate-then-writeFileSync
-#     (non-atomic) while holding the lock; kimchi's syncPiAuth writes
-#     atomically (tmp + fsync + rename). A lock-free read can therefore
-#     observe a partial file only during an upstream modify(); the branch
-#     retries with a short backoff so a transient tear heals inside the
-#     retry window. A persistently corrupt file still resolves undefined
-#     (the readLatestData caller swallows the reload failure and serves
-#     readState.data; a fresh per-read AuthStorage always holds undefined),
-#     request auth falls back to $KIMCHI_API_KEY, and the next revision
-#     change re-arms the reload. Regression tests: src/pi-auth-storage.test.ts.
-#     Removal: when upstream provides lock-free reads with a bare-map
-#     return and torn-read tolerance, when upstream modify() writes
-#     atomically, or when kimchi retakes the read lock.
+#     directly instead of taking the exclusive lock (orphaned crash-time locks
+#     caused 30s startup stalls). The branch returns the bare credential map —
+#     withLockAsync's contract; returning the callback's `{ result }` shape
+#     instead made the first read after an external revision change resolve
+#     undefined ("API key auth failed for provider kimchi-dev"). Reads retry
+#     torn partial files with a short backoff (upstream modify() is non-atomic
+#     truncate-then-writeFileSync; kimchi's syncPiAuth writes atomically, so
+#     partials are only observable during an upstream modify). Persistently
+#     corrupt files resolve undefined; the next revision change re-arms the
+#     reload. Regression tests: src/pi-auth-storage.test.ts.
+#     Removal: upstream lock-free reads with bare-map return + torn-read
+#     tolerance, atomic upstream modify(), or kimchi retaking the read lock.
   - Startup resource diagnostics: skill conflicts render as a single dim
 #     summary line ("[N skill conflicts] Some skills were found in multiple
 #     directories. <key> to see the full list.") that expands to the full
@@ -274,28 +265,22 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..904f51ac130b695e5c0f5180528fdc78
                      }
                      catch (error) {
 diff --git a/dist/core/auth-storage.js b/dist/core/auth-storage.js
-index 11f225b204b2d22ba2d37ecdda58e82fa23c6f0b..073e0d22d71c71d8ed5e9db5f4fb299cdd66bc7e 100644
+index 11f225b204b2d22ba2d37ecdda58e82fa23c6f0b..d7672cc4532a6d5a28ac6f8a10f31dfda9fe5c66 100644
 --- a/dist/core/auth-storage.js
 +++ b/dist/core/auth-storage.js
-@@ -320,6 +320,39 @@ export class AuthStorage {
+@@ -320,6 +320,33 @@ export class AuthStorage {
          }
      }
      async reloadFromStorageAsync(options) {
-+        // Reads do not need the exclusive lock when backed by a file.
-+        // The lock is only needed for modify()'s read-modify-write cycle.
-+        // Reading directly avoids 30s lock-wait stalls when another process
-+        // (or an orphaned lock from a crashed process) holds the write lock
-+        // during startup. Must return the bare credential map — the same
-+        // shape withLockAsync produces after destructuring { result, next } —
-+        // readLatestData has no wrapper handling.
++        // File-backed reads skip the exclusive lock (needed only for
++        // modify()'s read-modify-write): a crashed process's orphaned lock
++        // otherwise stalls startup reads for 30s. Must return the bare
++        // credential map — the shape withLockAsync produces after
++        // destructuring { result, next }.
 +        if (this.authPath) {
-+            // Reads do not need the exclusive lock, but a lock-free read can
-+            // observe a partial file mid-write: upstream modify() (kimchi's
-+            // syncPiAuth writes are atomic, so this is the remaining writer)
-+            // is truncate-then-writeFileSync while it holds the lock. A torn
-+            // read is transient, so retry with a short backoff. A persistently
-+            // corrupt file must surface (the next revision change re-arms the
-+            // reload) instead of serving a stale credential or undefined.
++            // A lock-free read can observe a partial file mid-write (upstream
++            // modify() is truncate-then-write; kimchi's syncPiAuth is atomic).
++            // Tears are transient — retry with backoff.
 +            const RETRIES = 3;
 +            const BACKOFF_MS = 10;
 +            for (let attempt = 0; ; attempt++) {

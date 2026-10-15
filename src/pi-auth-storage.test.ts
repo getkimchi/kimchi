@@ -8,19 +8,13 @@ import { afterEach, describe, expect, it, vi } from "vitest"
  * Regression tests for the "Auth-storage lock-free reads" hunk in
  * patches/@earendil-works__pi-coding-agent@0.85.1.patch.
  *
- * The first AuthStorage read after an external auth.json revision change
- * (another kimchi process's syncPiAuth write or chmod — auth.json is shared
- * by all kimchi processes) must resolve the bare credential map. The hunk
- * originally returned the `{ result: data }` callback shape instead, so
- * `read(provider)` returned undefined and request auth fell back to
- * models.json's `$KIMCHI_API_KEY` — which kimchi strips from process.env at
- * startup — failing with `API key auth failed for provider kimchi-dev: Failed
- * to resolve API key ... from environment variable: KIMCHI_API_KEY`.
- *
- * The torn-read case drives the retry branch of the lock-free hunk: upstream
- * modify() is truncate-then-writeFileSync (non-atomic, but holding the
- * lock), so a lock-free read that observes a partial file retries with
- * backoff and observes the completed write.
+ * After an external auth.json revision change (another process's syncPiAuth
+ * write or chmod), read(provider) must resolve the bare credential map — the
+ * hunk originally returned the callback's `{ result }` shape, so the first
+ * read resolved undefined and request auth fell back to models.json's
+ * $KIMCHI_API_KEY (stripped from process.env at startup): "API key auth
+ * failed for provider kimchi-dev". Torn reads (upstream modify() is
+ * non-atomic truncate-then-write) must retry inside the backoff window.
  */
 
 const tempDirs: string[] = []
@@ -71,8 +65,7 @@ describe("AuthStorage reads after external auth.json mutation (pi patch regressi
 		const { authPath, modelsPath } = seedDir(dir)
 		const registry = await createRegistry(authPath, modelsPath)
 
-		// Another process rewrites auth.json with a different credential (the
-		// shape kimchi syncPiAuth produces on key rotation).
+		// Another process rewrites auth.json with a rotated credential.
 		writeFileSync(authPath, `${JSON.stringify({ "kimchi-dev": { type: "api_key", key: "stored-key-2" } }, null, 2)}\n`)
 		chmodSync(authPath, 0o600)
 
@@ -87,9 +80,7 @@ describe("AuthStorage reads after external auth.json mutation (pi patch regressi
 		const { authPath, modelsPath } = seedDir(dir)
 		const registry = await createRegistry(authPath, modelsPath)
 
-		// Another process chmods auth.json (kimchi syncPiAuth does this on
-		// every startup when the file mode is wrong). Only the revision
-		// changes.
+		// Another process chmods auth.json; only the revision changes.
 		chmodSync(authPath, 0o600)
 
 		expect(await registry.getApiKeyForProvider("kimchi-dev")).toBe("stored-key")
@@ -106,13 +97,11 @@ describe("AuthStorage reads after external auth.json mutation (pi patch regressi
 		// external revision change.
 		expect(await registry.getApiKeyForProvider("kimchi-dev")).toBe("stored-key")
 
-		// Simulate upstream modify()'s non-atomic truncate-then-write while
-		// holding the lock: partial JSON with a fresh ctime revision, then
-		// the completed write lands 5ms later, inside the first backoff
-		// window. The lock-free read must retry and observe the healed value.
+		// Simulate upstream modify(): partial file with a fresh revision,
+		// healed 5ms later — inside the first 10ms backoff — so the read must
+		// observe the repaired value. Timer tracked so afterEach can cancel it.
 		writeFileSync(authPath, PARTIAL)
 		chmodSync(authPath, 0o600)
-		// Tracked so afterEach can cancel it before removing the temp dir.
 		const repairTimer = setTimeout(() => {
 			writeFileSync(
 				authPath,
@@ -137,21 +126,16 @@ describe("AuthStorage reads after external auth.json mutation (pi patch regressi
 		// Establish a snapshot.
 		expect(await registry.getApiKeyForProvider("kimchi-dev")).toBe("stored-key")
 
-		// Persistent corruption: upstream readLatestData() swallows the
-		// reload failure and serves readState.data. `ModelRegistry` builds a
-		// fresh `AuthStorage` per credential read, so `readState.data` is
-		// always undefined here — there is no stale snapshot to hang on. The
-		// request then falls back to $KIMCHI_API_KEY (stripped at startup)
-		// and surfaces the provider credential error. That is the
-		// "corrupt auth.json" failure mode users see; the retry logic
-		// above does not rescue it because the failure never heals.
+		// Persistent corruption resolves undefined: upstream readLatestData()
+		// swallows the reload failure, and ModelRegistry builds a fresh
+		// AuthStorage per read (no stale snapshot). Retry cannot heal — the
+		// failure never goes away inside the window.
 		writeFileSync(authPath, PARTIAL)
 		chmodSync(authPath, 0o600)
 		await expect(registry.getApiKeyForProvider("kimchi-dev")).resolves.toBeUndefined()
 
-		// A repaired file is picked up on the very next read: the failed
-		// attempt did NOT cache the bad state (the read-state revision is
-		// left stale, so the next call re-arms the reload).
+		// No bad state is cached (revision left stale), so the next read
+		// picks the repair up immediately.
 		writeFileSync(authPath, `${JSON.stringify({ "kimchi-dev": { type: "api_key", key: "stored-key-2" } }, null, 2)}\n`)
 		chmodSync(authPath, 0o600)
 		expect(await registry.getApiKeyForProvider("kimchi-dev")).toBe("stored-key-2")
@@ -181,9 +165,7 @@ describe("AuthStorage reads after external auth.json mutation (pi patch regressi
 		)
 		const registry = await createRegistry(authPath, modelsPath)
 
-		// Same upstream swallow: no snapshot to serve, so resolve returns
-		// undefined and the request surfaces the credential-store error
-		// instead of silently keeping a stale credential.
+		// Fresh storage, no snapshot: same undefined, no stale credential.
 		await expect(registry.getApiKeyForProvider("kimchi-dev")).resolves.toBeUndefined()
 	})
 })

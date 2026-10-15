@@ -19,30 +19,24 @@ import { lock } from "proper-lockfile"
 import { isKimchiProvider } from "./kimchi-provider.js"
 
 /**
- * chmod only when the mode is actually wrong. An unconditional chmod rewrites
- * auth.json's ctime on every startup — auth.json is shared by all kimchi
- * processes, so each bump forces every other running session to re-read the
- * file (revision check includes ctime) and arms the readLatestData race fixed
- * by the Auth-storage lock-free reads hunk.
+ * chmod only when the mode is wrong. An unconditional chmod bumps auth.json's
+ * ctime on every startup and, since the file is shared, forces every other
+ * session's lock-free reader to reload.
  */
 function ensureAuthFileMode(authPath: string): void {
 	if ((statSync(authPath).mode & 0o777) !== 0o600) chmodSync(authPath, 0o600)
 }
 
 /**
- * Write `content` to `path` atomically (same-directory temp file, fsync,
- * rename). auth.json readers are lock-free (see the Auth-storage lock-free
- * reads patch) while writers only lock against other writers, so a plain
- * truncate-then-writeFileSync lets a concurrent reader observe an empty or
- * partial file — surfacing as request-time credential loss against models.json's
- * $KIMCHI_API_KEY template. With rename, readers only ever see the old or the
- * new complete document.
+ * Atomically write `content` to `path` (same-dir tmp, fsync, rename).
+ * Readers are lock-free while writers only lock against writers, so a plain
+ * truncate-then-write lets a reader observe a partial file; with rename they
+ * only ever see the old or the new complete document.
  */
 function writeFileAtomicSync(path: string, content: string, mode: number): void {
-	// Resolve a symlinked auth.json so the tmp/rename lands beside the real
-	// file and the symlink is preserved; a bare rename over the symlink path
-	// would replace it with a regular file. realpathSync throws ENOENT
-	// when the file does not exist — fall back to `path` in that case.
+	// Resolve a symlinked auth.json so tmp+rename land beside the real file
+	// and the link survives (a bare rename over the link would replace it with
+	// a regular file).
 	const target = existsSync(path) ? realpathSync(path) : path
 	const tmp = join(dirname(target), `.${basename(target)}.${process.pid}.${randomUUID()}.tmp`)
 	try {

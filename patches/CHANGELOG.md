@@ -57,47 +57,28 @@ pipe-cleanup hunk grew into the shared termination helper).
   abort cleanup (upstream: pi#10929) and keep the Kimchi regression tests.
 ## @earendil-works/pi-coding-agent@0.85.1 (mid-version, corrective) — auth-storage lock-free read shape + torn-read retry
 
-Corrects the "reload unwrap" fix this section previously described. Exposure
-bisection (concurrent `kimchi auth check` loops against chmod-churned auth.json:
-25/25 ok pre-#1405, 10/25 on master, 25/25 with the previous consumer-side
-unwrap) and source archaeology showed the wrapper leak was introduced by our own
-lock-free-reads hunk from #1405, not upstream: upstream `withLockAsync`
-destructures `{ result, next }` from the reload callback and returns the bare
-credential map, while the #1405 hunk copied the callback's `{ result }` shape
-and returned it directly from `reloadFromStorageAsync`. Upstream 0.84.1/0.85.1
-dists byte-verified: no bug. No upstream issue needs filing.
+Corrects the "reload unwrap" entry above. The wrapper leak came from our own
+#1405 lock-free hunk, not upstream: upstream `withLockAsync` destructures
+`{ result, next }` and returns the bare credential map; the hunk returned the
+callback's `{ result }` shape directly. 0.84.1/0.85.1 dists byte-verified: no
+upstream defect, no issue to file. Exposure bisection (concurrent `auth check`
+loops against churned auth.json, three builds) pinned the introduction to the
+#1405 hunk.
 
-The hunk now returns the bare map (`return currentData`), the `readLatestData`
-unwrap hunks from the previous fix are dropped (upstream shape restored), and
-the branch retries torn lock-free reads with a short backoff: upstream
-`modify()` is truncate-then-writeFileSync (non-atomic) while holding the lock;
-kimchi's `syncPiAuth` writes atomically (tmp + fsync + rename), so a lock-free
-read can only observe a partial file during an upstream modify(). The retry
-heals the tear inside the backoff window. A persistently corrupt file
-resolves undefined (the upstream `readLatestData` caller swallows the reload
-failure and serves `readState.data`; a fresh per-read AuthStorage always
-holds undefined), request auth falls back to `$KIMCHI_API_KEY`, and the next
-revision change re-arms the reload. End state after this branch: kimchi
-writes are atomic, upstream writes hold the shared proper-lockfile `syncPiAuth`
-also takes, and lock-free readers retry transient tears.
+The hunk now returns the bare map and retries torn reads with a short backoff
+(upstream `modify()` is non-atomic truncate-then-writeFileSync; kimchi's
+`syncPiAuth` writes atomically, so partial files are only observable during
+an upstream modify). A persistently corrupt file resolves undefined — the
+`readLatestData` caller swallows reload failures and a fresh per-read
+AuthStorage holds no snapshot — and the next revision change re-arms the
+reload. The previous consumer-side unwrap hunks are dropped.
 
-- Regression tests: `src/pi-auth-storage.test.ts` (external rewrite +
-  chmod-only + transient-torn and persistent-corruption cases) and the
-  atomicity test in `src/pi-auth.test.ts`.
-- Rebasers: this entry replaces the earlier "reload unwrap" guidance. If
-  upstream ever adds lock-free reads (with a bare-map return and torn-read
-  tolerance), drop the whole lock-free hunk; there is no upstream defect
-  to track.
-
-- Reproduction was deterministic: a reader looping reads against a file being
-  chmod/rewrite-cycled by a concurrent process failed exactly one read per cycle
-  (the first after each revision change), with a valid file and valid snapshot
-  at the moment of failure. Exposure bisect across three builds pinned the
-  introduction to the #1405 hunk itself.
+- Regression tests: `src/pi-auth-storage.test.ts` + the atomicity and symlink
+  tests in `src/pi-auth.test.ts`.
+- Rebasers: if upstream adds lock-free reads (bare-map return, torn-read
+  tolerance), drop the whole hunk; there is no upstream defect to track.
 - Kept from the previous fix: `syncPiAuth` no longer chmods auth.json
-  unconditionally on the no-op path (src/pi-auth.ts) — fewer arming events at
-  the source. Both prior seam tests still cover the behavior and pass against
-  the corrected root fix.
+  unconditionally on the no-op path.
 
 ---
 

@@ -133,8 +133,7 @@ describe("syncPiAuth", () => {
 		const authPath = join(dir, "auth.json")
 		const modelsPath = join(dir, "models.json")
 
-		// A large payload widens the write window so a pre-fix truncated write is
-		// observable; auth.json readers skip the write lock by design.
+		// Large payload widens the write window; readers skip the write lock.
 		const providers: Record<string, unknown> = {}
 		for (let i = 0; i < 3000; i++) providers[`kimchi-dev/upstream-${i.toString().padStart(4, "0")}`] = {}
 		writeFileSync(modelsPath, JSON.stringify({ providers }))
@@ -185,8 +184,7 @@ process.stdout.write(JSON.stringify({ reads, bad }));`,
 	}, 30_000)
 
 	it("preserves a symlinked auth.json when rewriting credentials", async () => {
-		// POSIX-only: symlink semantics differ on Windows.
-		if (process.platform === "win32") return
+		if (process.platform === "win32") return // POSIX-only
 		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-symlink-"))
 		const otherDir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-symlink-target-"))
 		tempDirs.push(dir, otherDir)
