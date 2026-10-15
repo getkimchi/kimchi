@@ -1,4 +1,4 @@
-# Patch: Kimchi host integrations for pi-mcp-adapter 2.34.0
+# Patch: Kimchi host integrations for pi-mcp-adapter 5.3.0
 #
 # Tracking:
 #   - Project config directory: https://github.com/nicobailon/pi-mcp-adapter/issues/491
@@ -17,19 +17,21 @@
 #     text/event-stream is missing; upstream issue pending at
 #     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
 #     sends "Accept: application/json, text/event-stream")
-#   - DCR clientInfo version: hardcoded "2.11.0" in mcp-auth-flow; remove
-#     when upstream derives it from the package version
+#   - DCR clientInfo version: still hardcoded "2.11.0" in upstream
+#     mcp-auth-flow; remove when upstream derives it from the package version
 # Changes:
 #   - agent-dir/config (+dist mirrors): resolve the MCP project config
 #     directory via piConfig.mcpProjectConfigDir so project MCP config can
-#     live outside the user config directory.
+#     live outside the user config directory; covers both the adapter config
+#     path (mcp-adapter.json) and the legacy pi-mcp compat read (mcp.json).
 #   - types (+dist mirrors): sanitize MCP tool names to ^[a-zA-Z0-9_-]{1,128}$
 #     (truncating with a warning), normalize selector patterns on both sides,
 #     and keep pre-sanitization spellings matching for include/excludeTools.
 #   - metadata-cache/server-manager/tool-metadata (+dist mirrors): do not
 #     advertise the io.modelcontextprotocol/ui extension capability and do
-#     not persist or reconstruct UI resource metadata; persist tool
-#     annotations in the metadata cache instead.
+#     not persist or reconstruct UI resource metadata. (Tool-annotation
+#     caching is native upstream as of 5.x, so the 2.34.0-era hunk that
+#     persisted annotations in the metadata cache was dropped.)
 #   - mcp-auth-flow: manual (remote https) OAuth redirect flows also start an
 #     opportunistic loopback listener on the default callback port/path and
 #     race it against the manual paste prompt; graceful fallback to
@@ -56,11 +58,25 @@
 #     timeout appends the actionable manual-auth instructions (URL and
 #     auth-complete paste command) to the failure status message.
 #   - mcp-auth-flow: DCR clientInfo version bumped from stale hardcoded
-#     "2.11.0" to "2.34.0".
+#     "2.11.0" to "5.3.0".
 #   - mcp-oauth-provider: configured-discovery metadata fetch sends Accept
 #     "application/json, text/event-stream" instead of "application/json".
+#   - project-server-trust: KIMCHI_MANAGES_MCP_PROJECT_TRUST=1 skips the
+#     interactive per-server project approval (host already gates project trust),
+#     avoiding a double prompt in the TUI; no approval-store writes occur.
+#   - config (+dist mirror): the repointed legacy pi-mcp compat layers stay
+#     authoritative and adapter-format in the host topology — the global
+#     mcp.json behaves as the user-scope layer and the project mcp.json as
+#     the top project layer (each reads/writes itself, outranking shared
+#     imports a la 2.34). Pi-style compat parsing (which drops top-level
+#     settings/imports and per-server adapter keys) is disabled for these
+#     paths, and a project entry MERGES field-wise with the global entry
+#     (via mergeServerMaps' credential stripping) instead of replacing it.
+#   - config: writeProjectServerDisabledOverride writes its override through
+#     the server's provenance path (the file it was loaded from), falling
+#     back to the adapter-native project config for unknown servers.
 diff --git a/agent-dir.ts b/agent-dir.ts
-index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
+index 089da2c3e..70b62c58a 100644
 --- a/agent-dir.ts
 +++ b/agent-dir.ts
 @@ -1,3 +1,5 @@
@@ -97,7 +113,7 @@ index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091fa
      return manifest.piConfig
    } catch {
 diff --git a/config.ts b/config.ts
-index dfcccbfe12646daf4593f193c2649d422c2d4195..450b02972b7f624e38130aef2d00ee304d6632a4 100644
+index 244d7b932..34ade0d3a 100644
 --- a/config.ts
 +++ b/config.ts
 @@ -4,7 +4,7 @@ import { homedir } from "node:os";
@@ -109,17 +125,67 @@ index dfcccbfe12646daf4593f193c2649d422c2d4195..450b02972b7f624e38130aef2d00ee30
  import { getAgentPluginSummaries, loadAgentPluginConfigs, type AgentPluginSummary } from "./agent-plugin-loader.ts";
  import { cloneBuiltInAgentPluginEntry, isBuiltInAgentPlugin, mergeBuiltInAgentPluginEntries } from "./agent-plugin-provenance.ts";
  import { loadClaudePluginBundles } from "./claude-plugin-loader.ts";
-@@ -192,7 +192,7 @@ export function getProjectConfigPath(cwd = process.cwd()): string {
+@@ -232,11 +232,11 @@ export function getProjectConfigPath(cwd = process.cwd()): string {
  }
  
  export function getProjectPiConfigPath(cwd = process.cwd()): string {
--  return resolve(cwd, getConfigDirName(), PROJECT_PI_CONFIG_NAME);
-+  return resolve(cwd, getMcpProjectConfigDirName(), PROJECT_PI_CONFIG_NAME);
+-  return resolve(cwd, getConfigDirName(), ADAPTER_CONFIG_NAME);
++  return resolve(cwd, getMcpProjectConfigDirName(), ADAPTER_CONFIG_NAME);
  }
  
- export function getSharedConfigPath(target: SharedConfigTarget, cwd = process.cwd()): string {
+ export function getProjectPiMcpConfigPath(cwd = process.cwd()): string {
+-  return resolve(cwd, getConfigDirName(), PI_MCP_CONFIG_NAME);
++  return resolve(cwd, getMcpProjectConfigDirName(), PI_MCP_CONFIG_NAME);
+ }
+ 
+ let piMcpConfigEnabled = false;
+@@ -479,15 +479,12 @@ export function loadMcpConfigWithSources(overridePath?: string, cwd = process.cw
+     if (source.scope === "project") projectServers.set(name, { path: source.path });
+   }
+ 
+-  const piProjectSource = sourceSpecs.find((source) => source.id === "pi-mcp-project");
+-  const piProjectNames = Object.keys((piProjectSource && readPiMcpConfig(piProjectSource.readPath))?.mcpServers ?? {});
+   for (const source of sourceSpecs) {
+     const loaded = readSourceConfig(source.id, source.readPath);
+     if (!loaded) continue;
+-    // Pi replaces a global entry that the project file redefines; mergeServerMaps would merge fields.
+-    if (source.id === "pi-mcp-global") {
+-      for (const name of piProjectNames) delete loaded.mcpServers[name];
+-    }
++    // Kimchi: the repointed mcp.json project layer MERGES with the global
++    // layer field-wise (mergeServerMaps strips credentials on endpoint
++    // changes) instead of Pi's global-entry replacement.
+     const expandedImport = expandImports(loaded, cwd);
+     const expanded = expandedImport.config;
+     const sourceRef = { path: source.readPath };
+@@ -1139,8 +1136,12 @@ function readValidatedConfig(path: string, label: string): McpConfig | null {
+   }
+ }
+ 
++// Kimchi: the repointed `mcp.json` layers are adapter-format host files, not
++// Pi-native ones, so they go through the adapter parser (settings + imports
++// preserved) instead of the Pi compat translator.
+ function isPiMcpSource(id: ConfigSourceSpec["id"]): boolean {
+-  return id === "pi-mcp-global" || id === "pi-mcp-project";
++  void id;
++  return false;
+ }
+ 
+ function readSourceConfig(id: ConfigSourceSpec["id"], path: string): (McpConfig & { ignoredSettings?: Map<string, string[]> }) | null {
+@@ -1730,7 +1731,10 @@ export function writeProjectServerDisabledOverride(
+   serverName: string,
+   disabled: boolean,
+ ): ServerDisabledOverrideResult {
+-  const filePath = getProjectPiConfigPath(cwd);
++  // Kimchi: write the override where the server was loaded from (provenance),
++  // falling back to the adapter-native project file for unknown servers.
++  const provenancePath = getServerProvenance(overridePath, cwd).get(serverName)?.path;
++  const filePath = provenancePath ?? getProjectPiConfigPath(cwd);
+   const raw = readRawConfigObject(filePath);
+ 
+   const serverKey = raw.mcpServers !== undefined ? "mcpServers" : raw["mcp-servers"] !== undefined ? "mcp-servers" : "mcpServers";
 diff --git a/dist/agent-dir.d.ts b/dist/agent-dir.d.ts
-index b5cea54794703a8f94c84552aea1433cd40bcf6e..1cd442e4396b02e5bbefb8346f35f7e1a228c714 100644
+index b5cea5479..1cd442e43 100644
 --- a/dist/agent-dir.d.ts
 +++ b/dist/agent-dir.d.ts
 @@ -1,4 +1,5 @@
@@ -129,7 +195,7 @@ index b5cea54794703a8f94c84552aea1433cd40bcf6e..1cd442e4396b02e5bbefb8346f35f7e1
  export declare function getAgentPath(...segments: string[]): string;
  export declare function getAppName(): string;
 diff --git a/dist/agent-dir.js b/dist/agent-dir.js
-index 5e32b5b5ac21b77f3fe654bf081b296490e38272..c4de0fa818ba6b1dc493d434c10da392a4f58410 100644
+index 5e32b5b5a..c4de0fa81 100644
 --- a/dist/agent-dir.js
 +++ b/dist/agent-dir.js
 @@ -1,3 +1,5 @@
@@ -149,8 +215,23 @@ index 5e32b5b5ac21b77f3fe654bf081b296490e38272..c4de0fa818ba6b1dc493d434c10da392
  export function getAgentDir() {
      const piConfig = readPiConfig();
      const name = piConfig?.name;
+diff --git a/dist/config.d.ts b/dist/config.d.ts
+index ddf4786ef..21b1200b4 100644
+--- a/dist/config.d.ts
++++ b/dist/config.d.ts
+@@ -98,6 +98,10 @@ export declare function getGenericGlobalConfigPath(): string;
+ export declare function getProjectConfigPath(cwd?: string): string;
+ export declare function getProjectPiConfigPath(cwd?: string): string;
+ export declare function getProjectPiMcpConfigPath(cwd?: string): string;
++/** @internal Set once by the extension on Pi 0.99+, so every loader in the process agrees. */
++export declare function setPiMcpConfigEnabled(enabled: boolean): void;
++/** @internal */
++export declare function isPiMcpConfigEnabled(): boolean;
+ export declare function getLegacyMcpMigrationNotices(cwd?: string, overridePath?: string): string[];
+ export declare function getSharedConfigPath(target: SharedConfigTarget, cwd?: string): string;
+ export declare function getConfigDiscoveryPaths(overridePath?: string, cwd?: string): ConfigDiscoveryPath[];
 diff --git a/dist/config.js b/dist/config.js
-index 20b6adba1a0b861838f9dd59084e7af57d914ff8..fce831379e644ee680ca607d77956220c6e15bc8 100644
+index 5300eaa86..47e9ddeee 100644
 --- a/dist/config.js
 +++ b/dist/config.js
 @@ -4,7 +4,7 @@ import { homedir } from "node:os";
@@ -162,17 +243,110 @@ index 20b6adba1a0b861838f9dd59084e7af57d914ff8..fce831379e644ee680ca607d77956220
  import { getAgentPluginSummaries, loadAgentPluginConfigs } from "./agent-plugin-loader.js";
  import { cloneBuiltInAgentPluginEntry, isBuiltInAgentPlugin, mergeBuiltInAgentPluginEntries } from "./agent-plugin-provenance.js";
  import { loadClaudePluginBundles } from "./claude-plugin-loader.js";
-@@ -93,7 +93,7 @@ export function getProjectConfigPath(cwd = process.cwd()) {
+@@ -128,10 +128,10 @@ export function getProjectConfigPath(cwd = process.cwd()) {
      return resolve(cwd, PROJECT_CONFIG_NAME);
  }
  export function getProjectPiConfigPath(cwd = process.cwd()) {
--    return resolve(cwd, getConfigDirName(), PROJECT_PI_CONFIG_NAME);
-+    return resolve(cwd, getMcpProjectConfigDirName(), PROJECT_PI_CONFIG_NAME);
+-    return resolve(cwd, getConfigDirName(), ADAPTER_CONFIG_NAME);
++    return resolve(cwd, getMcpProjectConfigDirName(), ADAPTER_CONFIG_NAME);
  }
- export function getSharedConfigPath(target, cwd = process.cwd()) {
-     return target === "project" ? getProjectConfigPath(cwd) : getGenericGlobalConfigPath();
+ export function getProjectPiMcpConfigPath(cwd = process.cwd()) {
+-    return resolve(cwd, getConfigDirName(), PI_MCP_CONFIG_NAME);
++    return resolve(cwd, getMcpProjectConfigDirName(), PI_MCP_CONFIG_NAME);
+ }
+ let piMcpConfigEnabled = false;
+ /** @internal Set once by the extension on Pi 0.99+, so every loader in the process agrees. */
+@@ -337,17 +337,13 @@ export function loadMcpConfigWithSources(overridePath, cwd = process.cwd()) {
+         if (source.scope === "project")
+             projectServers.set(name, { path: source.path });
+     }
+-    const piProjectSource = sourceSpecs.find((source) => source.id === "pi-mcp-project");
+-    const piProjectNames = Object.keys((piProjectSource && readPiMcpConfig(piProjectSource.readPath))?.mcpServers ?? {});
+     for (const source of sourceSpecs) {
+         const loaded = readSourceConfig(source.id, source.readPath);
+         if (!loaded)
+             continue;
+-        // Pi replaces a global entry that the project file redefines; mergeServerMaps would merge fields.
+-        if (source.id === "pi-mcp-global") {
+-            for (const name of piProjectNames)
+-                delete loaded.mcpServers[name];
+-        }
++        // Kimchi: the repointed mcp.json project layer MERGES with the global
++        // layer field-wise (mergeServerMaps strips credentials on endpoint
++        // changes) instead of Pi's global-entry replacement.
+         const expandedImport = expandImports(loaded, cwd);
+         const expanded = expandedImport.config;
+         const sourceRef = { path: source.readPath };
+@@ -569,14 +565,15 @@ function getConfigSources(overridePath, cwd = process.cwd()) {
+     }
+     const piMcpGlobalPath = getPiMcpGlobalConfigPath();
+     if (piMcpConfigEnabled && piMcpGlobalPath !== userPath && !sources.some((source) => source.readPath === piMcpGlobalPath)) {
++        // Kimchi: the repointed host-dir mcp.json IS the user's adapter-format
++        // layer (2.34 semantics), so it reads/writes itself and outranks imports.
+         sources.push({
+             id: "pi-mcp-global",
+-            label: "user-global Pi MCP",
++            label: "user-global MCP",
+             readPath: piMcpGlobalPath,
+-            writePath: userPath,
+-            kind: "import",
+-            importKind: "Pi mcp.json",
+-            shared: true,
++            writePath: piMcpGlobalPath,
++            kind: "user",
++            shared: false,
+             scope: "global",
+         });
+     }
+@@ -640,15 +637,17 @@ function getConfigSources(overridePath, cwd = process.cwd()) {
+         });
+     }
+     // Pi reads `.pi/mcp.json` only in the cwd, so it is not part of ancestor discovery.
++    // Kimchi: the repointed project mcp.json is the primary adapter-format
++    // project layer (2.34 semantics): authoritative over `.mcp.json`, written
++    // back in place, parsed with the adapter parser (settings/imports kept).
+     if (piMcpConfigEnabled && projectPiMcpPath !== userPath && projectPiMcpPath !== piMcpGlobalPath) {
+         sources.push({
+             id: "pi-mcp-project",
+-            label: "project Pi MCP",
++            label: "project MCP",
+             readPath: projectPiMcpPath,
+-            writePath: projectPiPath,
+-            kind: "import",
+-            importKind: "Pi project mcp.json",
+-            shared: true,
++            writePath: projectPiMcpPath,
++            kind: "project",
++            shared: false,
+             scope: "project",
+         });
+     }
+@@ -975,7 +974,10 @@ function readValidatedConfig(path, label) {
+     }
+ }
+ function isPiMcpSource(id) {
+-    return id === "pi-mcp-global" || id === "pi-mcp-project";
++    // Kimchi: the repointed `mcp.json` layers are adapter-format host files,
++    // not Pi-native ones, so they go through the adapter parser.
++    void id;
++    return false;
+ }
+ function readSourceConfig(id, path) {
+     return isPiMcpSource(id) ? readPiMcpConfig(path) : readValidatedConfig(path, `MCP config from ${path}`);
+@@ -1550,7 +1552,10 @@ function setServersObject(raw, servers) {
+  * writer never copies a server definition or its credentials into the file.
+  */
+ export function writeProjectServerDisabledOverride(overridePath, cwd, serverName, disabled) {
+-    const filePath = getProjectPiConfigPath(cwd);
++    // Kimchi: write the override where the server was loaded from (provenance),
++    // falling back to the adapter-native project file for unknown servers.
++    const provenancePath = getServerProvenance(overridePath, cwd).get(serverName)?.path;
++    const filePath = provenancePath ?? getProjectPiConfigPath(cwd);
+     const raw = readRawConfigObject(filePath);
+     const serverKey = raw.mcpServers !== undefined ? "mcpServers" : raw["mcp-servers"] !== undefined ? "mcp-servers" : "mcpServers";
+     const rawServers = raw[serverKey];
 diff --git a/dist/metadata-cache.js b/dist/metadata-cache.js
-index d9e5f56365e917600bd9dd52f16efd0f418e04f0..a94a3a1cc7922b94588d9955dbb67fc7cc8cbb90 100644
+index 9b28fa916..8251deae2 100644
 --- a/dist/metadata-cache.js
 +++ b/dist/metadata-cache.js
 @@ -4,10 +4,9 @@ import { dirname } from "node:path";
@@ -180,14 +354,14 @@ index d9e5f56365e917600bd9dd52f16efd0f418e04f0..a94a3a1cc7922b94588d9955dbb67fc7
  import { createHash } from "node:crypto";
  import { isBuiltInAgentPlugin } from "./agent-plugin-provenance.js";
 -import { getToolUiResourceUri } from "./ui-app-bridge-helpers.js";
- import { createToolSelectorCandidateIndex, formatPromptCommandName, formatToolName, getToolNameCandidates, isServerDisabled, isToolAllowed, resolveToolPrefix } from "./types.js";
+ import { createToolSelectorCandidateIndex, formatPromptCommandName, formatToolName, getToolNameCandidates, isServerDisabled, isToolAllowed, resolveToolPrefix, resolveUniqueNameOwnership } from "./types.js";
  import { resourceNameToToolName } from "./resource-tools.js";
--import { extractToolUiStreamMode, interpolateEnvRecord, interpolateEnvVars, resolveBearerToken, resolveConfigPath, resolveServerUrl, stableStringify, } from "./utils.js";
-+import { interpolateEnvRecord, interpolateEnvVars, resolveBearerToken, resolveConfigPath, resolveServerUrl, stableStringify, } from "./utils.js";
+-import { extractToolAnnotations, extractToolUiStreamMode, interpolateEnvRecord, interpolateEnvVars, resolveBearerToken, resolveConfigPath, resolveServerUrl, stableStringify, } from "./utils.js";
++import { extractToolAnnotations, interpolateEnvRecord, interpolateEnvVars, resolveBearerToken, resolveConfigPath, resolveServerUrl, stableStringify, } from "./utils.js";
  import { extractUiToolVisibility, isUiToolVisibleToModel } from "./ui-tool-visibility.js";
  const CACHE_VERSION = 1;
- const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-@@ -183,9 +182,9 @@ export function reconstructToolMetadata(serverName, entry, prefix, definition, c
+ export function getMetadataCachePath() {
+@@ -250,9 +249,9 @@ export function reconstructToolMetadata(serverName, entry, prefix, definition, c
              description: tool.description ?? "",
              ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
              ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
@@ -196,10 +370,10 @@ index d9e5f56365e917600bd9dd52f16efd0f418e04f0..a94a3a1cc7922b94588d9955dbb67fc7
 +            // tool metadata. Remove when the harness supports MCP Apps.
              ...(tool.uiVisibility !== undefined ? { uiVisibility: tool.uiVisibility } : {}),
 -            ...(tool.uiStreamMode !== undefined ? { uiStreamMode: tool.uiStreamMode } : {}),
+             ...(annotations !== undefined ? { annotations } : {}),
          });
      }
-     if (definition.exposeResources !== false) {
-@@ -235,20 +234,19 @@ export function createCachedToolSelectorCandidateIndex(configuredServers, cache,
+@@ -299,21 +298,19 @@ export function createCachedToolSelectorCandidateIndex(configuredServers, cache,
      return createToolSelectorCandidateIndex(candidates);
  }
  export function serializeTools(tools) {
@@ -211,19 +385,19 @@ index d9e5f56365e917600bd9dd52f16efd0f418e04f0..a94a3a1cc7922b94588d9955dbb67fc7
 -        const uiResourceUri = tryGetToolUiResourceUri(t);
          const uiVisibility = extractUiToolVisibility(t._meta);
 -        const uiStreamMode = extractToolUiStreamMode(t._meta);
+         const annotations = extractToolAnnotations(t.annotations);
          return {
              name: t.name,
              ...(t.description !== undefined ? { description: t.description } : {}),
              ...(t.inputSchema !== undefined ? { inputSchema: t.inputSchema } : {}),
              ...(t.outputSchema !== undefined ? { outputSchema: t.outputSchema } : {}),
 -            ...(uiResourceUri !== undefined ? { uiResourceUri } : {}),
-+            ...(t.annotations !== undefined ? { annotations: t.annotations } : {}),
              ...(uiVisibility !== undefined ? { uiVisibility } : {}),
 -            ...(uiStreamMode !== undefined ? { uiStreamMode } : {}),
+             ...(annotations !== undefined ? { annotations } : {}),
          };
      });
- }
-@@ -299,12 +297,4 @@ export function reconstructPromptMetadata(serverName, prompts, prefix, definitio
+@@ -365,12 +362,4 @@ export function reconstructPromptMetadata(serverName, prompts, prefix, definitio
          };
      });
  }
@@ -238,18 +412,10 @@ index d9e5f56365e917600bd9dd52f16efd0f418e04f0..a94a3a1cc7922b94588d9955dbb67fc7
  //# sourceMappingURL=metadata-cache.js.map
 \ No newline at end of file
 diff --git a/dist/types.d.ts b/dist/types.d.ts
-index c0adc21f5eeb733062f3bceea41dbf256f88c55a..3404384567d0f575b6720e94bc0e760ece1b9b02 100644
+index 422f9ace5..d5be5556a 100644
 --- a/dist/types.d.ts
 +++ b/dist/types.d.ts
-@@ -512,6 +512,7 @@ export interface CachedTool {
-     description?: string;
-     inputSchema?: unknown;
-     outputSchema?: unknown;
-+    annotations?: ListToolsResult["tools"][number]["annotations"];
-     uiResourceUri?: string;
-     uiVisibility?: UiToolVisibility[];
-     uiStreamMode?: "eager" | "stream-first";
-@@ -560,6 +561,7 @@ export interface McpPanelResult {
+@@ -647,6 +647,7 @@ export interface McpPanelResult {
      disabledChanges: Map<string, boolean>;
      cancelled: boolean;
  }
@@ -258,13 +424,16 @@ index c0adc21f5eeb733062f3bceea41dbf256f88c55a..3404384567d0f575b6720e94bc0e760e
  /**
   * Format a tool name with server prefix.
 diff --git a/dist/types.js b/dist/types.js
-index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547a0af6065 100644
+index d7b492ee9..f17a25b58 100644
 --- a/dist/types.js
 +++ b/dist/types.js
-@@ -96,33 +96,56 @@ function encodeServerNamespace(name) {
-     }).join("");
- }
- export const MCP_TOOL_APPROVAL_REQUEST_EVENT = "pi-mcp-adapter:tool-approval-request";
+@@ -99,33 +99,54 @@ export const MCP_TOOL_APPROVAL_REQUEST_EVENT = "pi-mcp-adapter:tool-approval-req
+ /**
+  * Get server prefix based on tool prefix mode.
+  */
+-function sanitizeServerPrefix(serverName, preserveProviderValid = true) {
+-    const validCharacters = preserveProviderValid ? /^[A-Za-z0-9_-]$/ : /^[A-Za-z0-9]$/;
+-    return Array.from(serverName, char => validCharacters.test(char) ? char : `_${char.codePointAt(0).toString(16)}_`).join("");
 +// Host tool-name compatibility; tracking: getkimchi/kimchi#1168 (sanitize MCP
 +// tool names to the provider pattern). Remove when upstream sanitizes both name
 +// parts and caps wire names at the 128-char provider limit.
@@ -273,12 +442,6 @@ index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547
 +function sanitizeNamePart(value) {
 +    return value.replace(INVALID_TOOL_NAME_CHAR, "_");
 +}
- /**
-  * Get server prefix based on tool prefix mode.
-  */
--function sanitizeServerPrefix(serverName, preserveProviderValid = true) {
--    const validCharacters = preserveProviderValid ? /^[A-Za-z0-9_-]$/ : /^[A-Za-z0-9]$/;
--    return Array.from(serverName, char => validCharacters.test(char) ? char : `_${char.codePointAt(0).toString(16)}_`).join("");
 +function sanitizeServerPrefix(serverName) {
 +    return sanitizeNamePart(serverName);
  }
@@ -298,23 +461,24 @@ index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547
 +        return `mcp__${sanitizeNamePart(serverName.replace(/-/g, "_"))}`;
 +    return sanitizeNamePart(serverName.replace(/-/g, "_"));
  }
-+const warnedTruncatedNames = new Set();
  /**
-- * Format a tool name with server prefix.
-+ * Format a tool name with server prefix. The result always matches
-+ * ^[a-zA-Z0-9_-]{1,128}$: structurally valid tool names pass through
-+ * byte-for-byte (hyphens in the tool name are kept), anything else is replaced
-+ * with "_". Overlong names are truncated — server prefix first, tool tail
-+ * preserved so the model can still reference the tool — with a warning once
-+ * per distinct original name.
+  * Format a tool name with server prefix.
   */
++const warnedTruncatedNames = new Set();
  export function formatToolName(toolName, serverName, prefix) {
 -    const p = getServerPrefix(serverName, prefix);
 -    const sanitized = toolName.replace(/\./g, "_");
--    return p ? `${p}_${sanitized}` : sanitized;
-+    const toolPart = sanitizeNamePart(toolName) || "tool";
+-    if (p && sanitized.startsWith(`${p}_`) && sanitized.length > p.length + 1) {
+-        return sanitized;
 +    const serverPrefix = getServerPrefix(serverName, prefix);
++    const toolPart = sanitizeNamePart(toolName) || "tool";
++    if (serverPrefix && toolPart.startsWith(`${serverPrefix}_`) && toolPart.length > serverPrefix.length + 1) {
++        return truncateToolName(toolPart, toolPart);
++    }
 +    const name = serverPrefix ? `${serverPrefix}_${toolPart}` : toolPart;
++    return truncateToolName(name, toolPart);
++}
++function truncateToolName(name, toolPart) {
 +    if (name.length <= MAX_TOOL_NAME_LENGTH)
 +        return name;
 +    const limited = toolPart.length >= MAX_TOOL_NAME_LENGTH
@@ -323,12 +487,13 @@ index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547
 +    if (!warnedTruncatedNames.has(name)) {
 +        warnedTruncatedNames.add(name);
 +        console.warn(`MCP: tool name "${name}" exceeds ${MAX_TOOL_NAME_LENGTH} chars; truncated to "${limited}" — may collide with similarly-named tools`);
-+    }
+     }
+-    return p ? `${p}_${sanitized}` : sanitized;
 +    return limited;
  }
  export function resolveToolPrefix(definition, globalPrefix) {
      return definition?.toolPrefix ?? globalPrefix ?? "server";
-@@ -175,13 +198,17 @@ export function formatPromptCommandName(promptName, serverName, prefix) {
+@@ -193,13 +214,17 @@ export function formatPromptCommandName(promptName, serverName, prefix) {
      return `mcp__${serverPart}__${sanitizePromptName(promptName)}`;
  }
  function getLegacyServerPrefix(serverName, mode) {
@@ -349,7 +514,7 @@ index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547
  }
  function formatLegacyToolName(toolName, serverName, prefix) {
      const serverPrefix = getLegacyServerPrefix(serverName, prefix);
-@@ -226,14 +253,27 @@ export function createToolSelectorCandidateIndex(allCurrentCandidates, additiona
+@@ -244,14 +269,27 @@ export function createToolSelectorCandidateIndex(allCurrentCandidates, additiona
          ...(additionalCurrentCandidatesByToolName ? { additionalCurrentCandidatesByToolName } : {}),
      };
  }
@@ -380,10 +545,10 @@ index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547
          if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
              return true;
 diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
-index 0ae900470d923665153cdbc6028dd91f81c180b2..632f17314276b4a0295744b6560733e412d0868d 100644
+index 9ded419e6..b65dfa12e 100644
 --- a/mcp-auth-flow.ts
 +++ b/mcp-auth-flow.ts
-@@ -25,6 +25,8 @@ import {
+@@ -26,6 +26,8 @@ import {
    stopCallbackServer,
    stopCallbackServerIfIdle,
    releaseCallbackServer,
@@ -392,7 +557,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..632f17314276b4a0295744b6560733e4
  } from "./mcp-callback-server.ts"
  import {
    getAuthForUrl,
-@@ -52,6 +54,12 @@ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts"
+@@ -53,6 +55,12 @@ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts"
  /** Auth status for a server */
  export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
  
@@ -405,7 +570,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..632f17314276b4a0295744b6560733e4
  export interface McpOAuthRuntime {
    readonly signal: AbortSignal
  }
-@@ -93,6 +101,12 @@ type PendingAuth = {
+@@ -94,6 +102,12 @@ type PendingAuth = {
    authorizationUrl: string
    manualRedirect: boolean
    manualCompletionController?: AbortController
@@ -418,16 +583,16 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..632f17314276b4a0295744b6560733e4
    discovery: AuthDiscovery
    getHeaders: () => Headers
    authStorageOptions: AuthStorageOptions
-@@ -343,7 +357,7 @@ async function probeAuthDiscovery(serverUrl: string, definition?: ServerEntry, s
+@@ -344,7 +358,7 @@ async function probeAuthDiscovery(serverUrl: string, definition?: ServerEntry, s
          params: {
            protocolVersion: LATEST_PROTOCOL_VERSION,
            capabilities: {},
 -          clientInfo: { name: "pi-mcp-adapter", version: "2.11.0" },
-+          clientInfo: { name: "pi-mcp-adapter", version: "2.34.0" },
++          clientInfo: { name: "pi-mcp-adapter", version: "5.3.0" },
          },
        }),
        ...(discoverySignal ? { signal: discoverySignal } : {}),
-@@ -453,7 +467,7 @@ export async function startAuth(
+@@ -461,7 +475,7 @@ export async function startAuth(
    definition?: ServerEntry,
    options: AuthenticateOptions = {},
    operationAuthority?: OAuthAuthority,
@@ -436,7 +601,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..632f17314276b4a0295744b6560733e4
    if (isServerDisabled(definition)) throw new Error(`MCP server "${serverName}" is disabled`)
    const authority = operationAuthority ?? captureOAuthAuthority(serverName)
    authority()
-@@ -501,13 +515,22 @@ export async function startAuth(
+@@ -512,13 +526,22 @@ export async function startAuth(
    const existingPendingAuth = runtimeState.pendingAuths.get(getPendingAuthKey(serverName, authStorageOptions))
    if (existingPendingAuth?.serverUrl === serverUrl) {
      existingPendingAuth.authority()
@@ -460,7 +625,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..632f17314276b4a0295744b6560733e4
    if (!manualRedirect) {
      try {
        await ensureCallbackServer({
-@@ -540,6 +563,18 @@ export async function startAuth(
+@@ -551,6 +574,18 @@ export async function startAuth(
        }
        throw error
      }
@@ -479,7 +644,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..632f17314276b4a0295744b6560733e4
    }
  
    let capturedUrl: URL | undefined
-@@ -601,13 +636,14 @@ export async function startAuth(
+@@ -612,13 +647,14 @@ export async function startAuth(
        authorizationUrl: capturedUrl.toString(),
        manualRedirect,
        ...(manualRedirect ? { manualCompletionController: new AbortController() } : {}),
@@ -495,7 +660,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..632f17314276b4a0295744b6560733e4
    } catch (error) {
      authProvider.deactivate()
      try {
-@@ -890,6 +926,13 @@ export async function completeAuthFromInput(
+@@ -901,6 +937,13 @@ export async function completeAuthFromInput(
      throw new Error("Paste the full OAuth callback URL, including its code and state parameters")
    }
    const parsed = parseAuthorizationRedirectInput(input, oauthState)
@@ -509,7 +674,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..632f17314276b4a0295744b6560733e4
    return completeAuth(serverName, parsed, options)
  }
  
-@@ -910,6 +953,13 @@ export async function completeAuth(
+@@ -921,6 +964,13 @@ export async function completeAuth(
    const signal = combineAbortSignals(runtime.signal, options.signal)
    throwIfAborted(signal)
    const key = getPendingAuthKey(serverName, fallbackAuthStorageOptions)
@@ -523,7 +688,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..632f17314276b4a0295744b6560733e4
    const pendingAuth = runtimeState.pendingAuths.get(key)
    const authStorageOptions = pendingAuth?.authStorageOptions ?? fallbackAuthStorageOptions
    if (!pendingAuth) {
-@@ -954,6 +1004,9 @@ export async function completeAuth(
+@@ -965,6 +1015,9 @@ export async function completeAuth(
      if (result !== "AUTHORIZED") {
        throw new UnauthorizedError("Failed to authorize")
      }
@@ -533,7 +698,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..632f17314276b4a0295744b6560733e4
      return "authenticated"
    } catch (error) {
      caughtError = error
-@@ -971,6 +1024,14 @@ export async function completeAuth(
+@@ -982,6 +1035,14 @@ export async function completeAuth(
        if (caughtError === undefined) pendingAuth.authority()
      }
    }
@@ -548,7 +713,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..632f17314276b4a0295744b6560733e4
  }
  
  /**
-@@ -1034,7 +1095,7 @@ export async function authenticate(
+@@ -1045,7 +1106,7 @@ export async function authenticate(
        if (!pendingAuth) {
          throw new Error(`No pending OAuth flow for server: ${serverName}`)
        }
@@ -557,7 +722,7 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..632f17314276b4a0295744b6560733e4
          throw new Error(
            `OAuth for ${serverName} uses a remote redirect URI. Complete it with auth-start/auth-complete or /mcp-auth.`,
          )
-@@ -1042,7 +1103,7 @@ export async function authenticate(
+@@ -1053,7 +1114,7 @@ export async function authenticate(
  
        // Register the localhost callback before opening the browser. Remote
        // pre-registered callbacks are completed by pasting their full URL.
@@ -567,10 +732,10 @@ index 0ae900470d923665153cdbc6028dd91f81c180b2..632f17314276b4a0295744b6560733e4
          : waitForCallback(oauthState)
        void callbackPromise.catch(() => {})
 diff --git a/mcp-callback-server.ts b/mcp-callback-server.ts
-index 91b73cf0ebffa07cb7ea9a3fcd08e7c0fb3ec5c6..4b79b41a3f5524ffc570a9a222c0843c7392d1e7 100644
+index 32aad31f9..b25939246 100644
 --- a/mcp-callback-server.ts
 +++ b/mcp-callback-server.ts
-@@ -162,6 +162,24 @@ function htmlError(error: string): string {
+@@ -163,6 +163,24 @@ function htmlError(error: string): string {
    })
  }
  
@@ -595,7 +760,7 @@ index 91b73cf0ebffa07cb7ea9a3fcd08e7c0fb3ec5c6..4b79b41a3f5524ffc570a9a222c0843c
  /** Result of a successful OAuth callback */
  export interface OAuthCallbackResult {
    code: string
-@@ -188,6 +206,49 @@ const reservedAuthStates = new Set<string>()
+@@ -189,6 +207,49 @@ const reservedAuthStates = new Set<string>()
  /** Timeout for callback completion (5 minutes) */
  const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000
  
@@ -681,10 +846,10 @@ index 91b73cf0ebffa07cb7ea9a3fcd08e7c0fb3ec5c6..4b79b41a3f5524ffc570a9a222c0843c
    pendingAuths.delete(state)
    pending.resolve({ code, ...(iss !== null ? { iss } : {}) })
 diff --git a/mcp-oauth-provider.ts b/mcp-oauth-provider.ts
-index 61369dc32e42649d06f624daf622266bff1f2a29..828604e17c9cefbafc4804dca110fe51b9af464e 100644
+index b724478bf..d0aae7b5f 100644
 --- a/mcp-oauth-provider.ts
 +++ b/mcp-oauth-provider.ts
-@@ -221,7 +221,7 @@ async function loadConfiguredDiscoveryState(
+@@ -224,7 +224,7 @@ async function loadConfiguredDiscoveryState(
    fetchFn: FetchLike,
  ): Promise<OAuthDiscoveryState> {
    const response = await fetchFn(metadataUrl, {
@@ -694,7 +859,7 @@ index 61369dc32e42649d06f624daf622266bff1f2a29..828604e17c9cefbafc4804dca110fe51
    if (!response.ok) {
      await response.text().catch(() => {})
 diff --git a/metadata-cache.ts b/metadata-cache.ts
-index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef31282e511d4f 100644
+index 8dc634af1..d36939cb2 100644
 --- a/metadata-cache.ts
 +++ b/metadata-cache.ts
 @@ -4,7 +4,6 @@ import { dirname } from "node:path";
@@ -705,15 +870,15 @@ index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef3128
  import type {
    CachedPrompt,
    CachedResource,
-@@ -23,7 +22,6 @@ import type {
- import { createToolSelectorCandidateIndex, formatPromptCommandName, formatToolName, getToolNameCandidates, isServerDisabled, isToolAllowed, resolveToolPrefix, type ToolPrefix, type ToolSelectorCandidateIndex } from "./types.ts";
+@@ -24,7 +23,6 @@ import { createToolSelectorCandidateIndex, formatPromptCommandName, formatToolNa
  import { resourceNameToToolName } from "./resource-tools.ts";
  import {
+   extractToolAnnotations,
 -  extractToolUiStreamMode,
    interpolateEnvRecord,
    interpolateEnvVars,
    resolveBearerToken,
-@@ -234,9 +232,9 @@ export function reconstructToolMetadata(
+@@ -304,9 +302,9 @@ export function reconstructToolMetadata(
        description: tool.description ?? "",
        ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
        ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
@@ -722,10 +887,10 @@ index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef3128
 +      // metadata. Remove when the harness supports MCP Apps.
        ...(tool.uiVisibility !== undefined ? { uiVisibility: tool.uiVisibility } : {}),
 -      ...(tool.uiStreamMode !== undefined ? { uiStreamMode: tool.uiStreamMode } : {}),
+       ...(annotations !== undefined ? { annotations } : {}),
      });
    }
- 
-@@ -291,20 +289,19 @@ export function createCachedToolSelectorCandidateIndex(
+@@ -357,21 +355,19 @@ export function createCachedToolSelectorCandidateIndex(
  }
  
  export function serializeTools(tools: McpTool[]): CachedTool[] {
@@ -737,23 +902,22 @@ index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef3128
 -      const uiResourceUri = tryGetToolUiResourceUri(t);
        const uiVisibility = extractUiToolVisibility(t._meta);
 -      const uiStreamMode = extractToolUiStreamMode(t._meta);
+       const annotations = extractToolAnnotations(t.annotations);
        return {
          name: t.name,
          ...(t.description !== undefined ? { description: t.description } : {}),
          ...(t.inputSchema !== undefined ? { inputSchema: t.inputSchema } : {}),
          ...(t.outputSchema !== undefined ? { outputSchema: t.outputSchema } : {}),
 -        ...(uiResourceUri !== undefined ? { uiResourceUri } : {}),
-+        ...(t.annotations !== undefined ? { annotations: t.annotations } : {}),
          ...(uiVisibility !== undefined ? { uiVisibility } : {}),
 -        ...(uiStreamMode !== undefined ? { uiStreamMode } : {}),
+         ...(annotations !== undefined ? { annotations } : {}),
        };
      });
- }
-@@ -363,11 +360,3 @@ export function reconstructPromptMetadata(
-     };
+@@ -432,10 +428,3 @@ export function reconstructPromptMetadata(
    });
  }
--
+ 
 -function tryGetToolUiResourceUri(tool: McpTool): string | undefined {
 -  try {
 -    return getToolUiResourceUri({ _meta: tool._meta });
@@ -761,11 +925,28 @@ index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef3128
 -    return undefined;
 -  }
 -}
+diff --git a/project-server-trust.ts b/project-server-trust.ts
+index 264573709..762091327 100644
+--- a/project-server-trust.ts
++++ b/project-server-trust.ts
+@@ -200,6 +200,12 @@ export async function applyProjectServerTrust(
+   for (const [name, source] of loaded.projectServers) {
+     const definition = config.mcpServers[name];
+     if (!definition || isServerDisabled(definition)) continue;
++    // Host-managed project trust (Kimchi): the host runs its own project-trust
++    // gate before project config reaches this adapter, so the adapter's
++    // interactive per-server approval would double-prompt. Skip it entirely —
++    // no prompt and no approval-store write — when the host asked us to stand
++    // down. Remove when upstream supports a host-managed trust flag.
++    if (process.env.KIMCHI_MANAGES_MCP_PROJECT_TRUST === "1") continue;
+     const definitionHash = hashProjectServerDefinition(definition);
+     const approved = approvals.approvals.some(entry =>
+       entry.projectRoot === projectRoot && entry.serverName === name && entry.definitionHash === definitionHash);
 diff --git a/proxy-modes.ts b/proxy-modes.ts
-index 49f1b4eccfbee9a14ef6e71db8d8392dcba6ed23..cf860c2aa2a9bdc9b4fb8c96b4c4a8895a3d539c 100644
+index ebc0c7031..b2dd3e890 100644
 --- a/proxy-modes.ts
 +++ b/proxy-modes.ts
-@@ -152,6 +152,8 @@ function ensureBackgroundAuthWatcher(
+@@ -241,6 +241,8 @@ function ensureBackgroundAuthWatcher(
    serverName: string,
    serverUrl: string,
    definition: ServerEntry,
@@ -774,7 +955,7 @@ index 49f1b4eccfbee9a14ef6e71db8d8392dcba6ed23..cf860c2aa2a9bdc9b4fb8c96b4c4a889
  ): void {
    let watchers = backgroundAuthWatchers.get(state);
    if (!watchers) {
-@@ -189,11 +191,15 @@ function ensureBackgroundAuthWatcher(
+@@ -278,11 +280,15 @@ function ensureBackgroundAuthWatcher(
        if (isAbortError(statusError, state.owner.signal)) return;
      }
      if (state.owner.signal.aborted) return;
@@ -791,7 +972,7 @@ index 49f1b4eccfbee9a14ef6e71db8d8392dcba6ed23..cf860c2aa2a9bdc9b4fb8c96b4c4a889
      );
    }).finally(() => {
      if (watchers?.get(serverName) === watcher) watchers.delete(serverName);
-@@ -233,24 +239,27 @@ function getRedirectDetails(authorizationUrl: string): { port?: number; remote:
+@@ -322,24 +328,27 @@ function getRedirectDetails(authorizationUrl: string): { port?: number; remote:
    }
  }
  
@@ -827,7 +1008,7 @@ index 49f1b4eccfbee9a14ef6e71db8d8392dcba6ed23..cf860c2aa2a9bdc9b4fb8c96b4c4a889
      `mcp({ action: "auth-complete", server: "${serverName}", args: { redirectUrl: "PASTE_REDIRECT_URL_HERE" } })`,
      "",
      redirect.remote
-@@ -526,7 +535,7 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+@@ -626,7 +635,7 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
        };
      }
  
@@ -836,7 +1017,7 @@ index 49f1b4eccfbee9a14ef6e71db8d8392dcba6ed23..cf860c2aa2a9bdc9b4fb8c96b4c4a889
        ? ownedSignal
          ? await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, signal: ownedSignal, runtime: state.oauthRuntime })
          : await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, runtime: state.oauthRuntime })
-@@ -541,17 +550,23 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+@@ -641,17 +650,23 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
      }
  
      if (getRedirectDetails(authorizationUrl).remote) {
@@ -863,18 +1044,18 @@ index 49f1b4eccfbee9a14ef6e71db8d8392dcba6ed23..cf860c2aa2a9bdc9b4fb8c96b4c4a889
      };
    } catch (error) {
 diff --git a/server-manager.ts b/server-manager.ts
-index 3213c908a86c4baf483af3470bb6d5ea0c32028d..c1af597f0cd0c1d0c1d99f7620e63b5003c04954 100644
+index ba80e92e0..5ad589f38 100644
 --- a/server-manager.ts
 +++ b/server-manager.ts
-@@ -40,7 +40,6 @@ import {
+@@ -41,7 +41,6 @@ import {
  import { resolveNpxBinary } from "./npx-resolver.ts";
  import { createJsonSchemaValidator } from "./json-schema-validator.ts";
  import { logger } from "./logger.ts";
 -import { RESOURCE_MIME_TYPE } from "./ui-app-bridge-helpers.ts";
  import { isBuiltInAgentPlugin } from "./agent-plugin-provenance.ts";
  import { McpOAuthProvider } from "./mcp-oauth-provider.ts";
- import { extractOAuthConfig, supportsOAuth, type McpOAuthRuntime } from "./mcp-auth-flow.ts";
-@@ -1126,12 +1125,11 @@ export class McpServerManager {
+ import { explainRegistrationRejection, extractOAuthConfig, supportsOAuth, type McpOAuthRuntime } from "./mcp-auth-flow.ts";
+@@ -1450,12 +1449,11 @@ export class McpServerManager {
    }
  
    private buildClientCapabilities() {
@@ -892,23 +1073,24 @@ index 3213c908a86c4baf483af3470bb6d5ea0c32028d..c1af597f0cd0c1d0c1d99f7620e63b50
        ...(this.elicitationConfig
          ? {
 diff --git a/tool-metadata.ts b/tool-metadata.ts
-index 47525f34a6c7a8f25a007eee7e91abd0c452b014..7d810820003f4d624224b41548cfafc9d4ce2223 100644
+index 96a7982de..f3e162025 100644
 --- a/tool-metadata.ts
 +++ b/tool-metadata.ts
-@@ -1,9 +1,7 @@
+@@ -1,9 +1,8 @@
 -import { getToolUiResourceUri } from "./ui-app-bridge-helpers.ts";
  import type { McpExtensionState } from "./state.ts";
  import type { ToolMetadata, McpTool, McpResource, ServerEntry, ToolPrefix } from "./types.ts";
- import { createToolSelectorCandidateIndex, formatToolName, getToolNameCandidates, isToolAllowed, resolveToolPrefix } from "./types.ts";
+ import { createToolSelectorCandidateIndex, formatToolName, getToolNameCandidates, isToolAllowed, resolveToolPrefix, resolveUniqueNameOwnership } from "./types.ts";
  import { resourceNameToToolName } from "./resource-tools.ts";
--import { extractToolUiStreamMode } from "./utils.ts";
+-import { extractToolAnnotations, extractToolUiStreamMode } from "./utils.ts";
++import { extractToolAnnotations } from "./utils.ts";
  import { extractUiToolVisibility, isUiToolVisibleToModel } from "./ui-tool-visibility.ts";
  
  export function buildToolMetadata(
-@@ -96,22 +94,16 @@ export function buildToolMetadata(
+@@ -89,13 +88,9 @@ export function buildToolMetadata(
+     if (!isUiToolVisibleToModel(uiVisibility)) {
+       continue;
      }
-     seenNames.add(name);
- 
 -    let uiResourceUri: string | undefined;
 -    try {
 -      uiResourceUri = getToolUiResourceUri({ _meta: tool._meta });
@@ -919,43 +1101,24 @@ index 47525f34a6c7a8f25a007eee7e91abd0c452b014..7d810820003f4d624224b41548cfafc9
 +    // Host MCP UI disable: Kimchi does not yet properly support the MCP UI
 +    // standard, so tools never acquire interactive UI resources here. Remove
 +    // when the harness supports MCP Apps (or adopts an upstream disable option).
+     const annotations = extractToolAnnotations(tool.annotations);
      metadata.push({
        name,
-       originalName: tool.name,
+@@ -103,9 +98,7 @@ export function buildToolMetadata(
        description: tool.description ?? "",
        ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
        ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
 -      ...(uiResourceUri !== undefined ? { uiResourceUri } : {}),
        ...(uiVisibility !== undefined ? { uiVisibility } : {}),
 -      ...(uiStreamMode !== undefined ? { uiStreamMode } : {}),
+       ...(annotations !== undefined ? { annotations } : {}),
      });
    }
- 
 diff --git a/types.ts b/types.ts
-index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632aa729e057 100644
+index 6757ec7f1..69193d48c 100644
 --- a/types.ts
 +++ b/types.ts
-@@ -88,6 +88,7 @@ export interface McpTool {
-   description?: SdkTool["description"];
-   inputSchema?: SdkTool["inputSchema"]; // JSON Schema
-   outputSchema?: SdkTool["outputSchema"]; // JSON Schema for structuredContent
-+  annotations?: SdkTool["annotations"];
-   _meta?: SdkTool["_meta"];
- }
- 
-@@ -730,6 +731,11 @@ export interface CachedTool {
-   description?: string;
-   inputSchema?: unknown;
-   outputSchema?: unknown;
-+  // Host read-only classification; tracking: getkimchi/kimchi — Kimchi's
-+  // planning mode admits read-only-qualified MCP tools (spec annotations
-+  // with a name convention fallback), which requires annotations to survive
-+  // into the persistent cache. Remove when upstream caches annotations.
-+  annotations?: SdkTool["annotations"];
-   uiResourceUri?: string;
-   uiVisibility?: UiToolVisibility[];
-   uiStreamMode?: "eager" | "stream-first";
-@@ -781,14 +787,22 @@ export interface McpPanelResult {
+@@ -860,14 +860,22 @@ export interface McpPanelResult {
    cancelled: boolean;
  }
  
@@ -983,7 +1146,7 @@ index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632a
  }
  
  export function getServerPrefix(
-@@ -797,25 +811,44 @@ export function getServerPrefix(
+@@ -876,28 +884,51 @@ export function getServerPrefix(
  ): string {
    if (mode === "none") return "";
    if (mode === "short") {
@@ -1016,10 +1179,19 @@ index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632a
  ): string {
 -  const p = getServerPrefix(serverName, prefix);
 -  const sanitized = toolName.replace(/\./g, "_");
--  return p ? `${p}_${sanitized}` : sanitized;
-+  const toolPart = sanitizeNamePart(toolName) || "tool";
+-  if (p && sanitized.startsWith(`${p}_`) && sanitized.length > p.length + 1) {
+-    return sanitized;
 +  const serverPrefix = getServerPrefix(serverName, prefix);
++  const toolPart = sanitizeNamePart(toolName) || "tool";
++  if (serverPrefix && toolPart.startsWith(`${serverPrefix}_`) && toolPart.length > serverPrefix.length + 1) {
++    return truncateToolName(toolPart, toolPart);
+   }
+-  return p ? `${p}_${sanitized}` : sanitized;
 +  const name = serverPrefix ? `${serverPrefix}_${toolPart}` : toolPart;
++  return truncateToolName(name, toolPart);
++}
++
++function truncateToolName(name: string, toolPart: string): string {
 +  if (name.length <= MAX_TOOL_NAME_LENGTH) return name;
 +  const limited =
 +    toolPart.length >= MAX_TOOL_NAME_LENGTH
@@ -1035,7 +1207,7 @@ index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632a
  }
  
  export function resolveToolPrefix(
-@@ -881,10 +914,14 @@ export function formatPromptCommandName(
+@@ -981,10 +1012,14 @@ export function formatPromptCommandName(
  }
  
  function getLegacyServerPrefix(serverName: string, mode: ToolPrefix): string {
@@ -1053,7 +1225,7 @@ index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632a
  }
  
  function formatLegacyToolName(toolName: string, serverName: string, prefix: ToolPrefix): string {
-@@ -944,13 +981,25 @@ export function createToolSelectorCandidateIndex(
+@@ -1044,13 +1079,25 @@ export function createToolSelectorCandidateIndex(
    };
  }
  

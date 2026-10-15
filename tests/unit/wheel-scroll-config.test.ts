@@ -13,9 +13,10 @@ import { makeMockTerminal } from "./pi-tui-fake-terminal.js"
 const ENV_KEY = "KIMCHI_WHEEL_SCROLL_LINES"
 
 function wheelScrollLinesOf(tui: TuiAltScreen): number {
-	// Private field, runtime-visible; Record access pins the patch without
+	// pi 1.2 routes the value through a WheelScrollAccelerator instance on the
+	// private `wheelScroll` field; Record access pins the patch wiring without
 	// needing exports upstream doesn't provide.
-	return (tui as unknown as Record<string, number>).wheelScrollLines
+	return (tui as unknown as Record<string, { lines: number }>).wheelScroll.lines
 }
 
 describe("TuiAltScreen KIMCHI_WHEEL_SCROLL_LINES patch", () => {

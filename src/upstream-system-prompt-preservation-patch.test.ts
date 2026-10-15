@@ -23,8 +23,8 @@
  * behavioral check on the forced-prompt projection.
  */
 
-import { AgentSession } from "@earendil-works/pi-coding-agent"
 import { readFileSync } from "node:fs"
+import { AgentSession } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 
 type AnyFn = (...args: unknown[]) => unknown
@@ -81,8 +81,9 @@ describe("upstream forced-prompt projection (replaces the _systemPromptOverride 
 		}
 		sessionProto._installAgentForcedPromptProjection.call(session)
 
-		const transform = (session.agent as { transformContext: (msgs: unknown[], signal?: AbortSignal) => Promise<unknown[]> })
-			.transformContext
+		const transform = (
+			session.agent as { transformContext: (msgs: unknown[], signal?: AbortSignal) => Promise<unknown[]> }
+		).transformContext
 		const out = await transform([
 			{ role: "system", content: "PI BASE PROMPT", timestamp: 1 },
 			{ role: "user", content: "hi", timestamp: 2 },
@@ -100,8 +101,9 @@ describe("upstream forced-prompt projection (replaces the _systemPromptOverride 
 		}
 		sessionProto._installAgentForcedPromptProjection.call(session)
 
-		const transform = (session.agent as { transformContext: (msgs: unknown[], signal?: AbortSignal) => Promise<unknown[]> })
-			.transformContext
+		const transform = (
+			session.agent as { transformContext: (msgs: unknown[], signal?: AbortSignal) => Promise<unknown[]> }
+		).transformContext
 		const input = [{ role: "system", content: "PI BASE PROMPT", timestamp: 1 }]
 		expect(await transform(input)).toEqual(input)
 	})

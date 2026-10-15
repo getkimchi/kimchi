@@ -456,6 +456,8 @@ export class UpstreamMcpProbe implements McpProbe {
 		})
 		try {
 			signal.throwIfAborted()
+			// Same host-managed trust flag as index.ts: project trust is Kimchi's gate.
+			process.env.KIMCHI_MANAGES_MCP_PROJECT_TRUST = "1"
 			createMcpAdapter({ config })(host.api)
 			await Promise.race([emitHandlers(host, "session_start"), aborted])
 			signal.throwIfAborted()

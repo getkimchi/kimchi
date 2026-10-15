@@ -8,7 +8,8 @@ if (!editDirectory) throw new Error("Usage: pnpm exec node scripts/commit-pi-pat
 // Derive the patch filename from package.json's pinned version so the script
 // does not go stale on every upstream bump.
 const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"))
-const version = pkg.dependencies?.["@earendil-works/pi-coding-agent"] ?? pkg.devDependencies?.["@earendil-works/pi-coding-agent"]
+const version =
+	pkg.dependencies?.["@earendil-works/pi-coding-agent"] ?? pkg.devDependencies?.["@earendil-works/pi-coding-agent"]
 if (!version) throw new Error("Could not find the pi-coding-agent version pin in package.json")
 const patchPath = resolve(`patches/@earendil-works__pi-coding-agent@${version.replace(/^[^\d]*/, "")}.patch`)
 const existing = readFileSync(patchPath, "utf8")

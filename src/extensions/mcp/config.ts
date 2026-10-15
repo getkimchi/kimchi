@@ -2,9 +2,15 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
-import { loadMcpConfig as loadUpstreamMcpConfig } from "pi-mcp-adapter/config"
+import { loadMcpConfig as loadUpstreamMcpConfig, setPiMcpConfigEnabled } from "pi-mcp-adapter/config"
 import type { ImportKind, McpConfig, McpSettings, ServerEntry } from "pi-mcp-adapter/types"
 import stripJsonComments from "strip-json-comments"
+
+// Kimchi always runs on Pi >= 0.99, whose native MCP config lives in `mcp.json`.
+// The adapter only reads those legacy layers once its own extension init has
+// detected the Pi version; Kimchi's loader can run before that init, so enable
+// the compat layer up front (same decision the adapter would make moments later).
+setPiMcpConfigEnabled(true)
 
 export const LEGACY_PROJECT_MCP_CONFIG = ".kimchi/mcp.json"
 

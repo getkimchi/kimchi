@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionUIContext, SessionShutdownEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
@@ -95,9 +95,9 @@ describe("terminalColorsExtension", () => {
 			let widgetFactory: (() => { invalidate(): void; render(): string[] }) | undefined
 			const ctx = createContext({
 				ui: {
-					setWidget: vi.fn((_id: string, factory: typeof widgetFactory) => {
-						widgetFactory = factory
-					}),
+					setWidget: vi.fn((_key: string, content: unknown) => {
+						if (typeof content === "function") widgetFactory = content as unknown as typeof widgetFactory
+					}) as unknown as ExtensionUIContext["setWidget"],
 					theme: { name: "kimchi-minimal" } as ExtensionUIContext["theme"],
 				},
 			})
@@ -107,7 +107,8 @@ describe("terminalColorsExtension", () => {
 
 			// Sensor widget fires on TUI.invalidate() after setTheme(); simulate the
 			// user switching to a theme whose vars declare oscFg/oscBg.
-			ctx.ui.theme = { name: "osc-theme" } as ExtensionUIContext["theme"]
+			// ExtensionUIContext.theme is read-only to extensions; the test simulates the swap.
+			;(ctx.ui as { theme: ExtensionUIContext["theme"] }).theme = { name: "osc-theme" } as ExtensionUIContext["theme"]
 			widgetFactory?.().invalidate()
 
 			const written = stdoutWrite.mock.calls.map((call) => String(call[0]))

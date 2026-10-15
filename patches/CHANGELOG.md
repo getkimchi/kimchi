@@ -68,10 +68,31 @@ but are only drained by the next fresh run).
 
 ### `pi-mcp-adapter`
 
-- **Held at 2.34.0 against 1.2 peers throughout the core rebase** — the
-  2.x→5.3.0 bump lands in its own commit/chunk (config rename to
-  `mcp-adapter.json`, `/mcp-adapter` command, mcpScript default-off, built-in
-  MCP replacement in 5.x).
+- **BUMPED — 2.34.0 → 5.3.0** (MCP client 2.0.0 → 2.3.1 for GHSA-6qxp-vccf-f47h;
+  the `@modelcontextprotocol/sdk@1.29.0` patch stays, sdk 1.29 is still in the graph).
+- **DROPPED — tool-annotation caching hunk.** Native in 5.x (metadata-cache
+  persists/reconstructs annotations).
+- **RE-DRAFTED — tool-name sanitization** around upstream's new `formatToolName`
+  prefix-dedup branch; truncation wrapped in `truncateToolName()`.
+- **RE-DRAFTED — config discovery under Kimchi dirs.** Project/global adapter
+  configs moved to `mcp-adapter.json` upstream with `mcp.json` demoted to a
+  Pi-compat import tier. The Kimchi patch repoints the compat layers at the
+  Kimchi agent/project directories and makes those layers authoritative again
+  (2.34 semantics): adapter-format parsing (top-level `settings`/`imports`
+  survive — Pi-style compat parsing would drop them), self-writing, and
+  project entries merge field-wise over the global entry instead of Pi's
+  whole-entry replacement. `writeProjectServerDisabledOverride` writes via
+  server provenance so overrides land in the file the server came from.
+- **KEPT — OAuth loopback/tombstone/in-flight hunks, metadata Accept widen,
+  `mcp.panel`, watcher instructions; DCR clientInfo bumped to "5.3.0".**
+- **NEW — `KIMCHI_MANAGES_MCP_PROJECT_TRUST` hunk.** 5.x interactively prompts
+  per project server on trust; the env flag skips that approval so Kimchi's
+  existing `resolveMcpProjectTrust` stays the single gate (no double prompt).
+- **CLIENT PATCH (`@modelcontextprotocol/client@2.3.1`) RE-DONE — OAuth
+  metadata Accept widen still needed** (2.3.1 still sends json-only at the
+  three sites).
+- **mcpScript stays OFF** (upstream 4.0 default; Kimchi already pinned
+  `scriptMode: false` and suppresses the gateway).
 
 ---
 

@@ -190,7 +190,7 @@ index cc41fea6d..c1ef81c89 100644
 +    if (process.env.KIMCHI_WHEEL_SCROLL_LINES === undefined)
 +        return undefined;
 +    const parsed = Number.parseInt(process.env.KIMCHI_WHEEL_SCROLL_LINES, 10);
-+    return Number.isFinite(parsed) ? parsed : undefined;
++    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 +}
  const MAX_CACHED_OFFSCREEN_KITTY_IMAGES = 16;
  const MAX_CACHED_OFFSCREEN_KITTY_TRANSMISSION_BYTES = 32 * 1024 * 1024;
