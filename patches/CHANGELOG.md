@@ -106,6 +106,33 @@ reload. The previous consumer-side unwrap hunks are dropped.
 
 ---
 
+## @earendil-works/pi-coding-agent@0.85.1 (mid-version, additive) — mark the run active before before_agent_start
+
+Not an upgrade: a new hunk while the pin stayed at 0.85.1, from the workflows
+regression investigation ("step became idle without the run settling"; crashes
+traced to v1.13.0's work-attribution scope capture awaiting a network call in
+before_agent_start for command/extension-started turns).
+
+- **NEW — `prompt()` and `sendCustomMessage(triggerTurn)` set
+  `_isAgentRunActive = true` BEFORE emitting `before_agent_start`.** pi awaits
+  the emit before starting the turn, and `isIdle()` returned true during it,
+  so any async handler work (memory digest retrieval, work-attribution scope
+  capture — both legitimately await network calls) made idle-watchers
+  (kimchi-workflows' bridge: waitForIdle → one task tick → still idle → fail
+  the step) misread turn preparation as a crashed step. The flag resets on
+  every non-run exit path (emit throw, empty-message return);
+  `_runAgentPrompt` owns it from turn start (idempotent set). Side benefits:
+  a second prompt during preparation now gets "already processing" instead of
+  double-entering the run, and memory's turn-recall steer delivered during the
+  emit enqueues properly instead of appending out-of-band. Verified both
+  directions by tests/e2e/tui/idle-race.test.ts (fails on the unpatched
+  package, passes with the patch).
+- **Upstream candidate:** this is a genuine contract gap — pi permits async
+  before_agent_start handlers while the session reports idle during them.
+  File upstream; remove the hunks when pi fixes it.
+
+---
+
 ## @earendil-works/pi-coding-agent@0.85.1 (mid-version, additive) — bounded confinement registry, session-file publication
 
 Follow-up to the review-round-2 hardening above, from PR #1405 review round 3.
