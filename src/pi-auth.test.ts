@@ -136,6 +136,29 @@ describe("syncPiAuth", () => {
 		expect(statSync(authPath).mode & 0o777).toBe(0o600)
 	})
 
+	it("does not touch auth storage metadata when credentials and mode are unchanged", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-"))
+		tempDirs.push(dir)
+		const authPath = join(dir, "auth.json")
+		const modelsPath = join(dir, "models.json")
+		const originalAuth = JSON.stringify({
+			anthropic: { type: "api_key", key: "keep-me" },
+			"kimchi-dev": { type: "api_key", key: "kimchi-key" },
+		})
+		writeFileSync(authPath, originalAuth, { mode: 0o600 })
+		writeFileSync(modelsPath, JSON.stringify({ providers: { "kimchi-dev": {} } }))
+		const before = statSync(authPath, { bigint: true })
+
+		await syncPiAuth(authPath, modelsPath, "kimchi-key")
+
+		const after = statSync(authPath, { bigint: true })
+		// No chmod on the no-op path: auth.json is shared by all kimchi processes
+		// and an unconditional chmod bumps its ctime, forcing every other running
+		// session to re-read the file (their revision check includes ctime).
+		expect(after.ctimeNs).toBe(before.ctimeNs)
+		expect(after.mtimeNs).toBe(before.mtimeNs)
+	})
+
 	it("switches the active key in the same Pi runtime, including newly discovered sub-providers", async () => {
 		vi.stubEnv("KIMCHI_DISABLE_BUILTIN_PROVIDERS", "1")
 		vi.stubEnv("KIMCHI_API_KEY", undefined)

@@ -1,6 +1,6 @@
 import { isWorkId } from "../../shared/work-id.js"
 import { plainURL } from "../../utils/url.js"
-import { providerId } from "../pull-request-status/provider-records.js"
+import { providerId, pullRequestAuthor, pullRequestTitle } from "../pull-request-status/provider-records.js"
 import { type PullRequestCostReport, type RequestCostAllocation, time } from "../work-attribution/costs.js"
 import { requestWorkLinks } from "../work-attribution/links.js"
 import { isWorkScope, sameWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
@@ -33,6 +33,10 @@ export interface SnapshotContent {
 		state: "open" | "closed" | "merged"
 		mergedAt?: string
 		closedAt?: string
+		/** At most 1,024 characters; left out when unknown. */
+		title?: string
+		/** The author's provider login, at most 255 characters; left out when unknown. */
+		author?: string
 	}[]
 	requests: {
 		requestId: string
@@ -184,7 +188,7 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 		fail()
 	const pulls = new Set<string>()
 	for (const pr of pullRequests) {
-		if (!onlyKeys(pr, ["id", "number", "url", "state", "mergedAt", "closedAt"])) fail()
+		if (!onlyKeys(pr, ["id", "number", "url", "state", "mergedAt", "closedAt", "title", "author"])) fail()
 		if (
 			!providerId(pr.id) ||
 			pulls.has(pr.id) ||
@@ -196,7 +200,10 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 			pr.url.length > 2048 ||
 			(pr.state === "merged") !== (pr.mergedAt !== undefined) ||
 			(pr.mergedAt !== undefined && !validTime(pr.mergedAt)) ||
-			(pr.closedAt !== undefined && (pr.state !== "closed" || !validTime(pr.closedAt)))
+			(pr.closedAt !== undefined && (pr.state !== "closed" || !validTime(pr.closedAt))) ||
+			// Only what buildSnapshots sends unchanged: non-empty text within its bound.
+			(pr.title !== undefined && pullRequestTitle(pr.title) !== pr.title) ||
+			(pr.author !== undefined && pullRequestAuthor(pr.author) !== pr.author)
 		)
 			fail()
 		if (plainURL(pr.url)?.host !== repo.host) fail()
@@ -690,6 +697,8 @@ export function buildSnapshots(
 					!detailed.has(candidate.key)
 				)
 					continue
+				const title = pullRequestTitle(pr.title)
+				const author = pullRequestAuthor(pr.author)
 				const metadata = {
 					id: pr.id,
 					number: pr.number,
@@ -697,6 +706,8 @@ export function buildSnapshots(
 					state: pr.state,
 					...(pr.mergedAt ? { mergedAt: pr.mergedAt } : {}),
 					...(pr.state === "closed" && pr.closedAt ? { closedAt: pr.closedAt } : {}),
+					...(title ? { title } : {}),
+					...(author ? { author } : {}),
 				}
 
 				const existing = group.content.pullRequests.find((other) => other.id === pr.id)

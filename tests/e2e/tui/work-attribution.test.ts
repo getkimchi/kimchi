@@ -288,6 +288,42 @@ test("the next message recovers account tracking after its saved scope is lost",
 	)
 })
 
+test("work that /ferment starts records its account from the first planning request", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "work-scope-ferment",
+			account,
+			gitInit: true,
+			models,
+			responses: [{ stream: ["I'll outline the scope."] }],
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, PROMPT_READY)
+			// Type then submit separately: a one-shot "/ferment\r" can race startup.
+			terminal.write("/ferment")
+			await waitForText(terminal, "/ferment")
+			terminal.submit("")
+			await waitForText(terminal, "would you like to ferment")
+			terminal.submit("Add a cache layer")
+			await waitForText(terminal, "I'll outline the scope.")
+			trace.step("the ferment's planning turn started without a typed message")
+			const sent = new Set(
+				fixture.fake.requests
+					.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+					.map((request) => request.headers["x-request-id"]),
+			)
+			const requests = readLedger(join(fixture.agentDir, "work-attribution")).filter(
+				(row) => row.type === "request" && sent.has(row.requestId),
+			)
+			expect(requests.length).toBeGreaterThan(0)
+			for (const request of requests) expect(request.scope).toMatchObject({ account })
+			expect(existsSync(join(fixture.agentDir, "work", requests[0].workId, "scope.json"))).toBe(true)
+			trace.step("every request sent so far and its work carry the verified account, so reporting can upload them")
+		},
+	)
+})
+
 test("the user can correct one earlier planning turn and revoke that correction", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,

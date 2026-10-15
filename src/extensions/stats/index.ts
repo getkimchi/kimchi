@@ -5,20 +5,40 @@
  * Fetches data from:
  * - Analytics API (generateAnalyticsReport)
  * - Productivity Metrics API (getProductivityMetrics)
+ *
+ * Provides /session-costs for the billed cost of this session and the user's recent sessions, models and workspaces, from the
+ * cost breakdown API (generateBreakdown).
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
-import { loadConfig } from "../../config.js"
+import { getMe } from "../../api/me.js"
+import { verifyApiKey } from "../../api/organizations.js"
+import { loadConfig, readTelemetryConfig } from "../../config.js"
 import { CastAiStatsApi, getTimeRange } from "./api.js"
+import {
+	COST_VIEWS,
+	type CostView,
+	costError,
+	costWindow,
+	formatModelCosts,
+	formatSessionCosts,
+	formatWorkspaceCosts,
+	ownerFilter,
+	parseCostArgs,
+} from "./cost.js"
 import { formatError, formatHelp } from "./display.js"
 import { formatAnalyticsVisual, formatProductivityVisual, type SortBy } from "./visual.js"
 
-function createApiClient(): CastAiStatsApi {
-	const apiKey = loadConfig().apiKey || process.env.CASTAI_API_KEY
-	if (!apiKey) {
+function apiKey(): string {
+	const key = loadConfig().apiKey || process.env.CASTAI_API_KEY
+	if (!key) {
 		throw new Error("No API key found. Please run `kimchi login` to set up your API key.")
 	}
-	return new CastAiStatsApi({ apiKey })
+	return key
+}
+
+function createApiClient(): CastAiStatsApi {
+	return new CastAiStatsApi({ apiKey: apiKey() })
 }
 
 /**
@@ -120,7 +140,52 @@ async function handleStatsCommand(args: string, ctx: ExtensionCommandContext): P
 	}
 }
 
+async function handleCostCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
+	if (!ctx.hasUI) {
+		return
+	}
+	const { view, days } = parseCostArgs(args)
+	try {
+		const key = apiKey()
+		const [{ organizationId }, { id: userId }] = await Promise.all([verifyApiKey(key), getMe(key)])
+		// Kimchi sends the session id only with telemetry on; only the sessions view looks for this session.
+		const sessionId =
+			view === "sessions" && readTelemetryConfig().enabled ? ctx.sessionManager.getSessionId() : undefined
+		const window = costWindow(days, sessionId)
+		ctx.ui.notify(`Fetching billed costs for the last ${window.days} days...`, "info")
+		const response = await new CastAiStatsApi({ apiKey: key }).generateBreakdown(
+			organizationId,
+			COST_VIEWS[view],
+			window.startTime,
+			window.endTime,
+			ownerFilter(userId),
+		)
+		const lines =
+			view === "models"
+				? formatModelCosts(response, window.days, ctx.ui.theme)
+				: view === "workspaces"
+					? formatWorkspaceCosts(response, window.days, ctx.ui.theme)
+					: formatSessionCosts(response, sessionId, window.days, ctx.ui.theme)
+		ctx.ui.notify(lines.join("\n"), "info")
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err)
+		ctx.ui.notify(costError(message), "error")
+	}
+}
+
 export default function statsExtension(pi: ExtensionAPI) {
+	pi.registerCommand("session-costs", {
+		description:
+			"Billed cost of this session and your recent sessions (/session-costs models, /session-costs workspaces, /session-costs 30)",
+		getArgumentCompletions: (prefix) =>
+			(Object.keys(COST_VIEWS) as CostView[])
+				.filter((view) => view.startsWith(prefix.trimStart().toLowerCase()))
+				.map((view) => ({ value: view, label: view, description: `/session-costs ${view}` })),
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
+			await handleCostCommand(args, ctx)
+		},
+	})
+
 	pi.registerCommand("stats", {
 		description: "View coding analytics and metrics (/stats 7 for last 7 days)",
 		handler: async (args: string, ctx: ExtensionCommandContext) => {

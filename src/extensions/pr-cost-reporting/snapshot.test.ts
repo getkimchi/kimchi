@@ -387,6 +387,56 @@ describe("allowlisted repository snapshots", () => {
 	})
 })
 
+describe("PR titles and author logins", () => {
+	const content = (fields: Partial<WorkPullRequest>) => build(records([{ ...pull(), ...fields }])).snapshots[0].content
+	const valid = (value: SnapshotContent) =>
+		validateSnapshot({ schemaVersion: 1, producerId: requestId, revision: "1", generatedAt: at, ...value })
+	it("uploads them beside the PR's provider identity", () => {
+		const value = content({ title: "Fix the login redirect", author: "octocat" })
+		expect(value.pullRequests).toEqual([
+			{
+				id: "101",
+				number: 1,
+				url: "https://github.com/example/repo/pull/1",
+				state: "merged",
+				mergedAt: "2026-10-04T13:00:00.000Z",
+				title: "Fix the login redirect",
+				author: "octocat",
+			},
+		])
+		expect(() => valid(value)).not.toThrow()
+	})
+	it.each([{}, { title: "", author: "" }])("never sends an unknown or empty title or author: %j", (fields) => {
+		const [pr] = content(fields).pullRequests
+		expect(pr).not.toHaveProperty("title")
+		expect(pr).not.toHaveProperty("author")
+	})
+	it("cuts a long title to 1,024 whole characters and leaves out a login it cannot send whole", () => {
+		const value = content({ title: `${"a".repeat(1023)}😀${"b".repeat(100)}`, author: "a".repeat(256) })
+		expect(value.pullRequests[0].title).toBe(`${"a".repeat(1023)}😀`)
+		expect(value.pullRequests[0]).not.toHaveProperty("author")
+		expect(() => valid(value)).not.toThrow()
+	})
+	it.each([
+		{ title: 42 },
+		{ title: null },
+		{ title: "" },
+		{ title: "a".repeat(1025) },
+		{ author: ["octocat"] },
+		{ author: "" },
+		{ author: "a".repeat(256) },
+	])("rejects a recovered payload whose PR has an invalid title or author: %j", (fields) => {
+		const value = wire()
+		Object.assign(value.pullRequests[0], fields)
+		expect(() => validateSnapshot(value)).toThrow()
+	})
+	it("counts the bounds in characters, as the server does", () => {
+		const value = wire()
+		Object.assign(value.pullRequests[0], { title: "😀".repeat(1024), author: "a".repeat(255) })
+		expect(() => validateSnapshot(value)).not.toThrow()
+	})
+})
+
 describe("local and reported confidence", () => {
 	it("sends native evidence for the editing input and session evidence for a separate input", () => {
 		const segment = { id: billingId, attribution: "session", reason: "matching-disabled" }

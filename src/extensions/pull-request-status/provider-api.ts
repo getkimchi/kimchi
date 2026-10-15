@@ -1,7 +1,7 @@
 /** GitHub and GitLab access for PR discovery: credentials, the bounded HTTP client with pagination, and repository identity. */
 import { execFile } from "node:child_process"
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { isAbsolute, join } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { readGitToken } from "../../config.js"
@@ -37,6 +37,8 @@ function cliEnvironment(): NodeJS.ProcessEnv {
 		"GLAB_TOKEN",
 		"GITLAB_ACCESS_TOKEN",
 		"OAUTH_TOKEN",
+		// glab 1.80-1.100 print this variable's deprecation warning on stdout, ahead of the token.
+		"NO_PROMPT",
 	])
 		delete env[key]
 	return {
@@ -109,9 +111,28 @@ function environmentToken(repository: Pick<Repository, "provider" | "host">): st
 	return undefined
 }
 
-async function gitlabCredential(host: string, signal: AbortSignal, deadline: number): Promise<string | undefined> {
+/** glab's config file. Before 1.115, `glab config path` prints help or an error; search as glab 1.76+ does then. */
+async function glabConfigPath(signal: AbortSignal, deadline: number): Promise<string> {
 	const path = await command("glab", ["config", "path"], undefined, signal, deadline)
-	if (!path || !isAbsolute(path)) return undefined
+	if (path && !path.includes("\n") && isAbsolute(path)) return path
+	if (process.env.GLAB_CONFIG_DIR) return join(process.env.GLAB_CONFIG_DIR, "config.yml")
+	// Older glab reads the same file unless several exist; before 1.76 it preferred its XDG config folder.
+	const legacy = join(homedir(), ".config", "glab-cli", "config.yml")
+	if (existsSync(legacy)) return legacy
+	const xdg = process.env.XDG_CONFIG_HOME
+	const base =
+		xdg && isAbsolute(xdg)
+			? xdg
+			: process.platform === "darwin"
+				? join(homedir(), "Library", "Application Support")
+				: process.platform === "win32"
+					? (process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"))
+					: join(homedir(), ".config")
+	return join(base, "glab-cli", "config.yml")
+}
+
+async function gitlabCredential(host: string, signal: AbortSignal, deadline: number): Promise<string | undefined> {
+	const path = await glabConfigPath(signal, deadline)
 	let entry: unknown
 	try {
 		const file = statSync(path)
@@ -124,9 +145,14 @@ async function gitlabCredential(host: string, signal: AbortSignal, deadline: num
 	}
 	if (!object(entry)) return undefined
 	// glab's token command can fall back to an unrelated global or local token.
-	// Plaintext credentials must be stored under this exact host.
-	if (entry.use_keyring !== true && entry.use_keyring !== "true")
-		return typeof entry.token === "string" ? entry.token.trim() || undefined : undefined
+	// Plaintext credentials must be stored under this exact host. Before 1.84,
+	// a keyring login left the host's token empty instead of setting use_keyring.
+	const token = typeof entry.token === "string" ? entry.token.trim() : entry.token
+	const keyring =
+		entry.use_keyring === true ||
+		entry.use_keyring === "true" ||
+		((token ?? "") === "" && entry.use_keyring !== false && entry.use_keyring !== "false")
+	if (!keyring) return typeof token === "string" ? token || undefined : undefined
 	let directory: string | undefined
 	try {
 		directory = mkdtempSync(join(tmpdir(), "kimchi-glab-auth-"))

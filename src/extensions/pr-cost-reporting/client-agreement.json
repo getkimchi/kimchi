@@ -18,28 +18,36 @@
 					"number": 101,
 					"url": "https://github.com/example/a/pull/101",
 					"state": "merged",
-					"mergedAt": "2026-10-04T13:00:00.000Z"
+					"mergedAt": "2026-10-04T13:00:00.000Z",
+					"title": "Change 101",
+					"author": "octocat"
 				},
 				{
 					"id": "102",
 					"number": 102,
 					"url": "https://github.com/example/a/pull/102",
 					"state": "merged",
-					"mergedAt": "2026-10-04T13:00:00.000Z"
+					"mergedAt": "2026-10-04T13:00:00.000Z",
+					"title": "Change 102",
+					"author": "octocat"
 				},
 				{
 					"id": "103",
 					"number": 103,
 					"url": "https://github.com/example/a/pull/103",
 					"state": "merged",
-					"mergedAt": "2026-10-04T13:00:00.000Z"
+					"mergedAt": "2026-10-04T13:00:00.000Z",
+					"title": "Change 103",
+					"author": "octocat"
 				},
 				{
 					"id": "104",
 					"number": 104,
 					"url": "https://github.com/example/a/pull/104",
 					"state": "merged",
-					"mergedAt": "2026-10-04T13:00:00.000Z"
+					"mergedAt": "2026-10-04T13:00:00.000Z",
+					"title": "Change 104",
+					"author": "octocat"
 				}
 			],
 			"requests": [

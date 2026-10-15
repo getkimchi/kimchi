@@ -261,3 +261,37 @@ export interface TimeSeriesDataPoint {
 	timestamp: string
 	value: number
 }
+
+// ─── Cost Breakdown API Types ────────────────────────────────────────────────
+
+/** Breakdown dimensions /session-costs reads; see GET /ai-optimizer/v1beta/organizations/{id}:generateBreakdown. */
+export type BreakdownDimension =
+	| "BREAKDOWN_DIMENSION_SESSION"
+	| "BREAKDOWN_DIMENSION_MODEL"
+	| "BREAKDOWN_DIMENSION_WORKSPACE"
+
+/** One dimension value's billed cost. Counts are uint64, which the JSON API sends as strings. */
+export interface BreakdownItem {
+	dimensionValue?: string
+	displayName?: string
+	totalCostUsd?: string
+	requestCount?: string
+	topModels?: string[]
+	lastActiveTime?: string
+	autoCostUsd?: string
+	autoRequestCount?: string
+	autoModels?: string[]
+}
+
+export interface BreakdownTotals {
+	totalCostUsd?: string
+	requestCount?: string
+	autoCostUsd?: string
+	autoRequestCount?: string
+}
+
+export interface GenerateBreakdownResponse {
+	items?: BreakdownItem[]
+	totals?: BreakdownTotals
+	nextPageToken?: string
+}

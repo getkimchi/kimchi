@@ -33,6 +33,8 @@ function pull(number: number, repository: "a" | "b"): WorkPullRequest {
 		host: "github.com",
 		repository: `example/${repository}`,
 		number,
+		// Display metadata is optional: repository b's link was saved by a version that did not read it.
+		...(repository === "a" ? { title: `Change ${number}`, author: "octocat" } : {}),
 		url: `https://github.com/example/${repository}/pull/${number}`,
 		state: "merged",
 		mergedAt: merged,

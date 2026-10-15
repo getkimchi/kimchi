@@ -6,8 +6,8 @@ import type { Theme } from "@earendil-works/pi-coding-agent"
 import { formatCount } from "../format.js"
 import type { GenerateAnalyticsResponse, GetProductivityMetricsResponse, ProviderProductivityMetrics } from "./types.js"
 
-export function formatCurrency(amount: string | number): string {
-	const num = typeof amount === "string" ? Number.parseFloat(amount) : amount
+export function formatCurrency(amount: string | number | undefined): string {
+	const num = typeof amount === "string" ? Number.parseFloat(amount) : Number(amount)
 	if (Number.isNaN(num)) return "$0.00"
 	return `$${num.toFixed(2)}`
 }

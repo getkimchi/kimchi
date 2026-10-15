@@ -64,6 +64,21 @@ export function label(repository: Pick<Repository, "provider">): string {
 	return repository.provider === "gitlab" ? "GitLab" : "GitHub"
 }
 
+/** PR cost uploads bound a PR's title and author login in characters (code points), as the server counts them. */
+const MAX_TITLE_CHARACTERS = 1024
+const MAX_AUTHOR_CHARACTERS = 255
+
+/** A title cut to the upload bound; a missing, empty or non-text title is unknown. */
+export function pullRequestTitle(value: unknown): string | undefined {
+	// Whole characters: cutting UTF-16 units could leave half a surrogate pair, which the server rejects.
+	return typeof value === "string" && value ? Array.from(value).slice(0, MAX_TITLE_CHARACTERS).join("") : undefined
+}
+
+/** An author login; one past the bound is unknown rather than cut, because a shorter login names someone else. */
+export function pullRequestAuthor(value: unknown): string | undefined {
+	return typeof value === "string" && value && Array.from(value).length <= MAX_AUTHOR_CHARACTERS ? value : undefined
+}
+
 export function pullRequest(
 	value: unknown,
 	repository: Pick<Repository, "host" | "provider">,
@@ -101,6 +116,10 @@ export function pullRequest(
 		throw new LookupError(`${label(repository)} returned an invalid pull request.`, "invalid")
 	const url = httpsURL(provider === "gitlab" ? value.web_url : value.html_url)
 	const id = providerId(value.id)
+	// Display metadata only: a missing or malformed title or author never invalidates the link.
+	const title = pullRequestTitle(value.title)
+	const user = provider === "gitlab" ? value.author : value.user
+	const author = object(user) ? pullRequestAuthor(provider === "gitlab" ? user.username : user.login) : undefined
 	const repositoryId = providerId(
 		provider === "gitlab"
 			? value.target_project_id
@@ -120,6 +139,8 @@ export function pullRequest(
 		...(repositoryId ? { repositoryId } : {}),
 		url: url.href,
 		number,
+		...(title ? { title } : {}),
+		...(author ? { author } : {}),
 		state,
 		repository: path[1],
 		host,
@@ -149,6 +170,10 @@ export function storedPullRequests(value: unknown): WorkPullRequest[] {
 						web_url: item.url,
 						number: item.number,
 						iid: item.number,
+						// Links saved by older versions have neither; they stay valid without them.
+						title: item.title,
+						user: { login: item.author },
+						author: { username: item.author },
 						state:
 							provider === "gitlab"
 								? item.state === "open"

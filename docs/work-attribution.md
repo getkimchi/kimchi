@@ -143,7 +143,7 @@ Segments distinguish an explicit plan or work choice, a model inference, ordinar
 
 Automatic continuation also requires the same verified account and Git repository. New work saves the API endpoint, organization, user and Git common-directory identity in `scope.json`; requests retain that scope. Another worktree of the same repository can continue it. Switching account or repository starts separate work. Missing account verification, a non-Git directory or an older work without scope prevents automatic adoption; matching then stays unresolved without a warning. `/work <plan path>` refuses a plan whose work was saved for another verified account or repository and keeps the current work. A plan without saved scope remains an explicit local choice; older records are never assigned today's account just because they were reopened.
 
-If account verification is unavailable for a new work's first input, the work keeps waiting for its scope and saves it at the next verified message under the same API key and endpoint; a changed key starts new work instead. Requests made before that stay unscoped. If an existing work's scope file is missing or damaged, the next message starts newly scoped work. An explicit `/work` choice remains selected, with missing scope still unknown. Earlier request records stay unchanged; Kimchi does not fill their missing account data with the current login.
+New work saves its scope before its first request, including a turn that a command such as `/ferment` or an extension message starts without a typed message. If account verification is unavailable then, the work keeps waiting for its scope and saves it at the next verified message or turn under the same API key and endpoint; a changed key starts new work instead. Requests made before that stay unscoped. If an existing work's scope file is missing or damaged, the next message starts newly scoped work. An explicit `/work` choice remains selected, with missing scope still unknown. Earlier request records stay unchanged; Kimchi does not fill their missing account data with the current login.
 
 #### Correct earlier requests
 
@@ -279,6 +279,7 @@ Each commit keeps two extra fields, `prLookup` and `pullRequests[]`. The rows af
 | `pullRequests[]` | Confirmed GitHub or GitLab links. The existing field name stays the same for compatibility; later errors do not erase links. |
 | `provider` / `number` | `github` uses the PR number; `gitlab` uses the project's MR number (`iid`), not its global ID. Older links without `provider` mean GitHub. |
 | `id` / `repositoryId` | Stable provider IDs for the PR or MR and its target repository, when returned. These survive repository renames; older records can omit them. |
+| `title` / `author` | The provider's title, cut to 1,024 characters, and the author's login (GitHub `user.login`, GitLab `author.username`), read from the responses lookup already receives. Only PR cost reporting uploads them; `/work` and the footer do not show them. Empty or malformed values are left out. Older records omit both and gain them on the link's next check; a merged link with stable IDs is no longer checked, so one saved by an earlier version usually keeps omitting them. |
 | `headSha` / `mergeCommitSha` | The head commit and the provider's merge hash. GitHub may return a test-merge hash before merging; use `state` to establish an actual merge. |
 | `mergedAt` / `closedAt` / `checkedAt` | Provider event times, or `null` when unavailable, and when Kimchi checked the link. GitLab's state can be `merged` even when its response omits `mergedAt`. |
 
@@ -291,6 +292,8 @@ The PR entrypoint, provider queries and their tests live in `src/extensions/pull
 GitHub's commit-to-PR endpoint may omit a PR that was closed before Kimchi ever found it. Known closed PRs are rechecked so reopening is detected.
 
 Kimchi tries credentials in this order: an environment token for the selected host, a saved Kimchi Git token for that host, then the matching CLI's saved token. It does not prompt, install a CLI, or change your login. A rejected token produces an error instead of silently trying another identity. A `glab` token saved without a host is ignored.
+
+`glab` before 1.115 has no `glab config path`. Kimchi then finds its `config.yml` the way glab 1.76 and later do: `$GLAB_CONFIG_DIR`, then `~/.config/glab-cli`, then the XDG config folder (`~/Library/Application Support/glab-cli` on macOS, `%LOCALAPPDATA%\glab-cli` on Windows). If several of these files exist, glab 1.75 and earlier may use a different one. Keyring logins are read through `glab`, including those saved before 1.84 without a `use_keyring` setting.
 
 | Available access | Result |
 | --- | --- |

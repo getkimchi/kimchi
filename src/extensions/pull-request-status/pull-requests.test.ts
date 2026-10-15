@@ -10,7 +10,7 @@ import {
 	writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { parse as parseYaml } from "yaml"
 import * as summaries from "../work-attribution/summary.js"
@@ -178,6 +178,12 @@ function gitlabConfig(contents: string): string {
 	writeFileSync(path, contents)
 	return path
 }
+/** Saves a glab config.yml whose gitlab.com login is `token`, in a folder below the test's home. */
+function glabHome(folder: string, token: string): void {
+	const path = join(directory, folder, "config.yml")
+	mkdirSync(dirname(path), { recursive: true })
+	writeFileSync(path, `hosts:\n  gitlab.com:\n    token: ${token}\n`)
+}
 
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "kimchi-pull-requests-"))
@@ -186,6 +192,10 @@ beforeEach(() => {
 	mkdirSync(repository)
 	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir)
 	for (const name of authEnv) vi.stubEnv(name, undefined)
+	// Without `glab config path`, lookups read glab's files below the home folder; keep real logins out.
+	vi.stubEnv("HOME", directory)
+	for (const name of ["USERPROFILE", "XDG_CONFIG_HOME", "LOCALAPPDATA", "GLAB_CONFIG_DIR", "NO_PROMPT"])
+		vi.stubEnv(name, undefined)
 	updates = []
 	cli.git.mockReset()
 	cli.auth.mockReset().mockResolvedValue(undefined)
@@ -280,6 +290,8 @@ describe("native provider credentials", () => {
 		vi.stubEnv("GH_REPO", "wrong/repository")
 		vi.stubEnv("GLAB_ENABLE_CI_AUTOLOGIN", "true")
 		vi.stubEnv("GITLAB_CI", "true")
+		// glab 1.80-1.100 print this variable's deprecation warning on stdout, ahead of the token.
+		vi.stubEnv("NO_PROMPT", "true")
 		cli.auth.mockResolvedValue(
 			provider === "github" ? "cli-test-token" : gitlabConfig("hosts:\n  gitlab.com:\n    token: cli-test-token\n"),
 		)
@@ -289,7 +301,7 @@ describe("native provider credentials", () => {
 		expect([command, args]).toEqual(
 			provider === "github" ? ["gh", ["auth", "token", "--hostname", "github.com"]] : ["glab", ["config", "path"]],
 		)
-		for (const name of [...authEnv, "GIT_DIR", "GH_REPO"]) expect(options.env?.[name]).toBeUndefined()
+		for (const name of [...authEnv, "GIT_DIR", "GH_REPO", "NO_PROMPT"]) expect(options.env?.[name]).toBeUndefined()
 		expect(options.env).toMatchObject({
 			GH_PROMPT_DISABLED: "1",
 			GH_NO_UPDATE_NOTIFIER: "1",
@@ -376,10 +388,10 @@ describe("native provider credentials", () => {
 		expect(cli.auth.mock.calls.map(([, args]) => args)).toEqual([["config", "path"]])
 	})
 	it.each([
-		"hosts:\n  gitlab.com: {}\n",
 		"hosts:\n  other.example.test:\n    token: other-host-token\n",
 		"hosts:\n  gitlab.com:\n    token: 123\n",
-		"hosts:\n  gitlab.com:\n    token: ''\n",
+		"hosts:\n  gitlab.com:\n    use_keyring: false\n",
+		"hosts:\n  gitlab.com:\n    use_keyring: 'false'\n",
 		"hosts: [\n",
 	])("does not use glab fallback credentials without a valid scoped token: %s", async (contents) => {
 		seed()
@@ -454,6 +466,75 @@ describe("native provider credentials", () => {
 		expect(temporary && existsSync(temporary)).toBe(false)
 		expect(http).not.toHaveBeenCalled()
 		expect(existsSync(join(agentDir, "work-attribution", "writer.jsonl"))).toBe(false)
+	})
+	it.each([
+		["prints its help, as glab 1.73 and 1.75-1.114 do", "Manage key/value strings.\n\n  Current respected settings:"],
+		["is an unknown command, as glab 1.72 and older", undefined],
+	])("finds an older glab's login when `glab config path` %s", async (_case, output) => {
+		seed()
+		useProvider("gitlab")
+		glabHome(".config/glab-cli", "older-glab-token")
+		cli.auth.mockImplementation(async (_command, args) => (args[1] === "path" ? output : "unexpected-command-token"))
+		await lookup()
+		expect(cli.auth.mock.calls.map(([, args]) => args)).toEqual([["config", "path"]])
+		expect(http).toHaveBeenCalled()
+		for (const [, options] of http.mock.calls)
+			expect(new Headers(options.headers).get("authorization")).toBe("Bearer older-glab-token")
+	})
+	it.each([
+		["GLAB_CONFIG_DIR", "custom-token"],
+		["~/.config ahead of XDG_CONFIG_HOME, as glab 1.76+", "legacy-token"],
+		["XDG_CONFIG_HOME", "xdg-token"],
+		["Application Support on macOS", "app-support-token"],
+	])("reads an older glab's login from %s", async (location, token) => {
+		seed()
+		useProvider("gitlab")
+		if (location !== "XDG_CONFIG_HOME" && location !== "Application Support on macOS")
+			glabHome(".config/glab-cli", "legacy-token")
+		if (location === "GLAB_CONFIG_DIR") {
+			vi.stubEnv("GLAB_CONFIG_DIR", join(directory, "custom"))
+			glabHome("custom", "custom-token")
+		} else if (location !== "Application Support on macOS") {
+			vi.stubEnv("XDG_CONFIG_HOME", join(directory, "xdg"))
+			glabHome("xdg/glab-cli", "xdg-token")
+		}
+		const platform = process.platform
+		if (location === "Application Support on macOS") {
+			Object.defineProperty(process, "platform", { value: "darwin" })
+			glabHome("Library/Application Support/glab-cli", "app-support-token")
+		}
+		try {
+			await lookup()
+		} finally {
+			Object.defineProperty(process, "platform", { value: platform })
+		}
+		expect(http).toHaveBeenCalled()
+		for (const [, options] of http.mock.calls)
+			expect(new Headers(options.headers).get("authorization")).toBe(`Bearer ${token}`)
+	})
+	it.each([
+		"hosts:\n  gitlab.com: {}\n",
+		"hosts:\n  gitlab.com:\n    git_protocol: ssh\n",
+		"hosts:\n  gitlab.com:\n    token:\n",
+		"hosts:\n  gitlab.com:\n    token: ''\n",
+	])("asks the keyring for a login that glab before 1.84 saved without a token: %s", async (contents) => {
+		seed()
+		useProvider("gitlab")
+		const path = gitlabConfig(`token: global-token\n${contents}`)
+		cli.auth.mockImplementation(async (_command, args, options) => {
+			if (args[1] === "path") return path
+			expect(args).toEqual(["config", "get", "token", "--host", "gitlab.com"])
+			const isolated = options.env?.GLAB_CONFIG_DIR
+			expect(isolated && parseYaml(readFileSync(join(isolated, "config.yml"), "utf8"))).toEqual({
+				hosts: { "gitlab.com": { use_keyring: "true" } },
+			})
+			return "keyring-token"
+		})
+		await lookup()
+		expect(cli.auth).toHaveBeenCalledTimes(2)
+		expect(http).toHaveBeenCalled()
+		for (const [, options] of http.mock.calls)
+			expect(new Headers(options.headers).get("authorization")).toBe("Bearer keyring-token")
 	})
 })
 
@@ -1165,6 +1246,68 @@ describe("durable work pull request discovery", () => {
 		await lookup()
 		expect(reads.mock.calls[2][1]).toBe(checkpoint)
 		expect(commitCalls()).toHaveLength(2)
+	})
+})
+
+describe("PR titles and author logins", () => {
+	const titled = (provider: Provider) =>
+		provider === "github"
+			? pull(7, { title: "Fix the login redirect", user: { login: "octocat", id: 1 } })
+			: mr(7, { title: "Fix the login redirect", author: { username: "octocat", id: 1 } })
+	it.each(providers)("keeps the %s title and author it already receives across a restart", async (provider) => {
+		seed()
+		useProvider(provider)
+		replies(() => [titled(provider)])
+		await lookup()
+		// The repository identity and the commit's associations; display metadata needs no request of its own.
+		expect(http).toHaveBeenCalledTimes(2)
+		expect(saved().at(-1).pullRequests).toEqual([
+			expect.objectContaining({ number: 7, title: "Fix the login redirect", author: "octocat" }),
+		])
+		vi.resetModules()
+		const relaunched = await import("./pull-requests.js")
+		expect(relaunched.readWorkPullRequestUpdates(agentDir)[0].pullRequests).toEqual([
+			expect.objectContaining({ provider, number: 7, title: "Fix the login redirect", author: "octocat" }),
+		])
+	})
+	it.each([
+		["github", {}],
+		["github", { title: "", user: { login: "" } }],
+		["github", { title: 42, user: "octocat" }],
+		["github", { title: null, user: { login: "a".repeat(256) } }],
+		["gitlab", {}],
+		["gitlab", { title: "", author: { username: "" } }],
+		["gitlab", { title: 42, author: "octocat" }],
+		["gitlab", { title: null, author: { username: "a".repeat(256) } }],
+	] as const)("links a %s PR and leaves out a missing or malformed title and author: %j", async (provider, fields) => {
+		seed()
+		useProvider(provider)
+		replies(() => [provider === "github" ? pull(7, fields) : mr(7, fields)])
+		await lookup()
+		const [link] = saved().at(-1).pullRequests
+		expect(saved().at(-1).prLookup.status).toBe("linked")
+		expect(link).toMatchObject({ provider, number: 7, state: "open" })
+		expect(link).not.toHaveProperty("title")
+		expect(link).not.toHaveProperty("author")
+	})
+	it.each(providers)("keeps reading %s links saved without them and adds them on the next check", async (provider) => {
+		const id = String(provider === "github" ? pull().id : mr().id)
+		// A link saved by an earlier version.
+		seed({
+			prLookup: { status: "linked", checkedAt: "2026-10-01T12:00:00Z" },
+			pullRequests: [stored(provider, { id, repositoryId: "42" })],
+		})
+		useProvider(provider)
+		const [before] = readWorkPullRequestUpdates(agentDir)[0].pullRequests
+		expect(before).toMatchObject({ provider, id, number: 7, state: "open" })
+		expect(before).not.toHaveProperty("title")
+		expect(before).not.toHaveProperty("author")
+		replies(() => [titled(provider)])
+		await lookup()
+		expect(saved().at(-1)).toMatchObject({
+			prLookup: { status: "linked" },
+			pullRequests: [{ id, number: 7, title: "Fix the login redirect", author: "octocat" }],
+		})
 	})
 })
 
