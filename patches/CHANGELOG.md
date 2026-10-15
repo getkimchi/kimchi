@@ -53,6 +53,13 @@ but are only drained by the next fresh run).
   after a programmatic abort to drain retained queues; 1.2 does not (queues
   drain on the next run). Kimchi's bash-background contract tests now drive
   recovery with a fresh prompt instead of asserting the auto-drain.
+- **PORTED (2026-10-15, post-rebase) — auth-storage hunk re-shaped to the
+  master-era root fix.** Master's `fix(auth)` (#1425) reworked the 0.85.1
+  lock-free-reads hunk after this branch's initial 1.2 rebase: the hunk now
+  returns the bare credential map (upstream `readLatestData` unwrap shape
+  restored — the `{ result }` wrapper was our own leak), retries torn reads
+  with backoff, and treats a 0-byte `content === ""` read as a tear. Same
+  code applied verbatim to the 1.2.0 patch; `src/pi-auth*` tests 18/18.
 
 ### `@earendil-works/pi-tui`
 

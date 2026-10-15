@@ -13,7 +13,7 @@ patchedDependencies:
     hash: 3001f6ef3c5db7261046c224f6217c7b2a146ca42a7a1feeadd09336b80d8641
     path: patches/@earendil-works__pi-ai@1.2.0.patch
   '@earendil-works/pi-coding-agent@1.2.0':
-    hash: f6d326af3e30dc1ad5a97a5eaad86389e3614b78d40678e98389527419d61146
+    hash: e544635f5867d28a96f916444026361f636b6717f61bb7bcac5950793a3c2a50
     path: patches/@earendil-works__pi-coding-agent@1.2.0.patch
   '@earendil-works/pi-tui@1.2.0':
     hash: c427d2eec7c067e7b85590ecd89f7d3e43a8260be373a52074c60369860e8926
@@ -43,13 +43,13 @@ importers:
         version: 1.3.0
       '@earendil-works/pi-coding-agent':
         specifier: 1.2.0
-        version: 1.2.0(patch_hash=f6d326af3e30dc1ad5a97a5eaad86389e3614b78d40678e98389527419d61146)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
+        version: 1.2.0(patch_hash=e544635f5867d28a96f916444026361f636b6717f61bb7bcac5950793a3c2a50)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-tui':
         specifier: 1.2.0
         version: 1.2.0(patch_hash=c427d2eec7c067e7b85590ecd89f7d3e43a8260be373a52074c60369860e8926)
       '@kimchi-dev/kimchi-workflows':
         specifier: 0.0.9
-        version: 0.0.9(@earendil-works/pi-coding-agent@1.2.0(patch_hash=f6d326af3e30dc1ad5a97a5eaad86389e3614b78d40678e98389527419d61146)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@1.2.0(patch_hash=c427d2eec7c067e7b85590ecd89f7d3e43a8260be373a52074c60369860e8926))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))
+        version: 0.0.9(@earendil-works/pi-coding-agent@1.2.0(patch_hash=e544635f5867d28a96f916444026361f636b6717f61bb7bcac5950793a3c2a50)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@1.2.0(patch_hash=c427d2eec7c067e7b85590ecd89f7d3e43a8260be373a52074c60369860e8926))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))
       '@modelcontextprotocol/client':
         specifier: 2.3.1
         version: 2.3.1(patch_hash=6818576eba7396828c654c5c7a184eacc8d82eba91d0f97ab1e459de45023e03)
@@ -3731,7 +3731,7 @@ snapshots:
     dependencies:
       quickjs-wasi: 3.6.2
 
-  '@earendil-works/pi-coding-agent@1.2.0(patch_hash=f6d326af3e30dc1ad5a97a5eaad86389e3614b78d40678e98389527419d61146)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)':
+  '@earendil-works/pi-coding-agent@1.2.0(patch_hash=e544635f5867d28a96f916444026361f636b6717f61bb7bcac5950793a3c2a50)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)':
     dependencies:
       '@earendil-works/pi-agent-core': 1.2.0(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.10.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-ai': 1.2.0(patch_hash=3001f6ef3c5db7261046c224f6217c7b2a146ca42a7a1feeadd09336b80d8641)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.10.2)(ws@8.20.1)(zod@4.4.3)
@@ -3919,9 +3919,9 @@ snapshots:
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
-  '@kimchi-dev/kimchi-workflows@0.0.9(@earendil-works/pi-coding-agent@1.2.0(patch_hash=f6d326af3e30dc1ad5a97a5eaad86389e3614b78d40678e98389527419d61146)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@1.2.0(patch_hash=c427d2eec7c067e7b85590ecd89f7d3e43a8260be373a52074c60369860e8926))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))':
+  '@kimchi-dev/kimchi-workflows@0.0.9(@earendil-works/pi-coding-agent@1.2.0(patch_hash=e544635f5867d28a96f916444026361f636b6717f61bb7bcac5950793a3c2a50)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@1.2.0(patch_hash=c427d2eec7c067e7b85590ecd89f7d3e43a8260be373a52074c60369860e8926))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))':
     dependencies:
-      '@earendil-works/pi-coding-agent': 1.2.0(patch_hash=f6d326af3e30dc1ad5a97a5eaad86389e3614b78d40678e98389527419d61146)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
+      '@earendil-works/pi-coding-agent': 1.2.0(patch_hash=e544635f5867d28a96f916444026361f636b6717f61bb7bcac5950793a3c2a50)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-tui': 1.2.0(patch_hash=c427d2eec7c067e7b85590ecd89f7d3e43a8260be373a52074c60369860e8926)
       '@types/node': 22.19.18
       cross-spawn: 7.0.6

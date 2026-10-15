@@ -213,51 +213,52 @@ index c16f5da1b0902b04152e4d550f3fe601249e3b42..cde5b444d7a960438ef984076f8f997b
                      }
                      catch (error) {
 diff --git a/dist/core/auth-storage.js b/dist/core/auth-storage.js
-index 021c379011448cdf5a656294864b4f2f23dd7c13..c1745994528706b870047eeccd25b2d97fb79bc2 100644
+index 021c379011448cdf5a656294864b4f2f23dd7c13..551a1acecf7882bd0a226685b8606c7732a957c4 100644
 --- a/dist/core/auth-storage.js
 +++ b/dist/core/auth-storage.js
-@@ -327,6 +327,21 @@ export class AuthStorage {
+@@ -327,6 +327,42 @@ export class AuthStorage {
          }
      }
      async reloadFromStorageAsync(options) {
-+        // Reads do not need the exclusive lock when backed by a file:
-+        // auth.json is a small file written atomically via a single
-+        // writeFileSync. The lock is only needed for modify()'s
-+        // read-modify-write cycle. Reading directly avoids 30s lock-wait
-+        // stalls when another process (or an orphaned lock from a crashed
-+        // process) holds the write lock during startup.
++        // File-backed reads skip the exclusive lock (needed only for
++        // modify()'s read-modify-write): a crashed process's orphaned lock
++        // otherwise stalls startup reads for 30s. Must return the bare
++        // credential map — the shape withLockAsync produces after
++        // destructuring { result, next }.
 +        if (this.authPath) {
-+            options?.signal?.throwIfAborted();
-+            const content = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
-+            const currentData = this.parseStorageData(content);
-+            const revision = getFileRevision(this.authPath);
-+            this.updateReadState(currentData, revision);
-+            return { result: currentData };
++            // A lock-free read can observe a partial file mid-write (upstream
++            // modify() is truncate-then-write; kimchi's syncPiAuth is atomic).
++            // Tears are transient — retry with backoff.
++            const RETRIES = 3;
++            const BACKOFF_MS = 10;
++            for (let attempt = 0; ; attempt++) {
++                options?.signal?.throwIfAborted();
++                try {
++                    const content = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
++                    // parseStorageData() maps empty content to {} WITHOUT
++                    // throwing, so a read sampling a non-atomic writer's
++                    // open(O_TRUNC) window would resolve "no credentials" and
++                    // skip the retry — the request then hard-fails its auth
++                    // fallback. Treat the 0-byte read as a tear; a missing
++                    // file (content === undefined) stays a valid
++                    // no-credentials state.
++                    if (content === "")
++                        throw new Error("auth.json read empty (torn non-atomic write)");
++                    const currentData = this.parseStorageData(content);
++                    this.updateReadState(currentData, getFileRevision(this.authPath));
++                    return currentData;
++                }
++                catch (error) {
++                    if (attempt >= RETRIES)
++                        throw error;
++                    await new Promise((resolve) => setTimeout(resolve, BACKOFF_MS));
++                }
++            }
 +        }
 +        // In-memory storage: no file, no lock contention — use the backend.
          return this.storage.withLockAsync(async (content) => {
              const currentData = this.parseStorageData(content);
              const revision = this.authPath ? getFileRevision(this.authPath) : undefined;
-@@ -337,7 +352,8 @@ export class AuthStorage {
-     async readLatestData(options) {
-         options?.signal?.throwIfAborted();
-         if (!this.authPath) {
--            const reload = this.reloadFromStorageAsync(options);
-+            // Kimchi patch: unwrap { result: data } so callers receive the credential map.
-+            const reload = this.reloadFromStorageAsync(options).then((outcome) => outcome.result);
-             return options?.signal ? reload : reload.catch(() => this.readState.data);
-         }
-         const revision = getFileRevision(this.authPath);
-@@ -362,7 +378,8 @@ export class AuthStorage {
-         const reload = this.readState.reload;
-         reload.readers++;
-         try {
--            const result = raceWithAbortSignal(reload.promise, options?.signal);
-+            // Kimchi patch: unwrap { result: data } so callers receive the credential map.
-+            const result = raceWithAbortSignal(reload.promise.then((outcome) => outcome.result), options?.signal);
-             return options?.signal ? await result : await result.catch(() => this.readState.data);
-         }
-         finally {
 diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
 index f9292e82120e4afbc3702b11d684867ae0ff7033..d44374d5d5847597086b6b592d663aa26ce87a09 100644
 --- a/dist/core/extensions/loader.js
