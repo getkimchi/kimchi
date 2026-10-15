@@ -6,7 +6,6 @@
 #   source change and regression tests is planned against it). The /model
 #   selector and remaining runtime/UI hunks are still publication pending; no
 #   upstream issue or PR has been filed for those.
-# Removal: each hunk below declares its own Removal field (see per-hunk entries).
 # Changes:
 #   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
 #     compaction, model selection, extension UI helpers, and compact visuals.
