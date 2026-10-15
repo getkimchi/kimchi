@@ -55,6 +55,30 @@ pipe-cleanup hunk grew into the shared termination helper).
   pinned as expected failure with explicit teardown.
 - Removal: delete the hunk when the pinned Pi release ships equivalent bounded
   abort cleanup (upstream: pi#10929) and keep the Kimchi regression tests.
+## @earendil-works/pi-coding-agent@0.85.1 (mid-version, corrective) — lock-free read heals the 0-byte truncate window
+
+Follow-up to the torn-read retry entry above. The retry only engaged when
+`JSON.parse` threw; `parseStorageData()` maps empty content to `{}` WITHOUT
+throwing, so a read that sampled a non-atomic writer's `open(O_TRUNC)`
+window (auth.json at 0 bytes, before the first write lands) silently resolved
+"no credentials" and skipped the retry. With the credential gone, request
+uuid auth fell back to models.json's `$KIMCHI_API_KEY` template and
+hard-failed ("API key auth failed for provider … from environment variable:
+KIMCHI_API_KEY") — the exact symptom the `auth-reload-race` TUI test forbids.
+
+- **CHANGED — `reloadFromStorageAsync`: empty reads are tears.** A read that
+  returns "" counts as a torn write and retries inside the backoff window
+  (it heals 10 ms later, like a partial file does). A missing file
+  (content `undefined`) stays a valid no-credentials state — fresh installs
+  have no auth.json.
+- Regression test: `src/pi-auth-storage.test.ts` "0-byte tear" (verified to
+  fail pre-change against the published dist and the previous hunk).
+- Rebasers: same removal criterion as the parent entry — drop the whole
+  auth-storage hunk when upstream ships lock-free reads with torn-read
+  tolerance.
+
+---
+
 ## @earendil-works/pi-coding-agent@0.85.1 (mid-version, corrective) — auth-storage lock-free read shape + torn-read retry
 
 Corrects the "reload unwrap" entry above. The wrapper leak came from our own

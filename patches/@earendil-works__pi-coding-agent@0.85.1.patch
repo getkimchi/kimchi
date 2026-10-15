@@ -55,6 +55,15 @@
 #     reload. Regression tests: src/pi-auth-storage.test.ts.
 #     Removal: upstream lock-free reads with bare-map return + torn-read
 #     tolerance, atomic upstream modify(), or kimchi retaking the read lock.
+#   - Auth-storage lock-free reads handle the 0-byte truncate window: a read
+#     sampling a non-atomic writer's open(O_TRUNC) moment sees an empty file,
+#     which parseStorageData() maps to {} WITHOUT throwing — the read would
+#     silently resolve "no credentials" and request auth would hard-fail
+#     ("API key auth failed for provider …" from the models.json
+#     $KIMCHI_API_KEY fallback) instead of retrying. The hunk now treats an
+#     empty read as a torn write and retries it inside the backoff window; a
+#     missing file (content undefined) remains a valid no-credentials state.
+#     Regression test: pi-auth-storage.test.ts "0-byte tear".
   - Startup resource diagnostics: skill conflicts render as a single dim
 #     summary line ("[N skill conflicts] Some skills were found in multiple
 #     directories. <key> to see the full list.") that expands to the full
@@ -267,7 +276,7 @@ diff --git a/dist/core/auth-storage.js b/dist/core/auth-storage.js
 index 11f225b204b2d22ba2d37ecdda58e82fa23c6f0b..d7672cc4532a6d5a28ac6f8a10f31dfda9fe5c66 100644
 --- a/dist/core/auth-storage.js
 +++ b/dist/core/auth-storage.js
-@@ -320,6 +320,33 @@ export class AuthStorage {
+@@ -320,6 +320,42 @@ export class AuthStorage {
          }
      }
      async reloadFromStorageAsync(options) {
@@ -286,6 +295,15 @@ index 11f225b204b2d22ba2d37ecdda58e82fa23c6f0b..d7672cc4532a6d5a28ac6f8a10f31dfd
 +                options?.signal?.throwIfAborted();
 +                try {
 +                    const content = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
++                    // parseStorageData() maps empty content to {} WITHOUT
++                    // throwing, so a read sampling a non-atomic writer's
++                    // open(O_TRUNC) window would resolve "no credentials" and
++                    // skip the retry — the request then hard-fails its auth
++                    // fallback. Treat the 0-byte read as a tear; a missing
++                    // file (content === undefined) stays a valid
++                    // no-credentials state.
++                    if (content === "")
++                        throw new Error("auth.json read empty (torn non-atomic write)");
 +                    const currentData = this.parseStorageData(content);
 +                    this.updateReadState(currentData, getFileRevision(this.authPath));
 +                    return currentData;
@@ -305,7 +323,7 @@ diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
 index e8e8859ae1e64ef0cdc50b0d31e2927d1fa0082f..4a40f8a045287a5d3099b903fcd7dd13591282aa 100644
 --- a/dist/core/extensions/loader.js
 +++ b/dist/core/extensions/loader.js
-@@ -29,6 +29,20 @@ import { readPiManifest } from "../pi-manifest.js";
+@@ -29,6 +38,20 @@ import { readPiManifest } from "../pi-manifest.js";
  import { createSyntheticSourceInfo } from "../source-info.js";
  import { time } from "../timings.js";
  /** Modules available to extensions via virtualModules (for compiled binaries) */
@@ -326,7 +344,7 @@ index e8e8859ae1e64ef0cdc50b0d31e2927d1fa0082f..4a40f8a045287a5d3099b903fcd7dd13
  const VIRTUAL_MODULES = {
      typebox: _bundledTypebox,
      "typebox/compile": _bundledTypeboxCompile,
-@@ -41,15 +55,23 @@ const VIRTUAL_MODULES = {
+@@ -41,15 +64,23 @@ const VIRTUAL_MODULES = {
      // Extensions resolve the pi-ai root to the compat entrypoint (a strict
      // superset of the core entrypoint): existing extensions using the old
      // global API keep working at runtime until compat is removed.
@@ -354,7 +372,7 @@ index e8e8859ae1e64ef0cdc50b0d31e2927d1fa0082f..4a40f8a045287a5d3099b903fcd7dd13
      "@mariozechner/pi-ai/oauth": _bundledPiAiOauth,
      "@mariozechner/pi-ai/providers/all": _bundledPiAiProviders,
      "@mariozechner/pi-coding-agent": _bundledPiCodingAgent,
-@@ -336,9 +358,9 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
+@@ -336,9 +367,9 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
              assertActive();
              return runtime.getCommands();
          },
@@ -370,7 +388,7 @@ diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
 index 94ca0722daa6a65691587e52a6fb269417337152..540b2edbee74d896773f5e406792c4b585cb6003 100644
 --- a/dist/core/extensions/types.d.ts
 +++ b/dist/core/extensions/types.d.ts
-@@ -189,6 +189,16 @@ export interface ExtensionUIContext {
+@@ -189,6 +198,16 @@ export interface ExtensionUIContext {
      getToolsExpanded(): boolean;
      /** Set tool output expansion state. */
      setToolsExpanded(expanded: boolean): void;
@@ -387,7 +405,7 @@ index 94ca0722daa6a65691587e52a6fb269417337152..540b2edbee74d896773f5e406792c4b5
  }
  export interface ContextUsage {
      /** Estimated context tokens, or null if unknown (e.g. right after compaction, before next LLM response). */
-@@ -199,6 +209,9 @@ export interface ContextUsage {
+@@ -199,6 +218,9 @@ export interface ContextUsage {
  }
  export interface CompactOptions {
      customInstructions?: string;
@@ -397,7 +415,7 @@ index 94ca0722daa6a65691587e52a6fb269417337152..540b2edbee74d896773f5e406792c4b5
      onComplete?: (result: CompactionResult) => void;
      onError?: (error: Error) => void;
  }
-@@ -1000,10 +1013,14 @@ export interface ExtensionAPI {
+@@ -1000,10 +1022,14 @@ export interface ExtensionAPI {
      /** Get available slash commands in the current session. */
      getCommands(): SlashCommandInfo[];
      /**
@@ -414,7 +432,7 @@ index 94ca0722daa6a65691587e52a6fb269417337152..540b2edbee74d896773f5e406792c4b5
      /** Get current thinking level. */
      getThinkingLevel(): ThinkingLevel;
      /**
-@@ -1202,7 +1219,9 @@ export type GetAllToolsHandler = () => ToolInfo[];
+@@ -1202,7 +1228,9 @@ export type GetAllToolsHandler = () => ToolInfo[];
  export type GetCommandsHandler = () => SlashCommandInfo[];
  export type SetActiveToolsHandler = (toolNames: string[]) => void;
  export type RefreshToolsHandler = () => void;
@@ -429,7 +447,7 @@ diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
 index d7940e14deb53a3a18237c51c5afb5712686f0ba..3eb37029df2956903d681c7ded12d212a5aae463 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
-@@ -39,6 +39,7 @@ export const defaultModelPerProvider = {
+@@ -39,6 +48,7 @@ export const defaultModelPerProvider = {
      opencode: "kimi-k2.6",
      "opencode-go": "kimi-k2.6",
      "kimi-coding": "kimi-for-coding",
@@ -441,7 +459,7 @@ diff --git a/dist/core/model-runtime.js b/dist/core/model-runtime.js
 index fbcc6cb95e08390559fd4b0a554b0c8ec37d5be5..4f3a52b8b5f9ec6fe8d9faf46f6336fb37fef19b 100644
 --- a/dist/core/model-runtime.js
 +++ b/dist/core/model-runtime.js
-@@ -82,6 +82,7 @@ export class ModelRuntime {
+@@ -82,6 +91,7 @@ export class ModelRuntime {
          const builtinModelDataGeneratedAt = builtinProviderCatalog.getBuiltinModelDataGeneratedAt();
          const providers = builtinProviderCatalog
              .builtinProviders()
@@ -453,7 +471,7 @@ diff --git a/dist/core/project-trust.js b/dist/core/project-trust.js
 index 2f85768ab02be1e733036a31d02fb75c2f417df2..708cee0fddf4e9a938c24f4264289dbc7e57c1b0 100644
 --- a/dist/core/project-trust.js
 +++ b/dist/core/project-trust.js
-@@ -2,7 +2,10 @@ import { APP_NAME, CONFIG_DIR_NAME } from "../config.js";
+@@ -2,7 +11,10 @@ import { APP_NAME, CONFIG_DIR_NAME } from "../config.js";
  import { emitProjectTrustEvent } from "./extensions/runner.js";
  import { getProjectTrustOptions, hasTrustRequiringProjectResources, } from "./trust-manager.js";
  function formatProjectTrustPrompt(cwd) {
@@ -469,7 +487,7 @@ diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
 index c5ed4d72cd596fe384af4c7b9526247e86e4d91b..551ba46e610f90a634ad07ed6b26ca6602d98540 100644
 --- a/dist/core/resource-loader.js
 +++ b/dist/core/resource-loader.js
-@@ -459,9 +459,16 @@ export class DefaultResourceLoader {
+@@ -459,9 +468,16 @@ export class DefaultResourceLoader {
      addExtensionConflictDiagnostics(extensionsResult) {
          // Detect extension conflicts (tools, commands, flags with same names from different extensions)
          // Keep all extensions loaded. Conflicts are reported as diagnostics, and precedence is handled by load order.
@@ -487,7 +505,7 @@ index c5ed4d72cd596fe384af4c7b9526247e86e4d91b..551ba46e610f90a634ad07ed6b26ca66
          }
      }
      mapSkillPath(resource, metadataByPath) {
-@@ -842,7 +849,7 @@ export class DefaultResourceLoader {
+@@ -842,7 +858,7 @@ export class DefaultResourceLoader {
          const toolOwners = new Map();
          const flagOwners = new Map();
          for (const ext of extensions) {
@@ -496,7 +514,7 @@ index c5ed4d72cd596fe384af4c7b9526247e86e4d91b..551ba46e610f90a634ad07ed6b26ca66
              for (const toolName of ext.tools.keys()) {
                  const existingOwner = toolOwners.get(toolName);
                  if (existingOwner && existingOwner !== ext.path) {
-@@ -855,13 +862,16 @@ export class DefaultResourceLoader {
+@@ -855,13 +871,16 @@ export class DefaultResourceLoader {
                      toolOwners.set(toolName, ext.path);
                  }
              }
@@ -519,7 +537,7 @@ diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
 index fbb784f771553c21e993cf82200a80a854261437..110ea6baa0d4d4b0550acc581fc325513ffc6cae 100644
 --- a/dist/core/session-manager.js
 +++ b/dist/core/session-manager.js
-@@ -163,6 +163,86 @@ function getSessionContextSettings(path) {
+@@ -163,6 +172,86 @@ function getSessionContextSettings(path) {
   * Project one selected session entry into LLM/runtime messages.
   * Plain custom entries are display/state entries and do not participate in context.
   */
@@ -606,7 +624,7 @@ index fbb784f771553c21e993cf82200a80a854261437..110ea6baa0d4d4b0550acc581fc32551
  export function sessionEntryToContextMessages(entry) {
      if (entry.type === "message") {
          const message = entry.message;
-@@ -172,6 +252,18 @@ export function sessionEntryToContextMessages(entry) {
+@@ -172,6 +261,18 @@ export function sessionEntryToContextMessages(entry) {
              message.content == null) {
              return [{ ...message, content: [] }];
          }
@@ -625,7 +643,7 @@ index fbb784f771553c21e993cf82200a80a854261437..110ea6baa0d4d4b0550acc581fc32551
          return [message];
      }
      if (entry.type === "custom_message") {
-@@ -618,6 +710,7 @@ export class SessionManager {
+@@ -618,6 +719,7 @@ export class SessionManager {
      }
      _setSessionFile(sessionFile, preloadedFileEntries) {
          this.sessionFile = resolvePath(sessionFile);
@@ -633,7 +651,7 @@ index fbb784f771553c21e993cf82200a80a854261437..110ea6baa0d4d4b0550acc581fc32551
          if (existsSync(this.sessionFile)) {
              const entries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
              // If file was empty, initialize it with a valid session header. If it was
-@@ -665,6 +758,7 @@ export class SessionManager {
+@@ -665,6 +767,7 @@ export class SessionManager {
          if (this.persist) {
              const fileTimestamp = timestamp.replace(/[:.]/g, "-");
              this.sessionFile = join(this.getSessionDir(), `${fileTimestamp}_${this.sessionId}.jsonl`);
@@ -641,7 +659,7 @@ index fbb784f771553c21e993cf82200a80a854261437..110ea6baa0d4d4b0550acc581fc32551
          }
          return this.sessionFile;
      }
-@@ -682,6 +776,25 @@ export class SessionManager {
+@@ -682,6 +785,25 @@ export class SessionManager {
              this.fileEntries = this.fileEntries.concat(entries);
          }
          this._buildIndex();
@@ -667,7 +685,7 @@ index fbb784f771553c21e993cf82200a80a854261437..110ea6baa0d4d4b0550acc581fc32551
      }
      _buildIndex() {
          this.byId.clear();
-@@ -705,19 +818,111 @@ export class SessionManager {
+@@ -705,19 +827,111 @@ export class SessionManager {
              }
          }
      }
@@ -781,7 +799,7 @@ index fbb784f771553c21e993cf82200a80a854261437..110ea6baa0d4d4b0550acc581fc32551
      isPersisted() {
          return this.persist;
      }
-@@ -736,13 +941,82 @@ export class SessionManager {
+@@ -736,13 +950,82 @@ export class SessionManager {
      getSessionFile() {
          return this.sessionFile;
      }
@@ -865,7 +883,7 @@ index fbb784f771553c21e993cf82200a80a854261437..110ea6baa0d4d4b0550acc581fc32551
              }
              else {
                  // Mark as not flushed so when assistant arrives, all entries get written
-@@ -754,7 +1028,7 @@ export class SessionManager {
+@@ -754,7 +1037,7 @@ export class SessionManager {
              const fd = openSync(this.sessionFile, "wx");
              try {
                  for (const e of this.fileEntries) {
@@ -874,7 +892,7 @@ index fbb784f771553c21e993cf82200a80a854261437..110ea6baa0d4d4b0550acc581fc32551
                  }
              }
              finally {
-@@ -763,7 +1037,7 @@ export class SessionManager {
+@@ -763,7 +1046,7 @@ export class SessionManager {
              this.flushed = true;
          }
          else {
@@ -883,7 +901,7 @@ index fbb784f771553c21e993cf82200a80a854261437..110ea6baa0d4d4b0550acc581fc32551
          }
      }
      _appendEntry(entry) {
-@@ -815,6 +1089,45 @@ export class SessionManager {
+@@ -815,6 +1098,45 @@ export class SessionManager {
          return entry.id;
      }
      /** Append a compaction summary as child of current leaf, then advance leaf. Returns entry id. */
@@ -929,7 +947,7 @@ index fbb784f771553c21e993cf82200a80a854261437..110ea6baa0d4d4b0550acc581fc32551
      appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromHook, usage) {
          const entry = {
              type: "compaction",
-@@ -829,6 +1142,9 @@ export class SessionManager {
+@@ -829,6 +1151,9 @@ export class SessionManager {
              fromHook,
          };
          this._appendEntry(entry);
@@ -939,7 +957,7 @@ index fbb784f771553c21e993cf82200a80a854261437..110ea6baa0d4d4b0550acc581fc32551
          return entry.id;
      }
      /** Append a custom entry (for extensions) as child of current leaf, then advance leaf. Returns entry id. */
-@@ -973,6 +1289,17 @@ export class SessionManager {
+@@ -973,6 +1298,17 @@ export class SessionManager {
      buildContextEntries() {
          return buildContextEntries(this.getEntries(), this.leafId, this.byId);
      }
@@ -957,7 +975,7 @@ index fbb784f771553c21e993cf82200a80a854261437..110ea6baa0d4d4b0550acc581fc32551
      /**
       * Build the session context (what gets sent to the LLM).
       * Uses tree traversal from current leaf.
-@@ -1162,6 +1489,7 @@ export class SessionManager {
+@@ -1162,6 +1498,7 @@ export class SessionManager {
              this.fileEntries = [header, ...pathWithoutLabels, ...labelEntries];
              this.sessionId = newSessionId;
              this.sessionFile = newSessionFile;
@@ -969,7 +987,7 @@ diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
 index b71057ddcf98b8500371f7b91f8ca10f52e7a78d..c4ae0edfa1b3c9a83510f3d18adbfd89a8485ed9 100644
 --- a/dist/core/tools/bash.js
 +++ b/dist/core/tools/bash.js
-@@ -62,17 +62,31 @@ export function createLocalShellOperations(shellName, resolveShellConfig) {
+@@ -62,17 +71,31 @@ export function createLocalShellOperations(shellName, resolveShellConfig) {
                  trackDetachedChildPid(child.pid);
              let timedOut = false;
              let timeoutHandle;
@@ -1004,7 +1022,7 @@ index b71057ddcf98b8500371f7b91f8ca10f52e7a78d..c4ae0edfa1b3c9a83510f3d18adbfd89
                      }, timeoutMs);
                  }
                  // Stream stdout and stderr.
-@@ -81,9 +95,9 @@ export function createLocalShellOperations(shellName, resolveShellConfig) {
+@@ -81,9 +104,9 @@ export function createLocalShellOperations(shellName, resolveShellConfig) {
                  // Handle abort signal by killing the entire process tree.
                  if (signal) {
                      if (signal.aborted)
@@ -1016,7 +1034,7 @@ index b71057ddcf98b8500371f7b91f8ca10f52e7a78d..c4ae0edfa1b3c9a83510f3d18adbfd89
                  }
                  // Handle shell spawn errors and wait for the process to terminate without hanging
                  // on inherited stdio handles held by detached descendants.
-@@ -101,8 +115,10 @@ export function createLocalShellOperations(shellName, resolveShellConfig) {
+@@ -101,8 +124,10 @@ export function createLocalShellOperations(shellName, resolveShellConfig) {
                      untrackDetachedChildPid(child.pid);
                  if (timeoutHandle)
                      clearTimeout(timeoutHandle);
@@ -1032,7 +1050,7 @@ diff --git a/dist/core/tools/renderers/edit.js b/dist/core/tools/renderers/edit.
 index 4def3e242133187867d60178e3364e26f0dfca4d..a132e8d8196d37ff25adb545021e59838df2fdd4 100644
 --- a/dist/core/tools/renderers/edit.js
 +++ b/dist/core/tools/renderers/edit.js
-@@ -10,7 +10,7 @@ import { renderDiff } from "../../../modes/interactive/components/diff.js";
+@@ -10,7 +19,7 @@ import { renderDiff } from "../../../modes/interactive/components/diff.js";
  import { computeEditsDiff } from "../edit-diff.js";
  import { renderToolPath, str } from "../render-utils.js";
  function createEditCallRenderComponent() {
@@ -1041,7 +1059,7 @@ index 4def3e242133187867d60178e3364e26f0dfca4d..a132e8d8196d37ff25adb545021e5983
          preview: undefined,
          previewArgsKey: undefined,
          previewPending: false,
-@@ -75,14 +75,14 @@ function formatEditResult(args, preview, result, theme, isError) {
+@@ -75,14 +84,14 @@ function formatEditResult(args, preview, result, theme, isError) {
  function getEditHeaderBg(preview, settledError, theme) {
      if (preview) {
          if ("error" in preview) {
@@ -1064,14 +1082,14 @@ diff --git a/dist/core/trust-manager.js b/dist/core/trust-manager.js
 index 0877ee7edaa522a496d98dd5fc9e9133849d070e..8fbc555ca6dae3555ced6f169ffff985af5590f3 100644
 --- a/dist/core/trust-manager.js
 +++ b/dist/core/trust-manager.js
-@@ -1,5 +1,5 @@
+@@ -1,5 +10,5 @@
  import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 -import { homedir } from "node:os";
 +import { homedir, tmpdir } from "node:os";
  import { dirname, join } from "node:path";
  import lockfile from "proper-lockfile";
  import { CONFIG_DIR_NAME } from "../config.js";
-@@ -14,6 +14,38 @@ const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES = [
+@@ -14,6 +23,38 @@ const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES = [
      "SYSTEM.md",
      "APPEND_SYSTEM.md",
  ];
@@ -1110,7 +1128,7 @@ index 0877ee7edaa522a496d98dd5fc9e9133849d070e..8fbc555ca6dae3555ced6f169ffff985
  function normalizeCwd(cwd) {
      return canonicalizePath(resolvePath(cwd));
  }
-@@ -142,19 +174,38 @@ function withTrustFileLock(path, fn) {
+@@ -142,19 +183,38 @@ function withTrustFileLock(path, fn) {
  }
  /**
   * Returns true when cwd has project-local resources that must be gated by
@@ -1159,7 +1177,7 @@ diff --git a/dist/modes/interactive/components/branch-summary-message.js b/dist/
 index e23ca6db02a29814112dd4945bd868604eb6676f..d0f6fd7aeb79c6a20655805152a30970f1b4cc2a 100644
 --- a/dist/modes/interactive/components/branch-summary-message.js
 +++ b/dist/modes/interactive/components/branch-summary-message.js
-@@ -10,7 +10,7 @@ export class BranchSummaryMessageComponent extends Box {
+@@ -10,7 +19,7 @@ export class BranchSummaryMessageComponent extends Box {
      message;
      markdownTheme;
      constructor(message, markdownTheme = getMarkdownTheme()) {
@@ -1172,7 +1190,7 @@ diff --git a/dist/modes/interactive/components/compaction-summary-message.js b/d
 index 48c22718e1dff7cf4faa4cc09b8a917301b0d892..93b59defc4ecc9caf7faf907230260a1a3f7c477 100644
 --- a/dist/modes/interactive/components/compaction-summary-message.js
 +++ b/dist/modes/interactive/components/compaction-summary-message.js
-@@ -10,7 +10,7 @@ export class CompactionSummaryMessageComponent extends Box {
+@@ -10,7 +19,7 @@ export class CompactionSummaryMessageComponent extends Box {
      message;
      markdownTheme;
      constructor(message, markdownTheme = getMarkdownTheme()) {
@@ -1185,7 +1203,7 @@ diff --git a/dist/modes/interactive/components/custom-message.js b/dist/modes/in
 index 7c6fb37daea606e59d1616d24fb18d689fed6023..918f1027fa6014595cf399c456da967ff5d7d1a1 100644
 --- a/dist/modes/interactive/components/custom-message.js
 +++ b/dist/modes/interactive/components/custom-message.js
-@@ -20,7 +20,7 @@ export class CustomMessageComponent extends Container {
+@@ -20,7 +29,7 @@ export class CustomMessageComponent extends Container {
          this.outputPad = outputPad;
          this.addChild(new Spacer(1));
          // Create box with purple background (used for default rendering)
@@ -1198,7 +1216,7 @@ diff --git a/dist/modes/interactive/components/extension-selector.js b/dist/mode
 index 8220e06bc1e2b136c4b84c4af3cd29fd21b98a9f..b213a26c7ac002776850a59d7cafce4ce1379683 100644
 --- a/dist/modes/interactive/components/extension-selector.js
 +++ b/dist/modes/interactive/components/extension-selector.js
-@@ -2,7 +2,7 @@
+@@ -2,7 +11,7 @@
   * Generic selector component for extensions.
   * Displays a list of string options with keyboard navigation.
   */
@@ -1207,7 +1225,7 @@ index 8220e06bc1e2b136c4b84c4af3cd29fd21b98a9f..b213a26c7ac002776850a59d7cafce4c
  import { theme } from "../theme/theme.js";
  import { CountdownTimer } from "./countdown-timer.js";
  import { DynamicBorder } from "./dynamic-border.js";
-@@ -75,6 +75,16 @@ export class ExtensionSelectorComponent extends Container {
+@@ -75,6 +84,16 @@ export class ExtensionSelectorComponent extends Container {
          else if (kb.matches(keyData, "tui.select.cancel")) {
              this.onCancelCallback();
          }
@@ -1228,7 +1246,7 @@ diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/in
 index bd8894046f77385541fd9bd7b88268866a34a526..41dbea51183403be34687a00a30352548b8f55dd 100644
 --- a/dist/modes/interactive/components/model-selector.js
 +++ b/dist/modes/interactive/components/model-selector.js
-@@ -34,6 +34,7 @@ export class ModelSelectorComponent extends Container {
+@@ -34,6 +43,7 @@ export class ModelSelectorComponent extends Container {
      refreshStatusMessage = "Refreshing model catalogs…";
      refreshStatusSuccess = false;
      tui;
@@ -1236,7 +1254,7 @@ index bd8894046f77385541fd9bd7b88268866a34a526..41dbea51183403be34687a00a3035254
      scopedModels;
      defaultModel;
      scope = "all";
-@@ -42,9 +43,10 @@ export class ModelSelectorComponent extends Container {
+@@ -42,9 +52,10 @@ export class ModelSelectorComponent extends Container {
      refreshAbortController = new AbortController();
      refreshTimeout;
      closed = false;
@@ -1248,7 +1266,7 @@ index bd8894046f77385541fd9bd7b88268866a34a526..41dbea51183403be34687a00a3035254
          this.currentModel = currentModel;
          this.modelRuntime = modelRuntime;
          this.scopedModels = scopedModels;
-@@ -87,7 +89,9 @@ export class ModelSelectorComponent extends Container {
+@@ -87,7 +98,9 @@ export class ModelSelectorComponent extends Container {
          this.addChild(new Spacer(1));
          // Hint
          if (this.onSelectAsDefaultCallback) {
@@ -1259,7 +1277,7 @@ index bd8894046f77385541fd9bd7b88268866a34a526..41dbea51183403be34687a00a3035254
          }
          // Add bottom border
          this.addChild(new DynamicBorder());
-@@ -107,6 +111,14 @@ export class ModelSelectorComponent extends Container {
+@@ -107,6 +120,14 @@ export class ModelSelectorComponent extends Container {
              model,
          }));
          this.allModels = this.sortModels(models);
@@ -1274,7 +1292,7 @@ index bd8894046f77385541fd9bd7b88268866a34a526..41dbea51183403be34687a00a3035254
          this.scopedModels = this.scopedModels.map((scoped) => {
              const refreshed = this.modelRuntime.getModel(scoped.model.provider, scoped.model.id);
              return refreshed ? { ...scoped, model: refreshed } : scoped;
-@@ -116,6 +128,13 @@ export class ModelSelectorComponent extends Container {
+@@ -116,6 +137,13 @@ export class ModelSelectorComponent extends Container {
              id: scoped.model.id,
              model: scoped.model,
          }));
@@ -1288,7 +1306,7 @@ index bd8894046f77385541fd9bd7b88268866a34a526..41dbea51183403be34687a00a3035254
          this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
          this.filteredModels = this.activeModels;
          const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-@@ -256,21 +275,34 @@ export class ModelSelectorComponent extends Container {
+@@ -256,21 +284,34 @@ export class ModelSelectorComponent extends Container {
          const maxVisible = 10;
          const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filteredModels.length - maxVisible));
          const endIndex = Math.min(startIndex + maxVisible, this.filteredModels.length);
@@ -1338,7 +1356,7 @@ index bd8894046f77385541fd9bd7b88268866a34a526..41dbea51183403be34687a00a3035254
          }
          // Add scroll indicator if needed
          if (startIndex > 0 || endIndex < this.filteredModels.length) {
-@@ -352,6 +384,11 @@ export class ModelSelectorComponent extends Container {
+@@ -352,6 +393,11 @@ export class ModelSelectorComponent extends Container {
      }
      handleSelect(model) {
          this.dispose();
@@ -1354,7 +1372,7 @@ diff --git a/dist/modes/interactive/components/skill-invocation-message.js b/dis
 index 561f3d2540db0a8d934bc2bbecb097aaa7c88458..da4601b0aa0ea1145505300ba77485cfc5c48bb0 100644
 --- a/dist/modes/interactive/components/skill-invocation-message.js
 +++ b/dist/modes/interactive/components/skill-invocation-message.js
-@@ -11,7 +11,7 @@ export class SkillInvocationMessageComponent extends Box {
+@@ -11,7 +20,7 @@ export class SkillInvocationMessageComponent extends Box {
      skillBlock;
      markdownTheme;
      constructor(skillBlock, markdownTheme = getMarkdownTheme()) {
@@ -1367,7 +1385,7 @@ diff --git a/dist/modes/interactive/components/tool-execution.js b/dist/modes/in
 index 811f0f024e769551b9bc96d26089887554751712..a3fd28ec904f0dd9440423a14e2bfe4868bcdf0e 100644
 --- a/dist/modes/interactive/components/tool-execution.js
 +++ b/dist/modes/interactive/components/tool-execution.js
-@@ -44,8 +44,8 @@ export class ToolExecutionComponent extends Container {
+@@ -44,8 +53,8 @@ export class ToolExecutionComponent extends Container {
          // Always create all shell variants. contentBox is used for default renderer-based composition.
          // selfRenderContainer is used when the tool renders its own framing.
          // contentText is reserved for generic fallback rendering when no tool definition exists.
@@ -1378,7 +1396,7 @@ index 811f0f024e769551b9bc96d26089887554751712..a3fd28ec904f0dd9440423a14e2bfe48
          this.contentTextRegion = this.createResultRegion(this.contentText);
          this.selfRenderContainer = new Container();
          if (this.hasRendererDefinition()) {
-@@ -215,10 +215,10 @@ export class ToolExecutionComponent extends Container {
+@@ -215,10 +224,10 @@ export class ToolExecutionComponent extends Container {
      }
      updateDisplay() {
          const bgFn = this.isPartial
@@ -1396,7 +1414,7 @@ diff --git a/dist/modes/interactive/components/user-message.js b/dist/modes/inte
 index 2e0490362d3396995b587f502ff3e69a7cad9a43..0cb75bb6a9fd0c0a9bdb5eba7cf2eeb8e3eae896 100644
 --- a/dist/modes/interactive/components/user-message.js
 +++ b/dist/modes/interactive/components/user-message.js
-@@ -11,6 +11,7 @@ export class UserMessageComponent extends Container {
+@@ -11,6 +20,7 @@ export class UserMessageComponent extends Container {
      text;
      markdownTheme;
      outputPad;
@@ -1404,7 +1422,7 @@ index 2e0490362d3396995b587f502ff3e69a7cad9a43..0cb75bb6a9fd0c0a9bdb5eba7cf2eeb8
      markdownTransformers;
      constructor(text, markdownTheme = getMarkdownTheme(), outputPad = 1, markdownTransformers = []) {
          super();
-@@ -26,15 +27,15 @@ export class UserMessageComponent extends Container {
+@@ -26,15 +36,15 @@ export class UserMessageComponent extends Container {
      }
      rebuild() {
          this.clear();
@@ -1427,7 +1445,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
 index a1e7d98551b085a62359f1b5dc2953d0878b073b..29cec93708963f5d6ae6fcfd7243afd226b18800 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -1359,8 +1359,65 @@ export class InteractiveMode {
+@@ -1359,8 +1368,65 @@ export class InteractiveMode {
          if (showDiagnostics) {
              const skillDiagnostics = skillsResult.diagnostics;
              if (skillDiagnostics.length > 0) {
@@ -1494,7 +1512,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..29cec93708963f5d6ae6fcfd7243afd2
                  this.loadedResourcesContainer.addChild(new Spacer(1));
              }
              const promptDiagnostics = promptsResult.diagnostics;
-@@ -1900,6 +1957,7 @@ export class InteractiveMode {
+@@ -1900,6 +1966,7 @@ export class InteractiveMode {
              confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
              input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
              notify: (message, type) => this.showExtensionNotify(message, type),
@@ -1502,7 +1520,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..29cec93708963f5d6ae6fcfd7243afd2
              onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
              setStatus: (key, text) => this.setExtensionStatus(key, text),
              setWorkingMessage: (message) => {
-@@ -1945,6 +2003,16 @@ export class InteractiveMode {
+@@ -1945,6 +2012,16 @@ export class InteractiveMode {
              },
              getToolsExpanded: () => this.toolOutputExpanded,
              setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
@@ -1519,7 +1537,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..29cec93708963f5d6ae6fcfd7243afd2
          };
      }
      /**
-@@ -2774,15 +2842,24 @@ export class InteractiveMode {
+@@ -2774,15 +2851,24 @@ export class InteractiveMode {
                          throw new Error("Completed compaction is missing from the session context");
                      }
                      this.chatContainer.clear();
@@ -1553,7 +1571,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..29cec93708963f5d6ae6fcfd7243afd2
                      }
                      this.footer.invalidate();
                  }
-@@ -3155,7 +3232,9 @@ export class InteractiveMode {
+@@ -3155,7 +3241,9 @@ export class InteractiveMode {
          this.chatContainer.addChild(new Text(text, 1, 0));
      }
      renderInitialMessages() {
@@ -1564,7 +1582,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..29cec93708963f5d6ae6fcfd7243afd2
          this.renderSessionEntries(entries, {
              updateFooter: true,
              populateHistory: true,
-@@ -3176,7 +3255,7 @@ export class InteractiveMode {
+@@ -3176,7 +3264,7 @@ export class InteractiveMode {
          if (this.chatContainer.children.length > 0) {
              this.chatContainer.addChild(new Spacer(1));
          }
@@ -1573,7 +1591,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..29cec93708963f5d6ae6fcfd7243afd2
      }
      async getUserInput() {
          const queuedInput = this.pendingUserInputs.shift();
-@@ -3192,7 +3271,8 @@ export class InteractiveMode {
+@@ -3192,7 +3280,8 @@ export class InteractiveMode {
      }
      rebuildChatFromMessages() {
          this.chatContainer.clear();
@@ -1583,7 +1601,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..29cec93708963f5d6ae6fcfd7243afd2
      }
      // =========================================================================
      // Key handlers
-@@ -4036,6 +4116,34 @@ export class InteractiveMode {
+@@ -4036,6 +4125,34 @@ export class InteractiveMode {
              this.showModelSelector();
              return;
          }
@@ -1618,7 +1636,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..29cec93708963f5d6ae6fcfd7243afd2
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
-@@ -4168,6 +4276,8 @@ export class InteractiveMode {
+@@ -4168,6 +4285,8 @@ export class InteractiveMode {
      }
      showModelSelector(initialSearchInput) {
          this.showSelector((done) => {
@@ -1627,7 +1645,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..29cec93708963f5d6ae6fcfd7243afd2
              const selectModel = async (model, persist) => {
                  try {
                      await this.session.setModel(model, { persist });
-@@ -4186,10 +4296,13 @@ export class InteractiveMode {
+@@ -4186,10 +4305,13 @@ export class InteractiveMode {
              };
              const defaultProvider = this.settingsManager.getDefaultProvider();
              const defaultModel = this.settingsManager.getDefaultModel();
@@ -1643,7 +1661,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..29cec93708963f5d6ae6fcfd7243afd2
              return { component: selector, focus: selector, dispose: () => selector.dispose() };
          });
      }
-@@ -5051,7 +5164,12 @@ export class InteractiveMode {
+@@ -5051,7 +5173,12 @@ export class InteractiveMode {
          const outputPath = this.getPathCommandArgument(text, "/export");
          try {
              if (outputPath?.endsWith(".jsonl")) {

@@ -116,6 +116,39 @@ describe("AuthStorage reads after external auth.json mutation (pi patch regressi
 		}
 	})
 
+	it("heals a 0-byte tear (truncate window) by retrying instead of resolving empty credentials", async () => {
+		vi.stubEnv("KIMCHI_DISABLE_BUILTIN_PROVIDERS", "1")
+		vi.stubEnv("KIMCHI_API_KEY", undefined)
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-auth-storage-patch-"))
+		tempDirs.push(dir)
+		const { authPath, modelsPath } = seedDir(dir)
+		const registry = await createRegistry(authPath, modelsPath)
+		// Establish a snapshot so the torn-read branch is exercised after an
+		// external revision change.
+		expect(await registry.getApiKeyForProvider("kimchi-dev")).toBe("stored-key")
+
+		// Truncate auth.json to 0 bytes — the window between a non-atomic
+		// writer's open(O_TRUNC) and its first write. parseStorageData() maps
+		// empty content to {} WITHOUT throwing, so without the hunk the read
+		// would silently resolve "no credentials" (request auth then falls
+		// back to models.json's $KIMCHI_API_KEY and fails). The read must
+		// treat the empty file as a tear and retry inside the backoff window.
+		writeFileSync(authPath, "")
+		chmodSync(authPath, 0o600)
+		const repairTimer = setTimeout(() => {
+			writeFileSync(
+				authPath,
+				`${JSON.stringify({ "kimchi-dev": { type: "api_key", key: "stored-key-2" } }, null, 2)}\n`,
+			)
+			chmodSync(authPath, 0o600)
+		}, 5)
+		try {
+			expect(await registry.getApiKeyForProvider("kimchi-dev")).toBe("stored-key-2")
+		} finally {
+			clearTimeout(repairTimer)
+		}
+	})
+
 	it("a persistently corrupt file resolves undefined on fresh storage, and repair is picked up immediately after", async () => {
 		vi.stubEnv("KIMCHI_DISABLE_BUILTIN_PROVIDERS", "1")
 		vi.stubEnv("KIMCHI_API_KEY", undefined)
