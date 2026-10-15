@@ -11085,7 +11085,7 @@ describe("plan-review held prompt", () => {
 		await delay(10)
 		expect(isSettled()).toBeUndefined()
 
-		heldFake.emit({ type: "agent_settled" })
+		heldFake.emit({ type: "agent_settled", aborted: false })
 		await promptPromise
 		const settled = isSettled()
 		expect(settled?.ok).toBe(true)
@@ -11108,7 +11108,7 @@ describe("plan-review held prompt", () => {
 		await delay(5)
 		expect(isSettled()).toBeUndefined()
 
-		heldFake.emit({ type: "agent_settled" })
+		heldFake.emit({ type: "agent_settled", aborted: false })
 		await promptPromise
 		expect(isSettled()?.ok).toBe(true)
 	})
@@ -11149,7 +11149,7 @@ describe("plan-review held prompt", () => {
 		heldFake.emit({ type: "agent_start" })
 		heldFake.emit(assistantErrorEvent("boom"))
 		heldFake.emit(agentEnd())
-		heldFake.emit({ type: "agent_settled" })
+		heldFake.emit({ type: "agent_settled", aborted: false })
 		await promptPromise
 		expect(isSettled()?.ok).toBe(false)
 	})

@@ -100,8 +100,9 @@ function getActiveSubagentToolNames(
 import { markOrchestratorSteer } from "../../steer-marker.js"
 
 /** Send a steering message that is clearly marked as coming from the orchestrator, not the user. */
-function steerAsOrchestrator(session: AgentSession, message: string): Promise<void> {
-	return session.steer(markOrchestratorSteer(message))
+async function steerAsOrchestrator(session: AgentSession, message: string): Promise<void> {
+	// pi 1.2: steer() resolves to a QueuedInputDisposition we don't need here.
+	await session.steer(markOrchestratorSteer(message))
 }
 
 /** Default max turns. undefined = unlimited (no turn limit). */

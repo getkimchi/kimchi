@@ -5,6 +5,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 	ExtensionHandler,
+	ExtensionToolContext,
 	RegisteredCommand,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
@@ -315,7 +316,16 @@ async function emitHandlers(host: ProbeHost, event: "session_start" | "session_s
 async function executeGateway(host: ProbeHost, params: Record<string, unknown>): Promise<GatewayResult> {
 	const gateway = host.tools.get("mcp")
 	if (!gateway) throw new Error("pi-mcp-adapter did not register its MCP gateway")
-	return gateway.execute(`probe-${randomUUID()}`, params, host.context.signal, undefined, host.context)
+	// pi 1.2: tool execute now receives an ExtensionToolContext (ExtensionContext
+	// + tools/executeTool). The probe synthesizes only an ExtensionContext; the
+	// adapter gateway does not call executeTool, so widening here is safe.
+	return gateway.execute(
+		`probe-${randomUUID()}`,
+		params,
+		host.context.signal,
+		undefined,
+		host.context as ExtensionToolContext,
+	)
 }
 
 export class UpstreamMcpProbe implements McpProbe {

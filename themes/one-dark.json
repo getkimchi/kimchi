@@ -13,11 +13,13 @@
 		"accent-red": "#e06c75",
 		"accent-purple": "#c678dd",
 		"muted-grey": "#5c6370",
-		"muted-dark": "#3e4452"
+		"muted-dark": "#3e4452",
+		"oscFg": "fg-primary",
+		"oscBg": "bg-primary",
+		"textBg": "bg-primary"
 	},
 	"colors": {
 		"text": "fg-primary",
-		"textBg": "bg-primary",
 		"accent": "accent-purple",
 		"success": "accent-green",
 		"error": "accent-red",
@@ -67,9 +69,7 @@
 		"thinkingHigh": "accent-cyan",
 		"thinkingXhigh": "accent-yellow",
 		"thinkingText": "fg-primary",
-		"bashMode": "accent-green",
-		"oscFg": "fg-primary",
-		"oscBg": "bg-primary"
+		"bashMode": "accent-green"
 	},
 	"export": {
 		"pageBg": "#282c34",

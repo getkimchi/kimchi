@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { createContext } from "../../__mocks__/context.js"
+import { createContext, createToolContext } from "../../__mocks__/context.js"
 import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { AUTO_MODEL_PROVIDER } from "../../auto-model/constants.js"
 import dapExtension from "../../dap.js"
@@ -639,7 +639,7 @@ describe("runAgent — telemetry extension", () => {
 					},
 					undefined,
 					undefined,
-					createContext(),
+					createToolContext(),
 				)
 				emit({ type: "tool_execution_end", toolName: "submit_agent_report" })
 				await new Promise<void>((resolve) => queueMicrotask(() => resolve()))

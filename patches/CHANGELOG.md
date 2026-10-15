@@ -15,6 +15,66 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
 
 ---
 
+## 1.2.0 — full rebase onto pi 1.2 (transcript “worlds” redesign)
+
+pi 1.2 reworked the session core: system messages now carry prompts and tool
+declarations (`TranscriptContext`), `before_agent_start` is a discriminated union
+fired for extension-triggered runs too, tool availability rides
+`SystemMessage.toolsAdded`/`toolsRemoved` (in-band `addedToolNames` is gone), and
+`session.abort()` is terminal for the run chain (the steer/followUp queues survive
+but are only drained by the next fresh run).
+
+### `@earendil-works/pi-coding-agent`
+
+- **DROPPED — triggerTurn `before_agent_start` mirror + `_systemPromptOverride`
+  preservation hunks.** Native in 1.2: `_startRun({ messageType: "custom" })` fires
+  `emitBeforeAgentStart`, and extension `systemPrompt` results become a
+  `forceSystemPrompt` per-request projection that tool-loadout rebuilds never
+  touch. Witness coverage rewrote: `src/upstream-system-prompt-preservation-patch.test.ts`
+  now pins the native behavior instead of the patch markers.
+- **DROPPED — user-message Box wrapper hunk.** Upstream 1.2 renders the Markdown
+  child directly; the Kimchi prefix/OSC 133 patch moved extension-side to
+  neutralize the Markdown instance's `paddingY`/`paddingX`/`defaultTextStyle`
+  (`patchUserMessageRender` in `src/extensions/tool-rendering.ts`).
+- **MOVED — Bun `type2`/`bundledPiAiCompatSafe` Proxy compat.** Upstream split the
+  virtual-module seam: the hunk now lives in `dist/core/extensions/virtual-modules.js`
+  instead of `loader.js`.
+- **REBASED — force-compaction `keepRecentTokens: 0` retry, session-manager
+  `_kimchiOriginalToolContent`/`_serializableEntry`, model-resolver
+  `kimchi-dev: minimax-m3`, `setModel { persist }`, bash abort/timeout pipe
+  cleanup (`terminateGroup`), interactive-mode/project-trust markers.** Same
+  intent, re-homed on the 1.2 functions (several private methods were
+  renamed/split by the transcript redesign).
+- **NOTED — abort semantics changed silently.** 0.85 chained a continuation
+  after a programmatic abort to drain retained queues; 1.2 does not (queues
+  drain on the next run). Kimchi's bash-background contract tests now drive
+  recovery with a fresh prompt instead of asserting the auto-drain.
+
+### `@earendil-works/pi-tui`
+
+- **REBASED — stroke rendering (applyStrokeToLine), scrollback opt-out
+  (PI_TUI_NO_CLEAR_SCROLLBACK), no-truncate width hardening, wheel-scroll
+  speed (KIMCHI_WHEEL_SCROLL_LINES).** 1.2 replaced the editor's caret with an
+  APC cursor marker (`\x1b_pi:c\x07` / FAKE_CURSOR_START/END); the strip sites
+  in Kimchi source were adapted (`\x1b[7m` strokes are now no-ops there).
+  `applyStrokeToLine` gained a hard truncate so narrow widths can no longer
+  overflow (fuzz invariant now enforced against line construction).
+
+### `@earendil-works/pi-ai`
+
+- **No hunks applied.** The 0.85.1 oauth-page HTML replacement moved path
+  (`dist/auth/oauth/oauth-page.js` → `dist/utils/oauth-page.js`) and stays a
+  post-install script (`scripts/patch-pi-ai-oauth.js`), not a pnpm patch.
+
+### `pi-mcp-adapter`
+
+- **Held at 2.34.0 against 1.2 peers throughout the core rebase** — the
+  2.x→5.3.0 bump lands in its own commit/chunk (config rename to
+  `mcp-adapter.json`, `/mcp-adapter` command, mcpScript default-off, built-in
+  MCP replacement in 5.x).
+
+---
+
 ## 0.85.1 (mid-version, additive) — bounded abort/timeout pipe cleanup
 
 Not an upgrade: a new behavior was added to the pi-coding-agent patch while the

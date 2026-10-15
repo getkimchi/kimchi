@@ -72,9 +72,11 @@ const ITERM2_IMAGE_PREFIX = "\x1b]1337;File="
 
 let toolBackgroundMode: "default" | "transparent" | "outlines" = "outlines"
 
-interface ThemeWithPrivate extends Omit<Theme, "bgColors" | "fgColors"> {
-	bgColors: Theme["bgColors"]
-	fgColors: Theme["fgColors"]
+// pi 1.2 stores per-token ANSI values on private `bgAnsi`/`fgAnsi` Maps
+// (previously `bgColors`/`fgColors`).
+interface ThemeWithPrivate {
+	bgAnsi?: Map<string, string> | Record<string, string>
+	fgAnsi?: Map<string, string> | Record<string, string>
 }
 
 /** Context passed to tool renderers. This type is not exported from Pi. */
@@ -103,6 +105,10 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
 	showImages: boolean
 	/** Whether the current result is an error. */
 	isError: boolean
+	/** Milliseconds the tool's execution took; `undefined` while it runs or when absent (pi 1.2). */
+	durationMs: number | undefined
+	/** Horizontal padding configured by the outputPad setting (pi 1.2). */
+	outputPad: number
 }
 
 interface AgentEditResult extends AgentToolResult<unknown> {
@@ -242,10 +248,10 @@ function syncToolBackgroundMode(): void {
 
 function setThemeBg(theme: Theme, key: string, value: string): void {
 	const _theme = theme as unknown as ThemeWithPrivate
-	if (_theme.bgColors instanceof Map) {
-		_theme.bgColors.set(key, value)
-	} else if (_theme.bgColors && typeof _theme.bgColors === "object") {
-		_theme.bgColors[key] = value
+	if (_theme.bgAnsi instanceof Map) {
+		_theme.bgAnsi.set(key, value)
+	} else if (_theme.bgAnsi && typeof _theme.bgAnsi === "object") {
+		_theme.bgAnsi[key] = value
 	}
 }
 
@@ -524,14 +530,27 @@ export function patchUserMessageRender(): void {
 	const originalRender = proto.render
 	if (typeof originalRender !== "function") return
 	proto.render = function patchedUserMessageRender(width: number) {
-		const box = (this as any).contentBox
-		if (box) {
-			// Remove the ▍ stroke and blank padding lines. paddingX=0 lets content
-			// render at full width; we prepend the prefix and truncate explicitly.
-			box.bgFn = null
-			box.paddingY = 0
-			box.paddingX = 0
-			box.invalidateCache?.()
+		// pi 1.2 removed the Box wrapper around the Markdown child; neutralize
+		// the Markdown itself instead: paddingY=0 drops the blank margin lines,
+		// paddingX=0 lets content render at full width, and clearing the
+		// bgColor kills the "▍" stroke (we re-apply our own bg below).
+		const md = (this as any).children?.[0]
+		if (md && typeof md === "object" && "paddingY" in md) {
+			md.paddingY = 0
+			md.paddingX = 0
+			if (md.defaultTextStyle && typeof md.defaultTextStyle === "object") {
+				md.defaultTextStyle = { color: md.defaultTextStyle.color }
+			}
+			md.invalidate?.()
+		} else {
+			// Pre-1.2 shape: content wrapped in a Box.
+			const box = (this as any).contentBox
+			if (box) {
+				box.bgFn = null
+				box.paddingY = 0
+				box.paddingX = 0
+				box.invalidateCache?.()
+			}
 		}
 		const theme = _themePaletteCacheTheme
 		const glyph = typeof theme?.fg === "function" ? theme.fg("accent", "❯") : "❯"

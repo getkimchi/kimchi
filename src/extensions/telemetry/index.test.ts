@@ -200,7 +200,7 @@ describe("telemetryExtension integration", () => {
 		telemetryExtension(makeConfig())(api)
 
 		await getHandler(handlers, "session_start")({}, ctx)
-		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, ctx)
+		await getHandler(handlers, "before_agent_start")({ messageType: "user", prompt: "hello", images: [] }, ctx)
 
 		await getHandler(
 			handlers,
@@ -255,7 +255,7 @@ describe("telemetryExtension integration", () => {
 		telemetryExtension(makeConfig())(api)
 
 		await getHandler(handlers, "session_start")({}, ctx)
-		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, ctx)
+		await getHandler(handlers, "before_agent_start")({ messageType: "user", prompt: "hello", images: [] }, ctx)
 		await getHandler(handlers, "session_shutdown")({ reason: "disconnect" })
 
 		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
@@ -280,7 +280,7 @@ describe("telemetryExtension integration", () => {
 		telemetryExtension(makeConfig())(api)
 
 		await getHandler(handlers, "session_start")({}, ctx)
-		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, ctx)
+		await getHandler(handlers, "before_agent_start")({ messageType: "user", prompt: "hello", images: [] }, ctx)
 
 		await trackSubagentSpawned({ id: "a1", type: "explore", description: "find files" }, ctx)
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })

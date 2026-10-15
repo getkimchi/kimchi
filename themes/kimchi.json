@@ -25,7 +25,9 @@
 		"blue-keyword": "#569CD6",
 		"neutral-200": "#D4D4D4",
 		"neutral-type": "#4EC9B0",
-		"neutral-string": "#CE9178"
+		"neutral-string": "#CE9178",
+		"oscFg": "#A1A1A1",
+		"oscBg": "#1A1818"
 	},
 	"colors": {
 		"accent": "orange-500",
@@ -78,9 +80,7 @@
 		"thinkingMedium": "purple-400",
 		"thinkingHigh": "cyan-500",
 		"thinkingXhigh": "orange-500",
-		"bashMode": "lime-500",
-		"oscFg": "#A1A1A1",
-		"oscBg": "#1A1818"
+		"bashMode": "lime-500"
 	},
 	"export": {
 		"pageBg": "#1A1818",
