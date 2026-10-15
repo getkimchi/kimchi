@@ -750,7 +750,7 @@ export function createWorkAttributionExtension(
 			if (event.source === "extension") return
 			// Model matching runs beside the turn and never delays it. Without a verdict, an input keeps the attribution
 			// it has with matching off.
-			const matchingOn = workMatchingEnabled() && workMatchingAvailable(ctx.modelRegistry)
+			const matchingOn = workMatchingEnabled() && workMatchingAvailable(ctx.modelRegistry, ctx.model)
 			let started = false
 			let matchingOutcome: "failed" | undefined
 			try {

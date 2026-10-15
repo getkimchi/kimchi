@@ -8,8 +8,8 @@ import { readConfigSetting } from "../../config/settings.js"
 import { isKimchiProvider } from "../../kimchi-provider.js"
 import { readPlanWorkId } from "../../shared/planning/plan-markdown.js"
 import { isWorkId } from "../../shared/work-id.js"
-import { resolveClassifierCandidates } from "../model-catalog/classifier-models.js"
-import { refFromModel } from "../model-catalog/ref-utils.js"
+import { isAutoRoutedModel } from "../auto-model/constants.js"
+import { findModelByRef, refFromModel } from "../model-catalog/ref-utils.js"
 import { getRedactionConfig } from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
 import {
@@ -37,6 +37,11 @@ export class WorkMatchingLimit extends Error {}
 export const WORK_MATCHING_DEADLINE_MS = 5000
 /** A fresh input is compared with this many of the most recently active saved tasks, one request each. */
 export const MAX_WORK_CANDIDATES = 8
+/**
+ * A check normally finishes in under a second. One that stalls past this, even mid-stream, fails so the next matching
+ * model decides in the time left instead of the whole deadline running out on the first.
+ */
+export const WORK_MATCHING_CALL_TIMEOUT_MS = 2000
 /** Saved task files read while looking for those tasks; older history is left out rather than refused. */
 const MAX_SCANNED_INTENTS = 512
 const MAX_MATCHING_INPUT_CHARS = 12000
@@ -102,12 +107,26 @@ export function workMatchingEnabled(): boolean {
 	return matchingSetting() ?? true
 }
 /**
- * Without an explicit choice, matching runs only on Kimchi's shared classifier models. Falling back to the selected
- * model, which may be billed to the user's own provider, needs `/work matching on`.
+ * Matching models in order; the next one decides only when one cannot answer. They are not the permission classifier's
+ * list: on recorded matching inputs minimax-m3 joined unrelated work, and backend-routed auto spread checks across
+ * models with reasoning on.
  */
-export function workMatchingAvailable(registry: ExtensionContext["modelRegistry"]): boolean {
+export const WORK_MATCHING_MODEL_REFS = ["kimchi-dev/glm-5.3-flash", "kimchi-dev/deepseek-v4-flash-0731"] as const
+function matchingModels(registry: ExtensionContext["modelRegistry"]): Model<Api>[] {
+	return WORK_MATCHING_MODEL_REFS.flatMap((ref) => findModelByRef(registry, ref) ?? [])
+}
+/**
+ * Without an explicit choice, matching runs only on the matching models. Falling back to the selected model, which may
+ * be billed to the user's own provider, needs `/work matching on`, and never uses auto, which routes each check apart.
+ */
+export function workMatchingAvailable(
+	registry: ExtensionContext["modelRegistry"],
+	model: Pick<Model<Api>, "provider" | "id"> | undefined,
+): boolean {
 	const setting = matchingSetting()
-	return setting ?? resolveClassifierCandidates(registry).candidates.length > 0
+	if (setting === false) return false
+	if (matchingModels(registry).length) return true
+	return setting === true && !!model && !isAutoRoutedModel(model)
 }
 
 export function workIntentPath(workId: string): string {
@@ -261,9 +280,9 @@ export async function loadWorkIntents(cwd: string, workId: string, text: string,
 }
 
 /**
- * Separate inference on the shared classifier models, the next one deciding when one cannot answer, or on the model
- * selected at input time when the catalog has none of them; never changes the chat model. Each saved task is checked
- * in its own request and all of them at once; one deadline covers every request and model.
+ * Separate inference on the matching models, the next one deciding when one cannot answer, or on the model selected at
+ * input time when the catalog has none of them; never changes the chat model. Each saved task is checked in its own
+ * request and all of them at once; one deadline covers every request and model.
  */
 export async function classifyWorkIntent(
 	ctx: WorkContext & Pick<ExtensionContext, "model" | "modelRegistry">,
@@ -273,9 +292,9 @@ export async function classifyWorkIntent(
 	deadlineMs = WORK_MATCHING_DEADLINE_MS,
 ): Promise<(IntentDecision & { model: string; cause?: WorkMatchingFailure }) | undefined> {
 	const { modelRegistry } = ctx
-	if (!ctx.model) return
-	const { candidates } = resolveClassifierCandidates(modelRegistry)
-	const models = candidates.length ? candidates : [ctx.model]
+	const matching = matchingModels(modelRegistry)
+	if (!ctx.model || (!matching.length && isAutoRoutedModel(ctx.model))) return
+	const models = matching.length ? matching : [ctx.model]
 	let unknown = { decision: "unknown" as const, model: refFromModel(models[0]) }
 	if (!workMatchingEnabled()) return unknown
 	// Nothing to compare is not the model's uncertainty.
@@ -348,7 +367,7 @@ export async function classifyWorkIntent(
 					},
 					signal: attempt,
 					maxRetries: 0,
-					timeoutMs: deadlineMs,
+					timeoutMs: Math.min(WORK_MATCHING_CALL_TIMEOUT_MS, deadlineMs),
 					maxTokens: 128,
 					temperature: 0,
 					// Kimchi's GLM routes can mix reasoning into text or echo input in JSON-object mode.

@@ -19,7 +19,6 @@ import { readConfigSetting } from "../../config/settings.js"
 import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createContext } from "../__mocks__/context.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
-import { DEFAULT_CLASSIFIER_CANDIDATE_REFS } from "../model-catalog/classifier-models.js"
 import * as redactionConfig from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
 import { getWorkId, setWorkId } from "../work-attribution.js"
@@ -28,6 +27,8 @@ import {
 	classifyWorkIntent,
 	loadWorkIntents,
 	rememberWorkIntent,
+	WORK_MATCHING_CALL_TIMEOUT_MS,
+	WORK_MATCHING_MODEL_REFS,
 	WorkMatchingLimit,
 	workIntentPath,
 	workMatchingAvailable,
@@ -70,7 +71,7 @@ afterEach(async () => {
 })
 
 /** Candidate checks run at once, so a reply is chosen by what was asked rather than by arrival order. */
-type Reply = string | { content: string; delay: number }
+type Reply = string | { content: string; delay: number; afterHeaders?: boolean }
 type Answer = string | string[] | ((data: Record<string, unknown>) => Reply)
 function byCheck(candidates: Record<string, Reply>, precheck: Reply = JSON.stringify({ decision: "specific" })) {
 	return (data: Record<string, unknown>) =>
@@ -100,8 +101,11 @@ async function provider(answer: Answer, status = 200, headers: Record<string, st
 					: answer
 		const content = typeof reply === "string" ? reply : reply.content
 		const delay = typeof reply === "string" ? delays[requests.length - 1] : reply.delay
+		// A stream can also stall after its headers, which the SDK's request timeout no longer covers.
+		const afterHeaders = typeof reply !== "string" && reply.afterHeaders
+		if (afterHeaders) response.writeHead(status, { "content-type": "text/event-stream", ...headers })
 		if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
-		response.writeHead(status, { "content-type": "text/event-stream", ...headers })
+		if (!afterHeaders) response.writeHead(status, { "content-type": "text/event-stream", ...headers })
 		response.end(
 			`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n` +
 				`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
@@ -151,45 +155,79 @@ it("uses the selected model without shared classifier models, with normal auth a
 	for (const row of overhead) expect(row.segment).toMatchObject({ attribution: "session", reason: "work-matching" })
 })
 
-it("decides on the shared classifier models in order, the next one answering when a model cannot", async () => {
+it("decides on the matching models in order, the next one answering when a model cannot", async () => {
 	const failing = await provider("{}", 500)
 	const server = await provider([JSON.stringify({ decision: "specific" }), JSON.stringify({ decision: "match" })])
-	const [unauthorized, broken, answering] = DEFAULT_CLASSIFIER_CANDIDATE_REFS.map((ref, index) => {
+	const [broken, answering] = WORK_MATCHING_MODEL_REFS.map((ref, index) => {
 		const [name, id] = ref.split("/")
-		return { ...createModel(id, name), baseUrl: [server, failing, server][index].model.baseUrl }
+		return { ...createModel(id, name), baseUrl: [failing, server][index].model.baseUrl }
 	})
-	const registry = createModelRegistry([server.model, unauthorized, broken, answering])
-	registry.getApiKeyAndHeaders.mockImplementation(async (model) =>
-		model === unauthorized ? { ok: false, error: "No API key" } : { ok: true, apiKey: "classifier-key" },
-	)
+	// Permission classifier models that are not matching models never decide.
+	const permissionOnly = createModel("minimax-m3", "kimchi-dev")
+	const registry = createModelRegistry([server.model, permissionOnly, broken, answering])
+	registry.getApiKeyAndHeaders.mockResolvedValue({ ok: true, apiKey: "classifier-key" })
 	const ctx = createContext({ cwd: server.root, model: server.model, modelRegistry: registry })
 	expect(await classifyWorkIntent(ctx, input)).toEqual({
 		decision: "continue",
 		workId,
-		model: DEFAULT_CLASSIFIER_CANDIDATE_REFS[2],
+		model: WORK_MATCHING_MODEL_REFS[1],
 	})
-	expect(registry.getApiKeyAndHeaders.mock.calls.map(([model]) => model)).toEqual([unauthorized, broken, answering])
+	expect(registry.getApiKeyAndHeaders.mock.calls.map(([model]) => model)).toEqual([broken, answering])
 	expect(failing.requests).toHaveLength(1)
 	expect(server.requests.map((request) => JSON.parse(request.body).model)).toEqual([answering.id, answering.id])
 	const overhead = readWorkRecords(join(server.root, "agent")).filter((row) => row.type === "request")
 	expect(overhead.map((row) => row.model)).toEqual([broken.id, answering.id, answering.id])
 })
 
-it("is on by default only where Kimchi's shared classifier models can decide", () => {
-	const [provider, id] = DEFAULT_CLASSIFIER_CANDIDATE_REFS[0].split("/")
+it("lets the next matching model decide when a check's stream stalls after its headers", async () => {
+	const stalled = await provider(
+		byCheck({}, { content: JSON.stringify({ decision: "specific" }), delay: 6000, afterHeaders: true }),
+	)
+	const server = await provider(byCheck({ [workId]: JSON.stringify({ decision: "match" }) }))
+	const [first, second] = WORK_MATCHING_MODEL_REFS.map((ref, index) => {
+		const [name, id] = ref.split("/")
+		return { ...createModel(id, name), baseUrl: [stalled, server][index].model.baseUrl }
+	})
+	const registry = createModelRegistry([server.model, first, second])
+	registry.getApiKeyAndHeaders.mockResolvedValue({ ok: true, apiKey: "classifier-key" })
+	const ctx = createContext({ cwd: server.root, model: server.model, modelRegistry: registry })
+	const started = Date.now()
+	expect(await classifyWorkIntent(ctx, input)).toEqual({
+		decision: "continue",
+		workId,
+		model: WORK_MATCHING_MODEL_REFS[1],
+	})
+	expect(Date.now() - started).toBeLessThan(WORK_MATCHING_CALL_TIMEOUT_MS + 1500)
+	expect(stalled.requests).toHaveLength(1)
+})
+
+it("never sends a check through backend-routed auto", async () => {
+	const server = await provider(JSON.stringify({ decision: "specific" }))
+	const auto = { ...createModel("auto", "kimchi-dev"), baseUrl: server.model.baseUrl }
+	const ctx = createContext({ cwd: server.root, model: auto, modelRegistry: createModelRegistry([auto]) })
+	expect(workMatchingAvailable(ctx.modelRegistry, auto)).toBe(false)
+	expect(await classifyWorkIntent(ctx, input)).toBeUndefined()
+	expect(server.requests).toHaveLength(0)
+})
+
+it("is on by default only where a matching model can decide", () => {
+	const [provider, id] = WORK_MATCHING_MODEL_REFS[0].split("/")
+	const selected = createModel("chat", "selected")
 	const shared = createModelRegistry([createModel(id, provider)])
-	const own = createModelRegistry([createModel("chat", "selected")])
+	const own = createModelRegistry([selected])
+	const permissionOnly = createModelRegistry([createModel("minimax-m3", "kimchi-dev")])
 	vi.mocked(readConfigSetting).mockReturnValue(undefined)
-	expect([workMatchingEnabled(), workMatchingAvailable(shared), workMatchingAvailable(own)]).toEqual([
-		true,
-		true,
-		false,
-	])
+	expect([
+		workMatchingEnabled(),
+		workMatchingAvailable(shared, selected),
+		workMatchingAvailable(own, selected),
+		workMatchingAvailable(permissionOnly, selected),
+	]).toEqual([true, true, false, false])
 	// Matching on the selected model, which another provider may bill, needs /work matching on.
 	vi.mocked(readConfigSetting).mockReturnValue(true)
-	expect(workMatchingAvailable(own)).toBe(true)
+	expect(workMatchingAvailable(own, selected)).toBe(true)
 	vi.mocked(readConfigSetting).mockReturnValue(false)
-	expect([workMatchingEnabled(), workMatchingAvailable(shared)]).toEqual([false, false])
+	expect([workMatchingEnabled(), workMatchingAvailable(shared, selected)]).toEqual([false, false])
 })
 
 it("does not authenticate or send private task history when matching is disabled", async () => {
