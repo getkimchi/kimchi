@@ -20,15 +20,7 @@
  * Output: { "tools": [{ "name": "..." }], "needsAuth": false }
  * Exit:   0 on success (including needs-auth), 1 on error
  *
- * `kimchi mcp forget-grant` — one-shot OAuth grant forget (invocation contract
- * for Kimchi Studio's connector disconnect, kimchi-studio#466):
- *
- * Usage:  kimchi mcp forget-grant <server-name> --json
- * Output: { "ok": true,  "name", "found", "chunksRemoved", "legacyFileRemoved" }
- *         { "ok": false, "name", "error", "reason": "invalid-input" | "denied" | "unavailable" | "error" }
- * Exit:   0 on success — `found: true` removed a grant, `found: false` was
- *         already forgotten (idempotent); 1 on failure, with `reason`
- *         distinguishing a macOS consent denial from a locked keychain.
+ * `kimchi mcp forget-grant` — one-shot OAuth grant forget; invocation contract and consent budget: docs/mcp-forget-grant.md
  */
 
 import type { ServerEntry } from "pi-mcp-adapter/types"
