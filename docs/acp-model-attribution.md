@@ -56,7 +56,11 @@ Timing: the served model is usually known before the first token streams, but
 a provider may report it late. The first chunk may therefore carry
 `modelId === requestedModelId` as the best-known value, corrected by a later
 chunk's `_meta` once the served model is known. The last-wins rule absorbs
-this.
+this. When the served model is reported only at the response's end and all
+text was already streamed, the correction arrives as a **zero-length**
+`agent_message_chunk` — no content to append, the corrected `_meta` under
+the same `messageId`. When ACP v2 whole-message upserts land, the correction
+migrates onto them and the zero-length chunk disappears.
 
 Refs are composed directly from the provider's report; if the backend routes
 to a model outside kimchi's catalog, the ref still carries the raw id — it

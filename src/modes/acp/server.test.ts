@@ -3472,6 +3472,50 @@ describe("KimchiAcpAgent per-message model attribution", () => {
 		])
 	})
 
+	it("emits a zero-length correction chunk when responseModel arrives only at message_end", async () => {
+		// The fully-streamed gap: every delta carried the requested-id
+		// fallback, and the restore path emits nothing when no text is left —
+		// so the authoritative tuple must land via an explicit zero-length
+		// correction chunk on the same messageId. Clients append nothing and
+		// apply the _meta (docs/acp-model-attribution.md).
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitDelta("text_delta", 0, "fully streamed", partialMessage({ model: "auto" }))
+			fake.emit({
+				type: "message_end",
+				message: partialMessage({
+					model: "auto",
+					responseModel: "glm-5.3",
+					content: [{ type: "text", text: "fully streamed" }],
+				}),
+			})
+			fake.emit(agentEnd())
+		}
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+		const chunks = updates.filter((u) => u.update.sessionUpdate === "agent_message_chunk")
+		expect(chunks).toHaveLength(2)
+		expect(metasFor("agent_message_chunk")).toEqual([
+			{
+				"kimchi.dev": {
+					modelId: "kimchi-dev/auto",
+					requestedModelId: "kimchi-dev/auto",
+				},
+			},
+			{
+				"kimchi.dev": {
+					modelId: "kimchi-dev/glm-5.3",
+					requestedModelId: "kimchi-dev/auto",
+				},
+			},
+		])
+		// The correction carries no text and reuses the streamed block's id.
+		const texts = chunks.map((u) => (u.update as { content: { text: string } }).content.text)
+		expect(texts).toEqual(["fully streamed", ""])
+		expect((chunks[1].update as { messageId?: string }).messageId).toBe(
+			(chunks[0].update as { messageId?: string }).messageId,
+		)
+	})
+
 	it("re-emits _meta from the persisted tuple when replaying a loaded session", async () => {
 		const loaded = new FakeAgentSession("session-model-meta-load")
 		loaded.branch = [

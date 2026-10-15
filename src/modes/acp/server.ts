@@ -1585,6 +1585,31 @@ export class KimchiAcpAgent implements Agent {
 						entry.streamedText.set(index, block.text)
 					})
 				}
+				// A provider may report the served model only on this final message,
+				// so every streamed chunk carried the requested-id fallback. When the
+				// authoritative attribution differs from what a block id already
+				// emitted — and the restore loop above sent no chunk for it — land the
+				// correction explicitly: a zero-length chunk on that id. Content-append
+				// is a no-op and the client's last-wins rule (docs/acp-model-attribution.md)
+				// applies the served ref.
+				const authoritativeAttribution = modelAttributionFrom(msg)
+				for (const blockId of entry.contentIndexToBlockId.values()) {
+					// Correction only: ids that already carried an attribution. A block
+					// that streamed without one (malformed partial events) has nothing to
+					// correct, and the restore loop above covers un-streamed text.
+					if (!entry.emittedModelMeta.has(blockId)) continue
+					const modelMeta = modelMetaFor(entry.emittedModelMeta, blockId, authoritativeAttribution)
+					if (modelMeta === undefined) continue
+					this.send({
+						sessionId,
+						update: {
+							sessionUpdate: "agent_message_chunk",
+							content: { type: "text", text: "" },
+							messageId: blockId,
+							...spreadModelMeta(modelMeta),
+						},
+					})
+				}
 				const usage = msg.usage
 				if (usage) {
 					updateTurnUsage(turn, usage)
