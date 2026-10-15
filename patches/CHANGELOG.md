@@ -26,6 +26,20 @@ but are only drained by the next fresh run).
 
 ### `@earendil-works/pi-coding-agent`
 
+- **NEW — context-overflow recovery id fallback (`_findPersistedMessageEntryId`).**
+  0.85.1 removed the failed overflow assistant by slicing it from
+  `agent.state.messages` before compacting; pi 1.2.0 replaced that with an
+  identity-keyed context edit (`_omitRecoveryAttempt`). In the bun-compiled
+  binary the failed message object is materialized through a copy, so object
+  identity misses on all upstream paths (id map, branch scan, live-state
+  projection index — the failed message never re-enters `agent.state.messages`,
+  so the `messageIndex < 0` early return fires first), `_omitRecoveryAttempt`
+  silently skips the edit, the post-compaction projection keeps the failed
+  assistant at the tail, and `agent.continue()` throws "Cannot continue from
+  message role: assistant". The patch adds a role+timestamp fallback match
+  against the branch ahead of the messageIndex early return. Detected by the
+  `tests/e2e/tui/context-overflow-recovery.test.ts` TUI e2e; verified on the
+  compiled binary.
 - **NEW — bug-report kimchi destination seams (interactive bug-report.js).**
   pi 1.2 shipped a hardcoded builtin `/bug` that shadowed Kimchi's own report
   extension (removed in the same change — the tip now points at `/bug`). The

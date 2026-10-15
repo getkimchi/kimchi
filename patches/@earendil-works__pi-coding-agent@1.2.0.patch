@@ -136,6 +136,10 @@
 #     is present. Removal criteria: upstream provides bundle-mutation and
 #     destination seams in the bug-report flow (or kimchi stops freighting
 #     /bug to its own tracker).
+#   - Context-overflow recovery: `_findPersistedMessageEntryId` falls
+#     back to a role+timestamp match when object identity misses (see
+#     patches/CHANGELOG.md). Removal: when upstream resolves recovery-omission
+#     targets without object identity.
 # Security (project trust): extends hasTrustRequiringProjectResources
 # (dist/core/trust-manager.js) with Kimchi's project-local .kimchi/ and .claude/
 # resources (config, permissions, hooks, skills, agents, memory, tags, plans,
@@ -164,10 +168,34 @@ index ec17d54377ea8ff8d27a338069809cc9f91e46d2..e97f50e3af153f66a5a37cf59989f0c5
    ANTHROPIC_API_KEY                - Anthropic Claude API key
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index c16f5da1b0902b04152e4d550f3fe601249e3b42..cde5b444d7a960438ef984076f8f997b25b25ebb 100644
+index c16f5da1b0902b04152e4d550f3fe601249e3b42..f30d7a5cd17edf89141229db3de743986bb41daf 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
-@@ -2197,7 +2197,7 @@ export class AgentSession {
+@@ -821,6 +821,23 @@ export class AgentSession {
+             if (entry.type === "message" && entry.message === message)
+                 return entry.id;
+         }
++        // Kimchi patch: entry-id identity can break when a message object is
++        // materialized through a copy (e.g. kimi-lazy-log marker resolution on
++        // read or synthetic run-failure messages), leaving the persisted entry
++        // unreachable. Fall back to a role+timestamp match against the branch
++        // so recovery omission (`_omitRecoveryAttempt`) can still target it.
++        if (message && typeof message === "object" && "role" in message &&
++            typeof message.role === "string" && "timestamp" in message &&
++            typeof message.timestamp === "number") {
++            for (const entry of [...this.sessionManager.getBranch()].reverse()) {
++                const entryMessage = entry.type === "message" && "message" in entry && entry.message;
++                if (entryMessage && entryMessage.role === message.role &&
++                    "timestamp" in entryMessage && entryMessage.timestamp === message.timestamp) {
++                    this._entryIdsByMessage.set(message, entry.id);
++                    return entry.id;
++                }
++            }
++        }
+         const messageIndex = this.agent.state.messages.indexOf(message);
+         if (messageIndex < 0)
+             return undefined;
+@@ -2197,7 +2214,7 @@ export class AgentSession {
       *
       * @param customInstructions Optional instructions for the compaction summary
       */
@@ -176,7 +204,7 @@ index c16f5da1b0902b04152e4d550f3fe601249e3b42..cde5b444d7a960438ef984076f8f997b
          await this.abort();
          this._compactionAbortController = new AbortController();
          this._emit({ type: "compaction_start", reason: "manual" });
-@@ -2210,14 +2210,21 @@ export class AgentSession {
+@@ -2210,14 +2227,21 @@ export class AgentSession {
              }
              const settings = this.settingsManager.getCompactionSettings(model);
              const pathEntries = this.sessionManager.getBranch();
@@ -200,7 +228,7 @@ index c16f5da1b0902b04152e4d550f3fe601249e3b42..cde5b444d7a960438ef984076f8f997b
              }
              let extensionCompaction;
              if (this._extensionRunner.hasHandlers("session_before_compact")) {
-@@ -2772,10 +2779,10 @@ export class AgentSession {
+@@ -2772,10 +2796,10 @@ export class AgentSession {
              setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
              refreshTools: () => this._refreshToolRegistry(),
              getCommands,
@@ -213,7 +241,7 @@ index c16f5da1b0902b04152e4d550f3fe601249e3b42..cde5b444d7a960438ef984076f8f997b
                  return true;
              },
              getThinkingLevel: () => this.thinkingLevel,
-@@ -2801,7 +2808,7 @@ export class AgentSession {
+@@ -2801,7 +2825,7 @@ export class AgentSession {
              compact: (options) => {
                  void (async () => {
                      try {
