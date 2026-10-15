@@ -48,9 +48,14 @@ routing state (`state.ts`), keyed by the requested id.
 ACP clients learn about pick changes through a `_kimchi.dev/routed_model`
 ext notification, pushed exactly when the transcript entry above is
 appended — once per change, silent when a later turn lands on the same
-model. The payload is `{ sessionId, requestedId, routedId }`: the requested
-virtual id and the served model's catalog id, or the backend's raw id when
-the catalog doesn't know it. Like all kimchi.dev ext notifications it is
+model. The payload is `{ sessionId, requestedId, routedId }`: both ids are
+full `provider/modelId` refs — the same format as the per-message
+attribution `_meta` (see [ACP model attribution](./acp-model-attribution.md))
+and the session's model list, so `requestedId` compares directly against
+`SessionModelState.currentModelId`. The requested ref is the virtual id
+(`kimchi-dev/auto`); `routedId` is the served model's ref, or
+`provider/raw-id` when the catalog doesn't know the pick. Like all
+kimchi.dev ext notifications it is
 not advertised in `_meta`; clients that don't know it ignore it per JSON-RPC
 rules.
 

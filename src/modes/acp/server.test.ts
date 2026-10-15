@@ -6137,7 +6137,7 @@ describe("routed model notifications", () => {
 		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/routed_model")).toEqual([
 			{
 				method: "_kimchi.dev/routed_model",
-				params: { sessionId: "session-routed-1", requestedId: "auto", routedId: "glm-5.3" },
+				params: { sessionId: "session-routed-1", requestedId: "kimchi-dev/auto", routedId: "kimchi-dev/glm-5.3" },
 			},
 		])
 	})
@@ -6157,11 +6157,11 @@ describe("routed model notifications", () => {
 		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/routed_model")).toEqual([
 			{
 				method: "_kimchi.dev/routed_model",
-				params: { sessionId: "session-routed-6", requestedId: "auto", routedId: "glm-5.3" },
+				params: { sessionId: "session-routed-6", requestedId: "kimchi-dev/auto", routedId: "kimchi-dev/glm-5.3" },
 			},
 			{
 				method: "_kimchi.dev/routed_model",
-				params: { sessionId: "session-routed-6", requestedId: "auto", routedId: "kimi-k3" },
+				params: { sessionId: "session-routed-6", requestedId: "kimchi-dev/auto", routedId: "kimchi-dev/kimi-k3" },
 			},
 		])
 	})
@@ -6188,12 +6188,12 @@ describe("routed model notifications", () => {
 		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/routed_model")).toEqual([
 			{
 				method: "_kimchi.dev/routed_model",
-				params: { sessionId: "session-routed-2", requestedId: "auto", routedId: "glm-5.3" },
+				params: { sessionId: "session-routed-2", requestedId: "kimchi-dev/auto", routedId: "kimchi-dev/glm-5.3" },
 			},
 		])
 	})
 
-	it("forwards unknown-model picks with the raw backend id", async () => {
+	it("forwards unknown-model picks with the provider-prefixed raw id", async () => {
 		const fake = new FakeAgentSession("session-routed-3")
 		const { conn, extNotifications } = makeRecordingConn()
 		const agent = await startRoutedTestSession(fake, conn)
@@ -6207,7 +6207,11 @@ describe("routed model notifications", () => {
 		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/routed_model")).toEqual([
 			{
 				method: "_kimchi.dev/routed_model",
-				params: { sessionId: "session-routed-3", requestedId: "auto", routedId: "brand-new-backend-model" },
+				params: {
+					sessionId: "session-routed-3",
+					requestedId: "kimchi-dev/auto",
+					routedId: "kimchi-dev/brand-new-backend-model",
+				},
 			},
 		])
 	})

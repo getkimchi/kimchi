@@ -87,6 +87,5 @@ id, `responseModel` stores the concrete pick.)
 change, silent when a later turn lands on the same model — suited to
 status indicators that show the current pick. The `_meta` payload here is the
 **per-message** channel: suited to labeling each response. Neither deprecates
-the other. Note the deliberate format divergence: `routed_model` carries bare
-ids (`auto`, `glm-5.3`), this channel carries full `provider/modelId` refs
-joinable against the session's model list.
+the other. Both channels use the same id format: full `provider/modelId`
+refs, joinable against the session's model list.
