@@ -137,5 +137,11 @@ try {
 	})
 	cpSync(stagedOut, validatorDest)
 } finally {
-	rmSync(stagingRoot, { recursive: true, force: true })
+	// Best-effort: cleanup must never mask a build error or fail the build once
+	// the bundle is in place — a stale temp dir is the accepted worst case.
+	try {
+		rmSync(stagingRoot, { recursive: true, force: true })
+	} catch {
+		// ignore — the OS reclaims temp dirs
+	}
 }
