@@ -1428,5 +1428,6 @@ export function parseThinkingMode(input: string): ThinkingStepsMode | undefined 
 	if (["collapsed", "collapse", "c"].includes(normalized)) return "collapsed"
 	if (["summary", "summaries", "s"].includes(normalized)) return "summary"
 	if (["expanded", "expand", "full", "e"].includes(normalized)) return "expanded"
+	if (["none", "n"].includes(normalized)) return "none"
 	return undefined
 }

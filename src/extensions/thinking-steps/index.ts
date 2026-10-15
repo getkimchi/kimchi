@@ -32,7 +32,7 @@ type ThinkingStepsCommandAction =
 
 const CUSTOM_ENTRY_TYPE = "thinking-steps.mode"
 const DEFAULT_HIDDEN_LABEL = "Thinking..."
-const MODE_OPTIONS: ThinkingStepsMode[] = ["collapsed", "expanded"]
+const MODE_OPTIONS: ThinkingStepsMode[] = ["none", "collapsed", "expanded"]
 const SCOPE_OPTIONS: PersistedThinkingStepsPreferenceScope[] = ["project", "global"]
 
 function modeStatusText(ctx: ExtensionContext, mode: ThinkingStepsMode): string {
@@ -48,7 +48,7 @@ function modeChangeMessage(mode: ThinkingStepsMode, scope: ThinkingStepsCommandS
 }
 
 function invalidUsageMessage(): string {
-	return "Usage: /thinking-steps [collapsed|expanded] | [project|global] [collapsed|expanded|clear]"
+	return "Usage: /thinking-steps [none|collapsed|expanded] | [project|global] [none|collapsed|expanded|clear]"
 }
 
 function notifyUser(ctx: ExtensionContext, message: string, level: "info" | "warning"): void {
@@ -125,9 +125,10 @@ function applyMode(
 }
 
 function cycleMode(current: ThinkingStepsMode): ThinkingStepsMode {
+	if (current === "none") return "collapsed"
 	if (current === "collapsed") return "expanded"
 	if (current === "summary") return "expanded"
-	return "collapsed"
+	return "none"
 }
 
 function parsePreferenceScope(input: string): PersistedThinkingStepsPreferenceScope | undefined {
@@ -311,7 +312,7 @@ export default function thinkingStepsExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.registerShortcut(Key.alt("t"), {
-		description: "Toggle thinking view (collapsed / expanded)",
+		description: "Toggle thinking view (none / collapsed / expanded)",
 		handler: thinkingToggleHandler,
 	})
 

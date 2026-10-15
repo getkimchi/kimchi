@@ -5,7 +5,7 @@ import { getActiveThinkingState, getCurrentThinkingScopeKey, getThinkingStepsMod
 import type { DerivedThinkingStep, ThinkingSemanticRole, ThinkingSourceBlock, ThinkingThemeLike } from "./types.js"
 
 interface RenderOptions {
-	mode: "collapsed" | "summary" | "expanded"
+	mode: "collapsed" | "summary" | "expanded" | "none"
 	steps: DerivedThinkingStep[]
 	blocks: ThinkingSourceBlock[]
 	activeStepId?: string
@@ -496,6 +496,9 @@ function renderExpanded(
 
 export function renderThinkingStepsLines(theme: ThinkingThemeLike, width: number, options: RenderOptions): string[] {
 	if (options.steps.length === 0) return []
+	// "none" renders nothing; existing components repaint empty after a
+	// live mode switch without waiting for an updateContent rebuild.
+	if (options.mode === "none") return []
 	if (options.mode === "collapsed") {
 		return renderCollapsed(
 			theme,

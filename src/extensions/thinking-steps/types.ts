@@ -1,4 +1,6 @@
-export type ThinkingStepsMode = "collapsed" | "summary" | "expanded"
+/** How thinking blocks render in the transcript. "none" suppresses them
+ *  entirely — no live preview while active, no collapsed marker once settled. */
+export type ThinkingStepsMode = "collapsed" | "summary" | "expanded" | "none"
 export type PersistedThinkingStepsPreferenceScope = "project" | "global"
 
 export type ThinkingSemanticRole = "inspect" | "plan" | "compare" | "verify" | "write" | "search" | "error" | "default"

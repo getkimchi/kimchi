@@ -8,6 +8,7 @@ import {
 	getActiveThinkingState,
 	getLastThinkingDuration,
 	getPatchCleanup,
+	getThinkingStepsMode,
 	incrementPatchRefCount,
 	resolveThinkingMessageScope,
 	setPatchCleanup,
@@ -298,7 +299,12 @@ function installPatch(theme: ThinkingThemeLike): () => void {
 			this.contentContainer.clear()
 
 			const thinkingBlocks = collectThinkingBlocks(message)
-			const hasVisibleContent = hasVisibleTextContent(message) || thinkingBlocks.length > 0
+			const thinkingScopeKey = resolveThinkingMessageScope(message)
+			// "none" view mode: render nothing for thinking — no live preview while
+			// active, no collapsed marker once settled. Display-only: the session
+			// transcript and exports keep the thinking blocks.
+			const thinkingSuppressed = getThinkingStepsMode(thinkingScopeKey) === "none"
+			const hasVisibleContent = hasVisibleTextContent(message) || (thinkingBlocks.length > 0 && !thinkingSuppressed)
 			if (hasVisibleContent) {
 				this.contentContainer.addChild(new Spacer(1))
 			}
@@ -319,38 +325,33 @@ function installPatch(theme: ThinkingThemeLike): () => void {
 				}
 
 				if (content.type === "thinking" && thinkingBlocks.length > 0 && !renderedThinking) {
-					if (this.hideThinkingBlock) {
-						const scopeKey = resolveThinkingMessageScope(message)
-						const activeState = getActiveThinkingState(message.timestamp, scopeKey)
-						if (activeState.active) {
-							this.contentContainer.addChild(new LiveThinkingPreview(theme, thinkingBlocks))
+					renderedThinking = true
+					if (!thinkingSuppressed) {
+						if (this.hideThinkingBlock) {
+							const activeState = getActiveThinkingState(message.timestamp, thinkingScopeKey)
+							if (activeState.active) {
+								this.contentContainer.addChild(new LiveThinkingPreview(theme, thinkingBlocks))
+							} else {
+								const lastDuration = getLastThinkingDuration()
+								const usesDuration = lastDuration !== undefined && message.timestamp === lastDuration.messageTimestamp
+								const rawLabel = usesDuration
+									? lastDuration.durationMs < 1000
+										? "Thought for <1s"
+										: `Thought for ${Math.round(lastDuration.durationMs / 1000)}s`
+									: this.hiddenThinkingLabel
+								const styledLabel = theme.bold ? theme.bold(rawLabel) : rawLabel
+								this.contentContainer.addChild(
+									new Text(` ${theme.fg("muted", "▍")} ${theme.fg("dim", styledLabel)}`, 0, 0),
+								)
+							}
 						} else {
-							const lastDuration = getLastThinkingDuration()
-							const usesDuration = lastDuration !== undefined && message.timestamp === lastDuration.messageTimestamp
-							const rawLabel = usesDuration
-								? lastDuration.durationMs < 1000
-									? "Thought for <1s"
-									: `Thought for ${Math.round(lastDuration.durationMs / 1000)}s`
-								: this.hiddenThinkingLabel
-							const styledLabel = theme.bold ? theme.bold(rawLabel) : rawLabel
 							this.contentContainer.addChild(
-								new Text(` ${theme.fg("muted", "▍")} ${theme.fg("dim", styledLabel)}`, 0, 0),
+								new ThinkingStepsComponent(theme, message.timestamp, thinkingBlocks, thinkingScopeKey, this),
 							)
 						}
-					} else {
-						this.contentContainer.addChild(
-							new ThinkingStepsComponent(
-								theme,
-								message.timestamp,
-								thinkingBlocks,
-								resolveThinkingMessageScope(message),
-								this,
-							),
-						)
-					}
-					renderedThinking = true
-					if (hasVisibleTextAfterThinking) {
-						this.contentContainer.addChild(new Spacer(1))
+						if (hasVisibleTextAfterThinking) {
+							this.contentContainer.addChild(new Spacer(1))
+						}
 					}
 				}
 			}
