@@ -220,8 +220,10 @@ async function addPlan(intent: WorkIntent): Promise<WorkIntent> {
 		return finishPlan(intent, newest)
 	} catch (error) {
 		// Some runtimes surface a missing directory lazily while the handle iterates rather than on
-		// opendir itself, so the whole scan, not just the open, tolerates ENOENT. Any other failure
-		// refuses the candidate rather than hiding unreadable history.
+		// opendir itself, so the whole scan, not just the open, tolerates ENOENT. Matching limits
+		// (size/version caps) keep their shape for /work reporting; any other failure refuses the
+		// candidate rather than hiding unreadable history.
+		if (error instanceof WorkMatchingLimit) throw error
 		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return intent
 		throw new Error("Cannot read retained work plans")
 	}
