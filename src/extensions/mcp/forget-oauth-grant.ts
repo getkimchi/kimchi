@@ -12,29 +12,43 @@
  *   keychain on the next start and resurrect the grant.
  *
  * A missing grant is success: re-running after a successful (or partial)
- * forget reports `found: false` and changes nothing. macOS consent handling
- * inherits the keychain boundary: reads and deletes go through the trusted
- * `/usr/bin/security` ACL path (no dialog for kimchi-written items), and a
- * user denial throws `McpKeychainDeniedError` once — the per-process denial
- * tombstone in keyring-require-bridge keeps repeats from re-prompting, so a
- * denial aborts the operation without a dialog storm.
+ * forget reports `found: false` and changes nothing.
+ *
+ * Consent handling (the two hazards from the keychain code shape):
+ * - On macOS the operation never READS the keychain: chunk accounts are
+ *   discovered by enumerating the service's entries (`dump-keychain`), so a
+ *   legacy item's read-triggered ACL self-heal cannot pop a dialog, and
+ *   chunk discovery still works when the main entry is corrupt. On platforms
+ *   without account enumeration the chunk manifest is read instead, and a
+ *   corrupt main entry is then forgotten alone.
+ * - Deletes go through the ACL-trusted `/usr/bin/security` path (no dialog
+ *   for kimchi-written items). For a legacy item macOS shows exactly one
+ *   consent dialog per invocation at worst: the first denial aborts the
+ *   remaining deletes instead of prompting for each entry. A repeated forget
+ *   within one process is additionally guarded by the read-path denial
+ *   tombstone; across invocations the app is expected to honor the CLI's
+ *   `reason: "denied"` outcome instead of retrying.
  */
 
 import { existsSync, rmSync } from "node:fs"
+import { homedir } from "node:os"
 import { join } from "node:path"
-import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import {
 	createUnderlyingKeyringEntry,
+	defaultSecurityRunner,
+	type KeyringEntryLike,
 	MCP_OAUTH_SERVICE,
 	mcpCredentialAccountId,
+	mcpLegacyOAuthBaseDir,
+	mcpOAuthChunkAccountId,
 	type OAuthChunkManifest,
 	parseOAuthChunkManifestRecord,
+	TEST_KEYRING_DIR_ENV,
 } from "./keyring-require-bridge.js"
+import { parseDumpedAccounts } from "./stray-oauth-entry-cleanup.js"
 
-interface KeychainEntryForForget {
-	getPassword(): string | null
-	deleteCredential(): boolean
-}
+/** The digest segment of a chunk account (`<account>.chunk.<16 hex>.<index>`), per the adapter's manifest writer. */
+const CHUNK_ACCOUNT = /^\.chunk\.[0-9a-f]{16}\.\d+$/
 
 export interface ForgetMcpOAuthGrantResult {
 	/**
@@ -50,13 +64,29 @@ export interface ForgetMcpOAuthGrantResult {
 
 export interface ForgetMcpOAuthGrantOptions {
 	/** Entry factory keyed by account; injectable for tests. Defaults to the platform keyring backend. */
-	entryFactory?: (account: string) => KeychainEntryForForget
+	entryFactory?: (account: string) => Pick<KeyringEntryLike, "getPassword" | "deleteCredential">
+	/**
+	 * Lists the accounts stored under the MCP OAuth service; null when the
+	 * backend cannot enumerate (chunk discovery then falls back to reading
+	 * the main entry's manifest). Defaults to a `dump-keychain` enumeration
+	 * on macOS and `null` elsewhere.
+	 */
+	listAccounts?: () => string[] | null
 	/** Legacy plaintext OAuth directory; injectable for tests. Defaults to `$MCP_OAUTH_DIR` or `<agentDir>/mcp-oauth`. */
 	legacyBaseDir?: string
 }
 
-function defaultLegacyBaseDir(): string {
-	return process.env.MCP_OAUTH_DIR?.trim() || join(getAgentDir(), "mcp-oauth")
+/**
+ * macOS account enumeration over the login keychain (where kimchi's writes
+ * land). Skipped for the file-backed test store, whose hashed on-disk keys
+ * cannot be reconstructed from account names — its tests drive the
+ * manifest fallback explicitly.
+ */
+function defaultListAccounts(): string[] | null {
+	if (process.platform !== "darwin" || process.env[TEST_KEYRING_DIR_ENV]) return null
+	const dump = defaultSecurityRunner(["dump-keychain", join(homedir(), "Library", "Keychains", "login.keychain-db")])
+	if (dump.status !== 0) return null
+	return parseDumpedAccounts(dump.stdout, MCP_OAUTH_SERVICE)
 }
 
 export function forgetMcpOAuthGrant(
@@ -65,35 +95,56 @@ export function forgetMcpOAuthGrant(
 ): ForgetMcpOAuthGrantResult {
 	const account = mcpCredentialAccountId(serverName)
 	const entryFactory = options.entryFactory ?? ((acct: string) => createUnderlyingKeyringEntry(MCP_OAUTH_SERVICE, acct))
-	const legacyBaseDir = options.legacyBaseDir ?? defaultLegacyBaseDir()
+	const legacyBaseDir = options.legacyBaseDir ?? mcpLegacyOAuthBaseDir()
+	const listed = (options.listAccounts ?? defaultListAccounts)()
 
 	let found = false
 	let chunksRemoved = 0
+	let mainExisted = false
+	let chunkAccounts: string[] = []
 
-	const main = entryFactory(account)
-	const payload = main.getPassword()
-	if (payload !== null) {
-		found = true
-		// The chunk manifest lives in the main credential, so the read above is
-		// the pre-delete discovery step: chunk accounts cannot be derived without
-		// it, and a keychain denial aborts before anything is deleted. A corrupt
-		// (non-JSON) main entry still belongs to this server, so forgetting it
-		// proceeds with the main entry alone — orphaned chunks become unreachable
-		// with the manifest gone.
-		let manifest: OAuthChunkManifest | null = null
-		try {
-			manifest = parseOAuthChunkManifestRecord(JSON.parse(payload))
-		} catch (error) {
-			if (!(error instanceof SyntaxError)) throw error
-		}
-		if (manifest) {
-			for (let index = 0; index < manifest.chunkCount; index++) {
-				const removed = entryFactory(`${account}.chunk.${manifest.chunkDigest}.${index}`).deleteCredential()
-				if (removed) chunksRemoved++
+	if (listed !== null) {
+		// Enumeration: no keychain reads, so legacy items never trigger the
+		// read-path ACL self-heal and its consent dialog. Chunk accounts match
+		// the account prefix plus the adapter's `.chunk.*` layout, so a corrupt
+		// main entry leaves no orphans behind.
+		chunkAccounts = listed.filter(
+			(name) => name.startsWith(`${account}.`) && CHUNK_ACCOUNT.test(name.slice(account.length)),
+		)
+		mainExisted = listed.includes(account)
+	} else {
+		// Manifest fallback: the chunk keys are only derivable from the main
+		// credential. The read is the pre-delete discovery step — a keychain
+		// denial aborts before anything is deleted. A corrupt (non-JSON) main
+		// entry still belongs to this server and is forgotten alone.
+		const payload = entryFactory(account).getPassword()
+		mainExisted = payload !== null
+		if (payload !== null) {
+			let manifest: OAuthChunkManifest | null = null
+			try {
+				manifest = parseOAuthChunkManifestRecord(JSON.parse(payload))
+			} catch (error) {
+				if (!(error instanceof SyntaxError)) throw error
+			}
+			if (manifest) {
+				chunkAccounts = Array.from({ length: manifest.chunkCount }, (_, index) =>
+					mcpOAuthChunkAccountId(account, manifest.chunkDigest, index),
+				)
 			}
 		}
-		main.deleteCredential()
 	}
+
+	found = mainExisted || chunkAccounts.length > 0
+
+	// Chunks first, then the main entry (pi-mcp-adapter's removal order, so a
+	// surviving main still describes any surviving chunks). A consent denial
+	// aborts the loop: the alternative — trying every entry — would surface a
+	// fresh macOS dialog per legacy ACL item. The throw propagates to the
+	// caller, which reports `reason: "denied"`.
+	for (const chunkAccount of chunkAccounts) {
+		if (entryFactory(chunkAccount).deleteCredential()) chunksRemoved++
+	}
+	if (mainExisted) entryFactory(account).deleteCredential()
 
 	let legacyFileRemoved = false
 	const legacyEntryDir = join(legacyBaseDir, account)

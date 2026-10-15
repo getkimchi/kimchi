@@ -105,6 +105,92 @@ describe("forgetMcpOAuthGrant", () => {
 		expect(existsSync(credentialPath(keyringDir, account))).toBe(false)
 	})
 
+	describe("with enumerated accounts (macOS path)", () => {
+		// Enumeration avoids keychain reads entirely: no ACL self-heal dialog,
+		// and chunk accounts are found by name even when the manifest-less main
+		// entry is corrupt.
+		function memoryStore(initial: Record<string, string>) {
+			const store = new Map(Object.entries(initial))
+			return {
+				store,
+				entryFactory: (account: string) => ({
+					getPassword: () => store.get(account) ?? null,
+					deleteCredential: () => store.delete(account),
+				}),
+			}
+		}
+
+		it("removes chunks discovered by enumeration even when the main entry is corrupt", () => {
+			const account = credentialAccount("corrupt-enumerated")
+			const chunk0 = `${account}.chunk.0123456789abcdef.0`
+			const chunk1 = `${account}.chunk.0123456789abcdef.1`
+			const { store, entryFactory } = memoryStore({ [account]: "not-json", [chunk0]: "c0", [chunk1]: "c1" })
+
+			expect(
+				forgetMcpOAuthGrant("corrupt-enumerated", {
+					entryFactory,
+					listAccounts: () => [...store.keys()],
+					legacyBaseDir: tempDir("kimchi-oauth-"),
+				}),
+			).toEqual({ found: true, chunksRemoved: 2, legacyFileRemoved: false })
+			expect(store.size).toBe(0)
+		})
+
+		it("never reads the keychain when enumerating (no self-heal consent dialog)", () => {
+			const account = credentialAccount("no-read")
+			const read = vi.fn()
+
+			expect(
+				forgetMcpOAuthGrant("no-read", {
+					entryFactory: () => ({ getPassword: read, deleteCredential: () => true }),
+					listAccounts: () => [account],
+					legacyBaseDir: tempDir("kimchi-oauth-"),
+				}),
+			).toEqual({ found: true, chunksRemoved: 0, legacyFileRemoved: false })
+			expect(read).not.toHaveBeenCalled()
+		})
+
+		it("aborts the remaining deletes after the first consent denial", () => {
+			const account = credentialAccount("deny-first-chunk")
+			const chunk0 = `${account}.chunk.0123456789abcdef.0`
+			const chunk1 = `${account}.chunk.0123456789abcdef.1`
+			const deletes: string[] = []
+			const denyingFactory = (acct: string) => ({
+				getPassword: () => "{}",
+				deleteCredential: () => {
+					deletes.push(acct)
+					throw new McpKeychainDeniedError(acct)
+				},
+			})
+
+			expect(() =>
+				forgetMcpOAuthGrant("deny-first-chunk", {
+					entryFactory: denyingFactory,
+					listAccounts: () => [account, chunk0, chunk1],
+					legacyBaseDir: tempDir("kimchi-oauth-"),
+				}),
+			).toThrow(McpKeychainDeniedError)
+			// Exactly one delete was attempted: at most one macOS consent dialog
+			// can appear per forget invocation — no dialog storm for legacy items.
+			expect(deletes).toHaveLength(1)
+		})
+
+		it("reports found from enumeration when nothing needs the main entry", () => {
+			const account = credentialAccount("orphan-chunks")
+			const chunk0 = `${account}.chunk.0123456789abcdef.0`
+			const { store, entryFactory } = memoryStore({ [chunk0]: "c0" })
+
+			expect(
+				forgetMcpOAuthGrant("orphan-chunks", {
+					entryFactory,
+					listAccounts: () => [...store.keys()],
+					legacyBaseDir: tempDir("kimchi-oauth-"),
+				}),
+			).toEqual({ found: true, chunksRemoved: 1, legacyFileRemoved: false })
+			expect(store.size).toBe(0)
+		})
+	})
+
 	describe("at the keychain boundary", () => {
 		// Consent denial (exit 128) and not-found (exit 44) are the two macOS
 		// outcomes every delete must survive; the boundary is the real
@@ -132,8 +218,13 @@ describe("forgetMcpOAuthGrant", () => {
 
 		it("treats an already-deleted grant as absent", () => {
 			const { runner } = runnerReturning([])
+			const listAccounts = () => null
 			expect(
-				forgetMcpOAuthGrant("gone", { entryFactory: securityFactory(runner), legacyBaseDir: tempDir("kimchi-oauth-") }),
+				forgetMcpOAuthGrant("gone", {
+					entryFactory: securityFactory(runner),
+					listAccounts,
+					legacyBaseDir: tempDir("kimchi-oauth-"),
+				}),
 			).toEqual({
 				found: false,
 				chunksRemoved: 0,
@@ -143,11 +234,15 @@ describe("forgetMcpOAuthGrant", () => {
 
 		it("aborts on consent denial and never re-prompts the dialog", () => {
 			const { calls, runner } = runnerReturning([denied])
-			const options = { entryFactory: securityFactory(runner), legacyBaseDir: tempDir("kimchi-oauth-") }
+			const options = {
+				entryFactory: securityFactory(runner),
+				listAccounts: () => null,
+				legacyBaseDir: tempDir("kimchi-oauth-"),
+			}
 
 			expect(() => forgetMcpOAuthGrant("denied-server", options)).toThrow(McpKeychainDeniedError)
-			// One runner invocation total: the denial is tombstoned, so a retry by a
-			// polling caller aborts without surfacing a second macOS consent dialog.
+			// One runner invocation total: the read-path denial is tombstoned, so a
+			// repeat within the same process aborts without a second consent dialog.
 			expect(() => forgetMcpOAuthGrant("denied-server", options)).toThrow(McpKeychainDeniedError)
 			expect(calls).toHaveLength(1)
 		})
@@ -155,7 +250,11 @@ describe("forgetMcpOAuthGrant", () => {
 		it("propagates a consent denial from the delete verb", () => {
 			const found: SecurityToolResult = { status: 0, stdout: "b64:e30=\n", stderr: "" }
 			const { calls, runner } = runnerReturning([found, denied])
-			const options = { entryFactory: securityFactory(runner), legacyBaseDir: tempDir("kimchi-oauth-") }
+			const options = {
+				entryFactory: securityFactory(runner),
+				listAccounts: () => null,
+				legacyBaseDir: tempDir("kimchi-oauth-"),
+			}
 
 			expect(() => forgetMcpOAuthGrant("deny-delete", options)).toThrow(McpKeychainDeniedError)
 			expect(calls.map((c) => c[0])).toEqual(["find-generic-password", "delete-generic-password"])

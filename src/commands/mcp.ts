@@ -42,6 +42,10 @@ import {
 } from "../extensions/mcp/keyring-require-bridge.js"
 import { type ProbeResult, UpstreamMcpProbe } from "../extensions/mcp/probe.js"
 
+const SERVER_NAME_PATTERN_SOURCE = "^(?!.*\\.\\.)[^/\\\\]+$"
+/** Server names follow one rule everywhere: no path separators or consecutive dots (guards path traversal in name-keyed credential paths). */
+const SERVER_NAME_PATTERN = new RegExp(SERVER_NAME_PATTERN_SOURCE)
+
 /**
  * TypeBox schema for the probe stdin input.
  *
@@ -56,7 +60,7 @@ const ProbeInputSchema = Type.Object(
 	{
 		name: Type.String({
 			minLength: 1,
-			pattern: "^(?!.*\\.\\.)[^/\\\\]+$",
+			pattern: SERVER_NAME_PATTERN_SOURCE,
 		}),
 		server: Type.Object({}, { additionalProperties: true }),
 	},
@@ -94,8 +98,7 @@ export async function runMcp(args: string[]): Promise<number | undefined> {
 	return 1
 }
 
-/** Server names follow the probe rule: no path separators or consecutive dots. */
-const SERVER_NAME_PATTERN = /^(?!.*\.\.)[^/\\]+$/
+type ForgetGrantFailureReason = "invalid-input" | "denied" | "unavailable" | "error"
 
 async function runForgetGrant(args: string[]): Promise<number> {
 	if (!args.includes("--json")) {
@@ -114,7 +117,7 @@ async function runForgetGrant(args: string[]): Promise<number> {
 		return emitJson({ ok: true, name, ...forgetMcpOAuthGrant(name) }, 0)
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error)
-		const reason =
+		const reason: ForgetGrantFailureReason =
 			error instanceof McpKeychainDeniedError
 				? "denied"
 				: error instanceof McpKeychainUnavailableError
@@ -124,7 +127,11 @@ async function runForgetGrant(args: string[]): Promise<number> {
 	}
 }
 
-function emitForgetGrantFailure(name: string | null, message: string, reason: string): Promise<number> {
+function emitForgetGrantFailure(
+	name: string | null,
+	message: string,
+	reason: ForgetGrantFailureReason,
+): Promise<number> {
 	return emitJson({ ok: false, name, error: message, reason }, 1)
 }
 

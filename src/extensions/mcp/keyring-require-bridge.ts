@@ -10,7 +10,7 @@ import { configureMcpKeyringRecoveryHelper } from "./keyring-recovery.js"
 const KEYRING_PACKAGE = "@napi-rs/keyring"
 const VIRTUAL_KEYRING_PATH = "/$bunfs/kimchi/@napi-rs/keyring/index.js"
 const INSTALLED_MARKER = Symbol.for("kimchi.mcp.keyring-require-bridge")
-const TEST_KEYRING_DIR_ENV = "KIMCHI_MCP_E2E_KEYRING_DIR"
+export const TEST_KEYRING_DIR_ENV = "KIMCHI_MCP_E2E_KEYRING_DIR"
 
 /** Kimchi-owned OS credential-store service for MCP OAuth credentials. */
 export const MCP_OAUTH_SERVICE = "dev.kimchi.mcp.oauth"
@@ -76,10 +76,20 @@ class FileBackedTestEntry {
  * so a drift that narrows or renames the surface fails loudly before
  * release instead of at runtime for users.
  */
-interface KeyringEntryLike {
+export interface KeyringEntryLike {
 	getPassword(): string | null
 	setPassword(password: string): void
 	deleteCredential(): boolean
+}
+
+/** The keyring account of one chunk of a split OAuth credential (pi-mcp-adapter's chunk-key layout — keep this the single definition). */
+export function mcpOAuthChunkAccountId(account: string, digest: string, index: number): string {
+	return `${account}.chunk.${digest}.${index}`
+}
+
+/** Legacy plaintext OAuth directory ($MCP_OAUTH_DIR or the agent-dir default); the read and forget paths must agree on it. */
+export function mcpLegacyOAuthBaseDir(): string {
+	return process.env.MCP_OAUTH_DIR?.trim() || join(getAgentDir(), "mcp-oauth")
 }
 
 /**
@@ -465,7 +475,7 @@ function parseCredentialServerUrl(account: string, payload: string): string | un
 	if (manifest) {
 		const chunks: string[] = []
 		for (let index = 0; index < manifest.chunkCount; index++) {
-			const chunk = readSecureCredential(`${account}.chunk.${manifest.chunkDigest}.${index}`)
+			const chunk = readSecureCredential(mcpOAuthChunkAccountId(account, manifest.chunkDigest, index))
 			if (chunk === null) throw new Error("Missing MCP OAuth credential chunk")
 			chunks.push(chunk)
 		}
@@ -484,7 +494,7 @@ export function inspectMcpCredentialAccount(serverName: string): McpCredentialAc
 			const serverUrl = parseCredentialServerUrl(account, securePayload)
 			return { status: "present", ...(serverUrl === undefined ? {} : { serverUrl }) }
 		}
-		const legacyBaseDir = process.env.MCP_OAUTH_DIR?.trim() || join(getAgentDir(), "mcp-oauth")
+		const legacyBaseDir = mcpLegacyOAuthBaseDir()
 		const legacyPath = join(legacyBaseDir, account, "tokens.json")
 		if (!existsSync(legacyPath)) return { status: "absent" }
 		const serverUrl = parseCredentialServerUrl(account, readFileSync(legacyPath, "utf8"))

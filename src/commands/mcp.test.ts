@@ -11,12 +11,13 @@ vi.mock("../extensions/mcp/probe.js", () => ({
 }))
 
 vi.mock("../extensions/mcp/keyring-require-bridge.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../extensions/mcp/keyring-require-bridge.js")>()
+	const actual = await importOriginal<typeof KeyringBridge>()
 	return { ...actual, verifyMcpKeyringRuntime }
 })
 
 vi.mock("../extensions/mcp/forget-oauth-grant.js", () => ({ forgetMcpOAuthGrant }))
 
+import type * as KeyringBridge from "../extensions/mcp/keyring-require-bridge.js"
 import { McpKeychainDeniedError, McpKeychainUnavailableError } from "../extensions/mcp/keyring-require-bridge.js"
 import { runMcp } from "./mcp.js"
 
