@@ -18,11 +18,13 @@ export const BASH_TOOL_GUARD_EVENTS = {
 export type BashToolGuardEventChannel = (typeof BASH_TOOL_GUARD_EVENTS)[keyof typeof BASH_TOOL_GUARD_EVENTS]
 
 export interface BashToolGuardWarnPayload {
-	/** The read/edit/write/background category that triggered the warn. */
+	/** The category that triggered the warn. Only `background` steers,
+	 *  so warn events fire for backgrounding alone; the `BashCategory`
+	 *  type still includes read/edit/write (classification contract). */
 	category: BashCategory
-	/** The tool name detected in the matched segment (e.g. "cat", "sed").
-	 *  Kept short and structured so telemetry can aggregate without
-	 *  receiving raw command text. */
+	/** The tool name detected in the matched segment (e.g. "nohup",
+	 *  "disown", "&"). Kept short and structured so telemetry can
+	 *  aggregate without receiving raw command text. */
 	tool: string
 	/** How many times this category has been seen in the session so far. */
 	count: number
@@ -32,7 +34,13 @@ export interface BashToolGuardWarnPayload {
 }
 
 export interface BashToolGuardBlockPayload {
+	/** The category that was blocked. Only `background` steers, so block
+	 *  events fire for backgrounding alone (and only when
+	 *  `blockOnThreshold` is enabled); the `BashCategory` type still
+	 *  includes read/edit/write (classification contract). */
 	category: BashCategory
+	/** The tool name detected in the matched segment (e.g. "nohup",
+	 *  "disown", "&"). */
 	tool: string
 	count: number
 	/** True in interactive sessions (UI present); false in print/protocol/
@@ -42,6 +50,7 @@ export interface BashToolGuardBlockPayload {
 
 export interface BashToolGuardAllowedByUserRequestPayload {
 	category: BashCategory
-	/** The tool name detected in the matched segment (e.g. "cat", "sed"). */
+	/** The tool name detected in the matched segment (e.g. "nohup",
+	 *  "disown"). Only background matches reach the user-request path. */
 	tool: string
 }

@@ -79,7 +79,7 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		kind: "extensions",
 		label: "Bash-tool guard",
 		description:
-			"Warn when the LLM uses `bash` (cat/sed/echo) for tasks that have a dedicated read/edit/write tool, and remind it that `cd` does not persist between bash calls. Disabling stops runtime guard messages; the core prompt continues to prefer dedicated tools.",
+			"Steer the LLM away from backgrounding processes with `&`/`nohup`/`disown` — they orphan outside the bash tool's lifecycle. Disabling stops runtime guard messages; the core prompt continues to prefer dedicated read/edit/write tools.",
 		defaultEnabled: true,
 	},
 	{

@@ -347,21 +347,55 @@ describe("BashToolGuard", () => {
 		expect(guard.recordCommand("pnpm test")).toEqual({ decision: "allow" })
 	})
 
-	it("returns warn on first match per category", () => {
+	it("returns allow for read/edit/write matches (classification-only)", () => {
 		const guard = new BashToolGuard()
-		const result = guard.recordCommand("cat foo.ts") as BashGuardWarnResult
+		expect(guard.recordCommand("cat file.ts")).toEqual({ decision: "allow" })
+		expect(guard.recordCommand("sed -i 's/a/b/' f")).toEqual({ decision: "allow" })
+		expect(guard.recordCommand("echo hi > f")).toEqual({ decision: "allow" })
+		expect(guard.recordCommand('printf "%s\\n" x >> f')).toEqual({ decision: "allow" })
+		expect(guard.recordCommand("tee out.log")).toEqual({ decision: "allow" })
+		expect(guard.recordCommand("head -n 30 train.txt > part1")).toEqual({ decision: "allow" })
+		expect(guard.recordCommand("python3 - <<EOF > out")).toEqual({ decision: "allow" })
+		// No counting for classification-only categories.
+		expect(guard.getCount("read")).toBe(0)
+		expect(guard.getCount("edit")).toBe(0)
+		expect(guard.getCount("write")).toBe(0)
+	})
+
+	it("read/edit/write categories never steer regardless of user prompt", () => {
+		const guard = new BashToolGuard()
+		// No user prompt at all.
+		expect(guard.recordCommand("cat foo.ts")).toEqual({ decision: "allow" })
+		expect(guard.recordCommand("sed -i 's/a/b/' foo.ts")).toEqual({ decision: "allow" })
+		expect(guard.recordCommand("echo 'x' > foo.ts")).toEqual({ decision: "allow" })
+		// Matching user prompt — previously a user-request allow, now a plain
+		// allow: explicit-request detection only runs for background.
+		guard.setLastUserPrompt("cat foo.ts")
+		expect(guard.recordCommand("cat foo.ts")).toEqual({ decision: "allow" })
+		guard.setLastUserPrompt("use sed to fix foo.ts")
+		expect(guard.recordCommand("sed -i 's/typo/fix/' foo.ts")).toEqual({ decision: "allow" })
+		guard.setLastUserPrompt("write the result to output.txt")
+		expect(guard.recordCommand("echo 'done' > output.txt")).toEqual({ decision: "allow" })
+		expect(guard.getCount("read")).toBe(0)
+		expect(guard.getCount("edit")).toBe(0)
+		expect(guard.getCount("write")).toBe(0)
+	})
+
+	it("returns warn on first background match", () => {
+		const guard = new BashToolGuard()
+		const result = guard.recordCommand("nohup python3 run.py &") as BashGuardWarnResult
 		expect(result.decision).toBe("warn")
-		expect(result.category).toBe("read")
-		expect(result.suggestion).toMatch(/read tool/)
+		expect(result.category).toBe("background")
+		expect(result.suggestion).toMatch(/bash_control/)
 		expect(result.count).toBe(1)
 	})
 
-	it("returns block on second match of same category (when blockOnThreshold=true)", () => {
+	it("returns block on second background match (when blockOnThreshold=true)", () => {
 		const guard = new BashToolGuard({ blockOnThreshold: true })
-		guard.recordCommand("cat foo.ts")
-		const result = guard.recordCommand("head -n 5 bar.ts") as BashGuardBlockResult
+		guard.recordCommand("nohup python3 run.py &")
+		const result = guard.recordCommand("sleep 60 &") as BashGuardBlockResult
 		expect(result.decision).toBe("block")
-		expect(result.category).toBe("read")
+		expect(result.category).toBe("background")
 		expect(result.count).toBe(2)
 	})
 
@@ -369,99 +403,121 @@ describe("BashToolGuard", () => {
 		// Default behaviour: warn-only. The guard never refuses a bash call
 		// unless the caller explicitly opts in via blockOnThreshold: true.
 		const guard = new BashToolGuard()
-		expect(guard.recordCommand("cat foo.ts").decision).toBe("warn")
-		expect(guard.recordCommand("cat bar.ts").decision).toBe("warn")
-		expect(guard.recordCommand("cat baz.ts").decision).toBe("warn")
-		expect(guard.recordCommand("cat qux.ts").decision).toBe("warn")
+		expect(guard.recordCommand("sleep 1 &").decision).toBe("warn")
+		expect(guard.recordCommand("sleep 2 &").decision).toBe("warn")
+		expect(guard.recordCommand("sleep 3 &").decision).toBe("warn")
+		expect(guard.recordCommand("sleep 4 &").decision).toBe("warn")
 	})
 
-	it("uses per-category counters (cat doesn't burn sed budget)", () => {
+	it("file-op matches don't burn the background budget", () => {
 		const guard = new BashToolGuard({ blockOnThreshold: true })
-		expect(guard.recordCommand("cat foo.ts").decision).toBe("warn")
-		// Different category, fresh budget → warn again, not block.
-		expect(guard.recordCommand("sed -i 's/foo/bar/' foo.ts").decision).toBe("warn")
-		expect(guard.recordCommand("echo 'x' > bar.ts").decision).toBe("warn")
-		// Now each category has had its warn, second occurrence blocks.
-		expect(guard.recordCommand("cat baz.ts").decision).toBe("block")
-		expect(guard.recordCommand("sed -i 's/a/b/' baz.ts").decision).toBe("block")
-		expect(guard.recordCommand("echo 'y' > qux.ts").decision).toBe("block")
+		expect(guard.recordCommand("cat foo.ts").decision).toBe("allow")
+		expect(guard.recordCommand("sed -i 's/a/b/' foo.ts").decision).toBe("allow")
+		expect(guard.recordCommand("echo 'x' > bar.ts").decision).toBe("allow")
+		// Background budget untouched by the file-op classifications.
+		expect(guard.recordCommand("sleep 60 &").decision).toBe("warn")
+		const result = guard.recordCommand("disown") as BashGuardBlockResult
+		expect(result.decision).toBe("block")
+		expect(result.count).toBe(2)
 	})
 
 	it("respects custom warnThreshold (global)", () => {
 		const guard = new BashToolGuard({ warnThreshold: 2, blockOnThreshold: true })
-		expect(guard.recordCommand("cat a.ts").decision).toBe("warn")
-		expect(guard.recordCommand("cat b.ts").decision).toBe("warn")
-		expect(guard.recordCommand("cat c.ts").decision).toBe("block")
+		expect(guard.recordCommand("sleep 1 &").decision).toBe("warn")
+		expect(guard.recordCommand("sleep 2 &").decision).toBe("warn")
+		expect(guard.recordCommand("sleep 3 &").decision).toBe("block")
 	})
 
-	it("respects per-category warnThresholds", () => {
+	it("respects per-category warnThresholds (background)", () => {
 		const guard = new BashToolGuard({
-			warnThresholds: { read: 3, edit: 0, write: 1 },
+			warnThresholds: { read: 3, edit: 0, write: 1, background: 2 },
 			blockOnThreshold: true,
 		})
-		// read budget = 3 warns before block
-		expect(guard.recordCommand("cat a.ts").decision).toBe("warn")
-		expect(guard.recordCommand("cat b.ts").decision).toBe("warn")
-		expect(guard.recordCommand("cat c.ts").decision).toBe("warn")
-		expect(guard.recordCommand("cat d.ts").decision).toBe("block")
-		// edit budget = 0 warns → first occurrence blocks
-		expect(guard.recordCommand("sed -i 's/a/b/' e.ts").decision).toBe("block")
-		// write budget = 1 warn (default) → first warns, second blocks
-		expect(guard.recordCommand("echo 'x' > f.ts").decision).toBe("warn")
-		expect(guard.recordCommand("echo 'y' > g.ts").decision).toBe("block")
+		// background budget = 2 warns before block
+		expect(guard.recordCommand("sleep 1 &").decision).toBe("warn")
+		expect(guard.recordCommand("sleep 2 &").decision).toBe("warn")
+		expect(guard.recordCommand("sleep 3 &").decision).toBe("block")
+		// read/edit/write thresholds are inert: classification-only
+		// categories never steer or block regardless of their budgets.
+		expect(guard.recordCommand("sed -i 's/a/b/' e.ts").decision).toBe("allow")
+		expect(guard.recordCommand("echo 'x' > f.ts").decision).toBe("allow")
 	})
 
-	it("per-category overrides fallback to global warnThreshold when partial", () => {
+	it("background falls back to global warnThreshold when not overridden", () => {
 		const guard = new BashToolGuard({
 			warnThreshold: 1,
-			warnThresholds: { edit: 3 },
+			warnThresholds: { read: 3, edit: 0 },
 			blockOnThreshold: true,
 		})
-		// read falls back to global (1)
-		expect(guard.recordCommand("cat a.ts").decision).toBe("warn")
-		expect(guard.recordCommand("cat b.ts").decision).toBe("block")
-		// write falls back to global (1)
-		expect(guard.recordCommand("echo 'x' > a.ts").decision).toBe("warn")
-		// edit uses override (3)
-		expect(guard.recordCommand("sed -i 's/a/b/' a.ts").decision).toBe("warn")
-		expect(guard.recordCommand("sed -i 's/c/d/' a.ts").decision).toBe("warn")
-		expect(guard.recordCommand("sed -i 's/e/f/' a.ts").decision).toBe("warn")
-		expect(guard.recordCommand("sed -i 's/g/h/' a.ts").decision).toBe("block")
+		// background falls back to global (1)
+		expect(guard.recordCommand("sleep 1 &").decision).toBe("warn")
+		expect(guard.recordCommand("sleep 2 &").decision).toBe("block")
 	})
 
 	it("reset() clears all counters", () => {
 		const guard = new BashToolGuard()
-		guard.recordCommand("cat a.ts")
-		guard.recordCommand("cat b.ts") // would have been block
+		guard.recordCommand("sleep 1 &")
+		guard.recordCommand("sleep 2 &") // would have been block
 		guard.reset()
-		expect(guard.getCount("read")).toBe(0)
-		expect(guard.recordCommand("cat c.ts").decision).toBe("warn")
+		expect(guard.getCount("background")).toBe(0)
+		expect(guard.recordCommand("sleep 3 &").decision).toBe("warn")
 	})
 
 	it("isEnabled=false short-circuits to allow", () => {
 		const guard = new BashToolGuard({ isEnabled: () => false })
-		expect(guard.recordCommand("cat foo.ts")).toEqual({ decision: "allow" })
-		expect(guard.recordCommand("cat foo.ts")).toEqual({ decision: "allow" })
-		expect(guard.recordCommand("sed -i 's/foo/bar/' foo.ts")).toEqual({ decision: "allow" })
+		expect(guard.recordCommand("nohup python3 run.py &")).toEqual({ decision: "allow" })
+		expect(guard.recordCommand("sleep 60 &")).toEqual({ decision: "allow" })
+		expect(guard.recordCommand("disown")).toEqual({ decision: "allow" })
 	})
 
 	it("formatWarnText fills placeholders", () => {
 		const guard = new BashToolGuard()
-		const result = guard.recordCommand("cat foo.ts") as BashGuardWarnResult
+		const result = guard.recordCommand("nohup python3 run.py &") as BashGuardWarnResult
 		const text = guard.formatWarnText(result)
-		expect(text).toContain("cat foo.ts")
-		expect(text).toContain("read")
-		expect(text).toMatch(/read tool/)
+		expect(text).toContain("nohup python3 run.py")
+		expect(text).toContain("detaches the process from the bash tool's lifecycle")
+		expect(text).toMatch(/bash_control/)
+		expect(text).not.toContain("%matchedSegment%")
+		expect(text).not.toContain("%suggestion%")
 	})
 
 	it("formatBlockReason fills placeholders", () => {
-		const guard = new BashToolGuard()
-		guard.recordCommand("cat a.ts")
-		const result = guard.recordCommand("cat b.ts") as BashGuardBlockResult
+		const guard = new BashToolGuard({ blockOnThreshold: true })
+		guard.recordCommand("sleep 1 &")
+		const result = guard.recordCommand("sleep 2 &") as BashGuardBlockResult
 		const text = guard.formatBlockReason(result)
-		expect(text).toContain("read")
-		expect(text).toMatch(/read tool/)
-		expect(text).toMatch(/blocked/i)
+		expect(text).toContain("& (background)")
+		expect(text).toContain("blocked backgrounding")
+		expect(text).toMatch(/bash_control/)
+		expect(text).not.toContain("%matchedSegment%")
+		expect(text).not.toContain("%suggestion%")
+	})
+
+	it("background steer composes both mechanisms and never renders NaN (experimental on)", () => {
+		setExperimentalFeaturesEnabled(true)
+		const guard = new BashToolGuard({ blockOnThreshold: true })
+		const warn = guard.recordCommand("sleep 60 &") as BashGuardWarnResult
+		const warnText = guard.formatWarnText(warn)
+		expect(warnText).toContain("bash_control stop_handles")
+		expect(warnText).toContain("`daemon` tool")
+		expect(warnText).not.toContain("NaN")
+		guard.recordCommand("sleep 61 &")
+		const block = guard.recordCommand("sleep 62 &") as BashGuardBlockResult
+		const blockText = guard.formatBlockReason(block)
+		expect(blockText).toContain("bash_control stop_handles")
+		expect(blockText).toContain("`daemon` tool")
+		expect(blockText).not.toContain("NaN")
+	})
+
+	it("background steer falls back to the restate-to-user guidance without daemon (experimental off)", () => {
+		setExperimentalFeaturesEnabled(false)
+		const guard = new BashToolGuard()
+		const warn = guard.recordCommand("sleep 60 &") as BashGuardWarnResult
+		const text = guard.formatWarnText(warn)
+		expect(text).toContain("bash_control stop_handles")
+		expect(text).toContain("restate that requirement to the user")
+		expect(text).not.toContain("`daemon` tool")
+		expect(text).not.toContain("NaN")
 	})
 
 	it("getCount returns 0 for unseen category", () => {
@@ -469,24 +525,28 @@ describe("BashToolGuard", () => {
 		expect(guard.getCount("read")).toBe(0)
 		expect(guard.getCount("edit")).toBe(0)
 		expect(guard.getCount("write")).toBe(0)
+		expect(guard.getCount("background")).toBe(0)
 	})
 
-	it("getCount returns accumulated count after matches", () => {
+	it("getCount returns accumulated count after background matches", () => {
 		const guard = new BashToolGuard()
+		guard.recordCommand("sleep 1 &")
+		guard.recordCommand("nohup python3 run.py &")
+		expect(guard.getCount("background")).toBe(2)
+		// read/edit/write matches never count.
 		guard.recordCommand("cat a.ts")
-		guard.recordCommand("cat b.ts")
-		expect(guard.getCount("read")).toBe(2)
-		expect(guard.getCount("edit")).toBe(0)
+		expect(guard.getCount("read")).toBe(0)
 	})
 
 	it("getWarnThreshold returns per-category threshold", () => {
-		const guard = new BashToolGuard({ warnThresholds: { read: 2, edit: 0, write: 3 } })
+		const guard = new BashToolGuard({ warnThresholds: { read: 2, edit: 0, write: 3, background: 5 } })
 		expect(guard.getWarnThreshold("read")).toBe(2)
 		expect(guard.getWarnThreshold("edit")).toBe(0)
 		expect(guard.getWarnThreshold("write")).toBe(3)
+		expect(guard.getWarnThreshold("background")).toBe(5)
 	})
 
-	it.each<BashCategory>(["read", "edit", "write", "background"])("tracks %s category independently", (category) => {
+	it("classifies all four categories but only background steers", () => {
 		const guard = new BashToolGuard()
 		const triggerByCategory: Record<BashCategory, string> = {
 			read: "cat foo.ts",
@@ -494,15 +554,19 @@ describe("BashToolGuard", () => {
 			write: "echo 'x' > foo.ts",
 			background: "nohup python3 run.py &",
 		}
-		const result = guard.recordCommand(triggerByCategory[category]) as BashGuardWarnResult
-		expect(result.category).toBe(category)
-		expect(guard.getCount(category)).toBe(1)
+		expect(guard.recordCommand(triggerByCategory.read)).toEqual({ decision: "allow" })
+		expect(guard.recordCommand(triggerByCategory.edit)).toEqual({ decision: "allow" })
+		expect(guard.recordCommand(triggerByCategory.write)).toEqual({ decision: "allow" })
+		const result = guard.recordCommand(triggerByCategory.background) as BashGuardWarnResult
+		expect(result.category).toBe("background")
+		expect(guard.getCount("background")).toBe(1)
+		expect(guard.getCount("read")).toBe(0)
 	})
 
 	it("returns user-request allow reason when explicitly requested", () => {
 		const guard = new BashToolGuard()
-		guard.setLastUserPrompt("please use sed to fix foo.ts")
-		const result = guard.recordCommand("sed -i 's/typo/fix/' foo.ts")
+		guard.setLastUserPrompt("run it in the background")
+		const result = guard.recordCommand("nohup python3 run.py &")
 		expect(result).toEqual({ decision: "allow", reason: "user-request" })
 	})
 
@@ -515,310 +579,136 @@ describe("BashToolGuard", () => {
 describe("BashToolGuard — explicit user request override (tool name)", () => {
 	it("allows when user prompt mentions the matched tool", () => {
 		const guard = new BashToolGuard()
-		guard.setLastUserPrompt("please use sed to fix the typo in foo.ts")
-		expect(guard.recordCommand("sed -i 's/typo/fix/' foo.ts")).toEqual({
+		guard.setLastUserPrompt("run this with nohup please")
+		expect(guard.recordCommand("nohup python3 run.py &")).toEqual({
 			decision: "allow",
 			reason: "user-request",
 		})
 	})
 
-	it("allows 'cat this file'", () => {
+	it("allows 'disown the job'", () => {
 		const guard = new BashToolGuard()
-		guard.setLastUserPrompt("cat src/foo.ts and tell me what it does")
-		expect(guard.recordCommand("cat src/foo.ts")).toEqual({ decision: "allow", reason: "user-request" })
-	})
-
-	it("allows 'use echo to write'", () => {
-		const guard = new BashToolGuard()
-		guard.setLastUserPrompt("use echo to create a marker file")
-		expect(guard.recordCommand("echo 'done' > marker.txt")).toEqual({
-			decision: "allow",
-			reason: "user-request",
-		})
+		guard.setLastUserPrompt("disown the job and move on")
+		expect(guard.recordCommand("disown")).toEqual({ decision: "allow", reason: "user-request" })
 	})
 
 	it("allows across repeated matches when explicitly requested", () => {
 		const guard = new BashToolGuard()
-		guard.setLastUserPrompt("cat foo.ts")
-		expect(guard.recordCommand("cat foo.ts")).toEqual({ decision: "allow", reason: "user-request" })
-		expect(guard.recordCommand("cat foo.ts")).toEqual({ decision: "allow", reason: "user-request" })
-		expect(guard.recordCommand("cat foo.ts")).toEqual({ decision: "allow", reason: "user-request" })
+		guard.setLastUserPrompt("use nohup for the server")
+		expect(guard.recordCommand("nohup python3 run.py &")).toEqual({ decision: "allow", reason: "user-request" })
+		expect(guard.recordCommand("nohup python3 other.py &")).toEqual({ decision: "allow", reason: "user-request" })
+		expect(guard.recordCommand("nohup python3 third.py &")).toEqual({ decision: "allow", reason: "user-request" })
 	})
 
-	it("blocks when user prompt does NOT mention the tool AND has no semantic intent (opt-in)", () => {
+	it("blocks when user prompt does NOT mention the tool AND has no background intent (opt-in)", () => {
 		const guard = new BashToolGuard({ blockOnThreshold: true })
-		// 'fix the typo in foo.ts' would match the edit semantic intent
-		// pattern, so use a prompt that mentions neither tool nor intent.
-		guard.setLastUserPrompt("please change foo.ts")
-		expect(guard.recordCommand("sed -i 's/typo/fix/' foo.ts").decision).toBe("warn")
-		expect(guard.recordCommand("sed -i 's/x/y/' foo.ts").decision).toBe("block")
+		guard.setLastUserPrompt("please start the analysis")
+		expect(guard.recordCommand("nohup python3 run.py &").decision).toBe("warn")
+		expect(guard.recordCommand("nohup python3 run2.py &").decision).toBe("block")
 	})
 
 	it("warns repeatedly when user prompt lacks explicit intent (default opt-in)", () => {
 		const guard = new BashToolGuard()
-		guard.setLastUserPrompt("please change foo.ts")
-		expect(guard.recordCommand("sed -i 's/typo/fix/' foo.ts").decision).toBe("warn")
-		expect(guard.recordCommand("sed -i 's/x/y/' foo.ts").decision).toBe("warn")
-		expect(guard.recordCommand("sed -i 's/a/b/' foo.ts").decision).toBe("warn")
-	})
-
-	it("uses word-boundary matching (no false positives on substrings)", () => {
-		const guard = new BashToolGuard()
-		// 'cat' inside 'categorize' should NOT trigger the override.
-		guard.setLastUserPrompt("categorize the files")
-		expect(guard.recordCommand("cat foo.ts").decision).toBe("warn")
+		guard.setLastUserPrompt("please start the analysis")
+		expect(guard.recordCommand("nohup python3 run.py &").decision).toBe("warn")
+		expect(guard.recordCommand("nohup python3 run2.py &").decision).toBe("warn")
+		expect(guard.recordCommand("nohup python3 run3.py &").decision).toBe("warn")
 	})
 
 	it("uses word-boundary matching (no false positives on similar words)", () => {
 		const guard = new BashToolGuard()
-		// 'sed' inside 'used' should NOT trigger the override.
-		guard.setLastUserPrompt("the tool used for editing")
-		expect(guard.recordCommand("sed -i 's/a/b/' foo.ts").decision).toBe("warn")
+		// 'disown' inside 'disowned' should NOT trigger the override.
+		guard.setLastUserPrompt("the disowned processes piled up")
+		expect(guard.recordCommand("disown").decision).toBe("warn")
 	})
 
 	it("reset() clears the last prompt", () => {
 		const guard = new BashToolGuard()
-		guard.setLastUserPrompt("cat foo.ts")
-		expect(guard.recordCommand("cat foo.ts")).toEqual({ decision: "allow", reason: "user-request" })
+		guard.setLastUserPrompt("use nohup for the server")
+		expect(guard.recordCommand("nohup python3 run.py &")).toEqual({ decision: "allow", reason: "user-request" })
 		guard.reset()
-		expect(guard.recordCommand("cat foo.ts").decision).toBe("warn")
-	})
-
-	it("explicit request overrides per-category but other categories still guard", () => {
-		const guard = new BashToolGuard({ blockOnThreshold: true })
-		guard.setLastUserPrompt("use sed to fix foo.ts")
-		// sed is explicitly requested → allow
-		expect(guard.recordCommand("sed -i 's/a/b/' foo.ts")).toEqual({
-			decision: "allow",
-			reason: "user-request",
-		})
-		// cat is not mentioned → still guarded
-		expect(guard.recordCommand("cat foo.ts").decision).toBe("warn")
-		expect(guard.recordCommand("cat foo.ts").decision).toBe("block")
+		expect(guard.recordCommand("nohup python3 run.py &").decision).toBe("warn")
 	})
 
 	it("isExplicitlyRequested returns false when no prompt set", () => {
 		const guard = new BashToolGuard()
-		expect(guard.isExplicitlyRequested("cat foo.ts", "read")).toBe(false)
+		expect(guard.isExplicitlyRequested("nohup python3 run.py")).toBe(false)
 	})
 
 	it("isExplicitlyRequested returns false for empty matchedSegment", () => {
 		const guard = new BashToolGuard()
-		guard.setLastUserPrompt("cat the file")
-		expect(guard.isExplicitlyRequested("", "read")).toBe(false)
+		// 'disown' would match the tool-name tier for a real segment, but
+		// the semantic patterns don't match — proving the empty segment
+		// neither crashes nor false-positives.
+		guard.setLastUserPrompt("disown it please")
+		expect(guard.isExplicitlyRequested("")).toBe(false)
 	})
 
 	it("case-insensitive matching", () => {
 		const guard = new BashToolGuard()
-		guard.setLastUserPrompt("Use CAT to read the file")
-		expect(guard.recordCommand("cat foo.ts")).toEqual({ decision: "allow", reason: "user-request" })
+		guard.setLastUserPrompt("Use NOHUP for the server")
+		expect(guard.recordCommand("nohup python3 run.py &")).toEqual({ decision: "allow", reason: "user-request" })
 	})
 
-	it("isExplicitlyRequested takes category argument (semantic intent uses it)", () => {
+	it("isExplicitlyRequested matches background semantic intent (no tool name)", () => {
 		const guard = new BashToolGuard()
-		guard.setLastUserPrompt("please read the file foo.ts")
-		// Program 'cat' is not mentioned, but the 'read the file' semantic
-		// pattern matches → still allowed.
-		expect(guard.isExplicitlyRequested("cat foo.ts", "read")).toBe(true)
-		// Same prompt but 'edit' category: semantic patterns differ.
-		expect(guard.isExplicitlyRequested("sed -i 's/a/b/' foo.ts", "edit")).toBe(false)
+		guard.setLastUserPrompt("please run it in the background")
+		// Program 'nohup' is not mentioned, but the 'run ... background'
+		// semantic pattern matches → still allowed.
+		expect(guard.isExplicitlyRequested("nohup python3 run.py")).toBe(true)
 	})
 
 	it("getLastUserPrompt returns the lowercased prompt", () => {
 		const guard = new BashToolGuard()
-		guard.setLastUserPrompt("Read The FILE foo.ts")
-		expect(guard.getLastUserPrompt()).toBe("read the file foo.ts")
+		guard.setLastUserPrompt("Run It IN THE Background")
+		expect(guard.getLastUserPrompt()).toBe("run it in the background")
 	})
 })
 
 describe("BashToolGuard — semantic intent override (no tool name)", () => {
-	// These tests verify the guard detects intent phrases like "read the file"
-	// even when the user doesn't name the tool explicitly.
+	// These tests verify the guard detects background intent phrases like
+	// "run in the background" even when the user doesn't name the operator.
 
-	describe("read intent", () => {
-		it("'read the file foo.ts' allows cat", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("read the file foo.ts")
-			expect(guard.recordCommand("cat foo.ts")).toEqual({ decision: "allow", reason: "user-request" })
-		})
-
-		it("'show me foo.ts' allows cat", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("show me what's in foo.ts")
-			expect(guard.recordCommand("cat foo.ts")).toEqual({ decision: "allow", reason: "user-request" })
-		})
-
-		it("'print the contents of foo.ts' allows cat", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("print the contents of foo.ts")
-			expect(guard.recordCommand("cat foo.ts")).toEqual({ decision: "allow", reason: "user-request" })
-		})
-
-		it("'view the source' allows less", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("view the source for me")
-			expect(guard.recordCommand("less foo.ts")).toEqual({ decision: "allow", reason: "user-request" })
-		})
-
-		it("'open foo.ts' allows cat (intent to inspect)", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("open foo.ts")
-			expect(guard.recordCommand("cat foo.ts")).toEqual({ decision: "allow", reason: "user-request" })
-		})
-
-		it("does NOT trigger edit semantic patterns for read", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("read the file foo.ts")
-			// Same prompt — edit semantic patterns must NOT match
-			expect(guard.isExplicitlyRequested("sed -i 's/a/b/' foo.ts", "edit")).toBe(false)
-		})
+	it("'run in the background' allows nohup", () => {
+		const guard = new BashToolGuard()
+		guard.setLastUserPrompt("run the server in the background")
+		expect(guard.recordCommand("nohup python3 run.py &")).toEqual({ decision: "allow", reason: "user-request" })
 	})
 
-	describe("edit intent", () => {
-		it("'fix the typo in foo.ts' allows sed", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("fix the typo in foo.ts")
-			expect(guard.recordCommand("sed -i 's/typo/fix/' foo.ts")).toEqual({
-				decision: "allow",
-				reason: "user-request",
-			})
-		})
-
-		it("'replace foo with bar in file.ts' allows sed", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("replace foo with bar in file.ts")
-			expect(guard.recordCommand("sed -i 's/foo/bar/' file.ts")).toEqual({
-				decision: "allow",
-				reason: "user-request",
-			})
-		})
-
-		it("'modify foo.ts' allows perl", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("modify foo.ts to add the export")
-			expect(guard.recordCommand("perl -i -pe 's/a/b/' foo.ts")).toEqual({
-				decision: "allow",
-				reason: "user-request",
-			})
-		})
-
-		it("'update the file with the new value' allows sed", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("update the file with the new value")
-			expect(guard.recordCommand("sed -i 's/old/new/' file.ts")).toEqual({
-				decision: "allow",
-				reason: "user-request",
-			})
-		})
-
-		it("'use sed to fix this' allows sed", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("use sed to fix this")
-			expect(guard.recordCommand("sed -i 's/a/b/' file.ts")).toEqual({
-				decision: "allow",
-				reason: "user-request",
-			})
-		})
-
-		it("'edit foo.ts' allows sed", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("edit foo.ts")
-			expect(guard.recordCommand("sed -i 's/a/b/' foo.ts")).toEqual({
-				decision: "allow",
-				reason: "user-request",
-			})
-		})
-
-		it("does NOT trigger write semantic patterns for edit", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("fix the typo in foo.ts")
-			expect(guard.isExplicitlyRequested("echo 'x' > foo.ts", "write")).toBe(false)
-		})
+	it("'launch it detached' allows backgrounding", () => {
+		const guard = new BashToolGuard()
+		guard.setLastUserPrompt("launch it detached so it survives the shell")
+		expect(guard.recordCommand("sleep 60 &")).toEqual({ decision: "allow", reason: "user-request" })
 	})
 
-	describe("write intent", () => {
-		it("'write to foo.ts' allows echo redirect", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("write the result to foo.ts")
-			expect(guard.recordCommand("echo 'done' > foo.ts")).toEqual({
-				decision: "allow",
-				reason: "user-request",
-			})
-		})
-
-		it("'create a foo.ts file' allows echo redirect", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("create a foo.ts file")
-			expect(guard.recordCommand("echo 'content' > foo.ts")).toEqual({
-				decision: "allow",
-				reason: "user-request",
-			})
-		})
-
-		it("'save the output to log.txt' allows tee", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("save the output to log.txt")
-			expect(guard.recordCommand("tee log.txt")).toEqual({ decision: "allow", reason: "user-request" })
-		})
-
-		it("'put the result in output.txt' allows echo redirect", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("put the result in output.txt")
-			expect(guard.recordCommand("echo 'done' > output.txt")).toEqual({
-				decision: "allow",
-				reason: "user-request",
-			})
-		})
-
-		it("'echo ... to file' allows echo redirect", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("echo the line to the file")
-			expect(guard.recordCommand("echo 'done' > foo.ts")).toEqual({
-				decision: "allow",
-				reason: "user-request",
-			})
-		})
-
-		it("'redirect to file.txt' allows echo redirect", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("redirect the output to file.txt")
-			expect(guard.recordCommand("echo 'done' > file.txt")).toEqual({
-				decision: "allow",
-				reason: "user-request",
-			})
-		})
-
-		it("does NOT trigger read semantic patterns for write", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("write to foo.ts")
-			expect(guard.isExplicitlyRequested("cat foo.ts", "read")).toBe(false)
-		})
+	it("'use nohup' allows nohup (semantic, without quotes)", () => {
+		const guard = new BashToolGuard()
+		guard.setLastUserPrompt("just use nohup for the server")
+		expect(guard.recordCommand("nohup python3 run.py &")).toEqual({ decision: "allow", reason: "user-request" })
 	})
 
-	describe("semantic intent negative cases", () => {
-		it("'look at the build output' does not allow cat", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("look at the build output")
-			expect(guard.recordCommand("cat foo.ts").decision).toBe("warn")
-		})
+	it("does NOT trigger background intent for unrelated prompts", () => {
+		const guard = new BashToolGuard()
+		guard.setLastUserPrompt("run the tests now")
+		expect(guard.isExplicitlyRequested("nohup python3 run.py")).toBe(false)
+	})
 
-		it("'just readme' does not allow cat (no file context)", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("just readme")
-			expect(guard.recordCommand("cat foo.ts").decision).toBe("warn")
-		})
+	it("'look at the build output' does not allow backgrounding", () => {
+		const guard = new BashToolGuard()
+		guard.setLastUserPrompt("look at the build output")
+		expect(guard.recordCommand("nohup python3 run.py &").decision).toBe("warn")
+	})
 
-		it("'please be careful' does not allow sed", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("please be careful")
-			expect(guard.recordCommand("sed -i 's/a/b/' foo.ts").decision).toBe("warn")
-		})
+	it("'please be careful' does not allow backgrounding", () => {
+		const guard = new BashToolGuard()
+		guard.setLastUserPrompt("please be careful")
+		expect(guard.recordCommand("sleep 60 &").decision).toBe("warn")
+	})
 
-		it("'no changes needed' does not allow echo", () => {
-			const guard = new BashToolGuard()
-			guard.setLastUserPrompt("no changes needed")
-			expect(guard.recordCommand("echo 'x' > foo.ts").decision).toBe("warn")
-		})
+	it("'no changes needed' does not allow backgrounding", () => {
+		const guard = new BashToolGuard()
+		guard.setLastUserPrompt("no changes needed")
+		expect(guard.recordCommand("disown").decision).toBe("warn")
 	})
 })
 

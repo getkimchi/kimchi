@@ -77,8 +77,11 @@ describe("resource definitions", () => {
 			kind: "extensions",
 			label: "Bash-tool guard",
 			defaultEnabled: true,
-			description: expect.stringContaining("core prompt continues to prefer dedicated tools"),
+			description: expect.stringContaining("Steer the LLM away from backgrounding processes"),
 		})
+		// The toggle only stops runtime guard messages — the prompt-level
+		// preference stays on regardless.
+		expect(resource?.description).toContain("core prompt continues to prefer dedicated read/edit/write tools")
 		// Toggling is dynamic — the tool_call handler consults
 		// isResourceEnabled on every bash call, so no restart is
 		// required when the user flips the /resources toggle.

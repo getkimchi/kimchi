@@ -148,7 +148,7 @@ describe("bashToolGuardExtension wiring", () => {
 
 		const result = emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "cat foo.ts" },
+			input: { command: "nohup python3 run.py &" },
 		})
 		expect(result).toBeUndefined()
 		expect(pi._blockResult).toBeUndefined()
@@ -164,14 +164,14 @@ describe("bashToolGuardExtension wiring", () => {
 		fireSessionStart(pi)
 
 		emit(pi, "turn_start")
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } })
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "sed -i 's/a/b/' a.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 60 &" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "nohup python3 run.py &" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "disown" } })
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 		expect(pi._emittedEvents.filter(({ channel }) => channel === BASH_TOOL_GUARD_EVENTS.WARN)).toHaveLength(3)
 
 		emit(pi, "turn_start")
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat c.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 61 &" } })
 		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
 	})
 
@@ -180,33 +180,35 @@ describe("bashToolGuardExtension wiring", () => {
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 60 &" } })
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 
-		const result = emit(pi, "tool_call", { toolName: "bash", input: { command: "head b.ts" } })
+		const result = emit(pi, "tool_call", { toolName: "bash", input: { command: "nohup python3 run.py &" } })
 		expect(result?.block).toBe(true)
-		expect(result?.reason).toMatch(/read/i)
+		expect(result?.reason).toMatch(/background/i)
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1) // still only the one steer
 	})
 
-	it("different categories have independent budgets", () => {
+	it("file-op categories never steer; background keeps its own budget", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
-		// First read → steer
+		// read/edit/write matches: classification-only, no steer.
 		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
-		// First edit → steer (different category)
 		emit(pi, "tool_call", {
 			toolName: "bash",
 			input: { command: "sed -i 's/a/b/' a.ts" },
 		})
-		// First write → steer (different category)
 		emit(pi, "tool_call", {
 			toolName: "bash",
 			input: { command: "echo 'x' > a.ts" },
 		})
-		expect(pi.sendMessage).toHaveBeenCalledTimes(3)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+
+		// First background match → steer (its own budget).
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "nohup python3 run.py &" } })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 		expect(pi._blockResult).toBeUndefined()
 	})
 
@@ -215,8 +217,8 @@ describe("bashToolGuardExtension wiring", () => {
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } }) // would block
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 60 &" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 61 &" } }) // would block
 		expect(pi._blockResult?.block).toBe(true)
 
 		// Reset and re-test
@@ -224,7 +226,7 @@ describe("bashToolGuardExtension wiring", () => {
 		pi._blockResult = undefined
 		const result = emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "cat c.ts" },
+			input: { command: "sleep 62 &" },
 		})
 		expect(result).toBeUndefined()
 		expect(pi._blockResult).toBeUndefined()
@@ -235,8 +237,8 @@ describe("bashToolGuardExtension wiring", () => {
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } }) // would block
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 60 &" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 61 &" } }) // would block
 
 		// User input resets counters
 		emit(pi, "input", { source: "interactive" })
@@ -244,7 +246,7 @@ describe("bashToolGuardExtension wiring", () => {
 
 		const result = emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "cat c.ts" },
+			input: { command: "sleep 62 &" },
 		})
 		expect(result).toBeUndefined()
 	})
@@ -254,8 +256,8 @@ describe("bashToolGuardExtension wiring", () => {
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } }) // would block
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 60 &" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 61 &" } }) // would block
 
 		// Extension-sourced input must not reset
 		emit(pi, "input", { source: "extension" })
@@ -263,7 +265,7 @@ describe("bashToolGuardExtension wiring", () => {
 
 		const result = emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "cat c.ts" },
+			input: { command: "sleep 62 &" },
 		})
 		expect(result?.block).toBe(true)
 	})
@@ -294,6 +296,12 @@ describe("bashToolGuardExtension wiring", () => {
 			"rg 'foo' src/",
 			"echo 'build done'", // no redirect
 			"echo 'log' > /dev/null", // stream target
+			// read/edit/write are classification-only now: no steer, no events.
+			"cat file.ts",
+			"sed -n '1,5p' f",
+			"sed -i 's/a/b/' f",
+			"echo x > f",
+			"python3 - <<'EOF' > out",
 		]
 		for (const command of legitCommands) {
 			const result = emit(pi, "tool_call", { toolName: "bash", input: { command } })
@@ -310,9 +318,9 @@ describe("bashToolGuardExtension wiring", () => {
 		fireSessionStart(pi)
 
 		// Even repeated anti-patterns should pass under plan mode.
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } })
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat c.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 60 &" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "nohup python3 run.py &" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "disown" } })
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 		expect(pi._blockResult).toBeUndefined()
 	})
@@ -326,8 +334,8 @@ describe("bashToolGuardExtension wiring", () => {
 		fireSessionStart(pi)
 
 		// Anti-patterns pass without warn/block/steer events.
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 60 &" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "nohup python3 run.py &" } })
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 		expect(pi._blockResult).toBeUndefined()
 		expect(pi._emittedEvents).toHaveLength(0)
@@ -341,8 +349,8 @@ describe("bashToolGuardExtension wiring", () => {
 		bashToolGuardExtension(pi as unknown as PI, { isEnabled: () => true })
 		fireSessionStart(pi)
 
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 60 &" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "nohup python3 run.py &" } })
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 		expect(pi._blockResult).toBeUndefined()
 	})
@@ -357,10 +365,10 @@ describe("bashToolGuardExtension wiring", () => {
 		})
 		fireSessionStart(pi)
 
-		// First `cat` warns (steer message), second blocks.
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
+		// First background match warns (steer message), second blocks.
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 60 &" } })
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
-		const result = emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } })
+		const result = emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 61 &" } })
 		expect(result?.block).toBe(true)
 	})
 
@@ -376,18 +384,18 @@ describe("bashToolGuardExtension wiring", () => {
 
 		// Resource disabled → guard stays silent even on repeated
 		// anti-patterns that would otherwise exceed the threshold.
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } })
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat c.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 60 &" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "nohup python3 run.py &" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "disown" } })
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 		expect(pi._blockResult).toBeUndefined()
 		expect(pi._emittedEvents).toHaveLength(0)
 
 		// Re-enabling the resource mid-session restores the guard.
 		mockResourceEnabled = true
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 61 &" } })
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
-		const result = emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } })
+		const result = emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 62 &" } })
 		expect(result?.block).toBe(true)
 	})
 
@@ -398,13 +406,14 @@ describe("bashToolGuardExtension wiring", () => {
 
 		emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "sed -i 's/a/b/' a.ts" },
+			input: { command: "sleep 60 &" },
 		}) // warn
 		const result = emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "sed -i 's/x/y/' a.ts" },
+			input: { command: "sleep 61 &" },
 		}) // block
-		expect(result?.reason).toMatch(/edit tool/)
+		expect(result?.reason).toMatch(/bash_control/)
+		expect(result?.reason).toMatch(/blocked backgrounding/)
 	})
 
 	it("non-string command input is ignored", () => {
@@ -448,13 +457,13 @@ describe("bashToolGuardExtension wiring", () => {
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
-		// User explicitly asks: "please use sed to fix foo.ts"
-		emit(pi, "input", { source: "interactive", text: "please use sed to fix foo.ts" })
+		// User explicitly asks: "run it in the background"
+		emit(pi, "input", { source: "interactive", text: "run it in the background" })
 
-		// Model runs sed twice — would normally steer then block.
+		// Model backgrounds twice — would normally steer then block.
 		const r1 = emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "sed -i 's/a/b/' foo.ts" },
+			input: { command: "nohup python3 run.py &" },
 		})
 		expect(r1).toBeUndefined()
 		expect(pi.sendMessage).not.toHaveBeenCalled()
@@ -462,30 +471,30 @@ describe("bashToolGuardExtension wiring", () => {
 
 		const r2 = emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "sed -i 's/c/d/' foo.ts" },
+			input: { command: "sleep 60 &" },
 		})
 		expect(r2).toBeUndefined()
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("explicit-request override is per-tool (cat allowed, sed still guarded)", () => {
+	it("explicit-request override is background-only (file-ops never steer)", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
-		emit(pi, "input", { source: "interactive", text: "use cat to read foo.ts" })
+		emit(pi, "input", { source: "interactive", text: "disown the job please" })
 
-		// cat: allowed (user mentioned)
+		// disown: allowed (user mentioned the tool by name)
 		const r1 = emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "cat foo.ts" },
+			input: { command: "disown" },
 		})
 		expect(r1).toBeUndefined()
 
-		// sed: not mentioned, still guarded
+		// bare `&` backgrounding: not requested, still guarded
 		const r2 = emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "sed -i 's/a/b/' foo.ts" },
+			input: { command: "sleep 60 &" },
 		})
 		expect(r2).toBeUndefined() // first match: warn, not block
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
@@ -496,12 +505,12 @@ describe("bashToolGuardExtension wiring", () => {
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
-		// 'cat' inside 'categorize' — word-boundary match means this should NOT bypass.
-		emit(pi, "input", { source: "interactive", text: "categorize the files" })
+		// 'disown' inside 'disowned' — word-boundary match means this should NOT bypass.
+		emit(pi, "input", { source: "interactive", text: "the disowned processes piled up" })
 
 		const result = emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "cat foo.ts" },
+			input: { command: "disown" },
 		})
 		expect(result).toBeUndefined() // first: steer
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
@@ -512,20 +521,19 @@ describe("bashToolGuardExtension wiring", () => {
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
-		// First prompt explicitly asks for sed → allowed
-		emit(pi, "input", { source: "interactive", text: "use sed to fix foo.ts" })
+		// First prompt explicitly asks for backgrounding → allowed
+		emit(pi, "input", { source: "interactive", text: "run it in the background" })
 		emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "sed -i 's/a/b/' foo.ts" },
+			input: { command: "nohup python3 run.py &" },
 		})
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 
-		// Next user prompt doesn't mention sed AND has no edit intent
-		// (avoid "edit bar.ts" which now matches the edit semantic pattern).
+		// Next user prompt has no background intent
 		emit(pi, "input", { source: "interactive", text: "now look at bar.ts" })
 		const r = emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "sed -i 's/x/y/' bar.ts" },
+			input: { command: "sleep 60 &" },
 		})
 		expect(r).toBeUndefined() // first match: steer
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
@@ -533,7 +541,7 @@ describe("bashToolGuardExtension wiring", () => {
 })
 
 describe("bashToolGuardExtension — compound commands", () => {
-	it("flags read in compound (cat foo && echo done)", () => {
+	it("does not steer on read in compound (cat foo && echo done)", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
@@ -542,71 +550,75 @@ describe("bashToolGuardExtension — compound commands", () => {
 			toolName: "bash",
 			input: { command: "cat foo.ts && echo done" },
 		})
-		expect(result).toBeUndefined() // first match: warn
+		expect(result).toBeUndefined()
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi._emittedEvents).toHaveLength(0)
+	})
+
+	it("flags backgrounding in compound (git status; sleep 60 &)", () => {
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
+		fireSessionStart(pi)
+
+		const result = emit(pi, "tool_call", {
+			toolName: "bash",
+			input: { command: "git status; sleep 60 &" },
+		})
+		expect(result).toBeUndefined() // warn
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: STEER_MESSAGE_TYPE,
 				content: expect.arrayContaining([
-					expect.objectContaining({ type: "text", text: expect.stringMatching(/read/i) }),
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringMatching(/detaches the process from the bash tool's lifecycle/),
+					}),
 				]),
 			}),
 			{ deliverAs: "steer" },
 		)
 	})
 
-	it("flags write in compound (git status; echo x > foo)", () => {
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
-		fireSessionStart(pi)
-
-		const result = emit(pi, "tool_call", {
-			toolName: "bash",
-			input: { command: "git status; echo 'x' > foo.ts" },
-		})
-		expect(result).toBeUndefined() // warn
-		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
-	})
-
-	it("blocks write in compound on second match", () => {
+	it("blocks backgrounding in compound on second match", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "git status; echo 'first' > a.ts" },
+			input: { command: "git status; sleep 60 &" },
 		}) // warn
 		const result = emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "git pull && echo 'done' > progress.txt" },
+			input: { command: "git pull && nohup python3 run.py &" },
 		}) // block
 		expect(result?.block).toBe(true)
-		expect(result?.reason).toMatch(/write/i)
+		expect(result?.reason).toMatch(/background/i)
 	})
 
-	it("allows compound read when user explicitly asks", () => {
+	it("allows compound backgrounding when user explicitly asks", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
-		emit(pi, "input", { source: "interactive", text: "cat foo.ts and bar.ts" })
+		emit(pi, "input", { source: "interactive", text: "run the server and the watcher in the background" })
 		const result = emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "cat foo.ts && cat bar.ts" },
+			input: { command: "nohup python3 run.py & sleep 30 &" },
 		})
 		expect(result).toBeUndefined()
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("flags pipe where first segment is a read", () => {
+	it("flags backgrounding in a pipe (make | tee log &)", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		const result = emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "cat foo.ts | head -n 5" },
+			input: { command: "make | tee build.log &" },
 		})
 		expect(result).toBeUndefined() // warn
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
@@ -614,66 +626,39 @@ describe("bashToolGuardExtension — compound commands", () => {
 })
 
 describe("bashToolGuardExtension — semantic intent override", () => {
-	it("'read the file' intent allows cat through the full extension", () => {
+	it("'run in the background' intent allows nohup through the full extension", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
-		emit(pi, "input", { source: "interactive", text: "read the file foo.ts and summarize" })
+		emit(pi, "input", { source: "interactive", text: "run the analysis in the background" })
 		const result = emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "cat foo.ts" },
+			input: { command: "nohup python3 run.py &" },
 		})
 		expect(result).toBeUndefined()
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("'fix the typo' intent allows sed through the full extension", () => {
+	it("file-op intent allows file-ops silently (no user-request event, no steer)", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
-		emit(pi, "input", { source: "interactive", text: "fix the typo in foo.ts" })
-		const result = emit(pi, "tool_call", {
-			toolName: "bash",
-			input: { command: "sed -i 's/typo/fix/' foo.ts" },
-		})
-		expect(result).toBeUndefined()
-		expect(pi.sendMessage).not.toHaveBeenCalled()
-	})
-
-	it("'write to file' intent allows echo redirect through the full extension", () => {
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
-		fireSessionStart(pi)
-
-		emit(pi, "input", { source: "interactive", text: "write the result to output.txt" })
-		const result = emit(pi, "tool_call", {
-			toolName: "bash",
-			input: { command: "echo 'done' > output.txt" },
-		})
-		expect(result).toBeUndefined()
-		expect(pi.sendMessage).not.toHaveBeenCalled()
-	})
-
-	it("semantic intent for one category does NOT bypass other categories", () => {
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
-		fireSessionStart(pi)
-
-		// 'read the file' → read semantic intent active
 		emit(pi, "input", { source: "interactive", text: "read the file foo.ts" })
-		// cat allowed
 		emit(pi, "tool_call", {
 			toolName: "bash",
 			input: { command: "cat foo.ts" },
 		})
 		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(
+			pi._emittedEvents.filter(({ channel }) => channel === BASH_TOOL_GUARD_EVENTS.ALLOWED_BY_USER_REQUEST),
+		).toHaveLength(0)
 
-		// but write/edit still guarded (no intent match)
+		// but backgrounding without intent still steers
 		const result = emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "sed -i 's/a/b/' foo.ts" },
+			input: { command: "sleep 60 &" },
 		})
 		expect(result).toBeUndefined() // warn
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
@@ -688,14 +673,14 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 
 		emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "cat foo.ts" },
+			input: { command: "nohup python3 run.py &" },
 		})
 
 		expect(pi.events.emit).toHaveBeenCalledWith(
 			BASH_TOOL_GUARD_EVENTS.WARN,
 			expect.objectContaining({
-				category: "read",
-				tool: "cat",
+				category: "background",
+				tool: "nohup",
 				count: 1,
 			}),
 		)
@@ -708,17 +693,17 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 
 		emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "cat a.ts" },
+			input: { command: "sleep 60 &" },
 		}) // warn (no block event)
 		emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "cat b.ts" },
+			input: { command: "sleep 61 &" },
 		}) // block
 
 		expect(pi.events.emit).toHaveBeenCalledWith(
 			BASH_TOOL_GUARD_EVENTS.BLOCK,
 			expect.objectContaining({
-				category: "read",
+				category: "background",
 				count: 2,
 			}),
 		)
@@ -729,17 +714,17 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
-		emit(pi, "input", { source: "interactive", text: "please use sed to fix foo.ts" })
+		emit(pi, "input", { source: "interactive", text: "please run it in the background" })
 		emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "sed -i 's/a/b/' foo.ts" },
+			input: { command: "nohup python3 run.py &" },
 		})
 
 		expect(pi.events.emit).toHaveBeenCalledWith(
 			BASH_TOOL_GUARD_EVENTS.ALLOWED_BY_USER_REQUEST,
 			expect.objectContaining({
-				category: "edit",
-				tool: "sed",
+				category: "background",
+				tool: "nohup",
 			}),
 		)
 	})
@@ -749,17 +734,17 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
-		emit(pi, "input", { source: "interactive", text: "read the file foo.ts" })
+		emit(pi, "input", { source: "interactive", text: "run the analysis in the background" })
 		emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "cat foo.ts" },
+			input: { command: "nohup python3 run.py &" },
 		})
 
 		expect(pi.events.emit).toHaveBeenCalledWith(
 			BASH_TOOL_GUARD_EVENTS.ALLOWED_BY_USER_REQUEST,
 			expect.objectContaining({
-				category: "read",
-				tool: "cat",
+				category: "background",
+				tool: "nohup",
 			}),
 		)
 	})
@@ -777,6 +762,18 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 		expect(pi.events.emit).not.toHaveBeenCalled()
 	})
 
+	it("read/edit/write matches emit no events", () => {
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
+		fireSessionStart(pi)
+
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat foo.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sed -i 's/a/b/' foo.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "echo 'x' > foo.ts" } })
+
+		expect(pi.events.emit).not.toHaveBeenCalled()
+	})
+
 	it("does NOT emit events when guard is disabled (plan mode)", () => {
 		mockMode = "plan"
 		const pi = createMockPI()
@@ -785,11 +782,11 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 
 		emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "cat foo.ts" },
+			input: { command: "sleep 60 &" },
 		})
 		emit(pi, "tool_call", {
 			toolName: "bash",
-			input: { command: "cat bar.ts" },
+			input: { command: "nohup python3 run.py &" },
 		})
 
 		expect(pi.events.emit).not.toHaveBeenCalled()
@@ -800,8 +797,8 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
-		// Warn on the read category.
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat foo.ts" } })
+		// Warn on the background category.
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 60 &" } })
 		// Three allowed calls on other categories/tools close the window.
 		emit(pi, "tool_call", { toolName: "bash", input: { command: "git status" } })
 		emit(pi, "tool_call", { toolName: "bash", input: { command: "ls" } })
@@ -817,9 +814,9 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
-		// Warn (read), then a second read-quad intervention inside the window.
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat foo.ts" } })
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat bar.ts" } })
+		// Warn (background), then a second background intervention inside the window.
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 60 &" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "nohup python3 run.py &" } })
 
 		const outcomes = vi.mocked(pi.events.emit).mock.calls.filter(([channel]) => channel === "steer:outcome")
 		expect(outcomes.some(([, payload]) => payload.outcome === "repeated")).toBe(true)
@@ -832,8 +829,8 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 			bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 			fireSessionStart(pi)
 
-			const res1 = emit(pi, "tool_call", { toolName: "bash", input: { command: "cat foo.ts" } })
-			const res2 = emit(pi, "tool_call", { toolName: "bash", input: { command: "cat bar.ts" } })
+			const res1 = emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 60 &" } })
+			const res2 = emit(pi, "tool_call", { toolName: "bash", input: { command: "nohup python3 run.py &" } })
 
 			// No blocks and no events at all.
 			expect(res1?.block ?? false).toBe(false)
@@ -849,27 +846,28 @@ describe("bashToolGuardExtension — per-category thresholds", () => {
 	it("respects per-category warnThresholds passed via options", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI, {
-			warnThresholds: { read: 3, edit: 0, write: 1 },
+			warnThresholds: { read: 3, edit: 0, write: 1, background: 3 },
 			blockOnThreshold: true,
 		})
 		fireSessionStart(pi)
 
-		// read budget = 3 → three warns, then block
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } })
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat c.ts" } })
+		// background budget = 3 → three warns, then block
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 1 &" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 2 &" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 3 &" } })
 		expect(pi._blockResult).toBeUndefined()
 
-		const r4 = emit(pi, "tool_call", { toolName: "bash", input: { command: "cat d.ts" } })
+		const r4 = emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 4 &" } })
 		expect(r4?.block).toBe(true)
 
-		// edit budget = 0 → first occurrence blocks immediately
+		// read/edit/write budgets are inert: classification-only categories
+		// never block regardless of their (zero) budgets.
 		pi._blockResult = undefined
 		const rEdit = emit(pi, "tool_call", {
 			toolName: "bash",
 			input: { command: "sed -i 's/a/b/' a.ts" },
 		})
-		expect(rEdit?.block).toBe(true)
+		expect(rEdit).toBeUndefined()
 	})
 })
 

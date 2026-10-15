@@ -157,9 +157,9 @@ Evaluated events are emitted once at invocation settlement, before applying the 
 
 | Channel | Payload type | When |
 |---|---|---|
-| `bash_tool_guard:warn` | `BashToolGuardWarnPayload` | A bash command matches a guarded pattern (cat, sed, etc.) |
-| `bash_tool_guard:block` | `BashToolGuardBlockPayload` | A guarded bash command is blocked |
-| `bash_tool_guard:allowed_by_user_request` | `BashToolGuardAllowedByUserRequestPayload` | User explicitly allowed a guarded command |
+| `bash_tool_guard:warn` | `BashToolGuardWarnPayload` | A bash command backgrounds a process (`&`/`nohup`/`disown`) |
+| `bash_tool_guard:block` | `BashToolGuardBlockPayload` | A backgrounding bash command is blocked |
+| `bash_tool_guard:allowed_by_user_request` | `BashToolGuardAllowedByUserRequestPayload` | User explicitly allowed a backgrounding command |
 
 Payloads carry category, tool, count — no raw command text (privacy).
 
