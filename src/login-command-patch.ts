@@ -25,7 +25,6 @@ import {
 	performKimchiBrowserLogin,
 	prePopulateSubscriptionModels,
 	promptSelfHostedEndpoints,
-	regionChoiceRequired,
 	syncKimchiAuth,
 } from "./extensions/login/flow.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
@@ -228,8 +227,7 @@ async function startKimchiBrowserLogin(im: InteractiveMode, region: RegionId): P
 async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 	const modeLike = im as unknown as LoginModeLike
 	const currentRegion = loadConfig().region
-	// Skip the selector when gating leaves no choice (e.g. EU experimental-off).
-	if (!modeLike.showSelector || !regionChoiceRequired(currentRegion)) {
+	if (!modeLike.showSelector) {
 		await startKimchiBrowserLogin(im, currentRegion)
 		return
 	}
@@ -252,10 +250,10 @@ async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 
 async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 	const modeLike = im as unknown as LoginModeLike
-	// Mirror the account login: region first when selector support exists and
-	// gating leaves an actual choice, then the key/endpoint inputs.
+	// Mirror the account login: region first when selector support exists, then
+	// the key/endpoint inputs.
 	const currentRegion = loadConfig().region
-	if (!modeLike.showSelector || !regionChoiceRequired(currentRegion)) {
+	if (!modeLike.showSelector) {
 		await runKimchiApiKeyLogin(im, currentRegion)
 		return
 	}
