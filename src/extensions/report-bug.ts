@@ -127,5 +127,5 @@ const BUG_COMMAND_CONFIG = {
 }
 
 export default function reportBugExtension(pi: ExtensionAPI) {
-	pi.registerCommand("bug", BUG_COMMAND_CONFIG)
+	pi.registerCommand("report-bug", BUG_COMMAND_CONFIG)
 }

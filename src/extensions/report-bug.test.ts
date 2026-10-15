@@ -98,15 +98,15 @@ describe("reportBugExtension", () => {
 	it("registers the 'bug' command", () => {
 		const { api, commands } = makeMockPi()
 		reportBugExtension(api)
-		expect(commands.has("bug")).toBe(true)
-		expect(commands.get("bug")?.description).toBe("Report a bug in kimchi — opens GitHub issue form")
+		expect(commands.has("report-bug")).toBe(true)
+		expect(commands.get("report-bug")?.description).toBe("Report a bug in kimchi — opens GitHub issue form")
 	})
 
 	it("builds URL with required params when called without args (UI mode)", async () => {
 		const { api, commands } = makeMockPi()
 		reportBugExtension(api)
 
-		const command = commands.get("bug")
+		const command = commands.get("report-bug")
 		if (command === undefined) {
 			throw new Error("bug command not registered")
 		}
@@ -130,7 +130,7 @@ describe("reportBugExtension", () => {
 		const { api, commands } = makeMockPi()
 		reportBugExtension(api)
 
-		const command = commands.get("bug")
+		const command = commands.get("report-bug")
 		if (command === undefined) {
 			throw new Error("bug command not registered")
 		}
@@ -150,7 +150,7 @@ describe("reportBugExtension", () => {
 		const { api, commands } = makeMockPi()
 		reportBugExtension(api)
 
-		const command = commands.get("bug")
+		const command = commands.get("report-bug")
 		if (command === undefined) {
 			throw new Error("bug command not registered")
 		}
@@ -169,7 +169,7 @@ describe("reportBugExtension", () => {
 		const { api, commands } = makeMockPi()
 		reportBugExtension(api)
 
-		const command = commands.get("bug")
+		const command = commands.get("report-bug")
 		if (command === undefined) {
 			throw new Error("bug command not registered")
 		}
@@ -187,7 +187,7 @@ describe("reportBugExtension", () => {
 		const { api, commands } = makeMockPi()
 		reportBugExtension(api)
 
-		const command = commands.get("bug")
+		const command = commands.get("report-bug")
 		if (command === undefined) {
 			throw new Error("bug command not registered")
 		}
@@ -205,7 +205,7 @@ describe("reportBugExtension", () => {
 	it("calls ctx.ui.confirm when UI is available", async () => {
 		const { api, commands } = makeMockPi()
 		reportBugExtension(api)
-		const command = commands.get("bug")
+		const command = commands.get("report-bug")
 		if (command === undefined) {
 			throw new Error("bug command not registered")
 		}
@@ -227,7 +227,7 @@ describe("reportBugExtension", () => {
 	it("embeds session-file param when confirm is true and gh succeeds", async () => {
 		const { api, commands } = makeMockPi()
 		reportBugExtension(api)
-		const command = commands.get("bug")
+		const command = commands.get("report-bug")
 		if (command === undefined) {
 			throw new Error("bug command not registered")
 		}
@@ -249,7 +249,7 @@ describe("reportBugExtension", () => {
 	it("skips gist creation when user declines confirmation", async () => {
 		const { api, commands } = makeMockPi()
 		reportBugExtension(api)
-		const command = commands.get("bug")
+		const command = commands.get("report-bug")
 		if (command === undefined) {
 			throw new Error("bug command not registered")
 		}
@@ -269,7 +269,7 @@ describe("reportBugExtension", () => {
 	it("skips gist creation in headless mode", async () => {
 		const { api, commands } = makeMockPi()
 		reportBugExtension(api)
-		const command = commands.get("bug")
+		const command = commands.get("report-bug")
 		if (command === undefined) {
 			throw new Error("bug command not registered")
 		}
@@ -284,7 +284,7 @@ describe("reportBugExtension", () => {
 	it("falls back without session-file when gh throws", async () => {
 		const { api, commands } = makeMockPi()
 		reportBugExtension(api)
-		const command = commands.get("bug")
+		const command = commands.get("report-bug")
 		if (command === undefined) {
 			throw new Error("bug command not registered")
 		}
