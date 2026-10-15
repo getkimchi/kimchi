@@ -99,6 +99,14 @@ but are only drained by the next fresh run).
   The client 2.3.1 patch carries the spec-strict-gateway Accept fix alone.
 - **DROPPED — tool-annotation caching hunk.** Native in 5.x (metadata-cache
   persists/reconstructs annotations).
+- **NEW — always register `/mcp` (index.ts).** pi 1.2 ships a built-in native
+  MCP extension (`replaceable`) that reads the same mcp.json files with a
+  stricter schema (`auth` must be `{provider}` bearer-name, not the adapter's
+  `"oauth"` shorthand) and connects the same servers. Registering `/mcp`
+  unconditionally makes pi's loader omit the built-in (upstream-designed
+  replacement), so the adapter stays the single MCP owner; verified the
+  "MCP servers need attention" banner no longer appears on launch with
+  adapter-format configs under a temp HOME.
 - **RE-DRAFTED — tool-name sanitization** around upstream's new `formatToolName`
   prefix-dedup branch; truncation wrapped in `truncateToolName()`.
 - **RE-DRAFTED — config discovery under Kimchi dirs.** Project/global adapter

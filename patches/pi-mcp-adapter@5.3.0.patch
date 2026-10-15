@@ -72,11 +72,17 @@
 #     settings/imports and per-server adapter keys) is disabled for these
 #     paths, and a project entry MERGES field-wise with the global entry
 #     (via mergeServerMaps' credential stripping) instead of replacing it.
+#   - Always register /mcp (index.ts): pi 0.99+/1.2 ships a built-in native
+#     MCP extension; Kimchi's compat layers own these mcp.json files, so
+#     keeping the built-in double-connects servers and its stricter native
+#     auth schema ({provider} bearer) warns on adapter-format configs.
+#     Registering /mcp at load makes pi's loader omit the replaceable
+#     built-in extension (upstream-designed replacement mechanism).
 #   - config: writeProjectServerDisabledOverride writes its override through
 #     the server's provenance path (the file it was loaded from), falling
 #     back to the adapter-native project config for unknown servers.
 diff --git a/agent-dir.ts b/agent-dir.ts
-index 089da2c3e..70b62c58a 100644
+index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
 +++ b/agent-dir.ts
 @@ -1,3 +1,5 @@
@@ -113,7 +119,7 @@ index 089da2c3e..70b62c58a 100644
      return manifest.piConfig
    } catch {
 diff --git a/config.ts b/config.ts
-index 244d7b932..34ade0d3a 100644
+index 244d7b9321c42a3790884a72f3e19222ac9a3912..34ade0d3ac49a8c108c83325bb6b4714f9025ff9 100644
 --- a/config.ts
 +++ b/config.ts
 @@ -4,7 +4,7 @@ import { homedir } from "node:os";
@@ -185,7 +191,7 @@ index 244d7b932..34ade0d3a 100644
  
    const serverKey = raw.mcpServers !== undefined ? "mcpServers" : raw["mcp-servers"] !== undefined ? "mcp-servers" : "mcpServers";
 diff --git a/dist/agent-dir.d.ts b/dist/agent-dir.d.ts
-index b5cea5479..1cd442e43 100644
+index b5cea54794703a8f94c84552aea1433cd40bcf6e..1cd442e4396b02e5bbefb8346f35f7e1a228c714 100644
 --- a/dist/agent-dir.d.ts
 +++ b/dist/agent-dir.d.ts
 @@ -1,4 +1,5 @@
@@ -195,7 +201,7 @@ index b5cea5479..1cd442e43 100644
  export declare function getAgentPath(...segments: string[]): string;
  export declare function getAppName(): string;
 diff --git a/dist/agent-dir.js b/dist/agent-dir.js
-index 5e32b5b5a..c4de0fa81 100644
+index 5e32b5b5ac21b77f3fe654bf081b296490e38272..c4de0fa818ba6b1dc493d434c10da392a4f58410 100644
 --- a/dist/agent-dir.js
 +++ b/dist/agent-dir.js
 @@ -1,3 +1,5 @@
@@ -216,7 +222,7 @@ index 5e32b5b5a..c4de0fa81 100644
      const piConfig = readPiConfig();
      const name = piConfig?.name;
 diff --git a/dist/config.d.ts b/dist/config.d.ts
-index ddf4786ef..21b1200b4 100644
+index ddf4786efa7c6f7808647b78fd55db34cbf9911d..21b1200b44d504ef7b2747e0f41970db097fdd2a 100644
 --- a/dist/config.d.ts
 +++ b/dist/config.d.ts
 @@ -98,6 +98,10 @@ export declare function getGenericGlobalConfigPath(): string;
@@ -231,7 +237,7 @@ index ddf4786ef..21b1200b4 100644
  export declare function getSharedConfigPath(target: SharedConfigTarget, cwd?: string): string;
  export declare function getConfigDiscoveryPaths(overridePath?: string, cwd?: string): ConfigDiscoveryPath[];
 diff --git a/dist/config.js b/dist/config.js
-index 5300eaa86..47e9ddeee 100644
+index 5300eaa860a1d73036b253f0544bdacc85a861fd..47e9ddeee98a3a0257b18fdfe55d901ac4536a41 100644
 --- a/dist/config.js
 +++ b/dist/config.js
 @@ -4,7 +4,7 @@ import { homedir } from "node:os";
@@ -346,7 +352,7 @@ index 5300eaa86..47e9ddeee 100644
      const serverKey = raw.mcpServers !== undefined ? "mcpServers" : raw["mcp-servers"] !== undefined ? "mcp-servers" : "mcpServers";
      const rawServers = raw[serverKey];
 diff --git a/dist/metadata-cache.js b/dist/metadata-cache.js
-index 9b28fa916..8251deae2 100644
+index 9b28fa9162b3e6d86d5ddb043a186943c729ff4a..8251deae26c165a061158affa01b837be757c3ac 100644
 --- a/dist/metadata-cache.js
 +++ b/dist/metadata-cache.js
 @@ -4,10 +4,9 @@ import { dirname } from "node:path";
@@ -412,7 +418,7 @@ index 9b28fa916..8251deae2 100644
  //# sourceMappingURL=metadata-cache.js.map
 \ No newline at end of file
 diff --git a/dist/types.d.ts b/dist/types.d.ts
-index 422f9ace5..d5be5556a 100644
+index 422f9ace5bfc8d8e99c8b0caa7aced4eec5407b2..d5be5556a359c9afa42465eb8ecd2bc21aee43d3 100644
 --- a/dist/types.d.ts
 +++ b/dist/types.d.ts
 @@ -647,6 +647,7 @@ export interface McpPanelResult {
@@ -424,7 +430,7 @@ index 422f9ace5..d5be5556a 100644
  /**
   * Format a tool name with server prefix.
 diff --git a/dist/types.js b/dist/types.js
-index d7b492ee9..f17a25b58 100644
+index d7b492ee92f4d94968cc8631d6b52cde0a497944..f17a25b58541c26c49a88d711fbc479cbb3c33d1 100644
 --- a/dist/types.js
 +++ b/dist/types.js
 @@ -99,33 +99,54 @@ export const MCP_TOOL_APPROVAL_REQUEST_EVENT = "pi-mcp-adapter:tool-approval-req
@@ -544,8 +550,28 @@ index d7b492ee9..f17a25b58 100644
          }
          if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
              return true;
+diff --git a/index.ts b/index.ts
+index af8232f2bd71df01307c5dd550459d8f2ebbf42f..c975075d924b3ec90cd4a29373bd035e130d8429 100644
+--- a/index.ts
++++ b/index.ts
+@@ -1721,8 +1721,13 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+     },
+   });
+   registerMcpCommand("mcp-adapter");
+-  // /mcp at load replaces Pi 0.99+'s built-in MCP; a supplied config doesn't read Pi's files, so it keeps the built-in.
+-  if (!programmaticConfig || !piSupportsMcp(pi)) registerMcpCommand("mcp");
++  // Kimchi: always register /mcp — pi 0.99+/1.2's built-in MCP reads the same
++  // mcp.json files Kimchi's compat layers write (adapter-format), so keeping
++  // the built-in double-connects every server and its stricter native schema
++  // (auth as {provider}) rejects the adapter's "oauth" shorthand with a
++  // startup warning. Registering /mcp at load makes pi's loader omit the
++  // replaceable built-in extension entirely (upstream-designed replacement).
++  registerMcpCommand("mcp");
+   // Opt-in `mcp.panel.open` keys open the panel without touching the editor draft.
+   // Shortcut handlers get no reload(), so dispatch the command: its context has one.
+   if (!programmaticConfig) {
 diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
-index 9ded419e6..b65dfa12e 100644
+index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..b65dfa12e72afed88c08ded0e10853d9e64f9581 100644
 --- a/mcp-auth-flow.ts
 +++ b/mcp-auth-flow.ts
 @@ -26,6 +26,8 @@ import {
@@ -732,7 +758,7 @@ index 9ded419e6..b65dfa12e 100644
          : waitForCallback(oauthState)
        void callbackPromise.catch(() => {})
 diff --git a/mcp-callback-server.ts b/mcp-callback-server.ts
-index 32aad31f9..b25939246 100644
+index 32aad31f9fe94cef128de9e1576cbc04d53fa822..b2593924653dda1fe18be16da7e7a90ae8d4cced 100644
 --- a/mcp-callback-server.ts
 +++ b/mcp-callback-server.ts
 @@ -163,6 +163,24 @@ function htmlError(error: string): string {
@@ -846,7 +872,7 @@ index 32aad31f9..b25939246 100644
    pendingAuths.delete(state)
    pending.resolve({ code, ...(iss !== null ? { iss } : {}) })
 diff --git a/mcp-oauth-provider.ts b/mcp-oauth-provider.ts
-index b724478bf..d0aae7b5f 100644
+index b724478bf4036c199d4574c87a200207706ceb29..d0aae7b5f9fc4fce5a1b7841360efe1ceb589726 100644
 --- a/mcp-oauth-provider.ts
 +++ b/mcp-oauth-provider.ts
 @@ -224,7 +224,7 @@ async function loadConfiguredDiscoveryState(
@@ -859,7 +885,7 @@ index b724478bf..d0aae7b5f 100644
    if (!response.ok) {
      await response.text().catch(() => {})
 diff --git a/metadata-cache.ts b/metadata-cache.ts
-index 8dc634af1..d36939cb2 100644
+index 8dc634af1152be3447ae33738b1c6ee9826a9020..d36939cb261d3ccfdc1dae8da6fad3d55a734de1 100644
 --- a/metadata-cache.ts
 +++ b/metadata-cache.ts
 @@ -4,7 +4,6 @@ import { dirname } from "node:path";
@@ -926,7 +952,7 @@ index 8dc634af1..d36939cb2 100644
 -  }
 -}
 diff --git a/project-server-trust.ts b/project-server-trust.ts
-index 264573709..762091327 100644
+index 264573709c2c896fdb88d661fd24cd8f2f4a2327..7620913273acb8cd190bbb992d9e85303b5eabb6 100644
 --- a/project-server-trust.ts
 +++ b/project-server-trust.ts
 @@ -200,6 +200,12 @@ export async function applyProjectServerTrust(
@@ -943,7 +969,7 @@ index 264573709..762091327 100644
      const approved = approvals.approvals.some(entry =>
        entry.projectRoot === projectRoot && entry.serverName === name && entry.definitionHash === definitionHash);
 diff --git a/proxy-modes.ts b/proxy-modes.ts
-index ebc0c7031..b2dd3e890 100644
+index ebc0c703199036f2eedb738bbad7419a89a56db9..b2dd3e890ff444a34bb3ed32522b16a93255105c 100644
 --- a/proxy-modes.ts
 +++ b/proxy-modes.ts
 @@ -241,6 +241,8 @@ function ensureBackgroundAuthWatcher(
@@ -1044,7 +1070,7 @@ index ebc0c7031..b2dd3e890 100644
      };
    } catch (error) {
 diff --git a/server-manager.ts b/server-manager.ts
-index ba80e92e0..5ad589f38 100644
+index ba80e92e0be2bb1c1918dd8973dac4601b8b9feb..5ad589f38f549669aee9bd48d437926b3fc0a4c4 100644
 --- a/server-manager.ts
 +++ b/server-manager.ts
 @@ -41,7 +41,6 @@ import {
@@ -1073,7 +1099,7 @@ index ba80e92e0..5ad589f38 100644
        ...(this.elicitationConfig
          ? {
 diff --git a/tool-metadata.ts b/tool-metadata.ts
-index 96a7982de..f3e162025 100644
+index 96a7982de39034a0bda886d8210dc6aefeeaa3f7..f3e162025671569947986cfc6c50c39da77c287b 100644
 --- a/tool-metadata.ts
 +++ b/tool-metadata.ts
 @@ -1,9 +1,8 @@
@@ -1115,7 +1141,7 @@ index 96a7982de..f3e162025 100644
      });
    }
 diff --git a/types.ts b/types.ts
-index 6757ec7f1..69193d48c 100644
+index 6757ec7f18be5eb4a7dfbf1c9572466ddf9bcadc..69193d48c7d1d7cab1bdadab67eaab3859ff6f3b 100644
 --- a/types.ts
 +++ b/types.ts
 @@ -860,14 +860,22 @@ export interface McpPanelResult {
