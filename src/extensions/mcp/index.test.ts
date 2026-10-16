@@ -371,6 +371,24 @@ describe("upstream MCP adapter facade", () => {
 			expect(registrations).toEqual([])
 		})
 
+		it("keeps the proxy tool reachable when the gateway is the only configured server", async () => {
+			configState.config = { mcpServers: {} }
+			configState.configPath = "/tmp/mcp.json"
+			gatewayState.server = gatewayServer
+			const harness = createExtensionApi()
+			const registrations = captureRuntimeRegistrations(harness)
+
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+
+			expect(registrations).toHaveLength(1)
+			// The gateway registers after adapter install; the policy must count it,
+			// or an otherwise-empty config drops the proxy tool and strands the
+			// gateway's tools (regression: https://github.com/getkimchi/kimchi/pull/1436).
+			upstream.api?.registerTool(tool("mcp", "MCP"))
+			expect(harness.getRegisteredTools().map(({ name }) => name)).toEqual(["mcp"])
+		})
+
 		it("registers the gateway in untrusted projects as a user-level server", async () => {
 			projectTrust.trusted = false
 			gatewayState.server = gatewayServer

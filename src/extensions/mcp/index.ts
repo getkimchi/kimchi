@@ -369,7 +369,18 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 				...(legacyConfigWarning === undefined ? [] : [legacyConfigWarning]),
 				...(projectTrusted ? [] : [MCP_PROJECT_TRUST_WARNING]),
 			]
-			const installedPolicy = createMcpToolSurfacePolicy(config)
+			// The gateway registers with the adapter right after install; count it
+			// toward the tool-surface policy and plan-mode read-only classification,
+			// or an otherwise-empty config would suppress the proxy tool and strand
+			// the gateway's tools.
+			const effectiveConfig =
+				gateway !== undefined
+					? {
+							...selectedResult.config,
+							mcpServers: { ...selectedResult.config.mcpServers, [gateway.name]: gateway.entry },
+						}
+					: selectedResult.config
+			const installedPolicy = createMcpToolSurfacePolicy(effectiveConfig)
 			policy = installedPolicy
 			const adapterOptions: McpAdapterOptions =
 				options.callerServers || selectedResult.useProgrammaticConfig
@@ -384,7 +395,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					(upstreamEvent, handler) => {
 						upstreamHandlers[upstreamEvent].push(handler)
 					},
-					(server) => collectReadOnlyMcpWireNames(config, server),
+					(server) => collectReadOnlyMcpWireNames(effectiveConfig, server),
 				),
 			)
 			if (gateway !== undefined) registerGatewayRuntimeServer(pi, gateway)
