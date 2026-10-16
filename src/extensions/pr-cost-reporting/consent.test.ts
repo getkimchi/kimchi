@@ -12,7 +12,9 @@ import {
 	prReportingHeaderValue,
 	prReportingStatePath,
 	readPRReportingConsent,
+	savePRReportingChoice,
 	setPRReportingSessionMode,
+	takeReportingNotice,
 } from "./consent.js"
 
 let agentDir: string
@@ -129,6 +131,26 @@ describe("PR reporting header value", () => {
 		setPRReportingSessionMode(mode)
 		expect(prReportingHeaderValue(agentDir)).toBe("off")
 		setPRReportingSessionMode("rpc")
+		expect(prReportingHeaderValue(agentDir)).toBe("proxy")
+	})
+})
+
+describe("saved PR reporting state", () => {
+	it("lets one of several concurrent sessions claim the default-on notice", async () => {
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		const claims = await Promise.all([1, 2, 3].map(() => takeReportingNotice(agentDir)))
+		expect(claims.filter(Boolean)).toHaveLength(1)
+		expect(await takeReportingNotice(agentDir)).toBe(false)
+		expect(readPRReportingConsent(agentDir)).toEqual({ enabled: true, source: "default" })
+	})
+
+	it("keeps an explicit choice over a later change of the SaaS setting", async () => {
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		await savePRReportingChoice(false, agentDir)
+		expect(await takeReportingNotice(agentDir)).toBe(false)
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+		await savePRReportingChoice(true, agentDir)
+		expect(readPRReportingConsent(agentDir)).toEqual({ enabled: true, source: "choice" })
 		expect(prReportingHeaderValue(agentDir)).toBe("proxy")
 	})
 })
