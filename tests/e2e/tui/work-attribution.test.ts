@@ -174,7 +174,12 @@ test("a separate check uses the selected model while an unrelated question start
 			artifactName: "work-selected-model",
 			account,
 			gitInit: true,
-			models: [...models, { slug: "second", displayName: "Second selected model", reasoning: true }],
+			// Large window so upstream pi's bigger prompt preamble never trips the
+			// model-switch safe-window gate when the test switches to `second`.
+			models: [
+				...models,
+				{ slug: "second", displayName: "Second selected model", reasoning: true, contextWindow: 200_000 },
+			],
 			responses: [
 				{ match: main, stream: ["CSV plan ready."] },
 				{ match: isWorkMatchingRequest, stream: ['{"decision":"new"}'] },

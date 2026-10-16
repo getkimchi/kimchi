@@ -2,7 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { resolveAuxiliaryFilesDir } from "./resolver.js"
+import { resolveAuxiliaryFilesDir, resolveValidatedAuxiliaryFilesDir } from "./resolver.js"
 
 describe("resolveAuxiliaryFilesDir", () => {
 	// Whitespace in the home path is intentional: it would break if the resolver used string concatenation instead of path.join.
@@ -80,6 +80,92 @@ describe("resolveAuxiliaryFilesDir", () => {
 			const execPath = join(tmpBase, "bin", "kimchi")
 			const env = { XDG_DATA_HOME: "/xdg/data" }
 			expect(resolveAuxiliaryFilesDir(env, home, execPath)).toBe("/xdg/data/kimchi")
+		})
+	})
+
+	describe("resolveValidatedAuxiliaryFilesDir", () => {
+		let tmpBase: string
+
+		// Valid aux layout: package.json + theme/dark.json + theme/light.json
+		const makeValidAuxDir = (dir: string) => {
+			mkdirSync(join(dir, "theme"), { recursive: true })
+			writeFileSync(join(dir, "package.json"), "{}")
+			writeFileSync(join(dir, "theme", "dark.json"), "{}")
+			writeFileSync(join(dir, "theme", "light.json"), "{}")
+		}
+
+		beforeEach(() => {
+			tmpBase = join(tmpdir(), `kimchi-resolver-validated-test-${process.pid}`)
+		})
+
+		afterEach(() => {
+			rmSync(tmpBase, { recursive: true, force: true })
+		})
+
+		it("returns the validated sibling share dir when PI_PACKAGE_DIR is unset", () => {
+			const shareDir = join(tmpBase, "share", "kimchi")
+			makeValidAuxDir(shareDir)
+			mkdirSync(join(tmpBase, "bin"), { recursive: true })
+			const execPath = join(tmpBase, "bin", "kimchi")
+			expect(resolveValidatedAuxiliaryFilesDir({}, home, execPath)).toBe(shareDir)
+		})
+
+		it("throws the validation error when PI_PACKAGE_DIR is unset and nothing valid resolves", () => {
+			mkdirSync(join(tmpBase, "bin"), { recursive: true })
+			const execPath = join(tmpBase, "bin", "kimchi")
+			expect(() => resolveValidatedAuxiliaryFilesDir({}, home, execPath)).toThrow(/Auxiliary files directory not found/)
+		})
+
+		it("recovers to a valid binary-adjacent share dir when PI_PACKAGE_DIR was inherited from a source checkout", () => {
+			// Simulates launching dist/bin/kimchi from inside another kimchi/pi
+			// session: the parent exports its own package dir (a source checkout
+			// with themes/ instead of theme/), which fails validation.
+			const shareDir = join(tmpBase, "share", "kimchi")
+			makeValidAuxDir(shareDir)
+			const sourceCheckout = join(tmpBase, "source-checkout")
+			mkdirSync(join(sourceCheckout, "themes"), { recursive: true })
+			writeFileSync(join(sourceCheckout, "package.json"), "{}")
+			mkdirSync(join(tmpBase, "bin"), { recursive: true })
+			const execPath = join(tmpBase, "bin", "kimchi")
+			const env = { PI_PACKAGE_DIR: sourceCheckout }
+			expect(resolveValidatedAuxiliaryFilesDir(env, home, execPath)).toBe(shareDir)
+		})
+
+		it("keeps an explicit-but-invalid PI_PACKAGE_DIR when no valid sibling exists", () => {
+			mkdirSync(join(tmpBase, "bin"), { recursive: true })
+			const execPath = join(tmpBase, "bin", "kimchi")
+			const env = { PI_PACKAGE_DIR: "/user/chosen/dir" }
+			expect(resolveValidatedAuxiliaryFilesDir(env, home, execPath)).toBe("/user/chosen/dir")
+		})
+
+		it("recovers to a valid installed data dir when the sibling share dir is stale", () => {
+			// Upgrade/nested-launch case: the binary-adjacent share dir exists but
+			// lacks theme/ (stale 0.85.1-era layout), while the installed data dir
+			// has the full layout. The recovery must not stop at the first bad
+			// candidate.
+			const shareDir = join(tmpBase, "share", "kimchi")
+			mkdirSync(shareDir, { recursive: true })
+			writeFileSync(join(shareDir, "package.json"), "{}")
+			const tmpHome = join(tmpBase, "home")
+			makeValidAuxDir(join(tmpHome, ".local", "share", "kimchi"))
+			mkdirSync(join(tmpBase, "bin"), { recursive: true })
+			const execPath = join(tmpBase, "bin", "kimchi")
+			const sourceCheckout = join(tmpBase, "source-checkout")
+			mkdirSync(sourceCheckout, { recursive: true })
+			writeFileSync(join(sourceCheckout, "package.json"), "{}")
+			const env = { PI_PACKAGE_DIR: sourceCheckout }
+			expect(resolveValidatedAuxiliaryFilesDir(env, tmpHome, execPath)).toBe(join(tmpHome, ".local", "share", "kimchi"))
+		})
+
+		it("keeps the env var when both it and the sibling are valid", () => {
+			const shareDir = join(tmpBase, "share", "kimchi")
+			makeValidAuxDir(shareDir)
+			const customDir = join(tmpBase, "custom")
+			makeValidAuxDir(customDir)
+			mkdirSync(join(tmpBase, "bin"), { recursive: true })
+			const execPath = join(tmpBase, "bin", "kimchi")
+			const env = { PI_PACKAGE_DIR: customDir }
+			expect(resolveValidatedAuxiliaryFilesDir(env, home, execPath)).toBe(customDir)
 		})
 	})
 })

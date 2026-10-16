@@ -184,6 +184,19 @@ export function ensureQuietStartupDefault(settings: Record<string, unknown>): bo
 	return true
 }
 
+/**
+ * Seed tuiMode "regular" when absent. pi ≥1.2 defaults to fullscreen
+ * (alt-screen), which changes working-indicator animations, editor modals,
+ * and scrollback handling relative to the 0.85-era behavior Kimchi's UX
+ * (and its verification suite) was built against. Keep the upgrade
+ * behavior-preserving; fullscreen stays an opt-in via settings.json.
+ */
+export function ensureTuiModeDefault(settings: Record<string, unknown>): boolean {
+	if ("tuiMode" in settings) return false
+	settings.tuiMode = "regular"
+	return true
+}
+
 export const THIRD_PARTY_MAX_RETRIES = 4
 
 export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {
@@ -196,7 +209,7 @@ export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {
 export type MigrationState = "done" | "skip-forever"
 
 export interface TuiConfig {
-	/** Wheel-scroll step (lines) for fullscreen (alt-screen) mode. Min 1; floored by the pi-tui clamp. */
+	/** Wheel-scroll step (lines) for fullscreen (alt-screen) mode. Min 1; synced into pi settings.json \`fullscreenWheelScrollLines\` at startup. */
 	wheelScrollLines?: number
 }
 
@@ -708,17 +721,19 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 }
 
 /**
- * Map TUI config onto the `KIMCHI_WHEEL_SCROLL_LINES` env var consumed by the
- * patched pi-tui `TuiAltScreen` constructor. Env var already set wins over
- * config (env > config > default). Must run before the interactive TUI is
- * constructed — the patched constructor reads the env var once, so later
- * changes do not apply without a restart.
+ * Map Kimchi's `tui.wheelScrollLines` onto pi's native settings.json key
+ * `fullscreenWheelScrollLines` (upstream pi-tui 1.2 WheelScrollAccelerator;
+ * "auto" default). Runs as part of the startup settings.json seeding in
+ * cli.ts. Kimchi config wins over pi settings when set — the config key is
+ * the canonical Kimchi surface (`kimchi config set tui.wheelScrollLines`).
+ * Returns true when the settings record changed.
  */
-export function applyTuiEnvOverrides(config: KimchiConfig): void {
+export function syncWheelScrollToPiSettings(settings: Record<string, unknown>, config: KimchiConfig): boolean {
 	const lines = config.tui?.wheelScrollLines
-	if (lines !== undefined && process.env.KIMCHI_WHEEL_SCROLL_LINES === undefined) {
-		process.env.KIMCHI_WHEEL_SCROLL_LINES = String(lines)
-	}
+	if (lines === undefined) return false
+	if (settings.fullscreenWheelScrollLines === lines) return false
+	settings.fullscreenWheelScrollLines = lines
+	return true
 }
 
 export interface ResolvedEndpoints extends RegionEndpoints {

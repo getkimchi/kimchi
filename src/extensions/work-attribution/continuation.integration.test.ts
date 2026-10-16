@@ -16,7 +16,7 @@ import { join } from "node:path"
 import type { BeforeProviderHeadersEvent, InputEvent } from "@earendil-works/pi-coding-agent"
 import { afterEach, expect, it, vi } from "vitest"
 import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
-import { createContext } from "../__mocks__/context.js"
+import { createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import { savedWorkSummary } from "../__mocks__/work-summary.js"
@@ -55,7 +55,7 @@ async function planningRepository() {
 	git("update-ref", "refs/remotes/origin/trunk", "HEAD")
 	git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
 	git("checkout", "-q", "-b", "feature")
-	const ctx = createContext({ cwd, sessionManager: { getSessionId: () => "skill-planner" } })
+	const ctx = createToolContext({ cwd, sessionManager: { getSessionId: () => "skill-planner" } })
 	const path = "docs/adr/decision.md"
 	await createTrackedWriteTool(ctx, "write-adr").execute("write-adr", { path, content: "# Build the feature\n" })
 	const workId = getWorkId(ctx)
@@ -64,7 +64,7 @@ async function planningRepository() {
 
 it.each([0, 7])("records a candidate observation for an ADR written by Bash before exit %s", async (exitCode) => {
 	const { cwd, captured, agentDir } = await planningRepository()
-	const ctx = createContext({ cwd, sessionManager: { getSessionId: () => `bash-planner-${exitCode}` } })
+	const ctx = createToolContext({ cwd, sessionManager: { getSessionId: () => `bash-planner-${exitCode}` } })
 	const workId = getWorkId(ctx)
 	const path = "docs/adr/from-bash.md"
 	const toolCallId = `bash-adr-${exitCode}`
@@ -106,7 +106,7 @@ it("does not claim a human-written ADR after a read-only Bash call", async () =>
 	const { cwd, captured, agentDir } = await planningRepository()
 	const path = "docs/adr/from-human.md"
 	writeFileSync(join(cwd, path), "# Human decision\n")
-	const ctx = createContext({ cwd, sessionManager: { getSessionId: () => "bash-reader" } })
+	const ctx = createToolContext({ cwd, sessionManager: { getSessionId: () => "bash-reader" } })
 	await createCommitTrackingBashTool(ctx).execute("read-adr", { command: `cat ${path}` }, undefined, undefined, ctx)
 
 	expect(await findWorkContinuation({ cwd }, `Implement ${path}`, captured)).toEqual({ owned: false })
@@ -129,7 +129,7 @@ it.each(
 	),
 )("keeps unnamed work separate from a recent ADR ($source: $text)", async ({ source, text }) => {
 	const { cwd, path, workId, agentDir } = await planningRepository()
-	const ctx = createContext({ cwd, sessionManager: { getSessionId: () => "fresh-session" } })
+	const ctx = createToolContext({ cwd, sessionManager: { getSessionId: () => "fresh-session" } })
 	const originalWork = getWorkId(ctx)
 	const api = createExtensionApi()
 	createWorkAttributionExtension()(api.api)
@@ -188,7 +188,7 @@ it("leaves an input naming an ADR owned from another worktree unresolved without
 	const otherTree = join(cwd, "..", "implementation")
 	git("worktree", "add", "-q", "-b", "implementation", otherTree)
 	writeFileSync(join(otherTree, path), "# Revised by hand\n")
-	const ctx = createContext({ cwd: otherTree, sessionManager: { getSessionId: () => "other-tree" } })
+	const ctx = createToolContext({ cwd: otherTree, sessionManager: { getSessionId: () => "other-tree" } })
 	const api = createExtensionApi()
 	createWorkAttributionExtension()(api.api)
 	const journals = vi.spyOn(summary, "readWorkRecords")
@@ -203,7 +203,7 @@ it.each(["interactive", "rpc"] as const)("adopts a pasted plan before the first 
 	const saved = savePlanMarkdown({ cwd, name: "paste", planText: "# Plan\nImplement src/export.ts.\n", workId })
 	const content = readFileSync(saved.path, "utf8")
 	rmSync(saved.path)
-	const ctx = createContext({ cwd, sessionManager: { getSessionId: () => "pasted-session" } })
+	const ctx = createToolContext({ cwd, sessionManager: { getSessionId: () => "pasted-session" } })
 	const api = createExtensionApi()
 	createWorkAttributionExtension()(api.api)
 	await api.getHandler<InputEvent>("input")({ type: "input", source, text: `Implement this:\n${content}` }, ctx)
@@ -294,7 +294,7 @@ async function recordedPlan(kind: "path" | "snapshot" | "paste" | "artifact", al
 		symlinkSync(agentDir, alias, "dir")
 		vi.stubEnv("PI_CODING_AGENT_DIR", alias)
 	}
-	const planner = createContext({ cwd, sessionManager: { getSessionId: () => "producer" } })
+	const planner = createToolContext({ cwd, sessionManager: { getSessionId: () => "producer" } })
 	const api = createExtensionApi()
 	createWorkAttributionExtension()(api.api)
 	const input = api.getHandler<InputEvent>("input")
@@ -338,7 +338,7 @@ async function recordedPlan(kind: "path" | "snapshot" | "paste" | "artifact", al
 		if (kind !== "path") rmSync(saved.path)
 	}
 	const original = readWorkRecords(agentDir).filter((row) => row.type === "request")
-	const implementer = createContext({ cwd, sessionManager: { getSessionId: () => "consumer" } })
+	const implementer = createToolContext({ cwd, sessionManager: { getSessionId: () => "consumer" } })
 	return {
 		cwd,
 		agentDir,
@@ -424,7 +424,7 @@ it.each([
 ])("skips plan continuation when its named output has another owner (%s file)", async (state) => {
 	const flow = await recordedPlan("path")
 	const output = "docs/other-work/output.md"
-	const other = createContext({ cwd: flow.cwd, sessionManager: { getSessionId: () => "other-owner" } })
+	const other = createToolContext({ cwd: flow.cwd, sessionManager: { getSessionId: () => "other-owner" } })
 	await createTrackedWriteTool(other, "other-output").execute("other-output", {
 		path: output,
 		content: "# Other work\n",
@@ -505,7 +505,7 @@ it.each([
 		inferred: { totalCostUsd: "1.000000000" },
 	})
 	await correctWorkLink(flow.implementer, `unlink ${link?.linkId}`)
-	const next = createContext({ cwd: flow.cwd, sessionManager: { getSessionId: () => "later-consumer" } })
+	const next = createToolContext({ cwd: flow.cwd, sessionManager: { getSessionId: () => "later-consumer" } })
 	await flow.input({ type: "input", source: "interactive", text: flow.text }, next)
 	rows = readWorkRecords(flow.agentDir)
 	expect(rows.filter((row) => row.type === "work_link")).toHaveLength(2)

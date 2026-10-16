@@ -359,6 +359,9 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		}
 
 		pi.on("before_agent_start", async (event, ctx) => {
+			// upstream pi: the event fires for extension-triggered runs too and is a
+			// union — memory digests/recall key off user prompts only.
+			if (event.messageType !== "user") return
 			clearMemoryView(ctx)
 			// Capture the session cwd once — scopes retrieval to the project store.
 			sessionCwd ??= ctx.cwd

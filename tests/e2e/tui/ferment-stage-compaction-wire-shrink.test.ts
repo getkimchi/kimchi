@@ -167,7 +167,13 @@ test("stage compaction makes the next request carry the summary instead of the o
 				},
 				// Turn 7 is the COMPACTION SUMMARIZATION call itself (fired by the
 				// turn_end drain between turns). Its streamed text is stored as
-				// the compaction summary in the session.
+				// the compaction summary in the session. upstream pi splits a mid-turn
+				// compaction into TWO summarization calls (history + turn prefix,
+				// where 0.85 made one), so the script needs one response per call.
+				{
+					stream: [`${SUMMARY_MARKER}: prior turns produced the filler blob; step 1/1 completed with passing gates.`],
+					usage: { prompt_tokens: 210_000, completion_tokens: 300 },
+				},
 				{
 					stream: [`${SUMMARY_MARKER}: prior turns produced the filler blob; step 1/1 completed with passing gates.`],
 					usage: { prompt_tokens: 210_000, completion_tokens: 300 },
@@ -223,14 +229,22 @@ test("stage compaction makes the next request carry the summary instead of the o
 			trace.step("pre-compaction request carried the filler blob (sanity)")
 
 			// The final request is the auto-compaction continuation turn. With the
-			// inline-compact resync it carries the summary marker, not the filler.
-			// Without the resync (the 019ffb83 regression) it would be inverted:
-			// the run loop's run-start snapshot still holds the full transcript.
-
+			// inline-compact resync it carries the summary marker in place of
+			// history. Without the resync (the 019ffb83 regression) it would
+			// still hold the run loop's run-start snapshot of the full
+			// transcript.
+			//
+			// upstream pi compaction boundaries land at turn starts: the summary
+			// replaces the HISTORY before the live turn, while the live
+			// turn's own messages — including the step-completion assistant
+			// message that carries the filler blob here — stay on the wire.
+			// So the shrink assertion uses pre-turn content instead of the
+			// filler: the intent text submitted before the run began is
+			// history and must be gone; the summary marker must be present.
 			const lastBody = bodies[bodies.length - 1]
 			expect(lastBody).toContain(SUMMARY_MARKER)
-			expect(lastBody).not.toContain(FILLER_TOKEN)
-			trace.step("post-compaction request carries summary marker and not the filler blob")
+			expect(lastBody).not.toContain("Drive the compaction assertion flow")
+			trace.step("post-compaction request carries the summary marker in place of the pre-turn history")
 		},
 	)
 })

@@ -1,5 +1,5 @@
 {
-	"$schema": "https://raw.githubusercontent.com/badlogic/pi-mono/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+	"$schema": "https://pi.dev/schemas/theme.schema.json",
 	"name": "kimchi-light",
 	"vars": {
 		"orange-500": "#D94B1F",
@@ -27,7 +27,9 @@
 		"tool-error-bg": "#FFF0F0",
 		"user-msg-bg": "#F5F5F5",
 		"custom-msg-bg": "#F3F0FB",
-		"selected-bg": "#E0E0F0"
+		"selected-bg": "#E0E0F0",
+		"oscFg": "#333333",
+		"oscBg": "#FAFAFA"
 	},
 	"colors": {
 		"accent": "orange-500",
@@ -86,9 +88,7 @@
 		"thinkingHigh": "#875f87",
 		"thinkingXhigh": "#8b008b",
 
-		"bashMode": "lime-600",
-		"oscFg": "#333333",
-		"oscBg": "#FAFAFA"
+		"bashMode": "lime-600"
 	},
 	"export": {
 		"pageBg": "#f8f8f8",

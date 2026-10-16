@@ -1,0 +1,252 @@
+# Patch: Kimchi compatibility fixes for pi-ai 1.3.0
+#
+# Tracking: none yet. No matching upstream issue exists; report these
+# changes to https://github.com/earendil-works/pi before the next upgrade.
+# Changes:
+#   - Accept JSON-encoded array/object tool arguments (including {} as an empty
+#     array) in coercePrimitiveByType.
+#   - Run coerceWithJsonSchema before Value.Convert, and wrap conversion errors
+#     with the received arguments so models can self-correct.
+#   - Drop upstream's TYPEBOX_KIND guard so coercion also applies to
+#     TypeBox-defined schemas (Kimchi's own tools are TypeBox-defined). Both the
+#     guard and its then-unused declaration are removed on purpose.
+#   - Count LiteLLM cache_creation_tokens as cache writes.
+# Careful: validateToolArguments interleaves with upstream's
+#   normalizeOptionalNulls() - keep that call first when rebasing.
+# Removal: delete each hunk when the pinned Pi release provides that behavior.
+# History: see patches/CHANGELOG.md.
+#
+diff --git a/dist/api/openai-completions.js b/dist/api/openai-completions.js
+index 0eeaffa968628593cf6e9f8648650149a97ed55b..bb01a06e4151936de9e8205651dbce6f77c4f104 100644
+--- a/dist/api/openai-completions.js
++++ b/dist/api/openai-completions.js
+@@ -1165,7 +1165,7 @@ function convertTools(tools, compat) {
+ function parseChunkUsage(rawUsage, model) {
+     const promptTokens = rawUsage.prompt_tokens || 0;
+     const cacheReadTokens = rawUsage.prompt_tokens_details?.cached_tokens ?? rawUsage.prompt_cache_hit_tokens ?? rawUsage.cached_tokens ?? 0;
+-    const cacheWriteTokens = rawUsage.prompt_tokens_details?.cache_write_tokens || 0;
++    const cacheWriteTokens = rawUsage.prompt_tokens_details?.cache_write_tokens ?? rawUsage.prompt_tokens_details?.cache_creation_tokens ?? 0;
+     // Follow documented OpenAI/OpenRouter semantics: cached_tokens is cache-read
+     // tokens (hits). Providers disagree on placement: OpenAI/OpenRouter use
+     // prompt_tokens_details.cached_tokens, DeepSeek uses prompt_cache_hit_tokens,
+diff --git a/dist/cli.js b/dist/cli.js
+old mode 100644
+new mode 100755
+diff --git a/dist/utils/oauth-page.js b/dist/utils/oauth-page.js
+index e88fef3637b295d03261445908e10e08f5749c2a..5fa2c54db0f26b8900c64ce949c833817c64726d 100644
+--- a/dist/utils/oauth-page.js
++++ b/dist/utils/oauth-page.js
+@@ -1,4 +1,4 @@
+-const LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" aria-hidden="true"><path fill="#F09082" d="M165.29 165.29H517.36V400H400V282.65H165.29Z"/><path fill="#4D9ABF" d="M165.29 282.65H282.65V400H400V517.36H282.65V634.72H165.29Z"/><path fill="#F1BE58" d="M517.36 400H634.72V634.72H517.36Z"/></svg>`;
++import { readFileSync } from "node:fs";
+ function escapeHtml(value) {
+     return value
+         .replaceAll("&", "&amp;")
+@@ -8,9 +8,24 @@ function escapeHtml(value) {
+         .replaceAll("'", "&#39;");
+ }
+ function renderPage(options) {
+-    const title = escapeHtml(options.title);
+-    const heading = escapeHtml(options.heading);
+-    const message = escapeHtml(options.message);
++    const templateDir = process.env.KIMCHI_OAUTH_TEMPLATE_DIR;
++    if (templateDir) {
++        try {
++            const filePath = templateDir + "/" + (options.template || "default") + ".html";
++            let html = readFileSync(filePath, "utf-8");
++            html = html.replaceAll("{{TITLE}}", escapeHtml(options.title || ""));
++            html = html.replaceAll("{{HEADING}}", escapeHtml(options.heading || ""));
++            html = html.replaceAll("{{MESSAGE}}", escapeHtml(options.message || ""));
++            html = html.replaceAll("{{DETAILS}}", options.details ? `<div class="details">${escapeHtml(options.details)}</div>` : "");
++            return html;
++        }
++        catch {
++            // fall through to minimal unbranded fallback
++        }
++    }
++    const title = escapeHtml(options.title || "");
++    const heading = escapeHtml(options.heading || "");
++    const message = escapeHtml(options.message || "");
+     const details = options.details ? escapeHtml(options.details) : undefined;
+     return `<!doctype html>
+ <html lang="en">
+@@ -19,71 +34,16 @@ function renderPage(options) {
+   <meta name="viewport" content="width=device-width, initial-scale=1" />
+   <title>${title}</title>
+   <style>
+-    :root {
+-      --text: #fafafa;
+-      --text-dim: #a1a1aa;
+-      --page-bg: #09090b;
+-      --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+-      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+-    }
+-    * { box-sizing: border-box; }
+-    html { color-scheme: dark; }
+-    body {
+-      margin: 0;
+-      min-height: 100vh;
+-      display: flex;
+-      align-items: center;
+-      justify-content: center;
+-      padding: 24px;
+-      background: var(--page-bg);
+-      color: var(--text);
+-      font-family: var(--font-sans);
+-      text-align: center;
+-    }
+-    main {
+-      width: 100%;
+-      max-width: 560px;
+-      display: flex;
+-      flex-direction: column;
+-      align-items: center;
+-      justify-content: center;
+-    }
+-    .logo {
+-      width: 72px;
+-      height: 72px;
+-      display: block;
+-      margin-bottom: 24px;
+-    }
+-    h1 {
+-      margin: 0 0 10px;
+-      font-size: 28px;
+-      line-height: 1.15;
+-      font-weight: 650;
+-      color: var(--text);
+-    }
+-    p {
+-      margin: 0;
+-      line-height: 1.7;
+-      color: var(--text-dim);
+-      font-size: 15px;
+-    }
+-    .details {
+-      margin-top: 16px;
+-      font-family: var(--font-mono);
+-      font-size: 13px;
+-      color: var(--text-dim);
+-      white-space: pre-wrap;
+-      word-break: break-word;
+-    }
++    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 480px; margin: 48px auto; padding: 24px; line-height: 1.5; color: #111; }
++    h1 { font-size: 20px; margin: 0 0 12px; }
++    p { margin: 0 0 12px; color: #555; }
++    .details { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; background: #f5f5f5; padding: 12px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
+   </style>
+ </head>
+ <body>
+-  <main>
+-    <div class="logo">${LOGO_SVG}</div>
+-    <h1>${heading}</h1>
+-    <p>${message}</p>
+-    ${details ? `<div class="details">${details}</div>` : ""}
+-  </main>
++  <h1>${heading}</h1>
++  <p>${message}</p>
++  ${details ? `<div class="details">${details}</div>` : ""}
+ </body>
+ </html>`;
+ }
+@@ -92,6 +52,7 @@ export function oauthSuccessHtml(message) {
+         title: "Authentication successful",
+         heading: "Authentication successful",
+         message,
++        template: "success",
+     });
+ }
+ export function oauthErrorHtml(message, details) {
+@@ -100,6 +61,7 @@ export function oauthErrorHtml(message, details) {
+         heading: "Authentication failed",
+         message,
+         details,
++        template: "error",
+     });
+ }
+ //# sourceMappingURL=oauth-page.js.map
+diff --git a/dist/utils/validation.js b/dist/utils/validation.js
+index 272cf2b843c5690f3c755b0b6893b720a71e5243..82141129560b04a6fd093cd125194338db547252 100644
+--- a/dist/utils/validation.js
++++ b/dist/utils/validation.js
+@@ -1,7 +1,6 @@
+ import { Compile } from "typebox/compile";
+ import { Value } from "typebox/value";
+ const validatorCache = new WeakMap();
+-const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
+ function getSchemaTypes(schema) {
+     if (typeof schema.type === "string") {
+         return [schema.type];
+@@ -108,6 +107,31 @@ function coercePrimitiveByType(value, type) {
+             }
+             return value;
+         }
++        case "array": {
++            if (typeof value === "string") {
++                try {
++                    const parsed = JSON.parse(value);
++                    if (Array.isArray(parsed))
++                        return parsed;
++                }
++                catch { }
++            }
++            if (typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === 0) {
++                return [];
++            }
++            return value;
++        }
++        case "object": {
++            if (typeof value === "string") {
++                try {
++                    const parsed = JSON.parse(value);
++                    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed))
++                        return parsed;
++                }
++                catch { }
++            }
++            return value;
++        }
+         default:
+             return value;
+     }
+@@ -281,22 +305,27 @@ export function validateToolArguments(tool, toolCall) {
+     if (toolCall.argumentsError) {
+         throw new Error(`Invalid arguments for tool "${toolCall.name}": ${toolCall.argumentsError}`);
+     }
+-    const args = structuredClone(toolCall.arguments);
++    let args = structuredClone(toolCall.arguments);
+     normalizeOptionalNulls(args, tool.parameters);
+-    Value.Convert(tool.parameters, args);
++    args = coerceWithJsonSchema(args, tool.parameters);
++    try {
++        Value.Convert(tool.parameters, args);
++    }
++    catch (conversionError) {
++        const cause = conversionError instanceof Error ? conversionError.message : String(conversionError);
++        throw new Error(`Validation failed for tool "${toolCall.name}": argument conversion failed: ${cause}\n\nReceived arguments:\n${JSON.stringify(toolCall.arguments, null, 2)}`);
++    }
+     const validator = getValidator(tool.parameters);
+-    if (!Object.getOwnPropertySymbols(tool.parameters).includes(TYPEBOX_KIND)) {
+-        const coerced = coerceWithJsonSchema(args, tool.parameters);
+-        if (coerced !== args) {
+-            if (typeof args === "object" && args !== null && typeof coerced === "object" && coerced !== null) {
+-                for (const key of Object.keys(args)) {
+-                    delete args[key];
+-                }
+-                Object.assign(args, coerced);
+-            }
+-            else {
+-                return validator.Check(coerced) ? coerced : args;
++    const coerced = coerceWithJsonSchema(args, tool.parameters);
++    if (coerced !== args) {
++        if (typeof args === "object" && args !== null && typeof coerced === "object" && coerced !== null) {
++            for (const key of Object.keys(args)) {
++                delete args[key];
+             }
++            Object.assign(args, coerced);
++        }
++        else {
++            return validator.Check(coerced) ? coerced : args;
+         }
+     }
+     if (validator.Check(args)) {

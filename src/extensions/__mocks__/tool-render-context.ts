@@ -14,6 +14,8 @@ export function createToolRenderContext(overrides: Partial<ToolRenderContext> = 
 		expanded: false,
 		showImages: true,
 		isError: false,
+		durationMs: undefined,
+		outputPad: 0,
 		...overrides,
 	}
 }

@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { createLocalBashOperations } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, expect, it } from "vitest"
-import { createContext } from "../__mocks__/context.js"
+import { createToolContext } from "../__mocks__/context.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
 import { createBashControlToolDefinition } from "./bash-control-tool.js"
 import { createProcessRegistry, SAFETY_LIMIT_REASON } from "./process-registry.js"
@@ -14,7 +14,7 @@ import { createTerminalDelivery } from "./terminal-delivery.js"
 
 let cwd: string
 let state: BashSessionState
-const ctx = createContext()
+const ctx = createToolContext()
 
 function isAlive(pid: number): boolean {
 	try {

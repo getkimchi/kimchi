@@ -102,7 +102,11 @@ test("plan-to-ferment promotion — Start as ferment immediately continues execu
 			// Stage 5: dropdown closes — Ferment is running under auto permissions.
 			// Status-line order is now permissions/model first, then ferment, so
 			// look for "auto" leading and "Ferment: ... · Running" somewhere after.
-			await waitForText(terminal, /auto · .* · Ferment: .* · Running/, { timeoutMs: STREAM_TIMEOUT_MS })
+			// upstream pi renders status segments with two spaces around the `·`, so
+			// match any whitespace around each separator.
+			await waitForText(terminal, /auto\s+·\s+.*\s+·\s+Ferment:\s+.*\s+·\s+Running/, {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
 			trace.step("status line transitioned to auto — ferment created")
 
 			// Stage 6: verify the ferment artifact was written.

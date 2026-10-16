@@ -72,7 +72,8 @@ function isSummarizationRequest(body: unknown): boolean {
 	const text = JSON.stringify(body ?? "")
 	return (
 		text.includes("structured context checkpoint summary") ||
-		text.includes("PREFIX of a turn that was too large to keep")
+		// upstream pi rewrote the turn-prefix prompt (was "PREFIX of a turn that was too large to keep")
+		text.includes("Later messages are stored separately and do not need to be reconstructed")
 	)
 }
 
@@ -171,6 +172,15 @@ function makeCompactionResponses(summaryGate: Promise<void>): FakeResponseScript
 			match: (request) => isSummarizationRequest(request.body),
 			holdUntil: summaryGate,
 			stream: [`${SUMMARY_MARKER}: the tool task is mid-flight; turn two completed, work continues.`],
+			usage: { prompt_tokens: 1_000, completion_tokens: 200 },
+		},
+		// upstream pi compaction makes a SECOND summarization call (turn-prefix
+		// summary) when the cut lands mid-turn. Scripts are one-shot, so this
+		// needs its own matching entry — otherwise it falls through to turn 3's
+		// tool-call response and upstream's "attempted to call a tool" guard throws.
+		{
+			match: (request) => isSummarizationRequest(request.body),
+			stream: [`${SUMMARY_MARKER}: turn prefix continues here.`],
 			usage: { prompt_tokens: 1_000, completion_tokens: 200 },
 		},
 		// Task turn 3 (post-compaction): below threshold, no further compaction.

@@ -64,7 +64,7 @@ export const GENERAL_TIPS = [
 	{
 		id: "export-bug-report",
 		scope: "general",
-		message: "Run `/bug` to create GitHub issue with a bug report.",
+		message: "Run `/bug` to create GitHub issue with a bug report (PII-scrubbed).",
 	},
 	{
 		id: "multi-model-roles",

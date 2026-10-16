@@ -202,7 +202,20 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 		// (context, agents, phase, usage) and change the terminal layout for every test.
 		writeFileSync(
 			join(agentDir, "settings.json"),
-			JSON.stringify({ statusLine: { pinned: [] }, hideThinkingBlock: true }, null, "\t"),
+			JSON.stringify(
+				{
+					statusLine: { pinned: [] },
+					hideThinkingBlock: true,
+					// On the first boot of a fresh HOME the adapter has not yet written
+					// its own `-builtin:mcp` disable, so pi's built-in MCP extension
+					// would load alongside the adapter for that boot (double tool
+					// registration, /mcp routing taken by the built-in). Seed the flag
+					// up front so every E2E launch has the adapter as sole MCP owner.
+					extensions: ["-builtin:mcp"],
+				},
+				null,
+				"\t",
+			),
 			"utf-8",
 		)
 

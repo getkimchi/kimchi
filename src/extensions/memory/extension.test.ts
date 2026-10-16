@@ -1,7 +1,7 @@
 import type { BeforeAgentStartEvent, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { populateCliArgs } from "../../cli-args.js"
-import { createCommandContext, createContext } from "../__mocks__/context.js"
+import { createCommandContext, createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { MEMORY_SEARCH_TIMEOUT_MS, TURN_RECALL_QUERY_MAX_CHARS } from "./config.js"
 import { createMemoryExtension, type MemorySearcher } from "./index.js"
@@ -35,7 +35,18 @@ function hits(...items: Array<{ memory: string; score: number }>): MemorySearche
 }
 
 function startEvent(prompt: string): BeforeAgentStartEvent {
-	return { type: "before_agent_start", systemPrompt: BASE_PROMPT, prompt } as BeforeAgentStartEvent
+	// upstream pi: before_agent_start is a discriminated union — the runtime
+	// handler guards on messageType === "user", so the fixture must emit the
+	// BeforeAgentStartUserEvent shape (systemPromptOptions is unused by the
+	// handler; the double cast keeps the partial literal honest).
+	return {
+		type: "before_agent_start",
+		messageType: "user",
+		systemPrompt: BASE_PROMPT,
+		systemPromptOptions: undefined,
+		prompt,
+		images: [],
+	} as unknown as BeforeAgentStartEvent
 }
 
 async function setup(extension: (pi: ExtensionAPI) => void) {
@@ -552,7 +563,7 @@ describe("memory extension", () => {
 		const { api, getHandler, getRegisteredTool } = createExtensionApi()
 		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) })(api)
 		const start = getHandler<BeforeAgentStartEvent, { systemPrompt?: string } | undefined>("before_agent_start")
-		const ctx = createContext()
+		const ctx = createToolContext()
 		await start(startEvent("turn 1"), ctx)
 
 		setSessionMemoryOverride(ctx.sessionManager, false)

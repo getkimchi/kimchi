@@ -11,6 +11,7 @@ const upstream = vi.hoisted(() => ({
 
 vi.mock("pi-mcp-adapter/config", () => ({
 	loadMcpConfig: upstream.load,
+	setPiMcpConfigEnabled: vi.fn(),
 }))
 
 import { LEGACY_PROJECT_MCP_CONFIG, loadKimchiMcpConfig } from "./config.js"

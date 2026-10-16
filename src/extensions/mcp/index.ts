@@ -286,6 +286,10 @@ export function createKimchiMcpAdapterExtension(options: KimchiMcpAdapterExtensi
 }
 
 function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterExtensionOptions): void {
+	// Kimchi gates project MCP configuration itself (resolveMcpProjectTrust);
+	// the adapter's own interactive per-server approval would double-prompt.
+	// The dependency patch honors this flag by standing that layer down.
+	process.env.KIMCHI_MANAGES_MCP_PROJECT_TRUST = "1"
 	installKeyringRequireBridge()
 	cleanupStrayMcpOAuthEntriesBestEffort()
 	installMcpOAuthCallbackBranding()

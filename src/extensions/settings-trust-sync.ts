@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { setProjectScopeTrusted } from "../project-scope-trust.js"
 import { invalidateResourceDefinitionsCache } from "../resources/definitions.js"
-import { setSettingsProjectTrusted } from "../settings-watcher.js"
+import { setSettingsProjectTrusted, setToolGateSession } from "../settings-watcher.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
 /**
@@ -38,6 +38,10 @@ export default function settingsTrustSyncExtension(pi: ExtensionAPI): void {
 				if (ctx.cwd) {
 					setProjectScopeTrusted(ctx.cwd, trusted)
 					invalidateResourceDefinitionsCache()
+					// Tool gating reads (isDefaultToolEnabled) must see the
+					// session's cwd and trust, not the process's — the ACP
+					// server hosts sessions with different cwds in one process.
+					setToolGateSession(ctx.cwd, trusted)
 				}
 			}
 		} catch (err) {

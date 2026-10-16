@@ -13,13 +13,13 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { createContext } from "../__mocks__/context.js"
+import { createToolContext } from "../__mocks__/context.js"
 import { createDaemonToolDefinition, DAEMON_TOOL_DESCRIPTION } from "./daemon-tool.js"
 import { isPidAlive, readDaemon } from "./state.js"
 
 const describePosix = process.platform === "win32" ? describe.skip : describe
 
-const fakeCtx = (cwd: string) => createContext({ cwd })
+const fakeCtx = (cwd: string) => createToolContext({ cwd })
 
 describe("daemon tool description (steering)", () => {
 	it("positions itself as last resort, not as a bash replacement", () => {

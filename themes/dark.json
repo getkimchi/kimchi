@@ -1,5 +1,5 @@
 {
-	"$schema": "https://raw.githubusercontent.com/badlogic/pi-mono/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+	"$schema": "https://pi.dev/schemas/theme.schema.json",
 	"name": "dark",
 	"vars": {
 		"cyan": "#00d7ff",
@@ -16,7 +16,9 @@
 		"bg-tertiary": "#343541",
 		"selectedBg": "#3a3a4a",
 		"userMsgBg": "#343541",
-		"customMsgBg": "#2d2838"
+		"customMsgBg": "#2d2838",
+		"oscFg": "#D4D4D4",
+		"oscBg": "#1E1E1E"
 	},
 	"colors": {
 		"accent": "accent",
@@ -30,7 +32,6 @@
 		"dim": "dimGray",
 		"text": "gray",
 		"thinkingText": "gray",
-
 		"selectedBg": "selectedBg",
 		"userMessageBg": "userMsgBg",
 		"userMessageText": "gray",
@@ -42,7 +43,6 @@
 		"toolErrorBg": "bg-primary",
 		"toolTitle": "cyan",
 		"toolOutput": "gray",
-
 		"mdHeading": "#f0c674",
 		"mdLink": "#81a2be",
 		"mdLinkUrl": "dimGray",
@@ -53,11 +53,9 @@
 		"mdQuoteBorder": "gray",
 		"mdHr": "gray",
 		"mdListBullet": "accent",
-
 		"toolDiffAdded": "green",
 		"toolDiffRemoved": "red",
 		"toolDiffContext": "gray",
-
 		"syntaxComment": "#6A9955",
 		"syntaxKeyword": "#569CD6",
 		"syntaxFunction": "#DCDCAA",
@@ -67,17 +65,13 @@
 		"syntaxType": "#4EC9B0",
 		"syntaxOperator": "#D4D4D4",
 		"syntaxPunctuation": "#D4D4D4",
-
 		"thinkingOff": "darkGray",
 		"thinkingMinimal": "#6e6e6e",
 		"thinkingLow": "#5f87af",
 		"thinkingMedium": "#81a2be",
 		"thinkingHigh": "#b294bb",
 		"thinkingXhigh": "#d183e8",
-
-		"bashMode": "green",
-		"oscFg": "#D4D4D4",
-		"oscBg": "#1E1E1E"
+		"bashMode": "green"
 	},
 	"export": {
 		"pageBg": "#18181e",

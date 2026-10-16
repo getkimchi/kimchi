@@ -33,9 +33,13 @@ test("returns MCP argument validation failures to the model without ending the s
 			await waitForText(terminal, "Kimchi surfaced the MCP validation error and continued.", {
 				timeoutMs: STREAM_TIMEOUT_MS,
 			})
-			await fixture.mcp.waitForEvent("tool_called", { where: { name: "echo", arguments: {} } })
-			expect(toolResultText(fixture.fake.requests, invalidEcho)).toContain(validationMessage)
-			trace.step("invalid MCP arguments reached the server and returned as a bounded tool error")
+			// pi-mcp-adapter 5.x validates arguments client-side before contacting
+			// the server, so the fixture itself never sees the call; the contract
+			// that matters is the bounded, model-facing validation error.
+			expect(toolResultText(fixture.fake.requests, invalidEcho)).toContain(
+				"Failed to call tool: data must have required property 'message'",
+			)
+			trace.step("invalid MCP arguments returned as a bounded tool error without ending the session")
 		},
 	)
 })

@@ -124,15 +124,18 @@ test("invalidates cached MCP metadata when the server config changes", async ({ 
 			expect(toolResultText(fixture.fake.requests, searchAfterChange)).toContain(
 				'No tools matching "fixture_echo" in "fixture"',
 			)
+			// pi-mcp-adapter 5.3: an invalidated cache entry is rediscovered at
+			// startup (needsDiscovery) instead of staying dormant until first use
+			// (2.34 semantics). The exclusion still applies — search finds nothing.
 			expect(
 				fixture.mcp
 					.readEvents()
 					.slice(afterRestart)
 					.some((event) => event.type === "process_started"),
-			).toBe(false)
+			).toBe(true)
 			const cache = JSON.parse(readFileSync(cachePath, "utf-8")) as MetadataCache
-			expect(cache.servers.fixture?.configHash).toBe(hashBeforeChange)
-			trace.step("stale metadata was ignored without starting the lazy server or rewriting its cache")
+			expect(cache.servers.fixture?.configHash).not.toBe(hashBeforeChange)
+			trace.step("stale metadata was rediscovered at startup and rewritten with the new config hash")
 		},
 	)
 })

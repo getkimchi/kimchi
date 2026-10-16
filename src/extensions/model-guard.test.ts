@@ -30,6 +30,7 @@ import modelSwitchExtension, { __resetModelSwitchStateForTest } from "./model-sw
 // Mock the settings-watcher so the /settings Auto-compact toggle can be
 // controlled per test without touching the real settings files.
 vi.mock("../settings-watcher.js", () => ({
+	isDefaultToolEnabled: () => true,
 	getCompactionEnabled: vi.fn(() => true),
 }))
 

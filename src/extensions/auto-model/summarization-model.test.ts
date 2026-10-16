@@ -44,7 +44,10 @@ describe("Auto summarization model adapter", () => {
 
 		const result = await resolver.call(session, auto)
 
-		expect(getAuth).toHaveBeenCalledWith(target)
+		// upstream pi: upstream _getSummarizationRequestAuth always passes the
+		// options arg through to getAuth (signal is undefined when the caller
+		// didn't supply one).
+		expect(getAuth).toHaveBeenCalledWith(target, { signal: undefined })
 		expect(result.model).toBe(target)
 	})
 })

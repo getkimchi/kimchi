@@ -1,6 +1,6 @@
 /**
  * Regression tests for the "unknown model" steer-telemetry gap (Chunk 2,
- * LLM-3079): steer events fired before the first assistant message, or under
+ * trailing-SSoT chunk): steer events fired before the first assistant message, or under
  * backend routing, must not report model="unknown" when a concrete session /
  * selection model exists. Mirrors the messages.ts reproduce environment.
  */

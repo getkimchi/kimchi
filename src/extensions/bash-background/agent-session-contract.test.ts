@@ -314,15 +314,19 @@ describe("background bash delivery contract (real AgentSession)", () => {
 		while (!getSessionState(harness.session.sessionManager.getSessionId())?.delivery.hasQueuedAutomatic())
 			await delay(20)
 
-		// Abort the run programmatically (queues are NOT dropped). The real
-		// AgentSession chains a continuation after the aborted run: it consumes
-		// the advisory steer first (whose scripted response is the explicit
+		// Abort the run programmatically (queues are NOT dropped). Upstream pi
+		// makes the abort terminal for the run chain: the queued advisory and
+		// the late notification are NOT auto-drained anymore (they are kept,
+		// FIFO-preserved, for the next run). The fresh prompt below drives
+		// the recovery: it consumes the advisory steer first (whose scripted
+		// response is the explicit
 		// inspection — claiming and delivering the released outcome through its
 		// tool result) and only THEN the late automatic message — superseded,
 		// replaced in place with a suppression note. The prompt resolves after
 		// the whole chain settles.
 		await harness.session.abort()
 		await pending
+		await harness.session.prompt("Please proceed with the recovery")
 
 		// The payload reached the provider EXACTLY once — through the
 		// inspection's tool result, never through the late message.
@@ -384,6 +388,9 @@ describe("background bash delivery contract (real AgentSession)", () => {
 			).toBe(1)
 			await harness.session.abort()
 			await pending
+			// upstream pi: abort is terminal — the queued steer + late notification
+			// survive but are only consumed by the next run, driven here.
+			await harness.session.prompt("Proceed with the inspection")
 
 			const lastRequest = harness.requests.at(-1)
 			if (!lastRequest) throw new Error("provider request missing")
