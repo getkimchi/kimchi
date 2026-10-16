@@ -6,7 +6,7 @@
  * Subagent and single-model instructions live in `prompt-construction/system-prompt.ts`.
  */
 
-import { renderDelegationThinkingLevelTable, renderOrchestratorThinkingTable } from "../agents/thinking-level-policy.js"
+import type { ThinkingLevel } from "../agents/personas/types.js"
 import { renderAgentWorkerBudgetTable } from "../agents/worker-budget-policy.js"
 import type { ModelCustomMetadata } from "./model-metadata.js"
 import { resolveOrchestrationGuideline } from "./model-registry/guidelines/guidelines-resolver.js"
@@ -181,21 +181,33 @@ Always pass a \`thinking\` parameter on every Agent call — never omit it. Use 
 **Tool descriptions vs. Orchestration:** Tool descriptions summarize capabilities. Detailed policy for delegation, budgets, model selection, and artifact handoff lives in this Orchestration section. If a tool description appears to set policy differently, follow Orchestration.`
 }
 
+function renderDelegationThinkingLevelTable(): string {
+	const rows: Array<[string, string, ThinkingLevel, ThinkingLevel, ThinkingLevel]> = [
+		["Explore (bounded fact-finding)", "Explore", "minimal", "low", "medium"],
+		["Research note", "Researcher", "low", "medium", "high"],
+		["Plan or plan verification", "Plan", "high", "high", "high"],
+		["Build chunk", "Builder", "medium", "high", "xhigh"],
+		["Review report", "Reviewer", "medium", "high", "high"],
+		["Fix round", "Fixer", "medium", "high", "high"],
+	]
+	return [
+		"| Work shape | Agent type | simple chunk | complex chunk | after 1 retry (+1 tier) |",
+		"|---|---|---:|---:|---:|",
+		...rows.map(
+			([label, agentType, simple, complex, retry]) => `| ${label} | ${agentType} | ${simple} | ${complex} | ${retry} |`,
+		),
+	].join("\n")
+}
+
 const THINKING_LEVELS = `### Thinking levels
 
-\`thinking\` controls extended reasoning for the orchestrator and each delegated worker. Levels (lowest to highest): off, minimal, low, medium, high, xhigh, max. Use the lowest level that fits the task — higher thinking costs more tokens and time.
-
-**Orchestrator (main thread):** keep thinking low while coordinating (spawning agents, reading artifact paths). Raise only when classifying the pipeline, self-validating a plan, or interpreting ambiguous subagent reports.
-
-${renderOrchestratorThinkingTable()}
+\`thinking\` controls extended reasoning for each delegated worker. Levels (lowest to highest): off, minimal, low, medium, high, xhigh, max. Use the lowest level that fits the task — higher thinking costs more tokens and time.
 
 **Delegated workers:** pass \`thinking\` on every \`Agent\` call. Orchestrator-provided \`thinking\` overrides agent profile defaults. Map chunk \`complexity\` from the plan spec to the simple/complex column.
 
 ${renderDelegationThinkingLevelTable()}
 
-**Self-performed work:** when you decide to do a phase yourself instead of delegating, call \`set_phase\` with the same phase-scoped \`thinking\` level you would have passed to an Agent. Use the \`simple\` column for quick/small work and the \`complex\` column for multi-step or subtle work. This updates your own reasoning level for the phase; reset to a lower coordination level when you go back to delegating.
-
-**Retry escalation:** when spawning a replacement or \`resume_subagent\` after \`budget_exhausted\` or a stalled approach, bump \`thinking\` one tier from the prior call (see retry column). If you are redoing self-performed work, bump the \`set_phase\` \`thinking\` value the same way. Do not exceed the per-scope ceiling shown in the retry column. Combine with model-tier escalation when appropriate.
+**Retry escalation:** when spawning a replacement or \`resume_subagent\` after \`budget_exhausted\` or a stalled approach, bump \`thinking\` one tier from the prior call (see retry column). Do not exceed the per-scope ceiling shown in the retry column. Combine with model-tier escalation when appropriate.
 
 **Non-reasoning models:** if the target model shows Extended thinking: no in Your team above, use \`off\` or the highest level the model supports — never request levels the model cannot run.`
 

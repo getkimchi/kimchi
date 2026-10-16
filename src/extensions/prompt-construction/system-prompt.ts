@@ -372,9 +372,7 @@ ${lines.join("\n")}`
 
 export const PHASE_MANAGEMENT_INTRO = `## Phase Management
 
-The session starts in \`explore\` phase by default. Call \`set_phase\` when the work type changes — pick one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\`. Only one phase is active at a time; the most recent call wins. Subagents set their phase automatically from their persona, so this tool is for tagging the main thread's work.
-
-When the orchestrator decides to perform a phase itself (not delegate), include the matching \`thinking\` parameter from the Orchestration **Thinking levels** table. Leave \`thinking\` unset when only tagging coordination work or when delegating the phase to an Agent.`
+The session starts in \`explore\` phase by default. Call \`set_phase\` when the work type changes — pick one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\`. Only one phase is active at a time; the most recent call wins. Subagents set their phase automatically from their persona, so this tool is for tagging the main thread's work.`
 
 const PHASE_ORDER: readonly Phase[] = ["explore", "research", "plan", "build", "review"]
 

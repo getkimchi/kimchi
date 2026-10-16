@@ -638,6 +638,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("## Phase Management")
 			expect(result).toContain("During **plan** phase")
 			expect(result).toContain("### Model-specific notes")
+			expect(result).not.toContain("include the matching `thinking` parameter")
 		})
 	})
 

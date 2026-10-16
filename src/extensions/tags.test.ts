@@ -99,6 +99,7 @@ const TEST_SESSION_ID = "test-session"
 type RegisteredTool = {
 	name: string
 	execute: (...args: unknown[]) => unknown
+	parameters?: unknown
 }
 
 type RegisteredCommand = {
@@ -286,18 +287,21 @@ describe("tags system prompt block", () => {
 		expect(pi.setThinkingLevel).not.toHaveBeenCalled()
 	})
 
-	it("set_phase updates thinking level when performing a phase itself", async () => {
+	it("set_phase does not expose or apply a thinking level", async () => {
 		const pi = makeTagsPi()
+
+		const schema = JSON.stringify(pi.tools.get("set_phase")?.parameters ?? {})
+		expect(schema).not.toContain("thinking")
 
 		const result = await pi.tools
 			.get("set_phase")
-			?.execute("call-1", { phase: "plan", thinking: "high" }, undefined, undefined, createContext({ hasUI: false }))
+			?.execute("call-1", { phase: "plan" }, undefined, undefined, createContext({ hasUI: false }))
 
 		expect(result).toMatchObject({
 			content: [{ type: "text", text: "Phase changed to: plan" }],
-			details: { phase: "plan", thinking: "high" },
+			details: { phase: "plan" },
 		})
-		expect(pi.setThinkingLevel).toHaveBeenCalledWith("high")
+		expect(pi.setThinkingLevel).not.toHaveBeenCalled()
 	})
 })
 
