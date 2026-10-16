@@ -100,9 +100,16 @@ function gitlabHost(): string | undefined {
 	return configuredHost(process.env.GITLAB_HOST ?? process.env.GL_HOST ?? process.env.GITLAB_URI ?? "gitlab.com")
 }
 
+/** GitHub Enterprise Cloud with data residency gives each enterprise one subdomain of ghe.com. */
+function gheComHost(host: string): boolean {
+	return /^[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?\.ghe\.com$/.test(host)
+}
+
 function environmentToken(repository: Pick<Repository, "provider" | "host">): string | undefined {
 	if (repository.provider === "github") {
-		if (repository.host === "github.com") return process.env.GH_TOKEN || process.env.GITHUB_TOKEN
+		// gh sends GH_TOKEN to github.com and every ghe.com subdomain; the Enterprise token is for Server hosts only.
+		if (repository.host === "github.com" || gheComHost(repository.host))
+			return process.env.GH_TOKEN || process.env.GITHUB_TOKEN
 		if (repository.host === configuredHost(process.env.GH_HOST))
 			return process.env.GH_ENTERPRISE_TOKEN || process.env.GITHUB_ENTERPRISE_TOKEN
 	} else if (repository.host === gitlabHost()) {
@@ -189,11 +196,17 @@ export async function credential(
 	return token
 }
 
+/** GitHub.com and GHE.com serve the REST API from an api. subdomain; Enterprise Server serves it under /api/v3. */
+function githubAPI(host: string): string {
+	if (host === "github.com") return "https://api.github.com"
+	return gheComHost(host) ? `https://api.${host}` : `https://${host}/api/v3`
+}
+
 export function api(repository: Pick<Repository, "host" | "provider" | "name">, endpoint = ""): URL {
 	const base =
 		repository.provider === "gitlab"
 			? `https://${repository.host}/api/v4/projects/${encodeURIComponent(repository.name)}`
-			: `${repository.host === "github.com" ? "https://api.github.com" : `https://${repository.host}/api/v3`}/repos/${repository.name}`
+			: `${githubAPI(repository.host)}/repos/${repository.name}`
 	return new URL(`${base}${endpoint ? `/${endpoint}` : ""}`)
 }
 
@@ -458,7 +471,7 @@ function remoteRepository(value: string): Pick<Repository, "host" | "name"> & { 
 }
 
 function providerFor(host: string): Repository["provider"] | undefined {
-	if (host === "github.com" || host === configuredHost(process.env.GH_HOST)) return "github"
+	if (host === "github.com" || gheComHost(host) || host === configuredHost(process.env.GH_HOST)) return "github"
 	if (host === "gitlab.com" || host === gitlabHost()) return "gitlab"
 }
 

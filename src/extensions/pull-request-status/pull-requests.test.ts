@@ -158,7 +158,8 @@ function replies(handler: (url: URL, options: RequestInit) => unknown = () => []
 			? {
 					id: 42,
 					full_name: github[1],
-					html_url: `https://${url.host === "api.github.com" ? "github.com" : url.host}/${github[1]}`,
+					// GitHub.com and GHE.com serve their API from an api. subdomain of the web host.
+					html_url: `https://${url.host === "api.github.com" ? "github.com" : url.host.replace(/^api\.(?=[^.]+\.ghe\.com$)/, "")}/${github[1]}`,
 				}
 			: gitlab
 				? {
@@ -357,6 +358,48 @@ describe("native provider credentials", () => {
 		for (const [url, options] of http.mock.calls) {
 			expect(url.origin).toBe("https://enterprise.example")
 			expect(new Headers(options.headers).get("authorization")).toBe("Bearer enterprise-token")
+		}
+	})
+	it("finds a GHE.com pull request through the enterprise's API subdomain with that host's CLI login", async () => {
+		seed()
+		remote("git@octocorp.ghe.com:team/repo.git")
+		cli.auth.mockImplementation(async (command, args) =>
+			command === "gh" && args.join(" ") === "auth token --hostname octocorp.ghe.com" ? "tenant-cli-token" : undefined,
+		)
+		replies(() => [pull(7, { html_url: "https://octocorp.ghe.com/team/repo/pull/7" })])
+		await lookup()
+		expect(saved().at(-1)).toMatchObject({
+			prLookup: { status: "linked" },
+			pullRequests: [{ provider: "github", host: "octocorp.ghe.com", number: 7, repository: "team/repo" }],
+		})
+		expect(commitCalls()[0].href).toBe(`https://api.octocorp.ghe.com/repos/team/repo/commits/${sha}/pulls?per_page=100`)
+		for (const [url, options] of http.mock.calls) {
+			expect(url.origin).toBe("https://api.octocorp.ghe.com")
+			expect(new Headers(options.headers).get("authorization")).toBe("Bearer tenant-cli-token")
+		}
+	})
+	it("sends GH_TOKEN to a GHE.com host as gh does, never the Enterprise Server token", async () => {
+		seed()
+		remote("https://octocorp.ghe.com/team/repo.git")
+		vi.stubEnv("GH_TOKEN", "tenant-token")
+		vi.stubEnv("GH_ENTERPRISE_TOKEN", "enterprise-server-secret")
+		replies(() => [pull(7, { html_url: "https://octocorp.ghe.com/team/repo/pull/7" })])
+		await lookup()
+		expect(saved().at(-1).prLookup).toMatchObject({ status: "linked" })
+		expect(cli.auth).not.toHaveBeenCalled()
+		for (const [url, options] of http.mock.calls) {
+			expect(url.origin).toBe("https://api.octocorp.ghe.com")
+			expect(new Headers(options.headers).get("authorization")).toBe("Bearer tenant-token")
+		}
+	})
+	it("does not treat a host that merely contains ghe.com as GitHub Enterprise Cloud", async () => {
+		seed()
+		remote("https://octocorp.ghe.com.attacker.example/team/repo.git")
+		vi.stubEnv("GH_TOKEN", "tenant-secret")
+		await lookup()
+		for (const [url, options] of http.mock.calls) {
+			expect(url.host).toBe("octocorp.ghe.com.attacker.example")
+			expect(new Headers(options.headers).has("authorization")).toBe(false)
 		}
 	})
 	it("keeps a cloud GitHub token on github.com even when GH_HOST names another host", async () => {
