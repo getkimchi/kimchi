@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
@@ -31,6 +31,7 @@ import { copySessionFileAndAddHandoffNote, removeTempDir } from "./teleport/prov
 import * as billingSource from "./work-attribution/billing-source.js"
 import { createWorkCommitTrackingOperations } from "./work-attribution/commits.js"
 import * as continuation from "./work-attribution/continuation.js"
+import { changeWorkIssue } from "./work-attribution/issues.js"
 import * as supervisor from "./work-attribution/reconcile-supervisor.js"
 import * as scope from "./work-attribution/scope.js"
 import { flushWorkSummaries, readWorkRecords, recoverWorkSummaries } from "./work-attribution/summary.js"
@@ -50,6 +51,7 @@ import {
 	WORK_CHANGED_EVENT,
 	WORK_DETAILS_REQUEST_EVENT,
 	type WorkDetailsRequest,
+	workLedgerPath,
 } from "./work-attribution.js"
 
 let dir: string
@@ -1389,6 +1391,143 @@ describe("local work attribution", () => {
 		const next = recordProviderRequest(ctx)
 		const rows = readFileSync(path, "utf8").trim().split("\n")
 		expect(JSON.parse(rows.at(-1) ?? "").requestId).toBe(next.requestId)
+	})
+})
+
+describe("Jira issue selection", () => {
+	function session() {
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const ctx = { ...createCommandContext(), ...createContext({ cwd: dir }) }
+		return {
+			api,
+			ctx,
+			input: (text: string) => api.getHandler<InputEvent>("input")({ type: "input", text, source: "interactive" }, ctx),
+			/** Sends one model request and returns its saved row. */
+			async send() {
+				const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+				await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(event, ctx)
+				return records().find((row) => row.type === "request" && row.requestId === event.headers["X-Request-Id"])
+			},
+		}
+	}
+
+	it("binds requests from the next input to the selected issue and leaves earlier rows as they were", async () => {
+		const { api, ctx, input, send } = session()
+		// A key in the prompt is not a selection.
+		await input("Plan ABC-123, see https://example.atlassian.net/browse/ABC-124")
+		const planning = await send()
+		const history = readFileSync(workLedgerPath(ctx), "utf8")
+		expect(existsSync(join(dir, "work", getWorkId(ctx), "issue.jsonl"))).toBe(false)
+
+		await api.getRegisteredCommand("work").handler("issue ABC-123", ctx)
+		expect(vi.mocked(ctx.ui.notify).mock.lastCall).toEqual([
+			`Jira issue ABC-123 selected for this work. It applies from the next prompt; earlier requests are unchanged.\nWork ID: ${getWorkId(ctx)}\nJira issue: ABC-123\nCost: unknown; waiting for billing`,
+			"info",
+		])
+		await input("Implement it")
+		const implementation = await send()
+
+		expect(planning).not.toHaveProperty("issue")
+		expect(implementation).toMatchObject({ workId: planning.workId, issue: { key: "ABC-123", revision: 1 } })
+		expect(readFileSync(workLedgerPath(ctx), "utf8").startsWith(history)).toBe(true)
+	})
+
+	it("keeps an input's issue when another session changes it, until the next input or run", async () => {
+		const { api, ctx, input, send } = session()
+		await input("Implement the export")
+		const first = await send()
+		await changeWorkIssue(dir, getWorkId(ctx), "other-session", "ABC-1")
+		const sameInput = await send()
+		// A run started without typed input, as /ferment starts one, reads the selection again.
+		await api.getHandler("before_agent_start")({}, ctx)
+		const nextRun = await send()
+		await changeWorkIssue(dir, getWorkId(ctx), "other-session", "ABC-2")
+		const nextRunAgain = await send()
+		await input("Then document it")
+		const nextInput = await send()
+
+		expect([first, sameInput].map((row) => row.issue)).toEqual([undefined, undefined])
+		expect([nextRun, nextRunAgain].map((row) => row.issue)).toEqual([
+			{ key: "ABC-1", revision: 1 },
+			{ key: "ABC-1", revision: 1 },
+		])
+		expect(nextInput.issue).toEqual({ key: "ABC-2", revision: 2 })
+		// A retry keeps the issue of the request it repeats.
+		const wire = new Headers({ "X-Request-Id": nextInput.requestId })
+		prepareProviderRequest(wire, "", { bodyTags: [] })
+		prepareProviderRequest(wire, "", { bodyTags: [] })
+		expect(records().find((row) => row.type === "request" && row.requestId === wire.get("x-request-id"))).toMatchObject(
+			{ parentRequestId: nextInput.requestId, issue: { key: "ABC-2", revision: 2 } },
+		)
+	})
+
+	it("prints the work's issue in the /work details, and shows, clears and rejects with /work issue", async () => {
+		const ctx = { ...createCommandContext(), ...createContext({ cwd: dir, mode: "rpc" }) }
+		const mock = createExtensionApi()
+		createWorkAttributionExtension()(mock.api)
+		mock.api.events.on(WORK_DETAILS_REQUEST_EVENT, (request) => {
+			;(request as WorkDetailsRequest).lines.push("PR #7 open: https://github.com/example/repo/pull/7")
+		})
+		const command = mock.getRegisteredCommand("work")
+		const workId = getWorkId(ctx)
+		const segment = getWorkSegment(ctx)
+		const printed = () => vi.mocked(ctx.ui.notify).mock.lastCall
+		const details = (issue: string[]) =>
+			[
+				`Work ID: ${workId}`,
+				...issue,
+				"PR #7 open: https://github.com/example/repo/pull/7",
+				"Cost: unknown; waiting for billing",
+			].join("\n")
+
+		await command.handler("issue", ctx)
+		expect(printed()).toEqual([`Jira issue: none. Select one with: /work issue <KEY>\n${details([])}`, "info"])
+		await command.handler("issue ABC-123", ctx)
+		await command.handler("", ctx)
+		expect(printed()).toEqual([details(["Jira issue: ABC-123"]), "info"])
+		await command.handler("issue", ctx)
+		expect(printed()).toEqual([details(["Jira issue: ABC-123"]), "info"])
+		await command.handler("issue clear", ctx)
+		expect(printed()).toEqual([
+			`Jira issue ABC-123 cleared from this work. From the next prompt, requests have no issue; earlier requests are unchanged.\n${details([])}`,
+			"info",
+		])
+		await command.handler("issue ABC 123", ctx)
+		expect(printed()).toEqual([
+			'Not a Jira issue key: "ABC 123". Use /work issue <KEY>, such as /work issue ABC-123, or /work issue clear.',
+			"warning",
+		])
+		// Choosing an issue is not a work choice: the work and its input segment stay.
+		expect({ workId: getWorkId(ctx), segment: getWorkSegment(ctx) }).toEqual({ workId, segment })
+	})
+
+	it("lists the current work's issue in the terminal's work panel", async () => {
+		const panels: Component[] = []
+		const custom = vi.fn().mockImplementation(
+			(factory: Parameters<ExtensionUIContext["custom"]>[0]) =>
+				new Promise((done) => {
+					void Promise.resolve(factory({} as TUI, testTheme, {} as never, done)).then((panel) => panels.push(panel))
+				}),
+		)
+		const ctx = { ...createCommandContext(), ...createContext({ cwd: dir, ui: { custom } }) }
+		const mock = createExtensionApi()
+		createWorkAttributionExtension()(mock.api)
+		const command = mock.getRegisteredCommand("work")
+		await command.handler("issue ABC-123", ctx)
+		await flushWorkSummaries()
+
+		const browsing = command.handler("", ctx)
+		await vi.waitFor(() => expect(panels).toHaveLength(1))
+		const view = panels[0].render(100).map(stripTerminalSequences)
+		expect(view).toContain(`  Work ID: ${getWorkId(ctx)}`)
+		expect(view).toContain("  Jira issue: ABC-123")
+		expect(view.join("\n")).toContain(`● ${getWorkId(ctx).slice(0, 8)} ABC-123`)
+		panels[0].handleInput?.("\r")
+		await browsing
+		expect(vi.mocked(ctx.ui.notify).mock.lastCall?.[0]).toMatch(
+			new RegExp(`^Work ID: ${getWorkId(ctx)}\nJira issue: ABC-123\nCost: unknown`),
+		)
 	})
 })
 

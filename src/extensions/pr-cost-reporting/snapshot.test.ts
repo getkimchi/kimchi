@@ -179,6 +179,11 @@ describe("allowlisted repository snapshots", () => {
 			expect(JSON.stringify(content)).not.toContain(privateValue)
 		expect(() => validateSnapshot(wire())).not.toThrow()
 	})
+	it("leaves the Jira issue a request was bound to locally out of the upload", () => {
+		const content = build(records([pull()], { issue: { key: "ABC-123", revision: 1 } })).snapshots[0].content
+		expect(content).toEqual(build().snapshots[0].content)
+		expect(JSON.stringify(content)).not.toContain("ABC-123")
+	})
 	it("keeps missing prices in the complete inventory", () => {
 		const content = build(records(), false).snapshots[0].content
 		expect(content.requests[0].billingRecordIds).toEqual([])

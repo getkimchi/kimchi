@@ -1,4 +1,17 @@
-import { createReadStream, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import {
+	closeSync,
+	createReadStream,
+	existsSync,
+	fstatSync,
+	fsyncSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	readSync,
+	statSync,
+	writeFileSync,
+} from "node:fs"
 import { mkdir, readdir, stat } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 import { setImmediate } from "node:timers/promises"
@@ -126,8 +139,25 @@ const ROW_CHECKS: Record<Collection, (row: unknown) => boolean> = {
 		entry(row, ["observationId", "toolCallId", "repository", "worktree", "source"]) && Array.isArray(row.files),
 	continuations: (row) => entry(row, ["source"]) && object(row.evidence),
 }
+/** Appends one record as a JSON line and syncs it. */
+export function appendJournalLine(path: string, record: unknown): void {
+	mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+	const fd = openSync(path, "a+", 0o600)
+	try {
+		const size = fstatSync(fd).size
+		const last = Buffer.alloc(1)
+		if (size) readSync(fd, last, 0, 1, size - 1)
+		// An unterminated tail is an interrupted append. Start a new line instead of truncating:
+		// another process may be appending, and readers skip only that cut-off record.
+		const repair = size && last[0] !== 10 ? "\n" : ""
+		writeFileSync(fd, `${repair}${JSON.stringify(record)}\n`)
+		fsyncSync(fd)
+	} finally {
+		closeSync(fd)
+	}
+}
 /** An interrupted append leaves a record cut off mid-value; any other unparseable line is damage. */
-function truncated(line: string): boolean {
+export function truncated(line: string): boolean {
 	const closing: string[] = []
 	let inString = false
 	// Where an escape sequence such as \n or \u001b began, and how many \u hex digits it still needs.

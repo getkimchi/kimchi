@@ -8,6 +8,7 @@ import { saveWorkSummary } from "../__mocks__/work-summary.js"
 import { buildWorkBrowser, readWorkBrowser, type SavedWork } from "./browser.js"
 import { type WorkCostReport, workCostDetails, workCostTotals } from "./cost-details.js"
 import type { PullRequestCost } from "./costs.js"
+import { changeWorkIssue } from "./issues.js"
 import { type Collection, type Row, readWorkHead, type WorkHead } from "./row-log.js"
 
 vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
@@ -536,6 +537,33 @@ describe("work browser rows", () => {
 				...printed.slice(1),
 			].join("\n"),
 		)
+	})
+
+	it("names each work's selected Jira issue in its row, and other works' saved issue in their details", async () => {
+		const [current, other, none] = [1, 2, 3].map(workId)
+		for (const id of [current, other, none])
+			await save(id, { summary: summary(id, { requests: [request(`r-${id}`)] }) })
+		await changeWorkIssue(agentDir, current, "session", "ABC-123")
+		await changeWorkIssue(agentDir, other, "session", "ABC-12")
+		await changeWorkIssue(agentDir, none, "session", "ABC-7")
+		await changeWorkIssue(agentDir, none, "session", undefined)
+		// /work passes the current work's lines, its issue first, as it prints them elsewhere.
+		const lines = ["Jira issue: ABC-123", "PR #7 open: https://github.com/example/kimchi/pull/7"]
+
+		const { rows } = await readWorkBrowser(agentDir, { workId: current, lines }, NOW)
+		const row = (id: string) => rows.find((candidate) => candidate.workId === id)
+
+		expect(row(current)?.label).toBe("● 00000001 ABC-123 · kimchi")
+		expect(row(current)?.details).toBe(
+			[`Work ID: ${current}`, ...lines, ...workCostDetails(agentDir, current)].join("\n"),
+		)
+		expect(row(other)?.label).toBe("  00000002 ABC-12 · kimchi")
+		expect(row(other)?.details).toBe(
+			[`Work ID: ${other}`, "Jira issue: ABC-12", ...workCostDetails(agentDir, other)].join("\n"),
+		)
+		expect(row(other)?.description).toMatch(/\nLast activity: [^\n]+\nJira issue: ABC-12\n/)
+		expect(row(none)?.label).toBe("  00000003 kimchi")
+		expect(row(none)?.description).not.toContain("Jira issue")
 	})
 
 	it("explains unknown prices with the work's own untagged requests and failed refreshes only", async () => {

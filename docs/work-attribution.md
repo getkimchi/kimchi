@@ -23,6 +23,9 @@ The result is a summary in `~/.config/kimchi/harness/work/<workId>/` in the user
 # User: saved task text used for later matching
 ~/.config/kimchi/harness/work/<workId>/intent.json
 
+# User: the Jira issue chosen with /work issue
+~/.config/kimchi/harness/work/<workId>/issue.jsonl
+
 # User: source history used to rebuild summaries and match later commits
 ~/.config/kimchi/harness/work-attribution/<session-id>.jsonl
 ~/.config/kimchi/harness/work-attribution/transitions/<repo-worktree-hash>.jsonl
@@ -55,13 +58,29 @@ flowchart LR
 
 ## Browse works with `/work`
 
-In the terminal, `/work` opens a list of works. The current work comes first, marked `●`, followed by up to 29 works with activity in the last 35 days, newest first. Each row names the work by its saved plan's title, or else by repository and branch, with a short work ID. It also shows the work's own priced spend and PR state, for example `$0.0623 · PR #731 open` or `$0.0123 known so far · 2 PRs`. Own spend covers the work's requests and requests a correction linked into it, not other works on the same PR.
+In the terminal, `/work` opens a list of works. The current work comes first, marked `●`, followed by up to 29 works with activity in the last 35 days, newest first. Each row names the work by its saved plan's title, or else by repository and branch, with a short work ID; a Jira issue chosen with `/work issue` comes first, for example `ABC-123 · kimchi · feat/jira`. It also shows the work's own priced spend and PR state, for example `$0.0623 · PR #731 open` or `$0.0123 known so far · 2 PRs`. Own spend covers the work's requests and requests a correction linked into it, not other works on the same PR.
 
 Amounts in the list are rounded; the details keep exact values. `known so far` means some requests still have no price, including requests made since the last cost check. A work whose requests have no price yet shows `cost unknown`, never `$0`. The header adds up the cost reports of the listed works. Connected works share one report, so its requests count once, including those of connected works that are not listed.
 
 The selected row shows what `/work` prints, plus its repository, branch, last activity and request count. Only the current work has live PR lookup lines; other works show their saved PR links. Enter prints the selected work's details into the conversation, and Esc closes the list. The list reads only each work's small `work.json` and `cost-totals.json`, so it opens quickly for long works and never waits for the network. Other works without a readable `work.json` are left out until an update rebuilds their summary.
 
-ACP, RPC and print mode keep printing the current work's details as text. So do `/work new`, `/work <plan path>`, `/work matching on|off` and `/work link|unlink`.
+ACP, RPC and print mode keep printing the current work's details as text. So do `/work new`, `/work <plan path>`, `/work issue`, `/work matching on|off` and `/work link|unlink`.
+
+## Choose the work's Jira issue with `/work issue`
+
+```text
+/work issue ABC-123   # select it for the current work
+/work issue            # show it, or a key the branch name suggests
+/work issue clear      # remove it
+```
+
+`/work issue <KEY>` selects a Jira issue for the current work, including work outside a Git repository. A key is a project key, a dash and an issue number, such as `ABC-123`. Lowercase letters are saved, and shown, in uppercase; anything else is refused. Selecting and clearing say what changed, and every form prints the work's details as `/work` does, with the selected issue under the work ID.
+
+The selection applies from the next prompt. Each request records the issue its work had when the request's prompt began, as `"issue": {"key": "ABC-123", "revision": 1}` in its request record; requests already sent keep what they recorded. A run started without a typed prompt, such as one `/ferment` starts, reads the selection again too. When matching moves a prompt to another work, its requests record that work's issue. A selection made in another session of the same work applies there from that session's next prompt.
+
+`/work issue` also checks the current branch. A branch name with exactly one Jira-key-shaped token other than the selected issue, such as `feature/ABC-123-add-jira`, is suggested with the command that selects it; a name with several keys lists them. A detached HEAD or a folder outside Git suggests nothing. Kimchi never selects an issue from a branch name or from prompt text. `/work` and the work list show the selected issue under the work ID.
+
+Each selection or clear appends a revision to `work/<workId>/issue.jsonl`; earlier revisions stay. It is separate from `scope.json`, which never changes, and from the session journals. Writers lock the file while they read it and append, so sessions that select at the same time get consecutive revisions and the later one wins. A line cut short by a crash is skipped, as in the journals. If two revisions ever share a number, or the last line cannot be read, `/work` says the selection is unsettled or unknown until the next `/work issue <KEY>` or `/work issue clear`. Kimchi does not check the key with Jira, and the selection is not uploaded: PR cost reports are unchanged.
 
 ## How Kimchi matches things
 
@@ -350,6 +369,7 @@ All paths below are inside the agent directory.
 | `work-attribution/billing-polls.json` | Latest polling times and the last refresh that failed before any billing page, only for requests whose billing window is still open. Replaced after checks, so unchanged results and failed refreshes do not grow the journal. |
 | `work/<workId>/scope.json` | Original API endpoint, organization, user and Git common-directory identity. Credentials are not saved here. |
 | `work/<workId>/intent.json` | Saved task text for model matching, bound to its original account and repository. Not written while matching is off. |
+| `work/<workId>/issue.jsonl` | The Jira issue chosen with `/work issue`: one revision per selection or clear, newest last. Not uploaded. |
 | `work/<workId>/plans/<name>-<content-hash>.md` | Saved plan versions that survive worktree deletion. Identical content reuses the same copy. |
 | `work-attribution/<session-id>.jsonl` | Append-only history used to rebuild the summary. |
 | `work-attribution/transitions/*.jsonl` | Edit evidence: request/tool IDs, repository paths, Git blobs and file modes before and after each native edit/write change. |

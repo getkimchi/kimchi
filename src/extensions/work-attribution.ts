@@ -1,16 +1,6 @@
 import { createHash, randomUUID } from "node:crypto"
-import {
-	closeSync,
-	existsSync,
-	fstatSync,
-	fsyncSync,
-	mkdirSync,
-	openSync,
-	readFileSync,
-	readSync,
-	writeFileSync,
-} from "node:fs"
-import { dirname, join, resolve } from "node:path"
+import { existsSync, readFileSync } from "node:fs"
+import { join, resolve } from "node:path"
 import { contentText } from "@earendil-works/pi-ai"
 import {
 	type BeforeProviderHeadersEvent,
@@ -38,6 +28,7 @@ import { findWorkContinuation, hasWorkReference, type WorkContinuation } from ".
 import { workCostDetails } from "./work-attribution/cost-details.js"
 import { debugWorkAttribution } from "./work-attribution/diagnostics.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
+import { readWorkIssue, type WorkIssueBinding, workIssueCommand, workIssueLines } from "./work-attribution/issues.js"
 import {
 	confirmWorkContinuation,
 	correctWorkLink,
@@ -68,6 +59,7 @@ import {
 	workMatchingEnabled,
 } from "./work-attribution/semantic.js"
 import {
+	appendJournalLine,
 	flushWorkSummaries,
 	markNewWork,
 	object,
@@ -152,8 +144,29 @@ interface PendingRequest {
 	headers?: BeforeProviderHeadersEvent["headers"]
 	/** Set while the request's input waits for its matching decision; shared by its retries. */
 	deferred?: DeferredRows
+	/** The Jira issue of its work when its input began; a matching decision takes the decided work's. */
+	issue?: WorkIssueBinding
 }
 const pendingRequests = new Map<string, PendingRequest>()
+/** By session ledger and work: the Jira issue selected when the current input began, null for none. */
+const inputIssues = new Map<string, Map<string, WorkIssueBinding | null>>()
+/**
+ * A work's issue as its first request of the input found it. A selection made since, here or in another session,
+ * applies from the next input; requests already written keep theirs.
+ */
+function inputIssue(path: string, workId: string): WorkIssueBinding | undefined {
+	let works = inputIssues.get(path)
+	if (!works) {
+		works = new Map()
+		inputIssues.set(path, works)
+	}
+	let issue = works.get(workId)
+	if (issue === undefined) {
+		issue = readWorkIssue(getAgentDir(), workId).selected ?? null
+		works.set(workId, issue)
+	}
+	return issue ?? undefined
+}
 type WorkRecordFields = { type: string; [key: string]: unknown }
 /** Rows of requests sent while their input's matching decision is pending, in the order they were produced. */
 interface DeferredRows {
@@ -204,7 +217,13 @@ function writeDeferredRows(match: PendingMatch, decided?: { workId: string; segm
 	const scope = decided ? (readWorkScope(decided.workId) ?? null) : undefined
 	// A dispatch replaces a request's in-memory entry, so settle every copy that held or later rows come from.
 	const settle = (request: PendingRequest) => {
-		if (decided) Object.assign(request, { workId: decided.workId, segment: decided.segment, scope })
+		if (decided)
+			Object.assign(request, {
+				workId: decided.workId,
+				segment: decided.segment,
+				scope,
+				issue: inputIssue(request.path, decided.workId),
+			})
 	}
 	if (decided) {
 		for (const request of pendingRequests.values()) if (request.deferred === deferred) settle(request)
@@ -217,7 +236,9 @@ function writeDeferredRows(match: PendingMatch, decided?: { workId: string; segm
 		tryWorkAttribution(() =>
 			appendWorkRecord(
 				request.ctx,
-				fields.type === "request" ? { ...fields, segment: request.segment, scope: request.scope } : fields,
+				fields.type === "request"
+					? { ...fields, segment: request.segment, scope: request.scope, issue: request.issue }
+					: fields,
 				request.workId,
 				request.path,
 			),
@@ -264,8 +285,6 @@ export function appendWorkRecord(
 	workId = getWorkId(ctx),
 	path = workLedgerPath(ctx),
 ): void {
-	mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-	const fd = openSync(path, "a+", 0o600)
 	const record = {
 		...fields,
 		version: 1,
@@ -274,18 +293,7 @@ export function appendWorkRecord(
 		cwd: ctx.cwd,
 		recordedAt: new Date().toISOString(),
 	}
-	try {
-		const size = fstatSync(fd).size
-		const last = Buffer.alloc(1)
-		if (size) readSync(fd, last, 0, 1, size - 1)
-		// An unterminated tail is an interrupted append. Start a new line instead of truncating:
-		// another process may be appending, and readers skip only that cut-off record.
-		const repair = size && last[0] !== 10 ? "\n" : ""
-		writeFileSync(fd, `${repair}${JSON.stringify(record)}\n`)
-		fsyncSync(fd)
-	} finally {
-		closeSync(fd)
-	}
+	appendJournalLine(path, record)
 	if (fields.type === "plan" || fields.type === "commit" || fields.type === "file_transition") {
 		const key = workLedgerPath(ctx)
 		const outputs = workOutputs.get(key) ?? new Set<string>()
@@ -351,6 +359,7 @@ export function recordProviderRequest(
 	// New requests must distinguish unknown scope from legacy records that predate account tracking.
 	const scope = readWorkScope(workId) ?? null
 	const path = workLedgerPath(ctx)
+	const issue = inputIssue(path, workId)
 	const fields = {
 		type: "request",
 		requestId,
@@ -361,6 +370,7 @@ export function recordProviderRequest(
 		segment,
 		scope,
 		purpose,
+		...(issue ? { issue } : {}),
 	}
 	// A request of an input whose matching decision is still running is written once that decision is known.
 	const match = pendingMatches.get(path)
@@ -376,6 +386,7 @@ export function recordProviderRequest(
 		segment,
 		scope,
 		purpose,
+		issue,
 		dispatched: false,
 		responded: false,
 		...(deferred && !deferred.written ? { deferred } : {}),
@@ -413,6 +424,7 @@ export function prepareProviderRequest(headers: Headers, url: string, metadata: 
 				segment: request.segment,
 				scope: request.scope,
 				purpose: request.purpose,
+				...(request.issue ? { issue: request.issue } : {}),
 				startedAt,
 				provider: request.model?.provider,
 				model: request.model?.id,
@@ -694,6 +706,9 @@ export function createWorkAttributionExtension(
 			return attributeInput(event, ctx)
 		})
 		pi.on("before_agent_start", async (_event, ctx) => {
+			// Every run reads its works' Jira issues again before its first request, also one without typed input that
+			// a command such as /ferment starts.
+			inputIssues.delete(workLedgerPath(ctx))
 			// The initial prompt was handled before skill/template expansion by the input hook.
 			preparedInput = true
 			const checked = inputCheckedScope
@@ -748,6 +763,8 @@ export function createWorkAttributionExtension(
 			abortMatching()
 			const generation = inputGeneration
 			if (event.source === "extension") return
+			// A delivered input reads its works' Jira issues again before its first request.
+			inputIssues.delete(workLedgerPath(ctx))
 			// Model matching runs beside the turn and never delays it. Without a verdict, an input keeps the attribution
 			// it has with matching off.
 			const matchingOn = workMatchingEnabled() && workMatchingAvailable(ctx.modelRegistry, ctx.model)
@@ -1052,10 +1069,11 @@ export function createWorkAttributionExtension(
 			freshSessionLedgers.delete(key)
 			initialized.delete(key)
 			explicitSelection.delete(key)
+			inputIssues.delete(key)
 		})
 		pi.registerCommand("work", {
 			description:
-				"Show work details, start work (new), continue a plan (<path>), control matching (matching on|off), or correct earlier requests (link|unlink)",
+				"Show work details, start work (new), continue a plan (<path>), choose its Jira issue (issue [<KEY>|clear]), control matching (matching on|off), or correct earlier requests (link|unlink)",
 			handler: async (args, ctx) => {
 				try {
 					const value = args.trim()
@@ -1077,7 +1095,27 @@ export function createWorkAttributionExtension(
 						notifyWorkChanged()
 						return
 					}
-					if (value === "new") setWorkId(ctx)
+					const issueArgs = /^issue(?:\s|$)/.test(value) ? value.slice("issue".length) : undefined
+					// What /work issue says before the work's details.
+					let notice: string[] = []
+					if (issueArgs !== undefined) {
+						const { lines, changed, warning } = await workIssueCommand(
+							{
+								agentDir: getAgentDir(),
+								workId: getWorkId(ctx),
+								sessionId: ctx.sessionManager.getSessionId(),
+								cwd: ctx.cwd,
+							},
+							issueArgs,
+						)
+						if (warning) {
+							notify(ctx, lines.join("\n"), "warning")
+							return
+						}
+						// The next input reads the new selection before its first request.
+						if (changed) inputIssues.delete(workLedgerPath(ctx))
+						notice = lines
+					} else if (value === "new") setWorkId(ctx)
 					else if (value) {
 						const workId = readPlanWorkId(readFileSync(resolve(ctx.cwd, value), "utf8"))
 						if (!workId) throw new Error("Plan has no valid work ID")
@@ -1095,7 +1133,8 @@ export function createWorkAttributionExtension(
 						}
 						setWorkId(ctx, workId)
 					}
-					if (value) {
+					// Choosing an issue keeps the work and its input segment.
+					if (value && issueArgs === undefined) {
 						activeSegments.set(workLedgerPath(ctx), {
 							id: randomUUID(),
 							attribution: "explicit",
@@ -1113,6 +1152,8 @@ export function createWorkAttributionExtension(
 						notifyWorkChanged()
 					}
 					const details: WorkDetailsRequest = { workId: getWorkId(ctx), lines: [] }
+					// The work's Jira issue comes first; other extensions add PR and lookup lines.
+					details.lines.push(...workIssueLines(readWorkIssue(getAgentDir(), details.workId)))
 					pi.events.emit(WORK_DETAILS_REQUEST_EVENT, details)
 					const stopped =
 						matchingLimit && workMatchingEnabled()
@@ -1132,7 +1173,7 @@ export function createWorkAttributionExtension(
 						return
 					}
 					details.lines.push(...workCostDetails(getAgentDir(), details.workId))
-					notify(ctx, [`Work ID: ${details.workId}`, ...details.lines].join("\n"))
+					notify(ctx, [...notice, `Work ID: ${details.workId}`, ...details.lines].join("\n"))
 				} catch (error) {
 					warnWorkAttribution(ctx, error)
 				}
