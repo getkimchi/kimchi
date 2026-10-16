@@ -17,7 +17,15 @@ export default function prApiFixture() {
 			provider === "gitlab"
 				? `${base}/repository/commits/${state.headSha}/merge_requests`
 				: `${base}/commits/${state.headSha}/pulls`
-		const kind = url.pathname === base ? "repository" : url.pathname === commits ? "commit" : undefined
+		const list = `${base}/${provider === "gitlab" ? "merge_requests" : "pulls"}`
+		const kind =
+			url.pathname === base
+				? "repository"
+				: url.pathname === commits
+					? "commit"
+					: url.pathname === list
+						? "branch"
+						: undefined
 		const headers = new Headers(options?.headers ?? (input instanceof Request ? input.headers : undefined))
 		const tokenMatched = headers.get("authorization") === `Bearer ${process.env.KIMCHI_TEST_PR_TOKEN}`
 		if (
@@ -26,7 +34,11 @@ export default function prApiFixture() {
 			!kind ||
 			!tokenMatched ||
 			(options?.method ?? (input instanceof Request ? input.method : "GET")) !== "GET" ||
-			(kind === "repository" ? url.search !== "" : url.search !== "?per_page=100")
+			(kind === "repository"
+				? url.search !== ""
+				: kind === "commit"
+					? url.search !== "?per_page=100"
+					: url.searchParams.get("state") !== "all")
 		) {
 			throw new Error("Unexpected fixture API request or credential")
 		}
@@ -44,10 +56,17 @@ export default function prApiFixture() {
 		if (kind === "repository")
 			return Response.json(
 				provider === "gitlab"
-					? { id: 42, path_with_namespace: project, web_url: `https://gitlab.com/${project}` }
-					: { full_name: project, html_url: `https://github.com/${project}` },
+					? { id: 42, path_with_namespace: project, web_url: `https://gitlab.com/${project}`, default_branch: "main" }
+					: { full_name: project, html_url: `https://github.com/${project}`, default_branch: "main" },
 			)
 		if (state.mode === "auth") return Response.json({ message: "Fixture authentication failure" }, { status: 401 })
+		if (kind === "branch") {
+			const branch =
+				provider === "gitlab"
+					? url.searchParams.get("source_branch")
+					: url.searchParams.get("head")?.replace(/^example:/, "")
+			if (state.mode === "hold" || branch !== "feature") return Response.json([])
+		}
 		if (state.mode !== "open" && state.mode !== "merged") throw new Error("The test did not release the API lookup")
 		const mergedAt = state.mode === "merged" ? (state.mergedAt ?? new Date().toISOString()) : null
 		const mergeCommitSha = mergedAt ? "f".repeat(40) : null
@@ -58,6 +77,8 @@ export default function prApiFixture() {
 							id: 98731,
 							iid: 731,
 							source_project_id: 42,
+							source_branch: "feature",
+							author: { username: "jose" },
 							web_url: `https://gitlab.com/${project}/-/merge_requests/731`,
 							state: mergedAt ? "merged" : "opened",
 							sha: state.headSha,
@@ -71,7 +92,7 @@ export default function prApiFixture() {
 							number: 731,
 							html_url: `https://github.com/${project}/pull/731`,
 							state: mergedAt ? "closed" : "open",
-							head: { sha: state.headSha },
+							head: { sha: state.headSha, ref: "feature" },
 							merge_commit_sha: mergeCommitSha,
 							merged_at: mergedAt,
 							closed_at: mergedAt,

@@ -79,7 +79,13 @@ export function command(
 			},
 			(error, stdout) => {
 				if (signal.aborted) reject(signal.reason)
-				else done(error ? undefined : stdout.trim() || undefined)
+				else if (error) done(undefined)
+				else {
+					// Unicode whitespace is valid in Git refs; trimming it can select a different branch.
+					const output =
+						command === "git" && args.includes("symbolic-ref") ? stdout.replace(/\r?\n$/, "") : stdout.trim()
+					done(output || undefined)
+				}
 			},
 		)
 	})
@@ -526,7 +532,16 @@ export async function repositoryIdentity(
 			const id = object(value) ? value.id : undefined
 			if (candidate === "gitlab" && (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0))
 				throw new LookupError("GitLab returned an invalid project ID.", "invalid")
-			return { ...repository, name, ...(typeof id === "number" ? { id } : {}) }
+			const defaultBranch =
+				object(value) && typeof value.default_branch === "string" && value.default_branch !== ""
+					? value.default_branch
+					: undefined
+			return {
+				...repository,
+				name,
+				...(typeof id === "number" ? { id } : {}),
+				...(defaultBranch ? { defaultBranch } : {}),
+			}
 		} catch (error) {
 			// Unknown self-hosts can probe both API shapes with the same saved identity. Only the provider's own
 			// error identifies the host; sign-in pages, redirects and network failures mean an unsupported remote.
