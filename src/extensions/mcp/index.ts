@@ -312,10 +312,15 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			const selectedResult = projectTrusted ? projectResult : userResult
 			// The built-in gateway is a user-level server: injected after the
 			// trust-based selection, so it is present in untrusted projects too.
-			// A user-configured server at a gateway address wins over it.
+			// A user-configured server wins over it — by gateway address, or by
+			// holding the built-in's name at any address.
 			const gatewayServer = buildBuiltinGatewayServer()
 			const injectedServers: Record<string, ServerEntry> = {}
-			if (gatewayServer !== undefined && !hasGatewayAddress(selectedResult.config, getGatewayAddresses())) {
+			if (
+				gatewayServer !== undefined &&
+				selectedResult.config.mcpServers[gatewayServer.name] === undefined &&
+				!hasGatewayAddress(selectedResult.config, getGatewayAddresses())
+			) {
 				injectedServers[gatewayServer.name] = gatewayServer.entry
 			}
 			const hasInjectedServers = options.callerServers !== undefined || Object.keys(injectedServers).length > 0

@@ -336,6 +336,18 @@ describe("upstream MCP adapter facade", () => {
 			expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
 		})
 
+		it("skips the built-in when a user server holds the gateway name at another address", async () => {
+			configState.config = { mcpServers: { "kimchi-mcp-gateway": { url: "https://proxy.corp.example/mcp" } } }
+			configState.configPath = "/tmp/mcp.json"
+			gatewayState.server = gatewayServer
+			const harness = createExtensionApi()
+
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+
+			expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
+		})
+
 		it("injects the gateway into untrusted projects as a user-level server", async () => {
 			projectTrust.trusted = false
 			gatewayState.server = gatewayServer

@@ -137,7 +137,8 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		kind: "plugins",
 		label: "Kimchi MCP gateway",
 		description:
-			"Connect the built-in Cast AI MCP gateway (Jira, Confluence, and more) using the same API key as model access.",
+			"Connect the built-in Cast AI MCP gateway (Jira, Confluence, and more) using the same API key as model access. " +
+			"Once enabled it is available in every project, including untrusted ones, like any user-level MCP server.",
 		defaultEnabled: false,
 		restartRequired: true,
 	},

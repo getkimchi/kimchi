@@ -80,6 +80,20 @@ describe("buildBuiltinGatewayServer", () => {
 		expect(buildBuiltinGatewayServer()).toBeUndefined()
 	})
 
+	it("returns undefined for an http (non-https) base", () => {
+		resourceState.enabled = true
+		configState.savedKey = "castai_v1_key"
+		configState.castApiUrl = "http://api.cast.ai"
+		expect(buildBuiltinGatewayServer()).toBeUndefined()
+	})
+
+	it("returns undefined for a schemeless base", () => {
+		resourceState.enabled = true
+		configState.savedKey = "castai_v1_key"
+		configState.castApiUrl = "kimchi.internal/api"
+		expect(buildBuiltinGatewayServer()).toBeUndefined()
+	})
+
 	it("builds the region-derived URL and bearer header from the saved key", () => {
 		resourceState.enabled = true
 		configState.savedKey = "castai_v1_saved"
@@ -143,6 +157,10 @@ describe("hasGatewayAddress", () => {
 
 	it("matches a gateway URL under a different region than the active one", () => {
 		expect(hasGatewayAddress(configWith("https://api.eu.cast.ai/mcp"), addresses)).toBe(true)
+	})
+
+	it("matches an explicit default port against the portless form", () => {
+		expect(hasGatewayAddress(configWith("https://api.cast.ai:443/mcp"), addresses)).toBe(true)
 	})
 
 	it("does not match a different path, host, scheme, or scheme-relative URL", () => {

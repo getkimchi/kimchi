@@ -27,6 +27,20 @@ function gatewayUrlForCastApi(castApiUrl: string): string | undefined {
 }
 
 /**
+ * The credential is only ever attached to an https endpoint: an http or
+ * schemeless base (possible via env overrides or self-hosted config) must
+ * never receive the Bearer header.
+ */
+function isSecureUrl(url: string): boolean {
+	try {
+		return new URL(url).protocol === "https:"
+	} catch {
+		// Expected for malformed bases from arbitrary config/env values.
+		return false
+	}
+}
+
+/**
  * Normalizes a candidate server URL for address comparison: origin plus
  * path, lowercased, no trailing slash, no query/hash. Unparseable or
  * non-HTTP(S) URLs normalize to undefined — mcp.json entries are arbitrary
@@ -37,7 +51,9 @@ export function normalizeServerUrl(url: string): string | undefined {
 		const parsed = new URL(url)
 		if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return undefined
 		const path = parsed.pathname.replace(/\/+$/, "")
-		return `${parsed.protocol}//${parsed.host}${path}`.toLowerCase()
+		// origin lowercases the host and drops explicit default ports (:443/:80),
+		// so portless and default-port forms compare equal.
+		return `${parsed.origin}${path}`.toLowerCase()
 	} catch {
 		// Expected for malformed user-provided URLs; such entries can never
 		// collide with the gateway address.
@@ -71,7 +87,7 @@ export function getGatewayAddresses(): string[] {
 export function buildBuiltinGatewayServer(): BuiltInGatewayServer | undefined {
 	if (!isResourceEnabled(KIMCHI_MCP_GATEWAY_RESOURCE_ID)) return undefined
 	const url = gatewayUrlForCastApi(resolveEndpoints().castApiUrl)
-	if (url === undefined) return undefined
+	if (url === undefined || !isSecureUrl(url)) return undefined
 	const apiKey = getEnvironmentApiKey() ?? readApiKeyFromConfigFile()
 	if (!apiKey) return undefined
 	// Custom headers suppress the adapter's OAuth auto-detection for this URL.
