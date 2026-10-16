@@ -6,6 +6,7 @@ import { parseThinkingMode } from "./parse.js"
 import {
 	clearThinkingStepsModePreference,
 	readThinkingStepsModePreference,
+	resolveStickyModeScope,
 	writeThinkingStepsModePreference,
 } from "./persistence.js"
 import {
@@ -41,7 +42,7 @@ function modeStatusText(ctx: ExtensionContext, mode: ThinkingStepsMode): string 
 
 function modeChangeMessage(mode: ThinkingStepsMode, scope: ThinkingStepsCommandScope): string {
 	if (scope === "session") {
-		return `Thinking view: ${mode}`
+		return `Thinking view: ${mode} (saved as default)`
 	}
 
 	return `Thinking view: ${mode} (saved for ${scope})`
@@ -65,8 +66,14 @@ function notifyUser(ctx: ExtensionContext, message: string, level: "info" | "war
 	console.info(message)
 }
 
-function persistMode(pi: ExtensionAPI, mode: ThinkingStepsMode): void {
-	pi.appendEntry(CUSTOM_ENTRY_TYPE, { mode })
+/** A mode picked in-session also becomes the default for future sessions so
+ *  the choice survives restarts instead of resetting every session. */
+async function persistStickyModeDefault(ctx: ExtensionContext, mode: ThinkingStepsMode): Promise<void> {
+	try {
+		await writeThinkingStepsModePreference(await resolveStickyModeScope(ctx.cwd), ctx.cwd, mode)
+	} catch (error) {
+		reportPersistenceError(ctx, error)
+	}
 }
 
 async function readRestoredModePreference(
@@ -108,16 +115,12 @@ function refreshThinkingUI(ctx: ExtensionContext): void {
 }
 
 function applyMode(
-	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	mode: ThinkingStepsMode,
-	options?: { persistSession?: boolean; announceScope?: ThinkingStepsCommandScope },
+	options?: { announceScope?: ThinkingStepsCommandScope },
 ): void {
 	setCurrentThinkingScopeKey(ctx.cwd)
 	setThinkingStepsMode(mode, ctx.cwd)
-	if (options?.persistSession !== false) {
-		persistMode(pi, mode)
-	}
 	refreshThinkingUI(ctx)
 	if (options?.announceScope) {
 		notifyUser(ctx, modeChangeMessage(mode, options.announceScope), "info")
@@ -287,6 +290,11 @@ export default function thinkingStepsExtension(pi: ExtensionAPI): void {
 					reportPersistenceError(ctx, error)
 					return
 				}
+			} else {
+				// Sticky default: an in-session change persists as the default for
+				// future sessions — the project preference when one governs this
+				// directory, otherwise the global one.
+				await persistStickyModeDefault(ctx, selectedMode)
 			}
 
 			if (degraded) {
@@ -298,7 +306,7 @@ export default function thinkingStepsExtension(pi: ExtensionAPI): void {
 				return
 			}
 
-			applyMode(pi, ctx, selectedMode, { announceScope: action.scope })
+			applyMode(ctx, selectedMode, { announceScope: action.scope })
 		},
 	})
 
@@ -308,7 +316,8 @@ export default function thinkingStepsExtension(pi: ExtensionAPI): void {
 			return
 		}
 		const nextMode = cycleMode(getThinkingStepsMode(ctx.cwd))
-		applyMode(pi, ctx, nextMode, { announceScope: "session" })
+		await persistStickyModeDefault(ctx, nextMode)
+		applyMode(ctx, nextMode, { announceScope: "session" })
 	}
 
 	pi.registerShortcut(Key.alt("t"), {
@@ -330,7 +339,7 @@ export default function thinkingStepsExtension(pi: ExtensionAPI): void {
 		}
 
 		const restoredMode = await restoreMode(ctx)
-		applyMode(pi, ctx, restoredMode, { persistSession: false })
+		applyMode(ctx, restoredMode)
 	})
 
 	pi.on("message_start", async (event) => {

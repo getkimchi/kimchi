@@ -79,6 +79,18 @@ export async function readThinkingStepsModePreference(
 	return readModeFromFile(getPreferencePath(scope, cwd))
 }
 
+/** Scope an in-session mode change should persist to as the new default: the
+ *  project preference when one governs this directory, otherwise the global
+ *  one. An unreadable project preference is treated as absent — the restore
+ *  path falls back the same way, so stickiness lands consistently. */
+export async function resolveStickyModeScope(cwd: string): Promise<PersistedThinkingStepsPreferenceScope> {
+	try {
+		return (await readThinkingStepsModePreference("project", cwd)) ? "project" : "global"
+	} catch {
+		return "global"
+	}
+}
+
 export async function writeThinkingStepsModePreference(
 	scope: PersistedThinkingStepsPreferenceScope,
 	cwd: string,
