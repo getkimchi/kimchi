@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { BugReportBundle } from "./bug-report.js"
 
-const { default: bugReportDestinationExtension, _internal, deliveryDeps } = await import("./bug-report.js")
+const {
+	default: bugReportDestinationExtension,
+	_internal,
+	deliveryDeps,
+	shouldRegisterBugCommand,
+} = await import("./bug-report.js")
 
 function makeBundle(): BugReportBundle {
 	return {
@@ -22,18 +27,32 @@ function makeBundle(): BugReportBundle {
 
 describe("bug-report kimchi destination", () => {
 	afterEach(() => {
-		delete globalThis.__kimchiBugReportScrub
-		delete globalThis.__kimchiBugReportDeliver
+		Reflect.deleteProperty(globalThis, "__kimchiBugReportScrub")
+		Reflect.deleteProperty(globalThis, "__kimchiBugReportDeliver")
 		vi.restoreAllMocks()
 	})
 
-	it("registers the scrub and deliver hooks and the /bug command when loaded", () => {
+	it("registers the scrub and deliver hooks and the /bug command outside the TUI", () => {
 		const registeredCommands: string[] = []
 		const pi = { registerCommand: (name: string) => registeredCommands.push(name) } as never
-		bugReportDestinationExtension(pi)
+		bugReportDestinationExtension(pi, ["--mode", "acp"])
 		expect(globalThis.__kimchiBugReportScrub).toBeInstanceOf(Function)
 		expect(globalThis.__kimchiBugReportDeliver).toBeInstanceOf(Function)
 		expect(registeredCommands).toEqual(["bug"])
+	})
+
+	it("skips the /bug command in the interactive TUI (upstream's built-in wins)", () => {
+		const registeredCommands: string[] = []
+		const pi = { registerCommand: (name: string) => registeredCommands.push(name) } as never
+		bugReportDestinationExtension(pi, [])
+		expect(registeredCommands).toEqual([])
+	})
+
+	it("shouldRegisterBugCommand is true for print and protocol modes, false for the TUI", () => {
+		expect(shouldRegisterBugCommand(["kimchi"])).toBe(false)
+		expect(shouldRegisterBugCommand(["kimchi", "-p", "hi"])).toBe(true)
+		expect(shouldRegisterBugCommand(["kimchi", "--mode", "acp"])).toBe(true)
+		expect(shouldRegisterBugCommand(["kimchi", "--mode=rpc"])).toBe(true)
 	})
 
 	it("scrubs PII/secrets across every bundle field", async () => {

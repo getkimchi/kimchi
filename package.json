@@ -71,6 +71,7 @@
 		"open": "^10.2.0",
 		"pi-mcp-adapter": "5.3.1",
 		"proper-lockfile": "^4.1.2",
+		"quickjs-wasi": "3.6.2",
 		"shell-quote": "1.8.4",
 		"shiki": "^4.0.2",
 		"ssh2": "^1.17.0",

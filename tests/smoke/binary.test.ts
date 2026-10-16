@@ -187,6 +187,20 @@ describe("binary smoke tests", () => {
 		})
 	})
 
+	it("bundled themes sync even when PI_PACKAGE_DIR is inherited from a source checkout", { timeout: 35_000 }, () => {
+		// A nested kimchi session exports its own PI_PACKAGE_DIR; when that dir is a
+		// source checkout (themes/ instead of the packaged theme/) startup must
+		// recover to the binary-adjacent share dir instead of emitting
+		// "bundled theme <name> not found" warnings and running unthemed.
+		const result = runBinary({
+			args: ["-p", "hello"],
+			extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy", PI_PACKAGE_DIR: resolve(".") },
+			throwOnError: false,
+			timeoutMs: 25_000,
+		})
+		expect(result.stderr).not.toContain("bundled theme")
+	})
+
 	it.skipIf(!process.env.KIMCHI_API_KEY)("sends a request to a model via -p flag", { retry: 2 }, () => {
 		const result = runBinary({
 			args: ["--debug-prompts", "-p", "respond with only the word hello"],

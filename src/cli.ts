@@ -21,6 +21,7 @@ import {
 	stripMultiModelArgs,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
+import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
 import { installModelTableRenderer } from "./model-selector-table.js"
@@ -651,8 +652,13 @@ try {
 			"solarized-dark.json",
 			"solarized-light.json",
 		]
+		// Never fall back to the empty string here: an unset/empty PI_PACKAGE_DIR
+		// would cwd-anchor resolve("", "theme") and emit "bundled theme not found"
+		// warnings pointing at wherever the user happened to launch kimchi.
+		// resolveAuxiliaryFilesDir degrades to the execPath-adjacent share dir,
+		// which is where the packaged binary actually keeps its assets.
 		const bundledThemesSrcDir = isBunBinary
-			? resolve(process.env.PI_PACKAGE_DIR ?? "", "theme")
+			? resolve(resolveAuxiliaryFilesDir(process.env, homedir(), process.execPath), "theme")
 			: resolve(dirname(fileURLToPath(import.meta.url)), "../themes")
 		mkdirSync(themesDir, { recursive: true })
 

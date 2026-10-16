@@ -2,6 +2,17 @@
 // validates auxiliary files, or checks for updates.
 import { MCP_KEYRING_HELPER_COMMAND } from "./extensions/mcp/keyring-recovery.js"
 
+// Embed codemode's QuickJS wasm in the compiled executable, the same way pi's own
+// bun entry does in dist/bun/runtime-setup.js. Without this, getQuickJSWasmPath()
+// falls back to require.resolve from inside the executable and codemode dies with
+// "Cannot find module 'quickjs-wasi/quickjs.wasm'".
+// The path is read back and registered in entry.ts once pi-mono's config module
+// has loaded with PI_PACKAGE_DIR already set.
+// This file is only compiled into the binary; the `with { type: "file" }` loader
+// attribute is a Bun build feature, not valid for Node-run sources.
+import quickjsWasmPath from "quickjs-wasi/quickjs.wasm" with { type: "file" }
+process.env.KIMCHI_QUICKJS_WASM_PATH = quickjsWasmPath
+
 if (process.argv.length === 3 && process.argv[2] === MCP_KEYRING_HELPER_COMMAND) {
 	const { installKeyringRequireBridge } = await import("./extensions/mcp/keyring-require-bridge.js")
 	installKeyringRequireBridge()
