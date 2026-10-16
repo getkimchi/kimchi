@@ -37,9 +37,8 @@
  *      when experimental features are enabled). Hard-blocking is opt-in
  *      via `blockOnThreshold: true`. read/edit/write patterns are
  *      classification-only: the prompt-level preference (layer 1)
- *      carries those, and runtime steers for them measured 70–77%
- *      ignored with frequently inapplicable advice (v4 bash-control
- *      comparison, Oct 2026), so they no longer steer, block, or count.
+ *      carries those, so they no longer steer, block, or count (see
+ *      docs/bash-tool-guard.md for the benchmark rationale).
  *      Classification is retained for tests and future telemetry.
  *
  * Four categories are classified:
@@ -573,9 +572,8 @@ export class BashToolGuard {
 		if (!classification) return { decision: "allow" }
 
 		// Layer 2 steers only on backgrounding. read/edit/write remain
-		// classification-only (see module doc): the prompt-level preference
-		// (layer 1) carries those, and runtime steers for them measured
-		// 70–77% ignored with frequently inapplicable advice.
+		// classification-only: the prompt-level preference (layer 1)
+		// carries those — see docs/bash-tool-guard.md for the rationale.
 		if (classification.category !== "background") {
 			return { decision: "allow" }
 		}

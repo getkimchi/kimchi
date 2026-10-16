@@ -24,8 +24,8 @@ redirections (`2>&1`, `>&2`) are not flagged.
 ## What it no longer catches (intentional)
 
 The read / edit / write categories (`cat <file>`, `sed -i`, `echo > file`,
-`tee`, heredoc redirects) are **classification-only** as of the v4
-bash-control benchmark comparison (Oct 2026): runtime steers for them
+`tee`, heredoc redirects) are **classification-only** as of the
+benchmark comparison (Oct 2026): runtime steers for them
 measured 70–77% ignored, the write category was dominated by
 false-positive triggers (`make | tee build.log`, dataset splits,
 heredoc scripts) where the suggested tool was wrong, and removing them
