@@ -115,6 +115,7 @@ function createMockStatusLineData(opts?: {
 	lsp?: string
 	workPr?: string
 	workPrUrl?: string
+	workTree?: string
 }): ReadonlyFooterDataProvider {
 	const statuses = new Map<string, string>()
 	if (opts?.permissionsMode) statuses.set("permissions-mode", opts.permissionsMode)
@@ -123,6 +124,7 @@ function createMockStatusLineData(opts?: {
 	if (opts?.lsp) statuses.set("lsp", opts.lsp)
 	if (opts?.workPr) statuses.set("work-pr", opts.workPr)
 	if (opts?.workPrUrl) statuses.set("work-pr-url", opts.workPrUrl)
+	if (opts?.workTree) statuses.set("work-tree", opts.workTree)
 	return {
 		getExtensionStatuses: vi.fn(() => statuses),
 	} as unknown as ReadonlyFooterDataProvider
@@ -161,6 +163,21 @@ describe("buildScriptPayload", () => {
 		}
 		context.statusLineData = createMockStatusLineData()
 		expect(buildStatusLineSegments(context, new Set()).some((segment) => segment.id === "work-pr")).toBe(false)
+	})
+
+	it("names the active worktree in both footers and hides it outside one", () => {
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({ workTree: "feature/branch · .worktrees/branch" }),
+		}
+		for (const segments of [buildStatusLineSegments(context, new Set()), buildControlsLineSegments(context)]) {
+			const segment = segments.find((segment) => segment.id === "work-tree")
+			expect(stripAnsi(segment?.text ?? "")).toBe("⎇ feature/branch · .worktrees/branch")
+			expect(visibleWidth(renderFittedLine(segments, 60, context.theme))).toBeLessThanOrEqual(60)
+		}
+		context.statusLineData = createMockStatusLineData()
+		expect(buildStatusLineSegments(context, new Set()).some((segment) => segment.id === "work-tree")).toBe(false)
 	})
 	it("drops the PR state before anything else when the line runs out of room", () => {
 		const context = {

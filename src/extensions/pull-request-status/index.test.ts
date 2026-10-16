@@ -11,6 +11,7 @@ import * as supervisor from "../work-attribution/reconcile-supervisor.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import * as branches from "./branch-status.js"
+import { anchorDirectory } from "./command-anchor.js"
 import pullRequestStatusExtension from "./index.js"
 import { LookupError } from "./provider-records.js"
 import type * as discovery from "./pull-requests.js"
@@ -23,6 +24,11 @@ vi.mock("../work-attribution/reconcile-supervisor.js", () => ({
 vi.mock("./branch-status.js", () => ({
 	currentBranch: vi.fn(),
 	lookupBranchPullRequest: vi.fn(),
+}))
+vi.mock("./command-anchor.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./command-anchor.js")>()),
+	// Only the git-touching half is replaced; the command parser is tested beside its source.
+	anchorDirectory: vi.fn(),
 }))
 
 let directory: string
@@ -87,6 +93,7 @@ beforeEach(() => {
 	vi.mocked(supervisor.subscribePullRequestReconciliation).mockReturnValue(async () => {})
 	vi.mocked(branches.currentBranch).mockResolvedValue(undefined)
 	vi.mocked(branches.lookupBranchPullRequest).mockResolvedValue({ branch: "feature", pullRequest: pr })
+	vi.mocked(anchorDirectory).mockImplementation((_cwd: string, observed?: string) => Promise.resolve(observed ?? _cwd))
 	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
 })
 afterEach(async () => {
@@ -231,6 +238,7 @@ describe("PR status extension", () => {
 	it("checks the current branch without work tracking and writes no work records", async () => {
 		await startStandalone()
 		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-pr", "PR #7 open"))
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-tree", undefined)
 		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-pr-url", pr.url)
 		expect(supervisor.subscribeFileReconciliation).not.toHaveBeenCalled()
 		expect(supervisor.subscribePullRequestReconciliation).not.toHaveBeenCalled()
@@ -303,6 +311,77 @@ describe("PR status extension", () => {
 			ctx,
 		)
 		await vi.waitFor(() => expect(branches.lookupBranchPullRequest).toHaveBeenCalledTimes(2))
+	})
+
+	it("anchors the branch on a linked worktree a command enters", async () => {
+		const api = await startStandalone()
+		await vi.waitFor(() => expect(branches.lookupBranchPullRequest).toHaveBeenCalledOnce())
+		const worktree = join(directory, "worktree")
+		vi.mocked(anchorDirectory).mockResolvedValue(worktree)
+		vi.mocked(branches.currentBranch).mockResolvedValue("wt-branch")
+		vi.mocked(branches.lookupBranchPullRequest).mockResolvedValue({ branch: "wt-branch", pullRequest: pr })
+		await api.getHandler("tool_execution_start")(
+			{
+				type: "tool_execution_start",
+				toolCallId: "enter",
+				toolName: "bash",
+				args: { command: `cd ${worktree} && pnpm test` },
+			},
+			ctx,
+		)
+		await vi.waitFor(() =>
+			expect(branches.lookupBranchPullRequest).toHaveBeenLastCalledWith(worktree, expect.anything()),
+		)
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR #7 open")
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-tree", "wt-branch · worktree")
+	})
+
+	it("re-anchors when a later command enters another directory", async () => {
+		const api = await startStandalone()
+		await vi.waitFor(() => expect(branches.lookupBranchPullRequest).toHaveBeenCalledOnce())
+		const first = join(directory, "first")
+		const second = join(directory, "second")
+		vi.mocked(anchorDirectory).mockResolvedValue(first)
+		vi.mocked(branches.currentBranch).mockResolvedValue("first-branch")
+		vi.mocked(branches.lookupBranchPullRequest).mockResolvedValue({ branch: "first-branch", pullRequest: pr })
+		await api.getHandler("tool_execution_start")(
+			{ type: "tool_execution_start", toolCallId: "one", toolName: "bash", args: { command: `cd ${first}` } },
+			ctx,
+		)
+		await vi.waitFor(() => expect(branches.lookupBranchPullRequest).toHaveBeenLastCalledWith(first, expect.anything()))
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-tree", "first-branch · first")
+		vi.mocked(anchorDirectory).mockResolvedValue(second)
+		vi.mocked(branches.currentBranch).mockResolvedValue("second-branch")
+		vi.mocked(branches.lookupBranchPullRequest).mockResolvedValue({ branch: "second-branch", pullRequest: pr })
+		await api.getHandler("tool_execution_start")(
+			{ type: "tool_execution_start", toolCallId: "two", toolName: "bash", args: { command: `cd ${second}` } },
+			ctx,
+		)
+		await vi.waitFor(() => expect(branches.lookupBranchPullRequest).toHaveBeenLastCalledWith(second, expect.anything()))
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-tree", "second-branch · second")
+	})
+
+	it("follows the directory of a user shell command", async () => {
+		const api = await startStandalone()
+		await vi.waitFor(() => expect(branches.lookupBranchPullRequest).toHaveBeenCalledOnce())
+		const worktree = join(directory, "user-tree")
+		vi.mocked(anchorDirectory).mockResolvedValue(worktree)
+		vi.mocked(branches.currentBranch).mockResolvedValue("user-branch")
+		vi.mocked(branches.lookupBranchPullRequest).mockResolvedValue({ branch: "user-branch", pullRequest: pr })
+		await api.getHandler("user_bash")(
+			{
+				type: "user_bash",
+				command: `cd ${worktree} && make test`,
+				excludeFromContext: false,
+				cwd: directory,
+			},
+			ctx,
+		)
+		await vi.waitFor(() =>
+			expect(branches.lookupBranchPullRequest).toHaveBeenLastCalledWith(worktree, expect.anything()),
+		)
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR #7 open")
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-tree", "user-branch · user-tree")
 	})
 
 	it("shows GitLab merge requests without work tracking and keeps their URL separate from text", async () => {

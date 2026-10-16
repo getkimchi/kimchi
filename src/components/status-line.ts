@@ -36,6 +36,7 @@ export type SegmentId =
 	| "lsp"
 	| "dap"
 	| "work-pr"
+	| "work-tree"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -354,6 +355,7 @@ function joinSegments(segments: Segment[], sep: string): string {
 const SHED_ORDER: SegmentId[] = [
 	"dap",
 	"lsp",
+	"work-tree",
 	"work-pr",
 	"team",
 	"tags",
@@ -636,6 +638,22 @@ function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProv
 	return { id: "work-pr", text, width: visibleWidth(text), raw: { kind: "work-pr", compact } }
 }
 
+/** `branch · directory` as the PR status extension sets it while commands run in a linked worktree. */
+const WORK_TREE_STATUS = /^(.+) · (.+)$/
+
+/**
+ * The worktree branch is accented and its directory muted: the branch names the worktree, the directory locates it.
+ */
+function buildWorkTreeSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
+	const status = statusLineData.getExtensionStatuses().get("work-tree")
+	if (!status) return null
+	const match = WORK_TREE_STATUS.exec(status)
+	if (!match) return { id: "work-tree", text: accentText(theme, status), width: visibleWidth(status) }
+	const [, branch, directory] = match
+	const text = `${dimText(theme, "⎇")} ${accentText(theme, branch)} ${dimText(theme, `· ${directory}`)}`
+	return { id: "work-tree", text, width: visibleWidth(text) }
+}
+
 function buildBudgetSegment(theme: Theme, pinned: boolean): Segment | null {
 	if (!pinned) return null
 	const budget = getBillingStatusLine()?.budget
@@ -730,6 +748,7 @@ export function buildStatusLineSegments(
 		buildTeamSegment(theme, tags, pinned.has("team")),
 		buildLspSegment(theme, statusLineData),
 		buildDapSegment(theme, statusLineData),
+		buildWorkTreeSegment(theme, statusLineData),
 		buildWorkPrSegment(theme, statusLineData),
 	].filter((s): s is Segment => s !== null)
 }
@@ -746,6 +765,7 @@ const CONTROLS_LINE_IDS: ReadonlySet<SegmentId> = new Set([
 	"credits",
 	"budget",
 	"work-pr",
+	"work-tree",
 ])
 const CONTROLS_LINE_PINNED: ReadonlySet<SegmentId> = new Set(["credits", "budget"])
 
