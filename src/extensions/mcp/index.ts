@@ -5,8 +5,14 @@ import type {
 	ExtensionHandler,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
-import { createMcpAdapter, MCP_STATUS_EVENT } from "pi-mcp-adapter"
+import {
+	createMcpAdapter,
+	MCP_RUNTIME_REGISTER_EVENT,
+	MCP_RUNTIME_REGISTER_VERSION,
+	MCP_STATUS_EVENT,
+} from "pi-mcp-adapter"
 import type { McpAdapterOptions, McpConfig, ServerEntry } from "pi-mcp-adapter/types"
+import type { McpRuntimeRegistrationRequest } from "pi-mcp-adapter"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { getConfiguredLegacyMcpKeys } from "../../config.js"
 import {
@@ -22,6 +28,7 @@ import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { observeToolFiles } from "../work-attribution/file-observations.js"
 import { loadKimchiMcpConfig } from "./config.js"
 import { buildBuiltinGatewayServer, getGatewayAddresses, hasGatewayAddress } from "./gateway.js"
+import type { BuiltInGatewayServer } from "./gateway.js"
 import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
 import {
 	brandMcpAdapterOwnedToolResult,
@@ -107,6 +114,31 @@ function canChangeFiles(
 
 type UpstreamLifecycleHandler = ExtensionHandler<unknown, unknown>
 type CapturedUpstreamEvent = "input" | "session_start"
+
+/**
+ * Registers the built-in gateway through the adapter's runtime-server API
+ * instead of merging it into the adapter config: programmatic-config mode
+ * downgrades /mcp and /mcp-auth from the overlay panel to plain text, while
+ * runtime servers keep file-backed mode and get the same lifecycle
+ * treatment as configured servers. Must be called after the adapter is
+ * installed — the adapter answers on pi.events.
+ */
+function registerGatewayRuntimeServer(pi: ExtensionAPI, gateway: BuiltInGatewayServer): void {
+	const request: McpRuntimeRegistrationRequest = {
+		version: MCP_RUNTIME_REGISTER_VERSION,
+		name: gateway.name,
+		definition: gateway.entry,
+	}
+	pi.events.emit(MCP_RUNTIME_REGISTER_EVENT, request)
+	if (request.result === undefined) {
+		console.error(`MCP: gateway "${gateway.name}" runtime registration got no response from the adapter`)
+		return
+	}
+	if (!request.result.ok) {
+		const detail = request.result.error instanceof Error ? request.result.error.message : String(request.result.error)
+		console.error(`MCP: gateway "${gateway.name}" runtime registration failed: ${detail}`)
+	}
+}
 
 function createUpstreamApi(
 	pi: ExtensionAPI,
@@ -310,28 +342,23 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 				...(explicitTrust === undefined ? {} : { explicitTrust }),
 			})
 			const selectedResult = projectTrusted ? projectResult : userResult
-			// The built-in gateway is a user-level server: injected after the
+			// The built-in gateway is a user-level server: registered after the
 			// trust-based selection, so it is present in untrusted projects too.
 			// A user-configured server wins over it — by gateway address, or by
-			// holding the built-in's name at any address.
+			// holding the built-in's name at any address (the adapter refuses
+			// runtime registration for name collisions as well).
 			const gatewayServer = buildBuiltinGatewayServer()
-			const injectedServers: Record<string, ServerEntry> = {}
-			if (
-				gatewayServer !== undefined &&
-				selectedResult.config.mcpServers[gatewayServer.name] === undefined &&
-				!hasGatewayAddress(selectedResult.config, getGatewayAddresses())
-			) {
-				injectedServers[gatewayServer.name] = gatewayServer.entry
-			}
-			const hasInjectedServers = options.callerServers !== undefined || Object.keys(injectedServers).length > 0
-			const config = hasInjectedServers
+			const gateway =
+				gatewayServer === undefined ||
+				selectedResult.config.mcpServers[gatewayServer.name] !== undefined ||
+				options.callerServers?.[gatewayServer.name] !== undefined ||
+				hasGatewayAddress(selectedResult.config, getGatewayAddresses())
+					? undefined
+					: gatewayServer
+			const config = options.callerServers
 				? {
 						...selectedResult.config,
-						mcpServers: {
-							...selectedResult.config.mcpServers,
-							...injectedServers,
-							...options.callerServers,
-						},
+						mcpServers: { ...selectedResult.config.mcpServers, ...options.callerServers },
 					}
 				: selectedResult.config
 			const { warnings: oauthWarnings } = migrateLegacyOAuthCredentials(config, { cwd })
@@ -345,7 +372,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			const installedPolicy = createMcpToolSurfacePolicy(config)
 			policy = installedPolicy
 			const adapterOptions: McpAdapterOptions =
-				hasInjectedServers || selectedResult.useProgrammaticConfig
+				options.callerServers || selectedResult.useProgrammaticConfig
 					? { config }
 					: selectedResult.configPath
 						? { configPath: selectedResult.configPath }
@@ -360,6 +387,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					(server) => collectReadOnlyMcpWireNames(config, server),
 				),
 			)
+			if (gateway !== undefined) registerGatewayRuntimeServer(pi, gateway)
 		}
 
 		for (const warning of warnings) {
