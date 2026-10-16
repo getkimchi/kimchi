@@ -58,13 +58,19 @@ export function getClaudeCodeSkillResourcePaths(
 	return paths
 }
 
-export function getConfiguredSkillResourcePaths(cwd: string, configuredSkillPaths: string[]): string[] {
+export function getConfiguredSkillResourcePaths(
+	cwd: string,
+	configuredSkillPaths: string[],
+	options: ClaudeCodeSkillResourceOptions = {},
+): string[] {
 	const expandedPaths = expandConfiguredSkillPaths(configuredSkillPaths, cwd)
 	const nativeSkillNames = collectNativeSkillNames(expandedPaths)
+	// Claude-Code-skill paths configured via config.json reach the prompt through
+	// this channel too, so bundled skills' disables-skills shadowing must apply
+	// here exactly as it does in the claude-code-skills extension's discovery.
+	const excludeSkillNames = new Set([...nativeSkillNames, ...(options.excludeSkillNames ?? [])])
 	return expandedPaths.flatMap((path) =>
-		isClaudeCodeSkillPath(path)
-			? materializeClaudeCodeSkillPath(path, { excludeSkillNames: nativeSkillNames })
-			: [path],
+		isClaudeCodeSkillPath(path) ? materializeClaudeCodeSkillPath(path, { excludeSkillNames }) : [path],
 	)
 }
 

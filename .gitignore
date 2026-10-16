@@ -93,3 +93,4 @@ vendor/superpowers/
 
 # E2E failure artifacts (written by the test fixtures on failure)
 *.fail.*.log
+/resources/skills/pptx/scripts/pptx.mjs

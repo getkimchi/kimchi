@@ -3,6 +3,7 @@ import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent"
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import { Type } from "typebox"
+import { collectBundledDisabledSkillNames } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import {
 	discoverClaudeCodeSkillDirs,
 	getClaudeCodeSkillResourcePaths,
@@ -13,6 +14,7 @@ interface SkillToolDetails {
 	success: boolean
 	name?: string
 	filePath?: string
+	disabledBy?: string
 	error?: string
 }
 
@@ -31,7 +33,12 @@ type SkillToolArgs = Static<typeof SkillToolSchema>
 export default function claudeCodeSkillsExtension(pi: ExtensionAPI, getSkillPaths: () => string[] = () => []): void {
 	pi.on("resources_discover", (event) => {
 		const skillPaths = getClaudeCodeSkillResourcePaths(event.cwd, {
-			excludeSkillNames: getConfiguredNativeSkillNames(event.cwd, getSkillPaths()),
+			excludeSkillNames: [
+				...getConfiguredNativeSkillNames(event.cwd, getSkillPaths()),
+				// Bundled skills may shadow external skills by name while their own
+				// resource toggle is enabled (documents → Anthropic office skills).
+				...collectBundledDisabledSkillNames().keys(),
+			],
 		})
 		if (skillPaths.length === 0) return undefined
 		return { skillPaths }
@@ -76,6 +83,19 @@ function registerSkillTool(pi: ExtensionAPI): void {
 				return {
 					content: [{ type: "text" as const, text: "Skill name is required." }],
 					details: { success: false, error: "Skill name is required." } satisfies SkillToolDetails,
+				}
+			}
+
+			// A bundled skill can shadow external skills by name while its resource
+			// toggle is on (documents → Anthropic office skills). Refuse with the
+			// declarer named so the model reroutes instead of retrying.
+			const disabledSkills = collectBundledDisabledSkillNames()
+			const disabledBy = disabledSkills.get(name)
+			if (disabledBy !== undefined) {
+				const message = `Claude Code skill "${name}" is unavailable: it is disabled by the enabled "${disabledBy}" skill.`
+				return {
+					content: [{ type: "text" as const, text: message }],
+					details: { success: false, name, disabledBy, error: message } satisfies SkillToolDetails,
 				}
 			}
 

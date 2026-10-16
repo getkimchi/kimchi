@@ -1,0 +1,34 @@
+name: document-oracle
+# Phase 0 slice: PowerPoint-parity oracle for the bundled pptx skill.
+# Manual for now — baselines land after the first live calibration;
+# runs without any Microsoft software or sign-in.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  oracle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Build the pptx bundle the same way a release does.
+      - run: node scripts/copy-resources.js
+      - name: Run the oracle
+        run: bun scripts/document-oracle.ts
+      - name: Upload oracle artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: document-oracle
+          path: ${{ runner.temp }}/doc-oracle-*/oracle-report.md
+          if-no-files-found: warn
