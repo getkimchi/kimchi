@@ -567,7 +567,8 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		const { h, execute } = createProposeHarness()
 		expect(h.runtime.getActive()).toBeUndefined()
 		const beforeCount = h.storage.list().length
-		const ctx = createContext({ hasUI: false, cwd: agentDir })
+		const sessionId = "01a1444a-86e4-7a11-8b22-333344445555"
+		const ctx = createContext({ hasUI: false, cwd: agentDir, sessionManager: { getSessionId: () => sessionId } })
 
 		const result = await execute(
 			"tool-call-1",
@@ -592,7 +593,8 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		if (!active) throw new Error("Expected active Ferment")
 		const [planFile] = readdirSync(join(agentDir, ".kimchi", "plans"))
 		const workId = readPlanWorkId(readFileSync(join(agentDir, ".kimchi", "plans", planFile), "utf8"))
-		expect(workId).toMatch(/^[0-9a-f-]{36}$/)
+		// A first proposal takes the ID of the session writing it, which the gateway sees as X-Session-Id.
+		expect(workId).toBe(sessionId)
 		expect(loadRuntimeState(active.id, agentDir).workId).toBe(workId)
 		// The retained copy lives where the gateway can find the same work ID.
 		expect(readdirSync(join(agentDir, "work", String(workId), "plans"))).toHaveLength(1)

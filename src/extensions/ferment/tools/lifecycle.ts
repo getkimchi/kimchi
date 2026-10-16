@@ -8,7 +8,6 @@
  *   4. Format result text — host concern
  */
 
-import { randomUUID } from "node:crypto"
 import { type ExtensionAPI, type ExtensionContext, getMarkdownTheme } from "@earendil-works/pi-coding-agent"
 import { Markdown } from "@earendil-works/pi-tui"
 import type { Static } from "typebox"
@@ -31,6 +30,7 @@ import {
 } from "../../../ferment/types.js"
 import { fermentPlanFileName, saveToolPlan } from "../../../shared/planning/plan-markdown.js"
 import { emitPlanReviewRequest } from "../../../shared/planning/plan-review-bus.js"
+import { newPlanWorkId } from "../../../shared/work-id.js"
 import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
 import { withBlocked } from "../../herdr-events.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
@@ -1178,7 +1178,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			// same file. Failures are non-fatal but warned so the review flow
 			// can continue without a path.
 			// Every proposal of a ferment names the same work: the plan it was created from, or its first proposal.
-			const workId = getFermentWorkId(fermentId) ?? randomUUID()
+			const workId = getFermentWorkId(fermentId) ?? newPlanWorkId(ctx.sessionManager.getSessionId())
 			const saved = saveToolPlan(ctx, "ferment", {
 				cwd,
 				name: fermentPlanFileName(ferment.name, fermentId),

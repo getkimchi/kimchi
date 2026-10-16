@@ -985,6 +985,24 @@ describe("plan mode assumption detection", () => {
 			}
 		})
 
+		it("gives a new plan the ID of the session writing it", async () => {
+			const sessionId = "01a1444a-86e4-7a11-8b22-333344445555"
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([], sessionId))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-"))
+			try {
+				const ctx = createMockContext(["Rework the plan"], sessionId)
+				ctx.cwd = tmpDir
+				await submitPlan(harness, PLAN_V1, ctx)
+				const saved = readFileSync(join(tmpDir, ".kimchi", "plans", "plan-cache-layer.md"), "utf8")
+				// The gateway sees the planning session's ID, so it can link that session to the one implementing the plan.
+				expect(readPlanWorkId(saved)).toBe(sessionId)
+				expect(readdirSync(join(agentDir, "work", sessionId, "plans"))).toHaveLength(1)
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
+
 		it.each(["saved", "blocked"])("warns only when the plan's retained copy cannot be saved (%s)", async (outcome) => {
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 			await harness.fire("session_start", {}, createMockContext([]))

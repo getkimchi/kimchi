@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto"
 import { basename, extname, resolve } from "node:path"
 import { Type } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, SessionManager, ToolCallEvent } from "@earendil-works/pi-coding-agent"
@@ -31,6 +30,7 @@ import {
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
+import { newPlanWorkId } from "../../shared/work-id.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { BASH_CONTROL_TOOL_NAME } from "../bash-background/bash-control-tool.js"
 import { readE2eSeam } from "../e2e-seam.js"
@@ -819,7 +819,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// default/auto/yolo continue in their current mode.
 
 				// Save plan to disk
-				activePlan ??= { slug: slugifyPlanName(derivePlanTitle(planText)), workId: randomUUID() }
+				activePlan ??= {
+					slug: slugifyPlanName(derivePlanTitle(planText)),
+					workId: newPlanWorkId(ctx.sessionManager.getSessionId()),
+				}
 				const plan = activePlan
 				const saved = saveToolPlan(ctx, "permissions", { cwd: ctx.cwd, name: plan.slug, planText, workId: plan.workId })
 				const planPath = saved?.path
