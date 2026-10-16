@@ -132,6 +132,9 @@ import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
+import requestIdentityExtension, {
+	prepareProviderRequest as prepareIdentifiedRequest,
+} from "./extensions/request-identity/index.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import sessionMemoryStatsExtension from "./extensions/session-memory-stats.js"
@@ -731,7 +734,10 @@ async function cliMain(): Promise<void> {
 
 			installGlobalFetchInstrumentation({
 				userAgent: `kimchi/${getVersion()}`,
-				onModelRequest: prepareProviderRequest,
+				onModelRequest: (headers, url, metadata) => {
+					prepareProviderRequest(headers, url, metadata)
+					prepareIdentifiedRequest(headers, url)
+				},
 				onModelResponse: recordProviderResponse,
 				onModelCompletionSettled: (originalFetch) =>
 					refreshBillingStatusFromConfig({ fetch: originalFetch, mode: "automatic" }),
@@ -915,6 +921,8 @@ async function cliMain(): Promise<void> {
 					{ id: COST_PER_PR_RESOURCE_ID, factory: pullRequestStatusExtension },
 					{ id: COST_PER_PR_RESOURCE_ID, factory: prCostReportingExtension },
 				] satisfies ManagedExtensionFactory[]),
+				// After work attribution, whose request IDs it keeps.
+				requestIdentityExtension,
 				requestTimingExtension,
 				llmResponseLogExtension,
 				activityExtension,

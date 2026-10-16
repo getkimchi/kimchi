@@ -6,8 +6,7 @@ import { IS_ACP_MODE } from "../../modes/acp/state.js"
 import { readEffectiveTelemetryConfig } from "../../telemetry-policy.js"
 import { getOsMetadata } from "../../utils/os-metadata.js"
 import { getVersion } from "../../utils.js"
-import { isAgentWorker } from "../agent-worker-context.js"
-import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { parentSessionId } from "../agent-worker-context.js"
 import { getActiveFerment } from "../ferment/index.js"
 import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
 import { getTelemetryFermentV2Context, resetTelemetryFermentV2Context } from "./ferment-v2-context.js"
@@ -15,6 +14,7 @@ import { getAcpAttributes, getPiSessionAttributes } from "./handlers/utils.js"
 import { toAttrs } from "./helpers.js"
 import { getSessionType } from "./session-type.js"
 import { buildLogRecord, type LogRecord, sendLogBatch, sendMetrics } from "./transport.js"
+import { TurnCounter } from "./turn-counter.js"
 
 export type TelemetryAttributes = Record<string, string | number | boolean>
 
@@ -65,7 +65,7 @@ export function _resetSharedAccumulators(): void {
 // SessionContext — process-level telemetry state
 // ---------------------------------------------------------------------------
 
-export class TelemetryContext {
+export class TelemetryContext extends TurnCounter {
 	config: TelemetryConfig
 	telemetryId: string
 	/**
@@ -80,16 +80,6 @@ export class TelemetryContext {
 	 * Current model, updated from message events; used for domain events that lack a pi context.
 	 */
 	currentModel = "unknown"
-	/**
-	 * Current turn index: a 1-based, strictly increasing count of LLM turns
-	 * (round-trips) in this session — one per turn_start, across all agent
-	 * runs (prompts), never reset mid-session. Events are stamped with the
-	 * turn they occurred in. `0` occurs only before the session's first turn
-	 * (e.g. a warmup provider call); treat it as "pre-turn", not a turn number.
-	 */
-	turnIndex = 0
-	/** Turn slot allocated to the last user_message (see stampUserMessageTurn). */
-	private lastUserMessageTurn = 0
 	/**
 	 * Wall-clock ms when the current user prompt began (set by
 	 * handleBeforeAgentStart). Anchor for agent.interrupted's ms_into_turn —
@@ -143,6 +133,7 @@ export class TelemetryContext {
 	private resolveUserEmailReady!: () => void
 
 	constructor(config: TelemetryConfig) {
+		super()
 		this.config = config
 		this.osMetadata = getOsMetadata()
 		if (!telemetryId) telemetryId = crypto.randomUUID()
@@ -164,8 +155,7 @@ export class TelemetryContext {
 		this.telemetryId = telemetryId
 		this.telemetryStartMs = Date.now()
 		this.currentModel = "unknown"
-		this.turnIndex = 0
-		this.lastUserMessageTurn = 0
+		this.resetTurns()
 		this.promptStartMs = 0
 		this.lastTraceContext = undefined
 		this.sentMessages.clear()
@@ -182,27 +172,6 @@ export class TelemetryContext {
 		this.shuttingDown = false
 		this.logBuffer = []
 		this.stopLogFlushTimer()
-	}
-
-	/**
-	 * Advance the session turn counter for a new LLM turn (called on every
-	 * turn_start) and return it. Merges with the user-message slot so values
-	 * stay strictly increasing even when a prompt failed to start a turn.
-	 */
-	advanceTurn(): number {
-		this.turnIndex = Math.max(this.turnIndex + 1, this.lastUserMessageTurn)
-		return this.turnIndex
-	}
-
-	/**
-	 * Turn slot the run started by this prompt will occupy — stamped on its
-	 * user_message record (before_agent_start fires before the first
-	 * turn_start). Strictly increasing even when the prompt never starts a
-	 * turn (blocked or failed before the agent loop).
-	 */
-	stampUserMessageTurn(): number {
-		this.lastUserMessageTurn = Math.max(this.lastUserMessageTurn + 1, this.turnIndex + 1)
-		return this.lastUserMessageTurn
 	}
 
 	/** Capture the pi session id for this context. Called from session_start. */
@@ -310,19 +279,9 @@ export class TelemetryContext {
 		this.enqueueLogRecord(buildLogRecord(this.resolveSessionId(), eventName, toAttrs(merged)))
 	}
 
-	/**
-	 * Returns the spawning (parent) session's pi session id when this process is
-	 * inside an Agent-subagent run, undefined otherwise. The Agent runner sets
-	 * KIMCHI_PARENT_SESSION_ID for the whole subagent run; the Agent-worker async
-	 * context (or KIMCHI_SUBAGENT=1) gates the check so parent-session events are
-	 * never attributed a parent.
-	 *
-	 * Used for both the `session.parent_id` telemetry attribute and the
-	 * X-Parent-Session-Id provider header (chat_completions pipeline).
-	 */
+	/** The spawning session's pi session id inside an Agent-subagent run; see {@link parentSessionId}. */
 	getParentSessionId(): string | undefined {
-		if (!isAgentWorker()) return undefined
-		return process.env[PARENT_SESSION_ID_ENV_KEY]
+		return parentSessionId()
 	}
 
 	private getParentSessionAttribute(): TelemetryAttributes | undefined {

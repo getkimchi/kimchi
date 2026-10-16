@@ -52,7 +52,8 @@ describe("classifyToolCall", () => {
 		const result = await success
 		expect(result).toMatchObject({ ok: true, verdict: "safe", usedModelId: primary.id })
 		expect(completeMock).toHaveBeenCalledTimes(1)
-		expect(completeMock.mock.calls[0][2].headers).not.toHaveProperty("X-Request-Id")
+		// Without a stored identity the request still gets one, so the gateway can tell its session.
+		expect(completeMock.mock.calls[0][2].headers["X-Request-Id"]).toMatch(/^[0-9a-f-]{36}$/)
 		expect(diagnostic).toHaveBeenCalled()
 		expect(warn).not.toHaveBeenCalled()
 

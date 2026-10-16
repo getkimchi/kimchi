@@ -8,6 +8,7 @@ import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles, normalizeRoleModels } from "../orchestration/model-roles.js"
 import { getRedactionConfig } from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
+import { pinRequestContext, trackProviderRequest } from "../request-identity/index.js"
 import type { TodoItem } from "../todos/types.js"
 import { appendWorkRecord, getWorkId, recordProviderRequest, tryWorkAttribution } from "../work-attribution.js"
 import type { FermentV2EvaluatorFailureType } from "./domain-events.js"
@@ -344,6 +345,8 @@ export async function evaluateFermentV2(
 		}
 		const evaluatorSession = createEvaluatorSession(ctx)
 		const workContext = { cwd: ctx.cwd, sessionManager: evaluatorSession }
+		// The gateway reports evaluator requests under the evaluated session.
+		const reportedSession = pinRequestContext(ctx)
 		if (inheritedWorkId) tryWorkAttribution(() => appendWorkRecord(workContext, { type: "work" }, inheritedWorkId))
 		evaluatorSession.appendCustomEntry(INTERNAL_SESSION_ENTRY, { kind: "ferment-evaluator" })
 		evaluatorSession.appendSessionInfo("Ferment V2 evaluator")
@@ -356,13 +359,14 @@ export async function evaluateFermentV2(
 				input.signal?.throwIfAborted()
 				deadline = AbortSignal.timeout(timeoutMs)
 				const signal = input.signal ? AbortSignal.any([deadline, input.signal]) : deadline
-				const attribution = inheritedWorkId
-					? tryWorkAttribution(() => recordProviderRequest(workContext, model, inheritedWorkId))
-					: undefined
+				const requestId =
+					(inheritedWorkId
+						? tryWorkAttribution(() => recordProviderRequest(workContext, model, inheritedWorkId))?.requestId
+						: undefined) ?? trackProviderRequest(reportedSession)
 				providerRequestCount++
 				const response = await completeSimple(model, requestContext, {
 					apiKey: auth.apiKey,
-					headers: { ...auth.headers, ...(attribution ? { "X-Request-Id": attribution.requestId } : {}) },
+					headers: { ...auth.headers, "X-Request-Id": requestId },
 					reasoning: "minimal",
 					thinkingBudgets: correcting ? { minimal: 0 } : undefined,
 					samplingParams: isKimchiManagedJsonModeProvider(model.provider)

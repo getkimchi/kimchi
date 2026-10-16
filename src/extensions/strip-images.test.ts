@@ -186,7 +186,11 @@ describe("strip-images extension", () => {
 			const handler = mockPi.getHandler("strip-images") as (args: string[], ctx: unknown) => Promise<void>
 			await handler([], ctx)
 			expect(completeMock).toHaveBeenCalledOnce()
-			expect(completeMock.mock.calls[0][2].headers).toEqual({ "X-Test": "preserved" })
+			// Without a stored identity the request still gets one, so the gateway can tell its session.
+			expect(completeMock.mock.calls[0][2].headers).toEqual({
+				"X-Test": "preserved",
+				"X-Request-Id": expect.stringMatching(/^[0-9a-f-]{36}$/),
+			})
 			expect(storeImageDescription).toHaveBeenCalledWith("test-hash", "saved description")
 			expect(mockNotify).toHaveBeenCalledWith(expect.stringContaining("Work attribution unavailable"), "warning")
 		})

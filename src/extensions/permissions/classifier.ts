@@ -1,6 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { complete } from "@earendil-works/pi-ai/compat"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
+import { trackProviderRequest } from "../request-identity/index.js"
 import {
 	getWorkId,
 	pinWorkContext,
@@ -150,9 +151,10 @@ async function runClassifier(
 	deadline: number,
 	signal?: AbortSignal,
 ): Promise<ClassifierResult> {
-	const request = attribution.workId
-		? tryWorkAttribution(() => recordProviderRequest(attribution.context, model, attribution.workId))
-		: undefined
+	const requestId =
+		(attribution.workId
+			? tryWorkAttribution(() => recordProviderRequest(attribution.context, model, attribution.workId))?.requestId
+			: undefined) ?? trackProviderRequest(attribution.context)
 	const outcome = await withinDeadline(
 		(attemptSignal) =>
 			complete(
@@ -169,10 +171,7 @@ async function runClassifier(
 				},
 				{
 					apiKey: auth.apiKey,
-					headers: {
-						...auth.headers,
-						...(request ? { "X-Request-Id": request.requestId } : {}),
-					},
+					headers: { ...auth.headers, "X-Request-Id": requestId },
 					signal: attemptSignal,
 					onPayload: (payload: unknown) => {
 						if (payload && typeof payload === "object") {

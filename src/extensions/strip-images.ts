@@ -11,7 +11,7 @@ import {
 	sessionHasImages,
 	storeImageDescription,
 } from "./model-guard.js"
-
+import { trackProviderRequest } from "./request-identity/index.js"
 import { getWorkId, pinWorkContext, recordProviderRequest, warnWorkAttribution } from "./work-attribution.js"
 
 const IMAGE_DESCRIPTION_PROMPT = "Describe this image concisely. Include key visual details, text, layout."
@@ -119,6 +119,7 @@ export default function stripImagesExtension(pi: ExtensionAPI) {
 						warnWorkAttribution(ctx, error)
 					}
 				}
+				headers["X-Request-Id"] ??= trackProviderRequest(workContext)
 				try {
 					const response = await complete(
 						visionModel,

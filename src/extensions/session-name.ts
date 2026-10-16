@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig, RETRY_DEFAULTS } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
+import { trackProviderRequest } from "./request-identity/index.js"
 import { getWorkId, pinWorkContext, recordProviderRequest, warnWorkAttribution } from "./work-attribution.js"
 
 export const SESSION_NAME_MODEL = "deepseek-v4-flash-0731"
@@ -167,18 +168,19 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 				retry: { maxRetries },
 				fetchImpl: (url, init) => {
 					const headers = new Headers(init?.headers)
+					let requestId: string | undefined
 					if (workId) {
 						try {
-							const request = recordProviderRequest(
+							requestId = recordProviderRequest(
 								workContext,
 								{ provider: "kimchi-dev", id: SESSION_NAME_MODEL },
 								workId,
-							)
-							headers.set("X-Request-Id", request.requestId)
+							).requestId
 						} catch (error) {
 							warnWorkAttribution(ctx, error)
 						}
 					}
+					headers.set("X-Request-Id", requestId ?? trackProviderRequest(workContext))
 					return fetch(url, { ...init, headers })
 				},
 			},

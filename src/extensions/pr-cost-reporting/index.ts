@@ -7,6 +7,7 @@ import {
 } from "../work-attribution/reconcile-supervisor.js"
 import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } from "../work-attribution.js"
 import { uploadSkipReason } from "./automation.js"
+import { setPRReportingSessionMode } from "./consent.js"
 import {
 	dueLimitNotices,
 	readReportingState,
@@ -86,6 +87,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		started = true
 		skipReason = uploadSkipReason(ctx.mode)
+		setPRReportingSessionMode(ctx.mode)
 		synchronize(ctx)
 		// Studio drops notifications for a session it has not registered yet, so it gets the notice after a turn.
 		if (stop && !IS_ACP_MODE) await reportingEnabled()

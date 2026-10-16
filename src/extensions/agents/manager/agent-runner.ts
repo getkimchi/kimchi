@@ -30,6 +30,7 @@ import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import requestIdentityExtension from "../../request-identity/index.js"
 import requestTimingExtension from "../../request-timing.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
@@ -501,6 +502,7 @@ ${skillLines}`
 		...(isResourceEnabled(COST_PER_PR_RESOURCE_ID)
 			? [createWorkAttributionExtension(inheritedWorkId ?? null, inheritedSegment)]
 			: []),
+		requestIdentityExtension,
 		requestTimingExtension,
 		...autoExtensionFactories,
 		bashExtension,

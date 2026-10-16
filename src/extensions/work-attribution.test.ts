@@ -19,13 +19,16 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { type Component, stripTerminalSequences, type TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { resolveEndpoints } from "../config.js"
 import { installGlobalFetchInstrumentation } from "../http/instrument-fetch.js"
 import { readPlanWorkId, savePlanMarkdown } from "../shared/planning/plan-markdown.js"
+import { INFRA_BREAKER_THRESHOLD_ENV } from "../upstream-retry-patch.js"
 import { createCommandContext, createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { testTheme } from "./__mocks__/theme.js"
 import { createWorkScopeSnapshot } from "./__mocks__/work-scope.js"
 import { savedWorkSummary } from "./__mocks__/work-summary.js"
+import { CI_VARIABLES } from "./pr-cost-reporting/automation.js"
 import requestTimingExtension from "./request-timing.js"
 import { copySessionFileAndAddHandoffNote, removeTempDir } from "./teleport/provisioning/handoff-note.js"
 import * as billingSource from "./work-attribution/billing-source.js"
@@ -261,6 +264,21 @@ describe("local work attribution", () => {
 			workId: identity.workId,
 			billingSource: original,
 		})
+	})
+	it("tells the gateway it may report an attributed request, under the session that made it", () => {
+		for (const name of [...CI_VARIABLES, "KIMCHI_PR_COST_REPORTING", INFRA_BREAKER_THRESHOLD_ENV]) vi.stubEnv(name, "")
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		let sessionId = "attributed-session"
+		const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
+		const { requestId } = recordProviderRequest(ctx, ctx.model)
+		sessionId = "next-session"
+		const url = `${resolveEndpoints({ cwd: dir }).openAiBaseUrl}/chat/completions`
+		for (const attempt of [1, 2]) {
+			const headers = new Headers({ "X-Request-Id": requestId })
+			prepareProviderRequest(headers, url, { bodyTags: [] })
+			expect(headers.get("x-kimchi-pr-reporting"), `attempt ${attempt}`).toBe("proxy")
+			expect(headers.get("x-session-id"), `attempt ${attempt}`).toBe("attributed-session")
+		}
 	})
 	it.each([
 		{ bodyTags: undefined, header: "team:one", reason: "body-uninspectable" },

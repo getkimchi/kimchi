@@ -28,6 +28,7 @@ import type { ModelRequestMetadata } from "../http/instrument-fetch.js"
 import { isResourceEnabled } from "../resources/store.js"
 import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
+import { applyPRReportingHeaders, type RequestCorrelation, requestCorrelation } from "./request-identity/index.js"
 import { isHarnessSteer } from "./steer-marker.js"
 import { trackPRCostMetric } from "./telemetry/pr-cost.js"
 import { type BillingSource, captureBillingSource, requestTagSelector } from "./work-attribution/billing-source.js"
@@ -152,6 +153,8 @@ interface PendingRequest {
 	headers?: BeforeProviderHeadersEvent["headers"]
 	/** Set while the request's input waits for its matching decision; shared by its retries. */
 	deferred?: DeferredRows
+	/** The session the gateway reports this request under; retries keep it. */
+	correlation: RequestCorrelation
 }
 const pendingRequests = new Map<string, PendingRequest>()
 type WorkRecordFields = { type: string; [key: string]: unknown }
@@ -379,6 +382,7 @@ export function recordProviderRequest(
 		dispatched: false,
 		responded: false,
 		...(deferred && !deferred.written ? { deferred } : {}),
+		correlation: requestCorrelation(ctx),
 	}
 	if (request.deferred) request.deferred.rows.push({ request, fields })
 	rememberRequest(requestId, request)
@@ -389,6 +393,7 @@ export function prepareProviderRequest(headers: Headers, url: string, metadata: 
 	const logicalId = headers.get("x-request-id")
 	const request = logicalId && pendingRequests.get(logicalId)
 	if (!request) return
+	applyPRReportingHeaders(headers, url, request.correlation)
 	const billingSource = captureBillingSource(headers, url, request.ctx.cwd)
 	const retry = request.dispatched
 	const requestId = retry ? randomUUID() : logicalId
