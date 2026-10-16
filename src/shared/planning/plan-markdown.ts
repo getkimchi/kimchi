@@ -10,8 +10,11 @@
  * | ferment scoping | `propose_ferment_scoping` builds the plan | `ferment-<slug>-<first12(fermentId)>.md` |
  *
  * Editable files live under `<cwd>/.kimchi/plans/` and are overwritten on
- * rework. Plans with a work ID also retain each content version under the
- * agent directory's `work/<workId>/plans/`, outside disposable worktrees.
+ * rework. A plan's first line names its work ID, and each content version is
+ * retained under the agent directory's `work/<workId>/plans/`, outside
+ * disposable worktrees. The Kimchi gateway uses that ID, from the header or
+ * the retained path, to link a planning session to the session that
+ * implements the plan.
  *
  * This module intentionally has no load/delete surface: consumers read plan
  * files directly when needed, and the harness never deletes plan files —
@@ -21,9 +24,9 @@
 import { createHash } from "node:crypto"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
-import { getAgentDir } from "@earendil-works/pi-coding-agent"
+import { type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
 import { writeFileAtomic } from "../../config/json.js"
-import { debugWorkAttribution } from "../../extensions/work-attribution/diagnostics.js"
+import { debugPRCost } from "../pr-cost-log.js"
 import { isWorkId } from "../work-id.js"
 
 /** Canonical directory (relative to the project cwd) for plan markdown files. */
@@ -58,7 +61,7 @@ export function generatePlanPersistenceNote(opts: {
 }
 
 /** Fallback slug, also returned by {@link derivePlanTitle} for a plan without a title. */
-export const DEFAULT_SLUG = "untitled-plan"
+const DEFAULT_SLUG = "untitled-plan"
 const MAX_SLUG_LENGTH = 48
 
 /**
@@ -122,23 +125,22 @@ export interface SavePlanMarkdownOptions {
 	readonly name: string
 	/** Markdown content to persist (written verbatim). */
 	readonly planText: string
-	/** Attribution identity of the planning work. */
+	/** The plan's work ID, kept across its revisions; it names the plan to the Kimchi gateway. */
 	readonly workId?: string
 }
 
-/** Shown after {@link savePlanMarkdown} kept an attributed plan without its retained copy. */
+/** Shown after {@link savePlanMarkdown} kept a plan without its retained copy. */
 export const UNRETAINED_PLAN_NOTICE =
-	"plan saved without its retained copy; naming or pasting it later will not continue its work, but /work <plan path> still selects it"
+	"plan saved without its retained copy, so deleting this worktree also deletes the plan"
 
 /**
  * Write (or overwrite in place) a plan markdown file under
- * `<cwd>/.kimchi/plans/<slug(name)>.md` and retain its version when attributed.
+ * `<cwd>/.kimchi/plans/<slug(name)>.md` and retain its version when it has a work ID.
  * Local save errors propagate; a failed retained copy warns without blocking review.
  */
 export function savePlanMarkdown(opts: SavePlanMarkdownOptions): {
 	path: string
 	snapshotPath?: string
-	contentHash?: string
 } {
 	const plansDir = resolve(opts.cwd, PLAN_DIR)
 	mkdirSync(plansDir, { recursive: true })
@@ -160,11 +162,32 @@ export function savePlanMarkdown(opts: SavePlanMarkdownOptions): {
 			const hash = createHash("sha256").update(content).digest("hex")
 			const snapshotPath = join(plans, `${slugifyPlanName(opts.name)}-${hash}.md`)
 			writeFileAtomic(snapshotPath, content)
-			return { path: filePath, snapshotPath, contentHash: hash }
+			return { path: filePath, snapshotPath }
 		} catch (error) {
 			// Callers show their own notice; terminal output would corrupt the TUI.
-			debugWorkAttribution("Could not retain plan version:", error)
+			debugPRCost("Could not retain plan version:", error)
 		}
 	}
 	return { path: filePath }
+}
+
+/**
+ * Save a tool's plan under its work ID. Failures are shown under `label` rather than thrown: review continues without
+ * a file.
+ */
+export function saveToolPlan(
+	ctx: Pick<ExtensionContext, "hasUI" | "ui">,
+	label: string,
+	plan: SavePlanMarkdownOptions & { readonly workId: string },
+): { path: string; snapshotPath?: string } | undefined {
+	try {
+		const saved = savePlanMarkdown(plan)
+		// The debug log has the cause; the user learns that the plan lives only in this worktree.
+		if (!saved.snapshotPath && ctx.hasUI) ctx.ui.notify(`${label}: ${UNRETAINED_PLAN_NOTICE}`, "warning")
+		return saved
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error)
+		if (ctx.hasUI) ctx.ui.notify(`${label}: failed to save plan file: ${detail}`, "warning")
+		else console.error(`${label}: failed to save plan file: ${detail}`)
+	}
 }

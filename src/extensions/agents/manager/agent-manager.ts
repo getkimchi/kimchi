@@ -15,7 +15,6 @@ import { type ClonePlan, resolveClonePlan } from "../../teleport/provisioning/cl
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import { repoBasename } from "../../teleport/provisioning/paths.js"
 import { GitTokenPromptComponent, type GitTokenPromptResult } from "../../teleport/ui/git-token-prompt.js"
-import { getWorkId, getWorkSegment, tryWorkAttribution } from "../../work-attribution.js"
 import type {
 	AgentAbortReason,
 	AgentOutcome,
@@ -227,21 +226,9 @@ export class AgentManager {
 		}
 		this.agents.set(id, record)
 
-		// Pin only the work and segment. Copy descriptors like Pi's createCommandContext(): a spread would freeze
-		// Pi's lazy getters (model, sessionManager, signal, ...) at spawn and bypass its stale-context guard.
-		const workContext = effectiveOptions.remote
-			? ctx
-			: (Object.defineProperties(
-					{},
-					{
-						...Object.getOwnPropertyDescriptors(ctx),
-						workId: { value: tryWorkAttribution(() => getWorkId(ctx)), enumerable: true },
-						segment: { value: getWorkSegment(ctx) ?? null, enumerable: true },
-					},
-				) as ExtensionContext)
 		const args: SpawnArgs = {
 			pi,
-			ctx: workContext,
+			ctx,
 			type,
 			prompt: withAgentReportProtocol(prompt, effectiveOptions.taskRef),
 			options: effectiveOptions,

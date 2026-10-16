@@ -16,7 +16,7 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
-import { pinWorkContext, type WorkContext } from "../work-attribution.js"
+import { pinRequestContext, type RequestContext } from "../request-identity/index.js"
 import {
 	deleteRuntimeState,
 	emptyState,
@@ -317,10 +317,11 @@ export function markHumanInput(): void {
 let judgeModel: Model<Api> | undefined
 let judgeModelRegistry: ModelRegistry | undefined
 let judgeMultiModelEnabled = false
-let judgeWorkContext: WorkContext | undefined
+let judgeRequestContext: RequestContext | undefined
 
-export function getJudgeWorkContext(): WorkContext | undefined {
-	return judgeWorkContext
+/** The session the judge's requests belong to, pinned when the judge context was captured. */
+export function getJudgeRequestContext(): RequestContext | undefined {
+	return judgeRequestContext
 }
 
 export function getJudgeModel(): Model<Api> | undefined {
@@ -342,9 +343,9 @@ export function captureJudgeContext(
 	model?: Model<Api>,
 	registry?: ModelRegistry,
 	multiModelEnabled?: boolean,
-	context?: WorkContext,
+	context?: RequestContext,
 ): void {
-	if (context) judgeWorkContext = pinWorkContext(context)
+	if (context) judgeRequestContext = pinRequestContext(context)
 	if (model) judgeModel = model
 	if (registry) judgeModelRegistry = registry
 	if (multiModelEnabled !== undefined) judgeMultiModelEnabled = multiModelEnabled

@@ -2,8 +2,17 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import * as diagnostics from "../../extensions/work-attribution/diagnostics.js"
-import { derivePlanTitle, fermentPlanFileName, savePlanMarkdown, slugifyPlanName } from "./plan-markdown.js"
+import { createContext } from "../../extensions/__mocks__/context.js"
+import * as diagnostics from "../pr-cost-log.js"
+import {
+	derivePlanTitle,
+	fermentPlanFileName,
+	readPlanWorkId,
+	savePlanMarkdown,
+	saveToolPlan,
+	slugifyPlanName,
+	UNRETAINED_PLAN_NOTICE,
+} from "./plan-markdown.js"
 
 describe("slugifyPlanName", () => {
 	it("converts a title to kebab-case", () => {
@@ -84,7 +93,7 @@ describe("savePlanMarkdown", () => {
 
 	it("keeps the local plan usable when retaining a version fails", () => {
 		const terminal = vi.spyOn(console, "warn").mockImplementation(() => {})
-		const debug = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
+		const debug = vi.spyOn(diagnostics, "debugPRCost").mockImplementation(() => {})
 		writeFileSync(join(tmpDir, "agent"), "blocked")
 		const saved = savePlanMarkdown({
 			cwd: join(tmpDir, "worktree"),
@@ -168,5 +177,51 @@ describe("savePlanMarkdown", () => {
 		writeFileSync(join(tmpDir, ".kimchi"), "")
 		expect(existsSync(join(tmpDir, ".kimchi"))).toBe(true)
 		expect(() => savePlanMarkdown({ cwd: tmpDir, name: "X", planText: "x\n" })).toThrow()
+	})
+})
+
+describe("saveToolPlan", () => {
+	let tmpDir: string
+	const workId = "11111111-1111-4111-8111-111111111111"
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "plan-markdown-tool-"))
+		vi.stubEnv("PI_CODING_AGENT_DIR", join(tmpDir, "agent"))
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
+		rmSync(tmpDir, { recursive: true, force: true })
+	})
+
+	it("names the plan's work in its header and in the retained path", () => {
+		const ctx = createContext()
+		const saved = saveToolPlan(ctx, "permissions", { cwd: tmpDir, name: "Search", planText: "# Search\n", workId })
+		if (!saved?.snapshotPath) throw new Error("Expected a retained plan")
+		expect(readPlanWorkId(readFileSync(saved.path, "utf8"))).toBe(workId)
+		expect(saved.snapshotPath.startsWith(join(tmpDir, "agent", "work", workId, "plans"))).toBe(true)
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+	})
+
+	it("warns that a plan without its retained copy lives only in this worktree", () => {
+		vi.spyOn(diagnostics, "debugPRCost").mockImplementation(() => {})
+		writeFileSync(join(tmpDir, "agent"), "blocked")
+		const ctx = createContext()
+		const saved = saveToolPlan(ctx, "ferment", { cwd: tmpDir, name: "Search", planText: "# Search\n", workId })
+		expect(saved?.snapshotPath).toBeUndefined()
+		expect(ctx.ui.notify).toHaveBeenCalledWith(`ferment: ${UNRETAINED_PLAN_NOTICE}`, "warning")
+	})
+
+	it("reports a plan it cannot save instead of throwing", () => {
+		writeFileSync(join(tmpDir, ".kimchi"), "blocked")
+		const ctx = createContext()
+		expect(
+			saveToolPlan(ctx, "permissions", { cwd: tmpDir, name: "Search", planText: "# Search\n", workId }),
+		).toBeUndefined()
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("permissions: failed to save plan file:"),
+			"warning",
+		)
 	})
 })

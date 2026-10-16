@@ -3,7 +3,7 @@ import { FERMENT_V2_RESOURCE_ID } from "../extensions/ferment-v2/constants.js"
 import { KIMCHI_MCP_GATEWAY_RESOURCE_ID } from "../extensions/mcp/gateway.js"
 import { MEMORY_RESOURCE_ID } from "../extensions/memory/config.js"
 import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/index.js"
-import { COST_PER_PR_RESOURCE_ID } from "../extensions/work-attribution/resource.js"
+import { COST_PER_PR_RESOURCE_ID } from "../extensions/pr-cost-reporting/resource.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { discoverClaudeCodeHookResourceDefinitions } from "./claude-code-hook-resources.js"
 import { discoverKimchiHookResourceDefinitions } from "./kimchi-hook-resources.js"
@@ -112,7 +112,7 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		kind: "extensions",
 		label: "Cost per PR",
 		description:
-			"Link model requests to their work and pull requests, show /work and the PR/MR status, and report PR costs.",
+			"Let the Kimchi gateway report PR costs from your requests (/pr-reporting) and show the current branch's PR/MR in the footer.",
 		defaultEnabled: true,
 		restartRequired: true,
 	},

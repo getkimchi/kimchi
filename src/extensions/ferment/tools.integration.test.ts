@@ -18,8 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vite
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache, FermentStorage } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
-import { flushWorkSummaries } from "../work-attribution/summary.js"
-import { getWorkId } from "../work-attribution.js"
+import { readPlanWorkId } from "../../shared/planning/plan-markdown.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, getPendingScope, setPendingScope } from "./scoping.js"
 import {
@@ -27,6 +26,7 @@ import {
 	clearAllStepStarts,
 	getActive,
 	getActiveFermentId,
+	getFermentWorkId,
 	markScopingConfirmed,
 	markScopingInteractive,
 	setActive,
@@ -164,7 +164,6 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
-	await flushWorkSummaries()
 	vi.unstubAllEnvs()
 	rmSync(join(h.tempDir, "agent"), { recursive: true, force: true })
 	clearFermentCache()
@@ -1530,9 +1529,9 @@ describe("propose_ferment_scoping", () => {
 			const saved = readFileSync(planFile, "utf-8")
 			expect(saved).toContain("# Plan: Proposed Ferment")
 			expect(saved).toContain("## Goal")
-			// The saved artifact adds work metadata to the plan shown in the tool result.
+			// The saved artifact names the ferment's work ahead of the plan shown in the tool result.
 			const planPortion = result.split("\n\nPlan saved.")[0]
-			expect(saved).toBe(`<!-- kimchi-work-id: ${getWorkId(ctx)} -->\n${planPortion}`)
+			expect(saved).toBe(`<!-- kimchi-work-id: ${getFermentWorkId(id)} -->\n${planPortion}`)
 			expect(result).toContain(`Plan file: ${planFile}`)
 		})
 
@@ -1546,6 +1545,8 @@ describe("propose_ferment_scoping", () => {
 			ok(await h.call("propose_ferment_scoping", basePayload(id, { title: "First Draft" }), ctx))
 			const planFile = join(h.tempDir, ".kimchi", "plans", `ferment-overwrite-${id.slice(0, 12)}.md`)
 			expect(existsSync(planFile)).toBe(true)
+			const firstWorkId = readPlanWorkId(readFileSync(planFile, "utf-8"))
+			expect(firstWorkId).toBe(getFermentWorkId(id))
 
 			// Re-propose with the same ferment id overwrites the same file slot.
 			const second = ok(await h.call("propose_ferment_scoping", basePayload(id, { goal: "Build a better thing" }), ctx))
@@ -1554,6 +1555,8 @@ describe("propose_ferment_scoping", () => {
 			expect(readdirSync(plansDir)).toEqual([`ferment-overwrite-${id.slice(0, 12)}.md`])
 			const saved = readFileSync(planFile, "utf-8")
 			expect(saved).toContain("Build a better thing")
+			// Every proposal of one ferment names the same work.
+			expect(readPlanWorkId(saved)).toBe(firstWorkId)
 			expect(second).toContain(`Plan file: ${planFile}`)
 		})
 

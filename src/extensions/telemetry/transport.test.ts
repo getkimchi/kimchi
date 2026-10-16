@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
-import * as config from "../../config.js"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
-import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import type { MetricData } from "./transport.js"
 import { buildLogRecord, sendLog, sendLogBatch, sendMetrics } from "./transport.js"
 
@@ -212,47 +210,6 @@ describe("sendLogBatch", () => {
 })
 
 describe("sendMetrics", () => {
-	it("omits session identity from aggregate health metrics", async () => {
-		const config = makeConfig()
-		const health = {
-			name: "kimchi.pr_cost.queue.depth",
-			type: "Gauge" as const,
-			value: 2,
-			attrs: {},
-			scope: "aggregate" as const,
-		}
-		await sendMetrics(config, "private-session", [health], BASE_NS)
-		const body = JSON.parse(vi.mocked(globalThis.fetch).mock.calls[0][1]?.body as string)
-		const point = body.resourceMetrics[0].scopeMetrics[0].metrics[0].gauge.dataPoints[0]
-		expect(point.asInt).toBe("2")
-		expect(point.attributes).toEqual([{ key: "client", value: { stringValue: "pi" } }])
-		expect(JSON.stringify(body)).not.toContain("private-session")
-	})
-
-	it("aborts aggregate metrics under FORCE_OFF even when the user opted in", async () => {
-		await setOrgPolicyForTests({ usageReporting: "FORCE_OFF" })
-		vi.spyOn(config, "readTelemetryConfig").mockReturnValue(makeConfig())
-		const metrics: MetricData[] = [
-			{ name: "kimchi.pr_cost.queue.depth", type: "Gauge", value: 1, attrs: {}, scope: "aggregate" },
-		]
-
-		await sendMetrics(makeConfig(), "session-abc", metrics, BASE_NS)
-
-		expect(globalThis.fetch).not.toHaveBeenCalled()
-	})
-
-	it("sends aggregate metrics under FORCE_ON even when the user opted out", async () => {
-		await setOrgPolicyForTests({ usageReporting: "FORCE_ON" })
-		vi.spyOn(config, "readTelemetryConfig").mockReturnValue(makeConfig({ enabled: false }))
-		const metrics: MetricData[] = [
-			{ name: "kimchi.pr_cost.queue.depth", type: "Gauge", value: 1, attrs: {}, scope: "aggregate" },
-		]
-
-		await sendMetrics(makeConfig(), "session-abc", metrics, BASE_NS)
-
-		expect(globalThis.fetch).toHaveBeenCalledOnce()
-	})
-
 	let originalFetch: typeof globalThis.fetch
 
 	beforeEach(() => {

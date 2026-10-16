@@ -5,15 +5,16 @@ import type { Api, Model, StopReason } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type AgentEndEvent, SessionManager } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { resolveEndpoints } from "../../config.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
+import { INFRA_BREAKER_THRESHOLD_ENV } from "../../upstream-retry-patch.js"
 import { createContext } from "../__mocks__/context.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles } from "../orchestration/model-roles.js"
 import { resetRedactionConfigCache } from "../pii-redaction/config.js"
 import * as redactor from "../pii-redaction/redactor.js"
-import * as diagnostics from "../work-attribution/diagnostics.js"
-import { flushWorkSummaries } from "../work-attribution/summary.js"
-import * as attribution from "../work-attribution.js"
+import { CI_VARIABLES } from "../pr-cost-reporting/automation.js"
+import { prepareProviderRequest } from "../request-identity/index.js"
 import {
 	evaluateFermentV2,
 	MAX_TODO_STATE_CHARS,
@@ -58,15 +59,14 @@ const usage = {
 	costUsd: 0.33,
 }
 
-let attributionDir: string
+let agentDir: string
 beforeEach(() => {
-	attributionDir = mkdtempSync(join(tmpdir(), "evaluator-attribution-"))
-	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
+	agentDir = mkdtempSync(join(tmpdir(), "evaluator-agent-"))
+	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir)
 })
-afterEach(async () => {
-	await flushWorkSummaries()
+afterEach(() => {
 	vi.unstubAllEnvs()
-	rmSync(attributionDir, { recursive: true, force: true })
+	rmSync(agentDir, { recursive: true, force: true })
 })
 
 let savedRedactionEnv: string | undefined
@@ -100,20 +100,20 @@ describe("Ferment V2 evaluator", () => {
 		vi.restoreAllMocks()
 	})
 
-	it.each([
-		"getWorkId",
-		"appendWorkRecord",
-		"recordProviderRequest",
-	] as const)("evaluates normally when %s fails", async (operation) => {
-		vi.spyOn(attribution, operation).mockImplementation(() => {
-			throw new Error("ledger unavailable")
-		})
-		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
+	it("lets the gateway report evaluator requests under the evaluated session", async () => {
+		for (const name of [...CI_VARIABLES, "KIMCHI_PR_COST_REPORTING", INFRA_BREAKER_THRESHOLD_ENV]) vi.stubEnv(name, "")
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
 		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"more work"}'))
-		const result = await evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext())
+		const ctx = evaluatorContext()
+		const result = await evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, ctx)
 		expect(result).toMatchObject({ verdict: "continue", reason: "more work" })
-		expect(completeMock).toHaveBeenCalledOnce()
-		expect(warning).toHaveBeenCalled()
+		const requestId = completeMock.mock.calls[0][2]?.headers?.["X-Request-Id"]
+		expect(requestId).toMatch(/^[0-9a-f-]{36}$/)
+		const wire = new Headers({ "X-Request-Id": String(requestId) })
+		prepareProviderRequest(wire, `${resolveEndpoints({ cwd: ctx.cwd }).openAiBaseUrl}/chat/completions`, {
+			bodyTags: [],
+		})
+		expect(wire.get("x-session-id")).toBe(ctx.sessionManager.getSessionId())
 	})
 	it("uses the session model in single-model mode", () => {
 		const ctx = evaluatorContext()
