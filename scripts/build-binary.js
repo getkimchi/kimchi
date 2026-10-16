@@ -56,6 +56,7 @@ if (target.os === "darwin" && platform() !== "darwin") {
 const crossTarget = targetArg ? target.bun : undefined
 const isCrossCompile = !!crossTarget
 process.env.KIMCHI_BUILD_TARGET_OS = target.os
+process.env.KIMCHI_BUILD_TARGET_ARCH = target.bun.endsWith("-arm64") ? "arm64" : "x64"
 
 function run(label, cmd) {
 	console.log(`\n→ ${label}`)

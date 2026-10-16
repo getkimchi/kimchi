@@ -16,6 +16,7 @@ export const SLASH_COMMANDS = {
 	mcp: { hint: "Show MCP server status" },
 	resources: { hint: "Manage resources (files, URLs, images)" },
 	tags: { hint: "Manage usage tracking tags" },
+	notifications: { hint: "Native desktop notifications: on, off, or test" },
 	tips: { hint: "Show all tips" },
 	help: { hint: "Show this help" },
 	exit: { hint: "Exit the application" },
