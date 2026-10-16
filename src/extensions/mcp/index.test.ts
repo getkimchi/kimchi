@@ -3,8 +3,8 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { BeforeProviderHeadersEvent, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
-import type { McpAdapterOptions, McpConfig, ServerEntry } from "pi-mcp-adapter/types"
 import { MCP_RUNTIME_REGISTER_EVENT, type McpRuntimeRegistrationRequest } from "pi-mcp-adapter"
+import type { McpAdapterOptions, McpConfig, ServerEntry } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import type * as CliArgs from "../../cli-args.js"
@@ -300,7 +300,9 @@ describe("upstream MCP adapter facade", () => {
 		}
 
 		/** Simulates the real adapter's synchronous answer on the event bus. */
-		function captureRuntimeRegistrations(harness: ReturnType<typeof createExtensionApi>): McpRuntimeRegistrationRequest[] {
+		function captureRuntimeRegistrations(
+			harness: ReturnType<typeof createExtensionApi>,
+		): McpRuntimeRegistrationRequest[] {
 			const requests: McpRuntimeRegistrationRequest[] = []
 			harness.api.events.on(MCP_RUNTIME_REGISTER_EVENT, (raw: unknown) => {
 				const request = raw as McpRuntimeRegistrationRequest

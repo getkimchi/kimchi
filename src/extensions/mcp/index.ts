@@ -5,6 +5,7 @@ import type {
 	ExtensionHandler,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
+import type { McpRuntimeRegistrationRequest } from "pi-mcp-adapter"
 import {
 	createMcpAdapter,
 	MCP_RUNTIME_REGISTER_EVENT,
@@ -12,7 +13,6 @@ import {
 	MCP_STATUS_EVENT,
 } from "pi-mcp-adapter"
 import type { McpAdapterOptions, McpConfig, ServerEntry } from "pi-mcp-adapter/types"
-import type { McpRuntimeRegistrationRequest } from "pi-mcp-adapter"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { getConfiguredLegacyMcpKeys } from "../../config.js"
 import {
@@ -27,8 +27,8 @@ import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { observeToolFiles } from "../work-attribution/file-observations.js"
 import { loadKimchiMcpConfig } from "./config.js"
-import { buildBuiltinGatewayServer, getGatewayAddresses, hasGatewayAddress } from "./gateway.js"
 import type { BuiltInGatewayServer } from "./gateway.js"
+import { buildBuiltinGatewayServer, getGatewayAddresses, hasGatewayAddress } from "./gateway.js"
 import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
 import {
 	brandMcpAdapterOwnedToolResult,
