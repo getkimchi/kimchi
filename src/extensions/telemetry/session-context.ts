@@ -3,7 +3,6 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getMe } from "../../api/me.js"
 import type { TelemetryConfig } from "../../config.js"
 import { IS_ACP_MODE } from "../../modes/acp/state.js"
-import { readEffectiveTelemetryConfig } from "../../telemetry-policy.js"
 import { getOsMetadata } from "../../utils/os-metadata.js"
 import { getVersion } from "../../utils.js"
 import { parentSessionId } from "../agent-worker-context.js"
@@ -327,38 +326,23 @@ export class TelemetryContext extends TurnCounter {
 	}
 
 	flushMetrics(): void {
-		const consent = readEffectiveTelemetryConfig()
-		if (!this.config.enabled || !consent.enabled || this.cumulative.prCost?.consentVersion !== consent.consentVersion)
-			this.cumulative.prCost = undefined
-		const prCost = this.cumulative.prCost
 		const metrics = collectMetrics(this.cumulative)
 		if (metrics.length > 0) {
 			this.track(
-				this.userEmailReady.then(() => {
-					const currentConsent = readEffectiveTelemetryConfig()
-					const allowPRCostMetrics =
-						this.config.enabled && currentConsent.enabled && prCost?.consentVersion === currentConsent.consentVersion
-					if (!allowPRCostMetrics && prCost === this.cumulative.prCost) this.cumulative.prCost = undefined
-					return sendMetrics(
+				this.userEmailReady.then(() =>
+					sendMetrics(
 						this.config,
 						this.resolveSessionId(),
-						metrics
-							.filter((m) => m.scope !== "aggregate" || (allowPRCostMetrics && prCost === this.cumulative.prCost))
-							.map((m) => ({
-								...m,
-								attrs: {
-									...m.attrs,
-									...(m.scope === "aggregate" ? {} : { "user.account_uuid": this.userId ?? "" }),
-								},
-							})),
+						metrics.map((m) => ({
+							...m,
+							attrs: {
+								...m.attrs,
+								"user.account_uuid": this.userId ?? "",
+							},
+						})),
 						this.sessionStartNano,
-						undefined,
-						(current) =>
-							this.config.enabled &&
-							prCost === this.cumulative.prCost &&
-							prCost?.consentVersion === current.consentVersion,
-					)
-				}),
+					),
+				),
 			)
 		}
 	}

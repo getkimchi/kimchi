@@ -30,7 +30,6 @@ import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../sha
 import { isWorkId } from "../shared/work-id.js"
 import { applyPRReportingHeaders, type RequestCorrelation, requestCorrelation } from "./request-identity/index.js"
 import { isHarnessSteer } from "./steer-marker.js"
-import { trackPRCostMetric } from "./telemetry/pr-cost.js"
 import { type BillingSource, captureBillingSource, requestTagSelector } from "./work-attribution/billing-source.js"
 import { readWorkBrowser } from "./work-attribution/browser.js"
 import { WorkBrowserPanel } from "./work-attribution/browser-panel.js"
@@ -756,8 +755,6 @@ export function createWorkAttributionExtension(
 			// Model matching runs beside the turn and never delays it. Without a verdict, an input keeps the attribution
 			// it has with matching off.
 			const matchingOn = workMatchingEnabled() && workMatchingAvailable(ctx.modelRegistry, ctx.model)
-			let started = false
-			let matchingOutcome: "failed" | undefined
 			try {
 				bind(ctx)
 				const key = workLedgerPath(ctx)
@@ -870,7 +867,6 @@ export function createWorkAttributionExtension(
 				}
 				// Without a verified account and repository, matching stays unresolved.
 				if (!model || !matchingOn || !captured) return
-				started = true
 				// The turn starts now. Its requests are held in memory until the decision gives them their work, so
 				// matching is never on the user's critical path; tools wait for it instead (see message_end).
 				useSegment("session", "matching-pending")
@@ -962,9 +958,6 @@ export function createWorkAttributionExtension(
 						if (!decided && unchanged())
 							decided = settle("session", outcome === "limited" ? "matching-limited" : "matching-failed")
 						return decided
-					} finally {
-						if (generation === inputGeneration)
-							trackPRCostMetric({ kind: "matching", outcome: outcome ?? getWorkSegment(ctx)?.attribution ?? "unknown" })
 					}
 				}
 				match.settled = decide()
@@ -976,14 +969,7 @@ export function createWorkAttributionExtension(
 						if (activeMatch === match) activeMatch = undefined
 					})
 			} catch (error) {
-				matchingOutcome = "failed"
 				warnWorkAttribution(ctx, error)
-			} finally {
-				if (!started && generation === inputGeneration)
-					trackPRCostMetric({
-						kind: "matching",
-						outcome: matchingOutcome ?? getWorkSegment(ctx)?.attribution ?? "unknown",
-					})
 			}
 		}
 		pi.on("before_provider_headers", (event, ctx) => {

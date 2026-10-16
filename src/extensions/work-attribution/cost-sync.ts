@@ -7,7 +7,6 @@ import { writeFileAtomic, writeFileDurably } from "../../config/json.js"
 import { loadConfig } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { readE2eSeam } from "../e2e-seam.js"
-import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { BEFORE_PAGE_TIMEOUT_MESSAGE, type BillingRow, billingResponse, lookupRows } from "./billing-api.js"
 import {
@@ -220,10 +219,6 @@ async function publishReports(
 	polls: Record<string, BillingPoll>,
 	assertLease: () => void,
 ): Promise<boolean> {
-	trackPRCostMetric({
-		kind: "unpriced",
-		value: report.requests.filter((request) => request.priceStatus !== "priced").length,
-	})
 	// Shared PR totals and correction links connect works, transitively; a saved report covers the whole component.
 	const neighbours = new Map<string, Set<string>>()
 	for (const ids of [
