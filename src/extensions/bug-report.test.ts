@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import type { BugReportBundle } from "./bug-report.js"
 
 const { default: bugReportDestinationExtension, _internal, deliveryDeps } = await import("./bug-report.js")
 
-function makeBundle() {
+function makeBundle(): BugReportBundle {
 	return {
 		metadata: {
 			id: "rpt-1",
@@ -14,7 +15,8 @@ function makeBundle() {
 			crashes: [{ message: "boom near jose@example.com" }],
 		},
 		summary: "User jose@example.com hit an error with sk-abc1234567890 in env.",
-		sessionJsonl: '{"role":"user","content":[{"type":"text","text":"my email is jose@example.com"}]}\n',
+		sessionJsonl:
+			'{"role":"user","content":[{"type":"text","text":"my email is jose@example.com","password":"hunter2-plain"}]}\n',
 	}
 }
 
@@ -25,12 +27,13 @@ describe("bug-report kimchi destination", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("registers the scrub and deliver hooks when loaded", () => {
-		// The pi hook is unused — this extension only installs globals.
-		// Cast through to satisfy the ExtensionAPI factory signature without a mock.
-		;(bugReportDestinationExtension as unknown as () => void)()
+	it("registers the scrub and deliver hooks and the /bug command when loaded", () => {
+		const registeredCommands: string[] = []
+		const pi = { registerCommand: (name: string) => registeredCommands.push(name) } as never
+		bugReportDestinationExtension(pi)
 		expect(globalThis.__kimchiBugReportScrub).toBeInstanceOf(Function)
 		expect(globalThis.__kimchiBugReportDeliver).toBeInstanceOf(Function)
+		expect(registeredCommands).toEqual(["bug"])
 	})
 
 	it("scrubs PII/secrets across every bundle field", async () => {
@@ -44,10 +47,40 @@ describe("bug-report kimchi destination", () => {
 		expect(scrubbed.metadata.id).toBe("rpt-1")
 	})
 
+	it("redacts sensitive JSON keys inside the transcript (key-name rules still apply)", async () => {
+		const scrubbed = await _internal.scrubBundle(makeBundle())
+		// The plain-looking password value must be caught by the key-name rule,
+		// which only works when the JSONL is parsed per line.
+		expect(scrubbed.sessionJsonl).not.toContain("hunter2-plain")
+		expect(scrubbed.sessionJsonl).toContain("[REDACTED-SECRET_FIELD]")
+		expect(scrubbed.sessionJsonl).toContain('"password"')
+		expect(scrubbed.sessionJsonl?.endsWith("\n")).toBe(true)
+	})
+
+	it("redacts non-JSON transcript lines as plain text", async () => {
+		const bundle = makeBundle()
+		bundle.sessionJsonl = "not json: jose@example.com\n"
+		const scrubbed = await _internal.scrubBundle(bundle)
+		expect(scrubbed.sessionJsonl).not.toContain("jose@example.com")
+		expect(scrubbed.sessionJsonl).toContain("not json:")
+	})
+
 	it("does not mutate the input bundle", async () => {
 		const bundle = makeBundle()
 		await _internal.scrubBundle(bundle)
 		expect(JSON.stringify(bundle)).toContain("jose@example.com")
+	})
+
+	it("never creates a gist when the transcript is not included", async () => {
+		const createGist = vi.spyOn(deliveryDeps, "createGist")
+		const openUrl = vi.spyOn(deliveryDeps, "openUrl").mockResolvedValue(undefined as unknown)
+		const bundle = makeBundle()
+		bundle.sessionJsonl = undefined
+		const delivery = await _internal.deliverToKimchi(bundle)
+		expect(createGist).not.toHaveBeenCalled()
+		expect(delivery.message).toContain("no session data uploaded")
+		const url = openUrl.mock.calls[0][0] as string
+		expect(url).not.toContain("gist.github.com")
 	})
 
 	it("delivers by opening the getkimchi issue form and attaches the gist URL", async () => {

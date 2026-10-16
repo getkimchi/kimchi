@@ -1144,21 +1144,28 @@ index 55624605ababf2f1f129e9963cdbbe3ca27f5566..5d5f70ae62bf0e160567cf1f2b715154
          const agentsSkillsDir = join(currentDir, ".agents", "skills");
          if (agentsSkillsDir !== userAgentsSkillsDir && existsSync(agentsSkillsDir)) {
 diff --git a/dist/modes/interactive/bug-report.js b/dist/modes/interactive/bug-report.js
-index 3918684c7c71d493d977745c8e86d5b7bcb843e1..82a11692064023abc63056bb6f82ea050275c22e 100644
+index 3918684c7c71d493d977745c8e86d5b7bcb843e1..6231c0eb01399ae1001f73e8c0fddb8e37173ac2 100644
 --- a/dist/modes/interactive/bug-report.js
 +++ b/dist/modes/interactive/bug-report.js
-@@ -10,7 +10,9 @@ import { ExtensionEditorComponent } from "./components/extension-editor.js";
+@@ -10,7 +10,16 @@ import { ExtensionEditorComponent } from "./components/extension-editor.js";
  import { ExtensionSelectorComponent } from "./components/extension-selector.js";
  import { createShareTrailingEntries } from "./session-share.js";
  import { theme } from "./theme/theme.js";
 -const DISCLAIMER = "This report goes to the Pi developers (Earendil) and is not shared publicly. It includes your pi version, operating system, the current model and provider configuration (without API keys), loaded extensions, settings, and provider error diagnostics from this session.";
++const EARENDIL_DISCLAIMER = "This report goes to the Pi developers (Earendil) and is not shared publicly. It includes your pi version, operating system, the current model and provider configuration (without API keys), loaded extensions, settings, and provider error diagnostics from this session.";
 +// kimchi-dev: branding/destination text points at the kimchi tracker; the
 +// destination itself is delegated through __kimchiBugReportDeliver (below).
-+const DISCLAIMER = "This report is filed on the Kimchi GitHub issue tracker (getkimchi/kimchi). All session data — transcript, summary, diagnostics — is PII/secret-scrubbed before it leaves this machine. It includes your kimchi version, operating system, the current model and provider configuration (without API keys), loaded extensions, settings, and provider error diagnostics from this session.";
++// The kimchi disclaimer only applies when the destination hook is registered
++// — without it the stock Earendil flow (and its truthful disclaimer) runs.
++const KIMCHI_DISCLAIMER = "This report is filed on the Kimchi GitHub issue tracker (getkimchi/kimchi). All session data — transcript, summary, diagnostics — is PII/secret-scrubbed before it leaves this machine. It includes your kimchi version, operating system, the current model and provider configuration (without API keys), loaded extensions, settings, and provider error diagnostics from this session.";
++// Resolve lazily: the kimchi destination hook is installed when the host's
++// extensions load, which happens after this module initializes.
++const kimchiDestinationActive = () => typeof globalThis.__kimchiBugReportDeliver === "function";
++const bugReportDisclaimer = () => (kimchiDestinationActive() ? KIMCHI_DISCLAIMER : EARENDIL_DISCLAIMER);
  const TRANSCRIPT_NOTE = "The transcript contains your messages, model output, tool calls and their results, including file contents and command output read during this session.";
  /** Run the `/bug` flow: consent, optional summary, then upload or export. */
  export async function reportBug(context, initialHint) {
-@@ -46,6 +48,10 @@ export async function reportBug(context, initialHint) {
+@@ -46,6 +55,10 @@ export async function reportBug(context, initialHint) {
      let bundle;
      try {
          bundle = buildBundle(context.session, options, summary);
@@ -1169,7 +1176,16 @@ index 3918684c7c71d493d977745c8e86d5b7bcb843e1..82a11692064023abc63056bb6f82ea05
      }
      catch (error) {
          context.showError(`Failed to build bug report: ${errorMessage(error)}`);
-@@ -80,7 +86,14 @@ async function promptForOptions(context, initialHint) {
+@@ -64,7 +77,7 @@ export async function reportBug(context, initialHint) {
+     await exportZip(context, bundle);
+ }
+ async function promptForOptions(context, initialHint) {
+-    const hint = await input(context, "Report a bug", `${DISCLAIMER}\n\nWhat went wrong? (optional)`, initialHint);
++    const hint = await input(context, "Report a bug", `${bugReportDisclaimer()}\n\nWhat went wrong? (optional)`, initialHint);
+     if (hint === null)
+         return undefined;
+     const transcript = await choose(context, "Include the session transcript?", ["Yes, include the transcript", "No"], TRANSCRIPT_NOTE);
+@@ -80,14 +93,23 @@ async function promptForOptions(context, initialHint) {
          includeSummary = summary !== "No";
      }
      const description = hint.trim();
@@ -1179,13 +1195,23 @@ index 3918684c7c71d493d977745c8e86d5b7bcb843e1..82a11692064023abc63056bb6f82ea05
 +    const kimchiDelivery = typeof globalThis.__kimchiBugReportDeliver === "function";
 +    const uploadLabel = kimchiDelivery ? "File on GitHub" : "Upload Report";
 +    const uploadNote = kimchiDelivery
-+        ? "Files the report on github.com/getkimchi/kimchi in your browser."
++        ? "Files the report on github.com/getkimchi/kimchi in your browser. When a transcript is included, the scrubbed report data is uploaded to a private GitHub gist linked from the issue (to your own GitHub account via `gh`); without a transcript, no upload happens."
 +        : `Upload sends the report to ${new URL(getRadiusGatewayUrl()).host}.`;
 +    const delivery = await choose(context, "Bug report", [uploadLabel, "Export as Zip", "Cancel"], `Description: ${description || "none"}\nTranscript: ${includeSession ? "included" : "not included"}\nSummary: ${includeSummary ? `written by ${context.session.model?.name ?? "the current model"}` : "none"}\n\n${uploadNote} Export writes a zip archive to the current directory instead.`);
      if (!delivery || delivery === "Cancel")
          return undefined;
      return {
-@@ -118,6 +131,19 @@ function buildBundle(session, options, summary) {
+         hint: description || undefined,
+         includeSession,
+         includeSummary,
+-        delivery: delivery === "Upload Report" ? "upload" : "zip",
++        // kimchi-dev: compare against the displayed label — with the custom
++        // destination hook the upload option reads "File on GitHub".
++        delivery: delivery === uploadLabel ? "upload" : "zip",
+     };
+ }
+ function buildBundle(session, options, summary) {
+@@ -118,6 +140,19 @@ function buildBundle(session, options, summary) {
  async function upload(context, bundle) {
      const loader = showLoader(context, "Uploading bug report...");
      try {

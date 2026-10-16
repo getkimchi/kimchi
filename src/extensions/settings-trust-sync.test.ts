@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../settings-watcher.js", () => ({
 	setSettingsProjectTrusted: vi.fn(),
+	setToolGateSession: vi.fn(),
 }))
 
 vi.mock("../resources/definitions.js", () => ({
@@ -11,10 +12,11 @@ vi.mock("../resources/definitions.js", () => ({
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { isProjectScopeAllowed, resetProjectScopeTrustForTests } from "../project-scope-trust.js"
 import { invalidateResourceDefinitionsCache } from "../resources/definitions.js"
-import { setSettingsProjectTrusted } from "../settings-watcher.js"
+import { setSettingsProjectTrusted, setToolGateSession } from "../settings-watcher.js"
 import settingsTrustSyncExtension from "./settings-trust-sync.js"
 
 const mockSync = vi.mocked(setSettingsProjectTrusted)
+const mockToolGate = vi.mocked(setToolGateSession)
 const mockInvalidate = vi.mocked(invalidateResourceDefinitionsCache)
 
 interface SessionStartCtx {
@@ -39,6 +41,7 @@ function sessionStartHandler(): SessionStartHandler {
 
 beforeEach(() => {
 	mockSync.mockReset()
+	mockToolGate.mockReset()
 	mockInvalidate.mockReset()
 	resetProjectScopeTrustForTests()
 })
@@ -52,6 +55,11 @@ describe("settingsTrustSyncExtension", () => {
 	it("syncs a trusted decision onto the settings watcher at session start", () => {
 		sessionStartHandler()({}, { isProjectTrusted: () => true })
 		expect(mockSync).toHaveBeenCalledWith(true)
+	})
+
+	it("syncs the session cwd and trust onto tool gating", () => {
+		sessionStartHandler()({}, { isProjectTrusted: () => true, cwd: "/work/session-a" })
+		expect(mockToolGate).toHaveBeenCalledWith("/work/session-a", true)
 	})
 
 	it("syncs an untrusted decision at session start", () => {

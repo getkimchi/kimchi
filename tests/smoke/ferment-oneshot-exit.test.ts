@@ -38,7 +38,7 @@ interface JsonlEntry {
 }
 
 describe("--ferment-oneshot process lifecycle", () => {
-	// LLM-2404: the benchmark observed `agent_end` after Ferment completion, but
+	// The benchmark observed `agent_end` after Ferment completion, but
 	// the kimchi process stayed alive until Harbor killed it. This reproduces the
 	// real linked-worker one-shot path and asserts the CLI process exits cleanly.
 	it("exits after ferment completion, final assistant message, and agent_end", async () => {
