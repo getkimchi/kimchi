@@ -5,6 +5,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 	ExtensionHandler,
+	ExtensionToolContext,
 	RegisteredCommand,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
@@ -315,7 +316,16 @@ async function emitHandlers(host: ProbeHost, event: "session_start" | "session_s
 async function executeGateway(host: ProbeHost, params: Record<string, unknown>): Promise<GatewayResult> {
 	const gateway = host.tools.get("mcp")
 	if (!gateway) throw new Error("pi-mcp-adapter did not register its MCP gateway")
-	return gateway.execute(`probe-${randomUUID()}`, params, host.context.signal, undefined, host.context)
+	// upstream pi: tool execute now receives an ExtensionToolContext (ExtensionContext
+	// + tools/executeTool). The probe synthesizes only an ExtensionContext; the
+	// adapter gateway does not call executeTool, so widening here is safe.
+	return gateway.execute(
+		`probe-${randomUUID()}`,
+		params,
+		host.context.signal,
+		undefined,
+		host.context as ExtensionToolContext,
+	)
 }
 
 export class UpstreamMcpProbe implements McpProbe {
@@ -446,6 +456,8 @@ export class UpstreamMcpProbe implements McpProbe {
 		})
 		try {
 			signal.throwIfAborted()
+			// Same host-managed trust flag as index.ts: project trust is Kimchi's gate.
+			process.env.KIMCHI_MANAGES_MCP_PROJECT_TRUST = "1"
 			createMcpAdapter({ config })(host.api)
 			await Promise.race([emitHandlers(host, "session_start"), aborted])
 			signal.throwIfAborted()

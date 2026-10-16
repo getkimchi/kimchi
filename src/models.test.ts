@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
+import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "./credential-staleness.js"
 import { AUTO_MODEL_DESCRIPTION } from "./extensions/auto-model/constants.js"
@@ -1737,7 +1738,10 @@ describe("openai Responses API routing", () => {
 
 	function openaiProviderModels(models: unknown[]) {
 		const { providers } = buildModelsConfig(models as never, "https://example.invalid")
-		return providers["kimchi-dev/openai"]?.models ?? []
+		// upstream pi splits ProviderModelConfig into chat/image/classifier union
+		// members; every model built here is a chat model, so narrow the array
+		// elements to the chat shape.
+		return (providers["kimchi-dev/openai"]?.models ?? []) as Array<Extract<ProviderModelConfig, { type?: "chat" }>>
 	}
 
 	it("routes Responses-capable OpenAI models through openai-responses", () => {

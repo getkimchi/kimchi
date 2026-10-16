@@ -78,8 +78,9 @@ const BUDGET = {
 	/** Total canonical tool surface (18 tools after the DAP entry/session and
 	 *  Agent-continuation deferrals, the Skill resource gate, the mcp
 	 *  zero-server registration gate, and the lsp no-server detection gate;
-	 *  Includes the redesigned bash_control schema; ~2% headroom over
-	 *  measured 5802). Dev
+	 *  Includes the redesigned bash_control schema; ~1% headroom over
+	 *  measured 5938 after upstream pi grew the upstream builtin tool definitions).
+	 *  Dev
 	 *  sessions in a repo WITH a detected language server will exceed this by
 	 *  the five gated lsp_* tools — that is by design, see LSP_TOOL_NAMES in
 	 *  lsp.ts. */

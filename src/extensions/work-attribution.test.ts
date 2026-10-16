@@ -21,7 +21,7 @@ import { type Component, stripTerminalSequences, type TUI } from "@earendil-work
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { installGlobalFetchInstrumentation } from "../http/instrument-fetch.js"
 import { readPlanWorkId, savePlanMarkdown } from "../shared/planning/plan-markdown.js"
-import { createCommandContext, createContext } from "./__mocks__/context.js"
+import { createCommandContext, createContext, createToolContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { testTheme } from "./__mocks__/theme.js"
 import { createWorkScopeSnapshot } from "./__mocks__/work-scope.js"
@@ -347,7 +347,7 @@ describe("local work attribution", () => {
 			api: "openai-completions" as const,
 			baseUrl: "https://model.invalid/v1",
 		}
-		const ctx = createContext({ cwd: dir, model })
+		const ctx = createToolContext({ cwd: dir, model })
 		const api = createExtensionApi()
 		if (failure === "network") requestTimingExtension(api.api)
 		createWorkAttributionExtension()(api.api)

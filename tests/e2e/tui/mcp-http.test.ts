@@ -158,7 +158,10 @@ test("settles a tool call when a connected HTTP MCP server becomes unavailable",
 			await waitForText(terminal, "Kimchi recovered from the unavailable HTTP MCP server.", {
 				timeoutMs: STREAM_TIMEOUT_MS,
 			})
-			expect(toolResultText(fixture.fake.requests, echo)).toContain("Failed to call tool")
+			// adapter 5.x phrases the reconnect failure as availability, e.g.
+			// Server "fixture" not available (last failed …), while 2.34 said
+			// "Failed to call tool"; both are bounded model-facing errors.
+			expect(toolResultText(fixture.fake.requests, echo)).toMatch(/Failed to call tool|not available|Failed to connect/)
 			trace.step("HTTP transport loss became a model-facing error and the turn settled")
 		},
 	)

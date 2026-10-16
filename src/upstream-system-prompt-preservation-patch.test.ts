@@ -1,193 +1,110 @@
 /**
- * Regression tests for Pi's native `setActiveToolsByName()` override
- * preservation and Kimchi's resource-reload patch.
+ * Regression tests for the prompt lifecycle Kimchi's
+ * prompt-enrichment extensions rely on.
  *
- * Why: kimchi's prompt-enrichment extension replaces the system prompt on
- * every `before_agent_start`. Mid-run `pi.setActiveTools()` calls (ferment
- * tool profiles, permissions, tool visibility) used to reset
- * `agent.state.systemPrompt` to the rebuilt pi-mono default prompt, and — via
- * the prepareNextTurn patch — the model then ran on the default prompt for
- * the rest of the agent run (until the next real user prompt). Follow-up
- * messages never re-fire `before_agent_start`, so the clobber persisted.
+ * History: on pi 0.85, `setActiveToolsByName()` and resource reloads reset
+ * `agent.state.systemPrompt` to the rebuilt pi-mono default prompt, and
+ * extension-triggered turns (`sendCustomMessage({ triggerTurn: true })`)
+ * never fired `before_agent_start` — so an injected prompt/facts vanished
+ * mid-run. Kimchi patched both.
  *
- * These tests pin two things:
- *   1. the installed dist actually contains the patch (source assertion —
- *      fails fast if the patch is lost on upgrade), and
- *   2. the real prototype method preserves a non-base prompt while still
- *      rebuilding the base prompt and the tool set.
+ * upstream pi made both behaviors native, and the patches were dropped during the
+ * upgrade:
+ *   1. Extension `systemPrompt` results become a `forceSystemPrompt`
+ *      projection installed per request
+ *      (`_installAgentForcedPromptProjection`); tool-set rebuilds only touch
+ *      `_baseSystemPromptOptions` and never the projection.
+ *   2. `_startRun` fires `before_agent_start` for `messageType: "custom"`
+ *      triggers exactly like user prompts, injecting handler `message`s and
+ *      applying handler prompt selections.
+ *
+ * These tests pin that the installed 1.2 dist still provides the behavior
+ * (source assertions fail fast on an upstream regression), plus one
+ * behavioral check on the forced-prompt projection.
  */
 
+import { readFileSync } from "node:fs"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 
 type AnyFn = (...args: unknown[]) => unknown
 
 const sessionProto = AgentSession.prototype as unknown as Record<string, AnyFn>
 
-/** Minimal fake `this` for calling AgentSession prototype methods directly. */
-function makeFakeSession(basePrompt: string) {
-	const tools = new Map([
-		["read", { name: "read", description: "read a file", parameters: {} }],
-		["bash", { name: "bash", description: "run a command", parameters: {} }],
-	])
-	// Inherit from the real prototype so every collaborator method invoked
-	// internally (_rebuildSystemPrompt, getActiveToolNames, …) resolves.
-	// biome-ignore lint/suspicious/noExplicitAny: fake `this` for prototype-method invocation
-	const fake: any = Object.create(AgentSession.prototype)
-	Object.assign(fake, {
-		agent: { state: { tools: [], systemPrompt: basePrompt } },
-		_baseSystemPrompt: basePrompt,
-		_toolRegistry: tools,
-		_toolPromptSnippets: new Map(),
-		_toolPromptGuidelines: new Map(),
-		_cwd: "/tmp/fake-cwd",
-		_resourceLoader: {
-			getSystemPrompt: () => undefined,
-			getAppendSystemPrompt: () => [],
-			getSkills: () => ({ skills: [] }),
-			getAgentsFiles: () => ({ agentsFiles: [] }),
-			extendResources: vi.fn(),
-		},
-		_extensionRunner: {
-			hasHandlers: () => true,
-			emitResourcesDiscover: vi.fn(async () => ({
-				skillPaths: [{ path: "/tmp/fake-skills", extensionPath: "/tmp/fake-ext" }],
-				promptPaths: [],
-				themePaths: [],
-			})),
-		},
-		// Instance stubs so extendResourcesFromExtensions doesn't reach further
-		// into prototype internals (getExtensionSourceLabel etc.).
-		buildExtensionResourcePaths: vi.fn(() => []),
-	})
-	return fake
+function runnerSource(): string {
+	// The package exports no subpaths — locate the installed dist directly.
+	return readFileSync(
+		new URL("../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/runner.js", import.meta.url),
+		"utf8",
+	)
 }
 
-describe("upstream system-prompt preservation patch", () => {
-	it("is present in the installed dist (setActiveToolsByName + resource reload)", () => {
-		const setActiveSource = String(sessionProto.setActiveToolsByName)
-		expect(setActiveSource).toContain("_systemPromptOverride")
-
-		const reloadSource = String(sessionProto.extendResourcesFromExtensions)
-		expect(reloadSource).toContain("kimchi-dev: preserve a before_agent_start prompt")
+describe("upstream before_agent_start on extension-triggered turns (native since 1.2)", () => {
+	it("sendCustomMessage triggerTurn starts a run from a custom trigger", () => {
+		expect(String(sessionProto.sendCustomMessage)).toContain('_startRun({ messageType: "custom"')
 	})
 
-	it("setActiveToolsByName preserves an extension-installed prompt while rebuilding tools and base", () => {
-		const fake = makeFakeSession("PI BASE PROMPT")
-		fake.agent.state.systemPrompt = "KIMCHI OVERRIDE PROMPT"
-		fake._systemPromptOverride = "KIMCHI OVERRIDE PROMPT"
-
-		sessionProto.setActiveToolsByName.call(fake, ["read", "bash"])
-
-		expect(fake.agent.state.systemPrompt).toBe("KIMCHI OVERRIDE PROMPT")
-		// Tool set is still replaced:
-		expect(fake.agent.state.tools.map((t: { name: string }) => t.name)).toEqual(["read", "bash"])
-		// Base prompt is still rebuilt from the new tool set (no longer the old base):
-		expect(fake._baseSystemPrompt).not.toBe("PI BASE PROMPT")
+	it("_prepareRun fires before_agent_start for custom triggers and injects handler messages", () => {
+		const source = String(sessionProto._prepareRun)
+		expect(source).toContain("emitBeforeAgentStart(trigger")
+		expect(source).toContain('trigger.messageType === "custom"')
+		expect(source).toContain("result.messages")
 	})
 
-	it("setActiveToolsByName resets to the rebuilt base prompt when no override is active", () => {
-		const fake = makeFakeSession("PI BASE PROMPT")
-		// state.systemPrompt === _baseSystemPrompt (same reference): no extension override.
-		sessionProto.setActiveToolsByName.call(fake, ["read"])
-
-		expect(fake.agent.state.systemPrompt).toBe(fake._baseSystemPrompt)
-		expect(fake.agent.state.systemPrompt).not.toBe("PI BASE PROMPT")
+	it("runner maps a handler's systemPrompt to forceSystemPrompt", () => {
+		expect(runnerSource()).toContain("currentOptions.forceSystemPrompt = result.systemPrompt")
 	})
 
-	it("setActiveToolsByName preserves the override even when the tool set is emptied", () => {
-		const fake = makeFakeSession("PI BASE PROMPT")
-		fake.agent.state.systemPrompt = "KIMCHI OVERRIDE PROMPT"
-		fake._systemPromptOverride = "KIMCHI OVERRIDE PROMPT"
-
-		// ferment plan-review suppression calls pi.setActiveTools([]).
-		sessionProto.setActiveToolsByName.call(fake, [])
-
-		expect(fake.agent.state.systemPrompt).toBe("KIMCHI OVERRIDE PROMPT")
-		expect(fake.agent.state.tools).toEqual([])
-	})
-
-	it("extendResourcesFromExtensions preserves an extension-installed prompt", async () => {
-		const fake = makeFakeSession("PI BASE PROMPT")
-		fake.agent.state.systemPrompt = "KIMCHI OVERRIDE PROMPT"
-		fake._systemPromptOverride = "KIMCHI OVERRIDE PROMPT"
-
-		await sessionProto.extendResourcesFromExtensions.call(fake, "startup")
-
-		expect(fake.agent.state.systemPrompt).toBe("KIMCHI OVERRIDE PROMPT")
-		expect(fake._baseSystemPrompt).not.toBe("PI BASE PROMPT")
-	})
-
-	it("extendResourcesFromExtensions resets to the rebuilt base prompt when no override is active", async () => {
-		const fake = makeFakeSession("PI BASE PROMPT")
-		// state.systemPrompt === _baseSystemPrompt (same reference): no extension override.
-		await sessionProto.extendResourcesFromExtensions.call(fake, "startup")
-
-		expect(fake.agent.state.systemPrompt).toBe(fake._baseSystemPrompt)
-		expect(fake.agent.state.systemPrompt).not.toBe("PI BASE PROMPT")
+	it("extension messages follow the starting message in the run", () => {
+		// Ordering contract the old patch established: trigger message first,
+		// then pending nextTurn messages, then handler-injected messages.
+		const source = String(sessionProto._prepareRun)
+		const triggerIdx = source.indexOf("messages.push(trigger.message)")
+		const handlerIdx = source.indexOf("for (const msg of result.messages)")
+		expect(triggerIdx).toBeGreaterThanOrEqual(0)
+		expect(handlerIdx).toBeGreaterThan(triggerIdx)
 	})
 })
 
-describe("upstream before_agent_start on extension-triggered turns patch", () => {
-	function makeTriggerTurnSession(beforeResult: unknown) {
-		const fake = makeFakeSession("PI BASE PROMPT")
-		fake._runAgentPrompt = vi.fn(async () => {})
-		fake._extensionRunner = {
-			emitBeforeAgentStart: vi.fn(async () => beforeResult),
+describe("upstream forced-prompt projection (replaces the _systemPromptOverride patch)", () => {
+	it("setActiveToolsByName and resource reloads never write agent.state.systemPrompt", () => {
+		for (const method of ["setActiveToolsByName", "_setActiveTools", "extendResourcesFromExtensions"]) {
+			const source = String(sessionProto[method])
+			expect(source).not.toContain("state.systemPrompt =")
 		}
-		return fake
-	}
-
-	const customMessage = {
-		customType: "ferment_continuation_nudge",
-		content: [{ type: "text", text: "continue the ferment" }],
-		display: false,
-		details: undefined,
-	}
-
-	it("is present in the installed dist (sendCustomMessage triggerTurn)", () => {
-		const source = String(sessionProto.sendCustomMessage)
-		expect(source).toContain("emitBeforeAgentStart")
 	})
 
-	it("triggerTurn applies an extension-installed prompt and prepends extension messages", async () => {
-		const fake = makeTriggerTurnSession({
-			systemPrompt: "KIMCHI OVERRIDE PROMPT",
-			messages: [{ customType: "injected", content: [{ type: "text", text: "ctx" }], display: false }],
-		})
+	it("installs a projection replacing the request's leading system message with the forced text", async () => {
+		const session: Record<string, unknown> = {
+			agent: { transformContext: undefined },
+			_runSystemPromptOptions: { forceSystemPrompt: "KIMCHI FORCED PROMPT" },
+		}
+		sessionProto._installAgentForcedPromptProjection.call(session)
 
-		await sessionProto.sendCustomMessage.call(fake, customMessage, { triggerTurn: true })
+		const transform = (
+			session.agent as { transformContext: (msgs: unknown[], signal?: AbortSignal) => Promise<unknown[]> }
+		).transformContext
+		const out = await transform([
+			{ role: "system", content: "PI BASE PROMPT", timestamp: 1 },
+			{ role: "user", content: "hi", timestamp: 2 },
+		])
 
-		expect(fake.agent.state.systemPrompt).toBe("KIMCHI OVERRIDE PROMPT")
-		const runMessages = fake._runAgentPrompt.mock.calls[0][0] as Array<{ role: string; customType: string }>
-		expect(runMessages.map((m) => m.customType)).toEqual(["injected", "ferment_continuation_nudge"])
+		const messages = out as Array<{ role: string; content: string }>
+		expect(messages[0]).toMatchObject({ role: "system", content: "KIMCHI FORCED PROMPT" })
+		for (const m of messages.slice(1)) expect(m.role).not.toBe("system")
 	})
 
-	it("triggerTurn resets to the base prompt when no extension overrides it", async () => {
-		const fake = makeTriggerTurnSession(undefined)
-		fake.agent.state.systemPrompt = "STALE OVERRIDE"
+	it("projection passes the context through unchanged when no prompt is forced", async () => {
+		const session: Record<string, unknown> = {
+			agent: { transformContext: undefined },
+			_runSystemPromptOptions: undefined,
+		}
+		sessionProto._installAgentForcedPromptProjection.call(session)
 
-		await sessionProto.sendCustomMessage.call(fake, customMessage, { triggerTurn: true })
-
-		expect(fake.agent.state.systemPrompt).toBe("PI BASE PROMPT")
-	})
-
-	it("triggerTurn accepts plain-string content (completion notifications, feedback nudges)", async () => {
-		const fake = makeTriggerTurnSession({ systemPrompt: "KIMCHI OVERRIDE PROMPT" })
-
-		await sessionProto.sendCustomMessage.call(
-			fake,
-			{ customType: "agent_completion", content: "long task completed", display: true },
-			{ triggerTurn: true },
-		)
-
-		expect(fake.agent.state.systemPrompt).toBe("KIMCHI OVERRIDE PROMPT")
-		expect(fake._extensionRunner.emitBeforeAgentStart).toHaveBeenCalledWith(
-			"long task completed",
-			undefined,
-			"PI BASE PROMPT",
-			undefined,
-		)
-		expect(fake._runAgentPrompt).toHaveBeenCalledOnce()
+		const transform = (
+			session.agent as { transformContext: (msgs: unknown[], signal?: AbortSignal) => Promise<unknown[]> }
+		).transformContext
+		const input = [{ role: "system", content: "PI BASE PROMPT", timestamp: 1 }]
+		expect(await transform(input)).toEqual(input)
 	})
 })

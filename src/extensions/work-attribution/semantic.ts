@@ -206,19 +206,32 @@ async function readIntent(workId: string, repo: string, account: WorkAccount): P
 
 async function addPlan(intent: WorkIntent): Promise<WorkIntent> {
 	const directory = join(getAgentDir(), "work", intent.workId, "plans")
-	const files = await opendir(directory).catch((error: NodeJS.ErrnoException) => {
-		if (error.code !== "ENOENT") throw new Error("Cannot read retained work plans")
-	})
-	if (!files) return intent
-	let newest: { path: string; mtime: number } | undefined
-	let count = 0
-	for await (const file of files) {
-		if (++count > 32) throw new WorkMatchingLimit("a saved task has more than 32 plan versions")
-		if (!file.isFile() || !file.name.endsWith(".md")) continue
-		const path = join(directory, file.name)
-		const info = await stat(path)
-		if (!newest || info.mtimeMs > newest.mtime) newest = { path, mtime: info.mtimeMs }
+	try {
+		const files = await opendir(directory)
+		let newest: { path: string; mtime: number } | undefined
+		let count = 0
+		for await (const file of files) {
+			if (++count > 32) throw new WorkMatchingLimit("a saved task has more than 32 plan versions")
+			if (!file.isFile() || !file.name.endsWith(".md")) continue
+			const path = join(directory, file.name)
+			const info = await stat(path)
+			if (!newest || info.mtimeMs > newest.mtime) newest = { path, mtime: info.mtimeMs }
+		}
+		return finishPlan(intent, newest)
+	} catch (error) {
+		// Some runtimes surface a missing directory lazily while the handle iterates rather than on
+		// opendir itself, so the whole scan, not just the open, tolerates ENOENT. Matching limits
+		// (size/version caps) keep their shape for /work reporting; any other failure refuses the
+		// candidate rather than hiding unreadable history.
+		if (error instanceof WorkMatchingLimit) throw error
+		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return intent
+		throw new Error("Cannot read retained work plans")
 	}
+}
+async function finishPlan(
+	intent: WorkIntent,
+	newest: { path: string; mtime: number } | undefined,
+): Promise<WorkIntent> {
 	if (!newest) return intent
 	if ((await stat(newest.path)).size > 16000) throw new WorkMatchingLimit("a saved plan is larger than 16,000 bytes")
 	const content = await readFile(newest.path, "utf8")

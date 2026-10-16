@@ -4,7 +4,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, join, sep } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { createContext } from "../__mocks__/context.js"
+import { createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createBackgroundBashToolDefinition } from "../bash-background/bash-background-tool.js"
 import bashBackgroundExtension from "../bash-background/index.js"
@@ -298,7 +298,7 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 	})
 
 	it.each([5, 10])("records commits through the registered background Bash tool (timeout %s)", async (timeout) => {
-		const ctx = createContext({ cwd: repository })
+		const ctx = createToolContext({ cwd: repository })
 		const pi = createExtensionApi()
 		vi.spyOn(attribution, "getWorkId").mockReturnValue("original-work")
 		const record = vi.spyOn(attribution, "appendWorkRecord").mockImplementation(() => {})
@@ -331,7 +331,7 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 
 	it("records a background commit after the first checkin under its original session and work", async () => {
 		let sessionId = "original-session"
-		const ctx = createContext({ cwd: repository, sessionManager: { getSessionId: vi.fn(() => sessionId) } })
+		const ctx = createToolContext({ cwd: repository, sessionManager: { getSessionId: vi.fn(() => sessionId) } })
 		const work = vi.spyOn(attribution, "getWorkId").mockReturnValue("original-work")
 		const record = vi.spyOn(attribution, "appendWorkRecord").mockImplementation(() => {})
 		const registry = createProcessRegistry()
@@ -387,7 +387,7 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 	})
 
 	it.each(["foreground", "background"])("runs %s Bash when work persistence fails", async (mode) => {
-		const ctx = createContext({ cwd: repository })
+		const ctx = createToolContext({ cwd: repository })
 		vi.spyOn(attribution, "getWorkId").mockImplementation(() => {
 			throw new Error("ledger unavailable")
 		})
@@ -423,7 +423,7 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 		true,
 	])("follows this work's commits through rebase and conflict continue (restart: %s)", async (restart) => {
 		vi.stubEnv("PI_CODING_AGENT_DIR", join(directory, "agent"))
-		const ctx = createContext({ cwd: repository, sessionManager: { getSessionId: () => "rebasing" } })
+		const ctx = createToolContext({ cwd: repository, sessionManager: { getSessionId: () => "rebasing" } })
 		const tool = createCommitTrackingBashTool(ctx)
 		const bash = (command: string) => tool.execute("rebase-tool", { command }, undefined, undefined, ctx)
 		writeFileSync(join(repository, "shared.txt"), "base\n")
@@ -480,7 +480,7 @@ await flushWorkSummaries();`
 
 	it("follows another session's commit of the same work through a rebase, reading only commit rows", async () => {
 		vi.stubEnv("PI_CODING_AGENT_DIR", join(directory, "agent"))
-		const first = createContext({ cwd: repository, sessionManager: { getSessionId: () => "first" } })
+		const first = createToolContext({ cwd: repository, sessionManager: { getSessionId: () => "first" } })
 		const workId = attribution.getWorkId(first)
 		git(repository, "commit", "--allow-empty", "-qm", "base")
 		await createCommitTrackingBashTool(first).execute(
@@ -498,7 +498,7 @@ await flushWorkSummaries();`
 		git(repository, "commit", "--allow-empty", "-qm", "upstream")
 		git(repository, "checkout", "-q", "feat")
 		// A later session of the same work only knows the commit from the work's summary.
-		const second = createContext({ cwd: repository, sessionManager: { getSessionId: () => "second" } })
+		const second = createToolContext({ cwd: repository, sessionManager: { getSessionId: () => "second" } })
 		attribution.setWorkId(second, workId)
 		const opened = vi.spyOn(fs, "openSync")
 		await createCommitTrackingBashTool(second).execute(
@@ -524,7 +524,7 @@ await flushWorkSummaries();`
 
 	it("records same-work cherry-picks, reverts and new merge commits", async () => {
 		vi.stubEnv("PI_CODING_AGENT_DIR", join(directory, "agent"))
-		const ctx = createContext({ cwd: repository, sessionManager: { getSessionId: () => "sequencer" } })
+		const ctx = createToolContext({ cwd: repository, sessionManager: { getSessionId: () => "sequencer" } })
 		const tool = createCommitTrackingBashTool(ctx)
 		const bash = (command: string) => tool.execute("sequencer-tool", { command }, undefined, undefined, ctx)
 		git(repository, "commit", "--allow-empty", "-qm", "base")
@@ -561,7 +561,7 @@ await flushWorkSummaries();`
 	it("pins the session and work while the tool is running", async () => {
 		let sessionId = "original-session"
 		let workId = "original-work"
-		const ctx = createContext({ cwd: repository, sessionManager: { getSessionId: vi.fn(() => sessionId) } })
+		const ctx = createToolContext({ cwd: repository, sessionManager: { getSessionId: vi.fn(() => sessionId) } })
 		vi.spyOn(attribution, "getWorkId").mockImplementation(() => workId)
 		const record = vi.spyOn(attribution, "appendWorkRecord").mockImplementation(() => {})
 		await createCommitTrackingBashTool(ctx).execute(

@@ -24,6 +24,7 @@
  */
 import type { Message, Model } from "@earendil-works/pi-ai"
 import { stream } from "@earendil-works/pi-ai/api/anthropic-messages"
+import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript"
 import type { ContextEvent, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { convertToLlm } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -179,11 +180,13 @@ async function captureRequestBody(messages: AgentMessage[]): Promise<CapturedBod
 	try {
 		const s = stream(
 			model,
-			{
+			// upstream pi: stream() takes a TranscriptContext; normalizeContext folds the
+			// raw context (systemPrompt/tools here) into the transcript.
+			normalizeContext({
 				systemPrompt: "You are a cache replay test.",
 				tools: TEST_TOOLS,
 				messages: convertToLlm(messages) as Message[],
-			},
+			}),
 			{ apiKey: "replay-key", fetch: captureFetch as unknown as typeof fetch },
 		)
 		for await (const ev of s) {

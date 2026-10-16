@@ -75,9 +75,11 @@ describe("loginExtension", () => {
 			registerProvider,
 		} as unknown as ExtensionAPI)
 
+		// The label comes verbatim from pi-ai's builtin openaiCodexProvider()
+		// catalog (the extension registers it unmodified) — upstream pi renamed it.
 		expect(registerProvider.mock.calls[0]?.[0]).toMatchObject({
 			id: "openai-codex",
-			name: "OpenAI Codex",
+			name: "OpenAI Codex (legacy)",
 			auth: { oauth: { name: "OpenAI (ChatGPT Plus/Pro)" } },
 		})
 	})

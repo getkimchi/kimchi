@@ -18,32 +18,22 @@ import type { ToolVisibilityAPI } from "./prompt-construction/tool-visibility.js
  *   `revealOnce()` directly from their own handler and pass the triggering
  *   tool call's id so its result carries the in-band load marker.
  *
- * In-band reveal cache stability (`addedToolNames`):
+ * Reveal mechanism (1.3.0):
  *
- * Besides enabling the tools (the top-level `params.tools` array changes),
- * every reveal stamps the triggering toolResult message with
- * `addedToolNames`. Upstream's wire converters read that marker when a model
- * carries native deferred-tool compat (`deferredToolsMode`): they keep the
- * revealed tools OUT of the wire `tools` array and deliver their schemas
- * in-band right after the stamped tool result, so the cacheable prefix
- * never changes mid-session. Currently NO production model carries such
- * compat — the Kimchi gateway rejects the in-band messages (HTTP 400), so
- * `models.ts:metadataToModel` deliberately omits it — and the stamp is
- * inert on every wire we serve. It is kept because the cost is trivial and
- * the mechanism is the correct load point if a gateway ever honors in-band
- * tools again. Stamps key on the tool call id of the call whose toolResult
- * should carry the marker — matched at `message_end`, which fires after
- * execution and before the next LLM request.
+ * upstream pi removed `ToolResultMessage.addedToolNames` along with its in-band
+ * wire delivery. Tool availability changes are now declared on system
+ * messages (`SystemMessage.toolsAdded`/`toolsRemoved`), and the agent
+ * session diffs the active tool set against the transcript itself, so an
+ * extension only needs to flip the active set — no per-result stamping is
+ * required or possible. The previous `message_end` stamping block was
+ * already inert on every wire Kimchi serves and has been removed.
  */
 export interface DeferredReveal {
 	/**
 	 * Reveal the tool group once; no-op after the first call or in workers.
 	 *
-	 * `stampToolCallId`: id of the tool call whose toolResult should carry the
-	 * in-band `addedToolNames` marker. Omit only when no tool result is
-	 * associated with the reveal — the group still becomes active, but the
-	 * cache-stable in-band load point is lost for providers with native
-	 * support.
+	 * `stampToolCallId` is accepted for API compatibility but unused: 1.3.0
+	 * has no per-result load marker (see the file header).
 	 */
 	revealOnce(stampToolCallId?: string): void
 	/** Re-hide the group for a fresh session (call from session_start). */
@@ -86,34 +76,13 @@ export function createDeferredReveal(
 	opts: DeferredRevealOptions = {},
 ): DeferredReveal {
 	let revealed = isAgentWorker()
-	// toolCallId of a tool call whose toolResult must carry the in-band
-	// reveal marker → names to stamp. Consumed at message_end.
-	const pendingStamps = new Map<string, string[]>()
 
 	if (opts.anchorToolName) {
 		pi.on("tool_result", (event) => {
 			if (event.isError || event.toolName !== opts.anchorToolName || revealed) return
-			revealOnce(event.toolCallId)
+			revealOnce()
 		})
 	}
-
-	// Stamp the triggering tool result with the in-band reveal marker
-	// (upstream `addedToolNames`; same replacement mechanism
-	// hidden-tool-guidance uses). Consumed exactly once — later toolResults
-	// with the same id (retries) carry nothing.
-	pi.on("message_end", (event) => {
-		const message = event.message
-		if (message.role !== "toolResult") return
-		const names = pendingStamps.get(message.toolCallId)
-		if (!names) return
-		pendingStamps.delete(message.toolCallId)
-		return {
-			message: {
-				...message,
-				addedToolNames: [...(message.addedToolNames ?? []), ...names],
-			},
-		}
-	})
 
 	for (const name of toolNames) {
 		deferredGroups.set(name, () => {
@@ -123,21 +92,16 @@ export function createDeferredReveal(
 		})
 	}
 
-	function revealOnce(stampToolCallId?: string): void {
+	function revealOnce(_stampToolCallId?: string): void {
 		if (revealed || isAgentWorker()) return
 		revealed = true
 		visibility.enable(toolNames)
-		if (stampToolCallId !== undefined) {
-			const existing = pendingStamps.get(stampToolCallId) ?? []
-			pendingStamps.set(stampToolCallId, [...new Set([...existing, ...toolNames])])
-		}
 	}
 
 	return {
 		revealOnce,
 		resetForSession() {
 			revealed = isAgentWorker()
-			pendingStamps.clear()
 			if (!revealed && opts.hideOnReset !== false) visibility.disable(toolNames)
 		},
 	}

@@ -1,7 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { __clearModelThinkingLevelsForTest, getModelThinkingLevels, registerModelThinkingLevels } from "../models.js"
-import { createContext } from "./__mocks__/context.js"
+import { createContext, createToolContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { AUTO_MODEL_DESCRIPTION, AUTO_MODEL_PI_NAME } from "./auto-model/constants.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "./auto-model/state.js"
@@ -71,7 +71,7 @@ function createHarness(models: ModelEntry[], currentModel?: ModelEntry) {
 	const { api, getRegisteredTool } = createExtensionApi()
 	modelListExtension(api)
 	const tool = getRegisteredTool("list_models")
-	const ctx = createContext({
+	const ctx = createToolContext({
 		modelRegistry: { getAvailable: () => models.map(toModel) },
 		model: currentModel ? toModel(currentModel) : undefined,
 	})

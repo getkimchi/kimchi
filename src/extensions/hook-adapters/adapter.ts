@@ -686,7 +686,9 @@ function lastAssistantText(message: TurnEndEvent["message"]): string | null {
 function lastAssistantTextFromMessages(messages: AgentEndEvent["messages"]): string | null {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i]
-		if (isRecord(message) && message.role === "assistant") return lastAssistantText(message)
+		// Role check before any Record-guard: with upstream pi's message types,
+		// Record-guards narrow AgentMessage to the toolResult member only.
+		if (message.role === "assistant") return lastAssistantText(message)
 	}
 	return null
 }
@@ -697,10 +699,10 @@ function lastAssistantStop(messages: AgentEndEvent["messages"]): {
 } {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i]
-		if (isRecord(message) && message.role === "assistant") {
+		if (message.role === "assistant") {
 			return {
-				stopReason: stringValue(message.stopReason),
-				errorMessage: stringValue(message.errorMessage),
+				stopReason: message.stopReason,
+				errorMessage: message.errorMessage,
 			}
 		}
 	}

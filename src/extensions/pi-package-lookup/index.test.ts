@@ -153,6 +153,9 @@ describe("original pi package lookup", () => {
 					scope: "project",
 					origin: "package",
 					baseDir: packageDir,
+					// upstream pi: upstream metadata propagates verbatim and now carries
+					// packageRoot (same dir as baseDir for a local-path package).
+					packageRoot: packageDir,
 				},
 			},
 		])

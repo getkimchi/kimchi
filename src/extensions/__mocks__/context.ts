@@ -3,6 +3,7 @@ import type {
 	ContextUsage,
 	ExtensionCommandContext,
 	ExtensionContext,
+	ExtensionToolContext,
 	ExtensionUIContext,
 	ModelRegistry,
 	SessionManager,
@@ -21,6 +22,21 @@ export function createCommandContext(): ExtensionCommandContext {
 		navigateTree: vi.fn(async () => ({ cancelled: false })),
 		switchSession: vi.fn(async () => ({ cancelled: false })),
 		reload: vi.fn(async () => {}),
+	}
+}
+
+/**
+ * Context for calling a tool's `execute()` directly in tests (upstream pi:
+ * tool execution receives an `ExtensionToolContext`, not a plain
+ * `ExtensionContext`).
+ */
+export function createToolContext(overrides?: Parameters<typeof createContext>[0]): ExtensionToolContext {
+	return {
+		...createContext(overrides),
+		tools: [],
+		executeTool: vi.fn(async () => {
+			throw new Error("executeTool not supported by this mock")
+		}),
 	}
 }
 

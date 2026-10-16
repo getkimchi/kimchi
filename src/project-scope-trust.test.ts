@@ -59,12 +59,20 @@ describe("isProjectScopeAllowed", () => {
 
 describe("TRUST_REQUIRING_PROJECT_RESOURCES stays in sync with the pi patch", () => {
 	it("the patch's embedded KIMCHI_TRUST_REQUIRING_PROJECT_RESOURCES matches the first-party constant", () => {
-		const patchPath = join(
-			dirname(fileURLToPath(import.meta.url)),
-			"..",
-			"patches",
-			"@earendil-works__pi-coding-agent@0.85.1.patch",
-		)
+		// Derive the patch path from package.json — the pinned dependency
+		// version names the patchedDependencies key; hardcoding the patch
+		// filename would go stale on every pi upgrade.
+		const pkgDir = join(dirname(fileURLToPath(import.meta.url)), "..")
+		const pkg = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf-8")) as {
+			dependencies: Record<string, string>
+			pnpm?: { patchedDependencies?: Record<string, string> }
+		}
+		const pin = pkg.dependencies["@earendil-works/pi-coding-agent"]
+		const patchRel = pkg.pnpm?.patchedDependencies?.[`@earendil-works/pi-coding-agent@${pin}`]
+		if (!patchRel) {
+			throw new Error(`no patchedDependencies entry for @earendil-works/pi-coding-agent@${pin}`)
+		}
+		const patchPath = join(pkgDir, patchRel)
 		const patch = readFileSync(patchPath, "utf-8")
 		const match = patch.match(/const KIMCHI_TRUST_REQUIRING_PROJECT_RESOURCES = \[([\s\S]*?)\]/)
 		if (!match) {

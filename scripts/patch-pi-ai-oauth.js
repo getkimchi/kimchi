@@ -2,7 +2,8 @@
 /**
  * Post-install patch for @earendil-works/pi-ai OAuth pages.
  *
- * Replaces the hardcoded Pi-branded HTML in pi-ai's oauth-page.js with a
+ * Replaces the hardcoded Pi-branded HTML in pi-ai's dist/utils/oauth-page.js
+ * (pi-ai >= 1.0 moved the module from dist/auth/oauth/oauth-page.js) with a
  * renderer that reads Kimchi templates from KIMCHI_OAUTH_TEMPLATE_DIR.
  * The templates themselves live in resources/oauth/ — designers iterate
  * on them without touching node_modules or refreshing this patch.
@@ -20,7 +21,7 @@
 import { existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
-const target = join(process.cwd(), "node_modules", "@earendil-works", "pi-ai", "dist", "auth", "oauth", "oauth-page.js")
+const target = join(process.cwd(), "node_modules", "@earendil-works", "pi-ai", "dist", "utils", "oauth-page.js")
 
 const patched = `import { readFileSync } from "node:fs";
 function escapeHtml(value) {

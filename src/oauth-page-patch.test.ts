@@ -6,7 +6,9 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import { afterEach, beforeEach, expect, it } from "vitest"
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
-const patchedFile = resolve(projectRoot, "node_modules/@earendil-works/pi-ai/dist/auth/oauth/oauth-page.js")
+// pi-ai >= 1.0 moved the module from dist/auth/oauth/oauth-page.js to
+// dist/utils/oauth-page.js — same oauthSuccessHtml/oauthErrorHtml exports.
+const patchedFile = resolve(projectRoot, "node_modules/@earendil-works/pi-ai/dist/utils/oauth-page.js")
 const patchedFileUrl = pathToFileURL(patchedFile).href
 const templateDir = resolve(projectRoot, "resources/oauth")
 
@@ -31,7 +33,7 @@ it("does not create a stray file when the upstream target is missing", () => {
 			encoding: "utf-8",
 		})
 		expect(result.status).toBe(1)
-		expect(existsSync(resolve(cwd, "node_modules/@earendil-works/pi-ai/dist/auth/oauth/oauth-page.js"))).toBe(false)
+		expect(existsSync(resolve(cwd, "node_modules/@earendil-works/pi-ai/dist/utils/oauth-page.js"))).toBe(false)
 	} finally {
 		rmSync(cwd, { recursive: true, force: true })
 	}

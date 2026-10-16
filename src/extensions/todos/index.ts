@@ -95,10 +95,6 @@ export * from "./tool.js"
 export * from "./types.js"
 export * from "./widget.js"
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object"
-}
-
 function restoreTodoStoreFromSessionEntries(sessionManager: Pick<SessionManager, "getBranch" | "getSessionId">): void {
 	const sessionId = sessionManager.getSessionId()
 	restoreTodoStoreFromDetails(
@@ -781,7 +777,9 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 	pi.on("turn_end", (event, ctx) => {
 		const message = event.message
-		if (!isRecord(message) || message.role !== "assistant") return
+		// Role check first: isRecord narrows to the only Record-assignable
+		// union member (toolResult) under upstream pi's message types.
+		if (message.role !== "assistant") return
 		if ((event.toolResults as readonly unknown[]).length > 0 || ctx.hasPendingMessages?.()) return
 		if (message.stopReason === "aborted" || message.stopReason === "error") return
 		syncTodoWidget(ctx)

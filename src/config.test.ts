@@ -3,12 +3,12 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
-	applyTuiEnvOverrides,
 	buildSkillPathOptions,
 	checkConfigFilePermissions,
 	clearApiKey,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
+	ensureTuiModeDefault,
 	getApiKeyMismatchWarning,
 	getApiKeySource,
 	getConfiguredLegacyMcpKeys,
@@ -23,6 +23,7 @@ import {
 	resetInvalidLlmBaseUrlWarningForTests,
 	resetInvalidSelfHostedUrlWarningForTests,
 	resolveEndpoints,
+	syncWheelScrollToPiSettings,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
 	writeDeviceId,
@@ -622,38 +623,33 @@ describe("writeTuiWheelScrollLines", () => {
 	})
 })
 
-describe("applyTuiEnvOverrides", () => {
-	const ENV_KEY = "KIMCHI_WHEEL_SCROLL_LINES"
-
-	beforeEach(() => {
-		// stubEnv with a fresh baseline so leaked values from other tests
-		// (or the developer's real shell env) can't skew expectations.
-		vi.stubEnv(ENV_KEY, "")
-		delete process.env[ENV_KEY]
-	})
-
-	afterEach(() => {
-		vi.unstubAllEnvs()
-		delete process.env[ENV_KEY]
-	})
-
-	it("maps tui.wheelScrollLines onto the env var when unset", () => {
+describe("syncWheelScrollToPiSettings", () => {
+	it("maps tui.wheelScrollLines onto fullscreenWheelScrollLines", () => {
 		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
-		applyTuiEnvOverrides({ ...config, tui: { wheelScrollLines: 3 } })
-		expect(process.env[ENV_KEY]).toBe("3")
+		const settings: Record<string, unknown> = {}
+		expect(syncWheelScrollToPiSettings(settings, { ...config, tui: { wheelScrollLines: 3 } })).toBe(true)
+		expect(settings.fullscreenWheelScrollLines).toBe(3)
 	})
 
-	it("does not overwrite a pre-set env var (env > config)", () => {
-		process.env[ENV_KEY] = "5"
+	it("is idempotent when settings already hold the config value", () => {
 		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
-		applyTuiEnvOverrides({ ...config, tui: { wheelScrollLines: 3 } })
-		expect(process.env[ENV_KEY]).toBe("5")
+		const settings: Record<string, unknown> = { fullscreenWheelScrollLines: 3 }
+		expect(syncWheelScrollToPiSettings(settings, { ...config, tui: { wheelScrollLines: 3 } })).toBe(false)
+		expect(settings.fullscreenWheelScrollLines).toBe(3)
+	})
+
+	it("config wins over an existing pi setting", () => {
+		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
+		const settings: Record<string, unknown> = { fullscreenWheelScrollLines: "auto" }
+		expect(syncWheelScrollToPiSettings(settings, { ...config, tui: { wheelScrollLines: 3 } })).toBe(true)
+		expect(settings.fullscreenWheelScrollLines).toBe(3)
 	})
 
 	it("does nothing when tui.wheelScrollLines is unconfigured", () => {
 		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
-		applyTuiEnvOverrides({ ...config, tui: undefined })
-		expect(process.env[ENV_KEY]).toBeUndefined()
+		const settings: Record<string, unknown> = { fullscreenWheelScrollLines: "auto" }
+		expect(syncWheelScrollToPiSettings(settings, { ...config, tui: undefined })).toBe(false)
+		expect(settings.fullscreenWheelScrollLines).toBe("auto")
 	})
 })
 
@@ -1591,6 +1587,20 @@ describe("ensureQuietStartupDefault", () => {
 		const verbose = { quietStartup: false }
 		expect(ensureQuietStartupDefault(verbose)).toBe(false)
 		expect(verbose.quietStartup).toBe(false)
+	})
+})
+
+describe("ensureTuiModeDefault", () => {
+	it("seeds tuiMode regular when the key is absent", () => {
+		const settings: Record<string, unknown> = {}
+		expect(ensureTuiModeDefault(settings)).toBe(true)
+		expect(settings.tuiMode).toBe("regular")
+	})
+
+	it("leaves an explicit tuiMode alone", () => {
+		const fullscreen = { tuiMode: "fullscreen" }
+		expect(ensureTuiModeDefault(fullscreen)).toBe(false)
+		expect(fullscreen.tuiMode).toBe("fullscreen")
 	})
 })
 

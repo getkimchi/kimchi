@@ -15,6 +15,162 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
 
 ---
 
+## 1.3.0 — rebase from 0.85.1 (transcript “worlds” redesign)
+
+The new core reworked the session subsystem: system messages now carry prompts and tool
+declarations (`TranscriptContext`), `before_agent_start` is a discriminated union
+fired for extension-triggered runs too, tool availability rides
+`SystemMessage.toolsAdded`/`toolsRemoved` (in-band `addedToolNames` is gone), and
+`session.abort()` is terminal for the run chain (the steer/followUp queues survive
+but are only drained by the next fresh run).
+
+### `@earendil-works/pi-coding-agent`
+
+- **NEW — context-overflow recovery id fallback (`_findPersistedMessageEntryId`).**
+  0.85.1 removed the failed overflow assistant by slicing it from
+  `agent.state.messages` before compacting; the new core replaced that with an
+  identity-keyed context edit (`_omitRecoveryAttempt`). In the bun-compiled
+  binary the failed message object is materialized through a copy, so object
+  identity misses on all upstream paths (id map, branch scan, live-state
+  projection index — the failed message never re-enters `agent.state.messages`,
+  so the `messageIndex < 0` early return fires first), `_omitRecoveryAttempt`
+  silently skips the edit, the post-compaction projection keeps the failed
+  assistant at the tail, and `agent.continue()` throws "Cannot continue from
+  message role: assistant". The patch adds a role+timestamp fallback match
+  against the branch ahead of the messageIndex early return. Detected by the
+  `tests/e2e/tui/context-overflow-recovery.test.ts` TUI e2e; verified on the
+  compiled binary.
+- **NEW — bug-report kimchi destination seams (interactive bug-report.js).**
+  Upstream now ships a hardcoded builtin `/bug` that shadowed Kimchi's own report
+  extension (removed in the same change — the tip now points at `/bug`). The
+  patch adds two global hook seams: `__kimchiBugReportScrub` deep-redacts
+  every bundle string before upload *or* zip export (PII/secrets, sharing our
+  `pii-redaction` engine), and `__kimchiBugReportDeliver` routes delivery to
+  the getkimchi GitHub issue form (private gist of the scrubbed metadata +
+  transcript) instead of the built-in Radius upload. Both hooks are provided
+  by `src/extensions/bug-report.ts`; with no hook registered the
+  stock Earendil flow runs unchanged. Tracking: none yet — candidates for
+  upstream: bundle-mutation and destination seams in the /bug flow.
+- **DROPPED — triggerTurn `before_agent_start` mirror + `_systemPromptOverride`
+  preservation hunks.** Native in 1.2: `_startRun({ messageType: "custom" })` fires
+  `emitBeforeAgentStart`, and extension `systemPrompt` results become a
+  `forceSystemPrompt` per-request projection that tool-loadout rebuilds never
+  touch. Witness coverage rewrote: `src/upstream-system-prompt-preservation-patch.test.ts`
+  now pins the native behavior instead of the patch markers.
+- **DROPPED — user-message Box wrapper hunk.** Upstream 1.2 renders the Markdown
+  child directly; the Kimchi prefix/OSC 133 patch moved extension-side to
+  neutralize the Markdown instance's `paddingY`/`paddingX`/`defaultTextStyle`
+  (`patchUserMessageRender` in `src/extensions/tool-rendering.ts`).
+- **DROPPED — the leftover `contentBox;` field declaration on
+  `user-message.js`** (2026-10-15). Vestigial after the wrapper removal — its
+  only reader was a guarded pre-1.2 fallback in `patchUserMessageRender`, now
+  also removed.
+- **MOVED — Bun `type2`/`bundledPiAiCompatSafe` Proxy compat.** Upstream split the
+  virtual-module seam: the hunk now lives in `dist/core/extensions/virtual-modules.js`
+  instead of `loader.js`.
+- **REBASED — force-compaction `keepRecentTokens: 0` retry, session-manager
+  `_kimchiOriginalToolContent`/`_serializableEntry`, model-resolver
+  `kimchi-dev: minimax-m3`, `setModel { persist }`, bash abort/timeout pipe
+  cleanup (`terminateGroup`), interactive-mode/project-trust markers.** Same
+  intent, re-homed on the 1.2 functions (several private methods were
+  renamed/split by the transcript redesign).
+- **NOTED — abort semantics changed silently.** 0.85 chained a continuation
+  after a programmatic abort to drain retained queues; 1.2 does not (queues
+  drain on the next run). Kimchi's bash-background contract tests now drive
+  recovery with a fresh prompt instead of asserting the auto-drain.
+- **PORTED (2026-10-15, post-rebase) — auth-storage hunk re-shaped to the
+  master-era root fix.** Master's `fix(auth)` (#1425) reworked the 0.85.1
+  lock-free-reads hunk after this branch's initial 1.2 rebase: the hunk now
+  returns the bare credential map (upstream `readLatestData` unwrap shape
+  restored — the `{ result }` wrapper was our own leak), retries torn reads
+  with backoff, and treats a 0-byte `content === ""` read as a tear. Same
+  code applied verbatim to the current patch; `src/pi-auth*` tests 18/18.
+
+### `@earendil-works/pi-tui`
+
+- **REBASED — stroke rendering (applyStrokeToLine), no-truncate width
+  hardening.** The new TUI replaced the
+  editor's caret with an APC cursor marker (`\x1b_pi:c\x07` /
+  FAKE_CURSOR_START/END); the strip sites in Kimchi source were adapted
+  (`\x1b[7m` strokes are now no-ops there).
+- **DROPPED — scrollback opt-out (`PI_TUI_NO_CLEAR_SCROLLBACK`)** (2026-10-15).
+  `ESC[3J` scrollback clearing is back to upstream's unconditional behavior on
+  full renders; `dist/tui-main-screen.js` is no longer patched and
+  `tests/unit/pi-tui-scrollback-flag.test.ts` was deleted with it (mirrors the
+  same removal made at the 0.85.1 pin on `chore/remove-pi-tui-scrollback-flag`).
+- **DROPPED — wheel-scroll speed (`KIMCHI_WHEEL_SCROLL_LINES`)** (2026-10-15).
+  Upstream now ships a native velocity-based `WheelScrollAccelerator` with an
+  `"auto"` default and a first-class `fullscreenWheelScrollLines` setting; pi
+  always passes an explicit value, so the env fallback was unreachable. Kimchi's
+  `tui.wheelScrollLines` config now syncs into pi's settings.json key
+  (`syncWheelScrollToPiSettings` in `src/config.ts`).
+  `applyStrokeToLine` gained a hard truncate so narrow widths can no longer
+  overflow (fuzz invariant now enforced against line construction).
+
+### `@earendil-works/pi-ai`
+
+- **LAYERED — `validateToolArguments` coercion/verbose-conversion hunk now sits on
+  top of upstream's new `argumentsError` guard** (malformed tool-call arguments now
+  fail validation before `structuredClone`; upstream #10897). The Kimchi hunks
+  (unconditional `coerceWithJsonSchema` pre-conversion, `Value.Convert` wrapped in
+  descriptive try/catch, no `TYPEBOX_KIND` bypass) are unchanged.
+- **No hunks applied.** The 0.85.1 oauth-page HTML replacement moved path
+  (`dist/auth/oauth/oauth-page.js` → `dist/utils/oauth-page.js`) and stays a
+  post-install script (`scripts/patch-pi-ai-oauth.js`), not a pnpm patch.
+
+### `pi-mcp-adapter`
+
+- **BUMPED — 2.34.0 → 5.3.1** (MCP client 2.0.0 → 2.3.1 for GHSA-6qxp-vccf-f47h).
+- **DROPPED — `@modelcontextprotocol/sdk@1.29.0` patch.** Adapter 5.3.0's OAuth
+  path imports `@modelcontextprotocol/client` 2.3.1 exclusively; sdk 1.29
+  remains in the graph only as a peer of `@google/genai`/`mem0ai`/`ext-apps`
+  with no `client/auth.js` consumer.
+  The client 2.3.1 patch carries the spec-strict-gateway Accept fix alone.
+- **DROPPED — tool-annotation caching hunk.** Native in 5.x (metadata-cache
+  persists/reconstructs annotations).
+- **NEW — bundled-runtime-safe version read (pi-builtin-mcp.ts).** Under Bun
+  SEA bundles `import.meta.url` is a $bunfs path with no real package.json;
+  the top-level readFileSync threw at import time, so pi's built-in MCP was
+  never disabled in compiled binaries and both MCP stacks ran (double tool
+  registration and strict-auth-schema warnings). Falls back to "unknown",
+  which simply re-checks on each start. Found via CI TUI e2e failures that
+  only reproduce against `dist/bin/kimchi`, not dev-mode runs.
+- **NEW — always register `/mcp` (index.ts).** Upstream ships a built-in native
+  MCP extension (`replaceable`) that reads the same mcp.json files with a
+  stricter schema (`auth` must be `{provider}` bearer-name, not the adapter's
+  `"oauth"` shorthand) and connects the same servers. Registering `/mcp`
+  unconditionally makes pi's loader omit the built-in (upstream-designed
+  replacement), so the adapter stays the single MCP owner; verified the
+  "MCP servers need attention" banner no longer appears on launch with
+  adapter-format configs under a temp HOME.
+- **RE-DRAFTED — tool-name sanitization** around upstream's new `formatToolName`
+  prefix-dedup branch; truncation wrapped in `truncateToolName()`.
+- **RE-DRAFTED — config discovery under Kimchi dirs.** Project/global adapter
+  configs moved to `mcp-adapter.json` upstream with `mcp.json` demoted to a
+  Pi-compat import tier. The Kimchi patch repoints the compat layers at the
+  Kimchi agent/project directories and makes those layers authoritative again
+  (2.34 semantics): adapter-format parsing (top-level `settings`/`imports`
+  survive — Pi-style compat parsing would drop them), self-writing, and
+  project entries merge field-wise over the global entry instead of Pi's
+  whole-entry replacement. `writeProjectServerDisabledOverride` writes via
+  server provenance so overrides land in the file the server came from.
+- **KEPT — OAuth loopback/tombstone/in-flight hunks, metadata Accept widen,
+  `mcp.panel`, watcher instructions; DCR clientInfo bumped to "5.3.1".**
+- **NEW — `KIMCHI_MANAGES_MCP_PROJECT_TRUST` hunk.** 5.x interactively prompts
+  per project server on trust; the env flag skips that approval so Kimchi's
+  existing `resolveMcpProjectTrust` stays the single gate (no double prompt).
+- **RE-DRAFTED (5.3.1) — MCP UI capability strip.** 5.3.1 gained an `openUi:
+  false` opt-out per server, but still advertises the `io.modelcontextprotocol/ui`
+  extension by default; the Kimchi strip now removes only that default-advertise,
+  keeping the layout (comment documents it as the host-side disable).
+- **CLIENT PATCH (`@modelcontextprotocol/client@2.3.1`) RE-DONE — OAuth
+  metadata Accept widen still needed** (2.3.1 still sends json-only at the
+  three sites).
+- **mcpScript stays OFF** (upstream 4.0 default; Kimchi already pinned
+  `scriptMode: false` and suppresses the gateway).
+
+---
+
 ## 0.85.1 (mid-version, additive) — bounded abort/timeout pipe cleanup
 
 Not an upgrade: a new behavior was added to the pi-coding-agent patch while the
@@ -319,10 +475,10 @@ where the `tui-alt-screen.js` hunk came from.
   `paddingX` is threaded through both `applyStrokeToLine` call sites, including the
   empty-line path. Upstream clamped only `Text` — `Box` and `Markdown` still need
   Kimchi's hardening (upstream gap, worth reporting).
-- **`tui-main-screen.js` — hunk rewritten.** The clear sequence moved into the new
-  `BoundedTerminalWriter`; the `PI_TUI_NO_CLEAR_SCROLLBACK` gate was rewritten from
-  `buffer +=` to `output.append(...)`. Guaranteed failure on rebase — the old idiom
-  no longer exists.
+- **`tui-main-screen.js` — no longer patched.** At the 0.85.1 rebase the
+  `PI_TUI_NO_CLEAR_SCROLLBACK` gate's hunk was rewritten from `buffer +=` to the
+  new `BoundedTerminalWriter`'s `output.append(...)`; the gate was later removed
+  (see the top entry), and this file is back to upstream.
 - **`box.js` — extended upstream's new `handleMouse()`.** 0.85.1 added mouse support.
   Upstream is self-consistent (`handleMouse` and `render` both use
   `width - paddingX*2`), but Kimchi's stroke patch changes `render()` to subtract
@@ -414,4 +570,4 @@ where the `tui-alt-screen.js` hunk came from.
 - PR [earendil-works/pi#8627](https://github.com/earendil-works/pi/pull/8627)
   (`ctx.cwd` for the seven cwd-sensitive tools) is a Kimchi-contributed fix that
   **arrives with this upgrade** — absent at 0.84.1, present in all seven at 0.85.1.
-  Closes LLM-3185 with no local change, after [kimchi#1099](https://github.com/getkimchi/kimchi/pull/1099) was closed unmerged.
+  Closes the tracked cwd-sensitivity issue with no local change, after [kimchi#1099](https://github.com/getkimchi/kimchi/pull/1099) was closed unmerged.

@@ -20,7 +20,10 @@ import { fileURLToPath } from "node:url"
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 const piAgentDist = join(projectRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist")
 
-const themeFiles = ["dark.json", "light.json", "theme-schema.json"]
+// upstream pi no longer ships theme-schema.json in dist (hosted at
+// https://pi.dev/schemas/theme.schema.json instead) — only the two built-in
+// theme palettes are staged.
+const themeFiles = ["dark.json", "light.json"]
 const themeSrc = join(piAgentDist, "modes", "interactive", "theme")
 
 // Skip TypeScript declarations and source maps when staging export-html — only template.{html,css,js}

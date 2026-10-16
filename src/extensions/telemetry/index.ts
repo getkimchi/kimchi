@@ -980,6 +980,9 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			handleToolExecutionEnd(telemetryCtx, ctx, event)
 		})
 		pi.on("before_agent_start", async (event, ctx) => {
+			// upstream pi: the event fires for extension-triggered runs too and is a
+			// union — only user prompts carry `prompt`.
+			if (event.messageType !== "user") return
 			if (!sessionStartEmitted) {
 				sessionStartEmitted = true
 				emitSessionStartEvent(telemetryCtx, ctx)

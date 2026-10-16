@@ -12,14 +12,14 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { createContext } from "../__mocks__/context.js"
+import { createToolContext } from "../__mocks__/context.js"
 import { createDaemonControlToolDefinition, DAEMON_CONTROL_TOOL_DESCRIPTION } from "./daemon-control-tool.js"
 import { spawnDaemon } from "./spawn.js"
 import { isPidAlive, readDaemon } from "./state.js"
 
 const describePosix = process.platform === "win32" ? describe.skip : describe
 
-const fakeCtx = createContext()
+const fakeCtx = createToolContext()
 
 describe("daemon_control tool description (steering)", () => {
 	it("documents the four actions and disclaims bash_control overlap", () => {
