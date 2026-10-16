@@ -151,6 +151,93 @@ async function changes(before: Snapshot, after: Snapshot): Promise<Change[] | un
 }
 
 /** A tool window can overlap human edits. Observations are candidates, never exclusive mutation proof. */
+export interface ToolFileObservation {
+	/** Context pinned at `begin` time; background processes may outlive the session. */
+	pinned: WorkContext
+	toolCallId: string
+	source: "bash" | "mcp"
+	/** The attributed model request, when one exists. */
+	origin: { requestId?: string; workId: string } | undefined
+	workId: string
+	before: Snapshot | undefined
+	startedAt: string
+}
+
+/**
+ * Pin the attribution context and take the "before" snapshot. Returns undefined
+ * when the call cannot be observed (MCP without an attributed model request,
+ * or work tracking unavailable) - callers then skip `endToolFileObservation`.
+ */
+export async function beginToolFileObservation(
+	ctx: WorkContext,
+	toolCallId: string,
+	source: "bash" | "mcp",
+	identity?: { workId: string; requestId?: string },
+): Promise<ToolFileObservation | undefined> {
+	const pinned = pinWorkContext(ctx)
+	const origin = identity ?? getToolRequest(pinned, toolCallId)
+	// MCP remains usable when work tracking is absent; only an attributed model tool call can opt in.
+	if (source === "mcp" && !origin) return undefined
+	let workId: string
+	try {
+		workId = origin?.workId ?? getWorkId(pinned)
+	} catch {
+		return undefined
+	}
+	const before = await snapshot(pinned.cwd)
+	return { pinned, toolCallId, source, origin, workId, before, startedAt: new Date().toISOString() }
+}
+
+/**
+ * Take the "after" snapshot and record the observation. Safe to call when the
+ * begin snapshot failed (`before` undefined - nothing is recorded).
+ */
+export async function endToolFileObservation(observation: ToolFileObservation): Promise<void> {
+	const { pinned, toolCallId, source, origin, workId, before, startedAt } = observation
+	if (!before) return
+	try {
+		const after = await snapshot(pinned.cwd)
+		const sameRepository = after?.repository === before.repository && after?.worktree === before.worktree
+		const changed =
+			sameRepository && before.complete && after?.complete
+				? await changes(before, after).catch(() => undefined)
+				: undefined
+		const complete = changed !== undefined
+		const files = changed ?? []
+		// One incomplete scan per request already keeps its spend from being confirmed.
+		const requestId = origin?.requestId
+		const repeated = !files.length && !complete && requestId !== undefined && incompleteRequests.has(requestId)
+		if (!complete && requestId !== undefined) incompleteRequests.add(requestId)
+		if ((files.length || !complete) && !repeated)
+			appendWorkRecord(
+				pinned,
+				{
+					type: "file_observation",
+					observationId: randomUUID(),
+					source,
+					toolCallId,
+					requestId: origin?.requestId,
+					repository: before.repository,
+					worktree: before.worktree,
+					startedAt,
+					complete,
+					files: files.slice(0, MAX_OBSERVED_PATHS),
+					...(files.length > MAX_OBSERVED_PATHS ? { changedPaths: files.length, truncated: true } : {}),
+					...(!complete ? { reason: "incomplete-snapshot" } : {}),
+				},
+				workId,
+			)
+	} catch (error) {
+		debugWorkAttribution("Could not record tool file observations:", error)
+	}
+}
+
+/**
+ * Observe the files a tool changes while `run` executes: snapshot before and
+ * after, then record the diff as a `file_observation` work record. The split
+ * `beginToolFileObservation`/`endToolFileObservation` pair backs event-driven
+ * observers (MCP calls on the native engine).
+ */
 export async function observeToolFiles<T>(
 	ctx: WorkContext,
 	toolCallId: string,
@@ -158,57 +245,11 @@ export async function observeToolFiles<T>(
 	run: () => Promise<T>,
 	identity?: { workId: string; requestId?: string },
 ): Promise<T> {
-	const pinned = pinWorkContext(ctx)
-	const origin = identity ?? getToolRequest(pinned, toolCallId)
-	// MCP remains usable when work tracking is absent; only an attributed model tool call can opt in.
-	if (source === "mcp" && !origin) return run()
-	let workId: string
-	try {
-		workId = origin?.workId ?? getWorkId(pinned)
-	} catch {
-		return run()
-	}
-	const before = await snapshot(pinned.cwd)
-	const startedAt = new Date().toISOString()
+	const observation = await beginToolFileObservation(ctx, toolCallId, source, identity)
+	if (observation === undefined) return run()
 	try {
 		return await run()
 	} finally {
-		if (before) {
-			try {
-				const after = await snapshot(pinned.cwd)
-				const sameRepository = after?.repository === before.repository && after?.worktree === before.worktree
-				const changed =
-					sameRepository && before.complete && after?.complete
-						? await changes(before, after).catch(() => undefined)
-						: undefined
-				const complete = changed !== undefined
-				const files = changed ?? []
-				// One incomplete scan per request already keeps its spend from being confirmed.
-				const requestId = origin?.requestId
-				const repeated = !files.length && !complete && requestId !== undefined && incompleteRequests.has(requestId)
-				if (!complete && requestId !== undefined) incompleteRequests.add(requestId)
-				if ((files.length || !complete) && !repeated)
-					appendWorkRecord(
-						pinned,
-						{
-							type: "file_observation",
-							observationId: randomUUID(),
-							source,
-							toolCallId,
-							requestId: origin?.requestId,
-							repository: before.repository,
-							worktree: before.worktree,
-							startedAt,
-							complete,
-							files: files.slice(0, MAX_OBSERVED_PATHS),
-							...(files.length > MAX_OBSERVED_PATHS ? { changedPaths: files.length, truncated: true } : {}),
-							...(!complete ? { reason: "incomplete-snapshot" } : {}),
-						},
-						workId,
-					)
-			} catch (error) {
-				debugWorkAttribution("Could not record tool file observations:", error)
-			}
-		}
+		await endToolFileObservation(observation)
 	}
 }

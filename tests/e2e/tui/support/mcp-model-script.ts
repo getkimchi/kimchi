@@ -1,4 +1,3 @@
-import type { McpSettings } from "pi-mcp-adapter/types"
 import type { FakeResponseScript, RecordedRequest } from "./fake-openai-server.js"
 
 type JsonObject = Record<string, unknown>
@@ -17,7 +16,6 @@ export interface ScriptedMcpToolCall extends ScriptedModelToolCall {
 interface McpCallOptions {
 	id?: string
 	serverName?: string
-	toolPrefix?: McpSettings["toolPrefix"]
 }
 
 let generatedCallId = 0
@@ -27,13 +25,10 @@ function nextCallId(label: string): string {
 	return `call_mcp_${label.replaceAll(/[^a-zA-Z0-9]+/g, "_")}_${generatedCallId}`
 }
 
-function prefixedToolName(serverName: string, toolName: string, prefix: McpCallOptions["toolPrefix"]): string {
-	if (prefix === "none") return toolName
-	let normalizedServerName = serverName.replaceAll("-", "_")
-	if (prefix === "short") {
-		normalizedServerName = serverName.replace(/-?mcp$/i, "").replaceAll("-", "_") || "mcp"
-	}
-	return `${normalizedServerName}_${toolName}`
+/** Native pi 1.3 names: `mcp__<server>__<tool>`, sanitized like the builtin. */
+function prefixedToolName(serverName: string, toolName: string): string {
+	const normalizedServerName = serverName.replaceAll("-", "_")
+	return `mcp__${normalizedServerName}__${toolName}`.replace(/[^A-Za-z0-9_]/g, "_")
 }
 
 function modelToolCall(name: string, args: JsonObject, id: string): FakeResponseScript {
@@ -47,27 +42,23 @@ function modelToolCall(name: string, args: JsonObject, id: string): FakeResponse
 	}
 }
 
-export function gatewayMcpCall(toolName: string, args?: JsonObject, options: McpCallOptions = {}): ScriptedMcpToolCall {
-	const serverName = options.serverName ?? "fixture"
-	const id = options.id ?? nextCallId(`gateway_${serverName}_${toolName}`)
-	const gatewayArgs: JsonObject = {
-		tool: prefixedToolName(serverName, toolName, options.toolPrefix),
-		server: serverName,
-		...(args === undefined ? {} : { args: JSON.stringify(args) }),
-	}
-	return {
-		id,
-		modelToolName: "mcp",
-		serverName,
-		originalToolName: toolName,
-		response: modelToolCall("mcp", gatewayArgs, id),
-	}
+export function gatewayMcpCall(
+	toolName: string,
+	args: JsonObject = {},
+	options: McpCallOptions = {},
+): ScriptedMcpToolCall {
+	// Native MCP has no gateway tool: a "gateway" call IS the direct tool call.
+	return directMcpCall(toolName, args, options)
 }
 
-export function directMcpCall(toolName: string, args: JsonObject, options: McpCallOptions = {}): ScriptedMcpToolCall {
+export function directMcpCall(
+	toolName: string,
+	args: JsonObject = {},
+	options: McpCallOptions = {},
+): ScriptedMcpToolCall {
 	const serverName = options.serverName ?? "fixture"
 	const id = options.id ?? nextCallId(`direct_${serverName}_${toolName}`)
-	const modelName = prefixedToolName(serverName, toolName, options.toolPrefix)
+	const modelName = prefixedToolName(serverName, toolName)
 	return {
 		id,
 		modelToolName: modelName,
@@ -75,32 +66,6 @@ export function directMcpCall(toolName: string, args: JsonObject, options: McpCa
 		originalToolName: toolName,
 		response: modelToolCall(modelName, args, id),
 	}
-}
-
-export function searchMcpTools(
-	query: string,
-	options: Pick<McpCallOptions, "id" | "serverName"> = {},
-): ScriptedModelToolCall {
-	const id = options.id ?? nextCallId("search")
-	return {
-		id,
-		modelToolName: "mcp",
-		response: modelToolCall(
-			"mcp",
-			{ search: query, ...(options.serverName === undefined ? {} : { server: options.serverName }) },
-			id,
-		),
-	}
-}
-
-export function connectMcpServer(serverName: string, options: Pick<McpCallOptions, "id"> = {}): ScriptedModelToolCall {
-	const id = options.id ?? nextCallId(`connect_${serverName}`)
-	return { id, modelToolName: "mcp", response: modelToolCall("mcp", { connect: serverName }, id) }
-}
-
-export function emptyMcpCall(options: Pick<McpCallOptions, "id"> = {}): ScriptedModelToolCall {
-	const id = options.id ?? nextCallId("status")
-	return { id, modelToolName: "mcp", response: modelToolCall("mcp", {}, id) }
 }
 
 export function mcpUiMessages(options: Pick<McpCallOptions, "id"> = {}): ScriptedModelToolCall {

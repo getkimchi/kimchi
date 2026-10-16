@@ -466,7 +466,10 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 		// Most recent handle first, the one before it second (cohort tests).
 		if (bashHandles[0]) fn.arguments = fn.arguments.replaceAll("__BASH_HANDLE__", bashHandles[0])
 		if (bashHandles[1]) fn.arguments = fn.arguments.replaceAll("__BASH_HANDLE_2__", bashHandles[1])
-		if (firstMcpTool) fn.arguments = fn.arguments.replaceAll("__MCP_FIRST_TOOL__", firstMcpTool)
+		if (firstMcpTool) {
+			fn.arguments = fn.arguments.replaceAll("__MCP_FIRST_TOOL__", firstMcpTool)
+			fn.name = fn.name.replaceAll("__MCP_FIRST_TOOL__", firstMcpTool)
+		}
 		chunk([
 			{
 				index: 0,
@@ -562,9 +565,9 @@ function extractAgentId(body: unknown): string | undefined {
 	return extractAgentIdFromText(JSON.stringify(body ?? ""))
 }
 
-/** Pull the first namespaced MCP tool from a prior gateway connect/list result. */
+/** Pull the first namespaced native MCP tool (mcp__<server>__<tool>) offered in the request. */
 function extractFirstMcpTool(body: unknown): string | undefined {
-	return JSON.stringify(body ?? "").match(/-\s*(conformance_[A-Za-z0-9_.-]+)/)?.[1]
+	return JSON.stringify(body ?? "").match(/"(mcp__[A-Za-z0-9]+__[A-Za-z0-9_]+)"/)?.[1]
 }
 
 function extractAgentIdFromValue(value: unknown): string | undefined {

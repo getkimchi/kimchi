@@ -12,8 +12,8 @@
 //     bash_control and web_fetch are NOT deferred: they are part of the
 //     static session surface so the top-level tools array never changes
 //     mid-session (prompt-cache stability).
-//   - the mcp gateway is config-gated (Chunk 5): not registered at all when
-//     zero MCP servers are configured (a dedicated test asserts the on-state)
+//   - MCP tools are NOT registered by kimchi's own factories at all — pi's
+//     native engine (loaded by pi main, absent from this harness) owns them
 //   - the five lsp_* tools are detection-gated (Chunk 6): registered but
 //     hidden via a visibility vote when no language server is detected for
 //     the session cwd (a dedicated test asserts the detected state)
@@ -54,56 +54,11 @@ vi.mock("./multi-model.js", async (importOriginal) => {
 })
 
 // =============================================================================
-// Mock MCP config — pin zero configured servers so the Chunk 5 registration
-// gate rolls mcp-adapter up off the canonical surface deterministically
-// (ambient ~/.config/kimchi/harness/mcp.json state must not leak into the
-// spec). The metadata cache is also stubbed: with zero servers the factory
-// would otherwise purge and rewrite the developer machine's real cache file.
-//
-// Without useProgrammaticConfig: true, mcp/index.ts passes empty options to
-// createMcpAdapter, which then reads the real MCP config from disk (the agent
-// dir set by PI_CODING_AGENT_DIR) and registers its tools (atlassian_*) into
-// the tool surface under test. The flag makes the adapter use only the
-// servers mocked above.
+// Post-native-migration MCP note: kimchi's mcp/index.ts registers no tools in
+// any config state (the native engine owns mcp__<server>__<tool>; the built-in
+// gateway registers a SERVER via pi.registerMcpServer only when an API key
+// exists). Nothing to pin — ambient mcp.json cannot leak into the spec.
 // =============================================================================
-
-const mcpConfigState = vi.hoisted(() => ({
-	servers: {} as Record<string, unknown>,
-}))
-vi.mock("./mcp/config.js", async (importOriginal) => {
-	const original = await importOriginal<typeof import("./mcp/config.js")>()
-	return {
-		...original,
-		loadKimchiMcpConfig: () => ({
-			config: { mcpServers: mcpConfigState.servers },
-			warnings: [],
-			useProgrammaticConfig: true,
-		}),
-	}
-})
-
-// The adapter falls through to createMcpAdapter({}) when the mocked config
-// carries no configPath — the library then discovers the DEVELOPER MACHINE's
-// real default MCP config (~/.config/mcp/mcp.json) and leaks those tools into
-// the spec. Stub createMcpAdapter so mcpConfigState is the single source of
-// truth: zero servers → nothing registered; >=1 → the bare gateway tool.
-vi.mock("pi-mcp-adapter", async (importOriginal) => {
-	const original = await importOriginal<typeof import("pi-mcp-adapter")>()
-	const stub = (options?: { config?: { mcpServers?: Record<string, unknown> } }) => {
-		// biome-ignore lint/suspicious/noExplicitAny: capture api — only registerTool is used
-		return (api: { registerTool: (tool: any) => void }) => {
-			const servers = options?.config?.mcpServers ?? mcpConfigState.servers
-			if (Object.keys(servers).length === 0) return
-			api.registerTool({
-				name: "mcp",
-				description: "MCP gateway (stubbed for the exposure spec)",
-				parameters: { type: "object", properties: {} },
-				execute: async () => ({ content: [{ type: "text", text: "" }] }),
-			})
-		}
-	}
-	return { ...original, createMcpAdapter: stub }
-})
 
 // =============================================================================
 // Mock adapter registry — controlled from tests via adapterState.active
@@ -434,7 +389,6 @@ const JS_DEBUG: DapAdapterConfig = {
 
 describe("tool exposure at session start", () => {
 	beforeEach(() => {
-		mcpConfigState.servers = {}
 		lspServerState.active = []
 		adapterState.active = [JS_DEBUG]
 		clientState.sessionAfterCreate = {
@@ -563,17 +517,18 @@ describe("tool exposure at session start", () => {
 		}
 	})
 
-	it("mcp gateway registers and is advertised when a server is configured (Chunk 5 gate on)", async () => {
-		mcpConfigState.servers = {
-			// Spawn fails fast (ENOENT) and is caught inside initializeMcp — the
-			// registration/advertisement under test happens before init runs.
-			"gate-test": { command: "definitely-not-a-real-kimchi-exposure-command" },
-		}
+	it("registers no MCP tools from kimchi's own factories — the native engine owns them", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
-		expect(harness.registered.has("mcp"), "mcp must be registered with >=1 configured server").toBe(true)
-		expect(harness.active.has("mcp"), "mcp must be advertised with >=1 configured server").toBe(true)
+		// The native engine (builtin:mcp, loaded by pi main()) registers
+		// mcp__<server>__<tool> at runtime; kimchi's factories contribute no
+		// tools regardless of ambient config, so nothing can leak from the
+		// developer machine's mcp.json into this harness.
+		for (const name of harness.registered.keys()) {
+			expect(name.startsWith("mcp__"), `unexpected MCP tool registration: ${name}`).toBe(false)
+		}
+		expect(harness.registered.has("mcp"), "the adapter-era gateway tool must stay gone").toBe(false)
 	})
 
 	it("DAP reveal round-trip exposes the 11 session tools exactly once when a session starts", async () => {

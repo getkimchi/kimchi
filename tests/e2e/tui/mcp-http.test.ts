@@ -84,43 +84,6 @@ test("authenticates to a Streamable HTTP MCP server with a static bearer token",
 	)
 })
 
-test("falls back from Streamable HTTP to the legacy MCP SSE transport", async ({ terminal }) => {
-	const echo = gatewayMcpCall("echo", { message: "legacy-sse" })
-	await runMcpKimchiSession(
-		terminal,
-		{
-			artifactName: "mcp-sse-fallback",
-			mcp: {
-				transport: "sse",
-				behavior: {
-					tools: [
-						mcpToolResult(
-							"echo",
-							{ content: [{ type: "text", text: "fixture echo: legacy-sse" }] },
-							{ message: "legacy-sse" },
-						),
-					],
-				},
-			},
-			responses: [echo.response, modelReply("Kimchi completed the MCP call through SSE fallback.")],
-		},
-		async (fixture, trace) => {
-			terminal.submit("Call MCP through the legacy SSE fallback")
-			await waitForText(terminal, "Kimchi completed the MCP call through SSE fallback.", {
-				timeoutMs: STREAM_TIMEOUT_MS,
-			})
-			await fixture.mcp.waitForEvent("tool_called", {
-				where: { name: "echo", arguments: { message: "legacy-sse" } },
-			})
-			expect(fixture.mcp.hasEvent("sse_streamable_rejected")).toBe(true)
-			expect(fixture.mcp.hasEvent("sse_session_initialized")).toBe(true)
-			expect(fixture.mcp.hasEvent("sse_message")).toBe(true)
-			expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: legacy-sse")
-			trace.step("Streamable HTTP failure and successful SSE fallback both observed")
-		},
-	)
-})
-
 test("keeps Kimchi usable when an HTTP MCP server returns malformed protocol data", async ({ terminal }) => {
 	const echo = gatewayMcpCall("echo", {})
 	await runMcpKimchiSession(
@@ -158,10 +121,11 @@ test("settles a tool call when a connected HTTP MCP server becomes unavailable",
 			await waitForText(terminal, "Kimchi recovered from the unavailable HTTP MCP server.", {
 				timeoutMs: STREAM_TIMEOUT_MS,
 			})
-			// adapter 5.x phrases the reconnect failure as availability, e.g.
-			// Server "fixture" not available (last failed …), while 2.34 said
-			// "Failed to call tool"; both are bounded model-facing errors.
-			expect(toolResultText(fixture.fake.requests, echo)).toMatch(/Failed to call tool|not available|Failed to connect/)
+			// The native transport phrases the loss as "Unable to connect.";
+			// whatever the phrasing, it must be a bounded model-facing error.
+			expect(toolResultText(fixture.fake.requests, echo)).toMatch(
+				/Failed to call tool|not available|Failed to connect|Unable to connect/,
+			)
 			trace.step("HTTP transport loss became a model-facing error and the turn settled")
 		},
 	)

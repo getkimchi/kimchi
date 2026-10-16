@@ -106,12 +106,11 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	// planning profiles so the step can return its result or questions.
 	{ name: "workflow_submit_result", modes: ["shared"] },
 	{ name: "workflow_submit_questions", modes: ["shared"] },
-	// MCP gateway — discovery + proxy for MCP server tools. Available in normal
-	// and implementation modes, but filtered out of both planning profiles
-	// (arbitrary server calls). Read-only-qualified MCP direct tools are
-	// admitted to planning profiles by the profile manager via
-	// registerReadOnlyToolProvider (see src/extensions/mcp/read-only.ts).
-	{ name: "mcp", modes: ["shared"] },
+	// MCP tools (native engine) are NOT catalogued: they register as
+	// `mcp__<server>__<tool>` per server at runtime and are classified for
+	// planning admission by name convention (permissions/taxonomy.ts), not by
+	// this static catalog. The codemode/tool_search reachability tools are
+	// likewise runtime-registered by pi and stay out of planning profiles.
 	// DAP debugger tools — always available in every mode/profile so the agent
 	// can inspect runtime state at any time. Registered by the dap extension.
 	{ name: "debug_launch", modes: ["shared"] },
@@ -172,7 +171,7 @@ export function isAdhocOnlyToolName(name: string): boolean {
  */
 export const SHARED_PLANNING_TOOLS: ToolEntry[] = [{ name: "submit_plan", modes: ["adhoc"] }]
 
-const PLANNING_CORE_TOOLS = SHARED_CORE_TOOLS.filter((tool) => tool.name !== "mcp")
+const PLANNING_CORE_TOOLS = SHARED_CORE_TOOLS
 
 /**
  * Tools gated behind the ferment lifecycle.

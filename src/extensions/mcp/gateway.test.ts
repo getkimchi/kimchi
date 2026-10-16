@@ -1,6 +1,6 @@
-import type { McpConfig } from "pi-mcp-adapter/types"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type * as ConfigModule from "../../config.js"
+import type { ServerEntry } from "./types.js"
 
 const configState = vi.hoisted(() => ({
 	environmentKey: undefined as string | undefined,
@@ -30,7 +30,7 @@ vi.mock("../../resources/store.js", () => ({
 }))
 
 import {
-	buildBuiltinGatewayServer,
+	buildGatewayRegistration,
 	GATEWAY_SERVER_NAME,
 	getGatewayAddresses,
 	hasGatewayAddress,
@@ -38,15 +38,13 @@ import {
 	normalizeServerUrl,
 } from "./gateway.js"
 
-function configWith(...urls: (string | undefined)[]): McpConfig {
-	return {
-		mcpServers: Object.fromEntries(
-			urls.map((url, index) => [`server-${index}`, url === undefined ? { command: "stdio-server" } : { url }]),
-		),
-	}
+function configWith(...urls: (string | undefined)[]): Record<string, ServerEntry> {
+	return Object.fromEntries(
+		urls.map((url, index) => [`server-${index}`, url === undefined ? { command: "stdio-server" } : { url }]),
+	)
 }
 
-describe("buildBuiltinGatewayServer", () => {
+describe("buildGatewayRegistration", () => {
 	beforeEach(() => {
 		configState.environmentKey = undefined
 		configState.savedKey = undefined
@@ -65,45 +63,46 @@ describe("buildBuiltinGatewayServer", () => {
 
 	it("returns undefined when the resource is disabled, even with a key and URL", () => {
 		configState.environmentKey = "castai_v1_key"
-		expect(buildBuiltinGatewayServer()).toBeUndefined()
+		expect(buildGatewayRegistration()).toBeUndefined()
 	})
 
 	it("returns undefined when no API key is configured", () => {
 		resourceState.enabled = true
-		expect(buildBuiltinGatewayServer()).toBeUndefined()
+		expect(buildGatewayRegistration()).toBeUndefined()
 	})
 
 	it("returns undefined on self-hosted (empty castApiUrl)", () => {
 		resourceState.enabled = true
 		configState.savedKey = "castai_v1_key"
 		configState.castApiUrl = ""
-		expect(buildBuiltinGatewayServer()).toBeUndefined()
+		expect(buildGatewayRegistration()).toBeUndefined()
 	})
 
 	it("returns undefined for an http (non-https) base", () => {
 		resourceState.enabled = true
 		configState.savedKey = "castai_v1_key"
 		configState.castApiUrl = "http://api.cast.ai"
-		expect(buildBuiltinGatewayServer()).toBeUndefined()
+		expect(buildGatewayRegistration()).toBeUndefined()
 	})
 
 	it("returns undefined for a schemeless base", () => {
 		resourceState.enabled = true
 		configState.savedKey = "castai_v1_key"
 		configState.castApiUrl = "kimchi.internal/api"
-		expect(buildBuiltinGatewayServer()).toBeUndefined()
+		expect(buildGatewayRegistration()).toBeUndefined()
 	})
 
 	it("builds the region-derived URL and bearer header from the saved key", () => {
 		resourceState.enabled = true
 		configState.savedKey = "castai_v1_saved"
 		configState.castApiUrl = "https://api.eu.cast.ai"
-		expect(buildBuiltinGatewayServer()).toEqual({
+		expect(buildGatewayRegistration()).toEqual({
 			name: GATEWAY_SERVER_NAME,
-			entry: {
+			config: {
+				type: "http",
 				url: "https://api.eu.cast.ai/mcp",
 				headers: { Authorization: "Bearer castai_v1_saved" },
-				lifecycle: "keep-alive",
+				exposure: "direct",
 			},
 		})
 	})
@@ -112,15 +111,15 @@ describe("buildBuiltinGatewayServer", () => {
 		resourceState.enabled = true
 		configState.environmentKey = "castai_v1_env"
 		configState.savedKey = "castai_v1_saved"
-		const built = buildBuiltinGatewayServer()
-		expect(built?.entry.headers?.Authorization).toBe("Bearer castai_v1_env")
+		const built = buildGatewayRegistration()
+		expect((built?.config as { headers?: Record<string, string> }).headers?.Authorization).toBe("Bearer castai_v1_env")
 	})
 
 	it("normalizes trailing slashes on the Cast AI API base", () => {
 		resourceState.enabled = true
 		configState.savedKey = "castai_v1_key"
 		configState.castApiUrl = "https://api.cast.ai///"
-		expect(buildBuiltinGatewayServer()?.entry.url).toBe("https://api.cast.ai/mcp")
+		expect((buildGatewayRegistration()?.config as { url?: string }).url).toBe("https://api.cast.ai/mcp")
 	})
 })
 
@@ -174,7 +173,7 @@ describe("hasGatewayAddress", () => {
 	})
 
 	it("returns false for an empty config", () => {
-		expect(hasGatewayAddress({ mcpServers: {} }, addresses)).toBe(false)
+		expect(hasGatewayAddress({}, addresses)).toBe(false)
 	})
 })
 

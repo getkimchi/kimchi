@@ -35,9 +35,9 @@
 		"test:e2e:tui:trace:replay": "node scripts/run-tui-e2e.js replay",
 		"test:e2e:acp": "pnpm run build:binary && vitest run --config tests/e2e/acp/vitest.config.ts",
 		"test:e2e:mcp": "pnpm run build:binary && pnpm run test:e2e:mcp:tui && pnpm run test:e2e:mcp:acp && pnpm run test:e2e:mcp:conformance",
-		"test:e2e:mcp:tui": "node scripts/run-tui-e2e.js mcp-config && node scripts/run-tui-e2e.js mcp-project-trust && node scripts/run-tui-e2e.js mcp-stdio && node scripts/run-tui-e2e.js mcp-failures && node scripts/run-tui-e2e.js mcp-http && node scripts/run-tui-e2e.js mcp-browser-branding && node scripts/run-tui-e2e.js mcp-oauth && node scripts/run-tui-e2e.js mcp-restart && node scripts/run-tui-e2e.js mcp-panel && node scripts/run-tui-e2e.js mcp-lifecycle && node scripts/run-tui-e2e.js mcp-ui",
-		"test:e2e:mcp:acp": "vitest run --config tests/e2e/acp/vitest.config.ts tests/e2e/acp/mcp-workflow.test.ts tests/e2e/acp/mcp-probe-command.test.ts",
-		"test:e2e:mcp:conformance": "conformance client --command \"pnpm exec tsx tests/e2e/mcp/conformance-client.ts\" --scenario initialize --spec-version 2025-11-25 --timeout 30000 --output-dir .kimchi/mcp-conformance-results && conformance client --command \"pnpm exec tsx tests/e2e/mcp/conformance-client.ts\" --scenario tools_call --spec-version 2025-11-25 --timeout 30000 --output-dir .kimchi/mcp-conformance-results && conformance client --command \"pnpm exec tsx tests/e2e/mcp/conformance-client.ts\" --scenario sse-retry --spec-version 2025-11-25 --timeout 30000 --output-dir .kimchi/mcp-conformance-results && conformance client --command \"pnpm exec tsx tests/e2e/mcp/conformance-client.ts\" --scenario auth/metadata-default --spec-version 2025-11-25 --timeout 60000 --output-dir .kimchi/mcp-conformance-results && conformance client --command \"pnpm exec tsx tests/e2e/mcp/conformance-client.ts\" --scenario auth/pre-registration --spec-version 2025-11-25 --timeout 60000 --output-dir .kimchi/mcp-conformance-results",
+		"test:e2e:mcp:tui": "node scripts/run-tui-e2e.js mcp-config && node scripts/run-tui-e2e.js mcp-project-trust && node scripts/run-tui-e2e.js mcp-stdio && node scripts/run-tui-e2e.js mcp-http && node scripts/run-tui-e2e.js mcp-oauth-strict-accept",
+		"test:e2e:mcp:acp": "vitest run --config tests/e2e/acp/vitest.config.ts tests/e2e/acp/mcp-workflow.test.ts tests/e2e/acp/mcpservers-acceptance.test.ts tests/e2e/acp/mcpservers-tool-registration.test.ts",
+		"test:e2e:mcp:conformance": "conformance client --command \"pnpm exec tsx tests/e2e/mcp/conformance-client.ts\" --scenario initialize --spec-version 2025-11-25 --timeout 30000 --output-dir .kimchi/mcp-conformance-results && conformance client --command \"pnpm exec tsx tests/e2e/mcp/conformance-client.ts\" --scenario tools_call --spec-version 2025-11-25 --timeout 30000 --output-dir .kimchi/mcp-conformance-results",
 		"postinstall": "node scripts/patch-pi-ai-oauth.js && node scripts/copy-resources.js --dev",
 		"prepare": "husky",
 		"verify": "pnpm run check && pnpm run build:binary && pnpm run test && pnpm run test:smoke"
@@ -52,12 +52,11 @@
 		"@bulkhead-ai/core": "^0.7.0",
 		"@clack/prompts": "^1.3.0",
 		"@earendil-works/pi-coding-agent": "1.3.0",
+		"@earendil-works/pi-mcp": "1.3.0",
 		"@earendil-works/pi-tui": "1.3.0",
 		"@kimchi-dev/kimchi-workflows": "0.0.9",
-		"@modelcontextprotocol/client": "2.3.1",
 		"@modelcontextprotocol/ext-apps": "^1.7.1",
 		"@modelcontextprotocol/sdk": "^1.29.0",
-		"@napi-rs/keyring": "1.3.0",
 		"@shikijs/cli": "^4.0.2",
 		"@types/proper-lockfile": "^4.1.4",
 		"@types/ssh2": "^1.15.5",
@@ -69,7 +68,6 @@
 		"micromatch": "^4.0.8",
 		"natural": "link:shims/natural",
 		"open": "^10.2.0",
-		"pi-mcp-adapter": "5.3.1",
 		"proper-lockfile": "^4.1.2",
 		"quickjs-wasi": "3.6.2",
 		"shell-quote": "1.8.4",
@@ -143,8 +141,7 @@
 			"@earendil-works/pi-ai@1.3.0": "patches/@earendil-works__pi-ai@1.3.0.patch",
 			"@earendil-works/pi-tui@1.3.0": "patches/@earendil-works__pi-tui@1.3.0.patch",
 			"@earendil-works/pi-coding-agent@1.3.0": "patches/@earendil-works__pi-coding-agent@1.3.0.patch",
-			"pi-mcp-adapter@5.3.1": "patches/pi-mcp-adapter@5.3.1.patch",
-			"@modelcontextprotocol/client@2.3.1": "patches/@modelcontextprotocol__client@2.3.1.patch"
+			"@earendil-works/pi-mcp@1.3.0": "patches/@earendil-works__pi-mcp@1.3.0.patch"
 		},
 		"supportedArchitectures": {
 			"os": [

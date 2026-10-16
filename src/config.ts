@@ -736,6 +736,29 @@ export function syncWheelScrollToPiSettings(settings: Record<string, unknown>, c
 	return true
 }
 
+/**
+ * Map the `plugins.mcp-apps` org-policy resource toggle onto pi's native
+ * settings: disabled → ensure a `-builtin:mcp` entry in `extensions`
+ * (upstream's designed opt-out for the built-in MCP extension); enabled →
+ * drop it again. Runs as part of the startup settings.json seeding in cli.ts.
+ * Returns true when the settings record changed.
+ */
+export function syncMcpBuiltinToPiSettings(settings: Record<string, unknown>, mcpAppsEnabled: boolean): boolean {
+	const VALUE = "-builtin:mcp"
+	const extensions = Array.isArray(settings.extensions) ? [...(settings.extensions as string[])] : []
+	const present = extensions.includes(VALUE)
+	if (mcpAppsEnabled && !present) return false
+	if (mcpAppsEnabled) {
+		settings.extensions = extensions.filter((entry) => entry !== VALUE)
+		return true
+	}
+	if (!present) {
+		settings.extensions = [...extensions, VALUE]
+		return true
+	}
+	return false
+}
+
 export interface ResolvedEndpoints extends RegionEndpoints {
 	/** KIMCHI_BASE_URL env → project config → global config → the region's OpenAI base. */
 	llmEndpoint: string

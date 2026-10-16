@@ -1,8 +1,8 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { MCP_FIXTURE_OAUTH_ACCESS_TOKEN, mcpToolResult } from "../tui/support/mcp-fixture.js"
+import { mcpToolResult } from "../tui/support/mcp-fixture.js"
 import { gatewayMcpCall, modelReply, toolResultText } from "../tui/support/mcp-model-script.js"
 import { type AcpMcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture, startAcpMcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
@@ -113,28 +113,18 @@ describe("ACP integration — MCP", () => {
 })
 
 describe("ACP integration — probe recovery", () => {
-	it("migrates preauthorized legacy credentials before the first probe, without a session", async () => {
+	it("reports needsAuth from an unauthenticated probe of an OAuth-protected server", async () => {
 		const fixture = await startAcpMcpFixture({
-			artifactName: "acp-mcp-legacy-probe",
-			mcp: { transport: "oauth", oauthPreauthorized: true },
+			artifactName: "acp-mcp-probe-needs-auth",
+			mcp: { transport: "oauth" },
 			responses: [],
 		})
 		try {
-			const legacyDir = join(fixture.homeDir, ".config", "kimchi", "harness", "mcp-oauth", "fixture")
-			mkdirSync(legacyDir, { recursive: true })
-			writeFileSync(
-				join(legacyDir, "tokens.json"),
-				JSON.stringify({ serverUrl: fixture.mcp.url, tokens: { accessToken: MCP_FIXTURE_OAUTH_ACCESS_TOKEN } }),
-				{ mode: 0o600 },
-			)
 			const probe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
 				server: fixture.mcp.serverDefinition,
-				serverName: "fixture",
-				skipAuth: true,
+				serverName: "protected",
 			})
-			expect(probe).toMatchObject({ needsAuth: false, error: null })
-			expect(probe.tools).toEqual(expect.arrayContaining([expect.objectContaining({ name: "echo" })]))
-			expect(fixture.mcp.hasEvent("oauth_browser_opened")).toBe(false)
+			expect(probe).toMatchObject({ tools: [], needsAuth: true })
 		} finally {
 			await fixture.stop()
 		}
@@ -152,7 +142,9 @@ describe("ACP integration — probe recovery", () => {
 				server: fixture.mcp.serverDefinition,
 				serverName: "stalled",
 			})
-			expect(probe).toEqual({ tools: [], needsAuth: false, error: "Probe timed out after 15 seconds" })
+			// Native engine: the 10s probe abort surfaces as a bounded timeout/abort error.
+			expect(probe).toMatchObject({ tools: [], needsAuth: false })
+			expect(String(probe.error)).toMatch(/timed out|abort/i)
 			expect(performance.now() - started).toBeLessThan(20_000)
 			await fixture.mcp.waitForEvent("process_exited", { where: { code: 0 } })
 			expect(fixture.mcp.hasEvent("initialized")).toBe(false)
@@ -160,124 +152,6 @@ describe("ACP integration — probe recovery", () => {
 			await fixture.stop()
 		}
 	}, 25_000)
-})
-
-describe("ACP integration — OAuth MCP", () => {
-	let fixture: AcpMcpFixture
-	const echo = gatewayMcpCall("echo", { message: "acp-oauth-mcp" })
-
-	beforeEach(async () => {
-		fixture = await startAcpMcpFixture({
-			artifactName: "acp-mcp-oauth-workflow",
-			mcp: {
-				transport: "oauth",
-				behavior: {
-					tools: [
-						mcpToolResult(
-							"echo",
-							{ content: [{ type: "text", text: "fixture echo: acp-oauth-mcp" }] },
-							{ message: "acp-oauth-mcp" },
-						),
-					],
-				},
-			},
-			responses: [echo.response, modelReply("ACP called the OAuth-protected MCP tool.")],
-		})
-	}, STARTUP_TIMEOUT_MS)
-
-	afterEach(async () => {
-		await fixture.stop()
-	})
-
-	it("distinguishes auth-required probing, authenticates, and then uses the protected tool", async () => {
-		const server = fixture.mcp.serverDefinition
-		const unauthenticatedProbe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
-			server,
-			serverName: "fixture",
-			skipAuth: true,
-		})
-		expect(unauthenticatedProbe.needsAuth).toBe(true)
-
-		const authenticatedProbe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
-			server,
-			serverName: "fixture",
-		})
-		expect(authenticatedProbe.needsAuth).toBe(false)
-		expect(authenticatedProbe.error).toBeNull()
-		expect(authenticatedProbe.tools).toEqual(expect.arrayContaining([expect.objectContaining({ name: "echo" })]))
-		await fixture.mcp.waitForEvent("oauth_token_issued", { where: { grantType: "authorization_code" } })
-
-		const sessionId = await newSession(fixture, fixture.workDir)
-		const result = await prompt(fixture, sessionId, "Call the OAuth-protected configured MCP tool")
-		expect(result.stopReason).toBe("end_turn")
-		expect(result.chunks).toContain("ACP called the OAuth-protected MCP tool.")
-		await fixture.mcp.waitForEvent("tool_called", {
-			where: { name: "echo", arguments: { message: "acp-oauth-mcp" } },
-		})
-		expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: acp-oauth-mcp")
-	})
-})
-
-describe("ACP integration — OAuth MCP with a remote https redirect", () => {
-	let fixture: AcpMcpFixture
-	const echo = gatewayMcpCall("echo", { message: "acp-oauth-remote-redirect" })
-
-	beforeEach(async () => {
-		fixture = await startAcpMcpFixture({
-			artifactName: "acp-mcp-oauth-remote-redirect",
-			mcp: {
-				transport: "oauth",
-				oauth: { redirectUri: "https://app.kimchi.dev/mcp-oauth/callback-v2" },
-				behavior: {
-					tools: [
-						mcpToolResult(
-							"echo",
-							{ content: [{ type: "text", text: "fixture echo: acp-oauth-remote-redirect" }] },
-							{ message: "acp-oauth-remote-redirect" },
-						),
-					],
-				},
-			},
-			responses: [echo.response, modelReply("ACP used the OAuth-protected MCP tool after the remote redirect.")],
-		})
-	}, STARTUP_TIMEOUT_MS)
-
-	afterEach(async () => {
-		await fixture.stop()
-	})
-
-	it("authenticates through the loopback bounce without a manual paste", async () => {
-		const server = fixture.mcp.serverDefinition
-		const unauthenticatedProbe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
-			server,
-			serverName: "fixture",
-			skipAuth: true,
-		})
-		expect(unauthenticatedProbe.needsAuth).toBe(true)
-
-		const authenticatedProbe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
-			server,
-			serverName: "fixture",
-		})
-		expect(authenticatedProbe.error).toBeNull()
-		expect(authenticatedProbe.needsAuth).toBe(false)
-		expect(authenticatedProbe.tools).toEqual(expect.arrayContaining([expect.objectContaining({ name: "echo" })]))
-
-		await fixture.mcp.waitForEvent("oauth_authorized", {
-			where: { redirectUri: "https://app.kimchi.dev/mcp-oauth/callback-v2" },
-		})
-		await fixture.mcp.waitForEvent("oauth_token_issued", { where: { grantType: "authorization_code" } })
-		expect(fixture.mcp.hasEvent("oauth_browser_completed")).toBe(true)
-
-		const sessionId = await newSession(fixture, fixture.workDir)
-		const result = await prompt(fixture, sessionId, "Call the OAuth-protected configured MCP tool")
-		expect(result.stopReason).toBe("end_turn")
-		expect(result.chunks).toContain("ACP used the OAuth-protected MCP tool after the remote redirect.")
-		await fixture.mcp.waitForEvent("tool_called", {
-			where: { name: "echo", arguments: { message: "acp-oauth-remote-redirect" } },
-		})
-		expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: acp-oauth-remote-redirect")
-	})
 })
 
 describe("ACP integration — project MCP trust", () => {

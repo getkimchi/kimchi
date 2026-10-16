@@ -34,7 +34,7 @@ export const COMMANDS: CommandDefinition[] = [
 	{ name: "update", summary: "Check for and install Kimchi/package updates", run: runUpdate },
 	{ name: "config", summary: "Inspect or change kimchi config (e.g. telemetry)", run: runConfig },
 	{ name: "resources", summary: "Enable or disable Kimchi hooks, tools, extensions, and plugins", run: runResources },
-	{ name: "mcp", summary: "MCP server utilities (probe and diagnostics)", run: runMcp },
+	{ name: "mcp", summary: "MCP server utilities (probe, diagnostics, native add/list/remove/login)", run: runMcp },
 	{ name: "memory", summary: "Manage persistent memory (list, search, delete, reset)", run: runMemory },
 	{ name: "version", summary: "Print the kimchi version", run: runVersion },
 ]

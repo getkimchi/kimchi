@@ -32,7 +32,14 @@ const STATIC_CATEGORIES: Record<string, ToolCategory> = {
 	workflow_submit_questions: "readOnly",
 }
 
-const READ_ONLY_NAME_HINT = /^(read|get|list|search|query|describe|find|grep|ls|loki_|view|show)/i
+/*
+ * Read-only classification by name. Post-adapter, MCP tools reach this layer
+ * as bare names (`mcp__<server>__<tool>`) with no tool annotations attached,
+ * so the name convention is the only signal — unlike the adapter-era
+ * read-only qualification, an explicit `readOnlyHint` can no longer veto a
+ * misleading name (see the plan-mode gate in permissions/index.ts).
+ */
+const READ_ONLY_NAME_HINT = /^(read|get|list|search|query|describe|find|grep|ls|loki_|view|show|fetch)/i
 
 // Verbs at the start of an underscore-separated segment that signal a read-only
 // operation on namespaced MCP direct tools like `jetbrains_get_all_open_file_paths`
@@ -53,6 +60,7 @@ const READ_ONLY_VERB_SEGMENTS = new Set([
 	"show",
 	"preview",
 	"inspect",
+	"fetch",
 ])
 
 function hasReadOnlyVerbSegment(toolName: string): boolean {

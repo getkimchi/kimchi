@@ -2,14 +2,9 @@
  * `kimchi mcp probe` — transient MCP server tool discovery.
  *
  * Reads a `{ name: string, server: ServerEntry }` JSON from stdin, connects
- * through an isolated upstream adapter instance, calls `tools/list`, prints
- * the result as JSON to stdout, and exits.
- *
- * The `name` field selects the OAuth token-store key. Remote probes use that
- * durable name for a new account or credentials proven to match the URL. If
- * an account exists but its URL cannot be matched, they probe under a
- * throwaway `__probe_<uuid>` name and clean it up afterwards, so credentials
- * for an undiscoverable previous URL cannot be overwritten.
+ * with an isolated native client, calls `tools/list`, prints the result as
+ * JSON to stdout, and exits. The `name` is informational only — probes carry
+ * no credentials, and a 401 from the server maps to `needsAuth: true`.
  *
  * Used by Kimchi Desktop's MCP server configuration UI to populate a
  * multiselect dropdown of available tools when the user picks
@@ -20,19 +15,19 @@
  * Output: { "tools": [{ "name": "..." }], "needsAuth": false }
  * Exit:   0 on success (including needs-auth), 1 on error
  *
- * `kimchi mcp forget-grant` — one-shot OAuth grant forget; invocation contract and consent budget: docs/mcp-forget-grant.md
+ * `kimchi mcp forget-grant` — one-shot OAuth grant forget; invocation contract
+ * and consent budget: docs/mcp-forget-grant.md
+ *
+ * Everything else (`add`, `remove`, `list`, `login`, …) delegates to pi's
+ * native MCP CLI (`runMcpCommand`); adapter-era `auth` redirects to `login`.
  */
 
-import type { ServerEntry } from "pi-mcp-adapter/types"
+import { getAgentDir, runMcpCommand } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { Value } from "typebox/value"
-import { forgetMcpOAuthGrant } from "../extensions/mcp/forget-oauth-grant.js"
-import {
-	McpKeychainDeniedError,
-	McpKeychainUnavailableError,
-	verifyMcpKeyringRuntime,
-} from "../extensions/mcp/keyring-require-bridge.js"
 import { type ProbeResult, UpstreamMcpProbe } from "../extensions/mcp/probe.js"
+import type { ServerEntry } from "../extensions/mcp/types.js"
+import { defaultMcpAuthPath, forgetMcpGrant } from "./mcp-forget-grant.js"
 
 const SERVER_NAME_PATTERN_SOURCE = "^(?!.*\\.\\.)[^/\\\\]+$"
 /** Server names follow one rule everywhere: no path separators or consecutive dots (guards path traversal in name-keyed credential paths). */
@@ -75,22 +70,28 @@ export async function runMcp(args: string[]): Promise<number | undefined> {
 			Object.assign(console, stdoutConsole)
 		}
 	}
-	if (subcommand === "keyring-check") {
-		return runKeyringCheck(args.slice(1))
-	}
 	if (subcommand === "forget-grant") {
 		return runForgetGrant(args.slice(1))
 	}
+	if (subcommand === "auth") {
+		// Adapter-era spelling; the native verb is `login`.
+		process.stderr.write("kimchi mcp auth is now kimchi mcp login\n")
+		return runMcp(["login", ...args.slice(1)])
+	}
+	if (subcommand !== undefined) {
+		// Delegate to pi's native MCP CLI (login, inspector, help, …).
+		return runMcpCommand(args, { agentDir: getAgentDir(), cwd: process.cwd() })
+	}
 
-	// Future: `kimchi mcp list`, `kimchi mcp status`, etc.
 	process.stderr.write(`Unknown mcp subcommand: ${subcommand ?? "(none)"}\n`)
 	process.stderr.write("Usage: kimchi mcp probe --json < server-config.json\n")
-	process.stderr.write("       kimchi mcp keyring-check --json\n")
 	process.stderr.write("       kimchi mcp forget-grant <server-name> --json\n")
+	process.stderr.write("       kimchi mcp login <server>\n")
+	process.stderr.write("       (add, remove, list and other subcommands come from the native MCP CLI)\n")
 	return 1
 }
 
-type ForgetGrantFailureReason = "invalid-input" | "denied" | "unavailable" | "error"
+type ForgetGrantFailureReason = "invalid-input" | "error"
 
 async function runForgetGrant(args: string[]): Promise<number> {
 	if (!args.includes("--json")) {
@@ -98,26 +99,17 @@ async function runForgetGrant(args: string[]): Promise<number> {
 	}
 	const positional = args.filter((arg) => arg !== "--json")
 	const name = positional.length === 1 ? positional[0] : undefined
-	// Reject unknown flags as well: without this, `--name=x` would be treated
-	// as the server name and "successfully" forget a nonexistent server.
 	if (name === undefined || name.startsWith("-") || !SERVER_NAME_PATTERN.test(name)) {
 		return emitForgetGrantFailure(
 			name ?? null,
-			`Expected exactly one server name with no path separators or '..': kimchi mcp forget-grant <server-name> --json`,
+			"Expected exactly one server name with no path separators or '..': kimchi mcp forget-grant <server-name> --json",
 			"invalid-input",
 		)
 	}
 	try {
-		return emitJson({ ok: true, name, ...forgetMcpOAuthGrant(name) }, 0)
+		return emitJson({ ok: true, name, ...forgetMcpGrant(name, defaultMcpAuthPath(getAgentDir())) }, 0)
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error)
-		const reason: ForgetGrantFailureReason =
-			error instanceof McpKeychainDeniedError
-				? "denied"
-				: error instanceof McpKeychainUnavailableError
-					? "unavailable"
-					: "error"
-		return emitForgetGrantFailure(name, message, reason)
+		return emitForgetGrantFailure(name, error instanceof Error ? error.message : String(error), "error")
 	}
 }
 
@@ -127,23 +119,6 @@ function emitForgetGrantFailure(
 	reason: ForgetGrantFailureReason,
 ): Promise<number> {
 	return emitJson({ ok: false, name, error: message, reason }, 1)
-}
-
-async function runKeyringCheck(args: string[]): Promise<number> {
-	if (!args.includes("--json")) return emitError("--json flag is required", null)
-	try {
-		return emitJson({ ok: true, ...verifyMcpKeyringRuntime() }, 0)
-	} catch (err) {
-		return emitJson(
-			{
-				ok: false,
-				platform: process.platform,
-				arch: process.arch,
-				error: err instanceof Error ? err.message : String(err),
-			},
-			1,
-		)
-	}
 }
 
 async function runProbe(args: string[]): Promise<number> {

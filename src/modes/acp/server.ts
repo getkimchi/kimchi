@@ -86,7 +86,7 @@ import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/
 import { resolveMarkerForDisplay } from "../../extensions/display-budget.js"
 import { getRawErrorMessage } from "../../extensions/error-preservation.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
-import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
+import type { KimchiMcpExtensionOptions } from "../../extensions/mcp/index.js"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
 import {
 	availableModelRefs,
@@ -254,7 +254,7 @@ export interface RunAcpOptions {
 	extensionFactories: InlineExtension[]
 	agentDir: string
 	/** Add the session-scoped MCP adapter after caller servers are known. */
-	mcpExtensionFactory?: (options: KimchiMcpAdapterExtensionOptions) => ExtensionFactory
+	mcpExtensionFactory?: (options: KimchiMcpExtensionOptions) => ExtensionFactory
 	/**
 	 * Content of the `--append-system-prompt` CLI flag, forwarded verbatim to
 	 * every session's DefaultResourceLoader. When a client also sends

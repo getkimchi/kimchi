@@ -1,24 +1,22 @@
 # Project MCP overrides
 
-Kimchi repoints pi-mono's project config directory via `piConfig.mcpProjectConfigDir = ".kimchi"` (see [mcp-project-config-patch.md](mcp-project-config-patch.md)). All project-level MCP state therefore lives under `<project>/.kimchi/` — upstream pi's `.pi/mcp.json` is never read by kimchi.
+Kimchi repoints pi-mono's project MCP config to `.kimchi/mcp.json` via a patch on the upstream discovery path (see [mcp-project-config-patch.md](mcp-project-config-patch.md)). All project-level MCP state therefore lives under `<project>/.kimchi/` — upstream pi's `.pi/mcp.json` is never read by kimchi.
 
 ## Overriding a server for one project
 
-Add a project-level override file at `<project>/.kimchi/mcp.json`. Configs are merged per field: fields you omit (e.g. `command`, `url`) are inherited from the server's definition elsewhere (for example the user-global `~/.config/kimchi/harness/mcp.json`).
-
-To disable a globally defined server just for this project, use an override-only entry:
+Add a project-level override file at `<project>/.kimchi/mcp.json`. The project layer is merged over `<agentDir>/mcp.json` after preprocessing: a project entry wins whole-server conflicts with the user-global entry, and a project entry with `enabled: false` hides the server for this project only.
 
 ```jsonc
 // <project>/.kimchi/mcp.json
-{ "mcpServers": { "<serverName>": { "disabled": true } } }
+{ "mcpServers": { "<serverName>": { "enabled": false } } }
 ```
 
-To re-enable it later, set `"disabled": false` or delete the override entry.
+To re-enable it later, set `"enabled": true` or delete the project entry.
 
-## `disabled`, not `enabled`
+## `enabled` (native) vs `disabled` (legacy)
 
-The MCP adapter has no `enabled` field — `{ "enabled": false }` is silently ignored everywhere (upstream pi included). The correct field is `disabled: true`.
+pi 1.3's native MCP config uses `enabled: false`. Kimchi's the pre-migration adapter format used `disabled: true`; the one-shot startup migration (`mcp-native-migration.done` stamp) translates `disabled: true` → `enabled: false` in place, so both spellings work after the upgrade, but new files should use `enabled`.
 
-## Panel persistence
+## Permissions
 
-The interactive MCP panel's per-project enable/disable toggle (`ctrl+d`) persists to `<project>/.kimchi/mcp-adapter.json` (or the server's provenance file) — the same `.kimchi` directory, independent of any hand-written `mcp.json` override.
+The directory permissions guided `0600` convention ([config-migration](docs/mcp-project-config-patch.md)) applies to both files.

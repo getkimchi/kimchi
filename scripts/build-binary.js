@@ -80,6 +80,22 @@ if (!isCI) {
 }
 
 cleanDist()
+
+// Bundle pi's codemode worker entry into one self-contained file. pi's
+// bun-binary runtime resolves the worker as "./src/extensions/codemode/worker.ts"
+// (pi's own build embeds that source entrypoint), but the published package
+// ships no src tree — kimchi embeds this bundle instead and registers its path
+// via setEmbeddedCodemodeWorkerPath (see src/binary-entry.ts and the pi patch).
+// Without it, every codemode-mediated MCP call in the compiled binary fails with
+// module-not-found. The output is git-ignored (src/generated/) and only needed
+// at compile time, but is generated before typecheck so a cold `pnpm run
+// build:binary` never typechecks against a stale copy.
+const piDistDir = dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")))
+const codemodeWorkerEntry = join(piDistDir, "extensions", "codemode", "worker.js")
+run(
+	"bundle codemode worker",
+	`bun build ${codemodeWorkerEntry} --target=bun --outfile ${join(projectRoot, "src", "generated", "codemode-worker.js")}`,
+)
 // Opt-in skip (KIMCHI_SKIP_TYPECHECK=1 in CI): memory-constrained CI pods
 // can OOM tsc before the compile step. Benchmark artifact builds use it —
 // product CI still typechecks every src change; the benchmarked ref's own

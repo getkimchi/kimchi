@@ -1,21 +1,21 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Model } from "@earendil-works/pi-ai"
-import type { McpStatusSnapshot } from "pi-mcp-adapter"
-import { MCP_STATUS_EVENT } from "pi-mcp-adapter"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { getMe } from "../../api/me.js"
 import { getOrganization, verifyApiKey } from "../../api/organizations.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "../auto-model/state.js"
-import statusExtension, {
-	buildStatusRows,
-	gatherStatusRows,
-	resolveLoginMethod,
-	summarizeMcpSnapshot,
-} from "./index.js"
+import statusExtension, { buildStatusRows, gatherStatusRows, resolveLoginMethod, summarizeMcpConfig } from "./index.js"
+
+// Isolate MCP config counting from the developer's real agent dir: forks
+// inherit any exported PI_/KIMCHI_ agent-dir vars, and getAgentDir() reads the
+// PI_ one in the test-resolved module while kimchi runtime code reads KIMCHI_.
+const isolatedAgentDir = mkdtempSync(join(tmpdir(), "status-agentdir-"))
+process.env.KIMCHI_CODING_AGENT_DIR = isolatedAgentDir
+process.env.PI_CODING_AGENT_DIR = isolatedAgentDir
 
 const configState = vi.hoisted(() => ({
 	savedKey: undefined as string | undefined,
@@ -61,7 +61,7 @@ function baseDeps(overrides: Partial<Parameters<typeof buildStatusRows>[0]> = {}
 		cwd: "/tmp/project",
 		modelRef: "kimchi-dev/kimi-k3",
 		isAuto: false,
-		mcp: { connected: 3, disabled: 10, failed: 1 },
+		mcp: { configured: 3, disabled: 10 },
 		...overrides,
 	}
 }
@@ -77,7 +77,7 @@ describe("buildStatusRows", () => {
 			"Session ID:     b3611b12-9c93-4b2a-92d8-29c866db68b8",
 			"cwd:            /tmp/project",
 			"Model:          kimchi-dev/kimi-k3",
-			"MCP servers:    3 connected, 10 disabled, 1 failed · /mcp",
+			"MCP servers:    3 configured, 10 disabled · /mcp",
 		])
 	})
 
@@ -163,56 +163,40 @@ describe("gatherStatusRows", () => {
 	})
 })
 
-describe("summarizeMcpSnapshot", () => {
-	type ServerStatus = McpStatusSnapshot["servers"][number]["status"]
+describe("summarizeMcpConfig", () => {
+	let dir: string
+	let agentDir: string
 
-	function snapshot(statuses: Array<{ status: ServerStatus; disabled?: boolean }>): McpStatusSnapshot {
-		return {
-			version: 1,
-			servers: statuses.map((s, i) => ({
-				name: `server-${i}`,
-				status: s.status,
-				toolCount: 0,
-				directToolCount: 0,
-				disabled: s.disabled ?? false,
-				listenState: "active" as const,
-			})),
-			totalTools: 0,
-			totalResources: 0,
-			connectedCount: 0,
-			disabledCount: 0,
-		}
-	}
-
-	it("counts connected/cached as connected, disabled as disabled, and the failed set as failed", () => {
-		expect(
-			summarizeMcpSnapshot(
-				snapshot([
-					{ status: "connected" },
-					{ status: "cached" },
-					{ status: "failed" },
-					{ status: "needs-auth" },
-					{ status: "not-connected" },
-					{ status: "disabled" },
-				]),
-			),
-		).toEqual({ connected: 2, disabled: 1, failed: 3 })
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "status-mcp-"))
+		agentDir = join(dir, "agent")
+		process.env.KIMCHI_CODING_AGENT_DIR = agentDir
+		process.env.PI_CODING_AGENT_DIR = agentDir
 	})
 
-	it("treats a server with the disabled flag as disabled even if status says connected", () => {
-		expect(summarizeMcpSnapshot(snapshot([{ status: "connected", disabled: true }]))).toEqual({
-			connected: 0,
-			disabled: 1,
-			failed: 0,
-		})
+	afterEach(() => {
+		process.env.KIMCHI_CODING_AGENT_DIR = isolatedAgentDir
+		process.env.PI_CODING_AGENT_DIR = isolatedAgentDir
+		rmSync(dir, { recursive: true, force: true })
 	})
 
-	it.each([
-		{ status: "failed" as const },
-		{ status: "needs-auth" as const },
-		{ status: "not-connected" as const },
-	])("classifies $status in the failed bucket", ({ status }) => {
-		expect(summarizeMcpSnapshot(snapshot([{ status }]))).toEqual({ connected: 0, disabled: 0, failed: 1 })
+	it("counts configured and disabled servers across global and project layers (project wins ties)", () => {
+		mkdirSync(agentDir, { recursive: true })
+		mkdirSync(join(dir, ".kimchi"), { recursive: true })
+		writeFileSync(
+			join(agentDir, "mcp.json"),
+			JSON.stringify({ mcpServers: { a: { command: "x" }, b: { command: "y", enabled: false } } }),
+		)
+		writeFileSync(
+			join(dir, ".kimchi", "mcp.json"),
+			JSON.stringify({ mcpServers: { b: { enabled: true }, c: { url: "https://x" } } }),
+		)
+		expect(summarizeMcpConfig(dir)).toEqual({ configured: 3, disabled: 0 })
+	})
+
+	it("reports zero with no configs present", () => {
+		mkdirSync(agentDir, { recursive: true })
+		expect(summarizeMcpConfig(dir)).toEqual({ configured: 0, disabled: 0 })
 	})
 })
 
@@ -339,7 +323,7 @@ describe("status command handler", () => {
 
 		expect(ctx.ui.custom).not.toHaveBeenCalled()
 		// No key in config and an empty auth store → "Not logged in"; no
-		// identity fetched; no MCP snapshot received.
+		// identity fetched; the MCP row reflects the (empty) config layers.
 		expect(rows).toEqual([
 			"Version:        9.9.9-test",
 			"Login method:   Not logged in",
@@ -348,7 +332,7 @@ describe("status command handler", () => {
 			"Session ID:     test-session",
 			"cwd:            /tmp/project",
 			"Model:          (no model selected)",
-			"MCP servers:    unavailable · /mcp",
+			"MCP servers:    0 configured, 0 disabled · /mcp",
 		])
 	})
 
@@ -463,22 +447,6 @@ describe("status command handler", () => {
 		expect(rows.some((r) => r.startsWith("Email:"))).toBe(false)
 		expect(rows.some((r) => r.startsWith("Organization:"))).toBe(false)
 	})
-
-	it("summarizes the MCP snapshot published on the event bus", async () => {
-		const { ctx, emitEvent, runStatus } = setup()
-		ctx.mode = "rpc"
-
-		emitEvent(MCP_STATUS_EVENT, {
-			version: 1,
-			servers: [{ name: "a", status: "connected", toolCount: 0, directToolCount: 0, disabled: false }],
-			totalTools: 0,
-			totalResources: 0,
-			connectedCount: 1,
-			disabledCount: 0,
-		})
-
-		expect(await runStatus()).toContain("MCP servers:    1 connected, 0 disabled, 0 failed · /mcp")
-	})
 })
 
 describe("status command handler errors", () => {
@@ -503,15 +471,5 @@ describe("status command handler errors", () => {
 		expect(rows.some((r) => r.startsWith("Email:"))).toBe(false)
 		expect(rows.some((r) => r.startsWith("Organization:"))).toBe(false)
 		expect(getOrganization).not.toHaveBeenCalled()
-	})
-
-	it("ignores malformed MCP status payloads", async () => {
-		configState.savedKey = undefined
-		const { ctx, emitEvent, runStatus } = setup()
-		ctx.mode = "rpc"
-
-		emitEvent(MCP_STATUS_EVENT, { version: 1 })
-
-		expect(await runStatus()).toContain("MCP servers:    unavailable · /mcp")
 	})
 })

@@ -92,6 +92,18 @@ but are only drained by the next fresh run).
   with backoff, and treats a 0-byte `content === ""` read as a tear. Same
   code applied verbatim to the current patch; `src/pi-auth*` tests 18/18.
 
+- **NEW — native MCP project config repointed to `.kimchi/mcp.json`.** Kimchi
+  adopts pi 1.3's built-in MCP extension in the follow-up `feat/native-mcp-migration`
+  branch (the pi-mcp-adapter dependency is dropped there). Native discovery reads the
+  project layer from `<cwd>/CONFIG_DIR_NAME/mcp.json` (i.e. `.pi/mcp.json`); the patch
+  changes config.js/cli.js/index.js to `.kimchi/mcp.json` — the location kimchi's
+  adapter-era `piConfig.mcpProjectConfigDir = ".kimchi"` layer already used — so
+  existing user project configs load unchanged. Trust gating is unaffected:
+  `.kimchi/mcp.json` is in the patched `KIMCHI_TRUST_REQUIRING_PROJECT_RESOURCES`
+  list, so untrusted projects' configs stay unread. Contract test:
+  `src/upstream-mcp-project-config-patch.test.ts`. Tracking: none — kimchi-specific
+  (upstream contribution candidate: a `piConfig.mcpProjectConfigDir` key).
+
 ### `@earendil-works/pi-tui`
 
 - **REBASED — stroke rendering (applyStrokeToLine), no-truncate width
@@ -577,3 +589,19 @@ where the `tui-alt-screen.js` hunk came from.
   (`ctx.cwd` for the seven cwd-sensitive tools) is a Kimchi-contributed fix that
   **arrives with this upgrade** — absent at 0.84.1, present in all seven at 0.85.1.
   Closes the tracked cwd-sensitivity issue with no local change, after [kimchi#1099](https://github.com/getkimchi/kimchi/pull/1099) was closed unmerged.
+
+## Native MCP migration (feat/native-mcp-migration)
+
+### `@earendil-works/pi-coding-agent@1.3.0` — added hunks
+
+- **Native MCP project discovery at `.kimchi/mcp.json`** (`dist/extensions/mcp/config.js`, plus user-facing strings in `dist/cli.js` and `dist/index.js`). Upstream discovers `<project>/.pi/mcp.json`; kimchi does not accept `.pi` in repositories. Tracking: none (kimchi product choice, no upstream concept to track). Covered by `src/upstream-mcp-project-config-patch.test.ts` (text + syntax contract).
+- **Root-index exports `runMcpCommand` and `McpCommandOptions`** so `kimchi mcp` proxies to pi's native MCP CLI (`dist/index.js`, `dist/index.d.ts`). Tracking: none.
+
+### New patch: `@earendil-works/pi-mcp@1.3.0` — OAuth Accept headers
+
+Re-home of the fix previously carried as `@modelcontextprotocol/client@2.3.1`: widen the OAuth metadata/token/registration `Accept` header to `application/json, text/event-stream` (spec-strict gateways 406 otherwise). Tracking: upstream issue pending (remove when pi-mcp sends the widened header natively).
+
+### Removed patches
+
+- `pi-mcp-adapter@5.3.1.patch` — adapter is deleted; native MCP replaces the whole stack (config.json, keyring-OAuth, panels).
+- `@modelcontextprotocol/client@2.3.1.patch` — only the adapter used this client package.

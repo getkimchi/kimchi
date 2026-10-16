@@ -29,18 +29,10 @@ import { fileURLToPath } from "node:url"
 import { describe, expect, it, vi } from "vitest"
 import { measureCanonicalToolSurface } from "./context-budget-tools.js"
 
-// Pin the mcp-adapter to zero configured servers: with no servers the
-// adapter registers nothing, so the canonical
-// surface must not depend on the ambient machine's mcp.json. The metadata
-// cache is stubbed too — with zero servers the factory would otherwise purge
-// and rewrite the developer machine's real mcp-cache.json.
-vi.mock("./mcp/config.js", async (importOriginal) => {
-	const original = await importOriginal<typeof import("./mcp/config.js")>()
-	return {
-		...original,
-		loadKimchiMcpConfig: () => ({ config: { mcpServers: {} }, warnings: [] }),
-	}
-})
+// Post-native-migration note: kimchi's mcp extension registers no tools in a
+// headless zero-server measurement (the gateway needs an API key; the native
+// engine is not instantiated here), so no mcp mock is needed to pin the
+// canonical surface to a machine-independent state.
 
 import { withPrintGate } from "./print-mode.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "./prompt-construction/system-prompt.js"
