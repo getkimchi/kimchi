@@ -124,6 +124,7 @@ import plannotatorExtension from "./extensions/plannotator/index.js"
 import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/index.js"
 import powershellGateExtension from "./extensions/powershell-gate.js"
 import prCostReportingExtension from "./extensions/pr-cost-reporting/index.js"
+import { COST_PER_PR_RESOURCE_ID } from "./extensions/pr-cost-reporting/resource.js"
 import { setPrintGate } from "./extensions/print-mode.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
@@ -132,9 +133,7 @@ import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
-import requestIdentityExtension, {
-	prepareProviderRequest as prepareIdentifiedRequest,
-} from "./extensions/request-identity/index.js"
+import requestIdentityExtension, { prepareProviderRequest } from "./extensions/request-identity/index.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import sessionMemoryStatsExtension from "./extensions/session-memory-stats.js"
@@ -171,12 +170,6 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
-import { COST_PER_PR_RESOURCE_ID } from "./extensions/work-attribution/resource.js"
-import {
-	createWorkAttributionExtension,
-	prepareProviderRequest,
-	recordProviderResponse,
-} from "./extensions/work-attribution.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import { installGlobalFetchInstrumentation } from "./http/instrument-fetch.js"
 import {
@@ -734,11 +727,7 @@ async function cliMain(): Promise<void> {
 
 			installGlobalFetchInstrumentation({
 				userAgent: `kimchi/${getVersion()}`,
-				onModelRequest: (headers, url, metadata) => {
-					prepareProviderRequest(headers, url, metadata)
-					prepareIdentifiedRequest(headers, url)
-				},
-				onModelResponse: recordProviderResponse,
+				onModelRequest: prepareProviderRequest,
 				onModelCompletionSettled: (originalFetch) =>
 					refreshBillingStatusFromConfig({ fetch: originalFetch, mode: "automatic" }),
 			})
@@ -917,11 +906,10 @@ async function cliMain(): Promise<void> {
 				contextAssemblyExtension,
 				cacheSummaryExtension,
 				...enabledExtensionFactories([
-					{ id: COST_PER_PR_RESOURCE_ID, factory: createWorkAttributionExtension() },
 					{ id: COST_PER_PR_RESOURCE_ID, factory: pullRequestStatusExtension },
 					{ id: COST_PER_PR_RESOURCE_ID, factory: prCostReportingExtension },
 				] satisfies ManagedExtensionFactory[]),
-				// After work attribution, whose request IDs it keeps.
+				// Always loaded: requests say `X-Kimchi-PR-Reporting: off` while Cost per PR is disabled.
 				requestIdentityExtension,
 				requestTimingExtension,
 				llmResponseLogExtension,

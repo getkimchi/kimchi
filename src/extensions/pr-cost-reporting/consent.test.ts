@@ -6,7 +6,6 @@ import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import { setResourceOverride } from "../../resources/store.js"
 import { INFRA_BREAKER_THRESHOLD_ENV } from "../../upstream-retry-patch.js"
-import { COST_PER_PR_RESOURCE_ID } from "../work-attribution/resource.js"
 import { CI_VARIABLES } from "./automation.js"
 import {
 	prReportingHeaderValue,
@@ -16,6 +15,7 @@ import {
 	setPRReportingSessionMode,
 	takeReportingNotice,
 } from "./consent.js"
+import { COST_PER_PR_RESOURCE_ID } from "./resource.js"
 
 let agentDir: string
 

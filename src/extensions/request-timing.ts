@@ -14,12 +14,12 @@
  */
 
 import type { BeforeProviderHeadersEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { getActiveRequest } from "./work-attribution.js"
+import { getActiveRequestId } from "./request-identity/index.js"
 
 /** Shape of the `data` field on a `request_diagnostics` custom entry. */
 export interface RequestDiagnosticsData {
+	/** The request's X-Request-Id, when Kimchi sent one */
 	requestId?: string
-	workId?: string
 	/** ISO timestamp when the request was sent */
 	requestStartedAt: string
 	/** ISO timestamp when the response was received */
@@ -94,7 +94,7 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 	pi.on("before_provider_headers", async (event) => {
 		flushPendingDiagnostics()
 		lastRequestTime = Date.now()
-		// The runner shares this object across handlers; attribution may run after us.
+		// The runner shares this object across handlers; request identity may set X-Request-Id after us.
 		requestHeaders = event.headers
 	})
 
@@ -118,10 +118,9 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 			retryCount++
 		}
 
-		const activeRequest = requestHeaders ? getActiveRequest(ctx) : undefined
-		const identity = activeRequest?.requestId === requestHeaders?.["X-Request-Id"] ? activeRequest : undefined
+		const requestId = requestHeaders ? getActiveRequestId(ctx) : undefined
 		pendingDiagnostics = {
-			...identity,
+			...(requestId && requestId === requestHeaders?.["X-Request-Id"] ? { requestId } : {}),
 			requestStartedAt: new Date(lastRequestTime).toISOString(),
 			requestCompletedAt: new Date(completedAt).toISOString(),
 			durationMs,

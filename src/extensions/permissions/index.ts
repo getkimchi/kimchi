@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { basename, extname, resolve } from "node:path"
 import { Type } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, SessionManager, ToolCallEvent } from "@earendil-works/pi-coding-agent"
@@ -11,7 +12,7 @@ import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
-import { derivePlanTitle, slugifyPlanName } from "../../shared/planning/plan-markdown.js"
+import { derivePlanTitle, saveToolPlan, slugifyPlanName } from "../../shared/planning/plan-markdown.js"
 import {
 	consumePlanReviewContext,
 	emitPlanReviewDecision,
@@ -73,7 +74,6 @@ import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
-import { getWorkId, saveToolPlan, tryWorkAttribution } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
 import { registerCommands } from "./commands.js"
@@ -260,11 +260,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	let preFermentMode: PermissionModeState | undefined
 	let lastActiveFermentId: string | undefined
 	let cliMode: PermissionMode | undefined
-	// Session-held slug of the plan currently being drafted. Kept across rework
-	// turns so rewrites overwrite the same file even if the plan title changes;
-	// released when the plan is approved (execute / start-as-ferment) or the
-	// session restarts.
-	let activePlanSlug: string | undefined
+	// Session-held slug and work ID of the plan currently being drafted. Kept
+	// across rework turns so rewrites overwrite the same file even if the plan
+	// title changes, and every revision names the same work; released when the
+	// plan is approved (execute / start-as-ferment) or the session restarts.
+	let activePlan: { slug: string; workId: string } | undefined
 	// Per-session count of plan-mode stall nudges (model stopped after tool
 	// calls without calling submit_plan). Keyed by session ID so concurrent
 	// sessions don't share a budget. Reset when submit_plan is called, when
@@ -417,7 +417,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}
 		if (current === "plan" && next.mode !== "plan") {
 			restoreToolsFromPlanMode()
-			activePlanSlug = undefined
+			activePlan = undefined
 			planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 		}
 		if (next.mode === "plan") applyPlanModeTools()
@@ -611,7 +611,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		appliedPermissionMode = undefined
 		applyingPermissionMode = false
 		cliMode = undefined
-		activePlanSlug = undefined
+		activePlan = undefined
 		planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 		const { errors } = doLoadConfig(ctx)
 
@@ -805,7 +805,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						"Test Coverage, Open Questions), Verification Strategy, Decision Log, Risks.",
 				}),
 			}),
-			async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				const planText = (params as { plan?: string })?.plan
 				if (!planText?.trim()) {
 					return {
@@ -819,8 +819,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// default/auto/yolo continue in their current mode.
 
 				// Save plan to disk
-				if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
-				const saved = saveToolPlan(ctx, ctx, toolCallId, "permissions", { name: activePlanSlug, planText })
+				activePlan ??= { slug: slugifyPlanName(derivePlanTitle(planText)), workId: randomUUID() }
+				const plan = activePlan
+				const saved = saveToolPlan(ctx, "permissions", { cwd: ctx.cwd, name: plan.slug, planText, workId: plan.workId })
 				const planPath = saved?.path
 				const snapshotPath = saved?.snapshotPath
 				const retainedPlanNote = snapshotPath ? `\nContinue from another worktree using: ${snapshotPath}` : ""
@@ -849,7 +850,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				emitPlanReviewRequest(
 					pi,
 					{ planContent: planText, planFilePath: planPath, source: "adhoc" },
-					{ ctx, planPath, planText, rawText: planText, activePlanSlug },
+					{
+						ctx,
+						planPath,
+						planText,
+						rawText: planText,
+						activePlanSlug: plan.slug,
+						planWorkId: plan.workId,
+					},
 				)
 
 				// TUI-E2E seam (KIMCHI_E2E_FAKE_PLANNOTATOR_DECISION): when set to a
@@ -967,7 +975,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (payload.planReviewSource !== "adhoc") return
 		const reviewCtx = consumePlanReviewContext()
 		if (!reviewCtx) return
-		const { ctx, planPath, planText, rawText, activePlanSlug: reviewedPlanSlug } = reviewCtx
+		const { ctx, planPath, planText, rawText, activePlanSlug: reviewedPlanSlug, planWorkId } = reviewCtx
 
 		const executeLocally = async () => {
 			// Plan mode withholds execution until approval — release it to the highest
@@ -975,7 +983,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// already executable: no transition.
 			if (!releaseFromPlanForApproval(ctx)) return
 			await executePlan(ctx, planPath, planText, reviewedPlanSlug)
-			activePlanSlug = undefined
+			activePlan = undefined
 		}
 
 		// Spawn a foreground remote agent to execute the plan in a cloud sandbox.
@@ -986,8 +994,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// Shared by the start_cloud decision and the plannotator "where should
 		// it run?" route below.
 		const executeInCloud = async () => {
-			const approvedSlug = activePlanSlug
-			activePlanSlug = undefined
+			const approvedPlan = activePlan
+			activePlan = undefined
 			pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
 			// Only plan mode needs the release-to-auto transition; submissions
 			// from auto mode are already in an execution posture.
@@ -1005,7 +1013,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// restore plan mode (when we switched away from it) so they can retry.
 				const message = err instanceof Error ? err.message : String(err)
 				ctx.ui?.notify?.(`Could not start the remote agent: ${message}`, "error")
-				activePlanSlug = approvedSlug
+				activePlan = approvedPlan
 				if (wasPlanMode) {
 					changeMode(ctx, "auto", { mode: "plan", initiatedBy: "user", source: "runtime" }, "cloud_spawn_failed")
 				}
@@ -1051,7 +1059,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			await executeLocally()
 		} else if (payload.decision === "start_ferment") {
 			// Converted into a ferment — same release as the execute path.
-			activePlanSlug = undefined
+			activePlan = undefined
 			// ── Tool-swap contract ────────────────────────────────────────────────
 			// This is a SNAPSHOT SWAP that takes effect at the next turn boundary —
 			// there is no explicit handoff message and no model-visible notification.
@@ -1116,7 +1124,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						isOneShot: pi.getFlag("ferment-oneshot") === true,
 						cwd: ctx.cwd,
 					})
-					tryWorkAttribution(() => setFermentWorkId(draft.id, getWorkId(ctx), fermentDir))
+					if (planWorkId) setFermentWorkId(draft.id, planWorkId, fermentDir)
 					defaultFermentRuntime.setActive(draft)
 					if (pi.events) emitFermentCreated(pi.events, draft)
 					appendRefEntry(pi, draft.id)
@@ -1144,7 +1152,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				})
 				// Set the draft active before emitting STARTED so telemetry can capture
 				// the scoping baseline. Keep planning tools until activation succeeds.
-				tryWorkAttribution(() => setFermentWorkId(draft.id, getWorkId(ctx), fermentDir))
+				if (planWorkId) setFermentWorkId(draft.id, planWorkId, fermentDir)
 				defaultFermentRuntime.setActive(draft)
 				if (pi.events) emitFermentCreated(pi.events, draft)
 				// Scope it using the structured fields from the shared plan.

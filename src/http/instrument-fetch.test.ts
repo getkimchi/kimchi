@@ -96,42 +96,37 @@ describe("installGlobalFetchInstrumentation", () => {
 		expect(input.bodyUsed).toBe(false)
 		expect(prepare.mock.calls[0][2]).toEqual({ bodyTags: undefined })
 	})
-	it("prepares each tracked dispatch using cloned headers and reports its outgoing identity", async () => {
-		const observe = vi.fn()
+	it("prepares each tracked dispatch using cloned headers", async () => {
 		const prepare = vi.fn((headers: Headers) => {
 			expect(baseCalls).toHaveLength(0)
 			headers.set("X-Request-Id", "wire-attempt")
 		})
 		install()
-		installGlobalFetchInstrumentation({ userAgent: "late-install", onModelRequest: prepare, onModelResponse: observe })
+		installGlobalFetchInstrumentation({ userAgent: "late-install", onModelRequest: prepare })
 		const request = new Request("https://llm.test/openai/v1/chat/completions", {
 			headers: { "X-Request-Id": "logical-request", Authorization: "Bearer keep" },
 		})
-		const response = await fetch(request)
+		await fetch(request)
 		expect(prepare).toHaveBeenCalledOnce()
 		expect(request.headers.get("x-request-id")).toBe("logical-request")
 		const wire = new Headers(baseCalls[0].init?.headers)
 		expect(wire.get("x-request-id")).toBe("wire-attempt")
 		expect(wire.get("authorization")).toBe("Bearer keep")
-		expect(observe).toHaveBeenCalledWith("wire-attempt", response)
 	})
-	it("continues without a request ID when durable attempt preparation fails", async () => {
+	it("continues without a request ID when attempt preparation fails", async () => {
 		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
 		try {
-			const observe = vi.fn()
 			installGlobalFetchInstrumentation({
 				userAgent: "test",
 				onModelRequest: () => {
-					throw Error("disk unavailable")
+					throw Error("identity unavailable")
 				},
-				onModelResponse: observe,
 			})
 			const headers = { "X-Request-Id": "must-not-repeat", Authorization: "Bearer keep" }
 			expect(await (await fetch("https://llm.test/v1/chat/completions", { headers })).text()).toBe("ok")
 			expect(new Headers(baseCalls[0].init?.headers).has("x-request-id")).toBe(false)
 			expect(new Headers(baseCalls[0].init?.headers).get("authorization")).toBe("Bearer keep")
 			expect(headers["X-Request-Id"]).toBe("must-not-repeat")
-			expect(observe).not.toHaveBeenCalled()
 			// Diagnostics go to the opt-in debug log, never to stderr.
 			expect(warning).not.toHaveBeenCalled()
 		} finally {
@@ -150,35 +145,15 @@ describe("installGlobalFetchInstrumentation", () => {
 		"/anthropic/v1/messages",
 		"/anthropic/v1/messages?beta=true",
 		"/openai/v1/responses",
-	])("observes a tracked response before reading %s, including HTTP errors", async (path) => {
-		const observe = vi.fn()
+	])("prepares a tracked %s request without reading its response", async (path) => {
+		const prepare = vi.fn()
 		install()
-		installGlobalFetchInstrumentation({ userAgent: "kimchi-test/1.0", onModelResponse: observe })
-		baseResponse = () => new Response("untouched stream", { status: 503, headers: { "X-Prompt-Id": "billing-id" } })
+		installGlobalFetchInstrumentation({ userAgent: "kimchi-test/1.0", onModelRequest: prepare })
+		baseResponse = () => new Response("untouched stream", { status: 503 })
 		const response = await fetch(new Request(`https://llm.test${path}`, { headers: { "X-Request-Id": "request-id" } }))
-		expect(observe).toHaveBeenCalledOnce()
-		expect(observe).toHaveBeenCalledWith("request-id", expect.objectContaining({ status: 503 }))
-		expect(observe.mock.calls[0][1].headers.get("X-Prompt-Id")).toBe("billing-id")
+		expect(prepare).toHaveBeenCalledOnce()
 		expect(response.bodyUsed).toBe(false)
 		expect(await response.text()).toBe("untouched stream")
-	})
-	it("does not observe unrelated traffic and keeps inference working if observation fails", async () => {
-		const observe = vi.fn(() => {
-			throw Error("ledger unavailable")
-		})
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
-		installGlobalFetchInstrumentation({ userAgent: "kimchi-test/1.0", onModelResponse: observe })
-		await fetch("https://llm.test/v1/models", { headers: { "X-Request-Id": "request-id" } })
-		await fetch("https://llm.test/openai/v1/chat/completions")
-		expect(observe).not.toHaveBeenCalled()
-		expect(
-			await (
-				await fetch("https://llm.test/openai/v1/chat/completions", { headers: { "X-Request-Id": "request-id" } })
-			).text(),
-		).toBe("ok")
-		expect(observe).toHaveBeenCalledOnce()
-		expect(warning).not.toHaveBeenCalled()
-		warning.mockRestore()
 	})
 	it("adds the default user-agent and preserves a caller-supplied one", async () => {
 		install()

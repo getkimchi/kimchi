@@ -15,8 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig, RETRY_DEFAULTS } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
-import { trackProviderRequest } from "./request-identity/index.js"
-import { getWorkId, pinWorkContext, recordProviderRequest, warnWorkAttribution } from "./work-attribution.js"
+import { pinRequestContext, trackProviderRequest } from "./request-identity/index.js"
 
 export const SESSION_NAME_MODEL = "deepseek-v4-flash-0731"
 const SESSION_NAME_TIMEOUT_MS = 10_000
@@ -132,13 +131,7 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 
 	if (!apiKey) return fallback
 
-	const workContext = pinWorkContext(ctx)
-	let workId: string | undefined
-	try {
-		workId = getWorkId(workContext)
-	} catch (error) {
-		warnWorkAttribution(ctx, error)
-	}
+	const requestContext = pinRequestContext(ctx)
 
 	try {
 		const maxRetries = getSessionNameMaxRetries(ctx.cwd)
@@ -168,19 +161,8 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 				retry: { maxRetries },
 				fetchImpl: (url, init) => {
 					const headers = new Headers(init?.headers)
-					let requestId: string | undefined
-					if (workId) {
-						try {
-							requestId = recordProviderRequest(
-								workContext,
-								{ provider: "kimchi-dev", id: SESSION_NAME_MODEL },
-								workId,
-							).requestId
-						} catch (error) {
-							warnWorkAttribution(ctx, error)
-						}
-					}
-					headers.set("X-Request-Id", requestId ?? trackProviderRequest(workContext))
+					// Each attempt is its own request for the gateway.
+					headers.set("X-Request-Id", trackProviderRequest(requestContext))
 					return fetch(url, { ...init, headers })
 				},
 			},

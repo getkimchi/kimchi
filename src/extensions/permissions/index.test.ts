@@ -15,7 +15,7 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { isResourceEnabled } from "../../resources/store.js"
-import { UNRETAINED_PLAN_NOTICE } from "../../shared/planning/plan-markdown.js"
+import { readPlanWorkId, UNRETAINED_PLAN_NOTICE } from "../../shared/planning/plan-markdown.js"
 import {
 	emitPlanReviewDecision,
 	PLAN_REVIEW_DECISION_CHANNEL,
@@ -23,7 +23,6 @@ import {
 	subscribePlanReviewClosed,
 } from "../../shared/planning/plan-review-bus.js"
 import { registerReadOnlyToolProvider } from "../../shared/planning/tool-profile-manager.js"
-import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
@@ -35,14 +34,12 @@ import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "../model-catalog/classifier-models.js"
+import { COST_PER_PR_RESOURCE_ID } from "../pr-cost-reporting/resource.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { CUSTOM_BRANCH_ITEM, CUSTOM_BRANCH_PROMPT } from "../remote-run/git-workflow.js"
 import { runCloudAgent } from "../remote-run/runner.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
-import { COST_PER_PR_RESOURCE_ID } from "../work-attribution/resource.js"
-import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary.js"
-import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
 import permissionsExtension, { checkCompoundCommand, handleCompoundConfirm, notifyFermentActive } from "./index.js"
@@ -122,15 +119,14 @@ function cleanPermissionEnv(): void {
 	unregisterSessionPermissionFlagController(TEST_SESSION_ID)
 }
 
-let attributionDir: string
+let agentDir: string
 beforeEach(() => {
-	attributionDir = mkdtempSync(join(tmpdir(), "plan-attribution-"))
-	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
+	agentDir = mkdtempSync(join(tmpdir(), "plan-agent-"))
+	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir)
 })
-afterEach(async () => {
-	await flushWorkSummaries()
+afterEach(() => {
 	vi.unstubAllEnvs()
-	rmSync(attributionDir, { recursive: true, force: true })
+	rmSync(agentDir, { recursive: true, force: true })
 })
 
 beforeEach(cleanPermissionEnv)
@@ -962,39 +958,31 @@ describe("plan mode assumption detection", () => {
 		const PLAN_V2 =
 			"# Plan: Cache Layer\n\n## Goal\nAdd caching layer with TTL.\n\n## Chunks\n\n### Chunk 1: Add cache primitive\n- **Accept When**: round-trip works"
 
-		it("saves the plan's originating request even if work changed before the tool ran", async () => {
-			const ctx = createContext({
-				cwd: attributionDir,
-				hasUI: false,
-				sessionManager: { getSessionId: () => TEST_SESSION_ID },
-			})
+		it("names one work in every revision of a plan, and a new work for the next plan", async () => {
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
-			await harness.fire("session_start", {}, ctx)
-			const tracing = createExtensionApi()
-			createWorkAttributionExtension()(tracing.api)
-			const headers: Record<string, string> = {}
-			await tracing.getHandler("before_provider_headers")({ headers }, ctx)
-			expect(headers["X-Request-Id"]).toBeTypeOf("string")
-			const workId = getWorkId(ctx)
-			await tracing.getHandler("message_end")(
-				{
-					message: {
-						role: "assistant",
-						stopReason: "toolUse",
-						content: [{ type: "toolCall", id: "tc-submit-plan", name: "submit_plan" }],
-					},
-				},
-				ctx,
-			)
-			setWorkId(ctx)
-			await submitPlan(harness, PLAN_V1, ctx)
-			expect(readWorkRecords(attributionDir)).toContainEqual(
-				expect.objectContaining({
-					type: "plan",
-					workId,
-					requestId: headers["X-Request-Id"],
-				}),
-			)
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-identity-"))
+			try {
+				const ctx = createMockContext([])
+				Object.assign(ctx, { hasUI: false })
+				ctx.cwd = tmpDir
+				await harness.fire("session_start", {}, ctx)
+				const planFile = join(tmpDir, ".kimchi", "plans", "plan-cache-layer.md")
+				const header = () => readPlanWorkId(readFileSync(planFile, "utf-8"))
+				await submitPlan(harness, PLAN_V1, ctx)
+				const first = header()
+				expect(first).toMatch(/^[0-9a-f-]{36}$/)
+				// The retained copy names the same work, so the gateway can match either.
+				expect(readdirSync(join(agentDir, "work", String(first), "plans"))).toHaveLength(1)
+				await submitPlan(harness, PLAN_V2, ctx)
+				expect(header()).toBe(first)
+				expect(readdirSync(join(agentDir, "work", String(first), "plans"))).toHaveLength(2)
+				// A new session drafts a new plan.
+				await harness.fire("session_start", {}, ctx)
+				await submitPlan(harness, PLAN_V1, ctx)
+				expect(header()).not.toBe(first)
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
 		})
 
 		it.each(["saved", "blocked"])("warns only when the plan's retained copy cannot be saved (%s)", async (outcome) => {
@@ -1005,8 +993,8 @@ describe("plan mode assumption detection", () => {
 			try {
 				if (outcome === "blocked") {
 					// Retained copies live under <agent>/work/<workId>/plans.
-					rmSync(join(attributionDir, "work"), { recursive: true, force: true })
-					writeFileSync(join(attributionDir, "work"), "blocked")
+					rmSync(join(agentDir, "work"), { recursive: true, force: true })
+					writeFileSync(join(agentDir, "work"), "blocked")
 				}
 				const ctx = createMockContext(["Rework the plan"])
 				ctx.cwd = tmpDir
@@ -1387,10 +1375,7 @@ describe("plan mode assumption detection", () => {
 		"## Verification Strategy\nRun pnpm test src/api after each chunk.\n\n" +
 		"## Risks\nCache staleness: short default TTL.\n"
 
-	it.each([
-		false,
-		true,
-	])("Start as ferment persists a ferment artifact under .kimchi/ferments (unavailable attribution: %s)", async (unavailable) => {
+	it("Start as ferment persists a ferment artifact under .kimchi/ferments that keeps the plan's work", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 
@@ -1402,11 +1387,6 @@ describe("plan mode assumption detection", () => {
 			// Project-local ferments are gated on project trust — these tests
 			// exercise the trusted persistence path.
 			setProjectScopeTrusted(tmpDir, true)
-			if (unavailable) {
-				const path = join(attributionDir, "work-attribution")
-				rmSync(path, { recursive: true, force: true })
-				writeFileSync(path, "blocked")
-			}
 			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
 			const fermentsDir = join(tmpDir, ".kimchi", "ferments")
@@ -1416,7 +1396,10 @@ describe("plan mode assumption detection", () => {
 
 			const artifact = JSON.parse(readFileSync(join(fermentsDir, files[0]), "utf-8"))
 			expect(existsSync(join(tmpDir, ".kimchi", "plans"))).toBe(true)
-			if (!unavailable) expect(loadRuntimeState(artifact.id, fermentsDir).workId).toBe(getWorkId(ctx))
+			const [planFile] = readdirSync(join(tmpDir, ".kimchi", "plans"))
+			const planWorkId = readPlanWorkId(readFileSync(join(tmpDir, ".kimchi", "plans", planFile), "utf-8"))
+			expect(planWorkId).toMatch(/^[0-9a-f-]{36}$/)
+			expect(loadRuntimeState(artifact.id, fermentsDir).workId).toBe(planWorkId)
 			// Status is 'running' because 'Start as ferment' activates the first phase
 			// via the full runtime path when the plan has a structured Chunks section.
 			expect(artifact.status).toMatch(/^(planned|running|active)$/)
@@ -1681,10 +1664,7 @@ describe("plan mode assumption detection", () => {
 	// produce a lossy ferment from raw section splitting. It should persist a draft
 	// ferment via the normal runtime path, notify the user, and leave implementation
 	// tools off.
-	it.each([
-		false,
-		true,
-	])("Start as ferment falls back to draft-only when the plan has no ## Chunks section (unavailable attribution: %s)", async (unavailable) => {
+	it("Start as ferment falls back to draft-only when the plan has no ## Chunks section", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 
@@ -1694,11 +1674,6 @@ describe("plan mode assumption detection", () => {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
 			setProjectScopeTrusted(tmpDir, true)
-			if (unavailable) {
-				const path = join(attributionDir, "work-attribution")
-				rmSync(path, { recursive: true, force: true })
-				writeFileSync(path, "blocked")
-			}
 			await submitPlan(harness, PLAN_WITHOUT_CHUNKS, ctx)
 
 			// 1) The artifact is persisted as a draft (no phase activated).
@@ -1708,7 +1683,9 @@ describe("plan mode assumption detection", () => {
 			expect(files).toHaveLength(1)
 			const artifact = JSON.parse(readFileSync(join(fermentsDir, files[0]), "utf-8"))
 			expect(existsSync(join(tmpDir, ".kimchi", "plans"))).toBe(true)
-			if (!unavailable) expect(loadRuntimeState(artifact.id, fermentsDir).workId).toBe(getWorkId(ctx))
+			const [planFile] = readdirSync(join(tmpDir, ".kimchi", "plans"))
+			const planWorkId = readPlanWorkId(readFileSync(join(tmpDir, ".kimchi", "plans", planFile), "utf-8"))
+			expect(loadRuntimeState(artifact.id, fermentsDir).workId).toBe(planWorkId)
 			expect(artifact.status).toBe("draft")
 			expect(artifact.phases ?? []).toHaveLength(0)
 

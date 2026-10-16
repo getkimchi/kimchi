@@ -5,8 +5,8 @@ import { lock } from "proper-lockfile"
 import { invalidateJsonCache, readJson, readJsonCached, writeFileDurably } from "../../config/json.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import { isTelemetryEnabled } from "../../telemetry-policy.js"
-import { COST_PER_PR_RESOURCE_ID } from "../work-attribution/resource.js"
 import { reportingSkipReason } from "./automation.js"
+import { COST_PER_PR_RESOURCE_ID } from "./resource.js"
 
 /** Tells the Kimchi gateway whether it may report this request's PR costs: `proxy` when it may, otherwise `off`. */
 export const PR_REPORTING_HEADER = "X-Kimchi-PR-Reporting"

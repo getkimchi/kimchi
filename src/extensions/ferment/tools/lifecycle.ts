@@ -1,4 +1,3 @@
-import { pinWorkContext, saveToolPlan, tryWorkAttribution } from "../../work-attribution.js"
 /**
  * Ferment lifecycle tools: list, scope, update fields, complete.
  *
@@ -9,6 +8,7 @@ import { pinWorkContext, saveToolPlan, tryWorkAttribution } from "../../work-att
  *   4. Format result text — host concern
  */
 
+import { randomUUID } from "node:crypto"
 import { type ExtensionAPI, type ExtensionContext, getMarkdownTheme } from "@earendil-works/pi-coding-agent"
 import { Markdown } from "@earendil-works/pi-tui"
 import type { Static } from "typebox"
@@ -29,7 +29,7 @@ import {
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
-import { fermentPlanFileName } from "../../../shared/planning/plan-markdown.js"
+import { fermentPlanFileName, saveToolPlan } from "../../../shared/planning/plan-markdown.js"
 import { emitPlanReviewRequest } from "../../../shared/planning/plan-review-bus.js"
 import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
 import { withBlocked } from "../../herdr-events.js"
@@ -61,7 +61,7 @@ import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { safeSendMessage } from "../safe-send.js"
 import type { PendingScope } from "../scoping.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
-import { FIX_PROTOCOL, MAX_BLOCK_RETRIES, setFermentWorkId } from "../state.js"
+import { FIX_PROTOCOL, getFermentWorkId, MAX_BLOCK_RETRIES, setFermentWorkId } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -1087,7 +1087,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
-		async execute(toolCallId, rawParams, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
 			clearScopingStatus(ctx)
 			const normalized = normalizeProposeScopingParams(rawParams)
 			if (!normalized.ok) return normalized.error
@@ -1108,7 +1108,8 @@ ${renderGateGuidance("scope_ferment")}`,
 			const questions = params.questions ?? []
 			const questionValidationError = validateScopingQuestions(questions)
 			if (questionValidationError) return toolErr(questionValidationError)
-			const pinned = pinWorkContext(ctx)
+			// The plan lands in the project the call started in, even if resolving the target awaits.
+			const cwd = ctx.cwd
 
 			// 3. Resolve the target ferment. If no id is given and no active ferment
 			// exists, bootstrap a new draft from the proposal.
@@ -1176,12 +1177,15 @@ ${renderGateGuidance("scope_ferment")}`,
 			// filename is stable for this ferment so re-proposals overwrite the
 			// same file. Failures are non-fatal but warned so the review flow
 			// can continue without a path.
-			const saved = saveToolPlan(ctx, pinned, toolCallId, "ferment", {
+			// Every proposal of a ferment names the same work: the plan it was created from, or its first proposal.
+			const workId = getFermentWorkId(fermentId) ?? randomUUID()
+			const saved = saveToolPlan(ctx, "ferment", {
+				cwd,
 				name: fermentPlanFileName(ferment.name, fermentId),
 				planText: planEntry,
+				workId,
 			})
-			const workId = saved?.workId
-			if (workId) tryWorkAttribution(() => setFermentWorkId(fermentId, workId))
+			if (saved) setFermentWorkId(fermentId, workId)
 			const planPath = saved?.path
 			const snapshotPath = saved?.snapshotPath
 			const savedPlanNote =

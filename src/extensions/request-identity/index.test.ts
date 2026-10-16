@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { complete, getModel } from "@earendil-works/pi-ai/compat"
 import type { BeforeProviderHeadersEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resolveEndpoints } from "../../config.js"
@@ -13,17 +14,18 @@ import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { CI_VARIABLES } from "../pr-cost-reporting/automation.js"
 import { setPRReportingSessionMode } from "../pr-cost-reporting/consent.js"
-import { COST_PER_PR_RESOURCE_ID } from "../work-attribution/resource.js"
+import { COST_PER_PR_RESOURCE_ID } from "../pr-cost-reporting/resource.js"
+import requestTimingExtension from "../request-timing.js"
 import requestIdentityExtension, {
-	applyPRReportingHeaders,
+	getActiveRequestId,
 	pinRequestContext,
 	prepareProviderRequest,
-	requestCorrelation,
 	trackProviderRequest,
 } from "./index.js"
 
 let dir: string
 let gatewayUrl: string
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "kimchi-request-identity-"))
@@ -56,120 +58,246 @@ async function startSession(sessionId: string) {
 	return { api, ctx }
 }
 
+/** The headers of one dispatch of a tracked request, as the fetch hook prepares them. */
+function dispatch(requestId: string, url = gatewayUrl, init: Record<string, string> = {}, bodyTags: string[] = []) {
+	const headers = new Headers({ ...init, "X-Request-Id": requestId })
+	prepareProviderRequest(headers, url, { bodyTags })
+	return headers
+}
+
+async function mainRequest(api: ReturnType<typeof createExtensionApi>, ctx: ReturnType<typeof session>) {
+	const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+	await api.emit("before_provider_headers", event, ctx)
+	return event
+}
+
 describe("PR reporting headers", () => {
 	it("tells the gateway it may report a request and names its session and turn", async () => {
 		const { api, ctx } = await startSession("main-session")
 		await api.emit("before_agent_start", { type: "before_agent_start", prompt: "Fix it" }, ctx)
 		await api.emit("turn_start", { type: "turn_start" }, ctx)
-		const headers = new Headers()
-		applyPRReportingHeaders(headers, gatewayUrl, requestCorrelation(ctx))
-		expect(Object.fromEntries(headers)).toEqual({
-			"x-kimchi-pr-reporting": "proxy",
-			"x-session-id": "main-session",
-			"x-turn-index": "1",
-		})
+		const { headers } = await mainRequest(api, ctx)
+		const wire = dispatch(String(headers["X-Request-Id"]))
+		expect(wire.get("x-kimchi-pr-reporting")).toBe("proxy")
+		expect(wire.get("x-session-id")).toBe("main-session")
+		expect(wire.get("x-turn-index")).toBe("1")
+		expect(wire.has("x-parent-session-id")).toBe(false)
 	})
 
 	it("sends only off when reporting is not allowed", async () => {
 		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
 		const { ctx } = await startSession("quiet-session")
-		const headers = new Headers()
-		applyPRReportingHeaders(headers, gatewayUrl, requestCorrelation(ctx))
-		expect(Object.fromEntries(headers)).toEqual({ "x-kimchi-pr-reporting": "off" })
+		const wire = dispatch(trackProviderRequest(ctx))
+		expect(wire.get("x-kimchi-pr-reporting")).toBe("off")
+		expect(wire.has("x-session-id")).toBe(false)
+		expect(wire.has("x-turn-index")).toBe(false)
 	})
 
-	it.each([
-		"https://api.openai.com/v1/chat/completions",
-		"not a url",
-	])("leaves requests outside the configured gateway unchanged: %s", async (url) => {
+	it("leaves requests outside the configured gateway without PR headers or tag", async () => {
 		const { ctx } = await startSession("main-session")
-		const headers = new Headers({ Authorization: "Bearer key" })
-		applyPRReportingHeaders(headers, url, requestCorrelation(ctx))
-		expect(Object.fromEntries(headers)).toEqual({ authorization: "Bearer key" })
+		const requestId = trackProviderRequest(ctx)
+		const wire = dispatch(requestId, "https://api.openai.com/v1/chat/completions", { Authorization: "Bearer key" })
+		expect(Object.fromEntries(wire)).toEqual({ authorization: "Bearer key", "x-request-id": requestId })
 	})
 
 	it("keeps the session headers telemetry already set on a main request", async () => {
 		const { ctx } = await startSession("main-session")
-		const headers = new Headers({ "X-Session-Id": "telemetry-session", "X-Turn-Index": "7" })
-		applyPRReportingHeaders(headers, gatewayUrl, requestCorrelation(ctx))
-		expect(headers.get("x-session-id")).toBe("telemetry-session")
-		expect(headers.get("x-turn-index")).toBe("7")
+		const wire = dispatch(trackProviderRequest(ctx), gatewayUrl, { "X-Session-Id": "telemetry", "X-Turn-Index": "7" })
+		expect(wire.get("x-session-id")).toBe("telemetry")
+		expect(wire.get("x-turn-index")).toBe("7")
 	})
 
 	it("names the parent session of a subagent request", async () => {
 		vi.stubEnv(PARENT_SESSION_ID_ENV_KEY, "parent-session")
 		const { ctx } = await startSession("child-session")
-		const headers = new Headers()
-		const correlation = await runAsAgentWorker(async () => requestCorrelation(ctx))
-		applyPRReportingHeaders(headers, gatewayUrl, correlation)
-		expect(headers.get("x-session-id")).toBe("child-session")
-		expect(headers.get("x-parent-session-id")).toBe("parent-session")
+		const wire = dispatch(await runAsAgentWorker(async () => trackProviderRequest(ctx)))
+		expect(wire.get("x-session-id")).toBe("child-session")
+		expect(wire.get("x-parent-session-id")).toBe("parent-session")
 		// Outside a subagent run the same environment names no parent.
-		expect(requestCorrelation(ctx)).not.toHaveProperty("parentSessionId")
+		expect(dispatch(trackProviderRequest(ctx)).has("x-parent-session-id")).toBe(false)
 	})
 
 	it("counts turns like telemetry: one per round-trip, never reset by a new prompt", async () => {
 		const { api, ctx } = await startSession("main-session")
-		expect(requestCorrelation(ctx).turnIndex).toBe(0)
-		const turns: (number | undefined)[] = []
+		const turn = () => dispatch(trackProviderRequest(ctx)).get("x-turn-index")
+		expect(turn()).toBe("0")
+		const turns: (string | null)[] = []
 		for (const rounds of [2, 1]) {
 			await api.emit("before_agent_start", { type: "before_agent_start", prompt: "Next" }, ctx)
 			for (let round = 0; round < rounds; round++) {
 				await api.emit("turn_start", { type: "turn_start" }, ctx)
-				turns.push(requestCorrelation(ctx).turnIndex)
+				turns.push(turn())
 			}
 		}
-		expect(turns).toEqual([1, 2, 3])
+		expect(turns).toEqual(["1", "2", "3"])
 		await api.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx)
-		expect(requestCorrelation(ctx)).not.toHaveProperty("turnIndex")
-	})
-})
-
-describe("tracked provider requests", () => {
-	it("gives a main request an ID unless work attribution already did", async () => {
-		const { api, ctx } = await startSession("main-session")
-		const attributed: BeforeProviderHeadersEvent = {
-			type: "before_provider_headers",
-			headers: { "x-request-id": "attributed" },
-		}
-		await api.emit("before_provider_headers", attributed, ctx)
-		expect(attributed.headers).toEqual({ "x-request-id": "attributed" })
-		const plain: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
-		await api.emit("before_provider_headers", plain, ctx)
-		expect(plain.headers["X-Request-Id"]).toMatch(/^[0-9a-f-]{36}$/)
+		expect(dispatch(trackProviderRequest(ctx)).has("x-turn-index")).toBe(false)
 	})
 
-	it("reports a side call under the session pinned before it awaited", async () => {
+	it("reports a side call under the session pinned before it awaited", () => {
 		let sessionId = "first-session"
 		const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
 		const pinned = pinRequestContext(ctx)
 		sessionId = "next-session"
-		const headers = new Headers({ "X-Request-Id": trackProviderRequest(pinned) })
-		prepareProviderRequest(headers, gatewayUrl)
-		expect(headers.get("x-session-id")).toBe("first-session")
+		expect(dispatch(trackProviderRequest(pinned)).get("x-session-id")).toBe("first-session")
+	})
+})
+
+describe("request IDs and tags", () => {
+	it("gives each attempt its own ID and tag and drops the previous attempt's tag", async () => {
+		const { ctx } = await startSession("main-session")
+		const logicalId = trackProviderRequest(ctx)
+		const first = dispatch(logicalId, gatewayUrl, { "X-Tags": "team:one" })
+		expect(first.get("x-request-id")).toBe(logicalId)
+		expect(first.get("x-tags")).toBe(`team:one,kimchi-request:${logicalId}`)
+		// An SDK retry can resend the headers it was given, including our tag.
+		const retry = dispatch(logicalId, gatewayUrl, { "X-Tags": `team:one,kimchi-request:${logicalId}` })
+		const retryId = retry.get("x-request-id")
+		expect(retryId).toMatch(UUID)
+		expect(retryId).not.toBe(logicalId)
+		expect(retry.get("x-tags")).toBe(`team:one,kimchi-request:${retryId}`)
+		expect(retry.get("x-session-id")).toBe("main-session")
 	})
 
 	it.each([
-		{ resource: true, requestId: true, value: "proxy" },
-		{ resource: false, requestId: false, value: "off" },
-	])("sends the request ID only while Cost per PR is enabled ($resource)", async ({ resource, requestId, value }) => {
-		setResourceOverride(COST_PER_PR_RESOURCE_ID, resource)
-		const sent = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("ok"))
-		vi.stubGlobal("fetch", sent)
-		installGlobalFetchInstrumentation({
-			userAgent: "test",
-			onModelRequest: (headers, url) => prepareProviderRequest(headers, url),
-		})
-		const id = trackProviderRequest(session("main-session"))
-		await fetch(gatewayUrl, { method: "POST", headers: { "X-Request-Id": id }, body: "{}" })
-		const outgoing = new Headers(sent.mock.calls[0][1]?.headers)
-		expect(outgoing.get("x-request-id")).toBe(requestId ? id : null)
-		expect(outgoing.get("x-kimchi-pr-reporting")).toBe(value)
+		{ bodyTags: undefined, header: "team:one", reason: "body-uninspectable" },
+		{ bodyTags: Array.from({ length: 10 }, () => "duplicate:tag"), header: "", reason: "tag-limit" },
+		{ bodyTags: ["kimchi-request:user-owned"], header: "team:one", reason: "reserved-tag" },
+	])("keeps user tags and adds none when the request has no room ($reason)", async ({ bodyTags, header }) => {
+		const { ctx } = await startSession("main-session")
+		const requestId = trackProviderRequest(ctx)
+		const headers = new Headers({ "X-Request-Id": requestId, "X-Tags": header })
+		prepareProviderRequest(headers, gatewayUrl, { bodyTags })
+		expect(headers.get("x-tags")).toBe(header)
+		expect(headers.get("x-request-id")).toBe(requestId)
+		expect(headers.get("x-kimchi-pr-reporting")).toBe("proxy")
 	})
 
-	it("leaves untracked request IDs to their owner", () => {
+	it("sends no request ID or tag while Cost per PR is disabled, but still says off", async () => {
+		setResourceOverride(COST_PER_PR_RESOURCE_ID, false)
+		const { api, ctx } = await startSession("main-session")
+		const { headers } = await mainRequest(api, ctx)
+		const wire = dispatch(String(headers["X-Request-Id"]), gatewayUrl, { "X-Tags": "team:one" })
+		expect(Object.fromEntries(wire)).toEqual({ "x-kimchi-pr-reporting": "off", "x-tags": "team:one" })
+		expect(getActiveRequestId(ctx)).toBeUndefined()
+	})
+
+	it("tags an image-heavy request sent through the fetch instrumentation", async () => {
+		const { ctx } = await startSession("main-session")
+		const requestId = trackProviderRequest(ctx)
+		const sent = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("ok"))
+		vi.stubGlobal("fetch", sent)
+		installGlobalFetchInstrumentation({ userAgent: "test", onModelRequest: prepareProviderRequest })
+		const image = `data:image/png;base64,${"A".repeat(6 * 1024 * 1024)}`
+		const body = JSON.stringify({ messages: [{ content: [{ type: "image_url", image_url: { url: image } }] }] })
+		await fetch(gatewayUrl, { method: "POST", headers: { "X-Request-Id": requestId }, body })
+		expect(new Headers(sent.mock.calls[0][1]?.headers).get("x-tags")).toBe(`kimchi-request:${requestId}`)
+	})
+
+	it("keeps the main request's identity when a side call retries", async () => {
+		const { api, ctx } = await startSession("main-session")
+		const main = await mainRequest(api, ctx)
+		const mainId = String(main.headers["X-Request-Id"])
+		dispatch(mainId)
+		expect(getActiveRequestId(ctx)).toBe(mainId)
+		const sideCall = trackProviderRequest(ctx)
+		dispatch(sideCall)
+		expect(dispatch(sideCall).get("x-request-id")).not.toBe(sideCall)
+		expect(getActiveRequestId(ctx)).toBe(mainId)
+		expect(main.headers["X-Request-Id"]).toBe(mainId)
+	})
+
+	it("moves an older main request's retries off the active request once another starts", async () => {
+		const { api, ctx } = await startSession("main-session")
+		const original = await mainRequest(api, ctx)
+		const logicalId = String(original.headers["X-Request-Id"])
+		dispatch(logicalId)
+		const retryId = dispatch(logicalId).get("x-request-id")
+		expect(getActiveRequestId(ctx)).toBe(retryId)
+		expect(original.headers["X-Request-Id"]).toBe(retryId)
+		const current = await mainRequest(api, ctx)
+		for (const id of [logicalId, String(retryId)]) {
+			expect(dispatch(id).get("x-request-id")).not.toBe(id)
+			expect(getActiveRequestId(ctx)).toBe(current.headers["X-Request-Id"])
+		}
+		await api.emit("turn_start", { type: "turn_start" }, ctx)
+		expect(getActiveRequestId(ctx)).toBeUndefined()
+	})
+
+	it.each([
+		"http",
+		"network",
+	])("gives Pi's hidden %s retry its own ID and tag, and records the successful attempt", async (failure) => {
+		vi.stubEnv("KIMCHI_STREAM_IDLE_TIMEOUT_MS", "0")
+		const model = {
+			...getModel("openai", "gpt-4o-mini"),
+			api: "openai-completions" as const,
+			baseUrl: resolveEndpoints({ cwd: dir }).openAiBaseUrl,
+		}
+		const ctx = createContext({ cwd: dir, model, sessionManager: { getSessionId: () => "main-session" } })
+		const api = createExtensionApi()
+		requestIdentityExtension(api.api)
+		requestTimingExtension(api.api)
+		await api.emit("session_start", { type: "session_start", reason: "startup" }, ctx)
+		const event = await mainRequest(api, ctx)
+		const logicalId = event.headers["X-Request-Id"]
+		const calls: { requestId: string | null; tag: string | null; reporting: string | null }[] = []
+		vi.stubGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+			const headers = new Headers(init?.headers)
+			calls.push({
+				requestId: headers.get("x-request-id"),
+				tag: headers.get("x-tags"),
+				reporting: headers.get("x-kimchi-pr-reporting"),
+			})
+			if (calls.length === 1) {
+				if (failure === "network") throw new TypeError("fetch failed")
+				return Response.json(
+					{ error: { message: "retry", type: "server_error" } },
+					{ status: 503, headers: { "Retry-After": "0" } },
+				)
+			}
+			const chunk = {
+				id: "chat",
+				object: "chat.completion.chunk",
+				created: 1,
+				model: model.id,
+				choices: [{ index: 0, delta: { role: "assistant", content: "done" }, finish_reason: "stop" }],
+				usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+			}
+			return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
+				headers: { "Content-Type": "text/event-stream" },
+			})
+		})
+		installGlobalFetchInstrumentation({ userAgent: "retry-test", onModelRequest: prepareProviderRequest })
+		const result = await complete(
+			model,
+			{ messages: [{ role: "user", content: "Say done", timestamp: Date.now() }] },
+			{
+				apiKey: "fake",
+				headers: event.headers,
+				maxRetries: 1,
+				maxRetryDelayMs: 1,
+				onResponse: async (response) => {
+					await api.emit("after_provider_response", { type: "after_provider_response", ...response }, ctx)
+				},
+			},
+		)
+		expect(result.errorMessage).toBeUndefined()
+		expect(calls).toHaveLength(2)
+		expect(calls[0].requestId).toBe(logicalId)
+		expect(calls[1].requestId).toMatch(UUID)
+		expect(calls[1].requestId).not.toBe(logicalId)
+		expect(calls.map((call) => call.tag)).toEqual(calls.map((call) => `kimchi-request:${call.requestId}`))
+		expect(calls.map((call) => call.reporting)).toEqual(["proxy", "proxy"])
+		await api.emit("message_end", { message: result }, ctx)
+		expect(api.getAppendedEntries("request_diagnostics")).toEqual([
+			expect.objectContaining({ requestId: calls[1].requestId, status: 200 }),
+		])
+	})
+
+	it("leaves untracked request IDs unchanged", () => {
 		const headers = new Headers({ "X-Request-Id": "someone-else" })
-		prepareProviderRequest(headers, gatewayUrl)
+		prepareProviderRequest(headers, gatewayUrl, { bodyTags: [] })
 		expect(Object.fromEntries(headers)).toEqual({ "x-request-id": "someone-else" })
 	})
 })

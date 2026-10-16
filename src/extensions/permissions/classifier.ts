@@ -1,14 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { complete } from "@earendil-works/pi-ai/compat"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
-import { trackProviderRequest } from "../request-identity/index.js"
-import {
-	getWorkId,
-	pinWorkContext,
-	recordProviderRequest,
-	tryWorkAttribution,
-	type WorkContext,
-} from "../work-attribution.js"
+import { pinRequestContext, type RequestContext, trackProviderRequest } from "../request-identity/index.js"
 import { DEFAULT_CONFIG } from "./constants.js"
 import classifierSystemPrompt from "./prompts/classifier-system-prompt.js"
 import type { ClassifierFailureCode, ClassifierResult, ClassifierVerdict, RiskScore } from "./types.js"
@@ -25,7 +18,8 @@ export interface ClassifyInput {
 }
 
 export interface ClassifierOptions {
-	context: WorkContext
+	/** The session the classifier's requests belong to. */
+	context: RequestContext
 	timeoutMs: number
 	maxTotalMs?: number
 }
@@ -40,8 +34,7 @@ export async function classifyToolCall(
 	const deadline = performance.now() + (options.maxTotalMs ?? DEFAULT_CONFIG.classifierMaxTotalMs)
 	if (signal?.aborted) return unavailable("classifier aborted", "aborted")
 	if (!candidates.length) return unavailable("no model available for classifier", "no_candidates")
-	const context = pinWorkContext(options.context)
-	const workId = tryWorkAttribution(() => getWorkId(context))
+	const context = pinRequestContext(options.context)
 	let lastResult = unavailable("classifier budget exhausted", "budget_exhausted")
 	const skips: string[] = []
 
@@ -82,7 +75,7 @@ export async function classifyToolCall(
 				model,
 				authResult.value,
 				call,
-				{ context, workId },
+				context,
 				Math.min(candidateDeadline, performance.now() + options.timeoutMs),
 				signal,
 			)
@@ -147,14 +140,11 @@ async function runClassifier(
 	model: Model<Api>,
 	auth: CandidateAuth,
 	call: ClassifyInput,
-	attribution: { context: WorkContext; workId: string | undefined },
+	context: RequestContext,
 	deadline: number,
 	signal?: AbortSignal,
 ): Promise<ClassifierResult> {
-	const requestId =
-		(attribution.workId
-			? tryWorkAttribution(() => recordProviderRequest(attribution.context, model, attribution.workId))?.requestId
-			: undefined) ?? trackProviderRequest(attribution.context)
+	const requestId = trackProviderRequest(context)
 	const outcome = await withinDeadline(
 		(attemptSignal) =>
 			complete(

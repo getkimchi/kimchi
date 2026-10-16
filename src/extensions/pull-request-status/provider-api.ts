@@ -1,12 +1,11 @@
-/** GitHub and GitLab access for PR discovery: credentials, the bounded HTTP client with pagination, and repository identity. */
+/** GitHub and GitLab access for the branch PR footer: credentials, the bounded HTTP client with pagination, and repository identity. */
 import { execFile } from "node:child_process"
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { isAbsolute, join } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { readGitToken } from "../../config.js"
-import { object } from "../work-attribution/summary.js"
-import { httpsURL, LookupError, label, type Repository, repositoryPath } from "./provider-records.js"
+import { httpsURL, isRecord, LookupError, label, type Repository, repositoryPath } from "./provider-records.js"
 
 const COMMAND_TIMEOUT_MS = 5000
 
@@ -138,12 +137,12 @@ async function gitlabCredential(host: string, signal: AbortSignal, deadline: num
 		const file = statSync(path)
 		if (!file.isFile() || file.size > 64 * 1024) return undefined
 		const config: unknown = parseYaml(readFileSync(path, "utf8"), { logLevel: "silent", maxAliasCount: 0 })
-		if (!object(config) || !object(config.hosts) || !Object.hasOwn(config.hosts, host)) return undefined
+		if (!isRecord(config) || !isRecord(config.hosts) || !Object.hasOwn(config.hosts, host)) return undefined
 		entry = config.hosts[host]
 	} catch {
 		return undefined
 	}
-	if (!object(entry)) return undefined
+	if (!isRecord(entry)) return undefined
 	// glab's token command can fall back to an unrelated global or local token.
 	// Plaintext credentials must be stored under this exact host. Before 1.84,
 	// a keyring login left the host's token empty instead of setting use_keyring.
@@ -270,18 +269,6 @@ export async function requestJSON(
 				continue
 			}
 
-			// Only a commit-association endpoint can report an unpublished commit.
-			// Inspect its bounded body; repository and permission errors stay errors.
-			const missingCommitSha =
-				repository.provider === "github" && response.status === 422
-					? /^\/(?:api\/v3\/)?(?:repos\/[^/]+\/[^/]+|repositories\/\d+)\/commits\/([a-f\d]{40}|[a-f\d]{64})\/pulls$/i.exec(
-							url.pathname,
-						)?.[1]
-					: repository.provider === "gitlab" && response.status === 404
-						? /^\/api\/v4\/projects\/[^/]+\/repository\/commits\/([a-f\d]{40}|[a-f\d]{64})\/merge_requests$/i.exec(
-								url.pathname,
-							)?.[1]
-						: undefined
 			if (!response.ok && limitedUntil) {
 				await response.body?.cancel()
 				throw new LookupError(
@@ -312,14 +299,13 @@ export async function requestJSON(
 			try {
 				value = JSON.parse(Buffer.concat(chunks).toString("utf8"))
 			} catch {
-				if (response.ok || missingCommitSha)
-					throw new LookupError(`${label(repository)} returned invalid JSON.`, "invalid")
+				if (response.ok) throw new LookupError(`${label(repository)} returned invalid JSON.`, "invalid")
 			}
-			if (!response.ok && !missingCommitSha) {
+			if (!response.ok) {
 				// GitHub errors link their documentation; GitLab messages start with the HTTP status,
 				// and its token errors use OAuth's error fields.
 				const fromProvider =
-					object(value) &&
+					isRecord(value) &&
 					(repository.provider === "github"
 						? typeof value.documentation_url === "string"
 						: (typeof value.message === "string" && value.message.startsWith(`${response.status} `)) ||
@@ -338,7 +324,7 @@ export async function requestJSON(
 					)
 				if (response.status === 404)
 					throw new LookupError(
-						`${label(repository)} could not find this repository, commit or pull request. It may require authentication.`,
+						`${label(repository)} could not find this repository or pull request. It may require authentication.`,
 						"missing",
 						fromProvider,
 					)
@@ -347,16 +333,6 @@ export async function requestJSON(
 					"retry",
 					fromProvider,
 				)
-			}
-			if (missingCommitSha) {
-				const message =
-					repository.provider === "github" ? `No commit found for SHA: ${missingCommitSha}` : "404 Commit Not Found"
-				if (!object(value) || value.message !== message)
-					throw new LookupError(
-						`${label(repository)} lookup failed (HTTP ${response.status}). Kimchi will retry.`,
-						response.status === 404 ? "missing" : "retry",
-					)
-				value = []
 			}
 			return { value, headers: response.headers, url, bytes }
 		}
@@ -403,14 +379,8 @@ export async function pages(
 		if (nextPage) next.searchParams.set("page", nextPage)
 		sameOrigin(next, initialURL.origin)
 		const pageNumber = next.searchParams.get("page") ?? ""
-		const numericRoute = /^\/(?:api\/v3\/)?repositories\/([1-9]\d*)(\/.+)$/.exec(next.pathname)
-		const sameRepositoryRoute =
-			repository.provider === "github" &&
-			numericRoute &&
-			(repository.id === undefined || String(repository.id) === numericRoute[1]) &&
-			next.pathname === result.url.pathname.replace(/\/repos\/[^/]+\/[^/]+(?=\/)/, `/repositories/${numericRoute[1]}`)
 		if (
-			(next.pathname !== result.url.pathname && !sameRepositoryRoute) ||
+			next.pathname !== result.url.pathname ||
 			!/^[1-9]\d*$/.test(pageNumber) ||
 			!Number.isSafeInteger(Number(pageNumber)) ||
 			next.searchParams.getAll("page").length !== 1 ||
@@ -418,15 +388,14 @@ export async function pages(
 		)
 			throw new LookupError("The Git provider returned invalid pagination.")
 		if (repository.provider === "gitlab") {
+			// GitLab's Link header repeats the project route as an `id` parameter the request never sent.
 			const routeId = /^\/api\/v4\/projects\/([^/]+)(?:\/|$)/.exec(result.url.pathname)?.[1]
-			const routeSha = /\/repository\/commits\/([^/]+)\//.exec(result.url.pathname)?.[1]
-			for (const [key, value] of Object.entries({ id: routeId, sha: routeSha }))
-				if (
-					value &&
-					next.searchParams.getAll(key).length === 1 &&
-					next.searchParams.get(key) === decodeURIComponent(value)
-				)
-					next.searchParams.delete(key)
+			if (
+				routeId &&
+				next.searchParams.getAll("id").length === 1 &&
+				next.searchParams.get("id") === decodeURIComponent(routeId)
+			)
+				next.searchParams.delete("id")
 		}
 		for (const key of new Set([...result.url.searchParams.keys(), ...next.searchParams.keys()]))
 			if (key !== "page" && result.url.searchParams.get(key) !== next.searchParams.get(key))
@@ -519,11 +488,11 @@ export async function repositoryIdentity(
 		repository.token = saved || (await credential(repository, signal, deadline, tokens))
 		try {
 			const { value } = await requestJSON(repository, api(repository), signal, deadline)
-			const name = object(value) ? (candidate === "github" ? value.full_name : value.path_with_namespace) : undefined
-			const url = httpsURL(object(value) ? (candidate === "github" ? value.html_url : value.web_url) : undefined)
+			const name = isRecord(value) ? (candidate === "github" ? value.full_name : value.path_with_namespace) : undefined
+			const url = httpsURL(isRecord(value) ? (candidate === "github" ? value.html_url : value.web_url) : undefined)
 			if (!repositoryPath(name, candidate) || url.host !== remote.host || url.pathname !== `/${name}`)
 				throw new LookupError(`${label(repository)} returned an invalid repository.`, "invalid")
-			const id = object(value) ? value.id : undefined
+			const id = isRecord(value) ? value.id : undefined
 			if (candidate === "gitlab" && (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0))
 				throw new LookupError("GitLab returned an invalid project ID.", "invalid")
 			return { ...repository, name, ...(typeof id === "number" ? { id } : {}) }

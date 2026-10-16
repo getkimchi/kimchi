@@ -49,6 +49,8 @@ export interface PlanReviewContext {
 	/** Raw assistant message text (before marker stripping) — used by ferment creation. */
 	readonly rawText?: string
 	readonly activePlanSlug?: string
+	/** The reviewed plan's work ID; a Ferment created from the plan keeps it for its own plan. */
+	readonly planWorkId?: string
 	readonly fermentId?: string
 }
 

@@ -7,19 +7,15 @@ import { createContext } from "../../__mocks__/context.js"
 import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { AUTO_MODEL_PROVIDER } from "../../auto-model/constants.js"
 import dapExtension from "../../dap.js"
-import * as diagnostics from "../../work-attribution/diagnostics.js"
-import { flushWorkSummaries, readWorkRecords } from "../../work-attribution/summary.js"
-import type { WorkSegment } from "../../work-attribution.js"
 
-let attributionDir: string
+let agentDir: string
 beforeEach(() => {
-	attributionDir = mkdtempSync(join(tmpdir(), "agent-attribution-"))
-	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
+	agentDir = mkdtempSync(join(tmpdir(), "agent-runner-"))
+	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir)
 })
-afterEach(async () => {
-	await flushWorkSummaries()
+afterEach(() => {
 	vi.unstubAllEnvs()
-	rmSync(attributionDir, { recursive: true, force: true })
+	rmSync(agentDir, { recursive: true, force: true })
 })
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {
@@ -371,8 +367,6 @@ describe("runAgent — telemetry extension", () => {
 	})
 
 	it("passes required Kimchi extensions to DefaultResourceLoader", async () => {
-		const segment: WorkSegment = { id: "parent-input", attribution: "unknown", reason: "model-uncertain" }
-		Object.assign(ctx, { segment })
 		const session = makeFakeSession({})
 		mockCreateAgentSession.mockResolvedValue({
 			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
@@ -389,20 +383,17 @@ describe("runAgent — telemetry extension", () => {
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		expect(ctorArg).toHaveProperty("extensionFactories")
 		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
-		expect(ctorArg?.extensionFactories).toHaveLength(6)
+		expect(ctorArg?.extensionFactories).toHaveLength(5)
 		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+		// The child's own requests carry their identity for the gateway.
 		const childApi = createExtensionApi()
 		await runInlineExtension(ctorArg?.extensionFactories?.[1], childApi.api)
-		const child = createContext({ cwd: attributionDir, sessionManager: { getSessionId: () => "child-segment" } })
-		await childApi.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(
-			{ type: "before_provider_headers", headers: {} },
-			child,
-		)
-		expect(readWorkRecords(attributionDir)).toContainEqual(
-			expect.objectContaining({ type: "request", sessionId: "child-segment", segment }),
-		)
+		const child = createContext({ cwd: agentDir, sessionManager: { getSessionId: () => "child-session" } })
+		const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await childApi.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(event, child)
+		expect(event.headers["X-Request-Id"]).toMatch(/^[0-9a-f-]{36}$/)
 	})
 
 	describe("subagent telemetry policy", () => {
@@ -451,33 +442,6 @@ describe("runAgent — telemetry extension", () => {
 
 			expect(mockTelemetryExtension.mock.calls[0]?.[0]?.enabled).toBe(true)
 		})
-	})
-
-	it("starts a child when attribution storage is unavailable", async () => {
-		writeFileSync(join(attributionDir, "work-attribution"), "blocked")
-		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
-		const session = makeFakeSession({})
-		mockCreateAgentSession.mockResolvedValue({
-			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
-			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
-				ReturnType<typeof createAgentSession>
-			>["extensionsResult"],
-		})
-
-		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
-			pi: pi as unknown as RunOptions["pi"],
-		})
-
-		expect(warning).toHaveBeenCalled()
-		warning.mockRestore()
-		expect(mockDefaultResourceLoader).toHaveBeenCalledTimes(1)
-		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
-		expect(ctorArg).toHaveProperty("extensionFactories")
-		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
-		expect(ctorArg?.extensionFactories).toHaveLength(6)
-		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
-		expect(mockReadTelemetryConfig).toHaveBeenCalled()
-		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
 	})
 
 	it("registers Auto routing only for children that use Auto", async () => {
@@ -532,7 +496,7 @@ describe("runAgent — telemetry extension", () => {
 		})
 
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
-		expect(ctorArg?.extensionFactories).toHaveLength(7)
+		expect(ctorArg?.extensionFactories).toHaveLength(6)
 		expect(ctorArg?.extensionFactories).toContain(dapExtension)
 		// The debug tool names must flow into the child session's tool allowlist so the
 		// SDK activates them once the dap extension registers them on session_start.
@@ -608,8 +572,8 @@ describe("runAgent — telemetry extension", () => {
 
 		const linkedLoaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		const ordinaryLoaderOptions = mockDefaultResourceLoader.mock.calls[1]?.[0]
-		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(7)
-		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(6)
+		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(6)
+		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(5)
 		expect(linkedSession.setActiveToolsByName).toHaveBeenCalledWith(["submit_agent_report"])
 		expect(ordinarySession.setActiveToolsByName).toHaveBeenCalledWith([])
 	})
@@ -625,7 +589,7 @@ describe("runAgent — telemetry extension", () => {
 			abortSpy,
 			emitUsage: false,
 			promptAction: async (emit) => {
-				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[6]
+				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[5]
 				const childApi = createExtensionApi()
 				await runInlineExtension(factory, childApi.api)
 				const tool = childApi.getRegisteredTool("submit_agent_report")

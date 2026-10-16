@@ -1,9 +1,10 @@
 /** The gateway's limit on combined body and header tags, counted before deduplication. */
-export const GATEWAY_TAG_LIMIT = 10
-/** Kimchi's usage tags always add model and phase tags, and the billing tag needs one more slot. */
-export const PRICED_TAG_LIMIT = GATEWAY_TAG_LIMIT - 3
+const GATEWAY_TAG_LIMIT = 10
 
-/** Prepare a tag without publishing it before its dispatch record is durable. */
+/**
+ * The `kimchi-request:<request ID>` tag the gateway reports with the request, so its bill can be found by that ID. A
+ * previous attempt's tag is dropped first; user tags are never dropped to make room.
+ */
 export function prepareBillingTag(
 	headers: Headers,
 	bodyTags: readonly string[] | undefined,

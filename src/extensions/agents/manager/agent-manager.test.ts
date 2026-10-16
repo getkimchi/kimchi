@@ -64,7 +64,6 @@ import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { captureBaseline, resolveSandboxGitConnection, SandboxGitError } from "../../remote-run/sandbox-git.js"
 import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
-import { flushWorkSummaries } from "../../work-attribution/summary.js"
 import type { AgentRecord } from "../personas/types.js"
 import type { PersistedGitWorkflow, RemoteRunState } from "../remote-run-persistence.js"
 import { AgentManager, buildAgentOutcome } from "./agent-manager.js"
@@ -89,10 +88,6 @@ const mockListWorkspaces = vi.mocked(listWorkspaces)
 const mockLoadWorkspaceFile = vi.mocked(loadWorkspaceFile)
 const mockResolveSandboxGitConnection = vi.mocked(resolveSandboxGitConnection)
 const mockCaptureBaseline = vi.mocked(captureBaseline)
-
-afterEach(async () => {
-	await flushWorkSummaries()
-})
 
 function fakePi(): ExtensionAPI {
 	return createExtensionApi().api

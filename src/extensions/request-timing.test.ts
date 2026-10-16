@@ -5,8 +5,8 @@ import type { BeforeProviderHeadersEvent, ExtensionAPI } from "@earendil-works/p
 import { describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
+import requestIdentityExtension from "./request-identity/index.js"
 import requestTimingExtension from "./request-timing.js"
-import { createWorkAttributionExtension, getWorkId, setWorkId } from "./work-attribution.js"
 
 type Handler = (...args: unknown[]) => Promise<void> | void
 
@@ -87,28 +87,25 @@ describe("requestTimingExtension", () => {
 			const mock = createExtensionApi()
 			const ctx = createContext({ cwd: dir })
 			if (timingFirst) requestTimingExtension(mock.api)
-			createWorkAttributionExtension()(mock.api)
+			requestIdentityExtension(mock.api)
 			if (!timingFirst) requestTimingExtension(mock.api)
 			const ids: string[] = []
-			const workIds: string[] = []
 			for (const status of [500, 200]) {
 				await mock.getHandler("before_provider_request")({}, ctx)
 				const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
 				for (const handler of mock.getHandlers<BeforeProviderHeadersEvent>("before_provider_headers"))
 					await handler(event, ctx)
 				const requestId = event.headers["X-Request-Id"]
-				if (typeof requestId !== "string") throw new Error("Expected an attributed request ID")
+				if (typeof requestId !== "string") throw new Error("Expected a request ID")
 				ids.push(requestId)
-				workIds.push(getWorkId(ctx))
-				setWorkId(ctx)
 				await mock.getHandler("after_provider_response")({ status, headers: {} }, ctx)
 				for (const handler of mock.getHandlers("message_end"))
 					await handler({ message: { role: "assistant", content: [] } }, ctx)
 			}
 			expect(ids[0]).not.toBe(ids[1])
 			expect(mock.getAppendedEntries("request_diagnostics")).toEqual([
-				expect.objectContaining({ requestId: ids[0], workId: workIds[0], isRetry: false }),
-				expect.objectContaining({ requestId: ids[1], workId: workIds[1], isRetry: true }),
+				expect.objectContaining({ requestId: ids[0], isRetry: false }),
+				expect.objectContaining({ requestId: ids[1], isRetry: true }),
 			])
 			await mock.getHandler("before_provider_request")({}, ctx)
 			await mock.getHandler("after_provider_response")({ status: 200, headers: {} }, ctx)
@@ -116,7 +113,6 @@ describe("requestTimingExtension", () => {
 				await handler({ message: { role: "assistant", content: [] } }, ctx)
 			const fallback = mock.getAppendedEntries("request_diagnostics").at(-1)
 			expect(fallback).not.toHaveProperty("requestId")
-			expect(fallback).not.toHaveProperty("workId")
 		} finally {
 			vi.unstubAllEnvs()
 			rmSync(dir, { recursive: true, force: true })

@@ -1,9 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
-import { flushWorkSummaries } from "./work-attribution/summary.js"
 
 // All mock functions must be vi.hoisted
 const { completeMock, mockNotify, mockRegisterCommand } = vi.hoisted(() => ({
@@ -60,17 +59,16 @@ import { getLatestMessages, markImagesAsStripped, sessionHasImages, storeImageDe
 import stripImagesExtension from "./strip-images.js"
 
 describe("strip-images extension", () => {
-	let attributionDir: string
-	afterEach(async () => {
-		await flushWorkSummaries()
+	let agentDir: string
+	afterEach(() => {
 		vi.unstubAllEnvs()
-		rmSync(attributionDir, { recursive: true, force: true })
+		rmSync(agentDir, { recursive: true, force: true })
 	})
 	let mockPi: ReturnType<typeof createMockPi>
 
 	beforeEach(() => {
-		attributionDir = mkdtempSync(join(tmpdir(), "strip-attribution-"))
-		vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
+		agentDir = mkdtempSync(join(tmpdir(), "strip-agent-"))
+		vi.stubEnv("PI_CODING_AGENT_DIR", agentDir)
 		vi.clearAllMocks()
 		completeMock.mockReset()
 		mockNotify.mockClear()
@@ -162,37 +160,26 @@ describe("strip-images extension", () => {
 			expect(completeMock.mock.calls[0]?.[0]).toMatchObject({ id: "vision-model" })
 		})
 
-		it.each(["identity", "request"])("describes images when %s persistence fails", async (stage) => {
+		it("sends each image description with its own request ID beside the provider's headers", async () => {
 			vi.mocked(getLatestMessages).mockReturnValue([
 				{ role: "user", content: [{ type: "image", data: "image-data", mimeType: "image/png" }] },
 			] as never)
 			completeMock.mockResolvedValue({ content: [{ type: "text", text: "saved description" }], stopReason: "stop" })
-			const blockLedger = () => {
-				const path = join(attributionDir, "work-attribution")
-				rmSync(path, { recursive: true, force: true })
-				writeFileSync(path, "not a directory")
-			}
-			if (stage === "identity") blockLedger()
 			const ctx = createMockCtx({
 				modelRegistry: {
 					getAvailable: () => [],
-					getApiKeyAndHeaders: async () => {
-						if (stage === "request") blockLedger()
-						return { ok: true, apiKey: "key", headers: { "X-Test": "preserved" } }
-					},
+					getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "key", headers: { "X-Test": "preserved" } }),
 				},
 			})
 			stripImagesExtension(mockPi as never)
 			const handler = mockPi.getHandler("strip-images") as (args: string[], ctx: unknown) => Promise<void>
 			await handler([], ctx)
 			expect(completeMock).toHaveBeenCalledOnce()
-			// Without a stored identity the request still gets one, so the gateway can tell its session.
 			expect(completeMock.mock.calls[0][2].headers).toEqual({
 				"X-Test": "preserved",
 				"X-Request-Id": expect.stringMatching(/^[0-9a-f-]{36}$/),
 			})
 			expect(storeImageDescription).toHaveBeenCalledWith("test-hash", "saved description")
-			expect(mockNotify).toHaveBeenCalledWith(expect.stringContaining("Work attribution unavailable"), "warning")
 		})
 
 		it("preserves the explicit image-analysis token limit", async () => {

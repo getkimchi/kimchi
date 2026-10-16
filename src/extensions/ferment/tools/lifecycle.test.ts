@@ -1,15 +1,12 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
-import { UNRETAINED_PLAN_NOTICE } from "../../../shared/planning/plan-markdown.js"
+import { readPlanWorkId, UNRETAINED_PLAN_NOTICE } from "../../../shared/planning/plan-markdown.js"
 import { createContext } from "../../__mocks__/context.js"
-import { createExtensionApi } from "../../__mocks__/extension-api.js"
-import { flushWorkSummaries, readWorkRecords } from "../../work-attribution/summary.js"
-import { createWorkAttributionExtension, getWorkId, setWorkId } from "../../work-attribution.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { loadRuntimeState } from "../runtime-state-store.js"
 import { captureJudgeContext, setRuntimeStatePersistRoot } from "../state.js"
@@ -154,17 +151,16 @@ const passingFermentGates = () => [
 	},
 ]
 
-let attributionDir: string
+let agentDir: string
 beforeEach(() => {
-	attributionDir = mkdtempSync(join(tmpdir(), "plan-attribution-"))
-	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
-	setRuntimeStatePersistRoot(attributionDir)
+	agentDir = mkdtempSync(join(tmpdir(), "plan-agent-"))
+	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir)
+	setRuntimeStatePersistRoot(agentDir)
 })
-afterEach(async () => {
-	await flushWorkSummaries()
+afterEach(() => {
 	setRuntimeStatePersistRoot(undefined)
 	vi.unstubAllEnvs()
-	rmSync(attributionDir, { recursive: true, force: true })
+	rmSync(agentDir, { recursive: true, force: true })
 })
 
 beforeEach(() => {
@@ -567,17 +563,11 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		expect(component).toBeDefined()
 	})
 
-	it.each(["healthy", "identity", "append"])("saves a draft plan with attribution state: %s", async (stage) => {
+	it("saves a draft plan whose header names the work the new ferment keeps", async () => {
 		const { h, execute } = createProposeHarness()
 		expect(h.runtime.getActive()).toBeUndefined()
 		const beforeCount = h.storage.list().length
-		const ctx = createContext({ hasUI: false, cwd: attributionDir })
-		const originalWorkId = stage === "append" ? getWorkId(ctx) : undefined
-		if (stage !== "healthy") {
-			const path = join(attributionDir, "work-attribution")
-			rmSync(path, { recursive: true, force: true })
-			writeFileSync(path, "blocked")
-		}
+		const ctx = createContext({ hasUI: false, cwd: agentDir })
 
 		const result = await execute(
 			"tool-call-1",
@@ -597,23 +587,25 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		expect(okText(result)).toContain("Plan saved")
 		expect(h.storage.list().length).toBe(beforeCount + 1)
 		const active = h.runtime.getActive()
-		expect(active).toBeDefined()
 		expect(active?.name).toBe("Bootstrap Ferment")
 		expect(active?.status).toBe("planned")
 		if (!active) throw new Error("Expected active Ferment")
-		expect(existsSync(join(attributionDir, ".kimchi", "plans"))).toBe(true)
-		if (stage !== "identity")
-			expect(loadRuntimeState(active.id, attributionDir).workId).toBe(originalWorkId ?? getWorkId(ctx))
+		const [planFile] = readdirSync(join(agentDir, ".kimchi", "plans"))
+		const workId = readPlanWorkId(readFileSync(join(agentDir, ".kimchi", "plans", planFile), "utf8"))
+		expect(workId).toMatch(/^[0-9a-f-]{36}$/)
+		expect(loadRuntimeState(active.id, agentDir).workId).toBe(workId)
+		// The retained copy lives where the gateway can find the same work ID.
+		expect(readdirSync(join(agentDir, "work", String(workId), "plans"))).toHaveLength(1)
 	})
 
 	it.each(["saved", "blocked"])("warns only when the plan's retained copy cannot be saved (%s)", async (outcome) => {
 		const { execute } = createProposeHarness()
-		const ctx = createContext({ hasUI: true, cwd: attributionDir })
+		const ctx = createContext({ hasUI: true, cwd: agentDir })
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		if (outcome === "blocked") {
 			// Retained copies live under <agent>/work/<workId>/plans.
-			rmSync(join(attributionDir, "work"), { recursive: true, force: true })
-			writeFileSync(join(attributionDir, "work"), "blocked")
+			rmSync(join(agentDir, "work"), { recursive: true, force: true })
+			writeFileSync(join(agentDir, "work"), "blocked")
 		}
 		const result = await execute(
 			"tool-call-1",
@@ -630,53 +622,10 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			ctx,
 		)
 		warn.mockRestore()
-		expect(okText(result)).toContain(join(attributionDir, ".kimchi", "plans"))
+		expect(okText(result)).toContain(join(agentDir, ".kimchi", "plans"))
 		const notice = [`ferment: ${UNRETAINED_PLAN_NOTICE}`, "warning"]
 		if (outcome === "blocked") expect(ctx.ui.notify).toHaveBeenCalledWith(...notice)
 		else expect(ctx.ui.notify).not.toHaveBeenCalledWith(...notice)
-	})
-
-	it("saves the proposal's originating request even if work changed before the tool ran", async () => {
-		const { execute } = createProposeHarness()
-		const ctx = createContext({ hasUI: false, cwd: attributionDir })
-		const tracing = createExtensionApi()
-		createWorkAttributionExtension()(tracing.api)
-		const headers: Record<string, string> = {}
-		await tracing.getHandler("before_provider_headers")({ headers }, ctx)
-		const workId = getWorkId(ctx)
-		await tracing.getHandler("message_end")(
-			{
-				message: {
-					role: "assistant",
-					stopReason: "toolUse",
-					content: [{ type: "toolCall", id: "tool-call-1", name: "propose_ferment_scoping" }],
-				},
-			},
-			ctx,
-		)
-		setWorkId(ctx)
-		const result = await execute(
-			"tool-call-1",
-			{
-				title: "Pinned Proposal",
-				goal: "Ship the feature",
-				success_criteria: ["Tests pass"],
-				phases: [{ name: "P1", goal: "Build it", steps: [{ description: "Code it" }] }],
-				questions: [],
-				gates: passingPlanGates(),
-			},
-			undefined,
-			undefined,
-			ctx,
-		)
-		expect(okText(result)).toContain("Plan saved")
-		expect(readWorkRecords(attributionDir)).toContainEqual(
-			expect.objectContaining({
-				type: "plan",
-				workId,
-				requestId: headers["X-Request-Id"],
-			}),
-		)
 	})
 
 	it("creates a new draft ferment when an unknown ferment_id is provided and no active ferment exists", async () => {

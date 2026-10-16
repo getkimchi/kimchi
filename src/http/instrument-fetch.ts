@@ -12,7 +12,7 @@
  * installGlobalFetchInstrumentation call — see the options doc.
  */
 
-import { debugWorkAttribution } from "../extensions/work-attribution/diagnostics.js"
+import { debugPRCost } from "../shared/pr-cost-log.js"
 import { requestUrl, rewrapResponseWithBody, wrapFetchWithIdleTimeout } from "./stream-idle-timeout.js"
 
 type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -36,7 +36,6 @@ type BrandedFetch = FetchFn & Record<symbol, boolean | undefined>
  */
 let onModelCompletionSettled: ((originalFetch: FetchFn) => Promise<unknown>) | undefined
 let onModelRequest: GlobalFetchInstrumentationOptions["onModelRequest"]
-let onModelResponse: GlobalFetchInstrumentationOptions["onModelResponse"]
 
 /** String bodies are already in memory; even image-heavy contexts parse in milliseconds below this bound. */
 const MAX_INSPECTED_BODY_CHARS = 64 * 1024 * 1024
@@ -68,10 +67,8 @@ function requestMetadata(input: RequestInfo | URL, init?: RequestInit): ModelReq
 export interface GlobalFetchInstrumentationOptions {
 	/** Default user-agent, applied when the caller supplies none. */
 	userAgent: string
-	/** Persist a tracked HTTP attempt before dispatch; may replace its outgoing request ID. */
+	/** Prepare a tracked HTTP attempt before dispatch; may replace its outgoing request ID and add headers. */
 	onModelRequest?: (headers: Headers, url: string, metadata: ModelRequestMetadata) => void
-	/** Observe response metadata without reading the model's response body. */
-	onModelResponse?: (requestId: string, response: Pick<Response, "status" | "headers">) => void
 	/**
 	 * Kicked off after each model-completion response settles (body fully
 	 * read, errored, or cancelled). Receives the unpatched fetch so the
@@ -86,7 +83,6 @@ export interface GlobalFetchInstrumentationOptions {
 /** Replace `globalThis.fetch` with the instrumented version. Later installs update the hooks without stacking wrappers. */
 export function installGlobalFetchInstrumentation(options: GlobalFetchInstrumentationOptions): void {
 	if (options.onModelRequest) onModelRequest = options.onModelRequest
-	if (options.onModelResponse) onModelResponse = options.onModelResponse
 	if (options.onModelCompletionSettled) {
 		onModelCompletionSettled = options.onModelCompletionSettled
 	}
@@ -112,18 +108,10 @@ export function installGlobalFetchInstrumentation(options: GlobalFetchInstrument
 				onModelRequest?.(headers, requestUrl(input) ?? "", requestMetadata(input, init))
 			} catch (error) {
 				headers.delete("x-request-id")
-				debugWorkAttribution("Request identity unavailable:", error)
+				debugPRCost("Request identity unavailable:", error)
 			}
 		}
-		const requestId = headers.get("x-request-id")
 		const response = await idleFetch(input, { ...init, headers })
-		if (requestId && modelCompletion) {
-			try {
-				onModelResponse?.(requestId, response)
-			} catch (error) {
-				debugWorkAttribution("Response metadata unavailable:", error)
-			}
-		}
 		const hook = onModelCompletionSettled
 		return hook && response.ok && modelCompletion
 			? withBillingRefreshAfterResponseSettles(response, () => hook(originalFetch))

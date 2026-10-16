@@ -4,7 +4,7 @@ import { prepareBillingTag } from "./request-tags.js"
 const ID = "11111111-2222-4333-8444-555555555555"
 const TAG = `kimchi-request:${ID}`
 
-describe("per-attempt billing tags", () => {
+describe("per-attempt request tags", () => {
 	it("adds one tag while preserving every user tag and ignoring blank entries", () => {
 		const headers = new Headers({ "X-Tags": " team:a , ,source:b ", "X-LiteLLM-Tags": "project:c" })
 		const result = prepareBillingTag(headers, ["body:d", "   "], ID, () => false)
