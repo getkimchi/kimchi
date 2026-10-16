@@ -43,7 +43,7 @@ test("login via Kimchi account offers a region selector and persists the chosen 
 		{
 			artifactName: "login-region",
 			responses: [],
-			// The region selector only offers Europe behind the experimental flag.
+			// The flag-on selector also offers the experimental self-hosted region.
 			extraArgs: ["--enable-experimental-features"],
 		},
 		async (fixture, trace) => {
@@ -58,6 +58,7 @@ test("login via Kimchi account offers a region selector and persists the chosen 
 			await waitForText(terminal, "Select region:", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "United States \u2014 current", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "Europe", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "Self-hosted", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("region selector visible")
 			terminal.keyDown(1)
 			terminal.submit("")
@@ -81,13 +82,13 @@ test("login via Kimchi account offers a region selector and persists the chosen 
 	)
 })
 
-test("login skips the region selector and logs in to the default region without the experimental flag", async ({
+test("login offers the region selector without the experimental flag and persists the chosen EU region", async ({
 	terminal,
 }) => {
 	await runKimchiSession(
 		terminal,
 		{
-			artifactName: "login-region-gated",
+			artifactName: "login-region-ga-eu",
 			responses: [],
 		},
 		async (fixture, trace) => {
@@ -98,13 +99,60 @@ test("login skips the region selector and logs in to the default region without 
 			terminal.submit("")
 			trace.step("auth-method selector confirmed")
 
-			// No "Select region:" step: the browser flow goes straight to the
-			// default (US) web app.
+			// EU is generally available: the selector appears without the flag.
+			await waitForText(terminal, "Select region:", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "United States \u2014 current", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "Europe", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("region selector visible without the experimental flag")
+			terminal.keyDown(1)
+			terminal.submit("")
+
+			// The browser flow must target the EU web app.
+			await waitForText(terminal, "app.eu.kimchi.dev", { timeoutMs: STREAM_TIMEOUT_MS, full: true })
+			trace.step("browser login URL points at the EU web app")
+
+			const { port, state } = browserLoginUrl(terminal)
+			const callback = await fetch(`http://127.0.0.1:${port}/callback?state=${state}&token=fake`)
+			expect(callback.status).toBe(200)
+
+			await waitForConfigRegion(join(fixture.homeDir, ".config", "kimchi", "config.json"), "eu")
+			trace.step("config.json contains region eu")
+
+			await waitForText(terminal, PROMPT_READY, { timeoutMs: STREAM_TIMEOUT_MS })
+		},
+	)
+})
+
+test("login without the experimental flag still logs in to the default US region from the selector", async ({
+	terminal,
+}) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "login-region-ga-us",
+			responses: [],
+		},
+		async (fixture, trace) => {
+			terminal.write("/login")
+			await waitForText(terminal, "/login", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+			await waitForText(terminal, "Use a Kimchi account", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+			trace.step("auth-method selector confirmed")
+
+			await waitForText(terminal, "Select region:", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "United States \u2014 current", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("region selector visible without the experimental flag")
+			terminal.submit("") // United States, first option
+
+			// The browser flow goes to the default (US) web app.
 			await waitForText(terminal, "app.kimchi.dev", { timeoutMs: STREAM_TIMEOUT_MS, full: true })
 			trace.step("browser login URL points at the US web app")
 
 			const { port, state } = browserLoginUrl(terminal)
-			expect((await fetch(`http://127.0.0.1:${port}/callback?state=${state}&token=fake`)).status).toBe(200)
+			const callback = await fetch(`http://127.0.0.1:${port}/callback?state=${state}&token=fake`)
+			expect(callback.status).toBe(200)
+
 			await waitForConfigRegion(join(fixture.homeDir, ".config", "kimchi", "config.json"), "us")
 			trace.step("config.json contains region us")
 

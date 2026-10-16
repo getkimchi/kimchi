@@ -80,22 +80,23 @@ export function isRegionId(value: unknown): value is RegionId {
 }
 
 /**
- * Regions offered in pickers and advertised to clients. `eu` and `self-hosted`
- * are gated behind --enable-experimental-features until generally available.
+ * Regions offered in pickers and advertised to clients. `eu` is generally
+ * available; `self-hosted` stays gated behind --enable-experimental-features.
  *
  * This gate is SELECTION-ONLY by design: `REGIONS`, `isRegionId`, and
- * `endpointsForRegion` always resolve them, so a stored `region: "eu"` (or
- * `"self-hosted"`) config or `KIMCHI_REGION=eu` keeps working when the flag
- * is off. Evaluated per call (not at module load) because cli.ts sets the flag
+ * `endpointsForRegion` always resolve them, so a stored `region: "self-hosted"`
+ * config or `KIMCHI_REGION=self-hosted` keeps working when the flag is off.
+ * Evaluated per call (not at module load) because cli.ts sets the flag
  * after imports evaluate.
  *
- * To release a region: make this return Object.values(REGIONS) unconditionally
- * (single-file change; no call sites to revert).
+ * To release a region: remove it from the filter below (single-file change;
+ * no call sites to revert). A new region added to REGIONS is selectable by
+ * default — to keep it experimental, add its id to the filter below.
  */
 export function selectableRegions(): KimchiRegion[] {
 	const regions = Object.values(REGIONS)
 	if (isExperimentalFeaturesEnabled()) return regions
-	return regions.filter((region) => region.id === DEFAULT_REGION)
+	return regions.filter((region) => region.id !== "self-hosted")
 }
 
 /**

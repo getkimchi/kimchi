@@ -3,7 +3,7 @@ import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { setExperimentalFeaturesEnabled } from "../experimental.js"
-import { createRegionSelector, regionChoiceRequired, SwappableAuthComponent } from "./flow.js"
+import { createRegionSelector, SwappableAuthComponent } from "./flow.js"
 
 beforeAll(() => {
 	initTheme("default")
@@ -14,8 +14,8 @@ function createTui(): TUI {
 }
 
 describe("createRegionSelector", () => {
-	// EU is gated behind --enable-experimental-features; these tests cover the
-	// ungated (flag-on) behaviour.
+	// Self-hosted is gated behind --enable-experimental-features; these tests
+	// cover the ungated (flag-on) behaviour.
 	beforeEach(() => setExperimentalFeaturesEnabled(true))
 	afterEach(() => setExperimentalFeaturesEnabled(false))
 
@@ -67,49 +67,25 @@ describe("createRegionSelector", () => {
 		expect(onSelect).not.toHaveBeenCalled()
 	})
 
-	it("hides EU and self-hosted when experimental features are off", () => {
+	it("hides self-hosted when experimental features are off", () => {
 		setExperimentalFeaturesEnabled(false)
 
 		const us = createRegionSelector({ currentRegion: "us", onSelect: vi.fn(), onBack: vi.fn() })
-		expect(optionsOf(us)).toEqual(["United States \u2014 current"])
+		expect(optionsOf(us)).toEqual(["United States \u2014 current", "Europe"])
 	})
 
-	it("still lists the configured EU region first when experimental features are off", () => {
+	it("lists the configured EU region first when experimental features are off", () => {
 		setExperimentalFeaturesEnabled(false)
 
 		const eu = createRegionSelector({ currentRegion: "eu", onSelect: vi.fn(), onBack: vi.fn() })
 		expect(optionsOf(eu)).toEqual(["Europe \u2014 current", "United States"])
 	})
 
-	it("still lists the configured self-hosted region first when experimental features are off", () => {
+	it("lists the configured self-hosted region first when experimental features are off", () => {
 		setExperimentalFeaturesEnabled(false)
 
 		const selfHosted = createRegionSelector({ currentRegion: "self-hosted", onSelect: vi.fn(), onBack: vi.fn() })
-		expect(optionsOf(selfHosted)).toEqual(["Self-hosted \u2014 current", "United States"])
-	})
-})
-
-describe("regionChoiceRequired", () => {
-	beforeEach(() => setExperimentalFeaturesEnabled(true))
-	afterEach(() => setExperimentalFeaturesEnabled(false))
-
-	it("is true when multiple regions are selectable", () => {
-		expect(regionChoiceRequired("us")).toBe(true)
-	})
-
-	it("is false when EU is experimental-gated and the configured region is the default", () => {
-		setExperimentalFeaturesEnabled(false)
-		expect(regionChoiceRequired("us")).toBe(false)
-	})
-
-	it("is true when EU is experimental-gated but already configured (user can switch back)", () => {
-		setExperimentalFeaturesEnabled(false)
-		expect(regionChoiceRequired("eu")).toBe(true)
-	})
-
-	it("is true when self-hosted is experimental-gated but already configured", () => {
-		setExperimentalFeaturesEnabled(false)
-		expect(regionChoiceRequired("self-hosted")).toBe(true)
+		expect(optionsOf(selfHosted)).toEqual(["Self-hosted \u2014 current", "United States", "Europe"])
 	})
 })
 

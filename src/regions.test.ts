@@ -183,21 +183,14 @@ describe("selectableRegions", () => {
 		})
 	})
 
-	it("lists only the default region when experimental features are off", async () => {
+	it("lists us and eu without the flag now that eu is generally available", async () => {
 		await withExperimentalFeatures(false, () => {
-			expect(selectableRegions()).toEqual([REGIONS.us])
-		})
-	})
-
-	it("keeps the EU id and endpoints resolvable while gated (stored config keeps working)", async () => {
-		await withExperimentalFeatures(false, () => {
-			expect(isRegionId("eu")).toBe(true)
+			expect(selectableRegions()).toEqual([REGIONS.us, REGIONS.eu])
 			expect(REGIONS.eu.llmBaseUrl).toBe("https://llm.eu.kimchi.dev")
-			expect(selectableRegions().some((r) => r.id === "eu")).toBe(false)
 		})
 	})
 
-	it("gates self-hosted selection like eu while keeping it resolvable when stored", async () => {
+	it("gates self-hosted selection while keeping it resolvable when stored", async () => {
 		await withExperimentalFeatures(false, () => {
 			// Selection-only gate: isRegionId still validates, so a stored
 			// region or KIMCHI_REGION=self-hosted keeps resolving endpoints.

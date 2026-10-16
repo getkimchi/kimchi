@@ -668,8 +668,8 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const tempAgentDir = "/tmp/kimchi-acp-test-agent-dir"
 
 		beforeEach(() => {
-			// EU companion methods are gated behind experimental features; these
-			// capability tests cover the ungated (flag-on) behaviour.
+			// The self-hosted companion method is gated behind experimental features;
+			// these capability tests cover the ungated (flag-on) behaviour.
 			setExperimentalFeaturesEnabled(true)
 			// Clean up and create temp agent dir
 			try {
@@ -917,7 +917,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			}
 		})
 
-		it("omits the EU companion method when EU is experimental-gated", async () => {
+		it("advertises the EU companion method without the flag; omits gated self-hosted", async () => {
 			setExperimentalFeaturesEnabled(false)
 			const testAgent = new KimchiAcpAgent(makeConn(), {
 				extensionFactories: [],
@@ -926,7 +926,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods?.map((m) => m.id)).toEqual(["kimchi-agent", "kimchi-agent-us"])
+			expect(response.authMethods?.map((m) => m.id)).toEqual(["kimchi-agent", "kimchi-agent-us", "kimchi-agent-eu"])
 		})
 
 		it("declares terminal auth method when client supports terminal capability", async () => {
