@@ -32,15 +32,14 @@ export default function hiddenToolGuidanceExtension(pi: ExtensionAPI): void {
 			return
 		}
 
-		const revealed = revealDeferredTool(message.toolName)
+		// Reveal the suite so the model's retry works. No per-result load
+		// marker is stamped: 1.3.0 removed ToolResultMessage.addedToolNames;
+		// availability now rides SystemMessage.toolsAdded (see deferred-reveal).
+		revealDeferredTool(message.toolName)
 
 		return {
 			message: {
 				...message,
-				// The backstop reveal must also stamp the in-band load marker so
-				// providers with native deferred-tool loading keep the revealed
-				// tool out of the wire `tools` array (cache-stable surface).
-				...(revealed && { addedToolNames: [...revealed] }),
 				content: [
 					{
 						...block,

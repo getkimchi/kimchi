@@ -585,9 +585,8 @@ describe("tool exposure at session start", () => {
 			expect(harness.active.has(name), `${name} hidden before any debug session`).toBe(false)
 		}
 
-		// Execute the registered debug_launch (real tool → mocked session registry
-		// launch succeeds); the reveal anchors on the tool_result so the call id
-		// is known for the in-band addedToolNames stamp.
+		// Execute the registered debug_launch (real tool → mocked session
+		// registry launch succeeds); the reveal anchors on the tool_result.
 		const launchTool = harness.registered.get("debug_launch")
 		expect(launchTool).toBeDefined()
 		if (!launchTool) throw new Error("debug_launch not registered")

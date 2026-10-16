@@ -1,6 +1,6 @@
 /**
  * Cross-site integration tests for the steer-outcome watcher adoptions
- * (Chunk 3, LLM-3079): each kind that lacked a comply signal now emits one
+ * (Chunk 3): each kind that lacked a comply signal now emits one
  * via the shared watcher. These assert the classify definitions end-to-end —
  * fire a steer through the real emit path, drive the agent's behaviour, see
  * the outcome. Only kinds adopted in this change live here; the three kinds

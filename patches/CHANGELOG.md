@@ -49,8 +49,12 @@ but are only drained by the next fresh run).
   the getkimchi GitHub issue form (private gist of the scrubbed metadata +
   transcript) instead of the built-in Radius upload. Both hooks are provided
   by `src/extensions/bug-report.ts`; with no hook registered the
-  stock Earendil flow runs unchanged. Tracking: none yet — candidates for
-  upstream: bundle-mutation and destination seams in the /bug flow.
+  stock Earendil flow runs unchanged (the kimchi branding/disclaimer text is
+  conditional on the hook being present). The disclaimer/menu copy states
+  that a private-gist upload (via the user's own `gh` account) happens only
+  when the user opts to include a transcript. Tracking: none yet — upstream
+  candidates (scrub/destination seams) still need an issue filed before this
+  patch ships; removal criterion: upstream exposes both seams natively.
 - **DROPPED — triggerTurn `before_agent_start` mirror + `_systemPromptOverride`
   preservation hunks.** Native in 1.2: `_startRun({ messageType: "custom" })` fires
   `emitBeforeAgentStart`, and extension `systemPrompt` results become a

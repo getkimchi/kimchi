@@ -454,7 +454,7 @@ Kimchi stores its configuration (settings, sessions, models) under:
 
 ### TUI wheel-scroll speed
 
-Mouse-wheel scroll speed in fullscreen mode is configurable via `tui.wheelScrollLines` or the `KIMCHI_WHEEL_SCROLL_LINES` env var — see [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md).
+Mouse-wheel scroll speed in fullscreen mode is configurable via `tui.wheelScrollLines` (synced to pi's `fullscreenWheelScrollLines` setting) — see [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md).
 
 ### Context files
 

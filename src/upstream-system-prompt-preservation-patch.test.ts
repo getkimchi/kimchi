@@ -18,7 +18,7 @@
  *      triggers exactly like user prompts, injecting handler `message`s and
  *      applying handler prompt selections.
  *
- * These tests pin that the installed 1.2 dist still provides the behavior
+ * These tests pin that the installed 1.3.0 dist still provides the behavior
  * (source assertions fail fast on an upstream regression), plus one
  * behavioral check on the forced-prompt projection.
  */
@@ -39,7 +39,7 @@ function runnerSource(): string {
 	)
 }
 
-describe("upstream before_agent_start on extension-triggered turns (native since 1.2)", () => {
+describe("upstream before_agent_start on extension-triggered turns (native in 1.3.0)", () => {
 	it("sendCustomMessage triggerTurn starts a run from a custom trigger", () => {
 		expect(String(sessionProto.sendCustomMessage)).toContain('_startRun({ messageType: "custom"')
 	})
@@ -72,6 +72,31 @@ describe("upstream forced-prompt projection (replaces the _systemPromptOverride 
 			const source = String(sessionProto[method])
 			expect(source).not.toContain("state.systemPrompt =")
 		}
+	})
+
+	it("setActiveToolsByName preserves a forced prompt even when the tool set is emptied", () => {
+		// Behavioral check for the ferment path: setActiveTools([]) used to
+		// wipe an extension-installed prompt; at 1.3.0 it only rebuilds the
+		// base prompt from the loadout and must not touch the projection
+		// input (_runSystemPromptOptions.forceSystemPrompt).
+		const fake = {
+			_runSystemPromptOptions: { forceSystemPrompt: "KIMCHI FORCED PROMPT" },
+			_pendingToolNames: new Set<string>(),
+			getActiveToolNames: () => ["read", "bash"],
+			_applyToolLoadout: (names: string[]) => names.map((name) => ({ name })),
+			_rebuildSystemPrompt: (names: string[]) => {
+				rebuiltWith.push(names)
+			},
+		}
+		const rebuiltWith: string[][] = []
+		// Exercise the real chain: setActiveToolsByName → _setActiveTools (both
+		// from the dist), with only the loadout/prompt machinery stubbed.
+		const fakeSession = { ...fake, _setActiveTools: sessionProto._setActiveTools }
+		sessionProto.setActiveToolsByName.call(fakeSession, [])
+		expect(rebuiltWith).toEqual([[]])
+		expect((fake._runSystemPromptOptions as { forceSystemPrompt: string }).forceSystemPrompt).toBe(
+			"KIMCHI FORCED PROMPT",
+		)
 	})
 
 	it("installs a projection replacing the request's leading system message with the forced text", async () => {

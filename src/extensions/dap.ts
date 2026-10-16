@@ -329,8 +329,8 @@ export default function (pi: ExtensionAPI) {
 	//     this way; it reads from the skills-manager store, so no `read` call
 	//     ever happens)
 	//   - read of the SKILL.md file directly (path contains the marker)
-	// The triggering call's own result carries the in-band reveal marker
-	// (addedToolNames).
+	// RevealOnce accepts the triggering call's id for API compatibility; 1.3.0
+	// has no per-result load marker (availability rides SystemMessage.toolsAdded).
 	pi.on("tool_call", (event) => {
 		if (event.toolName === "skill_view") {
 			if (event.input.name === "dap-debugging") revealEntryTools.revealOnce(event.toolCallId)
@@ -345,8 +345,8 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	// Launch anchor: a successful debug_launch reveals the entry AND session
-	// tools. Hook the result (not the launchSession deps wrapper) so the
-	// call's id is available — its toolResult carries the in-band marker.
+	// tools. Hook the result (not the launchSession deps wrapper) — timing is
+	// post-execution, so the model's retry after an early failure also wins.
 	pi.on("tool_result", (event) => {
 		if (event.isError || event.toolName !== "debug_launch") return
 		revealEntryTools.revealOnce(event.toolCallId)
