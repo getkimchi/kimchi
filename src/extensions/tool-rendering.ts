@@ -45,6 +45,7 @@ import * as Diff from "diff"
 import type { BundledLanguage, BundledTheme } from "shiki"
 import type { TSchema } from "typebox"
 import { formatDuration } from "../extensions/format.js"
+import { isDefaultToolEnabled } from "../settings-watcher.js"
 import { resolveMarkerForDisplay } from "./display-budget.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
 import { TODO_TOOL_NAMES } from "./todos/tool.js"
@@ -4210,534 +4211,548 @@ export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd()
 	const sp = (path: string) => shortPath(cwd, path)
 
+	// See isDefaultToolEnabled in settings-watcher.ts for why extension-
+	// registered core tools must mirror upstream's defaultTools filter.
+	const shadowedToolEnabled = isDefaultToolEnabled
+
 	const readTool = createReadToolDefinition(cwd)
-	pi.registerTool({
-		name: "read",
-		label: "read",
-		description: readTool.description,
-		parameters: readTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			return readTool.execute(toolCallId, params, signal, onUpdate, ctx)
-		},
-		renderCall(args, theme, ctx) {
-			const summary = stableCallSummary(ctx, "_callSummary", () => {
-				let value = sp(args.path ?? "")
-				if (args.offset || args.limit) {
-					const parts: string[] = []
-					if (args.offset) parts.push(`offset=${args.offset}`)
-					if (args.limit) parts.push(`limit=${args.limit}`)
-					value += ` ${theme.fg("muted", `(${parts.join(", ")})`)}`
+	if (shadowedToolEnabled("read"))
+		pi.registerTool({
+			name: "read",
+			label: "read",
+			description: readTool.description,
+			parameters: readTool.parameters,
+			async execute(toolCallId, params, signal, onUpdate, ctx) {
+				return readTool.execute(toolCallId, params, signal, onUpdate, ctx)
+			},
+			renderCall(args, theme, ctx) {
+				const summary = stableCallSummary(ctx, "_callSummary", () => {
+					let value = sp(args.path ?? "")
+					if (args.offset || args.limit) {
+						const parts: string[] = []
+						if (args.offset) parts.push(`offset=${args.offset}`)
+						if (args.limit) parts.push(`limit=${args.limit}`)
+						value += ` ${theme.fg("muted", `(${parts.join(", ")})`)}`
+					}
+					return value
+				})
+				const timer = formatToolTimer(getToolElapsedMs(ctx))
+				return makeText(ctx.lastComponent, toolHeader("Read", summary, theme, toolStatusDot(ctx, theme), timer))
+			},
+			renderResult(result, { expanded, isPartial }, theme, ctx) {
+				if (isPartial) {
+					setupBlinkTimer(ctx)
+					return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Reading..."), theme))
 				}
-				return value
-			})
-			const timer = formatToolTimer(getToolElapsedMs(ctx))
-			return makeText(ctx.lastComponent, toolHeader("Read", summary, theme, toolStatusDot(ctx, theme), timer))
-		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
-			if (isPartial) {
-				setupBlinkTimer(ctx)
-				return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Reading..."), theme))
-			}
-			clearBlinkTimer(ctx)
-			if (getFirstImageBlock(result)) return renderReadImageResult(result, expanded, theme, ctx)
-			const details = result.details as ReadToolDetails | undefined
-			const content = result.content.find((block) => block?.type === "text")
-			if (content?.type !== "text")
-				return makeText(ctx.lastComponent, withBranch(theme.fg("error", "No text content"), theme))
-			const lines = content.text.split("\n")
-			if (ctx.isError) {
-				const header = theme.fg("muted", `${lines.length} lines loaded`)
-				const body = lines.map((line) => theme.fg("error", line || " ")).join("\n")
-				return makeText(ctx.lastComponent, withBranch(`${header}\n${body}`, theme))
-			}
-			let text = theme.fg("muted", `${lines.length} lines loaded`)
-			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)")
-			if (!expanded)
-				return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
-			const shown = lines.slice(0, previewLimit())
-			text += `\n${buildPreviewText(
-				shown.map((line) => theme.fg("dim", line || " ")),
-				false,
-				theme,
-				previewLimit(),
-			)}`
-			return makeText(ctx.lastComponent, withBranch(text, theme))
-		},
-	})
+				clearBlinkTimer(ctx)
+				if (getFirstImageBlock(result)) return renderReadImageResult(result, expanded, theme, ctx)
+				const details = result.details as ReadToolDetails | undefined
+				const content = result.content.find((block) => block?.type === "text")
+				if (content?.type !== "text")
+					return makeText(ctx.lastComponent, withBranch(theme.fg("error", "No text content"), theme))
+				const lines = content.text.split("\n")
+				if (ctx.isError) {
+					const header = theme.fg("muted", `${lines.length} lines loaded`)
+					const body = lines.map((line) => theme.fg("error", line || " ")).join("\n")
+					return makeText(ctx.lastComponent, withBranch(`${header}\n${body}`, theme))
+				}
+				let text = theme.fg("muted", `${lines.length} lines loaded`)
+				if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)")
+				if (!expanded)
+					return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
+				const shown = lines.slice(0, previewLimit())
+				text += `\n${buildPreviewText(
+					shown.map((line) => theme.fg("dim", line || " ")),
+					false,
+					theme,
+					previewLimit(),
+				)}`
+				return makeText(ctx.lastComponent, withBranch(text, theme))
+			},
+		})
 
 	const bashTool = createBashToolDefinition(cwd)
-	pi.registerTool({
-		name: "bash",
-		label: "bash",
-		description: bashTool.description,
-		parameters: bashTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			return bashTool.execute(toolCallId, params, signal, onUpdate, ctx)
-		},
-		renderCall(args, theme, ctx) {
-			const command = args.command
-			const timer = formatToolTimer(getToolElapsedMs(ctx))
-			if (ctx.expanded && command) {
-				// Expanded: show the tool name + timer on line 1, then the full
-				// command (with real newlines) as a continued branch block below.
-				const hdr = toolHeader("Bash", "", theme, toolStatusDot(ctx, theme), timer)
-				const cmdBlock = withBranch(
-					command
-						.split("\n")
-						.map((l) => theme.fg("accent", l))
-						.join("\n"),
+	if (shadowedToolEnabled("bash"))
+		pi.registerTool({
+			name: "bash",
+			label: "bash",
+			description: bashTool.description,
+			parameters: bashTool.parameters,
+			async execute(toolCallId, params, signal, onUpdate, ctx) {
+				return bashTool.execute(toolCallId, params, signal, onUpdate, ctx)
+			},
+			renderCall(args, theme, ctx) {
+				const command = args.command
+				const timer = formatToolTimer(getToolElapsedMs(ctx))
+				if (ctx.expanded && command) {
+					// Expanded: show the tool name + timer on line 1, then the full
+					// command (with real newlines) as a continued branch block below.
+					const hdr = toolHeader("Bash", "", theme, toolStatusDot(ctx, theme), timer)
+					const cmdBlock = withBranch(
+						command
+							.split("\n")
+							.map((l) => theme.fg("accent", l))
+							.join("\n"),
+						theme,
+						false,
+						true,
+					)
+					return makeText(ctx.lastComponent, `${hdr}\n${cmdBlock}`)
+				}
+				const summary = summarizeText(command, 72)
+				return makeText(ctx.lastComponent, toolHeader("Bash", summary, theme, toolStatusDot(ctx, theme), timer))
+			},
+			renderResult(result, { expanded, isPartial }, theme, ctx) {
+				const details = result.details as BashToolDetails | undefined
+				const output = result.content[0]?.type === "text" ? result.content[0].text : ""
+				const nonEmpty = output.split("\n").filter((line) => line.trim().length > 0)
+				if (isPartial) {
+					setupBlinkTimer(ctx)
+					return makeText(
+						ctx.lastComponent,
+						withBranch(theme.fg("warning", `Running... (${nonEmpty.length} lines)`), theme),
+					)
+				}
+				clearBlinkTimer(ctx)
+				const exitMatch = output.match(/exit code: (\d+)/)
+				const exitCode = exitMatch ? Number.parseInt(exitMatch[1], 10) : null
+				const isExitError = exitCode !== null && exitCode !== 0
+				const isError = ctx.isError || isExitError
+				let text = isError
+					? theme.fg("error", exitCode != null ? `Exit ${exitCode}` : "Failed")
+					: theme.fg("success", "Done")
+				text += theme.fg("muted", ` (${nonEmpty.length} lines)`)
+				if (details?.truncation?.truncated) text += theme.fg("warning", " [truncated]")
+				if (!expanded && !isError && nonEmpty.length > 0)
+					return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
+				if (!expanded && !isError) return makeText(ctx.lastComponent, withBranch(text, theme))
+				const collapsed = bashCollapsedLimit()
+				text += `\n${buildPreviewText(
+					nonEmpty.map((line) => theme.fg("dim", line)),
+					expanded,
 					theme,
-					false,
-					true,
-				)
-				return makeText(ctx.lastComponent, `${hdr}\n${cmdBlock}`)
-			}
-			const summary = summarizeText(command, 72)
-			return makeText(ctx.lastComponent, toolHeader("Bash", summary, theme, toolStatusDot(ctx, theme), timer))
-		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
-			const details = result.details as BashToolDetails | undefined
-			const output = result.content[0]?.type === "text" ? result.content[0].text : ""
-			const nonEmpty = output.split("\n").filter((line) => line.trim().length > 0)
-			if (isPartial) {
-				setupBlinkTimer(ctx)
-				return makeText(
-					ctx.lastComponent,
-					withBranch(theme.fg("warning", `Running... (${nonEmpty.length} lines)`), theme),
-				)
-			}
-			clearBlinkTimer(ctx)
-			const exitMatch = output.match(/exit code: (\d+)/)
-			const exitCode = exitMatch ? Number.parseInt(exitMatch[1], 10) : null
-			const isExitError = exitCode !== null && exitCode !== 0
-			const isError = ctx.isError || isExitError
-			let text = isError
-				? theme.fg("error", exitCode != null ? `Exit ${exitCode}` : "Failed")
-				: theme.fg("success", "Done")
-			text += theme.fg("muted", ` (${nonEmpty.length} lines)`)
-			if (details?.truncation?.truncated) text += theme.fg("warning", " [truncated]")
-			if (!expanded && !isError && nonEmpty.length > 0)
-				return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
-			if (!expanded && !isError) return makeText(ctx.lastComponent, withBranch(text, theme))
-			const collapsed = bashCollapsedLimit()
-			text += `\n${buildPreviewText(
-				nonEmpty.map((line) => theme.fg("dim", line)),
-				expanded,
-				theme,
-				collapsed,
-			)}`
-			return makeText(ctx.lastComponent, withBranch(text, theme))
-		},
-	})
+					collapsed,
+				)}`
+				return makeText(ctx.lastComponent, withBranch(text, theme))
+			},
+		})
 
 	const grepTool = createGrepToolDefinition(cwd)
-	pi.registerTool({
-		name: "grep",
-		label: "grep",
-		description: grepTool.description,
-		parameters: grepTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			return grepTool.execute(toolCallId, params, signal, onUpdate, ctx)
-		},
-		renderCall(args, theme, ctx) {
-			const summary = stableCallSummary(ctx, "_callSummary", () => {
-				let value = `"${summarizeText(args.pattern, 40)}"`
-				if (args.path) value += ` in ${args.path}`
-				return value
-			})
-			const timer = formatToolTimer(getToolElapsedMs(ctx))
-			return makeText(ctx.lastComponent, toolHeader("Grep", summary, theme, toolStatusDot(ctx, theme), timer))
-		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
-			if (isPartial) {
-				setupBlinkTimer(ctx)
-				return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Searching..."), theme))
-			}
-			clearBlinkTimer(ctx)
-			const details = result.details as GrepToolDetails | undefined
-			const rawText = result.content[0]?.type === "text" ? result.content[0].text : ""
-			// Pi's grep tool emits the GREP_NO_MATCHES_SENTINEL string as the sole content line
-			// when ripgrep finds nothing. Detect it at the content level so it isn't miscounted
-			// as one match — a per-line filter would risk swallowing a genuine match whose text
-			// happens to equal the sentinel.
-			if (rawText.trim() === GREP_NO_MATCHES_SENTINEL)
-				return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no matches"), theme))
-			const matches = rawText.split("\n").filter((line) => line.trim().length > 0)
-			if (matches.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no matches"), theme))
-			let text = theme.fg("muted", `${matches.length} matches`)
-			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)")
-			if (!expanded)
-				return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
-			text += `\n${buildPreviewText(
-				matches.map((line) => theme.fg("dim", line)),
-				false,
-				theme,
-				previewLimit(),
-			)}`
-			return makeText(ctx.lastComponent, withBranch(text, theme))
-		},
-	})
+	if (shadowedToolEnabled("grep"))
+		pi.registerTool({
+			name: "grep",
+			label: "grep",
+			description: grepTool.description,
+			parameters: grepTool.parameters,
+			async execute(toolCallId, params, signal, onUpdate, ctx) {
+				return grepTool.execute(toolCallId, params, signal, onUpdate, ctx)
+			},
+			renderCall(args, theme, ctx) {
+				const summary = stableCallSummary(ctx, "_callSummary", () => {
+					let value = `"${summarizeText(args.pattern, 40)}"`
+					if (args.path) value += ` in ${args.path}`
+					return value
+				})
+				const timer = formatToolTimer(getToolElapsedMs(ctx))
+				return makeText(ctx.lastComponent, toolHeader("Grep", summary, theme, toolStatusDot(ctx, theme), timer))
+			},
+			renderResult(result, { expanded, isPartial }, theme, ctx) {
+				if (isPartial) {
+					setupBlinkTimer(ctx)
+					return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Searching..."), theme))
+				}
+				clearBlinkTimer(ctx)
+				const details = result.details as GrepToolDetails | undefined
+				const rawText = result.content[0]?.type === "text" ? result.content[0].text : ""
+				// Pi's grep tool emits the GREP_NO_MATCHES_SENTINEL string as the sole content line
+				// when ripgrep finds nothing. Detect it at the content level so it isn't miscounted
+				// as one match — a per-line filter would risk swallowing a genuine match whose text
+				// happens to equal the sentinel.
+				if (rawText.trim() === GREP_NO_MATCHES_SENTINEL)
+					return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no matches"), theme))
+				const matches = rawText.split("\n").filter((line) => line.trim().length > 0)
+				if (matches.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no matches"), theme))
+				let text = theme.fg("muted", `${matches.length} matches`)
+				if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)")
+				if (!expanded)
+					return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
+				text += `\n${buildPreviewText(
+					matches.map((line) => theme.fg("dim", line)),
+					false,
+					theme,
+					previewLimit(),
+				)}`
+				return makeText(ctx.lastComponent, withBranch(text, theme))
+			},
+		})
 
 	const findTool = createFindToolDefinition(cwd)
-	pi.registerTool({
-		name: "find",
-		label: "find",
-		description: findTool.description,
-		parameters: findTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			return findTool.execute(toolCallId, params, signal, onUpdate, ctx)
-		},
-		renderCall(args, theme, ctx) {
-			const summary = stableCallSummary(ctx, "_callSummary", () => {
-				let value = `"${summarizeText(args.pattern, 40)}"`
-				if (args.path) value += ` in ${args.path}`
-				return value
-			})
-			const timer = formatToolTimer(getToolElapsedMs(ctx))
-			return makeText(ctx.lastComponent, toolHeader("Find", summary, theme, toolStatusDot(ctx, theme), timer))
-		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
-			if (isPartial) {
-				setupBlinkTimer(ctx)
-				return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Finding..."), theme))
-			}
-			clearBlinkTimer(ctx)
-			const items = (result.content[0]?.type === "text" ? result.content[0].text : "")
-				.split("\n")
-				.filter((line) => line.trim().length > 0)
-			if (items.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no files found"), theme))
-			let text = theme.fg("muted", `${items.length} files`)
-			if (!expanded)
-				return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
-			// Expanded: grouped find results with icons
-			const maxShow = previewLimit()
-			const shown = items.slice(0, maxShow)
-			const findLines: string[] = []
-			for (let i = 0; i < shown.length; i++) {
-				const item = shown[i].trim()
-				const icon = fileIcon(item)
-				findLines.push(`  ${icon}${theme.fg("dim", item)}`)
-			}
-			const remaining = items.length - shown.length
-			if (remaining > 0) {
-				findLines.push(`  ${theme.fg("muted", `… ${remaining} more files`)}`)
-			}
-			text += `\n${findLines.join("\n")}`
-			return makeText(ctx.lastComponent, withBranch(text, theme))
-		},
-	})
+	if (shadowedToolEnabled("find"))
+		pi.registerTool({
+			name: "find",
+			label: "find",
+			description: findTool.description,
+			parameters: findTool.parameters,
+			async execute(toolCallId, params, signal, onUpdate, ctx) {
+				return findTool.execute(toolCallId, params, signal, onUpdate, ctx)
+			},
+			renderCall(args, theme, ctx) {
+				const summary = stableCallSummary(ctx, "_callSummary", () => {
+					let value = `"${summarizeText(args.pattern, 40)}"`
+					if (args.path) value += ` in ${args.path}`
+					return value
+				})
+				const timer = formatToolTimer(getToolElapsedMs(ctx))
+				return makeText(ctx.lastComponent, toolHeader("Find", summary, theme, toolStatusDot(ctx, theme), timer))
+			},
+			renderResult(result, { expanded, isPartial }, theme, ctx) {
+				if (isPartial) {
+					setupBlinkTimer(ctx)
+					return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Finding..."), theme))
+				}
+				clearBlinkTimer(ctx)
+				const items = (result.content[0]?.type === "text" ? result.content[0].text : "")
+					.split("\n")
+					.filter((line) => line.trim().length > 0)
+				if (items.length === 0)
+					return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no files found"), theme))
+				let text = theme.fg("muted", `${items.length} files`)
+				if (!expanded)
+					return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
+				// Expanded: grouped find results with icons
+				const maxShow = previewLimit()
+				const shown = items.slice(0, maxShow)
+				const findLines: string[] = []
+				for (let i = 0; i < shown.length; i++) {
+					const item = shown[i].trim()
+					const icon = fileIcon(item)
+					findLines.push(`  ${icon}${theme.fg("dim", item)}`)
+				}
+				const remaining = items.length - shown.length
+				if (remaining > 0) {
+					findLines.push(`  ${theme.fg("muted", `… ${remaining} more files`)}`)
+				}
+				text += `\n${findLines.join("\n")}`
+				return makeText(ctx.lastComponent, withBranch(text, theme))
+			},
+		})
 
 	const lsTool = createLsToolDefinition(cwd)
-	pi.registerTool({
-		name: "ls",
-		label: "ls",
-		description: lsTool.description,
-		parameters: lsTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			return lsTool.execute(toolCallId, params, signal, onUpdate, ctx)
-		},
-		renderCall(args, theme, ctx) {
-			const summary = stableCallSummary(ctx, "_callSummary", () => sp(args.path ?? "."))
-			const timer = formatToolTimer(getToolElapsedMs(ctx))
-			return makeText(ctx.lastComponent, toolHeader("List", summary, theme, toolStatusDot(ctx, theme), timer))
-		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
-			if (isPartial) {
-				setupBlinkTimer(ctx)
-				return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Listing..."), theme))
-			}
-			clearBlinkTimer(ctx)
-			const items = (result.content[0]?.type === "text" ? result.content[0].text : "")
-				.split("\n")
-				.filter((line) => line.trim().length > 0)
-			if (items.length === 0)
-				return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "empty directory"), theme))
-			let text = theme.fg("muted", `${items.length} entries`)
-			if (!expanded)
-				return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
-			// Expanded: tree-view with icons
-			const maxShow = previewLimit()
-			const shown = items.slice(0, maxShow)
-			const treeLines: string[] = []
-			for (let i = 0; i < shown.length; i++) {
-				const item = shown[i]
-				const isDir = item.endsWith("/")
-				const isLast = i === shown.length - 1 && items.length <= maxShow
-				const prefix = isLast ? `${FG_RULE}\u2514\u2500\u2500${D_RST} ` : `${FG_RULE}\u251c\u2500\u2500${D_RST} `
-				const icon = isDir ? dirIcon() : fileIcon(item)
-				const name = isDir ? theme.fg("accent", theme.bold(item)) : theme.fg("dim", item)
-				treeLines.push(`${prefix}${icon}${name}`)
-			}
-			const remaining = items.length - shown.length
-			if (remaining > 0) {
-				treeLines.push(`${FG_RULE}\u2514\u2500\u2500${D_RST} ${theme.fg("muted", `\u2026 ${remaining} more entries`)}`)
-			}
-			text += `\n${treeLines.join("\n")}`
-			return makeText(ctx.lastComponent, withBranch(text, theme))
-		},
-	})
+	if (shadowedToolEnabled("ls"))
+		pi.registerTool({
+			name: "ls",
+			label: "ls",
+			description: lsTool.description,
+			parameters: lsTool.parameters,
+			async execute(toolCallId, params, signal, onUpdate, ctx) {
+				return lsTool.execute(toolCallId, params, signal, onUpdate, ctx)
+			},
+			renderCall(args, theme, ctx) {
+				const summary = stableCallSummary(ctx, "_callSummary", () => sp(args.path ?? "."))
+				const timer = formatToolTimer(getToolElapsedMs(ctx))
+				return makeText(ctx.lastComponent, toolHeader("List", summary, theme, toolStatusDot(ctx, theme), timer))
+			},
+			renderResult(result, { expanded, isPartial }, theme, ctx) {
+				if (isPartial) {
+					setupBlinkTimer(ctx)
+					return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Listing..."), theme))
+				}
+				clearBlinkTimer(ctx)
+				const items = (result.content[0]?.type === "text" ? result.content[0].text : "")
+					.split("\n")
+					.filter((line) => line.trim().length > 0)
+				if (items.length === 0)
+					return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "empty directory"), theme))
+				let text = theme.fg("muted", `${items.length} entries`)
+				if (!expanded)
+					return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
+				// Expanded: tree-view with icons
+				const maxShow = previewLimit()
+				const shown = items.slice(0, maxShow)
+				const treeLines: string[] = []
+				for (let i = 0; i < shown.length; i++) {
+					const item = shown[i]
+					const isDir = item.endsWith("/")
+					const isLast = i === shown.length - 1 && items.length <= maxShow
+					const prefix = isLast ? `${FG_RULE}\u2514\u2500\u2500${D_RST} ` : `${FG_RULE}\u251c\u2500\u2500${D_RST} `
+					const icon = isDir ? dirIcon() : fileIcon(item)
+					const name = isDir ? theme.fg("accent", theme.bold(item)) : theme.fg("dim", item)
+					treeLines.push(`${prefix}${icon}${name}`)
+				}
+				const remaining = items.length - shown.length
+				if (remaining > 0) {
+					treeLines.push(
+						`${FG_RULE}\u2514\u2500\u2500${D_RST} ${theme.fg("muted", `\u2026 ${remaining} more entries`)}`,
+					)
+				}
+				text += `\n${treeLines.join("\n")}`
+				return makeText(ctx.lastComponent, withBranch(text, theme))
+			},
+		})
 
 	const writeTool = createWriteToolDefinition(cwd)
-	pi.registerTool({
-		name: "write",
-		label: "write",
-		description: writeTool.description,
-		parameters: writeTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
-			const sessionCwd = ctx.cwd
-			const fullPath = fp ? resolve(sessionCwd, fp) : ""
-			const existedBefore = !!fullPath && fileExistsForTool(sessionCwd, fp)
-			WRITE_EXISTED_BEFORE.set(toolCallId, existedBefore)
-			let old: string | null = null
-			try {
-				if (fullPath && existedBefore) old = readFileSync(fullPath, "utf-8")
-			} catch {
-				old = null
-			}
-			const result = await createTrackedWriteTool(ctx, toolCallId).execute(toolCallId, params, signal, onUpdate)
-			const content = params.content ?? ""
-			if (old !== null && old !== content) {
-				const diff = parseDiff(old, content)
-				result.details = {
-					_type: "diff",
-					summary: summarizeDiff(diff.added, diff.removed),
-					diff,
-					language: lang(fp),
+	if (shadowedToolEnabled("write"))
+		pi.registerTool({
+			name: "write",
+			label: "write",
+			description: writeTool.description,
+			parameters: writeTool.parameters,
+			async execute(toolCallId, params, signal, onUpdate, ctx) {
+				const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
+				const sessionCwd = ctx.cwd
+				const fullPath = fp ? resolve(sessionCwd, fp) : ""
+				const existedBefore = !!fullPath && fileExistsForTool(sessionCwd, fp)
+				WRITE_EXISTED_BEFORE.set(toolCallId, existedBefore)
+				let old: string | null = null
+				try {
+					if (fullPath && existedBefore) old = readFileSync(fullPath, "utf-8")
+				} catch {
+					old = null
 				}
-			} else if (old === null) {
-				result.details = { _type: "new", lines: lineCount(content), filePath: fp }
-			} else if (old === content) {
-				result.details = { _type: "noChange" }
-			}
-			return result
-		},
-		renderCall(args, theme, ctx) {
-			const fp = args?.path ?? (args as { file_path?: string })?.file_path ?? ""
-			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "content"))
-			const wasNew = getWriteWasNewFile(ctx, cwd, fp, revealSummary)
-			const label = wasNew === true ? "Create" : "Write"
-			const summary = stableCallSummary(
-				ctx,
-				"_callSummary",
-				() => {
-					const base = sp(fp)
-					return shouldRevealCallArgs(ctx)
-						? `${base} ${theme.fg("muted", `(${lineCount(args.content ?? "")} lines)`)}`
-						: base
-				},
-				revealSummary,
-			)
-			const timer = formatToolTimer(getToolElapsedMs(ctx))
-			const hdr = toolHeader(label, summary, theme, toolStatusDot(ctx, theme), timer)
-			return makeText(ctx.lastComponent, hdr)
-		},
-		renderResult(result, { isPartial }, theme, ctx) {
-			if (isPartial) {
-				setupBlinkTimer(ctx)
-				return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Writing..."), theme))
-			}
-			clearBlinkTimer(ctx)
-			if (typeof ctx?.toolCallId === "string") WRITE_EXISTED_BEFORE.delete(ctx.toolCallId)
-			if (ctx.isError) {
-				const e =
-					result.content
-						?.filter((c) => c.type === "text")
-						.map((c) => c.text || "")
-						.join("\n") ?? "Error"
-				return makeText(ctx.lastComponent, withBranch(theme.fg("error", e), theme))
-			}
-			const d = (result as any).details
-			if (d?._type === "diff") {
-				const previewLines = ctx.expanded ? MAX_RENDER_LINES : diffCollapsedLimit()
-				const hunks = d.diff?.lines?.filter((l: any) => l.type === "sep").length + (d.diff?.lines?.length ? 1 : 0)
-				const diffWidth = branchDiffWidth()
-				const mode = shouldUseSplit(d.diff, diffWidth, previewLines) ? "split" : "unified"
-				const richSummary = diffSummaryWithMeta(d.diff.added, d.diff.removed, hunks, mode)
-				const key = `wd:${diffWidth}:${d.summary}:${d.diff?.lines?.length ?? 0}:${d.language ?? ""}:${ctx.expanded ? 1 : 0}`
-				if (ctx.state._wdk !== key) {
-					ctx.state._wdk = key
-					ctx.state._wdt = withFinalBranchBlock(`${richSummary}\n${theme.fg("muted", "rendering diff…")}`)
-					const dc = resolveDiffColors(theme)
-					renderSplit(d.diff, d.language, previewLines, dc, diffWidth)
-						.then((rendered) => {
-							if (ctx.state._wdk !== key) return
-							ctx.state._wdt = withFinalBranchBlock(`${richSummary}\n${rendered}`)
-							ctx.invalidate()
-						})
-						.catch(() => {
-							if (ctx.state._wdk !== key) return
-							ctx.state._wdt = withBranch(richSummary, theme)
-							ctx.invalidate()
-						})
-				}
-				return makeText(ctx.lastComponent, ctx.state._wdt ?? withBranch(richSummary, theme))
-			}
-			if (d?._type === "noChange")
-				return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "✓ no changes"), theme))
-			if (d?._type === "new") {
-				const content = typeof ctx.args?.content === "string" ? ctx.args.content : ""
-				const lineTotal = typeof d.lines === "number" ? d.lines : lineCount(content)
-				const contentHash = hashText(content)
-				const syntheticDiff = getCachedParsedDiff(ctx, `nf-diff:${d.filePath}:${contentHash}`, "", content)
-				const richSummary = diffSummaryWithMeta(syntheticDiff.added, 0, 1, "new file")
-				const previewLines = ctx.expanded ? MAX_RENDER_LINES : diffCollapsedLimit()
-				const diffWidth = branchDiffWidth()
-				const pk = `nf:${d.filePath}:${contentHash}:${diffWidth}:${ctx.expanded ? 1 : 0}`
-				if (ctx.state._nfk !== pk) {
-					ctx.state._nfk = pk
-					ctx.state._nft = withFinalBranchBlock(`${richSummary}\n${theme.fg("muted", "rendering diff…")}`)
-					const dc = resolveDiffColors(theme)
-					renderUnified(syntheticDiff, lang(d.filePath), previewLines, dc, diffWidth)
-						.then((rendered) => {
-							if (ctx.state._nfk !== pk) return
-							ctx.state._nft = withFinalBranchBlock(`${richSummary}\n${rendered}`)
-							ctx.invalidate()
-						})
-						.catch(() => {
-							if (ctx.state._nfk !== pk) return
-							ctx.state._nft = withBranch(`${richSummary} ${theme.fg("muted", `(${lineTotal} lines)`)}`, theme)
-							ctx.invalidate()
-						})
-				}
-				return makeText(
-					ctx.lastComponent,
-					ctx.state._nft ?? withBranch(`${richSummary} ${theme.fg("muted", `(${lineTotal} lines)`)}`, theme),
-				)
-			}
-			return makeText(ctx.lastComponent, withBranch(theme.fg("success", "Written"), theme))
-		},
-	})
-
-	const editTool = createEditToolDefinition(cwd)
-	pi.registerTool({
-		name: "edit",
-		label: "edit",
-		description: editTool.description,
-		parameters: editTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
-			const trackedTool = createTrackedEditTool(ctx, toolCallId)
-			const operations = getEditOperations(params)
-			const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, ctx.cwd) : null
-			const result = await trackedTool.execute(toolCallId, params, signal, onUpdate)
-			if (operations.length === 0) return result
-			const { diffs, summary, totalLines, totalHunks } = summarizeEditOperations(operations)
-			const baseDetails = (result as AgentEditResult | AgentMultiEditToolResult).details ?? {}
-			if (operations.length === 1) {
-				const localized = localizedDiffs?.[0]
-				const editLine =
-					localized?.line ?? (typeof baseDetails.firstChangedLine === "number" ? baseDetails.firstChangedLine : 0)
-				const diff = localized?.diff ?? diffs[0]
-				;(result as AgentEditResult).details = {
-					...baseDetails,
-					_type: "editInfo",
-					summary,
-					editLine,
-					hunks: countDiffHunks(diff),
-					added: diff?.added ?? 0,
-					removed: diff?.removed ?? 0,
+				const result = await createTrackedWriteTool(ctx, toolCallId).execute(toolCallId, params, signal, onUpdate)
+				const content = params.content ?? ""
+				if (old !== null && old !== content) {
+					const diff = parseDiff(old, content)
+					result.details = {
+						_type: "diff",
+						summary: summarizeDiff(diff.added, diff.removed),
+						diff,
+						language: lang(fp),
+					}
+				} else if (old === null) {
+					result.details = { _type: "new", lines: lineCount(content), filePath: fp }
+				} else if (old === content) {
+					result.details = { _type: "noChange" }
 				}
 				return result
-			}
-			;(result as AgentMultiEditToolResult).details = {
-				...baseDetails,
-				_type: "multiEditInfo",
-				summary,
-				editCount: operations.length,
-				diffLineCount: totalLines,
-				hunks: totalHunks,
-				totalAdded: diffs.reduce((sum, diff) => sum + diff.added, 0),
-				totalRemoved: diffs.reduce((sum, diff) => sum + diff.removed, 0),
-			}
-			return result
-		},
-		renderCall(args, theme, ctx) {
-			const fp = args?.path ?? (args as { file_path?: string })?.file_path ?? ""
-			const operations = getEditOperations(args)
-			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "edits"))
-			const summary = stableCallSummary(
-				ctx,
-				"_callSummary",
-				() =>
-					shouldRevealCallArgs(ctx) && operations.length > 1
-						? `${sp(fp)} ${theme.fg("muted", `(${operations.length} edits)`)}`
-						: sp(fp),
-				revealSummary,
-			)
-			const timer = formatToolTimer(getToolElapsedMs(ctx))
-			const hdr = toolHeader("Edit", summary, theme, ` ${toolStatusDot(ctx, theme)}`, timer)
-			if (!(ctx.argsComplete && operations.length > 0)) return makeText(ctx.lastComponent, hdr)
-			const diffWidth = branchDiffWidth()
-			const key = `edit:${fp}:${hashText(operations.map((edit) => `${edit.oldText}\u0000${edit.newText}`).join("\u0001"))}:${diffWidth}:${ctx.expanded ? 1 : 0}`
-			const { diffs: fallbackDiffs, summary: editSummary } = getCachedEditOperationSummary(ctx, key, operations)
-			if (ctx.state._pk !== key) {
-				ctx.state._pk = key
-				ctx.state._ptBody = theme.fg("muted", "(rendering…)")
-				ctx.state._ptDisplay = indentBranchBlock(withBranch(ctx.state._ptBody, theme, false, true))
-				const lg = lang(fp)
-				void computeLocalizedEditDiffs(fp, operations, cwd)
-					.then((localizedDiffs) => {
-						if (ctx.state._pk !== key) return
-						const diffs = localizedDiffs?.map((entry) => entry.diff) ?? fallbackDiffs
-						const lines =
-							localizedDiffs?.map((entry) => entry.line) ?? diffs.map((diff) => getFirstChangedNewLine(diff))
-						renderEditPreviewBody(ctx, key, theme, lg, operations, diffs, lines, editSummary)
-					})
-					.catch(() => {
-						if (ctx.state._pk !== key) return
-						renderEditPreviewBody(
-							ctx,
-							key,
-							theme,
-							lg,
-							operations,
-							fallbackDiffs,
-							fallbackDiffs.map((diff) => getFirstChangedNewLine(diff)),
-							editSummary,
-						)
-					})
-			}
-			const body = ctx.state._ptDisplay as string | undefined
-			return makeText(ctx.lastComponent, body ? `${hdr}\n${body}` : hdr)
-		},
-		renderResult(result, { isPartial }, theme, ctx) {
-			if (isPartial) {
-				setupBlinkTimer(ctx)
-				return makeText(ctx.lastComponent, indentBranchBlock(withBranch(theme.fg("dim", "Editing..."), theme)))
-			}
-			clearBlinkTimer(ctx)
-			if (ctx.isError) {
-				const e =
-					result.content
-						?.filter((c) => c.type === "text")
-						.map((c) => c.text || "")
-						.join("\n") ?? "Error"
-				return makeText(ctx.lastComponent, indentBranchBlock(withBranch(theme.fg("error", e), theme)))
-			}
-			if ((result as AgentEditResult).details?._type === "editInfo") {
-				const { editLine, hunks, added, removed } = (result as AgentEditResult).details
-				const loc = formatLineMeta(editLine ?? 0, theme)
-				const summary = diffSummaryWithMeta(added ?? 0, removed ?? 0, hunks ?? 0, "")
-				return makeText(ctx.lastComponent, indentBranchBlock(withBranch(`${summary}${loc}`, theme)))
-			}
-			if ((result as AgentMultiEditToolResult).details?._type === "multiEditInfo") {
-				const { editCount, diffLineCount, hunks, totalAdded, totalRemoved } = (result as AgentMultiEditToolResult)
-					.details
-				const summary = diffSummaryWithMeta(totalAdded ?? 0, totalRemoved ?? 0, hunks ?? 0, "")
-				return makeText(
-					ctx.lastComponent,
-					indentBranchBlock(
-						withBranch(
-							`${editCount} edits ${summary}${typeof diffLineCount === "number" ? ` ${theme.fg("muted", `(${diffLineCount} diff lines)`)}` : ""}`,
-							theme,
-						),
-					),
+			},
+			renderCall(args, theme, ctx) {
+				const fp = args?.path ?? (args as { file_path?: string })?.file_path ?? ""
+				const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "content"))
+				const wasNew = getWriteWasNewFile(ctx, cwd, fp, revealSummary)
+				const label = wasNew === true ? "Create" : "Write"
+				const summary = stableCallSummary(
+					ctx,
+					"_callSummary",
+					() => {
+						const base = sp(fp)
+						return shouldRevealCallArgs(ctx)
+							? `${base} ${theme.fg("muted", `(${lineCount(args.content ?? "")} lines)`)}`
+							: base
+					},
+					revealSummary,
 				)
-			}
-			return makeText(ctx.lastComponent, indentBranchBlock(withBranch(theme.fg("success", "Applied"), theme)))
-		},
-	})
+				const timer = formatToolTimer(getToolElapsedMs(ctx))
+				const hdr = toolHeader(label, summary, theme, toolStatusDot(ctx, theme), timer)
+				return makeText(ctx.lastComponent, hdr)
+			},
+			renderResult(result, { isPartial }, theme, ctx) {
+				if (isPartial) {
+					setupBlinkTimer(ctx)
+					return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Writing..."), theme))
+				}
+				clearBlinkTimer(ctx)
+				if (typeof ctx?.toolCallId === "string") WRITE_EXISTED_BEFORE.delete(ctx.toolCallId)
+				if (ctx.isError) {
+					const e =
+						result.content
+							?.filter((c) => c.type === "text")
+							.map((c) => c.text || "")
+							.join("\n") ?? "Error"
+					return makeText(ctx.lastComponent, withBranch(theme.fg("error", e), theme))
+				}
+				const d = (result as any).details
+				if (d?._type === "diff") {
+					const previewLines = ctx.expanded ? MAX_RENDER_LINES : diffCollapsedLimit()
+					const hunks = d.diff?.lines?.filter((l: any) => l.type === "sep").length + (d.diff?.lines?.length ? 1 : 0)
+					const diffWidth = branchDiffWidth()
+					const mode = shouldUseSplit(d.diff, diffWidth, previewLines) ? "split" : "unified"
+					const richSummary = diffSummaryWithMeta(d.diff.added, d.diff.removed, hunks, mode)
+					const key = `wd:${diffWidth}:${d.summary}:${d.diff?.lines?.length ?? 0}:${d.language ?? ""}:${ctx.expanded ? 1 : 0}`
+					if (ctx.state._wdk !== key) {
+						ctx.state._wdk = key
+						ctx.state._wdt = withFinalBranchBlock(`${richSummary}\n${theme.fg("muted", "rendering diff…")}`)
+						const dc = resolveDiffColors(theme)
+						renderSplit(d.diff, d.language, previewLines, dc, diffWidth)
+							.then((rendered) => {
+								if (ctx.state._wdk !== key) return
+								ctx.state._wdt = withFinalBranchBlock(`${richSummary}\n${rendered}`)
+								ctx.invalidate()
+							})
+							.catch(() => {
+								if (ctx.state._wdk !== key) return
+								ctx.state._wdt = withBranch(richSummary, theme)
+								ctx.invalidate()
+							})
+					}
+					return makeText(ctx.lastComponent, ctx.state._wdt ?? withBranch(richSummary, theme))
+				}
+				if (d?._type === "noChange")
+					return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "✓ no changes"), theme))
+				if (d?._type === "new") {
+					const content = typeof ctx.args?.content === "string" ? ctx.args.content : ""
+					const lineTotal = typeof d.lines === "number" ? d.lines : lineCount(content)
+					const contentHash = hashText(content)
+					const syntheticDiff = getCachedParsedDiff(ctx, `nf-diff:${d.filePath}:${contentHash}`, "", content)
+					const richSummary = diffSummaryWithMeta(syntheticDiff.added, 0, 1, "new file")
+					const previewLines = ctx.expanded ? MAX_RENDER_LINES : diffCollapsedLimit()
+					const diffWidth = branchDiffWidth()
+					const pk = `nf:${d.filePath}:${contentHash}:${diffWidth}:${ctx.expanded ? 1 : 0}`
+					if (ctx.state._nfk !== pk) {
+						ctx.state._nfk = pk
+						ctx.state._nft = withFinalBranchBlock(`${richSummary}\n${theme.fg("muted", "rendering diff…")}`)
+						const dc = resolveDiffColors(theme)
+						renderUnified(syntheticDiff, lang(d.filePath), previewLines, dc, diffWidth)
+							.then((rendered) => {
+								if (ctx.state._nfk !== pk) return
+								ctx.state._nft = withFinalBranchBlock(`${richSummary}\n${rendered}`)
+								ctx.invalidate()
+							})
+							.catch(() => {
+								if (ctx.state._nfk !== pk) return
+								ctx.state._nft = withBranch(`${richSummary} ${theme.fg("muted", `(${lineTotal} lines)`)}`, theme)
+								ctx.invalidate()
+							})
+					}
+					return makeText(
+						ctx.lastComponent,
+						ctx.state._nft ?? withBranch(`${richSummary} ${theme.fg("muted", `(${lineTotal} lines)`)}`, theme),
+					)
+				}
+				return makeText(ctx.lastComponent, withBranch(theme.fg("success", "Written"), theme))
+			},
+		})
+
+	const editTool = createEditToolDefinition(cwd)
+	if (shadowedToolEnabled("edit"))
+		pi.registerTool({
+			name: "edit",
+			label: "edit",
+			description: editTool.description,
+			parameters: editTool.parameters,
+			async execute(toolCallId, params, signal, onUpdate, ctx) {
+				const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
+				const trackedTool = createTrackedEditTool(ctx, toolCallId)
+				const operations = getEditOperations(params)
+				const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, ctx.cwd) : null
+				const result = await trackedTool.execute(toolCallId, params, signal, onUpdate)
+				if (operations.length === 0) return result
+				const { diffs, summary, totalLines, totalHunks } = summarizeEditOperations(operations)
+				const baseDetails = (result as AgentEditResult | AgentMultiEditToolResult).details ?? {}
+				if (operations.length === 1) {
+					const localized = localizedDiffs?.[0]
+					const editLine =
+						localized?.line ?? (typeof baseDetails.firstChangedLine === "number" ? baseDetails.firstChangedLine : 0)
+					const diff = localized?.diff ?? diffs[0]
+					;(result as AgentEditResult).details = {
+						...baseDetails,
+						_type: "editInfo",
+						summary,
+						editLine,
+						hunks: countDiffHunks(diff),
+						added: diff?.added ?? 0,
+						removed: diff?.removed ?? 0,
+					}
+					return result
+				}
+				;(result as AgentMultiEditToolResult).details = {
+					...baseDetails,
+					_type: "multiEditInfo",
+					summary,
+					editCount: operations.length,
+					diffLineCount: totalLines,
+					hunks: totalHunks,
+					totalAdded: diffs.reduce((sum, diff) => sum + diff.added, 0),
+					totalRemoved: diffs.reduce((sum, diff) => sum + diff.removed, 0),
+				}
+				return result
+			},
+			renderCall(args, theme, ctx) {
+				const fp = args?.path ?? (args as { file_path?: string })?.file_path ?? ""
+				const operations = getEditOperations(args)
+				const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "edits"))
+				const summary = stableCallSummary(
+					ctx,
+					"_callSummary",
+					() =>
+						shouldRevealCallArgs(ctx) && operations.length > 1
+							? `${sp(fp)} ${theme.fg("muted", `(${operations.length} edits)`)}`
+							: sp(fp),
+					revealSummary,
+				)
+				const timer = formatToolTimer(getToolElapsedMs(ctx))
+				const hdr = toolHeader("Edit", summary, theme, ` ${toolStatusDot(ctx, theme)}`, timer)
+				if (!(ctx.argsComplete && operations.length > 0)) return makeText(ctx.lastComponent, hdr)
+				const diffWidth = branchDiffWidth()
+				const key = `edit:${fp}:${hashText(operations.map((edit) => `${edit.oldText}\u0000${edit.newText}`).join("\u0001"))}:${diffWidth}:${ctx.expanded ? 1 : 0}`
+				const { diffs: fallbackDiffs, summary: editSummary } = getCachedEditOperationSummary(ctx, key, operations)
+				if (ctx.state._pk !== key) {
+					ctx.state._pk = key
+					ctx.state._ptBody = theme.fg("muted", "(rendering…)")
+					ctx.state._ptDisplay = indentBranchBlock(withBranch(ctx.state._ptBody, theme, false, true))
+					const lg = lang(fp)
+					void computeLocalizedEditDiffs(fp, operations, cwd)
+						.then((localizedDiffs) => {
+							if (ctx.state._pk !== key) return
+							const diffs = localizedDiffs?.map((entry) => entry.diff) ?? fallbackDiffs
+							const lines =
+								localizedDiffs?.map((entry) => entry.line) ?? diffs.map((diff) => getFirstChangedNewLine(diff))
+							renderEditPreviewBody(ctx, key, theme, lg, operations, diffs, lines, editSummary)
+						})
+						.catch(() => {
+							if (ctx.state._pk !== key) return
+							renderEditPreviewBody(
+								ctx,
+								key,
+								theme,
+								lg,
+								operations,
+								fallbackDiffs,
+								fallbackDiffs.map((diff) => getFirstChangedNewLine(diff)),
+								editSummary,
+							)
+						})
+				}
+				const body = ctx.state._ptDisplay as string | undefined
+				return makeText(ctx.lastComponent, body ? `${hdr}\n${body}` : hdr)
+			},
+			renderResult(result, { isPartial }, theme, ctx) {
+				if (isPartial) {
+					setupBlinkTimer(ctx)
+					return makeText(ctx.lastComponent, indentBranchBlock(withBranch(theme.fg("dim", "Editing..."), theme)))
+				}
+				clearBlinkTimer(ctx)
+				if (ctx.isError) {
+					const e =
+						result.content
+							?.filter((c) => c.type === "text")
+							.map((c) => c.text || "")
+							.join("\n") ?? "Error"
+					return makeText(ctx.lastComponent, indentBranchBlock(withBranch(theme.fg("error", e), theme)))
+				}
+				if ((result as AgentEditResult).details?._type === "editInfo") {
+					const { editLine, hunks, added, removed } = (result as AgentEditResult).details
+					const loc = formatLineMeta(editLine ?? 0, theme)
+					const summary = diffSummaryWithMeta(added ?? 0, removed ?? 0, hunks ?? 0, "")
+					return makeText(ctx.lastComponent, indentBranchBlock(withBranch(`${summary}${loc}`, theme)))
+				}
+				if ((result as AgentMultiEditToolResult).details?._type === "multiEditInfo") {
+					const { editCount, diffLineCount, hunks, totalAdded, totalRemoved } = (result as AgentMultiEditToolResult)
+						.details
+					const summary = diffSummaryWithMeta(totalAdded ?? 0, totalRemoved ?? 0, hunks ?? 0, "")
+					return makeText(
+						ctx.lastComponent,
+						indentBranchBlock(
+							withBranch(
+								`${editCount} edits ${summary}${typeof diffLineCount === "number" ? ` ${theme.fg("muted", `(${diffLineCount} diff lines)`)}` : ""}`,
+								theme,
+							),
+						),
+					)
+				}
+				return makeText(ctx.lastComponent, indentBranchBlock(withBranch(theme.fg("success", "Applied"), theme)))
+			},
+		})
 
 	const wrappedOpenAiTools = new Set<string>()
 	const registerOpenAiToolOverrides = (): void => {

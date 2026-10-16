@@ -7,6 +7,7 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSession, type ExtensionAPI, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
+import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
 	getParsedCliArgs,
 	hasFermentOneshotArg,
@@ -21,7 +22,6 @@ import {
 	stripMultiModelArgs,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
-import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
 import { installModelTableRenderer } from "./model-selector-table.js"

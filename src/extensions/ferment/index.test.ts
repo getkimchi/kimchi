@@ -50,6 +50,7 @@ vi.mock("../shared-status-line.js", () => ({
 // Default the /settings Auto-compact toggle to enabled (independent of dev machine's settings.json).
 vi.mock("../../settings-watcher.js", () => ({
 	getCompactionEnabled: () => true,
+	isDefaultToolEnabled: () => true,
 }))
 
 // Remote run disabled by default in tests; plannotator-routing tests flip it

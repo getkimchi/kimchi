@@ -81,6 +81,53 @@ export function getActiveThemeName(): string | undefined {
 	}
 }
 
+// Tool-gating reads must reflect the *session's* cwd and project-trust
+// decision, not the process's. The ACP server is one long-lived process
+// hosting sessions with different cwds, and callers here (tool-rendering's
+// registration-time gates, ferment/permissions profile applies) have no
+// ExtensionContext in scope, so the session sync path is the only place the
+// session cwd can reach this module. settingsTrustSyncExtension sets this at
+// session_start, before any profile apply runs.
+let toolGateSession: { cwd: string; trusted: boolean } = { cwd: process.cwd(), trusted: false }
+
+/** Manager cache for tool gating, keyed by cwd+trust; dropped on reset. */
+const toolGateManagers = new Map<string, SettingsManager | undefined>()
+
+/**
+ * Record the session's cwd and project-trust decision for tool gating
+ * (isDefaultToolEnabled). Called from settingsTrustSyncExtension at
+ * session_start — writes are idempotent, and applies are synchronous, so a
+ * later session's sync cannot interleave mid-apply on the single event loop.
+ */
+export function setToolGateSession(cwd: string, trusted: boolean): void {
+	toolGateSession = { cwd, trusted }
+}
+
+/**
+ * Upstream gates builtin tool registration on the resolved `defaultTools`
+ * setting, but extension-registered tools bypass that filter and are
+ * force-activated (includeAllExtensionTools), so any upstream-named tool a
+ * Kimchi extension re-registers (tool-rendering's decorated set,
+ * work-attribution's tracked fallbacks) would re-appear even when the user
+ * excluded it with `-name`. Mirror upstream's filter locally: with no
+ * `defaultTools` setting, or any lookup failure, the tool stays enabled.
+ */
+export function isDefaultToolEnabled(name: string): boolean {
+	const { cwd, trusted } = toolGateSession
+	const key = JSON.stringify([cwd, trusted])
+	try {
+		let manager = toolGateManagers.get(key)
+		if (!manager) {
+			manager = SettingsManager.create(cwd, getAgentDir(), { projectTrusted: trusted })
+			toolGateManagers.set(key, manager)
+		}
+		const resolved = manager.getDefaultTools()
+		return resolved === undefined || resolved.includes(name)
+	} catch {
+		return true
+	}
+}
+
 /**
  * Whether the /settings Auto-compact toggle is enabled, read via pi's own
  * accessor (missing key defaults to enabled). Project-scope settings apply per
@@ -110,6 +157,8 @@ export function __resetSettingsWatcherForTest(): void {
 	fileSignatures.clear()
 	globalSettingsPath = undefined
 	projectSettingsPath = undefined
+	toolGateSession = { cwd: process.cwd(), trusted: false }
+	toolGateManagers.clear()
 }
 
 type ThemeChangeListener = (newName: string | undefined, oldName: string | undefined) => void

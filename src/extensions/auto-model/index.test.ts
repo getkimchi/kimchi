@@ -32,6 +32,7 @@ const settingsStubs = vi.hoisted(() => ({
 }))
 vi.mock("../../settings-watcher.js", () => ({
 	getSettingsManager: () => settingsStubs,
+	isDefaultToolEnabled: () => true,
 }))
 
 // The gated-org overwrite writes the developer's real settings.json in

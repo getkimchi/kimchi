@@ -1,6 +1,5 @@
 // Dispatch the compiled recovery process before normal startup touches stdio,
 // validates auxiliary files, or checks for updates.
-import { MCP_KEYRING_HELPER_COMMAND } from "./extensions/mcp/keyring-recovery.js"
 
 // Embed codemode's QuickJS wasm in the compiled executable, the same way pi's own
 // bun entry does in dist/bun/runtime-setup.js. Without this, getQuickJSWasmPath()
@@ -11,6 +10,8 @@ import { MCP_KEYRING_HELPER_COMMAND } from "./extensions/mcp/keyring-recovery.js
 // This file is only compiled into the binary; the `with { type: "file" }` loader
 // attribute is a Bun build feature, not valid for Node-run sources.
 import quickjsWasmPath from "quickjs-wasi/quickjs.wasm" with { type: "file" }
+import { MCP_KEYRING_HELPER_COMMAND } from "./extensions/mcp/keyring-recovery.js"
+
 process.env.KIMCHI_QUICKJS_WASM_PATH = quickjsWasmPath
 
 if (process.argv.length === 3 && process.argv[2] === MCP_KEYRING_HELPER_COMMAND) {
