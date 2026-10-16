@@ -51,7 +51,7 @@ The first interactive session reported by default shows a one-time notice: `PR c
 
 ## Plans
 
-Each saved plan starts with `<!-- kimchi-work-id: <uuid> -->`, and each version is kept under the agent directory at `work/<uuid>/plans/<slug>-<sha256>.md`, outside disposable worktrees. A new plan takes the ID of the session that writes it, which the gateway already sees as `X-Session-Id`. Revisions keep it, and a Ferment started from the plan uses it for its own plan. When a later session reads or pastes the plan, or names its retained copy, the gateway sees the same ID and links the planning session to the session that implements it, even when the planning session ended at the plan.
+Each saved plan starts with `<!-- kimchi-work-id: <uuid> -->`, and each version is kept under the agent directory at `work/<uuid>/plans/<slug>-<sha256>.md`, outside disposable worktrees. A new plan takes the ID of the request that writes it, which the gateway already sees in that request's `kimchi-request` tag. Revisions keep it, and a Ferment started from the plan uses it for its own plan. When a later session reads or pastes the plan, or names its retained copy, the gateway sees the same ID and links the planning session to the session that implements it, even when the planning session ended at the plan.
 
 When the retained copy cannot be written, plan review continues and Kimchi warns: `plan saved without its retained copy, so deleting this worktree also deletes the plan`.
 

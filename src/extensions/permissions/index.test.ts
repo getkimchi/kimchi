@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type {
+	BeforeProviderHeadersEvent,
 	ExtensionAPI,
 	ExtensionContext,
 	ExtensionUIContext,
@@ -39,6 +40,7 @@ import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { CUSTOM_BRANCH_ITEM, CUSTOM_BRANCH_PROMPT } from "../remote-run/git-workflow.js"
 import { runCloudAgent } from "../remote-run/runner.js"
+import requestIdentityExtension from "../request-identity/index.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
@@ -985,20 +987,27 @@ describe("plan mode assumption detection", () => {
 			}
 		})
 
-		it("gives a new plan the ID of the session writing it", async () => {
-			const sessionId = "01a1444a-86e4-7a11-8b22-333344445555"
+		it("gives a new plan the ID of the request writing it", async () => {
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
-			await harness.fire("session_start", {}, createMockContext([], sessionId))
+			const identity = createExtensionApi()
+			requestIdentityExtension(identity.api)
+			const ctx = createMockContext(["Rework the plan"])
 			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-"))
 			try {
-				const ctx = createMockContext(["Rework the plan"], sessionId)
 				ctx.cwd = tmpDir
+				await harness.fire("session_start", {}, ctx)
+				await identity.emit("session_start", {}, ctx)
+				const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+				await identity.emit("before_provider_headers", event, ctx)
+				const requestId = String(event.headers["X-Request-Id"])
 				await submitPlan(harness, PLAN_V1, ctx)
 				const saved = readFileSync(join(tmpDir, ".kimchi", "plans", "plan-cache-layer.md"), "utf8")
-				// The gateway sees the planning session's ID, so it can link that session to the one implementing the plan.
-				expect(readPlanWorkId(saved)).toBe(sessionId)
-				expect(readdirSync(join(agentDir, "work", sessionId, "plans"))).toHaveLength(1)
+				// The gateway sees this ID in the request's kimchi-request tag, so it can link the planning session to the
+				// session implementing the plan.
+				expect(readPlanWorkId(saved)).toBe(requestId)
+				expect(readdirSync(join(agentDir, "work", requestId, "plans"))).toHaveLength(1)
 			} finally {
+				await identity.emit("session_shutdown", {}, ctx)
 				rmSync(tmpDir, { recursive: true, force: true })
 			}
 		})

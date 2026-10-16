@@ -71,6 +71,7 @@ import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blo
 import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
 import { buildRemotePlanPromptWithIntent } from "../remote-run/prompt-builder.js"
 import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
+import { getActiveRequestId } from "../request-identity/index.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
@@ -821,7 +822,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// Save plan to disk
 				activePlan ??= {
 					slug: slugifyPlanName(derivePlanTitle(planText)),
-					workId: newPlanWorkId(ctx.sessionManager.getSessionId()),
+					workId: newPlanWorkId(getActiveRequestId(ctx)),
 				}
 				const plan = activePlan
 				const saved = saveToolPlan(ctx, "permissions", { cwd: ctx.cwd, name: plan.slug, planText, workId: plan.workId })

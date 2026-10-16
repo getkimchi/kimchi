@@ -36,6 +36,7 @@ import { withBlocked } from "../../herdr-events.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
 import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
 import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
+import { getActiveRequestId } from "../../request-identity/index.js"
 import {
 	askUserForm,
 	createJudgeDecisionRecorder,
@@ -1178,7 +1179,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			// same file. Failures are non-fatal but warned so the review flow
 			// can continue without a path.
 			// Every proposal of a ferment names the same work: the plan it was created from, or its first proposal.
-			const workId = getFermentWorkId(fermentId) ?? newPlanWorkId(ctx.sessionManager.getSessionId())
+			const workId = getFermentWorkId(fermentId) ?? newPlanWorkId(getActiveRequestId(ctx))
 			const saved = saveToolPlan(ctx, "ferment", {
 				cwd,
 				name: fermentPlanFileName(ferment.name, fermentId),

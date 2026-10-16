@@ -2,11 +2,13 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { BeforeProviderHeadersEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import { readPlanWorkId, UNRETAINED_PLAN_NOTICE } from "../../../shared/planning/plan-markdown.js"
 import { createContext } from "../../__mocks__/context.js"
+import { createExtensionApi } from "../../__mocks__/extension-api.js"
+import requestIdentityExtension from "../../request-identity/index.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { loadRuntimeState } from "../runtime-state-store.js"
 import { captureJudgeContext, setRuntimeStatePersistRoot } from "../state.js"
@@ -567,8 +569,13 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		const { h, execute } = createProposeHarness()
 		expect(h.runtime.getActive()).toBeUndefined()
 		const beforeCount = h.storage.list().length
-		const sessionId = "01a1444a-86e4-7a11-8b22-333344445555"
-		const ctx = createContext({ hasUI: false, cwd: agentDir, sessionManager: { getSessionId: () => sessionId } })
+		const ctx = createContext({ hasUI: false, cwd: agentDir })
+		const identity = createExtensionApi()
+		requestIdentityExtension(identity.api)
+		await identity.emit("session_start", {}, ctx)
+		const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await identity.emit("before_provider_headers", event, ctx)
+		onTestFinished(() => identity.emit("session_shutdown", {}, ctx).then(() => undefined))
 
 		const result = await execute(
 			"tool-call-1",
@@ -593,8 +600,8 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		if (!active) throw new Error("Expected active Ferment")
 		const [planFile] = readdirSync(join(agentDir, ".kimchi", "plans"))
 		const workId = readPlanWorkId(readFileSync(join(agentDir, ".kimchi", "plans", planFile), "utf8"))
-		// A first proposal takes the ID of the session writing it, which the gateway sees as X-Session-Id.
-		expect(workId).toBe(sessionId)
+		// A first proposal takes the ID of the request writing it, which the gateway sees in its kimchi-request tag.
+		expect(workId).toBe(event.headers["X-Request-Id"])
 		expect(loadRuntimeState(active.id, agentDir).workId).toBe(workId)
 		// The retained copy lives where the gateway can find the same work ID.
 		expect(readdirSync(join(agentDir, "work", String(workId), "plans"))).toHaveLength(1)

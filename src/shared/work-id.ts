@@ -8,9 +8,10 @@ export function isWorkId(value: unknown): value is string {
 }
 
 /**
- * The work ID of a new plan: the ID of the session writing it. The Kimchi gateway sees that ID as X-Session-Id, so it
- * links the planning session to the session that implements the plan, even when the planning session ends at the plan.
+ * The work ID of a new plan: the ID of the request writing it, which the Kimchi gateway sees in that request's
+ * `kimchi-request` tag. The gateway links the planning session to the session that implements the plan by this ID, even
+ * when the planning session ends at the plan. Without a request ID, while Cost per PR is off, a fresh UUID.
  */
-export function newPlanWorkId(sessionId: string): string {
-	return isWorkId(sessionId) ? sessionId.toLowerCase() : randomUUID()
+export function newPlanWorkId(requestId: string | undefined): string {
+	return isWorkId(requestId) ? requestId.toLowerCase() : randomUUID()
 }
