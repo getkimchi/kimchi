@@ -39,6 +39,7 @@ export type SteerEventChannel = (typeof STEER_EVENTS)[keyof typeof STEER_EVENTS]
 export type SteerKind =
 	| "todo_early_nudge"
 	| "todo_staleness"
+	| "todo_checkin"
 	| "loop_guard"
 	| "bash_tool_guard"
 	| "bash_timeout_guidance"
@@ -74,6 +75,11 @@ export interface SteerOutcomePayload {
 	 *  ignored the nudge. Chunk 3 adds "expired" and the watcher module; until
 	 *  then only the two values below are emitted. */
 	outcome: "complied" | "repeated" | "expired"
+	/** How the outcome was produced, when the emitter tracks it. Used by the
+	 *  todo check-in gate to distinguish reconciliation by write vs confirm
+	 *  and failed confirmation attempts (wrong expected set, stale input
+	 *  revision). Closed vocabulary — no free text. */
+	method?: "write" | "confirm" | "mismatch" | "stale_revision"
 	/** steer_id of the fire this outcome belongs to, when the emitting site
 	 *  tracks it (the guard-kinds with bespoke windows do not yet). */
 	steer_id?: string
@@ -180,12 +186,18 @@ export function emitSteerOutcome(
 	pi: ExtensionAPI,
 	kind: SteerKind,
 	outcome: SteerOutcomePayload["outcome"],
-	shape: { interactive?: boolean; steerId?: string; turnsToOutcome?: number } = {},
+	shape: {
+		interactive?: boolean
+		steerId?: string
+		turnsToOutcome?: number
+		method?: SteerOutcomePayload["method"]
+	} = {},
 ): void {
 	if (isSteerDisabled(kind)) return
 	const payload: SteerOutcomePayload = {
 		kind,
 		outcome,
+		...(shape.method !== undefined ? { method: shape.method } : {}),
 		...(shape.steerId !== undefined ? { steer_id: shape.steerId } : {}),
 		...(shape.turnsToOutcome !== undefined ? { turns_to_outcome: shape.turnsToOutcome } : {}),
 		is_subagent: isAgentWorker(),
@@ -254,6 +266,7 @@ export function sendSteer(
 const STEER_DISABLE_FLAGS: Record<SteerKind, string> = {
 	todo_early_nudge: "KIMCHI_DISABLE_NUDGE_TODO_EARLY",
 	todo_staleness: "KIMCHI_DISABLE_NUDGE_STALENESS",
+	todo_checkin: "KIMCHI_DISABLE_NUDGE_TODO_CHECKIN",
 	loop_guard: "KIMCHI_DISABLE_GUARD_LOOP",
 	bash_tool_guard: "KIMCHI_DISABLE_GUARD_BASH_TOOL",
 	bash_timeout_guidance: "KIMCHI_DISABLE_NUDGE_BASH_TIMEOUT",

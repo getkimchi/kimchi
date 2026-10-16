@@ -147,7 +147,7 @@ Guard and nudge extensions publish semantic facts on the `steer:fired` / `steer:
 | Event | Meaning | Attributes |
 |---|---|---|
 | `steer.fired` | A steer/nudge/guard fired | `kind`, `reason`, `steer_id`, `turn_index`, `ms_into_turn`, `steer_ordinal`, `is_subagent`, `interactive` |
-| `steer.outcome` | The steer closed complied / repeated / expired | `kind`, `outcome`, `steer_id`, `turns_to_outcome`, `is_subagent`, `interactive` |
+| `steer.outcome` | The steer closed complied / repeated / expired | `kind`, `outcome`, `method`, `steer_id`, `turns_to_outcome`, `is_subagent`, `interactive` |
 | `steer.aborted` | User Esc-vetoed the turn following a steer | `kind`, `reason`, `steer_id`, `is_subagent`, `interactive` |
 
 `steer_id` is a random per-fire UUID generated at the emit site; outcome and aborted records carry the same id so a downstream join attributes them to the exact fire (replaces time-window joins). `turn_index` (1-based, session-scoped, strictly increasing — see the Turn indexing note below), `ms_into_turn`, and the 1-based `steer_ordinal` are stamped by the telemetry handler from `TelemetryContext` on the fire record, so emit sites stay state-free. `outcome` accepts `complied` (stopped / adopted), `repeated` (continued / ignored), or `expired` (the outcome window closed with no decision, e.g. session ended); not every emitting kind tracks all three yet. `steer.aborted` attribution is intentionally strict — a real (non-extension) user message clears the pending steer, so it only fires for the immediate post-steer turn; a separate, looser turn-based read lives on `agent.interrupted` via `last_steer_kind` / `last_steer_id` / `turns_since_last_steer` *(a true session-turn count even across prompts, since both indices are session-scoped)*.

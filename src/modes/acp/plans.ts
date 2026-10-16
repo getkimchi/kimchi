@@ -7,11 +7,21 @@
  */
 
 import type { Plan, PlanEntry, SessionNotification, SessionUpdate } from "@agentclientprotocol/sdk"
+import { getEffectivePendingCheckins, subscribeCheckinGate } from "../../extensions/todos/checkin-gate.js"
+import { getInputRevision } from "../../extensions/todos/reconciliation.js"
 import { parseTodoScopeKey } from "../../extensions/todos/scope.js"
-import { getTodoState, subscribeTodoStore } from "../../extensions/todos/store.js"
+import { GLOBAL_TODO_SCOPE, getTodoState, subscribeTodoStore } from "../../extensions/todos/store.js"
 import type { TodoItem, TodoScope, WriteTodosDetails } from "../../extensions/todos/types.js"
 
 type TodoPlanSnapshot = Pick<WriteTodosDetails, "scope" | "todos">
+
+/** Check-in gate state published under plan `_meta["kimchi.dev"]` so ACP
+ *  clients can surface a pause badge. The server emits it regardless of
+ *  whether the client renders vendor metadata. */
+export interface TodoCheckinMeta {
+	inputRevision: number
+	pendingScopes: TodoScope[]
+}
 
 const TODO_SCOPE_SPECIFICITY: Record<TodoScope["kind"], number> = {
 	"ferment-step": 2,
@@ -44,10 +54,15 @@ export function buildPlanEntries(todos: readonly TodoItem[]): PlanEntry[] {
 	return todos.map(todoToPlanEntry)
 }
 
-export function buildPlanUpdate(details: TodoPlanSnapshot): SessionUpdate {
+export function buildPlanUpdate(details: TodoPlanSnapshot, todoCheckin?: TodoCheckinMeta): SessionUpdate {
 	const plan: Plan = {
 		entries: buildPlanEntries(details.todos),
-		_meta: { "kimchi.dev": { scope: details.scope } },
+		_meta: {
+			"kimchi.dev": {
+				scope: details.scope,
+				...(todoCheckin !== undefined ? { todoCheckin } : {}),
+			},
+		},
 	}
 	return { ...plan, sessionUpdate: "plan" }
 }
@@ -73,6 +88,7 @@ export interface AcpPlanTrackerOptions {
 export class AcpPlanTracker {
 	private lastUpdateJson: string | undefined
 	private unsubscribe: (() => void) | undefined
+	private unsubscribeGate: (() => void) | undefined
 
 	constructor(private readonly options: AcpPlanTrackerOptions) {}
 
@@ -82,11 +98,21 @@ export class AcpPlanTracker {
 			if (sessionId !== this.options.sessionId) return
 			this.send(currentPlanSnapshot(sessionId) ?? { scope: details.scope, todos: [] })
 		})
+		// Gate changes (input, confirmation, closure) repaint the plan
+		// metadata even when the todo entries themselves did not change —
+		// including an explicit empty pendingScopes on closure. Metadata is
+		// part of the deduplication key, so unchanged entries still emit.
+		this.unsubscribeGate = subscribeCheckinGate((sessionId) => {
+			if (sessionId !== this.options.sessionId) return
+			this.send(currentPlanSnapshot(sessionId) ?? { scope: GLOBAL_TODO_SCOPE, todos: [] })
+		})
 	}
 
 	stop(): void {
 		this.unsubscribe?.()
 		this.unsubscribe = undefined
+		this.unsubscribeGate?.()
+		this.unsubscribeGate = undefined
 		this.lastUpdateJson = undefined
 	}
 
@@ -96,7 +122,7 @@ export class AcpPlanTracker {
 	}
 
 	private send(details: TodoPlanSnapshot): void {
-		const update = buildPlanUpdate(details)
+		const update = buildPlanUpdate(details, currentCheckinMeta(this.options.sessionId))
 		const updateJson = JSON.stringify(update)
 		if (updateJson === this.lastUpdateJson) return
 		try {
@@ -105,5 +131,16 @@ export class AcpPlanTracker {
 		} catch (err) {
 			console.error("[acp-plan] plan sessionUpdate send failed:", err)
 		}
+	}
+}
+
+/** Pending check-in state for the session, all relevant scopes included
+ *  even when ACP displays a narrower list. Reflects the effective
+ *  enforcement state: a released gate publishes no pending scopes while
+ *  work flows. */
+function currentCheckinMeta(sessionId: string): TodoCheckinMeta {
+	return {
+		inputRevision: getInputRevision(sessionId),
+		pendingScopes: getEffectivePendingCheckins(sessionId).map((check) => check.scope),
 	}
 }

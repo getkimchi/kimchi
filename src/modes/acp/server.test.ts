@@ -653,7 +653,12 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 					update: {
 						sessionUpdate: "plan",
 						entries: [{ content: "Write unit tests", priority: "medium", status: "pending" }],
-						_meta: { "kimchi.dev": { scope: { kind: "global" } } },
+						_meta: {
+							"kimchi.dev": {
+								scope: { kind: "global" },
+								todoCheckin: { inputRevision: 0, pendingScopes: [] },
+							},
+						},
 					},
 				},
 			])

@@ -84,6 +84,11 @@ function fermentLifecycleResponses() {
 		textResponse("Phase activated."),
 		toolCallResponse("start_ferment_step", { ...ids, step_id: STEP_ID }),
 		textResponse("Step started."),
+		// The check-in gate requires the model to reconcile the bridge-seeded
+		// step list (its unfinished title anchor) before further work tools
+		// are admitted — marking the anchor is the natural reconciliation when
+		// completing the step. Auto-scopes to the active step list.
+		toolCallResponse("mark_todo", { id: 1, status: "completed" }),
 		toolCallResponse("complete_ferment_step", {
 			...ids,
 			step_id: STEP_ID,
@@ -215,23 +220,39 @@ describe("ACP integration — plan updates from todo writes", () => {
 			},
 		])
 		// Scope metadata rides Plan._meta; spec-compliant clients ignore it.
-		expect(afterCreate[0]._meta).toEqual({ "kimchi.dev": { scope: { kind: "global" } } })
+		// todoCheckin carries the check-in gate state (one input so far, no
+		// pending scopes).
+		expect(afterCreate[0]._meta).toEqual({
+			"kimchi.dev": {
+				scope: { kind: "global" },
+				todoCheckin: { inputRevision: 1, pendingScopes: [] },
+			},
+		})
 
 		expect((await prompt(fixture, sessionId, "Advance the todo list")).stopReason).toBe("end_turn")
 
 		const afterUpdate = planSnapshots(fixture, sessionId)
-		expect(afterUpdate).toHaveLength(2)
+		// Three snapshots: the create write, the gate opening with the second
+		// prompt (unchanged entries, todoCheckin metadata), and the update
+		// write itself.
+		expect(afterUpdate).toHaveLength(3)
 		// Full replacement, not a patch: the client swaps the whole list.
-		expect(afterUpdate[1].entries).toEqual([
+		expect(afterUpdate[2].entries).toEqual([
 			{ content: "wire emission", priority: "medium", status: "completed" },
 			{ content: "deploying", priority: "medium", status: "in_progress" },
 		])
+		// The gate-opening snapshot carried the pending scope with unchanged
+		// entries; the update write cleared it.
+		expect(afterUpdate[1].entries).toEqual(afterUpdate[0].entries)
 
 		expect((await prompt(fixture, sessionId, "Clear the todo list")).stopReason).toBe("end_turn")
 
 		const afterClear = planSnapshots(fixture, sessionId)
-		expect(afterClear).toHaveLength(3)
-		expect(afterClear[2].entries).toEqual([])
+		// Five snapshots: the three above, the gate reopening with the third
+		// prompt, and the clear write (whose reconcile emitted the same payload
+		// as the clear itself — deduped).
+		expect(afterClear).toHaveLength(5)
+		expect(afterClear[4].entries).toEqual([])
 	})
 
 	it("scopes plan notifications to the owning session", async () => {
@@ -270,7 +291,12 @@ describe("ACP integration — plan updates from todo writes", () => {
 			{
 				sessionUpdate: "plan",
 				entries: [{ content: "research the change", priority: "medium", status: "in_progress" }],
-				_meta: { "kimchi.dev": { scope: { kind: "global" } } },
+				_meta: {
+					"kimchi.dev": {
+						scope: { kind: "global" },
+						todoCheckin: { inputRevision: 1, pendingScopes: [] },
+					},
+				},
 			},
 		])
 	})

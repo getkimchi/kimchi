@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import {
 	__resetTodoStore,
+	applyTodoMutation,
 	applyWriteTodos,
 	clearTodoStore,
 	GLOBAL_TODO_SCOPE,
@@ -180,7 +181,7 @@ describe("todo store", () => {
 		const unsubscribe = subscribeTodoStore(listener)
 
 		const details = applyWriteTodos({ todos: [{ content: "alpha", status: "pending" }] }, TEST_SESSION_ID)
-		expect(listener).toHaveBeenCalledWith(details, TEST_SESSION_ID)
+		expect(listener).toHaveBeenCalledWith(details, TEST_SESSION_ID, undefined)
 
 		unsubscribe()
 		applyWriteTodos({ todos: [{ content: "bravo", status: "pending" }] }, TEST_SESSION_ID)
@@ -199,6 +200,112 @@ describe("todo store", () => {
 		expect(listener.mock.calls[1]?.[1]).toBe("session-b")
 
 		unsubscribe()
+	})
+})
+
+describe("todo store mutations (applyTodoMutation)", () => {
+	beforeEach(() => {
+		__resetTodoStore()
+	})
+
+	it("applies add and mark mutations, preserving every change", () => {
+		applyWriteTodos({ todos: [{ content: "alpha", status: "pending" }] }, TEST_SESSION_ID)
+
+		const add = applyTodoMutation(GLOBAL_TODO_SCOPE, TEST_SESSION_ID, (todos) => [
+			...todos,
+			{ content: "bravo", status: "pending" },
+		])
+		expect(add?.todos.map((todo) => todo.content)).toEqual(["alpha", "bravo"])
+
+		const mark = applyTodoMutation(GLOBAL_TODO_SCOPE, TEST_SESSION_ID, (todos) =>
+			todos.map((todo) => (todo.content === "alpha" ? { ...todo, status: "completed" } : todo)),
+		)
+		expect(mark?.todos.map((todo) => todo.status)).toEqual(["completed", "pending"])
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID).map((todo) => todo.status)).toEqual([
+			"completed",
+			"pending",
+		])
+	})
+
+	it("serializes mutations with replacement and clear writes in call order", () => {
+		applyWriteTodos({ todos: [{ content: "one", status: "pending" }] }, TEST_SESSION_ID)
+
+		applyTodoMutation(GLOBAL_TODO_SCOPE, TEST_SESSION_ID, (todos) => [...todos, { content: "two", status: "pending" }])
+		applyWriteTodos({ todos: [{ content: "replaced", status: "in_progress" }] }, TEST_SESSION_ID)
+		applyTodoMutation(GLOBAL_TODO_SCOPE, TEST_SESSION_ID, (todos) => [
+			...todos,
+			{ content: "three", status: "pending" },
+		])
+
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID).map((todo) => todo.content)).toEqual([
+			"replaced",
+			"three",
+		])
+
+		applyWriteTodos({ todos: [] }, TEST_SESSION_ID)
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toEqual([])
+	})
+
+	it("suppresses store notification when the mutator returns undefined", () => {
+		applyWriteTodos({ todos: [{ content: "alpha", status: "pending" }] }, TEST_SESSION_ID)
+		const listener = vi.fn()
+		const unsubscribe = subscribeTodoStore(listener)
+
+		const result = applyTodoMutation(GLOBAL_TODO_SCOPE, TEST_SESSION_ID, () => undefined)
+
+		expect(result).toBeUndefined()
+		expect(listener).not.toHaveBeenCalled()
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID).map((todo) => todo.content)).toEqual(["alpha"])
+		unsubscribe()
+	})
+
+	it("a thrown mutator leaves state unchanged", () => {
+		applyWriteTodos({ todos: [{ content: "alpha", status: "pending" }] }, TEST_SESSION_ID)
+		const before = getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)
+
+		expect(() =>
+			applyTodoMutation(GLOBAL_TODO_SCOPE, TEST_SESSION_ID, () => {
+				throw new Error("boom")
+			}),
+		).toThrow("boom")
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toEqual(before)
+	})
+
+	it("gives mutators a detached snapshot that cannot tamper with stored items", () => {
+		applyWriteTodos({ todos: [{ content: "alpha", status: "pending" }] }, TEST_SESSION_ID)
+
+		applyTodoMutation(GLOBAL_TODO_SCOPE, TEST_SESSION_ID, (todos) => {
+			;(todos[0] as { content: string }).content = "tampered"
+			return undefined
+		})
+
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)[0]?.content).toBe("alpha")
+	})
+
+	it("rejects a thenable result without committing or notifying", () => {
+		applyWriteTodos({ todos: [{ content: "alpha", status: "pending" }] }, TEST_SESSION_ID)
+		const before = getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)
+		const listener = vi.fn()
+		const unsubscribe = subscribeTodoStore(listener)
+
+		expect(() =>
+			// The thenable is the point of this test: applyTodoMutation must
+			// reject it before committing.
+			// biome-ignore lint/suspicious/noThenProperty: intentional thenable
+			applyTodoMutation(GLOBAL_TODO_SCOPE, TEST_SESSION_ID, () => ({ then: () => {} }) as never),
+		).toThrow(/must be synchronous/)
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toEqual(before)
+		expect(listener).not.toHaveBeenCalled()
+		unsubscribe()
+	})
+
+	it("isolates mutations between sessions", () => {
+		applyWriteTodos({ todos: [{ content: "for A", status: "pending" }] }, "session-a")
+
+		applyTodoMutation(GLOBAL_TODO_SCOPE, "session-b", (todos) => [...todos, { content: "for B", status: "pending" }])
+
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-a").map((todo) => todo.content)).toEqual(["for A"])
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-b").map((todo) => todo.content)).toEqual(["for B"])
 	})
 })
 
@@ -221,7 +328,7 @@ describe("todo store listener failure isolation", () => {
 
 			expect(details.todos.map((todo) => todo.content)).toEqual(["alpha"])
 			expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toHaveLength(1)
-			expect(healthy).toHaveBeenCalledWith(details, TEST_SESSION_ID)
+			expect(healthy).toHaveBeenCalledWith(details, TEST_SESSION_ID, undefined)
 			expect(errorSpy).toHaveBeenCalledWith("Todo store listener failed:", expect.any(Error))
 		} finally {
 			errorSpy.mockRestore()

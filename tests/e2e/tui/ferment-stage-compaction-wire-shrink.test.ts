@@ -144,11 +144,24 @@ test("stage compaction makes the next request carry the summary instead of the o
 					usage: { prompt_tokens: 5_000, completion_tokens: 200 },
 				},
 				// Turn 6 (auto-continuation after start's tool result): emit the
-				// filler blob and complete the step with usage far above the
-				// min/step compaction gates. This is the last turn BEFORE the
-				// turn_end stage drain fires.
+				// filler blob, then reconcile the bridge-seeded step list (the
+				// check-in gate requires it before further work tools) by marking
+				// the step's title anchor completed.
 				{
 					stream: [FILLER_TEXT],
+					toolCalls: [
+						{
+							function: {
+								name: "mark_todo",
+								arguments: JSON.stringify({ id: 1, status: "completed" }),
+							},
+						},
+					],
+					usage: { prompt_tokens: 200_000, completion_tokens: 1_000 },
+				},
+				// Turn 6b (auto-continuation after the mark's result): complete the
+				// step. This is the last turn BEFORE the turn_end stage drain fires.
+				{
 					toolCalls: [
 						{
 							function: {

@@ -1,49 +1,57 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry, Theme } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { isResourceEnabled } from "../../resources/store.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { __resetCheckinGate, getPendingCheckins, hasEffectivePendingCheckin } from "./checkin-gate.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import todosExtension from "./index.js"
-import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope, hasEverHadTodos } from "./store.js"
+import { __resetReconciliationBookkeeping } from "./reconciliation.js"
+import {
+	__resetTodoStore,
+	applyWriteTodos,
+	GLOBAL_TODO_SCOPE,
+	getTodosForScope,
+	hasEverHadTodos,
+	registerActiveTodoScopeProvider,
+} from "./store.js"
 import { TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
-import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoStatus } from "./types.js"
+import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoScope, type TodoStatus } from "./types.js"
 
-type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Promise<unknown>
+vi.mock("../../resources/store.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../resources/store.js")>()
+	return {
+		...actual,
+		isResourceEnabled: vi.fn(() => true),
+	}
+})
+
+const isResourceEnabledMock = vi.mocked(isResourceEnabled)
+
+const STEP_SCOPE: TodoScope = { kind: "ferment-step", phaseId: "p1", stepId: "s1" }
 
 const theme = {
 	fg: (_color: string, text: string) => text,
 	bold: (text: string) => text,
 } as Theme
 
-function createTodosHarness(activeTools: string[] = [...TODO_TOOL_NAMES]) {
-	const handlers = new Map<string, ExtensionHandler[]>()
-	const pi = {
-		registerTool: vi.fn(),
-		registerCommand: vi.fn(),
-		registerShortcut: vi.fn(),
-		appendEntry: vi.fn(),
-		sendMessage: vi.fn(),
-		getActiveTools: vi.fn(() => activeTools),
-		events: { emit: vi.fn(), on: vi.fn() },
-		on: vi.fn((event: string, handler: ExtensionHandler) => {
-			const list = handlers.get(event) ?? []
-			list.push(handler)
-			handlers.set(event, list)
-		}),
-	} as unknown as ExtensionAPI
-
-	todosExtension(pi)
+function createTodosHarness(activeTools: string[] = [...TODO_TOOL_NAMES, "confirm_todos"]) {
+	const mock = createExtensionApi()
+	mock.setActiveTools(activeTools)
+	todosExtension(mock.api)
 
 	return {
+		/** Invoke every handler registered for `event`, returning the last
+		 * handler's result (the todos extension is the only registrant). */
 		async fire(event: string, payload: unknown, ctx: ExtensionContext) {
-			let result: unknown
-			for (const handler of handlers.get(event) ?? []) {
-				result = await handler(payload, ctx)
-			}
-			return result
+			const results = await mock.emit(event, payload, ctx)
+			return results.at(-1)
 		},
-		appendEntry: pi.appendEntry,
-		sendMessage: pi.sendMessage,
-		getActiveTools: pi.getActiveTools,
-		events: pi.events,
+		appendEntry: mock.appendEntry,
+		sendMessage: mock.sendMessage,
+		setActiveTools: mock.setActiveTools,
+		events: mock.api.events,
+		/** Registered tool definition, typed as the real ToolDefinition. */
+		registeredTool: mock.getRegisteredTool,
 	}
 }
 
@@ -234,7 +242,7 @@ describe("todos extension session state", () => {
 		const harness = createTodosHarness()
 		const result = await harness.fire("tool_call", toolCall("bash"), createContext("session", []))
 
-		expect(result).toBeUndefined()
+		expect(result).toEqual({ block: false })
 		expect(harness.appendEntry).not.toHaveBeenCalled()
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
@@ -523,35 +531,59 @@ describe("early todo nudge", () => {
 	})
 
 	describe("staleness threshold steers", () => {
-		it("fires one-shot steers at 9/17/25 post-write tool calls and resets on todo write", async () => {
+		it("fires recurring reminders every 10 successful work calls with no ceiling, resetting on todo write", async () => {
 			const harness = createTodosHarness()
 			const ctx = createContext("session", [])
 			await harness.fire("session_start", { reason: "new" }, ctx)
 			applyWriteTodos({ todos: [{ content: "long task", status: "in_progress" }] }, "session")
 
 			const stalenessCalls = () => steerCallsByReason(harness.sendMessage, "staleness")
-			const thresholds = [9, 17, 25]
 			for (let count = 1; count <= 30; count++) {
 				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-				expect(stalenessCalls()).toHaveLength(thresholds.filter((threshold) => threshold <= count).length)
+				expect(stalenessCalls()).toHaveLength(Math.floor(count / 10))
 			}
-			for (const [index, threshold] of thresholds.entries()) {
+			for (const [index, boundary] of [10, 20, 30].entries()) {
 				const message = stalenessCalls()[index]?.[0] as { content: string }
-				expect(message.content).toContain(`${threshold} changes`)
+				expect(message.content).toContain(`${boundary} changes`)
 				expect(message.content).toMatch(/^<system-reminder>\n/)
 				expect(stalenessCalls()[index]?.[1]).toEqual({ deliverAs: "steer" })
 			}
-			expect((stalenessCalls()[2]?.[0] as { content: string }).content).toContain("significantly stale")
+			// Wording strengthens from the third boundary (30) onward.
+			expect((stalenessCalls()[2]?.[0] as { content: string }).content).toContain("remove obsolete items")
 
-			// A todo write resets the counter and allows the nine-call reminder again.
+			// A todo write resets the schedule: the next reminder needs 10
+			// additional successful work calls.
 			applyWriteTodos(
 				{ todos: [{ id: 1, content: "long task", status: "in_progress", note: "Progress recorded" }] },
 				"session",
 			)
 			for (let count = 1; count <= 9; count++) {
 				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-				expect(stalenessCalls()).toHaveLength(3 + thresholds.filter((threshold) => threshold <= count).length)
+				expect(stalenessCalls()).toHaveLength(3)
 			}
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			expect(stalenessCalls()).toHaveLength(4)
+		})
+
+		it("keeps reminding at every multiple of 10 beyond 85 with no final ceiling", async () => {
+			const harness = createTodosHarness()
+			const ctx = createContext("session", [])
+			await harness.fire("session_start", { reason: "new" }, ctx)
+			applyWriteTodos({ todos: [{ content: "long task", status: "in_progress" }] }, "session")
+
+			for (let count = 1; count <= 83; count++) {
+				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			}
+			let stalenessCalls = steerCallsByReason(harness.sendMessage, "staleness")
+			expect(stalenessCalls).toHaveLength(8)
+
+			for (let count = 84; count <= 90; count++) {
+				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			}
+			stalenessCalls = steerCallsByReason(harness.sendMessage, "staleness")
+			expect(stalenessCalls).toHaveLength(9)
+			const last = stalenessCalls[8]?.[0] as { content: string; details?: { threshold?: number } }
+			expect(last.content).toContain("90 changes")
 		})
 
 		it("does not fire when the current scope has no todos", async () => {
@@ -565,5 +597,461 @@ describe("early todo nudge", () => {
 			}
 			expect(steerCallsByReason(harness.sendMessage, "staleness")).toHaveLength(0)
 		})
+
+		it("ages the global list while a step is active and regularly updated", async () => {
+			const harness = createTodosHarness()
+			const ctx = createContext("session", [])
+			await harness.fire("session_start", { reason: "new" }, ctx)
+			applyWriteTodos({ todos: [{ content: "global task", status: "pending" }] }, "session")
+			const unregister = registerActiveTodoScopeProvider(() => STEP_SCOPE)
+			try {
+				applyWriteTodos({ scope: STEP_SCOPE, todos: [{ content: "step task", status: "in_progress" }] }, "session")
+
+				// Both lists have unfinished items, so both age together: one
+				// scope-labelled reminder each at boundary 10.
+				for (let i = 0; i < 10; i++) {
+					await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+				}
+				let steers = steerCallsByReason(harness.sendMessage, "staleness") as Array<
+					[{ details?: { scope?: TodoScope } }]
+				>
+				expect(steers).toHaveLength(2)
+				expect(steers.map(([message]) => message.details?.scope)).toEqual([{ kind: "global" }, STEP_SCOPE])
+
+				// A step-scope write resets only the step epoch. Completing the
+				// step list stops its pressure; the global list keeps aging and
+				// its delivered boundary is not re-armed by the step write.
+				applyWriteTodos({ scope: STEP_SCOPE, todos: [{ content: "step task", status: "completed" }] }, "session")
+				for (let i = 0; i < 10; i++) {
+					await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+				}
+				steers = steerCallsByReason(harness.sendMessage, "staleness") as Array<[{ details?: { scope?: TodoScope } }]>
+				expect(steers).toHaveLength(3)
+				expect(steers[2]?.[0].details?.scope).toEqual({ kind: "global" })
+				expect((steers[2]?.[0] as { content: string }).content).toContain("20 changes")
+			} finally {
+				unregister()
+			}
+		})
+
+		it("does not age inactive historical step lists", async () => {
+			const harness = createTodosHarness()
+			const ctx = createContext("session", [])
+			await harness.fire("session_start", { reason: "new" }, ctx)
+			applyWriteTodos({ todos: [{ content: "global task", status: "pending" }] }, "session")
+			// A leftover step list from an earlier step: not active, so it
+			// never ages and never steers.
+			applyWriteTodos({ scope: STEP_SCOPE, todos: [{ content: "old step task", status: "in_progress" }] }, "session")
+
+			for (let i = 0; i < 10; i++) {
+				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			}
+			const steers = steerCallsByReason(harness.sendMessage, "staleness") as Array<
+				[{ details?: { scope?: TodoScope } }]
+			>
+			expect(steers).toHaveLength(1)
+			expect(steers[0]?.[0].details?.scope).toEqual({ kind: "global" })
+		})
+
+		it("replay resets every scope's counters and bands for the current session", async () => {
+			const harness = createTodosHarness()
+			const branch = [writeTodosEntry("t1", "global task", "in_progress")]
+			const ctx = createContext("session", branch)
+			await harness.fire("session_start", { reason: "new" }, ctx)
+
+			for (let i = 0; i < 10; i++) {
+				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			}
+			expect(steerCallsByReason(harness.sendMessage, "staleness")).toHaveLength(1)
+
+			// Branch switch / replay: the restored list starts a fresh epoch.
+			await harness.fire("session_tree", {}, ctx)
+			for (let i = 0; i < 10; i++) {
+				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			}
+			expect(steerCallsByReason(harness.sendMessage, "staleness")).toHaveLength(2)
+		})
+
+		it("keeps staleness pressure isolated between concurrent sessions", async () => {
+			const harness = createTodosHarness()
+			const ctxA = createContext("session-a", [writeTodosEntry("a", "task A", "in_progress")])
+			const ctxB = createContext("session-b", [writeTodosEntry("b", "task B", "in_progress")])
+			await harness.fire("session_start", { reason: "new" }, ctxA)
+			await harness.fire("session_start", { reason: "new" }, ctxB)
+
+			for (let i = 0; i < 10; i++) {
+				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctxA)
+			}
+			expect(steerCallsByReason(harness.sendMessage, "staleness")).toHaveLength(1)
+
+			// The same work in session B steers only session B's list.
+			for (let i = 0; i < 10; i++) {
+				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctxB)
+			}
+			expect(steerCallsByReason(harness.sendMessage, "staleness")).toHaveLength(2)
+		})
+	})
+})
+
+describe("todo check-in gate", () => {
+	const fireWork = (harness: ReturnType<typeof createTodosHarness>, ctx: ExtensionContext, toolCallId: string) =>
+		harness.fire("tool_call", { type: "tool_call", toolCallId, toolName: "bash", input: {} }, ctx)
+
+	const fireInput = (
+		harness: ReturnType<typeof createTodosHarness>,
+		ctx: ExtensionContext,
+		text = "Now do it differently",
+	) => harness.fire("input", { type: "input", text, source: "interactive" }, ctx)
+
+	beforeEach(() => {
+		__resetTodoStore()
+		__resetCheckinGate()
+		__resetReconciliationBookkeeping()
+		isResourceEnabledMock.mockReturnValue(true)
+	})
+
+	it("requires reconciliation after user input before admitting work tools", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		// The list exists from an earlier assistant write (reconciled at
+		// revision 0), so pre-input work flows.
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		expect(await fireWork(harness, ctx, "w0")).toEqual({ block: false })
+
+		await fireInput(harness, ctx)
+		const result = await fireWork(harness, ctx, "w1")
+		expect(result).toMatchObject({ block: true })
+		expect((result as { reason?: string }).reason).toContain("check-in pending (input revision 1)")
+		expect((result as { reason?: string }).reason).toContain("[in_progress] #1 task")
+
+		// One hidden instruction per accepted input revision.
+		expect(steerCallsByReason(harness.sendMessage, "user_input")).toHaveLength(1)
+
+		// Repeated blocked calls return current instructions without new steers.
+		await fireWork(harness, ctx, "w2")
+		expect(steerCallsByReason(harness.sendMessage, "user_input")).toHaveLength(1)
+
+		// Reconciliation tools pass through while the gate is open.
+		expect(
+			await harness.fire("tool_call", { type: "tool_call", toolCallId: "m1", toolName: "mark_todo", input: {} }, ctx),
+		).toEqual({ block: false })
+		expect(
+			await harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId: "c1", toolName: "confirm_todos", input: {} },
+				ctx,
+			),
+		).toEqual({ block: false })
+	})
+
+	it("releases work after a real write and after a successful confirmation", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
+		await fireInput(harness, ctx)
+		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
+
+		// A real assistant write against the admitted revision reconciles.
+		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "pending" }] }, "session", {
+			origin: "tool",
+			inputRevision: 1,
+		})
+		expect(await fireWork(harness, ctx, "w2")).toEqual({ block: false })
+
+		// Newer input re-arms the check; a matching confirmation releases it.
+		await fireInput(harness, ctx, "Second thought")
+		expect(await fireWork(harness, ctx, "w3")).toMatchObject({ block: true })
+		await harness
+			.registeredTool("confirm_todos")
+			.execute("c1", { inputRevision: 2, expected: [{ id: 1, status: "pending" }] }, undefined, undefined, ctx)
+		expect(await fireWork(harness, ctx, "w4")).toEqual({ block: false })
+	})
+
+	it("a mismatched or stale-revision confirmation keeps work blocked", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
+		await fireInput(harness, ctx)
+		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
+
+		await harness
+			.registeredTool("confirm_todos")
+			.execute("c1", { inputRevision: 1, expected: [{ id: 1, status: "completed" }] }, undefined, undefined, ctx)
+		expect(await fireWork(harness, ctx, "w2")).toMatchObject({ block: true })
+
+		await harness
+			.registeredTool("confirm_todos")
+			.execute("c2", { inputRevision: 0, expected: [{ id: 1, status: "in_progress" }] }, undefined, undefined, ctx)
+		expect(await fireWork(harness, ctx, "w3")).toMatchObject({ block: true })
+	})
+
+	it("a write admitted before newer user input cannot satisfy the newer check", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
+		await fireInput(harness, ctx)
+
+		// Admit a mark_todo call under revision 1…
+		await harness.fire("tool_call", { type: "tool_call", toolCallId: "m1", toolName: "mark_todo", input: {} }, ctx)
+		// …then newer input arrives before the write executes.
+		await fireInput(harness, ctx, "Changed my mind")
+		await harness.registeredTool("mark_todo").execute("m1", { id: 1, status: "pending" }, undefined, undefined, ctx)
+
+		// The write acknowledged revision 1 only; the revision-2 check stays pending.
+		expect(getPendingCheckins("session")).toHaveLength(1)
+		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
+	})
+
+	it("escalates after 50 ignored work calls, bounded to two openings per request", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
+		await fireInput(harness, ctx)
+		// Reconcile first so work can proceed, then neglect the list.
+		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 1,
+		})
+
+		const workAndExecute = async (id: string) => {
+			expect(await fireWork(harness, ctx, id)).toEqual({ block: false })
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		}
+
+		// First epoch: the gate opens at call 50 (staleness ≥ 50 with a
+		// delivered boundary-50 reminder).
+		for (let i = 0; i < 50; i++) await workAndExecute(`a${i}`)
+		expect(getPendingCheckins("session")[0]?.reasons.has("staleness")).toBe(true)
+		expect(await fireWork(harness, ctx, "a50")).toMatchObject({ block: true })
+
+		// Reconcile, neglect again: second opening.
+		applyWriteTodos(
+			{
+				todos: [
+					{ id: 1, content: "task", status: "completed" },
+					{ id: 2, content: "next", status: "in_progress" },
+				],
+			},
+			"session",
+			{ origin: "tool", inputRevision: 1 },
+		)
+		expect(await fireWork(harness, ctx, "b0")).toEqual({ block: false })
+		for (let i = 0; i < 50; i++) await workAndExecute(`b${i}`)
+		expect(getPendingCheckins("session").some((check) => check.reasons.has("staleness"))).toBe(true)
+		// Keep an unfinished item so the third epoch still ages.
+		applyWriteTodos({ todos: [{ id: 2, content: "next", status: "in_progress", note: "epoch 3" }] }, "session", {
+			origin: "tool",
+			inputRevision: 1,
+		})
+
+		// Third epoch: the two-opening budget for this request is spent — no
+		// third escalation, work flows, and reminders keep recurring.
+		for (let i = 0; i < 50; i++) await workAndExecute(`c${i}`)
+		expect(getPendingCheckins("session")).toHaveLength(0)
+		// 5 reminders per 50-call epoch: 15 total, no final ceiling.
+		expect(steerCallsByReason(harness.sendMessage, "staleness")).toHaveLength(15)
+
+		// The routine user-input check is never budget-limited: new input with
+		// a still-unfinished list re-arms the gate.
+		applyWriteTodos({ todos: [{ id: 3, content: "more", status: "pending" }] }, "session", {
+			origin: "tool",
+			inputRevision: 1,
+		})
+		await fireInput(harness, ctx, "One more thing")
+		expect(await fireWork(harness, ctx, "z1")).toMatchObject({ block: true })
+	})
+
+	it("releases enforcement when prerequisites are unavailable", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
+		await fireInput(harness, ctx)
+		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
+
+		// Kill switch on → released.
+		process.env.KIMCHI_DISABLE_NUDGE_TODO_CHECKIN = "1"
+		try {
+			expect(await fireWork(harness, ctx, "w2")).toEqual({ block: false })
+		} finally {
+			delete process.env.KIMCHI_DISABLE_NUDGE_TODO_CHECKIN
+		}
+
+		// Resource disabled → released; re-enabled → restored.
+		isResourceEnabledMock.mockReturnValue(false)
+		expect(await fireWork(harness, ctx, "w3")).toEqual({ block: false })
+		isResourceEnabledMock.mockReturnValue(true)
+		expect(await fireWork(harness, ctx, "w4")).toMatchObject({ block: true })
+
+		// No reconciliation tools active → released.
+		harness.setActiveTools(["bash"])
+		expect(await fireWork(harness, ctx, "w5")).toEqual({ block: false })
+	})
+
+	it("checks a list that becomes relevant mid-request before admitting work", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		// No todos at input time: nothing pending.
+		await fireInput(harness, ctx)
+		expect(await fireWork(harness, ctx, "w1")).toEqual({ block: false })
+
+		// A step activates and its list is seeded by the background bridge.
+		const unregister = registerActiveTodoScopeProvider(() => STEP_SCOPE)
+		try {
+			applyWriteTodos({ scope: STEP_SCOPE, todos: [{ content: "step task", status: "in_progress" }] }, "session") // bridge origin: does not reconcile
+			const result = await fireWork(harness, ctx, "w2")
+			expect(result).toMatchObject({ block: true })
+			expect((result as { reason?: string }).reason).toContain("step p1/s1")
+
+			// A real write to the step list reconciles it.
+			applyWriteTodos(
+				{ scope: STEP_SCOPE, todos: [{ id: 1, content: "step task", status: "in_progress", note: "reviewed" }] },
+				"session",
+				{ origin: "tool", inputRevision: 1 },
+			)
+			expect(await fireWork(harness, ctx, "w3")).toEqual({ block: false })
+		} finally {
+			unregister()
+		}
+	})
+
+	it("completed and empty lists do not gate work; blocked lists do", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "done", status: "completed" }] }, "session")
+		await fireInput(harness, ctx, "Anything left?")
+		expect(await fireWork(harness, ctx, "w1")).toEqual({ block: false })
+
+		applyWriteTodos({ todos: [] }, "session")
+		expect(await fireWork(harness, ctx, "w2")).toEqual({ block: false })
+
+		applyWriteTodos({ todos: [{ content: "waiting", status: "blocked" }] }, "session")
+		const result = await fireWork(harness, ctx, "w3")
+		expect(result).toMatchObject({ block: true })
+		expect((result as { reason?: string }).reason).toContain("[blocked] #1 waiting")
+	})
+
+	it("replay requires reconciliation of restored unfinished lists", async () => {
+		const harness = createTodosHarness()
+		const branch = [writeTodosEntry("t1", "restored task", "in_progress")]
+		const ctx = createContext("session", branch)
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		// The restored list is unfinished and unproven: work is gated until a
+		// real reconciliation (the branch content is not fresh input, so the
+		// revision stays 0).
+		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
+		applyWriteTodos({ todos: [{ id: 1, content: "restored task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+		expect(await fireWork(harness, ctx, "w2")).toEqual({ block: false })
+	})
+
+	it("does not escalate when staleness reminders are kill-switch disabled", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		process.env.KIMCHI_DISABLE_NUDGE_STALENESS = "1"
+		try {
+			for (let i = 0; i < 55; i++) {
+				expect(await fireWork(harness, ctx, `w${i}`)).toEqual({ block: false })
+				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			}
+			// No reminder was ever delivered (the kill switch suppressed every
+			// send), so no delivered boundary qualifies the escalation: the gate
+			// never opens and work keeps flowing.
+			expect(steerCallsByReason(harness.sendMessage, "staleness")).toHaveLength(0)
+			expect(getPendingCheckins("session")).toHaveLength(0)
+		} finally {
+			delete process.env.KIMCHI_DISABLE_NUDGE_STALENESS
+		}
+	})
+
+	it("a successful confirmation without a pending check still resets the reminder schedule", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "pending" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		const reminders = () => steerCallsByReason(harness.sendMessage, "staleness")
+		const workOnce = async (id: string) => {
+			expect(await fireWork(harness, ctx, id)).toEqual({ block: false })
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		}
+
+		// 23 calls age the list: reminders at boundaries 10 and 20.
+		for (let i = 0; i < 23; i++) await workOnce(`w${i}`)
+		expect(reminders()).toHaveLength(2)
+
+		// Confirm the accurate list with no check pending.
+		await harness
+			.registeredTool("confirm_todos")
+			.execute("c1", { inputRevision: 0, expected: [{ id: 1, status: "pending" }] }, undefined, undefined, ctx)
+
+		// The confirmation restarted the schedule: nine more calls stay quiet…
+		for (let i = 23; i < 32; i++) await workOnce(`w${i}`)
+		expect(reminders()).toHaveLength(2)
+		// …the tenth call after the confirmation reminds again.
+		await workOnce("w32")
+		expect(reminders()).toHaveLength(3)
+	})
+
+	it("disabled enforcement releases work and stops publishing a pause, preserving the checks", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+		await fireInput(harness, ctx, "New direction")
+		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
+		expect(hasEffectivePendingCheckin("session")).toBe(true)
+
+		// Resource disabled: work flows and the pause is no longer published —
+		// but the unreconciled check is preserved for re-enablement.
+		isResourceEnabledMock.mockReturnValue(false)
+		expect(await fireWork(harness, ctx, "w2")).toEqual({ block: false })
+		expect(hasEffectivePendingCheckin("session")).toBe(false)
+		expect(getPendingCheckins("session")).toHaveLength(1)
+
+		// Re-enabled: the unreconciled input re-surfaces.
+		isResourceEnabledMock.mockReturnValue(true)
+		expect(await fireWork(harness, ctx, "w3")).toMatchObject({ block: true })
+		expect(hasEffectivePendingCheckin("session")).toBe(true)
+	})
+
+	it("a background write that completes a pending list clears its check immediately", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
+		await fireInput(harness, ctx, "New direction")
+		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
+
+		// A background (bridge-style) write completes the list: the check drops
+		// at the write itself, not at the next work call's relevance cleanup.
+		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "completed" }] }, "session")
+		expect(getPendingCheckins("session")).toHaveLength(0)
+		expect(await fireWork(harness, ctx, "w2")).toEqual({ block: false })
 	})
 })
