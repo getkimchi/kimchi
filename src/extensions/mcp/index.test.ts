@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { BeforeProviderHeadersEvent, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
-import type { McpAdapterOptions, McpConfig } from "pi-mcp-adapter/types"
+import type { McpAdapterOptions, McpConfig, ServerEntry } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import type * as CliArgs from "../../cli-args.js"
@@ -50,6 +50,10 @@ const oauthMigration = vi.hoisted(() => ({ warnings: [] as string[] }))
 const oauthBranding = vi.hoisted(() => ({ install: vi.fn() }))
 const projectTrust = vi.hoisted(() => ({ trusted: true }))
 const readOnlyState = vi.hoisted(() => ({ wireNames: new Set<string>() }))
+const gatewayState = vi.hoisted(() => ({
+	server: undefined as { name: string; entry: ServerEntry } | undefined,
+	addresses: ["https://api.cast.ai/mcp"],
+}))
 
 vi.mock("pi-mcp-adapter", () => ({
 	MCP_STATUS_EVENT: "pi-mcp-adapter/status/v1",
@@ -85,6 +89,13 @@ vi.mock("./config.js", () => ({
 					...(configState.useProgrammaticConfig ? { useProgrammaticConfig: true } : {}),
 					warnings: configState.warnings,
 				},
+}))
+
+// The real gateway address matcher runs; only the environment-derived inputs are stubbed.
+vi.mock("./gateway.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./gateway.js")>()),
+	buildBuiltinGatewayServer: () => gatewayState.server,
+	getGatewayAddresses: () => gatewayState.addresses,
 }))
 
 vi.mock("../../config.js", () => ({
@@ -167,6 +178,8 @@ describe("upstream MCP adapter facade", () => {
 		cliState.noApprove = undefined
 		cliState.plan = false
 		projectTrust.trusted = true
+		gatewayState.server = undefined
+		gatewayState.addresses = ["https://api.cast.ai/mcp"]
 		planning.currentProfile = undefined
 		permissionState.mode = undefined
 		readOnlyState.wireNames.clear()
@@ -271,6 +284,85 @@ describe("upstream MCP adapter facade", () => {
 		await start(harness)
 
 		expect(upstream.options).toEqual({ config: configState.config })
+	})
+
+	describe("built-in gateway injection", () => {
+		const gatewayServer = {
+			name: "kimchi-mcp-gateway",
+			entry: { url: "https://api.cast.ai/mcp", headers: { Authorization: "Bearer test" } },
+		}
+
+		it("injects the enabled gateway server and switches to programmatic config", async () => {
+			configState.config = { mcpServers: { docs: { url: "https://example.test/mcp" } } }
+			configState.configPath = "/tmp/mcp.json"
+			gatewayState.server = gatewayServer
+			const harness = createExtensionApi()
+
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+
+			expect(upstream.options).toEqual({
+				config: {
+					mcpServers: {
+						docs: { url: "https://example.test/mcp" },
+						"kimchi-mcp-gateway": gatewayServer.entry,
+					},
+				},
+			})
+		})
+
+		it("keeps file-backed mode when the gateway resource is disabled", async () => {
+			configState.config = { mcpServers: { docs: { url: "https://example.test/mcp" } } }
+			configState.configPath = "/tmp/mcp.json"
+			const harness = createExtensionApi()
+
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+
+			expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
+		})
+
+		it("skips the built-in when a configured server already uses a gateway address", async () => {
+			configState.config = { mcpServers: { manual: { url: "https://api.eu.cast.ai/mcp" } } }
+			configState.configPath = "/tmp/mcp.json"
+			gatewayState.server = gatewayServer
+			// Production derives every region's gateway URL — see gateway.test.ts.
+			gatewayState.addresses = ["https://api.cast.ai/mcp", "https://api.eu.cast.ai/mcp"]
+			const harness = createExtensionApi()
+
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+
+			expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
+		})
+
+		it("injects the gateway into untrusted projects as a user-level server", async () => {
+			projectTrust.trusted = false
+			gatewayState.server = gatewayServer
+			const harness = createExtensionApi()
+
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+
+			expect(upstream.options).toEqual({
+				config: { mcpServers: { "kimchi-mcp-gateway": gatewayServer.entry } },
+			})
+		})
+
+		it("lets caller servers override the injected gateway by name", async () => {
+			gatewayState.server = gatewayServer
+			const harness = createExtensionApi()
+
+			createKimchiMcpAdapterExtension({
+				cwd: "/tmp",
+				callerServers: { "kimchi-mcp-gateway": { url: "https://ide.local/mcp" } },
+			})(harness.api)
+			await start(harness)
+
+			expect(upstream.options).toEqual({
+				config: { mcpServers: { "kimchi-mcp-gateway": { url: "https://ide.local/mcp" } } },
+			})
+		})
 	})
 
 	it("suppresses all model-facing MCP tools for an empty configuration", async () => {

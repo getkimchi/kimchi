@@ -21,6 +21,7 @@ import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { observeToolFiles } from "../work-attribution/file-observations.js"
 import { loadKimchiMcpConfig } from "./config.js"
+import { buildBuiltinGatewayServer, getGatewayAddresses, hasGatewayAddress } from "./gateway.js"
 import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
 import {
 	brandMcpAdapterOwnedToolResult,
@@ -309,10 +310,23 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 				...(explicitTrust === undefined ? {} : { explicitTrust }),
 			})
 			const selectedResult = projectTrusted ? projectResult : userResult
-			const config = options.callerServers
+			// The built-in gateway is a user-level server: injected after the
+			// trust-based selection, so it is present in untrusted projects too.
+			// A user-configured server at a gateway address wins over it.
+			const gatewayServer = buildBuiltinGatewayServer()
+			const injectedServers: Record<string, ServerEntry> = {}
+			if (gatewayServer !== undefined && !hasGatewayAddress(selectedResult.config, getGatewayAddresses())) {
+				injectedServers[gatewayServer.name] = gatewayServer.entry
+			}
+			const hasInjectedServers = options.callerServers !== undefined || Object.keys(injectedServers).length > 0
+			const config = hasInjectedServers
 				? {
 						...selectedResult.config,
-						mcpServers: { ...selectedResult.config.mcpServers, ...options.callerServers },
+						mcpServers: {
+							...selectedResult.config.mcpServers,
+							...injectedServers,
+							...options.callerServers,
+						},
 					}
 				: selectedResult.config
 			const { warnings: oauthWarnings } = migrateLegacyOAuthCredentials(config, { cwd })
@@ -326,7 +340,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			const installedPolicy = createMcpToolSurfacePolicy(config)
 			policy = installedPolicy
 			const adapterOptions: McpAdapterOptions =
-				options.callerServers || selectedResult.useProgrammaticConfig
+				hasInjectedServers || selectedResult.useProgrammaticConfig
 					? { config }
 					: selectedResult.configPath
 						? { configPath: selectedResult.configPath }
