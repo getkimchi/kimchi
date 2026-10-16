@@ -52,9 +52,11 @@ but are only drained by the next fresh run).
   stock Earendil flow runs unchanged (the kimchi branding/disclaimer text is
   conditional on the hook being present). The disclaimer/menu copy states
   that a private-gist upload (via the user's own `gh` account) happens only
-  when the user opts to include a transcript. Tracking: none yet — upstream
-  candidates (scrub/destination seams) still need an issue filed before this
-  patch ships; removal criterion: upstream exposes both seams natively.
+  when the user opts to include a transcript. Tracking: none — the
+  scrubbers, the gist/issue delivery, and the kimchi branding are a
+  kimchi-specific feature, so no upstream issue applies. Removal criterion:
+  upstream exposes scrub and destination seams natively (then the patch is
+  reduced to thin adapters instead of a fork of the flow).
 - **DROPPED — triggerTurn `before_agent_start` mirror + `_systemPromptOverride`
   preservation hunks.** Native in 1.2: `_startRun({ messageType: "custom" })` fires
   `emitBeforeAgentStart`, and extension `systemPrompt` results become a

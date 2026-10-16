@@ -7,6 +7,11 @@
 #   selector and remaining runtime/UI hunks are still publication pending; no
 #   upstream issue or PR has been filed for those.
 # Changes:
+#   - Root-index re-exports of getQuickJSWasmPath/setEmbeddedQuickJSWasmPath
+#     (and getThemesDir) from dist/config, so a host's compiled binary entry
+#     can embed quickjs.wasm via a Bun file import and register it without a
+#     deep, exports-blocked dist import. Tracking: publication pending (same
+#     bucket as other pending hunks above).
 #   - Kimchi CLI/provider defaults, forced compaction (force=true
 #     keepRecentTokens=0 retry), model selection, extension UI helpers, and
 #     compact visuals. NOTE: the 0.85.1-era "extension-triggered prompt
@@ -155,6 +160,11 @@
 # Removal: remove the selector adapter when the pinned Pi release provides equivalent rendering extensibility or native capability columns. Remove the tools/bash.js bounded-termination hunk when the pinned Pi release ships equivalent bounded abort cleanup (upstream: earendil-works/pi#10929); keep the Kimchi regression tests in src/extensions/bash-background/ after removal. Remove other runtime/UI hunks when upstream provides equivalent APIs or Kimchi no longer needs the branded behavior. Remove trust hunks when Pi provides native trust-scan extensibility or Kimchi adopts Pi's config-directory layout. Keep trust resources synchronized with `TRUST_REQUIRING_PROJECT_RESOURCES` in `src/project-scope-trust.ts` until then.
 # History: patches/CHANGELOG.md.
 #
+#   - Bug-report zip archives created with mode 0600 (writeZipArchive +
+#     trailing chmod): plain writeFile under the process umask (0644) leaks
+#     transcripts/diagnostics to other local users; matches upstream's 1.0.x
+#     sensitive-file hardening. Tracking: publication pending, same bucket as
+#     other pending hunks.
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index ec17d54377ea8ff8d27a338069809cc9f91e46d2..e97f50e3af153f66a5a37cf59989f0c57bf64c8a 100644
 --- a/dist/cli/args.js
@@ -1143,6 +1153,30 @@ index 55624605ababf2f1f129e9963cdbbe3ca27f5566..5d5f70ae62bf0e160567cf1f2b715154
      while (true) {
          const agentsSkillsDir = join(currentDir, ".agents", "skills");
          if (agentsSkillsDir !== userAgentsSkillsDir && existsSync(agentsSkillsDir)) {
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 3821d9f41564a68e990d233b260427d6a5681f42..32545fbb3d8a7b049666f05b7db166f2490860d9 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -1,5 +1,5 @@
+ export { type Args, parseArgs } from "./cli/args.ts";
+-export { CONFIG_DIR_NAME, getAgentDir, getDocsPath, getExamplesPath, getPackageDir, getReadmePath, VERSION, } from "./config.ts";
++export { CONFIG_DIR_NAME, getAgentDir, getDocsPath, getExamplesPath, getPackageDir, getReadmePath, getQuickJSWasmPath, setEmbeddedQuickJSWasmPath, getThemesDir, VERSION, } from "./config.ts";
+ export { AgentSession, type AgentSessionConfig, type AgentSessionEvent, type AgentSessionEventListener, type ModelCycleResult, type ParsedSkillBlock, type PromptOptions, parseSkillBlock, type SessionStats, } from "./core/agent-session.ts";
+ export { readStoredCredential } from "./core/auth-storage.ts";
+ export type { CacheWarmingDecision, CacheWarmingStatus } from "./core/cache-warmer.ts";
+diff --git a/dist/index.js b/dist/index.js
+index ab5cfccc3a90939e533b9118122189507a7af326..004f07bae5da2963f9379b41b449f08142a5b15e 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1,7 +1,7 @@
+ // Core session management
+ export { parseArgs } from "./cli/args.js";
+ // Config paths
+-export { CONFIG_DIR_NAME, getAgentDir, getDocsPath, getExamplesPath, getPackageDir, getReadmePath, VERSION, } from "./config.js";
++export { CONFIG_DIR_NAME, getAgentDir, getDocsPath, getExamplesPath, getPackageDir, getReadmePath, getQuickJSWasmPath, setEmbeddedQuickJSWasmPath, getThemesDir, VERSION, } from "./config.js";
+ export { AgentSession, parseSkillBlock, } from "./core/agent-session.js";
+ export { readStoredCredential } from "./core/auth-storage.js";
+ // Compaction
 diff --git a/dist/modes/interactive/bug-report.js b/dist/modes/interactive/bug-report.js
 index 3918684c7c71d493d977745c8e86d5b7bcb843e1..6231c0eb01399ae1001f73e8c0fddb8e37173ac2 100644
 --- a/dist/modes/interactive/bug-report.js
@@ -1702,3 +1736,24 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..ec6efe0ff9f32f1793e4aabf3748c5cc
                  this.showStatus(`Session exported to: ${filePath}`);
              }
              else {
+diff --git a/dist/utils/zip.js b/dist/utils/zip.js
+index 3068af95e4a5b64bb5556ae316cb2021a696a06a..13fbaa87923e0735a8fb7f600c5cf0849fab6ad9 100644
+--- a/dist/utils/zip.js
++++ b/dist/utils/zip.js
+@@ -1,4 +1,4 @@
+-import { writeFile } from "node:fs/promises";
++import { chmod, writeFile } from "node:fs/promises";
+ import { crc32, deflateRawSync } from "node:zlib";
+ function dosDateTime(date) {
+     return {
+@@ -55,6 +55,9 @@ function createZipArchive(entries) {
+     return Buffer.concat([...files, centralDirectory, end]);
+ }
+ export function writeZipArchive(filePath, entries) {
+-    return writeFile(filePath, createZipArchive(entries));
++    // Bug-report archives can contain transcripts and diagnostics — create with
++    // owner-only permissions, matching upstream's 1.0.x sensitive-file hardening.
++    // Trailing chmod covers pre-existing files, whose mode writeFile leaves alone.
++    return writeFile(filePath, createZipArchive(entries), { mode: 0o600 }).then(() => chmod(filePath, 0o600));
+ }
+ //# sourceMappingURL=zip.js.map
