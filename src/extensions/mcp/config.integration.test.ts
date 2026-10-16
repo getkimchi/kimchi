@@ -113,7 +113,7 @@ describe("MCP configuration with the real upstream loader", () => {
 		writeFileSync(join(manifestDir, "package.json"), JSON.stringify({ piConfig: { configDir: ".custom-host" } }))
 		vi.stubEnv("PI_PACKAGE_DIR", manifestDir)
 		try {
-			expect(getProjectPiConfigPath(cwd)).toBe(join(cwd, ".custom-host", "mcp.json"))
+			expect(getProjectPiConfigPath(cwd)).toBe(join(cwd, ".custom-host", "mcp-adapter.json"))
 		} finally {
 			vi.stubEnv("PI_PACKAGE_DIR", process.cwd())
 		}

@@ -35,7 +35,9 @@ function canUseTerminalOsc(args: string[]): boolean {
 }
 
 // OSC 10/11 enforce theme-specified fg/bg over the terminal's own colors.
-// Applied when the user has opted into a theme that defines oscFg/oscBg.
+// Applied when the user has opted into a theme that defines oscFg/oscBg in its
+// `vars` (upstream pi's theme schema forbids non-THEME_TOKENS keys under `colors`,
+// so these kimchi-specific colors live alongside the palette variables).
 // Any theme without these values (including kimchi-minimal) lets the terminal
 // own its bg/fg.
 //
@@ -59,12 +61,12 @@ function getThemeColors(themeName: string): { fgHex: string; bgHex: string } | n
 		const vars: Record<string, string> = theme.vars ?? {}
 		const resolveVar = (val: string): string => vars[val] ?? val
 
-		const oscBgRaw: string = theme.colors?.oscBg ?? ""
+		const oscBgRaw: string = theme.vars?.oscBg ?? ""
 		if (!oscBgRaw) return null
 		const bgHex = resolveVar(oscBgRaw)
 		if (!bgHex?.startsWith("#")) return null
 
-		const oscFgRaw: string = theme.colors?.oscFg ?? ""
+		const oscFgRaw: string = theme.vars?.oscFg ?? ""
 		const fgHex = oscFgRaw ? resolveVar(oscFgRaw) : ""
 
 		return { fgHex, bgHex }

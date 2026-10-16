@@ -4,7 +4,6 @@ import { isRegionId, REGION_ENV, REGIONS, SELF_HOSTED_URL_ENV, selectableRegions
 import { isTelemetryPolicyEnforced, readEffectiveTelemetryConfig, usageReportingPolicy } from "../telemetry-policy.js"
 
 const TELEMETRY_ENV = "KIMCHI_TELEMETRY_ENABLED"
-const WHEEL_SCROLL_ENV = "KIMCHI_WHEEL_SCROLL_LINES"
 
 /**
  * Allowlist of config keys writable via `kimchi config set` — deliberately
@@ -16,7 +15,6 @@ interface WritableKeyDef {
 	parse: (raw: string) => number | null
 	write: (value: number) => void
 	describeValue: string
-	envKey?: string
 	defaultDisplay: string
 }
 
@@ -28,8 +26,7 @@ const WRITABLE_KEYS: Record<string, WritableKeyDef> = {
 		},
 		write: (lines) => writeTuiWheelScrollLines(lines),
 		describeValue: "an integer ≥ 1",
-		envKey: WHEEL_SCROLL_ENV,
-		defaultDisplay: "unset (default 1)",
+		defaultDisplay: 'unset (default "auto")',
 	},
 }
 
@@ -179,9 +176,6 @@ function handleSet(args: string[]): number {
 	}
 	def.write(value)
 	console.log(`${key} = ${value} (written to global config)`)
-	if (def.envKey && process.env[def.envKey]) {
-		console.warn(`Note: ${def.envKey}=${process.env[def.envKey]} is set and overrides this value.`)
-	}
 	return 0
 }
 
@@ -197,10 +191,6 @@ function handleGet(args: string[]): number {
 		console.error(`kimchi config get: unknown or read-only key "${key}"`)
 		printWritableKeys()
 		return 2
-	}
-	if (def.envKey && process.env[def.envKey]) {
-		console.log(`${key}: ${process.env[def.envKey]} (from ${def.envKey}, overrides config)`)
-		return 0
 	}
 	// Dot-walk the merged config — project config (trusted) wins over global.
 	let current: unknown = loadConfig()

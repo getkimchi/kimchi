@@ -60,7 +60,12 @@ async function expectOneshotLifecycleToExit(): Promise<void> {
 		mkdirSync(workDir, { recursive: true })
 		mkdirSync(sessionDir, { recursive: true })
 		mkdirSync(fermentsDir, { recursive: true })
-		writeKimchiConfig(homeDir, fake.baseUrl)
+		writeKimchiConfig(homeDir, fake.baseUrl, [
+			// Large window: upstream pi auto-compaction (which makes extra summary calls
+			// that would consume task-turn script entries) stays out of this
+			// lifecycle scenario.
+			{ ...DEFAULT_MODEL, contextWindow: 512_000 },
+		])
 
 		const sessionPath = join(sessionDir, "main.jsonl")
 		const result = await runOneshot({
@@ -294,7 +299,7 @@ function passingGates(ids: string[]): Array<{ id: string; verdict: "pass"; ratio
 	}))
 }
 
-function writeKimchiConfig(homeDir: string, fakeBaseUrl: string): void {
+function writeKimchiConfig(homeDir: string, fakeBaseUrl: string, models = resolveModels(undefined)): void {
 	const configDir = join(homeDir, ".config", "kimchi")
 	const agentDir = join(configDir, "harness")
 	mkdirSync(agentDir, { recursive: true })
@@ -326,7 +331,7 @@ function writeKimchiConfig(homeDir: string, fakeBaseUrl: string): void {
 						api: "openai-completions",
 						authHeader: true,
 						headers: { "User-Agent": "kimchi/smoke-test" },
-						models: resolveModels(undefined).map((model) => ({
+						models: models.map((model) => ({
 							id: model.slug,
 							name: model.displayName,
 							reasoning: model.reasoning,

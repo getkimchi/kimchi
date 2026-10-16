@@ -72,7 +72,9 @@ test("uses Kimchi product language in MCP setup", async ({ terminal }) => {
 		terminal,
 		{
 			artifactName: "mcp-setup-branding",
-			mcp: {},
+			// Eager so the startup banner (MCP: 1 servers connected) appears —
+			// adapter 5.3 defaults servers to lazy, which never prints it.
+			mcp: { lifecycle: "eager" },
 			responses: [],
 		},
 		async (_fixture, trace) => {
@@ -96,7 +98,9 @@ test("advertises a truthful Kimchi-branded MCP gateway to the model", async ({ t
 		terminal,
 		{
 			artifactName: "mcp-model-contract-branding",
-			mcp: {},
+			// Eager so the startup banner (MCP: 1 servers connected) appears —
+			// adapter 5.3 defaults servers to lazy, which never prints it.
+			mcp: { lifecycle: "eager" },
 			responses: [
 				{
 					toolCalls: [

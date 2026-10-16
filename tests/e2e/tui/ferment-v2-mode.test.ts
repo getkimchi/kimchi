@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import { fullText, STARTUP_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
+import { fullText, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
 import type { FakeResponseRequest, FakeResponseScript } from "./support/fake-openai-server.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
@@ -181,7 +181,13 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 	}
 	const planningStopResponse: FakeResponseScript = {
 		stream: ["The plan is ready; implementation still remains."],
-		usage: { prompt_tokens: 7_500, completion_tokens: 0 },
+		// Trigger auto-compaction exactly once at this turn boundary. In 1.3.0
+		// the run-prepare check estimates the full projected context (system
+		// prompt included, ~10k tokens), so the old 7,500-token trigger now sits
+		// *below* the constant floor and compacts at every turn instead of once.
+		// The window (20k) keeps the floor under threshold (19k); this usage
+		// crosses it while staying under the ferment budget (also 20k).
+		usage: { prompt_tokens: 19_500, completion_tokens: 0 },
 	}
 	const compactionResponse: FakeResponseScript = {
 		stream: [`${COMPACTION_SUMMARY_MARKER}: the Ferment V2 plan is ready and implementation remains.`],
@@ -234,6 +240,9 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 		{
 			artifactName: "ferment-v2-mode",
 			seedHome: (homeDir) => enableFermentV2Mode(homeDir, { reserveTokens: 1_000, keepRecentTokens: 1 }),
+			// 20k window keeps the ~10k-token projection floor below threshold
+			// (19k) so only the scripted 19.5k usage crosses: one compaction.
+			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 20_000, maxTokens: 1024 }],
 			responses: [
 				continueEvaluationResponse,
 				metEvaluationResponse,
@@ -261,8 +270,11 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 			})
 			trace.step("model received canonical Ferment V2 context")
 			await waitForText(terminal, "Implement feature A", { timeoutMs: 5_000 })
-			await waitForText(terminal, "The plan is ready; implementation still remains.", { timeoutMs: 5_000 })
-			await waitForText(terminal, "Compacted from", { timeoutMs: 5_000 })
+			// 1.3.0_rechecks compaction at run-prepare time, interposing the
+			// compaction cycle between the planning stream's chunks — these
+			// boundaries need the stream budget, not a conversational one.
+			await waitForText(terminal, "The plan is ready; implementation still remains.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "Compacted from", { timeoutMs: STREAM_TIMEOUT_MS })
 
 			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
 			terminal.submit("/ferment-v2")
@@ -291,6 +303,9 @@ test("experimental Ferment V2 continues after manual compaction interrupts a tur
 		{
 			artifactName: "ferment-v2-mode-manual-compaction",
 			seedHome: (homeDir) => enableFermentV2Mode(homeDir, { reserveTokens: 1_000, keepRecentTokens: 1 }),
+			// Same 20k-window guard as the auto-compaction test: the /compact
+			// below must be the only summarization request in the wire.
+			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 20_000, maxTokens: 1024 }],
 			responses: [
 				{
 					match: isFermentV2EvaluatorRequest,
@@ -358,7 +373,8 @@ test("experimental Ferment V2 continues after manual compaction interrupts a tur
 			await waitForCookingAnimation(terminal)
 			await new Promise((resolve) => setTimeout(resolve, 750))
 			terminal.submit("/compact")
-			await waitForText(terminal, "Work is underway before manual compaction.", { timeoutMs: 5_000 })
+			// Same upstream pi compaction-cycle budget as the auto-compaction test above.
+			await waitForText(terminal, "Work is underway before manual compaction.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForText(terminal, "Compacted from", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
 
@@ -1141,6 +1157,11 @@ async function waitForCookingAnimation(terminal: Parameters<typeof fullText>[0])
 		"Cooking",
 		"Braising",
 		"Tossing everything together",
+		// upstream pi starts auto-compaction at run-prepare time, so the turn's
+		// first display can be the compaction indicator before any cooking
+		// frame appears; both prove the ferment turn is progressing.
+		"Auto-compacting",
+		"Compacting",
 	]
 	const deadline = Date.now() + 1_000
 	let previousFrame: string | undefined

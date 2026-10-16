@@ -111,6 +111,7 @@ describe("binary smoke tests", () => {
 	})
 
 	it("auto-names persisted sessions from the first user prompt", () => {
+		// upstream pi startup + dummy-provider retry takes ~7s; keep well above vitest's 5s default.
 		const before = new Set(listSessionFiles())
 		const prompt = "Explore 3 random files"
 		runBinary({
@@ -125,7 +126,7 @@ describe("binary smoke tests", () => {
 			.flatMap(readSessionEntries)
 
 		expect(newEntries).toContainEqual(expect.objectContaining({ type: "session_info", name: prompt }))
-	})
+	}, 20_000)
 
 	describe("runtime config autoloading", () => {
 		let workDir: string

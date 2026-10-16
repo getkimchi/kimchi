@@ -98,15 +98,14 @@ describe("UserMessageComponent prototype compatibility", () => {
 		expect(typeof proto.render).toBe("function")
 	})
 
-	it("instance has contentBox field", () => {
+	it("instance's first child is the Markdown component (upstream pi: no Box wrapper)", () => {
 		const instance = new UserMessageComponent("test")
-		expect((instance as any).contentBox).toBeDefined()
-	})
-
-	it("contentBox has paddingX as a number", () => {
-		const instance = new UserMessageComponent("test")
-		const box = (instance as any).contentBox
-		expect(typeof box.paddingX).toBe("number")
+		const md = (instance as any).children?.[0]
+		expect(md).toBeDefined()
+		expect(typeof md.paddingY).toBe("number")
+		expect(typeof md.paddingX).toBe("number")
+		expect(typeof md.defaultTextStyle).toBe("object")
+		expect(typeof md.invalidate).toBe("function")
 	})
 
 	it("render() returns a non-empty string array", () => {

@@ -115,6 +115,9 @@ describe("collectReadOnlyMcpWireNames", () => {
 	it("ignores metadata from another endpoint or an expired cache", () => {
 		const cache = setCache(config, { alpha: [{ name: "get_issue" }], beta: [{ name: "get_issue" }] })
 		cache.servers.alpha.configHash = "another-endpoint"
+		// adapter 5.x: entries without a server-declared TTL stay valid until the
+		// next connect refresh; expiry is driven by ttlMs now.
+		cache.servers.beta.ttlMs = 1000
 		cache.servers.beta.cachedAt = Date.now() - 8 * 24 * 60 * 60 * 1000
 		expect(collectReadOnlyMcpWireNames(config)).toEqual([])
 	})

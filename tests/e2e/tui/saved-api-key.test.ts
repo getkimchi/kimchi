@@ -13,7 +13,10 @@ test("a rejected saved Kimchi key stays synchronized while another provider can 
 		{
 			artifactName: "saved-api-key-rejected",
 			rejectedApiKeys: [rejectedKey],
-			models: [{ slug: "basic", displayName: "Test Model" }],
+			// Large window so upstream pi's bigger prompt preamble never trips the
+			// model-switch safe-window gate (which asks compact-or-new-session
+			// and intercepts the `Model: basic` status the test waits for).
+			models: [{ slug: "basic", displayName: "Test Model", contextWindow: 200_000 }],
 			responses: [{ stream: ["Other provider still works."] }],
 			env: { KIMCHI_API_KEY: "" },
 			seedHome(homeDir) {

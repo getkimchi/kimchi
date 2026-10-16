@@ -13,8 +13,9 @@
  *   the convention never applies — the explicit annotation wins.
  *
  * Annotations reach Kimchi through the adapter's persistent metadata cache
- * (the dependency patch retains them when serializing live tools). Wire names
- * are computed exactly as the adapter registers them, from the same config.
+ * (upstream caches tool annotations natively as of pi-mcp-adapter 5.x; the
+ * dependency patch only strips MCP-UI metadata). Wire names are computed
+ * exactly as the adapter registers them, from the same config.
  */
 
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"

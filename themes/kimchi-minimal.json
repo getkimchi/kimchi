@@ -14,7 +14,9 @@
 		"dim-gray": "#666666",
 		"dark-gray": "#505050",
 		"light-gray": "#a0a0a0",
-		"text-light": "#e5e5e7"
+		"text-light": "#e5e5e7",
+		"oscFg": "",
+		"oscBg": ""
 	},
 	"colors": {
 		"accent": "orange-500",
@@ -67,9 +69,7 @@
 		"thinkingMedium": "gray",
 		"thinkingHigh": "dim-gray",
 		"thinkingXhigh": "light-gray",
-		"bashMode": "lime-500",
-		"oscFg": "",
-		"oscBg": ""
+		"bashMode": "lime-500"
 	},
 	"export": {
 		"pageBg": "#18181e",

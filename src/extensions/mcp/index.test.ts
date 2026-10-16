@@ -9,7 +9,7 @@ import { Type } from "typebox"
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import type * as CliArgs from "../../cli-args.js"
 import type * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
-import { createCommandContext, createContext } from "../__mocks__/context.js"
+import { createCommandContext, createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { observeToolFiles } from "../work-attribution/file-observations.js"
 import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary.js"
@@ -506,7 +506,7 @@ describe("upstream MCP adapter facade", () => {
 		readOnlyState.wireNames.add("docs_get_issue")
 		upstream.api?.registerTool(tool("docs_get_issue", "Read"))
 		upstream.api?.registerTool(tool("docs_write", "Write"))
-		const ctx = createContext()
+		const ctx = createToolContext()
 		for (const registered of harness.getRegisteredTools())
 			await registered.execute(registered.name, {}, undefined, undefined, ctx)
 		expect(observeToolFiles).toHaveBeenCalledExactlyOnceWith(ctx, "docs_write", "mcp", expect.any(Function))
@@ -532,7 +532,7 @@ describe("upstream MCP adapter facade", () => {
 			write: { tool: "docs_write", args: {} },
 			install: { action: "install", url: "https://example.test/mcp" },
 		}
-		const ctx = createContext()
+		const ctx = createToolContext()
 		for (const [id, params] of Object.entries(calls))
 			await harness.getRegisteredTool("mcp").execute(id, params, undefined, undefined, ctx)
 		expect(vi.mocked(observeToolFiles).mock.calls.map((call) => call[1])).toEqual([
@@ -559,7 +559,7 @@ describe("upstream MCP adapter facade", () => {
 		git("config", "user.email", "mcp@example.invalid")
 		git("config", "commit.gpgSign", "false")
 		git("commit", "-q", "--allow-empty", "-m", "base")
-		const ctx = createContext({ cwd, sessionManager: { getSessionId: () => "mcp-write" } })
+		const ctx = createToolContext({ cwd, sessionManager: { getSessionId: () => "mcp-write" } })
 		// Pi reports the assistant response before running its tool calls; that pins each call to its request.
 		const work = createExtensionApi()
 		createWorkAttributionExtension()(work.api)
@@ -625,13 +625,13 @@ describe("upstream MCP adapter facade", () => {
 
 		const direct = harness.getRegisteredTools().find(({ name }) => name === "docs_get_issue")
 		const gateway = harness.getRegisteredTools().find(({ name }) => name === "mcp")
-		const directResult = await direct?.execute("direct", {}, undefined, undefined, createContext())
+		const directResult = await direct?.execute("direct", {}, undefined, undefined, createToolContext())
 		const gatewayResult = await gateway?.execute(
 			"gateway",
 			{ tool: "get_issue", args: {} },
 			undefined,
 			undefined,
-			createContext(),
+			createToolContext(),
 		)
 
 		expect(directExecute).not.toHaveBeenCalled()
@@ -667,13 +667,13 @@ describe("upstream MCP adapter facade", () => {
 
 		const direct = harness.getRegisteredTools().find(({ name }) => name === "docs_get_issue")
 		const gateway = harness.getRegisteredTools().find(({ name }) => name === "mcp")
-		await direct?.execute("direct", {}, undefined, undefined, createContext())
+		await direct?.execute("direct", {}, undefined, undefined, createToolContext())
 		const gatewayResult = await gateway?.execute(
 			"gateway",
 			{ tool: "get_issue", args: {} },
 			undefined,
 			undefined,
-			createContext(),
+			createToolContext(),
 		)
 
 		expect(readOnlyExecute).toHaveBeenCalledOnce()
@@ -696,7 +696,7 @@ describe("upstream MCP adapter facade", () => {
 		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
 
 		const gateway = harness.getRegisteredTools().find(({ name }) => name === "mcp")
-		const result = await gateway?.execute("gateway", { action: "list" }, undefined, undefined, createContext())
+		const result = await gateway?.execute("gateway", { action: "list" }, undefined, undefined, createToolContext())
 
 		expect(gatewayExecute).toHaveBeenCalledOnce()
 		expect(result).toMatchObject({ content: [{ type: "text", text: "ok" }] })
@@ -713,7 +713,7 @@ describe("upstream MCP adapter facade", () => {
 		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
 
 		const gateway = harness.getRegisteredTools().find(({ name }) => name === "mcp")
-		const result = await gateway?.execute("gateway", { action: "list" }, undefined, undefined, createContext())
+		const result = await gateway?.execute("gateway", { action: "list" }, undefined, undefined, createToolContext())
 
 		expect(gatewayExecute).not.toHaveBeenCalled()
 		expect(result).toMatchObject({ isError: true })
@@ -734,7 +734,7 @@ describe("upstream MCP adapter facade", () => {
 			{ tool: "docs_get_issue", server: "docs", args: {} },
 			undefined,
 			undefined,
-			createContext(),
+			createToolContext(),
 		)
 
 		expect(gatewayExecute).toHaveBeenCalledOnce()
@@ -993,7 +993,7 @@ describe("upstream MCP adapter facade", () => {
 		oauthMigration.warnings = ["legacy OAuth entry conflicts with the upstream layout"]
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
-		const ctx = createContext()
+		const ctx = createToolContext()
 
 		await harness.getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx)
 

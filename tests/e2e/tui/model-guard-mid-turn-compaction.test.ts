@@ -36,7 +36,8 @@ function isSummarizationRequest(body: unknown): boolean {
 	const text = JSON.stringify(body ?? "")
 	return (
 		text.includes("structured context checkpoint summary") ||
-		text.includes("PREFIX of a turn that was too large to keep")
+		// upstream pi rewrote the turn-prefix prompt (was "PREFIX of a turn that was too large to keep")
+		text.includes("Later messages are stored separately and do not need to be reconstructed")
 	)
 }
 

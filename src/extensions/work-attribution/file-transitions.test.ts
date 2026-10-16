@@ -23,7 +23,7 @@ import type {
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { createContext } from "../__mocks__/context.js"
+import { createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { savedWorkSummary } from "../__mocks__/work-summary.js"
 import toolRenderingExtension from "../tool-rendering.js"
@@ -63,7 +63,7 @@ function snapshots() {
 	return join(root, "agent", "work-attribution", "objects", createHash("sha256").update(repository).digest("hex"))
 }
 function context(session = "original") {
-	return createContext({ cwd: repo, sessionManager: { getSessionId: () => session } })
+	return createToolContext({ cwd: repo, sessionManager: { getSessionId: () => session } })
 }
 function rows() {
 	const dir = join(root, "agent", "work-attribution")

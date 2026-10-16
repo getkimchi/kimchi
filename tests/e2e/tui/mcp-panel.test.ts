@@ -57,8 +57,13 @@ for (const scope of ["global", "legacy-project"]) {
 				await waitForText(terminal, "Direct tools updated for this session.", { timeoutMs: STREAM_TIMEOUT_MS })
 				trace.step("echo toggled to direct and saved")
 
+				// pi-mcp-adapter 5.3 persists direct-tool overrides into the
+				// colocated adapter overlay (mcp-adapter.json), not the imported
+				// mcp.json (2.34 wrote in place).
 				const configPath =
-					scope === "legacy-project" ? join(fixture.workDir, ".kimchi", "mcp.json") : fixture.mcp.configPath
+					scope === "legacy-project"
+						? join(fixture.workDir, ".kimchi", "mcp-adapter.json")
+						: fixture.mcp.configPath.replace(/mcp\.json$/, "mcp-adapter.json")
 				const saved = JSON.parse(readFileSync(configPath, "utf-8")) as {
 					mcpServers?: Record<string, { directTools?: unknown }>
 				}

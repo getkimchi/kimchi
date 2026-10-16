@@ -175,7 +175,12 @@ test("background bash: repeated completion attempts with a live process each req
 			// carries each continuation exactly once (earlier requests also
 			// replay them, so the full history cannot be counted directly).
 			await waitForTurnToSettle(fixture.fake.requests)
-			const lastMessages = (fixture.fake.requests.at(-1)?.body as { messages?: unknown[] } | undefined)?.messages ?? []
+			// Non-chat housekeeping calls can arrive after the final chat request;
+			// assert on the last chat completion specifically.
+			const lastChat = fixture.fake.requests.filter((request) =>
+				request.url.includes("/chat/completions"),
+			)
+			const lastMessages = (lastChat.at(-1)?.body as { messages?: unknown[] } | undefined)?.messages ?? []
 			const lastHistory = JSON.stringify(lastMessages)
 			expect(
 				lastHistory.split("Task completion requires a disposition for unresolved background bash processes").length - 1,

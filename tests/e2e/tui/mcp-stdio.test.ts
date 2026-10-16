@@ -354,7 +354,9 @@ test("returns MCP server status for an empty gateway call", async ({ terminal })
 		terminal,
 		{
 			artifactName: "mcp-empty-call-status",
-			mcp: {},
+			// eager: adapter 5.x defers lazy servers until first use, but this
+			// test asserts the status of *connected* servers ("1/1").
+			mcp: { lifecycle: "eager" },
 			responses: [status.response, modelReply("The empty MCP gateway call returned server status.")],
 		},
 		async (fixture, trace) => {
