@@ -42,10 +42,16 @@ const makeMockPi = (
 	} as unknown as ExtensionAPI
 }
 
+const mockIsDefaultToolEnabled = vi.fn((_name: string) => true)
+vi.mock("../../settings-watcher.js", () => ({
+	isDefaultToolEnabled: (name: string) => mockIsDefaultToolEnabled(name),
+}))
+
 // Reset module-level state before every test so runs are fully independent
 // even though the ESM module is evaluated once per VM.
 beforeEach(() => {
 	resetAll()
+	mockIsDefaultToolEnabled.mockReset().mockReturnValue(true)
 })
 
 describe("apply", () => {
@@ -87,6 +93,21 @@ describe("apply", () => {
 		// idle is not a planning profile: providers are only honoured while planning
 		apply("idle", "adhoc", pi)
 		expect(vi.mocked(pi.setActiveTools).mock.calls[1][0]).not.toContain("srv_get_issue")
+	})
+
+	it("respects defaultTools: `-write` keeps write out of registry-derived snapshots", () => {
+		// defaultTools:["-write"] deactivates write at session construction; a
+		// profile snapshot unioning getAllTools() must not re-activate it.
+		mockIsDefaultToolEnabled.mockImplementation((name) => name !== "write")
+		const pi = makeMockPi({ allTools: [{ name: "read" }, { name: "bash" }, { name: "write" }] })
+
+		apply("idle", "adhoc", pi)
+		expect(vi.mocked(pi.setActiveTools).mock.calls[0][0]).not.toContain("write")
+
+		apply("implementation-ferment", "ferment", pi)
+		// implementation merges the ferment catalog (which includes write) into
+		// the registry set; the defaultTools filter must win over both.
+		expect(vi.mocked(pi.setActiveTools).mock.calls[1][0]).not.toContain("write")
 	})
 
 	it("a provider registered on one pi never surfaces in another pi's snapshot", () => {

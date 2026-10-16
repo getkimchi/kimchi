@@ -26,6 +26,7 @@ import {
 import { writeConfigSetting } from "../config/settings.js"
 import type { ModelRequestMetadata } from "../http/instrument-fetch.js"
 import { isResourceEnabled } from "../resources/store.js"
+import { isDefaultToolEnabled } from "../settings-watcher.js"
 import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
 import { isHarnessSteer } from "./steer-marker.js"
@@ -595,16 +596,23 @@ export function createWorkAttributionExtension(
 			if (!isChild && !stopCosts) stopCosts = subscribeCostReconciliation()
 			pi.registerTool(createCommitTrackingBashTool(ctx))
 			// Main sessions use tool-rendering's decorated tools; isolated children need these native fallbacks.
-			pi.registerTool({
-				...createEditToolDefinition(ctx.cwd),
-				execute: (id, params, signal, update, executionCtx) =>
-					createTrackedEditTool(executionCtx, id).execute(id, params, signal, update),
-			})
-			pi.registerTool({
-				...createWriteToolDefinition(ctx.cwd),
-				execute: (id, params, signal, update, executionCtx) =>
-					createTrackedWriteTool(executionCtx, id).execute(id, params, signal, update),
-			})
+			// Respect the resolved defaultTools filter (-name exclusions) the same
+			// way upstream gates builtin registration, or these fallbacks would
+			// re-add a tool the user excluded.
+			if (isDefaultToolEnabled("edit")) {
+				pi.registerTool({
+					...createEditToolDefinition(ctx.cwd),
+					execute: (id, params, signal, update, executionCtx) =>
+						createTrackedEditTool(executionCtx, id).execute(id, params, signal, update),
+				})
+			}
+			if (isDefaultToolEnabled("write")) {
+				pi.registerTool({
+					...createWriteToolDefinition(ctx.cwd),
+					execute: (id, params, signal, update, executionCtx) =>
+						createTrackedWriteTool(executionCtx, id).execute(id, params, signal, update),
+				})
+			}
 		})
 		const initialized = new Set<string>()
 		const continuationEligible = new Set<string>()

@@ -45,6 +45,7 @@ import {
 // keeps passing unchanged (backward compatible).
 vi.mock("../../settings-watcher.js", () => ({
 	getCompactionEnabled: vi.fn(() => true),
+	isDefaultToolEnabled: () => true,
 }))
 
 // ─── Mock the dynamic require of engine.js in auto-compaction.ts ───────────────

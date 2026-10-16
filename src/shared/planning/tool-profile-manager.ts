@@ -38,6 +38,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
 import { isFermentOnlyToolName } from "../../extensions/ferment/tool-names.js"
 import { getDisabledToolNames } from "../../extensions/prompt-construction/tool-visibility.js"
+import { isDefaultToolEnabled } from "../../settings-watcher.js"
 import { getToolsForProfile, isAdhocOnlyToolName, type ToolProfile } from "./tool-catalog.js"
 import { getToolSessionScope } from "./tool-session-scope.js"
 
@@ -216,6 +217,12 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI, trigger: Profi
 		// criteria hidden when no UI is attached), undoing the cooperative vote.
 		allowedNames = allowedNames.filter((name) => !disabled.has(name))
 	}
+
+	// The `defaultTools` setting (`-name` modifiers) deactivates builtins at
+	// session construction (initialActiveToolNames); every snapshot must
+	// respect it, otherwise unioning `pi.getAllTools()` or the catalog
+	// re-surfaces tools (e.g. `write`) the user deactivated.
+	allowedNames = allowedNames.filter((name) => isDefaultToolEnabled(name))
 
 	debugToolSurface(() => {
 		// Diff sampled only when logging is on, so gated-off runs pay nothing.

@@ -4,7 +4,6 @@
 // No top-level await: `bun build --compile --bytecode` (and --minify) reject
 // TLA anywhere in the bundled graph, so startup is structured as an explicit
 // async main instead.
-import { MCP_KEYRING_HELPER_COMMAND } from "./extensions/mcp/keyring-recovery.js"
 
 // Embed codemode's QuickJS wasm in the compiled executable, the same way pi's own
 // bun entry does in dist/bun/runtime-setup.js. Without this, getQuickJSWasmPath()
@@ -15,6 +14,8 @@ import { MCP_KEYRING_HELPER_COMMAND } from "./extensions/mcp/keyring-recovery.js
 // This file is only compiled into the binary; the `with { type: "file" }` loader
 // attribute is a Bun build feature, not valid for Node-run sources.
 import quickjsWasmPath from "quickjs-wasi/quickjs.wasm" with { type: "file" }
+import { MCP_KEYRING_HELPER_COMMAND } from "./extensions/mcp/keyring-recovery.js"
+
 process.env.KIMCHI_QUICKJS_WASM_PATH = quickjsWasmPath
 
 async function main(): Promise<void> {
