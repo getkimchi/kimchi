@@ -1,3 +1,4 @@
+import JSZip from "jszip"
 import { describe, expect, it } from "vitest"
 import { extractPptx } from "../extractors/pptx.js"
 import { parseDeckMarkdown, writePptx } from "./pptx.js"
@@ -108,6 +109,19 @@ describe("writePptx round trips through the extractor", () => {
 		const a = await extractPptx(await writePptx(spec))
 		const b = await extractPptx(await writePptx(spec))
 		expect(a).toEqual(b)
+	})
+
+	it("emits no Content_Types Override for a missing part (Keynote rejects orphans)", async () => {
+		const spec = parseDeckMarkdown("# A\n\n- one\n\n---\n\n# B\n\n- two\n")
+		const zip = await JSZip.loadAsync(await writePptx(spec))
+		const types = (await zip.file("[Content_Types].xml")?.async("string")) ?? ""
+		const orphans: string[] = []
+		for (const match of types.matchAll(/<Override PartName="([^"]+)"[^>]*\/>/g)) {
+			const part = match[1].replace(/^\//, "")
+			if (!zip.file(part)) orphans.push(match[1])
+		}
+		// pptxgenjs declares slideMaster{N} per slide but only writes slideMaster1.
+		expect(orphans).toEqual([])
 	})
 })
 

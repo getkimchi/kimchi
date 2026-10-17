@@ -14,6 +14,7 @@
 
 import { existsSync, statSync } from "node:fs"
 import { extname, isAbsolute, normalize } from "node:path"
+import JSZip from "jszip"
 // pptxgenjs's shipped .d.ts (`export default` a class merged with `export as
 // namespace`) isn't constructable under NodeNext import resolution, so the
 // default import is cast through the minimal surface this writer uses. The
@@ -1183,6 +1184,26 @@ export async function writePptx(spec: DeckSpec, options: WriteOptions = {}): Pro
 		if (slide.notes.length > 0) s.addNotes(slide.notes.join("\n"))
 	}
 
+	/**
+	 * pptxgenjs declares a Content_Types Override for `slideMaster{N}` per slide but
+	 * only ever writes slideMaster1 — orphan Overrides that PowerPoint and
+	 * LibreOffice ignore and Keynote rejects with "file is invalid". Strip any
+	 * Override whose part is missing from the package before handing it over.
+	 */
+	async function stripOrphanContentTypes(bytes: Uint8Array): Promise<Uint8Array> {
+		const zip = await JSZip.loadAsync(bytes)
+		const typesFile = zip.file("[Content_Types].xml")
+		if (!typesFile) return bytes
+		const xml = await typesFile.async("string")
+		const partNames = new Set(Object.keys(zip.files).map((name) => (name.startsWith("/") ? name : `/${name}`)))
+		const cleaned = xml.replace(/<Override PartName="([^"]+)"[^>]*\/>/g, (entry, partName: string) =>
+			partNames.has(partName) ? entry : "",
+		)
+		if (cleaned === xml) return bytes
+		zip.file("[Content_Types].xml", cleaned)
+		return new Uint8Array(await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }))
+	}
+
 	const buffer = (await pptx.write({ outputType: "nodebuffer" })) as Buffer
-	return new Uint8Array(buffer)
+	return stripOrphanContentTypes(new Uint8Array(buffer))
 }
