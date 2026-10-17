@@ -1237,12 +1237,11 @@ export async function writePptx(spec: DeckSpec, options: WriteOptions = {}): Pro
 			}
 		}
 
-		// 4. chart fixes: dangling axis references, externalData, chartSpace
-		// boilerplate.
+		// 4. chart fixes: dangling axis references, chartSpace boilerplate, and
+		// the embedded workbook's malformed table part.
 		// pptxgenjs writes a third <c:axId> for bar charts that points at an axis
 		// it never defines (bar charts take exactly two) — strict importers like
 		// Keynote reject the whole chart part for the dangling reference.
-		const chartRelsDropped: string[] = []
 		for (const name of Object.keys(zip.files)) {
 			if (!/^ppt\/charts\/chart\d+\.xml$/.test(name)) continue
 			const file = zip.file(name)
@@ -1261,28 +1260,33 @@ export async function writePptx(spec: DeckSpec, options: WriteOptions = {}): Pro
 					? chart.replace(/(<c:date1904[^>]*\/>)/, '$1<c:lang val="en-US"/>')
 					: chart.replace(/(<c:chartSpace[^>]*>)/, '$1<c:lang val="en-US"/>')
 			}
-			// Keynote's chart importer fails on the embedded workbook pptxgenjs
-			// attaches (c:externalData → a minimal .xlsx with table parts) and
-			// flags the chart "unsupported". The chart's numCache already holds
-			// the complete data — drop the workbook reference and the chart
-			// imports as a native, editable chart everywhere.
-			chart = chart.replace(/<c:externalData[\s\S]*?<\/c:externalData>/g, "")
-			chart = chart.replace(/<c:externalData[^>]*\/>/g, "")
 			zip.file(name, chart)
-			// the chart's rels only carried the workbook reference — drop them
-			// along with the embedded workbook parts
-			const relsName = name.replace("ppt/charts/", "ppt/charts/_rels/") + ".rels"
-			const relsFile = zip.file(relsName)
-			if (relsFile) {
-				const rels = await relsFile.async("string")
-				for (const target of rels.matchAll(/Target="([^"]+)"/g)) {
-					const resolved = target[1].replace(/^\.\.\//, "ppt/").replace(/^\//, "")
-					if (zip.file(resolved)) {
-						zip.remove(resolved)
-						chartRelsDropped.push(resolved)
-					}
+		}
+
+		// 5. embedded workbook repair: pptxgenjs writes the chart workbook's
+		// <table> part with a stray quote inside the ref attribute (e.g.
+		// ref="A1:B5'") — an invalid cell range that Keynote's chart importer
+		// chokes on when it opens the workbook for the chart data. Strip any
+		// stray quotes from table refs so the range is well-formed.
+		for (const name of Object.keys(zip.files)) {
+			if (!/^ppt\/embeddings\/[^/]+\.xlsx$/.test(name)) continue
+			const file = zip.file(name)
+			if (!file) continue
+			const workbook = await JSZip.loadAsync(await file.async("nodebuffer"))
+			let repaired = false
+			for (const part of Object.keys(workbook.files)) {
+				if (!/^xl\/tables\/table\d+\.xml$/.test(part)) continue
+				const tableFile = workbook.file(part)
+				if (!tableFile) continue
+				const tableXml = await tableFile.async("string")
+				const fixed = tableXml.replace(/(ref="[A-Z]+\d+:[A-Z]+\d+)'([^"]*")/g, "$1$2")
+				if (fixed !== tableXml) {
+					workbook.file(part, fixed)
+					repaired = true
 				}
-				zip.remove(relsName)
+			}
+			if (repaired) {
+				zip.file(name, await workbook.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }))
 			}
 		}
 

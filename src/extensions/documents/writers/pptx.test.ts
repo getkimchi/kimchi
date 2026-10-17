@@ -146,9 +146,20 @@ describe("writePptx round trips through the extractor", () => {
 		const datePos = chart.indexOf("<c:date1904")
 		expect(langPos).toBeGreaterThan(-1)
 		if (datePos > -1) expect(langPos).toBeGreaterThan(datePos)
-		// no embedded workbook: Keynote's importer fails on it and flags the chart
-		expect(chart).not.toContain("<c:externalData")
-		expect(Object.keys(zip.files).filter((n) => n.startsWith("ppt/embeddings/") && !n.endsWith("/"))).toEqual([])
+		// the embedded workbook ships with a repaired table ref — pptxgenjs
+		// writes a stray quote into it (ref="A1:B5'") and Keynote's chart
+		// importer rejects the whole chart for the malformed range
+		const workbookName = Object.keys(zip.files).find((n) => /^ppt\/embeddings\/[^/]+\.xlsx$/.test(n))
+		expect(workbookName).toBeDefined()
+		const workbook = await JSZip.loadAsync(
+			(await zip.file(workbookName ?? "")?.async("nodebuffer")) ?? new Uint8Array(),
+		)
+		for (const part of Object.keys(workbook.files)) {
+			if (!/^xl\/tables\/table\d+\.xml$/.test(part)) continue
+			const tableXml = (await workbook.file(part)?.async("string")) ?? ""
+			const ref = /ref="([^"]*)"/.exec(tableXml)?.[1] ?? ""
+			expect(ref).toMatch(/^[A-Z]+\d+:[A-Z]+\d+$/)
+		}
 	})
 })
 
