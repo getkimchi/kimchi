@@ -572,14 +572,26 @@ describe("account-fenced reporting delivery", () => {
 		)
 		expect(entry.retryAt - before).toBeGreaterThanOrEqual(0.8 * 60 * 60 * 1000)
 	})
-	it("still delivers when the opt-out watcher cannot start", async () => {
-		vi.spyOn(fs, "watch").mockImplementation(() => {
-			throw Object.assign(new Error("inotify watch limit reached"), { code: "ENOSPC" })
+	it("still delivers when the opt-out poller cannot start", async () => {
+		vi.spyOn(fs, "watchFile").mockImplementation(() => {
+			throw Object.assign(new Error("stat watcher unavailable"), { code: "ENOSPC" })
 		})
 		respond(accepted)
 		await deliverSnapshots(directory, "/project", new AbortController().signal, () => {})
 		expect(posts()).toHaveLength(1)
 		expect(Object.values((await readReportingState(directory)).entries)[0].pending).toBeUndefined()
+	})
+	it("does not hold a directory watch during delivery", async () => {
+		const watching = vi.spyOn(fs, "watch")
+		const polling = vi.spyOn(fs, "watchFile")
+		respond(accepted)
+		await deliverSnapshots(directory, "/project", new AbortController().signal, () => {})
+		expect(watching).not.toHaveBeenCalled()
+		expect(polling).toHaveBeenCalledWith(
+			expect.stringMatching(/pr-cost-reporting[\\/]state\.json$/),
+			{ persistent: false, interval: 250 },
+			expect.any(Function),
+		)
 	})
 	it("treats a record type this version does not know as incomplete history", async () => {
 		await rm(join(directory, "pr-cost-reporting", "state.json"))

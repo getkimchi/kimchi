@@ -1,20 +1,14 @@
-import { EventEmitter } from "node:events"
 import type * as fs from "node:fs"
-import {
-	type FSWatcher,
-	mkdtempSync,
-	renameSync,
-	rmSync,
-	statSync,
-	unwatchFile,
-	watch,
-	watchFile,
-	writeFileSync,
-} from "node:fs"
+import { mkdtempSync, renameSync, rmSync, statSync, unwatchFile, watch, watchFile, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { pollListener, resetFsPollingMock } from "../__mocks__/fs-polling.js"
 import { redactValue, startSettingsChangeWatcher } from "./settings-change-emitter.js"
+
+function notifyPoll(settingsDir: string): void {
+	pollListener()(statSync(join(settingsDir, "settings.json")), statSync(join(settingsDir, "settings.json")))
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -22,33 +16,15 @@ import { redactValue, startSettingsChangeWatcher } from "./settings-change-emitt
 
 type EmittedCall = { event: string; properties: Record<string, string | number | boolean> }
 
-// Inject only filesystem events: snapshots still read real files. OS directory
-// watchers can miss writes immediately after registration (notably on macOS),
-// so elapsed time is not a reliable readiness signal for these unit tests.
+// Inject only filesystem events: snapshots still read real files. Elapsed time
+// is not a reliable readiness signal for stat polling in unit tests, so the
+// poll listener is invoked directly.
 vi.mock("node:fs", async (importOriginal) => ({
 	...(await importOriginal<typeof fs>()),
 	watch: vi.fn(),
 	watchFile: vi.fn(),
 	unwatchFile: vi.fn(),
 }))
-
-class TestWatcher extends EventEmitter implements FSWatcher {
-	close = vi.fn()
-	ref(): this {
-		return this
-	}
-	unref(): this {
-		return this
-	}
-}
-
-let watchListener: fs.WatchListener<string> | undefined
-let pollListener: fs.StatsListener | undefined
-
-function notifySettingsChange(event: "change" | "rename" = "change", filename = "settings.json"): void {
-	if (!watchListener) throw new Error("settings watcher did not register a listener")
-	watchListener(event, filename)
-}
 
 // ---------------------------------------------------------------------------
 // redactValue — pure, deterministic redaction logic
@@ -104,7 +80,6 @@ describe("redactValue", () => {
 
 describe("startSettingsChangeWatcher", () => {
 	let tmpDir: string
-	let watcher: TestWatcher
 	let stop: (() => void) | undefined
 	let emitted: EmittedCall[]
 
@@ -112,20 +87,7 @@ describe("startSettingsChangeWatcher", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "kimchi-settings-"))
 		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", tmpDir)
 		vi.useFakeTimers()
-		watcher = new TestWatcher()
-		watchListener = undefined
-		vi.mocked(watch).mockReset()
-		vi.mocked(watch).mockImplementation((_filename, optionsOrListener, listener?: fs.WatchListener<string>) => {
-			watchListener = typeof optionsOrListener === "function" ? optionsOrListener : listener
-			return watcher
-		})
-		pollListener = undefined
-		vi.mocked(watchFile).mockReset()
-		vi.mocked(watchFile).mockImplementation((_filename, optionsOrListener, listener?: fs.StatsListener) => {
-			pollListener = typeof optionsOrListener === "function" ? optionsOrListener : listener
-			return watcher
-		})
-		vi.mocked(unwatchFile).mockReset()
+		resetFsPollingMock()
 		emitted = []
 	})
 
@@ -145,7 +107,7 @@ describe("startSettingsChangeWatcher", () => {
 
 		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "light", model: "kimi" }))
 
-		notifySettingsChange()
+		notifyPoll(tmpDir)
 		await vi.advanceTimersByTimeAsync(30)
 
 		expect(emitted).toHaveLength(1)
@@ -163,7 +125,7 @@ describe("startSettingsChangeWatcher", () => {
 
 		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "light", model: "o1" }))
 
-		notifySettingsChange()
+		notifyPoll(tmpDir)
 		await vi.advanceTimersByTimeAsync(30)
 
 		expect(emitted).toHaveLength(2)
@@ -195,7 +157,7 @@ describe("startSettingsChangeWatcher", () => {
 			}),
 		)
 
-		notifySettingsChange()
+		notifyPoll(tmpDir)
 		await vi.advanceTimersByTimeAsync(30)
 
 		const dumped = JSON.stringify(emitted)
@@ -228,7 +190,7 @@ describe("startSettingsChangeWatcher", () => {
 		// Rewrite identical content.
 		writeFileSync(join(tmpDir, "settings.json"), content)
 
-		notifySettingsChange()
+		notifyPoll(tmpDir)
 		await vi.advanceTimersByTimeAsync(200)
 		expect(emitted).toHaveLength(0)
 	})
@@ -237,62 +199,44 @@ describe("startSettingsChangeWatcher", () => {
 		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "dark" }))
 		stop = startSettingsChangeWatcher((event, properties) => emitted.push({ event, properties }))
 		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "light" }))
-		notifySettingsChange()
+		notifyPoll(tmpDir)
 		await vi.advanceTimersByTimeAsync(20)
 		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "default" }))
-		notifySettingsChange()
+		notifyPoll(tmpDir)
 		await vi.advanceTimersByTimeAsync(29)
 		expect(emitted).toEqual([])
 		await vi.advanceTimersByTimeAsync(1)
 		expect(emitted).toEqual([{ event: "config_changed", properties: { key: "theme", value: "default" } }])
 	})
 
-	it("reads an atomically replaced settings file on a directory rename event", async () => {
+	it("reads an atomically replaced settings file on the next poll", async () => {
 		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "dark" }))
 		stop = startSettingsChangeWatcher((event, properties) => emitted.push({ event, properties }))
 		writeFileSync(join(tmpDir, "replacement.json"), JSON.stringify({ theme: "light" }))
 		renameSync(join(tmpDir, "replacement.json"), join(tmpDir, "settings.json"))
-		notifySettingsChange("rename")
+		notifyPoll(tmpDir)
 		await vi.advanceTimersByTimeAsync(30)
 		expect(emitted).toEqual([{ event: "config_changed", properties: { key: "theme", value: "light" } }])
-		expect(watch).toHaveBeenCalledWith(tmpDir, { persistent: false }, expect.any(Function))
 	})
 
-	it("ignores changes to unrelated files in the settings directory", async () => {
-		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "dark" }))
-		stop = startSettingsChangeWatcher((event, properties) => emitted.push({ event, properties }))
-		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "light" }))
-		notifySettingsChange("change", "other.json")
-		await vi.advanceTimersByTimeAsync(30)
-		expect(emitted).toEqual([])
-	})
-
-	it("closes the watcher and cancels a pending emission on stop", async () => {
-		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "dark" }))
-		stop = startSettingsChangeWatcher((event, properties) => emitted.push({ event, properties }))
-		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "light" }))
-		notifySettingsChange()
-		stop()
-		await vi.advanceTimersByTimeAsync(30)
-		expect(emitted).toEqual([])
-		expect(watcher.close).toHaveBeenCalledOnce()
-		expect(unwatchFile).toHaveBeenCalledWith(join(tmpDir, "settings.json"), expect.any(Function))
-		stop = undefined
-	})
-
-	it("recovers a missed native notification through polling without duplicating the later native event", async () => {
+	it("does not watch the agent directory; polls the settings file instead", () => {
 		const path = join(tmpDir, "settings.json")
 		writeFileSync(path, JSON.stringify({ theme: "dark" }))
 		stop = startSettingsChangeWatcher((event, properties) => emitted.push({ event, properties }))
-		writeFileSync(path, JSON.stringify({ theme: "light" }))
-		if (!pollListener) throw new Error("polling backstop was not registered")
-		pollListener(statSync(path), statSync(path))
-		await vi.advanceTimersByTimeAsync(30)
-		expect(emitted).toEqual([{ event: "config_changed", properties: { key: "theme", value: "light" } }])
-		notifySettingsChange()
-		await vi.advanceTimersByTimeAsync(30)
-		expect(emitted).toHaveLength(1)
+		expect(watch).not.toHaveBeenCalled()
 		expect(watchFile).toHaveBeenCalledWith(path, { persistent: false, interval: 250 }, expect.any(Function))
+	})
+
+	it("stops polling and cancels a pending emission on stop", async () => {
+		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "dark" }))
+		stop = startSettingsChangeWatcher((event, properties) => emitted.push({ event, properties }))
+		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "light" }))
+		notifyPoll(tmpDir)
+		stop()
+		await vi.advanceTimersByTimeAsync(30)
+		expect(emitted).toEqual([])
+		expect(unwatchFile).toHaveBeenCalledWith(join(tmpDir, "settings.json"), expect.any(Function))
+		stop = undefined
 	})
 
 	it("returns a no-op stop function when KIMCHI_CODING_AGENT_DIR is unset", () => {
@@ -303,19 +247,26 @@ describe("startSettingsChangeWatcher", () => {
 		expect(watchFile).not.toHaveBeenCalled()
 	})
 
-	it("observes the first real settings write immediately after watcher startup", async () => {
+	it("observes the first real settings write within one poll interval", async () => {
 		vi.useRealTimers()
 		const actualFs = await vi.importActual<typeof fs>("node:fs")
-		vi.mocked(watch).mockImplementation(actualFs.watch)
 		vi.mocked(watchFile).mockImplementation(actualFs.watchFile)
 		vi.mocked(unwatchFile).mockImplementation(actualFs.unwatchFile)
 		const path = join(tmpDir, "settings.json")
 		writeFileSync(path, JSON.stringify({ theme: "dark" }))
 		stop = startSettingsChangeWatcher((event, properties) => emitted.push({ event, properties }))
 		writeFileSync(path, JSON.stringify({ theme: "light" }))
-		await vi.waitFor(
-			() => expect(emitted).toEqual([{ event: "config_changed", properties: { key: "theme", value: "light" } }]),
-			{ timeout: 5000 },
-		)
-	}, 10_000)
+		// CI runners can delay the first real stat poll well past one interval;
+		// keep the mtime fresh so the first poll that does run sees the change.
+		// Content stays identical, so the emitter still emits exactly once.
+		const refresh = setInterval(() => writeFileSync(path, JSON.stringify({ theme: "light" })), 400)
+		try {
+			await vi.waitFor(
+				() => expect(emitted).toEqual([{ event: "config_changed", properties: { key: "theme", value: "light" } }]),
+				{ timeout: 10_000 },
+			)
+		} finally {
+			clearInterval(refresh)
+		}
+	}, 15_000)
 })

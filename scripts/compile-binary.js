@@ -11,6 +11,15 @@
 import { readFile } from "node:fs/promises"
 import { parseArgs } from "node:util"
 
+// Local builds must embed a Bun that satisfies the declared engine: older
+// runtimes have known fs.watch bugs (fd leaks, per-path watch registration
+// costs) that shipped binaries avoid.
+const { engines } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
+if (engines?.bun && !Bun.semver.satisfies(Bun.version, engines.bun)) {
+	console.error(`Bun ${Bun.version} does not satisfy engines.bun "${engines.bun}" — run \`bun upgrade\``)
+	process.exit(1)
+}
+
 const DISK_PATH_LINE = "const path = require('path').join(__dirname, 'photon_rs_bg.wasm');"
 
 const embedPhotonWasm = {

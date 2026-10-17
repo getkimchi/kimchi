@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -39,6 +39,11 @@ export const FAKE_PROVIDER = "fake"
 
 export const BINARY_PATH = resolve(REPO_ROOT, "dist/bin/kimchi")
 export const PACKAGE_DIR = resolve(REPO_ROOT, "dist/share/kimchi")
+
+// Per-launch pidfile so teardown can kill a kimchi that ignored Ctrl-C/SIGINT
+// (e.g. a process stuck in a synchronous loop, where signal handlers starve).
+const launchedPidFiles = new WeakMap<Terminal, string>()
+let launchCounter = 0
 const INITIAL_SURVEY_ID = "019e87cc-5033-0000-d9bd-5e6501640b6e"
 
 export interface KimchiFixture {
@@ -347,8 +352,27 @@ export function launchKimchi(
 			: [`--provider ${sh(fixture.providerId)}`, `--model ${sh(fixture.initialModel)}`]),
 		...extraArgs,
 	].join(" ")
+	// Wrap the launch so the kimchi PID is recorded before the binary starts.
+	// `exec` keeps kimchi as the same process in the same foreground job, so
+	// Ctrl-C delivery and the exit marker are unchanged.
+	launchCounter += 1
+	const pidFile = join(tmpdir(), `kimchi-e2e-${process.pid}-${launchCounter}.pid`)
+	// A restart overwrites the terminal's entry: reap the superseded pidfile so
+	// it does not linger in tmpdir, and so a stuck prior process is not
+	// silently forgotten (quit() may have failed to collect it).
+	const supersededPidFile = launchedPidFiles.get(terminal)
+	if (supersededPidFile && supersededPidFile !== pidFile) rmSync(supersededPidFile, { force: true })
+	launchedPidFiles.set(terminal, pidFile)
+	const wrapped = command.replace(
+		`cd ${sh(fixture.workDir)} &&`,
+		`cd ${sh(fixture.workDir)} && sh -c ${sh('echo $$ > "$0"; exec "$@"')} ${sh(pidFile)}`,
+	)
+	if (wrapped === command)
+		throw new Error(
+			`launchKimchi: pidfile wrapper did not apply — the 'cd … &&' prefix no longer matches the launch command`,
+		)
 	const exitMarker = options.exitMarker ? `; printf '\\033c%s\\n' ${sh(options.exitMarker)}` : ""
-	terminal.submit(`${command}${exitMarker}`)
+	terminal.submit(`${wrapped}${exitMarker}`)
 }
 
 export interface KimchiSessionController {
@@ -408,6 +432,35 @@ export async function stopKimchi(terminal: Terminal): Promise<void> {
 	const timeout = new Promise<undefined>((resolveTimeout) => setTimeout(() => resolveTimeout(undefined), 1_000))
 	const result = await Promise.race([exit, timeout])
 	if (!result) terminal.kill()
+	reapLaunchedKimchi(terminal)
+}
+
+/** SIGKILL the launched kimchi if it survived terminal kill (e.g. stuck in a synchronous loop). */
+function reapLaunchedKimchi(terminal: Terminal): void {
+	const pidFile = launchedPidFiles.get(terminal)
+	launchedPidFiles.delete(terminal)
+	if (!pidFile || !existsSync(pidFile)) return
+	try {
+		const pid = Number.parseInt(readFileSync(pidFile, "utf-8"), 10)
+		if (Number.isInteger(pid)) {
+			let alive = false
+			try {
+				process.kill(pid, 0)
+				alive = true
+			} catch {
+				// ESRCH — already exited.
+			}
+			if (alive) {
+				// Guard against PID reuse: only kill when the process is our binary.
+				const line = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf-8" })
+				if (line.includes(BINARY_PATH)) process.kill(pid, "SIGKILL")
+			}
+		}
+	} catch {
+		// Teardown is best-effort.
+	} finally {
+		rmSync(pidFile, { force: true })
+	}
 }
 
 /** Create fixture, launch kimchi, wait for ready, run `body`, always tear down (artifact on throw). */
