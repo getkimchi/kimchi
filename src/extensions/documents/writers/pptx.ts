@@ -1185,25 +1185,70 @@ export async function writePptx(spec: DeckSpec, options: WriteOptions = {}): Pro
 	}
 
 	/**
-	 * pptxgenjs declares a Content_Types Override for `slideMaster{N}` per slide but
-	 * only ever writes slideMaster1 — orphan Overrides that PowerPoint and
-	 * LibreOffice ignore and Keynote rejects with "file is invalid". Strip any
-	 * Override whose part is missing from the package before handing it over.
+	 * Keynote compatibility sanitizer. PowerPoint and LibreOffice open decks
+	 * that Keynote refuses or flags with an import warning; four known deltas:
+	 *  1. pptxgenjs declares a Content_Types Override for `slideMaster{N}` per
+	 *     slide but only writes slideMaster1 — orphan Overrides Keynote rejects.
+	 *  2. `p:bgPr` ships without the `<a:effectLst/>` child PowerPoint always
+	 *     writes; Keynote's background parser wants it.
+	 *  3. `chart1.xml` omits the `<c:lang/>` chartSpace boilerplate.
+	 *  4. `p:sldSz cx` lands on a non-canonical width (13.33in × 914400) —
+	 *     snapped to the canonical 16:9 value like PowerPoint Online does.
+	 * All fixes are idempotent and content-safe.
 	 */
-	async function stripOrphanContentTypes(bytes: Uint8Array): Promise<Uint8Array> {
+	async function sanitizeForExport(bytes: Uint8Array): Promise<Uint8Array> {
 		const zip = await JSZip.loadAsync(bytes)
+		const partNames = new Set(Object.keys(zip.files).map((name) => (name.startsWith("/") ? name : `/${name}`)))
+
+		// 1. orphan Content_Types Overrides
 		const typesFile = zip.file("[Content_Types].xml")
 		if (!typesFile) return bytes
-		const xml = await typesFile.async("string")
-		const partNames = new Set(Object.keys(zip.files).map((name) => (name.startsWith("/") ? name : `/${name}`)))
-		const cleaned = xml.replace(/<Override PartName="([^"]+)"[^>]*\/>/g, (entry, partName: string) =>
+		let types = await typesFile.async("string")
+		types = types.replace(/<Override PartName="([^"]+)"[^>]*\/>/g, (entry, partName: string) =>
 			partNames.has(partName) ? entry : "",
 		)
-		if (cleaned === xml) return bytes
-		zip.file("[Content_Types].xml", cleaned)
+		zip.file("[Content_Types].xml", types)
+
+		// 2. sldSz: snap near-canonical widescreen to the canonical EMU values
+		const presFile = zip.file("ppt/presentation.xml")
+		if (presFile) {
+			let pres = await presFile.async("string")
+			pres = pres.replace(/<p:sldSz [^>]*\/>/, (el) => {
+				const cx = Number(/cx="(\d+)"/.exec(el)?.[1])
+				const cy = Number(/cy="(\d+)"/.exec(el)?.[1])
+				if (Math.abs(cx - 12192000) <= 60000 && Math.abs(cy - 6858000) <= 60000) {
+					return '<p:sldSz cx="12192000" cy="6858000"/>'
+				}
+				return el.replace(/\s+type="[^"]+"/, "")
+			})
+			zip.file("ppt/presentation.xml", pres)
+		}
+
+		// 3. bgPr: PowerPoint always writes an (empty) effectLst; Keynote wants it
+		for (const name of Object.keys(zip.files)) {
+			if (!/^ppt\/slides\/slide\d+\.xml$/.test(name)) continue
+			const file = zip.file(name)
+			if (!file) continue
+			let xml = await file.async("string")
+			if (xml.includes("<p:bgPr>") && !xml.includes("<a:effectLst/>")) {
+				xml = xml.replace(/<p:bgPr>/g, "<p:bgPr><a:effectLst/>")
+				zip.file(name, xml)
+			}
+		}
+
+		// 4. chart boilerplate: chartSpace lang element before roundedCorners
+		const chartFile = zip.file("ppt/charts/chart1.xml")
+		if (chartFile) {
+			let chart = await chartFile.async("string")
+			if (!chart.includes("<c:lang")) {
+				chart = chart.replace(/(<c:chartSpace[^>]*>)/, '$1<c:lang val="en-US"/>')
+				zip.file("ppt/charts/chart1.xml", chart)
+			}
+		}
+
 		return new Uint8Array(await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }))
 	}
 
 	const buffer = (await pptx.write({ outputType: "nodebuffer" })) as Buffer
-	return stripOrphanContentTypes(new Uint8Array(buffer))
+	return sanitizeForExport(new Uint8Array(buffer))
 }
