@@ -123,6 +123,30 @@ describe("writePptx round trips through the extractor", () => {
 		// pptxgenjs declares slideMaster{N} per slide but only writes slideMaster1.
 		expect(orphans).toEqual([])
 	})
+
+	it("emits schema-valid charts: no dangling axis references, lang after date1904", async () => {
+		const spec = parseDeckMarkdown(
+			'# A\n\n```chart\n{"type": "bar", "labels": ["Q1", "Q2"], "series": [{"name": "ARR", "values": [9.4, 11.3]}]}\n```\n',
+		)
+		const zip = await JSZip.loadAsync(await writePptx(spec))
+		// pptxgenjs numbers chart parts from a module-global counter — any chartN
+		const chartName = Object.keys(zip.files).find((n) => /^ppt\/charts\/chart\d+\.xml$/.test(n))
+		expect(chartName).toBeDefined()
+		const chart = (await zip.file(chartName ?? "")?.async("string")) ?? ""
+		// every axId referenced by a chart type must be defined by an axis element
+		const defined = new Set(
+			[...chart.matchAll(/<c:(?:catAx|valAx|serAx|dateAx)>\s*<c:axId val="(\d+)"\/>/g)].map((m) => m[1]),
+		)
+		expect(defined.size).toBe(2) // cat + val
+		for (const match of chart.matchAll(/<c:axId val="(\d+)"\/>/g)) {
+			expect(defined.has(match[1])).toBe(true)
+		}
+		// chartSpace sequence: date1904? then lang?
+		const langPos = chart.indexOf("<c:lang")
+		const datePos = chart.indexOf("<c:date1904")
+		expect(langPos).toBeGreaterThan(-1)
+		if (datePos > -1) expect(langPos).toBeGreaterThan(datePos)
+	})
 })
 
 describe("design blocks (stats/quote/cards/flow/code)", () => {

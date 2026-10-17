@@ -1191,7 +1191,8 @@ export async function writePptx(spec: DeckSpec, options: WriteOptions = {}): Pro
 	 *     slide but only writes slideMaster1 — orphan Overrides Keynote rejects.
 	 *  2. `p:bgPr` ships without the `<a:effectLst/>` child PowerPoint always
 	 *     writes; Keynote's background parser wants it.
-	 *  3. `chart1.xml` omits the `<c:lang/>` chartSpace boilerplate.
+	 *  3. `chart1.xml` keeps a dangling third `<c:axId>` (bar charts define two
+	 *     axes) and omits the `<c:lang/>` boilerplate.
 	 *  4. `p:sldSz cx` lands on a non-canonical width (13.33in × 914400) —
 	 *     snapped to the canonical 16:9 value like PowerPoint Online does.
 	 * All fixes are idempotent and content-safe.
@@ -1236,14 +1237,29 @@ export async function writePptx(spec: DeckSpec, options: WriteOptions = {}): Pro
 			}
 		}
 
-		// 4. chart boilerplate: chartSpace lang element before roundedCorners
-		const chartFile = zip.file("ppt/charts/chart1.xml")
-		if (chartFile) {
-			let chart = await chartFile.async("string")
-			if (!chart.includes("<c:lang")) {
-				chart = chart.replace(/(<c:chartSpace[^>]*>)/, '$1<c:lang val="en-US"/>')
-				zip.file("ppt/charts/chart1.xml", chart)
+		// 4. chart fixes: dangling axis references and chartSpace boilerplate.
+		// pptxgenjs writes a third <c:axId> for bar charts that points at an axis
+		// it never defines (bar charts take exactly two) — strict importers like
+		// Keynote reject the whole chart part for the dangling reference.
+		for (const name of Object.keys(zip.files)) {
+			if (!/^ppt\/charts\/chart\d+\.xml$/.test(name)) continue
+			const file = zip.file(name)
+			if (!file) continue
+			let chart = await file.async("string")
+			const definedAxes = new Set(
+				[...chart.matchAll(/<c:(?:catAx|valAx|serAx|dateAx)>\s*<c:axId val="(\d+)"\/>/g)].map((m) => m[1]),
+			)
+			if (definedAxes.size > 0) {
+				chart = chart.replace(/<c:axId val="(\d+)"\/>/g, (el, id: string) => (definedAxes.has(id) ? el : ""))
 			}
+			// c:lang is optional boilerplate, but it MUST sit after c:date1904 in
+			// the chartSpace sequence (date1904?, lang?, roundedCorners?, ...).
+			if (!chart.includes("<c:lang")) {
+				chart = /<c:date1904[^>]*\/>/.test(chart)
+					? chart.replace(/(<c:date1904[^>]*\/>)/, '$1<c:lang val="en-US"/>')
+					: chart.replace(/(<c:chartSpace[^>]*>)/, '$1<c:lang val="en-US"/>')
+			}
+			zip.file(name, chart)
 		}
 
 		return new Uint8Array(await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }))
