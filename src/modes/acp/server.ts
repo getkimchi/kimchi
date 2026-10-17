@@ -85,6 +85,7 @@ import {
 import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/state.js"
 import { resolveMarkerForDisplay } from "../../extensions/display-budget.js"
 import { getRawErrorMessage } from "../../extensions/error-preservation.js"
+import { clearRatingWindow } from "../../extensions/feedback/rating-window.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
@@ -140,6 +141,7 @@ import { composeAvailableCommands, createCommandsRefresher, discoverSkillCommand
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
 import { handleCompact } from "./ext-methods/compact.js"
 import { handleCompactAbort } from "./ext-methods/compact-abort.js"
+import { handleFeedback } from "./ext-methods/feedback.js"
 import { handleImportApply } from "./ext-methods/import-apply.js"
 import { importDiscover } from "./ext-methods/import-discover.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
@@ -183,7 +185,7 @@ import {
 	pathTrustResponse,
 	requireAbsolutePath,
 } from "./trust-updates.js"
-import type { FileChange, PendingFileChange, TurnContext, TurnUsage } from "./types.js"
+import type { FileChange, PendingFileChange, SessionTurnTarget, TurnContext, TurnUsage } from "./types.js"
 import { emptyTurnUsage, updateTurnUsage } from "./usage.js"
 import { asString, extractImages, truncate } from "./utils.js"
 
@@ -1179,15 +1181,12 @@ export class KimchiAcpAgent implements Agent {
 			case AVAILABLE_EXT_METHODS.set_session_title:
 				return handleSetSessionTitle((sessionId) => this.sessions.get(sessionId)?.session, params)
 			case AVAILABLE_EXT_METHODS.steering:
-				return handleSteering((sessionId) => {
-					const entry = this.sessions.get(sessionId)
-					if (!entry) return undefined
-					// A cancelled turn stays defined until the prompt settles, but
-					// cancel() has already drained its queue — a steer landing in this
-					// window must not re-queue text that would leak into the next prompt.
-					const turnActive = entry.turn !== undefined && !entry.turn.cancelled
-					return { session: entry.session, turnActive }
-				}, params)
+				return handleSteering((sessionId) => this.getSessionTurnTarget(sessionId), params)
+			case AVAILABLE_EXT_METHODS.feedback:
+				// Session-scoped rating submission (docs/acp-feedback.md): the rating
+				// window arms when the settled response's prompt() resolves end_turn
+				// and is cleared for cancelled/errored turns at finalize/fail time.
+				return handleFeedback((sessionId) => this.getSessionTurnTarget(sessionId), params)
 			case AVAILABLE_EXT_METHODS.import_discover:
 				// Sessionless, read-only source-app discovery for the import screen
 				// (ADR-0043/ADR-0044): nothing is written to disk and no session is
@@ -1251,11 +1250,7 @@ export class KimchiAcpAgent implements Agent {
 				// Session-scoped manual compaction. turnActive mirrors the turn
 				// bookkeeping prompt() uses: upstream compact() would silently abort
 				// the running turn, so the handler requires an idle session.
-				return handleCompact((sessionId) => {
-					const entry = this.sessions.get(sessionId)
-					if (!entry) return undefined
-					return { session: entry.session, turnActive: entry.turn !== undefined && !entry.turn.cancelled }
-				}, params)
+				return handleCompact((sessionId) => this.getSessionTurnTarget(sessionId), params)
 			case AVAILABLE_EXT_METHODS.compact_abort:
 				// Compaction-specific abort (not the whole-turn kill switch): stops
 				// only the summarization; idempotent when nothing is compacting.
@@ -1297,6 +1292,7 @@ export class KimchiAcpAgent implements Agent {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return
 		this.sessions.delete(sessionId)
+		clearRatingWindow(sessionId)
 		const droppedQueue = this.drainQueue(entry)
 		notifyDroppedQueue(this.conn, sessionId, droppedQueue, "shutdown")
 		unregisterAcpPrompter(sessionId)
@@ -2366,6 +2362,19 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	/**
+	 * Session lookup for the ext-method gating that steering, feedback and
+	 * compact share: the session plus whether a turn is truly active. A
+	 * cancelled turn stays defined until the prompt settles, but cancel() has
+	 * already resolved its outcome — it is not "no turn in progress".
+	 */
+	private getSessionTurnTarget(sessionId: string): SessionTurnTarget | undefined {
+		const entry = this.sessions.get(sessionId)
+		if (!entry) return undefined
+		const turnActive = entry.turn !== undefined && !entry.turn.cancelled
+		return { session: entry.session, turnActive }
+	}
+
+	/**
 	 * Finalize a held plan-review turn, mirroring the outcome rules of the
 	 * normal prompt-resolution path: client cancel → "cancelled", terminal
 	 * assistant error → JSON-RPC failure (never a silent end_turn), otherwise
@@ -2386,6 +2395,12 @@ export class KimchiAcpAgent implements Agent {
 		const turn = entry.turn
 		if (!turn) return
 		entry.turn = undefined
+		// Non-end_turn terminal outcomes (cancelled, refusal, …) never produce a
+		// rated settled response — clear the rating window armed at settle time.
+		// An end_turn settle keeps it: that is exactly when ratings are valid.
+		if (stopReason !== "end_turn") {
+			clearRatingWindow(entry.session.sessionId)
+		}
 		try {
 			this.emitUsageUpdate(entry.session, turn.usage)
 		} finally {
@@ -2429,6 +2444,10 @@ export class KimchiAcpAgent implements Agent {
 	private failTurn(entry: SessionRecord, err: unknown): void {
 		const turn = entry.turn
 		if (!turn) return
+		// A terminally errored run is not a settled response — the armed rating
+		// window (agent_settled fires before prompt() resolves) must not survive
+		// into a rate call for an error the client saw as a JSON-RPC failure.
+		clearRatingWindow(entry.session.sessionId)
 		entry.turn = undefined
 		turn.reject(err)
 	}
