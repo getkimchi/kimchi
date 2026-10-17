@@ -36,7 +36,7 @@ export interface CheckFinding {
 	/** 1-based slide number, or 0 for deck-level findings (e.g. monotony). */
 	slide: number
 	shape?: string
-	kind: "text-overflow" | "off-slide" | "missing-alt-text" | "overlap" | "low-contrast" | "monotony"
+	kind: "text-overflow" | "off-slide" | "missing-alt-text" | "overlap" | "low-contrast" | "monotony" | "dead-space"
 	detail: string
 }
 
@@ -272,6 +272,29 @@ function isPlainSlide(slide: XmlDocument | Element): boolean {
 	return textShapes > 0
 }
 
+/** A slide whose content spans < 45% of the slide height reads as a void. */
+const DEAD_SPACE_FRACTION = 0.45
+
+function checkDeadSpace(
+	slideIdx: number,
+	textShapes: Array<{ sp: Element }>,
+	slideSize: { width: number; height: number },
+	findings: CheckFinding[],
+): void {
+	const bboxes = textShapes.map((t) => bboxOf(t.sp)).filter((b): b is BBox => b !== undefined)
+	if (bboxes.length < 2) return
+	const top = Math.min(...bboxes.map((b) => b.y))
+	const bottom = Math.max(...bboxes.map((b) => b.y + b.h))
+	const span = bottom - top
+	if (span < DEAD_SPACE_FRACTION * slideSize.height) {
+		findings.push({
+			slide: slideIdx,
+			kind: "dead-space",
+			detail: `content spans ~${Math.round((span / slideSize.height) * 100)}% of the slide height — add a visual block (stats/cards/flow/code) or let the layout fill the canvas`,
+		})
+	}
+}
+
 const MONOTONY_MIN_SLIDES = 6
 const MONOTONY_PLAIN_FRACTION = 0.8
 
@@ -313,6 +336,7 @@ export async function checkPptx(data: Uint8Array): Promise<CheckFinding[]> {
 		}
 		checkOverlaps(i + 1, textShapes, findings)
 		checkContrast(i + 1, textShapes, slideBackgroundOf(slide), findings)
+		checkDeadSpace(i + 1, textShapes, slideSize ?? { width: 0, height: 0 }, findings)
 		for (const pic of byTag(slide, "pic")) {
 			checkMissingAltText(i + 1, pic, findings)
 		}

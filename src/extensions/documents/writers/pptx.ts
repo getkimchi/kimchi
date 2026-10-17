@@ -29,9 +29,11 @@ import {
 	DEFAULT_SLIDE_W,
 	type ElementBox,
 	estimateElementHeight,
+	estimateTextBlockHeightPt,
 	inlineTextOf,
 	MARGIN,
 	type Palette,
+	PT_PER_IN,
 	resolvePalette,
 } from "./pptx-layout.js"
 import type { ChartSpec, DeckMeta, DeckSpec, DeckTheme, LayoutHint, SlideElement, SlideSpec } from "./pptx-model.js"
@@ -468,8 +470,11 @@ function renderElement(
 	pal: Palette,
 	options: WriteOptions,
 	slideIndex: number,
+	renderOpts?: { large?: boolean },
 ): void {
 	const el = box.el
+	const bodyScale = renderOpts?.large === true ? 1.12 : 1
+	const listSpacing = renderOpts?.large === true ? 1.4 : undefined
 	switch (el.type) {
 		case "heading":
 			s.addText(inlineText(el.inline), {
@@ -494,7 +499,8 @@ function renderElement(
 				isTextBox: true,
 				margin: 0,
 				fontFace: pal.bodyFont,
-				fontSize: 16,
+				fontSize: 16 * bodyScale,
+				lineSpacingMultiple: listSpacing ?? 1.2,
 			})
 			break
 		case "bullets":
@@ -506,7 +512,8 @@ function renderElement(
 				isTextBox: true,
 				margin: 0,
 				fontFace: pal.bodyFont,
-				fontSize: 16,
+				fontSize: 16 * bodyScale,
+				lineSpacingMultiple: listSpacing ?? 1.25,
 			})
 			break
 		case "table":
@@ -697,6 +704,12 @@ function renderElement(
 			const gap = 0.3
 			const cw = (box.w - gap * (cols - 1)) / cols
 			const ch = (box.h - gap * (rows - 1)) / rows
+			// Type scales with the (possibly stretched) card and the title+body
+			// group centers vertically — growth reads as padding, not emptiness.
+			const big = ch > 1.75
+			const titleSize = big ? 17 : 15.5
+			const bodySize = big ? 12.5 : 11.5
+			const titleH = 0.42
 			el.cards.forEach((card, i) => {
 				const cx = box.x + (i % cols) * (cw + gap)
 				const cy = box.y + Math.floor(i / cols) * (ch + gap)
@@ -720,31 +733,35 @@ function renderElement(
 					})
 					tx = cx + 0.72
 				}
+				const bodyPt = estimateTextBlockHeightPt(card.body, cx + cw - tx - 0.2, bodySize)
+				const contentH = titleH + 0.12 + bodyPt / PT_PER_IN
+				// Badge clearance is horizontal (tx starts right of it), never vertical.
+				const titleTop = Math.min(Math.max((ch - contentH) / 2, 0.16), Math.max(0.16, ch - contentH - 0.14))
 				s.addText(card.title, {
 					x: tx,
-					y: cy + 0.16,
+					y: cy + titleTop,
 					w: cx + cw - tx - 0.2,
-					h: 0.55,
+					h: titleH,
 					isTextBox: true,
 					margin: 0,
 					fit: "shrink",
 					fontFace: pal.headFont,
-					fontSize: 15.5,
+					fontSize: titleSize,
 					bold: true,
 					color: pal.text,
 				})
 				s.addText(card.body, {
 					x: tx,
-					y: cy + 0.72,
+					y: cy + titleTop + titleH + 0.12,
 					w: cx + cw - tx - 0.2,
-					h: ch - 0.85,
+					h: Math.max(0.3, ch - titleTop - titleH - 0.26),
 					isTextBox: true,
 					margin: 0,
 					fit: "shrink",
 					fontFace: pal.bodyFont,
-					fontSize: 11.5,
+					fontSize: bodySize,
 					color: pal.muted,
-					lineSpacingMultiple: 1.1,
+					lineSpacingMultiple: 1.16,
 				})
 			})
 			break
@@ -990,6 +1007,17 @@ export async function writePptx(spec: DeckSpec, options: WriteOptions = {}): Pro
 			renderTitle(s, pptx, slide, pal, options, w, h)
 		} else {
 			const layout = computeSlideLayout(slide, theme)
+			if (slide.layoutHint === "closing") {
+				// Corner glow — same motif as title/hero, so the bookends read as one family.
+				s.addShape("ellipse", {
+					x: w - 4.6,
+					y: h - 4.6,
+					w: 4.4,
+					h: 4.4,
+					fill: { color: pal.accent, transparency: 90 },
+					line: { type: "none" },
+				})
+			}
 			if (layout.kicker && slide.kicker !== undefined) {
 				s.addText(slide.kicker.toUpperCase(), {
 					x: layout.kicker.x,
@@ -1020,8 +1048,9 @@ export async function writePptx(spec: DeckSpec, options: WriteOptions = {}): Pro
 					color: pal.text,
 				})
 			}
-			for (const col of layout.columns ?? []) renderElement(s, pptx, col, pal, options, slide.index)
-			for (const box of layout.flow) renderElement(s, pptx, box, pal, options, slide.index)
+			const renderOpts = slide.layoutHint === "closing" ? { large: true } : undefined
+			for (const col of layout.columns ?? []) renderElement(s, pptx, col, pal, options, slide.index, renderOpts)
+			for (const box of layout.flow) renderElement(s, pptx, box, pal, options, slide.index, renderOpts)
 		}
 
 		// Footer on workhorse slides only — clean title/hero/closing faces.

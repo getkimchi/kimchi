@@ -36,6 +36,19 @@ export function slideNeedsLightText(background: string | undefined): boolean {
 
 const stripHash = (hex: string) => hex.replace("#", "").toUpperCase()
 
+export const PT_PER_IN = 72
+
+/** Mean glyph width as a fraction of font size (Latin body text, generous). */
+const CHAR_WIDTH_RATIO = 0.52
+
+/** Estimated rendered height (pt) of a text block at the given width — shared by the
+ * flow estimator and (exported) by interior layouts that center content in stretched boxes. */
+export function estimateTextBlockHeightPt(text: string, widthIn: number, fontPt: number): number {
+	const charsPerLine = Math.max(4, (widthIn * 72) / (CHAR_WIDTH_RATIO * fontPt))
+	const lines = Math.max(1, Math.ceil(text.replace(/`/g, "").length / charsPerLine))
+	return lines * fontPt * 1.24
+}
+
 export interface Palette {
 	bg?: string
 	dark: boolean
@@ -97,13 +110,8 @@ export function inlineTextOf(inline: Inline[]): string {
 
 /* ------------------------- height estimation ------------------------- */
 
-/** Mean glyph width as a fraction of font size (Latin body text, generous). */
-const CHAR_WIDTH_RATIO = 0.52
-
 function estimatedTextHeightPt(text: string, widthIn: number, fontPt: number): number {
-	const charsPerLine = Math.max(4, (widthIn * 72) / (CHAR_WIDTH_RATIO * fontPt))
-	const lines = Math.max(1, Math.ceil(text.replace(/`/g, "").length / charsPerLine))
-	return lines * fontPt * 1.22
+	return estimateTextBlockHeightPt(text, widthIn, fontPt)
 }
 
 function bulletsPlainText(el: SlideElement & { type: "bullets" }): string[] {
@@ -117,8 +125,6 @@ function bulletsPlainText(el: SlideElement & { type: "bullets" }): string[] {
 	walk(el.items)
 	return lines
 }
-
-export const PT_PER_IN = 72
 
 /** Estimated rendered height (inches) of one element at the given width. */
 export function estimateElementHeight(el: SlideElement, widthIn: number): number {
@@ -144,7 +150,7 @@ export function estimateElementHeight(el: SlideElement, widthIn: number): number
 		case "stats":
 			return 1.8
 		case "quote": {
-			const body = estimatedTextHeightPt(el.text, widthIn - 1.2, 14.5) / PT_PER_IN
+			const body = estimateTextBlockHeightPt(el.text, widthIn - 1.2, 14.5) / PT_PER_IN
 			return Math.max(1.6, body + 0.95)
 		}
 		case "code":

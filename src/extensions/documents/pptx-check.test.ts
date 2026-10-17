@@ -201,6 +201,33 @@ describe("low-contrast findings", () => {
 	})
 })
 
+describe("dead-space findings", () => {
+	it("flags a slide whose content clumps in the top half", async () => {
+		const deck = await deckWith([
+			{
+				inner:
+					textSp({ id: 2, name: "Title", text: "Heading", x: 43 * PT, y: 25 * PT, w: 800 * PT, h: 90 * PT }) +
+					textSp({ id: 3, name: "Body", text: "Two short lines", x: 43 * PT, y: 130 * PT, w: 800 * PT, h: 110 * PT }),
+			},
+		])
+		const findings = await checkPptx(deck)
+		const dead = findings.find((f) => f.kind === "dead-space")
+		expect(dead).toMatchObject({ slide: 1 })
+		expect(dead?.detail).toContain("% of the slide height")
+	})
+
+	it("stays silent when content spans the canvas", async () => {
+		const deck = await deckWith([
+			{
+				inner:
+					textSp({ id: 2, name: "Title", text: "Heading", x: 43 * PT, y: 25 * PT, w: 800 * PT, h: 90 * PT }) +
+					textSp({ id: 3, name: "Body", text: "Content", x: 43 * PT, y: 420 * PT, w: 800 * PT, h: 80 * PT }),
+			},
+		])
+		expect((await checkPptx(deck)).filter((f) => f.kind === "dead-space")).toEqual([])
+	})
+})
+
 describe("monotony findings", () => {
 	const plainSlide = (i: number) => ({
 		inner:
