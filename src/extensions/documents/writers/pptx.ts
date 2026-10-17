@@ -1237,10 +1237,12 @@ export async function writePptx(spec: DeckSpec, options: WriteOptions = {}): Pro
 			}
 		}
 
-		// 4. chart fixes: dangling axis references and chartSpace boilerplate.
+		// 4. chart fixes: dangling axis references, externalData, chartSpace
+		// boilerplate.
 		// pptxgenjs writes a third <c:axId> for bar charts that points at an axis
 		// it never defines (bar charts take exactly two) — strict importers like
 		// Keynote reject the whole chart part for the dangling reference.
+		const chartRelsDropped: string[] = []
 		for (const name of Object.keys(zip.files)) {
 			if (!/^ppt\/charts\/chart\d+\.xml$/.test(name)) continue
 			const file = zip.file(name)
@@ -1259,7 +1261,29 @@ export async function writePptx(spec: DeckSpec, options: WriteOptions = {}): Pro
 					? chart.replace(/(<c:date1904[^>]*\/>)/, '$1<c:lang val="en-US"/>')
 					: chart.replace(/(<c:chartSpace[^>]*>)/, '$1<c:lang val="en-US"/>')
 			}
+			// Keynote's chart importer fails on the embedded workbook pptxgenjs
+			// attaches (c:externalData → a minimal .xlsx with table parts) and
+			// flags the chart "unsupported". The chart's numCache already holds
+			// the complete data — drop the workbook reference and the chart
+			// imports as a native, editable chart everywhere.
+			chart = chart.replace(/<c:externalData[\s\S]*?<\/c:externalData>/g, "")
+			chart = chart.replace(/<c:externalData[^>]*\/>/g, "")
 			zip.file(name, chart)
+			// the chart's rels only carried the workbook reference — drop them
+			// along with the embedded workbook parts
+			const relsName = name.replace("ppt/charts/", "ppt/charts/_rels/") + ".rels"
+			const relsFile = zip.file(relsName)
+			if (relsFile) {
+				const rels = await relsFile.async("string")
+				for (const target of rels.matchAll(/Target="([^"]+)"/g)) {
+					const resolved = target[1].replace(/^\.\.\//, "ppt/").replace(/^\//, "")
+					if (zip.file(resolved)) {
+						zip.remove(resolved)
+						chartRelsDropped.push(resolved)
+					}
+				}
+				zip.remove(relsName)
+			}
 		}
 
 		return new Uint8Array(await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }))

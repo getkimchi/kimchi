@@ -146,6 +146,9 @@ describe("writePptx round trips through the extractor", () => {
 		const datePos = chart.indexOf("<c:date1904")
 		expect(langPos).toBeGreaterThan(-1)
 		if (datePos > -1) expect(langPos).toBeGreaterThan(datePos)
+		// no embedded workbook: Keynote's importer fails on it and flags the chart
+		expect(chart).not.toContain("<c:externalData")
+		expect(Object.keys(zip.files).filter((n) => n.startsWith("ppt/embeddings/") && !n.endsWith("/"))).toEqual([])
 	})
 })
 
