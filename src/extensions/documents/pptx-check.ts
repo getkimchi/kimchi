@@ -25,16 +25,18 @@
  *   - Shapes whose bbox extends past the slide bbox (sldSz) → off-slide.
  */
 
-import type { Element } from "@xmldom/xmldom"
+import type { Element, Document as XmlDocument } from "@xmldom/xmldom"
 import { extractPptxShapeText, joinOoxmlPart, ooxmlRelsPath, parseOoxmlRels } from "./extractors/pptx.js"
 import { DocumentError } from "./model.js"
 import { type OoxmlPackage, openOoxml } from "./ooxml/package.js"
 import { byTag } from "./ooxml/xml.js"
+import { luminanceOf } from "./writers/pptx-layout.js"
 
 export interface CheckFinding {
+	/** 1-based slide number, or 0 for deck-level findings (e.g. monotony). */
 	slide: number
 	shape?: string
-	kind: "text-overflow" | "off-slide" | "missing-alt-text"
+	kind: "text-overflow" | "off-slide" | "missing-alt-text" | "overlap" | "low-contrast" | "monotony"
 	detail: string
 }
 
@@ -147,6 +149,144 @@ function checkMissingAltText(slideIdx: number, pic: Element, findings: CheckFind
 	}
 }
 
+/* ------------------------- overlap / contrast / monotony ------------------------- */
+
+/** Estimated rendered height (pt) of a shape's text — same formula as the overflow rule. */
+function estimatedContentPt(sp: Element): number {
+	const bbox = bboxOf(sp)
+	if (!bbox) return 0
+	const font = fontSizeOf(sp)
+	const innerW = Math.max(1, bbox.w - 2 * SIDE_INSET_PT)
+	let estimated = 0
+	for (const para of paragraphsOf(sp)) {
+		const lines = Math.max(1, Math.ceil((para.length * AVG_CHAR_WIDTH_RATIO * font) / innerW))
+		estimated += lines * font * LINE_SPACING
+	}
+	return estimated
+}
+
+/** Bbox enlarged to the estimated content height — catches text spilling past its box. */
+function extendedBBox(sp: Element): BBox | undefined {
+	const bbox = bboxOf(sp)
+	if (!bbox) return undefined
+	const est = estimatedContentPt(sp)
+	return est > bbox.h ? { ...bbox, h: est } : bbox
+}
+
+const OVERLAP_AREA_FRACTION = 0.3
+
+/** Two text-bearing shapes whose (content-extended) boxes intersect. */
+function checkOverlaps(
+	slideIdx: number,
+	textShapes: Array<{ name: string | undefined; sp: Element }>,
+	findings: CheckFinding[],
+): void {
+	for (let a = 0; a < textShapes.length; a++) {
+		for (let b = a + 1; b < textShapes.length; b++) {
+			const ba = extendedBBox(textShapes[a].sp)
+			const bb = extendedBBox(textShapes[b].sp)
+			if (!ba || !bb) continue
+			const ix = Math.max(0, Math.min(ba.x + ba.w, bb.x + bb.w) - Math.max(ba.x, bb.x))
+			const iy = Math.max(0, Math.min(ba.y + ba.h, bb.y + bb.h) - Math.max(ba.y, bb.y))
+			const smaller = Math.min(ba.w * ba.h, bb.w * bb.h)
+			if (smaller > 0 && (ix * iy) / smaller > OVERLAP_AREA_FRACTION) {
+				findings.push({
+					slide: slideIdx,
+					shape: textShapes[a].name,
+					kind: "overlap",
+					detail: `text in "${textShapes[a].name ?? "?"}" likely overlaps "${textShapes[b].name ?? "?"}"`,
+				})
+			}
+		}
+	}
+}
+
+/** Explicit run colors in a shape: srgbClr values found under rPr/solidFill. */
+function runColors(sp: Element): { explicit: string[]; hasUncolored: boolean } {
+	const explicit: string[] = []
+	let hasUncolored = false
+	for (const rPr of byTag(sp, "rPr")) {
+		let color: string | undefined
+		for (const sf of byTag(rPr, "solidFill")) {
+			for (const srgb of byTag(sf, "srgbClr")) color = srgb.getAttribute("val") ?? undefined
+		}
+		if (color) explicit.push(color)
+		else hasUncolored = true
+	}
+	return { explicit, hasUncolored }
+}
+
+const LOW_CONTRAST_BG_LUM = 0.35
+
+/** On a dark slide, text that is (or inherits) dark reads as nothing. */
+function checkContrast(
+	slideIdx: number,
+	textShapes: Array<{ name: string | undefined; sp: Element }>,
+	slideBg: string | undefined,
+	findings: CheckFinding[],
+): void {
+	const bgLum = luminanceOf(slideBg)
+	if (bgLum === undefined || bgLum >= LOW_CONTRAST_BG_LUM) return
+	for (const { name, sp } of textShapes) {
+		const { explicit, hasUncolored } = runColors(sp)
+		const darkest = Math.min(...explicit.map((c) => luminanceOf(c) ?? 1))
+		if (explicit.length > 0 && darkest < LOW_CONTRAST_BG_LUM) {
+			findings.push({
+				slide: slideIdx,
+				shape: name,
+				kind: "low-contrast",
+				detail: "dark text on a dark background — recolor toward the light end of the palette",
+			})
+		} else if (explicit.length === 0 && hasUncolored) {
+			findings.push({
+				slide: slideIdx,
+				shape: name,
+				kind: "low-contrast",
+				detail: "text without an explicit color on a dark background (theme default is dark)",
+			})
+		}
+	}
+}
+
+/** Slide background hex from <p:bg>, if the slide sets one. */
+function slideBackgroundOf(slide: XmlDocument | Element): string | undefined {
+	for (const bg of byTag(slide, "bg")) {
+		for (const sf of byTag(bg, "solidFill")) {
+			for (const srgb of byTag(sf, "srgbClr")) {
+				const val = srgb.getAttribute("val")
+				if (val) return val
+			}
+		}
+	}
+	return undefined
+}
+
+/** A "plain" slide: at most two text shapes, no pictures, tables or charts. */
+function isPlainSlide(slide: XmlDocument | Element): boolean {
+	if (byTag(slide, "pic").length > 0 || byTag(slide, "graphicFrame").length > 0) return false
+	let textShapes = 0
+	for (const sp of byTag(slide, "sp")) {
+		if (paragraphsOf(sp).length > 0) textShapes++
+		if (textShapes > 2) return false
+	}
+	return textShapes > 0
+}
+
+const MONOTONY_MIN_SLIDES = 6
+const MONOTONY_PLAIN_FRACTION = 0.8
+
+function checkMonotony(slideXmls: XmlDocument[], findings: CheckFinding[]): void {
+	if (slideXmls.length < MONOTONY_MIN_SLIDES) return
+	const plain = slideXmls.filter(isPlainSlide).length
+	if (plain / slideXmls.length > MONOTONY_PLAIN_FRACTION) {
+		findings.push({
+			slide: 0,
+			kind: "monotony",
+			detail: `${plain} of ${slideXmls.length} slides are title-and-text only — vary layouts (cards, stats, quotes, flows, two-column) so every slide isn't the same shape`,
+		})
+	}
+}
+
 export async function checkPptx(data: Uint8Array): Promise<CheckFinding[]> {
 	const pkg = await openOoxml(data)
 	if (!pkg.hasXml("ppt/presentation.xml")) {
@@ -155,17 +295,29 @@ export async function checkPptx(data: Uint8Array): Promise<CheckFinding[]> {
 	const slides = slidePartsOf(pkg)
 	const slideSize = slideSizeOf(pkg)
 	const findings: CheckFinding[] = []
+	const slideXmls: XmlDocument[] = []
 	for (let i = 0; i < slides.length; i++) {
 		const slide = pkg.getXml(slides[i].path)
-		for (const sp of byTag(slide, "sp")) {
-			const { name } = extractPptxShapeText(sp)
+		slideXmls.push(slide)
+		const textShapes = byTag(slide, "sp")
+			.map((sp) => ({ sp, name: extractPptxShapeText(sp).name }))
+			.filter((shape) => paragraphsOf(shape.sp).length > 0)
+		for (const { sp, name } of textShapes) {
 			checkTextOverflow(i + 1, sp, name, findings)
 			checkOffSlide(i + 1, sp, name, slideSize, findings)
 		}
+		// Shapes without text can still leave the slide bounds.
+		const textless = byTag(slide, "sp").filter((sp) => paragraphsOf(sp).length === 0)
+		for (const sp of textless) {
+			checkOffSlide(i + 1, sp, extractPptxShapeText(sp).name, slideSize, findings)
+		}
+		checkOverlaps(i + 1, textShapes, findings)
+		checkContrast(i + 1, textShapes, slideBackgroundOf(slide), findings)
 		for (const pic of byTag(slide, "pic")) {
 			checkMissingAltText(i + 1, pic, findings)
 		}
 	}
+	checkMonotony(slideXmls, findings)
 	return findings
 }
 
@@ -199,6 +351,10 @@ function slideSizeOf(pkg: OoxmlPackage): { width: number; height: number } | und
 export function renderFindings(findings: CheckFinding[]): string {
 	if (findings.length === 0) return "no findings"
 	return findings
-		.map((f) => `slide ${f.slide}${f.shape ? ` [shape "${f.shape}"]` : ""} ${f.kind}: ${f.detail}`)
+		.map((f) =>
+			f.slide === 0
+				? `deck ${f.shape ? ` [shape "${f.shape}"]` : ""} ${f.kind}: ${f.detail}`
+				: `slide ${f.slide}${f.shape ? ` [shape "${f.shape}"]` : ""} ${f.kind}: ${f.detail}`,
+		)
 		.join("\n")
 }

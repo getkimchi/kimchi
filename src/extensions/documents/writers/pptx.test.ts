@@ -111,6 +111,164 @@ describe("writePptx round trips through the extractor", () => {
 	})
 })
 
+describe("design blocks (stats/quote/cards/flow/code)", () => {
+	it("parses stats entries from `value | label` lines", () => {
+		const spec = parseDeckMarkdown("# G\n\n```stats\n$0 | past-cap spend\n4 levels | budget tiers\n```\n")
+		expect(spec.slides[0].elements[0]).toEqual({
+			type: "stats",
+			entries: [
+				{ value: "$0", label: "past-cap spend" },
+				{ value: "4 levels", label: "budget tiers" },
+			],
+		})
+	})
+
+	it("stats lines without a separator are typed errors naming the slide", () => {
+		expect(() => parseDeckMarkdown("# G\n\n```stats\n$0 no pipe here\n```\n")).toThrow(/slide 1: stats line needs/)
+	})
+
+	it("parses quotes with and without attribution", () => {
+		const withAttr = parseDeckMarkdown(
+			"# G\n\n```quote\nAuto router keeps quality high.\n| Dekel Shavit, Sr. Director\n```\n",
+		)
+		expect(withAttr.slides[0].elements[0]).toEqual({
+			type: "quote",
+			text: "Auto router keeps quality high.",
+			attribution: "Dekel Shavit, Sr. Director",
+		})
+		const without = parseDeckMarkdown("# G\n\n```quote\nQuote text only.\n```\n")
+		expect(without.slides[0].elements[0]).toEqual({ type: "quote", text: "Quote text only.", attribution: undefined })
+	})
+
+	it("parses cards, numbering them with an N. prefix", () => {
+		const spec = parseDeckMarkdown("# G\n\n```cards\n1. First | body one\nSecond | body two\n```\n")
+		expect(spec.slides[0].elements[0]).toEqual({
+			type: "cards",
+			cards: [
+				{ title: "First", body: "body one", number: "1" },
+				{ title: "Second", body: "body two", number: undefined },
+			],
+		})
+	})
+
+	it("parses flows from arrows or lines, honoring the * accent stage", () => {
+		const single = parseDeckMarkdown("# G\n\n```flow\ndraft → *running → complete\n```\n")
+		expect(single.slides[0].elements[0]).toEqual({
+			type: "flow",
+			stages: [{ label: "draft" }, { label: "running", highlight: true }, { label: "complete" }],
+		})
+		const lines = parseDeckMarkdown("# G\n\n```flow\nplan\nbuild\nship\n```\n")
+		expect(lines.slides[0].elements[0]).toEqual({
+			type: "flow",
+			stages: [{ label: "plan" }, { label: "build" }, { label: "ship" }],
+		})
+	})
+
+	it("untyped or code fences become terminal cards; unknown block langs are typed errors", () => {
+		const spec = parseDeckMarkdown("# G\n\n```\n$ kimchi setup\n# comment\n```\n")
+		expect(spec.slides[0].elements[0]).toEqual({ type: "code", lines: ["$ kimchi setup", "# comment"] })
+		expect(() => parseDeckMarkdown("# G\n\n```mermaid\ngraph LR\n```\n")).toThrow(
+			/slide 1: unknown block type "mermaid"/,
+		)
+	})
+
+	it("the hero hint parses like other layout hints", () => {
+		const spec = parseDeckMarkdown("# Kimchi :: hero\n\nYour AI. Under your control.\n")
+		expect(spec.slides[0].layoutHint).toBe("hero")
+		expect(spec.slides[0].heading).toBe("Kimchi")
+	})
+})
+
+const DESIGN_DECK_MD = `---
+title: Kimchi
+---
+
+# Kimchi :: hero
+
+The governed AI coding agent.
+
+One enforcement layer for your AI.
+
+\`\`\`
+$ brew install getkimchi/tap/kimchi
+$ kimchi setup
+\`\`\`
+
+- kimchi.dev
+- github.com/getkimchi/kimchi
+
+---
+
+# The problem
+
+- Runaway spend
+---
+
+# Governance
+
+\`\`\`stats
+$0 | spent past the cap
+4 levels | budgets per user, team, key, model\n\`\`\`
+
+\`\`\`quote
+Auto router keeps the quality of a single frontier model while cutting costs.
+| Dekel Shavit, Sr. Director of Engineering
+\`\`\`
+
+---
+
+# Milestones
+
+\`\`\`cards
+1. Hard limits | spending stops at the cap
+2. Real time | attributed per request
+3. Perimeter | data stays inside
+\`\`\`
+
+\`\`\`flow
+draft → *running → complete
+\`\`\`
+`
+
+describe("writePptx with the extended design grammar", () => {
+	const THEME = {
+		font: "Arial",
+		headingFont: "Arial",
+		accent: "#FF521D",
+		background: "#0E0F13",
+		footer: "kimchi · {n}",
+	}
+
+	it("hero + design blocks round trip with content intact", async () => {
+		const bytes = await writePptx(parseDeckMarkdown(DESIGN_DECK_MD, THEME))
+		const doc = await extractPptx(bytes)
+		expect(doc.units).toHaveLength(4)
+		expect(doc.units[0].markdown).toContain("Kimchi")
+		expect(doc.units[0].markdown).toContain("brew install getkimchi/tap/kimchi")
+		expect(doc.units[2].markdown).toContain("$0")
+		expect(doc.units[2].markdown).toContain("Auto router keeps the quality")
+		expect(doc.units[2].markdown).toContain("Dekel Shavit, Sr. Director of Engineering")
+		expect(doc.units[3].markdown).toContain("Hard limits")
+		expect(doc.units[3].markdown).toContain("draft")
+	})
+
+	it("footers render on content slides only, with the slide number expanded", async () => {
+		const bytes = await writePptx(parseDeckMarkdown(DESIGN_DECK_MD, THEME))
+		const doc = await extractPptx(bytes)
+		expect(doc.units[0].markdown).not.toContain("kimchi · 1")
+		expect(doc.units[1].markdown).toContain("kimchi · 2")
+		expect(doc.units[2].markdown).toContain("kimchi · 3")
+		expect(doc.units[3].markdown).toContain("kimchi · 4")
+	})
+
+	it("two body blocks now stack in source order instead of erroring", async () => {
+		const bytes = await writePptx(parseDeckMarkdown("# S\n\nOne lead paragraph.\n\n- first bullet\n"))
+		const doc = await extractPptx(bytes)
+		expect(doc.units[0].markdown).toContain("One lead paragraph.")
+		expect(doc.units[0].markdown).toContain("first bullet")
+	})
+})
+
 describe("writePptx image rules", () => {
 	it("rejects unsupported image extensions and missing files", async () => {
 		const spec = parseDeckMarkdown("# A\n\n![p](x.bmp)\n")

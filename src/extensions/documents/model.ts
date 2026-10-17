@@ -48,6 +48,7 @@ export type DocumentErrorCode =
 	| "password-protected"
 	| "extraction-failed"
 	| "timeout"
+	| "tool-missing" // optional external tool (e.g. LibreOffice for `render`) not installed
 
 export class DocumentError extends Error {
 	readonly code: DocumentErrorCode

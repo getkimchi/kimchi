@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { extractPptx } from "./extractors/pptx.js"
 import { makeDefectivePptx, makeSimplePptx } from "./fixtures/builders.js"
 import { runPptxCli } from "./pptx-cli.js"
+import type { RenderDeps } from "./pptx-render.js"
 
 function io() {
 	const out: string[] = []
@@ -101,6 +102,47 @@ describe("pptx.mjs create", () => {
 		t2.files.set("deck.md", new TextEncoder().encode("# A\n\n- b\n"))
 		expect(await runPptxCli(["create", "out.docx", "--content", "deck.md"], t2.io)).toBe(2)
 		expect(t2.err.join("\n")).toContain("must end in .pptx")
+	})
+})
+
+describe("pptx.mjs render", () => {
+	const renderDeps: RenderDeps = {
+		which: (cmd) => (cmd === "soffice" || cmd === "pdftoppm" ? `/usr/bin/${cmd}` : undefined),
+		run: () => ({ code: 0, stdout: "", stderr: "" }),
+		fileExists: (p) => p.endsWith("deck.pdf"),
+		// Like readdirSync: bare entry names, not paths.
+		listdir: () => ["deck-1.png", "deck-2.png"],
+		mkdtemp: (prefix) => `${prefix}t1`,
+	}
+
+	it("prints one PNG path per line and exits 0", async () => {
+		const t = io()
+		t.files.set("deck.pptx", await makeSimplePptx())
+		const code = await runPptxCli(["render", "deck.pptx", "--out", "pngs"], { ...t.io, renderDeps })
+		expect(code).toBe(0)
+		expect(t.out).toEqual(["pngs/deck-1.png", "pngs/deck-2.png"])
+	})
+
+	it("passes the --slides window through to the renderer", async () => {
+		const t = io()
+		t.files.set("deck.pptx", await makeSimplePptx())
+		const code = await runPptxCli(["render", "deck.pptx", "--out", "pngs", "--slides", "2-2"], {
+			...t.io,
+			renderDeps: {
+				...renderDeps,
+				listdir: () => ["deck-1.png", "deck-2.png", "deck-3.png"],
+			},
+		})
+		expect(code).toBe(0)
+		expect(t.out).toEqual(["pngs/deck-2.png"])
+	})
+
+	it("errors without --out and without a deck", async () => {
+		const t = io()
+		expect(await runPptxCli(["render", "deck.pptx"], { ...t.io, renderDeps })).toBe(2)
+		expect(t.err.join("\n")).toContain("render needs --out")
+		expect(await runPptxCli(["render"], { ...t.io, renderDeps })).toBe(2)
+		expect(t.err.join("\n")).toContain("render needs a deck path")
 	})
 })
 

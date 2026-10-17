@@ -1,6 +1,6 @@
 ---
 name: pptx
-description: Read, inspect, check, create, and edit PowerPoint decks (.pptx) locally — no Python or LibreOffice. Use whenever the user mentions a .pptx file or slides.
+description: Read, inspect, check, create, edit, and visually render PowerPoint decks (.pptx) locally. Use whenever the user mentions a .pptx file or slides.
 requires-resource: skills.pptx
 disables-skills: pptx
 ---
@@ -31,37 +31,67 @@ unchanged. **No `inspect` → no `edit`.**
 
 ## check `<deck>`
 
-Static review: likely text overflow (heuristic: character-width estimate vs. shape box);
-shapes off the slide edge; shapes/pictures without alt text. Exit code 1 when anything
-is flagged — treat flags as **heuristics**, named plainly ("likely text overflow").
-Run after every edit pass; if `check` reports findable defects, review a flagged area
-before finishing. Heuristics can false-positive on tight text — read the exact slide
+Static review. Exit code 1 when anything is flagged — treat flags as
+**heuristics**, named plainly ("likely text overflow"). Run after every edit
+pass; if `check` reports findable defects, review a flagged area before
+finishing. Heuristics can false-positive on tight text — read the exact slide
 before rewriting.
+
+- `text-overflow` — text estimated past its shape box.
+- `overlap` — two text shapes whose boxes intersect (spilled text colliding
+  with the shape below it).
+- `low-contrast` — dark text on a dark slide background (explicit or
+  inherited).
+- `off-slide` — shapes past the slide edge.
+- `missing-alt-text` — pictures without alt text.
+- `monotony` — deck-level: most slides are title-and-text only. Vary layouts
+  (see `deck-design.md`).
+
+## render `<deck> --out <dir> [--slides N-M]`
+
+Visual QA: LibreOffice converts the deck to PDF, then per-slide PNGs land in
+`--out` (one path per line on stdout). **Optional** — needs LibreOffice
+(`brew install --cask libreoffice` / `apt install libreoffice`); every other
+command works without it. Read the PNGs of the slides you just wrote before
+calling the deck done: you are looking for text touching box edges,
+misalignment, and colors that die against the background. `error
+[tool-missing]` names the install command — fall back to `check` instead of
+stalling. Out of range `--slides` is an error; the intermediate PDF is kept
+and named in the message.
 
 ## create `<out.pptx> --content deck.md [--theme theme.json] [--template branded.pptx]`
 
-Write the deck as Markdown (format reference: the extension's `deck-markdown.md` - slides
-split by `---`; `# title`; bullets; tables; ` ```chart ` blocks carrying the chart JSON
-grammar; a `Notes:` paragraph for speaker notes; `:: layout` hints like `:: chart`).
+Write the deck as Markdown (format reference: the extension's `deck-markdown.md`;
+design judgment: `deck-design.md` — read it once per session). Slides split by
+`---`; `# title` with `:: layout` hints; bullets; tables; ` ```chart ` blocks;
+design blocks (` ```stats `, `quote`, `cards`, `flow`, `code`); a `Notes:`
+paragraph for speaker notes.
 
-- `--theme theme.json`: `{ "font": "Aptos", "accent": "#1F4E79" }` — one accent applied
-  to every chart; individual charts override via `accent`.
+- `--theme theme.json`: palette and type (`font`, `accent`, `background`,
+  `surface`, `text`, `muted`, `headingFont`, `monoFont`, `footer`) — see
+  `deck-markdown.md`. A dark `background` derives the light text/surfaces for you.
 - `--template branded.pptx`: keeps the org master/theme/floating images and fills title
-  and content placeholders per layout. Charts and images are NOT filled in template
-  mode — create without `--template` first if you need them, then copy static brand
-  images over manually if asked.
+  and content placeholders per layout. Charts, design blocks and images are NOT filled
+  in template mode — create without `--template` first if you need them, then copy
+  static brand images over manually if asked.
 - **Always run `check` on the created deck.** Its output tells you what to fix before
   handing the file to the user.
-- Standard layouts the writer accepts: `title`, `content`, `two-column`, `table`,
-  `chart`, `blank`.
+- Standard layouts the writer accepts: `title`, `hero`, `content`, `two-column`,
+  `table`, `chart`, `blank`.
+- The writer refuses overfull slides (`error [slide-overfull]`) — split the slide,
+  don't shrink the text.
 
 ### Create checklist (read once per session)
 
-1. At most 6 bullets per content slide; sub-bullets by indenting two spaces.
-2. One ` ```chart ` per `:: chart` slide; bar/line/pie/doughnut with `labels` and
+1. One idea per slide; at most 6 bullets per content slide; sub-bullets by
+   indenting two spaces.
+2. Vary layouts across the deck — adjacent slides shouldn't share a shape.
+   Reach for `stats`/`cards`/`flow`/`quote` before another bullet list.
+3. One ` ```chart ` per `:: chart` slide; bar/line/pie/doughnut with `labels` and
    `series[].values` of equal length — the parser rejects mismatches.
-3. Dollar amounts always text or tables, never pie slices.
-4. Long slides: split at a natural section with `---` rather than shrink the text.
+4. Dollar amounts always text or tables, never pie slices.
+5. When LibreOffice is available, `render` and Read the PNGs of the title slide
+   and one dense slide before handing over.
 
 ## edit `<in.pptx> --out <out.pptx> --ops ops.json`
 

@@ -4,7 +4,7 @@
 
 import type { Inline } from "../markdown/blocks.js"
 
-export type LayoutHint = "title" | "content" | "two-column" | "table" | "chart" | "blank"
+export type LayoutHint = "title" | "hero" | "content" | "two-column" | "table" | "chart" | "blank"
 
 export interface ChartSpec {
 	type: "bar" | "line" | "pie" | "doughnut"
@@ -20,6 +20,16 @@ export type SlideElement =
 	| { type: "table"; header: Inline[][]; rows: Inline[][][] }
 	| { type: "chart"; spec: ChartSpec }
 	| { type: "image"; path: string; alt: string }
+	/** Big-number callout row (``` stats): value rendered large, label below. */
+	| { type: "stats"; entries: Array<{ value: string; label: string }> }
+	/** Pull-quote card (```quote); `text | attribution` on the last line splits attribution. */
+	| { type: "quote"; text: string; attribution?: string }
+	/** Terminal / code card (```code or untyped fence; always dark, mono). */
+	| { type: "code"; lines: string[] }
+	/** Grid of small cards (```cards); lines are `Title | body`, optional `N.` prefix numbers the card. */
+	| { type: "cards"; cards: Array<{ title: string; body: string; number?: string }> }
+	/** Horizontal stage flow with arrows (```flow); `*` prefix marks the accent stage. */
+	| { type: "flow"; stages: Array<{ label: string; highlight?: boolean }> }
 
 export interface SlideSpec {
 	/** 1-based among parsed slides. */
@@ -35,8 +45,26 @@ export interface SlideSpec {
 }
 
 export interface DeckTheme {
+	/** Body font (also used for headings when headingFont is unset). */
 	font?: string
+	/** Heading font — pairs with the body font for contrast. */
+	headingFont?: string
+	/** Monospace font for code/terminal cards. */
+	monoFont?: string
+	/** Brand accent color, hex with or without '#'. */
 	accent?: string
+	/** Deck-wide background; a dark value flips text/surface defaults. */
+	background?: string
+	/** Card surface (stats/quote/cards fills). */
+	surface?: string
+	/** Alternate card surface (quote/footer strip contrast). */
+	surface2?: string
+	/** Primary text color. */
+	text?: string
+	/** Secondary text (labels, captions). */
+	muted?: string
+	/** Footer drawn on content slides; `{n}` = slide number, `{title}` = deck title. */
+	footer?: string
 	slideWidth?: number
 	slideHeight?: number
 }

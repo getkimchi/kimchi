@@ -31,6 +31,7 @@ import { openOoxml } from "./ooxml/package.js"
 import { validateContentTypes, validatePresentationChildOrder } from "./ooxml/validate.js"
 import { checkPptx, renderFindings } from "./pptx-check.js"
 import { inspectPptx, renderInspection } from "./pptx-inspect.js"
+import { type RenderDeps, renderPptx } from "./pptx-render.js"
 import { renderDocument } from "./render.js"
 import { parseDeckMarkdown, writePptx } from "./writers/pptx.js"
 import type { DeckTheme } from "./writers/pptx-model.js"
@@ -42,6 +43,8 @@ export interface CliIo {
 	readFile?: (path: string) => Uint8Array
 	/** Write overrides let tests intercept outputs; default is atomic temp+rename. */
 	writeFile?: (path: string, data: Uint8Array) => void
+	/** Injectable seams for `render`'s external tools (tests substitute fakes). */
+	renderDeps?: RenderDeps
 }
 
 const USAGE = `usage: pptx.mjs <command> [args]
@@ -49,9 +52,12 @@ const USAGE = `usage: pptx.mjs <command> [args]
 commands:
   read <deck.pptx> [start-end]                    slides as Markdown (20 per call)
   inspect <deck.pptx>                             layouts, placeholders, shape names
-  check <deck.pptx>                               likely defects (overflow, alt text, off-slide)
+  check <deck.pptx>                               likely defects (overflow, overlap,
+                                                  contrast, alt text, off-slide)
   create <out.pptx> --content <file.md> [--theme <f.json>] [--template <deck.pptx>]
-  edit <in.pptx> --out <out.pptx> --ops <ops.json>  apply ops, never in place`
+  edit <in.pptx> --out <out.pptx> --ops <ops.json>  apply ops, never in place
+  render <deck.pptx> --out <dir> [--slides N-M]   PDF + per-slide PNGs for visual QA
+                                                  (needs LibreOffice; optional)`
 
 function readBytes(io: Required<CliIo>["readFile"], path: string): Uint8Array {
 	try {
@@ -70,6 +76,12 @@ function enforceSizeCap(path: string, data: Uint8Array): void {
 			"pptx",
 		)
 	}
+}
+
+/** Value of a `--name value` flag, or undefined when absent. */
+function flagValue(flags: string[], name: string): string | undefined {
+	const i = flags.indexOf(name)
+	return i >= 0 ? flags[i + 1] : undefined
 }
 
 function parseSlideRange(arg: string | undefined): { start: number; end: number } | undefined {
@@ -140,15 +152,11 @@ export async function runPptxCli(argv: string[], io: CliIo): Promise<number> {
 					)
 				if (!out.toLowerCase().endsWith(".pptx"))
 					throw new DocumentError("corrupt", `output path must end in .pptx: ${out}`)
-				const flag = (name: string) => {
-					const i = flags.indexOf(name)
-					return i >= 0 ? flags[i + 1] : undefined
-				}
-				const contentPath = flag("--content")
+				const contentPath = flagValue(flags, "--content")
 				if (!contentPath)
 					throw new DocumentError("corrupt", "create needs --content <file.md> (deck Markdown, see deck-markdown.md)")
 				const content = new TextDecoder().decode(readBytes(readFile, contentPath))
-				const themePath = flag("--theme")
+				const themePath = flagValue(flags, "--theme")
 				let theme: DeckTheme = {}
 				if (themePath) {
 					const raw = new TextDecoder().decode(readBytes(readFile, themePath))
@@ -158,18 +166,28 @@ export async function runPptxCli(argv: string[], io: CliIo): Promise<number> {
 					} catch {
 						throw new DocumentError("corrupt", `theme file is not valid JSON: ${themePath}`)
 					}
+					const str = (key: string) => (typeof parsed[key] === "string" ? (parsed[key] as string) : undefined)
+					const num = (key: string) => (typeof parsed[key] === "number" ? (parsed[key] as number) : undefined)
 					theme = {
-						font: typeof parsed.font === "string" ? parsed.font : undefined,
-						accent: typeof parsed.accent === "string" ? parsed.accent : undefined,
-						slideWidth: typeof parsed.slideWidth === "number" ? parsed.slideWidth : undefined,
-						slideHeight: typeof parsed.slideHeight === "number" ? parsed.slideHeight : undefined,
+						font: str("font"),
+						headingFont: str("headingFont"),
+						monoFont: str("monoFont"),
+						accent: str("accent"),
+						background: str("background"),
+						surface: str("surface"),
+						surface2: str("surface2"),
+						text: str("text"),
+						muted: str("muted"),
+						footer: str("footer"),
+						slideWidth: num("slideWidth"),
+						slideHeight: num("slideHeight"),
 					}
 				}
 				const spec = parseDeckMarkdown(content, theme)
-				const templatePath = flag("--template")
+				const templatePath = flagValue(flags, "--template")
 				let bytes: Uint8Array
 				if (templatePath) {
-					if (theme.font || theme.accent || theme.slideWidth || theme.slideHeight) {
+					if (Object.values(theme).some((v) => v !== undefined)) {
 						io.stderr("note: --theme fields are ignored in --template mode; the template's theme wins.")
 					}
 					const templateData = readBytes(readFile, templatePath)
@@ -190,12 +208,8 @@ export async function runPptxCli(argv: string[], io: CliIo): Promise<number> {
 						"corrupt",
 						"edit needs an input: pptx.mjs edit <in.pptx> --out <out.pptx> --ops <ops.json>",
 					)
-				const flag = (name: string) => {
-					const i = flags.indexOf(name)
-					return i >= 0 ? flags[i + 1] : undefined
-				}
-				const out = flag("--out")
-				const opsPath = flag("--ops")
+				const out = flagValue(flags, "--out")
+				const opsPath = flagValue(flags, "--ops")
 				if (!out) throw new DocumentError("corrupt", "edit needs --out <out.pptx> — edits never write in place")
 				if (!opsPath) throw new DocumentError("corrupt", "edit needs --ops <ops.json> (a JSON array of ops)")
 				if (!out.toLowerCase().endsWith(".pptx"))
@@ -237,6 +251,24 @@ export async function runPptxCli(argv: string[], io: CliIo): Promise<number> {
 				const writeFile = io.writeFile ?? atomicWrite
 				writeFile(out, bytes)
 				io.stdout(`edited ${input} -> ${out} (${ops.length} op${ops.length === 1 ? "" : "s"} applied)`)
+				return 0
+			}
+			case "render": {
+				const [input, ...flags] = args
+				if (!input)
+					throw new DocumentError("corrupt", "render needs a deck path: pptx.mjs render <deck.pptx> --out <dir>")
+				const outDir = flagValue(flags, "--out")
+				if (!outDir)
+					throw new DocumentError("corrupt", "render needs --out <dir> — the PDF and per-slide PNGs land there")
+				const data = readBytes(readFile, input)
+				enforceSizeCap(input, data)
+				const rendered = await renderPptx(input, {
+					outDir,
+					slides: parseSlideRange(flagValue(flags, "--slides")),
+					deps: io.renderDeps,
+				})
+				for (const image of rendered.images) io.stdout(image)
+				if (rendered.images.length === 0) io.stderr(`no PNGs; PDF only: ${rendered.pdf}`)
 				return 0
 			}
 			case undefined:

@@ -21,18 +21,23 @@ import { extname, isAbsolute, normalize } from "node:path"
 import pptxgenDefault from "pptxgenjs"
 import { type Block, type Inline, parseMarkdownBlocks } from "../markdown/blocks.js"
 import { DocumentError } from "../model.js"
-import { enforcePitfalls, slideNeedsLightText } from "./pitfalls.js"
+import { enforcePitfalls } from "./pitfalls.js"
+import {
+	computeSlideLayout,
+	DEFAULT_SLIDE_H,
+	DEFAULT_SLIDE_W,
+	type ElementBox,
+	estimateElementHeight,
+	inlineTextOf,
+	MARGIN,
+	type Palette,
+	resolvePalette,
+} from "./pptx-layout.js"
 import type { ChartSpec, DeckMeta, DeckSpec, DeckTheme, LayoutHint, SlideElement, SlideSpec } from "./pptx-model.js"
 
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".svg"])
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
-const LAYOUT_HINTS: LayoutHint[] = ["title", "content", "two-column", "table", "chart", "blank"]
-
-const DEFAULT_FONT = "Calibri"
-const DEFAULT_ACCENT = "00A3A1"
-const DEFAULT_SLIDE_W = 13.33
-const DEFAULT_SLIDE_H = 7.5
-const MARGIN = 0.6
+const LAYOUT_HINTS: LayoutHint[] = ["title", "hero", "content", "two-column", "table", "chart", "blank"]
 
 export class DeckParseError extends DocumentError {
 	constructor(msg: string) {
@@ -150,6 +155,90 @@ function listToBullets(block: Block & { type: "list" }): SlideElement {
 	return { type: "bullets", depth: 0, items }
 }
 
+/** Split `value | label` once; typed error names the slide and line. */
+function splitPair(line: string, slideIndex: number, ctx: string): { first: string; rest: string } {
+	const i = line.indexOf("|")
+	if (i < 0) throw new DeckParseError(`slide ${slideIndex}: ${ctx} line needs "value | label": ${line}`)
+	return { first: line.slice(0, i).trim(), rest: line.slice(i + 1).trim() }
+}
+
+function parseStatsBlock(code: string, slideIndex: number): SlideElement {
+	const entries = code
+		.split(/\r?\n/)
+		.map((l) => l.trim())
+		.filter(Boolean)
+		.map((l) => {
+			const { first, rest } = splitPair(l, slideIndex, "stats")
+			return { value: first, label: rest }
+		})
+	if (entries.length === 0) throw new DeckParseError(`slide ${slideIndex}: "stats" block is empty`)
+	return { type: "stats", entries }
+}
+
+function parseQuoteBlock(code: string, slideIndex: number): SlideElement {
+	const lines = code.split(/\r?\n/).filter((l) => l.trim())
+	if (lines.length === 0) throw new DeckParseError(`slide ${slideIndex}: "quote" block is empty`)
+	let attribution: string | undefined
+	const last = lines[lines.length - 1]
+	if (last.trim().startsWith("|")) {
+		attribution = last.replace(/^\s*\|\s*/, "").trim()
+		lines.pop()
+	}
+	const text = lines.join("\n").trim()
+	if (!text) throw new DeckParseError(`slide ${slideIndex}: "quote" has attribution but no quote text`)
+	return { type: "quote", text, attribution }
+}
+
+function parseCardsBlock(code: string, slideIndex: number): SlideElement {
+	const cards = code
+		.split(/\r?\n/)
+		.map((l) => l.trim())
+		.filter(Boolean)
+		.map((l) => {
+			const num = /^(\d+)\.\s+/.exec(l)
+			const body = num ? l.slice(num[0].length) : l
+			const { first, rest } = splitPair(body, slideIndex, "cards")
+			return { title: first, body: rest, number: num ? num[1] : undefined }
+		})
+	if (cards.length === 0) throw new DeckParseError(`slide ${slideIndex}: "cards" block is empty`)
+	return { type: "cards", cards }
+}
+
+function parseFlowBlock(code: string, slideIndex: number): SlideElement {
+	const raw = code
+		.split(/\r?\n/)
+		.map((l) => l.trim())
+		.filter(Boolean)
+	const pieces = raw.length === 1 && raw[0].includes("→") ? raw[0].split("→") : raw
+	const stages = pieces
+		.map((p) => p.trim())
+		.filter(Boolean)
+		.map((p) => (p.startsWith("*") ? { label: p.slice(1).trim(), highlight: true } : { label: p }))
+	if (stages.length < 2) throw new DeckParseError(`slide ${slideIndex}: "flow" needs at least two stages`)
+	return { type: "flow", stages }
+}
+
+/** Map a fenced block to a design element: typed languages first, anything else is a terminal/code card. */
+function fencedBlockToElement(block: Block & { type: "code" }, slideIndex: number): SlideElement {
+	switch (block.lang) {
+		case "stats":
+			return parseStatsBlock(block.code, slideIndex)
+		case "quote":
+			return parseQuoteBlock(block.code, slideIndex)
+		case "cards":
+			return parseCardsBlock(block.code, slideIndex)
+		case "flow":
+			return parseFlowBlock(block.code, slideIndex)
+		case "code":
+		case undefined:
+			return { type: "code", lines: block.code.split(/\r?\n/) }
+		default:
+			throw new DeckParseError(
+				`slide ${slideIndex}: unknown block type "${block.lang}" — supported: chart, stats, quote, cards, flow, code (or untyped fences for code)`,
+			)
+	}
+}
+
 /** Strip read-output locator lines, returning the blocks that carry content. */
 function stripReadMarkers(blocks: Block[]): Block[] {
 	const out: Block[] = []
@@ -232,10 +321,7 @@ export function parseDeckMarkdown(markdown: string, theme: DeckTheme = {}, warni
 				continue
 			}
 			if (block.type === "code") {
-				slide.elements.push({
-					type: "paragraphs",
-					inline: [[{ text: block.code, code: true }]],
-				})
+				slide.elements.push(fencedBlockToElement(block, groups.indexOf(group) + 1))
 				seenContent = true
 				continue
 			}
@@ -278,6 +364,7 @@ interface PptxSlide {
 	addTable(rows: unknown[][], opts: Record<string, unknown>): void
 	addChart(type: unknown, data: unknown[], opts: Record<string, unknown>): void
 	addImage(opts: Record<string, unknown>): void
+	addShape(shape: string, opts: Record<string, unknown>): void
 	addNotes(notes: unknown): void
 	background?: { color: string }
 }
@@ -318,10 +405,7 @@ function checkImage(path: string, slide: SlideSpec, options: WriteOptions): void
 	}
 }
 
-function flattenBullets(
-	el: SlideElement & { type: "bullets" },
-	color?: string,
-): Array<{ text: string; options: Record<string, unknown> }> {
+function flattenBullets(el: SlideElement & { type: "bullets" }, color: string) {
 	const out: Array<{ text: string; options: Record<string, unknown> }> = []
 	const walk = (items: typeof el.items, depth: number) => {
 		for (const item of items) {
@@ -329,11 +413,11 @@ function flattenBullets(
 			out.push({
 				text,
 				options: {
-					bullet: { indent: depth * 18 },
+					bullet: { indent: 12 + depth * 18 },
 					breakLine: true,
 					...(item.inline.some((i) => i.bold) ? { bold: true } : {}),
 					...(item.inline.some((i) => i.italic) ? { italic: true } : {}),
-					...(color ? { color } : {}),
+					color,
 				},
 			})
 			for (const child of item.children) {
@@ -345,158 +429,530 @@ function flattenBullets(
 	return out
 }
 
-function layoutGeometry(hint: LayoutHint | undefined, w: number, h: number) {
-	const inner = w - 2 * MARGIN
-	const heading = { x: MARGIN, y: 0.35, w: inner, h: 0.9 }
-	switch (hint) {
-		case "title":
-			return {
-				heading: { x: MARGIN, y: h * 0.35, w: inner, h: 1.4, align: "center" as const },
-				body: { x: MARGIN, y: h * 0.6, w: inner, h: h * 0.3 },
-			}
-		case "two-column":
-			return {
-				heading,
-				columns: [
-					{ x: MARGIN, y: 1.5, w: inner / 2 - 0.2, h: h - 2 },
-					{ x: MARGIN + inner / 2 + 0.2, y: 1.5, w: inner / 2 - 0.2, h: h - 2 },
-				],
-			}
+/* ------------------------- element renderers ------------------------- */
+
+/** Terminal cards are always dark, light or dark theme alike. */
+const TERMINAL = { fill: "0A0B0E", text: "C8CDD6", prompt: "7BD88F", comment: "8B93A0" }
+
+function addCard(
+	s: PptxSlide,
+	box: { x: number; y: number; w: number; h: number },
+	fill: string,
+	border: string,
+): void {
+	s.addShape("roundRect", { ...box, rectRadius: 0.08, fill: { color: fill }, line: { color: border, width: 0.75 } })
+}
+
+function textRuns(paragraphs: Inline[][], color: string) {
+	return paragraphs.flatMap((p) => [...pptxRunFromInline(p, color), { text: "\n", options: { breakLine: true } }])
+}
+
+function renderElement(
+	s: PptxSlide,
+	pptx: PptxInstance,
+	box: ElementBox,
+	pal: Palette,
+	options: WriteOptions,
+	slideIndex: number,
+): void {
+	const el = box.el
+	switch (el.type) {
+		case "heading":
+			s.addText(inlineText(el.inline), {
+				x: box.x,
+				y: box.y,
+				w: box.w,
+				h: box.h,
+				isTextBox: true,
+				margin: 0,
+				fontFace: pal.headFont,
+				fontSize: 20,
+				bold: true,
+				color: pal.text,
+			})
+			break
+		case "paragraphs":
+			s.addText(textRuns(el.inline, pal.text), {
+				x: box.x,
+				y: box.y,
+				w: box.w,
+				h: box.h,
+				isTextBox: true,
+				margin: 0,
+				fontFace: pal.bodyFont,
+				fontSize: 16,
+			})
+			break
+		case "bullets":
+			s.addText(flattenBullets(el, pal.text), {
+				x: box.x,
+				y: box.y,
+				w: box.w,
+				h: box.h,
+				isTextBox: true,
+				margin: 0,
+				fontFace: pal.bodyFont,
+				fontSize: 16,
+			})
+			break
 		case "table":
-		case "chart":
-		case "blank":
-		case "content":
-		case undefined:
-		default:
-			return { heading, body: { x: MARGIN, y: 1.5, w: inner, h: h - 2.1 } }
+			s.addTable(
+				[
+					el.header.map((cell) => ({
+						text: inlineTextOf(cell),
+						options: { bold: true, fill: { color: pal.accent }, color: "FFFFFF" },
+					})),
+					...el.rows.map((row) => row.map((cell) => inlineTextOf(cell))),
+				],
+				{
+					x: box.x,
+					y: box.y,
+					w: box.w,
+					fontFace: pal.bodyFont,
+					fontSize: 14,
+					border: { pt: 1, color: pal.border },
+					color: pal.text,
+				},
+			)
+			break
+		case "chart": {
+			const chartType =
+				el.spec.type === "bar"
+					? pptx.ChartType.bar
+					: el.spec.type === "line"
+						? pptx.ChartType.line
+						: el.spec.type === "pie"
+							? pptx.ChartType.pie
+							: pptx.ChartType.doughnut
+			s.addChart(
+				chartType,
+				el.spec.series.map((srs, i) => ({
+					name: srs.name ?? `Series ${i + 1}`,
+					labels: el.spec.labels,
+					values: srs.values,
+				})),
+				{
+					x: box.x,
+					y: box.y,
+					w: box.w,
+					h: box.h,
+					chartTitle: el.spec.title,
+					chartColors: [pal.accent, "7FDBD4", "1F6F8B", "F4B860"],
+					showLegend: el.spec.series.length > 1,
+					catAxisLabelColor: pal.muted,
+					valAxisLabelColor: pal.muted,
+					valGridLine: { color: pal.border, size: 0.5 },
+					catGridLine: { style: "none" },
+				},
+			)
+			break
+		}
+		case "image": {
+			const path = isAbsolute(el.path) ? el.path : normalize(`${options.baseDir ?? "."}/${el.path}`)
+			checkImage(path, { index: slideIndex, elements: [el], notes: [] }, options)
+			s.addImage({
+				path,
+				x: box.x,
+				y: box.y,
+				w: box.w,
+				h: box.h,
+				alt: el.alt,
+				sizing: { type: "contain", w: box.w, h: box.h },
+			})
+			break
+		}
+		case "stats": {
+			const n = el.entries.length
+			const gap = 0.45
+			const cw = (box.w - gap * (n - 1)) / n
+			el.entries.forEach((entry, i) => {
+				const cx = box.x + i * (cw + gap)
+				addCard(s, { x: cx, y: box.y, w: cw, h: box.h }, pal.surface, pal.border)
+				s.addText(entry.value, {
+					x: cx + 0.22,
+					y: box.y + 0.14,
+					w: cw - 0.44,
+					h: 0.72,
+					isTextBox: true,
+					margin: 0,
+					fit: "shrink",
+					fontFace: pal.headFont,
+					fontSize: 34,
+					bold: true,
+					color: pal.accent,
+				})
+				s.addText(entry.label, {
+					x: cx + 0.22,
+					y: box.y + 0.92,
+					w: cw - 0.44,
+					h: box.h - 1.05,
+					isTextBox: true,
+					margin: 0,
+					fit: "shrink",
+					fontFace: pal.bodyFont,
+					fontSize: 11.5,
+					color: pal.muted,
+					lineSpacingMultiple: 1.12,
+				})
+			})
+			break
+		}
+		case "quote": {
+			addCard(s, box, pal.surface2, pal.border)
+			s.addText("\u201C", {
+				x: box.x + 0.18,
+				y: box.y + 0.02,
+				w: 0.75,
+				h: 1.1,
+				isTextBox: true,
+				margin: 0,
+				fontFace: "Cambria",
+				fontSize: 52,
+				bold: true,
+				color: pal.accent,
+			})
+			const hasAttr = !!el.attribution
+			s.addText(el.text, {
+				x: box.x + 1.0,
+				y: box.y + 0.22,
+				w: hasAttr ? box.w * 0.6 : box.w - 1.35,
+				h: box.h - 0.55,
+				isTextBox: true,
+				margin: 0,
+				fit: "shrink",
+				fontFace: pal.bodyFont,
+				fontSize: 14.5,
+				italic: true,
+				color: pal.text,
+				lineSpacingMultiple: 1.18,
+			})
+			if (el.attribution) {
+				s.addText(el.attribution, {
+					x: box.x + box.w * 0.66,
+					y: box.y + box.h - 1.0,
+					w: box.w * 0.28,
+					h: 0.75,
+					isTextBox: true,
+					margin: 0,
+					fontFace: pal.bodyFont,
+					fontSize: 12,
+					bold: true,
+					color: pal.accent,
+					align: "right",
+					lineSpacingMultiple: 1.15,
+				})
+			}
+			break
+		}
+		case "code": {
+			addCard(s, box, TERMINAL.fill, pal.border)
+			// Traffic-light dots on the header strip — the terminal cue.
+			;["FF5F57", "FEBC2E", "28C840"].forEach((c, i) => {
+				s.addShape("ellipse", { x: box.x + 0.16 + i * 0.22, y: box.y + 0.14, w: 0.14, h: 0.14, fill: { color: c } })
+			})
+			const runs = el.lines.map((line, i) => ({
+				text: line,
+				options: {
+					breakLine: i < el.lines.length - 1,
+					color: /^\s*[$>]/.test(line) ? TERMINAL.prompt : /^\s*#/.test(line) ? TERMINAL.comment : TERMINAL.text,
+				},
+			}))
+			s.addText(runs, {
+				x: box.x + 0.24,
+				y: box.y + 0.42,
+				w: box.w - 0.48,
+				h: box.h - 0.55,
+				isTextBox: true,
+				margin: 0,
+				fontFace: pal.monoFont,
+				fontSize: 11.5,
+				lineSpacingMultiple: 1.28,
+				valign: "top",
+			})
+			break
+		}
+		case "cards": {
+			const n = el.cards.length
+			const cols = n <= 2 ? n : n <= 4 ? 2 : 3
+			const rows = Math.ceil(n / cols)
+			const gap = 0.3
+			const cw = (box.w - gap * (cols - 1)) / cols
+			const ch = (box.h - gap * (rows - 1)) / rows
+			el.cards.forEach((card, i) => {
+				const cx = box.x + (i % cols) * (cw + gap)
+				const cy = box.y + Math.floor(i / cols) * (ch + gap)
+				addCard(s, { x: cx, y: cy, w: cw, h: ch }, pal.surface, pal.border)
+				let tx = cx + 0.22
+				if (card.number) {
+					s.addShape("ellipse", { x: cx + 0.2, y: cy + 0.2, w: 0.4, h: 0.4, fill: { color: pal.accent } })
+					s.addText(card.number, {
+						x: cx + 0.2,
+						y: cy + 0.2,
+						w: 0.4,
+						h: 0.4,
+						isTextBox: true,
+						margin: 0,
+						fontFace: pal.headFont,
+						fontSize: 13,
+						bold: true,
+						color: "FFFFFF",
+						align: "center",
+						valign: "middle",
+					})
+					tx = cx + 0.72
+				}
+				s.addText(card.title, {
+					x: tx,
+					y: cy + 0.16,
+					w: cx + cw - tx - 0.2,
+					h: 0.55,
+					isTextBox: true,
+					margin: 0,
+					fit: "shrink",
+					fontFace: pal.headFont,
+					fontSize: 15.5,
+					bold: true,
+					color: pal.text,
+				})
+				s.addText(card.body, {
+					x: tx,
+					y: cy + 0.72,
+					w: cx + cw - tx - 0.2,
+					h: ch - 0.85,
+					isTextBox: true,
+					margin: 0,
+					fit: "shrink",
+					fontFace: pal.bodyFont,
+					fontSize: 11.5,
+					color: pal.muted,
+					lineSpacingMultiple: 1.1,
+				})
+			})
+			break
+		}
+		case "flow": {
+			const n = el.stages.length
+			const arrowW = 0.5
+			const bw = (box.w - arrowW * (n - 1)) / n
+			el.stages.forEach((stage, i) => {
+				const bx = box.x + i * (bw + arrowW)
+				const fill = stage.highlight ? pal.accent : pal.surface
+				addCard(s, { x: bx, y: box.y + 0.05, w: bw, h: box.h - 0.1 }, fill, pal.border)
+				s.addText(stage.label, {
+					x: bx,
+					y: box.y + 0.05,
+					w: bw,
+					h: box.h - 0.1,
+					isTextBox: true,
+					margin: 0,
+					fit: "shrink",
+					fontFace: pal.monoFont,
+					fontSize: 14,
+					bold: true,
+					color: stage.highlight ? "FFFFFF" : pal.text,
+					align: "center",
+					valign: "middle",
+				})
+				if (i < n - 1) {
+					s.addText("→", {
+						x: bx + bw,
+						y: box.y + box.h / 2 - 0.35,
+						w: arrowW,
+						h: 0.7,
+						isTextBox: true,
+						margin: 0,
+						fontFace: pal.headFont,
+						fontSize: 22,
+						bold: true,
+						color: pal.accent,
+						align: "center",
+						valign: "middle",
+					})
+				}
+			})
+			break
+		}
 	}
 }
 
-interface Geometry {
-	heading: { x: number; y: number; w: number; h: number; align?: "center" }
-	body?: { x: number; y: number; w: number; h: number }
-	columns?: Array<{ x: number; y: number; w: number; h: number }>
+/** Hero slide: brand title layout — big heading, accent tagline, optional terminal card, link row. */
+function renderHero(s: PptxSlide, pptx: PptxInstance, slide: SlideSpec, pal: Palette, w: number, h: number): void {
+	const inner = w - 2 * MARGIN
+	// Corner glow: kept fully in-bounds so `check` stays clean (transparency, not a gradient).
+	s.addShape("ellipse", {
+		x: w - 4.4,
+		y: h - 4.4,
+		w: 4.4,
+		h: 4.4,
+		fill: { color: pal.accent, transparency: 88 },
+		line: { type: "none" },
+	})
+	if (slide.heading !== undefined) {
+		s.addText(slide.heading, {
+			x: MARGIN,
+			y: 1.35,
+			w: inner,
+			h: 1.9,
+			isTextBox: true,
+			margin: 0,
+			fit: "shrink",
+			fontFace: pal.headFont,
+			fontSize: 54,
+			bold: true,
+			color: pal.text,
+		})
+	}
+	let firstPara = true
+	let y = 3.4
+	for (const el of slide.elements) {
+		if (el.type === "paragraphs") {
+			for (const p of el.inline) {
+				const lines = Math.max(1, Math.ceil(inlineTextOf(p).length / 90))
+				const ph = lines * (firstPara ? 0.48 : 0.32)
+				s.addText(pptxRunFromInline(p, firstPara ? pal.accent : pal.muted), {
+					x: MARGIN,
+					y,
+					w: firstPara ? inner : inner * 0.72,
+					h: ph + 0.1,
+					isTextBox: true,
+					margin: 0,
+					fit: "shrink",
+					fontFace: firstPara ? pal.headFont : pal.bodyFont,
+					fontSize: firstPara ? 22 : 13.5,
+					bold: firstPara,
+					lineSpacingMultiple: 1.15,
+				})
+				y += ph + 0.16
+				firstPara = false
+			}
+		}
+	}
+	for (const el of slide.elements) {
+		if (el.type === "code") {
+			const ch = Math.min(estimateElementHeight(el, 7.0), 2.3)
+			renderElement(
+				s,
+				pptx,
+				{ el, x: MARGIN, y: Math.min(y + 0.15, h - 1.05 - ch), w: 7.6, h: ch },
+				pal,
+				{},
+				slide.index,
+			)
+		}
+	}
+	for (const el of slide.elements) {
+		if (el.type === "bullets") {
+			const links = flattenBullets(el, pal.muted)
+				.map((r) => r.text)
+				.join("   ·   ")
+			s.addText(links, {
+				x: MARGIN,
+				y: h - 0.62,
+				w: inner,
+				h: 0.35,
+				isTextBox: true,
+				margin: 0,
+				fit: "shrink",
+				fontFace: pal.bodyFont,
+				fontSize: 11.5,
+				color: pal.muted,
+			})
+		}
+	}
+}
+
+function expandFooter(template: string, n: number, title: string | undefined): string {
+	return template.replaceAll("{n}", String(n)).replaceAll("{title}", title ?? "")
 }
 
 export async function writePptx(spec: DeckSpec, options: WriteOptions = {}): Promise<Uint8Array> {
-	enforcePitfalls(spec.slides)
+	enforcePitfalls(spec.slides, spec.theme)
 
 	const theme = spec.theme
 	const w = theme.slideWidth ?? DEFAULT_SLIDE_W
 	const h = theme.slideHeight ?? DEFAULT_SLIDE_H
-	const font = theme.font ?? DEFAULT_FONT
-	const accent = (theme.accent ?? DEFAULT_ACCENT).replace("#", "")
+	const basePal = resolvePalette(theme)
 	const pptx: PptxInstance = new PptxGenJS()
 	pptx.defineLayout({ name: "KIMCHI", width: w, height: h })
 	pptx.layout = "KIMCHI"
 	if (spec.meta.title) pptx.title = spec.meta.title
 	if (spec.meta.author) pptx.author = spec.meta.author
-	pptx.theme = { headFontFace: font, bodyFontFace: font }
+	pptx.theme = { headFontFace: basePal.headFont, bodyFontFace: basePal.bodyFont }
 
 	for (const slide of spec.slides) {
-		const geo = layoutGeometry(slide.layoutHint, w, h) as Geometry
+		// A per-slide background override re-derives text/surface colors for it.
+		const pal = slide.background ? resolvePalette({ ...theme, background: slide.background }) : basePal
 		const s = pptx.addSlide()
-		if (slide.background) {
-			s.background = { color: slide.background.replace("#", "") }
-		}
-		const color = slideNeedsLightText(slide.background) ? "FFFFFF" : undefined
-		if (slide.heading !== undefined) {
-			const isTitle = slide.layoutHint === "title"
-			s.addText(slide.heading, {
-				...geo.heading,
-				fontFace: font,
-				fontSize: isTitle ? 44 : 28,
-				bold: true,
-				color: color ?? accent,
-				align: geo.heading.align,
-			})
-		}
+		if (pal.bg) s.background = { color: pal.bg }
 
-		// Two-column: body blocks split across two boxes (see two-column-needs-hint).
-		if (slide.layoutHint === "two-column") {
-			const bodies = slide.elements.filter((e) => e.type === "bullets" || e.type === "paragraphs")
-			bodies.forEach((el, colIdx) => {
-				const box = geo.columns?.[Math.min(colIdx, (geo.columns?.length ?? 1) - 1)]
-				if (!box) return
-				if (el.type === "bullets") {
-					s.addText(flattenBullets(el, color), { ...box, fontFace: font, fontSize: 16 })
-				} else {
-					const runs = el.inline.flatMap((p) => [
-						...pptxRunFromInline(p, color),
-						{ text: "\n", options: { breakLine: true } },
-					])
-					s.addText(runs, { ...box, fontFace: font, fontSize: 16 })
-				}
-			})
-		}
-
-		for (const el of slide.elements) {
-			if (slide.layoutHint === "two-column" && (el.type === "bullets" || el.type === "paragraphs")) continue
-			const box = geo.body ?? { x: MARGIN, y: 1.5, w: w - 2 * MARGIN, h: h - 2.1 }
-			switch (el.type) {
-				case "heading":
-					s.addText(inlineText(el.inline), {
-						x: box.x,
-						y: box.y,
-						w: box.w,
-						h: 0.5,
-						fontFace: font,
-						fontSize: 20,
-						bold: true,
-						color,
-					})
-					break
-				case "paragraphs": {
-					const runs = el.inline.flatMap((p) => [
-						...pptxRunFromInline(p, color),
-						{ text: "\n", options: { breakLine: true } },
-					])
-					s.addText(runs, { ...box, fontFace: font, fontSize: 16 })
-					break
-				}
-				case "bullets":
-					s.addText(flattenBullets(el, color), { ...box, fontFace: font, fontSize: 16 })
-					break
-				case "table": {
-					s.addTable(
-						[
-							el.header.map((cell) => ({
-								text: inlineText(cell),
-								options: { bold: true, fill: { color: accent }, color: "FFFFFF" },
-							})),
-							...el.rows.map((row) => row.map((cell) => inlineText(cell))),
-						],
-						{ ...box, fontFace: font, fontSize: 14, border: { pt: 1, color: accent } },
-					)
-					break
-				}
-				case "chart": {
-					const chartType =
-						el.spec.type === "bar"
-							? pptx.ChartType.bar
-							: el.spec.type === "line"
-								? pptx.ChartType.line
-								: el.spec.type === "pie"
-									? pptx.ChartType.pie
-									: pptx.ChartType.doughnut
-					s.addChart(
-						chartType,
-						el.spec.series.map((srs, i) => ({
-							name: srs.name ?? `Series ${i + 1}`,
-							labels: el.spec.labels,
-							values: srs.values,
-						})),
-						{ ...box, chartTitle: el.spec.title, chartColors: [accent, "7FDBD4", "1F6F8B", "F4B860"] },
-					)
-					break
-				}
-				case "image": {
-					const path = isAbsolute(el.path) ? el.path : normalize(`${options.baseDir ?? "."}/${el.path}`)
-					checkImage(path, slide, options)
-					s.addImage({ path, ...box, alt: el.alt })
-					break
-				}
+		if (slide.layoutHint === "hero") {
+			renderHero(s, pptx, slide, pal, w, h)
+		} else if (slide.layoutHint === "title") {
+			if (slide.heading !== undefined) {
+				s.addText(slide.heading, {
+					x: MARGIN,
+					y: h * 0.35,
+					w: w - 2 * MARGIN,
+					h: 1.4,
+					isTextBox: true,
+					margin: 0,
+					fit: "shrink",
+					fontFace: pal.headFont,
+					fontSize: 44,
+					bold: true,
+					color: pal.accent,
+					align: "center",
+				})
 			}
+			const body = slide.elements.find((e) => e.type === "paragraphs")
+			if (body?.type === "paragraphs") {
+				s.addText(textRuns(body.inline, pal.text), {
+					x: MARGIN,
+					y: h * 0.6,
+					w: w - 2 * MARGIN,
+					h: h * 0.28,
+					isTextBox: true,
+					margin: 0,
+					fontFace: pal.bodyFont,
+					fontSize: 16,
+					align: "center",
+				})
+			}
+		} else {
+			const layout = computeSlideLayout(slide, theme)
+			if (layout.heading && slide.heading !== undefined) {
+				s.addText(slide.heading, {
+					x: layout.heading.x,
+					y: layout.heading.y,
+					w: layout.heading.w,
+					h: layout.heading.h,
+					isTextBox: true,
+					margin: 0,
+					fit: "shrink",
+					fontFace: pal.headFont,
+					fontSize: 28,
+					bold: true,
+					color: pal.text,
+				})
+			}
+			for (const col of layout.columns ?? []) renderElement(s, pptx, col, pal, options, slide.index)
+			for (const box of layout.flow) renderElement(s, pptx, box, pal, options, slide.index)
+		}
+
+		// Footer on workhorse slides only — clean title/hero faces.
+		if (pal.footer && slide.layoutHint !== "title" && slide.layoutHint !== "hero" && slide.layoutHint !== "blank") {
+			s.addText(expandFooter(pal.footer, slide.index, spec.meta.title), {
+				x: w - 3.6,
+				y: h - 0.44,
+				w: 3.0,
+				h: 0.3,
+				isTextBox: true,
+				margin: 0,
+				fontFace: pal.bodyFont,
+				fontSize: 9,
+				color: pal.muted,
+				align: "right",
+			})
 		}
 
 		if (slide.notes.length > 0) s.addNotes(slide.notes.join("\n"))

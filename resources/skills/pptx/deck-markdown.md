@@ -62,6 +62,68 @@ an image). The block body is JSON:
 Unknown `type` values are a typed error naming the slide. Empty `series` is
 an error. Insufficient axis space is not an error — the chart renders anyway.
 
+## Design blocks
+
+Fenced code blocks with the language tags below become composed visual
+elements — cards, terminal windows, quote plates — not code. Use them to
+vary slide layouts; a deck where every slide is title-plus-bullets reads as
+lazy (and `check` says so).
+
+- ` ```stats ` — one metric per line, `value | label`. Rendered as a row of
+  number cards in the accent color:
+
+  ~~~markdown
+  ```stats
+  4.2× | faster cold starts
+  $1.1M | annual savings
+  38 | clusters migrated
+  ```
+  ~~~
+
+- ` ```quote ` — the quote text, optionally followed by an attribution line
+  starting with `|`. Rendered as a large-type quote plate:
+
+  ~~~markdown
+  ```quote
+  The deck wrote itself before lunch.
+  | Head of Platform, customer name
+  ```
+  ~~~
+
+- ` ```cards ` — one card per line, `title | body`; a `1. ` prefix turns
+  into a numbered badge. Grid fills left-to-right (3 per row on 13.33″
+  slides):
+
+  ~~~markdown
+  ```cards
+  1. Bin packing | Consolidates workloads automatically
+  2. Rightsizing | Matches nodes to actual usage
+  3. Spot orchestration | Checkpoints stateful work
+  ```
+  ~~~
+
+- ` ```flow ` — pipeline stages, one per line or joined with `→` (at least
+  two). Prefix a stage with `*` to highlight it:
+
+  ~~~markdown
+  ```flow
+  Commit → *Build → Scan → Deploy
+  ```
+  ~~~
+
+- ` ```code ` (or any untyped fence) — a terminal-style card: dark
+  background, monospace, traffic-light dots. Good for command output and
+  config snippets:
+
+  ~~~markdown
+  ```code
+  $ kimchi deploy --cluster prod
+  ✓ 3 nodes consolidated
+  ```
+  ~~~
+
+An unknown fenced language is a typed error naming the supported types.
+
 ## Images
 
 - Written as standard markdown: `![alt text](path/to/image.png)`.
@@ -80,6 +142,7 @@ hint must match exactly one layout or creation fails naming the slide.
 | Hint              | Purpose                                  |
 | ----------------- | ---------------------------------------- |
 | `title`           | Large title, optional subtitle           |
+| `hero`            | Title face: accent tagline, terminal card, link row |
 | `content`         | Title + body (default)                   |
 | `two-column`      | Title + two body columns                 |
 | `table`           | Title plus a full-width table            |
@@ -95,15 +158,30 @@ Hints riding the first heading: `# Q3 Review :: two-column`.
 ```json
 {
 	"font": "Aptos",
-	"accent": "#00A3A1",
+	"headingFont": "Aptos Display",
+	"monoFont": "Courier New",
+	"accent": "#F4572E",
+	"background": "#0E0F13",
+	"surface": "#181A21",
+	"surface2": "#20242E",
+	"text": "#ECEDEF",
+	"muted": "#9BA1AB",
+	"footer": "{title} · {n}",
 	"slideWidth": 13.33,
 	"slideHeight": 7.5
 }
 ```
 
-Defaults: Calibri, kimchi teal `#00A3A1`, 13.33″ × 7.5″ (16:9). In
-`--template` mode the template's own theme wins and conflicting `--theme`
-fields are ignored with a warning.
+Defaults: Calibri body, kimchi teal `#00A3A1` accent, white background,
+13.33″ × 7.5″ (16:9).
+
+- A dark `background` flips the derived text/surface colors to light
+  automatically — set the palette fields only to override the derived ones.
+- `footer` renders small at the bottom-right of content slides (never on
+  `title`/`hero`/`blank`); `{n}` expands to the slide number, `{title}` to
+  the frontmatter deck title.
+- In `--template` mode the template's own theme wins and conflicting
+  `--theme` fields are ignored with a warning.
 
 ## Frontmatter
 
@@ -123,3 +201,8 @@ Both set the file's document properties; unknown keys are ignored.
 Unknown or malformed construct → a typed error naming the slide and the
 line, never silently dropped content. Examples: unclosed table row, a chart
 block that isn't valid JSON, an image URL scheme we don't accept.
+
+`error [slide-overfull]`: the slide's estimated content overruns the
+available region (title bar, footer, margins). Split the slide at a natural
+section with `---` or thin the content — the writer refuses to shrink text
+below readable sizes.

@@ -40,12 +40,39 @@ describe("pitfall guards", () => {
 		).toThrow(/chart-needs-series: series 1 has 5 values for 2 labels/)
 	})
 
-	it("two-column-needs-hint rejects two body blocks without the hint", () => {
+	it("body blocks now stack — no two-column error anymore", () => {
 		const bullets = { type: "bullets" as const, depth: 0, items: [{ inline: [{ text: "a" }], children: [] }] }
-		expect(() => enforcePitfalls([slideWith(bullets), slideWith(bullets)])).not.toThrow()
 		const slide = slideWith(bullets)
 		slide.elements.push(bullets)
-		expect(() => enforcePitfalls([slide])).toThrow(/two-column-needs-hint/)
+		expect(() => enforcePitfalls([slide])).not.toThrow()
+	})
+
+	it("slide-overfull rejects estimates that exceed the content region", () => {
+		const dense = {
+			type: "bullets" as const,
+			depth: 0,
+			items: Array.from({ length: 40 }, (_, i) => ({
+				inline: [{ text: `item ${i} describing a feature in moderate detail` }],
+				children: [],
+			})),
+		}
+		expect(() => enforcePitfalls([slideWith(dense)])).toThrow(/slide-overfull: slide/)
+		expect(() => enforcePitfalls([slideWith(dense)])).toThrow(/split it into two slides/)
+	})
+
+	it("slide-overfull accepts fitting content and honors the theme's slide size", () => {
+		const bullets = { type: "bullets" as const, depth: 0, items: [{ inline: [{ text: "a" }], children: [] }] }
+		expect(() => enforcePitfalls([slideWith(bullets)])).not.toThrow()
+		const dense = {
+			type: "bullets" as const,
+			depth: 0,
+			items: Array.from({ length: 24 }, (_, i) => ({
+				inline: [{ text: `item ${i} describing a feature in moderate detail` }],
+				children: [],
+			})),
+		}
+		expect(() => enforcePitfalls([slideWith(dense)])).toThrow(/slide-overfull/)
+		expect(() => enforcePitfalls([slideWith(dense)], { slideHeight: 16 })).not.toThrow()
 	})
 
 	it("table-needs-rows rejects header-only tables", () => {

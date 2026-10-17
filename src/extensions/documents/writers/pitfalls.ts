@@ -7,7 +7,8 @@
  * inside create_document.
  */
 
-import type { SlideSpec } from "./pptx-model.js"
+import { estimateOverflow } from "./pptx-layout.js"
+import type { DeckTheme, SlideSpec } from "./pptx-model.js"
 
 export interface Pitfall {
 	/** Stable id, named in error messages and tests. */
@@ -61,22 +62,22 @@ const CHART_NEEDS_SERIES: Pitfall = {
 	},
 }
 
-/** Two-column: pptxgenjsLays both text arrays vertically unless the writer
- * splits them into two addText calls — model-level, no silent "both columns
- * stacked" decks. The rule: a slide may not carry two body blocks unless the
- * hint is two-column. */
-const TWO_COLUMN_NEEDS_HINT: Pitfall = {
-	id: "two-column-needs-hint",
-	why: "without the two-column hint two body blocks stack vertically",
+/** Overfull slides: the writer's flow allocator uses the same estimator —
+ * content that cannot fit would render past the slide. Refuse with the
+ * measured numbers and the fix (split), so overflow can never ship silently.
+ * Built per-theme because region heights depend on slide size and footer. */
+const slideOverfull = (theme: DeckTheme): Pitfall => ({
+	id: "slide-overfull",
+	why: "estimated content height exceeds the content region; the slide must be split or trimmed",
 	check: (slide) => {
-		const bodies = slide.elements.filter((e) => e.type === "bullets" || e.type === "paragraphs")
-		if (bodies.length > 1 && slide.layoutHint !== "two-column") {
+		const over = estimateOverflow(slide, theme)
+		if (over > 0.15) {
 			throw new Error(
-				`two-column-needs-hint: slide "${slide.heading ?? "(untitled)"}" has ${bodies.length} body blocks but no two-column hint`,
+				`slide-overfull: slide "${slide.heading ?? "(untitled)"}" overruns the content region by ~${over.toFixed(2)}" — split it into two slides or thin the content`,
 			)
 		}
 	},
-}
+})
 
 /** Tables: pptxgenjs requires `options.tableStyle` internally consistent —
  * degenerate empty tables (header-only) render as a lone row PowerPoint
@@ -93,32 +94,20 @@ const TABLE_NEEDS_ROWS: Pitfall = {
 	},
 }
 
-/** Dark backgrounds: pptxgenjs leaves text color untouched — default dark
- * text on a dark slide. The rule acts at model level: when a slide sets a
- * background below luminance 0.35, every block without an explicit color
- * gets one assigned by the writer (documented here so tests can pin it). */
-export const DARK_BG_LIGHT_TEXT_LUMINANCE = 0.35
-
-export function slideNeedsLightText(background: string | undefined): boolean {
-	if (!background) return false
-	const hex = background.replace("#", "")
-	if (hex.length !== 6) return false
-	const r = Number.parseInt(hex.slice(0, 2), 16) / 255
-	const g = Number.parseInt(hex.slice(2, 4), 16) / 255
-	const b = Number.parseInt(hex.slice(4, 6), 16) / 255
-	return 0.2126 * r + 0.7152 * g + 0.0722 * b < DARK_BG_LIGHT_TEXT_LUMINANCE
-}
+// Luminance helpers moved to writers/pptx-layout.ts (shared with the flow
+// allocator); re-exported so existing imports keep working.
+export { DARK_BG_LIGHT_TEXT_LUMINANCE, slideNeedsLightText } from "./pptx-layout.js"
 
 export const PPTX_WRITING_PITFALLS: readonly Pitfall[] = [
 	CHART_VALUES_MUST_BE_NUMERIC,
 	CHART_NEEDS_SERIES,
-	TWO_COLUMN_NEEDS_HINT,
 	TABLE_NEEDS_ROWS,
 ]
 
 /** Run every guard against every slide. */
-export function enforcePitfalls(slides: SlideSpec[]): void {
+export function enforcePitfalls(slides: SlideSpec[], theme: DeckTheme = {}): void {
+	const rules = [...PPTX_WRITING_PITFALLS, slideOverfull(theme)]
 	for (const slide of slides) {
-		for (const rule of PPTX_WRITING_PITFALLS) rule.check(slide)
+		for (const rule of rules) rule.check(slide)
 	}
 }
