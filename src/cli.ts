@@ -46,6 +46,7 @@ import {
 	RETRY_DEFAULTS,
 	readTelemetryConfig,
 	resolveEffectiveApiKey,
+	syncMcpBuiltinToPiSettings,
 	syncWheelScrollToPiSettings,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
@@ -104,7 +105,7 @@ import loginExtension from "./extensions/login/index.js"
 import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
-import mcpAdapterExtension, { createKimchiMcpAdapterExtension } from "./extensions/mcp/index.js"
+import mcpExtension, { createKimchiMcpExtension } from "./extensions/mcp/index.js"
 import { UpstreamMcpProbe } from "./extensions/mcp/probe.js"
 import { MEMORY_RESOURCE_ID } from "./extensions/memory/config.js"
 import memoryExtension from "./extensions/memory/index.js"
@@ -202,6 +203,7 @@ import { initOrgPolicy } from "./org-policy.js"
 import { syncPiAuth } from "./pi-auth.js"
 import resourcesExtension from "./resources/extension.js"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
+import { isResourceEnabled } from "./resources/store.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
@@ -620,6 +622,12 @@ try {
 				changed = true
 			}
 			if (syncWheelScrollToPiSettings(existing, config)) changed = true
+			// The plugins.mcp-apps org-policy toggle suppresses pi's native
+			// built-in MCP extension wholesale (-builtin:mcp, the designed
+			// disable surface). On TUI it is the only MCP engine; on ACP the
+			// factory simply isn't injected (same toggle via
+			// enabledExtensionFactories below).
+			if (syncMcpBuiltinToPiSettings(existing, isResourceEnabled("plugins.mcp-apps"))) changed = true
 			if (changed) {
 				writeFileSync(settingsPath, `${JSON.stringify(existing, null, 2)}\n`)
 			}
@@ -762,8 +770,8 @@ try {
 		// was [...new Set([...skillPaths])]) so duplicate config entries don't
 		// multiply downstream expansion work per discovery.
 		const configuredSkillPaths = (): string[] => [...new Set(loadConfig().skillPaths ?? [])]
-		const mcpAdapterExtensions = enabledExtensionFactories([
-			{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
+		const mcpExtensions = enabledExtensionFactories([
+			{ id: "plugins.mcp-apps", factory: mcpExtension },
 		] satisfies ManagedExtensionFactory[])
 		const extensionFactories = [
 			// First so its session_start handler syncs project trust onto the
@@ -830,7 +838,7 @@ try {
 			// another platform (dead schema weight otherwise).
 			powershellGateExtension,
 			hiddenToolGuidanceExtension,
-			...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
+			...(IS_ACP_MODE ? [] : mcpExtensions),
 			ideAdapterExtension,
 			// Ferment must see raw input before prompt enrichment rewrites print-mode text.
 			...enabledExtensionFactories([
@@ -925,12 +933,22 @@ try {
 
 		if (IS_ACP_MODE) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
+			// pi's main() is what loads its built-in extensions in interactive runs;
+			// the ACP server composes sessions itself and kimchi's own factories
+			// alone left pi's codemeode and tool-search builtins unloaded. The
+			// builtin:mcp extension is instantiated inline by
+			// createKimchiMcpExtension instead (with ACP caller servers and the
+			// per-project migration), so it is excluded here to avoid double
+			// registration. Without codemeode/tool-search, non-`direct` MCP tools
+			// (the default exposure post-migration) were invisible to models in
+			// ACP sessions: pi declares them only through those discovery tools.
+			const { createCodemodeExtension, createToolSearchExtension } = await import("@earendil-works/pi-coding-agent")
 			await runAcpMode({
-				extensionFactories,
+				extensionFactories: [createCodemodeExtension(), createToolSearchExtension(), ...extensionFactories],
 				agentDir,
-				...(mcpAdapterExtensions.length > 0
+				...(mcpExtensions.length > 0
 					? {
-							mcpExtensionFactory: createKimchiMcpAdapterExtension,
+							mcpExtensionFactory: createKimchiMcpExtension,
 							mcpProbe: new UpstreamMcpProbe(),
 						}
 					: {}),

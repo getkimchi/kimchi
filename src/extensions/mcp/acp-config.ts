@@ -1,5 +1,5 @@
 import type { McpServer } from "@agentclientprotocol/sdk"
-import type { ServerEntry } from "pi-mcp-adapter/types"
+import type { ServerEntry } from "./types.js"
 
 function entriesToRecord(
 	entries: ReadonlyArray<{ name: string; value: string }> | undefined,

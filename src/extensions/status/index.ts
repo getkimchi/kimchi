@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs"
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { MCP_STATUS_EVENT, type McpStatusSnapshot } from "pi-mcp-adapter"
+import { join } from "node:path"
+import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
 import { getMe } from "../../api/me.js"
 import { getOrganization, type Organization, verifyApiKey } from "../../api/organizations.js"
 import { type ApiKeySource, getApiKeySource, getEnvironmentApiKey, getSavedApiKey, loadConfig } from "../../config.js"
@@ -15,20 +15,16 @@ import { createStatusPanelComponent } from "./panel.js"
 export const STATUS_COMMAND_DESCRIPTION = "Show version, login, session, model, and MCP status"
 
 /** Connected = tools available; cached counts as usable. */
-const MCP_CONNECTED_STATUSES = new Set(["connected", "cached"])
-const MCP_DISABLED_STATUS = "disabled"
 /**
  * The failed bucket: "failed" and "needs-auth" are the two error states;
  * "not-connected" is a server that is present but unusable, so it counts here
  * too rather than disappearing from the summary.
  */
-const MCP_FAILED_STATUSES = new Set(["failed", "needs-auth", "not-connected"])
 
 /** Summary counts for the MCP row of the Status panel. */
 export interface McpCounts {
-	connected: number
+	configured: number
 	disabled: number
-	failed: number
 }
 
 interface StatusRowsDeps {
@@ -70,12 +66,7 @@ export function buildStatusRows(deps: StatusRowsDeps): string[] {
 		row("Model:", `${deps.modelRef}${deps.isAuto ? ` (${deps.resolvedModelId ?? "auto"})` : ""}`),
 	]
 	if (deps.mcp) {
-		sessionRows.push(
-			row(
-				"MCP servers:",
-				`${deps.mcp.connected} connected, ${deps.mcp.disabled} disabled, ${deps.mcp.failed} failed · /mcp`,
-			),
-		)
+		sessionRows.push(row("MCP servers:", `${deps.mcp.configured} configured, ${deps.mcp.disabled} disabled · /mcp`))
 	} else {
 		sessionRows.push(row("MCP servers:", "unavailable · /mcp"))
 	}
@@ -83,20 +74,33 @@ export function buildStatusRows(deps: StatusRowsDeps): string[] {
 }
 
 /**
- * Count statuses into the connected/disabled/failed buckets. The status union
- * is closed (see McpServerRuntimeStatus), so connected+disabled+failed always
- * sum to the server total.
+ * Config-level MCP summary (native engine — no live snapshot event exists).
+ * Connected/failed live states are visible in `/mcp`; this row reports the
+ * configured totals from the two native config layers.
  */
-export function summarizeMcpSnapshot(snapshot: McpStatusSnapshot): McpCounts {
-	let connected = 0
+export function summarizeMcpConfig(cwd: string): McpCounts {
+	const servers = aggregateMcpServers(cwd)
 	let disabled = 0
-	let failed = 0
-	for (const server of snapshot.servers) {
-		if (server.status === MCP_DISABLED_STATUS || server.disabled) disabled++
-		else if (MCP_CONNECTED_STATUSES.has(server.status)) connected++
-		else if (MCP_FAILED_STATUSES.has(server.status)) failed++
+	for (const entry of Object.values(servers)) {
+		if (entry.enabled === false || entry.disabled === true) disabled++
 	}
-	return { connected, disabled, failed }
+	return { configured: Object.keys(servers).length, disabled }
+}
+
+function aggregateMcpServers(cwd: string): Record<string, Record<string, unknown>> {
+	const merged: Record<string, Record<string, unknown>> = {}
+	for (const path of [join(getAgentDir(), "mcp.json"), join(cwd, ".kimchi", "mcp.json")]) {
+		if (!existsSync(path)) continue
+		try {
+			const parsed = JSON.parse(readFileSync(path, "utf8")) as { mcpServers?: Record<string, unknown> }
+			for (const [name, entry] of Object.entries(parsed.mcpServers ?? {})) {
+				if (typeof entry === "object" && entry !== null) merged[name] = entry as Record<string, unknown>
+			}
+		} catch {
+			// Unreadable layer: pi reports the config error itself.
+		}
+	}
+	return merged
 }
 
 /** Third-party providers from pi's auth.json — kimchi providers excluded. */
@@ -151,11 +155,7 @@ interface Identity {
 /** Data the extension collects between `/status` invocations. */
 export interface StatusSources {
 	identity?: Pick<Identity, "email" | "organization">
-	mcp?: McpStatusSnapshot
-}
-
-function isMcpStatusSnapshot(data: unknown): data is McpStatusSnapshot {
-	return typeof data === "object" && data !== null && Array.isArray((data as { servers?: unknown }).servers)
+	mcp?: McpCounts
 }
 
 export function gatherStatusRows(ctx: ExtensionContext, sources: StatusSources = {}): string[] {
@@ -187,7 +187,7 @@ export function gatherStatusRows(ctx: ExtensionContext, sources: StatusSources =
 		modelRef,
 		isAuto: isAutoRoutedModel(model),
 		resolvedModelId,
-		mcp: sources.mcp ? summarizeMcpSnapshot(sources.mcp) : undefined,
+		mcp: sources.mcp,
 	})
 }
 
@@ -195,7 +195,6 @@ export default function statusExtension(pi: ExtensionAPI): void {
 	// Per-instance state: pi rebinds extensions on /new, /resume, fork and
 	// /reload, so each session starts from a clean slate.
 	let identity: Identity | undefined
-	let mcpSnapshot: McpStatusSnapshot | undefined
 
 	/**
 	 * Best-effort background fetch of email and organization for the active
@@ -229,9 +228,6 @@ export default function statusExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", () => {
 		refreshIdentity()
 	})
-	pi.events.on(MCP_STATUS_EVENT, (data) => {
-		if (isMcpStatusSnapshot(data)) mcpSnapshot = data
-	})
 	pi.registerCommand("status", {
 		description: STATUS_COMMAND_DESCRIPTION,
 		handler: async (_args, ctx) => {
@@ -239,7 +235,7 @@ export default function statusExtension(pi: ExtensionAPI): void {
 			if (!ctx.hasUI) return
 			// Pick up a key that changed mid-session; rows land on the next open.
 			refreshIdentity()
-			const rows = gatherStatusRows(ctx, { identity, mcp: mcpSnapshot })
+			const rows = gatherStatusRows(ctx, { identity, mcp: summarizeMcpConfig(ctx.cwd) })
 			if (ctx.mode === "tui") {
 				await ctx.ui.custom<void>((_tui, theme, _kb, done) => createStatusPanelComponent(theme, rows, done))
 				return

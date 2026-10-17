@@ -47,21 +47,14 @@ The dedicated `MCP E2E` GitHub Actions workflow runs the aggregate suite for pul
 
 | Area | End-to-end behavior |
 | --- | --- |
-| stdio | initialization, discovery, gateway calls, search-to-direct-tool injection, resources, error results, mixed content, and empty gateway status |
-| direct tools and cache | first-session exposure specification and successful direct invocation after a real process restart |
-| failures | invalid arguments, startup failure, disconnect during a call, bounded slow calls, transport loss, malformed HTTP, and cancellation specification |
-| Streamable HTTP | initialization, session IDs, custom headers, static bearer authentication, unavailable server behavior, and legacy SSE fallback |
-| OAuth | protected-resource and authorization-server metadata, dynamic client registration, authorization code with PKCE, browser callback, remote https redirect completed through the loopback callback, denial, token failure, persistence, and refresh after restart |
-| ACP | server probing, cache population, MCP-backed agent turns, image forwarding, authentication-required probing, OAuth login, and protected tool calls |
-| official conformance | the pinned runner's `initialize` and `tools_call` client scenarios against Kimchi's real ACP-hosted client stack |
+| stdio | initialization, direct tool calls (`mcp__<server>__<tool>`), error results delivered verbatim, and native multi-server namespacing |
+| Streamable HTTP | initialization, session IDs, custom headers, static bearer authentication (env-referenced or inline), unavailable server behavior, and malformed data isolation |
+| project trust | an untrusted `.kimchi/mcp.json` server never spawns; a trusted one initializes normally |
+| project override | `.kimchi/mcp.json` (same-name, `enabled: false`) hides a globally configured server |
+| OAuth strict Accept | authorization-code flow against a spec-strict gateway that 406s without `text/event-stream` (regression proof for the pi-mcp Accept-header patch, exercised via `kimchi mcp login`) |
+| ACP | server probing, MCP-backed agent turns, and the native `registerMcpServer` path |
 
-The suite contains three `test.fail` behavioral specifications for known product regressions:
-
-- `test.fail`: a configured direct MCP tool is not available to the first model request because asynchronous bootstrap completes too late (fixed upstream in pi-mcp-adapter v2.26.1, PR #374);
-- `test.fail`: cancelling an agent turn does not currently propagate the abort signal as MCP `notifications/cancelled` (fixed upstream in pi-mcp-adapter v2.11.0, PR #159);
-- `test.fail`: a crashed keep-alive stdio server cannot reconnect because the closed client remains marked connected (fixed upstream in pi-mcp-adapter v2.12.0, PR #194).
-
-These specifications still execute, and an unexpected pass tells us to remove `test.fail` after upgrading the bundled adapter.
+Legacy SSE transport, gateway/codemode UX, keyring-backed OAuth meals, and metadata-cache specs belong to the deleted adapter stack and their suites were removed with it.
 
 ## Adding a fixture behavior
 

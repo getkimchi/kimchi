@@ -87,15 +87,35 @@ try {
 	console.warn(`[kimchi-auto-update] failed: ${err instanceof Error ? err.message : err}`)
 }
 
+// One-shot MCP config migration: translate pi-mcp-adapter-format configs to
+// the native built-in MCP format BEFORE cli.ts loads pi-mono (and therefore
+// before the native MCP extension reads mcp.json). Best-effort and idempotent
+// — a stamped marker in the agent dir prevents re-runs.
+try {
+	const { runNativeMcpMigration } = await import("./extensions/mcp/config-migration.js")
+	runNativeMcpMigration({ agentDir: process.env.KIMCHI_CODING_AGENT_DIR, cwd: process.cwd() })
+} catch (err) {
+	console.warn(`[kimchi-mcp-migration] failed: ${err instanceof Error ? err.message : err}`)
+}
+
 // Register the embedded QuickJS wasm path (set by binary-entry.ts from a Bun file
 // import) with pi-mono's config module — only relevant in the compiled binary.
 // The binary name gate keeps an externally-set env var from being honored in
 // dev/source launches (same guard as maybeAutoUpdateOnLaunch).
 // Dynamic import: pi-mono must not load before PI_PACKAGE_DIR is set above.
 const compiledBinName = process.platform === "win32" ? "kimchi.exe" : "kimchi"
-if (process.env.KIMCHI_QUICKJS_WASM_PATH && basename(process.execPath) === compiledBinName) {
-	const { setEmbeddedQuickJSWasmPath } = await import("@earendil-works/pi-coding-agent")
-	setEmbeddedQuickJSWasmPath(process.env.KIMCHI_QUICKJS_WASM_PATH)
+if (basename(process.execPath) === compiledBinName) {
+	const { setEmbeddedQuickJSWasmPath, setEmbeddedCodemodeWorkerPath } = await import("@earendil-works/pi-coding-agent")
+	if (process.env.KIMCHI_QUICKJS_WASM_PATH) {
+		setEmbeddedQuickJSWasmPath(process.env.KIMCHI_QUICKJS_WASM_PATH)
+	}
+	// Same mechanism for pi's codemode worker (binary-entry.ts embeds a
+	// self-contained bundle): without it, every codemode-mediated MCP call in
+	// the compiled binary fails with module-not-found for pi's source-tree
+	// worker specifier.
+	if (process.env.KIMCHI_CODEMODE_WORKER_PATH) {
+		setEmbeddedCodemodeWorkerPath(process.env.KIMCHI_CODEMODE_WORKER_PATH)
+	}
 }
 
 // Install before the dynamic cli.js import - the interceptor must wrap process.stdin.emit before any pi-* listener attaches. See src/paste-interceptor.ts for the rationale (LLM-1358).

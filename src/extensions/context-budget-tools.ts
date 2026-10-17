@@ -149,10 +149,10 @@ export const EXTENSION_SOURCES: ExtensionSource[] = [
 	// LSP_TOOL_NAMES are filtered out of the canonical surface below.
 	{ module: "./lsp.js", source: "lsp" },
 	{ module: "./agents/index.js", source: "agents" },
-	// With zero configured MCP servers, the adapter registers no tools at all.
-	// context-budget.test.ts mocks this state, so this module contributes
-	// nothing to the canonical measurement.
-	{ module: "./mcp/index.js", source: "mcp-adapter" },
+	// Kimchi's MCP extension registers no tools headlessly (the native engine
+	// owns mcp__<server>__<tool>; the built-in gateway needs an API key), so
+	// this module contributes nothing to the canonical measurement.
+	{ module: "./mcp/index.js", source: "mcp" },
 	{ module: "./tags.js", source: "tags(set_phase)" },
 	{ module: "./claude-code-skills/index.js", source: "claude-code-skills(skill)" },
 ]
@@ -191,10 +191,10 @@ async function measureExtensionTools(
 			if (typeof imported.default !== "function") throw new Error("no default factory export")
 			const { api, tools, fire } = createCaptureApi()
 			await imported.default(api)
-			// The upstream MCP adapter registers its zero-server tool surface at
-			// extension load. Starting its async runtime would require a complete
-			// session context and cannot add tools for this fixture.
-			if (source !== "mcp-adapter") await fire("session_start")
+			// The mcp factory only wires event handlers (notices, work
+			// observation, gateway registration); firing its session_start is
+			// unnecessary and would touch the real agent dir.
+			if (source !== "mcp") await fire("session_start")
 			for (const tool of tools.values()) out.set(tool.name, entry(`extension:${source}`, tool))
 		} catch (error) {
 			exclusions.push({

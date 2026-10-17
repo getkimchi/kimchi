@@ -5,7 +5,33 @@ import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { isDeepStrictEqual } from "node:util"
 import type { CallToolResult, ReadResourceResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
-import type { McpConfig, McpSettings, OAuthConfig, ServerEntry } from "pi-mcp-adapter/types"
+/** Native MCP server config as pi 1.3's builtin:mcp extension reads it. */
+export type ServerEntry =
+	| {
+			type?: "stdio"
+			command: string
+			args?: string[]
+			env?: Record<string, string>
+			exposure?: "direct" | "codemode" | "deferred" | "hidden"
+			toolExposure?: Record<string, "direct" | "codemode" | "deferred" | "hidden">
+			enabled?: boolean
+	  }
+	| {
+			type?: "http" | "sse"
+			url: string
+			headers?: Record<string, string>
+			oauth?: McpFixtureOAuth
+			exposure?: "direct" | "codemode" | "deferred" | "hidden"
+			toolExposure?: Record<string, "direct" | "codemode" | "deferred" | "hidden">
+			enabled?: boolean
+	  }
+
+export interface McpFixtureOAuth {
+	scope?: string
+	clientId?: string
+	clientSecret?: string
+	grantType?: string
+}
 
 const REPO_ROOT = process.env.KIMCHI_REPO_ROOT
 	? resolve(process.env.KIMCHI_REPO_ROOT)
@@ -150,11 +176,6 @@ export function mcpResourceResult(uri: string, response: ReadResourceResult): Mc
 export interface McpServerFixtureOptions {
 	serverName?: string
 	scenario?: McpFixtureScenario
-	directTools?: boolean | string[]
-	lifecycle?: "keep-alive" | "lazy" | "eager"
-	idleTimeout?: number
-	toolPrefix?: McpSettings["toolPrefix"]
-	autoAuth?: boolean
 	oauthPreauthorized?: boolean
 	/** Spec-strict gateway mode: OAuth metadata/DCR endpoints 406 unless Accept advertises text/event-stream. */
 	strictAccept?: boolean
@@ -267,36 +288,19 @@ function eventsOfTypeFrom<T extends McpFixtureEventType>(events: McpFixtureEvent
 	return events.filter((event): event is McpFixtureEventOf<T> => event.type === type)
 }
 
-function configuredServerFields(options: McpServerFixtureOptions): ServerEntry {
-	return {
-		...(options.lifecycle === undefined ? {} : { lifecycle: options.lifecycle }),
-		...(options.idleTimeout === undefined ? {} : { idleTimeout: options.idleTimeout }),
-		...(options.directTools === undefined ? {} : { directTools: options.directTools }),
-	}
+function configuredServerFields(_options: McpServerFixtureOptions): Partial<ServerEntry> {
+	// Direct exposure keeps fixture tools model-visible as `mcp__<server>__<tool>`
+	// (the native codemode/deferred defaults are covered by upstream's own tests).
+	return { exposure: "direct" }
 }
 
 function fixtureBehaviorEnv(behavior: McpFixtureBehavior | undefined): Record<string, string> {
 	return behavior ? { KIMCHI_MCP_FIXTURE_BEHAVIOR: JSON.stringify(behavior) } : {}
 }
 
-function writeMcpConfig(
-	agentDir: string,
-	serverDefinitions: Record<string, ServerEntry>,
-	options: McpServerFixtureOptions,
-): string {
+function writeMcpConfig(agentDir: string, serverDefinitions: Record<string, ServerEntry>): string {
 	const configPath = resolve(agentDir, "mcp.json")
-	const config: McpConfig = {
-		mcpServers: serverDefinitions,
-		...(options.toolPrefix === undefined && options.autoAuth === undefined
-			? {}
-			: {
-					settings: {
-						...(options.toolPrefix === undefined ? {} : { toolPrefix: options.toolPrefix }),
-						...(options.autoAuth === undefined ? {} : { autoAuth: options.autoAuth }),
-					},
-				}),
-	}
-	writeFileSync(configPath, JSON.stringify(config, null, "\t"), "utf-8")
+	writeFileSync(configPath, JSON.stringify({ mcpServers: serverDefinitions }, null, "\t"), "utf-8")
 	return configPath
 }
 
@@ -312,7 +316,6 @@ export function seedMcpStdioFixture(agentDir: string, options: McpFixtureOptions
 	const configPath = writeMcpConfig(
 		agentDir,
 		Object.fromEntries(seeded.map((server) => [server.serverName, server.serverDefinition])),
-		options,
 	)
 	const servers = Object.fromEntries(
 		seeded.map((server) => [server.serverName, { ...server, configPath } satisfies McpServerFixture]),
@@ -415,21 +418,27 @@ export async function createMcpFixture(agentDir: string, options: McpFixtureOpti
 		})
 		const serverDefinition: ServerEntry = {
 			url: listening.url,
-			...(options.headers === undefined ? {} : { headers: options.headers }),
-			...(oauth ? { auth: "oauth" as const, oauth: options.oauth ?? { scope: "mcp:tools" } } : {}),
-			...(!oauth && options.bearerToken ? { auth: "bearer" as const, bearerToken: options.bearerToken } : {}),
+			...(options.headers === undefined && !(!oauth && options.bearerToken)
+				? {}
+				: {
+						headers: {
+							...options.headers,
+							...(!oauth && options.bearerToken ? { Authorization: `Bearer ${options.bearerToken}` } : {}),
+						},
+					}),
+			...(oauth ? { oauth: options.oauth ?? { scope: "mcp:tools" } } : {}),
 			...configuredServerFields(options),
 		}
-		const configPath = writeMcpConfig(agentDir, { [serverName]: serverDefinition }, options)
+		const configPath = writeMcpConfig(agentDir, { [serverName]: serverDefinition })
 		const browserEnv = oauth ? createOAuthBrowserDriver(agentDir, eventPath) : {}
-		const authStoreEnv = oauth ? { KIMCHI_MCP_E2E_KEYRING_DIR: resolve(agentDir, "mcp-keyring") } : {}
+		const _authStoreEnv = oauth ? { KIMCHI_MCP_E2E_KEYRING_DIR: resolve(agentDir, "mcp-keyring") } : {}
 		const serverFixture: McpServerFixture = { serverName, serverDefinition, configPath, eventPath, ...eventReader }
 
 		return {
 			...serverFixture,
 			transport: oauth ? "oauth" : transport,
 			url: listening.url,
-			env: { ...browserEnv, ...authStoreEnv },
+			env: { ...browserEnv },
 			servers: { [serverName]: serverFixture },
 			server(name) {
 				if (name !== serverName) throw new Error(`MCP fixture server ${name} is not configured`)
@@ -452,15 +461,11 @@ function seedExternalHttpFixture(agentDir: string, options: McpFixtureOptions): 
 	const serverDefinition: ServerEntry = {
 		url: options.externalUrl,
 		...(options.headers === undefined ? {} : { headers: options.headers }),
-		...(options.transport === "oauth"
-			? { auth: "oauth" as const, oauth: options.oauth ?? { scope: "mcp:tools" } }
-			: {}),
+		...(options.transport === "oauth" ? { oauth: options.oauth ?? { scope: "mcp:tools" } } : {}),
 		...configuredServerFields(options),
 	}
-	const configPath = writeMcpConfig(agentDir, { [serverName]: serverDefinition }, options)
+	const configPath = writeMcpConfig(agentDir, { [serverName]: serverDefinition })
 	const browserEnv = options.transport === "oauth" ? createOAuthBrowserDriver(agentDir, eventPath) : {}
-	const authStoreEnv =
-		options.transport === "oauth" ? { KIMCHI_MCP_E2E_KEYRING_DIR: resolve(agentDir, "mcp-keyring") } : {}
 	const serverFixture: McpServerFixture = {
 		serverName,
 		serverDefinition,
@@ -472,7 +477,7 @@ function seedExternalHttpFixture(agentDir: string, options: McpFixtureOptions): 
 		...serverFixture,
 		transport: options.transport === "oauth" ? "oauth" : "http",
 		url: options.externalUrl,
-		env: { ...browserEnv, ...authStoreEnv },
+		env: { ...browserEnv },
 		servers: { [serverName]: serverFixture },
 		server(name) {
 			if (name !== serverName) throw new Error(`MCP fixture server ${name} is not configured`)

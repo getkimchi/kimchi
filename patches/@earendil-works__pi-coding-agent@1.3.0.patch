@@ -12,6 +12,23 @@
 #     can embed quickjs.wasm via a Bun file import and register it without a
 #     deep, exports-blocked dist import. Tracking: publication pending (same
 #     bucket as other pending hunks above).
+#   - setEmbeddedCodemodeWorkerPath (dist/config + root re-export): hosts that
+#     bundle pi's dist into a compiled binary cannot provide pi's own bun
+#     entrypoint "./src/extensions/codemode/worker.ts" (the published package
+#     ships no src tree), so getCodemodeWorkerSpecifier's bun-binary branch
+#     fails with module-not-found and every codemode call dies. The setter lets
+#     the host register a self-contained worker file bundled from
+#     dist/extensions/codemode/worker.js. Tracking: publication pending (same
+#     bucket; propose upstream an official host-registration hook mirroring
+#     setEmbeddedQuickJSWasmPath). Remove the hunk when the pinned Pi release
+#     provides an official host hook for the codemode worker entry or embeds a
+#     dist-resolvable worker for bun-binary hosts.
+#   - Root-index re-exports of McpOAuthCredentialStore and createMcpAuthProvider
+#     from dist/extensions/mcp/oauth.js: kimchi's MCP probe reuses the native
+#     OAuth store for authenticated probes (signed-in servers must not report
+#     needsAuth), which requires these without a deep, exports-blocked dist
+#     import. Tracking: publication pending (same bucket; propose upstream
+#     exporting the MCP OAuth store helpers for hosts).
 #   - Kimchi CLI/provider defaults, forced compaction (force=true
 #     keepRecentTokens=0 retry), model selection, extension UI helpers, and
 #     compact visuals. NOTE: the 0.85.1-era "extension-triggered prompt
@@ -188,6 +205,54 @@ index ec17d54377ea8ff8d27a338069809cc9f91e46d2..e97f50e3af153f66a5a37cf59989f0c5
    ANTHROPIC_AUTH_TOKEN             - Anthropic bearer auth token
    ANTHROPIC_API_KEY                - Anthropic Claude API key
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
+diff --git a/dist/config.d.ts b/dist/config.d.ts
+index a1f218a4a88ec94c1b8a0cfc3a571cfdb4b70274..59d75be602861d3e63b0114072a41620f051f961 100644
+--- a/dist/config.d.ts
++++ b/dist/config.d.ts
+@@ -66,6 +66,13 @@ export declare function getInteractiveAssetsDir(): string;
+ export declare function getBundledInteractiveAssetPath(name: string): string;
+ /** Called by the Bun entry with the path of the QuickJS wasm file embedded in the compiled executable. */
+ export declare function setEmbeddedQuickJSWasmPath(path: string): void;
++/**
++ * Register a self-contained codemode worker file (an absolute path) for hosts
++ * that embed pi's dist in a compiled binary and cannot ship
++ * "./src/extensions/codemode/worker.ts". When set, the bun-binary runtime
++ * resolves the worker from this path instead of the source-tree specifier.
++ */
++export declare function setEmbeddedCodemodeWorkerPath(path: string): void;
+ /**
+  * Get path to `quickjs-wasi/quickjs.wasm`, the VM that runs codemode scripts. Resolved once so the
+  * compiled module cached per path keeps working after an update removes this install (#10439).
+diff --git a/dist/config.js b/dist/config.js
+index 62eb303e5ca396e4107081868790506673344faa..8336aa20a24e53683c17bca7c240061624714257 100644
+--- a/dist/config.js
++++ b/dist/config.js
+@@ -416,12 +416,25 @@ export function resolveCodemodeWorkerSpecifier(runtime, moduleUrl) {
+     return undefined;
+ }
+ let codemodeWorkerDataUrl;
++/**
++ * Called by a host's compiled binary entry with the extracted path of a
++ * self-contained codemode worker file embedded as a Bun file asset. Hosts that
++ * bundle pi's dist (instead of compiling pi's own src entrypoints) cannot
++ * provide "./src/extensions/codemode/worker.ts", so they bundle the worker
++ * themselves and register it here.
++ */
++let embeddedCodemodeWorkerPath;
++export function setEmbeddedCodemodeWorkerPath(path) {
++    embeddedCodemodeWorkerPath = path;
++}
+ /**
+  * Get the codemode worker entry, or undefined to use the worker that ships next to pi-codemode.
+  * The Bun and Node release builds both pass the worker as an extra entrypoint.
+  */
+ export function getCodemodeWorkerSpecifier() {
+     const runtime = isBunBinary ? "bun-binary" : isBundledNode ? "bundled-node" : "unbundled";
++    if (runtime === "bun-binary" && embeddedCodemodeWorkerPath)
++        return embeddedCodemodeWorkerPath;
+     const specifier = resolveCodemodeWorkerSpecifier(runtime, import.meta.url);
+     if (runtime !== "bundled-node" || !(specifier instanceof URL))
+         return specifier;
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
 index 11ab140cd4a227d03bf247de3b0d6a7197e892e0..490f849b30fe396d53236faf4862026b22b628bf 100644
 --- a/dist/core/agent-session.js
@@ -1179,30 +1244,107 @@ index 55624605ababf2f1f129e9963cdbbe3ca27f5566..5d5f70ae62bf0e160567cf1f2b715154
      while (true) {
          const agentsSkillsDir = join(currentDir, ".agents", "skills");
          if (agentsSkillsDir !== userAgentsSkillsDir && existsSync(agentsSkillsDir)) {
+diff --git a/dist/extensions/mcp/cli.js b/dist/extensions/mcp/cli.js
+index 8f0d990487f6059e4dae0bed75092e6974ba1a76..9587bf87757a09c7acd364ddc4799f8076b170be 100644
+--- a/dist/extensions/mcp/cli.js
++++ b/dist/extensions/mcp/cli.js
+@@ -387,7 +387,7 @@ async function list(loaded, json, untrustedNote, options, credentials, log) {
+         return failed ? 1 : 0;
+     }
+     if (reports.length === 0 && loaded.errors.length === 0) {
+-        log(`No MCP servers configured. Add them to ${join(options.agentDir, "mcp.json")} or .pi/mcp.json.`);
++        log(`No MCP servers configured. Add them to ${join(options.agentDir, "mcp.json")} or .kimchi/mcp.json.`);
+     }
+     for (const report of reports) {
+         const state = report.state === "connected"
+diff --git a/dist/extensions/mcp/config.js b/dist/extensions/mcp/config.js
+index 5de9b8172c701241241b7e47abee268c935a99d1..2e4b583b02f290f9c943e4b3ab5b8915ea3ad94a 100644
+--- a/dist/extensions/mcp/config.js
++++ b/dist/extensions/mcp/config.js
+@@ -2,7 +2,8 @@
+  * MCP server configuration.
+  *
+  * Servers are read from `mcp.json` in the agent directory and, for trusted projects, from
+- * `<project>/.pi/mcp.json`. Both use the `mcpServers` shape shared by other MCP clients, so
++ * `<project>/.kimchi/mcp.json` (kimchi patch — upstream `.pi/mcp.json`). Both use the
++ * `mcpServers` shape shared by other MCP clients, so
+  * existing configurations can be copied over. Project entries replace global entries with the
+  * same name.
+  *
+@@ -105,7 +106,8 @@ function readConfigFile(path, scope, state) {
+ export function loadMcpConfig(options) {
+     const state = { servers: new Map(), errors: [] };
+     readConfigFile(join(options.agentDir, "mcp.json"), "global", state);
+-    const projectConfig = options.projectTrusted ? join(options.cwd, CONFIG_DIR_NAME, "mcp.json") : undefined;
++    // kimchi: project MCP config lives at .kimchi/mcp.json (upstream: CONFIG_DIR_NAME = .pi)
++    const projectConfig = options.projectTrusted ? join(options.cwd, ".kimchi", "mcp.json") : undefined;
+     if (projectConfig)
+         readConfigFile(projectConfig, "project", state);
+     return {
+diff --git a/dist/extensions/mcp/index.js b/dist/extensions/mcp/index.js
+index 8ebc6df8ab912f6af3ebb1a4446dcb1e285af77f..79c5140dc2a9caace25f9ba2f7cc6eb6339aec4a 100644
+--- a/dist/extensions/mcp/index.js
++++ b/dist/extensions/mcp/index.js
+@@ -680,7 +680,7 @@ export function createMcpExtension(options = {}) {
+                 label: server.entry.name,
+                 description: `${describeState(server)} · ${exposureOf(server.entry)} · ${server.entry.override ? "global, project override" : (server.entry.scope ?? server.entry.source)}`,
+             })),
+-            empty: `No MCP servers configured. Add them to ${resolve(getAgentDir(), "mcp.json")} or .pi/mcp.json.`,
++            empty: `No MCP servers configured. Add them to ${resolve(getAgentDir(), "mcp.json")} or .kimchi/mcp.json.`,
+             confirmLabel: "manage",
+             cancelLabel: "close",
+         });
+@@ -882,7 +882,7 @@ export function createMcpExtension(options = {}) {
+         // ---------------------------------------------------------------------------------------
+         const formatStatus = () => {
+             if (servers.length === 0 && configErrors.length === 0 && overridden.length === 0) {
+-                return `No MCP servers configured. Add them to ${resolve(getAgentDir(), "mcp.json")} or .pi/mcp.json.`;
++                return `No MCP servers configured. Add them to ${resolve(getAgentDir(), "mcp.json")} or .kimchi/mcp.json.`;
+             }
+             const lines = servers.map((server) => {
+                 const { name } = server.entry;
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 3821d9f41564a68e990d233b260427d6a5681f42..32545fbb3d8a7b049666f05b7db166f2490860d9 100644
+index 3821d9f41564a68e990d233b260427d6a5681f42..8d544b6bf8f37ca55dbdc2427c2d88861a0bfd00 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
-@@ -1,5 +1,5 @@
+@@ -1,5 +1,6 @@
  export { type Args, parseArgs } from "./cli/args.ts";
 -export { CONFIG_DIR_NAME, getAgentDir, getDocsPath, getExamplesPath, getPackageDir, getReadmePath, VERSION, } from "./config.ts";
-+export { CONFIG_DIR_NAME, getAgentDir, getDocsPath, getExamplesPath, getPackageDir, getReadmePath, getQuickJSWasmPath, setEmbeddedQuickJSWasmPath, getThemesDir, VERSION, } from "./config.ts";
++export { CONFIG_DIR_NAME, getAgentDir, getDocsPath, getExamplesPath, getPackageDir, getReadmePath, getQuickJSWasmPath, setEmbeddedQuickJSWasmPath, setEmbeddedCodemodeWorkerPath, getThemesDir, VERSION, } from "./config.ts";
++export { McpOAuthCredentialStore, createMcpAuthProvider, type McpAuthProvider } from "./extensions/mcp/oauth.ts";
  export { AgentSession, type AgentSessionConfig, type AgentSessionEvent, type AgentSessionEventListener, type ModelCycleResult, type ParsedSkillBlock, type PromptOptions, parseSkillBlock, type SessionStats, } from "./core/agent-session.ts";
  export { readStoredCredential } from "./core/auth-storage.ts";
  export type { CacheWarmingDecision, CacheWarmingStatus } from "./core/cache-warmer.ts";
+@@ -31,6 +32,7 @@ export { type CodemodeExtensionOptions, createCodemodeExtension } from "./extens
+ export type { CodemodeStoreEntryData, CodemodeToolDetails } from "./extensions/codemode/tool.ts";
+ export type { LoadedMcpConfig, McpExposure, McpServerConfig, McpServerEntry } from "./extensions/mcp/config.ts";
+ export { createMcpExtension, type McpExtensionOptions, type McpTransportFactory } from "./extensions/mcp/index.ts";
++export { runMcpCommand, type McpCommandOptions } from "./extensions/mcp/cli.ts"; // kimchi: CLI delegation surface
+ export { createToolSearchExtension } from "./extensions/tool-search/index.ts";
+ export { type MainOptions, main } from "./main.ts";
+ export { InteractiveMode, type InteractiveModeOptions, type JsonAgentSessionEvent, type ModelInfo, type PrintModeOptions, RpcClient, type RpcClientOptions, type RpcCommand, type RpcEventListener, type RpcExtensionUIRequest, type RpcExtensionUIResponse, type RpcResponse, type RpcSessionState, runPrintMode, runRpcMode, } from "./modes/index.ts";
 diff --git a/dist/index.js b/dist/index.js
-index ab5cfccc3a90939e533b9118122189507a7af326..004f07bae5da2963f9379b41b449f08142a5b15e 100644
+index ab5cfccc3a90939e533b9118122189507a7af326..b3fb5ac97ceef0c6f2fce7f9b9ff24c46edbfdaf 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -1,7 +1,7 @@
+@@ -1,7 +1,8 @@
  // Core session management
  export { parseArgs } from "./cli/args.js";
  // Config paths
 -export { CONFIG_DIR_NAME, getAgentDir, getDocsPath, getExamplesPath, getPackageDir, getReadmePath, VERSION, } from "./config.js";
-+export { CONFIG_DIR_NAME, getAgentDir, getDocsPath, getExamplesPath, getPackageDir, getReadmePath, getQuickJSWasmPath, setEmbeddedQuickJSWasmPath, getThemesDir, VERSION, } from "./config.js";
++export { CONFIG_DIR_NAME, getAgentDir, getDocsPath, getExamplesPath, getPackageDir, getReadmePath, getQuickJSWasmPath, setEmbeddedQuickJSWasmPath, setEmbeddedCodemodeWorkerPath, getThemesDir, VERSION, } from "./config.js";
++export { McpOAuthCredentialStore, createMcpAuthProvider } from "./extensions/mcp/oauth.js";
  export { AgentSession, parseSkillBlock, } from "./core/agent-session.js";
  export { readStoredCredential } from "./core/auth-storage.js";
  // Compaction
+@@ -34,6 +35,7 @@ export { VIRTUAL_MODEL_STATE_ENTRY, } from "./core/virtual-models.js";
+ // Built-in extensions. The CLI loads them; SDK sessions add them to their extension factories.
+ export { createCodemodeExtension } from "./extensions/codemode/index.js";
+ export { createMcpExtension } from "./extensions/mcp/index.js";
++export { runMcpCommand } from "./extensions/mcp/cli.js"; // kimchi: CLI delegation surface
+ export { createToolSearchExtension } from "./extensions/tool-search/index.js";
+ // Main entry point
+ export { main } from "./main.js";
 diff --git a/dist/modes/interactive/bug-report.js b/dist/modes/interactive/bug-report.js
 index 3918684c7c71d493d977745c8e86d5b7bcb843e1..6231c0eb01399ae1001f73e8c0fddb8e37173ac2 100644
 --- a/dist/modes/interactive/bug-report.js

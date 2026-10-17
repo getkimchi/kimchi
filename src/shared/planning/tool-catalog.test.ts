@@ -44,7 +44,6 @@ const TOOL_NAMES = {
 		"web_fetch",
 		"web_search",
 		...WORKFLOW_OUTPUT_TOOL_NAMES,
-		"mcp",
 		...DAP_TOOL_NAMES,
 		...TODO_TOOL_NAMES,
 		...FERMENT_V2_TOOL_NAMES,
@@ -198,7 +197,6 @@ describe("getToolsForProfile", () => {
 			const result = getToolsForProfile("idle")
 			const names = namesOf(result)
 			const excluded = ["questionnaire", "ask_user", "bash", "edit", "write", "Agent"]
-			expect(names).toContain("mcp")
 			for (const name of excluded) {
 				expect(namesOf(result)).not.toContain(name)
 			}
@@ -215,8 +213,8 @@ describe("getToolsForProfile", () => {
 		const result = getToolsForProfile("planning-adhoc")
 		const names = namesOf(result)
 
-		it("includes shared core tools other than MCP", () => {
-			for (const name of TOOL_NAMES.sharedCore.filter((name) => name !== "mcp")) {
+		it("includes all shared core tools", () => {
+			for (const name of TOOL_NAMES.sharedCore) {
 				expect(names).toContain(name)
 			}
 		})
@@ -231,7 +229,7 @@ describe("getToolsForProfile", () => {
 			expect(names).toContain("bash")
 		})
 
-		it("does NOT include the mcp gateway", () => {
+		it("does NOT include an mcp catalog entry (MCP tools are runtime-registered)", () => {
 			expect(names).not.toContain("mcp")
 		})
 
@@ -270,13 +268,13 @@ describe("getToolsForProfile", () => {
 		const result = getToolsForProfile("planning-ferment")
 		const names = namesOf(result)
 
-		it("includes shared core tools other than MCP", () => {
-			for (const name of TOOL_NAMES.sharedCore.filter((name) => name !== "mcp")) {
+		it("includes all shared core tools", () => {
+			for (const name of TOOL_NAMES.sharedCore) {
 				expect(names).toContain(name)
 			}
 		})
 
-		it("does NOT include the mcp gateway", () => {
+		it("does NOT include an mcp catalog entry (MCP tools are runtime-registered)", () => {
 			expect(names).not.toContain("mcp")
 		})
 

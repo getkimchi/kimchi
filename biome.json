@@ -6,7 +6,8 @@
 			"!dist/",
 			"!node_modules/",
 			"!src/core/export-html/",
-			"!src/extensions/mcp-adapter/app-bridge.bundle.js"
+			"!src/extensions/mcp-adapter/app-bridge.bundle.js",
+			"!src/generated/codemode-worker.js"
 		]
 	},
 	"vcs": {
@@ -40,7 +41,9 @@
 	},
 	"overrides": [
 		{
-			"includes": ["src/**/*.test.ts"],
+			"includes": [
+				"src/**/*.test.ts"
+			],
 			"linter": {
 				"rules": {
 					"correctness": {
@@ -54,7 +57,9 @@
 			}
 		},
 		{
-			"includes": ["src/extensions/tool-rendering.ts"],
+			"includes": [
+				"src/extensions/tool-rendering.ts"
+			],
 			"linter": {
 				"rules": {
 					"suspicious": {

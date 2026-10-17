@@ -2,13 +2,14 @@
 
 import { startAcpMcpFixture } from "../acp/support/acp-fixture.js"
 import { newSession, prompt } from "../acp/support/scenarios.js"
-import { connectMcpServer, gatewayMcpCall, modelReply } from "../tui/support/mcp-model-script.js"
+import { modelReply } from "../tui/support/mcp-model-script.js"
 
 const scenario = process.env.MCP_CONFORMANCE_SCENARIO
 const serverUrl = process.argv[2]
-const toolScenarios = new Set(["initialize", "tools_call", "tools-call", "sse-retry"])
-const authScenarios = new Set(["auth/metadata-default", "auth/pre-registration"])
-const supportedScenarios = new Set([...toolScenarios, ...authScenarios])
+// Native engine scope: streamable-HTTP initialize + tools_call. The auth/* and
+// sse-retry scenarios belonged to the adapter's headless OAuth/SSE surfaces.
+const toolScenarios = new Set(["initialize", "tools_call", "tools-call"])
+const supportedScenarios = new Set(toolScenarios)
 function log(message: string): void {
 	process.stderr.write(`[mcp-conformance] ${message}\n`)
 }
@@ -20,24 +21,18 @@ if (!serverUrl?.startsWith("http://") && !serverUrl?.startsWith("https://")) {
 	throw new Error(`MCP conformance runner did not provide a server URL: ${serverUrl ?? "(missing)"}`)
 }
 
-if (authScenarios.has(scenario)) {
-	await runAuthScenario(scenario, serverUrl)
-	process.exit(0)
-}
-
-const connect = connectMcpServer("conformance")
-const toolCall = gatewayMcpCall(
-	"__MCP_FIRST_TOOL__",
-	{ a: 2, b: 3 },
-	{
-		serverName: "conformance",
-		toolPrefix: "none",
+// Native: no connect step — the fake model's name placeholder is resolved
+// from the request body's tool list (__MCP_FIRST_TOOL__ substitution), which
+// carries the full native `mcp__<server>__<tool>` id.
+const toolCall = {
+	response: {
+		toolCalls: [{ function: { name: "__MCP_FIRST_TOOL__", arguments: '{"a":2,"b":3}' } }],
 	},
-)
+}
 const fixture = await startAcpMcpFixture({
 	artifactName: `mcp-conformance-${scenario.replaceAll("/", "-")}`,
 	mcp: { transport: "http", externalUrl: serverUrl, serverName: "conformance" },
-	responses: [connect.response, toolCall.response, modelReply("Kimchi MCP conformance scenario completed.")],
+	responses: [toolCall.response, modelReply("Kimchi MCP conformance scenario completed.")],
 })
 log(`Kimchi ACP fixture started for ${scenario}`)
 
@@ -60,38 +55,3 @@ try {
 // The ACP SDK connection retains reader state after the child process closes.
 // All owned resources are stopped above, so terminate the short-lived conformance driver explicitly.
 process.exit(0)
-
-async function runAuthScenario(name: string, url: string): Promise<void> {
-	const rawContext = process.env.MCP_CONFORMANCE_CONTEXT
-	const context = rawContext ? (JSON.parse(rawContext) as Record<string, unknown>) : {}
-	const clientId = typeof context.client_id === "string" ? context.client_id : undefined
-	const clientSecret = typeof context.client_secret === "string" ? context.client_secret : undefined
-	const fixture = await startAcpMcpFixture({
-		artifactName: `mcp-conformance-${name.replaceAll("/", "-")}`,
-		mcp: {
-			transport: "oauth",
-			externalUrl: url,
-			serverName: "conformance",
-			oauth: {
-				...(clientId ? { clientId } : {}),
-				...(clientSecret ? { clientSecret } : {}),
-			},
-		},
-		responses: [],
-	})
-	log(`Kimchi ACP fixture started for ${name}`)
-
-	try {
-		const result = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
-			server: fixture.mcp.serverDefinition,
-			serverName: "conformance",
-		})
-		if (result.needsAuth !== false || result.error !== null) {
-			throw new Error(`Kimchi MCP conformance authentication did not settle: ${JSON.stringify(result)}`)
-		}
-		log(`Kimchi completed ${name}`)
-	} finally {
-		await fixture.stop()
-		log("fixture stopped")
-	}
-}

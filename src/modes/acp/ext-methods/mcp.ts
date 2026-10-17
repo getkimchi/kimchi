@@ -6,8 +6,8 @@
 // suitable for the ACP wire.
 
 import { RequestError } from "@agentclientprotocol/sdk"
-import type { ServerEntry } from "pi-mcp-adapter/types"
 import type { McpProbe, ProbeResult } from "../../../extensions/mcp/probe.js"
+import type { ServerEntry } from "../../../extensions/mcp/types.js"
 
 /**
  * Runtime validation for ServerEntry received over the ACP wire.

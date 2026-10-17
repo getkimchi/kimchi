@@ -69,8 +69,8 @@ reader of project scope calls `isProjectScopeAllowed(cwd)`:
 
 - `src/config.ts` — `loadConfig()` skips project `.kimchi/config.json`
   (endpoint, API key, skill paths, search settings)
-- `src/extensions/mcp-adapter/config.ts` — project `.kimchi/mcp.json` (server
-  registration/provenance — an untrusted repo must not spawn MCP servers)
+- pi's native MCP discovery (`builtin:mcp`) — project `.kimchi/mcp.json` is read
+  only when the project is trusted (an untrusted repo must not spawn MCP servers)
 - `src/extensions/permissions/config.ts` — project + local permission files
 - `src/resources/bash-hook-discovery.ts` — project `.kimchi/hooks/bash/`
 - `src/extensions/kimchi-hooks/definition.ts` — project

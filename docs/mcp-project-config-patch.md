@@ -1,15 +1,16 @@
 # MCP project config compatibility
 
-User-facing override behavior (override files, `disabled`, panel persistence) is documented in [mcp-project-overrides.md](mcp-project-overrides.md).
+User-facing behavior (override files, `enabled`/`disabled`) is documented in [mcp-project-overrides.md](mcp-project-overrides.md).
 
-Kimchi stores user configuration under `.config/kimchi/harness` and project MCP configuration under `.kimchi`. The pinned adapter uses `piConfig.configDir` for both locations; project files passed as a global override therefore collide with user configuration, and a programmatically supplied merged configuration bypasses the adapter's management panels. Those collision/panel behaviors date from the 2.34.0 integration and were last re-verified there.
+Kimchi stores user MCP configuration under `<agentDir>/mcp.json` and project MCP configuration under `.kimchi/mcp.json`. Upstream pi 1.3's native MCP discovery reads `<project>/.pi/mcp.json`; kimchi does not accept `.pi` inside repositories (zero `.pi` references ship in kimchi), so a patch on `@earendil-works/pi-coding-agent` repoints the discovery literal to `.kimchi/mcp.json`:
 
-The `pi-mcp-adapter@5.3.1` patch (`patches/pi-mcp-adapter@5.3.1.patch`) keeps the optional `piConfig.mcpProjectConfigDir` host setting, falling back to the original directory when absent. Kimchi sets it to `.kimchi`, covering both the adapter config path (`mcp-adapter.json`) and the legacy pi-mcp compat read (`mcp.json`). Upstream then handles loading, precedence, provenance, panel persistence, and server enable/disable using its normal file-backed project layer. No user configuration files are migrated or copied.
+- `dist/extensions/mcp/config.js` — discovery path in `loadMcpConfig`
+- `dist/cli.js`, `dist/index.js` — user-facing strings (help text, error messages)
 
-The same patch file carries unrelated integration hunks beyond the config-directory surface — MCP tool-name sanitization and selector matching, MCP UI standard disable, OAuth loopback capture, OAuth metadata `Accept` header, and DCR `clientInfo` version. Each hunk documents its own tracking issue and removal criteria in the patch header; only the config-directory hunk is Kimchi's #491 change.
+The trust-gating resource list (`KIMCHI_TRUST_REQUIRING_PROJECT_RESOURCES` in the same package) already names `.kimchi/mcp.json`, so project MCP servers keep requiring project trust.
 
-Tracking: [upstream host-path integration issue #491](https://github.com/nicobailon/pi-mcp-adapter/issues/491). Upstream PR plan: propose the optional project-directory host setting with default-path, split user/project path, config precedence, and writer/provenance tests. This local change has not been submitted upstream.
+The patch is covered by `src/upstream-mcp-project-config-patch.test.ts`, a text-and-syntax contract test against the installed dist. Preservation of user configuration across the format change (adapter → native) is handled by the one-shot config migration in `src/extensions/mcp/config-migration.ts`, which folds legacy layers (`~/.config/mcp/mcp.json`, `.mcp.json`, `mcp-adapter.json`) into the canonical files and stamps `mcp-native-migration.done`. Fields the native runtime cannot express (custom code-mode templates, OAuth shorthands, `requestHeadersCommand`, …) are dropped and listed in `mcp-native-migration-report.json`, with a one-time notice at startup.
 
-Remove the config-directory hunk when a pinned upstream release supports an independent host project-config directory (adjust the manifest setting if the upstream API differs). Keep Kimchi's real-loader and terminal panel tests as compatibility checks. Removing the other hunks is tracked separately in the patch header.
+Tracking: none — the `.kimchi` location is a kimchi product decision; upstream has no concept of it. Remove the patch only if upstream adds a host-overridable project-config directory.
 
-The patch was generated with `pnpm patch` / `pnpm patch-commit`, then installed with `pnpm install --no-frozen-lockfile`; do not edit the patch file directly.
+The patch was generated with `pnpm patch` / `pnpm patch-commit`, then installed with `pnpm install --no-frozen-lockfile`; do not edit the patch file directly. Patch-commit strips header comments and may rewrite the `patchedDependencies` spec — verify both after regenerating.

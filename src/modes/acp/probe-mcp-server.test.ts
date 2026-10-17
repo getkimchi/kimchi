@@ -1,8 +1,8 @@
 import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
-import type { ServerEntry } from "pi-mcp-adapter/types"
 import { describe, expect, it, vi } from "vitest"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
+import type { ServerEntry } from "../../extensions/mcp/types.js"
 import { AVAILABLE_EXT_METHODS } from "./capabilities.js"
 import { type AcpSessionFactory, KimchiAcpAgent } from "./server.js"
 

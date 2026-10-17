@@ -61,6 +61,9 @@ describe("classifyTool", () => {
 	it("classifies mcp read tools by trailing segment", () => {
 		expect(classifyTool("mcp__castai_prod_eu__list_clusters")).toBe("readOnly")
 		expect(classifyTool("mcp__castai_prod_eu__get_cluster_details")).toBe("readOnly")
+		// `fetch` was a read-only prefix in the adapter-era qualification
+		// (read-only.ts) and must survive the native migration.
+		expect(classifyTool("mcp__atlassian__fetch")).toBe("readOnly")
 	})
 
 	it("treats unknown-named tools as unknown", () => {

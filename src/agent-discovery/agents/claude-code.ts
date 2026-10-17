@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
-import type { ServerEntry } from "pi-mcp-adapter/types"
+import type { ServerEntry } from "../../extensions/mcp/types.js"
 import { hasBearerAuthorizationHeader } from "../engine.js"
 import type { AgentDefinition, DirCandidate } from "../index.js"
 

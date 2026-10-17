@@ -652,7 +652,7 @@ src/
     agents/             -- Subagent system (personas, manager, memory)
     orchestration/      -- Task classification, model registry, delegation
     ferment/            -- Ferment lifecycle tools & UI
-    mcp-adapter/        -- MCP server integration
+    mcp/                -- MCP server integration (native pi engine, migration, gateway)
     permissions/        -- Tool auth flows
     behaviours/         -- Contextual prompt behaviours
     web-fetch/          -- Web content fetching

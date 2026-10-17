@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const probeTools = vi.hoisted(() => vi.fn())
-const verifyMcpKeyringRuntime = vi.hoisted(() => vi.fn())
-const forgetMcpOAuthGrant = vi.hoisted(() => vi.fn())
+const forgetMcpGrant = vi.hoisted(() => vi.fn())
+const runMcpCommand = vi.hoisted(() => vi.fn())
+
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()
+	return { ...actual, runMcpCommand }
+})
 
 vi.mock("../extensions/mcp/probe.js", () => ({
 	UpstreamMcpProbe: class {
@@ -10,15 +15,11 @@ vi.mock("../extensions/mcp/probe.js", () => ({
 	},
 }))
 
-vi.mock("../extensions/mcp/keyring-require-bridge.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof KeyringBridge>()
-	return { ...actual, verifyMcpKeyringRuntime }
+vi.mock("./mcp-forget-grant.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./mcp-forget-grant.js")>()
+	return { ...actual, forgetMcpGrant }
 })
 
-vi.mock("../extensions/mcp/forget-oauth-grant.js", () => ({ forgetMcpOAuthGrant }))
-
-import type * as KeyringBridge from "../extensions/mcp/keyring-require-bridge.js"
-import { McpKeychainDeniedError, McpKeychainUnavailableError } from "../extensions/mcp/keyring-require-bridge.js"
 import { runMcp } from "./mcp.js"
 
 function mockStdin(data: string): void {
@@ -63,8 +64,6 @@ describe("kimchi mcp probe", () => {
 	beforeEach(() => {
 		probeTools.mockReset()
 		probeTools.mockResolvedValue({ tools: [], needsAuth: false, error: null })
-		verifyMcpKeyringRuntime.mockReset()
-		verifyMcpKeyringRuntime.mockReturnValue({ backend: "native", platform: "darwin", arch: "arm64", writable: true })
 	})
 
 	afterEach(() => {
@@ -72,32 +71,37 @@ describe("kimchi mcp probe", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("rejects unknown subcommands", async () => {
+	it("delegates unknown subcommands to pi's native MCP CLI", async () => {
+		runMcpCommand.mockResolvedValue(0)
+		expect(await runMcp(["login", "granola"])).toBe(0)
+		expect(runMcpCommand).toHaveBeenCalledWith(["login", "granola"], expect.objectContaining({ cwd: process.cwd() }))
+	})
+
+	it("maps the adapter-era `auth` verb onto native `login`", async () => {
+		runMcpCommand.mockResolvedValue(0)
 		const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-		expect(await runMcp(["unknown"])).toBe(1)
-		expect(stderr).toHaveBeenCalled()
+		expect(await runMcp(["auth", "granola"])).toBe(0)
+		expect(runMcpCommand).toHaveBeenCalledWith(["login", "granola"], expect.objectContaining({ cwd: process.cwd() }))
+		expect(stderr.mock.calls.map((call) => String(call[0])).join("")).toContain("kimchi mcp login")
 	})
 
-	it("verifies the native keyring through the compiled-runtime bridge", async () => {
-		const output = captureStdout()
-		expect(await runMcp(["keyring-check", "--json"])).toBe(0)
-		expect(verifyMcpKeyringRuntime).toHaveBeenCalledOnce()
-		expect(output.json).toEqual({
-			ok: true,
-			backend: "native",
-			platform: "darwin",
-			arch: "arm64",
-			writable: true,
-		})
+	it("delegates native-verbs (add/remove/list) to pi's MCP CLI", async () => {
+		runMcpCommand.mockResolvedValue(0)
+		expect(await runMcp(["list", "--json"])).toBe(0)
+		expect(runMcpCommand).toHaveBeenCalledWith(["list", "--json"], expect.objectContaining({ cwd: process.cwd() }))
+		expect(await runMcp(["add", "granola", "--", "npx", "granola-mcp"])).toBe(0)
+		expect(runMcpCommand).toHaveBeenCalledWith(
+			["add", "granola", "--", "npx", "granola-mcp"],
+			expect.objectContaining({ cwd: process.cwd() }),
+		)
+		expect(await runMcp(["remove", "granola"])).toBe(0)
+		expect(runMcpCommand).toHaveBeenCalledWith(["remove", "granola"], expect.objectContaining({ cwd: process.cwd() }))
 	})
 
-	it("reports native keyring failures", async () => {
-		verifyMcpKeyringRuntime.mockImplementation(() => {
-			throw new Error("credential store unavailable")
-		})
-		const output = captureStdout()
-		expect(await runMcp(["keyring-check", "--json"])).toBe(1)
-		expect(output.json).toEqual(expect.objectContaining({ ok: false, error: "credential store unavailable" }))
+	it("prints usage when no subcommand is given", async () => {
+		const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+		expect(await runMcp([])).toBe(1)
+		expect(stderr.mock.calls.map((call) => String(call[0])).join("")).toContain("kimchi mcp probe")
 	})
 
 	it("requires JSON mode", async () => {
@@ -315,8 +319,8 @@ describe("kimchi mcp probe", () => {
 
 describe("kimchi mcp forget-grant", () => {
 	beforeEach(() => {
-		forgetMcpOAuthGrant.mockReset()
-		forgetMcpOAuthGrant.mockReturnValue({ found: true, chunksRemoved: 3, legacyFileRemoved: false })
+		forgetMcpGrant.mockReset()
+		forgetMcpGrant.mockReturnValue({ removed: 2 })
 	})
 
 	afterEach(() => {
@@ -327,7 +331,7 @@ describe("kimchi mcp forget-grant", () => {
 		const output = captureStdout()
 		expect(await runMcp(["forget-grant", "granola"])).toBe(1)
 		expect(output.json).toEqual(expect.objectContaining({ ok: false, reason: "invalid-input" }))
-		expect(forgetMcpOAuthGrant).not.toHaveBeenCalled()
+		expect(forgetMcpGrant).not.toHaveBeenCalled()
 	})
 
 	it("requires exactly one server name", async () => {
@@ -337,7 +341,7 @@ describe("kimchi mcp forget-grant", () => {
 		const extra = captureStdout()
 		expect(await runMcp(["forget-grant", "a", "b", "--json"])).toBe(1)
 		expect(extra.json.reason).toBe("invalid-input")
-		expect(forgetMcpOAuthGrant).not.toHaveBeenCalled()
+		expect(forgetMcpGrant).not.toHaveBeenCalled()
 	})
 
 	it.each([
@@ -351,43 +355,25 @@ describe("kimchi mcp forget-grant", () => {
 		const output = captureStdout()
 		expect(await runMcp(["forget-grant", name, "--json"])).toBe(1)
 		expect(output.json.reason).toBe("invalid-input")
-		expect(forgetMcpOAuthGrant).not.toHaveBeenCalled()
+		expect(forgetMcpGrant).not.toHaveBeenCalled()
 	})
 
 	it("forgets the grant and reports the outcome", async () => {
 		const output = captureStdout()
 		expect(await runMcp(["forget-grant", "granola", "--json"])).toBe(0)
-		expect(forgetMcpOAuthGrant).toHaveBeenCalledWith("granola")
-		expect(output.json).toEqual({ ok: true, name: "granola", found: true, chunksRemoved: 3, legacyFileRemoved: false })
+		expect(forgetMcpGrant).toHaveBeenCalledWith("granola", expect.any(String))
+		expect(output.json).toEqual({ ok: true, name: "granola", removed: 2 })
 	})
 
-	it("succeeds with found=false when the grant is already forgotten", async () => {
-		forgetMcpOAuthGrant.mockReturnValue({ found: false, chunksRemoved: 0, legacyFileRemoved: false })
+	it("succeeds with removed=0 when the grant is already forgotten", async () => {
+		forgetMcpGrant.mockReturnValue({ removed: 0 })
 		const output = captureStdout()
 		expect(await runMcp(["forget-grant", "granola", "--json"])).toBe(0)
-		expect(output.json).toEqual({ ok: true, name: "granola", found: false, chunksRemoved: 0, legacyFileRemoved: false })
-	})
-
-	it("reports a consent denial as a distinct outcome", async () => {
-		forgetMcpOAuthGrant.mockImplementation(() => {
-			throw new McpKeychainDeniedError("sha256-x")
-		})
-		const output = captureStdout()
-		expect(await runMcp(["forget-grant", "granola", "--json"])).toBe(1)
-		expect(output.json).toEqual(expect.objectContaining({ ok: false, name: "granola", reason: "denied" }))
-	})
-
-	it("reports a locked keychain as unavailable", async () => {
-		forgetMcpOAuthGrant.mockImplementation(() => {
-			throw new McpKeychainUnavailableError()
-		})
-		const output = captureStdout()
-		expect(await runMcp(["forget-grant", "granola", "--json"])).toBe(1)
-		expect(output.json).toEqual(expect.objectContaining({ ok: false, name: "granola", reason: "unavailable" }))
+		expect(output.json).toEqual({ ok: true, name: "granola", removed: 0 })
 	})
 
 	it("reports other failures as generic errors", async () => {
-		forgetMcpOAuthGrant.mockImplementation(() => {
+		forgetMcpGrant.mockImplementation(() => {
 			throw new Error("I/O exploded")
 		})
 		const output = captureStdout()
