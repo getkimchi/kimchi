@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest"
 import {
+	chartSeriesColors,
 	computeSlideLayout,
 	estimateElementHeight,
 	estimateOverflow,
+	mixHex,
 	resolvePalette,
 	slideNeedsLightText,
 } from "./pptx-layout.js"
@@ -19,17 +21,28 @@ const bullets = (lines: string[]): SlideElement => ({
 })
 
 describe("resolvePalette", () => {
-	it("light defaults keep near-black text and gitignore-quiet surfaces", () => {
+	it("unset background defaults dark-first with derived light text", () => {
 		const pal = resolvePalette({})
-		expect(pal.dark).toBe(false)
-		expect(pal.bg).toBeUndefined()
-		expect(pal.text).toBe("22262B")
-		expect(pal.muted).toBe("5A6470")
-		expect(pal.surface).toBe("F2F4F6")
+		expect(pal.dark).toBe(true)
+		expect(pal.bg).toBe("0E0F13")
+		expect(pal.text).toBe("FFFFFF")
+		expect(pal.muted).toBe("9BA1AB")
+		expect(pal.surface).toBe("181A21")
+		expect(pal.border).toBe("2A2E39")
 		expect(pal.accent).toBe("00A3A1")
 		expect(pal.headFont).toBe("Calibri")
 		expect(pal.bodyFont).toBe("Calibri")
 		expect(pal.monoFont).toBe("Courier New")
+	})
+
+	it("explicit light background keeps near-black text, `line` overrides borders", () => {
+		const pal = resolvePalette({ background: "#FFFFFF" })
+		expect(pal.dark).toBe(false)
+		expect(pal.text).toBe("22262B")
+		expect(pal.muted).toBe("5A6470")
+		expect(pal.surface).toBe("F2F4F6")
+		expect(pal.border).toBe("D8DEE4")
+		expect(resolvePalette({ background: "#FFFFFF", line: "#FF0000" }).border).toBe("FF0000")
 	})
 
 	it("dark backgrounds flip text and surfaces", () => {
@@ -79,10 +92,17 @@ describe("computeSlideLayout", () => {
 		const layout = computeSlideLayout(slide, {})
 		expect(layout.heading?.y).toBeCloseTo(0.32)
 		const ys = layout.flow.map((b) => b.y)
-		expect(ys[0]).toBeCloseTo(1.35)
+		// Centering may shift the stack start down (bounded +0.5") when slack remains.
+		expect(ys[0]).toBeGreaterThanOrEqual(1.35)
+		expect(ys[0]).toBeLessThanOrEqual(1.86)
 		expect(ys[1]).toBeGreaterThan(ys[0])
 		expect(ys[2]).toBeGreaterThan(ys[1])
-		expect(layout.flow[1].h).toBeCloseTo(1.8) // stats row
+		// Canvas fill: slack goes to the stats row (capped growth) then gaps,
+		// so the stack reaches well past its natural height but stays bounded.
+		const natural = 1.8
+		expect(layout.flow[1].h).toBeGreaterThan(natural)
+		expect(layout.flow[1].h).toBeLessThanOrEqual(natural + 0.9 + 0.005) // STRETCH_CAP.stats
+		expect(layout.contentBottom).toBeGreaterThan(1.35 + 0.8 * (7.08 - 1.35))
 		expect(layout.contentBottom).toBeLessThan(7.08)
 	})
 
@@ -132,5 +152,31 @@ describe("estimateElementHeight", () => {
 		const one: SlideElement = { type: "code", lines: ["$ kimchi"] }
 		const ten: SlideElement = { type: "code", lines: Array.from({ length: 10 }, (_, i) => `line ${i}`) }
 		expect(estimateElementHeight(ten, 12)).toBeGreaterThan(estimateElementHeight(one, 12))
+	})
+})
+
+describe("chartSeriesColors", () => {
+	it("builds an on-brand monochrome ramp anchored on the accent", () => {
+		const colors = chartSeriesColors("FF521D", 4)
+		expect(colors).toHaveLength(4)
+		expect(colors[0]).toBe("FF521D")
+		for (const c of colors) expect(c).toMatch(/^[0-9A-F]{6}$/)
+		expect(new Set(colors).size).toBeGreaterThan(1) // ramp, not a flat fill
+	})
+
+	it("cycles when there are more series than ramp entries", () => {
+		const colors = chartSeriesColors("FF521D", 6)
+		expect(colors[4]).toBe(colors[0])
+		expect(colors[5]).toBe(colors[1])
+	})
+})
+
+describe("mixHex", () => {
+	it("lightens toward white and darkens toward black", () => {
+		expect(mixHex("000000", "FFFFFF", 1)).toBe("FFFFFF")
+		expect(mixHex("FFFFFF", "000000", 1)).toBe("000000")
+		expect(mixHex("808080", "FFFFFF", 0)).toBe("808080")
+		const half = mixHex("000000", "FFFFFF", 0.5)
+		expect(half).toBe("808080")
 	})
 })

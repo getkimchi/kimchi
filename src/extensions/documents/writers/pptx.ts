@@ -23,6 +23,7 @@ import { type Block, type Inline, parseMarkdownBlocks } from "../markdown/blocks
 import { DocumentError } from "../model.js"
 import { enforcePitfalls } from "./pitfalls.js"
 import {
+	chartSeriesColors,
 	computeSlideLayout,
 	DEFAULT_SLIDE_H,
 	DEFAULT_SLIDE_W,
@@ -37,7 +38,7 @@ import type { ChartSpec, DeckMeta, DeckSpec, DeckTheme, LayoutHint, SlideElement
 
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".svg"])
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
-const LAYOUT_HINTS: LayoutHint[] = ["title", "hero", "content", "two-column", "table", "chart", "blank"]
+const LAYOUT_HINTS: LayoutHint[] = ["title", "hero", "content", "two-column", "table", "chart", "closing", "blank"]
 
 export class DeckParseError extends DocumentError {
 	constructor(msg: string) {
@@ -320,6 +321,13 @@ export function parseDeckMarkdown(markdown: string, theme: DeckTheme = {}, warni
 				seenContent = true
 				continue
 			}
+			if (block.type === "code" && block.lang === "kicker") {
+				const text = block.code.trim().split(/\r?\n/)[0].trim()
+				if (!text) throw new DeckParseError(`slide ${groups.indexOf(group) + 1}: "kicker" block is empty`)
+				slide.kicker = text
+				seenContent = true
+				continue
+			}
 			if (block.type === "code") {
 				slide.elements.push(fencedBlockToElement(block, groups.indexOf(group) + 1))
 				seenContent = true
@@ -444,7 +452,13 @@ function addCard(
 }
 
 function textRuns(paragraphs: Inline[][], color: string) {
-	return paragraphs.flatMap((p) => [...pptxRunFromInline(p, color), { text: "\n", options: { breakLine: true } }])
+	// Break runs only BETWEEN paragraphs — a trailing break run has no color of
+	// its own, and pptxgenjs materializes it as an explicit black run (which the
+	// low-contrast check then flags on dark decks).
+	return paragraphs.flatMap((p, i) => [
+		...pptxRunFromInline(p, color),
+		...(i < paragraphs.length - 1 ? [{ text: "\n", options: { breakLine: true } }] : []),
+	])
 }
 
 function renderElement(
@@ -537,7 +551,12 @@ function renderElement(
 					w: box.w,
 					h: box.h,
 					chartTitle: el.spec.title,
-					chartColors: [pal.accent, "7FDBD4", "1F6F8B", "F4B860"],
+					chartColors: chartSeriesColors(pal.accent, el.spec.series.length),
+					showValue: el.spec.type === "bar" ? true : undefined,
+					dataLabelColor: pal.text,
+					dataLabelFontSize: 10,
+					dataLabelFontFace: pal.bodyFont,
+					dataLabelFormatCode: "0.##",
 					showLegend: el.spec.series.length > 1,
 					catAxisLabelColor: pal.muted,
 					valAxisLabelColor: pal.muted,
@@ -775,6 +794,86 @@ function renderElement(
 	}
 }
 
+/** Title slide lockup: corner glow, kicker, big left wordmark, muted subtitle, optional install terminal card. */
+function renderTitle(
+	s: PptxSlide,
+	pptx: PptxInstance,
+	slide: SlideSpec,
+	pal: Palette,
+	options: WriteOptions,
+	w: number,
+	h: number,
+): void {
+	const inner = w - 2 * MARGIN
+	// Corner glow — kept fully in-bounds so `check` stays clean (transparency, not a gradient).
+	s.addShape("ellipse", {
+		x: w - 4.6,
+		y: 0.25,
+		w: 4.4,
+		h: 4.4,
+		fill: { color: pal.accent, transparency: 90 },
+		line: { type: "none" },
+	})
+	if (slide.kicker !== undefined) {
+		s.addText(slide.kicker.toUpperCase(), {
+			x: MARGIN,
+			y: 0.55,
+			w: inner,
+			h: 0.42,
+			isTextBox: true,
+			margin: 0,
+			fontFace: pal.headFont,
+			fontSize: 10.5,
+			bold: true,
+			charSpacing: 3,
+			color: pal.accent,
+		})
+	}
+	if (slide.heading !== undefined) {
+		s.addText(slide.heading, {
+			x: MARGIN,
+			y: 1.05,
+			w: inner * 0.9,
+			h: 2.25,
+			isTextBox: true,
+			margin: 0,
+			fit: "shrink",
+			fontFace: pal.headFont,
+			fontSize: 54,
+			bold: true,
+			color: pal.text,
+		})
+	}
+	let y = 3.55
+	let sawSubtitle = false
+	for (const el of slide.elements) {
+		if (el.type === "code") continue // pinned install card below
+		const eh = estimateElementHeight(el, inner * 0.78)
+		if (el.type === "paragraphs" && !sawSubtitle) {
+			sawSubtitle = true
+			s.addText(textRuns(el.inline, pal.muted), {
+				x: MARGIN,
+				y,
+				w: inner * 0.78,
+				h: eh,
+				isTextBox: true,
+				margin: 0,
+				fontFace: pal.bodyFont,
+				fontSize: 15.5,
+				lineSpacingMultiple: 1.15,
+			})
+		} else {
+			renderElement(s, pptx, { el, x: MARGIN, y, w: inner * 0.78, h: eh }, pal, options, slide.index)
+		}
+		y += eh + 0.3
+	}
+	const code = slide.elements.find((e) => e.type === "code")
+	if (code?.type === "code") {
+		const cardH = Math.min(estimateElementHeight(code, 7.4), 2.2)
+		renderElement(s, pptx, { el: code, x: MARGIN, y: h - cardH - 0.5, w: 7.4, h: cardH }, pal, options, slide.index)
+	}
+}
+
 /** Hero slide: brand title layout — big heading, accent tagline, optional terminal card, link row. */
 function renderHero(s: PptxSlide, pptx: PptxInstance, slide: SlideSpec, pal: Palette, w: number, h: number): void {
 	const inner = w - 2 * MARGIN
@@ -888,38 +987,24 @@ export async function writePptx(spec: DeckSpec, options: WriteOptions = {}): Pro
 		if (slide.layoutHint === "hero") {
 			renderHero(s, pptx, slide, pal, w, h)
 		} else if (slide.layoutHint === "title") {
-			if (slide.heading !== undefined) {
-				s.addText(slide.heading, {
-					x: MARGIN,
-					y: h * 0.35,
-					w: w - 2 * MARGIN,
-					h: 1.4,
-					isTextBox: true,
-					margin: 0,
-					fit: "shrink",
-					fontFace: pal.headFont,
-					fontSize: 44,
-					bold: true,
-					color: pal.accent,
-					align: "center",
-				})
-			}
-			const body = slide.elements.find((e) => e.type === "paragraphs")
-			if (body?.type === "paragraphs") {
-				s.addText(textRuns(body.inline, pal.text), {
-					x: MARGIN,
-					y: h * 0.6,
-					w: w - 2 * MARGIN,
-					h: h * 0.28,
-					isTextBox: true,
-					margin: 0,
-					fontFace: pal.bodyFont,
-					fontSize: 16,
-					align: "center",
-				})
-			}
+			renderTitle(s, pptx, slide, pal, options, w, h)
 		} else {
 			const layout = computeSlideLayout(slide, theme)
+			if (layout.kicker && slide.kicker !== undefined) {
+				s.addText(slide.kicker.toUpperCase(), {
+					x: layout.kicker.x,
+					y: layout.kicker.y,
+					w: layout.kicker.w,
+					h: layout.kicker.h,
+					isTextBox: true,
+					margin: 0,
+					fontFace: pal.headFont,
+					fontSize: 10.5,
+					bold: true,
+					charSpacing: 3,
+					color: pal.accent,
+				})
+			}
 			if (layout.heading && slide.heading !== undefined) {
 				s.addText(slide.heading, {
 					x: layout.heading.x,
@@ -930,7 +1015,7 @@ export async function writePptx(spec: DeckSpec, options: WriteOptions = {}): Pro
 					margin: 0,
 					fit: "shrink",
 					fontFace: pal.headFont,
-					fontSize: 28,
+					fontSize: slide.layoutHint === "closing" ? 40 : 32,
 					bold: true,
 					color: pal.text,
 				})
@@ -939,8 +1024,14 @@ export async function writePptx(spec: DeckSpec, options: WriteOptions = {}): Pro
 			for (const box of layout.flow) renderElement(s, pptx, box, pal, options, slide.index)
 		}
 
-		// Footer on workhorse slides only — clean title/hero faces.
-		if (pal.footer && slide.layoutHint !== "title" && slide.layoutHint !== "hero" && slide.layoutHint !== "blank") {
+		// Footer on workhorse slides only — clean title/hero/closing faces.
+		if (
+			pal.footer &&
+			slide.layoutHint !== "title" &&
+			slide.layoutHint !== "hero" &&
+			slide.layoutHint !== "closing" &&
+			slide.layoutHint !== "blank"
+		) {
 			s.addText(expandFooter(pal.footer, slide.index, spec.meta.title), {
 				x: w - 3.6,
 				y: h - 0.44,

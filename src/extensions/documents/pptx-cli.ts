@@ -176,6 +176,7 @@ export async function runPptxCli(argv: string[], io: CliIo): Promise<number> {
 						background: str("background"),
 						surface: str("surface"),
 						surface2: str("surface2"),
+						line: str("line"),
 						text: str("text"),
 						muted: str("muted"),
 						footer: str("footer"),

@@ -44,7 +44,7 @@ export interface Palette {
 	muted: string
 	surface: string
 	surface2: string
-	/** Card outline on surfaces. */
+	/** Card outline on surfaces (theme `line`). */
 	border: string
 	headFont: string
 	bodyFont: string
@@ -52,8 +52,11 @@ export interface Palette {
 	footer?: string
 }
 
+/** Decks are dark-first: an unset background falls to the near-black brand base. */
+export const DEFAULT_BACKGROUND = "0E0F13"
+
 export function resolvePalette(theme: DeckTheme): Palette {
-	const bg = theme.background !== undefined ? stripHash(theme.background) : undefined
+	const bg = theme.background !== undefined ? stripHash(theme.background) : DEFAULT_BACKGROUND
 	const dark = slideNeedsLightText(bg)
 	return {
 		bg,
@@ -63,12 +66,29 @@ export function resolvePalette(theme: DeckTheme): Palette {
 		muted: theme.muted !== undefined ? stripHash(theme.muted) : dark ? "9BA1AB" : "5A6470",
 		surface: theme.surface !== undefined ? stripHash(theme.surface) : dark ? "181A21" : "F2F4F6",
 		surface2: theme.surface2 !== undefined ? stripHash(theme.surface2) : dark ? "0A0B0E" : "FFFFFF",
-		border: dark ? "2A2E39" : "D8DEE4",
+		border: theme.line !== undefined ? stripHash(theme.line) : dark ? "2A2E39" : "D8DEE4",
 		headFont: theme.headingFont ?? theme.font ?? "Calibri",
 		bodyFont: theme.font ?? "Calibri",
 		monoFont: theme.monoFont ?? "Courier New",
 		footer: theme.footer,
 	}
+}
+
+/** Mix `hex` toward `target` ("FFFFFF" lightens, "000000" darkens) by fraction `t` (0..1). */
+export function mixHex(hex: string, target: string, t: number): string {
+	const a = stripHash(hex)
+	const b = stripHash(target)
+	const mix = (i: number) =>
+		Math.round(Number.parseInt(a.slice(i, i + 2), 16) * (1 - t) + Number.parseInt(b.slice(i, i + 2), 16) * t)
+	return [mix(0), mix(2), mix(4)].map((v) => v.toString(16).padStart(2, "0").toUpperCase()).join("")
+}
+
+/** Monochrome accent ramp for chart series — on-brand by construction. */
+export function chartSeriesColors(accent: string, count: number): string[] {
+	const base = [accent, mixHex(accent, "FFFFFF", 0.35), mixHex(accent, "000000", 0.3), mixHex(accent, "FFFFFF", 0.62)]
+	const out: string[] = []
+	for (let i = 0; i < count; i++) out.push(base[i % base.length])
+	return out
 }
 
 export function inlineTextOf(inline: Inline[]): string {
@@ -149,6 +169,17 @@ export function estimateElementHeight(el: SlideElement, widthIn: number): number
 /** Chainable: consecutive cards grids collapse to a single grid visually, but keep spacing. */
 const isBodyElement = (el: SlideElement) => el.type === "bullets" || el.type === "paragraphs"
 
+/** How much height (inches) each design block may absorb when the slide has slack. */
+const STRETCH_CAP: Partial<Record<SlideElement["type"], number>> = {
+	stats: 0.9,
+	quote: 0.7,
+	code: 0.8,
+	chart: 1.3,
+	flow: 0.35,
+	image: 1.0,
+	cards: 0.9,
+}
+
 export interface ElementBox {
 	el: SlideElement
 	x: number
@@ -158,6 +189,8 @@ export interface ElementBox {
 }
 
 export interface SlideLayout {
+	/** Small caps accent label above the heading (theme-less slot, from a `kicker` fence). */
+	kicker?: { x: number; y: number; w: number; h: number }
 	heading?: { x: number; y: number; w: number; h: number; align: "left" | "center" }
 	flow: ElementBox[]
 	/** Column boxes for two-column body elements (kept out of `flow`). */
@@ -167,9 +200,15 @@ export interface SlideLayout {
 }
 
 /**
- * Vertical flow allocation: heading at top, elements stacked in source
- * order, two-column slides get their body blocks split across two columns
- * (other elements still flow full-width below).
+ * Vertical flow allocation: heading at top, elements stacked in source order,
+ * two-column slides get their body blocks split across two columns (other
+ * elements still flow full-width below).
+ *
+ * Canvas-filling: if the natural stack leaves slack above the region bottom,
+ * it is absorbed in three phases — stretch design blocks (capped per type),
+ * widen inter-row gaps (capped), then shift the flow start down (centering).
+ * Whatever remains stays as bottom margin. Content that does not fit is the
+ * `slide-overfull` pitfall's concern, not the allocator's.
  */
 export function computeSlideLayout(slide: SlideSpec, theme: DeckTheme): SlideLayout {
 	const w = theme.slideWidth ?? DEFAULT_SLIDE_W
@@ -182,9 +221,10 @@ export function computeSlideLayout(slide: SlideSpec, theme: DeckTheme): SlideLay
 		const aligned = hint === "title" ? ("center" as const) : ("left" as const)
 		const heading = slide.heading !== undefined ? { x: MARGIN, y: 0.4, w: inner, h: 1.3, align: aligned } : undefined
 		if (hint === "title") {
-			let acc = h * 0.35 + 1.0
-			for (const el of slide.elements) acc += estimateElementHeight(el, inner) + FLOW_GAP
-			return { heading, flow: [], contentBottom: acc }
+			// Bespoke lockup (renderTitle): kicker, wordmark, subtitle, install card.
+			let acc = 1.0 + 2.2
+			for (const el of slide.elements) acc += estimateElementHeight(el, inner * 0.9) + FLOW_GAP
+			return { heading, flow: [], contentBottom: Math.max(acc, h - 1.05) }
 		}
 		// Hero slots: heading zone (fixed), paragraphs stacked from y=3.4
 		// (first is the accent tagline), terminal card after the last paragraph,
@@ -197,49 +237,113 @@ export function computeSlideLayout(slide: SlideSpec, theme: DeckTheme): SlideLay
 		return { heading, flow: [], contentBottom: y + (code !== undefined ? 0.15 + codeH : 0) }
 	}
 
-	const top = hint === "blank" ? 0 : hasHeading ? 1.35 : 0.55
+	const headingH = hint === "closing" ? 1.35 : 1.0
+	const headingY = slide.kicker !== undefined ? 0.68 : 0.32
+	const top =
+		hint === "blank" ? 0 : hint === "closing" ? 2.05 : hasHeading ? (slide.kicker !== undefined ? 1.72 : 1.35) : 0.55
 	const heading =
-		hasHeading && hint !== "blank" ? { x: MARGIN, y: 0.32, w: inner, h: 0.92, align: "left" as const } : undefined
+		hasHeading && hint !== "blank"
+			? { x: MARGIN, y: headingY, w: inner, h: headingH, align: "left" as const }
+			: undefined
+	const kicker = slide.kicker !== undefined && hint !== "blank" ? { x: MARGIN, y: 0.2, w: inner, h: 0.42 } : undefined
 
 	// Reserve footer space on footered slides.
 	const bottom = theme.footer !== undefined ? h - 0.72 : h - 0.42
 
-	const flow: ElementBox[] = []
-	let columns: ElementBox[] | undefined
-	let y = top
-
+	// Natural-height rows in source order; the two-column pair is one row.
+	interface Row {
+		el: SlideElement
+		h: number
+		w: number
+		columnPair?: Array<{ el: SlideElement; h: number; w: number }>
+	}
+	const rows: Row[] = []
 	if (hint === "two-column") {
 		const bodies = slide.elements.filter(isBodyElement)
 		const others = slide.elements.filter((el) => !isBodyElement(el))
 		const colW = inner / 2 - 0.22
 		const colEls = bodies.slice(0, 2)
-		let colHeights = 0
-		columns = colEls.map((el, i) => {
-			const eh = estimateElementHeight(el, colW)
-			colHeights = Math.max(colHeights, eh)
-			return { el, x: MARGIN + i * (inner / 2 + 0.22), y, w: colW, h: eh }
-		})
-		y += colHeights > 0 ? colHeights + FLOW_GAP : 0
+		const columnPair = colEls.map((el) => ({ el, h: estimateElementHeight(el, colW), w: colW }))
+		const colHeights = Math.max(0, ...columnPair.map((c) => c.h))
+		if (columnPair.length > 0) rows.push({ el: columnPair[0].el, h: colHeights, w: inner, columnPair })
 		for (const el of [...(bodies.length > 2 ? bodies.slice(2) : []), ...others]) {
-			const eh = estimateElementHeight(el, inner)
-			flow.push({ el, x: MARGIN, y, w: inner, h: eh })
-			y += eh + FLOW_GAP
+			rows.push({ el, h: estimateElementHeight(el, inner), w: inner })
 		}
 	} else {
 		for (const el of slide.elements) {
-			const eh = estimateElementHeight(el, inner)
-			flow.push({
-				el,
-				x: MARGIN,
-				y,
-				w: inner,
-				h: hint === "chart" && el.type === "chart" ? Math.min(eh, bottom - y) : eh,
-			})
-			y += flow[flow.length - 1].h + FLOW_GAP
+			rows.push({ el, h: estimateElementHeight(el, inner), w: inner })
 		}
 	}
 
-	return { heading, flow, columns, contentBottom: y - FLOW_GAP }
+	const natural = rows.reduce((sum, r) => sum + r.h, 0) + FLOW_GAP * Math.max(0, rows.length - 1)
+	const slack = bottom - top - natural
+
+	// Phase 1 — stretch design blocks, water-filled under per-type caps (total growth per row).
+	if (slack > 0.02) {
+		let remaining = slack
+		const grown = new Map<Row, number>()
+		for (let pass = 0; pass < 4 && remaining > 0.02; pass++) {
+			const open = rows.filter((r) => (STRETCH_CAP[r.el.type] ?? 0) - (grown.get(r) ?? 0) > 0.01)
+			if (open.length === 0) break
+			const share = remaining / open.length
+			let used = 0
+			for (const r of open) {
+				const already = grown.get(r) ?? 0
+				const grow = Math.min(share, (STRETCH_CAP[r.el.type] ?? 0) - already)
+				r.h += grow
+				grown.set(r, already + grow)
+				used += grow
+			}
+			if (used <= 0.001) break
+			remaining -= used
+		}
+		// Phase 2 — widen gaps between rows (bounded).
+		const extraGap = Math.min(0.3, remaining / Math.max(1, rows.length - 1))
+		remaining -= extraGap * Math.max(0, rows.length - 1)
+		// Phase 3 — center the rest: shift the flow start down by up to half.
+		// Closings are deliberately sparse (statement + links) — let them center
+		// harder or the bottom half dies.
+		const topShift = Math.min(remaining * 0.5, hint === "closing" ? 1.5 : 0.5)
+		let y = top + topShift
+		const gap = FLOW_GAP + extraGap
+		const flow: ElementBox[] = []
+		let columns: ElementBox[] | undefined
+		for (const r of rows) {
+			if (r.columnPair) {
+				columns = r.columnPair.map((c, i) => ({ el: c.el, x: MARGIN + i * (inner / 2 + 0.22), y, w: c.w, h: c.h }))
+			} else {
+				flow.push({
+					el: r.el,
+					x: MARGIN,
+					y,
+					w: r.w,
+					h: hint === "chart" && r.el.type === "chart" ? Math.min(r.h, bottom - y) : r.h,
+				})
+			}
+			y += r.h + gap
+		}
+		return { kicker, heading, flow, columns, contentBottom: y - gap }
+	}
+
+	// No slack: plain stacking, exactly the natural heights.
+	const flow: ElementBox[] = []
+	let columns: ElementBox[] | undefined
+	let y = top
+	for (const r of rows) {
+		if (r.columnPair) {
+			columns = r.columnPair.map((c, i) => ({ el: c.el, x: MARGIN + i * (inner / 2 + 0.22), y, w: c.w, h: c.h }))
+		} else {
+			flow.push({
+				el: r.el,
+				x: MARGIN,
+				y,
+				w: r.w,
+				h: hint === "chart" && r.el.type === "chart" ? Math.min(r.h, bottom - y) : r.h,
+			})
+		}
+		y += r.h + FLOW_GAP
+	}
+	return { kicker, heading, flow, columns, contentBottom: y - FLOW_GAP }
 }
 
 /** Estimated content height beyond the region (inches); ≤ 0 fits. */

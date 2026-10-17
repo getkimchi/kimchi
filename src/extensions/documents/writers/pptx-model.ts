@@ -4,7 +4,7 @@
 
 import type { Inline } from "../markdown/blocks.js"
 
-export type LayoutHint = "title" | "hero" | "content" | "two-column" | "table" | "chart" | "blank"
+export type LayoutHint = "title" | "hero" | "content" | "two-column" | "table" | "chart" | "closing" | "blank"
 
 export interface ChartSpec {
 	type: "bar" | "line" | "pie" | "doughnut"
@@ -38,6 +38,8 @@ export interface SlideSpec {
 	/** Template layout NAME from `inspect` (edit-time append_slide / create --template). */
 	layoutName?: string
 	heading?: string
+	/** Small caps accent label above the heading (```kicker fence). */
+	kicker?: string
 	background?: string
 	elements: SlideElement[]
 	/** Speaker-note paragraphs (not rendered on the slide). */
@@ -63,6 +65,8 @@ export interface DeckTheme {
 	text?: string
 	/** Secondary text (labels, captions). */
 	muted?: string
+	/** Card outline on surfaces (theme `line`). */
+	line?: string
 	/** Footer drawn on content slides; `{n}` = slide number, `{title}` = deck title. */
 	footer?: string
 	slideWidth?: number

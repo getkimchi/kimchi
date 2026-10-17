@@ -63,9 +63,9 @@ and named in the message.
 
 Write the deck as Markdown (format reference: the extension's `deck-markdown.md`;
 design judgment: `deck-design.md` — read it once per session). Slides split by
-`---`; `# title` with `:: layout` hints; bullets; tables; ` ```chart ` blocks;
-design blocks (` ```stats `, `quote`, `cards`, `flow`, `code`); a `Notes:`
-paragraph for speaker notes.
+`---`; `# title` with `:: layout` hints; ` ```kicker ` section labels; bullets;
+tables; ` ```chart ` blocks; design blocks (` ```stats `, `quote`, `cards`,
+`flow`, `code`); a `Notes:` paragraph for speaker notes.
 
 - `--theme theme.json`: palette and type (`font`, `accent`, `background`,
   `surface`, `text`, `muted`, `headingFont`, `monoFont`, `footer`) — see
@@ -77,7 +77,7 @@ paragraph for speaker notes.
 - **Always run `check` on the created deck.** Its output tells you what to fix before
   handing the file to the user.
 - Standard layouts the writer accepts: `title`, `hero`, `content`, `two-column`,
-  `table`, `chart`, `blank`.
+  `table`, `chart`, `closing`, `blank`.
 - The writer refuses overfull slides (`error [slide-overfull]`) — split the slide,
   don't shrink the text.
 
@@ -87,10 +87,13 @@ paragraph for speaker notes.
    indenting two spaces.
 2. Vary layouts across the deck — adjacent slides shouldn't share a shape.
    Reach for `stats`/`cards`/`flow`/`quote` before another bullet list.
-3. One ` ```chart ` per `:: chart` slide; bar/line/pie/doughnut with `labels` and
+3. Ship a complete theme (palette + `line` + fonts), never font-and-accent
+   only — a bare theme wastes the derived dark/light machinery and washes
+   out card borders.
+4. One ` ```chart ` per `:: chart` slide; bar/line/pie/doughnut with `labels` and
    `series[].values` of equal length — the parser rejects mismatches.
-4. Dollar amounts always text or tables, never pie slices.
-5. When LibreOffice is available, `render` and Read the PNGs of the title slide
+5. Dollar amounts always text or tables, never pie slices.
+6. When LibreOffice is available, `render` and Read the PNGs of the title slide
    and one dense slide before handing over.
 
 ## edit `<in.pptx> --out <out.pptx> --ops ops.json`

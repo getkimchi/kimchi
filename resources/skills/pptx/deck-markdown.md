@@ -141,15 +141,31 @@ hint must match exactly one layout or creation fails naming the slide.
 
 | Hint              | Purpose                                  |
 | ----------------- | ---------------------------------------- |
-| `title`           | Large title, optional subtitle           |
+| `title`           | Composed lockup: kicker, big wordmark, subtitle, install card |
 | `hero`            | Title face: accent tagline, terminal card, link row |
 | `content`         | Title + body (default)                   |
 | `two-column`      | Title + two body columns                 |
 | `table`           | Title plus a full-width table            |
 | `chart`           | Title plus a full-width chart            |
+| `closing`         | Big statement face: 40pt heading, no footer |
 | `blank`           | Freeform shapes only                     |
 
 Hints riding the first heading: `# Q3 Review :: two-column`.
+
+## Kicker
+
+A fenced block with the language tag `kicker` sets a small caps accent label
+above the slide's heading — the section label the eye reads first:
+
+~~~markdown
+```kicker
+Platform Overview
+```
+
+# One gatekeeper for every request
+~~~
+
+First line only; the block is a slot, not a flow element.
 
 ## Themes
 
@@ -172,14 +188,21 @@ Hints riding the first heading: `# Q3 Review :: two-column`.
 }
 ```
 
-Defaults: Calibri body, kimchi teal `#00A3A1` accent, white background,
-13.33″ × 7.5″ (16:9).
+Defaults: dark-first — near-black `#0E0F13` background with derived light
+text and surfaces, Calibri body, kimchi teal `#00A3A1` accent, 13.33″ × 7.5″
+(16:9). Set `background` to a light value to opt out.
 
 - A dark `background` flips the derived text/surface colors to light
   automatically — set the palette fields only to override the derived ones.
+- `line` is the card/table outline color; on-brand monochrome by default.
+- Charts take their series colors from the accent (monochrome ramp) —
+  never an off-brand rainbow; bar charts show value labels.
+- The content flow absorbs leftover slide height: design blocks stretch
+  (bounded), gaps widen, and the stack centers — slides never die in the
+  bottom half.
 - `footer` renders small at the bottom-right of content slides (never on
-  `title`/`hero`/`blank`); `{n}` expands to the slide number, `{title}` to
-  the frontmatter deck title.
+  `title`/`hero`/`closing`/`blank`); `{n}` expands to the slide number,
+  `{title}` to the frontmatter deck title.
 - In `--template` mode the template's own theme wins and conflicting
   `--theme` fields are ignored with a warning.
 

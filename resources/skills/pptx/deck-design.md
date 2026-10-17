@@ -14,7 +14,8 @@ splitting at a natural section is the fix, never smaller text.
 ## Vary the layout, deliberately
 
 `check` flags decks where most slides are title-and-bullets. A good rhythm
-over ~10 slides:
+over ~10 slides (kickers — small caps section labels in ` ```kicker ` fences
+— carry the deck's spine from slide to slide):
 
 - **Title slide** (`:: title`) — deck name, subtitle, nothing else.
 - **Hero** (`:: hero`) — the thesis slide. Accent tagline paragraph, a
@@ -55,7 +56,8 @@ bullet-only slides is the smell `check` catches.
 
 ## Palette recipes
 
-Dark-first (default for technical decks):
+Dark-first (the writer's default — light decks opt in with a light
+`background`):
 
 ```json
 {

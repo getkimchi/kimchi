@@ -177,6 +177,22 @@ describe("design blocks (stats/quote/cards/flow/code)", () => {
 		expect(spec.slides[0].layoutHint).toBe("hero")
 		expect(spec.slides[0].heading).toBe("Kimchi")
 	})
+
+	it("kicker fences set the slide kicker; empty kickers are typed errors", () => {
+		const spec = parseDeckMarkdown("```kicker\nPlatform Overview\n```\n\n# The gatekeeper\n\n- one\n")
+		expect(spec.slides[0].kicker).toBe("Platform Overview")
+		// Kicker is a slot, not a flow element — only the bullet remains.
+		expect(spec.slides[0].elements).toEqual([
+			{ type: "bullets", depth: 0, items: [{ inline: [{ text: "one" }], children: [] }] },
+		])
+		expect(() => parseDeckMarkdown("```kicker\n\n```\n\n# T\n")).toThrow(/"kicker" block is empty/)
+	})
+
+	it("the closing hint parses and multi-word headings keep their text", () => {
+		const spec = parseDeckMarkdown("# Your AI. Under your control. :: closing\n\n- link one\n")
+		expect(spec.slides[0].layoutHint).toBe("closing")
+		expect(spec.slides[0].heading).toBe("Your AI. Under your control.")
+	})
 })
 
 const DESIGN_DECK_MD = `---
