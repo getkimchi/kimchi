@@ -28,8 +28,9 @@ export type SlideElement =
 	| { type: "code"; lines: string[] }
 	/** Grid of small cards (```cards); lines are `Title | body`, optional `N.` prefix numbers the card. */
 	| { type: "cards"; cards: Array<{ title: string; body: string; number?: string }> }
-	/** Horizontal stage flow with arrows (```flow); `*` prefix marks the accent stage. */
-	| { type: "flow"; stages: Array<{ label: string; highlight?: boolean }> }
+	/** Horizontal stage flow with arrows (```flow); `*` prefix marks the accent stage;
+	 * `Stage | description` adds a sub-line under the label. */
+	| { type: "flow"; stages: Array<{ label: string; description?: string; highlight?: boolean }> }
 
 export interface SlideSpec {
 	/** 1-based among parsed slides. */

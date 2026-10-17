@@ -157,7 +157,7 @@ export function estimateElementHeight(el: SlideElement, widthIn: number): number
 			return el.lines.length * ((11.5 * 1.3) / PT_PER_IN) + 0.95
 		case "cards": {
 			const n = el.cards.length
-			const cols = n <= 2 ? n : n <= 4 ? 2 : 3
+			const cols = n === 3 ? 3 : n <= 2 ? n : n <= 4 ? 2 : 3
 			const rows = Math.ceil(n / cols)
 			const cardW = (widthIn - 0.3 * (cols - 1)) / cols
 			let cardH = 1.35
@@ -167,8 +167,18 @@ export function estimateElementHeight(el: SlideElement, widthIn: number): number
 			}
 			return rows * cardH + (rows - 1) * 0.3
 		}
-		case "flow":
-			return 1.05
+		case "flow": {
+			if (!el.stages.some((st) => st.description !== undefined)) return 1.05
+			const n = el.stages.length
+			const chipW = Math.max(1, (widthIn - 0.5 * (n - 1)) / n - 0.24)
+			const maxDesc = Math.max(
+				0,
+				...el.stages.map((st) =>
+					st.description !== undefined ? estimateTextBlockHeightPt(st.description, chipW, 10.5) : 0,
+				),
+			)
+			return Math.max(1.05, 0.18 + 0.3 + 0.14 + maxDesc / PT_PER_IN + 0.24)
+		}
 	}
 }
 
@@ -179,7 +189,7 @@ const isBodyElement = (el: SlideElement) => el.type === "bullets" || el.type ===
 const STRETCH_CAP: Partial<Record<SlideElement["type"], number>> = {
 	stats: 0.9,
 	quote: 0.7,
-	code: 0.8,
+	code: 0.45,
 	chart: 1.3,
 	flow: 0.35,
 	image: 1.0,

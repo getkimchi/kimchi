@@ -180,3 +180,36 @@ describe("mixHex", () => {
 		expect(half).toBe("808080")
 	})
 })
+
+describe("v5 density fixes", () => {
+	it("three cards lay out as a single 3-across row, not a ragged 2x2", () => {
+		const three: SlideElement = {
+			type: "cards",
+			cards: [
+				{ title: "a", body: "b" },
+				{ title: "c", body: "d" },
+				{ title: "e", body: "f" },
+			],
+		}
+		const four: SlideElement = { type: "cards", cards: [...three.cards, { title: "g", body: "h" }] }
+		const h3 = estimateElementHeight(three, 12.13)
+		const h4 = estimateElementHeight(four, 12.13)
+		expect(h3).toBeLessThan(h4) // one row vs two rows
+		expect(h3).toBeLessThan(2.0) // single row of cards, no stacked second row
+	})
+
+	it("flow descriptions grow the estimated height; plain flows keep the compact one", () => {
+		const plain: SlideElement = { type: "flow", stages: [{ label: "a" }, { label: "b" }] }
+		const described: SlideElement = {
+			type: "flow",
+			stages: [
+				{ label: "a", description: "every call the agent makes passes through first" },
+				{ label: "b", description: "results come back checked and attributed" },
+				{ label: "c", description: "output verified before it ships anywhere" },
+			],
+		}
+		expect(estimateElementHeight(plain, 12.13)).toBeCloseTo(1.05)
+		// Two-line descriptions at 3-across chip width need a taller band.
+		expect(estimateElementHeight(described, 12.13)).toBeGreaterThan(1.15)
+	})
+})

@@ -216,7 +216,18 @@ function parseFlowBlock(code: string, slideIndex: number): SlideElement {
 	const stages = pieces
 		.map((p) => p.trim())
 		.filter(Boolean)
-		.map((p) => (p.startsWith("*") ? { label: p.slice(1).trim(), highlight: true } : { label: p }))
+		.map((p) => {
+			let label = p
+			let description: string | undefined
+			if (p.includes("|")) {
+				const { first, rest } = splitPair(p, slideIndex, "flow")
+				label = first
+				description = rest
+			}
+			return label.startsWith("*")
+				? { label: label.slice(1).trim(), description, highlight: true }
+				: { label: label.trim(), description }
+		})
 	if (stages.length < 2) throw new DeckParseError(`slide ${slideIndex}: "flow" needs at least two stages`)
 	return { type: "flow", stages }
 }
@@ -693,13 +704,13 @@ function renderElement(
 				fontFace: pal.monoFont,
 				fontSize: 11.5,
 				lineSpacingMultiple: 1.28,
-				valign: "top",
+				valign: "middle",
 			})
 			break
 		}
 		case "cards": {
 			const n = el.cards.length
-			const cols = n <= 2 ? n : n <= 4 ? 2 : 3
+			const cols = n === 3 ? 3 : n <= 2 ? n : n <= 4 ? 2 : 3
 			const rows = Math.ceil(n / cols)
 			const gap = 0.3
 			const cw = (box.w - gap * (cols - 1)) / cols
@@ -770,25 +781,62 @@ function renderElement(
 			const n = el.stages.length
 			const arrowW = 0.5
 			const bw = (box.w - arrowW * (n - 1)) / n
+			const hasDesc = el.stages.some((st) => st.description !== undefined)
 			el.stages.forEach((stage, i) => {
 				const bx = box.x + i * (bw + arrowW)
 				const fill = stage.highlight ? pal.accent : pal.surface
-				addCard(s, { x: bx, y: box.y + 0.05, w: bw, h: box.h - 0.1 }, fill, pal.border)
-				s.addText(stage.label, {
-					x: bx,
-					y: box.y + 0.05,
-					w: bw,
-					h: box.h - 0.1,
-					isTextBox: true,
-					margin: 0,
-					fit: "shrink",
-					fontFace: pal.monoFont,
-					fontSize: 14,
-					bold: true,
-					color: stage.highlight ? "FFFFFF" : pal.text,
-					align: "center",
-					valign: "middle",
-				})
+				const chip = { x: bx, y: box.y + 0.05, w: bw, h: box.h - 0.1 }
+				addCard(s, chip, fill, pal.border)
+				if (hasDesc) {
+					// Two-line chip: mono label over a muted sub-description. The label
+					// font shrinks to guarantee a single line — `fit: shrink` saves
+					// PowerPoint rendering but the static check counts real lines.
+					const labelSize = Math.max(9.5, Math.min(13.5, (bw - 0.24 - 14.4) / (0.5 * Math.max(1, stage.label.length))))
+					s.addText(stage.label, {
+						x: bx + 0.12,
+						y: chip.y + 0.16,
+						w: bw - 0.24,
+						h: 0.34,
+						isTextBox: true,
+						margin: 0,
+						fit: "shrink",
+						fontFace: pal.monoFont,
+						fontSize: labelSize,
+						bold: true,
+						color: stage.highlight ? "FFFFFF" : pal.text,
+					})
+					if (stage.description !== undefined) {
+						s.addText(stage.description, {
+							x: bx + 0.12,
+							y: chip.y + 0.54,
+							w: bw - 0.24,
+							h: chip.h - 0.68,
+							isTextBox: true,
+							margin: 0,
+							fit: "shrink",
+							fontFace: pal.bodyFont,
+							fontSize: 10.5,
+							color: stage.highlight ? "FFFFFF" : pal.muted,
+							lineSpacingMultiple: 1.15,
+						})
+					}
+				} else {
+					s.addText(stage.label, {
+						x: bx,
+						y: chip.y,
+						w: bw,
+						h: chip.h,
+						isTextBox: true,
+						margin: 0,
+						fit: "shrink",
+						fontFace: pal.monoFont,
+						fontSize: 14,
+						bold: true,
+						color: stage.highlight ? "FFFFFF" : pal.text,
+						align: "center",
+						valign: "middle",
+					})
+				}
 				if (i < n - 1) {
 					s.addText("→", {
 						x: bx + bw,
@@ -808,6 +856,57 @@ function renderElement(
 			})
 			break
 		}
+	}
+}
+
+/** Closing list: pillar rows (bold term + muted rest) with the last item pinned as an accent link row. */
+function renderClosingList(s: PptxSlide, box: ElementBox, pal: Palette, slideH: number): void {
+	const el = box.el
+	if (el.type !== "bullets") {
+		return
+	}
+	const items = el.items.filter((it) => it.children.length === 0).map((it) => inlineTextOf(it.inline))
+	if (items.length === 0) {
+		return
+	}
+	const links = items.length > 1 ? items[items.length - 1] : undefined
+	const pillars = links !== undefined ? items.slice(0, -1) : items
+	const runs: Array<{ text: string; options: Record<string, unknown> }> = []
+	pillars.forEach((text, i) => {
+		const sep = text.indexOf(" — ")
+		const last = i < pillars.length - 1
+		if (sep > 0) {
+			runs.push({ text: text.slice(0, sep), options: { bold: true, color: pal.text } })
+			runs.push({ text: text.slice(sep), options: { color: pal.muted, breakLine: last } })
+		} else {
+			runs.push({ text, options: { color: pal.text, breakLine: last } })
+		}
+	})
+	s.addText(runs, {
+		x: box.x,
+		y: box.y,
+		w: box.w,
+		h: Math.max(0.5, slideH - 1.15 - box.y),
+		isTextBox: true,
+		margin: 0,
+		fontFace: pal.bodyFont,
+		fontSize: 16.5,
+		lineSpacingMultiple: 1.45,
+		valign: "top",
+	})
+	if (links !== undefined) {
+		s.addText(links, {
+			x: box.x,
+			y: slideH - 0.85,
+			w: box.w,
+			h: 0.4,
+			isTextBox: true,
+			margin: 0,
+			fontFace: pal.bodyFont,
+			fontSize: 13.5,
+			bold: true,
+			color: pal.accent,
+		})
 	}
 }
 
@@ -1050,7 +1149,13 @@ export async function writePptx(spec: DeckSpec, options: WriteOptions = {}): Pro
 			}
 			const renderOpts = slide.layoutHint === "closing" ? { large: true } : undefined
 			for (const col of layout.columns ?? []) renderElement(s, pptx, col, pal, options, slide.index, renderOpts)
-			for (const box of layout.flow) renderElement(s, pptx, box, pal, options, slide.index, renderOpts)
+			for (const box of layout.flow) {
+				if (renderOpts !== undefined && box.el.type === "bullets") {
+					renderClosingList(s, box, pal, h)
+				} else {
+					renderElement(s, pptx, box, pal, options, slide.index, renderOpts)
+				}
+			}
 		}
 
 		// Footer on workhorse slides only — clean title/hero/closing faces.

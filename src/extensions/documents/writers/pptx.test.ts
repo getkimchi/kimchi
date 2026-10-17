@@ -164,6 +164,17 @@ describe("design blocks (stats/quote/cards/flow/code)", () => {
 		})
 	})
 
+	it("parses flow stage descriptions from `Stage | description` lines", () => {
+		const spec = parseDeckMarkdown("# G\n\n```flow\nBuild | compiles and tests\n*Ship | deploys to prod\n```\n")
+		expect(spec.slides[0].elements[0]).toEqual({
+			type: "flow",
+			stages: [
+				{ label: "Build", description: "compiles and tests" },
+				{ label: "Ship", description: "deploys to prod", highlight: true },
+			],
+		})
+	})
+
 	it("untyped or code fences become terminal cards; unknown block langs are typed errors", () => {
 		const spec = parseDeckMarkdown("# G\n\n```\n$ kimchi setup\n# comment\n```\n")
 		expect(spec.slides[0].elements[0]).toEqual({ type: "code", lines: ["$ kimchi setup", "# comment"] })
