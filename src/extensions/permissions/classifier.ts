@@ -1,12 +1,8 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { complete } from "@earendil-works/pi-ai/compat"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
-import {
-	pinRequestContext,
-	REQUEST_ID_HEADER,
-	type RequestContext,
-	trackProviderRequest,
-} from "../request-identity/index.js"
+import { REQUEST_ID_HEADER } from "../../http/instrument-fetch.js"
+import { pinRequestContext, type RequestContext, trackProviderRequest } from "../request-identity/index.js"
 import { DEFAULT_CONFIG } from "./constants.js"
 import classifierSystemPrompt from "./prompts/classifier-system-prompt.js"
 import type { ClassifierFailureCode, ClassifierResult, ClassifierVerdict, RiskScore } from "./types.js"

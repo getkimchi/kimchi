@@ -1,6 +1,7 @@
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai"
 import { complete } from "@earendil-works/pi-ai/compat"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { REQUEST_ID_HEADER } from "../http/instrument-fetch.js"
 import { isAutoRoutedModel } from "./auto-model/constants.js"
 import { getEffectiveModel } from "./auto-model/state.js"
 import {
@@ -11,7 +12,7 @@ import {
 	sessionHasImages,
 	storeImageDescription,
 } from "./model-guard.js"
-import { pinRequestContext, REQUEST_ID_HEADER, trackProviderRequest } from "./request-identity/index.js"
+import { pinRequestContext, trackProviderRequest } from "./request-identity/index.js"
 
 const IMAGE_DESCRIPTION_PROMPT = "Describe this image concisely. Include key visual details, text, layout."
 

@@ -14,8 +14,9 @@ import {
 	type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig, RETRY_DEFAULTS } from "../config.js"
+import { REQUEST_ID_HEADER } from "../http/instrument-fetch.js"
 import { fetchWithRetry } from "../utils/http.js"
-import { pinRequestContext, REQUEST_ID_HEADER, trackProviderRequest } from "./request-identity/index.js"
+import { pinRequestContext, trackProviderRequest } from "./request-identity/index.js"
 
 export const SESSION_NAME_MODEL = "deepseek-v4-flash-0731"
 const SESSION_NAME_TIMEOUT_MS = 10_000

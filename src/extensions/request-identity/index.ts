@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { resolveEndpoints } from "../../config.js"
-import type { ModelRequestMetadata } from "../../http/instrument-fetch.js"
+import { type ModelRequestMetadata, REQUEST_ID_HEADER } from "../../http/instrument-fetch.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import { debugPRCost } from "../../shared/pr-cost-log.js"
 import { parentSessionId } from "../agent-worker-context.js"
@@ -20,10 +20,7 @@ import { PR_REPORTING_HEADER, prReportingHeaderValue } from "../pr-cost-reportin
 import { COST_PER_PR_RESOURCE_ID } from "../pr-cost-reporting/resource.js"
 import { TELEMETRY_PROVIDER_HEADER_NAMES } from "../telemetry/provider-headers.js"
 import { TurnCounter } from "../telemetry/turn-counter.js"
-import { BILLING_TAG_PREFIX, prepareBillingTag } from "./request-tags.js"
-
-/** The header that carries a provider request's ID. */
-export const REQUEST_ID_HEADER = "X-Request-Id"
+import { BILLING_TAG_PREFIX, prepareBillingTag, TAGS_HEADER } from "./request-tags.js"
 
 /** The session a provider request belongs to; side calls pin it before awaiting. */
 export interface RequestContext {
@@ -33,7 +30,6 @@ export interface RequestContext {
 
 /** What the gateway learns about a request's session, captured when the request is created. */
 interface RequestCorrelation {
-	cwd: string
 	sessionId: string
 	parentSessionId?: string
 	/** Undefined when the session's turns are not counted in this process. */
@@ -43,6 +39,8 @@ interface RequestCorrelation {
 interface TrackedRequest {
 	/** The ID the request was created with; each of its attempts is tracked under its own ID too. */
 	logicalId: string
+	/** The request's project, whose configured gateway endpoints its dispatches are checked against. */
+	cwd: string
 	correlation: RequestCorrelation
 	dispatched: boolean
 	/** The tag this attempt carried, which a retry must not send again. */
@@ -69,7 +67,6 @@ function requestCorrelation(ctx: RequestContext): RequestCorrelation {
 	const parent = parentSessionId()
 	const turnIndex = sessionTurns.get(sessionId)?.turnIndex
 	return {
-		cwd: ctx.cwd,
 		sessionId,
 		...(parent ? { parentSessionId: parent } : {}),
 		...(turnIndex === undefined ? {} : { turnIndex }),
@@ -87,7 +84,7 @@ function remember(requestId: string, request: TrackedRequest): void {
 /** A request ID that finds the request's session again when it is dispatched, sent as {@link REQUEST_ID_HEADER}. */
 export function trackProviderRequest(ctx: RequestContext): string {
 	const requestId = randomUUID()
-	remember(requestId, { logicalId: requestId, correlation: requestCorrelation(ctx), dispatched: false })
+	remember(requestId, { logicalId: requestId, cwd: ctx.cwd, correlation: requestCorrelation(ctx), dispatched: false })
 	return requestId
 }
 
@@ -107,22 +104,25 @@ function isGatewayUrl(url: string, cwd: string): boolean {
 		return false
 	}
 	if (!["https:", "http:"].includes(target.protocol) || target.username || target.password) return false
+	let endpoints: ReturnType<typeof resolveEndpoints>
 	try {
-		const endpoints = resolveEndpoints({ cwd })
-		// Origins compare scheme, host and port as URLs mean them: case and default ports do not matter.
-		return [
-			endpoints.llmEndpoint,
-			endpoints.openAiBaseUrl,
-			endpoints.anthropicBaseUrl,
-			endpoints.experimentalOpenAiBaseUrl,
-		].some((endpoint) => {
-			const base = new URL(endpoint)
-			return target.origin === base.origin && target.pathname.startsWith(`${base.pathname.replace(/\/+$/, "")}/`)
-		})
+		endpoints = resolveEndpoints({ cwd })
 	} catch (error) {
 		debugPRCost("Gateway endpoints unavailable:", error)
 		return false
 	}
+	// Origins compare scheme, host and port as URLs mean them: case and default ports do not matter. An endpoint that is
+	// not a URL matches nothing.
+	return [
+		endpoints.llmEndpoint,
+		endpoints.openAiBaseUrl,
+		endpoints.anthropicBaseUrl,
+		endpoints.experimentalOpenAiBaseUrl,
+	].some((endpoint) => {
+		if (!URL.canParse(endpoint)) return false
+		const base = new URL(endpoint)
+		return target.origin === base.origin && target.pathname.startsWith(`${base.pathname.replace(/\/+$/, "")}/`)
+	})
 }
 
 function setIfAbsent(headers: Headers, name: string, value: string): void {
@@ -164,13 +164,13 @@ export function prepareProviderRequest(headers: Headers, url: string, metadata: 
 	if (!request) return
 	const requestId = request.dispatched ? randomUUID() : request.logicalId
 	const sendsRequestId = isResourceEnabled(COST_PER_PR_RESOURCE_ID)
-	const toGateway = isGatewayUrl(url, request.correlation.cwd)
+	const toGateway = isGatewayUrl(url, request.cwd)
 	const tagged = prepareBillingTag(headers, metadata.bodyTags, requestId, (tag) => isEarlierAttemptTag(request, tag))
 	const billing = sendsRequestId && toGateway ? tagged : undefined
 	remember(requestId, { ...request, dispatched: true, billingTag: billing?.tag })
 	if (sendsRequestId) headers.set(REQUEST_ID_HEADER, requestId)
 	else headers.delete(REQUEST_ID_HEADER)
-	if (billing) headers.set("X-Tags", billing.header)
+	if (billing) headers.set(TAGS_HEADER, billing.header)
 	if (toGateway) setGatewayHeaders(headers, request.correlation)
 	followActiveRequest(request, requestId)
 }
@@ -179,9 +179,12 @@ export function prepareProviderRequest(headers: Headers, url: string, metadata: 
 export default function requestIdentityExtension(pi: ExtensionAPI): void {
 	let sessionId: string | undefined
 	let turns = new TurnCounter()
+	// Another instance may have started the same session since; its state stays.
 	const release = () => {
-		if (sessionId && sessionTurns.get(sessionId) === turns) sessionTurns.delete(sessionId)
-		if (sessionId) activeRequestIds.delete(sessionId)
+		if (sessionId && sessionTurns.get(sessionId) === turns) {
+			sessionTurns.delete(sessionId)
+			activeRequestIds.delete(sessionId)
+		}
 		sessionId = undefined
 	}
 	pi.on("session_start", (_event, ctx) => {

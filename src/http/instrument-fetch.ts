@@ -17,6 +17,9 @@ import { requestUrl, rewrapResponseWithBody, wrapFetchWithIdleTimeout } from "./
 
 type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
+/** The header that carries a provider request's ID; a model completion with one goes through `onModelRequest`. */
+export const REQUEST_ID_HEADER = "X-Request-Id"
+
 /**
  * Registered via Symbol.for so the brand survives module duplication (bundled
  * binary vs. source imports in tests): a second install must see the first
@@ -103,11 +106,11 @@ export function installGlobalFetchInstrumentation(options: GlobalFetchInstrument
 			headers.set("user-agent", options.userAgent)
 		}
 		const modelCompletion = isModelCompletionFetch(input)
-		if (modelCompletion && headers.has("x-request-id")) {
+		if (modelCompletion && headers.has(REQUEST_ID_HEADER)) {
 			try {
 				onModelRequest?.(headers, requestUrl(input) ?? "", requestMetadata(input, init))
 			} catch (error) {
-				headers.delete("x-request-id")
+				headers.delete(REQUEST_ID_HEADER)
 				debugPRCost("Request identity unavailable:", error)
 			}
 		}

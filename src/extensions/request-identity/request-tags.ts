@@ -6,6 +6,9 @@ const BILLING_TAG_KEY = "kimchi-request"
 /** The prefix of the tag the gateway finds a request's bill by: `kimchi-request:<request ID>`. */
 export const BILLING_TAG_PREFIX = `${BILLING_TAG_KEY}:`
 
+/** The header of a request's comma-separated gateway tags. */
+export const TAGS_HEADER = "X-Tags"
+
 /**
  * The billing tag of one attempt and the `X-Tags` value that carries it, or undefined when the attempt cannot be
  * tagged. Earlier attempts' tags are removed from `headers` at once, so a retry never resends them; user tags are never
@@ -17,11 +20,11 @@ export function prepareBillingTag(
 	requestId: string,
 	ownsTag: (tag: string) => boolean,
 ): { tag: string; header: string } | undefined {
-	const parts = headers.get("X-Tags")?.split(",") ?? []
+	const parts = headers.get(TAGS_HEADER)?.split(",") ?? []
 	const retained = parts.filter((tag) => !ownsTag(tag.trim()))
 	if (retained.length !== parts.length) {
-		if (retained.length) headers.set("X-Tags", retained.join(","))
-		else headers.delete("X-Tags")
+		if (retained.length) headers.set(TAGS_HEADER, retained.join(","))
+		else headers.delete(TAGS_HEADER)
 	}
 	if (bodyTags === undefined) return undefined
 	const tags = [...retained, ...(headers.get("X-LiteLLM-Tags")?.split(",") ?? []), ...bodyTags]

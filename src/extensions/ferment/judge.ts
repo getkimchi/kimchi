@@ -1,4 +1,5 @@
-import { REQUEST_ID_HEADER, trackProviderRequest } from "../request-identity/index.js"
+import { REQUEST_ID_HEADER } from "../../http/instrument-fetch.js"
+import { trackProviderRequest } from "../request-identity/index.js"
 /**
  * Judge — surviving LLM-as-judge surface after the gate-registry migration.
  *

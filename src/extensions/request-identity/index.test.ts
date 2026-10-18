@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { complete, getModel } from "@earendil-works/pi-ai/compat"
@@ -6,6 +6,7 @@ import type { BeforeProviderHeadersEvent, SessionStartEvent } from "@earendil-wo
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resolveEndpoints } from "../../config.js"
 import { installGlobalFetchInstrumentation } from "../../http/instrument-fetch.js"
+import { clearProjectScopeTrust, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { setResourceOverride } from "../../resources/store.js"
 import { INFRA_BREAKER_THRESHOLD_ENV } from "../../upstream-retry-patch.js"
 import { createContext } from "../__mocks__/context.js"
@@ -134,6 +135,15 @@ describe("PR reporting headers", () => {
 		expect(dispatch(trackProviderRequest(ctx)).has("x-turn-index")).toBe(false)
 	})
 
+	it("keeps a session's identity when an older instance of the same session shuts down", async () => {
+		const older = await startSession("main-session")
+		const newer = await startSession("main-session")
+		const current = await mainRequest(newer.api, newer.ctx)
+		await older.api.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, older.ctx)
+		expect(getActiveRequestId(newer.ctx)).toBe(current.headers["X-Request-Id"])
+		expect(dispatch(trackProviderRequest(newer.ctx)).get("x-turn-index")).toBe("0")
+	})
+
 	it("reports a side call under the session pinned before it awaited", () => {
 		let sessionId = "first-session"
 		const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
@@ -195,6 +205,22 @@ describe("request IDs and tags", () => {
 		expect(reporting(`${completions}?beta=true`)).toBe("proxy")
 		expect(reporting(completions.replace("https://", "https://user:secret@"))).toBeNull()
 		expect(reporting(completions.replace("/v1/", "/v10/"))).toBeNull()
+	})
+
+	it("still finds the gateway when another configured endpoint is not a URL", async () => {
+		vi.stubEnv("KIMCHI_BASE_URL", "")
+		mkdirSync(join(dir, ".kimchi"))
+		writeFileSync(join(dir, ".kimchi", "config.json"), JSON.stringify({ llmEndpoint: "gateway.example.test/v1" }), {
+			mode: 0o600,
+		})
+		setProjectScopeTrusted(dir, true)
+		try {
+			expect(resolveEndpoints({ cwd: dir }).llmEndpoint).toBe("gateway.example.test/v1")
+			const { ctx } = await startSession("main-session")
+			expect(dispatch(trackProviderRequest(ctx)).get("x-kimchi-pr-reporting")).toBe("proxy")
+		} finally {
+			clearProjectScopeTrust(dir)
+		}
 	})
 
 	it("tags an image-heavy request sent through the fetch instrumentation", async () => {

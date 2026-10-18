@@ -56,6 +56,7 @@ function validState(state: Record<string, unknown>, path: string): SavedState {
 }
 
 const followsDefault = (state: SavedState) => !Object.keys(state).length || state.followsTelemetry === true
+const noticeDue = (state: SavedState) => followsDefault(state) && !state.defaultNoticeShown
 
 /**
  * The saved choice and its source. Reporting follows the SaaS telemetry setting, with the org's usage-reporting
@@ -70,8 +71,8 @@ export function readPRReportingConsent(agentDir = getAgentDir()): PRReportingCon
 }
 
 /** Why this process never reports PR costs, or undefined when it may. */
-export function prReportingSkipReason(env = process.env): string | undefined {
-	return reportingSkipReason(sessionMode, env)
+export function prReportingSkipReason(): string | undefined {
+	return reportingSkipReason(sessionMode)
 }
 
 /**
@@ -91,8 +92,8 @@ export function prReportingHeaderValue(agentDir = getAgentDir()): PRReportingHea
 	}
 }
 
-/** Replace the saved state under its lock; `mutate` returns false to leave the file as it is. */
-async function updateState(agentDir: string, mutate: (state: SavedState) => boolean): Promise<void> {
+/** Replace the saved state under its lock and say whether it was written; `mutate` returns false to leave it as it is. */
+async function updateState(agentDir: string, mutate: (state: SavedState) => boolean): Promise<boolean> {
 	const path = prReportingStatePath(agentDir)
 	const directory = dirname(path)
 	await mkdir(directory, { recursive: true, mode: 0o700 })
@@ -107,19 +108,20 @@ async function updateState(agentDir: string, mutate: (state: SavedState) => bool
 	})
 	try {
 		const state = validState(readJson(path), path)
-		if (!mutate(state)) return
+		if (!mutate(state)) return false
 		await writeFileDurably(path, `${JSON.stringify(state)}\n`, () => {
 			if (compromised) throw compromised
 		})
 		invalidateJsonCache(path)
+		return true
 	} finally {
 		if (!compromised) await release()
 	}
 }
 
 /** Save an explicit `/pr-reporting on|off`; it outlives restarts and changes in the SaaS telemetry setting. */
-export function savePRReportingChoice(enabled: boolean, agentDir = getAgentDir()): Promise<void> {
-	return updateState(agentDir, (state) => {
+export async function savePRReportingChoice(enabled: boolean, agentDir = getAgentDir()): Promise<void> {
+	await updateState(agentDir, (state) => {
 		state.version = 1
 		state.enabled = enabled
 		// JSON leaves the field out.
@@ -131,19 +133,13 @@ export function savePRReportingChoice(enabled: boolean, agentDir = getAgentDir()
 /** Claim the one-time notice that PR costs are reported by default, so concurrent sessions show it once. */
 export async function claimDefaultNotice(agentDir = getAgentDir()): Promise<boolean> {
 	const path = prReportingStatePath(agentDir)
-	const saved = validState(readJsonCached(path), path)
-	if (!followsDefault(saved) || saved.defaultNoticeShown) return false
-	let claimed = false
-	await updateState(agentDir, (state) => {
-		if (!followsDefault(state) || state.defaultNoticeShown) return false
-		Object.assign(state, {
-			version: 1,
-			enabled: isTelemetryEnabled(),
-			followsTelemetry: true,
-			defaultNoticeShown: true,
-		})
-		claimed = true
+	if (!noticeDue(validState(readJsonCached(path), path))) return false
+	return updateState(agentDir, (state) => {
+		if (!noticeDue(state)) return false
+		state.version = 1
+		state.enabled = isTelemetryEnabled()
+		state.followsTelemetry = true
+		state.defaultNoticeShown = true
 		return true
 	})
-	return claimed
 }
