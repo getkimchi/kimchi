@@ -11,7 +11,7 @@ import {
 	sessionHasImages,
 	storeImageDescription,
 } from "./model-guard.js"
-import { pinRequestContext, trackProviderRequest } from "./request-identity/index.js"
+import { pinRequestContext, REQUEST_ID_HEADER, trackProviderRequest } from "./request-identity/index.js"
 
 const IMAGE_DESCRIPTION_PROMPT = "Describe this image concisely. Include key visual details, text, layout."
 
@@ -104,7 +104,7 @@ export default function stripImagesExtension(pi: ExtensionAPI) {
 			let processedCount = 0
 			const errors: string[] = []
 			for (const [hash, img] of images) {
-				const headers = { ...auth.headers, "X-Request-Id": trackProviderRequest(requestContext) }
+				const headers = { ...auth.headers, [REQUEST_ID_HEADER]: trackProviderRequest(requestContext) }
 				try {
 					const response = await complete(
 						visionModel,

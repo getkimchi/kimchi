@@ -4,6 +4,7 @@ import { type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-ag
 import { lock } from "proper-lockfile"
 import { invalidateJsonCache, readJson, readJsonCached, writeFileDurably } from "../../config/json.js"
 import { isResourceEnabled } from "../../resources/store.js"
+import { debugPRCost } from "../../shared/pr-cost-log.js"
 import { isTelemetryEnabled } from "../../telemetry-policy.js"
 import { reportingSkipReason } from "./automation.js"
 import { COST_PER_PR_RESOURCE_ID } from "./resource.js"
@@ -11,7 +12,7 @@ import { COST_PER_PR_RESOURCE_ID } from "./resource.js"
 /** Tells the Kimchi gateway whether it may report this request's PR costs: `proxy` when it may, otherwise `off`. */
 export const PR_REPORTING_HEADER = "X-Kimchi-PR-Reporting"
 
-export type PRReportingHeaderValue = "proxy" | "off"
+type PRReportingHeaderValue = "proxy" | "off"
 
 export interface PRReportingConsent {
 	enabled: boolean
@@ -19,11 +20,16 @@ export interface PRReportingConsent {
 	source: "default" | "choice"
 }
 
-/**
- * The saved state: `enabled` (with `followsTelemetry` while the SaaS setting decides) and whether the one-time notice
- * was shown. Writes keep any other fields an older Kimchi saved in the same file.
- */
-type SavedState = Record<string, unknown>
+/** The saved state. Writes keep any other fields an older Kimchi saved in the same file. */
+interface SavedState {
+	version?: 1
+	enabled?: boolean
+	/** Set while the SaaS telemetry setting decides. */
+	followsTelemetry?: true
+	/** Set once the one-time notice was shown. */
+	defaultNoticeShown?: true
+	[field: string]: unknown
+}
 
 /** The main session's mode: print and JSON runs never report. Subagents share the process and its decision. */
 let sessionMode: ExtensionContext["mode"] | undefined
@@ -37,7 +43,7 @@ export function prReportingStatePath(agentDir = getAgentDir()): string {
 }
 
 /** No file yet is a valid state; anything else must look like a saved choice. */
-function validState(state: SavedState): SavedState {
+function validState(state: Record<string, unknown>, path: string): SavedState {
 	if (
 		Object.keys(state).length &&
 		(state.version !== 1 ||
@@ -45,7 +51,7 @@ function validState(state: SavedState): SavedState {
 			(state.followsTelemetry !== undefined && state.followsTelemetry !== true) ||
 			(state.defaultNoticeShown !== undefined && state.defaultNoticeShown !== true))
 	)
-		throw new Error("Invalid PR reporting state")
+		throw new Error(`Invalid PR reporting state in ${path}`)
 	return state
 }
 
@@ -56,7 +62,8 @@ const followsDefault = (state: SavedState) => !Object.keys(state).length || stat
  * policy applied, until an explicit `/pr-reporting on|off` is saved. Throws when the saved state is unreadable.
  */
 export function readPRReportingConsent(agentDir = getAgentDir()): PRReportingConsent {
-	const state = validState(readJsonCached(prReportingStatePath(agentDir)))
+	const path = prReportingStatePath(agentDir)
+	const state = validState(readJsonCached(path), path)
 	return followsDefault(state)
 		? { enabled: isTelemetryEnabled(), source: "default" }
 		: { enabled: state.enabled === true, source: "choice" }
@@ -78,7 +85,8 @@ export function prReportingHeaderValue(agentDir = getAgentDir()): PRReportingHea
 			readPRReportingConsent(agentDir).enabled
 			? "proxy"
 			: "off"
-	} catch {
+	} catch (error) {
+		debugPRCost("PR reporting state unavailable:", error)
 		return "off"
 	}
 }
@@ -98,7 +106,7 @@ async function updateState(agentDir: string, mutate: (state: SavedState) => bool
 		},
 	})
 	try {
-		const state = validState(readJson(path))
+		const state = validState(readJson(path), path)
 		if (!mutate(state)) return
 		await writeFileDurably(path, `${JSON.stringify(state)}\n`, () => {
 			if (compromised) throw compromised
@@ -121,8 +129,9 @@ export function savePRReportingChoice(enabled: boolean, agentDir = getAgentDir()
 }
 
 /** Claim the one-time notice that PR costs are reported by default, so concurrent sessions show it once. */
-export async function takeReportingNotice(agentDir = getAgentDir()): Promise<boolean> {
-	const saved = validState(readJsonCached(prReportingStatePath(agentDir)))
+export async function claimDefaultNotice(agentDir = getAgentDir()): Promise<boolean> {
+	const path = prReportingStatePath(agentDir)
+	const saved = validState(readJsonCached(path), path)
 	if (!followsDefault(saved) || saved.defaultNoticeShown) return false
 	let claimed = false
 	await updateState(agentDir, (state) => {

@@ -8,12 +8,12 @@ import { setResourceOverride } from "../../resources/store.js"
 import { INFRA_BREAKER_THRESHOLD_ENV } from "../../upstream-retry-patch.js"
 import { CI_VARIABLES } from "./automation.js"
 import {
+	claimDefaultNotice,
 	prReportingHeaderValue,
 	prReportingStatePath,
 	readPRReportingConsent,
 	savePRReportingChoice,
 	setPRReportingSessionMode,
-	takeReportingNotice,
 } from "./consent.js"
 import { COST_PER_PR_RESOURCE_ID } from "./resource.js"
 
@@ -138,16 +138,16 @@ describe("PR reporting header value", () => {
 describe("saved PR reporting state", () => {
 	it("lets one of several concurrent sessions claim the default-on notice", async () => {
 		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
-		const claims = await Promise.all([1, 2, 3].map(() => takeReportingNotice(agentDir)))
+		const claims = await Promise.all([1, 2, 3].map(() => claimDefaultNotice(agentDir)))
 		expect(claims.filter(Boolean)).toHaveLength(1)
-		expect(await takeReportingNotice(agentDir)).toBe(false)
+		expect(await claimDefaultNotice(agentDir)).toBe(false)
 		expect(readPRReportingConsent(agentDir)).toEqual({ enabled: true, source: "default" })
 	})
 
 	it("keeps an explicit choice over a later change of the SaaS setting", async () => {
 		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
 		await savePRReportingChoice(false, agentDir)
-		expect(await takeReportingNotice(agentDir)).toBe(false)
+		expect(await claimDefaultNotice(agentDir)).toBe(false)
 		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
 		await savePRReportingChoice(true, agentDir)
 		expect(readPRReportingConsent(agentDir)).toEqual({ enabled: true, source: "choice" })

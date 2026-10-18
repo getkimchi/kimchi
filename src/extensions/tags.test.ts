@@ -586,7 +586,7 @@ describe("room for the per-request tag", () => {
 			"11111111-1111-4111-8111-111111111111",
 			() => false,
 		)
-		expect(result.billingTagSkipped).toBe(count > 7 ? "tag-limit" : undefined)
+		expect(result === undefined).toBe(count > 7)
 	})
 })
 

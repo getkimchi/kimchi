@@ -8,7 +8,7 @@ import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles, normalizeRoleModels } from "../orchestration/model-roles.js"
 import { getRedactionConfig } from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
-import { pinRequestContext, trackProviderRequest } from "../request-identity/index.js"
+import { pinRequestContext, REQUEST_ID_HEADER, trackProviderRequest } from "../request-identity/index.js"
 import type { TodoItem } from "../todos/types.js"
 import type { FermentV2EvaluatorFailureType } from "./domain-events.js"
 import { latestFinalAnswerDraft } from "./final-answer.js"
@@ -359,7 +359,7 @@ export async function evaluateFermentV2(
 				providerRequestCount++
 				const response = await completeSimple(model, requestContext, {
 					apiKey: auth.apiKey,
-					headers: { ...auth.headers, "X-Request-Id": requestId },
+					headers: { ...auth.headers, [REQUEST_ID_HEADER]: requestId },
 					reasoning: "minimal",
 					thinkingBudgets: correcting ? { minimal: 0 } : undefined,
 					samplingParams: isKimchiManagedJsonModeProvider(model.provider)

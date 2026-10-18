@@ -1,32 +1,34 @@
-/** The gateway's limit on combined body and header tags, counted before deduplication. */
+/** The gateway's limit on combined body and header tags, counted before deduplication, repeated tags included. */
 const GATEWAY_TAG_LIMIT = 10
 
+const BILLING_TAG_KEY = "kimchi-request"
+
+/** The prefix of the tag the gateway finds a request's bill by: `kimchi-request:<request ID>`. */
+export const BILLING_TAG_PREFIX = `${BILLING_TAG_KEY}:`
+
 /**
- * The `kimchi-request:<request ID>` tag the gateway reports with the request, so its bill can be found by that ID. A
- * previous attempt's tag is dropped first; user tags are never dropped to make room.
+ * The billing tag of one attempt and the `X-Tags` value that carries it, or undefined when the attempt cannot be
+ * tagged. Earlier attempts' tags are removed from `headers` at once, so a retry never resends them; user tags are never
+ * dropped to make room.
  */
 export function prepareBillingTag(
 	headers: Headers,
 	bodyTags: readonly string[] | undefined,
 	requestId: string,
 	ownsTag: (tag: string) => boolean,
-): { billingTag?: string; billingTagSkipped?: string; header?: string } {
-	const original = headers.get("X-Tags")
-	const parts = original?.split(",") ?? []
+): { tag: string; header: string } | undefined {
+	const parts = headers.get("X-Tags")?.split(",") ?? []
 	const retained = parts.filter((tag) => !ownsTag(tag.trim()))
-	// Never resend a previous attempt's tag, even if persistence or body inspection
-	// prevents tagging this attempt. Every unrelated user tag stays intact.
 	if (retained.length !== parts.length) {
 		if (retained.length) headers.set("X-Tags", retained.join(","))
 		else headers.delete("X-Tags")
 	}
-	if (bodyTags === undefined) return { billingTagSkipped: "body-uninspectable" }
+	if (bodyTags === undefined) return undefined
 	const tags = [...retained, ...(headers.get("X-LiteLLM-Tags")?.split(",") ?? []), ...bodyTags]
 		.map((tag) => tag.trim())
 		.filter(Boolean)
-	if (tags.some((tag) => tag.split(":", 1)[0] === "kimchi-request")) return { billingTagSkipped: "reserved-tag" }
-	// The gateway counts combined entries before deduplication, including repeated tags.
-	if (tags.length >= GATEWAY_TAG_LIMIT) return { billingTagSkipped: "tag-limit" }
-	const billingTag = `kimchi-request:${requestId}`
-	return { billingTag, header: [...retained, billingTag].join(",") }
+	// A tag of the user's own with the same key, or no free slot, leaves the attempt untagged.
+	if (tags.length >= GATEWAY_TAG_LIMIT || tags.some((tag) => tag.split(":", 1)[0] === BILLING_TAG_KEY)) return undefined
+	const tag = `${BILLING_TAG_PREFIX}${requestId}`
+	return { tag, header: [...retained, tag].join(",") }
 }

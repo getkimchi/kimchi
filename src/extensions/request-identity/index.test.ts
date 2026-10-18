@@ -182,6 +182,21 @@ describe("request IDs and tags", () => {
 		expect(getActiveRequestId(ctx)).toBeUndefined()
 	})
 
+	it("finds the gateway by origin and path, whatever the configured host's case or default port", async () => {
+		vi.stubEnv("KIMCHI_BASE_URL", "https://LLM.Example.TEST:443")
+		const completions = new URL(`${resolveEndpoints({ cwd: dir }).openAiBaseUrl}/chat/completions`).href
+		const { ctx } = await startSession("main-session")
+		const reporting = (url: string) => {
+			const headers = new Headers({ "X-Request-Id": trackProviderRequest(ctx) })
+			prepareProviderRequest(headers, url, { bodyTags: [] })
+			return headers.get("x-kimchi-pr-reporting")
+		}
+		expect(reporting(completions)).toBe("proxy")
+		expect(reporting(`${completions}?beta=true`)).toBe("proxy")
+		expect(reporting(completions.replace("https://", "https://user:secret@"))).toBeNull()
+		expect(reporting(completions.replace("/v1/", "/v10/"))).toBeNull()
+	})
+
 	it("tags an image-heavy request sent through the fetch instrumentation", async () => {
 		const { ctx } = await startSession("main-session")
 		const requestId = trackProviderRequest(ctx)
@@ -214,7 +229,6 @@ describe("request IDs and tags", () => {
 		dispatch(logicalId)
 		const retryId = dispatch(logicalId).get("x-request-id")
 		expect(getActiveRequestId(ctx)).toBe(retryId)
-		expect(original.headers["X-Request-Id"]).toBe(retryId)
 		const current = await mainRequest(api, ctx)
 		for (const id of [logicalId, String(retryId)]) {
 			expect(dispatch(id).get("x-request-id")).not.toBe(id)

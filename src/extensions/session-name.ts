@@ -15,7 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig, RETRY_DEFAULTS } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
-import { pinRequestContext, trackProviderRequest } from "./request-identity/index.js"
+import { pinRequestContext, REQUEST_ID_HEADER, trackProviderRequest } from "./request-identity/index.js"
 
 export const SESSION_NAME_MODEL = "deepseek-v4-flash-0731"
 const SESSION_NAME_TIMEOUT_MS = 10_000
@@ -162,7 +162,7 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 				fetchImpl: (url, init) => {
 					const headers = new Headers(init?.headers)
 					// Each attempt is its own request for the gateway.
-					headers.set("X-Request-Id", trackProviderRequest(requestContext))
+					headers.set(REQUEST_ID_HEADER, trackProviderRequest(requestContext))
 					return fetch(url, { ...init, headers })
 				},
 			},

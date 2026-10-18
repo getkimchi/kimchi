@@ -2,12 +2,12 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text } from "@earendil-works/pi-tui"
 import { IS_ACP_MODE } from "../../modes/acp/state.js"
 import {
+	claimDefaultNotice,
 	prReportingHeaderValue,
 	prReportingSkipReason,
 	readPRReportingConsent,
 	savePRReportingChoice,
 	setPRReportingSessionMode,
-	takeReportingNotice,
 } from "./consent.js"
 import { statusText } from "./status.js"
 
@@ -32,7 +32,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 	async function showNotice(ctx: ExtensionContext): Promise<void> {
 		try {
 			if (!ctx.hasUI || prReportingHeaderValue() !== "proxy" || readPRReportingConsent().source !== "default") return
-			if (!(await takeReportingNotice())) return
+			if (!(await claimDefaultNotice())) return
 			// Studio shows notifications but not custom entries.
 			if (IS_ACP_MODE) ctx.ui.notify(NOTICE, "info")
 			else pi.appendEntry("pr-cost-reporting-notice", NOTICE)

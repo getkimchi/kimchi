@@ -1,4 +1,4 @@
-import { trackProviderRequest } from "../request-identity/index.js"
+import { REQUEST_ID_HEADER, trackProviderRequest } from "../request-identity/index.js"
 /**
  * Judge — surviving LLM-as-judge surface after the gate-registry migration.
  *
@@ -103,7 +103,7 @@ export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTok
 			},
 			{
 				apiKey: auth.apiKey,
-				headers: { ...auth.headers, "X-Request-Id": requestId },
+				headers: { ...auth.headers, [REQUEST_ID_HEADER]: requestId },
 				signal: AbortSignal.timeout(45_000),
 				...(maxTokens !== undefined && { maxTokens }),
 			},

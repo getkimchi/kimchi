@@ -6,10 +6,10 @@
  * found by its ID, and `X-Kimchi-PR-Reporting`: `proxy` when the gateway may report their PR costs, otherwise `off`.
  * With `proxy` they also carry the session, parent session and turn headers the gateway uses to group requests into
  * sessions and turns. Telemetry sends the same session headers on main requests when it is on; these never replace
- * them. The request ID and the tag leave the machine only while Cost per PR is enabled.
+ * them. On the completion endpoints Kimchi instruments, the request ID and the tag leave the machine only while Cost per
+ * PR is enabled.
  */
 import { randomUUID } from "node:crypto"
-import type { ProviderHeaders } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { resolveEndpoints } from "../../config.js"
 import type { ModelRequestMetadata } from "../../http/instrument-fetch.js"
@@ -20,7 +20,10 @@ import { PR_REPORTING_HEADER, prReportingHeaderValue } from "../pr-cost-reportin
 import { COST_PER_PR_RESOURCE_ID } from "../pr-cost-reporting/resource.js"
 import { TELEMETRY_PROVIDER_HEADER_NAMES } from "../telemetry/provider-headers.js"
 import { TurnCounter } from "../telemetry/turn-counter.js"
-import { prepareBillingTag } from "./request-tags.js"
+import { BILLING_TAG_PREFIX, prepareBillingTag } from "./request-tags.js"
+
+/** The header that carries a provider request's ID. */
+export const REQUEST_ID_HEADER = "X-Request-Id"
 
 /** The session a provider request belongs to; side calls pin it before awaiting. */
 export interface RequestContext {
@@ -44,16 +47,16 @@ interface TrackedRequest {
 	dispatched: boolean
 	/** The tag this attempt carried, which a retry must not send again. */
 	billingTag?: string
-	/** A main request's provider headers, where request timing reads its ID. */
-	headers?: ProviderHeaders
 }
 
 /** Turn counters of the sessions open in this process, by session ID. */
 const sessionTurns = new Map<string, TurnCounter>()
 /** Requests and their attempts, by request ID. */
 const trackedRequests = new Map<string, TrackedRequest>()
-/** Each session's current main request, by session ID. */
-const activeRequests = new Map<string, string>()
+/** The ID of each session's current main request attempt, by session ID. */
+const activeRequestIds = new Map<string, string>()
+/** Enough recent attempts to match SDK retries; the oldest is forgotten first. */
+const MAX_TRACKED_ATTEMPTS = 1000
 
 /** Snapshot the session so a request made after awaiting still belongs to it, even after a session switch. */
 export function pinRequestContext(ctx: RequestContext): RequestContext {
@@ -74,37 +77,29 @@ function requestCorrelation(ctx: RequestContext): RequestCorrelation {
 }
 
 function remember(requestId: string, request: TrackedRequest): void {
-	// ponytail: retain at most 1000 attempts for SDK retries.
-	if (trackedRequests.size >= 1000) {
+	if (trackedRequests.size >= MAX_TRACKED_ATTEMPTS) {
 		const oldest = trackedRequests.keys().next().value
 		if (oldest) trackedRequests.delete(oldest)
 	}
 	trackedRequests.set(requestId, request)
 }
 
-function track(ctx: RequestContext, headers?: ProviderHeaders): string {
-	const requestId = randomUUID()
-	remember(requestId, {
-		logicalId: requestId,
-		correlation: requestCorrelation(ctx),
-		dispatched: false,
-		...(headers ? { headers } : {}),
-	})
-	return requestId
-}
-
-/** A request ID that finds the request's session again when it is dispatched. Side calls send it as `X-Request-Id`. */
+/** A request ID that finds the request's session again when it is dispatched, sent as {@link REQUEST_ID_HEADER}. */
 export function trackProviderRequest(ctx: RequestContext): string {
-	return track(ctx)
+	const requestId = randomUUID()
+	remember(requestId, { logicalId: requestId, correlation: requestCorrelation(ctx), dispatched: false })
+	return requestId
 }
 
 /** The session's current main request ID, while Cost per PR sends request IDs. */
 export function getActiveRequestId(ctx: RequestContext): string | undefined {
-	return isResourceEnabled(COST_PER_PR_RESOURCE_ID) ? activeRequests.get(ctx.sessionManager.getSessionId()) : undefined
+	return isResourceEnabled(COST_PER_PR_RESOURCE_ID)
+		? activeRequestIds.get(ctx.sessionManager.getSessionId())
+		: undefined
 }
 
 /** Whether a dispatch goes to one of the configured Kimchi gateway endpoints of the request's project. */
-function gatewayRequest(url: string, cwd: string): boolean {
+function isGatewayUrl(url: string, cwd: string): boolean {
 	let target: URL
 	try {
 		target = new URL(url)
@@ -112,16 +107,18 @@ function gatewayRequest(url: string, cwd: string): boolean {
 		return false
 	}
 	if (!["https:", "http:"].includes(target.protocol) || target.username || target.password) return false
-	target.search = ""
-	target.hash = ""
 	try {
 		const endpoints = resolveEndpoints({ cwd })
+		// Origins compare scheme, host and port as URLs mean them: case and default ports do not matter.
 		return [
 			endpoints.llmEndpoint,
 			endpoints.openAiBaseUrl,
 			endpoints.anthropicBaseUrl,
 			endpoints.experimentalOpenAiBaseUrl,
-		].some((base) => target.href.startsWith(`${base.replace(/\/+$/, "")}/`))
+		].some((endpoint) => {
+			const base = new URL(endpoint)
+			return target.origin === base.origin && target.pathname.startsWith(`${base.pathname.replace(/\/+$/, "")}/`)
+		})
 	} catch (error) {
 		debugPRCost("Gateway endpoints unavailable:", error)
 		return false
@@ -132,45 +129,50 @@ function setIfAbsent(headers: Headers, name: string, value: string): void {
 	if (!headers.has(name)) headers.set(name, value)
 }
 
+/** Tell the gateway whether it may report the request's PR costs and, when it may, the session and turn it belongs to. */
+function setGatewayHeaders(headers: Headers, { sessionId, turnIndex, parentSessionId }: RequestCorrelation): void {
+	const value = prReportingHeaderValue()
+	headers.set(PR_REPORTING_HEADER, value)
+	if (value !== "proxy") return
+	setIfAbsent(headers, TELEMETRY_PROVIDER_HEADER_NAMES.sessionId, sessionId)
+	if (turnIndex !== undefined) setIfAbsent(headers, TELEMETRY_PROVIDER_HEADER_NAMES.turnIndex, String(turnIndex))
+	if (parentSessionId) setIfAbsent(headers, TELEMETRY_PROVIDER_HEADER_NAMES.parentSessionId, parentSessionId)
+}
+
+/** Whether a tag is the billing tag an earlier attempt of the same request carried. */
+function isEarlierAttemptTag(request: TrackedRequest, tag: string): boolean {
+	if (!tag.startsWith(BILLING_TAG_PREFIX)) return false
+	const previous = trackedRequests.get(tag.slice(BILLING_TAG_PREFIX.length))
+	return previous?.billingTag === tag && previous.logicalId === request.logicalId
+}
+
+/** Make an attempt the session's current main request when its request is. */
+function followActiveRequest(request: TrackedRequest, requestId: string): void {
+	const { sessionId } = request.correlation
+	const activeId = activeRequestIds.get(sessionId)
+	if (activeId && trackedRequests.get(activeId)?.logicalId === request.logicalId)
+		activeRequestIds.set(sessionId, requestId)
+}
+
 /**
  * Prepare one dispatch of a tracked request, including retries inside provider SDKs: each attempt gets its own ID and
  * tag. Requests tracked elsewhere are left unchanged.
  */
 export function prepareProviderRequest(headers: Headers, url: string, metadata: ModelRequestMetadata): void {
-	const knownId = headers.get("x-request-id")
+	const knownId = headers.get(REQUEST_ID_HEADER)
 	const request = knownId ? trackedRequests.get(knownId) : undefined
 	if (!request) return
 	const requestId = request.dispatched ? randomUUID() : request.logicalId
-	request.dispatched = true
-	const sending = isResourceEnabled(COST_PER_PR_RESOURCE_ID)
-	const gateway = gatewayRequest(url, request.correlation.cwd)
-	const tagging = prepareBillingTag(headers, metadata.bodyTags, requestId, (tag) => {
-		if (!tag.startsWith("kimchi-request:")) return false
-		const previous = trackedRequests.get(tag.slice("kimchi-request:".length))
-		return previous?.billingTag === tag && previous.logicalId === request.logicalId
-	})
-	const billingTag = sending && gateway ? tagging.billingTag : undefined
-	remember(requestId, { ...request, dispatched: true, billingTag })
-	if (sending) headers.set("X-Request-Id", requestId)
-	else headers.delete("X-Request-Id")
-	if (billingTag && tagging.header) headers.set("X-Tags", tagging.header)
-	if (gateway) {
-		const value = prReportingHeaderValue()
-		headers.set(PR_REPORTING_HEADER, value)
-		if (value === "proxy") {
-			const { sessionId, turnIndex, parentSessionId } = request.correlation
-			setIfAbsent(headers, TELEMETRY_PROVIDER_HEADER_NAMES.sessionId, sessionId)
-			if (turnIndex !== undefined) setIfAbsent(headers, TELEMETRY_PROVIDER_HEADER_NAMES.turnIndex, String(turnIndex))
-			if (parentSessionId) setIfAbsent(headers, TELEMETRY_PROVIDER_HEADER_NAMES.parentSessionId, parentSessionId)
-		}
-	}
-	// Request timing reads the main request's ID from its provider headers; move both to this attempt.
-	const { sessionId } = request.correlation
-	const active = activeRequests.get(sessionId)
-	if (active && trackedRequests.get(active)?.logicalId === request.logicalId) {
-		activeRequests.set(sessionId, requestId)
-		if (request.headers) request.headers["X-Request-Id"] = requestId
-	}
+	const sendsRequestId = isResourceEnabled(COST_PER_PR_RESOURCE_ID)
+	const toGateway = isGatewayUrl(url, request.correlation.cwd)
+	const tagged = prepareBillingTag(headers, metadata.bodyTags, requestId, (tag) => isEarlierAttemptTag(request, tag))
+	const billing = sendsRequestId && toGateway ? tagged : undefined
+	remember(requestId, { ...request, dispatched: true, billingTag: billing?.tag })
+	if (sendsRequestId) headers.set(REQUEST_ID_HEADER, requestId)
+	else headers.delete(REQUEST_ID_HEADER)
+	if (billing) headers.set("X-Tags", billing.header)
+	if (toGateway) setGatewayHeaders(headers, request.correlation)
+	followActiveRequest(request, requestId)
 }
 
 /** Gives every main request its identity and counts each session's turns. */
@@ -179,7 +181,7 @@ export default function requestIdentityExtension(pi: ExtensionAPI): void {
 	let turns = new TurnCounter()
 	const release = () => {
 		if (sessionId && sessionTurns.get(sessionId) === turns) sessionTurns.delete(sessionId)
-		if (sessionId) activeRequests.delete(sessionId)
+		if (sessionId) activeRequestIds.delete(sessionId)
 		sessionId = undefined
 	}
 	pi.on("session_start", (_event, ctx) => {
@@ -193,12 +195,12 @@ export default function requestIdentityExtension(pi: ExtensionAPI): void {
 	})
 	pi.on("turn_start", (_event, ctx) => {
 		turns.advanceTurn()
-		activeRequests.delete(ctx.sessionManager.getSessionId())
+		activeRequestIds.delete(ctx.sessionManager.getSessionId())
 	})
 	pi.on("before_provider_headers", (event, ctx) => {
-		const requestId = track(ctx, event.headers)
-		event.headers["X-Request-Id"] = requestId
-		activeRequests.set(ctx.sessionManager.getSessionId(), requestId)
+		const requestId = trackProviderRequest(ctx)
+		event.headers[REQUEST_ID_HEADER] = requestId
+		activeRequestIds.set(ctx.sessionManager.getSessionId(), requestId)
 	})
 	pi.on("session_shutdown", () => {
 		release()
