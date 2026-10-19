@@ -42,7 +42,7 @@ export async function lookupBranchPullRequest(
 							head: `${remote.name.split("/")[0]}:${branch}`,
 							sort: "updated",
 							direction: "desc",
-							per_page: "1",
+							per_page: "100",
 						}
 					: {
 							scope: "all",
@@ -60,13 +60,14 @@ export async function lookupBranchPullRequest(
 					? await pages(remote, url, signal, deadline)
 					: (await requestJSON(remote, url, signal, deadline)).value
 			if (!Array.isArray(values)) throw new LookupError(`${label(remote)} returned invalid pull requests.`)
-			const value =
+			const checkedAt = new Date().toISOString()
+			const pulls = (
 				remote.provider === "gitlab"
-					? values.find(
+					? values.filter(
 							(value) => object(value) && value.source_project_id === remote.id && value.source_branch === branch,
 						)
-					: values[0]
-			if (value !== undefined) {
+					: values
+			).map((value) => {
 				const head = object(value)
 					? remote.provider === "gitlab"
 						? value.source_branch
@@ -75,7 +76,21 @@ export async function lookupBranchPullRequest(
 							: undefined
 					: undefined
 				if (head !== branch) throw new LookupError(`${label(remote)} returned a pull request for a different branch.`)
-				pull = pullRequest(value, remote, new Date().toISOString())
+				return pullRequest(value, remote, checkedAt)
+			})
+			pull = pulls.find((item) => item.state === "open")
+			if (!pull && pulls.length) {
+				// A closed or merged PR can belong to an earlier branch with the same name; show it only when this
+				// branch once pointed at its head commit.
+				const history = await command(
+					"git",
+					["-C", cwd, "reflog", "show", "-n", "1000", "--format=%H", `refs/heads/${branch}`, "--"],
+					cwd,
+					signal,
+					deadline,
+				)
+				const held = new Set(history?.split("\n"))
+				pull = pulls.find((item) => held.has(item.headSha))
 			}
 		}
 	} catch (error) {

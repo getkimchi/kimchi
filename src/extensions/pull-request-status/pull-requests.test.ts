@@ -70,6 +70,13 @@ function remote(value = "https://github.com/team/repo.git", branch = "feature", 
 		throw new Error("Unexpected Git command")
 	})
 }
+/** Answers `git reflog` for the checked-out branch with these commits, newest first. */
+function reflog(...shas: string[]): void {
+	const git = cli.git.getMockImplementation()
+	cli.git.mockImplementation(async (args, options) =>
+		args.includes("reflog") ? shas.join("\n") : git?.(args, options),
+	)
+}
 function seed(overrides: Record<string, unknown> = {}, transitions = false): void {
 	const source = join(agentDir, "work-attribution", ...(transitions ? ["transitions"] : []))
 	mkdirSync(source, { recursive: true })
@@ -642,6 +649,68 @@ describe("repository and branch selection", () => {
 		const result = await lookupBranchPullRequest(repository, new AbortController().signal)
 		expect(result).toMatchObject({ branch: "feature", pullRequest: { provider, number: 7, state: "open" } })
 		expect(existsSync(agentDir)).toBe(false)
+	})
+	describe.each(providers)("closed and merged %s branch PRs", (provider) => {
+		const other = "b".repeat(40)
+		const closed = (number: number, head: string) =>
+			provider === "github"
+				? pull(number, { state: "closed", closed_at: "2026-10-01T12:00:00Z", head: { sha: head, ref: "feature" } })
+				: mr(number, { state: "closed", closed_at: "2026-10-01T12:00:00Z", sha: head })
+		const merged = (number: number, head: string) =>
+			provider === "github"
+				? pull(number, {
+						state: "closed",
+						merged_at: "2026-10-01T12:00:00Z",
+						closed_at: "2026-10-01T12:00:00Z",
+						merge_commit_sha: "f".repeat(40),
+						head: { sha: head, ref: "feature" },
+					})
+				: mr(number, {
+						state: "merged",
+						merged_at: "2026-10-01T12:00:00Z",
+						merge_commit_sha: "f".repeat(40),
+						sha: head,
+					})
+		const reflogCalls = () => cli.git.mock.calls.filter(([args]) => args.includes("reflog")).map(([args]) => args)
+
+		beforeEach(() => useProvider(provider))
+
+		it("prefers the open PR over a newer closed one without reading the reflog", async () => {
+			replies((url) => {
+				if (provider === "github") expect(url.searchParams.get("per_page")).toBe("100")
+				return [closed(8, other), provider === "github" ? pull() : mr()]
+			})
+			expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toMatchObject({
+				pullRequest: { number: 7, state: "open" },
+			})
+			expect(reflogCalls()).toEqual([])
+		})
+		it("hides a closed PR from an earlier branch with the same name", async () => {
+			reflog("c".repeat(40), "d".repeat(40))
+			replies(() => [closed(8, other)])
+			expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toEqual({
+				branch: "feature",
+				pullRequest: undefined,
+			})
+			expect(reflogCalls()).toEqual([
+				["-C", repository, "reflog", "show", "-n", "1000", "--format=%H", "refs/heads/feature", "--"],
+			])
+		})
+		it("shows the newest merged PR whose head this branch held", async () => {
+			reflog("c".repeat(40), sha)
+			replies(() => [closed(9, other), merged(7, sha), closed(6, sha)])
+			expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toMatchObject({
+				pullRequest: { number: 7, state: "merged", headSha: sha },
+			})
+		})
+		it("hides a merged PR when Git has no reflog for the branch", async () => {
+			replies(() => [merged(7, sha)])
+			expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toEqual({
+				branch: "feature",
+				pullRequest: undefined,
+			})
+			expect(reflogCalls()).toHaveLength(1)
+		})
 	})
 	it.each(providers)("never trims the checked-out %s branch into another branch's PR", async (provider) => {
 		useProvider(provider)
