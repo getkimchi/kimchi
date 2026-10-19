@@ -5735,34 +5735,54 @@ describe("generated artifacts (live turns)", () => {
 		rmSync(tmpDir, { recursive: true, force: true })
 	})
 
-	const assistantMessageEnd = (text: string): AgentSessionEvent => {
-		const message: AssistantMessage = {
-			role: "assistant",
-			content: [{ type: "text", text }],
-			api: "anthropic-messages",
-			provider: "anthropic",
-			model: "claude",
-			usage: {
-				input: 1,
-				output: 1,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 2,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	// Typed message factory: `content` overrides the default single-text-block
+	// body (tool-only and thinking-bearing fixtures pass theirs directly).
+	const makeAssistantMessage = (content?: unknown[]): AssistantMessage => ({
+		role: "assistant",
+		content: (content ?? [{ type: "text", text: "" }]) as AssistantMessage["content"],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude",
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: 0,
+	})
+
+	const assistantMessageEnd = (text: string, content?: unknown[]): AgentSessionEvent => ({
+		type: "message_end",
+		message: makeAssistantMessage(content ?? [{ type: "text", text }]),
+	})
+
+	// Emits one text_delta/thinking_delta on the given content index (mirrors
+	// the model-attribution suite's emitDelta helper).
+	const emitDelta = (type: "text_delta" | "thinking_delta", contentIndex: number, delta: string): void => {
+		fake.emit({
+			type: "message_update",
+			assistantMessageEvent: {
+				type,
+				delta,
+				contentIndex,
+				partial: {} as unknown as AssistantMessage,
 			},
-			stopReason: "stop",
-			timestamp: 0,
-		}
-		return { type: "message_end", message }
+			message: makeAssistantMessage(),
+		})
 	}
 
-	// Chunks carrying an artifacts payload, narrowed to messageId + artifacts.
+	// Chunks carrying an artifacts payload, narrowed to messageId + the full
+	// kimchi.dev meta blob (tests assert both artifacts and merged fields).
 	const artifactChunks = () =>
 		updates.flatMap((u) => {
 			if (u.update.sessionUpdate !== "agent_message_chunk") return []
-			const meta = (u.update as { _meta?: { "kimchi.dev"?: { artifacts?: unknown[] } } })._meta?.["kimchi.dev"]
+			const meta = (u.update as { _meta?: { "kimchi.dev"?: Record<string, unknown> } })._meta?.["kimchi.dev"]
 			if (!Array.isArray(meta?.artifacts)) return []
-			return [{ messageId: u.update.messageId, artifacts: meta.artifacts }]
+			return [{ messageId: u.update.messageId, meta }]
 		})
 
 	it("attaches artifacts meta to the assistant message's block id for a write tool call", async () => {
@@ -5791,8 +5811,7 @@ describe("generated artifacts (live turns)", () => {
 		expect(res.stopReason).toBe("end_turn")
 
 		const chunks = artifactChunks()
-		expect(chunks).toHaveLength(1)
-		expect(chunks[0].artifacts).toEqual([
+		expect(chunks[0].meta.artifacts).toEqual([
 			{
 				path: target,
 				name: "slides.pptx",
@@ -5829,19 +5848,16 @@ describe("generated artifacts (live turns)", () => {
 
 		const chunks = artifactChunks()
 		expect(chunks).toHaveLength(1)
-		expect((chunks[0].artifacts as Array<{ path: string }>).map((a) => a.path)).toEqual([target])
+		expect((chunks[0].meta.artifacts as Array<{ path: string }>).map((a) => a.path)).toEqual([target])
 	})
 
-	// A message with only toolCall blocks never allocates content block ids,
-	// so flushArtifacts at its message_end is a no-op; the turn-scoped
-	// artifacts surface at finalizeTurn on a fresh `km.` block id.
-	it("flushes artifacts of a tool-only last message at turn end on a fresh block id", async () => {
+	// A tool-only last message has no content block ids to attach to, and we
+	// deliberately do NOT invent a fresh `km.` id at turn end: a fresh id has
+	// no persisted counterpart, so session reload could not reproduce the
+	// chip — attaching only to real block ids keeps live and replay identical.
+	it("drops artifacts of a tool-only LAST message rather than emitting on a fresh id", async () => {
 		const target = join(tmpDir, "deck.pptx")
 		writeFileSync(target, "pptx")
-		const toolOnlyEnd = assistantMessageEnd("")
-		;(toolOnlyEnd as { message: AssistantMessage }).message.content = [
-			{ type: "toolCall", id: "tc-only", name: "write", arguments: { path: target, content: "pptx" } },
-		]
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
 			fake.emit({
@@ -5857,17 +5873,17 @@ describe("generated artifacts (live turns)", () => {
 				result: { content: [{ type: "text", text: "done" }] },
 				isError: false,
 			})
-			fake.emit(toolOnlyEnd)
+			fake.emit(
+				assistantMessageEnd("", [
+					{ type: "toolCall", id: "tc-only", name: "write", arguments: { path: target, content: "pptx" } },
+				]),
+			)
 			fake.emit(agentEnd())
 		}
 
 		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
 		expect(res.stopReason).toBe("end_turn")
-
-		const chunks = artifactChunks()
-		expect(chunks).toHaveLength(1)
-		expect(chunks[0].messageId).toMatch(/^km\.\d+$/)
-		expect((chunks[0].artifacts as Array<{ path: string }>).map((a) => a.path)).toEqual([target])
+		expect(artifactChunks()).toEqual([])
 	})
 
 	// A mid-turn tool-only message leaves its artifacts in the turn context;
@@ -5876,10 +5892,6 @@ describe("generated artifacts (live turns)", () => {
 	it("defers artifacts from a tool-only message to the next content-bearing message", async () => {
 		const target = join(tmpDir, "notes.md")
 		writeFileSync(target, "md")
-		const toolOnlyEnd = assistantMessageEnd("")
-		;(toolOnlyEnd as { message: AssistantMessage }).message.content = [
-			{ type: "toolCall", id: "tc-mid", name: "write", arguments: { path: target, content: "md" } },
-		]
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
 			fake.emit({
@@ -5895,7 +5907,11 @@ describe("generated artifacts (live turns)", () => {
 				result: { content: [{ type: "text", text: "done" }] },
 				isError: false,
 			})
-			fake.emit(toolOnlyEnd)
+			fake.emit(
+				assistantMessageEnd("", [
+					{ type: "toolCall", id: "tc-mid", name: "write", arguments: { path: target, content: "md" } },
+				]),
+			)
 			fake.emit(assistantMessageEnd("All done."))
 			fake.emit(agentEnd())
 		}
@@ -5907,7 +5923,85 @@ describe("generated artifacts (live turns)", () => {
 		expect(chunks).toHaveLength(1)
 		const textChunk = messageChunks(updates).find((c) => c.text === "All done.")
 		expect(chunks[0].messageId).toBe(textChunk?.messageId)
-		expect((chunks[0].artifacts as Array<{ path: string }>).map((a) => a.path)).toEqual([target])
+		expect((chunks[0].meta.artifacts as Array<{ path: string }>).map((a) => a.path)).toEqual([target])
+	})
+
+	// The client's _meta rule is last-wins on the whole blob per messageId, so
+	// the artifacts payload must MERGE the attribution the block already
+	// carried — otherwise the chip chunk would wipe the model label.
+	it("merges the block's model attribution into the artifacts chunk meta", async () => {
+		const target = join(tmpDir, "slides.pptx")
+		writeFileSync(target, "pptx")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitDelta("text_delta", 0, "Here.")
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-merge",
+				toolName: "write",
+				args: { path: target, content: "pptx" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-merge",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "done" }] },
+				isError: false,
+			})
+			fake.emit(assistantMessageEnd("Here."))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const chunks = artifactChunks()
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0].meta).toMatchObject({
+			modelId: expect.stringContaining("claude"),
+			requestedModelId: expect.stringContaining("claude"),
+		})
+	})
+
+	// A message whose last CONTENT block is thinking must not receive an
+	// agent_message_chunk on the thinking block id — kind-keyed clients would
+	// render a spurious empty message. Attach to the text block instead.
+	it("skips thinking-kind block ids when attaching the artifacts chunk", async () => {
+		const target = join(tmpDir, "chart.png")
+		writeFileSync(target, "png")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitDelta("text_delta", 0, "The chart.")
+			emitDelta("thinking_delta", 1, "looks good")
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-think",
+				toolName: "write",
+				args: { path: target, content: "png" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-think",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "done" }] },
+				isError: false,
+			})
+			fake.emit(
+				assistantMessageEnd("", [
+					{ type: "text", text: "The chart." },
+					{ type: "thinking", thinking: "looks good" },
+				]),
+			)
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const chunks = artifactChunks()
+		expect(chunks).toHaveLength(1)
+		const textChunk = messageChunks(updates).find((c) => c.text === "The chart.")
+		expect(chunks[0].messageId).toBe(textChunk?.messageId)
 	})
 
 	it("emits no artifacts meta when the turn produced none", async () => {

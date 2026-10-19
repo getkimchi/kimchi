@@ -169,7 +169,7 @@ import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
-import { artifactsFromToolCall, resolveToolPath } from "./tool-calls/artifacts.js"
+import { type Artifact, artifactsFromToolCall, resolveToolPath } from "./tool-calls/artifacts.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
 import {
 	buildPathTrustInfo,
@@ -1640,8 +1640,8 @@ export class KimchiAcpAgent implements Agent {
 					})
 				}
 				// Artifact chips attach AFTER any attribution correction so the
-				// client's last-wins _meta handling sees artifacts last.
-				this.flushArtifacts(sessionId, entry, turn)
+				// client's last-wins _meta handling sees the merged payload last.
+				this.flushArtifacts(sessionId, entry, turn, msg.content)
 				const usage = msg.usage
 				if (usage) {
 					updateTurnUsage(turn, usage)
@@ -2409,29 +2409,70 @@ export class KimchiAcpAgent implements Agent {
 	 * Emit collected turn artifacts as `_meta["kimchi.dev"].artifacts` on a
 	 * trailing zero-length agent_message_chunk — the model-attribution
 	 * correction precedent: content-append is a no-op, the client's last-wins
-	 * _meta rule applies. Attached to the message's last block id (Map
-	 * insertion order); a message that produced no content blocks (tool-only)
-	 * leaves the artifacts in place for a later message_end / finalizeTurn.
+	 * _meta rule applies. Attached to the message's last non-thinking block
+	 * id; a message that produced no eligible blocks (tool-only, or
+	 * thinking-only) leaves the artifacts in place for a later message_end.
+	 *
+	 * Artifacts are NEVER emitted on a fresh block id: a `km.N` the client's
+	 * history never saw has no persisted counterpart, so replay could not
+	 * reproduce the chip — attaching only to real block ids keeps live and
+	 * replay in lockstep. Leftover artifacts at turn end are dropped.
 	 */
-	private flushArtifacts(sessionId: string, entry: SessionRecord, turn: TurnContext): void {
+	private flushArtifacts(
+		sessionId: string,
+		entry: SessionRecord,
+		turn: TurnContext,
+		content: AssistantMessage["content"],
+	): void {
 		if (turn.artifacts.size === 0) return
 		// contentIndexToBlockId is cleared on message_start (and agent_start),
-		// so at message_end it maps exactly this message's content blocks. The
-		// LAST value in insertion order is the last block to emit — blocks are
-		// allocated as their first delta/streamed text arrives, matching block
-		// order — which is the id the client keys the message on.
+		// so at message_end it maps exactly this message's content blocks; its
+		// keys are content indexes, matching the final message's content
+		// array. The LAST inserted value is the last block to emit — blocks are
+		// allocated as their first delta arrives, matching block order.
+		//
+		// ...but skip thinking-kind block ids: an agent_message_chunk attached
+		// to a thinking block id renders a spurious empty agent message on
+		// kind-keyed clients (the same reason the attribution-correction loop
+		// above matches its update kind to the block type).
 		let messageId: string | undefined
-		for (const id of entry.contentIndexToBlockId.values()) messageId = id
+		for (const [contentIndex, blockId] of entry.contentIndexToBlockId) {
+			const blockKind = Array.isArray(content) ? content[contentIndex]?.type : undefined
+			if (blockKind === "thinking") continue
+			messageId = blockId
+		}
 		if (messageId === undefined) return
 		const artifacts = [...turn.artifacts.values()]
 		turn.artifacts.clear()
+		this.sendArtifactsChunk(sessionId, entry.emittedModelMeta, messageId, artifacts)
+	}
+
+	/**
+	 * The ONE wire shape for artifact chips — live (flushArtifacts) and
+	 * replay both route through here so the two paths can't drift: a
+	 * trailing zero-length agent_message_chunk with
+	 * `_meta["kimchi.dev"].artifacts`.
+	 *
+	 * The attribution already emitted for the messageId is merged in: the
+	 * client's _meta rule is last-wins on the whole blob per messageId
+	 * (docs/acp-model-attribution.md), so an artifacts-only payload would
+	 * WIPE any attribution this block just carried (including a correction
+	 * emitted moments earlier).
+	 */
+	private sendArtifactsChunk(
+		sessionId: string,
+		seenModelMeta: Map<string, ModelAttribution>,
+		messageId: string,
+		artifacts: Artifact[],
+	): void {
+		const attribution = seenModelMeta.get(messageId)
 		this.send({
 			sessionId,
 			update: {
 				sessionUpdate: "agent_message_chunk",
 				content: { type: "text", text: "" },
 				messageId,
-				_meta: kimchiDevMetaOf({ artifacts }),
+				_meta: kimchiDevMetaOf({ ...(attribution ?? {}), artifacts }),
 			},
 		})
 	}
@@ -2439,25 +2480,7 @@ export class KimchiAcpAgent implements Agent {
 	private finalizeTurn(entry: SessionRecord, stopReason: PromptResponse["stopReason"]): void {
 		const turn = entry.turn
 		if (!turn) return
-		// Clear the record first: if anything below (send, emitUsageUpdate)
-		// throws synchronously, the session must not be left wedged with a
-		// stale turn reference.
 		entry.turn = undefined
-		// Artifacts from a tool-only tail (a message that produced no content
-		// blocks never hit flushArtifacts) still surface before the turn closes.
-		const artifacts = [...turn.artifacts.values()]
-		turn.artifacts.clear()
-		if (artifacts.length > 0) {
-			this.send({
-				sessionId: entry.session.sessionId,
-				update: {
-					sessionUpdate: "agent_message_chunk",
-					content: { type: "text", text: "" },
-					messageId: `km.${entry.nextBlockId++}`,
-					_meta: kimchiDevMetaOf({ artifacts }),
-				},
-			})
-		}
 		try {
 			this.emitUsageUpdate(entry.session, turn.usage)
 		} finally {
