@@ -54,4 +54,20 @@ describe("requires-resource bundled skill gating", () => {
 		expect(bundled?.dir).toBeDefined()
 		expect(readdirSync(bundled?.dir ?? "").sort()).toEqual(["ungated"])
 	})
+
+	it("toggle flips reuse the cached visible dir instead of making new temp copies", () => {
+		const bundledDir = makeBundledDir()
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ resources: { "skills.pptx": false } }))
+		const first = resolveSkillRoots({ cwd: "/nonexistent-cwd", bundledDir }).find((r) => r.kind === "bundled")
+		expect(readdirSync(first?.dir ?? "").sort()).toEqual(["ungated"])
+
+		// Same visibility set again: the cached temp dir is reused (no second copy).
+		const again = resolveSkillRoots({ cwd: "/nonexistent-cwd", bundledDir }).find((r) => r.kind === "bundled")
+		expect(again?.dir).toBe(first?.dir)
+
+		// Back to fully visible: the bundled dir itself is used again (no temp).
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({}))
+		const on = resolveSkillRoots({ cwd: "/nonexistent-cwd", bundledDir }).find((r) => r.kind === "bundled")
+		expect(on?.dir).toBe(bundledDir)
+	})
 })
