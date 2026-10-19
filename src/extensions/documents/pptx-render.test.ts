@@ -1,11 +1,13 @@
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import type { DocumentError } from "./model.js"
 import { type RenderDeps, renderPptx } from "./pptx-render.js"
 
-const OUT = "/tmp/fake-out"
-const INPUT = "/decks/kimchi.pptx"
-const PDF = `${OUT}/kimchi.pdf`
-const PREFIX = `${OUT}/kimchi`
+const OUT = join(tmpdir(), "kimchi-render-test-fake-out")
+const INPUT = join(tmpdir(), "decks", "kimchi.pptx")
+const PDF = join(OUT, "kimchi.pdf")
+const PREFIX = join(OUT, "kimchi")
 
 interface RunResult {
 	code: number
