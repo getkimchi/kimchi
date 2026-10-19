@@ -441,10 +441,17 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		// text no longer matches the input event's) never text-match and are
 		// cleared by the agent_end reset below.
 		const recent = recentImmediateInputs.get(sessionId) ?? []
-		const recentIndex = recent.lastIndexOf(text)
+		// First match, not last: idle and steered prompts are delivered in
+		// arrival order, so with repeated texts the delivered message is the
+		// oldest matching entry.
+		const recentIndex = recent.indexOf(text)
 		const fromImmediateInput = recentIndex !== -1
 		if (fromImmediateInput) {
-			recent.splice(recentIndex, 1)
+			// Drop the match and every older entry: an entry older than the one
+			// just delivered belongs to an input that will never be delivered
+			// (swallowed by a later input handler, e.g. a cancelled vision gate)
+			// and would otherwise block the positional fallback below.
+			recent.splice(0, recentIndex + 1)
 			recentImmediateInputs.set(sessionId, recent)
 		}
 		const queue = deferredCheckinInputs.get(sessionId)

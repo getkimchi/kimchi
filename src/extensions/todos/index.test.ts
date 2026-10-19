@@ -1092,6 +1092,90 @@ describe("todo check-in gate", () => {
 		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
 	})
 
+	it("a swallowed input does not block a later rewritten follow-up", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		// A later input handler swallows this input ({ action: "handled" }, e.g. a
+		// cancelled vision gate): it advances at receipt but no message_start follows.
+		await harness.fire("input", { type: "input", text: "cancelled paste", source: "interactive" }, ctx)
+		// The next prompt is delivered and text-matches; the older swallowed entry
+		// can never be delivered, so it is dropped with the match.
+		await harness.fire("input", { type: "input", text: "Start", source: "interactive" }, ctx)
+		await harness.fire("message_start", { type: "message_start", message: { role: "user", content: "Start" } }, ctx)
+		expect(getInputRevision("session")).toBe(2)
+		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 2,
+		})
+
+		// A rewritten follow-up in the same run reaches the positional fallback.
+		await harness.fire(
+			"input",
+			{ type: "input", text: "/skill:review", source: "interactive", streamingBehavior: "followUp" },
+			ctx,
+		)
+		await harness.fire(
+			"message_start",
+			{ type: "message_start", message: { role: "user", content: "Review skill: full instructions" } },
+			ctx,
+		)
+		expect(getInputRevision("session")).toBe(3)
+		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
+	})
+
+	it("repeated steer texts are consumed one delivery at a time", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+		await harness.fire("input", { type: "input", text: "Start", source: "interactive" }, ctx)
+		await harness.fire("message_start", { type: "message_start", message: { role: "user", content: "Start" } }, ctx)
+
+		// A rewritten follow-up is queued, then two identical steers arrive; each
+		// advances at receipt.
+		await harness.fire(
+			"input",
+			{ type: "input", text: "/skill:review", source: "interactive", streamingBehavior: "followUp" },
+			ctx,
+		)
+		for (let i = 0; i < 2; i++) {
+			await harness.fire(
+				"input",
+				{ type: "input", text: "continue", source: "interactive", streamingBehavior: "steer" },
+				ctx,
+			)
+		}
+		expect(getInputRevision("session")).toBe(3)
+
+		// Each delivery consumes only its own entry (the oldest match): the second
+		// steer must not be mistaken for the queued follow-up.
+		for (let i = 0; i < 2; i++) {
+			await harness.fire(
+				"message_start",
+				{ type: "message_start", message: { role: "user", content: "continue" } },
+				ctx,
+			)
+		}
+		expect(getInputRevision("session")).toBe(3)
+
+		// The follow-up still arms on its own delivery.
+		await harness.fire(
+			"message_start",
+			{ type: "message_start", message: { role: "user", content: "Review skill: full instructions" } },
+			ctx,
+		)
+		expect(getInputRevision("session")).toBe(4)
+	})
+
 	it("read-only tools and questionnaire pass while gated", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
