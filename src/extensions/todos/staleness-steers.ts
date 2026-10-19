@@ -192,8 +192,7 @@ interface ScopeBands {
  * to that scope) so the next epoch can fire again; `clearSession` drops all
  * bands for a session (replay, shutdown). Only steers whose `send` callback
  * reports delivery are recorded — disabled or unsent steers do not count as
- * delivered, so the gate's eligibility check (staleness escalation) cannot
- * be satisfied by a suppressed reminder.
+ * delivered.
  *
  * Used by the ferment step-stall steer (one-shot per epoch); the recurring
  * staleness reminders use `createIntervalSteerTracker` above.
@@ -209,9 +208,6 @@ export function createThresholdSteerTracker(): {
 	}): void
 	reset(sessionId: string, scopeKey: string): void
 	clearSession(sessionId: string): void
-	/** Highest successfully delivered threshold for the scope in this
-	 *  write-epoch (undefined when none delivered). */
-	highestDelivered(sessionId: string, scopeKey: string): number | undefined
 	clear(): void
 } {
 	const bandsBySession = new Map<string, Map<string, ScopeBands>>()
@@ -239,11 +235,6 @@ export function createThresholdSteerTracker(): {
 		},
 		clearSession(sessionId) {
 			bandsBySession.delete(sessionId)
-		},
-		highestDelivered(sessionId, scopeKey) {
-			const fired = bandsBySession.get(sessionId)?.get(scopeKey)?.fired
-			if (!fired || fired.size === 0) return undefined
-			return Math.max(...fired)
 		},
 		clear() {
 			bandsBySession.clear()

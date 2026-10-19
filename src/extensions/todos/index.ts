@@ -6,6 +6,7 @@ import { FERMENT_V2_CUSTOM_ENTRY_TYPE } from "../ferment-v2/constants.js"
 import { restoreFermentV2 } from "../ferment-v2/reducer.js"
 import { FERMENT_V2_STATUS } from "../ferment-v2/types.js"
 import { isAwaitingUserAnswer } from "../orchestration/continuation-nudge.js"
+import { isReadOnlyTool } from "../permissions/taxonomy.js"
 import { emitSteerFired, emitSteerOutcome, isSteerDisabled } from "../steer-events.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import {
@@ -20,6 +21,7 @@ import {
 	getRelevantCheckinScopes,
 	handleCheckinReplay,
 	hasStalenessGateOpened,
+	isCheckinPending,
 	isScopeCheckedIn,
 	markCheckinPending,
 	markStalenessGateOpened,
@@ -118,6 +120,12 @@ export const EARLY_NUDGE_OUTCOME_WINDOW = 3
 // Early-nudge outcome state: per-session work-call count captured when the
 // nudge fired. Cleared on todo write (complied) or window expiry (repeated).
 const earlyNudgeFiredAt = new Map<string, number>()
+
+/** Latest check-in instruction fire per session, so outcome events can be
+ *  attributed back to the opening that caused them (the instruction fires
+ *  carry no outcome watcher of their own — the outcome is emitted when the
+ *  check actually closes). */
+const checkinSteerIds = new Map<string, string>()
 
 function markEarlyNudgeFired(sessionId: string, workCallCount: number): void {
 	earlyNudgeFiredAt.set(sessionId, workCallCount)
@@ -232,19 +240,15 @@ function armPlanSubmissionCheckin(pi: ExtensionAPI, sessionId: string, interacti
 	// Already pending (e.g. user input arrived during the review, or the
 	// staleness escalation opened earlier) — its own steer/block reason
 	// carries the instructions; don't queue a duplicate message.
-	if (
-		getPendingCheckins(sessionId).some((check) => getTodoScopeKey(check.scope) === getTodoScopeKey(GLOBAL_TODO_SCOPE))
-	)
-		return
+	if (isCheckinPending(GLOBAL_TODO_SCOPE, sessionId)) return
 	const revision = getInputRevision(sessionId)
 	markCheckinPending([GLOBAL_TODO_SCOPE], sessionId, revision, "plan_submission")
-	sendHiddenSteer(
-		pi,
-		TODO_CHECKIN_CUSTOM_TYPE,
-		planSubmissionCheckinText(sessionId, revision),
-		{ reason: "plan_submission", inputRevision: revision },
-		{ steerKind: "todo_checkin", steerReason: "plan_submission", interactive, sessionId },
-	)
+	sendHiddenSteer(pi, TODO_CHECKIN_CUSTOM_TYPE, planSubmissionCheckinText(sessionId, revision), {
+		reason: "plan_submission",
+		inputRevision: revision,
+	})
+	const steerId = emitSteerFired(pi, "todo_checkin", "plan_submission", { interactive, sessionId })
+	if (steerId) checkinSteerIds.set(sessionId, steerId)
 }
 
 function hiddenTodoMessage(text: string) {
@@ -285,6 +289,22 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	// the same scope — writes to one list never silence pressure on another.
 	const stalenessTracker = createIntervalSteerTracker()
 
+	// A queued follow-up (streamingBehavior "followUp") is delivered only
+	// after the current run ends. Arming the check at receipt would block
+	// work against a direction the model cannot see yet — and a blind
+	// confirmation would consume the revision before the message lands. The
+	// texts below are delivered (message_start) in queue order.
+	const deferredCheckinInputs = new Map<string, string[]>()
+
+	/** Reset one list's staleness bookkeeping — epoch, counter, and reminder
+	 *  schedule. A write or successful confirmation to a list re-arms its
+	 *  pressure; other lists keep accumulating. */
+	const resetScopeStaleness = (scope: TodoScope, sessionId: string): void => {
+		resetScopeEpoch(scope, sessionId)
+		resetToolCallsSinceTodoWrite(scope, sessionId)
+		stalenessTracker.reset(sessionId, getTodoScopeKey(scope))
+	}
+
 	function setSessionContext(sessionId: string, ctx: ExtensionContext): void {
 		_activeSessionContexts.set(sessionId, ctx)
 	}
@@ -310,11 +330,41 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		clearToolCallsSinceTodoWriteForSession(sessionId)
 		stalenessTracker.clearSession(sessionId)
 		clearScopeReconciliations(sessionId)
+		deferredCheckinInputs.delete(sessionId)
 		// Replay rebuilds gate state from the restored lists: relevant
 		// unfinished lists require reconciliation before resumed work.
 		// Historical messages are not fresh input (the input revision is
 		// not advanced).
 		handleCheckinReplay(sessionId)
+		syncTodoWidget(ctx)
+	}
+
+	const deliverGenuineInput = (ctx: ExtensionContext) => {
+		const sessionId = ctx.sessionManager.getSessionId()
+		const revision = advanceInputRevision(sessionId)
+		// Publish the effective enforcement state first: a release while
+		// checks are pending must stop surfaces from showing a pause, while
+		// preserving the unreconciled revisions for re-enablement.
+		const available = isCheckinEnforcementAvailable(pi)
+		setCheckinEnforcementActive(sessionId, available)
+		// Routine request-boundary check: new input may change the course of
+		// action, so relevant unfinished lists require reconciliation before
+		// further work. Existing checks and staleness are preserved — a new
+		// message never counts as reconciliation by itself.
+		if (!available) return
+		markCheckinPending(getRelevantCheckinScopes(sessionId), sessionId, revision)
+		// One reconciliation instruction per received input revision. The
+		// fire is emitted directly with no outcome watcher: the outcome is
+		// attributed when the check actually closes, carrying this steer_id.
+		const pending = getPendingCheckins(sessionId)
+		if (pending.length > 0) {
+			sendHiddenSteer(pi, TODO_CHECKIN_CUSTOM_TYPE, checkinInstructionText(pending, sessionId, revision), {
+				reason: "user_input",
+				inputRevision: revision,
+			})
+			const steerId = emitSteerFired(pi, "todo_checkin", "checkin", { interactive: ctx.hasUI, sessionId })
+			if (steerId) checkinSteerIds.set(sessionId, steerId)
+		}
 		syncTodoWidget(ctx)
 	}
 
@@ -328,30 +378,33 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	// real input re-arms the check legitimately.
 	pi.on("input", (event, ctx) => {
 		if (event.source === "extension") return
-		const sessionId = ctx.sessionManager.getSessionId()
-		const revision = advanceInputRevision(sessionId)
-		// Publish the effective enforcement state first: a release while
-		// checks are pending must stop surfaces from showing a pause, while
-		// preserving the unreconciled revisions for re-enablement.
-		setCheckinEnforcementActive(sessionId, isCheckinEnforcementAvailable(pi))
-		// Routine request-boundary check: new input may change the course of
-		// action, so relevant unfinished lists require reconciliation before
-		// further work. Existing checks and staleness are preserved — a new
-		// message never counts as reconciliation by itself.
-		if (!isCheckinEnforcementAvailable(pi)) return
-		markCheckinPending(getRelevantCheckinScopes(sessionId), sessionId, revision)
-		// One reconciliation instruction per accepted input revision.
-		const pending = getPendingCheckins(sessionId)
-		if (pending.length > 0) {
-			sendHiddenSteer(
-				pi,
-				TODO_CHECKIN_CUSTOM_TYPE,
-				checkinInstructionText(pending, sessionId, revision),
-				{ reason: "user_input", inputRevision: revision },
-				{ steerKind: "todo_checkin", steerReason: "checkin", interactive: ctx.hasUI, sessionId },
-			)
+		// Follow-ups are queued until the current run ends: defer the revision
+		// advance and check until the message is actually delivered.
+		if (event.streamingBehavior === "followUp") {
+			const sessionId = ctx.sessionManager.getSessionId()
+			deferredCheckinInputs.set(sessionId, [...(deferredCheckinInputs.get(sessionId) ?? []), event.text])
+			return
 		}
-		syncTodoWidget(ctx)
+		deliverGenuineInput(ctx)
+	})
+
+	// Delivery point for queued follow-ups: the user message entering
+	// history. Matched by text (the same rule upstream's queue drain uses);
+	// steered and idle inputs already advanced at receipt, so their
+	// message_start finds an empty queue and is a no-op.
+	pi.on("message_start", (event, ctx) => {
+		if (event.message.role !== "user") return
+		const sessionId = ctx.sessionManager.getSessionId()
+		const queue = deferredCheckinInputs.get(sessionId)
+		if (!queue || queue.length === 0) return
+		const content = event.message.content
+		const text =
+			typeof content === "string" ? content : content.map((part) => (part.type === "text" ? part.text : "")).join("")
+		const index = queue.indexOf(text)
+		if (index === -1) return
+		queue.splice(index, 1)
+		if (queue.length === 0) deferredCheckinInputs.delete(sessionId)
+		deliverGenuineInput(ctx)
 	})
 
 	// Work-tool admission gate. Only reconciliation tools (todo writes,
@@ -375,6 +428,13 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		// confirm_todos carries its own revision validation and is never a
 		// blocked "work tool" while the gate is open.
 		if (toolName === CONFIRM_TODOS_TOOL_NAME) return { block: false }
+
+		// Read-only tools (including questionnaire) pass while gated: they
+		// cannot make the list staler, and the model may need to inspect state
+		// or ask the user a clarifying question in order to reconcile against
+		// the latest direction. The taxonomy is the same one permission modes
+		// use — one source of truth for "read-only".
+		if (isReadOnlyTool(toolName)) return { block: false }
 
 		// Prerequisites are rechecked on enforcement: resource disablement,
 		// the kill switch, or missing reconciliation tools release the gate.
@@ -432,19 +492,22 @@ export default function todosExtension(pi: ExtensionAPI): void {
 			) {
 				recordScopeReconciliation(details.scope, emitterSessionId, context.inputRevision)
 				if (reconcileCheckinScope(details.scope, emitterSessionId, context.inputRevision)) {
+					// The opening's outcome is attributed here — the instruction
+					// fire carries no outcome watcher of its own.
+					const steerId = checkinSteerIds.get(emitterSessionId)
 					emitSteerOutcome(pi, "todo_checkin", "complied", {
 						method: "write",
+						steerId,
 						interactive: sessionCtx?.hasUI ?? false,
 					})
+					if (steerId) checkinSteerIds.delete(emitterSessionId)
 				}
 			}
 			// Any write to a scope starts a new staleness epoch (re-arming
 			// escalation for that scope) and resets only that list's counters —
 			// pressure on other lists keeps accumulating (a step update must not
 			// silence the neglected global list, and vice versa).
-			resetScopeEpoch(details.scope, emitterSessionId)
-			resetToolCallsSinceTodoWrite(details.scope, emitterSessionId)
-			stalenessTracker.reset(emitterSessionId, getTodoScopeKey(details.scope))
+			resetScopeStaleness(details.scope, emitterSessionId)
 			// A write that empties or fully completes a pending list clears its
 			// check immediately — including unattributed background writes,
 			// which do not reconcile — so neither surface keeps reporting an
@@ -461,18 +524,24 @@ export default function todosExtension(pi: ExtensionAPI): void {
 			if (change.kind === "reconciled" && change.method === "confirm") {
 				// A successful confirmation resets only that scope's staleness
 				// epoch and schedule — like a write, but without a synthetic store
-				// write.
-				resetScopeEpoch(change.scope, sessionId)
-				resetToolCallsSinceTodoWrite(change.scope, sessionId)
-				stalenessTracker.reset(sessionId, getTodoScopeKey(change.scope))
-				emitSteerOutcome(pi, "todo_checkin", "complied", {
-					method: "confirm",
-					interactive: sessionCtx?.hasUI ?? false,
-				})
+				// write. The outcome is attributed only when a check actually
+				// closed: a confirmation with nothing pending just resets the
+				// schedule.
+				resetScopeStaleness(change.scope, sessionId)
+				if (change.closed) {
+					const steerId = checkinSteerIds.get(sessionId)
+					emitSteerOutcome(pi, "todo_checkin", "complied", {
+						method: "confirm",
+						steerId,
+						interactive: sessionCtx?.hasUI ?? false,
+					})
+					if (steerId) checkinSteerIds.delete(sessionId)
+				}
 			}
 			if (change.kind === "confirm_mismatch") {
 				emitSteerOutcome(pi, "todo_checkin", "repeated", {
 					method: change.method,
+					steerId: checkinSteerIds.get(sessionId),
 					interactive: sessionCtx?.hasUI ?? false,
 				})
 			}
@@ -602,7 +671,8 @@ export default function todosExtension(pi: ExtensionAPI): void {
 					// reason without a duplicate message; the next blocked work tool
 					// carries the instructions.
 					addStalenessPending(scope, sessionId, revision)
-					emitSteerFired(pi, "todo_checkin", "staleness", { interactive: ctx.hasUI, sessionId })
+					const steerId = emitSteerFired(pi, "todo_checkin", "staleness", { interactive: ctx.hasUI, sessionId })
+					if (steerId) checkinSteerIds.set(sessionId, steerId)
 				}
 			}
 		}
@@ -665,6 +735,8 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		// same host are unaffected.
 		clearToolCallsSinceTodoWriteForSession(sessionId)
 		stalenessTracker.clearSession(sessionId)
+		deferredCheckinInputs.delete(sessionId)
+		checkinSteerIds.delete(sessionId)
 		disposeCheckinGateSession(sessionId)
 		disposeSessionReconciliation(sessionId)
 	})

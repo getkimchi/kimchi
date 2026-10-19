@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { reconcileCheckinScope, reportConfirmMismatch } from "./checkin-gate.js"
-import { getAdmittedInputRevision, getInputRevision, recordScopeReconciliation } from "./reconciliation.js"
+import { getInputRevision, recordScopeReconciliation, takeAdmittedInputRevision } from "./reconciliation.js"
 import { validateExplicitTodoScope } from "./scope.js"
 import { renderTodoEntries } from "./state-markdown.js"
 import { applyTodoMutation, applyWriteTodos, getTodosForScope, resolveTodoScope } from "./store.js"
@@ -106,7 +106,7 @@ interface ClearTodosParams {
 function toolWriteContext(sessionId: string, toolCallId: string): TodoWriteContext {
 	return {
 		origin: "tool",
-		inputRevision: getAdmittedInputRevision(sessionId, toolCallId) ?? getInputRevision(sessionId),
+		inputRevision: takeAdmittedInputRevision(sessionId, toolCallId) ?? getInputRevision(sessionId),
 	}
 }
 

@@ -2,10 +2,11 @@ import type { ExtensionAPI, ExtensionContext, SessionEntry, Theme } from "@earen
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { isResourceEnabled } from "../../resources/store.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { STEER_EVENTS } from "../steer-events.js"
 import { __resetCheckinGate, getPendingCheckins, hasEffectivePendingCheckin } from "./checkin-gate.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import todosExtension from "./index.js"
-import { __resetReconciliationBookkeeping } from "./reconciliation.js"
+import { __resetReconciliationBookkeeping, getInputRevision } from "./reconciliation.js"
 import {
 	__resetTodoStore,
 	applyWriteTodos,
@@ -886,6 +887,127 @@ describe("todo check-in gate", () => {
 		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
 		// …but subsequent admissions must pass the newer check first.
 		expect(await fireWork(harness, ctx, "w2")).toMatchObject({ block: true })
+	})
+
+	it("defers the check for queued follow-up input until the message is delivered", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		// Follow-ups queued mid-run: receipt alone must not advance the
+		// revision or arm the gate — the model cannot see these directions
+		// until the current run ends, and a blind confirmation would consume
+		// the revision before the message lands.
+		await harness.fire(
+			"input",
+			{ type: "input", text: "Do it differently", source: "interactive", streamingBehavior: "followUp" },
+			ctx,
+		)
+		await harness.fire(
+			"input",
+			{ type: "input", text: "Also add tests", source: "interactive", streamingBehavior: "followUp" },
+			ctx,
+		)
+		expect(getInputRevision("session")).toBe(0)
+		expect(getPendingCheckins("session")).toHaveLength(0)
+		expect(await fireWork(harness, ctx, "w1")).toEqual({ block: false })
+
+		// Delivery — the user message entering history (content parts form) —
+		// advances the revision and arms the check, in queue order.
+		await harness.fire(
+			"message_start",
+			{ type: "message_start", message: { role: "user", content: [{ type: "text", text: "Do it differently" }] } },
+			ctx,
+		)
+		expect(getInputRevision("session")).toBe(1)
+		expect(await fireWork(harness, ctx, "w2")).toMatchObject({ block: true })
+		expect(steerCallsByReason(harness.sendMessage, "user_input")).toHaveLength(1)
+
+		// Reconcile, then the second follow-up delivers (plain-string content).
+		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "pending" }] }, "session", {
+			origin: "tool",
+			inputRevision: 1,
+		})
+		expect(await fireWork(harness, ctx, "w3")).toEqual({ block: false })
+		await harness.fire(
+			"message_start",
+			{ type: "message_start", message: { role: "user", content: "Also add tests" } },
+			ctx,
+		)
+		expect(getInputRevision("session")).toBe(2)
+		expect(await fireWork(harness, ctx, "w4")).toMatchObject({ block: true })
+
+		// Steered and idle inputs still advance at receipt (regression guard).
+		await harness.fire(
+			"input",
+			{ type: "input", text: "Steering now", source: "interactive", streamingBehavior: "steer" },
+			ctx,
+		)
+		expect(getInputRevision("session")).toBe(3)
+	})
+
+	it("read-only tools and questionnaire pass while gated", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
+		await fireInput(harness, ctx)
+		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
+
+		// Read-only inspection and asking the user stay available — the model
+		// may need them to reconcile against the latest direction.
+		for (const toolName of ["read", "grep", "questionnaire"]) {
+			expect(
+				await harness.fire("tool_call", { type: "tool_call", toolCallId: `r-${toolName}`, toolName, input: {} }, ctx),
+			).toEqual({ block: false })
+		}
+		// Write-class and execute-class tools stay blocked.
+		expect(await fireWork(harness, ctx, "w2")).toMatchObject({ block: true })
+	})
+
+	it("check-in outcomes are attributed once, carrying the opening's steer_id", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
+		await fireInput(harness, ctx)
+		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
+
+		const outcomes: Array<{ kind: string; outcome: string; method?: string; steer_id?: string }> = []
+		const unsubscribe = harness.events.on(STEER_EVENTS.OUTCOME, (payload: unknown) =>
+			outcomes.push(payload as { kind: string; outcome: string; method?: string; steer_id?: string }),
+		)
+
+		// A reconciling write emits exactly one complied — no generic watcher
+		// duplicate — attributed to the instruction fire via steer_id.
+		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "pending" }] }, "session", {
+			origin: "tool",
+			inputRevision: 1,
+		})
+		expect(outcomes).toHaveLength(1)
+		expect(outcomes[0]).toMatchObject({ kind: "todo_checkin", outcome: "complied", method: "write" })
+		expect(typeof outcomes[0]?.steer_id).toBe("string")
+
+		// Newer input re-arms; a closing confirmation emits exactly one
+		// complied…
+		await fireInput(harness, ctx, "Second thought")
+		await harness
+			.registeredTool("confirm_todos")
+			.execute("c1", { inputRevision: 2, expected: [{ id: 1, status: "pending" }] }, undefined, undefined, ctx)
+		expect(outcomes).toHaveLength(2)
+		expect(outcomes[1]).toMatchObject({ kind: "todo_checkin", outcome: "complied", method: "confirm" })
+		// …and a confirmation with nothing pending emits nothing — no watcher
+		// expiry, no spurious complied.
+		await harness
+			.registeredTool("confirm_todos")
+			.execute("c2", { inputRevision: 2, expected: [{ id: 1, status: "pending" }] }, undefined, undefined, ctx)
+		expect(outcomes).toHaveLength(2)
+
+		unsubscribe()
 	})
 
 	it("escalates after 50 ignored work calls, bounded to two openings per request", async () => {

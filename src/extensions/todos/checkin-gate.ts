@@ -46,7 +46,7 @@ export interface CheckinPending {
 /** Change notification for surfaces (widget repaint, ACP plan metadata). */
 export type CheckinGateChange =
 	| { kind: "pending" }
-	| { kind: "reconciled"; scope: TodoScope; method: "write" | "confirm" }
+	| { kind: "reconciled"; scope: TodoScope; method: "write" | "confirm"; closed: boolean }
 	| { kind: "confirm_mismatch"; scope: TodoScope; method: "mismatch" | "stale_revision" }
 	| { kind: "enforcement"; active: boolean }
 
@@ -207,7 +207,7 @@ export function reconcileCheckinScope(
 		state.stalenessOpenedEpochs.delete(scopeKey)
 	}
 	if (closed || method === "confirm") {
-		notify(sessionId, { kind: "reconciled", scope, method })
+		notify(sessionId, { kind: "reconciled", scope, method, closed })
 	}
 	return closed
 }
@@ -279,6 +279,11 @@ export function setCheckinEnforcementActive(sessionId: string, active: boolean):
  *  invalidate it — reconciling then working is the normal flow). */
 export function isScopeCheckedIn(scope: TodoScope, sessionId: string): boolean {
 	return isScopeReconciledForRevision(scope, sessionId, getInputRevision(sessionId))
+}
+
+/** True when the scope currently has a pending check. */
+export function isCheckinPending(scope: TodoScope, sessionId: string): boolean {
+	return gateStates.get(sessionId)?.pendingByScope.has(getTodoScopeKey(scope)) ?? false
 }
 
 // ── Staleness escalation bookkeeping ────────────────────────────────────────

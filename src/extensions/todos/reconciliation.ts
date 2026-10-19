@@ -109,8 +109,15 @@ export function recordAdmittedInputRevision(sessionId: string, toolCallId: strin
 	getOrCreateInnerMap(admittedInputRevisions, sessionId).set(toolCallId, revision)
 }
 
-export function getAdmittedInputRevision(sessionId: string, toolCallId: string): number | undefined {
-	return admittedInputRevisions.get(sessionId)?.get(toolCallId)
+/** Take the admitted revision for a tool call: returns it and deletes the
+ *  entry, so the bookkeeping does not grow over a long session — the
+ *  revision is consumed exactly once, when the write executes. */
+export function takeAdmittedInputRevision(sessionId: string, toolCallId: string): number | undefined {
+	const byCall = admittedInputRevisions.get(sessionId)
+	if (!byCall) return undefined
+	const revision = byCall.get(toolCallId)
+	if (revision !== undefined) byCall.delete(toolCallId)
+	return revision
 }
 
 /** Shutdown disposal: clears all reconciliation state for a session. */
@@ -124,4 +131,5 @@ export function disposeSessionReconciliation(sessionId: string): void {
 export function __resetReconciliationBookkeeping(): void {
 	reconciliations.clear()
 	inputRevisions.clear()
+	admittedInputRevisions.clear()
 }
