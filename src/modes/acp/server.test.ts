@@ -5832,6 +5832,84 @@ describe("generated artifacts (live turns)", () => {
 		expect((chunks[0].artifacts as Array<{ path: string }>).map((a) => a.path)).toEqual([target])
 	})
 
+	// A message with only toolCall blocks never allocates content block ids,
+	// so flushArtifacts at its message_end is a no-op; the turn-scoped
+	// artifacts surface at finalizeTurn on a fresh `km.` block id.
+	it("flushes artifacts of a tool-only last message at turn end on a fresh block id", async () => {
+		const target = join(tmpDir, "deck.pptx")
+		writeFileSync(target, "pptx")
+		const toolOnlyEnd = assistantMessageEnd("")
+		;(toolOnlyEnd as { message: AssistantMessage }).message.content = [
+			{ type: "toolCall", id: "tc-only", name: "write", arguments: { path: target, content: "pptx" } },
+		]
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-only",
+				toolName: "write",
+				args: { path: target, content: "pptx" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-only",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "done" }] },
+				isError: false,
+			})
+			fake.emit(toolOnlyEnd)
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const chunks = artifactChunks()
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0].messageId).toMatch(/^km\.\d+$/)
+		expect((chunks[0].artifacts as Array<{ path: string }>).map((a) => a.path)).toEqual([target])
+	})
+
+	// A mid-turn tool-only message leaves its artifacts in the turn context;
+	// the NEXT message_end with content blocks flushes them on that message's
+	// own block id (the client keys the chip on the later message).
+	it("defers artifacts from a tool-only message to the next content-bearing message", async () => {
+		const target = join(tmpDir, "notes.md")
+		writeFileSync(target, "md")
+		const toolOnlyEnd = assistantMessageEnd("")
+		;(toolOnlyEnd as { message: AssistantMessage }).message.content = [
+			{ type: "toolCall", id: "tc-mid", name: "write", arguments: { path: target, content: "md" } },
+		]
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-mid",
+				toolName: "write",
+				args: { path: target, content: "md" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-mid",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "done" }] },
+				isError: false,
+			})
+			fake.emit(toolOnlyEnd)
+			fake.emit(assistantMessageEnd("All done."))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const chunks = artifactChunks()
+		expect(chunks).toHaveLength(1)
+		const textChunk = messageChunks(updates).find((c) => c.text === "All done.")
+		expect(chunks[0].messageId).toBe(textChunk?.messageId)
+		expect((chunks[0].artifacts as Array<{ path: string }>).map((a) => a.path)).toEqual([target])
+	})
+
 	it("emits no artifacts meta when the turn produced none", async () => {
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })

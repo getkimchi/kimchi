@@ -301,7 +301,9 @@ type SessionRecord = {
 	 * Per-assistant-message map from pi-mono's contentIndex → assigned
 	 * messageId. Cleared on each agent_start/message_start so a new assistant message
 	 * starts a fresh contentIndex namespace without colliding with the
-	 * previous message's assignments.
+	 * previous message's assignments. Insertion order follows first-emission
+	 * order of the message's blocks, so at message_end the last value is the
+	 * message's last emitted block id — flushArtifacts relies on this.
 	 */
 	contentIndexToBlockId: Map<number, string>
 	/**
@@ -2413,6 +2415,11 @@ export class KimchiAcpAgent implements Agent {
 	 */
 	private flushArtifacts(sessionId: string, entry: SessionRecord, turn: TurnContext): void {
 		if (turn.artifacts.size === 0) return
+		// contentIndexToBlockId is cleared on message_start (and agent_start),
+		// so at message_end it maps exactly this message's content blocks. The
+		// LAST value in insertion order is the last block to emit — blocks are
+		// allocated as their first delta/streamed text arrives, matching block
+		// order — which is the id the client keys the message on.
 		let messageId: string | undefined
 		for (const id of entry.contentIndexToBlockId.values()) messageId = id
 		if (messageId === undefined) return
@@ -2432,11 +2439,15 @@ export class KimchiAcpAgent implements Agent {
 	private finalizeTurn(entry: SessionRecord, stopReason: PromptResponse["stopReason"]): void {
 		const turn = entry.turn
 		if (!turn) return
+		// Clear the record first: if anything below (send, emitUsageUpdate)
+		// throws synchronously, the session must not be left wedged with a
+		// stale turn reference.
+		entry.turn = undefined
 		// Artifacts from a tool-only tail (a message that produced no content
 		// blocks never hit flushArtifacts) still surface before the turn closes.
-		if (turn.artifacts.size > 0) {
-			const artifacts = [...turn.artifacts.values()]
-			turn.artifacts.clear()
+		const artifacts = [...turn.artifacts.values()]
+		turn.artifacts.clear()
+		if (artifacts.length > 0) {
 			this.send({
 				sessionId: entry.session.sessionId,
 				update: {
@@ -2447,7 +2458,6 @@ export class KimchiAcpAgent implements Agent {
 				},
 			})
 		}
-		entry.turn = undefined
 		try {
 			this.emitUsageUpdate(entry.session, turn.usage)
 		} finally {
