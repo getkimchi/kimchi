@@ -197,7 +197,7 @@ jobs:
           set -e
           BIN="./dist/bin/kimchi"
           [ -f "$BIN" ] || BIN="./dist/bin/kimchi.exe"
-          for cli in pptx; do
+          for cli in pptx pdf; do
             script="dist/share/kimchi/skills/$cli/scripts/$cli.mjs"
             [ -f "$script" ] || { echo "missing $script"; exit 1; }
             out=$(BUN_BE_BUN=1 "$BIN" "$script" 2>&1 || true)

@@ -15,10 +15,12 @@ import { commandNames, newSession, prompt, waitFor } from "./support/scenarios.j
 
 const USER_DESC = "USER_PPTX_SKILL: python-pptx based deck editing."
 const USER_BODY = "OFFICE_PPTX_GUIDANCE: edit decks with python-pptx."
+const USER_PDF_DESC = "USER_PDF_SKILL: pypdf based merging."
 
 function seedClaudeSkills(homeDir: string): void {
 	const skills: Array<[string, string]> = [
 		["pptx", `---\nname: pptx\ndescription: ${USER_DESC}\n---\n# PPTX\n${USER_BODY}\n`],
+		["pdf", `---\nname: pdf\ndescription: ${USER_PDF_DESC}\n---\n# PDF\nUse pypdf.\n`],
 		[
 			"verify-this",
 			"---\nname: verify-this\ndescription: Verify a claim with fresh evidence.\n---\n# Verify this\nRestate it falsifiably.\n",
@@ -108,6 +110,7 @@ describe("ACP integration — disables-skills shadowing (bundled pptx → user p
 				artifactName: "skills-disables-skills-acp-refusal",
 				responses: [
 					{ toolCalls: [{ function: { name: "Skill", arguments: JSON.stringify({ skill: "pptx" }) } }] },
+					{ toolCalls: [{ function: { name: "Skill", arguments: JSON.stringify({ skill: "pdf" }) } }] },
 					{ stream: ["Refused as expected."] },
 				],
 				pretrustWorkDir: true,
@@ -119,11 +122,17 @@ describe("ACP integration — disables-skills shadowing (bundled pptx → user p
 			expect(await prompt(fixture, sessionId, "load the pptx skill")).toMatchObject({ stopReason: "end_turn" })
 
 			const chats = mainChats(fixture)
-			expect(chats.length).toBeGreaterThanOrEqual(2)
+			expect(chats.length).toBeGreaterThanOrEqual(3)
 			const second = JSON.stringify(chats[1].body)
 			expect(second).toContain("disabled by the enabled")
 			// The refusal replaced the user skill body — it never reached the model.
 			expect(second).not.toContain(USER_BODY)
+			const first = JSON.stringify(chats[0].body)
+			expect(first).not.toContain(USER_PDF_DESC)
+			// A same-named user pdf skill is refused by the bundled pdf skill.
+			const thirdBody = chats[2].body as { messages?: Array<{ role: string; content: unknown }> }
+			const thirdTools = (thirdBody.messages ?? []).filter((m) => m.role === "tool")
+			expect(String(thirdTools.at(-1)?.content ?? "")).toContain('disabled by the enabled "pdf" skill')
 		},
 		PROMPT_TIMEOUT_MS * 3,
 	)

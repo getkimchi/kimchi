@@ -123,6 +123,74 @@ if (!isDev) {
 	cpSync(proxyHelperSrc, join(proxyHelperBinDest, proxyHelperName))
 }
 
+// Bundle the pdf skill's CLI. Same staging-deref recipe as pptx:
+// unpdf/@cantoo/pdf-lib are dependency graphs pnpm nests, so stage the whole
+// package trees and let bun trace them. Fonts are discovered on the host at
+// runtime (pdf-fonts.ts scans the OS font dirs).
+const pdfSkillsDest = join(projectRoot, isDev ? "resources" : "dist/share/kimchi", "skills/pdf")
+{
+	const pdfCliDest = join(pdfSkillsDest, "scripts", "pdf.mjs")
+	mkdirSync(dirname(pdfCliDest), { recursive: true })
+	const pdfStaging = mkdtempSync(join(tmpdir(), "kimchi-pdf-build-"))
+	try {
+		const stagedEntry = join(pdfStaging, "pdf-cli.ts")
+		cpSync(join(projectRoot, "src", "extensions", "documents", "pdf-cli.ts"), stagedEntry)
+		cpSync(join(projectRoot, "src", "extensions", "documents"), join(pdfStaging, "documents"), {
+			recursive: true,
+			filter: (src) => !src.endsWith(".test.ts"),
+		})
+		let entry = readFileSync(stagedEntry, "utf-8")
+		entry = entry.replaceAll('from "./', 'from "./documents/')
+		writeFileSync(stagedEntry, entry)
+		// Stage each runtime dep AND its transitive tree (pnpm nests them).
+		// Packages land flat into the staging node_modules; children resolve via
+		// a require anchored at their parent's real manifest (pnpm layout).
+		const stagedPkgs = new Set()
+		const stageDep = (name, anchor) => {
+			if (stagedPkgs.has(name)) return
+			stagedPkgs.add(name)
+			const requireFrom = createRequire(anchor ?? join(projectRoot, "package.json"))
+			let realPkg
+			try {
+				realPkg = realpathSync(requireFrom.resolve(`${name}/package.json`))
+			} catch {
+				// package.json not exported (e.g. marked): anchor to the main entry
+				// and walk up to its manifest.
+				let dir = dirname(realpathSync(requireFrom.resolve(name)))
+				while (!existsSync(join(dir, "package.json"))) {
+					const up = dirname(dir)
+					if (up === dir) throw new Error(`no package.json above ${name}`)
+					dir = up
+				}
+				realPkg = join(dir, "package.json")
+			}
+			cpSync(dirname(realPkg), join(pdfStaging, "node_modules", name), { dereference: true, recursive: true })
+			const manifest = JSON.parse(readFileSync(realPkg, "utf-8"))
+			for (const child of Object.keys(manifest.dependencies ?? {})) {
+				try {
+					stageDep(child, realPkg)
+				} catch {
+					// optional dep not installed — bundling fails loudly if it's truly needed
+				}
+			}
+		}
+		for (const dep of ["@cantoo/pdf-lib", "@pdf-lib/fontkit", "unpdf", "marked"]) {
+			stageDep(dep)
+		}
+		const stagedOut = join(pdfStaging, "pdf.mjs")
+		execFileSync("bun", ["build", stagedEntry, "--target=node", "--format=esm", "--outfile", stagedOut], {
+			stdio: "inherit",
+		})
+		cpSync(stagedOut, pdfCliDest)
+	} finally {
+		try {
+			rmSync(pdfStaging, { recursive: true, force: true })
+		} catch {
+			// ignore — the OS reclaims temp dirs
+		}
+	}
+}
+
 // Bundle the pptx skill's CLI (same staging-deref dance as validate-skill:
 // bun resolves jszip/@xmldom from the staged node_modules, not the repo).
 const pptxCliDest = join(projectRoot, isDev ? "resources" : "dist/share/kimchi", "skills/pptx/scripts/pptx.mjs")
