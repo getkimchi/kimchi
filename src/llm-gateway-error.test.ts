@@ -387,7 +387,7 @@ describe("model_retired", () => {
 
 	it("classifies a model_gone body and parses replacement hints (Scenario B)", () => {
 		const error = classifyLLMGatewayError(
-			'{"error": {"code": 410, "type": "model_gone", "message": "Model kimi-k2.5 has been retired.", "replacement": "kimi-k3", "suggested_alternatives": [{"id": "kimi-k2.7", "reason": "Prior generation"}, {"id": "glm-5.3"}], "docs": "https://wiki.cast.ai/deprecations/kimi-k2.5"}}',
+			'{"error": {"code": 410, "type": "model_gone", "message": "Model kimi-k2.5 has been retired.", "replacement": "kimi-k3", "suggested_alternatives": [{"id": "kimi-k2.7", "reason": "Prior generation"}, {"id": "glm-5.3"}], "docs": "https://docs.kimchi.dev/deprecations/kimi-k2.5"}}',
 		)
 		expect(error?.reason).toBe("model_retired")
 		expect(error?.modelRetiredInfo).toEqual({
@@ -396,7 +396,7 @@ describe("model_retired", () => {
 				{ slug: "kimi-k2.7", reason: "Prior generation" },
 				{ slug: "glm-5.3", reason: undefined },
 			],
-			docs: "https://wiki.cast.ai/deprecations/kimi-k2.5",
+			docs: "https://docs.kimchi.dev/deprecations/kimi-k2.5",
 		})
 	})
 
@@ -460,6 +460,36 @@ describe("model_retired", () => {
 			alternatives: [{ slug: "kimi-k3", reason: undefined }],
 			docs: "https://docs.kimchi.dev/deprecations/kimi-k2.7",
 		})
+	})
+
+	it("strips ANSI/control characters from gateway-supplied reason text", () => {
+		// JSON path: real escape bytes after JSON parsing.
+		const parsed = classifyLLMGatewayError(
+			'{"error": {"type": "model_gone", "code": 410, "suggested_alternatives": [{"id": "glm-5.3", "reason": "bad \u001b[2J cleared"}]}}',
+		)
+		expect(parsed?.modelRetiredInfo?.alternatives[0]?.reason).toBe("bad [2J cleared")
+
+		// Regex-fallback path: a malformed body (trailing comma) fails
+		// JSON.parse, the object regex still extracts the entry, and escape
+		// sequences must not reach the terminal.
+		const fallback = classifyLLMGatewayError(
+			'{"error": {"type": "model_gone", "code": 410, "suggested_alternatives": [{"id": "glm-5.3", "reason": "bad \u001b[2J"},]}}',
+		)
+		const reason = fallback?.modelRetiredInfo?.alternatives[0]?.reason ?? ""
+		const hasControlChars = [...reason].some((c) => {
+			const code = c.charCodeAt(0)
+			return code < 32 || (code >= 127 && code < 160)
+		})
+		expect(hasControlChars).toBe(false)
+		expect(reason).toContain("bad")
+	})
+
+	it("strips control characters from replacement and docs", () => {
+		const error = classifyLLMGatewayError(
+			'{"error": {"type": "model_gone", "code": 410, "replacement": "kimi-\u001b[2Jk3", "docs": "https://d/\u001b[0mx"}}',
+		)
+		expect(error?.modelRetiredInfo?.replacement).toBe("kimi-[2Jk3")
+		expect(error?.modelRetiredInfo?.docs).toBe("https://d/[0mx")
 	})
 
 	it("tolerates the legacy string-array alternatives shape", () => {

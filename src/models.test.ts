@@ -1353,6 +1353,52 @@ describe("model description registry (/model table DESCRIPTION column)", () => {
 		expect(getModelDescription("kimchi-experimental/kimi-k2.7")?.startsWith("[Deprecated — retires")).toBe(true)
 	})
 
+	it("does not mark other providers' rows that share the slug", () => {
+		const day = 86_400_000
+		writeFileSync(
+			modelDeprecationsPath(modelsJsonPath),
+			JSON.stringify({
+				"kimi-k2.7": {
+					deprecated_at: new Date(Date.now() - 3 * day).toISOString(),
+					sunset_at: new Date(Date.now() + 10 * day).toISOString(),
+				},
+			}),
+			"utf-8",
+		)
+		registerModelDescription("kimchi-dev/kimi-k2.7", "MoE coding model.")
+		// Same model id under an unmanaged provider block: never marked.
+		registerModelDescription("openai/kimi-k2.7", "OpenAI-hosted twin.")
+		// Model id whose last segment coincides with the slug: never marked.
+		registerModelDescription("openrouter/anthropic/kimi-k2.7", "Routed twin.")
+		registerDeprecationMarkers(modelsJsonPath)
+		expect(getModelDescription("kimchi-dev/kimi-k2.7")?.startsWith("[Deprecated")).toBe(true)
+		expect(getModelDescription("openai/kimi-k2.7")).toBe("OpenAI-hosted twin.")
+		expect(getModelDescription("openrouter/anthropic/kimi-k2.7")).toBe("Routed twin.")
+	})
+
+	it("drops the marker and ghost entries when the sidecar stops listing the model", () => {
+		const day = 86_400_000
+		writeFileSync(
+			modelDeprecationsPath(modelsJsonPath),
+			JSON.stringify({
+				"kimi-k2.7": {
+					deprecated_at: new Date(Date.now() - 3 * day).toISOString(),
+					sunset_at: new Date(Date.now() + 10 * day).toISOString(),
+				},
+			}),
+			"utf-8",
+		)
+		registerDeprecationMarkers(modelsJsonPath)
+		expect(getModelDescription("kimchi-dev/kimi-k2.7")?.startsWith("[Deprecated")).toBe(true)
+
+		// Model crossed into sunset / entry removed: re-registration must
+		// clear the stale marker and remove the synthetic fallback keys.
+		writeFileSync(modelDeprecationsPath(modelsJsonPath), JSON.stringify({}), "utf-8")
+		registerDeprecationMarkers(modelsJsonPath)
+		expect(getModelDescription("kimchi-dev/kimi-k2.7")).toBeUndefined()
+		expect(getModelDescription("kimchi-experimental/kimi-k2.7")).toBeUndefined()
+	})
+
 	it("replaces fallback and stale descriptions on refresh and removes withdrawn descriptions", async () => {
 		const metadata = (description?: string) => ({
 			slug: "auto",

@@ -23,7 +23,7 @@
  * catalog churn, so no eviction is implemented.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
 /** Mirrors the metadata API's ModelAlternative contract ({slug, reason}). */
@@ -55,6 +55,25 @@ const DAY_MS = 24 * 60 * 60 * 1000
 /** UTC-midnight truncation, mirroring the backend's `.Truncate(24 * time.Hour)`. */
 function midnightUtc(nowMs: number): number {
 	return Math.floor(nowMs / DAY_MS) * DAY_MS
+}
+
+/** Sidecar/metadata date fields must be ISO-ish date strings; anything else
+ *  (numbers, garbage, escape-sequence payloads) is dropped with a warning so
+ *  a malformed record can neither crash rendering nor inject control
+ *  characters into user-visible surfaces. */
+const ISO_DATE_SHAPE_RE = /^\d{4}-\d{2}-\d{2}/
+
+function validDateField(value: unknown, fieldName: string, slug?: string): string | undefined {
+	if (value === undefined) return undefined
+	if (typeof value !== "string" || !ISO_DATE_SHAPE_RE.test(value) || Number.isNaN(Date.parse(value))) {
+		console.warn(
+			`[model-deprecation] ignoring invalid ${fieldName}${slug ? ` for ${slug}` : ""}: ${
+				typeof value === "string" ? value : JSON.stringify(value)
+			}`,
+		)
+		return undefined
+	}
+	return value
 }
 
 function parseIsoDate(value: string | undefined, fieldName: string, slug?: string): number | undefined {
@@ -120,6 +139,26 @@ export function modelDeprecationsPath(modelsJsonPath: string): string {
  */
 export const DEPRECATION_NOTIFY_WINDOW_DAYS = 30
 
+/** Shared 30-day cutoff, midnight-truncated like the backend so the marker
+ *  and the session-start toast can never disagree at the window edge. */
+export function deprecationNotifyCutoff(nowMs: number = Date.now()): number {
+	return midnightUtc(nowMs) + DEPRECATION_NOTIFY_WINDOW_DAYS * DAY_MS
+}
+
+/** Prefix every deprecation marker starts with. */
+const MARKER_PREFIX = "[Deprecated"
+const MARKER_RE = /^\[Deprecated(?: — retires \d{4}-\d{2}-\d{2})?\]\s*/
+
+/** True when a description string carries a deprecation marker. */
+export function isDeprecationMarked(description: string): boolean {
+	return description.startsWith(MARKER_PREFIX)
+}
+
+/** Remove a previously applied marker from a description, or return it unchanged. */
+export function stripDeprecationMarker(description: string): string {
+	return isDeprecationMarked(description) ? description.replace(MARKER_RE, "") : description
+}
+
 /**
  * Picker-facing deprecation marker for a model, or undefined when none
  * should render: not deprecated, already sunset (never listed anyway), or an
@@ -136,12 +175,16 @@ export function deprecationMarker(
 	if (state === "announced") {
 		const effectiveMs =
 			parseIsoDate(info.deprecated_at, "deprecated_at", slug) ?? parseIsoDate(info.sunset_at, "sunset_at", slug)
-		const cutoff = midnightUtc(nowMs) + DEPRECATION_NOTIFY_WINDOW_DAYS * DAY_MS
-		if (effectiveMs === undefined || effectiveMs > cutoff) return undefined
+		if (effectiveMs === undefined || effectiveMs > deprecationNotifyCutoff(nowMs)) return undefined
 	}
 	// Never cite a past deprecated_at as a future retirement (mirrors the
 	// session-start toast): past deprecations only name sunset_at when known.
-	const date = (state === "past" ? info.sunset_at : (info.sunset_at ?? info.deprecated_at))?.slice(0, 10)
+	// Both fields are validated strings by the time they get here (sidecar
+	// reads sanitize them), but guard anyway — deprecationMarker is exported
+	// and callers may pass raw metadata.
+	const sunsetAt = typeof info.sunset_at === "string" ? info.sunset_at : undefined
+	const deprecatedAt = typeof info.deprecated_at === "string" ? info.deprecated_at : undefined
+	const date = (state === "past" ? sunsetAt : (sunsetAt ?? deprecatedAt))?.slice(0, 10)
 	return date ? `[Deprecated — retires ${date}]` : "[Deprecated]"
 }
 
@@ -159,7 +202,9 @@ export function collectDeprecationMarkers(modelsJsonPath: string, nowMs: number 
 	return markers
 }
 
-/** Read the persisted deprecation map (slug → info); empty on absent/corrupt file. */
+/** Read the persisted deprecation map (slug → info); empty on absent/corrupt file.
+ *  Field values are validated on read — a hand-edited or corrupted sidecar
+ *  must never leak non-date strings into rendering or crash marker building. */
 export function readModelDeprecations(modelsJsonPath: string): Map<string, ModelDeprecationInfo> {
 	const result = new Map<string, ModelDeprecationInfo>()
 	try {
@@ -167,7 +212,7 @@ export function readModelDeprecations(modelsJsonPath: string): Map<string, Model
 		if (raw && typeof raw === "object" && !Array.isArray(raw)) {
 			for (const [slug, info] of Object.entries(raw as Record<string, unknown>)) {
 				if (info && typeof info === "object" && !Array.isArray(info)) {
-					result.set(slug, info as ModelDeprecationInfo)
+					result.set(slug, sanitizeDeprecationInfo(info as Record<string, unknown>, slug))
 				}
 			}
 		}
@@ -177,10 +222,30 @@ export function readModelDeprecations(modelsJsonPath: string): Map<string, Model
 	return result
 }
 
-function pickDeprecationFields(m: ModelDeprecationInfo): ModelDeprecationInfo | undefined {
+/** Keep only well-formed fields from a raw deprecation record. */
+function sanitizeDeprecationInfo(raw: Record<string, unknown>, slug: string): ModelDeprecationInfo {
 	const info: ModelDeprecationInfo = {}
-	if (m.deprecated_at !== undefined) info.deprecated_at = m.deprecated_at
-	if (m.sunset_at !== undefined) info.sunset_at = m.sunset_at
+	const deprecatedAt = validDateField(raw.deprecated_at, "deprecated_at", slug)
+	if (deprecatedAt !== undefined) info.deprecated_at = deprecatedAt
+	const sunsetAt = validDateField(raw.sunset_at, "sunset_at", slug)
+	if (sunsetAt !== undefined) info.sunset_at = sunsetAt
+	if (typeof raw.replacement_model === "string") info.replacement_model = raw.replacement_model
+	if (Array.isArray(raw.alternatives)) {
+		info.alternatives = raw.alternatives.filter(
+			(a): a is ModelAlternative =>
+				!!a && typeof a === "object" && !Array.isArray(a) && typeof (a as ModelAlternative).slug === "string",
+		)
+	}
+	if (typeof raw.deprecation_note === "string") info.deprecation_note = raw.deprecation_note
+	return info
+}
+
+function pickDeprecationFields(m: ModelDeprecationInfo & { slug?: string }): ModelDeprecationInfo | undefined {
+	const info: ModelDeprecationInfo = {}
+	const deprecatedAt = validDateField(m.deprecated_at, "deprecated_at", m.slug)
+	if (deprecatedAt !== undefined) info.deprecated_at = deprecatedAt
+	const sunsetAt = validDateField(m.sunset_at, "sunset_at", m.slug)
+	if (sunsetAt !== undefined) info.sunset_at = sunsetAt
 	if (m.replacement_model !== undefined) info.replacement_model = m.replacement_model
 	if (m.alternatives !== undefined) info.alternatives = m.alternatives
 	if (m.deprecation_note !== undefined) info.deprecation_note = m.deprecation_note
@@ -202,9 +267,10 @@ export function writeModelDeprecations(
 		if (info) merged.set(m.slug, info)
 	}
 	mkdirSync(dirname(modelsJsonPath), { recursive: true })
-	writeFileSync(
-		modelDeprecationsPath(modelsJsonPath),
-		`${JSON.stringify(Object.fromEntries(merged), null, "\t")}\n`,
-		"utf-8",
-	)
+	// Atomic swap: concurrent readers (per-request ACP marker reads) must see
+	// either the old file or the new one, never a half-written body.
+	const target = modelDeprecationsPath(modelsJsonPath)
+	const tmp = `${target}.${process.pid}.${Date.now()}.tmp`
+	writeFileSync(tmp, `${JSON.stringify(Object.fromEntries(merged), null, "\t")}\n`, "utf-8")
+	renameSync(tmp, target)
 }

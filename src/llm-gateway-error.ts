@@ -148,8 +148,15 @@ function parseGoneStatusCode(rawMessage: string): number | undefined {
 const ALTERNATIVE_OBJECT_RE =
 	/\{[^{}]*?"id"\s*:\s*"((?:[^"\\]|\\.)+)"(?:[^{}]*?"reason"\s*:\s*"((?:[^"\\]|\\.)*)")?[^{}]*?\}/g
 
-function unescapeJsonString(value: string): string {
-	return value.replace(/\\(.)/g, (_, ch) => (ch === "n" ? "\n" : ch === "t" ? "\t" : ch))
+/** Gateway-supplied free text (slugs, reasons, replacement, docs) is
+ *  interpolated into user-facing terminal output. Strip C0/C1 control
+ *  characters — including ANSI escape introducers — so a crafted
+ *  model_gone body cannot repaint or clear the user's screen. Newlines and
+ *  tabs have no business in a slug/reason either, so they go too. */
+function stripControlChars(value: string): string {
+	// Built from a string pattern: biome's noControlCharactersInRegex only
+	// applies to literals, and the ranges here are the whole point.
+	return value.replace(new RegExp("[\\u0000-\\u001f\\u007f-\\u009f]", "g"), "")
 }
 
 interface ParsedAlternative {
@@ -165,14 +172,17 @@ function parseAlternativesArray(raw: string): ModelRetiredAlternative[] | undefi
 		const withPriority: ParsedAlternative[] = []
 		for (const entry of parsed) {
 			if (typeof entry === "string") {
-				withPriority.push({ slug: entry })
+				const slug = stripControlChars(entry)
+				if (slug !== "") withPriority.push({ slug })
 				continue
 			}
 			if (entry && typeof entry === "object" && !Array.isArray(entry)) {
 				const e = entry as Record<string, unknown>
-				const slug = typeof e.id === "string" ? e.id : typeof e.slug === "string" ? e.slug : undefined
-				if (slug === undefined) continue
-				const reason = typeof e.reason === "string" ? e.reason : undefined
+				const rawSlug = typeof e.id === "string" ? e.id : typeof e.slug === "string" ? e.slug : undefined
+				if (rawSlug === undefined) continue
+				const slug = stripControlChars(rawSlug)
+				if (slug === "") continue
+				const reason = typeof e.reason === "string" ? stripControlChars(e.reason) : undefined
 				const priority = typeof e.priority === "number" ? e.priority : undefined
 				withPriority.push({ slug, reason, priority })
 			}
@@ -187,10 +197,14 @@ function parseAlternativesArray(raw: string): ModelRetiredAlternative[] | undefi
 
 /** Extract replacement hints from a model_retired error body, when present. */
 export function parseModelRetiredInfo(rawMessage: string): ModelRetiredInfo | undefined {
-	const replacementMatch =
-		/"replacement"\s*:\s*"([^"]*)"/.exec(rawMessage)?.[1] ?? /"replacementModel"\s*:\s*"([^"]*)"/.exec(rawMessage)?.[1]
-	const replacement = replacementMatch || undefined
-	const docs = /"docs"\s*:\s*"([^"]+)"/.exec(rawMessage)?.[1]
+	// Either key ("replacement" from the proxy envelope, "replacementModel"
+	// from the deprecation service); the first occurrence in the body wins,
+	// and an empty string means "no replacement" — the deprecation service
+	// sends replacementModel: "" when it only has alternatives.
+	const replacementRaw = /"replacement(?:Model)?"\s*:\s*"([^"]*)"/.exec(rawMessage)?.[1]
+	const replacement = replacementRaw ? stripControlChars(replacementRaw) : undefined
+	const docsRaw = /"docs"\s*:\s*"([^"]+)"/.exec(rawMessage)?.[1]
+	const docs = docsRaw ? stripControlChars(docsRaw) : undefined
 	const alternativesMatch = /"(?:suggested_alternatives|alternatives)"\s*:\s*\[([^\]]*)\]/.exec(rawMessage)
 	let alternatives: ModelRetiredAlternative[] = []
 	if (alternativesMatch) {
@@ -200,12 +214,17 @@ export function parseModelRetiredInfo(rawMessage: string): ModelRetiredInfo | un
 		} else {
 			// Fall back to regex parsing for the legacy id/reason object form.
 			alternatives = Array.from(alternativesMatch[1].matchAll(ALTERNATIVE_OBJECT_RE), (m) => ({
-				slug: unescapeJsonString(m[1]),
-				reason: m[2] !== undefined ? unescapeJsonString(m[2]) : undefined,
-			}))
+				slug: stripControlChars(m[1]),
+				reason: m[2] !== undefined ? stripControlChars(m[2]) : undefined,
+			})).filter((a) => a.slug !== "")
 			if (alternatives.length === 0) {
-				// Legacy string-array shape: ["glm-5.3", "kimi-k3"].
-				alternatives = Array.from(alternativesMatch[1].matchAll(/"([^"\\]+)"/g), (m) => ({ slug: m[1] }))
+				// Legacy string-array shape: ["glm-5.3", "kimi-k3"]. Escapes are
+				// deliberately NOT unescaped here — captured text renders as-is
+				// once control characters are stripped, so a crafted body can
+				// neither inject ANSI sequences nor smuggle newlines through.
+				alternatives = Array.from(alternativesMatch[1].matchAll(/"([^"\\]+)"/g), (m) => ({
+					slug: stripControlChars(m[1]),
+				})).filter((a) => a.slug !== "")
 			}
 		}
 	}

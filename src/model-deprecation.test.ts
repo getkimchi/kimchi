@@ -59,6 +59,37 @@ describe("deprecationMarker", () => {
 			deprecationMarker({ deprecated_at: "2026-08-01T00:00:00Z", sunset_at: "2026-09-01T00:00:00Z" }, "kimi-k2.5", NOW),
 		).toBeUndefined()
 	})
+
+	it("does not crash on a non-string sunset_at and renders no date", () => {
+		// Regression: `sunset_at: 12345` + past deprecated_at used to throw
+		// `TypeError: …slice is not a function` from startup and per-request
+		// ACP marker reads.
+		const info = { deprecated_at: "2026-09-01T00:00:00Z", sunset_at: 12345 } as unknown as {
+			deprecated_at?: string
+			sunset_at?: string
+		}
+		expect(deprecationMarker(info, "kimi-k2.7", NOW)).toBe("[Deprecated]")
+	})
+})
+
+describe("sidecar field validation", () => {
+	it("drops non-date and non-string date fields when reading the sidecar", () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-deprecation-validate-"))
+		const path = join(dir, "models.json")
+		writeFileSync(
+			modelDeprecationsPath(path),
+			JSON.stringify({
+				"kimi-a": { deprecated_at: "2026-09-01T00:00:00Z", sunset_at: "\u001b[2J2026-10-20" },
+				"kimi-b": { deprecated_at: "2026-09-01T00:00:00Z", sunset_at: 12345 },
+			}),
+			"utf-8",
+		)
+		const read = readModelDeprecations(path)
+		expect(read.get("kimi-a")?.sunset_at).toBeUndefined()
+		expect(read.get("kimi-b")?.sunset_at).toBeUndefined()
+		// Valid fields survive.
+		expect(read.get("kimi-a")?.deprecated_at).toBe("2026-09-01T00:00:00Z")
+	})
 })
 
 describe("collectDeprecationMarkers", () => {

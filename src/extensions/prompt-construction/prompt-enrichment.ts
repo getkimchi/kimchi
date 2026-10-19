@@ -30,7 +30,7 @@ import { join } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
-import { DEPRECATION_NOTIFY_WINDOW_DAYS, pickReplacementSlug, readModelDeprecations } from "../../model-deprecation.js"
+import { deprecationNotifyCutoff, pickReplacementSlug, readModelDeprecations } from "../../model-deprecation.js"
 import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
@@ -103,12 +103,6 @@ function readGitRemote(cwd: string): string | undefined {
 // Tracks `${sessionId} ${modelId}` pairs that already received a deprecation
 // notification, so each model warns at most once per session.
 const deprecatedNotificationFired = new Set<string>()
-
-/**
- * How close a model's retirement must be (in days) before session-start
- * warnings fire. Shared with the /model picker marker — see
- * DEPRECATION_NOTIFY_WINDOW_DAYS in model-deprecation.ts.
- */
 
 export function _resetDeprecatedNotificationTracking(): void {
 	deprecatedNotificationFired.clear()
@@ -267,7 +261,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 		// noise — the picker tags and role-remap logic stay ungated regardless.
 		// Evaluated once per process: the notice window, like the rest of the
 		// catalog snapshot, is startup-bound.
-		const notifyCutoff = Date.now() + DEPRECATION_NOTIFY_WINDOW_DAYS * 86_400_000
+		const notifyCutoff = deprecationNotifyCutoff()
 		const deprecatedWarnings = new Map<
 			string,
 			{ replacement?: string; deprecatedAt?: string; sunsetAt?: string; isPast?: boolean; note?: string }
