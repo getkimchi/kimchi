@@ -49,8 +49,8 @@ function readState(path: string): AutoUpdateState {
 	}
 }
 
-/** Default for autoUpdate is `true` (opt-out), matching Claude Code's
- *  native-install default. Only an explicit `false` disables it. */
+/** Default for autoUpdate is `true` (opt-out). Only an explicit
+ *  `false` disables it. */
 export function loadAutoUpdateSetting(): boolean {
 	const state = readState(autoUpdateStatePath())
 	// Missing or wrong type → opt-out default. Only an explicit `false` opts out.
