@@ -1,5 +1,5 @@
 import type { PromptResponse } from "@agentclientprotocol/sdk"
-import type { Artifact } from "./tool-calls/artifacts.js"
+import type { TurnArtifactBuffer } from "./artifact-links.js"
 
 export type TurnContext = {
 	cancelled: boolean
@@ -37,23 +37,13 @@ export type TurnContext = {
 	 */
 	toolCallArgs: Map<string, { toolName: string; args: unknown }>
 	/**
-	 * Generated user-openable files detected from completed tool calls this
-	 * turn (see tool-calls/artifacts.ts), keyed by resolved path for dedupe.
-	 * Emitted once at turn end (finalizeTurn) as trailing `resource_link`
-	 * agent_message_chunks carrying `_meta["kimchi.dev"].type = "artifact"`. A
-	 * turn that emitted no text block never attaches (see lastBlockId) and
-	 * its artifacts are dropped.
+	 * Per-turn artifact accumulator (artifact-links.ts): generated
+	 * user-openable files detected from completed tool calls plus the
+	 * turn-scoped attachment point (the last text block id; thinking blocks
+	 * are never registered). finalizeTurn flushes it as trailing
+	 * `resource_link` chunks; a text-less turn drops its artifacts.
 	 */
-	artifacts: Map<string, Artifact>
-	/**
-	 * The turn's most recently allocated agent_message (text) block id — the
-	 * attachment point for the turn-scoped artifact link chunks at
-	 * finalizeTurn. Thinking blocks never update this: a chunk attached to a
-	 * thinking block id would render a spurious empty agent message on
-	 * kind-keyed clients. Never a fresh id so replay produces the same
-	 * messageId (live/replay parity).
-	 */
-	lastBlockId?: string
+	artifactBuffer: TurnArtifactBuffer
 	usage: TurnUsage
 	resolve: (res: PromptResponse) => void
 	reject: (err: unknown) => void

@@ -133,6 +133,7 @@ import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { emitAgentActivityUpdate } from "./activity-updates.js"
+import { TurnArtifactBuffer } from "./artifact-links.js"
 import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, kimchiDevMetaOf } from "./capabilities.js"
 import { composeAvailableCommands, createCommandsRefresher, discoverSkillCommandsMap } from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
@@ -169,7 +170,7 @@ import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
-import { type Artifact, artifactsFromToolCall, resolveToolPath } from "./tool-calls/artifacts.js"
+import { resolveToolPath } from "./tool-calls/artifacts.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
 import {
 	buildPathTrustInfo,
@@ -1076,7 +1077,7 @@ export class KimchiAcpAgent implements Agent {
 			preWriteContents: new Map(),
 			pendingFileChanges: new Map(),
 			toolCallArgs: new Map(),
-			artifacts: new Map(),
+			artifactBuffer: new TurnArtifactBuffer(),
 			usage: emptyTurnUsage(),
 			resolve: turnResolve,
 			reject: turnReject,
@@ -1435,7 +1436,7 @@ export class KimchiAcpAgent implements Agent {
 					// chunk would render as a spurious empty agent message on
 					// kind-keyed clients.
 					if (ame.type === "text_delta") {
-						turn.lastBlockId = messageId
+						turn.artifactBuffer.noteTextBlock(messageId)
 					}
 					// modelAttributionFrom reads the partial assistant message — the
 					// same best-known tuple the auto-model extension learns from — so
@@ -1606,7 +1607,7 @@ export class KimchiAcpAgent implements Agent {
 						}
 						// Text blocks only reach here (thinking is filtered above):
 						// latest turn-scoped attachment point for artifact links.
-						turn.lastBlockId = messageId
+						turn.artifactBuffer.noteTextBlock(messageId)
 						const modelMeta = modelMetaFor(entry.emittedModelMeta, messageId, modelAttributionFrom(msg))
 						this.send({
 							sessionId,
@@ -1754,9 +1755,12 @@ export class KimchiAcpAgent implements Agent {
 				const stashed = turn.toolCallArgs.get(event.toolCallId)
 				turn.toolCallArgs.delete(event.toolCallId)
 				if (!event.isError && stashed) {
-					for (const artifact of artifactsFromToolCall(stashed.toolName, stashed.args, event.result, entry.cwd)) {
-						turn.artifacts.set(artifact.path, artifact)
-					}
+					turn.artifactBuffer.collectFromToolCall({
+						toolName: stashed.toolName,
+						args: stashed.args,
+						result: event.result,
+						cwd: entry.cwd,
+					})
 				}
 				const preWrite = turn.preWriteContents.get(event.toolCallId)
 				turn.preWriteContents.delete(event.toolCallId)
@@ -1822,15 +1826,11 @@ export class KimchiAcpAgent implements Agent {
 		// replay emitted earlier, never a fresh one, so live and replay produce
 		// the same attachment (and seedBlockCounterFromBranch's count stays
 		// exact).
-		const pendingArtifacts = new Map<string, Artifact>()
-		let turnLastBlockId: string | undefined
+		const artifactBuffer = new TurnArtifactBuffer()
 		const flushTurnArtifacts = () => {
-			if (pendingArtifacts.size === 0) return
-			const artifacts = [...pendingArtifacts.values()]
-			pendingArtifacts.clear()
-			const record = this.sessions.get(sessionId)
-			this.emitArtifactLinkChunks(sessionId, record?.emittedModelMeta ?? new Map(), turnLastBlockId, artifacts)
-			turnLastBlockId = undefined
+			for (const update of artifactBuffer.flush(this.sessions.get(sessionId)?.emittedModelMeta)) {
+				this.send({ sessionId, update })
+			}
 		}
 
 		for (const entry of entries) {
@@ -1856,9 +1856,9 @@ export class KimchiAcpAgent implements Agent {
 					toolResults,
 					this.sessions.get(sessionId),
 					modelAttributionFrom(msg),
-					pendingArtifacts,
+					artifactBuffer,
 				)
-				if (lastTextBlockId !== undefined) turnLastBlockId = lastTextBlockId
+				if (lastTextBlockId !== undefined) artifactBuffer.noteTextBlock(lastTextBlockId)
 			}
 			// toolResult: handled inline alongside its originating toolCall above.
 		}
@@ -1925,7 +1925,7 @@ export class KimchiAcpAgent implements Agent {
 		toolResults: Map<string, ReplayToolResult>,
 		record: SessionRecord | undefined,
 		attribution: ModelAttribution,
-		pendingArtifacts: Map<string, Artifact>,
+		artifactBuffer: TurnArtifactBuffer,
 	): string | undefined {
 		if (!Array.isArray(content)) return
 		// Allocates a fresh session-unique messageId for every emitted chunk
@@ -2046,9 +2046,7 @@ export class KimchiAcpAgent implements Agent {
 					}),
 				})
 				if (result && !result.isError && record) {
-					for (const artifact of artifactsFromToolCall(name, args, result, record.cwd, { verifyExists: false })) {
-						pendingArtifacts.set(artifact.path, artifact)
-					}
+					artifactBuffer.collectFromToolCall({ toolName: name, args, result, cwd: record.cwd, verifyExists: false })
 				}
 				// The branch may contain multiple toolCalls with the same upstream id
 				// (e.g., across a compaction boundary). Drop the mapping after replaying
@@ -2482,32 +2480,6 @@ export class KimchiAcpAgent implements Agent {
 	 * would WIPE the attribution that block id just carried (including a
 	 * correction emitted moments earlier).
 	 */
-	private emitArtifactLinkChunks(
-		sessionId: string,
-		seenModelMeta: Map<string, ModelAttribution>,
-		messageId: string | undefined,
-		artifacts: Artifact[],
-	): void {
-		if (artifacts.length === 0 || messageId === undefined) return
-		const attribution = seenModelMeta.get(messageId)
-		for (const artifact of artifacts) {
-			this.send({
-				sessionId,
-				update: {
-					sessionUpdate: "agent_message_chunk",
-					content: {
-						type: "resource_link",
-						uri: artifact.uri,
-						name: artifact.name,
-						...(artifact.mimeType !== undefined ? { mimeType: artifact.mimeType } : {}),
-					},
-					messageId,
-					_meta: kimchiDevMetaOf({ ...(attribution ?? {}), type: "artifact" }),
-				},
-			})
-		}
-	}
-
 	private finalizeTurn(entry: SessionRecord, stopReason: PromptResponse["stopReason"]): void {
 		const turn = entry.turn
 		if (!turn) return
@@ -2522,10 +2494,8 @@ export class KimchiAcpAgent implements Agent {
 			// could be reproduced by replay. Inside the try: a synchronous throw
 			// must never prevent turn resolution (this finalize path has been
 			// wedge-prone before — see comments in git history).
-			if (turn.artifacts.size > 0) {
-				const artifacts = [...turn.artifacts.values()]
-				turn.artifacts.clear()
-				this.emitArtifactLinkChunks(entry.session.sessionId, entry.emittedModelMeta, turn.lastBlockId, artifacts)
+			for (const update of turn.artifactBuffer.flush(entry.emittedModelMeta)) {
+				this.send({ sessionId: entry.session.sessionId, update })
 			}
 			this.emitUsageUpdate(entry.session, turn.usage)
 		} finally {
