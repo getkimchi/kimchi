@@ -36,6 +36,13 @@ test("plan-only policy hides execution options in the plan review menu", async (
 		},
 		async (fixture, trace) => {
 			terminal.submit("Plan a cache migration and wait for approval.")
+			// The plan-only policy surfaces persistently from session start: the
+			// status line warns that execution isn't available before any submit.
+			await waitForText(terminal, "plan-only", { full: false })
+			const started = viewText(terminal)
+			expect(started).toContain("Org policy is plan-only")
+			trace.step("plan-only status warning visible at session start")
+
 			await waitForText(terminal, "Rework the plan", { full: false })
 			const review = viewText(terminal)
 			// The menu explains the policy up front and offers no dead-end options.

@@ -386,7 +386,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		ctx.ui.setStatus("permissions-mode", `${name} ${hint}`)
 	}
 
-	function maybeShowYoloWarning(ctx: ExtensionContext) {
+	function maybeShowPolicyWarning(ctx: ExtensionContext) {
 		if (!ctx.hasUI) return
 		const { mode, initiatedBy } = getRuntimePermissionMode()
 		if (mode === "yolo" && initiatedBy === "user") {
@@ -394,6 +394,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				"permissions-warning",
 				"WARNING: all permission checks disabled. Recommended for sandbox environments only.",
 			)
+		} else if (!hasExecutableMode()) {
+			// Org policy is plan-only: no approved plan can ever proceed to
+			// execution and shift+tab has nowhere to go. Surface that from session
+			// start, persistently (ferment's degraded gate does the same), instead
+			// of only a one-shot notify when the plan review menu opens.
+			ctx.ui.setStatus("permissions-warning", "Org policy is plan-only — execution isn't available in this session.")
 		} else {
 			ctx.ui.setStatus("permissions-warning", undefined)
 		}
@@ -431,7 +437,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		for (const ctrl of activeAbortControllers) ctrl.abort()
 		activeAbortControllers.clear()
 		updateStatus(ctx)
-		maybeShowYoloWarning(ctx)
+		maybeShowPolicyWarning(ctx)
 		appliedPermissionMode = next
 		if (reason !== "session_start" && next.initiatedBy === "user") maybePersistPermissionMode(ctx, reason)
 		pi.events.emit(PERMISSION_EVENTS.MODE_CHANGED, { from, to: next, reason })

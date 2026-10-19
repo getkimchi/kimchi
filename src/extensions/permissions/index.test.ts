@@ -4796,6 +4796,23 @@ describe("adhoc submit_plan org-policy dead-ends", () => {
 		}
 	})
 
+	it("plan-only policy: session start sets a persistent status warning", async () => {
+		await seedOrgPolicy({ plan: true, default: false, auto: false, yolo: false })
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith("permissions-warning", expect.stringContaining("plan-only"))
+	})
+
+	it("a policy with an executable mode leaves the warning status empty", async () => {
+		await seedOrgPolicy({ plan: true, default: true, auto: false, yolo: false })
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+		// expect.anything() does not match the undefined clear-call.
+		expect(ctx.ui.setStatus).not.toHaveBeenCalledWith("permissions-warning", expect.anything())
+	})
+
 	it("plan-only policy: a forced plannotator execute warns, closes the review, and stays in plan mode", async () => {
 		await seedOrgPolicy({ plan: true, default: false, auto: false, yolo: false })
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
