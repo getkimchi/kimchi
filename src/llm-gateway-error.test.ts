@@ -418,6 +418,50 @@ describe("model_retired", () => {
 		})
 	})
 
+	it("parses the deprecation-service shape (replacementModel + alternatives with slug/reason/priority)", () => {
+		const error = classifyLLMGatewayError(
+			JSON.stringify({
+				error: {
+					message: "Model 'kimi-k2.7' has been retired.",
+					type: "model_gone",
+					code: 410,
+					deprecatedTime: "2026-10-05T16:30:00Z",
+					sunsetTime: "2026-10-18T23:59:59Z",
+					replacementModel: "",
+					alternatives: [
+						{ slug: "glm-5.3", reason: "Closest to K2.7 pricing", priority: 0 },
+						{ slug: "glm-5.3-flash", reason: "Cheaper than K2.7", priority: 1 },
+						{ slug: "deepseek-v4.1-flash", reason: "Cheaper than K2.7", priority: 2 },
+						{ slug: "kimi-k3", reason: "Latest generation", priority: 3 },
+					],
+					docs: "https://docs.kimchi.dev/deprecations/kimi-k2.7",
+				},
+			}),
+		)
+		expect(error?.reason).toBe("model_retired")
+		expect(error?.modelRetiredInfo).toEqual({
+			replacement: undefined,
+			alternatives: [
+				{ slug: "glm-5.3", reason: "Closest to K2.7 pricing" },
+				{ slug: "glm-5.3-flash", reason: "Cheaper than K2.7" },
+				{ slug: "deepseek-v4.1-flash", reason: "Cheaper than K2.7" },
+				{ slug: "kimi-k3", reason: "Latest generation" },
+			],
+			docs: "https://docs.kimchi.dev/deprecations/kimi-k2.7",
+		})
+	})
+
+	it("ignores an empty replacementModel string and falls back to alternatives", () => {
+		const error = classifyLLMGatewayError(
+			'{"error": {"type": "model_gone", "code": 410, "replacementModel": "", "alternatives": [{"slug": "kimi-k3"}], "docs": "https://docs.kimchi.dev/deprecations/kimi-k2.7"}}',
+		)
+		expect(error?.modelRetiredInfo).toEqual({
+			replacement: undefined,
+			alternatives: [{ slug: "kimi-k3", reason: undefined }],
+			docs: "https://docs.kimchi.dev/deprecations/kimi-k2.7",
+		})
+	})
+
 	it("tolerates the legacy string-array alternatives shape", () => {
 		const error = classifyLLMGatewayError(
 			'{"error": {"type": "model_gone", "message": "Model kimi-k2.5 has been retired.", "suggested_alternatives": ["kimi-k2.7", "glm-5.3"]}}',

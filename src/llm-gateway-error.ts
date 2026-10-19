@@ -152,20 +152,61 @@ function unescapeJsonString(value: string): string {
 	return value.replace(/\\(.)/g, (_, ch) => (ch === "n" ? "\n" : ch === "t" ? "\t" : ch))
 }
 
+interface ParsedAlternative {
+	slug: string
+	reason?: string
+	priority?: number
+}
+
+function parseAlternativesArray(raw: string): ModelRetiredAlternative[] | undefined {
+	try {
+		const parsed: unknown = JSON.parse(`[${raw}]`)
+		if (!Array.isArray(parsed)) return undefined
+		const withPriority: ParsedAlternative[] = []
+		for (const entry of parsed) {
+			if (typeof entry === "string") {
+				withPriority.push({ slug: entry })
+				continue
+			}
+			if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+				const e = entry as Record<string, unknown>
+				const slug = typeof e.id === "string" ? e.id : typeof e.slug === "string" ? e.slug : undefined
+				if (slug === undefined) continue
+				const reason = typeof e.reason === "string" ? e.reason : undefined
+				const priority = typeof e.priority === "number" ? e.priority : undefined
+				withPriority.push({ slug, reason, priority })
+			}
+		}
+		if (withPriority.length === 0) return undefined
+		withPriority.sort((a, b) => (a.priority ?? Infinity) - (b.priority ?? Infinity))
+		return withPriority.map(({ slug, reason }) => ({ slug, reason }))
+	} catch {
+		return undefined
+	}
+}
+
 /** Extract replacement hints from a model_retired error body, when present. */
 export function parseModelRetiredInfo(rawMessage: string): ModelRetiredInfo | undefined {
-	const replacement = /"replacement"\s*:\s*"([^"]+)"/.exec(rawMessage)?.[1]
+	const replacementMatch =
+		/"replacement"\s*:\s*"([^"]*)"/.exec(rawMessage)?.[1] ?? /"replacementModel"\s*:\s*"([^"]*)"/.exec(rawMessage)?.[1]
+	const replacement = replacementMatch || undefined
 	const docs = /"docs"\s*:\s*"([^"]+)"/.exec(rawMessage)?.[1]
-	const alternativesRaw = /"suggested_alternatives"\s*:\s*\[([^\]]*)\]/.exec(rawMessage)?.[1]
+	const alternativesMatch = /"(?:suggested_alternatives|alternatives)"\s*:\s*\[([^\]]*)\]/.exec(rawMessage)
 	let alternatives: ModelRetiredAlternative[] = []
-	if (alternativesRaw) {
-		alternatives = Array.from(alternativesRaw.matchAll(ALTERNATIVE_OBJECT_RE), (m) => ({
-			slug: unescapeJsonString(m[1]),
-			reason: m[2] !== undefined ? unescapeJsonString(m[2]) : undefined,
-		}))
-		if (alternatives.length === 0) {
-			// Legacy string-array shape: ["glm-5.3", "kimi-k3"].
-			alternatives = Array.from(alternativesRaw.matchAll(/"([^"\\]+)"/g), (m) => ({ slug: m[1] }))
+	if (alternativesMatch) {
+		const parsed = parseAlternativesArray(alternativesMatch[1])
+		if (parsed) {
+			alternatives = parsed
+		} else {
+			// Fall back to regex parsing for the legacy id/reason object form.
+			alternatives = Array.from(alternativesMatch[1].matchAll(ALTERNATIVE_OBJECT_RE), (m) => ({
+				slug: unescapeJsonString(m[1]),
+				reason: m[2] !== undefined ? unescapeJsonString(m[2]) : undefined,
+			}))
+			if (alternatives.length === 0) {
+				// Legacy string-array shape: ["glm-5.3", "kimi-k3"].
+				alternatives = Array.from(alternativesMatch[1].matchAll(/"([^"\\]+)"/g), (m) => ({ slug: m[1] }))
+			}
 		}
 	}
 	if (!replacement && !docs && alternatives.length === 0) return undefined
