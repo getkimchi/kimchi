@@ -843,6 +843,51 @@ describe("todo check-in gate", () => {
 		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
 	})
 
+	it("a reconciliation tool admitted in the same batch passes while work tools stay blocked", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
+		await fireInput(harness, ctx)
+
+		// Parallel batch admission: both calls are admitted before either
+		// executes. The reconciliation tool passes, but the work tool admitted
+		// before the reconciliation completed is still blocked — execution
+		// order within a batch must not be assumed.
+		expect(
+			await harness.fire("tool_call", { type: "tool_call", toolCallId: "m1", toolName: "mark_todo", input: {} }, ctx),
+		).toEqual({ block: false })
+		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
+
+		// The blocked work call never executed — no work side effects: the
+		// cumulative work counter did not age.
+		expect(getWorkToolCalls("session")).toBe(0)
+
+		// Once the admitted reconciliation executes, later admissions pass.
+		await harness.registeredTool("mark_todo").execute("m1", { id: 1, status: "pending" }, undefined, undefined, ctx)
+		expect(await fireWork(harness, ctx, "w2")).toEqual({ block: false })
+	})
+
+	it("a work call admitted before newer input finishes; subsequent admissions pass the check", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		// Admitted while no check is pending.
+		expect(await fireWork(harness, ctx, "w1")).toEqual({ block: false })
+
+		// Newer input arrives while the admitted call is executing…
+		await fireInput(harness, ctx)
+		// …the already-admitted call still finishes (nothing revokes it)…
+		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		// …but subsequent admissions must pass the newer check first.
+		expect(await fireWork(harness, ctx, "w2")).toMatchObject({ block: true })
+	})
+
 	it("escalates after 50 ignored work calls, bounded to two openings per request", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])

@@ -300,3 +300,65 @@ test("plan submission: stale final list arms the check-in gate for the approval 
 		},
 	)
 })
+
+test("check-in gate: input while gated requires reconciliation against the latest direction", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "todo-checkin-superseded-revision",
+			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
+			responses: [
+				// Turn 1: create the list, then answer. The create reconciles for
+				// revision 1, so the text-only answer needs no cleanup continuation.
+				tool("create_todos", { todos: [{ content: "Verify the input", status: "pending" }] }),
+				{ stream: ["Tracking the task now."] },
+				// Turn 2 (input revision 2 — changed direction): work tools are
+				// blocked while the check is pending; a repeated attempt returns
+				// the current instructions without new steers.
+				tool("bash", { command: "printf 'first attempt\\n'" }),
+				tool("bash", { command: "printf 'second attempt\\n'" }),
+				// A question to the user ends the turn — awaiting an answer, so
+				// neither the closure check nor the continuation nudge fires; the
+				// check stays pending across the turn boundary.
+				{ stream: ["Both attempts are blocked by the check-in. Should I proceed with the current direction?"] },
+				// Turn 3 (input revision 3 — the latest direction): the model still
+				// holds revision 2 from the block reason it saw, so its
+				// confirmation is stale — rejected with the current revision and
+				// the check stays pending.
+				tool("confirm_todos", { inputRevision: 2, expected: [{ id: 1, status: "pending" }] }),
+				// Reconciling against the latest direction (revision 3) is what
+				// unlocks the work tools.
+				tool("confirm_todos", { inputRevision: 3, expected: [{ id: 1, status: "pending" }] }),
+				tool("bash", { command: "printf 'resumed with the new direction\\n'" }),
+				{ stream: ["All done with the new direction."] },
+				// Keepalive for the bounded closure/continuation turn after the
+				// final text-only reply, if one fires.
+				{ stream: ["<done>"] },
+			],
+		},
+		async (fixture, trace) => {
+			const chat = () => fixture.fake.requests.filter((request) => request.url === "/openai/v1/chat/completions")
+			terminal.submit("Verify the input and keep the list accurate.")
+			await waitForText(terminal, "Tracking the task now.")
+
+			terminal.submit("Now do it differently.")
+			await waitForText(terminal, "Should I proceed with the current direction?", { timeoutMs: STREAM_TIMEOUT_MS })
+
+			terminal.submit("Actually, redo it the new way instead.")
+			await waitForText(terminal, "All done with the new direction.", { timeoutMs: STREAM_TIMEOUT_MS })
+
+			const history = JSON.stringify(chat())
+			// The gate blocked work against revision 2 and carried its instructions.
+			expect(history).toContain("check-in pending (input revision 2)")
+			// The newer direction superseded the pending check: the model's
+			// revision-2 confirmation was rejected as stale…
+			expect(history).toContain("The accepted input revision is now 3 (you confirmed revision 2)")
+			// …and only reconciliation against revision 3 released the work
+			// tools — no block ever carried revision 3, and work resumed.
+			expect(history).toContain("Confirmed 1 todos")
+			expect(history).not.toContain("check-in pending (input revision 3)")
+			expect(history).toContain("resumed with the new direction")
+			trace.step("superseded input: stale revision rejected, latest direction unlocks work")
+		},
+	)
+})
