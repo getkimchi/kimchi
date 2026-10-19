@@ -1,5 +1,5 @@
 /**
- * Document skills binary smoke: every pptx.mjs subcommand executed
+ * Document skills binary smoke: every pptx.mjs / pdf.mjs subcommand executed
  * against the compiled binary's embedded runtime (`BUN_BE_BUN=1 kimchi`), with
  * real fixtures — the "does it execute and produce a working artifact" proof
  * that CI runs on the canary smoke job.
@@ -52,5 +52,55 @@ describe("document skills under the compiled binary", () => {
 		})
 		expect(edit.status).toBe(0)
 		expect(readFileSync(join(workDir, "e.pptx"))).toEqual(original)
+	})
+
+	it("pdf.mjs: create (unicode) → read → info → split → merge → reorder → rotate", () => {
+		writeFileSync(
+			join(workDir, "doc.md"),
+			"# Rapport\n\nTotal **cost** ici — Zażółć.\n\n- uno\n- due\n\n| Item | N |\n|---|---|\n| x | 1 |\n\n---\n\n# Second page\n\nfin.\n",
+		)
+		const create = runSkillScript({ workDir, cli: "pdf", args: ["create", "doc.pdf", "--content", "doc.md"] })
+		expect(create.status).toBe(0)
+		const read = runSkillScript({ workDir, cli: "pdf", args: ["read", "doc.pdf"] })
+		expect(read.stdout).toContain("Rapport")
+		expect(read.stdout).toContain("Zażółć")
+		expect(read.stdout).toContain("Page 2")
+		const info = runSkillScript({ workDir, cli: "pdf", args: ["info", "doc.pdf"] })
+		expect(JSON.parse(info.stdout)).toMatchObject({ pageCount: 2, encrypted: false })
+		expect(
+			runSkillScript({ workDir, cli: "pdf", args: ["split", "doc.pdf", "--pages", "2-2", "--out", "p2.pdf"] }).status,
+		).toBe(0)
+		expect(JSON.parse(runSkillScript({ workDir, cli: "pdf", args: ["info", "p2.pdf"] }).stdout).pageCount).toBe(1)
+		const merge = runSkillScript({ workDir, cli: "pdf", args: ["merge", "m.pdf", "p2.pdf", "doc.pdf"] })
+		expect(merge.status).toBe(0)
+		expect(JSON.parse(runSkillScript({ workDir, cli: "pdf", args: ["info", "m.pdf"] }).stdout).pageCount).toBe(3)
+		expect(
+			runSkillScript({ workDir, cli: "pdf", args: ["reorder", "m.pdf", "--order", "3,2,1", "--out", "r.pdf"] }).status,
+		).toBe(0)
+		expect(
+			runSkillScript({ workDir, cli: "pdf", args: ["rotate", "r.pdf", "--out", "rot.pdf", "--angle", "90"] }).status,
+		).toBe(0)
+	})
+
+	it("pdf.mjs: text fields list and fill", async () => {
+		// @cantoo/pdf-lib is a repo dependency; build a one-field form fixture.
+		const { PDFDocument } = await import("@cantoo/pdf-lib")
+		const doc = await PDFDocument.create()
+		const page = doc.addPage([400, 300])
+		const form = doc.getForm()
+		const t = form.createTextField("user.name")
+		t.addToPage(page, { x: 50, y: 200, width: 200, height: 20 })
+		writeFileSync(join(workDir, "form.pdf"), await doc.save())
+		const fields = runSkillScript({ workDir, cli: "pdf", args: ["fields", "form.pdf"] })
+		expect(fields.stdout).toContain('"name":"user.name"')
+		writeFileSync(join(workDir, "v.json"), JSON.stringify({ "user.name": "Ada" }))
+		const fill = runSkillScript({
+			workDir,
+			cli: "pdf",
+			args: ["fill-form", "form.pdf", "--out", "filled.pdf", "--values", "v.json"],
+		})
+		expect(fill.status).toBe(0)
+		const filled = runSkillScript({ workDir, cli: "pdf", args: ["fields", "filled.pdf"] })
+		expect(filled.stdout).toContain('"value":"Ada"')
 	})
 })
