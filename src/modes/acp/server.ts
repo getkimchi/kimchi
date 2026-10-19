@@ -3,10 +3,8 @@
 
 import { randomUUID } from "node:crypto"
 import { closeSync, openSync, readdirSync, readFileSync, readSync } from "node:fs"
-import { homedir } from "node:os"
-import { isAbsolute, join, resolve } from "node:path"
+import { join } from "node:path"
 import { Readable, Writable } from "node:stream"
-import { fileURLToPath } from "node:url"
 import {
 	type SessionInfo as AcpSessionInfo,
 	type Agent,
@@ -171,6 +169,7 @@ import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
+import { type Artifact, artifactsFromToolCall, resolveToolPath } from "./tool-calls/artifacts.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
 import {
 	buildPathTrustInfo,
@@ -302,7 +301,9 @@ type SessionRecord = {
 	 * Per-assistant-message map from pi-mono's contentIndex → assigned
 	 * messageId. Cleared on each agent_start/message_start so a new assistant message
 	 * starts a fresh contentIndex namespace without colliding with the
-	 * previous message's assignments.
+	 * previous message's assignments. Insertion order follows first-emission
+	 * order of the message's blocks, so at message_end the last value is the
+	 * message's last emitted block id — flushArtifacts relies on this.
 	 */
 	contentIndexToBlockId: Map<number, string>
 	/**
@@ -491,6 +492,10 @@ export class KimchiAcpAgent implements Agent {
 				_meta: kimchiDevMetaOf({
 					...ADVERTISED_CAPABILITIES,
 					...(this.mcpProbe ? {} : { probe_mcp_server: false }),
+					// Not an ext method: advertises that assistant message chunks may
+					// carry `_meta["kimchi.dev"].artifacts` (generated openable files,
+					// e.g. pptx) for clients to render attachment chips.
+					artifacts: true,
 				}),
 			},
 			authMethods,
@@ -1069,6 +1074,8 @@ export class KimchiAcpAgent implements Agent {
 			lastStreamedContent: new Map(),
 			preWriteContents: new Map(),
 			pendingFileChanges: new Map(),
+			toolCallArgs: new Map(),
+			artifacts: new Map(),
 			usage: emptyTurnUsage(),
 			resolve: turnResolve,
 			reject: turnReject,
@@ -1632,6 +1639,9 @@ export class KimchiAcpAgent implements Agent {
 						},
 					})
 				}
+				// Artifact chips attach AFTER any attribution correction so the
+				// client's last-wins _meta handling sees the merged payload last.
+				this.flushArtifacts(sessionId, entry, turn, msg.content)
 				const usage = msg.usage
 				if (usage) {
 					updateTurnUsage(turn, usage)
@@ -1663,6 +1673,9 @@ export class KimchiAcpAgent implements Agent {
 				if (fileChanges.length > 0) {
 					turn.pendingFileChanges.set(event.toolCallId, fileChanges)
 				}
+				// tool_execution_end carries no args — stash them so artifact
+				// detection can pair args with the result there.
+				turn.toolCallArgs.set(event.toolCallId, { toolName: event.toolName, args: event.args })
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
 					// Pending tool_call was already sent via toolcall_start → emit update
@@ -1727,6 +1740,15 @@ export class KimchiAcpAgent implements Agent {
 				// retried call) can't leak stale diff data across tool calls.
 				const pending = turn.pendingFileChanges.get(event.toolCallId) ?? []
 				turn.pendingFileChanges.delete(event.toolCallId)
+				// Generated-artifact detection needs args+result together; the args
+				// stash is consumed here even on error so ids can't leak.
+				const stashed = turn.toolCallArgs.get(event.toolCallId)
+				turn.toolCallArgs.delete(event.toolCallId)
+				if (!event.isError && stashed) {
+					for (const artifact of artifactsFromToolCall(stashed.toolName, stashed.args, event.result, entry.cwd)) {
+						turn.artifacts.set(artifact.path, artifact)
+					}
+				}
 				const preWrite = turn.preWriteContents.get(event.toolCallId)
 				turn.preWriteContents.delete(event.toolCallId)
 				// Diffs are additional content blocks, appended after the existing
@@ -1781,11 +1803,22 @@ export class KimchiAcpAgent implements Agent {
 		const sessionId = session.sessionId
 		const entries = session.sessionManager.getBranch()
 		const toolResults = collectToolResults(entries)
+		// Artifacts discovered from one assistant message but unable to attach
+		// (the message emitted no block ids — a tool-call-only shape, common in
+		// multi-step turns) carry forward and flush on the next message that
+		// emits one — same deferral as the live turn's TurnContext.artifacts.
+		// Two per-turn boundaries mirror the live lifetime exactly: the map
+		// resets on each user message (live artifacts die with the turn), and
+		// leftovers at branch end are dropped (live never emits chips on a
+		// fresh block id — one without a persisted counterpart could not be
+		// reproduced on reload).
+		const pendingArtifacts = new Map<string, Artifact>()
 
 		for (const entry of entries) {
 			if (!entry || typeof entry !== "object" || entry.type !== "message") continue
 			const msg = entry.message
 			if (msg.role === "user") {
+				pendingArtifacts.clear()
 				const text = userMessageText(msg.content)
 				if (!text) continue
 				this.send({
@@ -1802,6 +1835,7 @@ export class KimchiAcpAgent implements Agent {
 					toolResults,
 					this.sessions.get(sessionId),
 					modelAttributionFrom(msg),
+					pendingArtifacts,
 				)
 			}
 			// toolResult: handled inline alongside its originating toolCall above.
@@ -1867,6 +1901,7 @@ export class KimchiAcpAgent implements Agent {
 		toolResults: Map<string, ReplayToolResult>,
 		record: SessionRecord | undefined,
 		attribution: ModelAttribution,
+		pendingArtifacts: Map<string, Artifact>,
 	): void {
 		if (!Array.isArray(content)) return
 		// Allocates a fresh session-unique messageId for every emitted chunk
@@ -1876,6 +1911,17 @@ export class KimchiAcpAgent implements Agent {
 			if (!record) return undefined
 			return `km.${record.nextBlockId++}`
 		}
+		// Most recent block id emitted for this message — the artifacts
+		// trailing chunk reuses it (never a fresh id) so replay sends no chunk
+		// that seedBlockCounterFromBranch didn't count, preserving live/replay
+		// messageId parity.
+		let lastEmittedMessageId: string | undefined
+		// Generated artifacts detected from this message's completed tool calls
+		// accumulate in pendingArtifacts (shared across the branch's messages):
+		// a message with no emitted block ids defers to the next one, mirroring
+		// the live turn's TurnContext.artifacts. Replay skips the on-disk
+		// existence check (files may be gone) — a chip for a deleted file is
+		// still informative; open failures are the client's UX concern.
 		// Buffer contiguous text blocks so a single assistant message renders as
 		// one agent_message_chunk per natural text segment — emit the full
 		// message as a single chunk, no per-token chunking. When a thinking or
@@ -1885,6 +1931,7 @@ export class KimchiAcpAgent implements Agent {
 		const flushText = () => {
 			if (textBuffer.length === 0) return
 			const messageId = nextMessageId()
+			lastEmittedMessageId = messageId ?? lastEmittedMessageId
 			const modelMeta = modelMetaFor(record?.emittedModelMeta, messageId, attribution)
 			this.send({
 				sessionId,
@@ -1909,6 +1956,7 @@ export class KimchiAcpAgent implements Agent {
 					} else if (part.kind === "thinking") {
 						flushText()
 						const messageId = nextMessageId()
+						lastEmittedMessageId = messageId ?? lastEmittedMessageId
 						const modelMeta = modelMetaFor(record?.emittedModelMeta, messageId, attribution)
 						this.send({
 							sessionId,
@@ -1929,6 +1977,7 @@ export class KimchiAcpAgent implements Agent {
 				// payload only matters for multi-turn provider continuity.
 				if (redacted || typeof thinking !== "string" || thinking.length === 0) continue
 				const messageId = nextMessageId()
+				lastEmittedMessageId = messageId ?? lastEmittedMessageId
 				const modelMeta = modelMetaFor(record?.emittedModelMeta, messageId, attribution)
 				this.send({
 					sessionId,
@@ -1973,6 +2022,11 @@ export class KimchiAcpAgent implements Agent {
 						rawOutput: result ? wireSafeToolResult(result) : undefined,
 					}),
 				})
+				if (result && !result.isError && record) {
+					for (const artifact of artifactsFromToolCall(name, args, result, record.cwd, { verifyExists: false })) {
+						pendingArtifacts.set(artifact.path, artifact)
+					}
+				}
 				// The branch may contain multiple toolCalls with the same upstream id
 				// (e.g., across a compaction boundary). Drop the mapping after replaying
 				// each call so the next one with the same upstream id gets a fresh id.
@@ -1982,6 +2036,17 @@ export class KimchiAcpAgent implements Agent {
 		// Trailing text after the last structural block (or a text-only message)
 		// still needs to land — flushText is a no-op when the buffer is empty.
 		flushText()
+		// Artifact chips mirror the live path's flushArtifacts: a trailing
+		// zero-length chunk on the message's last block id carrying
+		// `_meta["kimchi.dev"].artifacts`. A message with no emitted blocks
+		// (tool-call-only messages are a routine shape) leaves the artifacts in
+		// pendingArtifacts for the NEXT message that emits a block id — the
+		// live turn defers the same way.
+		if (pendingArtifacts.size > 0 && lastEmittedMessageId !== undefined && record) {
+			const artifacts = [...pendingArtifacts.values()]
+			pendingArtifacts.clear()
+			this.sendArtifactsChunk(sessionId, record.emittedModelMeta, lastEmittedMessageId, artifacts)
+		}
 	}
 
 	/**
@@ -2057,6 +2122,7 @@ export class KimchiAcpAgent implements Agent {
 		record.toolCallIdMap.delete(piToolCallId)
 		turn.announcedToolCallIds.delete(piToolCallId)
 		turn.lastStreamedContent.delete(piToolCallId)
+		turn.toolCallArgs.delete(piToolCallId)
 		if (opts.removeFromHidden) {
 			turn.hiddenToolCallIds.delete(piToolCallId)
 		}
@@ -2380,6 +2446,78 @@ export class KimchiAcpAgent implements Agent {
 		} else {
 			this.finalizeTurn(entry, "end_turn")
 		}
+	}
+
+	/**
+	 * Emit collected turn artifacts as `_meta["kimchi.dev"].artifacts` on a
+	 * trailing zero-length agent_message_chunk — the model-attribution
+	 * correction precedent: content-append is a no-op, the client's last-wins
+	 * _meta rule applies. Attached to the message's last non-thinking block
+	 * id; a message that produced no eligible blocks (tool-only, or
+	 * thinking-only) leaves the artifacts in place for a later message_end.
+	 *
+	 * Artifacts are NEVER emitted on a fresh block id: a `km.N` the client's
+	 * history never saw has no persisted counterpart, so replay could not
+	 * reproduce the chip — attaching only to real block ids keeps live and
+	 * replay in lockstep. Leftover artifacts at turn end are dropped.
+	 */
+	private flushArtifacts(
+		sessionId: string,
+		entry: SessionRecord,
+		turn: TurnContext,
+		content: AssistantMessage["content"],
+	): void {
+		if (turn.artifacts.size === 0) return
+		// contentIndexToBlockId is cleared on message_start (and agent_start),
+		// so at message_end it maps exactly this message's content blocks; its
+		// keys are content indexes, matching the final message's content
+		// array. The LAST inserted value is the last block to emit — blocks are
+		// allocated as their first delta arrives, matching block order.
+		//
+		// ...but skip thinking-kind block ids: an agent_message_chunk attached
+		// to a thinking block id renders a spurious empty agent message on
+		// kind-keyed clients (the same reason the attribution-correction loop
+		// above matches its update kind to the block type).
+		let messageId: string | undefined
+		for (const [contentIndex, blockId] of entry.contentIndexToBlockId) {
+			const blockKind = Array.isArray(content) ? content[contentIndex]?.type : undefined
+			if (blockKind === "thinking") continue
+			messageId = blockId
+		}
+		if (messageId === undefined) return
+		const artifacts = [...turn.artifacts.values()]
+		turn.artifacts.clear()
+		this.sendArtifactsChunk(sessionId, entry.emittedModelMeta, messageId, artifacts)
+	}
+
+	/**
+	 * The ONE wire shape for artifact chips — live (flushArtifacts) and
+	 * replay both route through here so the two paths can't drift: a
+	 * trailing zero-length agent_message_chunk with
+	 * `_meta["kimchi.dev"].artifacts`.
+	 *
+	 * The attribution already emitted for the messageId is merged in: the
+	 * client's _meta rule is last-wins on the whole blob per messageId
+	 * (docs/acp-model-attribution.md), so an artifacts-only payload would
+	 * WIPE any attribution this block just carried (including a correction
+	 * emitted moments earlier).
+	 */
+	private sendArtifactsChunk(
+		sessionId: string,
+		seenModelMeta: Map<string, ModelAttribution>,
+		messageId: string,
+		artifacts: Artifact[],
+	): void {
+		const attribution = seenModelMeta.get(messageId)
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "agent_message_chunk",
+				content: { type: "text", text: "" },
+				messageId,
+				_meta: kimchiDevMetaOf({ ...(attribution ?? {}), artifacts }),
+			},
+		})
 	}
 
 	private finalizeTurn(entry: SessionRecord, stopReason: PromptResponse["stopReason"]): void {
@@ -3074,26 +3212,6 @@ export function fileChangeToDiffContent(change: FileChange): ToolCallContent {
 			// files" mirror). Cast keeps the wire shape per the v1 mapping.
 			return { type: "diff", path: change.path, oldText: change.oldText ?? null } as ToolCallContent
 	}
-}
-
-// Faithful replication of pi's resolveToCwd (dist/core/tools/path-utils.js →
-// resolvePath with normalizeUnicodeSpaces + stripAtPrefix): the write tool
-// resolves args.path this way, so the pre-write read must match or a path
-// like "@notes.txt" or "~/file (with NBSP).md" would be misclassified as a
-// new file. pi-coding-agent only exports "." and "./hooks", so the helper
-// can't be imported — replicated here. Drift surfaces as an 'add' diff on an
-// overwritten file, not corruption.
-const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g
-function resolveToolPath(input: string, cwd: string): string {
-	let p = input.replace(UNICODE_SPACES, " ")
-	if (p.startsWith("@")) p = p.slice(1)
-	if (p === "~") {
-		p = homedir()
-	} else if (p.startsWith("~/") || (process.platform === "win32" && p.startsWith("~\\"))) {
-		p = join(homedir(), p.slice(2))
-	}
-	if (/^file:\/\//.test(p)) p = fileURLToPath(p)
-	return isAbsolute(p) ? resolve(p) : resolve(cwd, p)
 }
 
 // Reads the pre-write content for a `write` tool call. Returns null when the

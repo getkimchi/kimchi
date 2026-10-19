@@ -1,4 +1,5 @@
 import type { PromptResponse } from "@agentclientprotocol/sdk"
+import type { Artifact } from "./tool-calls/artifacts.js"
 
 export type TurnContext = {
 	cancelled: boolean
@@ -28,6 +29,22 @@ export type TurnContext = {
 	 * event resolves add-vs-modify from preWriteContents.
 	 */
 	pendingFileChanges: Map<string, PendingFileChange[]>
+	/**
+	 * toolName+args stashed at tool_execution_start per toolCallId so
+	 * tool_execution_end (which carries no args) can run generated-artifact
+	 * detection against args+result together. Same lifecycle as
+	 * pendingFileChanges: set at start, deleted at end / retireToolCall.
+	 */
+	toolCallArgs: Map<string, { toolName: string; args: unknown }>
+	/**
+	 * Generated user-openable files detected from completed tool calls this
+	 * turn (see tool-calls/artifacts.ts), keyed by resolved path for dedupe.
+	 * Flushed as `_meta["kimchi.dev"].artifacts` on a trailing zero-length
+	 * agent_message_chunk at message_end; artifacts from a message that
+	 * produced no content blocks survive to the next message_end (or to
+	 * finalizeTurn, which emits them on a fresh block id).
+	 */
+	artifacts: Map<string, Artifact>
 	usage: TurnUsage
 	resolve: (res: PromptResponse) => void
 	reject: (err: unknown) => void
