@@ -6222,6 +6222,63 @@ describe("generated artifacts (replay)", () => {
 		expect(chunks).toHaveLength(1)
 		expect((chunks[0].artifacts as Array<{ path: string }>).map((a) => a.path)).toEqual(["/tmp/dup.pdf"])
 	})
+
+	// Live artifact lifetime is per-turn (TurnContext.artifacts dies with the
+	// turn): a replayed user message ends the prior turn, so pending chips
+	// must NOT leak into the next turn's message.
+	it("does not leak pending artifacts across a user-message boundary", async () => {
+		const fake = new FakeAgentSession("loaded-noleak")
+		fake.branch = [
+			userTextEntry("first", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-n1", name: "bash", arguments: { command: "make" } }],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-n1", "bash", "wrote old.pdf", false, "trn1", "a1"),
+			userTextEntry("second", "u2", "a1"),
+			assistantTextEntry("Turn two.", "a2", "u2"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-noleak", cwd: "/tmp", mcpServers: [] })
+
+		expect(artifactChunks(updates)).toEqual([])
+	})
+
+	// A tool-call-only tail at branch end (e.g. an interrupted turn) has no
+	// block id and no later message: replay drops the chips, exactly like the
+	// live path (which never emits on a fresh block id).
+	it("drops artifacts of a tool-call-only tail at branch end", async () => {
+		const fake = new FakeAgentSession("loaded-tail")
+		fake.branch = [
+			userTextEntry("go", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "starting" },
+					{ type: "toolCall", id: "tc-t1", name: "bash", arguments: { command: "make" } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-t1", "bash", "wrote tail.pdf", false, "trt1", "a1"),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-t2", name: "bash", arguments: { command: "more" } }],
+				"a2",
+				"trt1",
+			),
+			toolResultEntry("tc-t2", "bash", "wrote tail2.pdf", false, "trt2", "a2"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-tail", cwd: "/tmp", mcpServers: [] })
+
+		// a1's own chip (tail.pdf from within a block-bearing message) lands on a1;
+		// the a2 tail's tail2.pdf is dropped.
+		const chunks = artifactChunks(updates)
+		expect(chunks).toHaveLength(1)
+		expect((chunks[0].artifacts as Array<{ path: string }>).map((a) => a.path)).toEqual(["/tmp/tail.pdf"])
+	})
 })
 
 // Pure adapter coverage for the FileChange → v1 Diff mapping, including the

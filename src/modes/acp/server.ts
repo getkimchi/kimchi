@@ -1807,12 +1807,18 @@ export class KimchiAcpAgent implements Agent {
 		// (the message emitted no block ids — a tool-call-only shape, common in
 		// multi-step turns) carry forward and flush on the next message that
 		// emits one — same deferral as the live turn's TurnContext.artifacts.
+		// Two per-turn boundaries mirror the live lifetime exactly: the map
+		// resets on each user message (live artifacts die with the turn), and
+		// leftovers at branch end are dropped (live never emits chips on a
+		// fresh block id — one without a persisted counterpart could not be
+		// reproduced on reload).
 		const pendingArtifacts = new Map<string, Artifact>()
 
 		for (const entry of entries) {
 			if (!entry || typeof entry !== "object" || entry.type !== "message") continue
 			const msg = entry.message
 			if (msg.role === "user") {
+				pendingArtifacts.clear()
 				const text = userMessageText(msg.content)
 				if (!text) continue
 				this.send({
@@ -2036,18 +2042,10 @@ export class KimchiAcpAgent implements Agent {
 		// (tool-call-only messages are a routine shape) leaves the artifacts in
 		// pendingArtifacts for the NEXT message that emits a block id — the
 		// live turn defers the same way.
-		if (pendingArtifacts.size > 0 && lastEmittedMessageId !== undefined) {
+		if (pendingArtifacts.size > 0 && lastEmittedMessageId !== undefined && record) {
 			const artifacts = [...pendingArtifacts.values()]
 			pendingArtifacts.clear()
-			this.send({
-				sessionId,
-				update: {
-					sessionUpdate: "agent_message_chunk",
-					content: { type: "text", text: "" },
-					messageId: lastEmittedMessageId,
-					_meta: kimchiDevMetaOf({ artifacts }),
-				},
-			})
+			this.sendArtifactsChunk(sessionId, record.emittedModelMeta, lastEmittedMessageId, artifacts)
 		}
 	}
 
