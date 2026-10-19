@@ -4,7 +4,7 @@ import { debuglog } from "node:util"
 import type { AnthropicMessagesCompat, Model, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
-import { resolveEndpoints } from "./config.js"
+import { pushUserWarning, resolveEndpoints } from "./config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
 import { AUTO_MODEL_DESCRIPTION, AUTO_MODEL_PROVIDER } from "./extensions/auto-model/constants.js"
 import { KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
@@ -630,7 +630,7 @@ export async function discoverModelsConfig(
 		if (options.allowCachedFallback === false) throw err
 		const cached = readCachedMetadata(modelsJsonPath) ?? []
 		if (cached.length === 0 && otherModels.length === 0) throw err
-		debug(`Failed to refresh models from API, using cached list: ${message}`)
+		pushUserWarning(`Failed to refresh models from API, using cached list: ${message}`)
 		return {
 			models: sortModels([...cached, ...otherModels]),
 			providers: buildModelsConfig(cached, options.endpoint).providers,
@@ -663,7 +663,7 @@ export async function discoverModelsConfig(
 		if (options.requireActiveModels) {
 			throw new ModelsFetchError("No active Kimchi models are available for this API key", { transient: false })
 		}
-		debug("All models from the API are deprecated or sunset. No active models available.")
+		pushUserWarning("All models from the API are deprecated or sunset. No active models available.")
 	}
 	const models = sortModels(activeModels)
 	return {

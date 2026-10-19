@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { consumeUserWarnings } from "./config.js"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "./credential-staleness.js"
 import { AUTO_MODEL_DESCRIPTION } from "./extensions/auto-model/constants.js"
 import { readModelDeprecations } from "./model-deprecation.js"
@@ -742,11 +743,11 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "saved-key")
 		const original = readFileSync(modelsJsonPath, "utf-8")
 		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 401, statusText: "Unauthorized" }))
-		debug.mockClear()
+		consumeUserWarnings()
 		const result = await updateModelsConfig(modelsJsonPath, "rejected-key")
 		expect(result.models.map((model) => model.slug)).toEqual(["kimi-k2.5"])
 		expect(isCredentialStale("rejected-key", "kimchi-dev")).toBe(true)
-		expect(debug).toHaveBeenCalledWith(expect.stringContaining("401 Unauthorized"))
+		expect(consumeUserWarnings()).toContainEqual(expect.stringContaining("401 Unauthorized"))
 		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
 	})
 
@@ -759,13 +760,13 @@ describe("updateModelsConfig", () => {
 		config.providers.custom = CUSTOM_PROVIDER
 		writeFileSync(modelsJsonPath, JSON.stringify(config))
 		const original = readFileSync(modelsJsonPath, "utf-8")
-		debug.mockClear()
+		consumeUserWarnings()
 		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 401, statusText: "Unauthorized" }))
 
 		const result = await updateModelsConfig(modelsJsonPath, "expired-kimchi-key")
 
 		expect(result.models.map((model) => model.slug)).toContain("custom-model")
-		expect(debug).toHaveBeenCalledWith(expect.stringContaining("401 Unauthorized"))
+		expect(consumeUserWarnings()).toContainEqual(expect.stringContaining("401 Unauthorized"))
 		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
 	})
 
@@ -898,8 +899,8 @@ describe("updateModelsConfig", () => {
 		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
 	})
 
-	it("warns via debuglog when all API models are sunset", async () => {
-		debug.mockClear()
+	it("buffers a user warning when all API models are sunset", async () => {
+		consumeUserWarnings()
 		const sunsetModel = {
 			slug: "old-model",
 			display_name: "Old Model",
@@ -917,7 +918,9 @@ describe("updateModelsConfig", () => {
 
 		const result = await updateModelsConfig(modelsJsonPath, "test-key")
 
-		expect(debug).toHaveBeenCalledWith(expect.stringContaining("All models from the API are deprecated or sunset"))
+		expect(consumeUserWarnings()).toContainEqual(
+			expect.stringContaining("All models from the API are deprecated or sunset"),
+		)
 		expect(result.models).toHaveLength(0)
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 		expect(config.providers["kimchi-dev"].models).toHaveLength(0)

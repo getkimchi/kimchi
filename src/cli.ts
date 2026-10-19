@@ -37,6 +37,7 @@ import "./session-selector-adapter.js"
 import {
 	applyTuiEnvOverrides,
 	captureApiKeyFromEnvironment,
+	consumeUserWarnings,
 	DEFAULT_SKILL_PATHS,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
@@ -73,6 +74,7 @@ import cacheSummaryExtension from "./extensions/cache-summary.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
+import configWarningsExtension from "./extensions/config-warnings.js"
 import contextAssemblyExtension from "./extensions/context-assembly.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
@@ -679,7 +681,14 @@ try {
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
 		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
 		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
+		// User-actionable warnings collected while config and models state was
+		// read (file permissions, invalid env URL overrides, model-refresh
+		// fallbacks). Print them pre-TUI on CLI/headless paths; TUI sessions
+		// see the same buffer via the config-warnings extension instead.
 		const terminalStartupOutputAllowed = isTerminalUiMode(rawArgs, terminalIo)
+		if (!terminalStartupOutputAllowed) {
+			for (const warning of consumeUserWarnings()) console.warn(`Warning: ${warning}`)
+		}
 		if (terminalStartupOutputAllowed) {
 			installTuiConsoleLogging()
 			await probeTerminalBackground()
@@ -787,6 +796,7 @@ try {
 			shellProfileMigrationExtension,
 			// session_start handlers are awaited in order; warn after the migration dialog closes.
 			createApiKeyWarningExtension(apiKeyWarning),
+			configWarningsExtension,
 			loopGuardExtension,
 			explorationGuardExtension,
 			reviewWriteGuardExtension,
