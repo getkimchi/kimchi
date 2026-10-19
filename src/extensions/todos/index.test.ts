@@ -916,8 +916,10 @@ describe("todo check-in gate", () => {
 		expect(getPendingCheckins("session")).toHaveLength(0)
 		expect(await fireWork(harness, ctx, "w1")).toEqual({ block: false })
 
-		// Delivery — the user message entering history (content parts form) —
-		// advances the revision and arms the check, in queue order.
+		// Delivery — the user message entering history — advances the revision
+		// and arms the check, in queue order. Deferred deliveries send no
+		// separate instruction: the block reason carries the instructions when
+		// work resumes.
 		await harness.fire(
 			"message_start",
 			{ type: "message_start", message: { role: "user", content: [{ type: "text", text: "Do it differently" }] } },
@@ -925,29 +927,56 @@ describe("todo check-in gate", () => {
 		)
 		expect(getInputRevision("session")).toBe(1)
 		expect(await fireWork(harness, ctx, "w2")).toMatchObject({ block: true })
-		expect(steerCallsByReason(harness.sendMessage, "user_input")).toHaveLength(1)
+		expect(steerCallsByReason(harness.sendMessage, "user_input")).toHaveLength(0)
 
-		// Reconcile, then the second follow-up delivers (plain-string content).
-		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "pending" }] }, "session", {
-			origin: "tool",
-			inputRevision: 1,
-		})
-		expect(await fireWork(harness, ctx, "w3")).toEqual({ block: false })
-		await harness.fire(
-			"message_start",
-			{ type: "message_start", message: { role: "user", content: "Also add tests" } },
-			ctx,
-		)
-		expect(getInputRevision("session")).toBe(2)
-		expect(await fireWork(harness, ctx, "w4")).toMatchObject({ block: true })
-
-		// Steered and idle inputs still advance at receipt (regression guard).
+		// A steered input after the follow-up advanced at receipt; its
+		// message_start is attributed to that input, not to the queued
+		// follow-up.
 		await harness.fire(
 			"input",
 			{ type: "input", text: "Steering now", source: "interactive", streamingBehavior: "steer" },
 			ctx,
 		)
+		expect(getInputRevision("session")).toBe(2)
+		await harness.fire(
+			"message_start",
+			{ type: "message_start", message: { role: "user", content: "Steering now" } },
+			ctx,
+		)
+		expect(getInputRevision("session")).toBe(2)
+
+		// Reconcile, then the second follow-up delivers with its text rewritten
+		// after the input event (skill/template expansion, a later handler's
+		// transform) — consumed positionally, since no unconsumed immediate
+		// input can have produced the message.
+		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "pending" }] }, "session", {
+			origin: "tool",
+			inputRevision: 2,
+		})
+		expect(await fireWork(harness, ctx, "w3")).toEqual({ block: false })
+		await harness.fire(
+			"message_start",
+			{
+				type: "message_start",
+				message: { role: "user", content: [{ type: "text", text: "Also add tests — expanded" }] },
+			},
+			ctx,
+		)
 		expect(getInputRevision("session")).toBe(3)
+		expect(await fireWork(harness, ctx, "w4")).toMatchObject({ block: true })
+
+		// A stale queue entry (dropped by upstream's clearQueue, e.g. an Esc
+		// pull-back) cannot double-advance a later resubmission of the same
+		// text: the resubmission's message is attributed to its own input.
+		await harness.fire(
+			"input",
+			{ type: "input", text: "continue", source: "interactive", streamingBehavior: "followUp" },
+			ctx,
+		)
+		await harness.fire("input", { type: "input", text: "continue", source: "interactive" }, ctx)
+		expect(getInputRevision("session")).toBe(4)
+		await harness.fire("message_start", { type: "message_start", message: { role: "user", content: "continue" } }, ctx)
+		expect(getInputRevision("session")).toBe(4)
 	})
 
 	it("read-only tools and questionnaire pass while gated", async () => {
@@ -1008,6 +1037,62 @@ describe("todo check-in gate", () => {
 		expect(outcomes).toHaveLength(2)
 
 		unsubscribe()
+	})
+
+	it("review handoffs are blocked despite their read-only taxonomy class", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
+		await fireInput(harness, ctx)
+		// submit_plan, workflow_submit_result, and workflow_submit_questions
+		// are classified read-only for permissions (they mutate nothing), but
+		// they end the turn for user/orchestrator review — the handoff must
+		// carry reconciled todos like any work tool.
+		for (const toolName of ["submit_plan", "workflow_submit_result", "workflow_submit_questions"]) {
+			expect(
+				await harness.fire("tool_call", { type: "tool_call", toolCallId: `h-${toolName}`, toolName, input: {} }, ctx),
+			).toMatchObject({ block: true })
+		}
+	})
+
+	it("one outcome per opening when several lists are pending", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "global task", status: "in_progress" }] }, "session")
+		const unregister = registerActiveTodoScopeProvider(() => STEP_SCOPE)
+		try {
+			applyWriteTodos({ scope: STEP_SCOPE, todos: [{ content: "step task", status: "in_progress" }] }, "session")
+			// Both lists are relevant and unfinished: one input arms one check
+			// per list.
+			await fireInput(harness, ctx)
+			const outcomes: Array<{ kind: string; outcome: string; method?: string; steer_id?: string }> = []
+			const unsubscribe = harness.events.on(STEER_EVENTS.OUTCOME, (payload: unknown) =>
+				outcomes.push(payload as { kind: string; outcome: string; method?: string; steer_id?: string }),
+			)
+
+			// Closing the first list emits nothing — the opening is still open.
+			applyWriteTodos({ scope: STEP_SCOPE, todos: [{ id: 1, content: "step task", status: "pending" }] }, "session", {
+				origin: "tool",
+				inputRevision: 1,
+			})
+			expect(outcomes).toHaveLength(0)
+
+			// Closing the last pending list emits exactly one complied.
+			// (Explicit global scope: the step-scope provider is still active,
+			// so an omitted scope would auto-target the step list.)
+			applyWriteTodos(
+				{ scope: { kind: "global" }, todos: [{ id: 1, content: "global task", status: "pending" }] },
+				"session",
+				{ origin: "tool", inputRevision: 1 },
+			)
+			expect(outcomes).toHaveLength(1)
+			expect(outcomes[0]).toMatchObject({ kind: "todo_checkin", outcome: "complied", method: "write" })
+			unsubscribe()
+		} finally {
+			unregister()
+		}
 	})
 
 	it("escalates after 50 ignored work calls, bounded to two openings per request", async () => {

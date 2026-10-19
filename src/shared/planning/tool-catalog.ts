@@ -175,6 +175,24 @@ export function isAdhocOnlyToolName(name: string): boolean {
  *  to recognize the plan handoff (e.g. the todos check-in boundary). */
 export const SUBMIT_PLAN_TOOL_NAME = "submit_plan"
 
+/** Framework-owned workflow control-plane tools that hand the turn over to
+ *  user/orchestrator review, like submit_plan. */
+export const WORKFLOW_SUBMIT_RESULT_TOOL_NAME = "workflow_submit_result"
+export const WORKFLOW_SUBMIT_QUESTIONS_TOOL_NAME = "workflow_submit_questions"
+
+/** Tools whose success ends the turn for user/orchestrator review. The
+ *  check-in gate blocks these deliberately (like every other non-read-only
+ *  tool): the handoff must carry reconciled todos, so a stale list cannot be
+ *  frozen into the review boundary. The permissions taxonomy classifies the
+ *  workflow submissions as read-only (they mutate nothing) — permission
+ *  concern is mutation, gate concern is the handoff — so the gate names them
+ *  explicitly instead of trusting the read-only exemption. */
+export const REVIEW_HANDOFF_TOOL_NAMES: ReadonlySet<string> = new Set([
+	SUBMIT_PLAN_TOOL_NAME,
+	WORKFLOW_SUBMIT_RESULT_TOOL_NAME,
+	WORKFLOW_SUBMIT_QUESTIONS_TOOL_NAME,
+])
+
 export const SHARED_PLANNING_TOOLS: ToolEntry[] = [{ name: SUBMIT_PLAN_TOOL_NAME, modes: ["adhoc"] }]
 
 const PLANNING_CORE_TOOLS = SHARED_CORE_TOOLS.filter((tool) => tool.name !== "mcp")

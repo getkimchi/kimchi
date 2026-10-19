@@ -426,6 +426,13 @@ resets staleness.
   reconciliation against the latest direction; explicit cancellation clears the list;
   ignore staleness reminders→gate→mismatch→confirm→work. Use deterministic shared fixtures
   and assert user-visible behavior, metadata, and absence of blocked tool side effects.
+  ACP note: the gate, per-scope staleness tracking, and outcome telemetry live in the
+  shared extension both surfaces run, exercised on ACP by todos-checkin (closure +
+  gate + confirm→work with plan metadata) and plan-updates snapshots; driving the
+  remaining TUI workflows (staleness escalation, gated-input supersession,
+  per-scope staleness, submit_plan) through ACP sessions requires elicitation-backed
+  multi-turn drivers — a separate work item, the same rationale as the conceded
+  submit_plan gap.
 
 **Files Changed**: new `checkin-gate.ts`; `tool.ts` (confirmation and write revision
 context); `store.ts` (write origin/revision notification context); `index.ts` (accepted
@@ -505,18 +512,37 @@ Chunk 5 reuses it for confirmations. Revert dependent chunks together when neces
     pass: they cannot make the list staler, and the model may need to inspect
     state or ask the user in order to reconcile against the latest direction.
     The classification reuses the permissions taxonomy — one source of truth.
+    Review handoffs are named explicitly (`REVIEW_HANDOFF_TOOL_NAMES`:
+    `submit_plan`, `workflow_submit_result`, `workflow_submit_questions`)
+    instead of trusting the read-only exemption: the taxonomy's concern is
+    mutation, the gate's concern is the handoff — both workflow submissions
+    are read-only for permissions yet end the turn for user/orchestrator
+    review, so they are gated like any work tool.
 11. **Queued follow-ups defer arming to delivery**: an input queued with
     `streamingBehavior: "followUp"` is delivered only after the current run
     ends; arming at receipt would block work against a direction the model
     cannot see and let a blind confirmation consume the revision. The revision
     advances and the check arms when the message enters history
-    (`message_start`), matched by text like upstream's queue drain.
+    (`message_start`), attributed causally rather than by timing: a user
+    message matches (in order) a recent immediate input's text (already
+    advanced at receipt), a queued follow-up's text (upstream may rewrite the
+    text between the input event and queueing — skill/template expansion, a
+    later input handler's transform), or — only when no unconsumed immediate
+    input could have produced the message — the oldest queued follow-up
+    positionally, which also keeps stale queue entries (dropped by upstream's
+    `clearQueue`) from double-advancing a later resubmission of the same
+    text. Deferred deliveries send no separate instruction steer: the block
+    reason carries the instructions with the model already looking at the new
+    direction.
 12. **Check-in outcomes are attributed, not watched**: the instruction fires
     carry no generic outcome watcher (it counted any todo write as "complied"
-    and expired confirmations); the outcome is emitted exactly once when a
-    check actually closes — by write or confirm — carrying the opening's
-    `steer_id`. Mismatches emit "repeated" with the mismatch method and the
-    same `steer_id`; a confirmation with nothing pending emits nothing.
+    and expired confirmations); one `complied` is emitted per opening — when
+    the LAST pending list closes, not once per list — by write or confirm,
+    carrying the opening's `steer_id`. Mismatches emit "repeated" with the
+    mismatch method and the same `steer_id`; a confirmation with nothing
+    pending emits nothing; and the `steer_id` is cleared whenever no check
+    remains (replay, silent empty-closures) so a later opening cannot
+    inherit a stale one.
 
 ## Risks
 
