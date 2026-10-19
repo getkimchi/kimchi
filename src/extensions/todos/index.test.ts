@@ -979,6 +979,77 @@ describe("todo check-in gate", () => {
 		expect(getInputRevision("session")).toBe(4)
 	})
 
+	it("consumes the session's own prompts before follow-up delivery (realistic order)", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		// The session's own prompt is delivered while the queue is still
+		// empty — its recent entry must still be consumed, or it would block
+		// every later follow-up. This prompt's text is rewritten at delivery
+		// (skill expansion), so it never text-matches: agent_end clears it.
+		await harness.fire("input", { type: "input", text: "/skill:review", source: "interactive" }, ctx)
+		expect(getInputRevision("session")).toBe(1)
+		await harness.fire(
+			"message_start",
+			{
+				type: "message_start",
+				message: { role: "user", content: [{ type: "text", text: "Review skill: full instructions" }] },
+			},
+			ctx,
+		)
+
+		// A follow-up queued during that run, delivered with its text rewritten:
+		// the positional fallback now runs (recent was consumed/reset).
+		await harness.fire(
+			"input",
+			{ type: "input", text: "do it differently", source: "interactive", streamingBehavior: "followUp" },
+			ctx,
+		)
+		await harness.fire("agent_end", {}, ctx)
+		await harness.fire(
+			"message_start",
+			{
+				type: "message_start",
+				message: { role: "user", content: [{ type: "text", text: "do it differently — expanded" }] },
+			},
+			ctx,
+		)
+		expect(getInputRevision("session")).toBe(2)
+		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
+
+		// Reconcile, then a follow-up whose text repeats an earlier prompt's:
+		// the earlier prompt consumed its own recent entry at its message_start,
+		// so the repeated text arms the check instead of being swallowed.
+		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "pending" }] }, "session", {
+			origin: "tool",
+			inputRevision: 2,
+		})
+		expect(await fireWork(harness, ctx, "w2")).toEqual({ block: false })
+		await harness.fire("input", { type: "input", text: "Start the task", source: "interactive" }, ctx)
+		await harness.fire(
+			"message_start",
+			{ type: "message_start", message: { role: "user", content: "Start the task" } },
+			ctx,
+		)
+		await harness.fire(
+			"input",
+			{ type: "input", text: "Start the task", source: "interactive", streamingBehavior: "followUp" },
+			ctx,
+		)
+		await harness.fire("agent_end", {}, ctx)
+		await harness.fire(
+			"message_start",
+			{ type: "message_start", message: { role: "user", content: "Start the task" } },
+			ctx,
+		)
+		expect(getInputRevision("session")).toBe(4)
+	})
+
 	it("read-only tools and questionnaire pass while gated", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])

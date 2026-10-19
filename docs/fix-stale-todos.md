@@ -428,11 +428,11 @@ resets staleness.
   and assert user-visible behavior, metadata, and absence of blocked tool side effects.
   ACP note: the gate, per-scope staleness tracking, and outcome telemetry live in the
   shared extension both surfaces run, exercised on ACP by todos-checkin (closure +
-  gate + confirm→work with plan metadata) and plan-updates snapshots; driving the
-  remaining TUI workflows (staleness escalation, gated-input supersession,
-  per-scope staleness, submit_plan) through ACP sessions requires elicitation-backed
-  multi-turn drivers — a separate work item, the same rationale as the conceded
-  submit_plan gap.
+  gate + confirm→work with plan metadata, gated-input revision supersession, and
+  staleness escalation → wrong confirm → right confirm → resume) and plan-updates
+  snapshots. The remaining TUI-only workflows — per-scope staleness during a
+  ferment step (needs the interactive /ferment dialogs) and submit_plan (needs the
+  elicitation-backed review driver) — are separate work items.
 
 **Files Changed**: new `checkin-gate.ts`; `tool.ts` (confirmation and write revision
 context); `store.ts` (write origin/revision notification context); `index.ts` (accepted

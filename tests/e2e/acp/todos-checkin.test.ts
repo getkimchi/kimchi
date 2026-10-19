@@ -188,3 +188,217 @@ describe("ACP integration — todo closure and check-in gate", () => {
 		expect(JSON.stringify(lastPlan?.entries)).toContain("Publish after approval")
 	})
 })
+
+describe("ACP integration — gated-input revision supersession", () => {
+	let fixture: AcpFixture
+
+	beforeEach(async () => {
+		fixture = await startAcpFixture({
+			artifactName: "acp-todos-checkin-superseded",
+			responses: [
+				// Prompt 1: create the list, then answer.
+				{
+					toolCalls: [
+						{
+							function: {
+								name: "create_todos",
+								arguments: JSON.stringify({ todos: [{ content: "Verify the input", status: "pending" }] }),
+							},
+						},
+					],
+				},
+				{ stream: ["Tracking the task now."] },
+				// Prompt 2 (input revision 2 — changed direction): work tools are
+				// blocked while the check is pending; a repeated attempt returns the
+				// current instructions.
+				{
+					toolCalls: [
+						{ function: { name: "bash", arguments: JSON.stringify({ command: "printf 'first attempt\\n'" }) } },
+					],
+				},
+				{
+					toolCalls: [
+						{ function: { name: "bash", arguments: JSON.stringify({ command: "printf 'second attempt\\n'" }) } },
+					],
+				},
+				// A question to the user ends the turn — awaiting an answer, so
+				// neither the closure check nor the continuation nudge fires.
+				{ stream: ["Both attempts are blocked by the check-in. Should I proceed with the current direction?"] },
+				// Prompt 3 (input revision 3 — the latest direction): the model
+				// still holds revision 2 from the block reason, so its confirmation
+				// is stale — rejected with the current revision.
+				{
+					toolCalls: [
+						{
+							function: {
+								name: "confirm_todos",
+								arguments: JSON.stringify({ inputRevision: 2, expected: [{ id: 1, status: "pending" }] }),
+							},
+						},
+					],
+				},
+				// Reconciling against the latest direction is what unlocks work.
+				{
+					toolCalls: [
+						{
+							function: {
+								name: "confirm_todos",
+								arguments: JSON.stringify({ inputRevision: 3, expected: [{ id: 1, status: "pending" }] }),
+							},
+						},
+					],
+				},
+				{ toolCalls: [{ function: { name: "bash", arguments: JSON.stringify({ command: "printf 'resumed\\n'" }) } }] },
+				{ stream: ["All done with the new direction."] },
+				{ stream: ["<done>"] },
+			],
+		})
+	}, STARTUP_TIMEOUT_MS)
+
+	afterEach(async () => {
+		await fixture.stop()
+	})
+
+	it("requires reconciliation against the latest direction while gated", async () => {
+		const sessionId = await newSession(fixture, fixture.workDir)
+
+		let result = await Promise.race([
+			fixture.conn.prompt({
+				sessionId,
+				prompt: [{ type: "text", text: "Verify the input and keep the list accurate." }],
+			}),
+			delay(PROMPT_TIMEOUT_MS).then(() => ({ stopReason: "TIMEOUT" as const })),
+		])
+		expect(result.stopReason).toBe("end_turn")
+
+		result = await Promise.race([
+			fixture.conn.prompt({
+				sessionId,
+				prompt: [{ type: "text", text: "Now do it differently." }],
+			}),
+			delay(PROMPT_TIMEOUT_MS).then(() => ({ stopReason: "TIMEOUT" as const })),
+		])
+		expect(result.stopReason).toBe("end_turn")
+		const bodies = providerBodies(fixture)
+		// The gate blocked work against revision 2 and carried its instructions.
+		expect(bodies.some((body) => body.includes("check-in pending (input revision 2)"))).toBe(true)
+
+		result = await Promise.race([
+			fixture.conn.prompt({
+				sessionId,
+				prompt: [{ type: "text", text: "Actually, redo it the new way instead." }],
+			}),
+			delay(PROMPT_TIMEOUT_MS).then(() => ({ stopReason: "TIMEOUT" as const })),
+		])
+		expect(result.stopReason).toBe("end_turn")
+
+		// The newer direction superseded the pending check: the revision-2
+		// confirmation was rejected as stale, only revision 3 released work,
+		// no block ever carried revision 3, and the work ran.
+		const history = JSON.stringify(providerBodies(fixture))
+		expect(history).toContain("The accepted input revision is now 3 (you confirmed revision 2)")
+		expect(history).toContain("Confirmed 1 todos")
+		expect(history).not.toContain("check-in pending (input revision 3)")
+		expect(history).toContain("resumed")
+	})
+})
+
+describe("ACP integration — staleness escalation", () => {
+	let fixture: AcpFixture
+
+	const workCall = (index: number) => ({
+		toolCalls: [
+			{ function: { name: "bash", arguments: JSON.stringify({ command: `printf 'work ${index} done\\n'` }) } },
+		],
+	})
+
+	beforeEach(async () => {
+		fixture = await startAcpFixture({
+			artifactName: "acp-todos-checkin-escalation",
+			responses: [
+				// Prompt 1: create the list, then fifty work calls — reminders
+				// recur at every boundary of ten with no ceiling.
+				{
+					toolCalls: [
+						{
+							function: {
+								name: "create_todos",
+								arguments: JSON.stringify({ todos: [{ content: "Long task", status: "in_progress" }] }),
+							},
+						},
+					],
+				},
+				...Array.from({ length: 50 }, (_, index) => workCall(index)),
+				// The 51st work call is blocked: the list aged past 50 while
+				// ignoring delivered boundary-30+ reminders, so the gate opened.
+				workCall(50),
+				// A wrong confirmation is rejected with the actual state…
+				{
+					toolCalls: [
+						{
+							function: {
+								name: "confirm_todos",
+								arguments: JSON.stringify({ inputRevision: 1, expected: [{ id: 1, status: "completed" }] }),
+							},
+						},
+					],
+				},
+				// …and the matching one resumes work.
+				{
+					toolCalls: [
+						{
+							function: {
+								name: "confirm_todos",
+								arguments: JSON.stringify({ inputRevision: 1, expected: [{ id: 1, status: "in_progress" }] }),
+							},
+						},
+					],
+				},
+				workCall(51),
+				{ stream: ["All checked in and verified."] },
+				{ stream: ["<done>"] },
+			],
+		})
+	}, STARTUP_TIMEOUT_MS)
+
+	afterEach(async () => {
+		await fixture.stop()
+	})
+
+	it("escalates after ignored reminders, rejects a wrong confirm, resumes on the right one", async () => {
+		const sessionId = await newSession(fixture, fixture.workDir)
+
+		const result = await Promise.race([
+			fixture.conn.prompt({
+				sessionId,
+				prompt: [{ type: "text", text: "Do the long task. Keep the todo list accurate as you go." }],
+			}),
+			delay(PROMPT_TIMEOUT_MS).then(() => ({ stopReason: "TIMEOUT" as const })),
+		])
+		expect(result.stopReason).toBe("end_turn")
+
+		const history = JSON.stringify(providerBodies(fixture))
+		// Reminders recurred at every boundary of ten, scope-labelled.
+		expect(history).toContain("10 changes since the global todo list was last updated")
+		expect(history).toContain("50 changes since the global todo list was last updated")
+		// The gate blocked the 51st work call with the check-in reason.
+		expect(history).toContain("check-in pending (input revision 1)")
+		// The wrong confirmation was rejected with the actual state…
+		expect(history).toContain("status mismatches")
+		expect(history).toContain("[in_progress] #1 Long task")
+		// …the right one resumed work.
+		expect(history).toContain("Confirmed 1 todos")
+		expect(history).toContain("work 51 done")
+
+		// The gate opened and closed on the plan metadata surface.
+		const plans = planUpdates(fixture, sessionId)
+		expect(
+			plans.some((plan) => {
+				const checkin = todoCheckinMeta(plan)
+				return checkin?.pendingScopes?.some((scope) => (scope as { kind?: string }).kind === "global")
+			}),
+			"pending check-in scope published under plan _meta",
+		).toBe(true)
+		expect(todoCheckinMeta(plans.at(-1) ?? ({} as Plan))?.pendingScopes).toEqual([])
+	})
+})

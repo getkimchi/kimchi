@@ -423,17 +423,27 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	pi.on("message_start", (event, ctx) => {
 		if (event.message.role !== "user") return
 		const sessionId = ctx.sessionManager.getSessionId()
-		const queue = deferredCheckinInputs.get(sessionId)
-		if (!queue || queue.length === 0) return
 		const content = event.message.content
 		const text =
 			typeof content === "string" ? content : content.map((part) => (part.type === "text" ? part.text : "")).join("")
+		// Consume the immediate input this message was produced by — on every
+		// user message, not only when a follow-up is pending. A session's own
+		// prompt is delivered while the queue is still empty, and a leftover
+		// recent entry would both swallow a repeated follow-up text and block
+		// the positional fallback below. Rewritten prompts (whose delivered
+		// text no longer matches the input event's) never text-match and are
+		// cleared by the agent_end reset below.
 		const recent = recentImmediateInputs.get(sessionId) ?? []
 		const recentIndex = recent.lastIndexOf(text)
-		if (recentIndex !== -1) {
-			// Produced by an input that already advanced at receipt.
+		const fromImmediateInput = recentIndex !== -1
+		if (fromImmediateInput) {
 			recent.splice(recentIndex, 1)
 			recentImmediateInputs.set(sessionId, recent)
+		}
+		const queue = deferredCheckinInputs.get(sessionId)
+		if (!queue || queue.length === 0) return
+		if (fromImmediateInput) {
+			// Produced by an input that already advanced at receipt.
 			return
 		}
 		const index = queue.indexOf(text)
@@ -448,6 +458,15 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		}
 		if (queue.length === 0) deferredCheckinInputs.delete(sessionId)
 		deliverGenuineInput(ctx, { deferred: true })
+	})
+
+	// Run boundary: idle and steered prompts are delivered within the run
+	// that received them, and a rewritten one never text-matches — so any
+	// recent entry still held here can no longer produce a message. Reset
+	// the attribution list so leftovers cannot block the next follow-up
+	// delivery's positional fallback.
+	pi.on("agent_end", (_event, ctx) => {
+		recentImmediateInputs.delete(ctx.sessionManager.getSessionId())
 	})
 
 	// Work-tool admission gate. Only reconciliation tools (todo writes,
