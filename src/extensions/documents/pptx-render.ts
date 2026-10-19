@@ -9,7 +9,7 @@
  */
 
 import { spawnSync } from "node:child_process"
-import { existsSync, mkdtempSync, readdirSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, rmSync, unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { DocumentError } from "./model.js"
@@ -64,6 +64,7 @@ const PDF_TO_PNG: Array<{ cmd: string; label: string; args: (pdf: string, prefix
 			"-dNOPAUSE",
 			"-dBATCH",
 			"-dQUIET",
+			"-dSAFER",
 			"-sDEVICE=png16m",
 			"-r110",
 			`-sOutputFile=${prefix}-%02d.png`,
@@ -163,6 +164,25 @@ export async function renderPptx(inputPath: string, opts: RenderOptions): Promis
 	// profile makes a second soffice hang forever — this is the classic
 	// headless-conversion stall, and the profile flag sidesteps it.
 	const profileDir = deps.mkdtemp(join(tmpdir(), "pptx-render-profile-"))
+	try {
+		return await convertAndRasterize(deps, soffice, profileDir, inputPath, opts)
+	} finally {
+		// Isolated profile dirs must not accumulate across renders.
+		try {
+			rmSync(profileDir, { recursive: true, force: true })
+		} catch {
+			// best-effort — the OS reclaims temp dirs
+		}
+	}
+}
+
+async function convertAndRasterize(
+	deps: Required<RenderDeps>,
+	soffice: string,
+	profileDir: string,
+	inputPath: string,
+	opts: RenderOptions,
+): Promise<RenderResult> {
 	const conversion = deps.run(soffice, [
 		"--headless",
 		"--norestore",
@@ -174,6 +194,19 @@ export async function renderPptx(inputPath: string, opts: RenderOptions): Promis
 		opts.outDir,
 		inputPath,
 	])
+	// Sweep stale artifacts of an earlier render of the same deck name from
+	// outDir first — collectImages matches <stem>-<n>.png, so leftovers would
+	// otherwise be picked up as this run's output.
+	const stem0 = basename(inputPath).replace(/\.pptx$/i, "")
+	for (const entry of deps.listdir(opts.outDir)) {
+		if (entry === `${stem0}.pdf` || /^Q${stem0}E-\d+\.png$/.test(entry)) {
+			try {
+				unlinkSync(join(opts.outDir, entry))
+			} catch {
+				// best-effort — a locked file just leaves a stale PNG
+			}
+		}
+	}
 	if (conversion.signal) {
 		throw new DocumentError(
 			"timeout",

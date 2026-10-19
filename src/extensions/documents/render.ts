@@ -113,11 +113,7 @@ export function renderOutline(doc: ExtractedDocument, path: string): string {
 		...doc.outline.map((line) => `- ${line}`),
 		``,
 		`Read specific ranges with read_document: { path: ${JSON.stringify(path)}, ${
-			doc.unitKind === "page"
-				? 'pages: "1-5"'
-				: doc.unitKind === "slide"
-					? 'pages: "1-5"'
-					: 'sheet: "<name>", rows: "1-50"'
+			doc.unitKind === "sheet" ? 'sheet: "<name>", rows: "1-50"' : 'pages: "1-5"'
 		} }`,
 	]
 	if (doc.notes.length > 0) lines.push(`Notes: ${doc.notes.map((n) => `[${n}]`).join(" ")}`)

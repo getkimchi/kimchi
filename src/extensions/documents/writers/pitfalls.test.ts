@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest"
 import { extractPptx } from "../extractors/pptx.js"
 import type { DeckSpec } from "../writers/pptx-model.js"
-import { enforcePitfalls, slideNeedsLightText } from "./pitfalls.js"
+import { enforcePitfalls } from "./pitfalls.js"
 import { parseDeckMarkdown, writePptx } from "./pptx.js"
+import { slideNeedsLightText } from "./pptx-layout.js"
 
 function slideWith(element: unknown): DeckSpec["slides"][number] {
 	return { index: 1, elements: [element as DeckSpec["slides"][number]["elements"][number]], notes: [] }

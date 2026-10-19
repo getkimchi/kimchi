@@ -94,10 +94,6 @@ const TABLE_NEEDS_ROWS: Pitfall = {
 	},
 }
 
-// Luminance helpers moved to writers/pptx-layout.ts (shared with the flow
-// allocator); re-exported so existing imports keep working.
-export { DARK_BG_LIGHT_TEXT_LUMINANCE, slideNeedsLightText } from "./pptx-layout.js"
-
 export const PPTX_WRITING_PITFALLS: readonly Pitfall[] = [
 	CHART_VALUES_MUST_BE_NUMERIC,
 	CHART_NEEDS_SERIES,

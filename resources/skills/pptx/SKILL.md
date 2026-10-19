@@ -46,6 +46,7 @@ before rewriting.
 - `missing-alt-text` — pictures without alt text.
 - `monotony` — deck-level: most slides are title-and-text only. Vary layouts
   (see `deck-design.md`).
+- `dead-space` — a slide whose content occupies under half of its area.
 
 ## render `<deck> --out <dir> [--slides N-M]`
 
