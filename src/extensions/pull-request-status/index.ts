@@ -4,14 +4,12 @@ import { lookupFailureReason, pullRequestLabel } from "./provider-records.js"
 
 /** How often the checked-out branch is checked. */
 const BRANCH_POLL_MS = 30_000
+const BRANCH_READ_TIMEOUT_MS = 2_000
 /** A branch's PR is asked for again only after a branch change, a push or PR creation, or this long. */
 const BRANCH_REFRESH_MS = 5 * 60_000
 const PUBLISH_COMMAND = /\b(?:git\s+push|gh\s+pr\s+create|glab\s+mr\s+create)\b/
 
-/**
- * Shows the checked-out branch's GitHub PR or GitLab MR in the footer. It reads the provider with the developer's
- * own credentials and records nothing; PR costs come from the Kimchi gateway.
- */
+/** Shows the checked-out branch's GitHub PR or GitLab MR in the footer, read with the developer's own credentials. */
 export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	let context: ExtensionContext | undefined
 	let activeKey = ""
@@ -63,7 +61,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		const key = contextKey(ctx)
 		const controller = new AbortController()
 		const current = () => started && !controller.signal.aborted && context === ctx && contextKey(ctx) === key
-		const promise = currentBranch(ctx.cwd, controller.signal, Date.now() + 2000)
+		const promise = currentBranch(ctx.cwd, controller.signal, Date.now() + BRANCH_READ_TIMEOUT_MS)
 			.then(async (branch) => {
 				if (!current()) return
 				// Clear the previous branch's link before waiting for its replacement.

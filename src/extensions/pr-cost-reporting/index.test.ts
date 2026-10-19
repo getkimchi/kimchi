@@ -59,12 +59,12 @@ async function command(args: string, commandCtx = createCommandContext()) {
 describe("default-on notice", () => {
 	it("says once across launches that the gateway reports PR costs and how to turn it off", async () => {
 		const ctx = createContext()
-		const notices: unknown[] = []
-		for (let count = 0; count < 2; count++)
-			notices.push(...(await launch(ctx)).getAppendedEntries("pr-cost-reporting-notice"))
-		expect(notices).toEqual([
+		const firstLaunch = (await launch(ctx)).getAppendedEntries("pr-cost-reporting-notice")
+		const secondLaunch = (await launch(ctx)).getAppendedEntries("pr-cost-reporting-notice")
+		expect(firstLaunch).toEqual([
 			"PR costs are reported to your account by the Kimchi gateway. Turn off with /pr-reporting off.",
 		])
+		expect(secondLaunch).toEqual([])
 		expect(saved()).toMatchObject({ followsTelemetry: true, defaultNoticeShown: true })
 		// Consecutive info notifications replace one another in the TUI.
 		expect(ctx.ui.notify).not.toHaveBeenCalled()

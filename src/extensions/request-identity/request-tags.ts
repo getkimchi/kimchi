@@ -3,16 +3,14 @@ const GATEWAY_TAG_LIMIT = 10
 
 const BILLING_TAG_KEY = "kimchi-request"
 
-/** The prefix of the tag the gateway finds a request's bill by: `kimchi-request:<request ID>`. */
+/** The gateway finds a request's bill by its `kimchi-request:<request ID>` tag. */
 export const BILLING_TAG_PREFIX = `${BILLING_TAG_KEY}:`
 
-/** The header of a request's comma-separated gateway tags. */
 export const TAGS_HEADER = "X-Tags"
 
 /**
- * The billing tag of one attempt and the `X-Tags` value that carries it, or undefined when the attempt cannot be
- * tagged. Earlier attempts' tags are removed from `headers` at once, so a retry never resends them; user tags are never
- * dropped to make room.
+ * The billing tag of one attempt and the `X-Tags` value that carries it, or undefined when it cannot be tagged.
+ * Earlier attempts' tags are removed from `headers` at once; user tags are never dropped to make room.
  */
 export function prepareBillingTag(
 	headers: Headers,
@@ -31,7 +29,8 @@ export function prepareBillingTag(
 		.map((tag) => tag.trim())
 		.filter(Boolean)
 	// A tag of the user's own with the same key, or no free slot, leaves the attempt untagged.
-	if (tags.length >= GATEWAY_TAG_LIMIT || tags.some((tag) => tag.split(":", 1)[0] === BILLING_TAG_KEY)) return undefined
+	const hasBillingKey = (tag: string) => tag === BILLING_TAG_KEY || tag.startsWith(BILLING_TAG_PREFIX)
+	if (tags.length >= GATEWAY_TAG_LIMIT || tags.some(hasBillingKey)) return undefined
 	const tag = `${BILLING_TAG_PREFIX}${requestId}`
 	return { tag, header: [...retained, tag].join(",") }
 }

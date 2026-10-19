@@ -3,18 +3,15 @@ import { join } from "node:path"
 import { format } from "node:util"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 
-/**
- * Opt-in diagnostics for the request and plan identity the Kimchi gateway uses to report PR costs. They never write
- * through the live TUI or ACP transport: `NODE_DEBUG=kimchi:pr-cost` saves them in the agent directory's
- * `logs/pr-cost.log`.
- */
+const DEBUG_NAMESPACE = "kimchi:pr-cost"
+
+// Bun's debuglog has no `enabled` getter, so NODE_DEBUG is read here: a name or a `prefix*`, in any case.
+const enablesNamespace = (entry: string) =>
+	entry === DEBUG_NAMESPACE || (entry.endsWith("*") && DEBUG_NAMESPACE.startsWith(entry.slice(0, -1)))
+
+/** Opt-in diagnostics: `NODE_DEBUG=kimchi:pr-cost` appends them to `<agent dir>/logs/pr-cost.log`, never to the TUI or ACP. */
 export function debugPRCost(message: string, ...details: unknown[]): void {
-	// Bun's debuglog lacks Node's enabled getter. Match NODE_DEBUG without calling its stderr logger.
-	const namespaces = (process.env.NODE_DEBUG ?? "")
-		.replace(/[|\\{}()[\]^$+?.]/g, "\\$&")
-		.replace(/\*/g, ".*")
-		.replace(/,/g, "$|^")
-	if (!new RegExp(`^${namespaces}$`, "i").test("kimchi:pr-cost")) return
+	if (!(process.env.NODE_DEBUG ?? "").toLowerCase().split(",").some(enablesNamespace)) return
 	try {
 		const directory = join(getAgentDir(), "logs")
 		mkdirSync(directory, { recursive: true, mode: 0o700 })

@@ -12,23 +12,19 @@ import { COST_PER_PR_RESOURCE_ID } from "./resource.js"
 /** Tells the Kimchi gateway whether it may report this request's PR costs: `proxy` when it may, otherwise `off`. */
 export const PR_REPORTING_HEADER = "X-Kimchi-PR-Reporting"
 
-type PRReportingHeaderValue = "proxy" | "off"
-
 export interface PRReportingConsent {
 	enabled: boolean
 	/** `default` follows the SaaS telemetry setting; `choice` is a saved `/pr-reporting on|off`. */
 	source: "default" | "choice"
 }
 
-/** The saved state. Writes keep any other fields an older Kimchi saved in the same file. */
+/** Writes keep any other fields an older Kimchi saved in the same file. */
 interface SavedState {
 	version?: 1
 	enabled?: boolean
 	/** Set while the SaaS telemetry setting decides. */
 	followsTelemetry?: true
-	/** Set once the one-time notice was shown. */
 	defaultNoticeShown?: true
-	[field: string]: unknown
 }
 
 /** The main session's mode: print and JSON runs never report. Subagents share the process and its decision. */
@@ -42,26 +38,24 @@ export function prReportingStatePath(agentDir = getAgentDir()): string {
 	return join(agentDir, "pr-cost-reporting", "state.json")
 }
 
+const isEmpty = (state: object) => Object.keys(state).length === 0
+const isUnsetOrTrue = (value: unknown) => value === undefined || value === true
+
 /** No file yet is a valid state; anything else must look like a saved choice. */
 function validState(state: Record<string, unknown>, path: string): SavedState {
-	if (
-		Object.keys(state).length &&
-		(state.version !== 1 ||
-			typeof state.enabled !== "boolean" ||
-			(state.followsTelemetry !== undefined && state.followsTelemetry !== true) ||
-			(state.defaultNoticeShown !== undefined && state.defaultNoticeShown !== true))
-	)
-		throw new Error(`Invalid PR reporting state in ${path}`)
+	const isSavedChoice =
+		state.version === 1 &&
+		typeof state.enabled === "boolean" &&
+		isUnsetOrTrue(state.followsTelemetry) &&
+		isUnsetOrTrue(state.defaultNoticeShown)
+	if (!isEmpty(state) && !isSavedChoice) throw new Error(`Invalid PR reporting state in ${path}`)
 	return state
 }
 
-const followsDefault = (state: SavedState) => !Object.keys(state).length || state.followsTelemetry === true
+const followsDefault = (state: SavedState) => isEmpty(state) || state.followsTelemetry === true
 const noticeDue = (state: SavedState) => followsDefault(state) && !state.defaultNoticeShown
 
-/**
- * The saved choice and its source. Reporting follows the SaaS telemetry setting, with the org's usage-reporting
- * policy applied, until an explicit `/pr-reporting on|off` is saved. Throws when the saved state is unreadable.
- */
+/** The saved `/pr-reporting on|off`, or else the SaaS telemetry setting under the org policy; throws if unreadable. */
 export function readPRReportingConsent(agentDir = getAgentDir()): PRReportingConsent {
 	const path = prReportingStatePath(agentDir)
 	const state = validState(readJsonCached(path), path)
@@ -75,11 +69,8 @@ export function prReportingSkipReason(): string | undefined {
 	return reportingSkipReason(sessionMode)
 }
 
-/**
- * The value of {@link PR_REPORTING_HEADER} for requests sent now: `proxy` only while Cost per PR is enabled, this
- * process may report, and consent is on. An unreadable saved state counts as `off`.
- */
-export function prReportingHeaderValue(agentDir = getAgentDir()): PRReportingHeaderValue {
+/** `proxy` while Cost per PR is on, this process may report and consent is on; `off` otherwise, also when unreadable. */
+export function prReportingHeaderValue(agentDir = getAgentDir()): "proxy" | "off" {
 	try {
 		return isResourceEnabled(COST_PER_PR_RESOURCE_ID) &&
 			!prReportingSkipReason() &&

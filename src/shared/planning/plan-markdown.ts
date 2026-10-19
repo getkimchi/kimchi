@@ -12,9 +12,7 @@
  * Editable files live under `<cwd>/.kimchi/plans/` and are overwritten on
  * rework. A plan's first line names its work ID, and each content version is
  * retained under the agent directory's `work/<workId>/plans/`, outside
- * disposable worktrees. The Kimchi gateway uses that ID, from the header or
- * the retained path, to link a planning session to the session that
- * implements the plan.
+ * disposable worktrees. The Kimchi gateway links a plan's sessions by that ID.
  *
  * This module intentionally has no load/delete surface: consumers read plan
  * files directly when needed, and the harness never deletes plan files —
@@ -171,10 +169,7 @@ export function savePlanMarkdown(opts: SavePlanMarkdownOptions): {
 	return { path: filePath }
 }
 
-/**
- * Save a tool's plan under its work ID. Failures are shown under `label` rather than thrown: review continues without
- * a file.
- */
+/** Save a tool's plan under its work ID; failures are shown under `label`, and review continues without a file. */
 export function saveToolPlan(
 	ctx: Pick<ExtensionContext, "hasUI" | "ui">,
 	label: string,
@@ -182,7 +177,6 @@ export function saveToolPlan(
 ): { path: string; snapshotPath?: string } | undefined {
 	try {
 		const saved = savePlanMarkdown(plan)
-		// The debug log has the cause; the user learns that the plan lives only in this worktree.
 		if (!saved.snapshotPath && ctx.hasUI) ctx.ui.notify(`${label}: ${UNRETAINED_PLAN_NOTICE}`, "warning")
 		return saved
 	} catch (error) {
