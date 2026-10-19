@@ -257,7 +257,8 @@ flowchart TD
     B -->|Other branch| H["Find the branch's PR or MR"]
     B -->|Detached HEAD| N["Show nothing"]
     H -->|Found| F["Show the branch and a PR link; create no work records"]
-    H -->|None or failed| D
+    H -->|None or other failure| D
+    H -->|Timeout, outage, rate limit or invalid reply| K["Keep the last footer; retry at the next check"]
 ```
 
 Once a link is known, Kimchi also checks that PR or MR by number to refresh its state. Rate-limit responses delay further calls to that host until the retry time.
@@ -277,7 +278,7 @@ The footer follows the checked-out branch, not the work's commits, because a com
 
 - On the repository's default branch, as GitHub or GitLab reports it, the footer shows only the branch name: unrelated PRs and MRs share that branch. If the provider reports no default branch, every branch shows only its name.
 - On a detached HEAD, the footer shows nothing.
-- A PR or MR matches when its source branch has the same name and, on GitLab, comes from the same project. An open one is shown first. A closed or merged one is shown only when the local branch's reflog contains its head commit, so a new branch that reuses an old name does not show the old branch's PR.
+- A PR or MR matches when its source branch has the same name and, on GitLab, comes from the same project. An open one is shown first. A closed or merged one is shown only when it closed after the local branch was created, which Git records as the branch's oldest reflog entry. A new branch that reuses an old name therefore does not show the old branch's PR. A branch checked out after its PR closed, or one whose reflog Git does not keep, shows no closed PR.
 
 Kimchi asks GitHub or GitLab about the branch again only after a branch change, a `git push`, `gh pr create` or `glab mr create` run by the agent's Bash tool, or five minutes. In the terminal, the link disappears as soon as Git reports another branch; ACP clients get the new branch at the next check, at most 30 seconds later. This lookup asks only the branch's own remote. It therefore does not find a PR or MR opened from a fork to its parent repository. The number is a terminal hyperlink; use your terminal's link gesture, usually Cmd-click or Ctrl-click. ACP clients receive plain status text and the URL separately; how they display them depends on the client.
 
