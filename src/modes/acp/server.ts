@@ -1803,6 +1803,11 @@ export class KimchiAcpAgent implements Agent {
 		const sessionId = session.sessionId
 		const entries = session.sessionManager.getBranch()
 		const toolResults = collectToolResults(entries)
+		// Artifacts discovered from one assistant message but unable to attach
+		// (the message emitted no block ids — a tool-call-only shape, common in
+		// multi-step turns) carry forward and flush on the next message that
+		// emits one — same deferral as the live turn's TurnContext.artifacts.
+		const pendingArtifacts = new Map<string, Artifact>()
 
 		for (const entry of entries) {
 			if (!entry || typeof entry !== "object" || entry.type !== "message") continue
@@ -1824,6 +1829,7 @@ export class KimchiAcpAgent implements Agent {
 					toolResults,
 					this.sessions.get(sessionId),
 					modelAttributionFrom(msg),
+					pendingArtifacts,
 				)
 			}
 			// toolResult: handled inline alongside its originating toolCall above.
@@ -1889,6 +1895,7 @@ export class KimchiAcpAgent implements Agent {
 		toolResults: Map<string, ReplayToolResult>,
 		record: SessionRecord | undefined,
 		attribution: ModelAttribution,
+		pendingArtifacts: Map<string, Artifact>,
 	): void {
 		if (!Array.isArray(content)) return
 		// Allocates a fresh session-unique messageId for every emitted chunk
@@ -1903,11 +1910,12 @@ export class KimchiAcpAgent implements Agent {
 		// that seedBlockCounterFromBranch didn't count, preserving live/replay
 		// messageId parity.
 		let lastEmittedMessageId: string | undefined
-		// Generated artifacts detected from this message's completed tool calls.
-		// Replay skips the on-disk existence check (files may be gone) — a chip
-		// for a deleted file is still informative; open failures are the
-		// client's UX concern.
-		const replayArtifacts = new Map<string, Artifact>()
+		// Generated artifacts detected from this message's completed tool calls
+		// accumulate in pendingArtifacts (shared across the branch's messages):
+		// a message with no emitted block ids defers to the next one, mirroring
+		// the live turn's TurnContext.artifacts. Replay skips the on-disk
+		// existence check (files may be gone) — a chip for a deleted file is
+		// still informative; open failures are the client's UX concern.
 		// Buffer contiguous text blocks so a single assistant message renders as
 		// one agent_message_chunk per natural text segment — emit the full
 		// message as a single chunk, no per-token chunking. When a thinking or
@@ -2010,7 +2018,7 @@ export class KimchiAcpAgent implements Agent {
 				})
 				if (result && !result.isError && record) {
 					for (const artifact of artifactsFromToolCall(name, args, result, record.cwd, { verifyExists: false })) {
-						replayArtifacts.set(artifact.path, artifact)
+						pendingArtifacts.set(artifact.path, artifact)
 					}
 				}
 				// The branch may contain multiple toolCalls with the same upstream id
@@ -2025,17 +2033,19 @@ export class KimchiAcpAgent implements Agent {
 		// Artifact chips mirror the live path's flushArtifacts: a trailing
 		// zero-length chunk on the message's last block id carrying
 		// `_meta["kimchi.dev"].artifacts`. A message with no emitted blocks
-		// (thinking redacted, text empty) has no id to attach to — its
-		// artifacts are dropped, which replay accepts (the live path would
-		// have deferred them to the next message's end).
-		if (replayArtifacts.size > 0 && lastEmittedMessageId !== undefined) {
+		// (tool-call-only messages are a routine shape) leaves the artifacts in
+		// pendingArtifacts for the NEXT message that emits a block id — the
+		// live turn defers the same way.
+		if (pendingArtifacts.size > 0 && lastEmittedMessageId !== undefined) {
+			const artifacts = [...pendingArtifacts.values()]
+			pendingArtifacts.clear()
 			this.send({
 				sessionId,
 				update: {
 					sessionUpdate: "agent_message_chunk",
 					content: { type: "text", text: "" },
 					messageId: lastEmittedMessageId,
-					_meta: kimchiDevMetaOf({ artifacts: [...replayArtifacts.values()] }),
+					_meta: kimchiDevMetaOf({ artifacts }),
 				},
 			})
 		}

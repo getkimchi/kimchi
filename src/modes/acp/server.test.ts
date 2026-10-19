@@ -6171,6 +6171,57 @@ describe("generated artifacts (replay)", () => {
 
 		expect(artifactChunks(updates)).toEqual([])
 	})
+
+	// A tool-call-only assistant message emits no block ids; its artifacts
+	// defer to the next message that emits one — the live turn does the same
+	// (TurnContext.artifacts carries over at flushArtifacts).
+	it("defers artifacts from a tool-call-only message to the next message with blocks", async () => {
+		const fake = new FakeAgentSession("loaded-defer")
+		fake.branch = [
+			userTextEntry("make it", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-d1", name: "bash", arguments: { command: "make" } }],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-d1", "bash", "wrote mid.pdf", false, "trd1", "a1"),
+			assistantTextEntry("All done.", "a2", "trd1"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-defer", cwd: "/tmp", mcpServers: [] })
+
+		const chunks = artifactChunks(updates)
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0].artifacts).toEqual([expect.objectContaining({ path: "/tmp/mid.pdf" })])
+		const textChunk = messageChunks(updates).find((c) => c.text === "All done.")
+		expect(chunks[0].messageId).toBe(textChunk?.messageId)
+	})
+
+	it("dedupes repeated paths across a message's tool calls", async () => {
+		const fake = new FakeAgentSession("loaded-dedupe")
+		fake.branch = [
+			userTextEntry("go", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "working" },
+					{ type: "toolCall", id: "tc-x1", name: "bash", arguments: { command: "one" } },
+					{ type: "toolCall", id: "tc-x2", name: "bash", arguments: { command: "two" } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-x1", "bash", "wrote dup.pdf", false, "trx1", "a1"),
+			toolResultEntry("tc-x2", "bash", "wrote dup.pdf", false, "trx2", "a1"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-dedupe", cwd: "/tmp", mcpServers: [] })
+
+		const chunks = artifactChunks(updates)
+		expect(chunks).toHaveLength(1)
+		expect((chunks[0].artifacts as Array<{ path: string }>).map((a) => a.path)).toEqual(["/tmp/dup.pdf"])
+	})
 })
 
 // Pure adapter coverage for the FileChange → v1 Diff mapping, including the
