@@ -420,6 +420,13 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	//    could have produced this message, so a stale queue entry (dropped by
 	//    upstream's clearQueue, e.g. an Esc pull-back) can never
 	//    double-advance a later resubmission of the same text.
+	// NOTE: extension-sourced follow-ups (e.g. the ferment plan-confirmation
+	// reply, ferment/events.ts) are filtered at the input event, so they are
+	// neither queued here nor recorded in recent — but their delivery still
+	// produces a user message_start. They are sent at turn_end, after any
+	// user follow-up queued during the run, so they cannot overtake one today;
+	// if that ordering ever changes, the delivery attribution must key on the
+	// message's source rather than position.
 	pi.on("message_start", (event, ctx) => {
 		if (event.message.role !== "user") return
 		const sessionId = ctx.sessionManager.getSessionId()
@@ -441,7 +448,20 @@ export default function todosExtension(pi: ExtensionAPI): void {
 			recentImmediateInputs.set(sessionId, recent)
 		}
 		const queue = deferredCheckinInputs.get(sessionId)
-		if (!queue || queue.length === 0) return
+		if (!queue || queue.length === 0) {
+			// No follow-up is pending, so this message can only be an idle or
+			// steered prompt's delivery. A rewritten prompt's entry never
+			// text-matches — drop the oldest unconsumed recent entry anyway,
+			// mirroring the follow-up fallback below: every user message
+			// corresponds to exactly one input, so unconsumed entries cannot
+			// linger past this message and block a follow-up delivery that
+			// arrives before the agent_end reset.
+			if (!fromImmediateInput && recent.length > 0) {
+				recent.shift()
+				recentImmediateInputs.set(sessionId, recent)
+			}
+			return
+		}
 		if (fromImmediateInput) {
 			// Produced by an input that already advanced at receipt.
 			return

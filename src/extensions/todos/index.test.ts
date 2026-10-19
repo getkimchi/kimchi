@@ -1050,6 +1050,48 @@ describe("todo check-in gate", () => {
 		expect(getInputRevision("session")).toBe(4)
 	})
 
+	it("a rewritten prompt at run start does not block the same run's rewritten follow-up", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		// The run starts with a rewritten prompt (skill expansion): its recent
+		// entry never text-matches, and no agent_end has fired yet.
+		await harness.fire("input", { type: "input", text: "/skill:review", source: "interactive" }, ctx)
+		expect(getInputRevision("session")).toBe(1)
+		await harness.fire(
+			"message_start",
+			{
+				type: "message_start",
+				message: { role: "user", content: [{ type: "text", text: "Review skill: full instructions" }] },
+			},
+			ctx,
+		)
+
+		// A follow-up queued during that run, delivered BEFORE the agent_end
+		// reset reaches it: the empty-queue drop already drained the rewritten
+		// prompt's entry, so the positional fallback runs.
+		await harness.fire(
+			"input",
+			{ type: "input", text: "do it differently", source: "interactive", streamingBehavior: "followUp" },
+			ctx,
+		)
+		await harness.fire(
+			"message_start",
+			{
+				type: "message_start",
+				message: { role: "user", content: [{ type: "text", text: "do it differently — expanded" }] },
+			},
+			ctx,
+		)
+		expect(getInputRevision("session")).toBe(2)
+		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
+	})
+
 	it("read-only tools and questionnaire pass while gated", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])

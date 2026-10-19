@@ -430,9 +430,11 @@ resets staleness.
   shared extension both surfaces run, exercised on ACP by todos-checkin (closure +
   gate + confirm→work with plan metadata, gated-input revision supersession, and
   staleness escalation → wrong confirm → right confirm → resume) and plan-updates
-  snapshots. The remaining TUI-only workflows — per-scope staleness during a
-  ferment step (needs the interactive /ferment dialogs) and submit_plan (needs the
-  elicitation-backed review driver) — are separate work items.
+  snapshots. The remaining TUI-only workflows: per-scope staleness during a
+  ferment step — drivable on ACP via a seeded planned ferment plus a "Resume"
+  elicitation answer, as plan-updates.test.ts does, an elaborate setup with
+  known CI flakiness, so deferred — and submit_plan (elicitation-backed
+  review driver).
 
 **Files Changed**: new `checkin-gate.ts`; `tool.ts` (confirmation and write revision
 context); `store.ts` (write origin/revision notification context); `index.ts` (accepted
@@ -533,7 +535,15 @@ Chunk 5 reuses it for confirmations. Revert dependent chunks together when neces
     `clearQueue`) from double-advancing a later resubmission of the same
     text. Deferred deliveries send no separate instruction steer: the block
     reason carries the instructions with the model already looking at the new
-    direction.
+    direction. An empty deferred queue at a user message means the message is
+    an idle or steered prompt's delivery: when its text does not match (a
+    rewritten prompt), the oldest unconsumed recent entry is dropped
+    positionally — mirroring the follow-up fallback — so leftovers cannot
+    block a follow-up delivery that arrives before the agent_end reset.
+    Extension-sourced follow-ups (e.g. the ferment plan-confirmation reply)
+    are filtered at the input event and never queued, but their delivery
+    still produces a user message_start; they are sent at turn_end, after any
+    user follow-up queued during the run, so they cannot overtake one today.
 12. **Check-in outcomes are attributed, not watched**: the instruction fires
     carry no generic outcome watcher (it counted any todo write as "complied"
     and expired confirmations); one `complied` is emitted per opening — when
