@@ -19,13 +19,15 @@ and transparently** — no re-login is needed, no command has to be run.
 
 The adapter stores, read-only, first valid entry per server:
 
-1. OS keyring: service `pi-mcp-adapter.oauth`, account `sha256-<sha256hex(name)>`,
-   chunked values (>1000 chars) reassembled from
-   `<account>.chunk.<digest>.<index>` accounts.
-   - macOS: `security find-generic-password` — silent for release binaries
-     (same Developer ID as the writer); an ad-hoc/dev build may get a one-time
-     consent prompt. Reads are timeout-bounded (10s) and a hard failure
-     disables further keyring reads for that launch.
+1. OS keyring: service `dev.kimchi.mcp.oauth` (v1.16.0's keyring bridge
+   remapped the adapter's own service name so kimchi never shares keychain
+   ACL entries with other adapter consumers), account `sha256-<sha256hex(name)>`,
+   values wrapped in a `b64:` envelope (its security-tool writes) and chunked
+   over 1000 chars across `<account>.chunk.<digest>.<index>` accounts.
+   - macOS: `security find-generic-password`. v1.16.0 wrote its items via
+     `/usr/bin/security` with an ACL trusting it, so reads are prompt-free for
+     every binary flavor. Read failures are classified (not found / headless
+     keychain / declined consent / timeout) and never hang a launch.
    - Linux: `secret-tool lookup` (install `libsecret-tools` if absent).
    - Windows Credential Manager: not implemented — those servers fall back to
      the re-login notice.
@@ -42,6 +44,10 @@ registration). Atomic 0600 writes; existing native keys are never modified.
 
 ## Failure behavior
 
+- Every run writes `<agentDir>/mcp-oauth-import-report.json` — per-server
+  statuses (`imported` / `already-authenticated` / `no-adapter-credentials` /
+  `url-mismatch` / `invalid-entry`), the store each import came from, and
+  warnings — so "why wasn't server X migrated" is answerable after the fact.
 - The stamp is only written when the import finished without warnings — an
   environment that was not ready (missing `secret-tool`, a dismissed keychain
   prompt) retries on the next launch. Warnings are printed to stderr.

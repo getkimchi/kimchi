@@ -5,11 +5,13 @@ import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import {
 	adapterAccount,
+	decodeKeychainValue,
 	encryptedFileKeyFromEnv,
 	importAdapterAuth,
 	type KeyringReader,
 	mcpNamespace,
 	nativeAuthKey,
+	OAUTH_IMPORT_REPORT,
 	OAUTH_IMPORT_STAMP,
 	parseAdapterAuthEntry,
 	readEncryptedEntry,
@@ -92,9 +94,23 @@ describe("parseAdapterAuthEntry", () => {
 	})
 })
 
+describe("decodeKeychainValue", () => {
+	it("unwraps the b64 envelope v1.16.0's security-tool writes used", () => {
+		const payload = '{"tokens":{"accessToken":"at"}}'
+		const envelope = `b64:${Buffer.from(payload).toString("base64")}`
+		expect(decodeKeychainValue(envelope)).toBe(payload)
+	})
+
+	it("decodes hex-shaped legacy secrets and passes plain values through", () => {
+		expect(decodeKeychainValue(Buffer.from("hello").toString("hex"))).toBe("hello")
+		expect(decodeKeychainValue('{"plain":true}')).toBe('{"plain":true}')
+	})
+})
+
 describe("readKeyringPayload", () => {
-	it("returns a non-chunked value as-is", () => {
-		const read: KeyringReader = (_service, account) => {
+	it("reads the kimchi-owned service, returning a non-chunked value as-is", () => {
+		const read: KeyringReader = (service, account) => {
+			expect(service).toBe("dev.kimchi.mcp.oauth")
 			expect(account).toBe("sha256-abc")
 			return { found: true, value: '{"tokens":{"accessToken":"at"}}' }
 		}
@@ -116,6 +132,28 @@ describe("readKeyringPayload", () => {
 			if (match && account === `acc.chunk.${digest}.${match[2]}`) {
 				const index = Number(match[2])
 				return index < 3 ? { found: true, value: chunks[index] } : { found: false }
+			}
+			return { found: false }
+		}
+		expect(readKeyringPayload(read, "acc")).toEqual({ found: true, value: payload })
+	})
+
+	it("decodes the b64 envelope on the base value and every chunk (v1.16.0 security-tool writes)", () => {
+		const payload = JSON.stringify({ tokens: { accessToken: "at".repeat(1500) }, serverUrl: "https://x.test/mcp" })
+		const chunks = [payload.slice(0, 900), payload.slice(900)]
+		const digest = "abcdef0123456789"
+		const enveloped = (value: string) => `b64:${Buffer.from(value).toString("base64")}`
+		const read: KeyringReader = (_service, account) => {
+			if (account === "acc") {
+				return {
+					found: true,
+					value: enveloped(JSON.stringify({ __piMcpAdapterOAuthChunked: 1, chunkCount: 2, chunkDigest: digest })),
+				}
+			}
+			const match = /^acc\.chunk\.[0-9a-f]+\.(\d+)$/.exec(account)
+			if (match) {
+				const index = Number(match[1])
+				return index < 2 ? { found: true, value: enveloped(chunks[index]) } : { found: false }
 			}
 			return { found: false }
 		}
@@ -392,6 +430,13 @@ describe("runOAuthImportOnce", () => {
 		expect(states["mcp__srv|https://x.test/mcp"].tokens.access_token).toBe("once-at")
 		expect(existsSync(join(agentDir, OAUTH_IMPORT_STAMP))).toBe(true)
 		expect(existsSync(join(agentDir, "mcp-oauth-import.lock"))).toBe(false)
+		// The report records what the silent import did, so "why wasn't X
+		// migrated" is answerable after the fact.
+		const report = JSON.parse(readFileSync(join(agentDir, OAUTH_IMPORT_REPORT), "utf8"))
+		expect(report).toMatchObject({ version: 1, stamped: true, imported: ["srv"] })
+		expect(report.results).toEqual([{ name: "srv", status: "imported", store: "plaintext" }])
+		expect(report.warnings).toEqual([])
+		expect(typeof report.ranAt).toBe("string")
 	})
 
 	it("is a no-op once the stamp exists", () => {
@@ -412,6 +457,10 @@ describe("runOAuthImportOnce", () => {
 		const unavailable: KeyringReader = () => ({ found: false, warning: "keychain locked" })
 		runOAuthImportOnce({ agentDir, cwd, keyringReader: unavailable })
 		expect(existsSync(join(agentDir, OAUTH_IMPORT_STAMP))).toBe(false)
+		// The report still records the failed attempt (stamped: false).
+		const report = JSON.parse(readFileSync(join(agentDir, OAUTH_IMPORT_REPORT), "utf8"))
+		expect(report.stamped).toBe(false)
+		expect(report.warnings).toContain("keychain locked")
 		// The import still happened for the readable (file) store, but the retry
 		// path stays armed.
 		runOAuthImportOnce({ agentDir, cwd, keyringReader: quietKeyring })

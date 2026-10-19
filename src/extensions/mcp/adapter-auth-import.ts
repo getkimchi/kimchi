@@ -1,14 +1,16 @@
 /**
- * Import pi-mcp-adapter (2.34.0-era) OAuth credentials into the native
- * `mcp-auth.json` store, so upgrading to the native MCP engine does not force
- * a one-time re-login per OAuth server. Invoked explicitly via
- * `kimchi mcp import-auth` — never at startup, because keychain reads can
- * prompt (ACL) and must not hang headless launches.
+ * Import v1.16.0-era (pi-mcp-adapter + kimchi keyring bridge) OAuth
+ * credentials into the native `mcp-auth.json` store, so upgrading to the
+ * native MCP engine does not force a one-time re-login per OAuth server.
+ * Runs automatically on first launch (entry.ts) — transparently, no command.
  *
  * Adapter stores (read-only, never modified — rollback to v1.16.0 keeps its
  * own credentials working):
- * - OS keyring: service `pi-mcp-adapter.oauth`, account `sha256-<sha256(name)>`;
- *   values over 1000 chars are chunked with a manifest at the base account
+ * - OS keyring: service `dev.kimchi.mcp.oauth` (the v1.16.0 keyring bridge's
+ *   remap of the adapter's service), account `sha256-<sha256(name)>`. v1.16.0
+ *   wrote items via `/usr/bin/security` with an ACL trusting it, values
+ *   wrapped in a `b64:` envelope — both handled, so reads are prompt-free.
+ *   Values over 1000 chars are chunked with a manifest at the base account
  *   and chunk accounts `<account>.chunk.<digest16>.<index>`.
  * - Legacy plaintext: `<agentDir>/mcp-oauth/<account>/tokens.json`.
  * - Opt-in encrypted file: `<agentDir>/mcp-oauth-encrypted/<account>/credentials.json`
@@ -36,7 +38,16 @@ export function mcpNamespace(name: string): string {
 	return `mcp__${name.replace(/-/g, "_")}`
 }
 
-const AUTH_SECRET_SERVICE = "pi-mcp-adapter.oauth"
+/**
+ * The keychain service kimchi's v1.16.0 keyring bridge stored MCP OAuth
+ * credentials under. (The adapter's own `pi-mcp-adapter.oauth` was remapped
+ * away so kimchi never shares keychain ACL entries with other adapter
+ * consumers — see the deleted keyring-require-bridge.) v1.16.0 wrote items
+ * via `/usr/bin/security` with an ACL trusting it (`-T /usr/bin/security`)
+ * and wrapped values in a `b64:` envelope; both are handled below so its
+ * items migrate with zero prompts.
+ */
+const AUTH_SECRET_SERVICE = "dev.kimchi.mcp.oauth"
 const AUTH_CHUNK_MANIFEST_KEY = "__piMcpAdapterOAuthChunked"
 const OAUTH_FILE_KEY_ENV = "PI_MCP_ADAPTER_OAUTH_FILE_KEY"
 const ENCRYPTED_FILE_AAD_CONTEXT = "pi-mcp-adapter.oauth.encrypted-file.v1"
@@ -148,17 +159,50 @@ function isChunkManifest(value: unknown): value is ChunkManifest {
  * The manifest sits at the base account; chunks live at
  * `<account>.chunk.<digest>.<index>` and concatenate in index order.
  */
+const ENVELOPE_PREFIX = "b64:"
+const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
+
+/** Text with no control characters other than tab/newline and no U+FFFD (guards against mis-decoding genuinely hex-shaped passwords). */
+function isPrintableText(value: string): boolean {
+	if (value.includes("\uFFFD")) return false
+	for (const char of value) {
+		const code = char.codePointAt(0) ?? 0
+		if (code < 0x20 && char !== "\t" && char !== "\n" && char !== "\r") return false
+	}
+	return true
+}
+
+/**
+ * Decode one raw keychain value the way v1.16.0's keyring bridge did:
+ * `b64:` envelope first (its security-tool writes), then the hex dumps the
+ * `security` CLI produces for non-ASCII legacy secrets (best effort), then
+ * the raw value as-is (plain legacy writes).
+ */
+export function decodeKeychainValue(raw: string): string {
+	if (raw.startsWith(ENVELOPE_PREFIX)) {
+		const body = raw.slice(ENVELOPE_PREFIX.length)
+		const decoded = Buffer.from(body, "base64").toString("utf8")
+		if (STRICT_BASE64.test(body) && !decoded.includes("\uFFFD")) return decoded
+	}
+	if (/^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0) {
+		const decoded = Buffer.from(raw, "hex").toString("utf8")
+		if (isPrintableText(decoded)) return decoded
+	}
+	return raw
+}
+
 export function readKeyringPayload(read: KeyringReader, account: string): KeyringReadResult {
 	const base = read(AUTH_SECRET_SERVICE, account)
 	if (!base.found || base.value === undefined) return base
+	const baseValue = decodeKeychainValue(base.value)
 
 	let parsed: unknown
 	try {
-		parsed = JSON.parse(base.value)
+		parsed = JSON.parse(baseValue)
 	} catch {
-		return { found: true, value: base.value }
+		return { found: true, value: baseValue }
 	}
-	if (!isChunkManifest(parsed)) return { found: true, value: base.value }
+	if (!isChunkManifest(parsed)) return { found: true, value: baseValue }
 
 	const chunks: string[] = []
 	for (let index = 0; index < parsed.chunkCount; index++) {
@@ -166,7 +210,7 @@ export function readKeyringPayload(read: KeyringReader, account: string): Keyrin
 		if (!chunk.found || chunk.value === undefined) {
 			return { found: false, warning: `chunk ${index} of ${parsed.chunkCount} missing for ${account}` }
 		}
-		chunks.push(chunk.value)
+		chunks.push(decodeKeychainValue(chunk.value))
 	}
 	return { found: true, value: chunks.join("") }
 }
@@ -270,31 +314,58 @@ export function encryptedFileKeyFromEnv(env: NodeJS.ProcessEnv = process.env): {
 let cliKeyringDisabled = false
 let cliKeyringDisabledWarning: string | undefined
 
+// /usr/bin/security exit codes are the OSStatus as an unsigned byte (OSStatus & 0xFF):
+// 44 = errSecItemNotFound, 36 = errSecInteractionNotAllowed, 128 = errSecUserCanceled
+// (a declined keychain consent dialog; empty stderr). Validated on macOS 26.6.2 by
+// the old keyring bridge — message markers classify first, exit codes are the fallback.
+const SECURITY_EXIT_ITEM_NOT_FOUND = 44
+const SECURITY_EXIT_INTERACTION_NOT_ALLOWED = 36
+const SECURITY_EXIT_CONSENT_DENIED = 128
+
 /**
  * Platform-CLI keyring reader. `security` on macOS, `secret-tool` on Linux;
  * Windows Credential Manager is not implemented (v1) — callers surface the
- * re-login guidance instead.
+ * re-login guidance instead. v1.16.0 wrote its keychain items via
+ * `/usr/bin/security` with an ACL trusting it, so reading them is silent.
  */
 export function cliKeyringReader(service: string, account: string): KeyringReadResult {
 	if (cliKeyringDisabled) return { found: false, warning: cliKeyringDisabledWarning }
 	if (process.platform === "darwin") {
+		let out: string
 		try {
-			const out = execFileSync("security", ["find-generic-password", "-s", service, "-a", account, "-w"], {
+			out = execFileSync("security", ["find-generic-password", "-s", service, "-a", account, "-w"], {
 				encoding: "utf8",
 				stdio: ["ignore", "pipe", "ignore"],
 				// A consent prompt nobody answers must never hang a launch.
 				timeout: 10_000,
 			})
-			return { found: true, value: stripTrailingNewline(out) }
 		} catch (error) {
 			const status = (error as { status?: number }).status
-			if (status === 44) return { found: false }
+			const stderr = String((error as { stderr?: string }).stderr ?? "")
+			if (stderr.includes("could not be found") || status === SECURITY_EXIT_ITEM_NOT_FOUND) {
+				return { found: false }
+			}
+			if (stderr.includes("interaction is not allowed") || status === SECURITY_EXIT_INTERACTION_NOT_ALLOWED) {
+				// Headless/SSH session: the keychain cannot show prompts at all. Other
+				// items (security-trusting ones) may still read fine, so no disable.
+				return {
+					found: false,
+					warning: `macOS keychain is locked or unavailable for ${account} (headless session?); its grant is not imported this launch`,
+				}
+			}
+			if (status === SECURITY_EXIT_CONSENT_DENIED) {
+				// The user declined the consent dialog — never re-prompt within this process.
+				cliKeyringDisabled = true
+				cliKeyringDisabledWarning = `macOS keychain consent was declined for ${account}; OAuth keyring import disabled for this launch`
+				return { found: false, warning: cliKeyringDisabledWarning }
+			}
 			cliKeyringDisabled = true
 			cliKeyringDisabledWarning = `macOS keychain read for ${account} failed (security exit ${
 				status ?? "unknown"
 			}); OAuth keyring import disabled for this launch`
 			return { found: false, warning: cliKeyringDisabledWarning }
 		}
+		return { found: true, value: decodeKeychainValue(stripTrailingNewline(out)) }
 	}
 	if (process.platform === "linux") {
 		try {
@@ -557,6 +628,29 @@ export function importAdapterAuth(options: {
 
 export const OAUTH_IMPORT_STAMP = "mcp-oauth-import.done"
 export const OAUTH_IMPORT_LOCK = "mcp-oauth-import.lock"
+export const OAUTH_IMPORT_REPORT = "mcp-oauth-import-report.json"
+
+export interface OAuthImportReportFile {
+	version: 1
+	ranAt: string
+	stamped: boolean
+	imported: string[]
+	results: ImportServerResult[]
+	warnings: string[]
+}
+
+/** Write via temp-file + rename so a concurrent reader never sees a torn file. */
+function writeImportReport(agentDir: string, report: OAuthImportReportFile): void {
+	const path = join(agentDir, OAUTH_IMPORT_REPORT)
+	const tmp = `${path}.tmp-${process.pid}-${Date.now().toString(36)}`
+	writeFileSync(tmp, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 })
+	try {
+		renameSync(tmp, path)
+	} catch (error) {
+		rmSync(tmp, { force: true })
+		throw error
+	}
+}
 
 /**
  * One-shot, launch-time OAuth token import: adapter credentials for the
@@ -585,7 +679,23 @@ export function runOAuthImportOnce(options: { agentDir: string; cwd: string; key
 			keyringReader: options.keyringReader,
 		})
 		for (const warning of report.warnings) console.warn(`[kimchi-mcp-oauth-import] ${warning}`)
-		if (report.ok && report.warnings.length === 0) writeFileSync(stampPath, "1\n")
+		const stamped = report.ok && report.warnings.length === 0
+		if (stamped) writeFileSync(stampPath, "1\n")
+		// The import is silent by design; the report is what makes "why wasn't
+		// server X migrated" answerable after the fact (per-server statuses,
+		// stores, warnings — mirroring the config migration's report).
+		try {
+			writeImportReport(options.agentDir, {
+				version: 1,
+				ranAt: new Date().toISOString(),
+				stamped,
+				imported: report.imported,
+				results: report.results,
+				warnings: report.warnings,
+			})
+		} catch {
+			// Never block startup on the report.
+		}
 	} finally {
 		rmSync(lockPath, { force: true })
 	}
