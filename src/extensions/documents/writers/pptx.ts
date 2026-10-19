@@ -39,7 +39,7 @@ import {
 } from "./pptx-layout.js"
 import type { ChartSpec, DeckMeta, DeckSpec, DeckTheme, LayoutHint, SlideElement, SlideSpec } from "./pptx-model.js"
 
-const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".svg"])
+const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg"])
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 const LAYOUT_HINTS: LayoutHint[] = ["title", "hero", "content", "two-column", "table", "chart", "closing", "blank"]
 
@@ -417,7 +417,10 @@ function checkImage(path: string, slide: SlideSpec, options: WriteOptions): void
 	const size = options.fileSize ?? ((p: string) => statSync(p).size)
 	const ext = extname(path).toLowerCase()
 	if (!IMAGE_EXTS.has(ext)) {
-		throw new DocumentError("unsupported-format", `slide ${slide.index}: image "${path}" is not PNG/JPEG/GIF/SVG`)
+		throw new DocumentError(
+			"unsupported-format",
+			`slide ${slide.index}: image "${path}" is not PNG/JPEG (local files only)`,
+		)
 	}
 	if (!exists(path)) {
 		throw new DocumentError("corrupt", `slide ${slide.index}: image not found: ${path}`)
@@ -586,7 +589,16 @@ function renderElement(
 			break
 		}
 		case "image": {
-			const path = isAbsolute(el.path) ? el.path : normalize(`${options.baseDir ?? "."}/${el.path}`)
+			// The documented contract: relative paths under the deck's Markdown
+			// dir. Absolute paths and `..` escapes are rejected so a hostile deck
+			// cannot embed arbitrary local files.
+			if (isAbsolute(el.path) || el.path.split(/[\\/]/).includes("..")) {
+				throw new DocumentError(
+					"unsupported-format",
+					`slide ${slideIndex}: image path "${el.path}" must stay under the deck's directory`,
+				)
+			}
+			const path = normalize(`${options.baseDir ?? "."}/${el.path}`)
 			checkImage(path, { index: slideIndex, elements: [el], notes: [] }, options)
 			s.addImage({
 				path,

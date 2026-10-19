@@ -21,7 +21,7 @@
  */
 
 import { readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
-import { dirname, resolve } from "node:path"
+import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { applyPptxOps, parsePptxOps } from "./editors/pptx.js"
 import { extractPptx } from "./extractors/pptx.js"
@@ -29,6 +29,7 @@ import { MAX_UNITS_PER_CALL, maxFileBytes } from "./limits.js"
 import { DocumentError, isDocumentError } from "./model.js"
 import { openOoxml } from "./ooxml/package.js"
 import { validateContentTypes, validatePresentationChildOrder } from "./ooxml/validate.js"
+import { sameFile } from "./paths.js"
 import { checkPptx, renderFindings } from "./pptx-check.js"
 import { inspectPptx, renderInspection } from "./pptx-inspect.js"
 import { type RenderDeps, renderPptx } from "./pptx-render.js"
@@ -215,7 +216,7 @@ export async function runPptxCli(argv: string[], io: CliIo): Promise<number> {
 				if (!opsPath) throw new DocumentError("corrupt", "edit needs --ops <ops.json> (a JSON array of ops)")
 				if (!out.toLowerCase().endsWith(".pptx"))
 					throw new DocumentError("corrupt", `output path must end in .pptx: ${out}`)
-				if (resolve(out) === resolve(input)) {
+				if (sameFile(out, input)) {
 					throw new DocumentError("corrupt", "--out must differ from the input — edits never write in place", "pptx")
 				}
 				const data = readBytes(readFile, input)
