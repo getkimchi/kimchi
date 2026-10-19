@@ -1898,6 +1898,16 @@ export class KimchiAcpAgent implements Agent {
 			if (!record) return undefined
 			return `km.${record.nextBlockId++}`
 		}
+		// Most recent block id emitted for this message — the artifacts
+		// trailing chunk reuses it (never a fresh id) so replay sends no chunk
+		// that seedBlockCounterFromBranch didn't count, preserving live/replay
+		// messageId parity.
+		let lastEmittedMessageId: string | undefined
+		// Generated artifacts detected from this message's completed tool calls.
+		// Replay skips the on-disk existence check (files may be gone) — a chip
+		// for a deleted file is still informative; open failures are the
+		// client's UX concern.
+		const replayArtifacts = new Map<string, Artifact>()
 		// Buffer contiguous text blocks so a single assistant message renders as
 		// one agent_message_chunk per natural text segment — emit the full
 		// message as a single chunk, no per-token chunking. When a thinking or
@@ -1907,6 +1917,7 @@ export class KimchiAcpAgent implements Agent {
 		const flushText = () => {
 			if (textBuffer.length === 0) return
 			const messageId = nextMessageId()
+			lastEmittedMessageId = messageId ?? lastEmittedMessageId
 			const modelMeta = modelMetaFor(record?.emittedModelMeta, messageId, attribution)
 			this.send({
 				sessionId,
@@ -1931,6 +1942,7 @@ export class KimchiAcpAgent implements Agent {
 					} else if (part.kind === "thinking") {
 						flushText()
 						const messageId = nextMessageId()
+						lastEmittedMessageId = messageId ?? lastEmittedMessageId
 						const modelMeta = modelMetaFor(record?.emittedModelMeta, messageId, attribution)
 						this.send({
 							sessionId,
@@ -1951,6 +1963,7 @@ export class KimchiAcpAgent implements Agent {
 				// payload only matters for multi-turn provider continuity.
 				if (redacted || typeof thinking !== "string" || thinking.length === 0) continue
 				const messageId = nextMessageId()
+				lastEmittedMessageId = messageId ?? lastEmittedMessageId
 				const modelMeta = modelMetaFor(record?.emittedModelMeta, messageId, attribution)
 				this.send({
 					sessionId,
@@ -1995,6 +2008,11 @@ export class KimchiAcpAgent implements Agent {
 						rawOutput: result ? wireSafeToolResult(result) : undefined,
 					}),
 				})
+				if (result && !result.isError && record) {
+					for (const artifact of artifactsFromToolCall(name, args, result, record.cwd, { verifyExists: false })) {
+						replayArtifacts.set(artifact.path, artifact)
+					}
+				}
 				// The branch may contain multiple toolCalls with the same upstream id
 				// (e.g., across a compaction boundary). Drop the mapping after replaying
 				// each call so the next one with the same upstream id gets a fresh id.
@@ -2004,6 +2022,23 @@ export class KimchiAcpAgent implements Agent {
 		// Trailing text after the last structural block (or a text-only message)
 		// still needs to land — flushText is a no-op when the buffer is empty.
 		flushText()
+		// Artifact chips mirror the live path's flushArtifacts: a trailing
+		// zero-length chunk on the message's last block id carrying
+		// `_meta["kimchi.dev"].artifacts`. A message with no emitted blocks
+		// (thinking redacted, text empty) has no id to attach to — its
+		// artifacts are dropped, which replay accepts (the live path would
+		// have deferred them to the next message's end).
+		if (replayArtifacts.size > 0 && lastEmittedMessageId !== undefined) {
+			this.send({
+				sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					content: { type: "text", text: "" },
+					messageId: lastEmittedMessageId,
+					_meta: kimchiDevMetaOf({ artifacts: [...replayArtifacts.values()] }),
+				},
+			})
+		}
 	}
 
 	/**

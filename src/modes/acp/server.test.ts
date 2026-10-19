@@ -6071,6 +6071,108 @@ describe("generated artifacts (live turns)", () => {
 	})
 })
 
+// Replay on loadSession must reproduce the same artifact chips per
+// historical message: detection reads the persisted toolCall blocks + tool
+// results, skips the on-disk existence check (files may be gone), and the
+// trailing zero-length chunk reuses the message's last block id so
+// live/replay messageId parity holds.
+describe("generated artifacts (replay)", () => {
+	function makeAgent(loader: AcpSessionLoader, conn: AgentSideConnection): KimchiAcpAgent {
+		return new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: loader,
+		})
+	}
+
+	const artifactChunks = (updates: SessionNotification[]) =>
+		updates.flatMap((u) => {
+			if (u.update.sessionUpdate !== "agent_message_chunk") return []
+			const meta = (u.update as { _meta?: { "kimchi.dev"?: { artifacts?: unknown[] } } })._meta?.["kimchi.dev"]
+			if (!Array.isArray(meta?.artifacts)) return []
+			return [{ messageId: u.update.messageId, artifacts: meta.artifacts }]
+		})
+
+	it("emits artifacts meta for a historical message whose tool call produced a file", async () => {
+		const fake = new FakeAgentSession("loaded-artifacts")
+		fake.branch = [
+			userTextEntry("make slides", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "Here you go." },
+					{ type: "toolCall", id: "tc-r1", name: "bash", arguments: { command: "make deck" } },
+				],
+				"a1",
+				"u1",
+			),
+			// The file need not exist anymore — replay skips the existence check.
+			toolResultEntry("tc-r1", "bash", "saved to out.pptx", false, "tr1", "a1"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-artifacts", cwd: "/tmp", mcpServers: [] })
+
+		const chunks = artifactChunks(updates)
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0].artifacts).toEqual([
+			{
+				path: "/tmp/out.pptx",
+				name: "out.pptx",
+				uri: pathToFileURL("/tmp/out.pptx").href,
+				mimeType: expect.stringContaining("presentationml"),
+			},
+		])
+		// Same messageId as the replayed text chunk — the chip attaches to the
+		// message, reusing the block id (live/replay parity) rather than
+		// allocating a fresh one.
+		const textChunk = messageChunks(updates).find((c) => c.text === "Here you go.")
+		expect(chunks[0].messageId).toBe(textChunk?.messageId)
+	})
+
+	it("emits no artifacts chunk for messages without generated files", async () => {
+		const fake = new FakeAgentSession("loaded-no-artifacts")
+		fake.branch = [
+			userTextEntry("hi", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "working…" },
+					{ type: "toolCall", id: "tc-r2", name: "bash", arguments: { command: "echo" } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-r2", "bash", "done", false, "tr2", "a1"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-no-artifacts", cwd: "/tmp", mcpServers: [] })
+
+		expect(artifactChunks(updates)).toEqual([])
+	})
+
+	it("skips artifacts from errored historical tool calls", async () => {
+		const fake = new FakeAgentSession("loaded-erred")
+		fake.branch = [
+			userTextEntry("hi", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "tried" },
+					{ type: "toolCall", id: "tc-r3", name: "bash", arguments: { command: "make deck" } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-r3", "bash", "failed writing out.pptx", true, "tr3", "a1"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-erred", cwd: "/tmp", mcpServers: [] })
+
+		expect(artifactChunks(updates)).toEqual([])
+	})
+})
+
 // Pure adapter coverage for the FileChange → v1 Diff mapping, including the
 // delete branch the edit/write tools never produce today.
 describe("fileChangeToDiffContent", () => {
