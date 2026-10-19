@@ -141,8 +141,10 @@ export const TODO_CHECKIN_CUSTOM_TYPE = "todo-checkin"
 
 /** Prerequisites for check-in enforcement, rechecked at every enforcement
  *  point: the resource enabled, the kill switch off, and an active
- *  reconciliation tool for the pending scope. When these are unavailable
- *  the gate releases (work is not blocked). */
+ *  reconciliation tool. The todo tools are scope-agnostic (every write
+ *  tool and confirm_todos accepts a scope argument), so registration is
+ *  checked globally rather than per pending scope. When these are
+ *  unavailable the gate releases (work is not blocked). */
 function isCheckinEnforcementAvailable(pi: ExtensionAPI): boolean {
 	if (!isResourceEnabled(TODOS_RESOURCE_ID)) return false
 	if (isSteerDisabled("todo_checkin")) return false
