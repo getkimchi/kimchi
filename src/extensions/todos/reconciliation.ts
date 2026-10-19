@@ -16,12 +16,13 @@ import { getTodoScopeKey } from "./scope.js"
 import { getTodoScopeVersion, getWorkToolCalls } from "./store.js"
 import type { TodoScope } from "./types.js"
 
-/** Latest accepted user-input revision per session. Advanced on every
+/** Latest received user-input revision per session. Advanced on every
  *  genuine user message (interactive or rpc source — never extension
- *  injections, reminders, or replayed history). */
+ *  injections, reminders, or replayed history) via the SDK input event —
+ *  receive semantics, not acceptance; see todos/index.ts. */
 const inputRevisions = new Map<string, number>()
 
-/** Advance and return the session's input revision (newest accepted input). */
+/** Advance and return the session's input revision (newest received input). */
 export function advanceInputRevision(sessionId: string): number {
 	const next = (inputRevisions.get(sessionId) ?? 0) + 1
 	inputRevisions.set(sessionId, next)

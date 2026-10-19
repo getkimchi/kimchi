@@ -321,6 +321,11 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	// Genuine user input (interactive or rpc — never extension injections or
 	// replayed history) advances the session's input revision. A newer input
 	// invalidates earlier reconciliation: what must be reconciled changed.
+	// The input event has receive semantics, not acceptance semantics: another
+	// handler may still consume the submission afterwards ({ action: "handled" }
+	// — e.g. a cancelled vision gate), leaving a pending check against a
+	// revision the model never saw. Bounded and self-correcting — the next
+	// real input re-arms the check legitimately.
 	pi.on("input", (event, ctx) => {
 		if (event.source === "extension") return
 		const sessionId = ctx.sessionManager.getSessionId()
