@@ -314,20 +314,6 @@ export function collectBundledDisabledSkillNames(bundledDir?: string): Map<strin
 	return disabled
 }
 
-function readDisablesSkillsNames(skillFilePath: string): string[] {
-	try {
-		const frontmatter = readFileSync(skillFilePath, "utf-8").split("\n").slice(0, 30).join("\n")
-		const match = /^disables-skills:[ \t]*(.+?)[ \t]*$/m.exec(frontmatter)
-		if (!match) return []
-		return match[1]
-			.split(",")
-			.map(normalizeDisablesSkillName)
-			.filter((name) => name !== "")
-	} catch {
-		return []
-	}
-}
-
 /** Mirror of the claude-code-skills name normalization so declared names
  * match the names discovered from materialized skill dirs. */
 function normalizeDisablesSkillName(name: string): string {
@@ -336,6 +322,20 @@ function normalizeDisablesSkillName(name: string): string {
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-+|-+$/g, "")
+}
+
+function readDisablesSkillsNames(skillFilePath: string): string[] {
+	try {
+		const frontmatter = readFileSync(skillFilePath, "utf-8").split("\n").slice(0, 30).join("\n")
+		const match = /^disables-skills:[ \t]*(.+?)[ \t]*$/m.exec(frontmatter)
+		if (!match) return []
+		return match[1]
+			.split(",")
+			.map((target) => normalizeDisablesSkillName(target))
+			.filter((name) => name !== "")
+	} catch {
+		return []
+	}
 }
 
 function copySkillsToTempDir(bundledDir: string, names: string[]): string {
@@ -364,13 +364,22 @@ function copySkillsToTempDir(bundledDir: string, names: string[]): string {
  */
 const visibleBundledDirCache = new Map<string, string | undefined>()
 
+/** Copy the resource-gated view of the bundled skills to a fresh temp dir.
+ *  Cached per visibility set, evicting every other entry (and cleaning up its
+ *  temp dir + exit listener) so toggle flips cannot accumulate unbounded in
+ *  the long-lived ACP process. */
 function visibleBundledDir(bundledDir: string): string | undefined {
-	const gated = listSkillNames(bundledDir).filter((name) => bundledSkillDisabledByResource(bundledDir, name))
-	if (gated.length === 0) return bundledDir
-	const visible = listSkillNames(bundledDir).filter((name) => !bundledSkillDisabledByResource(bundledDir, name))
-	if (visible.length === 0) return undefined
+	const names = listSkillNames(bundledDir)
+	const enabled = new Set(names.filter((name) => !bundledSkillDisabledByResource(bundledDir, name)))
+	if (enabled.size === names.length) return bundledDir
+	if (enabled.size === 0) return undefined
+	const visible = [...enabled]
 	const key = `${resolve(bundledDir)}|${visible.slice().sort().join(",")}`
 	if (visibleBundledDirCache.has(key)) return visibleBundledDirCache.get(key)
+	for (const [oldKey, oldDir] of visibleBundledDirCache) {
+		if (oldDir !== undefined) rmSync(oldDir, { recursive: true, force: true })
+		visibleBundledDirCache.delete(oldKey)
+	}
 	const value = copySkillsToTempDir(bundledDir, visible)
 	visibleBundledDirCache.set(key, value)
 	return value

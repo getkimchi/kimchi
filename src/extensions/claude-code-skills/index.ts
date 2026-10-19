@@ -8,6 +8,7 @@ import {
 	discoverClaudeCodeSkillDirs,
 	getClaudeCodeSkillResourcePaths,
 	getConfiguredNativeSkillNames,
+	normalizeSkillName,
 } from "./definition.js"
 
 interface SkillToolDetails {
@@ -88,9 +89,10 @@ function registerSkillTool(pi: ExtensionAPI): void {
 
 			// A bundled skill can shadow external skills by name while its resource
 			// toggle is on (documents → Anthropic office skills). Refuse with the
-			// declarer named so the model reroutes instead of retrying.
+			// declarer named so the model reroutes instead of retrying. Lookup
+			// normalizes like discovery does so case/format variants still hit it.
 			const disabledSkills = collectBundledDisabledSkillNames()
-			const disabledBy = disabledSkills.get(name)
+			const disabledBy = disabledSkills.get(normalizeSkillName(name))
 			if (disabledBy !== undefined) {
 				const message = `Claude Code skill "${name}" is unavailable: it is disabled by the enabled "${disabledBy}" skill.`
 				return {

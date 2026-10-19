@@ -422,6 +422,8 @@ function normalizeSkillName(name: string, fallbackName = "skill"): string {
 	return normalizeSkillName(fallbackName, "skill")
 }
 
+export { normalizeSkillName }
+
 function stripOuterQuotes(value: string): string {
 	if (isQuotedString(value)) {
 		return value.slice(1, -1)
