@@ -709,6 +709,13 @@ describe("repository and branch selection", () => {
 				pullRequest: { number: 7, state: "merged", headSha: other },
 			})
 		})
+		it("dates the branch from its oldest reflog entry, not its latest update", async () => {
+			reflog(created + 3600, created)
+			replies(() => [merged(7, new Date((created + 1800) * 1000).toISOString())])
+			expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toMatchObject({
+				pullRequest: { number: 7, state: "merged" },
+			})
+		})
 		it("hides a merged PR when Git keeps no reflog for the branch", async () => {
 			reflog()
 			replies(() => [merged(7, after)])
