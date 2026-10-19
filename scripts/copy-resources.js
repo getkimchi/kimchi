@@ -120,10 +120,10 @@ if (!isDev) {
 	cpSync(proxyHelperSrc, join(proxyHelperBinDest, proxyHelperName))
 }
 
-// Bundle the pdf skill's CLI and stage its fonts. Same staging-deref recipe
-// as pptx: unpdf/@cantoo/pdf-lib are dependency graphs pnpm nests, so stage
-// the whole package trees and let bun trace them. The DejaVu TTFs land in
-// <skill>/assets/ next to the script — resolvePdfAssetsDir() looks there.
+// Bundle the pdf skill's CLI. Same staging-deref recipe as pptx:
+// unpdf/@cantoo/pdf-lib are dependency graphs pnpm nests, so stage the whole
+// package trees and let bun trace them. Fonts are discovered on the host at
+// runtime (pdf-fonts.ts scans the OS font dirs).
 const pdfSkillsDest = join(projectRoot, isDev ? "resources" : "dist/share/kimchi", "skills/pdf")
 {
 	const pdfCliDest = join(pdfSkillsDest, "scripts", "pdf.mjs")
@@ -186,14 +186,6 @@ const pdfSkillsDest = join(projectRoot, isDev ? "resources" : "dist/share/kimchi
 			// ignore — the OS reclaims temp dirs
 		}
 	}
-	// Fonts: stage DejaVu TTFs + license next to the script.
-	const fontDir = dirname(realpathSync(join(projectRoot, "node_modules", "dejavu-fonts-ttf", "package.json")))
-	const assetsDest = join(pdfSkillsDest, "assets")
-	mkdirSync(assetsDest, { recursive: true })
-	for (const ttf of ["DejaVuSans.ttf", "DejaVuSans-Bold.ttf", "DejaVuSansMono.ttf"]) {
-		cpSync(join(fontDir, "ttf", ttf), join(assetsDest, ttf))
-	}
-	cpSync(join(fontDir, "LICENSE"), join(assetsDest, "DejaVu-LICENSE"))
 }
 
 // Bundle the pptx skill's CLI (same staging-deref dance as validate-skill:

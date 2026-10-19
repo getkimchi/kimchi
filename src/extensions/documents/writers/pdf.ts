@@ -1,7 +1,7 @@
 /**
  * Markdown → PDF writer for pdf.mjs create. Consumes the shared block IR
  * (markdown/blocks.ts — same input shape as the PPTX writer) and draws with
- * embedded DejaVu fonts so Unicode survives: standard-14 fonts only cover
+ * host fonts discovered by pdf-fonts.ts so Unicode survives: standard-14 fonts only cover
  * Latin-1, and silent mojibake is the exact failure this tool exists to
  * prevent. Text the fonts can't encode is a typed error naming a sample
  * character — never dropped, never written as tofu.
@@ -22,7 +22,7 @@ export interface PdfWriterFonts {
 	mono: PDFFont
 }
 
-/** Raw DejaVu TTFs; the writer embeds them into ITS document (pdf-lib fonts
+/** Raw TTF/OTF bytes; the writer embeds them into ITS document (pdf-lib fonts
  *  are document-bound — cross-document PDFFonts fail at save). */
 export interface PdfWriterFontBytes {
 	regular: Uint8Array
@@ -139,12 +139,24 @@ interface Coverage {
 	bold: { hasGlyph(cp: number): boolean }
 }
 
-function loadCoverage(fontBytes: PdfWriterFontBytes): Coverage {
-	const wrap = (bytes: Uint8Array) => {
-		const spec = pdfFontkit.create(bytes)
-		return { hasGlyph: (cp: number) => spec.hasGlyphForCodePoint(cp) }
-	}
-	return { regular: wrap(fontBytes.regular), bold: wrap(fontBytes.bold) }
+function loadCoverage(fonts: KitFonts): Coverage {
+	const wrap = (font: KitFont) => ({ hasGlyph: (cp: number) => font.hasGlyphForCodePoint(cp) })
+	return { regular: wrap(fonts.regular.kit), bold: wrap(fonts.bold.kit) }
+}
+
+interface KitFont {
+	hasGlyphForCodePoint(cp: number): boolean
+}
+
+interface KitFonts {
+	regular: { bytes: Uint8Array; kit: KitFont }
+	bold: { bytes: Uint8Array; kit: KitFont }
+	mono: { bytes: Uint8Array; kit: KitFont }
+}
+
+function loadKitFonts(fontBytes: PdfWriterFontBytes): KitFonts {
+	const wrap = (bytes: Uint8Array) => ({ bytes, kit: pdfFontkit.create(bytes) as unknown as KitFont })
+	return { regular: wrap(fontBytes.regular), bold: wrap(fontBytes.bold), mono: wrap(fontBytes.mono) }
 }
 
 function collectText(blocks: Block[], out: Array<{ text: string; bold: boolean }>): void {
@@ -185,7 +197,7 @@ function assertEncodable(coverage: Coverage, texts: Array<{ text: string; bold: 
 			if (cp > 0x20 && !font.hasGlyph(cp)) {
 				throw new DocumentError(
 					"unsupported-format",
-					`can't encode "${ch}" (U+${cp.toString(16).toUpperCase()}) — the bundled DejaVu fonts cover Latin/Greek/Cyrillic and symbols, not CJK or most emoji. Ask which format to use instead (a .docx or .pptx build would work).`,
+					`can't encode "${ch}" (U+${cp.toString(16).toUpperCase()}) — the font discovery picked covers common Latin/Greek/Cyrillic faces, not necessarily CJK or most emoji. Install fuller fonts and retry, or use a .docx/.pptx build instead.`,
 					"pdf",
 				)
 			}
@@ -242,7 +254,7 @@ function translateErr(err: unknown): never {
 	if (/encode|codepoint|glyph/i.test(msg)) {
 		throw new DocumentError(
 			"unsupported-format",
-			`text the bundled fonts can't encode (${msg}). The DejaVu fonts cover Latin/Greek/Cyrillic and symbols, not CJK or emoji — suggest producing a .docx or .pptx instead.`,
+			`text the discovered fonts can't encode (${msg}). The host fonts cover common faces, not necessarily CJK or emoji — install fuller fonts or produce a .docx or .pptx instead.`,
 			"pdf",
 		)
 	}
@@ -274,20 +286,23 @@ export async function renderBlocksToPdf(
 			"pdf",
 		)
 	}
-	const coverage = loadCoverage(fontBytes)
+	const kitFonts = loadKitFonts(fontBytes)
+	const coverage = loadCoverage(kitFonts)
 	const texts: Array<{ text: string; bold: boolean }> = []
 	collectText(blocks, texts)
 	assertEncodable(coverage, texts)
 
 	const doc = await PDFDocument.create()
 	doc.registerFontkit(pdfFontkit)
-	// Full embedding (no subset): @pdf-lib/fontkit's TTF subsetter crashes on
-	// these fonts at save (undefined pos). Cost: ~2 MB of fonts per created
-	// document — the price of guaranteed encodable output.
+	// Full embedding, no subset: pdf-lib's own `subset: true` path crashes on
+	// every host font we tried (undefined 'pos'), and fontkit's own subset
+	// streams omit name/cmap tables pdf-lib needs at re-embed. Mitigation is
+	// upstream: discovery rejects monster faces (pdf-fonts.ts). ~0.4–2 MB per
+	// created document for the fonts normally discovered.
 	const fonts: PdfWriterFonts = {
-		regular: await doc.embedFont(fontBytes.regular),
-		bold: await doc.embedFont(fontBytes.bold),
-		mono: await doc.embedFont(fontBytes.mono),
+		regular: await doc.embedFont(kitFonts.regular.bytes),
+		bold: await doc.embedFont(kitFonts.bold.bytes),
+		mono: await doc.embedFont(kitFonts.mono.bytes),
 	}
 	const size = options.pageSize ?? PAGE_SIZES.a4
 	const canvas = new Canvas(doc, size)

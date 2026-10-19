@@ -65,10 +65,12 @@ lists, `|`-tables, ` ```code ` fences, `> ` quotes, `![alt](path.png)` images, a
 `---` on its own line for a page break.
 
 Costs and limits to know before writing:
-- **Unicode is supported** through embedded fonts (adds ~2 MB to every output).
-  Characters outside Latin/Greek/Cyrillic/symbols (CJK, most emoji) fail with a
-  typed error — ask the user which format to use instead; a `.docx` or `.pptx`
-  build would handle them.
+- **Unicode is supported** through host fonts the script embeds whole (~0.5–2 MB
+  per created output — monster faces are skipped at discovery). Failing discovery errors as `tool-missing` with the fix
+  (`KIMCHI_PDF_FONT_DIR` or install DejaVu/Noto/Liberation); characters the
+  found font can't encode (maybe CJK, most emoji) fail with a typed error —
+  ask the user which format to use instead; a `.docx` or `.pptx` build would
+  handle them.
 - **No charts.** Render data as a table, or create a deck instead.
 - **Only local PNG/JPEG images**, with paths relative to the Markdown file.
 - Output is re-parsed before it's written — you can hand it over without a

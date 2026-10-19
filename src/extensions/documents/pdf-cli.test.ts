@@ -1,14 +1,16 @@
-import { readFileSync } from "node:fs"
-import { join } from "node:path"
+import { existsSync, readFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { PDFDocument, StandardFonts } from "@cantoo/pdf-lib"
 import { describe, expect, it } from "vitest"
 import { extractPdf } from "./extractors/pdf.js"
-import { resolvePdfAssetsDir } from "./pdf-assets.js"
 import { runPdfCli } from "./pdf-cli.js"
 
+const here = dirname(fileURLToPath(import.meta.url))
+
 function fontBytes() {
-	const dir = resolvePdfAssetsDir()
-	if (!dir) throw new Error("dejavu-fonts-ttf not resolvable in tests")
+	const dir = join(here, "../../..", "node_modules", "dejavu-fonts-ttf", "ttf")
+	if (!existsSync(join(dir, "DejaVuSans.ttf"))) throw new Error("dejavu-fonts-ttf not installed in tests")
 	return {
 		regular: new Uint8Array(readFileSync(join(dir, "DejaVuSans.ttf"))),
 		bold: new Uint8Array(readFileSync(join(dir, "DejaVuSans-Bold.ttf"))),

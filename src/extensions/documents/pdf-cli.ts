@@ -29,7 +29,7 @@ import { extractPdf, pdfInfo } from "./extractors/pdf.js"
 import { MAX_UNITS_PER_CALL, maxFileBytes } from "./limits.js"
 import { parseMarkdownBlocks } from "./markdown/blocks.js"
 import { DocumentError, isDocumentError } from "./model.js"
-import { resolvePdfAssetsDir } from "./pdf-assets.js"
+import { findPdfFonts, pdfFontSearchDirs } from "./pdf-fonts.js"
 import { renderDocument } from "./render.js"
 import { PAGE_SIZES, renderBlocksToPdf } from "./writers/pdf.js"
 
@@ -38,7 +38,7 @@ export interface PdfCliIo {
 	stderr: (line: string) => void
 	readFile?: (path: string) => Uint8Array
 	writeFile?: (path: string, data: Uint8Array) => void
-	/** Font bytes override for tests (real DejaVu TTFs otherwise). */
+	/** Font bytes override for tests (host fonts via pdf-fonts.ts otherwise). */
 	fonts?: { regular: Uint8Array; bold: Uint8Array; mono: Uint8Array }
 }
 
@@ -107,19 +107,19 @@ function parseOrder(spec: string): number[] {
 
 async function loadFontBytes(io: PdfCliIo): Promise<{ regular: Uint8Array; bold: Uint8Array; mono: Uint8Array }> {
 	if (io.fonts) return io.fonts
-	const dir = resolvePdfAssetsDir()
-	if (!dir) {
+	const fonts = findPdfFonts(pdfFontSearchDirs())
+	if (!fonts) {
 		throw new DocumentError(
 			"tool-missing",
-			"DejaVu fonts not found — run scripts/copy-resources.js (the bundled skill is missing its assets/)",
+			"no usable Unicode font found for creating PDFs — install DejaVu, Noto Sans, or Liberation fonts, or set KIMCHI_PDF_FONT_DIR to a directory of .ttf/.otf files",
 			"pdf",
 		)
 	}
 	const readFile = io.readFile ?? ((p: string) => new Uint8Array(readFileSync(p)))
 	return {
-		regular: readBytes(readFile, `${dir}/DejaVuSans.ttf`),
-		bold: readBytes(readFile, `${dir}/DejaVuSans-Bold.ttf`),
-		mono: readBytes(readFile, `${dir}/DejaVuSansMono.ttf`),
+		regular: readBytes(readFile, fonts.regular),
+		bold: readBytes(readFile, fonts.bold),
+		mono: readBytes(readFile, fonts.mono ?? fonts.regular),
 	}
 }
 
