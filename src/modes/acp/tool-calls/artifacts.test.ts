@@ -94,6 +94,34 @@ describe("artifactsFromToolCall", () => {
 		expect(out.map((a) => a.path)).toEqual([abs])
 	})
 
+	it("strips paren/bracket delimiters around paths", () => {
+		const abs = touch("out.pdf")
+		const results = touch("results.pdf")
+		const out = artifactsFromToolCall("bash", {}, textResult("wrote report (out.pdf)"), cwd)
+		expect(out.map((a) => a.path)).toEqual([abs])
+		const md = artifactsFromToolCall("bash", {}, textResult(`see [results.pdf](file://x)`), cwd)
+		expect(md.map((a) => a.path)).toEqual([results])
+		// Without the bracket strip, replay mode would surface ghost tokens.
+		const replay = artifactsFromToolCall("bash", {}, textResult("wrote (ghost.pdf)"), cwd, {
+			verifyExists: false,
+		})
+		expect(replay.map((a) => a.name)).toEqual(["ghost.pdf"])
+	})
+
+	it("a repeated token does not starve the candidate budget", () => {
+		touch("late.pdf")
+		const noise = Array.from({ length: 500 }, () => "spam.pdf").join(" ")
+		const out = artifactsFromToolCall("bash", {}, textResult(`${noise} late.pdf`), cwd)
+		expect(out.map((a) => a.name)).toEqual(["late.pdf"])
+	})
+
+	it("rejects URL candidates and detects powershell output", () => {
+		expect(artifactsFromToolCall("bash", {}, textResult("downloaded https://example.com/file.pdf"), cwd)).toEqual([])
+		const abs = touch("ps-report.csv")
+		const ps = artifactsFromToolCall("powershell", {}, textResult(`Export-Csv ${abs}`), cwd)
+		expect(ps.map((a) => a.path)).toEqual([abs])
+	})
+
 	it("detects multiple distinct artifacts and dedupes repeats", () => {
 		const a = touch("a.pdf")
 		const b = touch("b.xlsx")

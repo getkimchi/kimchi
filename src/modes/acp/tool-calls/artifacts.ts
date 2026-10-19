@@ -103,7 +103,7 @@ function artifactFromPath(rawPath: string, cwd: string, opts: { verifyExists: bo
 // list duplicates ARTIFACT_EXTENSIONS (a literal avoids RegExp-constructor
 // escaping); artifacts.test.ts asserts they stay in sync.
 const PATH_TOKEN =
-	/[^\s"'<>`;|&*?]*\.(?:pptx|xlsx|docx|pdf|html|htm|csv|png|jpg|jpeg|gif|webp|svg|md|markdown|zip|ics)(?![\w.])/gi
+	/[^\s"'<>`;|&*?()[\]{}]*\.(?:pptx|xlsx|docx|pdf|html|htm|csv|png|jpg|jpeg|gif|webp|svg|md|markdown|zip|ics)(?![\w.])/gi
 
 function textBlocks(result: unknown): string[] {
 	const r = result as { content?: unknown } | null | undefined
@@ -128,12 +128,12 @@ function bashArtifacts(result: unknown, cwd: string, opts: { verifyExists: boole
 	for (const text of textBlocks(result)) {
 		for (const match of text.matchAll(PATH_TOKEN)) {
 			if (out.length >= MAX_BASH_ARTIFACTS) return out
-			if (++candidates > MAX_BASH_CANDIDATES) return out
-			// Dedupe on the raw token BEFORE artifactFromPath, so a token
-			// repeated many times re-pays neither resolution nor the existence
-			// syscall.
+			// Dedupe on the raw token BEFORE the budget check and before
+			// artifactFromPath, so a token repeated many times costs neither a
+			// budget slot nor resolution/existence syscalls.
 			if (seenTokens.has(match[0])) continue
 			seenTokens.add(match[0])
+			if (++candidates > MAX_BASH_CANDIDATES) return out
 			if (match[0].includes("://")) continue
 			const artifact = artifactFromPath(match[0], cwd, opts)
 			if (!artifact || seen.has(artifact.path)) continue
