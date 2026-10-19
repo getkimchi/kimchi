@@ -10,6 +10,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { pathToFileURL } from "node:url"
 import type {
 	AgentSideConnection,
 	ContentChunk,
@@ -5701,6 +5702,200 @@ describe("KimchiAcpAgent per-turn diffs", () => {
 
 		const content = terminalContent("tc-edit-fail") as Array<{ type: string }>
 		expect(content.some((b) => b.type === "diff")).toBe(false)
+	})
+})
+
+// Generated-artifact chips: a turn that produces a user-openable file
+// (write/edit args, or paths sniffed from bash output) ends its assistant
+// message with a trailing zero-length agent_message_chunk carrying
+// `_meta["kimchi.dev"].artifacts`, attached to the message's last block id.
+describe("generated artifacts (live turns)", () => {
+	let tmpDir: string
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let updates: SessionNotification[]
+	let sessionId: string
+
+	beforeEach(async () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "kimchi-acp-artifacts-"))
+		fake = new FakeAgentSession("session-artifacts", tmpDir)
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const rec = makeRecordingConn()
+		updates = rec.updates
+		agent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+		const res = await agent.newSession({ cwd: tmpDir, mcpServers: [] })
+		sessionId = res.sessionId
+	})
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true })
+	})
+
+	const assistantMessageEnd = (text: string): AgentSessionEvent => {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	// Chunks carrying an artifacts payload, narrowed to messageId + artifacts.
+	const artifactChunks = () =>
+		updates.flatMap((u) => {
+			if (u.update.sessionUpdate !== "agent_message_chunk") return []
+			const meta = (u.update as { _meta?: { "kimchi.dev"?: { artifacts?: unknown[] } } })._meta?.["kimchi.dev"]
+			if (!Array.isArray(meta?.artifacts)) return []
+			return [{ messageId: u.update.messageId, artifacts: meta.artifacts }]
+		})
+
+	it("attaches artifacts meta to the assistant message's block id for a write tool call", async () => {
+		const target = join(tmpDir, "slides.pptx")
+		writeFileSync(target, "pptx bytes")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-pptx",
+				toolName: "write",
+				args: { path: target, content: "pptx bytes" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-pptx",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote slides.pptx" }] },
+				isError: false,
+			})
+			fake.emit(assistantMessageEnd("Here are your slides."))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const chunks = artifactChunks()
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0].artifacts).toEqual([
+			{
+				path: target,
+				name: "slides.pptx",
+				uri: pathToFileURL(target).href,
+				mimeType: expect.stringContaining("presentationml"),
+			},
+		])
+		// Attached to the message's own block id, not a fresh one.
+		const textIds = messageChunks(updates).map((c) => c.messageId)
+		expect(textIds).toContain(chunks[0].messageId)
+	})
+
+	it("detects artifacts mentioned in bash output and dedupes across calls", async () => {
+		const target = join(tmpDir, "report.pdf")
+		writeFileSync(target, "pdf")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			for (const toolCallId of ["tc-bash-1", "tc-bash-2"]) {
+				fake.emit({ type: "tool_execution_start", toolCallId, toolName: "bash", args: { command: "make report" } })
+				fake.emit({
+					type: "tool_execution_end",
+					toolCallId,
+					toolName: "bash",
+					result: { content: [{ type: "text", text: `wrote ${target}` }] },
+					isError: false,
+				})
+			}
+			fake.emit(assistantMessageEnd("Done."))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const chunks = artifactChunks()
+		expect(chunks).toHaveLength(1)
+		expect((chunks[0].artifacts as Array<{ path: string }>).map((a) => a.path)).toEqual([target])
+	})
+
+	it("emits no artifacts meta when the turn produced none", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-bash-none",
+				toolName: "bash",
+				args: { command: "echo hi" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-bash-none",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "hi" }] },
+				isError: false,
+			})
+			fake.emit(assistantMessageEnd("Nothing generated."))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+		expect(artifactChunks()).toEqual([])
+	})
+
+	it("ignores artifacts from failed tool calls", async () => {
+		const target = join(tmpDir, "ghost.pptx")
+		writeFileSync(target, "unrelated")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-fail",
+				toolName: "write",
+				args: { path: target, content: "x" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-fail",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "boom" }], isError: true },
+				isError: true,
+			})
+			fake.emit(assistantMessageEnd("Failed."))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+		expect(artifactChunks()).toEqual([])
+	})
+
+	it("advertises artifacts support in the initialize capabilities _meta", async () => {
+		const { conn } = makeRecordingConn()
+		const initAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+		})
+		const response = await initAgent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+			clientInfo: { name: "test", version: "0" },
+		})
+		expect(response.agentCapabilities?._meta?.["kimchi.dev"]).toMatchObject({ artifacts: true })
 	})
 })
 

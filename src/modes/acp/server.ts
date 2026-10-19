@@ -169,7 +169,7 @@ import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
-import { resolveToolPath } from "./tool-calls/artifacts.js"
+import { artifactsFromToolCall, resolveToolPath } from "./tool-calls/artifacts.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
 import {
 	buildPathTrustInfo,
@@ -490,6 +490,10 @@ export class KimchiAcpAgent implements Agent {
 				_meta: kimchiDevMetaOf({
 					...ADVERTISED_CAPABILITIES,
 					...(this.mcpProbe ? {} : { probe_mcp_server: false }),
+					// Not an ext method: advertises that assistant message chunks may
+					// carry `_meta["kimchi.dev"].artifacts` (generated openable files,
+					// e.g. pptx) for clients to render attachment chips.
+					artifacts: true,
 				}),
 			},
 			authMethods,
@@ -1068,6 +1072,8 @@ export class KimchiAcpAgent implements Agent {
 			lastStreamedContent: new Map(),
 			preWriteContents: new Map(),
 			pendingFileChanges: new Map(),
+			toolCallArgs: new Map(),
+			artifacts: new Map(),
 			usage: emptyTurnUsage(),
 			resolve: turnResolve,
 			reject: turnReject,
@@ -1631,6 +1637,9 @@ export class KimchiAcpAgent implements Agent {
 						},
 					})
 				}
+				// Artifact chips attach AFTER any attribution correction so the
+				// client's last-wins _meta handling sees artifacts last.
+				this.flushArtifacts(sessionId, entry, turn)
 				const usage = msg.usage
 				if (usage) {
 					updateTurnUsage(turn, usage)
@@ -1662,6 +1671,9 @@ export class KimchiAcpAgent implements Agent {
 				if (fileChanges.length > 0) {
 					turn.pendingFileChanges.set(event.toolCallId, fileChanges)
 				}
+				// tool_execution_end carries no args — stash them so artifact
+				// detection can pair args with the result there.
+				turn.toolCallArgs.set(event.toolCallId, { toolName: event.toolName, args: event.args })
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
 					// Pending tool_call was already sent via toolcall_start → emit update
@@ -1726,6 +1738,15 @@ export class KimchiAcpAgent implements Agent {
 				// retried call) can't leak stale diff data across tool calls.
 				const pending = turn.pendingFileChanges.get(event.toolCallId) ?? []
 				turn.pendingFileChanges.delete(event.toolCallId)
+				// Generated-artifact detection needs args+result together; the args
+				// stash is consumed here even on error so ids can't leak.
+				const stashed = turn.toolCallArgs.get(event.toolCallId)
+				turn.toolCallArgs.delete(event.toolCallId)
+				if (!event.isError && stashed) {
+					for (const artifact of artifactsFromToolCall(stashed.toolName, stashed.args, event.result, entry.cwd)) {
+						turn.artifacts.set(artifact.path, artifact)
+					}
+				}
 				const preWrite = turn.preWriteContents.get(event.toolCallId)
 				turn.preWriteContents.delete(event.toolCallId)
 				// Diffs are additional content blocks, appended after the existing
@@ -2056,6 +2077,7 @@ export class KimchiAcpAgent implements Agent {
 		record.toolCallIdMap.delete(piToolCallId)
 		turn.announcedToolCallIds.delete(piToolCallId)
 		turn.lastStreamedContent.delete(piToolCallId)
+		turn.toolCallArgs.delete(piToolCallId)
 		if (opts.removeFromHidden) {
 			turn.hiddenToolCallIds.delete(piToolCallId)
 		}
@@ -2381,9 +2403,50 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
+	/**
+	 * Emit collected turn artifacts as `_meta["kimchi.dev"].artifacts` on a
+	 * trailing zero-length agent_message_chunk — the model-attribution
+	 * correction precedent: content-append is a no-op, the client's last-wins
+	 * _meta rule applies. Attached to the message's last block id (Map
+	 * insertion order); a message that produced no content blocks (tool-only)
+	 * leaves the artifacts in place for a later message_end / finalizeTurn.
+	 */
+	private flushArtifacts(sessionId: string, entry: SessionRecord, turn: TurnContext): void {
+		if (turn.artifacts.size === 0) return
+		let messageId: string | undefined
+		for (const id of entry.contentIndexToBlockId.values()) messageId = id
+		if (messageId === undefined) return
+		const artifacts = [...turn.artifacts.values()]
+		turn.artifacts.clear()
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "agent_message_chunk",
+				content: { type: "text", text: "" },
+				messageId,
+				_meta: kimchiDevMetaOf({ artifacts }),
+			},
+		})
+	}
+
 	private finalizeTurn(entry: SessionRecord, stopReason: PromptResponse["stopReason"]): void {
 		const turn = entry.turn
 		if (!turn) return
+		// Artifacts from a tool-only tail (a message that produced no content
+		// blocks never hit flushArtifacts) still surface before the turn closes.
+		if (turn.artifacts.size > 0) {
+			const artifacts = [...turn.artifacts.values()]
+			turn.artifacts.clear()
+			this.send({
+				sessionId: entry.session.sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					content: { type: "text", text: "" },
+					messageId: `km.${entry.nextBlockId++}`,
+					_meta: kimchiDevMetaOf({ artifacts }),
+				},
+			})
+		}
 		entry.turn = undefined
 		try {
 			this.emitUsageUpdate(entry.session, turn.usage)
