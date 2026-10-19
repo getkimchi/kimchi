@@ -39,12 +39,21 @@ export type TurnContext = {
 	/**
 	 * Generated user-openable files detected from completed tool calls this
 	 * turn (see tool-calls/artifacts.ts), keyed by resolved path for dedupe.
-	 * Flushed as `_meta["kimchi.dev"].artifacts` on a trailing zero-length
-	 * agent_message_chunk at message_end; artifacts from a message that
-	 * produced no content blocks survive to the next message_end (or to
-	 * finalizeTurn, which emits them on a fresh block id).
+	 * Emitted once at turn end (finalizeTurn) as trailing `resource_link`
+	 * agent_message_chunks carrying `_meta["kimchi.dev"].type = "artifact"`. A
+	 * turn that emitted no text block never attaches (see lastBlockId) and
+	 * its artifacts are dropped.
 	 */
 	artifacts: Map<string, Artifact>
+	/**
+	 * The turn's most recently allocated agent_message (text) block id — the
+	 * attachment point for the turn-scoped artifact link chunks at
+	 * finalizeTurn. Thinking blocks never update this: a chunk attached to a
+	 * thinking block id would render a spurious empty agent message on
+	 * kind-keyed clients. Never a fresh id so replay produces the same
+	 * messageId (live/replay parity).
+	 */
+	lastBlockId?: string
 	usage: TurnUsage
 	resolve: (res: PromptResponse) => void
 	reject: (err: unknown) => void

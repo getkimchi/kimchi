@@ -5706,9 +5706,10 @@ describe("KimchiAcpAgent per-turn diffs", () => {
 })
 
 // Generated-artifact chips: a turn that produces a user-openable file
-// (write/edit args, or paths sniffed from bash output) ends its assistant
-// message with a trailing zero-length agent_message_chunk carrying
-// `_meta["kimchi.dev"].artifacts`, attached to the message's last block id.
+// (write/edit args, or paths sniffed from bash output) ends with trailing
+// `resource_link` agent_message_chunks — one per artifact — carrying
+// `_meta["kimchi.dev"].type = "artifact"`, attached to the turn's LAST text
+// block id (Claude-style turn-scoped emission).
 describe("generated artifacts (live turns)", () => {
 	let tmpDir: string
 	let fake: FakeAgentSession
@@ -5775,14 +5776,24 @@ describe("generated artifacts (live turns)", () => {
 		})
 	}
 
-	// Chunks carrying an artifacts payload, narrowed to messageId + the full
-	// kimchi.dev meta blob (tests assert both artifacts and merged fields).
+	// Artifact link chunks, narrowed to messageId + link content + kimchi.dev
+	// meta blob (tests assert both link fields and merged attribution fields).
 	const artifactChunks = () =>
 		updates.flatMap((u) => {
 			if (u.update.sessionUpdate !== "agent_message_chunk") return []
 			const meta = (u.update as { _meta?: { "kimchi.dev"?: Record<string, unknown> } })._meta?.["kimchi.dev"]
-			if (!Array.isArray(meta?.artifacts)) return []
-			return [{ messageId: u.update.messageId, meta }]
+			if (meta?.type !== "artifact") return []
+			const content = (u.update as { content?: Record<string, unknown> }).content ?? {}
+			if (content.type !== "resource_link") return []
+			return [
+				{
+					messageId: u.update.messageId,
+					uri: content.uri,
+					name: content.name,
+					mimeType: content.mimeType,
+					meta,
+				},
+			]
 		})
 
 	it("attaches artifacts meta to the assistant message's block id for a write tool call", async () => {
@@ -5811,17 +5822,26 @@ describe("generated artifacts (live turns)", () => {
 		expect(res.stopReason).toBe("end_turn")
 
 		const chunks = artifactChunks()
-		expect(chunks[0].meta.artifacts).toEqual([
-			{
-				path: target,
-				name: "slides.pptx",
-				uri: pathToFileURL(target).href,
-				mimeType: expect.stringContaining("presentationml"),
-			},
-		])
-		// Attached to the message's own block id, not a fresh one.
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0]).toMatchObject({
+			name: "slides.pptx",
+			uri: pathToFileURL(target).href,
+			mimeType: expect.stringContaining("presentationml"),
+		})
+		// Attached to a real replicated block id, not a fresh one.
 		const textIds = messageChunks(updates).map((c) => c.messageId)
 		expect(textIds).toContain(chunks[0].messageId)
+		// Turn-scoped: artifact link chunks are emitted at finalizeTurn —
+		// AFTER every message chunk of the turn (usage_update may still follow).
+		const textIdx = updates.findIndex((u) => {
+			if (u.update.sessionUpdate !== "agent_message_chunk") return false
+			return (u.update as { content?: { text?: string } }).content?.text === "Here are your slides."
+		})
+		const artifactIdx = updates.findIndex((u) => {
+			if (u.update.sessionUpdate !== "agent_message_chunk") return false
+			return (u.update as { content?: { type?: string } }).content?.type === "resource_link"
+		})
+		expect(artifactIdx).toBeGreaterThan(textIdx)
 	})
 
 	it("detects artifacts mentioned in bash output and dedupes across calls", async () => {
@@ -5848,14 +5868,14 @@ describe("generated artifacts (live turns)", () => {
 
 		const chunks = artifactChunks()
 		expect(chunks).toHaveLength(1)
-		expect((chunks[0].meta.artifacts as Array<{ path: string }>).map((a) => a.path)).toEqual([target])
+		expect(chunks.map((c) => c.uri)).toEqual([pathToFileURL(target).href])
 	})
 
-	// A tool-only last message has no content block ids to attach to, and we
-	// deliberately do NOT invent a fresh `km.` id at turn end: a fresh id has
-	// no persisted counterpart, so session reload could not reproduce the
-	// chip — attaching only to real block ids keeps live and replay identical.
-	it("drops artifacts of a tool-only LAST message rather than emitting on a fresh id", async () => {
+	// A turn whose ONLY assistant message is tool-only emitted no text block
+	// id — and we deliberately do NOT invent a fresh `km.` id at turn end: a
+	// fresh id has no persisted counterpart, so session reload could not
+	// reproduce the chip. Turn-scoped emission drops such artifacts.
+	it("drops artifacts of a text-less turn rather than emitting on a fresh id", async () => {
 		const target = join(tmpDir, "deck.pptx")
 		writeFileSync(target, "pptx")
 		fake.promptImpl = async () => {
@@ -5886,10 +5906,10 @@ describe("generated artifacts (live turns)", () => {
 		expect(artifactChunks()).toEqual([])
 	})
 
-	// A mid-turn tool-only message leaves its artifacts in the turn context;
-	// the NEXT message_end with content blocks flushes them on that message's
-	// own block id (the client keys the chip on the later message).
-	it("defers artifacts from a tool-only message to the next content-bearing message", async () => {
+	// A mid-turn tool-only message produces artifacts without any block of
+	// its own; turn-scoped emission attaches them at turn end to the turn's
+	// LAST text block (the later content-bearing message).
+	it("attaches a tool-only message's artifacts to the turn's last text block", async () => {
 		const target = join(tmpDir, "notes.md")
 		writeFileSync(target, "md")
 		fake.promptImpl = async () => {
@@ -5923,13 +5943,13 @@ describe("generated artifacts (live turns)", () => {
 		expect(chunks).toHaveLength(1)
 		const textChunk = messageChunks(updates).find((c) => c.text === "All done.")
 		expect(chunks[0].messageId).toBe(textChunk?.messageId)
-		expect((chunks[0].meta.artifacts as Array<{ path: string }>).map((a) => a.path)).toEqual([target])
+		expect(chunks[0].uri).toBe(pathToFileURL(target).href)
 	})
 
 	// The client's _meta rule is last-wins on the whole blob per messageId, so
-	// the artifacts payload must MERGE the attribution the block already
+	// the artifact chunk's _meta must MERGE the attribution the block already
 	// carried — otherwise the chip chunk would wipe the model label.
-	it("merges the block's model attribution into the artifacts chunk meta", async () => {
+	it("merges the block's model attribution into the artifact chunk meta", async () => {
 		const target = join(tmpDir, "slides.pptx")
 		writeFileSync(target, "pptx")
 		fake.promptImpl = async () => {
@@ -5963,10 +5983,11 @@ describe("generated artifacts (live turns)", () => {
 		})
 	})
 
-	// A message whose last CONTENT block is thinking must not receive an
-	// agent_message_chunk on the thinking block id — kind-keyed clients would
-	// render a spurious empty message. Attach to the text block instead.
-	it("skips thinking-kind block ids when attaching the artifacts chunk", async () => {
+	// A turn whose LAST content block is thinking must not see a
+	// resource_link chunk attached to the thinking block id — kind-keyed
+	// clients would render a spurious empty agent message. The link attaches
+	// to the prior text block instead (turn.lastBlockId skips thinking).
+	it("skips thinking-kind block ids when attaching artifact chunks", async () => {
 		const target = join(tmpDir, "chart.png")
 		writeFileSync(target, "png")
 		fake.promptImpl = async () => {
@@ -6004,7 +6025,7 @@ describe("generated artifacts (live turns)", () => {
 		expect(chunks[0].messageId).toBe(textChunk?.messageId)
 	})
 
-	it("emits no artifacts meta when the turn produced none", async () => {
+	it("emits no artifact chunks when the turn produced none", async () => {
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
 			fake.emit({
@@ -6071,11 +6092,12 @@ describe("generated artifacts (live turns)", () => {
 	})
 })
 
-// Replay on loadSession must reproduce the same artifact chips per
-// historical message: detection reads the persisted toolCall blocks + tool
-// results, skips the on-disk existence check (files may be gone), and the
-// trailing zero-length chunk reuses the message's last block id so
-// live/replay messageId parity holds.
+// Replay on loadSession must reproduce the live turn's artifact chips:
+// detection reads the persisted toolCall blocks + tool results, skips the
+// on-disk existence check (files may be gone), and each turn's artifacts
+// flush once — attached to the turn's last text block id (either just
+// before the next replayed user message or at branch end) so live/replay
+// messageId parity holds.
 describe("generated artifacts (replay)", () => {
 	function makeAgent(loader: AcpSessionLoader, conn: AgentSideConnection): KimchiAcpAgent {
 		return new KimchiAcpAgent(conn, {
@@ -6089,12 +6111,21 @@ describe("generated artifacts (replay)", () => {
 	const artifactChunks = (updates: SessionNotification[]) =>
 		updates.flatMap((u) => {
 			if (u.update.sessionUpdate !== "agent_message_chunk") return []
-			const meta = (u.update as { _meta?: { "kimchi.dev"?: { artifacts?: unknown[] } } })._meta?.["kimchi.dev"]
-			if (!Array.isArray(meta?.artifacts)) return []
-			return [{ messageId: u.update.messageId, artifacts: meta.artifacts }]
+			const meta = (u.update as { _meta?: { "kimchi.dev"?: { type?: string } } })._meta?.["kimchi.dev"]
+			if (meta?.type !== "artifact") return []
+			const content = (u.update as { content?: Record<string, unknown> }).content ?? {}
+			if (content.type !== "resource_link") return []
+			return [
+				{
+					messageId: u.update.messageId,
+					uri: content.uri,
+					name: content.name,
+					mimeType: content.mimeType,
+				},
+			]
 		})
 
-	it("emits artifacts meta for a historical message whose tool call produced a file", async () => {
+	it("emits artifact link chunks for a turn whose tool call produced a file", async () => {
 		const fake = new FakeAgentSession("loaded-artifacts")
 		fake.branch = [
 			userTextEntry("make slides", "u1", null),
@@ -6115,17 +6146,14 @@ describe("generated artifacts (replay)", () => {
 
 		const chunks = artifactChunks(updates)
 		expect(chunks).toHaveLength(1)
-		expect(chunks[0].artifacts).toEqual([
-			{
-				path: "/tmp/out.pptx",
-				name: "out.pptx",
-				uri: pathToFileURL("/tmp/out.pptx").href,
-				mimeType: expect.stringContaining("presentationml"),
-			},
-		])
+		expect(chunks[0]).toMatchObject({
+			name: "out.pptx",
+			uri: pathToFileURL("/tmp/out.pptx").href,
+			mimeType: expect.stringContaining("presentationml"),
+		})
 		// Same messageId as the replayed text chunk — the chip attaches to the
-		// message, reusing the block id (live/replay parity) rather than
-		// allocating a fresh one.
+		// turn's last text block, reusing the block id (live/replay parity)
+		// rather than allocating a fresh one.
 		const textChunk = messageChunks(updates).find((c) => c.text === "Here you go.")
 		expect(chunks[0].messageId).toBe(textChunk?.messageId)
 	})
@@ -6172,10 +6200,10 @@ describe("generated artifacts (replay)", () => {
 		expect(artifactChunks(updates)).toEqual([])
 	})
 
-	// A tool-call-only assistant message emits no block ids; its artifacts
-	// defer to the next message that emits one — the live turn does the same
-	// (TurnContext.artifacts carries over at flushArtifacts).
-	it("defers artifacts from a tool-call-only message to the next message with blocks", async () => {
+	// A tool-call-only assistant message emits no block ids; the turn's
+	// artifacts flush once per turn, attached to the turn's last text block
+	// — the same id a live turn would have used for its trailing chips.
+	it("flushes a tool-call-only message's artifacts on the turn's last text block", async () => {
 		const fake = new FakeAgentSession("loaded-defer")
 		fake.branch = [
 			userTextEntry("make it", "u1", null),
@@ -6193,7 +6221,7 @@ describe("generated artifacts (replay)", () => {
 
 		const chunks = artifactChunks(updates)
 		expect(chunks).toHaveLength(1)
-		expect(chunks[0].artifacts).toEqual([expect.objectContaining({ path: "/tmp/mid.pdf" })])
+		expect(chunks[0].uri).toBe(pathToFileURL("/tmp/mid.pdf").href)
 		const textChunk = messageChunks(updates).find((c) => c.text === "All done.")
 		expect(chunks[0].messageId).toBe(textChunk?.messageId)
 	})
@@ -6220,12 +6248,13 @@ describe("generated artifacts (replay)", () => {
 
 		const chunks = artifactChunks(updates)
 		expect(chunks).toHaveLength(1)
-		expect((chunks[0].artifacts as Array<{ path: string }>).map((a) => a.path)).toEqual(["/tmp/dup.pdf"])
+		expect(chunks.map((c) => c.uri)).toEqual([pathToFileURL("/tmp/dup.pdf").href])
 	})
 
 	// Live artifact lifetime is per-turn (TurnContext.artifacts dies with the
-	// turn): a replayed user message ends the prior turn, so pending chips
-	// must NOT leak into the next turn's message.
+	// turn): a replayed user message ends the prior turn and flushes its
+	// pending artifacts — here the first turn emitted no text block, so the
+	// chips drop rather than leaking into the next turn's message.
 	it("does not leak pending artifacts across a user-message boundary", async () => {
 		const fake = new FakeAgentSession("loaded-noleak")
 		fake.branch = [
@@ -6246,10 +6275,11 @@ describe("generated artifacts (replay)", () => {
 		expect(artifactChunks(updates)).toEqual([])
 	})
 
-	// A tool-call-only tail at branch end (e.g. an interrupted turn) has no
-	// block id and no later message: replay drops the chips, exactly like the
-	// live path (which never emits on a fresh block id).
-	it("drops artifacts of a tool-call-only tail at branch end", async () => {
+	// A tool-call-only tail at branch end (e.g. an interrupted turn) still
+	// belongs to THIS turn: its artifacts attach to the turn's last text
+	// block (emitted earlier in the branch) — the same wire a live turn
+	// would have produced at finalizeTurn.
+	it("attaches a tool-call-only tail's artifacts to the turn's last text block at branch end", async () => {
 		const fake = new FakeAgentSession("loaded-tail")
 		fake.branch = [
 			userTextEntry("go", "u1", null),
@@ -6273,11 +6303,17 @@ describe("generated artifacts (replay)", () => {
 		const agent = makeAgent(async () => asSession(fake), conn)
 		await agent.loadSession({ sessionId: "loaded-tail", cwd: "/tmp", mcpServers: [] })
 
-		// a1's own chip (tail.pdf from within a block-bearing message) lands on a1;
-		// the a2 tail's tail2.pdf is dropped.
+		// Both files belong to the same turn → both land, attached to the
+		// turn's last (and only) text block, a1's "starting" chunk.
 		const chunks = artifactChunks(updates)
-		expect(chunks).toHaveLength(1)
-		expect((chunks[0].artifacts as Array<{ path: string }>).map((a) => a.path)).toEqual(["/tmp/tail.pdf"])
+		expect(chunks).toHaveLength(2)
+		expect(chunks.map((c) => c.uri)).toEqual([
+			pathToFileURL("/tmp/tail.pdf").href,
+			pathToFileURL("/tmp/tail2.pdf").href,
+		])
+		const textChunk = messageChunks(updates).find((c) => c.text === "starting")
+		expect(chunks[0].messageId).toBe(textChunk?.messageId)
+		expect(chunks[1].messageId).toBe(textChunk?.messageId)
 	})
 })
 

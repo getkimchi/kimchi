@@ -303,7 +303,7 @@ type SessionRecord = {
 	 * starts a fresh contentIndex namespace without colliding with the
 	 * previous message's assignments. Insertion order follows first-emission
 	 * order of the message's blocks, so at message_end the last value is the
-	 * message's last emitted block id — flushArtifacts relies on this.
+	 * message's last emitted block id.
 	 */
 	contentIndexToBlockId: Map<number, string>
 	/**
@@ -492,9 +492,10 @@ export class KimchiAcpAgent implements Agent {
 				_meta: kimchiDevMetaOf({
 					...ADVERTISED_CAPABILITIES,
 					...(this.mcpProbe ? {} : { probe_mcp_server: false }),
-					// Not an ext method: advertises that assistant message chunks may
-					// carry `_meta["kimchi.dev"].artifacts` (generated openable files,
-					// e.g. pptx) for clients to render attachment chips.
+					// Not an ext method: advertises that the agent emits generated
+					// openable files (e.g. pptx) at turn end as `resource_link`
+					// agent_message_chunks carrying `_meta["kimchi.dev"].type = "artifact"`,
+					// for clients to render as attachment chips.
 					artifacts: true,
 				}),
 			},
@@ -1428,6 +1429,14 @@ export class KimchiAcpAgent implements Agent {
 						messageId = `km.${entry.nextBlockId++}`
 						entry.contentIndexToBlockId.set(ame.contentIndex, messageId)
 					}
+					// Turn-scoped artifact links attach to the turn's last
+					// agent_message block id at finalizeTurn. Thinking blocks are
+					// excluded: attached to a thinking block id, a resource_link
+					// chunk would render as a spurious empty agent message on
+					// kind-keyed clients.
+					if (ame.type === "text_delta") {
+						turn.lastBlockId = messageId
+					}
 					// modelAttributionFrom reads the partial assistant message — the
 					// same best-known tuple the auto-model extension learns from — so
 					// the first chunk of a block carries its attribution and a later
@@ -1595,6 +1604,9 @@ export class KimchiAcpAgent implements Agent {
 							messageId = `km.${entry.nextBlockId++}`
 							entry.contentIndexToBlockId.set(index, messageId)
 						}
+						// Text blocks only reach here (thinking is filtered above):
+						// latest turn-scoped attachment point for artifact links.
+						turn.lastBlockId = messageId
 						const modelMeta = modelMetaFor(entry.emittedModelMeta, messageId, modelAttributionFrom(msg))
 						this.send({
 							sessionId,
@@ -1639,9 +1651,6 @@ export class KimchiAcpAgent implements Agent {
 						},
 					})
 				}
-				// Artifact chips attach AFTER any attribution correction so the
-				// client's last-wins _meta handling sees the merged payload last.
-				this.flushArtifacts(sessionId, entry, turn, msg.content)
 				const usage = msg.usage
 				if (usage) {
 					updateTurnUsage(turn, usage)
@@ -1803,22 +1812,34 @@ export class KimchiAcpAgent implements Agent {
 		const sessionId = session.sessionId
 		const entries = session.sessionManager.getBranch()
 		const toolResults = collectToolResults(entries)
-		// Artifacts discovered from one assistant message but unable to attach
-		// (the message emitted no block ids — a tool-call-only shape, common in
-		// multi-step turns) carry forward and flush on the next message that
-		// emits one — same deferral as the live turn's TurnContext.artifacts.
-		// Two per-turn boundaries mirror the live lifetime exactly: the map
-		// resets on each user message (live artifacts die with the turn), and
-		// leftovers at branch end are dropped (live never emits chips on a
-		// fresh block id — one without a persisted counterpart could not be
-		// reproduced on reload).
+		// Artifacts discovered from this turn's completed tool calls accumulate
+		// across the turn's assistant messages (a tool-call-only message — a
+		// routine shape in multi-step turns — discovers files without emitting
+		// any text block) and flush ONCE per turn, attached to the turn's last
+		// emitted text block id — the live path's finalizeTurn emission in
+		// replay form: the chunk lands right before the next user message, or
+		// at branch end for the final turn. The messageId must be a block id
+		// replay emitted earlier, never a fresh one, so live and replay produce
+		// the same attachment (and seedBlockCounterFromBranch's count stays
+		// exact).
 		const pendingArtifacts = new Map<string, Artifact>()
+		let turnLastBlockId: string | undefined
+		const flushTurnArtifacts = () => {
+			if (pendingArtifacts.size === 0) return
+			const artifacts = [...pendingArtifacts.values()]
+			pendingArtifacts.clear()
+			const record = this.sessions.get(sessionId)
+			this.emitArtifactLinkChunks(sessionId, record?.emittedModelMeta ?? new Map(), turnLastBlockId, artifacts)
+			turnLastBlockId = undefined
+		}
 
 		for (const entry of entries) {
 			if (!entry || typeof entry !== "object" || entry.type !== "message") continue
 			const msg = entry.message
 			if (msg.role === "user") {
-				pendingArtifacts.clear()
+				// Turn boundary: the previous turn's artifacts flush before the
+				// next user message renders.
+				flushTurnArtifacts()
 				const text = userMessageText(msg.content)
 				if (!text) continue
 				this.send({
@@ -1829,7 +1850,7 @@ export class KimchiAcpAgent implements Agent {
 					},
 				})
 			} else if (msg.role === "assistant") {
-				this.replayAssistantBlocks(
+				const lastTextBlockId = this.replayAssistantBlocks(
 					sessionId,
 					msg.content,
 					toolResults,
@@ -1837,9 +1858,12 @@ export class KimchiAcpAgent implements Agent {
 					modelAttributionFrom(msg),
 					pendingArtifacts,
 				)
+				if (lastTextBlockId !== undefined) turnLastBlockId = lastTextBlockId
 			}
 			// toolResult: handled inline alongside its originating toolCall above.
 		}
+		// Final turn in the branch: flush whatever it left behind.
+		flushTurnArtifacts()
 	}
 
 	/**
@@ -1902,7 +1926,7 @@ export class KimchiAcpAgent implements Agent {
 		record: SessionRecord | undefined,
 		attribution: ModelAttribution,
 		pendingArtifacts: Map<string, Artifact>,
-	): void {
+	): string | undefined {
 		if (!Array.isArray(content)) return
 		// Allocates a fresh session-unique messageId for every emitted chunk
 		// and leaves it off the wire if the SessionRecord isn't loaded (e.g.
@@ -1911,17 +1935,18 @@ export class KimchiAcpAgent implements Agent {
 			if (!record) return undefined
 			return `km.${record.nextBlockId++}`
 		}
-		// Most recent block id emitted for this message — the artifacts
-		// trailing chunk reuses it (never a fresh id) so replay sends no chunk
-		// that seedBlockCounterFromBranch didn't count, preserving live/replay
-		// messageId parity.
-		let lastEmittedMessageId: string | undefined
+		// Most recent agent_message (text) block id emitted for this message —
+		// returned so the caller can attach the turn's artifact link chunks to
+		// the turn's last text block. Thinking chunks are excluded: attached to
+		// a thinking id, a resource_link chunk would render a spurious empty
+		// agent message on kind-keyed clients.
+		let lastTextMessageId: string | undefined
 		// Generated artifacts detected from this message's completed tool calls
-		// accumulate in pendingArtifacts (shared across the branch's messages):
-		// a message with no emitted block ids defers to the next one, mirroring
-		// the live turn's TurnContext.artifacts. Replay skips the on-disk
-		// existence check (files may be gone) — a chip for a deleted file is
-		// still informative; open failures are the client's UX concern.
+		// accumulate in pendingArtifacts (shared across the branch's turn):
+		// flush once per turn by the caller, mirroring finalizeTurn. Replay
+		// skips the on-disk existence check (files may be gone) — a chip for a
+		// deleted file is still informative; open failures are the client's
+		// UX concern.
 		// Buffer contiguous text blocks so a single assistant message renders as
 		// one agent_message_chunk per natural text segment — emit the full
 		// message as a single chunk, no per-token chunking. When a thinking or
@@ -1931,7 +1956,7 @@ export class KimchiAcpAgent implements Agent {
 		const flushText = () => {
 			if (textBuffer.length === 0) return
 			const messageId = nextMessageId()
-			lastEmittedMessageId = messageId ?? lastEmittedMessageId
+			lastTextMessageId = messageId ?? lastTextMessageId
 			const modelMeta = modelMetaFor(record?.emittedModelMeta, messageId, attribution)
 			this.send({
 				sessionId,
@@ -1956,7 +1981,6 @@ export class KimchiAcpAgent implements Agent {
 					} else if (part.kind === "thinking") {
 						flushText()
 						const messageId = nextMessageId()
-						lastEmittedMessageId = messageId ?? lastEmittedMessageId
 						const modelMeta = modelMetaFor(record?.emittedModelMeta, messageId, attribution)
 						this.send({
 							sessionId,
@@ -1977,7 +2001,6 @@ export class KimchiAcpAgent implements Agent {
 				// payload only matters for multi-turn provider continuity.
 				if (redacted || typeof thinking !== "string" || thinking.length === 0) continue
 				const messageId = nextMessageId()
-				lastEmittedMessageId = messageId ?? lastEmittedMessageId
 				const modelMeta = modelMetaFor(record?.emittedModelMeta, messageId, attribution)
 				this.send({
 					sessionId,
@@ -2036,17 +2059,7 @@ export class KimchiAcpAgent implements Agent {
 		// Trailing text after the last structural block (or a text-only message)
 		// still needs to land — flushText is a no-op when the buffer is empty.
 		flushText()
-		// Artifact chips mirror the live path's flushArtifacts: a trailing
-		// zero-length chunk on the message's last block id carrying
-		// `_meta["kimchi.dev"].artifacts`. A message with no emitted blocks
-		// (tool-call-only messages are a routine shape) leaves the artifacts in
-		// pendingArtifacts for the NEXT message that emits a block id — the
-		// live turn defers the same way.
-		if (pendingArtifacts.size > 0 && lastEmittedMessageId !== undefined && record) {
-			const artifacts = [...pendingArtifacts.values()]
-			pendingArtifacts.clear()
-			this.sendArtifactsChunk(sessionId, record.emittedModelMeta, lastEmittedMessageId, artifacts)
-		}
+		return lastTextMessageId
 	}
 
 	/**
@@ -2449,75 +2462,50 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	/**
-	 * Emit collected turn artifacts as `_meta["kimchi.dev"].artifacts` on a
-	 * trailing zero-length agent_message_chunk — the model-attribution
-	 * correction precedent: content-append is a no-op, the client's last-wins
-	 * _meta rule applies. Attached to the message's last non-thinking block
-	 * id; a message that produced no eligible blocks (tool-only, or
-	 * thinking-only) leaves the artifacts in place for a later message_end.
+	 * Emit collected turn artifacts as `resource_link` agent_message_chunks —
+	 * one chunk per artifact, each carrying
+	 * `_meta["kimchi.dev"].type = "artifact"` so clients can tell these open-
+	 * file links apart from links the model merely references in text. Live
+	 * (finalizeTurn) and replay both route through here so the two paths
+	 * can't drift.
 	 *
-	 * Artifacts are NEVER emitted on a fresh block id: a `km.N` the client's
-	 * history never saw has no persisted counterpart, so replay could not
-	 * reproduce the chip — attaching only to real block ids keeps live and
-	 * replay in lockstep. Leftover artifacts at turn end are dropped.
-	 */
-	private flushArtifacts(
-		sessionId: string,
-		entry: SessionRecord,
-		turn: TurnContext,
-		content: AssistantMessage["content"],
-	): void {
-		if (turn.artifacts.size === 0) return
-		// contentIndexToBlockId is cleared on message_start (and agent_start),
-		// so at message_end it maps exactly this message's content blocks; its
-		// keys are content indexes, matching the final message's content
-		// array. The LAST inserted value is the last block to emit — blocks are
-		// allocated as their first delta arrives, matching block order.
-		//
-		// ...but skip thinking-kind block ids: an agent_message_chunk attached
-		// to a thinking block id renders a spurious empty agent message on
-		// kind-keyed clients (the same reason the attribution-correction loop
-		// above matches its update kind to the block type).
-		let messageId: string | undefined
-		for (const [contentIndex, blockId] of entry.contentIndexToBlockId) {
-			const blockKind = Array.isArray(content) ? content[contentIndex]?.type : undefined
-			if (blockKind === "thinking") continue
-			messageId = blockId
-		}
-		if (messageId === undefined) return
-		const artifacts = [...turn.artifacts.values()]
-		turn.artifacts.clear()
-		this.sendArtifactsChunk(sessionId, entry.emittedModelMeta, messageId, artifacts)
-	}
-
-	/**
-	 * The ONE wire shape for artifact chips — live (flushArtifacts) and
-	 * replay both route through here so the two paths can't drift: a
-	 * trailing zero-length agent_message_chunk with
-	 * `_meta["kimchi.dev"].artifacts`.
+	 * Emission is TURN-scoped (Claude-style trailing artifacts), attached to
+	 * the turn's LAST agent_message block id — never a fresh `km.N`: a fresh
+	 * id has no persisted counterpart, so replay could not reproduce the
+	 * chips. A turn with no emitted text block at all (tool-call-only,
+	 * thinking-only) has nothing reproducible to attach to, so its artifacts
+	 * are dropped.
 	 *
-	 * The attribution already emitted for the messageId is merged in: the
-	 * client's _meta rule is last-wins on the whole blob per messageId
-	 * (docs/acp-model-attribution.md), so an artifacts-only payload would
-	 * WIPE any attribution this block just carried (including a correction
-	 * emitted moments earlier).
+	 * The block's emitted model attribution is merged into each chunk's
+	 * `_meta`: the client's rule is last-wins on the whole `_meta` blob per
+	 * messageId (docs/acp-model-attribution.md), so an artifacts-only payload
+	 * would WIPE the attribution that block id just carried (including a
+	 * correction emitted moments earlier).
 	 */
-	private sendArtifactsChunk(
+	private emitArtifactLinkChunks(
 		sessionId: string,
 		seenModelMeta: Map<string, ModelAttribution>,
-		messageId: string,
+		messageId: string | undefined,
 		artifacts: Artifact[],
 	): void {
+		if (artifacts.length === 0 || messageId === undefined) return
 		const attribution = seenModelMeta.get(messageId)
-		this.send({
-			sessionId,
-			update: {
-				sessionUpdate: "agent_message_chunk",
-				content: { type: "text", text: "" },
-				messageId,
-				_meta: kimchiDevMetaOf({ ...(attribution ?? {}), artifacts }),
-			},
-		})
+		for (const artifact of artifacts) {
+			this.send({
+				sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					content: {
+						type: "resource_link",
+						uri: artifact.uri,
+						name: artifact.name,
+						...(artifact.mimeType !== undefined ? { mimeType: artifact.mimeType } : {}),
+					},
+					messageId,
+					_meta: kimchiDevMetaOf({ ...(attribution ?? {}), type: "artifact" }),
+				},
+			})
+		}
 	}
 
 	private finalizeTurn(entry: SessionRecord, stopReason: PromptResponse["stopReason"]): void {
@@ -2525,6 +2513,20 @@ export class KimchiAcpAgent implements Agent {
 		if (!turn) return
 		entry.turn = undefined
 		try {
+			// Claude-style trailing artifacts: everything the turn generated is
+			// emitted once, at turn end, attached to the turn's last text block
+			// id. Emitted BEFORE the PromptResponse resolves so the client sees
+			// the links while it still considers the turn in flight (matching
+			// how usage_update lands here). A turn that emitted no text block
+			// (tool-call-only, thinking-only) drops its artifacts — no fresh id
+			// could be reproduced by replay. Inside the try: a synchronous throw
+			// must never prevent turn resolution (this finalize path has been
+			// wedge-prone before — see comments in git history).
+			if (turn.artifacts.size > 0) {
+				const artifacts = [...turn.artifacts.values()]
+				turn.artifacts.clear()
+				this.emitArtifactLinkChunks(entry.session.sessionId, entry.emittedModelMeta, turn.lastBlockId, artifacts)
+			}
 			this.emitUsageUpdate(entry.session, turn.usage)
 		} finally {
 			const response: PromptResponse = { stopReason }
