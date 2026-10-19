@@ -23,6 +23,7 @@ test.use(TUI_TEST_CONFIG)
 
 const USER_DESC = "USER_PPTX_SKILL: python-pptx based deck editing."
 const USER_BODY = "OFFICE_PPTX_GUIDANCE: edit decks with python-pptx."
+const USER_PDF_DESC = "USER_PDF_SKILL: pypdf based merging."
 
 /** Conversation turns only: the fake server also records warmup, title
  * generation, and other aux chat calls. */
@@ -35,6 +36,12 @@ function seedSkills(homeDir: string, workDir: string): void {
 	writeFileSync(
 		join(homeDir, ".claude", "skills", "pptx", "SKILL.md"),
 		`---\nname: pptx\ndescription: ${USER_DESC}\n---\n# PPTX\n${USER_BODY}\n`,
+		"utf-8",
+	)
+	mkdirSync(join(homeDir, ".claude", "skills", "pdf"), { recursive: true })
+	writeFileSync(
+		join(homeDir, ".claude", "skills", "pdf", "SKILL.md"),
+		`---\nname: pdf\ndescription: ${USER_PDF_DESC}\n---\n# PDF\nUse pypdf.\n`,
 		"utf-8",
 	)
 	mkdirSync(join(homeDir, ".claude", "skills", "verify-this"), { recursive: true })
@@ -57,6 +64,8 @@ test("bundled pptx skill shadows the user pptx skill: unadvertised and refused b
 			responses: [
 				// Turn 1: the model tries the shadowed user skill.
 				{ toolCalls: [{ function: { name: "Skill", arguments: JSON.stringify({ skill: "pptx" }) } }] },
+				// Turn 2: also tries the shadowed user pdf skill.
+				{ toolCalls: [{ function: { name: "Skill", arguments: JSON.stringify({ skill: "pdf" }) } }] },
 				{ stream: ["Understood, using the bundled pptx skill instead."] },
 			],
 		},
@@ -66,14 +75,15 @@ test("bundled pptx skill shadows the user pptx skill: unadvertised and refused b
 			trace.step("skill attempt and refusal completed")
 
 			const turns = conversationTurns(fixture.fake.requests)
-			expect(turns.length).toBeGreaterThanOrEqual(2)
+			expect(turns.length).toBeGreaterThanOrEqual(3)
 
-			// The advertised skill list carries the bundled pptx skill and the
-			// non-conflicting Claude Code skill — but not the user's pptx skill.
+			// The advertised skill list carries the bundled skills and the
+			// non-conflicting Claude Code skill — but not either user skill.
 			const first = JSON.stringify(turns[0].body)
 			expect(first).toContain("verify-this")
 			expect(first).not.toContain(USER_DESC)
-			trace.step("system prompt advertises bundled pptx + verify-this, not the user pptx skill")
+			expect(first).not.toContain(USER_PDF_DESC)
+			trace.step("system prompt advertises bundled skills + verify-this, not the user pptx/pdf skills")
 
 			// The refusal — not the user skill body — is what reached the model as
 			// the Skill tool result.
@@ -81,7 +91,13 @@ test("bundled pptx skill shadows the user pptx skill: unadvertised and refused b
 			const toolResult = String(second.messages?.find((m) => m.role === "tool")?.content ?? "")
 			expect(toolResult).toContain('is unavailable: it is disabled by the enabled "pptx" skill')
 			expect(toolResult).not.toContain(USER_BODY)
-			trace.step("Skill tool refusal reached model context")
+
+			// And a same-named user pdf skill is refused by the bundled pdf skill.
+			const third = turns[2].body as { messages?: Array<{ role: string; content: unknown }> }
+			const thirdTools = (third.messages ?? []).filter((m) => m.role === "tool")
+			const pdfToolResult = String(thirdTools.at(-1)?.content ?? "")
+			expect(pdfToolResult).toContain('is unavailable: it is disabled by the enabled "pdf" skill')
+			trace.step("Skill tool refusals for both declarers reached model context")
 		},
 	)
 })
