@@ -11,11 +11,9 @@ import { buildArtifactLinkChunks, TurnArtifactBuffer } from "./artifact-links.js
 const chunkOf = (u: SessionUpdate) =>
 	u as { sessionUpdate: string; content: Record<string, unknown>; messageId?: string; _meta?: unknown }
 
-// Wire-shape and attachment-rule coverage for the artifact domain module.
-// End-to-end behavior (live turn flush, replay flush, attribution on real
-// sessions) is pinned in server.test.ts — these tests pin the module's own
-// contract: chunk shape, attribution merge, attachment point, drop rule,
-// and per-turn dedupe.
+// Contract tests for the artifact domain module (chunk shape, attribution
+// merge, attachment point, drop rule, dedupe). End-to-end coverage of the
+// live/replay paths is in server.test.ts.
 describe("buildArtifactLinkChunks", () => {
 	const artifact = { path: "/a/slides.pptx", name: "slides.pptx", uri: "file:///a/slides.pptx" }
 
@@ -87,7 +85,7 @@ describe("TurnArtifactBuffer", () => {
 		expect(buffer.flush()).toHaveLength(1)
 	})
 
-	it("drops artifacts of a text-less turn (no noteTextBlock, no fresh id)", () => {
+	it("drops artifacts of a text-less turn (nothing to attach to)", () => {
 		const target = join(tmpDir, "out.pdf")
 		writeFileSync(target, "pdf")
 		const buffer = new TurnArtifactBuffer()

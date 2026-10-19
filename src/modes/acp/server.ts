@@ -493,10 +493,9 @@ export class KimchiAcpAgent implements Agent {
 				_meta: kimchiDevMetaOf({
 					...ADVERTISED_CAPABILITIES,
 					...(this.mcpProbe ? {} : { probe_mcp_server: false }),
-					// Not an ext method: advertises that the agent emits generated
-					// openable files (e.g. pptx) at turn end as `resource_link`
-					// agent_message_chunks carrying `_meta["kimchi.dev"].type = "artifact"`,
-					// for clients to render as attachment chips.
+					// Advertises that the agent emits generated files at turn end
+					// as `resource_link` chunks carrying
+					// `_meta["kimchi.dev"].type = "artifact"`.
 					artifacts: true,
 				}),
 			},
@@ -1430,11 +1429,9 @@ export class KimchiAcpAgent implements Agent {
 						messageId = `km.${entry.nextBlockId++}`
 						entry.contentIndexToBlockId.set(ame.contentIndex, messageId)
 					}
-					// Turn-scoped artifact links attach to the turn's last
-					// agent_message block id at finalizeTurn. Thinking blocks are
-					// excluded: attached to a thinking block id, a resource_link
-					// chunk would render as a spurious empty agent message on
-					// kind-keyed clients.
+					// Artifact links attach to the turn's last text block id.
+					// Thinking ids are never registered: a chunk on one would
+					// render as an empty agent message on kind-keyed clients.
 					if (ame.type === "text_delta") {
 						turn.artifactBuffer.noteTextBlock(messageId)
 					}
@@ -1605,8 +1602,7 @@ export class KimchiAcpAgent implements Agent {
 							messageId = `km.${entry.nextBlockId++}`
 							entry.contentIndexToBlockId.set(index, messageId)
 						}
-						// Text blocks only reach here (thinking is filtered above):
-						// latest turn-scoped attachment point for artifact links.
+						// Text blocks only reach here (filtered above).
 						turn.artifactBuffer.noteTextBlock(messageId)
 						const modelMeta = modelMetaFor(entry.emittedModelMeta, messageId, modelAttributionFrom(msg))
 						this.send({
@@ -1816,16 +1812,11 @@ export class KimchiAcpAgent implements Agent {
 		const sessionId = session.sessionId
 		const entries = session.sessionManager.getBranch()
 		const toolResults = collectToolResults(entries)
-		// Artifacts discovered from this turn's completed tool calls accumulate
-		// across the turn's assistant messages (a tool-call-only message — a
-		// routine shape in multi-step turns — discovers files without emitting
-		// any text block) and flush ONCE per turn, attached to the turn's last
-		// emitted text block id — the live path's finalizeTurn emission in
-		// replay form: the chunk lands right before the next user message, or
-		// at branch end for the final turn. The messageId must be a block id
-		// replay emitted earlier, never a fresh one, so live and replay produce
-		// the same attachment (and seedBlockCounterFromBranch's count stays
-		// exact).
+		// Turn-scoped, matching the live path: artifacts accumulate across
+		// the turn's assistant messages and flush once per turn, attached to
+		// the turn's last text block id — right before the next user message,
+		// or at branch end. Only block ids replay already emitted are used,
+		// preserving messageId parity with live (seedBlockCounterFromBranch).
 		const artifactBuffer = new TurnArtifactBuffer()
 		const flushTurnArtifacts = () => {
 			for (const update of artifactBuffer.flush(this.sessions.get(sessionId)?.emittedModelMeta)) {
@@ -1935,18 +1926,13 @@ export class KimchiAcpAgent implements Agent {
 			if (!record) return undefined
 			return `km.${record.nextBlockId++}`
 		}
-		// Most recent agent_message (text) block id emitted for this message —
-		// returned so the caller can attach the turn's artifact link chunks to
-		// the turn's last text block. Thinking chunks are excluded: attached to
-		// a thinking id, a resource_link chunk would render a spurious empty
-		// agent message on kind-keyed clients.
+		// Last agent_message block id emitted for this message, returned so
+		// the caller can register it as the turn's artifact attachment point
+		// (thinking chunks are excluded).
 		let lastTextMessageId: string | undefined
-		// Generated artifacts detected from this message's completed tool calls
-		// accumulate in pendingArtifacts (shared across the branch's turn):
-		// flush once per turn by the caller, mirroring finalizeTurn. Replay
-		// skips the on-disk existence check (files may be gone) — a chip for a
-		// deleted file is still informative; open failures are the client's
-		// UX concern.
+		// Artifacts from this message's completed tool calls go into the
+		// caller's turn buffer (flush once per turn, like finalizeTurn).
+		// Replay skips the on-disk existence check (files may be gone).
 		// Buffer contiguous text blocks so a single assistant message renders as
 		// one agent_message_chunk per natural text segment — emit the full
 		// message as a single chunk, no per-token chunking. When a thinking or
@@ -2485,15 +2471,10 @@ export class KimchiAcpAgent implements Agent {
 		if (!turn) return
 		entry.turn = undefined
 		try {
-			// Claude-style trailing artifacts: everything the turn generated is
-			// emitted once, at turn end, attached to the turn's last text block
-			// id. Emitted BEFORE the PromptResponse resolves so the client sees
-			// the links while it still considers the turn in flight (matching
-			// how usage_update lands here). A turn that emitted no text block
-			// (tool-call-only, thinking-only) drops its artifacts — no fresh id
-			// could be reproduced by replay. Inside the try: a synchronous throw
-			// must never prevent turn resolution (this finalize path has been
-			// wedge-prone before — see comments in git history).
+			// Turn-generated artifacts flush here, before the PromptResponse
+			// resolves. A turn with no text block drops its artifacts (no fresh
+			// id for replay to reproduce). Must stay inside the try so a sync
+			// throw can never prevent turn resolution.
 			for (const update of turn.artifactBuffer.flush(entry.emittedModelMeta)) {
 				this.send({ sessionId: entry.session.sessionId, update })
 			}

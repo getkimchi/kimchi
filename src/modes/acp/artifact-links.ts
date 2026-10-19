@@ -4,18 +4,16 @@ import type { ModelAttribution } from "./model-attribution.js"
 import { type Artifact, artifactsFromToolCall } from "./tool-calls/artifacts.js"
 
 /**
- * Build the wire shape for generated-artifact chips: one `resource_link`
- * agent_message_chunk per artifact, attached to `messageId` and carrying
- * `_meta["kimchi.dev"].type = "artifact"` so clients can tell generated
- * files apart from links the model merely references in text.
+ * Build artifact chip chunks: one `resource_link` agent_message_chunk per
+ * artifact, attached to `messageId` and carrying
+ * `_meta["kimchi.dev"].type = "artifact"` so clients can distinguish
+ * generated files from links the model merely references.
  *
- * The block's emitted model attribution is merged into each chunk's
- * `_meta`: the client's rule is last-wins on the whole `_meta` blob per
- * messageId (docs/acp-model-attribution.md), so an artifacts-only payload
- * would WIPE the attribution that block id carried.
+ * The block's emitted model attribution is merged into the `_meta` —
+ * clients apply last-wins per messageId (docs/acp-model-attribution.md),
+ * so omitting it would erase the attribution this block id carried.
  *
- * This is the ONLY construction site for artifact chunks — live turns and
- * replay both build through here so the shape cannot drift.
+ * Only construction site for artifact chunks (used by live and replay).
  */
 export function buildArtifactLinkChunks(opts: {
 	messageId: string
@@ -37,24 +35,20 @@ export function buildArtifactLinkChunks(opts: {
 }
 
 /**
- * Per-turn artifact accumulator — the ONE implementation of the attachment
- * rule shared by the live turn (finalizeTurn) and replay (turn boundary /
- * branch end):
+ * Per-turn artifact accumulator, shared by the live turn (finalizeTurn)
+ * and replay (turn boundary / branch end):
  *
- * 1. Artifacts detected from completed tool calls accumulate across the
- *    whole turn, deduped by resolved path.
- * 2. Chips attach to the turn's LAST text (agent_message) block id — every
- *    text block id must be registered via noteTextBlock. Thinking blocks
- *    are never registered callers' side, so an attachment slot never lands
- *    on a kind that would render a spurious empty message on kind-keyed
- *    clients.
- * 3. flush() builds the chunks and clears the state. With no artifacts or
- *    no registered text block (tool-call-only / thinking-only turn) it
- *    returns nothing: a fresh `km.N` would have no persisted counterpart,
- *    so such turns drop their chips by design (live/replay parity).
+ * 1. Artifacts from completed tool calls accumulate for the whole turn,
+ *    deduped by resolved path.
+ * 2. Chips attach to the turn's LAST text block id, registered via
+ *    noteTextBlock. Thinking block ids are never registered (a chunk on
+ *    one renders as an empty agent message on kind-keyed clients).
+ * 3. flush() builds the chunks and clears state. It returns [] when no
+ *    text block was registered (tool-call-only / thinking-only turn):
+ *    a fresh `km.N` has no persisted counterpart for replay, so such
+ *    chips are dropped by design.
  *
- * Emission is turn-scoped (Claude-style trailing artifacts): one
- * deterministic flush point, no mid-turn deferral state.
+ * Emission is turn-scoped: one flush point per turn, no mid-turn state.
  */
 export class TurnArtifactBuffer {
 	private readonly artifacts = new Map<string, Artifact>()
@@ -64,15 +58,14 @@ export class TurnArtifactBuffer {
 		return this.artifacts.size
 	}
 
-	/** Register a text block id as the current attachment candidate. */
+	/** Register a text block id as the attachment candidate. */
 	noteTextBlock(messageId: string): void {
 		this.lastBlockId = messageId
 	}
 
 	/**
-	 * Fold artifacts detected from one completed tool call into the buffer.
-	 * Delegates to the pure detection module (allowlist + resolution); pass
-	 * `verifyExists: false` for replay, where files may no longer exist.
+	 * Fold one completed tool call's detected artifacts into the buffer.
+	 * Pass `verifyExists: false` for replay (files may no longer exist).
 	 */
 	collectFromToolCall(opts: {
 		toolName: string
@@ -89,9 +82,9 @@ export class TurnArtifactBuffer {
 	}
 
 	/**
-	 * Build the flush chunks and clear all state. Returns [] when there is
-	 * nothing to attach or no attachment point. `seenModelMeta` may be
-	 * absent (partial test harnesses without a loaded SessionRecord).
+	 * Build the flush chunks and clear state; [] when nothing to attach or
+	 * no attachment point. `seenModelMeta` may be absent in partial test
+	 * harnesses.
 	 */
 	flush(seenModelMeta?: Map<string, ModelAttribution>): SessionUpdate[] {
 		const artifacts = [...this.artifacts.values()]

@@ -37,10 +37,8 @@ export type TurnContext = {
 	 */
 	toolCallArgs: Map<string, { toolName: string; args: unknown }>
 	/**
-	 * Per-turn artifact accumulator (artifact-links.ts): generated
-	 * user-openable files detected from completed tool calls plus the
-	 * turn-scoped attachment point (the last text block id; thinking blocks
-	 * are never registered). finalizeTurn flushes it as trailing
+	 * Per-turn artifact accumulator (artifact-links.ts): detected files plus
+	 * the attachment point (last text block id). finalizeTurn flushes it as
 	 * `resource_link` chunks; a text-less turn drops its artifacts.
 	 */
 	artifactBuffer: TurnArtifactBuffer

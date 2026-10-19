@@ -5705,11 +5705,9 @@ describe("KimchiAcpAgent per-turn diffs", () => {
 	})
 })
 
-// Generated-artifact chips: a turn that produces a user-openable file
-// (write/edit args, or paths sniffed from bash output) ends with trailing
-// `resource_link` agent_message_chunks — one per artifact — carrying
-// `_meta["kimchi.dev"].type = "artifact"`, attached to the turn's LAST text
-// block id (Claude-style turn-scoped emission).
+// Live turns: generated files flush at turn end as `resource_link`
+// chunks carrying `_meta["kimchi.dev"].type = "artifact"`, attached to the
+// turn's last text block id.
 describe("generated artifacts (live turns)", () => {
 	let tmpDir: string
 	let fake: FakeAgentSession
@@ -5831,8 +5829,8 @@ describe("generated artifacts (live turns)", () => {
 		// Attached to a real replicated block id, not a fresh one.
 		const textIds = messageChunks(updates).map((c) => c.messageId)
 		expect(textIds).toContain(chunks[0].messageId)
-		// Turn-scoped: artifact link chunks are emitted at finalizeTurn —
-		// AFTER every message chunk of the turn (usage_update may still follow).
+		// Artifact chunks emit at finalizeTurn — after all message chunks.
+		// (usage_update may still follow.)
 		const textIdx = updates.findIndex((u) => {
 			if (u.update.sessionUpdate !== "agent_message_chunk") return false
 			return (u.update as { content?: { text?: string } }).content?.text === "Here are your slides."
@@ -5871,10 +5869,8 @@ describe("generated artifacts (live turns)", () => {
 		expect(chunks.map((c) => c.uri)).toEqual([pathToFileURL(target).href])
 	})
 
-	// A turn whose ONLY assistant message is tool-only emitted no text block
-	// id — and we deliberately do NOT invent a fresh `km.` id at turn end: a
-	// fresh id has no persisted counterpart, so session reload could not
-	// reproduce the chip. Turn-scoped emission drops such artifacts.
+	// A text-less turn has no id to attach to, and a fresh `km.` id has no
+	// persisted counterpart for replay — so such artifacts are dropped.
 	it("drops artifacts of a text-less turn rather than emitting on a fresh id", async () => {
 		const target = join(tmpDir, "deck.pptx")
 		writeFileSync(target, "pptx")
@@ -6092,12 +6088,9 @@ describe("generated artifacts (live turns)", () => {
 	})
 })
 
-// Replay on loadSession must reproduce the live turn's artifact chips:
-// detection reads the persisted toolCall blocks + tool results, skips the
-// on-disk existence check (files may be gone), and each turn's artifacts
-// flush once — attached to the turn's last text block id (either just
-// before the next replayed user message or at branch end) so live/replay
-// messageId parity holds.
+// Replay on loadSession must reproduce the live chips: each turn's
+// artifacts flush once, attached to the turn's last text block id (before
+// the next user message, or at branch end). Existence check skipped.
 describe("generated artifacts (replay)", () => {
 	function makeAgent(loader: AcpSessionLoader, conn: AgentSideConnection): KimchiAcpAgent {
 		return new KimchiAcpAgent(conn, {

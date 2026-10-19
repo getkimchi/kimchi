@@ -1,19 +1,14 @@
 // Generated-artifact detection for ACP sessions.
 //
-// When the agent produces a user-openable file (slides, spreadsheets, PDFs,
-// …) we want clients to render an "Open <name>" affordance attached to the
-// assistant message. Detection is deliberately conservative:
-//   - only mutation-capable tools are inspected (write/edit produce exact
-//     paths; bash/powershell results are text-sniffed for candidates),
-//   - candidates must match a fixed extension allowlist,
-//   - live detection verifies the file exists on disk before reporting.
-// Detection never throws — a failure here must not disturb the turn.
+// Detects user-openable files (slides, spreadsheets, PDFs, …) the agent
+// produced, so clients can render an "Open <name>" action. Detection is
+// conservative: only write/edit paths and bash/powershell output are
+// inspected, candidates must match the extension allowlist, and live
+// detection requires the file to exist. Detection never throws.
 //
-// Trust assumption: artifact paths are agent-controlled output. The chip
-// grants no new capability — the agent can already print the path and ask
-// the user to open it — so the client presents a one-click convenience on
-// top of content the user's session produced (including script-capable
-// types like .html/.svg, which open in the user's own environment).
+// Trust assumption: artifact paths are agent-controlled output; the chip
+// is an explicit user action. Script-capable types (.html/.svg) open in
+// the user's own environment.
 
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
@@ -52,22 +47,17 @@ export const ARTIFACT_EXTENSIONS: Record<string, string> = {
 	".ics": "text/calendar",
 }
 
-// Upper bound on artifacts reported per bash result scan — a pathological
-// result (e.g. directory listing) must not flood the client.
+// Max artifacts reported per bash result (bounds flood-prone output).
 const MAX_BASH_ARTIFACTS = 8
 
-// Upper bound on candidate tokens evaluated per result — existsSync is a
-// synchronous syscall on the server's event loop, so an unbounded match
-// stream (e.g. a loop echoing fake .pdf names) would stall the server.
+// Max candidate tokens evaluated per result. existsSync is synchronous,
+// so an unbounded match stream could stall the server's event loop.
 const MAX_BASH_CANDIDATES = 256
 
-// Faithful replication of pi's resolveToCwd (dist/core/tools/path-utils.js →
-// resolvePath with normalizeUnicodeSpaces + stripAtPrefix): the write tool
-// resolves args.path this way, so callers matching pi's on-disk behaviour
-// (pre-write diff reads, artifact paths) must resolve identically or a path
-// like "@notes.txt" or "~/file (with NBSP).md" would miss. pi-coding-agent
-// only exports "." and "./hooks", so the helper can't be imported —
-// replicated here. Drift surfaces as a misclassified path, not corruption.
+// Replicates pi's resolveToCwd (pi-coding-agent path-utils: unicode-space
+// normalization, @-prefix strip, ~ expansion) because the write tool uses
+// it for args.path; callers must resolve identically. pi only exports
+// "."/"./hooks", so the helper cannot be imported directly.
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g
 export function resolveToolPath(input: string, cwd: string): string {
 	let p = input.replace(UNICODE_SPACES, " ")
@@ -94,14 +84,12 @@ function artifactFromPath(rawPath: string, cwd: string, opts: { verifyExists: bo
 	return { path, name: basename(path), uri: pathToFileURL(path).href, mimeType }
 }
 
-// Candidate path tokens in shell output, keyed on the artifact extensions
-// so plain text words never match. Matches absolute and relative paths as
-// well as bare filenames; quotes, whitespace and shell metachars terminate
-// a token (paths containing spaces are not detected — a v1 heuristic
-// trade-off, verified by the extension re-check downstream). Tokens
-// containing "://" (URLs) are rejected before resolution. The extension
-// list duplicates ARTIFACT_EXTENSIONS (a literal avoids RegExp-constructor
-// escaping); artifacts.test.ts asserts they stay in sync.
+// Candidate path tokens in shell output, keyed on the artifact
+// extensions so plain words never match. Quotes, whitespace and shell
+// metachars terminate a token (paths containing spaces are not detected —
+// a documented v1 trade-off). Tokens containing "://" (URLs) are rejected
+// before resolution. The extension list must stay in sync with
+// ARTIFACT_EXTENSIONS; artifacts.test.ts asserts this in both directions.
 const PATH_TOKEN =
 	/[^\s"'<>`;|&*?()[\]{}]*\.(?:pptx|xlsx|docx|pdf|html|htm|csv|png|jpg|jpeg|gif|webp|svg|md|markdown|zip|ics)(?![\w.])/gi
 
@@ -128,9 +116,8 @@ function bashArtifacts(result: unknown, cwd: string, opts: { verifyExists: boole
 	for (const text of textBlocks(result)) {
 		for (const match of text.matchAll(PATH_TOKEN)) {
 			if (out.length >= MAX_BASH_ARTIFACTS) return out
-			// Dedupe on the raw token BEFORE the budget check and before
-			// artifactFromPath, so a token repeated many times costs neither a
-			// budget slot nor resolution/existence syscalls.
+			// Dedupe raw tokens before the budget check so repeats cost
+			// neither a budget slot nor resolution/existence syscalls.
 			if (seenTokens.has(match[0])) continue
 			seenTokens.add(match[0])
 			if (++candidates > MAX_BASH_CANDIDATES) return out
@@ -146,9 +133,8 @@ function bashArtifacts(result: unknown, cwd: string, opts: { verifyExists: boole
 
 /**
  * Detect generated artifacts from a completed tool call. `args` are the
- * tool's arguments (stashed at tool_execution_start — the end event doesn't
- * carry them); `result` is the tool's result. Errored results produce no
- * artifacts: a failed mutation may not have landed. Never throws.
+ * tool's arguments (stashed at tool_execution_start; the end event has
+ * none). Errored results produce no artifacts. Never throws.
  */
 export function artifactsFromToolCall(
 	toolName: string,
