@@ -387,13 +387,48 @@ describe("model_retired", () => {
 
 	it("classifies a model_gone body and parses replacement hints (Scenario B)", () => {
 		const error = classifyLLMGatewayError(
-			'{"error": {"code": 410, "type": "model_gone", "message": "Model kimi-k2.5 has been retired.", "replacement": "kimi-k3", "suggested_alternatives": ["kimi-k2.7", "glm-5.3"], "docs": "https://wiki.cast.ai/deprecations/kimi-k2.5"}}',
+			'{"error": {"code": 410, "type": "model_gone", "message": "Model kimi-k2.5 has been retired.", "replacement": "kimi-k3", "suggested_alternatives": [{"id": "kimi-k2.7", "reason": "Prior generation"}, {"id": "glm-5.3"}], "docs": "https://wiki.cast.ai/deprecations/kimi-k2.5"}}',
 		)
 		expect(error?.reason).toBe("model_retired")
 		expect(error?.modelRetiredInfo).toEqual({
 			replacement: "kimi-k3",
-			alternatives: ["kimi-k2.7", "glm-5.3"],
+			alternatives: [
+				{ slug: "kimi-k2.7", reason: "Prior generation" },
+				{ slug: "glm-5.3", reason: undefined },
+			],
 			docs: "https://wiki.cast.ai/deprecations/kimi-k2.5",
+		})
+	})
+
+	it("parses the exact proxy model_gone envelope (objects with per-alternative reasons)", () => {
+		// Byte-for-byte the gateway's model_gone response shape: object
+		// entries, reason key omitted when unset, docs omitted when empty.
+		const error = classifyLLMGatewayError(
+			'{"error": {"type": "model_gone", "message": "Model \\"kimi-k2.7\\" has been removed.", "suggested_alternatives": [{"id": "glm-5.3", "reason": "Closest to K2.7 pricing ($1.40/$4.40 per 1M); reasoning and code, 1M context"}, {"id": "glm-5.3-flash", "reason": "Cheaper than K2.7 ($0.15/$0.50 per 1M)"}, {"id": "kimi-k3"}]}}',
+		)
+		expect(error?.reason).toBe("model_retired")
+		expect(error?.modelRetiredInfo).toEqual({
+			replacement: undefined,
+			alternatives: [
+				{ slug: "glm-5.3", reason: "Closest to K2.7 pricing ($1.40/$4.40 per 1M); reasoning and code, 1M context" },
+				{ slug: "glm-5.3-flash", reason: "Cheaper than K2.7 ($0.15/$0.50 per 1M)" },
+				{ slug: "kimi-k3", reason: undefined },
+			],
+			docs: undefined,
+		})
+	})
+
+	it("tolerates the legacy string-array alternatives shape", () => {
+		const error = classifyLLMGatewayError(
+			'{"error": {"type": "model_gone", "message": "Model kimi-k2.5 has been retired.", "suggested_alternatives": ["kimi-k2.7", "glm-5.3"]}}',
+		)
+		expect(error?.modelRetiredInfo).toEqual({
+			replacement: undefined,
+			alternatives: [
+				{ slug: "kimi-k2.7", reason: undefined },
+				{ slug: "glm-5.3", reason: undefined },
+			],
+			docs: undefined,
 		})
 	})
 

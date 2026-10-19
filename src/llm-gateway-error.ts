@@ -31,10 +31,19 @@ const LLM_GATEWAY_REASON_POLICIES: Record<
 	model_retired: { retryable: false, isInfrastructure: false, exitCode: LLM_GATEWAY_REQUEST_EXIT_CODE },
 }
 
+/** A suggested_alternatives entry from a model_gone verdict: the gateway's
+ * deprecation service serves objects shaped {"id": "glm-5.3", "reason": "..."}
+ * (reason omitted when unset). Legacy string entries ("glm-5.3") are tolerated
+ * when parsing; the normalized shape here is objects. */
+export interface ModelRetiredAlternative {
+	readonly slug: string
+	readonly reason?: string
+}
+
 /** Replacement hints extracted from a model_retired gateway verdict (Scenario B). */
 export interface ModelRetiredInfo {
 	readonly replacement?: string
-	readonly alternatives: string[]
+	readonly alternatives: ModelRetiredAlternative[]
 	readonly docs?: string
 }
 
@@ -133,12 +142,32 @@ function parseGoneStatusCode(rawMessage: string): number | undefined {
 	return undefined
 }
 
+// Per-entry shapes in suggested_alternatives: the current object form
+// ({"id":"...","reason":"..."} — reason optional, key omitted when unset),
+// matched entry-by-entry so a missing/reordered reason never swallows a slug.
+const ALTERNATIVE_OBJECT_RE =
+	/\{[^{}]*?"id"\s*:\s*"((?:[^"\\]|\\.)+)"(?:[^{}]*?"reason"\s*:\s*"((?:[^"\\]|\\.)*)")?[^{}]*?\}/g
+
+function unescapeJsonString(value: string): string {
+	return value.replace(/\\(.)/g, (_, ch) => (ch === "n" ? "\n" : ch === "t" ? "\t" : ch))
+}
+
 /** Extract replacement hints from a model_retired error body, when present. */
 export function parseModelRetiredInfo(rawMessage: string): ModelRetiredInfo | undefined {
 	const replacement = /"replacement"\s*:\s*"([^"]+)"/.exec(rawMessage)?.[1]
 	const docs = /"docs"\s*:\s*"([^"]+)"/.exec(rawMessage)?.[1]
 	const alternativesRaw = /"suggested_alternatives"\s*:\s*\[([^\]]*)\]/.exec(rawMessage)?.[1]
-	const alternatives = alternativesRaw ? Array.from(alternativesRaw.matchAll(/"([^"]+)"/g), (m) => m[1]) : []
+	let alternatives: ModelRetiredAlternative[] = []
+	if (alternativesRaw) {
+		alternatives = Array.from(alternativesRaw.matchAll(ALTERNATIVE_OBJECT_RE), (m) => ({
+			slug: unescapeJsonString(m[1]),
+			reason: m[2] !== undefined ? unescapeJsonString(m[2]) : undefined,
+		}))
+		if (alternatives.length === 0) {
+			// Legacy string-array shape: ["glm-5.3", "kimi-k3"].
+			alternatives = Array.from(alternativesRaw.matchAll(/"([^"\\]+)"/g), (m) => ({ slug: m[1] }))
+		}
+	}
 	if (!replacement && !docs && alternatives.length === 0) return undefined
 	return { replacement, alternatives, docs }
 }
