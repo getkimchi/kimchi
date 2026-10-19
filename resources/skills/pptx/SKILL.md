@@ -138,3 +138,6 @@ cover structure and text only.
   message says what to do instead.
 - `error [corrupt]` / `[safety-limit]`: the file itself failed to parse or tripped a
   safety cap. Don't retry blindly — report the exact message.
+- `error [too-large]`: the deck is over the 20 MB input cap. The cap can be
+  raised with `KIMCHI_DOCUMENT_MAX_MB`; document moves, zipping, or copying to a
+  smaller deck are the usual fixes.

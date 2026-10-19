@@ -11,6 +11,7 @@ import { discoverPackageResources } from "./package-resources.js"
 import type { ResourceDefinition, ResourceId, ResourceKind } from "./types.js"
 
 export const PPTX_SKILL_RESOURCE_ID: ResourceId = "skills.pptx"
+export const PDF_SKILL_RESOURCE_ID: ResourceId = "skills.pdf"
 
 export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 	{
@@ -19,6 +20,15 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		label: "PPTX skill",
 		description:
 			"Ship the bundled PowerPoint skill for reading, creating, and editing decks. While on, it takes precedence over a user-installed pptx skill.",
+		defaultEnabled: true,
+		restartRequired: true,
+	},
+	{
+		id: PDF_SKILL_RESOURCE_ID,
+		kind: "skills",
+		label: "PDF skill",
+		description:
+			"Ship the bundled PDF skill for reading, creating, and transforming PDFs (merge, split, rotate, reorder, form filling). While on, it takes precedence over a user-installed pdf skill.",
 		defaultEnabled: true,
 		restartRequired: true,
 	},
