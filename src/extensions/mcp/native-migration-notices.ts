@@ -16,6 +16,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
+import { mcpNamespace } from "./adapter-auth-import.js"
 import { MIGRATION_REPORT } from "./config-migration.js"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -75,6 +76,23 @@ function adapterOAuthServers(agentDir: string): Set<string> {
 	return servers
 }
 
+/**
+ * Servers that already hold a native grant (imported via `kimchi mcp import-auth`
+ * or freshly signed in) — any `mcp__<name>|` key in mcp-auth.json. Those servers
+ * must not appear in the re-login notice.
+ */
+export function namesWithNativeGrant(agentDir: string, names: string[]): Set<string> {
+	let keys: string[]
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(join(agentDir, "mcp-auth.json"), "utf8"))
+		if (!isRecord(parsed)) return new Set()
+		keys = Object.keys(parsed)
+	} catch {
+		return new Set()
+	}
+	return new Set(names.filter((name) => keys.some((key) => key.startsWith(`${mcpNamespace(name)}|`))))
+}
+
 function notifyOAuthRelogin(agentDir: string, ctx: ExtensionContext): void {
 	try {
 		const markerPath = join(agentDir, "mcp-oauth-relogin-shown.json")
@@ -89,7 +107,8 @@ function notifyOAuthRelogin(agentDir: string, ctx: ExtensionContext): void {
 		if (!existsSync(configPath)) return
 		const parsed: unknown = JSON.parse(readFileSync(configPath, "utf8"))
 		if (!isRecord(parsed) || !isRecord(parsed.mcpServers)) return
-		const affected = Object.keys(parsed.mcpServers).filter((name) => oauthServers.has(name))
+		const granted = namesWithNativeGrant(agentDir, Object.keys(parsed.mcpServers))
+		const affected = Object.keys(parsed.mcpServers).filter((name) => oauthServers.has(name) && !granted.has(name))
 		if (affected.length === 0) return
 		ctx.ui.notify(
 			`MCP now uses the native engine, which keeps its own OAuth store. Sign in again for: ${affected.join(", ")} — run /mcp and choose "Sign in".`,

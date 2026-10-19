@@ -9,14 +9,11 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
-/**
- * pi's `mcpNamespace(server)` (core/mcp-servers.ts): `mcp__` + the name with
- * `-` replaced by `_`. Not exported from the package root, so mirrored here;
- * the co-located test pins the format against the native store's keys.
- */
-export function mcpNamespace(name: string): string {
-	return `mcp__${name.replace(/-/g, "_")}`
-}
+// mcpNamespace moved to adapter-auth-import.ts (the extension layer owns the
+// native-store naming); re-exported here so existing importers keep working.
+import { mcpNamespace } from "../extensions/mcp/adapter-auth-import.js"
+
+export { mcpNamespace } from "../extensions/mcp/adapter-auth-import.js"
 
 export function forgetMcpGrant(name: string, authPath: string): { removed: number } {
 	if (!existsSync(authPath)) return { removed: 0 }
