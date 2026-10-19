@@ -25,7 +25,7 @@ vi.mock("../pull-request-status/pull-requests.js", () => ({
 	reconcileWorkPullRequests: vi.fn(),
 	readWorkPullRequestUpdates: vi.fn(),
 }))
-vi.mock("./cost-sync.js", () => ({ reconcileWorkCosts: vi.fn() }))
+vi.mock("./cost-sync.js", () => ({ reconcileWorkCosts: vi.fn(), requestWorkCostRebuild: vi.fn() }))
 vi.mock("./links.js", () => ({ reconcileWorkContinuations: vi.fn() }))
 
 let directory: string

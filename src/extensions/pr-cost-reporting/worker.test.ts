@@ -13,6 +13,10 @@ import * as costs from "../work-attribution/costs.js"
 import * as summary from "../work-attribution/summary.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
+
+// Capture snapshots floor their interval in production; these tests drive captures back-to-back.
+process.env.KIMCHI_E2E_CAPTURE_MIN_INTERVAL_MS = "0"
+
 import { queueSnapshots, readReportingState, setReportingEnabled, UPLOAD_INTERVAL_MS } from "./queue.js"
 import { buildSnapshots, type RepositorySnapshot, type WireSnapshot } from "./snapshot.js"
 import { statusText } from "./status.js"
@@ -1062,5 +1066,54 @@ describe("journals with a torn final append", () => {
 		})
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		expect(sent.map((payload) => payload.requests.map((request) => request.requestId))).toEqual([[requestId]])
+	})
+})
+
+describe("capture interval floor", () => {
+	it("skips a capture within the floor even when the journals changed between passes", async () => {
+		await seedLinked()
+		const path = join(directory, "work-attribution", "source.jsonl")
+		const rows = (await readFile(path, "utf8"))
+			.trim()
+			.split("\n")
+			.filter((line) => JSON.parse(line).type !== "commit")
+		await writeFile(path, `${rows.join("\n")}\n`)
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		const reads = vi.spyOn(summary, "readWorkRecordsAsync")
+		const before = reads.mock.calls.length
+		// Billing evidence from the costs pass changes the journal fingerprint every few minutes.
+		await appendFile(
+			path,
+			`${JSON.stringify({
+				type: "request_cost",
+				requestId: "33333333-3333-4333-8333-333333333333",
+				billingSource: {
+					apiUrl: "https://api.example",
+					gatewayUrl: "https://api.example/openai/v1",
+					credentialHash: "a".repeat(64),
+				},
+				billingSelector: {
+					type: "tag",
+					tag: "kimchi-request:33333333-3333-4333-8333-333333333333",
+					startTime: "2026-10-01T00:00:00.000Z",
+					endTime: "2026-10-02T00:00:00.000Z",
+				},
+				billingRows: [],
+				billingLookup: { status: "pending", checkedAt: "2026-10-01T12:00:00.000Z" },
+			})}\n`,
+		)
+		const floor = process.env.KIMCHI_E2E_CAPTURE_MIN_INTERVAL_MS
+		process.env.KIMCHI_E2E_CAPTURE_MIN_INTERVAL_MS = "3600000"
+		try {
+			await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+			expect(reads.mock.calls.length).toBe(before)
+			const clock = vi.spyOn(Date, "now")
+			const start = Date.now()
+			clock.mockReturnValue(start + 61 * 60_000)
+			await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+			expect(reads.mock.calls.length).toBeGreaterThan(before)
+		} finally {
+			process.env.KIMCHI_E2E_CAPTURE_MIN_INTERVAL_MS = floor
+		}
 	})
 })

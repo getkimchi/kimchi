@@ -8,7 +8,7 @@ import {
 	type WorkPullRequestUpdate,
 } from "../pull-request-status/pull-requests.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
-import { reconcileWorkCosts } from "./cost-sync.js"
+import { reconcileWorkCosts, requestWorkCostRebuild } from "./cost-sync.js"
 import { debugWorkAttribution as debug } from "./diagnostics.js"
 import { knownTransitionRepositories, reconcileRepositoryTransitions } from "./file-transitions.js"
 import { type ContinuationProgress, reconcileWorkContinuations } from "./links.js"
@@ -198,6 +198,8 @@ function tick(agentDir: string, owner: Supervisor): void {
 /** Refresh existing subscribers now, or once the current leased pass finishes. */
 export function requestWorkReconciliation(): void {
 	const agentDir = resolve(getAgentDir())
+	// An explicit request also refreshes the cost calculation at once, not on the rebuild interval.
+	requestWorkCostRebuild(agentDir)
 	const owner = supervisors.get(agentDir)
 	if (!owner || owner.controller.signal.aborted) return
 	if (owner.running) owner.requested = true

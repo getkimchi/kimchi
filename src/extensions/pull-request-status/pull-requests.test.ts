@@ -1452,18 +1452,20 @@ describe("durable work pull request discovery", () => {
 			pullRequests: [{ number: 7 }],
 		})
 	})
-	it("reads changed journals and does not advance its checkpoint after a failed source read", async () => {
+	it("reads appended journal bytes and does not advance a journal past a failed source read", async () => {
 		seed()
-		const reads = vi.spyOn(summaries, "readWorkRecords")
+		const reads = vi.spyOn(summaries, "readAppendedWorkRecords")
 		await lookup()
-		expect(reads.mock.calls[0]).toEqual([agentDir, undefined])
+		expect(reads.mock.calls[0][0]).toBe(agentDir)
+		const positions = reads.mock.calls[0][1]
 		reads.mockImplementationOnce(() => {
 			throw new Error("ledger unavailable")
 		})
 		await expect(lookup()).rejects.toThrow("ledger unavailable")
-		const checkpoint = reads.mock.calls[1][1]
+		// The failed pass advanced nothing; the next one retries from the same positions.
+		expect(reads.mock.calls[1][1]).toBe(positions)
 		await lookup()
-		expect(reads.mock.calls[2][1]).toBe(checkpoint)
+		expect(reads.mock.calls[2][1]).toBe(positions)
 		expect(commitCalls()).toHaveLength(2)
 	})
 })

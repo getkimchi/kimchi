@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { writeFileDurably } from "../../config/json.js"
-import { object, readWorkRecords } from "../work-attribution/summary.js"
+import { type JournalPosition, object, readAppendedWorkRecords } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { mergePullRequestLinks as mergePullRequests, pullRequestKey } from "./links.js"
 import { api, credential, pages, repositoryIdentity, requestJSON } from "./provider-api.js"
@@ -17,8 +17,6 @@ import {
 } from "./provider-records.js"
 
 export const PASS_BUDGET_MS = 10_000
-
-const MTIME_SLACK_MS = 2000
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -75,7 +73,8 @@ export interface WorkPullRequestUpdate {
 
 interface DiscoveryState {
 	commits: Map<string, WorkPullRequestUpdate>
-	readThrough?: number
+	/** Journal byte positions this process has parsed; see readAppendedWorkRecords. */
+	journals: Map<string, JournalPosition>
 	nextCommit?: string
 	running?: Promise<void>
 }
@@ -83,7 +82,7 @@ interface DiscoveryState {
 const states = new Map<string, DiscoveryState>()
 
 function discoveryState(directory: string): DiscoveryState {
-	const state = states.get(directory) ?? { commits: new Map<string, WorkPullRequestUpdate>() }
+	const state = states.get(directory) ?? { commits: new Map(), journals: new Map() }
 	states.set(directory, state)
 	return state
 }
@@ -179,11 +178,8 @@ function commitKey(row: WorkPullRequestUpdate): string {
 }
 
 function readCommits(agentDir: string, state: DiscoveryState): void {
-	const started = Date.now()
-	const records = readWorkRecords(
-		agentDir,
-		state.readThrough === undefined ? undefined : state.readThrough - MTIME_SLACK_MS,
-	)
+	// Only appended bytes are parsed on later ticks; a rewritten journal restarts from its beginning.
+	const records = readAppendedWorkRecords(agentDir, state.journals)
 	for (const row of records) {
 		if (
 			row.type !== "commit" ||
@@ -228,8 +224,6 @@ function readCommits(agentDir: string, state: DiscoveryState): void {
 		commit.pullRequests = mergePullRequests(existing?.pullRequests ?? [], storedPullRequests(row.pullRequests))
 		state.commits.set(key, commit)
 	}
-	// Never advance this checkpoint after a failed or incomplete source read.
-	state.readThrough = started
 }
 
 async function scan(

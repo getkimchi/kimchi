@@ -1,6 +1,7 @@
-import { existsSync, readFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { existsSync, readFileSync, statSync } from "node:fs"
 import { mkdir } from "node:fs/promises"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations.js"
 import { writeFileAtomic, writeFileDurably } from "../../config/json.js"
@@ -30,7 +31,17 @@ import {
 	totalRequestCosts,
 } from "./costs.js"
 import type { WorkAccount } from "./scope.js"
-import { object, readWorkRecords, readWorkRecordsAsync, workJournalFingerprint } from "./summary.js"
+import {
+	type JournalPosition,
+	journalPositions,
+	journalsExtend,
+	object,
+	readAppendedWorkRecords,
+	readWorkRecords,
+	readWorkRecordsAsync,
+	type WorkRecord,
+	workJournalFingerprint,
+} from "./summary.js"
 
 // The background pass: it looks up due bills within a budget, journals new evidence and publishes reports.
 
@@ -41,6 +52,20 @@ const PENDING_REFRESH_MS = 30_000
 const PRICED_REFRESH_MS = 5 * 60_000
 const DAY_MS = 24 * 60 * 60_000
 const SLOW_REFRESH_MS = 60 * 60_000
+/** How often the whole journal history is re-read and reports recomputed; appends in between only mark it stale. */
+const REBUILD_INTERVAL_MS = 5 * 60_000
+
+/** The rebuild interval, with the e2e override for tests that need to move it. */
+export function costRebuildIntervalMs(): number {
+	const value = Number(readE2eSeam("KIMCHI_E2E_COST_REBUILD_MS") ?? Number.NaN)
+	return Number.isSafeInteger(value) && value >= 0 ? value : REBUILD_INTERVAL_MS
+}
+
+/** Rebuilds requested by user action skip the interval: the next pass for this directory re-reads the journals. */
+export function requestWorkCostRebuild(agentDir: string): void {
+	forcedRebuilds.add(resolve(agentDir))
+}
+const forcedRebuilds = new Set<string>()
 
 interface BillingPoll {
 	checkedAt: number
@@ -53,6 +78,12 @@ interface BillingPoll {
 function readBillingPolls(path: string): Record<string, BillingPoll> {
 	const polls: Record<string, BillingPoll> = Object.create(null)
 	try {
+		const stat = statSync(path)
+		// Re-parsing the scheduling state cost a full pass on every tick with a large history;
+		// the file identity keys the cache, so any writer invalidates it. The caller mutates
+		// the returned object toward what it writes back, keeping cache and file in step.
+		if (cachedPolls?.path === path && cachedPolls.ino === stat.ino && cachedPolls.size === stat.size)
+			return cachedPolls.polls
 		const value: unknown = JSON.parse(readFileSync(path, "utf8"))
 		if (object(value))
 			for (const [id, entry] of Object.entries(value)) {
@@ -76,9 +107,11 @@ function readBillingPolls(path: string): Record<string, BillingPoll> {
 					}
 				}
 			}
+		cachedPolls = { path, ino: stat.ino, size: stat.size, polls }
 	} catch {}
 	return polls
 }
+let cachedPolls: { path: string; ino: number; size: number; polls: Record<string, BillingPoll> } | undefined
 
 /** Scheduling state applies only to the journal observation it was written for. */
 function currentPoll(polls: Record<string, BillingPoll>, item: OpenBilling): BillingPoll | undefined {
@@ -149,18 +182,49 @@ interface CostState {
 	displays: Map<string, BillingDisplay>
 	report: PullRequestCostReport
 	workIds: string[]
+	/** When this state was computed; a journal change within the rebuild interval still reuses it. */
+	rebuiltAt: number
 	/** Refresh failures shown by the last complete publish of this calculation. */
 	published?: string
+	/** The parsed records behind this calculation, so a forced rebuild re-reads only appends. */
+	records: WorkRecord[]
+	/** Where each journal was read to on the last parse; journals only grow. */
+	positions: Map<string, JournalPosition>
 }
 
 let lastCostState: CostState | undefined
 
-/** The calculation is a pure function of the journals, so passes reuse it until a journal changes. */
-async function costState(agentDir: string, signal: AbortSignal): Promise<CostState> {
+/**
+ * The calculation is a pure function of the journals, so passes reuse it until a journal changes.
+ * A change within the rebuild interval also reuses it: normal use appends records every few minutes,
+ * and re-reading the whole history on every 30-second pass made idle cost grow with that history.
+ * `force` re-reads at once: after this pass's own appends, and when a user action requested a refresh.
+ */
+async function costState(agentDir: string, signal: AbortSignal, force = false): Promise<CostState> {
 	// Fingerprint before reading: an append during the read only makes the next pass recalculate.
 	const fingerprint = await workJournalFingerprint(agentDir)
 	if (lastCostState?.agentDir === agentDir && lastCostState.fingerprint === fingerprint) return lastCostState
-	const records = await readWorkRecordsAsync(agentDir, signal)
+	if (
+		!force &&
+		lastCostState?.agentDir === agentDir &&
+		!forcedRebuilds.delete(resolve(agentDir)) &&
+		Date.now() - lastCostState.rebuiltAt < costRebuildIntervalMs()
+	)
+		return lastCostState
+	const previous = lastCostState?.agentDir === agentDir ? lastCostState : undefined
+	// Journals only grow, so when the previous calculation already parsed them only the
+	// appended bytes are read back; a full drain of open items re-parsed the whole history
+	// on every 30-second pass otherwise. A journal replaced, shrunk or removed by anything
+	// else falls back to the full read, as does the first build.
+	let records: WorkRecord[]
+	let positions: Map<string, JournalPosition>
+	if (previous && journalsExtend(previous.positions)) {
+		positions = new Map(previous.positions)
+		records = [...previous.records, ...readAppendedWorkRecords(agentDir, positions)]
+	} else {
+		records = await readWorkRecordsAsync(agentDir, signal)
+		positions = journalPositions(agentDir)
+	}
 	// The calculation cannot stop midway; a closing session must not wait for one it no longer needs.
 	signal.throwIfAborted()
 	const { requests, report } = readWorkCostReport(agentDir, records)
@@ -178,6 +242,9 @@ async function costState(agentDir: string, signal: AbortSignal): Promise<CostSta
 		displays,
 		report,
 		workIds: [...new Set(records.map((row) => row.workId))],
+		records,
+		positions,
+		rebuiltAt: Date.now(),
 	}
 	return lastCostState
 }
@@ -204,6 +271,8 @@ function group<K, T>(groups: Map<K, T[]>, key: K, value: T): void {
 const REPORT_REFRESH_MS = 5 * 60_000
 /** When this process last refreshed each work's full report. Its first pass refreshes every report. */
 const reportRefreshes = new Map<string, number>()
+/** Hash of each work's last written report content; an unchanged component costs a pass nothing. */
+const publishedContents = new Map<string, string>()
 function reportRefreshMs(): number {
 	const value = Number(readE2eSeam("KIMCHI_E2E_COST_REPORT_REFRESH_MS") ?? Number.NaN)
 	return Number.isSafeInteger(value) && value >= 0 ? value : REPORT_REFRESH_MS
@@ -288,6 +357,16 @@ async function publishReports(
 	for (const workId of workIds) {
 		assertLease()
 		const directory = join(agentDir, "work", workId)
+		// Members of one component repeat the same rows; when those rows did not change since the last
+		// publish, neither the full report nor the totals need rewriting.
+		const rows = JSON.stringify(content(component(workId)))
+		const digest = createHash("sha256").update(rows).digest("hex")
+		if (
+			publishedContents.get(workId) === digest &&
+			existsSync(join(directory, "costs.json")) &&
+			existsSync(join(directory, "cost-totals.json"))
+		)
+			continue
 		await mkdir(directory, { recursive: true, mode: 0o700 })
 		// ponytail: connected works repeat in per-work files; use one shared snapshot if storage growth warrants it.
 		const value = { version: 1, workId, ...content(component(workId)) }
@@ -306,6 +385,7 @@ async function publishReports(
 		}
 		await writeChanged(path, `${JSON.stringify(value, null, 2)}\n`, assertLease)
 		reportRefreshes.set(workId, now)
+		publishedContents.set(workId, digest)
 	}
 	return !deferred
 }
@@ -464,10 +544,16 @@ export async function reconcileWorkCosts(
 				// Offline, DNS/TLS, key checks, HTTP errors and deadlines before the first page add
 				// no evidence: keep the last known result and only remember the failure.
 				if (!pageReceived) {
+					const previous = polls[item.requestId]
 					polls[item.requestId] = {
 						checkedAt: Date.parse(lookup.checkedAt),
 						lookupAt: item.lookup?.checkedAt ?? "",
-						failure: { checkedAt: lookup.checkedAt, reason: lookup.reason },
+						// A repeated failure keeps its first observation: retry times are scheduling
+						// state, and changing them here churns every report that shows the failure.
+						failure:
+							previous?.failure?.reason === lookup.reason
+								? previous.failure
+								: { checkedAt: lookup.checkedAt, reason: lookup.reason },
 					}
 					continue
 				}
@@ -510,7 +596,10 @@ export async function reconcileWorkCosts(
 		}
 		signal.throwIfAborted()
 		assertLease()
-		const latest = changed ? await costState(agentDir, signal) : state
+		// The pass's own appends force a rebuild so the same pass publishes them, but the rebuild
+		// re-reads only the appended bytes (see costState): while open items drain — thirty a pass —
+		// a full re-read here would parse the whole journal history on every 30-second tick.
+		const latest = changed ? await costState(agentDir, signal, true) : state
 		signal.throwIfAborted()
 		assertLease()
 		// Closed windows, which the journal now proves, and vanished requests need no scheduling state.

@@ -1,5 +1,15 @@
-import { createReadStream, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
-import { mkdir, readdir, stat } from "node:fs/promises"
+import {
+	closeSync,
+	createReadStream,
+	existsSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	readSync,
+	statSync,
+	writeFileSync,
+} from "node:fs"
+import { mkdir, stat } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
@@ -232,18 +242,115 @@ export function readWorkRecords(
 	return records
 }
 /** The journals both readers parse, in the same order. */
-async function workJournals(agentDir: string): Promise<string[]> {
+function journalPaths(agentDir: string): string[] {
 	const directory = join(agentDir, "work-attribution")
 	const paths: string[] = []
 	for (const source of [directory, join(directory, "transitions")]) {
 		try {
-			for (const file of await readdir(source, { withFileTypes: true }))
+			for (const file of readdirSync(source, { withFileTypes: true }))
 				if (file.isFile() && file.name.endsWith(".jsonl")) paths.push(join(source, file.name))
 		} catch (error) {
 			if (!object(error) || error.code !== "ENOENT") throw error
 		}
 	}
 	return paths
+}
+async function workJournals(agentDir: string): Promise<string[]> {
+	return journalPaths(agentDir)
+}
+/** Where a reader stopped in one journal: the file it read and the bytes it had parsed. */
+export interface JournalPosition {
+	/** A replaced or rotated file has a new inode, whatever its size. */
+	ino: number
+	size: number
+}
+/**
+ * Records appended to the journals since `positions` last reached them, advancing it past each complete line.
+ * A journal that shrank or changed identity is read from the start again. Tolerates a record still being
+ * appended: its partial line is left for the next call, like readWorkRecordsAsync leaves a partial chunk.
+ */
+export function readAppendedWorkRecords(
+	agentDir: string,
+	positions: Map<string, JournalPosition>,
+	onRecordProblem?: (problem: WorkRecordProblem) => void,
+): WorkRecord[] {
+	const records: WorkRecord[] = []
+	const listed = new Set<string>()
+	for (const path of journalPaths(agentDir)) {
+		listed.add(path)
+		let stat: ReturnType<typeof statSync>
+		try {
+			stat = statSync(path)
+		} catch {
+			positions.delete(path)
+			continue
+		}
+		const previous = positions.get(path)
+		const from = previous && previous.ino === stat.ino && stat.size >= previous.size ? previous.size : 0
+		if (from >= stat.size) continue
+		const text = readRange(path, from, stat.size - from).toString("utf8")
+		const end = text.lastIndexOf("\n") + 1
+		if (end <= 0) continue
+		positions.set(path, { ino: stat.ino, size: from + end })
+		const parse = journalParser(path, records, onRecordProblem)
+		for (const line of text.slice(0, end).split("\n").slice(0, -1)) parse(line, false)
+	}
+	// A journal removed since the last call keeps no position for its return.
+	for (const path of positions.keys()) if (!listed.has(path)) positions.delete(path)
+	return records
+}
+/** Reads a byte range of a file in one open/read/close, without loading the rest. */
+function readRange(path: string, from: number, length: number): Buffer {
+	const buffer = Buffer.alloc(length)
+	const fd = openSync(path, "r")
+	try {
+		for (let read = 0; read < length; ) {
+			const bytes = readSync(fd, buffer, read, length - read, from + read)
+			if (bytes <= 0) break
+			read += bytes
+		}
+	} finally {
+		closeSync(fd)
+	}
+	return buffer
+}
+/**
+ * Where each journal's last complete line ends: the position a reader that has consumed every
+ * readable record stops at, matching what readAppendedWorkRecords treats as consumed.
+ */
+export function journalPositions(agentDir: string): Map<string, JournalPosition> {
+	const positions = new Map<string, JournalPosition>()
+	for (const path of journalPaths(agentDir)) {
+		try {
+			const stat = statSync(path)
+			if (!stat.size) continue
+			// Search backwards for the last line boundary; the window grows for long records.
+			for (let window = 4096; ; window *= 16) {
+				const length = Math.min(window, stat.size)
+				const end = readRange(path, stat.size - length, length).lastIndexOf(10) + 1
+				if (end > 0) {
+					positions.set(path, { ino: stat.ino, size: stat.size - length + end })
+					break
+				}
+				if (length === stat.size) break
+			}
+		} catch {
+			/* an unreadable journal is simply not positioned; a later pass reads it whole */
+		}
+	}
+	return positions
+}
+
+/** True when every journal the positions cover still exists, kept its identity, and only grew. */
+export function journalsExtend(positions: Map<string, JournalPosition>): boolean {
+	for (const [path, position] of positions)
+		try {
+			const stat = statSync(path)
+			if (stat.ino !== position.ino || stat.size < position.size) return false
+		} catch {
+			return false
+		}
+	return true
 }
 /**
  * Like readWorkRecords, but yields to the event loop after each file chunk so a large history never blocks the UI,
