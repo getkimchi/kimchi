@@ -1,6 +1,6 @@
 import { basename, extname, resolve } from "node:path"
 import { Type } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, ExtensionContext, SessionManager, ToolCallEvent } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
 import { getParsedCliArgs } from "../../cli-args.js"
@@ -89,12 +89,13 @@ import { flagModeFromOptions, resolveMode } from "./mode.js"
 import {
 	getPermissionMode,
 	persistPermissionModeIfChanged,
-	resolveInitialPermissionMode,
+	resolveInitialPermissionModeDetailed,
 	setPermissionMode,
 } from "./mode-controller.js"
 import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { PERMISSION_EVENTS, type PermissionDecision } from "./permissions-events.js"
 import {
+	getAllowedModes,
 	hasExecutableMode,
 	hasOrgPolicyRestrictions,
 	isFermentRunnable,
@@ -296,12 +297,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			...parseRules(loaded.denyBySource.project, "deny", "project"),
 			...parseRules(loaded.denyBySource.user, "deny", "user"),
 		]
-	}
-
-	function getInitialPermissionMode(
-		sessionManager: Pick<SessionManager, "getSessionId" | "getEntries">,
-	): PermissionModeState {
-		return resolveInitialPermissionMode(sessionManager, permissionsEnvFlag, cliMode, loaded)
 	}
 
 	/**
@@ -662,7 +657,18 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// YOLO mode: --yolo and --dangerously-skip-permissions both set yolo mode (no classifier, auto-approve all)
 		cliMode = flagModeFromOptions(getParsedCliArgs().options)
 
-		const current = getInitialPermissionMode(ctx.sessionManager)
+		const initial = resolveInitialPermissionModeDetailed(ctx.sessionManager, permissionsEnvFlag, cliMode, loaded)
+		const current = initial.state
+		if (initial.requested !== current.mode) {
+			// The org policy silently downgraded the requested startup mode (CLI
+			// flag, env, persisted entry, config default). Say so — the status line
+			// shows the effective mode, but nothing else explains the difference.
+			const message =
+				`mode "${initial.requested}" is not allowed by your organization's policy — starting in "${current.mode}". ` +
+				`Allowed: ${[...getAllowedModes()].join(", ")}`
+			if (ctx.hasUI) ctx.ui.notify(message, "warning")
+			else console.error(message)
+		}
 		let next = current
 		// Active ferment → elevate so scoping/lifecycle work can proceed without
 		// approval prompts. With a policy this follows the recorded gate decision;

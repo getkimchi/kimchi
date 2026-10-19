@@ -4796,6 +4796,28 @@ describe("adhoc submit_plan org-policy dead-ends", () => {
 		}
 	})
 
+	it("plan-only policy: a disallowed startup mode is clamped with a warning", async () => {
+		await seedOrgPolicy({ plan: true, default: false, auto: false, yolo: false })
+		const harness = createPermissionsHarness(["read", "bash"], { yolo: true })
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining('mode "yolo" is not allowed by your organization\'s policy'),
+			"warning",
+		)
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith("permissions-warning", expect.stringContaining("plan-only"))
+	})
+
+	it("an allowed startup mode produces no clamp warning", async () => {
+		await seedOrgPolicy({ plan: true, default: false, auto: false, yolo: true })
+		const harness = createPermissionsHarness(["read", "bash"], { yolo: true })
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("not allowed"), "warning")
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("yolo")
+	})
+
 	it("plan-only policy: session start sets a persistent status warning", async () => {
 		await seedOrgPolicy({ plan: true, default: false, auto: false, yolo: false })
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
