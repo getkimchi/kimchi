@@ -129,8 +129,10 @@ test("/model autocomplete lists the backend-advertised Auto and selects it", asy
 			// until the search filter actually selects the Auto row (cursor on it).
 			// The selector renders a capability table: the row shows the cursor,
 			// the current-model marker column, then MODEL | PROVIDER | CONTEXT |
-			// VISION | DESCRIPTION columns (no bracketed provider anymore).
-			await viewMatches(terminal, /→\s+auto\s+kimchi-dev\s+\S*k\s+✓/)
+			// THINKING | VISION | DESCRIPTION columns (no bracketed provider
+			// anymore). The catalog-floor auto entry does not reason, so THINKING
+			// reads "off" from the reasoning flag.
+			await viewMatches(terminal, /→\s+auto\s+kimchi-dev\s+\S*k\s+off\s+✓/)
 			trace.step("Auto highlighted")
 
 			terminal.submit("")

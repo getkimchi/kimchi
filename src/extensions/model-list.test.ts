@@ -1,5 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { __clearModelThinkingLevelsForTest, getModelThinkingLevels, registerModelThinkingLevels } from "../models.js"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { AUTO_MODEL_DESCRIPTION, AUTO_MODEL_PI_NAME } from "./auto-model/constants.js"
@@ -10,6 +11,7 @@ import modelListExtension, {
 	MODEL_LISTING_HEADER,
 	modelRefFromModel,
 	resolveModelDescription,
+	resolveModelThinkingLevels,
 } from "./model-list.js"
 import type { ModelCapabilities } from "./orchestration/model-registry/types.js"
 
@@ -113,9 +115,9 @@ describe("modelListExtension", () => {
 				"Current model: kimchi-dev/kimi-k9",
 				"",
 				MODEL_LISTING_HEADER,
-				"google/gemini-3-pro | 1000000 | yes | no",
-				`kimchi-dev/auto | 200000 | no | yes | ${AUTO_MODEL_DESCRIPTION}`,
-				"kimchi-dev/kimi-k9 | 400000 | yes | yes",
+				"google/gemini-3-pro | 1000000 | off | yes | no",
+				`kimchi-dev/auto | 200000 | not curated | no | yes | ${AUTO_MODEL_DESCRIPTION}`,
+				"kimchi-dev/kimi-k9 | 400000 | not curated | yes | yes",
 			].join("\n"),
 		)
 		expect(result.details).toBeNull()
@@ -126,7 +128,7 @@ describe("modelListExtension", () => {
 		const result = await exec()
 		const text = textOf(result)
 
-		expect(text).toContain(`kimchi-dev/auto | 200000 | no | yes | ${AUTO_MODEL_DESCRIPTION}`)
+		expect(text).toContain(`kimchi-dev/auto | 200000 | not curated | no | yes | ${AUTO_MODEL_DESCRIPTION}`)
 		// The conservative catalog-floor characteristics, not the routed pick.
 		expect(text).not.toContain("routed to")
 		expect(text).not.toContain("resolved")
@@ -144,7 +146,7 @@ describe("modelListExtension", () => {
 
 		expect(text).toContain("Current model: kimchi-dev/auto (routed to: kimchi-dev/kimi-k3)")
 		// The auto row itself stays plain — routing info lives only in the header.
-		expect(text).toContain(`kimchi-dev/auto | 200000 | no | yes | ${AUTO_MODEL_DESCRIPTION}`)
+		expect(text).toContain(`kimchi-dev/auto | 200000 | not curated | no | yes | ${AUTO_MODEL_DESCRIPTION}`)
 	})
 
 	it("omits the current model header when the session has no model", async () => {
@@ -195,10 +197,46 @@ describe("modelListExtension", () => {
 		})
 	})
 
+	describe("resolveModelThinkingLevels", () => {
+		const model = toModel(MODELS[0])
+
+		it("looks the levels up by the provider/id ref", () => {
+			const getLevels = vi.fn(() => ["off", "low"])
+			expect(resolveModelThinkingLevels(model, getLevels)).toEqual(["off", "low"])
+			expect(getLevels).toHaveBeenCalledWith("google/gemini-3-pro")
+		})
+
+		it("returns undefined when the registry has no entry", () => {
+			expect(resolveModelThinkingLevels(model, () => undefined)).toBeUndefined()
+		})
+	})
+
 	describe("formatModelListingLine", () => {
 		it("omits the description segment when none is available", () => {
 			const line = formatModelListingLine(toModel({ id: "m1", provider: "p", name: "M1" }))
-			expect(line).toBe("p/m1 | 100000 | no | yes")
+			expect(line).toBe("p/m1 | 100000 | not curated | no | yes")
+		})
+
+		it("renders curated levels as a comma+space list between context and vision", () => {
+			const line = formatModelListingLine(toModel(MODELS[0]), undefined, ["off", "low", "high", "max"])
+			expect(line).toBe("google/gemini-3-pro | 1000000 | off, low, high, max | yes | no")
+		})
+
+		it('renders a curated ["off"] as off even for a reasoning model', () => {
+			const line = formatModelListingLine(toModel(MODELS[0]), undefined, ["off"])
+			expect(line).toBe("google/gemini-3-pro | 1000000 | off | yes | no")
+		})
+
+		it("falls back to not-curated/off without curated levels — uncurated is never inferred as on", () => {
+			// No levels at all (uncurated or custom provider): a reasoning model's
+			// levels are unknown → "not curated"; a non-reasoning model is a hard "off".
+			expect(formatModelListingLine(toModel(MODELS[0]))).toBe("google/gemini-3-pro | 1000000 | off | yes | no")
+			expect(formatModelListingLine(toModel(MODELS[2]))).toBe("kimchi-dev/kimi-k9 | 400000 | not curated | yes | yes")
+		})
+
+		it("renders the curated empty array as on — the backend-confirmed no-distinct-levels state", () => {
+			const line = formatModelListingLine(toModel(MODELS[2]), undefined, [])
+			expect(line).toBe("kimchi-dev/kimi-k9 | 400000 | on | yes | yes")
 		})
 
 		it("collapses whitespace and truncates over-long descriptions to one line", () => {
@@ -206,14 +244,57 @@ describe("modelListExtension", () => {
 			const described = toModel(MODELS[0])
 			const line = formatModelListingLine(described, long)
 
-			expect(line.startsWith("google/gemini-3-pro | 1000000 | yes | no | line one line two ")).toBe(true)
+			expect(line.startsWith("google/gemini-3-pro | 1000000 | off | yes | no | line one line two ")).toBe(true)
 			expect(line.endsWith("…")).toBe(true)
 			expect(line).not.toContain("\n")
-			expect(line.split(" | ")[4]?.length).toBe(160)
+			expect(line.split(" | ")[5]?.length).toBe(160)
 		})
 
 		it("lists the model column labels in the header row", () => {
-			expect(MODEL_LISTING_HEADER).toBe("model | context | vision | reasoning | description")
+			expect(MODEL_LISTING_HEADER).toBe("model | context | thinking | vision | reasoning | description")
+		})
+	})
+
+	describe("list_models tool thinking column", () => {
+		beforeEach(() => {
+			__clearModelThinkingLevelsForTest()
+		})
+
+		it("documents the thinking column and its legend in the tool description", () => {
+			const { api, getRegisteredTool } = createExtensionApi()
+			modelListExtension(api)
+			const description = getRegisteredTool("list_models").description
+			expect(description).toContain("thinking levels")
+			expect(description).toContain("off, minimal, low, medium, high, xhigh, max")
+			expect(description).toContain("'on'")
+			expect(description).toContain("'not curated'")
+			expect(description).toContain("'off'")
+		})
+
+		it("renders registry levels and reasoning-flag fallbacks in tool output", async () => {
+			registerModelThinkingLevels("kimchi-dev/kimi-k9", ["max", "low", "high"])
+			registerModelThinkingLevels("kimchi-dev/glm-5.3", ["low", "high", "max"])
+			const { exec } = createHarness([
+				{ id: "kimi-k9", provider: "kimchi-dev", name: "Kimi K9", reasoning: true },
+				{ id: "glm-5.3", provider: "kimchi-dev", name: "GLM 5.3", reasoning: true },
+				{ id: "haiku", provider: "kimchi-dev", name: "Haiku", reasoning: true },
+				{ id: "embedding", provider: "kimchi-dev", name: "Embed", reasoning: false },
+			])
+			const text = textOf(await exec())
+
+			expect(text).toContain(MODEL_LISTING_HEADER)
+			// Unsorted registry data renders in canonical order.
+			expect(text).toContain("kimchi-dev/glm-5.3 | 100000 | low, high, max | no | yes")
+			expect(text).toContain("kimchi-dev/kimi-k9 | 100000 | low, high, max | no | yes")
+			// No registry entry: an uncurated reasoning model is "not curated", a
+			// non-reasoning model is "off".
+			expect(text).toContain("kimchi-dev/haiku | 100000 | not curated | no | yes")
+			expect(text).toContain("kimchi-dev/embedding | 100000 | off | no | no")
+		})
+
+		it("exposes registered levels through the shared registry helper", () => {
+			registerModelThinkingLevels("kimchi-dev/kimi-k9", ["off"])
+			expect(getModelThinkingLevels("kimchi-dev/kimi-k9")).toEqual(["off"])
 		})
 	})
 
