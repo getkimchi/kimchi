@@ -8,9 +8,20 @@ import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { discoverClaudeCodeHookResourceDefinitions } from "./claude-code-hook-resources.js"
 import { discoverKimchiHookResourceDefinitions } from "./kimchi-hook-resources.js"
 import { discoverPackageResources } from "./package-resources.js"
-import type { ResourceDefinition, ResourceKind } from "./types.js"
+import type { ResourceDefinition, ResourceId, ResourceKind } from "./types.js"
+
+export const PPTX_SKILL_RESOURCE_ID: ResourceId = "skills.pptx"
 
 export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
+	{
+		id: PPTX_SKILL_RESOURCE_ID,
+		kind: "skills",
+		label: "PPTX skill",
+		description:
+			"Ship the bundled PowerPoint skill for reading, creating, and editing decks. While on, it takes precedence over a user-installed pptx skill.",
+		defaultEnabled: true,
+		restartRequired: true,
+	},
 	{
 		id: "hooks.bash",
 		kind: "hooks",

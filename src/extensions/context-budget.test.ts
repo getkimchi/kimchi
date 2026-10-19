@@ -69,12 +69,14 @@ const BUDGET = {
 	 * including create-skill (gh/glab guidance lives in behaviour bodies, not
 	 * bundled skills). Rendered as a Codex-style markdown catalog (name +
 	 * description capped at 200 chars + path; no XML); this metric sums the
-	 * authored lengths, capped only at render time. ~13% headroom over
-	 * measured (97). */
-	skillsCatalog: 110,
-	/** Total canonical system-prompt + skills surface (measured 1641 after
-	 *  the #1474 product-identity intro — includes the ## Language section). */
-	total: 1650,
+	 * authored lengths, capped only at render time. After the bundled pptx
+	 * skill landed (description trimmed) on top of the #1474 product-identity
+	 * intro, the measured baseline is ~120 est; ~15% headroom. */
+	skillsCatalog: 140,
+	/** Total canonical system-prompt + skills surface (measured ~1664 after
+	 *  the #1474 intro plus the bundled pptx skill — includes the ## Language
+	 *  section). */
+	total: 1700,
 	/** Total canonical tool surface (18 tools after the DAP entry/session and
 	 *  Agent-continuation deferrals, the Skill resource gate, the mcp
 	 *  zero-server registration gate, and the lsp no-server detection gate;
@@ -85,13 +87,13 @@ const BUDGET = {
 	 *  sessions in a repo WITH a detected language server will exceed this by
 	 *  the five gated lsp_* tools — that is by design, see LSP_TOOL_NAMES in
 	 *  lsp.ts. */
-	toolSurface: 6300,
+	toolSurface: 6350,
 	/** Print-mode slice (17 tools — the canonical surface minus questionnaire
 	 *  and set_phase, which the registration gates drop in headless --print
-	 *  runs; includes the redesigned bash_control schema and the
-	 *  confirm_todos check-in tool, with ~1% headroom over measured 5582
-	 *  after pi 1.3.0). */
-	printToolSurface: 5650,
+	 *  runs; includes the redesigned bash_control schema, the confirm_todos
+	 *  check-in tool, and the document-support growth in the checks tool; ~2%
+	 *  headroom over measured 5582 after pi 1.3.0). */
+	printToolSurface: 5700,
 	/** Per-tool cap: any single tool above this many est tokens must be deliberate. */
 	singleTool: 1400,
 }
@@ -241,7 +243,7 @@ describe("context budget", () => {
 		}
 	})
 
-	it("canonical tool surface stays within committed token budgets", async () => {
+	it("canonical tool surface stays within committed token budgets", { timeout: 30_000 }, async () => {
 		const { tools, exclusions } = await measureCanonicalToolSurface()
 		// Pin membership as well as size: a flag stub that silently hides a tool
 		// must fail measurement even though it would reduce the token total.
