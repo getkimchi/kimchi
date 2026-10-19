@@ -42,7 +42,7 @@ export async function lookupBranchPullRequest(
 							head: `${remote.name.split("/")[0]}:${branch}`,
 							sort: "updated",
 							direction: "desc",
-							per_page: "100",
+							per_page: "30",
 						}
 					: {
 							scope: "all",
@@ -61,13 +61,14 @@ export async function lookupBranchPullRequest(
 					: (await requestJSON(remote, url, signal, deadline)).value
 			if (!Array.isArray(values)) throw new LookupError(`${label(remote)} returned invalid pull requests.`)
 			const checkedAt = new Date().toISOString()
+			let invalid: unknown
 			const pulls = (
 				remote.provider === "gitlab"
 					? values.filter(
 							(value) => object(value) && value.source_project_id === remote.id && value.source_branch === branch,
 						)
 					: values
-			).map((value) => {
+			).flatMap((value) => {
 				const head = object(value)
 					? remote.provider === "gitlab"
 						? value.source_branch
@@ -76,22 +77,29 @@ export async function lookupBranchPullRequest(
 							: undefined
 					: undefined
 				if (head !== branch) throw new LookupError(`${label(remote)} returned a pull request for a different branch.`)
-				return pullRequest(value, remote, checkedAt)
+				try {
+					return [pullRequest(value, remote, checkedAt)]
+				} catch (error) {
+					// One malformed old record must not hide a valid PR; it fails the lookup only when nothing is shown.
+					invalid ??= error
+					return []
+				}
 			})
 			pull = pulls.find((item) => item.state === "open")
 			if (!pull && pulls.length) {
-				// A closed or merged PR can belong to an earlier branch with the same name; show it only when this
-				// branch once pointed at its head commit.
+				// A branch name can be reused after its PR closes, even from that PR's head after a fast-forward merge.
+				// Show a closed or merged PR only if it closed after this local branch was created: the oldest reflog entry.
 				const history = await command(
 					"git",
-					["-C", cwd, "reflog", "show", "-n", "1000", "--format=%H", `refs/heads/${branch}`, "--"],
+					["-C", cwd, "reflog", "show", "--date=unix", "--format=%gd", `refs/heads/${branch}`, "--"],
 					cwd,
 					signal,
-					deadline,
+					Date.now() + 2000,
 				)
-				const held = new Set(history?.split("\n"))
-				pull = pulls.find((item) => held.has(item.headSha))
+				const created = Number(/@\{(\d+)\}$/.exec(history?.split("\n").at(-1) ?? "")?.[1]) * 1000
+				pull = pulls.find((item) => Date.parse(item.closedAt ?? item.mergedAt ?? "") >= created)
 			}
+			if (!pull && invalid) throw invalid
 		}
 	} catch (error) {
 		failure = error

@@ -70,11 +70,11 @@ function remote(value = "https://github.com/team/repo.git", branch = "feature", 
 		throw new Error("Unexpected Git command")
 	})
 }
-/** Answers `git reflog` for the checked-out branch with these commits, newest first. */
-function reflog(...shas: string[]): void {
+/** Answers `git reflog` for the `feature` branch with entries at these Unix times, newest first. */
+function reflog(...times: number[]): void {
 	const git = cli.git.getMockImplementation()
 	cli.git.mockImplementation(async (args, options) =>
-		args.includes("reflog") ? shas.join("\n") : git?.(args, options),
+		args.includes("reflog") ? times.map((time) => `feature@{${time}}`).join("\n") : git?.(args, options),
 	)
 }
 function seed(overrides: Record<string, unknown> = {}, transitions = false): void {
@@ -652,64 +652,83 @@ describe("repository and branch selection", () => {
 	})
 	describe.each(providers)("closed and merged %s branch PRs", (provider) => {
 		const other = "b".repeat(40)
-		const closed = (number: number, head: string) =>
+		// The local branch was created at this time; its PRs closed a day before or after.
+		const created = Date.parse("2026-10-01T12:00:00Z") / 1000
+		const before = "2026-09-30T12:00:00Z"
+		const after = "2026-10-02T12:00:00Z"
+		const closed = (number: number, at: string, head = sha) =>
 			provider === "github"
-				? pull(number, { state: "closed", closed_at: "2026-10-01T12:00:00Z", head: { sha: head, ref: "feature" } })
-				: mr(number, { state: "closed", closed_at: "2026-10-01T12:00:00Z", sha: head })
-		const merged = (number: number, head: string) =>
+				? pull(number, { state: "closed", closed_at: at, head: { sha: head, ref: "feature" } })
+				: mr(number, { state: "closed", closed_at: at, sha: head })
+		const merged = (number: number, at: string, head = sha) =>
 			provider === "github"
 				? pull(number, {
 						state: "closed",
-						merged_at: "2026-10-01T12:00:00Z",
-						closed_at: "2026-10-01T12:00:00Z",
+						merged_at: at,
+						closed_at: at,
 						merge_commit_sha: "f".repeat(40),
 						head: { sha: head, ref: "feature" },
 					})
-				: mr(number, {
-						state: "merged",
-						merged_at: "2026-10-01T12:00:00Z",
-						merge_commit_sha: "f".repeat(40),
-						sha: head,
-					})
+				: mr(number, { state: "merged", merged_at: at, merge_commit_sha: "f".repeat(40), sha: head })
+		const malformed = (number: number) =>
+			provider === "github"
+				? pull(number, { state: "closed", head: { sha: "not-a-sha", ref: "feature" } })
+				: mr(number, { state: "closed", sha: null })
+		const open = () => (provider === "github" ? pull() : mr())
 		const reflogCalls = () => cli.git.mock.calls.filter(([args]) => args.includes("reflog")).map(([args]) => args)
 
 		beforeEach(() => useProvider(provider))
 
 		it("prefers the open PR over a newer closed one without reading the reflog", async () => {
 			replies((url) => {
-				if (provider === "github") expect(url.searchParams.get("per_page")).toBe("100")
-				return [closed(8, other), provider === "github" ? pull() : mr()]
+				if (provider === "github") expect(url.searchParams.get("per_page")).toBe("30")
+				return [closed(8, after, other), open()]
 			})
 			expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toMatchObject({
 				pullRequest: { number: 7, state: "open" },
 			})
 			expect(reflogCalls()).toEqual([])
 		})
-		it("hides a closed PR from an earlier branch with the same name", async () => {
-			reflog("c".repeat(40), "d".repeat(40))
-			replies(() => [closed(8, other)])
+		it("hides a PR that closed before this branch was created, even when the branch starts at its head", async () => {
+			// A fast-forward merge leaves the old PR's head on the default branch, where the reused name starts.
+			reflog(created + 3600, created)
+			replies(() => [merged(8, before)])
 			expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toEqual({
 				branch: "feature",
 				pullRequest: undefined,
 			})
 			expect(reflogCalls()).toEqual([
-				["-C", repository, "reflog", "show", "-n", "1000", "--format=%H", "refs/heads/feature", "--"],
+				["-C", repository, "reflog", "show", "--date=unix", "--format=%gd", "refs/heads/feature", "--"],
 			])
 		})
-		it("shows the newest merged PR whose head this branch held", async () => {
-			reflog("c".repeat(40), sha)
-			replies(() => [closed(9, other), merged(7, sha), closed(6, sha)])
+		it("shows the newest PR that closed after this branch was created, whatever its head", async () => {
+			// The provider can move the head after the last push: a rebase button, a suggestion or a bot commit.
+			reflog(created + 3600, created)
+			replies(() => [closed(9, before), merged(7, after, other), closed(6, after)])
 			expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toMatchObject({
-				pullRequest: { number: 7, state: "merged", headSha: sha },
+				pullRequest: { number: 7, state: "merged", headSha: other },
 			})
 		})
-		it("hides a merged PR when Git has no reflog for the branch", async () => {
-			replies(() => [merged(7, sha)])
+		it("hides a merged PR when Git keeps no reflog for the branch", async () => {
+			reflog()
+			replies(() => [merged(7, after)])
 			expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toEqual({
 				branch: "feature",
 				pullRequest: undefined,
 			})
 			expect(reflogCalls()).toHaveLength(1)
+		})
+		it("shows a valid open PR beside a malformed older record", async () => {
+			replies(() => [malformed(8), open()])
+			expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toMatchObject({
+				pullRequest: { number: 7, state: "open" },
+			})
+		})
+		it("reports a malformed record when no other PR can be shown", async () => {
+			replies(() => [malformed(8)])
+			await expect(lookupBranchPullRequest(repository, new AbortController().signal)).rejects.toThrow(
+				"invalid pull request",
+			)
 		})
 	})
 	it.each(providers)("never trims the checked-out %s branch into another branch's PR", async (provider) => {
