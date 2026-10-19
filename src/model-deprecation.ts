@@ -145,6 +145,16 @@ export function deprecationNotifyCutoff(nowMs: number = Date.now()): number {
 	return midnightUtc(nowMs) + DEPRECATION_NOTIFY_WINDOW_DAYS * DAY_MS
 }
 
+/** True when a deprecation date falls within the notify window, compared by
+ *  day (UTC-midnight truncation on both sides) rather than by exact instant.
+ *  Sidecar dates carry a time of day; the backend and the window cutoff are
+ *  day-granular, so a deprecation landing exactly 30 days out at 17:50 must
+ *  still be inside the window — comparing the raw timestamp against the
+ *  midnight-truncated cutoff would silently drop it. */
+export function isWithinDeprecationNotifyWindow(effectiveMs: number, nowMs: number = Date.now()): boolean {
+	return midnightUtc(effectiveMs) <= deprecationNotifyCutoff(nowMs)
+}
+
 /** Prefix every deprecation marker starts with. */
 const MARKER_PREFIX = "[Deprecated"
 const MARKER_RE = /^\[Deprecated(?: — retires \d{4}-\d{2}-\d{2})?\]\s*/
@@ -175,7 +185,7 @@ export function deprecationMarker(
 	if (state === "announced") {
 		const effectiveMs =
 			parseIsoDate(info.deprecated_at, "deprecated_at", slug) ?? parseIsoDate(info.sunset_at, "sunset_at", slug)
-		if (effectiveMs === undefined || effectiveMs > deprecationNotifyCutoff(nowMs)) return undefined
+		if (effectiveMs === undefined || !isWithinDeprecationNotifyWindow(effectiveMs, nowMs)) return undefined
 	}
 	// Never cite a past deprecated_at as a future retirement (mirrors the
 	// session-start toast): past deprecations only name sunset_at when known.

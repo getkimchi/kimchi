@@ -6,6 +6,7 @@ import {
 	collectDeprecationMarkers,
 	deprecationMarker,
 	deriveDeprecationState,
+	isWithinDeprecationNotifyWindow,
 	modelDeprecationsPath,
 	pickReplacementSlug,
 	readModelDeprecations,
@@ -46,8 +47,29 @@ describe("deprecationMarker", () => {
 		)
 	})
 
+	it("marks an announced deprecation landing exactly at the 30-day window edge", () => {
+		// Regression: the window cutoff is UTC-midnight-truncated, but a
+		// sidecar timestamp carries a time of day. A deprecation dated exactly
+		// 30 days out at 18:00Z (raw instant past the midnight cutoff) must still
+		// be inside the window — comparisons are day-granular on both sides.
+		expect(deprecationMarker({ deprecated_at: "2026-10-10T18:00:00Z" }, "kimi-k2.7", NOW)).toBe(
+			"[Deprecated — retires 2026-10-10]",
+		)
+	})
+
 	it("stays silent for announcements beyond the notify window", () => {
 		expect(deprecationMarker({ deprecated_at: "2026-12-01T00:00:00Z" }, "kimi-k2.7", NOW)).toBeUndefined()
+	})
+
+	it("stays silent one day past the window edge", () => {
+		expect(deprecationMarker({ deprecated_at: "2026-10-11T00:00:00Z" }, "kimi-k2.7", NOW)).toBeUndefined()
+	})
+
+	it("isWithinDeprecationNotifyWindow is day-granular at the edge", () => {
+		// Raw instant just past the midnight-truncated cutoff, same UTC day:
+		// inside the window. One day later: outside.
+		expect(isWithinDeprecationNotifyWindow(Date.parse("2026-10-10T18:00:00Z"), NOW)).toBe(true)
+		expect(isWithinDeprecationNotifyWindow(Date.parse("2026-10-11T00:00:00Z"), NOW)).toBe(false)
 	})
 
 	it("never marks Claude models from stale vendor deprecated_at dates", () => {
