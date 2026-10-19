@@ -34,13 +34,13 @@ afterEach(() => {
 })
 
 describe("loadAutoUpdateSetting", () => {
-	it("returns false when the settings file is missing (opt-in default)", () => {
-		expect(loadAutoUpdateSetting()).toBe(false)
+	it("returns true when the settings file is missing (opt-out default)", () => {
+		expect(loadAutoUpdateSetting()).toBe(true)
 	})
 
-	it("returns false when the file exists but has no autoUpdate key", () => {
+	it("returns true when the file exists but has no autoUpdate key", () => {
 		writeFileSync(statePath(), JSON.stringify({ theme: "dark" }))
-		expect(loadAutoUpdateSetting()).toBe(false)
+		expect(loadAutoUpdateSetting()).toBe(true)
 	})
 
 	it("returns false when autoUpdate is explicitly false", () => {
@@ -53,16 +53,16 @@ describe("loadAutoUpdateSetting", () => {
 		expect(loadAutoUpdateSetting()).toBe(true)
 	})
 
-	it("returns false (defensive default) when autoUpdate is the wrong type", () => {
+	it("returns true (opt-out default) when autoUpdate is the wrong type", () => {
 		writeFileSync(statePath(), JSON.stringify({ autoUpdate: "yes" }))
-		expect(loadAutoUpdateSetting()).toBe(false)
+		expect(loadAutoUpdateSetting()).toBe(true)
 	})
 
-	it("returns false and warns when the file contains malformed JSON", () => {
+	it("returns true and warns when the file contains malformed JSON", () => {
 		writeFileSync(statePath(), "{not valid json")
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		try {
-			expect(loadAutoUpdateSetting()).toBe(false)
+			expect(loadAutoUpdateSetting()).toBe(true)
 			expect(warn).toHaveBeenCalledOnce()
 			const msg = warn.mock.calls[0]?.[0] as string
 			expect(msg).toContain("[kimchi-update]")

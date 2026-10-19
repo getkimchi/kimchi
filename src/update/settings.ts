@@ -26,7 +26,7 @@ function autoUpdateStatePath(): string {
 }
 
 interface AutoUpdateState {
-	/** Opt-in (default false) for the initial rollout. */
+	/** Opt-out (default true). Only an explicit `false` disables. */
 	autoUpdate?: boolean
 	/** One-time onboarding toast shown flag. */
 	autoUpdateNoticeShown?: boolean
@@ -49,13 +49,12 @@ function readState(path: string): AutoUpdateState {
 	}
 }
 
-/** Default for autoUpdate is `false` (opt-in) for the initial rollout.
- *  Plan: ship opt-in first, monitor for regressions, then flip to `true`
- *  (opt-out) to match Claude Code's native-install default. */
+/** Default for autoUpdate is `true` (opt-out), matching Claude Code's
+ *  native-install default. Only an explicit `false` disables it. */
 export function loadAutoUpdateSetting(): boolean {
 	const state = readState(autoUpdateStatePath())
-	// Missing or wrong type → opt-in default. Only an explicit `true` opts in.
-	if (typeof state.autoUpdate !== "boolean") return false
+	// Missing or wrong type → opt-out default. Only an explicit `false` opts out.
+	if (typeof state.autoUpdate !== "boolean") return true
 	return state.autoUpdate
 }
 

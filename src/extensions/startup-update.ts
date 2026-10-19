@@ -13,11 +13,11 @@ const UPDATE_STATUS_KEY = "update-available"
  *
  * The message is displayed via setStatus and read by the status line renderer.
  *
- * When auto-update is enabled (opt-in default — the toggle defaults to
- * off, so most users land here), the footer hint is suppressed — users
- * get updates silently on next launch. The first launch after a user
- * enables the toggle also emits a one-time onboarding toast explaining
- * the behavior and how to opt out via `/update`.
+ * When auto-update is enabled (opt-out default — the toggle defaults
+ * to on, so most users land here), the footer hint is suppressed — users
+ * get updates silently on next launch. The first launch with the toggle
+ * on also emits a one-time onboarding toast explaining the behavior and
+ * how to opt out via `/update`.
  */
 export default function startupUpdateExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx: ExtensionContext) => {
