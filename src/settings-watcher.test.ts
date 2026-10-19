@@ -243,6 +243,7 @@ describe("getSettingsManager", () => {
 	})
 
 	it("recreates a watcher and drops the cache after a watch error", () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {})
 		const watcher = createMockWatcher()
 		mockWatch.mockReturnValue(watcher as unknown as ReturnType<typeof watch>)
 
@@ -261,6 +262,7 @@ describe("getSettingsManager", () => {
 	})
 
 	it("drops the watcher and cache even when close() throws during error handling", () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {})
 		const watcher = createMockWatcher()
 		watcher.close.mockImplementation(() => {
 			throw new Error("already destroyed")
@@ -279,6 +281,7 @@ describe("getSettingsManager", () => {
 	})
 
 	it("delivers a theme change that happened while a watcher was dead", () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {})
 		const watcher = createMockWatcher()
 		mockWatch.mockReturnValue(watcher as unknown as ReturnType<typeof watch>)
 		mockCreate.mockReturnValue(asManager(fakeManager({ theme: "light" })))

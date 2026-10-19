@@ -4,12 +4,7 @@
 
 import { type FSWatcher, watch } from "node:fs"
 import { resolve } from "node:path"
-import { debuglog } from "node:util"
 import { getActiveThemeName } from "./settings-watcher.js"
-
-/** Watcher diagnostics — silent unless NODE_DEBUG=kimchi:theme.
- *  Raw console writes corrupt the interactive TUI. */
-const debug = debuglog("kimchi:theme")
 
 type ThemeFileChangeListener = (themeName: string) => void
 
@@ -39,7 +34,7 @@ function fire(filename: string): void {
 		try {
 			l(changedTheme)
 		} catch (err) {
-			debug("[theme-file-watcher] listener error:", err)
+			console.warn("[theme-file-watcher] listener error:", err)
 		}
 	}
 }
@@ -62,7 +57,7 @@ function ensureWatcher(): void {
 		})
 		watcher.unref?.()
 		watcher.on("error", (err) => {
-			debug("[theme-file-watcher] watch error:", err)
+			console.warn("[theme-file-watcher] watch error:", err)
 			watcher?.close()
 			watcher = undefined
 		})
@@ -93,7 +88,7 @@ export function checkAndNotifyThemeChange(): void {
 			try {
 				l(activeTheme)
 			} catch (err) {
-				debug("[theme-file-watcher] listener error:", err)
+				console.warn("[theme-file-watcher] listener error:", err)
 			}
 		}
 	}

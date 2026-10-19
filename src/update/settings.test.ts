@@ -19,14 +19,6 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 	return { ...actual, getAgentDir: () => fakeAgentDir }
 })
 
-// Mock debuglog the same way work-attribution's tests do (#1362): capture the
-// debug logger so routing can be asserted, keeping node:util's other exports.
-const { debug } = vi.hoisted(() => ({ debug: vi.fn() }))
-vi.mock("node:util", async (importOriginal) => ({
-	...(await importOriginal<typeof import("node:util")>()),
-	debuglog: () => debug,
-}))
-
 // Imports must come AFTER the vi.mock call so the mock is wired up.
 const { loadAutoUpdateSetting, saveAutoUpdateSetting, loadAutoUpdateNoticeShown, markAutoUpdateNoticeShown } =
 	await import("./settings.js")
@@ -66,12 +58,17 @@ describe("loadAutoUpdateSetting", () => {
 		expect(loadAutoUpdateSetting()).toBe(false)
 	})
 
-	it("returns false and logs via debuglog when the file contains malformed JSON", () => {
+	it("returns false and warns when the file contains malformed JSON", () => {
 		writeFileSync(statePath(), "{not valid json")
-		expect(loadAutoUpdateSetting()).toBe(false)
-		expect(debug).toHaveBeenCalledOnce()
-		const msg = debug.mock.calls[0]?.[0] as string
-		expect(msg).toContain("[kimchi-update]")
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			expect(loadAutoUpdateSetting()).toBe(false)
+			expect(warn).toHaveBeenCalledOnce()
+			const msg = warn.mock.calls[0]?.[0] as string
+			expect(msg).toContain("[kimchi-update]")
+		} finally {
+			warn.mockRestore()
+		}
 	})
 })
 

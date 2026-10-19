@@ -1,10 +1,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-
-// Mock debuglog the same way work-attribution's tests do (#1362): capture the
-// debug logger so routing can be asserted, keeping node:util's other exports.
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import {
 	applyTuiEnvOverrides,
 	buildSkillPathOptions,
@@ -17,6 +14,7 @@ import {
 	getApiKeySource,
 	getConfiguredLegacyMcpKeys,
 	loadConfig,
+	pushUserWarning,
 	RETRY_DEFAULTS,
 	readApiKeyFromConfigFile,
 	readGitToken,
@@ -26,6 +24,7 @@ import {
 	readTeleportCompactHintEnabled,
 	resetInvalidLlmBaseUrlWarningForTests,
 	resetInvalidSelfHostedUrlWarningForTests,
+	resetUserWarningsForTests,
 	resolveEndpoints,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
@@ -337,7 +336,7 @@ describe("loadConfig", () => {
 
 	it("warns once and ignores a malformed KIMCHI_BASE_URL", () => {
 		writeFileSync(configPath, JSON.stringify({ apiKey: "my-key", llmEndpoint: "https://custom.example" }))
-		consumeUserWarnings()
+		resetUserWarningsForTests()
 		vi.stubEnv("KIMCHI_BASE_URL", "https://")
 
 		const first = loadConfig({ configPath })
@@ -355,7 +354,7 @@ describe("loadConfig", () => {
 
 	it("rejects a non-http KIMCHI_BASE_URL scheme", () => {
 		writeFileSync(configPath, JSON.stringify({ apiKey: "my-key" }))
-		consumeUserWarnings()
+		resetUserWarningsForTests()
 		vi.stubEnv("KIMCHI_BASE_URL", "ftp://env.example")
 		const config = loadConfig({ configPath })
 		expect(config.llmEndpoint).toBe("https://llm.kimchi.dev/openai/v1")
@@ -903,7 +902,7 @@ describe("region config", () => {
 
 	it("loadConfig: an invalid KIMCHI_SELF_HOSTED_URL warns once and counts as unset", () => {
 		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://config.example.com" }))
-		consumeUserWarnings()
+		resetUserWarningsForTests()
 		resetInvalidSelfHostedUrlWarningForTests()
 		// Only the self-hosted warning; the temp file's loose permissions warn separately.
 		const selfHostedWarnings = () =>
@@ -1470,11 +1469,18 @@ describe("permissions", () => {
 		expect(checkConfigFilePermissions(join(tempDir, "missing.json"))).toBeUndefined()
 	})
 
+	it("checkConfigFilePermissions message carries no severity prefix", () => {
+		// Surfaces add their own: cli.ts prints "Warning: …", the TUI notifies at warning level.
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }), { mode: 0o644 })
+		chmodSync(configPath, 0o644)
+		expect(checkConfigFilePermissions(configPath)?.startsWith(configPath)).toBe(true)
+	})
+
 	it("loadConfig buffers a user warning when config.json is group/world-readable", () => {
 		writeFileSync(configPath, JSON.stringify({ apiKey: "leaky-key" }), { mode: 0o644 })
 		chmodSync(configPath, 0o644)
 
-		consumeUserWarnings()
+		resetUserWarningsForTests()
 		loadConfig({ configPath })
 		const warning = consumeUserWarnings().find((message) => message.includes("group/world-readable"))
 		expect(warning).toBeDefined()
@@ -1485,7 +1491,7 @@ describe("permissions", () => {
 		writeApiKey("safe-key", configPath)
 		expect(statSync(configPath).mode & 0o777).toBe(0o600)
 
-		consumeUserWarnings()
+		resetUserWarningsForTests()
 		loadConfig({ configPath })
 		const permWarning = consumeUserWarnings().find((message) => message.includes("group/world-readable"))
 		expect(permWarning).toBeUndefined()
@@ -1495,7 +1501,7 @@ describe("permissions", () => {
 		writeFileSync(configPath, JSON.stringify({ apiKey: "leaky-key" }), { mode: 0o644 })
 		chmodSync(configPath, 0o644)
 
-		consumeUserWarnings()
+		resetUserWarningsForTests()
 		const key = readApiKeyFromConfigFile(configPath)
 		expect(key).toBe("leaky-key")
 		const warning = consumeUserWarnings().find((message) => message.includes("group/world-readable"))
@@ -1670,5 +1676,30 @@ describe("memoryExtraction config parsing", () => {
 
 		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }))
 		expect(loadConfig({ configPath }).memoryExtraction).toBeUndefined()
+	})
+})
+
+describe("user warnings buffer", () => {
+	beforeEach(() => {
+		resetUserWarningsForTests()
+	})
+
+	it("buffers warnings until the first drain", () => {
+		pushUserWarning("first")
+		pushUserWarning("second")
+
+		expect(consumeUserWarnings()).toEqual(["first", "second"])
+		expect(consumeUserWarnings()).toEqual([])
+	})
+
+	it("routes warnings raised after the drain to console.warn instead of the buffer", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		onTestFinished(() => warn.mockRestore())
+		consumeUserWarnings()
+
+		pushUserWarning("late model-refresh fallback")
+
+		expect(warn).toHaveBeenCalledWith("late model-refresh fallback")
+		expect(consumeUserWarnings()).toEqual([])
 	})
 })

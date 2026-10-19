@@ -16,13 +16,8 @@
 // PID so concurrent processes don't collide on the rename.
 
 import { join } from "node:path"
-import { debuglog } from "node:util"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { readJsonCached, writeJson } from "../config/json.js"
-
-/** Auto-update diagnostics — silent unless NODE_DEBUG=kimchi:update.
- *  Raw console writes corrupt the interactive TUI. */
-const debug = debuglog("kimchi:update")
 
 /** Path to the dedicated auto-update state file. Separate from the shared
  *  settings.json so read-modify-writes here can never clobber unrelated keys. */
@@ -49,7 +44,7 @@ function readState(path: string): AutoUpdateState {
 		// be visible). Auto-update is non-critical, so swallow and return the
 		// default state rather than crashing the session.
 		const reason = err instanceof Error ? err.message : String(err)
-		debug(`[kimchi-update] Ignoring malformed auto-update state at ${path}: ${reason}`)
+		console.warn(`[kimchi-update] Ignoring malformed auto-update state at ${path}: ${reason}`)
 		return {}
 	}
 }

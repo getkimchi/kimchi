@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { consumeUserWarnings } from "./config.js"
+import { consumeUserWarnings, resetUserWarningsForTests } from "./config.js"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "./credential-staleness.js"
 import { AUTO_MODEL_DESCRIPTION } from "./extensions/auto-model/constants.js"
 import { readModelDeprecations } from "./model-deprecation.js"
@@ -18,14 +18,6 @@ import {
 	readExperimentalModels,
 	updateModelsConfig,
 } from "./models.js"
-
-// Mock debuglog the same way work-attribution's tests do (#1362): capture the
-// debug logger so routing can be asserted, keeping node:util's other exports.
-const { debug } = vi.hoisted(() => ({ debug: vi.fn() }))
-vi.mock("node:util", async (importOriginal) => ({
-	...(await importOriginal<typeof import("node:util")>()),
-	debuglog: () => debug,
-}))
 
 // loadConfig() reads the launch-time global config (real HOME). Pin it without
 // a region so endpoint derivation (experimental provider, metadata defaults)
@@ -743,7 +735,7 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "saved-key")
 		const original = readFileSync(modelsJsonPath, "utf-8")
 		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 401, statusText: "Unauthorized" }))
-		consumeUserWarnings()
+		resetUserWarningsForTests()
 		const result = await updateModelsConfig(modelsJsonPath, "rejected-key")
 		expect(result.models.map((model) => model.slug)).toEqual(["kimi-k2.5"])
 		expect(isCredentialStale("rejected-key", "kimchi-dev")).toBe(true)
@@ -760,7 +752,7 @@ describe("updateModelsConfig", () => {
 		config.providers.custom = CUSTOM_PROVIDER
 		writeFileSync(modelsJsonPath, JSON.stringify(config))
 		const original = readFileSync(modelsJsonPath, "utf-8")
-		consumeUserWarnings()
+		resetUserWarningsForTests()
 		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 401, statusText: "Unauthorized" }))
 
 		const result = await updateModelsConfig(modelsJsonPath, "expired-kimchi-key")
@@ -900,7 +892,7 @@ describe("updateModelsConfig", () => {
 	})
 
 	it("buffers a user warning when all API models are sunset", async () => {
-		consumeUserWarnings()
+		resetUserWarningsForTests()
 		const sunsetModel = {
 			slug: "old-model",
 			display_name: "Old Model",
@@ -1600,8 +1592,8 @@ describe("openai Responses API routing", () => {
 		expect(models[0]?.baseUrl).toBeUndefined()
 	})
 
-	it("warns via debuglog when an OpenAI slug matches neither routing table (catalog lint)", () => {
-		debug.mockClear()
+	it("warns when an OpenAI slug matches neither routing table (catalog lint)", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		const models = openaiProviderModels([
 			openaiModel("o5"),
 			openaiModel("gpt-3.5-turbo", { reasoning: false }),
@@ -1610,8 +1602,8 @@ describe("openai Responses API routing", () => {
 		expect(models).toHaveLength(3)
 		// Unknown slug still routes via chat completions — the lint only warns.
 		expect(models.find((m) => m.id === "o5")?.api).toBeUndefined()
-		expect(debug).toHaveBeenCalledTimes(1)
-		expect(debug.mock.calls[0]?.[0]).toContain("'o5'")
+		expect(warn).toHaveBeenCalledTimes(1)
+		expect(warn.mock.calls[0]?.[0]).toContain("'o5'")
 	})
 
 	it("does not touch non-openai providers", () => {

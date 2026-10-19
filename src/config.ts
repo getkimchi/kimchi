@@ -25,20 +25,35 @@ import { getVersion } from "./utils.js"
 
 /** User-actionable warnings collected while config/models state is read
  *  (loose config-file permissions, ignored invalid env URL overrides,
- *  model-refresh fallbacks). Startup surfaces drain the buffer and display
- *  them — printed pre-TUI in cli.ts, or via the config-warnings extension
- *  when the TUI owns the screen. Raw console writes here would corrupt it. */
+ *  model-refresh fallbacks). Startup surfaces drain the buffer once and
+ *  display it — printed pre-TUI in cli.ts, or via the config-warnings
+ *  extension as a notification, since pre-TUI output is hidden once the TUI
+ *  takes over the screen. Warnings raised after that drain have no reader,
+ *  so they go to console.warn (tui.log while the TUI is active, see
+ *  tui-console.ts; stderr otherwise). */
 const pendingUserWarnings: string[] = []
+let userWarningsDrained = false
 
 export function pushUserWarning(message: string): void {
+	if (userWarningsDrained) {
+		console.warn(message)
+		return
+	}
 	pendingUserWarnings.push(message)
 }
 
-/** Drain pending user warnings — returns them and clears the buffer. */
+/** Drain pending user warnings — returns them and clears the buffer. Later
+ *  pushes bypass the buffer. */
 export function consumeUserWarnings(): string[] {
+	userWarningsDrained = true
 	const warnings = [...pendingUserWarnings]
 	pendingUserWarnings.length = 0
 	return warnings
+}
+
+export function resetUserWarningsForTests(): void {
+	userWarningsDrained = false
+	pendingUserWarnings.length = 0
 }
 
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
@@ -484,7 +499,7 @@ export function checkConfigFilePermissions(configPath: string): string | undefin
 		if ((stat.mode & 0o077) !== 0 && !configPermissionWarnedPaths.has(configPath)) {
 			configPermissionWarnedPaths.add(configPath)
 			const mode = (stat.mode & 0o777).toString(8)
-			return `Warning: ${configPath} is group/world-readable (mode ${mode}). Run \`chmod 600 ${configPath}\` to restrict access to your API key.`
+			return `${configPath} is group/world-readable (mode ${mode}). Run \`chmod 600 ${configPath}\` to restrict access to your API key.`
 		}
 	} catch {
 		// File doesn't exist or is inaccessible — not a perm warning

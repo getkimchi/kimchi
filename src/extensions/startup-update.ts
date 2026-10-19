@@ -1,4 +1,3 @@
-import { debuglog } from "node:util"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isHomebrewInstall } from "../update/paths.js"
 import { loadAutoUpdateNoticeShown, loadAutoUpdateSetting, markAutoUpdateNoticeShown } from "../update/settings.js"
@@ -6,10 +5,6 @@ import { checkForUpdate, parseCanarySha7 } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
 
 const UPDATE_STATUS_KEY = "update-available"
-
-/** Startup-check diagnostics — silent unless NODE_DEBUG=kimchi:update.
- *  Raw console writes corrupt the interactive TUI. */
-const debug = debuglog("kimchi:update")
 
 /**
  * Startup-time check for new kimchi versions. Uses cache (24h) and displays
@@ -56,7 +51,7 @@ export default function startupUpdateExtension(pi: ExtensionAPI) {
 			// and-continue pattern used for checkForUpdate below, but
 			// also returns early because we have no signal worth
 			// showing when the settings file itself is unreadable.
-			debug(`[startup-update] auto-update settings unavailable: ${(err as Error).message}`)
+			console.warn(`[startup-update] auto-update settings unavailable: ${(err as Error).message}`)
 			return
 		}
 

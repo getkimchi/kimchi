@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
-import { debuglog } from "node:util"
 import type { AnthropicMessagesCompat, Model, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
@@ -10,10 +9,6 @@ import { AUTO_MODEL_DESCRIPTION, AUTO_MODEL_PROVIDER } from "./extensions/auto-m
 import { KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
 import { deriveDeprecationState, type ModelAlternative, writeModelDeprecations } from "./model-deprecation.js"
 import { getVersion } from "./utils.js"
-
-/** Model catalog diagnostics — silent unless NODE_DEBUG=kimchi:models.
- *  Raw console writes corrupt the interactive TUI. */
-const debug = debuglog("kimchi:models")
 
 // Upstream catalog keyed by exact model id, used to inherit anthropic-messages
 // compat flags (adaptive thinking, strict tools) and effort-level maps.
@@ -332,7 +327,7 @@ export function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 			!RESPONSES_API_SLUG_PATTERNS.some((pattern) => pattern.test(m.slug)) &&
 			!CHAT_COMPLETIONS_ONLY_SLUG_PATTERNS.some((pattern) => pattern.test(m.slug))
 		) {
-			debug(
+			console.warn(
 				`[models] OpenAI model '${m.slug}' matches no Responses/chat-completions routing pattern; defaulting to chat completions — update the routing tables`,
 			)
 		}
@@ -647,7 +642,7 @@ export async function discoverModelsConfig(
 	try {
 		writeModelDeprecations(modelsJsonPath, fetched)
 	} catch (err) {
-		debug("[model-deprecation] failed to persist sidecar:", err)
+		console.warn("[model-deprecation] failed to persist sidecar:", err)
 	}
 
 	// Deprecation is a signalling boundary, sunset is the serving boundary:

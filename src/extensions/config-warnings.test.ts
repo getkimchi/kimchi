@@ -1,13 +1,13 @@
 import type { SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { consumeUserWarnings, pushUserWarning } from "../config.js"
+import { consumeUserWarnings, pushUserWarning, resetUserWarningsForTests } from "../config.js"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import configWarningsExtension from "./config-warnings.js"
 
 describe("configWarningsExtension", () => {
 	beforeEach(() => {
-		consumeUserWarnings() // module-level buffer must not leak between tests
+		resetUserWarningsForTests() // module-level buffer must not leak between tests
 	})
 
 	it("notifies each buffered user warning on interactive session startup", async () => {

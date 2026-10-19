@@ -1,13 +1,8 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { isAbsolute, join } from "node:path"
-import { debuglog } from "node:util"
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import type { ServerEntry } from "pi-mcp-adapter/types"
 import type { AgentDefinition, AgentDiscovery, DirCandidate, DiscoveredSkill } from "./index.js"
-
-/** Discovery diagnostics — silent unless NODE_DEBUG=kimchi:agents.
- *  Raw console writes corrupt the interactive TUI. */
-const debug = debuglog("kimchi:agents")
 
 function msg(err: unknown): string {
 	return err instanceof Error ? err.message : String(err)
@@ -98,7 +93,7 @@ export function resolveDirCandidates(candidates: readonly DirCandidate[], getCwd
 			// existsSync — cwd-dependent behaviour that survives even under the
 			// explicit `cwd` option and "home" scope. Flag it rather than
 			// resolving it implicitly.
-			debug(
+			console.warn(
 				`Non-absolute directory candidate "${c}" in agent discovery resolves against the current working directory; use an absolute path or a { projectRelative } candidate`,
 			)
 		}
@@ -132,11 +127,13 @@ function enumerateSkills(skillsDir: string): DiscoveredSkill[] {
 		// diagnostics — surface them, or the skill vanishes from discovery
 		// silently and the user has no observable reason why.
 		for (const diagnostic of diagnostics) {
-			debug(`Skill discovery in ${skillsDir}: ${diagnostic.message}${diagnostic.path ? ` (${diagnostic.path})` : ""}`)
+			console.warn(
+				`Skill discovery in ${skillsDir}: ${diagnostic.message}${diagnostic.path ? ` (${diagnostic.path})` : ""}`,
+			)
 		}
 		return skills.map((s) => ({ name: s.name, description: s.description, path: s.filePath }))
 	} catch (err) {
-		debug(`Failed to enumerate skills in ${skillsDir}: ${msg(err)}`)
+		console.warn(`Failed to enumerate skills in ${skillsDir}: ${msg(err)}`)
 		return []
 	}
 }
@@ -159,7 +156,7 @@ export function discoverAgent(def: AgentDefinition, options?: DiscoverAgentOptio
 		scope === "home"
 			? def.configPaths.filter((path) => {
 					if (isAbsolute(path)) return true
-					debug(
+					console.warn(
 						`Skipping non-absolute config path "${path}" for ${def.displayName} in home-scoped discovery; config paths must be absolute`,
 					)
 					return false
@@ -172,7 +169,7 @@ export function discoverAgent(def: AgentDefinition, options?: DiscoverAgentOptio
 			raw = readFileSync(path, "utf-8")
 		} catch (err) {
 			if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-				debug(`Failed to read ${def.displayName} config at ${path}: ${msg(err)}`)
+				console.warn(`Failed to read ${def.displayName} config at ${path}: ${msg(err)}`)
 			}
 			continue
 		}
@@ -180,7 +177,7 @@ export function discoverAgent(def: AgentDefinition, options?: DiscoverAgentOptio
 		try {
 			parsed = parse(raw)
 		} catch (err) {
-			debug(`Failed to parse ${def.displayName} config at ${path}: ${msg(err)}`)
+			console.warn(`Failed to parse ${def.displayName} config at ${path}: ${msg(err)}`)
 			continue
 		}
 		const sources = def.extractServerSources(parsed)
@@ -202,7 +199,7 @@ export function discoverAgent(def: AgentDefinition, options?: DiscoverAgentOptio
 			try {
 				skillCount = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).length
 			} catch (err) {
-				debug(`Failed to read ${def.displayName} skills directory at ${dir}: ${msg(err)}`)
+				console.warn(`Failed to read ${def.displayName} skills directory at ${dir}: ${msg(err)}`)
 				// The directory exists but could not be read (e.g. EACCES). -1 is
 				// distinct from 0 ("empty") so import_discover keeps the app row —
 				// the client must be able to tell "nothing here" from "couldn't
@@ -229,7 +226,7 @@ export function discoverAgent(def: AgentDefinition, options?: DiscoverAgentOptio
 			try {
 				commandsCount = countMarkdownFiles(dir)
 			} catch (err) {
-				debug(`Failed to read ${def.displayName} commands directory at ${dir}: ${msg(err)}`)
+				console.warn(`Failed to read ${def.displayName} commands directory at ${dir}: ${msg(err)}`)
 			}
 			break
 		}

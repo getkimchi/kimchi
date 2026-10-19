@@ -678,21 +678,19 @@ try {
 		populateCliArgs(rawArgs)
 		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
 
-		// Probe runs here (before pi-mono takes stdin) so the result is cached for
-		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
-		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
-		// User-actionable warnings collected while config and models state was
-		// read (file permissions, invalid env URL overrides, model-refresh
-		// fallbacks). Print them pre-TUI on CLI/headless paths; TUI sessions
-		// see the same buffer via the config-warnings extension instead.
 		const terminalStartupOutputAllowed = isTerminalUiMode(rawArgs, terminalIo)
-		if (!terminalStartupOutputAllowed) {
-			for (const warning of consumeUserWarnings()) console.warn(`Warning: ${warning}`)
-		}
 		if (terminalStartupOutputAllowed) {
+			// Probe runs here (before pi-mono takes stdin) so the result is cached for
+			// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
+			// modes: stdout belongs to the caller, and OSC escapes corrupt it.
 			installTuiConsoleLogging()
 			await probeTerminalBackground()
 			await probeKittyKeyboardSupport()
+		} else {
+			// User-actionable warnings buffered while config and models were read.
+			// TUI sessions show them via the config-warnings extension instead,
+			// because pre-TUI output is hidden once the TUI takes the screen.
+			for (const warning of consumeUserWarnings()) console.warn(`Warning: ${warning}`)
 		}
 
 		// Emit warnings for terminals that don't support modifier-aware Enter.
