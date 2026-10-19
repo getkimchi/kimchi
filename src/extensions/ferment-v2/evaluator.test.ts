@@ -14,6 +14,7 @@ import { getModelRoles } from "../orchestration/model-roles.js"
 import { resetRedactionConfigCache } from "../pii-redaction/config.js"
 import * as redactor from "../pii-redaction/redactor.js"
 import { CI_VARIABLES } from "../pr-cost-reporting/automation.js"
+import { setPRReportingSessionMode } from "../pr-cost-reporting/consent.js"
 import { prepareProviderRequest } from "../request-identity/index.js"
 import {
 	evaluateFermentV2,
@@ -92,6 +93,7 @@ describe("Ferment V2 evaluator", () => {
 	})
 
 	afterEach(() => {
+		setPRReportingSessionMode(undefined)
 		resetProjectScopeTrustForTests()
 		if (savedRedactionEnv === undefined) delete process.env.KIMCHI_REDACTION_ENABLED
 		else process.env.KIMCHI_REDACTION_ENABLED = savedRedactionEnv
@@ -103,6 +105,8 @@ describe("Ferment V2 evaluator", () => {
 	it("lets the gateway report evaluator requests under the evaluated session", async () => {
 		for (const name of [...CI_VARIABLES, "KIMCHI_PR_COST_REPORTING", INFRA_BREAKER_THRESHOLD_ENV]) vi.stubEnv(name, "")
 		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		// The main session's Cost per PR extension records its mode at session_start.
+		setPRReportingSessionMode("tui")
 		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"more work"}'))
 		const ctx = evaluatorContext()
 		const result = await evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, ctx)

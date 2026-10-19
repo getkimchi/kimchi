@@ -8,6 +8,7 @@ import { resolveEndpoints } from "../../config.js"
 import { createContext } from "../__mocks__/context.js"
 import { createModel } from "../__mocks__/model-registry.js"
 import { CI_VARIABLES } from "../pr-cost-reporting/automation.js"
+import { setPRReportingSessionMode } from "../pr-cost-reporting/consent.js"
 import { prepareProviderRequest } from "../request-identity/index.js"
 import {
 	describeJudgeModel,
@@ -1167,6 +1168,7 @@ describe("judgeApiCall", () => {
 		captureJudgeContext(undefined, undefined, false, createContext())
 	})
 	afterEach(() => {
+		setPRReportingSessionMode(undefined)
 		vi.unstubAllEnvs()
 		rmSync(agentDir, { recursive: true, force: true })
 		completeMock.mockReset()
@@ -1176,6 +1178,8 @@ describe("judgeApiCall", () => {
 		for (const name of [...CI_VARIABLES, "KIMCHI_PR_COST_REPORTING", "KIMCHI_INFRA_BREAKER_THRESHOLD"])
 			vi.stubEnv(name, "")
 		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		// The main session's Cost per PR extension records its mode at session_start.
+		setPRReportingSessionMode("tui")
 		let sessionId = "judge-original"
 		const ctx = createContext({ cwd: agentDir, sessionManager: { getSessionId: () => sessionId } })
 		const model = createModel("judge-x")

@@ -110,6 +110,9 @@ describe("default-on notice", () => {
 })
 
 describe("/pr-reporting", () => {
+	// Pi starts the session, which records its mode, before any command runs.
+	beforeEach(() => setPRReportingSessionMode("tui"))
+
 	it("turns reporting on against a disabled SaaS default and keeps fields an older Kimchi saved", async () => {
 		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
 		save({ version: 1, enabled: false, followsTelemetry: true, producerId: "older-producer", entries: {} })

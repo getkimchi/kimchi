@@ -27,7 +27,10 @@ interface SavedState {
 	defaultNoticeShown?: true
 }
 
-/** The main session's mode: print and JSON runs never report. Subagents share the process and its decision. */
+/**
+ * The main session's mode: print and JSON runs never report. Subagents share the process and its decision. Only the Cost
+ * per PR extension records it, and that extension loads only when Cost per PR was on at launch.
+ */
 let sessionMode: ExtensionContext["mode"] | undefined
 
 export function setPRReportingSessionMode(mode: ExtensionContext["mode"] | undefined): void {
@@ -69,10 +72,14 @@ export function prReportingSkipReason(): string | undefined {
 	return reportingSkipReason(sessionMode)
 }
 
-/** `proxy` while Cost per PR is on, this process may report and consent is on; `off` otherwise, also when unreadable. */
+/**
+ * `proxy` while Cost per PR is on, this process may report and consent is on; `off` otherwise, also when unreadable. A
+ * process that started with Cost per PR off stays `off` until it restarts, as the resource requires.
+ */
 export function prReportingHeaderValue(agentDir = getAgentDir()): "proxy" | "off" {
 	try {
-		return isResourceEnabled(COST_PER_PR_RESOURCE_ID) &&
+		return sessionMode !== undefined &&
+			isResourceEnabled(COST_PER_PR_RESOURCE_ID) &&
 			!prReportingSkipReason() &&
 			readPRReportingConsent(agentDir).enabled
 			? "proxy"

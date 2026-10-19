@@ -133,6 +133,14 @@ describe("PR reporting header value", () => {
 		setPRReportingSessionMode("rpc")
 		expect(prReportingHeaderValue(agentDir)).toBe("proxy")
 	})
+
+	it("is off in a process whose Cost per PR extension never started, though Cost per PR is on now", () => {
+		saveState({ version: 1, enabled: true })
+		setPRReportingSessionMode(undefined)
+		expect(prReportingHeaderValue(agentDir)).toBe("off")
+		setPRReportingSessionMode("tui")
+		expect(prReportingHeaderValue(agentDir)).toBe("proxy")
+	})
 })
 
 describe("saved PR reporting state", () => {
