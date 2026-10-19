@@ -94,7 +94,13 @@ import {
 } from "./mode-controller.js"
 import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { PERMISSION_EVENTS, type PermissionDecision } from "./permissions-events.js"
-import { hasOrgPolicyRestrictions, highestAllowedHighMode, isFermentRunnable, isModeAllowed } from "./policy.js"
+import {
+	hasExecutableMode,
+	hasOrgPolicyRestrictions,
+	isFermentRunnable,
+	isModeAllowed,
+	releaseTargetForPlanApproval,
+} from "./policy.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
 import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import {
@@ -446,12 +452,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	 * policy this preserves the historical release to auto.
 	 */
 	function releaseFromPlanForApproval(ctx: ExtensionContext): boolean {
-		const target = hasOrgPolicyRestrictions() ? highestAllowedHighMode() : "auto"
+		const target = releaseTargetForPlanApproval()
 		if (!target) {
 			ctx.ui.notify(
-				"Your organization's policy does not allow auto or yolo mode, so the approved plan cannot be executed here.",
+				"Your organization's policy only allows plan mode, so the approved plan cannot be executed.",
 				"warning",
 			)
+			// A policy-blocked approval closes the review with no follow-up turn;
+			// surfaces holding the prompt open across the review (ACP) need the close.
+			notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 			return false
 		}
 		if (getRuntimePermissionMode().mode === "plan") {
@@ -893,8 +902,20 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				const DECLINE = "Rework the plan"
 				const START_AS_FERMENT = "Start as ferment"
 
-				const options: string[] = [EXECUTE_LOCAL_DECISION_OPTION]
-				if (isRemoteRunEnabled()) options.push(CLOUD_DECISION_OPTION)
+				const options: string[] = []
+				// Org policy: a plan-only policy leaves no mode an approved plan can
+				// execute in — hide the execution options rather than fail after the
+				// click, and say so up front. The plannotator surface cannot
+				// pre-filter, so the decision handler enforces the same check.
+				if (hasExecutableMode()) {
+					options.push(EXECUTE_LOCAL_DECISION_OPTION)
+					if (isRemoteRunEnabled()) options.push(CLOUD_DECISION_OPTION)
+				} else {
+					ctx.ui.notify(
+						`Plan saved${planPath ? ` to ${planPath}` : ""}. Your organization's policy only allows plan mode — execution isn't available here.`,
+						"warning",
+					)
+				}
 				options.push(DECLINE)
 				// Org policy: without an executable mode, ferment cannot run — hide it.
 				if (isFermentRunnable()) options.push(START_AS_FERMENT)
@@ -986,13 +1007,16 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// Shared by the start_cloud decision and the plannotator "where should
 		// it run?" route below.
 		const executeInCloud = async () => {
+			// Only plan mode needs the release transition; submissions already in
+			// an executable mode are already in an execution posture. Release
+			// BEFORE clearing state so a policy-blocked release leaves the review
+			// exactly as it was (slug kept, no approval event fired).
+			const wasPlanMode = getRuntimePermissionMode().mode === "plan"
+			if (wasPlanMode && !releaseFromPlanForApproval(ctx)) return
+			const releasedMode = getRuntimePermissionMode().mode
 			const approvedSlug = activePlanSlug
 			activePlanSlug = undefined
 			pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
-			// Only plan mode needs the release-to-auto transition; submissions
-			// from auto mode are already in an execution posture.
-			const wasPlanMode = getRuntimePermissionMode().mode === "plan"
-			if (wasPlanMode && !releaseFromPlanForApproval(ctx)) return
 			const cloudDescription = `${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
 			try {
 				const { prompt: cloudPrompt, gitWorkflow } = await buildRemotePlanPromptWithIntent(ctx, planText, {
@@ -1007,7 +1031,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				ctx.ui?.notify?.(`Could not start the remote agent: ${message}`, "error")
 				activePlanSlug = approvedSlug
 				if (wasPlanMode) {
-					changeMode(ctx, "auto", { mode: "plan", initiatedBy: "user", source: "runtime" }, "cloud_spawn_failed")
+					changeMode(ctx, releasedMode, { mode: "plan", initiatedBy: "user", source: "runtime" }, "cloud_spawn_failed")
 				}
 			}
 			// Cloud execution never starts a local follow-up turn (the remote run
@@ -1020,7 +1044,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// execution is enabled, ask where the plan should run instead of
 			// auto-executing locally. Escape/dismiss defers: no mode change,
 			// nothing starts; re-open the review to choose again.
-			if (payload.source === "plannotator" && isRemoteRunEnabled()) {
+			// A plan-only policy cannot execute anywhere — skip the where-dialog
+			// and go straight through the blocked-release path (notify + close).
+			if (payload.source === "plannotator" && isRemoteRunEnabled() && hasExecutableMode()) {
 				// The same decision event dismisses the older review surface (TUI
 				// menu) via a listener registered AFTER this handler. pi's TUI
 				// keeps a single extensionSelector and disposes whatever is
@@ -1120,14 +1146,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					defaultFermentRuntime.setActive(draft)
 					if (pi.events) emitFermentCreated(pi.events, draft)
 					appendRefEntry(pi, draft.id)
-					if (getRuntimePermissionMode().mode === "plan") {
-						releaseFromPlanForApproval(ctx)
-					}
-					// Draft-only conversion dispatches no follow-up turn: notify.
-					notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 					ctx.ui?.notify?.(
 						`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment list to resume and scope it interactively.`,
 					)
+					// A blocked release already warned and closed the review — done.
+					if (getRuntimePermissionMode().mode === "plan" && !releaseFromPlanForApproval(ctx)) return
+					// Draft-only conversion dispatches no follow-up turn: notify.
+					notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 					return
 				}
 
@@ -1188,6 +1213,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						gate.kind === "blocked" ? FERMENT_PLAN_ONLY_MESSAGE : "Ferment start cancelled.",
 						gate.kind === "blocked" ? "warning" : "info",
 					)
+					// The review ends here with no follow-up turn: close it out for
+					// surfaces holding the prompt open (ACP).
+					notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 					return
 				}
 				if (gate.kind === "degraded") {
