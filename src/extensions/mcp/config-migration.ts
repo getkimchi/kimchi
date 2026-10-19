@@ -371,12 +371,12 @@ function writeFileAtomic(path: string, contents: string): void {
 }
 
 /**
- * Claim a migration section with an O_EXCL lock file: two processes
- * launching after an upgrade must not both migrate. A crashed holder leaves
- * the lock behind; after `maxAgeMs` a later run takes it over, so a hard crash
- * costs at most a delay, never a stuck migration.
+ * Claim a section with an O_EXCL lock file: two processes launching after an
+ * upgrade must not both run. A crashed holder leaves the lock behind; after
+ * `maxAgeMs` a later run takes it over, so a hard crash costs at most a delay,
+ * never a stuck run. Shared by the config migration and the OAuth import.
  */
-function claimMigration(lockPath: string, maxAgeMs = 30_000): boolean {
+export function claimStaleLock(lockPath: string, maxAgeMs = 30_000): boolean {
 	try {
 		writeFileSync(lockPath, `${process.pid}\n`, { flag: "wx", mode: 0o600 })
 		return true
@@ -476,7 +476,7 @@ export function runNativeMcpMigration(options: RunMigrationOptions): RunMigratio
 	// the migration to a later launch.
 	mkdirSync(options.agentDir, { recursive: true })
 	const lockPath = join(options.agentDir, MIGRATION_LOCK)
-	if (!claimMigration(lockPath)) return { migrated: false }
+	if (!claimStaleLock(lockPath)) return { migrated: false }
 
 	const issues: MigrationIssue[] = []
 	const files: MigrationReport["files"] = []

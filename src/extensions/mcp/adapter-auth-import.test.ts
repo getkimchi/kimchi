@@ -1,5 +1,5 @@
 import { createCipheriv, createHash, randomBytes } from "node:crypto"
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
@@ -10,10 +10,12 @@ import {
 	type KeyringReader,
 	mcpNamespace,
 	nativeAuthKey,
+	OAUTH_IMPORT_STAMP,
 	parseAdapterAuthEntry,
 	readEncryptedEntry,
 	readKeyringPayload,
 	readPlaintextEntry,
+	runOAuthImportOnce,
 	toNativeAuthState,
 } from "./adapter-auth-import.js"
 
@@ -363,5 +365,71 @@ describe("importAdapterAuth", () => {
 		const report = importAdapterAuth({ agentDir, cwd, keyringReader: fakeKeyring() })
 		expect(report.ok).toBe(false)
 		expect(report.warnings[0]).toContain("mcp-auth.json")
+	})
+})
+
+describe("runOAuthImportOnce", () => {
+	function onceFixture() {
+		const root = mkdtempSync(join(tmpdir(), "oauth-import-once-"))
+		const agentDir = join(root, "agent")
+		const cwd = join(root, "work")
+		mkdirSync(join(agentDir, "mcp-oauth"), { recursive: true })
+		mkdirSync(cwd, { recursive: true })
+		writeJson(join(agentDir, "mcp.json"), { mcpServers: { srv: { url: "https://x.test/mcp" } } })
+		writeLegacyStore(agentDir, "srv", {
+			tokens: { accessToken: "once-at", refreshToken: "once-rt" },
+			serverUrl: "https://x.test/mcp",
+		})
+		return { root, agentDir, cwd }
+	}
+
+	const quietKeyring: KeyringReader = () => ({ found: false })
+
+	it("imports on first run, writes the stamp, and removes the lock", () => {
+		const { agentDir, cwd } = onceFixture()
+		runOAuthImportOnce({ agentDir, cwd, keyringReader: quietKeyring })
+		const states = JSON.parse(readFileSync(join(agentDir, "mcp-auth.json"), "utf8"))
+		expect(states["mcp__srv|https://x.test/mcp"].tokens.access_token).toBe("once-at")
+		expect(existsSync(join(agentDir, OAUTH_IMPORT_STAMP))).toBe(true)
+		expect(existsSync(join(agentDir, "mcp-oauth-import.lock"))).toBe(false)
+	})
+
+	it("is a no-op once the stamp exists", () => {
+		const { agentDir, cwd } = onceFixture()
+		runOAuthImportOnce({ agentDir, cwd, keyringReader: quietKeyring })
+		const before = readFileSync(join(agentDir, "mcp-auth.json"), "utf8")
+		// A second, fresher credential must not be picked up after the stamp.
+		writeLegacyStore(agentDir, "srv", {
+			tokens: { accessToken: "newer-at" },
+			serverUrl: "https://x.test/mcp",
+		})
+		runOAuthImportOnce({ agentDir, cwd, keyringReader: quietKeyring })
+		expect(readFileSync(join(agentDir, "mcp-auth.json"), "utf8")).toBe(before)
+	})
+
+	it("does not stamp when the environment was not ready, so it retries later", () => {
+		const { agentDir, cwd } = onceFixture()
+		const unavailable: KeyringReader = () => ({ found: false, warning: "keychain locked" })
+		runOAuthImportOnce({ agentDir, cwd, keyringReader: unavailable })
+		expect(existsSync(join(agentDir, OAUTH_IMPORT_STAMP))).toBe(false)
+		// The import still happened for the readable (file) store, but the retry
+		// path stays armed.
+		runOAuthImportOnce({ agentDir, cwd, keyringReader: quietKeyring })
+		expect(existsSync(join(agentDir, OAUTH_IMPORT_STAMP))).toBe(true)
+	})
+
+	it("creates a missing agent dir (fresh install) instead of failing", () => {
+		const root = mkdtempSync(join(tmpdir(), "oauth-import-fresh-"))
+		const agentDir = join(root, "fresh", "agent")
+		runOAuthImportOnce({ agentDir, cwd: root, keyringReader: quietKeyring })
+		expect(existsSync(join(agentDir, OAUTH_IMPORT_STAMP))).toBe(true)
+	})
+
+	it("does nothing while a fresh lock is held (concurrent launch)", () => {
+		const { agentDir, cwd } = onceFixture()
+		mkdirSync(agentDir, { recursive: true })
+		writeFileSync(join(agentDir, "mcp-oauth-import.lock"), `${process.pid}\n`, { flag: "wx", mode: 0o600 })
+		runOAuthImportOnce({ agentDir, cwd, keyringReader: quietKeyring })
+		expect(existsSync(join(agentDir, "mcp-auth.json"))).toBe(false)
 	})
 })

@@ -18,9 +18,6 @@
  * `kimchi mcp forget-grant` — one-shot OAuth grant forget; invocation contract
  * and consent budget: docs/mcp-forget-grant.md
  *
- * `kimchi mcp import-auth` — one-shot import of adapter-era OAuth credentials
- * into the native store (see docs/mcp-import-auth.md).
- *
  * Everything else (`add`, `remove`, `list`, `login`, …) delegates to pi's
  * native MCP CLI (`runMcpCommand`); adapter-era `auth` redirects to `login`.
  */
@@ -31,7 +28,6 @@ import { Value } from "typebox/value"
 import { type ProbeResult, UpstreamMcpProbe } from "../extensions/mcp/probe.js"
 import type { ServerEntry } from "../extensions/mcp/types.js"
 import { defaultMcpAuthPath, forgetMcpGrant } from "./mcp-forget-grant.js"
-import { runImportAuth } from "./mcp-import-auth.js"
 
 const SERVER_NAME_PATTERN_SOURCE = "^(?!.*\\.\\.)[^/\\\\]+$"
 /** Server names follow one rule everywhere: no path separators or consecutive dots (guards path traversal in name-keyed credential paths). */
@@ -77,9 +73,6 @@ export async function runMcp(args: string[]): Promise<number | undefined> {
 	if (subcommand === "forget-grant") {
 		return runForgetGrant(args.slice(1))
 	}
-	if (subcommand === "import-auth") {
-		return runImportAuth(args.slice(1))
-	}
 	if (subcommand === "auth") {
 		// Adapter-era spelling; the native verb is `login`.
 		process.stderr.write("kimchi mcp auth is now kimchi mcp login\n")
@@ -93,7 +86,6 @@ export async function runMcp(args: string[]): Promise<number | undefined> {
 	process.stderr.write(`Unknown mcp subcommand: ${subcommand ?? "(none)"}\n`)
 	process.stderr.write("Usage: kimchi mcp probe --json < server-config.json\n")
 	process.stderr.write("       kimchi mcp forget-grant <server-name> --json\n")
-	process.stderr.write("       kimchi mcp import-auth [--json]\n")
 	process.stderr.write("       kimchi mcp login <server>\n")
 	process.stderr.write("       (add, remove, list and other subcommands come from the native MCP CLI)\n")
 	return 1

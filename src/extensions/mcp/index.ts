@@ -22,6 +22,7 @@ import {
 	getAgentDir,
 	type McpServerConfig,
 } from "@earendil-works/pi-coding-agent"
+import { importAdapterAuth } from "./adapter-auth-import.js"
 import { runProjectMcpMigration, UNSUPPORTED_SERVER_FIELDS } from "./config-migration.js"
 import { buildGatewayRegistration, getGatewayAddresses, hasGatewayAddress } from "./gateway.js"
 import nativeMigrationNoticesExtension from "./native-migration-notices.js"
@@ -109,11 +110,15 @@ export function createKimchiMcpExtension(options: KimchiMcpExtensionOptions): Ex
 			}
 		}
 		registerGateway(pi, options.callerServers ?? {})
-		// The launch-time one-shot only migrated the server start cwd's ancestor
-		// chain; ACP sessions run in other directories. Translate this session's
-		// project file before the native extension reads it.
 		try {
-			runProjectMcpMigration({ agentDir: getAgentDir(), cwd: options.cwd })
+			// The launch-time one-shot only migrated the server start cwd's ancestor
+			// chain; ACP sessions run in other directories. Translate this session's
+			// project file before the native extension reads it, and import adapter
+			// OAuth credentials for its servers on first sight — the launch-time
+			// import only covered the start cwd's config.
+			if (runProjectMcpMigration({ agentDir: getAgentDir(), cwd: options.cwd }).migrated) {
+				importAdapterAuth({ agentDir: getAgentDir(), cwd: options.cwd })
+			}
 		} catch (error) {
 			console.warn(`[kimchi-mcp] project migration failed: ${error instanceof Error ? error.message : String(error)}`)
 		}

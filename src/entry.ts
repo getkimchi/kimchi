@@ -105,6 +105,18 @@ try {
 	console.warn(`[kimchi-mcp-migration] failed: ${err instanceof Error ? err.message : err}`)
 }
 
+// One-shot OAuth token import: adapter-era credentials for the configured
+// servers are carried into the native mcp-auth.json store transparently on
+// the first launch after the upgrade, so no re-login is needed. Best-effort
+// and idempotent — a stamp in the agent dir prevents re-runs (written only
+// when no store warnings occurred, so an unready environment retries later).
+try {
+	const { runOAuthImportOnce } = await import("./extensions/mcp/adapter-auth-import.js")
+	runOAuthImportOnce({ agentDir: process.env.KIMCHI_CODING_AGENT_DIR, cwd: process.cwd() })
+} catch (err) {
+	console.warn(`[kimchi-mcp-oauth-import] failed: ${err instanceof Error ? err.message : err}`)
+}
+
 // Register the embedded QuickJS wasm path (set by binary-entry.ts from a Bun file
 // import) with pi-mono's config module — only relevant in the compiled binary.
 // The binary name gate keeps an externally-set env var from being honored in

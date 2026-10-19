@@ -29,6 +29,8 @@ import { createDecipheriv, createHash } from "node:crypto"
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
+import { claimStaleLock } from "./config-migration.js"
+
 /** pi's `mcpNamespace(server)` (core/mcp-servers.ts): `mcp__` + name with `-` → `_`. */
 export function mcpNamespace(name: string): string {
 	return `mcp__${name.replace(/-/g, "_")}`
@@ -264,26 +266,34 @@ export function encryptedFileKeyFromEnv(env: NodeJS.ProcessEnv = process.env): {
 	return { key }
 }
 
+/** After a hard keyring failure (prompt dismissed, keychain locked, timeout) further reads in the same process are skipped. */
+let cliKeyringDisabled = false
+let cliKeyringDisabledWarning: string | undefined
+
 /**
  * Platform-CLI keyring reader. `security` on macOS, `secret-tool` on Linux;
  * Windows Credential Manager is not implemented (v1) — callers surface the
  * re-login guidance instead.
  */
 export function cliKeyringReader(service: string, account: string): KeyringReadResult {
+	if (cliKeyringDisabled) return { found: false, warning: cliKeyringDisabledWarning }
 	if (process.platform === "darwin") {
 		try {
 			const out = execFileSync("security", ["find-generic-password", "-s", service, "-a", account, "-w"], {
 				encoding: "utf8",
 				stdio: ["ignore", "pipe", "ignore"],
+				// A consent prompt nobody answers must never hang a launch.
+				timeout: 10_000,
 			})
 			return { found: true, value: stripTrailingNewline(out) }
 		} catch (error) {
 			const status = (error as { status?: number }).status
 			if (status === 44) return { found: false }
-			return {
-				found: false,
-				warning: `macOS keychain read for ${account} failed (security exit ${status ?? "unknown"})`,
-			}
+			cliKeyringDisabled = true
+			cliKeyringDisabledWarning = `macOS keychain read for ${account} failed (security exit ${
+				status ?? "unknown"
+			}); OAuth keyring import disabled for this launch`
+			return { found: false, warning: cliKeyringDisabledWarning }
 		}
 	}
 	if (process.platform === "linux") {
@@ -291,6 +301,7 @@ export function cliKeyringReader(service: string, account: string): KeyringReadR
 			const out = execFileSync("secret-tool", ["lookup", "service", service, "username", account], {
 				encoding: "utf8",
 				stdio: ["ignore", "pipe", "ignore"],
+				timeout: 10_000,
 			})
 			const value = stripTrailingNewline(out)
 			return value === "" ? { found: false } : { found: true, value }
@@ -300,18 +311,19 @@ export function cliKeyringReader(service: string, account: string): KeyringReadR
 				return {
 					found: false,
 					warning:
-						"secret-tool is not installed; keyring-stored grants cannot be imported (install libsecret-tools and re-run)",
+						"secret-tool is not installed; keyring-stored grants cannot be imported (install libsecret-tools and restart)",
 				}
 			}
-			return {
-				found: false,
-				warning: `Linux keyring read for ${account} failed: ${error instanceof Error ? error.message : String(error)}`,
-			}
+			cliKeyringDisabled = true
+			cliKeyringDisabledWarning = `Linux keyring read for ${account} failed: ${
+				error instanceof Error ? error.message : String(error)
+			}`
+			return { found: false, warning: cliKeyringDisabledWarning }
 		}
 	}
 	return {
 		found: false,
-		warning: `OAuth keyring import is not implemented on ${process.platform}; run kimchi mcp login <server> once per OAuth server`,
+		warning: `OAuth keyring import is not implemented on ${process.platform}; affected servers need a one-time re-login`,
 	}
 }
 
@@ -541,4 +553,40 @@ export function importAdapterAuth(options: {
 	}
 
 	return { ok: true, imported, results, warnings }
+}
+
+export const OAUTH_IMPORT_STAMP = "mcp-oauth-import.done"
+export const OAUTH_IMPORT_LOCK = "mcp-oauth-import.lock"
+
+/**
+ * One-shot, launch-time OAuth token import: adapter credentials for the
+ * configured servers are carried into the native store transparently on the
+ * first launch after the upgrade, so no re-login is needed. Runs before the
+ * native MCP extension reads its config (entry.ts), guarded by a stamp and
+ * the same O_EXCL lock discipline as the config migration.
+ *
+ * The stamp is written only when the run finished without warnings — an
+ * environment that was not ready (missing secret-tool, a dismissed keychain
+ * prompt) is retried on the next launch. Warnings go to stderr; failures
+ * never block startup and degrade to the existing re-login notice.
+ */
+export function runOAuthImportOnce(options: { agentDir: string; cwd: string; keyringReader?: KeyringReader }): void {
+	const stampPath = join(options.agentDir, OAUTH_IMPORT_STAMP)
+	if (existsSync(stampPath)) return
+	// Fresh installs may have no agent dir yet (the same first-launch window
+	// the config migration handles); create it before claiming the lock.
+	mkdirSync(options.agentDir, { recursive: true })
+	const lockPath = join(options.agentDir, OAUTH_IMPORT_LOCK)
+	if (!claimStaleLock(lockPath)) return
+	try {
+		const report = importAdapterAuth({
+			agentDir: options.agentDir,
+			cwd: options.cwd,
+			keyringReader: options.keyringReader,
+		})
+		for (const warning of report.warnings) console.warn(`[kimchi-mcp-oauth-import] ${warning}`)
+		if (report.ok && report.warnings.length === 0) writeFileSync(stampPath, "1\n")
+	} finally {
+		rmSync(lockPath, { force: true })
+	}
 }
