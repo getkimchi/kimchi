@@ -7,7 +7,12 @@ import { resolveEndpoints } from "./config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
 import { AUTO_MODEL_DESCRIPTION, AUTO_MODEL_PROVIDER } from "./extensions/auto-model/constants.js"
 import { KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
-import { deriveDeprecationState, type ModelAlternative, writeModelDeprecations } from "./model-deprecation.js"
+import {
+	collectDeprecationMarkers,
+	deriveDeprecationState,
+	type ModelAlternative,
+	writeModelDeprecations,
+} from "./model-deprecation.js"
 import { getVersion } from "./utils.js"
 
 // Upstream catalog keyed by exact model id, used to inherit anthropic-messages
@@ -446,6 +451,30 @@ export function registerDescriptionsFromProviders(
 	}
 }
 
+/** Prefix registered descriptions with deprecation markers from the sidecar,
+ * so /model warns before a deprecated model is selected rather than after
+ * (the toast only fires on selection/session start). Window-gated like the
+ * toast; markers never stack on refreshes. Models without a backend
+ * description (most serverless rows) get the marker as their whole
+ * description under the standard kimchi blocks — an unmarked empty row is
+ * exactly the gap this closes. */
+export function registerDeprecationMarkers(modelsJsonPath: string): void {
+	const registry = modelDescriptionRegistry()
+	for (const [slug, marker] of collectDeprecationMarkers(modelsJsonPath)) {
+		let keyed = false
+		for (const [key, description] of registry) {
+			if (key.slice(key.lastIndexOf("/") + 1) !== slug) continue
+			keyed = true
+			if (description.startsWith("[Deprecated")) continue
+			registry.set(key, `${marker} ${description}`.trim())
+		}
+		if (!keyed) {
+			registry.set(`kimchi-dev/${slug}`, marker)
+			registry.set(`kimchi-experimental/${slug}`, marker)
+		}
+	}
+}
+
 /** Fill the selector's Auto fallback description when the current catalog
  * has none. The backend owns the `auto` entry, but not every catalog ships a
  * description for it — the /model table should never render a bare Auto row.
@@ -475,6 +504,7 @@ function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined
 		// /model selector keeps descriptions across offline restarts.
 		registerDescriptionsFromProviders(providers)
 		registerAutoDescriptionFallback()
+		registerDeprecationMarkers(modelsJsonPath)
 		const result: ModelMetadata[] = []
 		for (const [name, provider] of Object.entries(providers)) {
 			if (!name.startsWith("kimchi-dev")) continue
@@ -586,6 +616,7 @@ export async function updateModelsConfig(
 		// blocks (the fetch path — endpoint descriptions land here first).
 		registerDescriptionsFromProviders(merged.providers as Record<string, { models?: PiModelConfig[] }>)
 		registerAutoDescriptionFallback()
+		registerDeprecationMarkers(modelsJsonPath)
 	}
 	return {
 		models: result.models,

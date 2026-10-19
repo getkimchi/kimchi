@@ -110,6 +110,55 @@ export function modelDeprecationsPath(modelsJsonPath: string): string {
 	return join(dirname(modelsJsonPath), "model-deprecations.json")
 }
 
+/**
+ * How close a model's retirement must be (in days) before user-facing
+ * deprecation signals fire — session-start warnings and the /model picker
+ * marker alike. Far-future lifespan signals (vendor retirement dates years
+ * out, with or without an announced deprecation) stay silent until they get
+ * close; curated Kimchi deprecations run on a 30-day deprecation window.
+ * 30 days keeps urgent notices loud and distant dates quiet.
+ */
+export const DEPRECATION_NOTIFY_WINDOW_DAYS = 30
+
+/**
+ * Picker-facing deprecation marker for a model, or undefined when none
+ * should render: not deprecated, already sunset (never listed anyway), or an
+ * announcement beyond the notify window. Mirrors the session-start toast's
+ * gating so both surfaces agree on when a deprecation becomes visible.
+ */
+export function deprecationMarker(
+	info: ModelDeprecationInfo,
+	slug: string,
+	nowMs: number = Date.now(),
+): string | undefined {
+	const state = deriveDeprecationState(info, nowMs, slug)
+	if (state === "none" || state === "sunset") return undefined
+	if (state === "announced") {
+		const effectiveMs =
+			parseIsoDate(info.deprecated_at, "deprecated_at", slug) ?? parseIsoDate(info.sunset_at, "sunset_at", slug)
+		const cutoff = midnightUtc(nowMs) + DEPRECATION_NOTIFY_WINDOW_DAYS * DAY_MS
+		if (effectiveMs === undefined || effectiveMs > cutoff) return undefined
+	}
+	// Never cite a past deprecated_at as a future retirement (mirrors the
+	// session-start toast): past deprecations only name sunset_at when known.
+	const date = (state === "past" ? info.sunset_at : (info.sunset_at ?? info.deprecated_at))?.slice(0, 10)
+	return date ? `[Deprecated — retires ${date}]` : "[Deprecated]"
+}
+
+/**
+ * Deprecation markers by slug for the current sidecar, ready for selector
+ * surfaces (TUI description registry, ACP model option descriptions).
+ * Empty when the sidecar is absent — no markers is the normal steady state.
+ */
+export function collectDeprecationMarkers(modelsJsonPath: string, nowMs: number = Date.now()): Map<string, string> {
+	const markers = new Map<string, string>()
+	for (const [slug, info] of readModelDeprecations(modelsJsonPath)) {
+		const marker = deprecationMarker(info, slug, nowMs)
+		if (marker) markers.set(slug, marker)
+	}
+	return markers
+}
+
 /** Read the persisted deprecation map (slug → info); empty on absent/corrupt file. */
 export function readModelDeprecations(modelsJsonPath: string): Map<string, ModelDeprecationInfo> {
 	const result = new Map<string, ModelDeprecationInfo>()

@@ -119,6 +119,7 @@ import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { classifyLLMGatewayError, parseRateLimitRetryAt } from "../../llm-gateway-error.js"
+import { collectDeprecationMarkers } from "../../model-deprecation.js"
 import { updateModelsConfig } from "../../models.js"
 import { clearPiAuth, syncPiAuth } from "../../pi-auth.js"
 import { clearProjectScopeTrust, setProjectScopeTrusted } from "../../project-scope-trust.js"
@@ -2519,12 +2520,18 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 	// Ordering mirrors sortModels() in src/models.ts: active entries sorted by
 	// ref first, deprecated entries last — deprecated lands at the bottom by
 	// flag, not by pinning a specific value.
+	// Regular models carry no description today; deprecated ones get the
+	// picker marker (same gating as the session-start toast) so ACP clients
+	// see the deprecation before selecting, mirroring the TUI's /model column.
+	const deprecationMarkers = collectDeprecationMarkers(join(loadKimchiConfig().agentConfigDir, "models.json"))
 	const options: Array<{ value: string; name: string; description?: string | null; deprecated?: boolean }> = [
-		...modelRegistry
-			.getAvailable()
-			.map((m) =>
-				isAutoRoutedModel(m) ? autoModelOption(m, session.sessionId) : { value: refFromModel(m), name: m.name },
-			),
+		...modelRegistry.getAvailable().map((m) => {
+			if (isAutoRoutedModel(m)) return autoModelOption(m, session.sessionId)
+			const marker = deprecationMarkers.get(m.id)
+			return marker
+				? { value: refFromModel(m), name: m.name, description: marker }
+				: { value: refFromModel(m), name: m.name }
+		}),
 		{
 			value: "multi-model",
 			name: `Multi-model (${orchName})`,
