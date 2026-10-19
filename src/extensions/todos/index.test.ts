@@ -587,6 +587,38 @@ describe("early todo nudge", () => {
 			expect(last.content).toContain("90 changes")
 		})
 
+		it("reminders continue with the check-in gate disabled — blocking never masks the interval behavior", async () => {
+			const harness = createTodosHarness()
+			const ctx = createContext("session", [])
+			await harness.fire("session_start", { reason: "new" }, ctx)
+			applyWriteTodos({ todos: [{ content: "long task", status: "in_progress" }] }, "session")
+
+			// The check-in kill switch releases enforcement entirely; the
+			// staleness schedule is governed by its own switch and must keep
+			// ticking. Every work call is admitted (nothing is blocked) and the
+			// reminders recur at 10, 20, and 30 — the stronger wording — with
+			// no hard blocking to mask the interval behavior.
+			process.env.KIMCHI_DISABLE_NUDGE_TODO_CHECKIN = "1"
+			try {
+				const stalenessCalls = () => steerCallsByReason(harness.sendMessage, "staleness")
+				for (let count = 1; count <= 30; count++) {
+					const admitted = await harness.fire(
+						"tool_call",
+						{ type: "tool_call", toolCallId: `w-${count}`, toolName: "bash", input: {} },
+						ctx,
+					)
+					expect(admitted).toEqual({ block: false })
+					await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+					expect(stalenessCalls()).toHaveLength(Math.floor(count / 10))
+				}
+				const last = stalenessCalls()[2]?.[0] as { content: string }
+				expect(last.content).toContain("30 changes")
+				expect(last.content).toContain("remove obsolete items or complete items whose work is done")
+			} finally {
+				delete process.env.KIMCHI_DISABLE_NUDGE_TODO_CHECKIN
+			}
+		})
+
 		it("does not fire when the current scope has no todos", async () => {
 			const harness = createTodosHarness()
 			const ctx = createContext("session", [])
