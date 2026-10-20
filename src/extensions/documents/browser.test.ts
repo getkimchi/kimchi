@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url"
 import { describe, expect, it } from "vitest"
 import { findBrowser, htmlToPdf } from "./browser.js"
 
@@ -98,7 +99,7 @@ describe("htmlToPdf", () => {
 		expect(argv).toContain("--host-resolver-rules=MAP * ~NOTFOUND")
 		expect(argv).toContain("--user-data-dir=/tmp/fake-profile")
 		expect(argv).toContain("--print-to-pdf=/tmp/out.pdf")
-		expect(argv).toContain(`file://${"/home/u/doc.html"}`)
+		expect(argv).toContain(pathToFileURL("/home/u/doc.html").href)
 		expect(removed).toEqual(["/tmp/fake-profile"])
 	})
 
