@@ -1,5 +1,7 @@
 import { statSync } from "node:fs"
+import { pathToFileURL } from "node:url"
 import type { SessionUpdate } from "@agentclientprotocol/sdk"
+import type { RecordedArtifact } from "../../extensions/artifact-recorder.js"
 import { kimchiDevMetaOf } from "./capabilities.js"
 import type { ModelAttribution } from "./model-attribution.js"
 import { type Artifact, artifactsFromToolCall } from "./tool-calls/artifacts.js"
@@ -145,6 +147,26 @@ export class TurnArtifactBuffer {
 			const sniffedIndex = this.sniffedKeys.indexOf(artifact.path)
 			if (sniffedIndex >= 0) this.sniffedKeys.splice(sniffedIndex, 1)
 			this.artifacts.set(artifact.path, artifact)
+		}
+	}
+
+	/**
+	 * Replay: replace the turn's re-derived artifacts with the detection
+	 * recorded live in the session log (extension row). Rows sighted in the
+	 * branch arrive after that turn's tool results, so the pending sniffed
+	 * entries are discarded: recorded rows are exact (live was stat-gated);
+	 * re-derivation on replay is only the fallback for older sessions.
+	 */
+	adoptRecorded(artifacts: RecordedArtifact[]): void {
+		this.artifacts.clear()
+		this.sniffedKeys.length = 0
+		for (const artifact of artifacts.slice(0, MAX_TURN_ARTIFACTS)) {
+			this.artifacts.set(artifact.path, {
+				uri: pathToFileURL(artifact.path).href,
+				path: artifact.path,
+				name: artifact.name,
+				...(artifact.mimeType !== null && artifact.mimeType !== undefined ? { mimeType: artifact.mimeType } : {}),
+			})
 		}
 	}
 

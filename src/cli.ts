@@ -56,6 +56,7 @@ import activityExtension from "./extensions/activity.js"
 import idleGcExtension from "./extensions/adaptive-gc.js"
 import agentsExtension from "./extensions/agents/index.js"
 import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
+import { artifactRecorderExtension } from "./extensions/artifact-recorder.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import { installAutoModelAdapters } from "./extensions/auto-model/adapters.js"
 import autoModelRoutingExtension from "./extensions/auto-model/index.js"
@@ -781,6 +782,7 @@ async function cliMain(): Promise<void> {
 				// autonomous skill-authoring guidance proved noisy in practice;
 				// re-enable only deliberately via registerSkillManageTool.
 				(pi: ExtensionAPI) => skillsManagerExtension(pi, { registerSkillManageTool: false }),
+				artifactRecorderExtension,
 				statsExtension,
 				statusExtension,
 				budgetCommandExtension,

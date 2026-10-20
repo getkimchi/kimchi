@@ -6192,6 +6192,64 @@ describe("generated artifacts (replay)", () => {
 		expect(chunks[0].messageId).toBe(textChunk?.messageId)
 	})
 
+	it("adopts a recorded artifact row verbatim instead of re-deriving from output text", async () => {
+		const fake = new FakeAgentSession("loaded-recorded")
+		fake.branch = [
+			userTextEntry("make a deck", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "Done." },
+					{ type: "toolCall", id: "tc-rec1", name: "bash", arguments: { command: "make" } },
+				],
+				"a1",
+				"u1",
+			),
+			// Output text would sniff a bogus data-shaped token on replay;
+			// the recorded row replaces it with the exact live detection.
+			toolResultEntry("tc-rec1", "bash", "wednesday,elated,echo-baby.csv shipped", false, "tr1", "a1"),
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: {
+					v: 1,
+					artifacts: [{ path: "/tmp/real-deck.pptx", name: "real-deck.pptx", mimeType: "application/nn-presentation" }],
+				},
+			} as never,
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-recorded", cwd: "/tmp", mcpServers: [] })
+		const chunks = artifactChunks(updates)
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0]).toMatchObject({
+			uri: pathToFileURL("/tmp/real-deck.pptx").href,
+			name: "real-deck.pptx",
+			mimeType: "application/nn-presentation",
+		})
+		const textChunk = messageChunks(updates).find((c) => c.text === "Done.")
+		expect(chunks[0].messageId).toBe(textChunk?.messageId)
+	})
+
+	it("falls back to re-derivation when a session has no recorded rows (legacy)", async () => {
+		const fake = new FakeAgentSession("loaded-legacy")
+		fake.branch = [
+			userTextEntry("make slides", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "Here you go." },
+					{ type: "toolCall", id: "tc-l1", name: "bash", arguments: { command: "make" } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-l1", "bash", "saved to assets/out.pptx", false, "tr1", "a1"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-legacy", cwd: "/tmp", mcpServers: [] })
+		expect(artifactChunks(updates)).toHaveLength(1)
+	})
+
 	it("emits no artifacts chunk for messages without generated files", async () => {
 		const fake = new FakeAgentSession("loaded-no-artifacts")
 		fake.branch = [

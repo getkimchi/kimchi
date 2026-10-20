@@ -33,6 +33,24 @@ Source of truth: `src/modes/acp/tool-calls/artifacts.ts`. Three inputs per tool 
 - Live flush re-verifies existence, so files produced and deleted within one turn never link to ghosts; replay omits the check so artifact links survive for files created and later removed by subsequent turns.
 - Chunks carry `_meta["kimchi.dev"].type = "artifact"` so clients can distinguish generated files from links the model merely references; capability is advertised in initialize as `artifacts: true`.
 
-## Replay divergence (accepted v1 trade-off)
+## Replay from recorded rows
 
-Replay re-runs detection without the live gates — no mtime window and no existence check — because the session record stores tool results, not tool-call start times, and replayed files may legitimately be gone. Consequence: historical read-only output (`cat report.md`, `git log --name-only`) can surface artifact links on replay that the live turn suppressed. Exact parity would require persisting the per-turn detection result, which is intentionally out of scope; the zero-prefix-token filter (`wrote a .md file`) removes the most visible nonsense in both paths. Non-goals as before: backgrounded commands, subagent files.
+The artifact-recorder extension (`src/extensions/artifact-recorder.ts`, both
+surfaces) runs the same detection at turn end and appends the result as a
+session custom entry: `{ customType: "kimchi-artifacts", data: { v: 1,
+artifacts: [{ path, name, mimeType }] } }` — already stat-gated, deduped,
+label-resolved and capped (32). `pi.appendEntry` persists it into the
+session log, so rows travel with branch trees (kill-branch, intersections)
+exactly like the turns that produced them.
+
+On replay, sighting a row adopts it verbatim (`TurnArtifactBuffer
+.adoptRecorded`) — replacing whatever raw-output re-derivation sniffed — so
+replay shows exactly what the live turn emitted, including links to files
+since deleted or renamed, and never ghosts that never existed (data-shaped
+tokens were stat-gated at record time). Older sessions carry no rows and
+fall back to re-derivation without the live gates (no mtime window, no
+existence check — artifacts may legitimately be gone). The fallback can
+surface links for historical read-only output (`cat report.md`); shape
+filters (commas/backslashes/shell variables, bare-basename suppression on
+replay) remove the most visible nonsense. Non-goals as before: backgrounded
+commands, subagent files.

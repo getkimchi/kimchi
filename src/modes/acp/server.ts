@@ -73,6 +73,7 @@ import {
 	writeApiKey,
 } from "../../config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "../../credential-staleness.js"
+import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry } from "../../extensions/artifact-recorder.js"
 import {
 	AUTO_MODEL_DESCRIPTION,
 	AUTO_MODEL_PROVIDER,
@@ -1812,9 +1813,12 @@ export class KimchiAcpAgent implements Agent {
 	// calls. Tool results are paired with their originating toolCall by id so
 	// the historical tool render shape (tool_call + terminal tool_call_update)
 	// matches what live turns produce. Compaction / branch_summary /
-	// model_change / custom entries emit nothing — using getBranch() (raw
-	// entries) instead of buildSessionContext() avoids surfacing compaction
-	// summaries as synthetic user messages.
+	// model_change entries emit nothing — using getBranch() (raw entries)
+	// instead of buildSessionContext() avoids surfacing compaction summaries
+	// as synthetic user messages. Custom entries: the artifact-recorder
+	// extension's rows are adopted as the turn's exact artifacts (recorded
+	// live, stat-gated), replacing replay-side re-derivation; other custom
+	// entries still emit nothing.
 	//
 	// Notifications go straight from this method to conn.sessionUpdate; we do
 	// NOT replay through the AgentSession event emitter, so extensions like
@@ -1840,6 +1844,16 @@ export class KimchiAcpAgent implements Agent {
 		}
 
 		for (const entry of entries) {
+			if (entry && entry.type === "custom") {
+				// Recorded artifact row (extension): adopt it for this turn — the
+				// row arrives after the turn's tool results and replaces what
+				// re-derivation sniffed (exact: live detection was stat-gated).
+				const custom = entry as { customType?: unknown; data?: unknown }
+				const data =
+					custom.customType === ARTIFACTS_ENTRY_TYPE ? (custom.data as ArtifactsEntry | undefined) : undefined
+				if (data?.v === 1 && Array.isArray(data.artifacts)) artifactBuffer.adoptRecorded(data.artifacts)
+				continue
+			}
 			if (!entry || typeof entry !== "object" || entry.type !== "message") continue
 			const msg = entry.message
 			if (msg.role === "user") {
