@@ -1686,7 +1686,9 @@ export class KimchiAcpAgent implements Agent {
 				}
 				// tool_execution_end carries no args — stash them so artifact
 				// detection can pair args with the result there.
-				turn.toolCallArgs.set(event.toolCallId, { toolName: event.toolName, args: event.args })
+				// startedAt anchors the artifact mtime window (see
+				// MTIME_TOLERANCE_MS in tool-calls/artifacts.ts).
+				turn.toolCallArgs.set(event.toolCallId, { toolName: event.toolName, args: event.args, startedAt: Date.now() })
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
 					// Pending tool_call was already sent via toolcall_start → emit update
@@ -1761,6 +1763,7 @@ export class KimchiAcpAgent implements Agent {
 						args: stashed.args,
 						result: event.result,
 						cwd: entry.cwd,
+						windowStart: stashed.startedAt,
 					})
 				}
 				const preWrite = turn.preWriteContents.get(event.toolCallId)
@@ -1824,7 +1827,11 @@ export class KimchiAcpAgent implements Agent {
 		// preserving messageId parity with live (seedBlockCounterFromBranch).
 		const artifactBuffer = new TurnArtifactBuffer()
 		const flushTurnArtifacts = () => {
-			for (const update of artifactBuffer.flush(this.sessions.get(sessionId)?.emittedModelMeta)) {
+			// verifyExists:false: replayed chips keep pointing at files that may
+			// legitimately be gone (detection already skipped the on-disk check).
+			for (const update of artifactBuffer.flush(this.sessions.get(sessionId)?.emittedModelMeta, {
+				verifyExists: false,
+			})) {
 				this.send({ sessionId, update })
 			}
 		}

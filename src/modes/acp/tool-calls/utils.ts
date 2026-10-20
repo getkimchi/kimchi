@@ -12,11 +12,9 @@ import type {
 import { asString, truncate } from "../utils.js"
 
 // Replicates pi's resolveToCwd (pi-coding-agent path-utils: unicode-space
-// normalization, @-prefix strip, ~ expansion) because the write tool uses
-// it for args.path; callers must resolve identically. pi only exports
-// "."/"./hooks", so the helper cannot be imported directly. Shared by the
-// artifact sniffer and the per-turn diff reader so neither feature owns
-// the other's copy.
+// normalization, @-prefix strip, ~ expansion, file:// URLs) because the
+// write tool resolves args.path with it and pi does not export the
+// helper. Shared by the artifact sniffer and the per-turn diff reader.
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g
 export function resolveToolPath(input: string, cwd: string): string {
 	let p = input.replace(UNICODE_SPACES, " ")

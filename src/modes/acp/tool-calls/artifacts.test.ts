@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
@@ -170,6 +170,156 @@ describe("artifactsFromToolCall", () => {
 		expect(artifactsFromToolCall("bash", null, undefined, cwd)).toEqual([])
 		expect(artifactsFromToolCall("bash", {}, { content: "not-an-array" }, cwd)).toEqual([])
 		expect(artifactsFromToolCall("write", { path: `${String.fromCharCode(0)}.pdf` }, textResult("ok"), cwd)).toEqual([])
+	})
+
+	describe("mtime window and command filtering", () => {
+		it("rejects a pre-existing file mentioned by a read-only command", () => {
+			const abs = touch("notes.md")
+			const past = Date.now() - 60_000
+			utimesSync(abs, new Date(past), new Date(past))
+			const out = artifactsFromToolCall("bash", { command: "cat notes.md" }, textResult("notes.md"), cwd, {
+				windowStart: Date.now(),
+			})
+			expect(out).toEqual([])
+		})
+
+		it("accepts a file rewritten inside the window", () => {
+			// Pre-existing file with an old mtime, then the tool rewrites it.
+			const abs = touch("report.pdf")
+			const past = Date.now() - 60_000
+			utimesSync(abs, new Date(past), new Date(past))
+			const windowStart = Date.now()
+			touch("report.pdf")
+			const out = artifactsFromToolCall(
+				"bash",
+				{ command: "pandoc in.md -o report.pdf" },
+				textResult("wrote report.pdf"),
+				cwd,
+				{ windowStart },
+			)
+			expect(out.map((a) => a.path)).toEqual([abs])
+		})
+
+		it("tolerates coarse (1s+) mtime granularity, rejects clearly stale files", () => {
+			const abs = touch("slides.pptx")
+			const windowStart = Date.now()
+			// Within tolerance: a write just before a coarse clock would round.
+			utimesSync(abs, new Date(windowStart - 1_500), new Date(windowStart - 1_500))
+			expect(
+				artifactsFromToolCall("bash", {}, textResult("slides.pptx"), cwd, { windowStart }).map((a) => a.path),
+			).toEqual([abs])
+			// Outside tolerance: genuinely before the command started.
+			utimesSync(abs, new Date(windowStart - 3_000), new Date(windowStart - 3_000))
+			expect(artifactsFromToolCall("bash", {}, textResult("slides.pptx"), cwd, { windowStart })).toEqual([])
+		})
+
+		it("does not apply the window to write/edit paths (the tool authored them)", () => {
+			const abs = touch("deck.pptx")
+			const past = Date.now() - 60_000
+			utimesSync(abs, new Date(past), new Date(past))
+			const out = artifactsFromToolCall("write", { path: "deck.pptx" }, textResult("ok"), cwd, {
+				windowStart: Date.now(),
+			})
+			expect(out.map((a) => a.path)).toEqual([abs])
+		})
+
+		it("skips sniffing for tree-materializing git commands", () => {
+			const abs = touch("restored.md")
+			for (const command of [
+				"git checkout main",
+				"git -C repo merge feature",
+				"git stash pop",
+				"git pull && git status",
+				"sudo git pull",
+				"sudo -u root git pull",
+				// sudo -n takes no argument; nice -n takes one. Same flag, per-wrapper handling.
+				"sudo -n git pull",
+				"nice -n 5 git merge feature",
+				"env LANG=C sudo -u root git rebase main",
+				"env GIT_TRACE=1 git merge feature",
+				"/usr/bin/git checkout main",
+				"git.exe pull",
+				"doas -u root git pull",
+				"nohup git pull",
+				"setsid -w git merge feature",
+				"stdbuf -o0 git pull",
+				"stdbuf -o 0 git pull",
+				"env -C /tmp git pull",
+				// BSD env (macOS) alternate-path option.
+				"env -P /usr/bin git pull",
+				"time -o /tmp/t.log git pull",
+			]) {
+				expect(artifactsFromToolCall("bash", { command }, textResult(`done: ${abs}`), cwd), command).toEqual([])
+			}
+			// A non-git command in a chain still sniffs (no windowStart = no mtime gate).
+			const out = artifactsFromToolCall("bash", { command: "make && echo done" }, textResult(`built ${abs}`), cwd)
+			expect(out.map((a) => a.path)).toEqual([abs])
+
+			// Positive control: commit message words must not parse as a subcommand.
+			const commitOut = artifactsFromToolCall(
+				"bash",
+				{ command: 'git commit -m "restore thing" && echo done' },
+				textResult(`wrote ${abs}`),
+				cwd,
+			)
+			expect(commitOut.map((a) => a.path)).toEqual([abs])
+		})
+
+		it("falls back to sniffing when a wrapper has an unknown option argument", () => {
+			// Unparsable `sudo --as root …`-style wrappers misclassify the git
+			// call, so exclusion must not fire; the command degrades to plain
+			// sniffing (which can still chip a genuinely produced file).
+			const abs = touch("build.pdf")
+			const out = artifactsFromToolCall(
+				"bash",
+				{ command: "sudo --unknownflag value git pull" },
+				textResult(`wrote ${abs}`),
+				cwd,
+			)
+			expect(out.map((a) => a.path)).toEqual([abs])
+		})
+
+		it("rejects directories that match the extension allowlist", () => {
+			mkdirSync(join(cwd, "docs.md"), { recursive: true })
+			expect(artifactsFromToolCall("bash", {}, textResult("docs.md"), cwd)).toEqual([])
+		})
+
+		it("resolves sniffed relative tokens against a leading cd", () => {
+			const abs = touch("out/deck.pptx")
+			const out = artifactsFromToolCall(
+				"bash",
+				{ command: "cd out && python make.py" },
+				textResult("wrote deck.pptx"),
+				cwd,
+			)
+			expect(out.map((a) => a.path)).toEqual([abs])
+		})
+
+		it("handles env-prefixed and powershell navigation", () => {
+			const abs = touch("build/report.pdf")
+			const envPrefixed = artifactsFromToolCall(
+				"bash",
+				{ command: "LANG=C cd build && pandoc -o report.pdf in.md" },
+				textResult("report.pdf"),
+				cwd,
+			)
+			expect(envPrefixed.map((a) => a.path)).toEqual([abs])
+			const ps = artifactsFromToolCall(
+				"powershell",
+				{ command: "Set-Location build; Export report.pdf" },
+				textResult("report.pdf"),
+				cwd,
+			)
+			expect(ps.map((a) => a.path)).toEqual([abs])
+		})
+
+		it("ignores navigation that is not the leading segment", () => {
+			const abs = touch("top.pdf")
+			touch("sub/top.pdf")
+			// mid-script cd: conservative miss — resolves against session cwd.
+			const out = artifactsFromToolCall("bash", { command: "echo x; cd sub; make" }, textResult("wrote top.pdf"), cwd)
+			expect(out.map((a) => a.path)).toEqual([abs])
+		})
 	})
 
 	describe("sentence-final periods in bash output", () => {

@@ -35,7 +35,7 @@ export type TurnContext = {
 	 * detection against args+result together. Same lifecycle as
 	 * pendingFileChanges: set at start, deleted at end / retireToolCall.
 	 */
-	toolCallArgs: Map<string, { toolName: string; args: unknown }>
+	toolCallArgs: Map<string, { toolName: string; args: unknown; startedAt: number }>
 	/**
 	 * Per-turn artifact accumulator (artifact-links.ts): detected files plus
 	 * the attachment point (last text block id). finalizeTurn flushes it as

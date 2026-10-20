@@ -1,3 +1,4 @@
+import { statSync } from "node:fs"
 import type { SessionUpdate } from "@agentclientprotocol/sdk"
 import { kimchiDevMetaOf } from "./capabilities.js"
 import type { ModelAttribution } from "./model-attribution.js"
@@ -73,9 +74,12 @@ export class TurnArtifactBuffer {
 		result: unknown
 		cwd: string
 		verifyExists?: boolean
+		/** Foreground mtime window start; sniffed bash candidates require a fresh mtime. */
+		windowStart?: number
 	}): void {
 		for (const artifact of artifactsFromToolCall(opts.toolName, opts.args, opts.result, opts.cwd, {
 			verifyExists: opts.verifyExists ?? true,
+			windowStart: opts.windowStart,
 		})) {
 			this.artifacts.set(artifact.path, artifact)
 		}
@@ -85,13 +89,28 @@ export class TurnArtifactBuffer {
 	 * Build the flush chunks and clear state; [] when nothing to attach or
 	 * no attachment point. `seenModelMeta` may be absent in partial test
 	 * harnesses.
+	 *
+	 * Live flushes re-verify every artifact still exists and is a file: a
+	 * tool call may have produced it temporarily and deleted it before the
+	 * turn ended. Replay flushes pass verifyExists:false — replayed chips
+	 * keep pointing at files that may legitimately be gone.
 	 */
-	flush(seenModelMeta?: Map<string, ModelAttribution>): SessionUpdate[] {
-		const artifacts = [...this.artifacts.values()]
+	flush(seenModelMeta?: Map<string, ModelAttribution>, opts?: { verifyExists?: boolean }): SessionUpdate[] {
+		let artifacts = [...this.artifacts.values()]
 		const messageId = this.lastBlockId
 		this.artifacts.clear()
 		this.lastBlockId = undefined
 		if (artifacts.length === 0 || messageId === undefined) return []
+		if (opts?.verifyExists !== false) {
+			artifacts = artifacts.filter((a) => {
+				try {
+					return statSync(a.path).isFile()
+				} catch {
+					return false
+				}
+			})
+			if (artifacts.length === 0) return []
+		}
 		return buildArtifactLinkChunks({ messageId, artifacts, seenModelMeta })
 	}
 }

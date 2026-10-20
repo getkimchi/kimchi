@@ -10,9 +10,10 @@
 // is an explicit user action. Script-capable types (.html/.svg) open in
 // the user's own environment.
 
-import { existsSync } from "node:fs"
+import { statSync } from "node:fs"
 import { basename, extname } from "node:path"
 import { pathToFileURL } from "node:url"
+import { parseCommandSegments } from "../../../extensions/permissions/taxonomy.js"
 import { resolveToolPath } from "./utils.js"
 
 export type Artifact = {
@@ -50,11 +51,170 @@ export const ARTIFACT_EXTENSIONS: Record<string, string> = {
 // Max artifacts reported per bash result (bounds flood-prone output).
 const MAX_BASH_ARTIFACTS = 8
 
-// Max candidate tokens evaluated per result. existsSync is synchronous,
+// Max candidate tokens evaluated per result. statSync is synchronous,
 // so an unbounded match stream could stall the server's event loop.
 const MAX_BASH_CANDIDATES = 256
 
-function artifactFromPath(rawPath: string, cwd: string, opts: { verifyExists: boolean }): Artifact | null {
+// A sniffed bash/powershell candidate counts as agent-produced only if its
+// mtime is at-or-after the tool call's start (stamped at
+// tool_execution_start); otherwise a read-only command (`cat`/`ls`) naming
+// a pre-existing file would produce a chip (cf. anthropics/claude-code
+// #102401). The tolerance absorbs 1-second mtime granularity (HFS+, some
+// network mounts). Backgrounded commands are not covered: their output
+// arrives via steering/bash_control messages, not tool results.
+const MTIME_TOLERANCE_MS = 2000
+
+// Tree-materializing git commands restore files from git objects with
+// fresh mtimes, bypassing the window check, so output sniffing is skipped
+// for them. Whole-command skip: `git stash pop && python make.py` also
+// misses the python artifact (accepted v1 trade-off). Commands are
+// tokenized with the permissions taxonomy's shell parser
+// (parseCommandSegments), not ad-hoc regex.
+const GIT_TREE_MATERIALIZING = new Set([
+	"checkout",
+	"switch",
+	"merge",
+	"rebase",
+	"reset",
+	"restore",
+	"pull",
+	"cherry-pick",
+	"revert",
+	"apply",
+])
+// Flags that take a separate argument; other dash-prefixed tokens are
+// skipped and the next bare token is the subcommand.
+const GIT_ARG_FLAGS = new Set(["-C", "-c", "-u", "--git-dir", "--work-tree", "--exec-path", "--namespace"])
+
+// Commands that simply delegate to the real command after their own
+// options and (for env) VAR=value assignments.
+const WRAPPER_COMMANDS = new Set([
+	"sudo",
+	"doas",
+	"command",
+	"noglob",
+	"nohup",
+	"setsid",
+	"stdbuf",
+	"time",
+	"nice",
+	"env",
+])
+
+// Wrapper options that take a separate argument (`sudo -u root`), per
+// their man pages (sudo.ws, coreutils env/stdbuf/nice, util-linux setsid,
+// GNU time, OpenBSD doas). Keyed by wrapper because the same flag differs
+// between them: `sudo -n` takes no argument, `nice -n 5` does; `sudo -S`
+// (stdin) is argless, `env -S string` is not. Long options with separate
+// arguments (`sudo --user root`) misclassify and degrade to sniffing.
+// Windows `cmd /c git …`-style launches are not wrappers (`/`-prefixed
+// options don't parse through `-` handling) and also degrade to sniffing.
+const WRAPPER_ARG_FLAGS: Record<string, ReadonlySet<string>> = {
+	sudo: new Set(["-a", "-c", "-C", "-D", "-g", "-h", "-p", "-R", "-r", "-t", "-T", "-U", "-u"]),
+	doas: new Set(["-a", "-C", "-u"]),
+	nice: new Set(["-n"]),
+	// env `-P altpath` is BSD-only (inert in the set on GNU env).
+	env: new Set(["-a", "-u", "-C", "-S", "-P"]),
+	time: new Set(["-f", "-o"]),
+	stdbuf: new Set(["-i", "-o", "-e"]),
+}
+
+// Lowercased basename without a Windows .exe suffix, so absolute paths
+// (/usr/bin/git) and git.exe both match.
+function executableName(token: string): string {
+	const base = token.slice(Math.max(token.lastIndexOf("/") + 1, token.lastIndexOf("\\") + 1))
+	return base.replace(/\.exe$/i, "").toLowerCase()
+}
+
+// Skips leading wrapper commands (and their option/assignment tokens) so
+// "sudo git pull" or "env FOO=1 git merge" classify as git. Unknown
+// wrapper options with arguments misclassify and degrade to plain
+// sniffing.
+function firstRealCommand(tokens: string[]): { name: string; index: number } | undefined {
+	let i = 0
+	for (;;) {
+		const token = tokens[i]
+		if (token === undefined) return undefined
+		const name = executableName(token)
+		if (!WRAPPER_COMMANDS.has(name)) return { name, index: i }
+		i++
+		const argFlags = WRAPPER_ARG_FLAGS[name]
+		while (i < tokens.length) {
+			const opt = tokens[i] as string
+			if (argFlags?.has(opt)) {
+				i += 2
+				continue
+			}
+			if (!/^(?:-|[A-Za-z_]\w*=)/.test(opt)) break
+			i++
+		}
+	}
+}
+
+function gitSubcommand(tokens: string[]): string | undefined {
+	for (let i = 1; i < tokens.length; i++) {
+		const t = tokens[i] as string
+		if (GIT_ARG_FLAGS.has(t)) {
+			i++
+			continue
+		}
+		if (t.startsWith("-")) continue
+		return t
+	}
+	return undefined
+}
+
+/**
+ * True when any segment of the command is a git invocation that restores
+ * working-tree files from git objects (checkout/merge/stash pop/…), so its
+ * output must not be sniffed for artifacts. Handles wrapper commands
+ * (sudo/env/time, …) and non-bare invocations (/usr/bin/git, git.exe); a
+ * git call hidden inside a script is not detectable at this layer.
+ */
+function isTreeMaterializingGit(segments: CommandSegments): boolean {
+	for (const segment of segments) {
+		const cmd = firstRealCommand(segment.tokens)
+		if (cmd === undefined || cmd.name !== "git") continue
+		const gitTokens = segment.tokens.slice(cmd.index)
+		const sub = gitSubcommand(gitTokens)
+		if (sub === undefined) continue
+		if (GIT_TREE_MATERIALIZING.has(sub)) return true
+		if (sub === "stash" && (gitTokens.includes("pop") || gitTokens.includes("apply"))) return true
+	}
+	return false
+}
+
+// Leading navigation ("cd X && …", PowerShell "Set-Location X; …"):
+// resolve sniffed relative tokens against the target directory instead of
+// the session cwd. Only a leading segment is honored; mid-script cd,
+// pushd/popd, and make -C remain misses (conservative direction).
+function navigatedCwd(segments: CommandSegments, cwd: string): string {
+	const tokens = segments[0]?.tokens ?? []
+	const name = tokens[0]?.toLowerCase()
+	if ((name === "cd" || name === "set-location") && tokens.length === 2) {
+		try {
+			return resolveToolPath(tokens[1] as string, cwd)
+		} catch {
+			return cwd
+		}
+	}
+	return cwd
+}
+
+type CommandSegments = ReturnType<typeof parseCommandSegments>
+
+type DetectOpts = {
+	/** Require the file to exist (live detection; false for replay). */
+	verifyExists?: boolean
+	/**
+	 * Tool-call start (epoch ms). Sniffed bash/powershell candidates must
+	 * have an mtime inside the window; write/edit args are authoritative
+	 * and skip the check. Requires a stat, so it implies verifyExists.
+	 */
+	windowStart?: number
+}
+
+function artifactFromPath(rawPath: string, cwd: string, opts: DetectOpts): Artifact | null {
 	const mimeType = ARTIFACT_EXTENSIONS[extname(rawPath).toLowerCase()]
 	if (mimeType === undefined) return null
 	let path: string
@@ -63,19 +223,27 @@ function artifactFromPath(rawPath: string, cwd: string, opts: { verifyExists: bo
 	} catch {
 		return null
 	}
-	if (opts.verifyExists && !existsSync(path)) return null
+	if ((opts.verifyExists ?? true) || opts.windowStart !== undefined) {
+		let stats: ReturnType<typeof statSync>
+		try {
+			stats = statSync(path)
+		} catch {
+			return null
+		}
+		if (!stats.isFile()) return null
+		if (opts.windowStart !== undefined && stats.mtimeMs < opts.windowStart - MTIME_TOLERANCE_MS) return null
+	}
 	return { path, name: basename(path), uri: pathToFileURL(path).href, mimeType }
 }
 
-// Candidate path tokens in shell output, keyed on the artifact
-// extensions so plain words never match. Quotes, whitespace and shell
-// metachars terminate a token (paths containing spaces are not detected —
-// a documented v1 trade-off). Tokens containing "://" (URLs) are rejected
-// A single sentence-final period after the extension is allowed (\.? then
-// stripped from the token) so "Wrote report.md." still matches, while the
-// (?![\w.]) lookahead keeps rejecting partial-extension matches like
-// report.md.bak. The extension list must stay in sync with
-// ARTIFACT_EXTENSIONS; artifacts.test.ts asserts this in both directions.
+// Candidate path tokens in shell output, keyed on the extension allowlist
+// so plain words never match. Quotes, whitespace, and shell metachars
+// terminate a token (paths with spaces are not detected — v1 trade-off).
+// One trailing sentence period is allowed (\.?, stripped from the token)
+// so "Wrote report.md." matches, while (?![\w.]) still rejects
+// report.md.bak. Tokens containing "://" (URLs) are rejected before
+// resolution. artifacts.test.ts keeps this extension list in sync with
+// ARTIFACT_EXTENSIONS in both directions.
 const PATH_TOKEN =
 	/[^\s"'<>`;|&*?()[\]{}]*\.(?:pptx|xlsx|docx|pdf|html|htm|csv|png|jpg|jpeg|gif|webp|svg|md|markdown|zip|ics)\.?(?![\w.])/gi
 
@@ -94,7 +262,7 @@ function isErrorResult(result: unknown): boolean {
 	return (result as { isError?: unknown } | null | undefined)?.isError === true
 }
 
-function bashArtifacts(result: unknown, cwd: string, opts: { verifyExists: boolean }): Artifact[] {
+function bashArtifacts(result: unknown, cwd: string, opts: DetectOpts): Artifact[] {
 	const out: Artifact[] = []
 	const seen = new Set<string>()
 	const seenTokens = new Set<string>()
@@ -129,18 +297,23 @@ export function artifactsFromToolCall(
 	args: unknown,
 	result: unknown,
 	cwd: string,
-	opts: { verifyExists: boolean } = { verifyExists: true },
+	opts: DetectOpts = {},
 ): Artifact[] {
 	try {
 		if (isErrorResult(result)) return []
 		if (toolName === "write" || toolName === "edit") {
 			const path = (args as { path?: unknown } | null | undefined)?.path
 			if (typeof path !== "string") return []
-			const artifact = artifactFromPath(path, cwd, opts)
+			// No mtime window here: the write/edit tool authored the file itself.
+			const artifact = artifactFromPath(path, cwd, { verifyExists: opts.verifyExists })
 			return artifact ? [artifact] : []
 		}
 		if (toolName === "bash" || toolName === "powershell") {
-			return bashArtifacts(result, cwd, opts)
+			const command = (args as { command?: unknown } | null | undefined)?.command
+			if (typeof command !== "string") return bashArtifacts(result, cwd, opts)
+			const segments = parseCommandSegments(command)
+			if (isTreeMaterializingGit(segments)) return []
+			return bashArtifacts(result, navigatedCwd(segments, cwd), opts)
 		}
 		return []
 	} catch {
