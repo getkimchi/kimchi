@@ -6206,6 +6206,47 @@ describe("generated artifacts (replay)", () => {
 		expect(chunks[0].messageId).toBe(textChunk?.messageId)
 	})
 
+	it("merges multiple recorded rows within one turn (one row per assistant message)", async () => {
+		const fake = new FakeAgentSession("loaded-multirow")
+		fake.branch = [
+			userTextEntry("make two files", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "First." },
+					{ type: "toolCall", id: "tc-mr1", name: "write", arguments: { path: "/tmp/mr-a.md" } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-mr1", "write", "ok", false, "tr1", "a1"),
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: { v: 1, artifacts: [{ path: "/tmp/mr-a.md", name: "mr-a.md", mimeType: "text/markdown" }] },
+			} as never,
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "Second." },
+					{ type: "toolCall", id: "tc-mr2", name: "write", arguments: { path: "/tmp/mr-b.md" } },
+				],
+				"a2",
+				"tr1",
+			),
+			toolResultEntry("tc-mr2", "write", "ok", false, "tr2", "a2"),
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: { v: 1, artifacts: [{ path: "/tmp/mr-b.md", name: "mr-b.md", mimeType: "text/markdown" }] },
+			} as never,
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-multirow", cwd: "/tmp", mcpServers: [] })
+		const names = artifactChunks(updates).map((c) => c.name)
+		// Both rows of the turn land — adoption merges, never clears.
+		expect(names.sort()).toEqual(["mr-a.md", "mr-b.md"])
+	})
+
 	it("adopts a recorded artifact row verbatim instead of re-deriving from output text", async () => {
 		const fake = new FakeAgentSession("loaded-recorded")
 		fake.branch = [

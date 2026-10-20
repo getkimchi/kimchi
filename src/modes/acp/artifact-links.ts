@@ -150,16 +150,15 @@ export class TurnArtifactBuffer {
 	}
 
 	/**
-	 * Replay: replace the turn's re-derived artifacts with the detection
-	 * recorded live in the session log (extension row). Rows sighted in the
-	 * branch arrive after that turn's tool results, so the pending sniffed
-	 * entries are discarded: recorded rows are exact (live was stat-gated);
-	 * re-derivation on replay is only the fallback for older sessions.
+	 * Replay: fold a recorded artifact row (written live by the recorder
+	 * extension) into the buffer. One row per producing assistant message,
+	 * so a turn may carry several — merge by resolved path, never clear:
+	 * the clear existed to discard replay-side re-derivation, which replay
+	 * no longer does at all.
 	 */
 	adoptRecorded(artifacts: RecordedArtifact[]): void {
-		this.artifacts.clear()
-		this.sniffedKeys.length = 0
-		for (const artifact of artifacts.slice(0, MAX_TURN_ARTIFACTS)) {
+		for (const artifact of artifacts) {
+			if (this.artifacts.has(artifact.path)) continue
 			this.artifacts.set(artifact.path, {
 				uri: pathToFileURL(artifact.path).href,
 				path: artifact.path,

@@ -88,6 +88,7 @@ const GIT_TREE_MATERIALIZING = new Set([
 	"cherry-pick",
 	"revert",
 	"apply",
+	"worktree",
 ])
 // Flags that take a separate argument; other dash-prefixed tokens are
 // skipped and the next bare token is the subcommand.

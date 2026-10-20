@@ -43,14 +43,20 @@ function turnArtifacts(event: TurnEndEvent, cwd: string): Artifact[] {
 		if (block.type === "toolCall") toolCalls.set(block.id, block)
 	}
 	if (toolCalls.size === 0) return []
-	const results = event.toolResults
-	const timestamps = results.map((r) => r.timestamp).filter((t): t is number => typeof t === "number")
-	const windowStart = (timestamps.length > 0 ? Math.min(...timestamps) : event.message.timestamp) - CLOCK_SKEW_MS
+	// Anchor the mtime window at the message, not at the earliest result:
+	// a long-running command writes its artifact early and finishes long
+	// after — anchoring at result time can push that mtime outside the
+	// window, while live (per-call start − skew) caught it.
+	const windowStart = event.message.timestamp - CLOCK_SKEW_MS
 	const seen = new Set<string>()
 	const out: Artifact[] = []
-	for (const result of results) {
+	// Cap parity with live: sniffed (bash/powershell) entries evict
+	// oldest-past-the-cap; intentional (write/edit/declared) always land.
+	const sniffedKeys: string[] = []
+	for (const result of event.toolResults) {
 		const toolCall = toolCalls.get(result.toolCallId)
 		if (!toolCall) continue
+		const sniffed = toolCall.name === "bash" || toolCall.name === "powershell"
 		for (const artifact of artifactsFromToolCall(
 			toolCall.name,
 			toolCall.arguments,
@@ -59,10 +65,28 @@ function turnArtifacts(event: TurnEndEvent, cwd: string): Artifact[] {
 			cwd,
 			{ windowStart },
 		)) {
-			if (seen.has(artifact.path)) continue
+			if (sniffed && sniffedKeys.includes(artifact.path)) continue
+			if (!sniffed && seen.has(artifact.path)) {
+				// Intentional path promotes out of sniffed eviction eligibility.
+				const idx = sniffedKeys.indexOf(artifact.path)
+				if (idx >= 0) sniffedKeys.splice(idx, 1)
+				continue
+			}
 			seen.add(artifact.path)
+			if (sniffed) {
+				sniffedKeys.push(artifact.path)
+				if (sniffedKeys.length > MAX_TURN_RECORDED) {
+					const evicted = sniffedKeys.shift()
+					if (evicted !== undefined) {
+						seen.delete(evicted)
+						out.splice(
+							out.findIndex((a) => a.path === evicted),
+							1,
+						)
+					}
+				}
+			}
 			out.push(artifact)
-			if (out.length >= MAX_TURN_RECORDED) return out
 		}
 	}
 	return out

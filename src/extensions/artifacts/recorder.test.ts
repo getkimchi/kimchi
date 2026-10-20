@@ -102,7 +102,7 @@ describe("artifact-recorder", () => {
 		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toHaveLength(0)
 	})
 
-	it("caps recorded artifacts per turn", async () => {
+	it("keeps every intentional (write/edit) artifact; only sniffed bash entries cap at 32", async () => {
 		const now = Date.now()
 		const { api, emit, getAppendedEntries } = createExtensionApi()
 		artifactRecorderExtension(api)
@@ -128,7 +128,59 @@ describe("artifact-recorder", () => {
 		)
 		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
 		expect(rows).toHaveLength(1)
-		expect(rows[0].artifacts).toHaveLength(32)
+		// Writes are intentional and always land (live parity).
+		expect(rows[0].artifacts).toHaveLength(40)
+	})
+
+	it("sniffed bash artifacts evict oldest past 32, intentional ones promote out", async () => {
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		const files = Array.from({ length: 40 }, (_, i) => `s${i}.md`)
+		for (const f of files) touch(f)
+		// 40 bash results each mentioning its file…
+		const bashResults = files.map((f, i) => ({
+			toolCallId: `tcb-${i}`,
+			toolName: "bash",
+			content: [{ type: "text", text: `wrote ${f}` }],
+			isError: false,
+			timestamp: now,
+		}))
+		const writeResult = {
+			toolCallId: "tcw-0",
+			toolName: "write",
+			content: [{ type: "text", text: "ok" }],
+			isError: false,
+			timestamp: now,
+		}
+		touch("plan.md")
+		const blocks = [
+			...files.map((f, i) => ({
+				type: "toolCall",
+				id: `tcb-${i}`,
+				name: "bash",
+				arguments: { command: `echo > ${f}` },
+			})),
+			{ type: "toolCall", id: "tcw-0", name: "write", arguments: { path: "plan.md" } },
+		]
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: { role: "assistant", timestamp: now, content: blocks },
+				toolResults: [...bashResults, writeResult],
+			},
+			ctx,
+		)
+		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows).toHaveLength(1)
+		const names = rows[0].artifacts.map((a) => a.name)
+		// 32 most-recent sniffed (s8..s39) plus the intentional write.
+		expect(names).toHaveLength(33)
+		expect(names).toContain("plan.md")
+		expect(names).toContain("s39.md")
+		expect(names).not.toContain("s0.md")
 	})
 
 	it("round-trip URI can be rebuilt from the recorded row (replay assumption)", () => {
