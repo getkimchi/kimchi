@@ -48,8 +48,8 @@ export function formatNoReplanningGuidance(opts: { backticks?: boolean } = {}): 
 // Every tool execute returns the same { details, content, isError? } shape;
 // these helpers cut the visual noise.
 
-export function toolOk(text: string) {
-	return { details: undefined, content: [{ type: "text" as const, text }] }
+export function toolOk(text: string, details?: Record<string, unknown>) {
+	return { details, content: [{ type: "text" as const, text }] }
 }
 
 export function toolErr(text: string) {

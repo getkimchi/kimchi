@@ -58,7 +58,7 @@ function normalizeThinkingScopeKey(scopeKey?: string): string {
 }
 
 function normalizeThinkingMode(mode: unknown): ThinkingStepsMode {
-	return mode === "collapsed" || mode === "summary" || mode === "expanded" ? mode : "summary"
+	return mode === "collapsed" || mode === "summary" || mode === "expanded" || mode === "none" ? mode : "summary"
 }
 
 function normalizeActiveThinkingState(value: unknown): ActiveThinkingState {

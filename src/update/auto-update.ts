@@ -10,7 +10,7 @@ import { basename } from "node:path"
 import { type CliMode, getCliModeArg, hasExportFlag, hasPrintFlag, PROTOCOL_MODES } from "../cli-modes.js"
 import { getVersion } from "../utils.js"
 import { isHomebrewInstall } from "./paths.js"
-import { loadAutoUpdateSetting } from "./settings.js"
+import { loadAutoUpdateNoticeShown, loadAutoUpdateSetting } from "./settings.js"
 import { applyUpdate, checkForUpdate, parseCanarySha7 } from "./workflow.js"
 
 const LOG_PREFIX = "[kimchi-auto-update]"
@@ -252,6 +252,8 @@ export interface MaybeAutoUpdateOnLaunchOptions {
  *   - running from source/dev (getVersion() is "dev" or "unknown", or
  *     process.execPath is not the packaged kimchi binary)
  *   - loadAutoUpdateSetting() returns false
+ *   - the one-time auto-update notice has not been shown yet (no session
+ *     since this default took effect has told the user about it)
  *   - the user presses Ctrl+C during the check or download (per-launch skip;
  *     the persisted auto-update setting is untouched, so the next launch
  *     retries the update)
@@ -291,6 +293,13 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 		const expectedBinName = process.platform === "win32" ? "kimchi.exe" : "kimchi"
 		if (basename(process.execPath) !== expectedBinName) return
 		if (!loadAutoUpdateSetting()) return
+		// Auto-update is on by default, so a user upgrading from an opt-in
+		// build would otherwise be updated before ever hearing about it. Wait
+		// until a session has shown the one-time notice (startup-update.ts);
+		// the first launch after that applies updates. Only TUI sessions can
+		// show that notice — protocol-mode launches return above before
+		// reaching this gate, and ACP clients own harness updates there.
+		if (!loadAutoUpdateNoticeShown()) return
 		if (opts.signal?.aborted) return
 
 		// Ctrl+C-to-skip: from here until this launch commits to a version,

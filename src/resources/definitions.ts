@@ -1,5 +1,6 @@
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../extensions/claude-code-skills/definition.js"
 import { FERMENT_V2_RESOURCE_ID } from "../extensions/ferment-v2/constants.js"
+import { KIMCHI_MCP_GATEWAY_RESOURCE_ID } from "../extensions/mcp/gateway.js"
 import { MEMORY_RESOURCE_ID } from "../extensions/memory/config.js"
 import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/index.js"
 import { COST_PER_PR_RESOURCE_ID } from "../extensions/work-attribution/resource.js"
@@ -79,7 +80,7 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		kind: "extensions",
 		label: "Bash-tool guard",
 		description:
-			"Warn when the LLM uses `bash` (cat/sed/echo) for tasks that have a dedicated read/edit/write tool, and remind it that `cd` does not persist between bash calls. Disabling stops runtime guard messages; the core prompt continues to prefer dedicated tools.",
+			"Steer the LLM away from backgrounding processes with `&`/`nohup`/`disown` — they orphan outside the bash tool's lifecycle. Disabling stops runtime guard messages; the core prompt continues to prefer dedicated read/edit/write tools.",
 		defaultEnabled: true,
 	},
 	{
@@ -129,6 +130,16 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		label: "MCP apps",
 		description: "Enable MCP/app connector tools.",
 		defaultEnabled: true,
+		restartRequired: true,
+	},
+	{
+		id: KIMCHI_MCP_GATEWAY_RESOURCE_ID,
+		kind: "plugins",
+		label: "Kimchi MCP gateway",
+		description:
+			"Connect the built-in Cast AI MCP gateway (Jira, Confluence, and more) using the same API key as model access. " +
+			"Once enabled it is available in every project, including untrusted ones, like any user-level MCP server.",
+		defaultEnabled: false,
 		restartRequired: true,
 	},
 	{

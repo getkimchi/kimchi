@@ -26,7 +26,7 @@ const TYPE_OWN_ANSWER_LABEL = "Type your own answer"
  */
 export const MAX_REASON_LENGTH = 300
 
-function clampReason(reason: string): string {
+export function clampReason(reason: string): string {
 	return reason.length <= MAX_REASON_LENGTH ? reason : reason.slice(0, MAX_REASON_LENGTH)
 }
 

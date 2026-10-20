@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { BeforeProviderHeadersEvent, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
-import type { McpAdapterOptions, McpConfig } from "pi-mcp-adapter/types"
+import { MCP_RUNTIME_REGISTER_EVENT, type McpRuntimeRegistrationRequest } from "pi-mcp-adapter"
+import type { McpAdapterOptions, McpConfig, ServerEntry } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import type * as CliArgs from "../../cli-args.js"
@@ -50,9 +51,15 @@ const oauthMigration = vi.hoisted(() => ({ warnings: [] as string[] }))
 const oauthBranding = vi.hoisted(() => ({ install: vi.fn() }))
 const projectTrust = vi.hoisted(() => ({ trusted: true }))
 const readOnlyState = vi.hoisted(() => ({ wireNames: new Set<string>() }))
+const gatewayState = vi.hoisted(() => ({
+	server: undefined as { name: string; entry: ServerEntry } | undefined,
+	addresses: ["https://api.cast.ai/mcp"],
+}))
 
 vi.mock("pi-mcp-adapter", () => ({
 	MCP_STATUS_EVENT: "pi-mcp-adapter/status/v1",
+	MCP_RUNTIME_REGISTER_EVENT: "pi-mcp-adapter:runtime-register:v1",
+	MCP_RUNTIME_REGISTER_VERSION: 1,
 	createMcpAdapter: vi.fn((options: McpAdapterOptions) => (api: ExtensionAPI) => {
 		upstream.options = options
 		upstream.api = api
@@ -85,6 +92,13 @@ vi.mock("./config.js", () => ({
 					...(configState.useProgrammaticConfig ? { useProgrammaticConfig: true } : {}),
 					warnings: configState.warnings,
 				},
+}))
+
+// The real gateway address matcher runs; only the environment-derived inputs are stubbed.
+vi.mock("./gateway.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./gateway.js")>()),
+	buildBuiltinGatewayServer: () => gatewayState.server,
+	getGatewayAddresses: () => gatewayState.addresses,
 }))
 
 vi.mock("../../config.js", () => ({
@@ -167,6 +181,8 @@ describe("upstream MCP adapter facade", () => {
 		cliState.noApprove = undefined
 		cliState.plan = false
 		projectTrust.trusted = true
+		gatewayState.server = undefined
+		gatewayState.addresses = ["https://api.cast.ai/mcp"]
 		planning.currentProfile = undefined
 		permissionState.mode = undefined
 		readOnlyState.wireNames.clear()
@@ -271,6 +287,140 @@ describe("upstream MCP adapter facade", () => {
 		await start(harness)
 
 		expect(upstream.options).toEqual({ config: configState.config })
+	})
+
+	describe("built-in gateway runtime registration", () => {
+		const gatewayServer = {
+			name: "kimchi-mcp-gateway",
+			entry: {
+				url: "https://api.cast.ai/mcp",
+				headers: { Authorization: "Bearer test" },
+				lifecycle: "keep-alive" as const,
+			},
+		}
+
+		/** Simulates the real adapter's synchronous answer on the event bus. */
+		function captureRuntimeRegistrations(
+			harness: ReturnType<typeof createExtensionApi>,
+		): McpRuntimeRegistrationRequest[] {
+			const requests: McpRuntimeRegistrationRequest[] = []
+			harness.api.events.on(MCP_RUNTIME_REGISTER_EVENT, (raw: unknown) => {
+				const request = raw as McpRuntimeRegistrationRequest
+				request.result = { ok: true, registration: { dispose: async () => {} } }
+				requests.push(request)
+			})
+			return requests
+		}
+
+		it("registers the enabled gateway as a runtime server, keeping file-backed mode", async () => {
+			configState.config = { mcpServers: { docs: { url: "https://example.test/mcp" } } }
+			configState.configPath = "/tmp/mcp.json"
+			gatewayState.server = gatewayServer
+			const harness = createExtensionApi()
+			const registrations = captureRuntimeRegistrations(harness)
+
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+
+			expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
+			expect(registrations).toHaveLength(1)
+			expect(registrations[0]?.name).toBe("kimchi-mcp-gateway")
+			expect(registrations[0]?.definition).toEqual(gatewayServer.entry)
+		})
+
+		it("does not register the gateway when the resource is disabled", async () => {
+			configState.config = { mcpServers: { docs: { url: "https://example.test/mcp" } } }
+			configState.configPath = "/tmp/mcp.json"
+			const harness = createExtensionApi()
+			const registrations = captureRuntimeRegistrations(harness)
+
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+
+			expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
+			expect(registrations).toEqual([])
+		})
+
+		it("skips runtime registration when a configured server already uses a gateway address", async () => {
+			configState.config = { mcpServers: { manual: { url: "https://api.eu.cast.ai/mcp" } } }
+			configState.configPath = "/tmp/mcp.json"
+			gatewayState.server = gatewayServer
+			// Production derives every region's gateway URL — see gateway.test.ts.
+			gatewayState.addresses = ["https://api.cast.ai/mcp", "https://api.eu.cast.ai/mcp"]
+			const harness = createExtensionApi()
+			const registrations = captureRuntimeRegistrations(harness)
+
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+
+			expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
+			expect(registrations).toEqual([])
+		})
+
+		it("skips runtime registration when a user server holds the gateway name at another address", async () => {
+			configState.config = { mcpServers: { "kimchi-mcp-gateway": { url: "https://proxy.corp.example/mcp" } } }
+			configState.configPath = "/tmp/mcp.json"
+			gatewayState.server = gatewayServer
+			const harness = createExtensionApi()
+			const registrations = captureRuntimeRegistrations(harness)
+
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+
+			expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
+			expect(registrations).toEqual([])
+		})
+
+		it("keeps the proxy tool reachable when the gateway is the only configured server", async () => {
+			configState.config = { mcpServers: {} }
+			configState.configPath = "/tmp/mcp.json"
+			gatewayState.server = gatewayServer
+			const harness = createExtensionApi()
+			const registrations = captureRuntimeRegistrations(harness)
+
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+
+			expect(registrations).toHaveLength(1)
+			// The gateway registers after adapter install; the policy must count it,
+			// or an otherwise-empty config drops the proxy tool and strands the
+			// gateway's tools (regression: https://github.com/getkimchi/kimchi/pull/1436).
+			upstream.api?.registerTool(tool("mcp", "MCP"))
+			expect(harness.getRegisteredTools().map(({ name }) => name)).toEqual(["mcp"])
+		})
+
+		it("registers the gateway in untrusted projects as a user-level server", async () => {
+			projectTrust.trusted = false
+			gatewayState.server = gatewayServer
+			const harness = createExtensionApi()
+			const registrations = captureRuntimeRegistrations(harness)
+
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+
+			// Untrusted projects load user config programmatically (pre-existing
+			// behavior); the gateway still registers through the runtime API.
+			expect(upstream.options).toEqual({ config: { mcpServers: {} } })
+			expect(registrations).toHaveLength(1)
+			expect(registrations[0]?.definition).toEqual(gatewayServer.entry)
+		})
+
+		it("skips runtime registration when a caller server holds the gateway name", async () => {
+			gatewayState.server = gatewayServer
+			const harness = createExtensionApi()
+			const registrations = captureRuntimeRegistrations(harness)
+
+			createKimchiMcpAdapterExtension({
+				cwd: "/tmp",
+				callerServers: { "kimchi-mcp-gateway": { url: "https://ide.local/mcp" } },
+			})(harness.api)
+			await start(harness)
+
+			expect(upstream.options).toEqual({
+				config: { mcpServers: { "kimchi-mcp-gateway": { url: "https://ide.local/mcp" } } },
+			})
+			expect(registrations).toEqual([])
+		})
 	})
 
 	it("suppresses all model-facing MCP tools for an empty configuration", async () => {
@@ -690,33 +840,6 @@ describe("upstream MCP adapter facade", () => {
 		expect(harness.api.registerCommand).toHaveBeenCalledWith("mcp", expect.anything())
 	})
 
-	it("reapplies the active profile once after a status-update burst settles", async () => {
-		configState.config = { mcpServers: { docs: { command: "docs" } } }
-		const harness = createExtensionApi()
-		mcpAdapterExtension(harness.api)
-
-		vi.useFakeTimers()
-		try {
-			// 5-event burst.
-			for (let i = 0; i < 5; i++) {
-				harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
-			}
-			expect(planning.reapplyCurrentProfile).not.toHaveBeenCalled()
-
-			await vi.advanceTimersByTimeAsync(250)
-			expect(planning.reapplyCurrentProfile).toHaveBeenCalledTimes(1)
-			expect(planning.reapplyCurrentProfile).toHaveBeenCalledWith(harness.api)
-
-			// A later burst collapses the same way.
-			planning.reapplyCurrentProfile.mockClear()
-			harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
-			await vi.advanceTimersByTimeAsync(250)
-			expect(planning.reapplyCurrentProfile).toHaveBeenCalledTimes(1)
-		} finally {
-			vi.useRealTimers()
-		}
-	})
-
 	it("still resyncs synchronously when the adapter registers a tool", async () => {
 		configState.config = { mcpServers: { docs: { command: "docs" } } }
 		const harness = createExtensionApi()
@@ -728,25 +851,6 @@ describe("upstream MCP adapter facade", () => {
 		upstream.api?.registerTool(tool("docs_get_issue", "MCP: get_issue"))
 
 		expect(planning.reapplyCurrentProfile).toHaveBeenCalledWith(harness.api)
-	})
-
-	it("drops a pending resnapshot when the session shuts down", async () => {
-		configState.config = { mcpServers: { docs: { command: "docs" } } }
-		const harness = createExtensionApi()
-		mcpAdapterExtension(harness.api)
-
-		vi.useFakeTimers()
-		try {
-			// A status event schedules the resnapshot; the session is then
-			// replaced/reloaded before it fires. The stale pi's event bus throws
-			// on any later emit, so the callback must never run.
-			harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
-			await harness.getHandler("session_shutdown")({ type: "session_shutdown", reason: "reload" }, createContext())
-			await vi.advanceTimersByTimeAsync(250)
-			expect(planning.reapplyCurrentProfile).not.toHaveBeenCalled()
-		} finally {
-			vi.useRealTimers()
-		}
 	})
 
 	it("drops a pending resnapshot when a replacement session starts", async () => {

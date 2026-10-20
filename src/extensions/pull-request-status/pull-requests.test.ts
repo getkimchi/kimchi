@@ -70,6 +70,13 @@ function remote(value = "https://github.com/team/repo.git", branch = "feature", 
 		throw new Error("Unexpected Git command")
 	})
 }
+/** Answers `git reflog` for the `feature` branch with entries at these Unix times, newest first. */
+function reflog(...times: number[]): void {
+	const git = cli.git.getMockImplementation()
+	cli.git.mockImplementation(async (args, options) =>
+		args.includes("reflog") ? times.map((time) => `feature@{${time}}`).join("\n") : git?.(args, options),
+	)
+}
 function seed(overrides: Record<string, unknown> = {}, transitions = false): void {
 	const source = join(agentDir, "work-attribution", ...(transitions ? ["transitions"] : []))
 	mkdirSync(source, { recursive: true })
@@ -157,12 +164,14 @@ function replies(handler: (url: URL, options: RequestInit) => unknown = () => []
 		const value = github
 			? {
 					id: 42,
+					default_branch: "main",
 					full_name: github[1],
 					html_url: `https://${url.host === "api.github.com" ? "github.com" : url.host}/${github[1]}`,
 				}
 			: gitlab
 				? {
 						id: 42,
+						default_branch: "main",
 						path_with_namespace: decodeURIComponent(gitlab[1]),
 						web_url: `${url.origin}/${decodeURIComponent(gitlab[1])}`,
 					}
@@ -539,6 +548,101 @@ describe("native provider credentials", () => {
 })
 
 describe("repository and branch selection", () => {
+	it("skips the branch PR lookup on GitLab's default branch", async () => {
+		remote("git@gitlab.com:team/subgroup/repo.git", "master")
+		http.mockImplementation(async (url) => {
+			if (url.pathname === "/api/v4/projects/team%2Fsubgroup%2Frepo")
+				return Response.json({
+					id: 42,
+					path_with_namespace: "team/subgroup/repo",
+					web_url: "https://gitlab.com/team/subgroup/repo",
+					default_branch: "master",
+				})
+			return Response.json([
+				mr(7, {
+					source_branch: "master",
+					state: "closed",
+					author: { username: "jose" },
+					updated_at: "2026-10-16T10:00:00Z",
+					closed_at: "2026-10-16T09:00:00Z",
+				}),
+			])
+		})
+		const result = await lookupBranchPullRequest(repository, new AbortController().signal)
+		// Another author's closed MR on the shared default branch is not this user's orientation.
+		expect(result).toEqual({ branch: "master", pullRequest: undefined })
+		expect(http.mock.calls.map(([url]) => url.pathname)).toEqual(["/api/v4/projects/team%2Fsubgroup%2Frepo"])
+		expect(existsSync(agentDir)).toBe(false)
+	})
+	it("skips the branch PR lookup on GitHub's default branch", async () => {
+		remote("https://github.com/team/repo.git", "main")
+		http.mockImplementation(async (url) => {
+			if (url.pathname === "/repos/team/repo")
+				return Response.json({
+					id: 1,
+					full_name: "team/repo",
+					html_url: "https://github.com/team/repo",
+					default_branch: "main",
+				})
+			return Response.json([pull(7, { state: "closed", head: { sha, ref: "main" } })])
+		})
+		const result = await lookupBranchPullRequest(repository, new AbortController().signal)
+		expect(result).toEqual({ branch: "main", pullRequest: undefined })
+		expect(http.mock.calls.map(([url]) => url.pathname)).toEqual(["/repos/team/repo"])
+		expect(existsSync(agentDir)).toBe(false)
+	})
+	it("skips the branch PR lookup on a custom default branch", async () => {
+		remote("git@gitlab.com:team/subgroup/repo.git", "develop")
+		http.mockImplementation(async (url) => {
+			if (url.pathname === "/api/v4/projects/team%2Fsubgroup%2Frepo")
+				return Response.json({
+					id: 42,
+					path_with_namespace: "team/subgroup/repo",
+					web_url: "https://gitlab.com/team/subgroup/repo",
+					default_branch: "develop",
+				})
+			return Response.json([mr(7, { source_branch: "develop" })])
+		})
+		const result = await lookupBranchPullRequest(repository, new AbortController().signal)
+		expect(result).toEqual({ branch: "develop", pullRequest: undefined })
+		expect(http.mock.calls.map(([url]) => url.pathname)).toEqual(["/api/v4/projects/team%2Fsubgroup%2Frepo"])
+	})
+	it("discards a suppressed default-branch result when checkout changes during the metadata request", async () => {
+		remote("https://github.com/team/repo.git", "main")
+		http.mockImplementation(async () => {
+			// The checkout changes while the repository metadata resolves; no PR list request may follow.
+			remote(undefined, "other")
+			return Response.json({
+				id: 1,
+				full_name: "team/repo",
+				html_url: "https://github.com/team/repo",
+				default_branch: "main",
+			})
+		})
+		expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toBeUndefined()
+		expect(http).toHaveBeenCalledOnce()
+	})
+	it.each([
+		["absent", undefined],
+		["empty", ""],
+		["null", null],
+		["non-string", 42],
+	] as const)("hides the branch PR when default_branch metadata is %s", async (_case, value) => {
+		useProvider("github")
+		http.mockImplementation(async (url) => {
+			if (url.pathname === "/repos/team/repo")
+				return Response.json({
+					id: 1,
+					full_name: "team/repo",
+					html_url: "https://github.com/team/repo",
+					...(value === undefined ? {} : { default_branch: value }),
+				})
+			return Response.json([pull()])
+		})
+		const result = await lookupBranchPullRequest(repository, new AbortController().signal)
+		expect(result).toEqual({ branch: "feature", pullRequest: undefined })
+		expect(http).toHaveBeenCalledOnce()
+	})
 	it.each(providers)("shows the current %s branch without creating attribution records", async (provider) => {
 		useProvider(provider)
 		replies(() => (provider === "github" ? [pull()] : [mr()]))
@@ -546,13 +650,128 @@ describe("repository and branch selection", () => {
 		expect(result).toMatchObject({ branch: "feature", pullRequest: { provider, number: 7, state: "open" } })
 		expect(existsSync(agentDir)).toBe(false)
 	})
+	describe.each(providers)("closed and merged %s branch PRs", (provider) => {
+		const other = "b".repeat(40)
+		// The local branch was created at this time; its PRs closed a day before or after.
+		const created = Date.parse("2026-10-01T12:00:00Z") / 1000
+		const before = "2026-09-30T12:00:00Z"
+		const after = "2026-10-02T12:00:00Z"
+		const closed = (number: number, at: string, head = sha) =>
+			provider === "github"
+				? pull(number, { state: "closed", closed_at: at, head: { sha: head, ref: "feature" } })
+				: mr(number, { state: "closed", closed_at: at, sha: head })
+		const merged = (number: number, at: string, head = sha) =>
+			provider === "github"
+				? pull(number, {
+						state: "closed",
+						merged_at: at,
+						closed_at: at,
+						merge_commit_sha: "f".repeat(40),
+						head: { sha: head, ref: "feature" },
+					})
+				: mr(number, { state: "merged", merged_at: at, merge_commit_sha: "f".repeat(40), sha: head })
+		const malformed = (number: number) =>
+			provider === "github"
+				? pull(number, { state: "closed", head: { sha: "not-a-sha", ref: "feature" } })
+				: mr(number, { state: "closed", sha: null })
+		const open = () => (provider === "github" ? pull() : mr())
+		const reflogCalls = () => cli.git.mock.calls.filter(([args]) => args.includes("reflog")).map(([args]) => args)
+
+		beforeEach(() => useProvider(provider))
+
+		it("prefers the open PR over a newer closed one without reading the reflog", async () => {
+			replies((url) => {
+				if (provider === "github") expect(url.searchParams.get("per_page")).toBe("30")
+				return [closed(8, after, other), open()]
+			})
+			expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toMatchObject({
+				pullRequest: { number: 7, state: "open" },
+			})
+			expect(reflogCalls()).toEqual([])
+		})
+		it("hides a PR that closed before this branch was created, even when the branch starts at its head", async () => {
+			// A fast-forward merge leaves the old PR's head on the default branch, where the reused name starts.
+			reflog(created + 3600, created)
+			replies(() => [merged(8, before)])
+			expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toEqual({
+				branch: "feature",
+				pullRequest: undefined,
+			})
+			expect(reflogCalls()).toEqual([
+				["-C", repository, "reflog", "show", "--date=unix", "--format=%gd", "refs/heads/feature", "--"],
+			])
+		})
+		it("shows the newest PR that closed after this branch was created, whatever its head", async () => {
+			// The provider can move the head after the last push: a rebase button, a suggestion or a bot commit.
+			reflog(created + 3600, created)
+			replies(() => [closed(9, before), merged(7, after, other), closed(6, after)])
+			expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toMatchObject({
+				pullRequest: { number: 7, state: "merged", headSha: other },
+			})
+		})
+		it("dates the branch from its oldest reflog entry, not its latest update", async () => {
+			reflog(created + 3600, created)
+			replies(() => [merged(7, new Date((created + 1800) * 1000).toISOString())])
+			expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toMatchObject({
+				pullRequest: { number: 7, state: "merged" },
+			})
+		})
+		it("hides a merged PR when Git keeps no reflog for the branch", async () => {
+			reflog()
+			replies(() => [merged(7, after)])
+			expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toEqual({
+				branch: "feature",
+				pullRequest: undefined,
+			})
+			expect(reflogCalls()).toHaveLength(1)
+		})
+		it("shows a valid open PR beside a malformed older record", async () => {
+			replies(() => [malformed(8), open()])
+			expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toMatchObject({
+				pullRequest: { number: 7, state: "open" },
+			})
+		})
+		it("reports a malformed record when no other PR can be shown", async () => {
+			replies(() => [malformed(8)])
+			await expect(lookupBranchPullRequest(repository, new AbortController().signal)).rejects.toThrow(
+				"invalid pull request",
+			)
+		})
+	})
+	it.each(providers)("never trims the checked-out %s branch into another branch's PR", async (provider) => {
+		useProvider(provider)
+		const branch = "feature\u00a0"
+		remote(
+			provider === "github" ? "https://github.com/team/repo.git" : "https://gitlab.com/team/subgroup/repo.git",
+			`${branch}\n`,
+		)
+		replies((url) => {
+			const source =
+				provider === "github"
+					? url.searchParams.get("head")?.slice("team:".length)
+					: url.searchParams.get("source_branch")
+			return source === "feature" ? (provider === "github" ? [pull()] : [mr()]) : []
+		})
+		expect(await lookupBranchPullRequest(repository, new AbortController().signal)).toEqual({
+			branch,
+			pullRequest: undefined,
+		})
+		const url = http.mock.calls.at(-1)?.[0]
+		expect(url?.searchParams.get(provider === "github" ? "head" : "source_branch")).toBe(
+			provider === "github" ? `team:${branch}` : branch,
+		)
+	})
 	it("resolves the renamed repository before using an exact numeric branch filter", async () => {
 		remote("https://github.com/old/repo.git", "1320")
 		http.mockImplementation(async (url) => {
 			if (url.pathname === "/repos/old/repo")
 				return new Response(null, { status: 301, headers: { location: "/repos/renamed/repo" } })
 			if (url.pathname === "/repos/renamed/repo")
-				return Response.json({ full_name: "renamed/repo", html_url: "https://github.com/renamed/repo" })
+				return Response.json({
+					full_name: "renamed/repo",
+					html_url: "https://github.com/renamed/repo",
+					default_branch: "main",
+				})
 			expect(url.pathname).toBe("/repos/renamed/repo/pulls")
 			expect(url.searchParams.get("head")).toBe("renamed:1320")
 			return Response.json([

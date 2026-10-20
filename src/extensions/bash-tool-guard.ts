@@ -1,10 +1,9 @@
 /**
  * Bash-tool guard
  *
- * Steers the LLM away from using `bash` for tasks that have a dedicated
- * non-shell tool (`read`, `edit`, `write`). The replacement tools are
- * cheaper (less output to land in context) and trigger LSP-aware tooling
- * (hover/definition) when reading or editing code.
+ * Steers the LLM away from backgrounding processes with `&`, `nohup`,
+ * or `disown` — such processes escape the bash tool's lifecycle and
+ * become orphaned, consuming memory until the container OOMs.
  *
  * Two layers of nudging:
  *
@@ -14,12 +13,14 @@
  *      "Execute bash commands (ls, grep, find, etc.)" tells the model
  *      bash can do those things — exactly the substitution we steer
  *      against. The override fixes the snippet, and the consolidated
- *      section makes the substitution rules explicit. Goal: the model
- *      picks the dedicated tool the first time, not after being told.
- *      The resource toggle controls the runtime guard below, not Kimchi's
- *      core tool-selection preference. If the extension was loaded for the
- *      current session, its bash description override also remains registered
- *      until the session restarts.
+ *      section makes the substitution rules explicit. This layer also
+ *      carries the read/edit/write preference: use the dedicated
+ *      tools instead of `cat` / `sed -i` / shell redirects. Goal: the
+ *      model picks the dedicated tool the first time, not after being
+ *      told. The resource toggle controls the runtime guard below, not
+ *      Kimchi's core tool-selection preference. If the extension was
+ *      loaded for the current session, its bash description override
+ *      also remains registered until the session restarts.
  *
  *      The description override is delivered via `pi.registerTool()` on
  *      `session_start`, re-registering the bash tool with an overridden
@@ -30,13 +31,19 @@
  *      disposable array of fresh objects on every call and never reaches
  *      the prompt builder's own later call.
  *
- *   2. **Guard (downstream).** Inspects each bash call. If the command
- *      is a file-reading / in-place-edit / file-writing pattern that
- *      has a dedicated tool, emits a steer message pointing at the
- *      dedicated tool. Hard-blocking is opt-in via
- *      `blockOnThreshold: true`.
+ *   2. **Guard (downstream).** Inspects each bash call. When the command
+ *      backgrounds a process, emits a steer message pointing at the
+ *      supported alternatives (managed background, or the `daemon` tool
+ *      when experimental features are enabled). Hard-blocking is opt-in
+ *      via `blockOnThreshold: true`. read/edit/write patterns are
+ *      classification-only: the prompt-level preference (layer 1)
+ *      carries those, so they no longer steer, block, or count (see
+ *      docs/bash-tool-guard.md for the benchmark rationale).
+ *      Classification is retained for tests and future telemetry.
  *
- * Three categories are detected:
+ * Four categories are classified:
+ *   - background — standalone `&`, `nohup`, `disown` (the only steered
+ *             category).
  *   - read  — `cat <file>`, `head <file>`, `tail <file>`, `less <file>`,
  *             `bat <file>`, `sed -n '<range>p' <file>` (read-only sed).
  *   - edit  — `sed -i ... <file>`, `perl -i -pe ... <file>`,
@@ -46,22 +53,23 @@
  *             `echo ... > file`.
  *
  * Behaviour:
- *   - First match for a category within a session: steer (don't block).
- *   - Second match for the same category: hard-block with a reason pointing
- *     at the right tool — but only when `blockOnThreshold: true` is passed
- *     to the extension. The default is warn-only so adopting the guard
- *     never stalls a session if the replacement tool is unavailable.
- *   - Per-category counters: a `cat` doesn't burn the budget for `sed -i`.
- *   - Per-category thresholds: read/edit/write can have different budgets.
- *   - Per-category counters reset on `session_start` and each user `input`.
+ *   - First background match within a session: steer (don't block).
+ *   - Second background match: hard-block with a reason — but only when
+ *     `blockOnThreshold: true` is passed to the extension. The default
+ *     is warn-only so adopting the guard never stalls a session if the
+ *     alternatives are unavailable.
+ *   - Per-category thresholds: only `background` steers, so only its
+ *     budget is consulted; read/edit/write thresholds are inert (kept
+ *     for the options contract).
+ *   - Counters reset on `session_start` and each user `input`.
  *   - Warn-only steer coalescing resets on `session_start` and each assistant
  *     `turn_start`, so parallel bash calls cannot build a steer backlog.
  *   - Disabled in plan-mode permission context (inspection, not
  *     enforcement — same rationale as `exploration-guard`).
- *   - Explicit user request override: detects both tool names ("cat",
- *     "sed") and semantic intents ("read the file", "fix with sed",
- *     "write a marker"). Uses word-boundary matching to avoid false
- *     positives (e.g. "cat" inside "categorize").
+ *   - Explicit user request override (background only): detects both
+ *     tool names ("nohup", "disown") and semantic intents ("run in the
+ *     background", "detached"). Uses word-boundary matching to avoid
+ *     false positives.
  *   - Emits domain events via pi.events for telemetry to observe.
  *   - `grep` / `rg` / `ag` and `find` are intentionally NOT guarded: they
  *     have legitimate uses outside code-search and the false-positive cost
@@ -99,9 +107,12 @@ export interface BashClassification {
 }
 
 export interface PerCategoryThresholds {
+	/** Inert: read/edit/write no longer steer (classification-only).
+	 *  Retained so the options contract stays stable. */
 	read?: number
 	edit?: number
 	write?: number
+	/** Budget for the backgrounding category — the only steered one. */
 	background?: number
 }
 
@@ -148,32 +159,36 @@ export interface BashGuardBlockResult {
 export type BashGuardDecision = BashGuardResult | BashGuardWarnResult | BashGuardBlockResult
 
 const WARN_STEER_BASE =
-	"Bash-tool guard: this command reads/updates files via a shell command (%matchedSegment%, category: %category%). " +
-	"The dedicated tool is faster and unlocks LSP context (hover/definition/diagnostics): %suggestion% " +
-	"Hard blocking is opt-in; pass `blockOnThreshold: true` to enable."
+	"Bash-tool guard: backgrounding with `%matchedSegment%` detaches the process from the bash tool's lifecycle — " +
+	"it becomes orphaned and can consume memory until the container OOMs.\n\n%suggestion%"
 
 const BLOCK_REASON_BASE =
-	"Bash-tool guard: blocked %category% via shell after a warning in this session. " +
-	"%suggestion% " +
-	"To override, disable the bash-tool-guard extension in resource settings."
+	"Bash-tool guard: blocked backgrounding (%matchedSegment%) after a warning in this session. " +
+	"%suggestion% To override, disable the bash-tool-guard extension in resource settings."
 
 const READ_SUGGESTION = "Use the read tool with the file path (and offset/limit for head/tail)."
 const EDIT_SUGGESTION = "Use the edit tool with old_string/new_string."
 const WRITE_SUGGESTION = "Use the edit tool for targeted changes or the write tool for full-file replacements."
-const DAEMON_STEER =
-	"if the process must keep running after your session ends (e.g. a server someone connects to afterwards), use the `daemon` tool instead."
-const NO_DAEMON_STEER =
-	"managed background is killed at session end — if the service must outlive the session, restate that requirement to the user before finishing."
 
 function backgroundSuggestion(): string {
 	const daemon = isExperimentalFeaturesEnabled()
-	return (
-		"Use the bash tool for long-running commands: if one is still running after its brief initial handoff (~2s), you get a handle and it continues by default — its exit result is delivered automatically at the next turn boundary while you keep working, so do not poll; drive stops via bash_control stop_handles. " +
-		"Do not background processes with `&`, `nohup`, or `disown` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs. " +
-		+(daemon
-			? `Managed background (bash + bash_control) is killed when the session ends; ${DAEMON_STEER}`
-			: `Managed background is likewise killed at session end; ${NO_DAEMON_STEER}`)
+	const lines = [
+		"Two supported ways to run a long command, depending on whether it must outlive the session:",
+		"- Session-scoped: run it with the bash tool — after a brief initial handoff (~2s) you get a handle and it continues by default while other tools stay available; exit results are delivered automatically (do not poll); stop it via bash_control stop_handles. It is killed when the session ends.",
+	]
+	if (daemon) {
+		lines.push(
+			"- Must keep running after the session ends (e.g. a server someone connects to afterwards), and only then: use the `daemon` tool instead.",
+		)
+	} else {
+		lines.push(
+			"- Must keep running after the session ends: restate that requirement to the user before finishing — managed background is killed at session end.",
+		)
+	}
+	lines.push(
+		"Never background with `&`, `nohup`, or `disown` — the process escapes the bash tool's lifecycle and becomes orphaned, consuming memory until the container OOMs.",
 	)
+	return lines.join("\n")
 }
 
 /**
@@ -453,68 +468,25 @@ function escapeRegex(s: string): string {
 }
 
 /**
- * Semantic intent phrases that imply an explicit user request for a given
- * category. Each entry maps a category to a list of regex patterns matched
- * against the (lowercased) user prompt.
+ * Semantic intent phrases that imply an explicit user request to
+ * background a process. Matched against the (lowercased) user prompt.
  *
  * Why regex instead of plain word lists: natural-language prompts use
- * varied phrasings ("read the file", "show me what's in foo.ts", "print
- * the contents of foo.ts"). Word lists catch only the literal form;
- * regexes cover the common variants while staying readable.
+ * varied phrasings ("run this in the background", "launch it detached").
+ * Word lists catch only the literal form; regexes cover the common
+ * variants while staying readable.
  *
  * Each pattern must be a complete regex (anchored with \b where needed).
  * Test new patterns in `bash-tool-guard.test.ts` before adding.
  */
-const SEMANTIC_INTENT_PATTERNS: Record<BashCategory, RegExp[]> = {
-	read: [
-		// "read the file", "read foo.ts", "read the contents of foo.ts"
-		/\bread\b.*\b(file|contents?|source|code)\b/,
-		// "show me foo.ts", "show what's in foo.ts"
-		/\bshow\b.*\b(me|what'?s? in|contents? of)\b/,
-		// "print the contents of foo.ts"
-		/\bprint\b.*\b(contents?|file|source)\b/,
-		// "view foo.ts", "view the file"
-		/\bview\b.*\b(file|contents?|source)\b/,
-		// "open foo.ts" / "open the file" — agents often say this
-		/\bopen\b.*\b(file|\.[a-z]{1,4})\b/,
-	],
-	edit: [
-		// "fix the typo", "fix this with sed", "fix the file"
-		/\bfix\b.*\b(typo|bug|error|file|this|line)\b/,
-		// "replace foo with bar", "replace text in foo.ts"
-		/\breplace\b.*\b(with|in|inside)\b/,
-		// "modify foo.ts", "modify the file"
-		/\bmodify\b.*\b(file|\.[a-z]{1,4})\b/,
-		// "update foo.ts", "update the file"
-		/\bupdate\b.*\b(file|\.[a-z]{1,4})\b/,
-		// "use sed/awk/perl to ..."
-		/\buse\b.*\b(sed|awk|perl)\b/,
-		// "edit foo.ts"
-		/\bedit\b.*\b(file|\.[a-z]{1,4})\b/,
-	],
-	write: [
-		// "write a file", "write to foo.ts", "write the contents to foo.ts"
-		/\bwrite\b.*\b(to|file|contents? to)\b/,
-		// "create a file", "create foo.ts"
-		/\bcreate\b.*\b(file|\.[a-z]{1,4})\b/,
-		// "save to foo.ts", "save the output to foo.ts"
-		/\bsave\b.*\b(to|into)\b/,
-		// "put it in foo.ts", "put the result in foo.ts"
-		/\bput\b.*\b(in|into|to)\b/,
-		// "echo ... to file"
-		/\becho\b.*\bto\b/,
-		// "redirect to foo.ts", "redirect output to foo.ts"
-		/\bredirect\b.*\bto\b/,
-	],
-	background: [
-		// "run in the background", "run this in background"
-		/\brun\b.*\bbackground\b/,
-		// "run it detached", "launch detached"
-		/\bdetached\b/,
-		// "use nohup", "run with nohup"
-		/\bnohup\b/,
-	],
-}
+const BACKGROUND_INTENT_PATTERNS: RegExp[] = [
+	// "run in the background", "run this in background"
+	/\brun\b.*\bbackground\b/,
+	// "run it detached", "launch detached"
+	/\bdetached\b/,
+	// "use nohup", "run with nohup"
+	/\bnohup\b/,
+]
 
 export class BashToolGuard {
 	private readonly warnThresholds: Record<BashCategory, number>
@@ -522,8 +494,8 @@ export class BashToolGuard {
 	private readonly blockOnThreshold: boolean
 	private readonly categoryCounts: Map<BashCategory, number> = new Map()
 	/** Most recent user prompt text, lowercased. Used to detect explicit
-	 *  requests like "use sed" or "cat this file" so the guard doesn't
-	 *  override an explicit user instruction. */
+	 *  requests like "run it in the background" or "use nohup" so the
+	 *  guard doesn't override an explicit user instruction. */
 	private lastUserPrompt = ""
 
 	constructor(options: BashGuardOptions = {}) {
@@ -555,15 +527,14 @@ export class BashToolGuard {
 	}
 
 	/** True when the user's most recent prompt explicitly requests the
-	 *  matched tool or category. Detection is two-tiered:
-	 *    1. Program-name match (word-boundary): "use sed to fix this",
-	 *       "cat the file", "echo to marker".
-	 *    2. Semantic intent match: "read the file", "fix with sed",
-	 *       "write to foo.ts", etc. — catches prompts that don't mention
-	 *       the tool by name but clearly intend the operation.
-	 *  Both use word-boundary matching to avoid false positives (e.g.
-	 *  "cat" inside "categorize", "sed" inside "used"). */
-	isExplicitlyRequested(matchedSegment: string, category: BashCategory): boolean {
+	 *  matched backgrounding tool or intent. Detection is two-tiered:
+	 *    1. Program-name match (word-boundary): "use nohup",
+	 *       "disown it".
+	 *    2. Semantic intent match: "run in the background", "detached",
+	 *       "nohup" — catches prompts that don't mention the operator
+	 *       by name but clearly intend the operation.
+	 *  Both use word-boundary matching to avoid false positives. */
+	isExplicitlyRequested(matchedSegment: string): boolean {
 		if (!this.lastUserPrompt) return false
 		// First token of the matched segment is the tool name.
 		const tool = matchedSegment.split(/\s+/)[0]?.toLowerCase()
@@ -572,26 +543,27 @@ export class BashToolGuard {
 			if (toolPattern.test(this.lastUserPrompt)) return true
 		}
 		// Semantic intent fallback — catches intent without naming the tool.
-		const intentPatterns = SEMANTIC_INTENT_PATTERNS[category]
-		return intentPatterns.some((pattern) => pattern.test(this.lastUserPrompt))
+		return BACKGROUND_INTENT_PATTERNS.some((pattern) => pattern.test(this.lastUserPrompt))
 	}
 
 	getCount(category: BashCategory): number {
 		return this.categoryCounts.get(category) ?? 0
 	}
 
-	/** Threshold for a given category (read/edit/write). */
+	/** Threshold for the backgrounding category (the only steered one). */
 	getWarnThreshold(category: BashCategory): number {
 		return this.warnThresholds[category]
 	}
 
 	/**
 	 * Inspect a bash command. Returns:
-	 *   - `{ decision: "allow" }` when the command is fine.
-	 *   - `{ decision: "warn", ... }` for the first match of a category,
-	 *     AND for every subsequent match when `blockOnThreshold` is false
+	 *   - `{ decision: "allow" }` when the command is fine, or when it
+	 *     matches a read/edit/write classification (those are
+	 *     classification-only — layer 1 carries the preference).
+	 *   - `{ decision: "warn", ... }` for the first backgrounding match,
+	 *     AND for every subsequent one when `blockOnThreshold` is false
 	 *     (default). The LLM keeps getting nudged on each occurrence.
-	 *   - `{ decision: "block", ... }` once the per-category warnThreshold
+	 *   - `{ decision: "block", ... }` once the background warnThreshold
 	 *     is exceeded, but only when `blockOnThreshold` is true (opt-in).
 	 */
 	recordCommand(command: string): BashGuardDecision {
@@ -599,9 +571,16 @@ export class BashToolGuard {
 		const classification = classifyBashCommand(command)
 		if (!classification) return { decision: "allow" }
 
-		// Explicit user request: "use sed to fix this", "cat the file", etc.
-		// The user knows what they're asking for; don't override.
-		if (this.isExplicitlyRequested(classification.matchedSegment, classification.category)) {
+		// Layer 2 steers only on backgrounding. read/edit/write remain
+		// classification-only: the prompt-level preference (layer 1)
+		// carries those — see docs/bash-tool-guard.md for the rationale.
+		if (classification.category !== "background") {
+			return { decision: "allow" }
+		}
+
+		// Explicit user request: "run it in the background", "use nohup",
+		// etc. The user knows what they're asking for; don't override.
+		if (this.isExplicitlyRequested(classification.matchedSegment)) {
 			return { decision: "allow", reason: "user-request" }
 		}
 
@@ -647,14 +626,15 @@ export class BashToolGuard {
 
 	/** Build the steer message text for a `warn` decision. */
 	formatWarnText(result: BashGuardWarnResult): string {
-		return WARN_STEER_BASE.replace("%matchedSegment%", result.matchedSegment)
-			.replace("%category%", result.category)
-			.replace("%suggestion%", result.suggestion)
+		return WARN_STEER_BASE.replace("%matchedSegment%", result.matchedSegment).replace("%suggestion%", result.suggestion)
 	}
 
 	/** Build the block reason text for a `block` decision. */
 	formatBlockReason(result: BashGuardBlockResult): string {
-		return BLOCK_REASON_BASE.replace("%category%", result.category).replace("%suggestion%", result.suggestion)
+		return BLOCK_REASON_BASE.replace("%matchedSegment%", result.matchedSegment).replace(
+			"%suggestion%",
+			result.suggestion,
+		)
 	}
 }
 

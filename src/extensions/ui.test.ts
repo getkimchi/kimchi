@@ -52,6 +52,28 @@ describe("isBareExitAlias", () => {
 	})
 })
 
+describe("bare exit input handler", () => {
+	it("shuts down and marks the input handled for 'exit'", async () => {
+		const harness = createExtensionApi()
+		uiExtension(harness.api)
+		const shutdown = vi.fn()
+		const ctx = { shutdown } as unknown as ExtensionContext
+		const result = await harness.getHandler("input")({ type: "input", text: "exit" } as never, ctx)
+		expect(shutdown).toHaveBeenCalledTimes(1)
+		expect(result).toEqual({ action: "handled" })
+	})
+
+	it("leaves ordinary prompts untouched", async () => {
+		const harness = createExtensionApi()
+		uiExtension(harness.api)
+		const shutdown = vi.fn()
+		const ctx = { shutdown } as unknown as ExtensionContext
+		const result = await harness.getHandler("input")({ type: "input", text: "hello" } as never, ctx)
+		expect(shutdown).not.toHaveBeenCalled()
+		expect(result).toBeUndefined()
+	})
+})
+
 describe("ctrlCCascadeDecision", () => {
 	it("returns 'clear' when editor has text (regardless of streaming)", () => {
 		expect(ctrlCCascadeDecision(true, true)).toBe("clear")

@@ -12,8 +12,8 @@
 //                                   so the compiled binary resolves assets from the shared data directory
 
 import { execFileSync } from "node:child_process"
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
-import { platform } from "node:os"
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { platform, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -111,22 +111,37 @@ if (!isDev) {
 
 // Bundle YAML into the validator: discovered skills are copied to temporary
 // directories, and installed binaries have no node_modules to resolve it from.
+//
+// Build inside a temp staging dir instead of in place: bun scans every ancestor
+// directory of its entry path hunting for workspace context, which fails under
+// sandboxes that don't grant the home directory. Staging under the
+// system temp dir keeps the whole ancestor chain readable; the bundle is moved
+// into the repo afterwards.
 const validatorDest = join(
 	projectRoot,
 	isDev ? "resources" : "dist/share/kimchi",
 	"skills/create-skill/scripts/validate-skill.mjs",
 )
 mkdirSync(dirname(validatorDest), { recursive: true })
-execFileSync(
-	"bun",
-	[
-		"build",
-		join(projectRoot, "src/shared/skill-discovery/validate-skill.ts"),
-		"--target=node",
-		"--format=esm",
-		"--minify",
-		"--outfile",
-		validatorDest,
-	],
-	{ stdio: "inherit" },
-)
+const stagingRoot = mkdtempSync(join(tmpdir(), "kimchi-validate-build-"))
+try {
+	const stagedEntry = join(stagingRoot, "validate-skill.ts")
+	const stagedYaml = join(stagingRoot, "node_modules", "yaml")
+	cpSync(join(projectRoot, "src/shared/skill-discovery/validate-skill.ts"), stagedEntry)
+	// Dereference pnpm's symlink so bun resolves "yaml" without walking the real
+	// package's path back into the repo.
+	cpSync(join(projectRoot, "node_modules", "yaml"), stagedYaml, { dereference: true, recursive: true })
+	const stagedOut = join(stagingRoot, "validate-skill.mjs")
+	execFileSync("bun", ["build", stagedEntry, "--target=node", "--format=esm", "--minify", "--outfile", stagedOut], {
+		stdio: "inherit",
+	})
+	cpSync(stagedOut, validatorDest)
+} finally {
+	// Best-effort: cleanup must never mask a build error or fail the build once
+	// the bundle is in place — a stale temp dir is the accepted worst case.
+	try {
+		rmSync(stagingRoot, { recursive: true, force: true })
+	} catch {
+		// ignore — the OS reclaims temp dirs
+	}
+}

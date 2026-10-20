@@ -240,6 +240,8 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("Always pass a `thinking` parameter on every Agent call")
 		expect(result).toContain("| Build chunk | Builder |")
 		expect(result).toContain("Orchestrator-provided `thinking` overrides agent profile defaults")
+		expect(result).not.toContain("Self-performed work")
+		expect(result).not.toContain("Orchestrator (main thread)")
 	})
 
 	it("includes review row in budget table", () => {

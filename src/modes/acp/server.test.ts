@@ -10,6 +10,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { pathToFileURL } from "node:url"
 import type {
 	AgentSideConnection,
 	ContentChunk,
@@ -5701,6 +5702,767 @@ describe("KimchiAcpAgent per-turn diffs", () => {
 
 		const content = terminalContent("tc-edit-fail") as Array<{ type: string }>
 		expect(content.some((b) => b.type === "diff")).toBe(false)
+	})
+})
+
+// Live turns: generated files flush at turn end as `resource_link`
+// chunks carrying `_meta["kimchi.dev"].type = "artifact"`, attached to the
+// turn's last text block id.
+describe("generated artifacts (live turns)", () => {
+	let tmpDir: string
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let updates: SessionNotification[]
+	let sessionId: string
+
+	beforeEach(async () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "kimchi-acp-artifacts-"))
+		fake = new FakeAgentSession("session-artifacts", tmpDir)
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const rec = makeRecordingConn()
+		updates = rec.updates
+		agent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+		const res = await agent.newSession({ cwd: tmpDir, mcpServers: [] })
+		sessionId = res.sessionId
+	})
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true })
+	})
+
+	// Typed message factory: `content` overrides the default single-text-block
+	// body (tool-only and thinking-bearing fixtures pass theirs directly).
+	const makeAssistantMessage = (content?: unknown[]): AssistantMessage => ({
+		role: "assistant",
+		content: (content ?? [{ type: "text", text: "" }]) as AssistantMessage["content"],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude",
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: 0,
+	})
+
+	const assistantMessageEnd = (text: string, content?: unknown[]): AgentSessionEvent => ({
+		type: "message_end",
+		message: makeAssistantMessage(content ?? [{ type: "text", text }]),
+	})
+
+	// Emits one text_delta/thinking_delta on the given content index (mirrors
+	// the model-attribution suite's emitDelta helper).
+	const emitDelta = (type: "text_delta" | "thinking_delta", contentIndex: number, delta: string): void => {
+		fake.emit({
+			type: "message_update",
+			assistantMessageEvent: {
+				type,
+				delta,
+				contentIndex,
+				partial: {} as unknown as AssistantMessage,
+			},
+			message: makeAssistantMessage(),
+		})
+	}
+
+	// Artifact link chunks, narrowed to messageId + link content + kimchi.dev
+	// meta blob (tests assert both link fields and merged attribution fields).
+	const artifactChunks = () =>
+		updates.flatMap((u) => {
+			if (u.update.sessionUpdate !== "agent_message_chunk") return []
+			const meta = (u.update as { _meta?: { "kimchi.dev"?: Record<string, unknown> } })._meta?.["kimchi.dev"]
+			if (meta?.type !== "artifact") return []
+			const content = (u.update as { content?: Record<string, unknown> }).content ?? {}
+			if (content.type !== "resource_link") return []
+			return [
+				{
+					messageId: u.update.messageId,
+					uri: content.uri,
+					name: content.name,
+					mimeType: content.mimeType,
+					meta,
+				},
+			]
+		})
+
+	it("attaches artifacts meta to the assistant message's block id for a write tool call", async () => {
+		const target = join(tmpDir, "slides.pptx")
+		writeFileSync(target, "pptx bytes")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-pptx",
+				toolName: "write",
+				args: { path: target, content: "pptx bytes" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-pptx",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote slides.pptx" }] },
+				isError: false,
+			})
+			fake.emit(assistantMessageEnd("Here are your slides."))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const chunks = artifactChunks()
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0]).toMatchObject({
+			name: "slides.pptx",
+			uri: pathToFileURL(target).href,
+			mimeType: expect.stringContaining("presentationml"),
+		})
+		// Attached to a real replicated block id, not a fresh one.
+		const textIds = messageChunks(updates).map((c) => c.messageId)
+		expect(textIds).toContain(chunks[0].messageId)
+		// Artifact chunks emit at finalizeTurn — after all message chunks.
+		// (usage_update may still follow.)
+		const textIdx = updates.findIndex((u) => {
+			if (u.update.sessionUpdate !== "agent_message_chunk") return false
+			return (u.update as { content?: { text?: string } }).content?.text === "Here are your slides."
+		})
+		const artifactIdx = updates.findIndex((u) => {
+			if (u.update.sessionUpdate !== "agent_message_chunk") return false
+			return (u.update as { content?: { type?: string } }).content?.type === "resource_link"
+		})
+		expect(artifactIdx).toBeGreaterThan(textIdx)
+	})
+
+	it("detects artifacts mentioned in bash output and dedupes across calls", async () => {
+		const target = join(tmpDir, "report.pdf")
+		writeFileSync(target, "pdf")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			for (const toolCallId of ["tc-bash-1", "tc-bash-2"]) {
+				fake.emit({ type: "tool_execution_start", toolCallId, toolName: "bash", args: { command: "make report" } })
+				fake.emit({
+					type: "tool_execution_end",
+					toolCallId,
+					toolName: "bash",
+					result: { content: [{ type: "text", text: `wrote ${target}` }] },
+					isError: false,
+				})
+			}
+			fake.emit(assistantMessageEnd("Done."))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const chunks = artifactChunks()
+		expect(chunks).toHaveLength(1)
+		expect(chunks.map((c) => c.uri)).toEqual([pathToFileURL(target).href])
+	})
+
+	// A text-less turn has no id to attach to, and a fresh `km.` id has no
+	// persisted counterpart for replay — so such artifacts are dropped.
+	it("drops artifacts of a text-less turn rather than emitting on a fresh id", async () => {
+		const target = join(tmpDir, "deck.pptx")
+		writeFileSync(target, "pptx")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-only",
+				toolName: "write",
+				args: { path: target, content: "pptx" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-only",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "done" }] },
+				isError: false,
+			})
+			fake.emit(
+				assistantMessageEnd("", [
+					{ type: "toolCall", id: "tc-only", name: "write", arguments: { path: target, content: "pptx" } },
+				]),
+			)
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+		expect(artifactChunks()).toEqual([])
+	})
+
+	// A mid-turn tool-only message produces artifacts without any block of
+	// its own; turn-scoped emission attaches them at turn end to the turn's
+	// LAST text block (the later content-bearing message).
+	it("attaches a tool-only message's artifacts to the turn's last text block", async () => {
+		const target = join(tmpDir, "notes.md")
+		writeFileSync(target, "md")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-mid",
+				toolName: "write",
+				args: { path: target, content: "md" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-mid",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "done" }] },
+				isError: false,
+			})
+			fake.emit(
+				assistantMessageEnd("", [
+					{ type: "toolCall", id: "tc-mid", name: "write", arguments: { path: target, content: "md" } },
+				]),
+			)
+			fake.emit(assistantMessageEnd("All done."))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const chunks = artifactChunks()
+		expect(chunks).toHaveLength(1)
+		const textChunk = messageChunks(updates).find((c) => c.text === "All done.")
+		expect(chunks[0].messageId).toBe(textChunk?.messageId)
+		expect(chunks[0].uri).toBe(pathToFileURL(target).href)
+	})
+
+	// The client's _meta rule is last-wins on the whole blob per messageId, so
+	// the artifact chunk's _meta must MERGE the attribution the block already
+	// carried — otherwise the chip chunk would wipe the model label.
+	it("merges the block's model attribution into the artifact chunk meta", async () => {
+		const target = join(tmpDir, "slides.pptx")
+		writeFileSync(target, "pptx")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitDelta("text_delta", 0, "Here.")
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-merge",
+				toolName: "write",
+				args: { path: target, content: "pptx" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-merge",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "done" }] },
+				isError: false,
+			})
+			fake.emit(assistantMessageEnd("Here."))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const chunks = artifactChunks()
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0].meta).toMatchObject({
+			modelId: expect.stringContaining("claude"),
+			requestedModelId: expect.stringContaining("claude"),
+		})
+	})
+
+	// Text in message A, then a terminal tool-call-only message B: the
+	// artifact attaches to A's block, whose attribution may be absent from
+	// the emitted meta map — the noteTextBlock snapshot keeps the model
+	// fields on the artifact.
+	it("keeps model fields when the last text block predates a tool-only terminal message", async () => {
+		const target = join(tmpDir, "plan.md")
+		writeFileSync(target, "md")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitDelta("text_delta", 0, "Here is the plan.")
+			fake.emit(assistantMessageEnd("Here is the plan."))
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-term",
+				toolName: "write",
+				args: { path: target, content: "md" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-term",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "done" }] },
+				isError: false,
+			})
+			fake.emit(
+				assistantMessageEnd("", [
+					{ type: "toolCall", id: "tc-term", name: "write", arguments: { path: target, content: "md" } },
+				]),
+			)
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+		const chunks = artifactChunks()
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0].meta).toMatchObject({
+			modelId: expect.stringContaining("claude"),
+		})
+	})
+
+	// A turn whose LAST content block is thinking must not see a
+	// resource_link chunk attached to the thinking block id — kind-keyed
+	// clients would render a spurious empty agent message. The link attaches
+	// to the prior text block instead (turn.lastBlockId skips thinking).
+	it("skips thinking-kind block ids when attaching artifact chunks", async () => {
+		const target = join(tmpDir, "chart.png")
+		writeFileSync(target, "png")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitDelta("text_delta", 0, "The chart.")
+			emitDelta("thinking_delta", 1, "looks good")
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-think",
+				toolName: "write",
+				args: { path: target, content: "png" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-think",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "done" }] },
+				isError: false,
+			})
+			fake.emit(
+				assistantMessageEnd("", [
+					{ type: "text", text: "The chart." },
+					{ type: "thinking", thinking: "looks good" },
+				]),
+			)
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const chunks = artifactChunks()
+		expect(chunks).toHaveLength(1)
+		const textChunk = messageChunks(updates).find((c) => c.text === "The chart.")
+		expect(chunks[0].messageId).toBe(textChunk?.messageId)
+	})
+
+	it("emits no artifact chunks when the turn produced none", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-bash-none",
+				toolName: "bash",
+				args: { command: "echo hi" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-bash-none",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "hi" }] },
+				isError: false,
+			})
+			fake.emit(assistantMessageEnd("Nothing generated."))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+		expect(artifactChunks()).toEqual([])
+	})
+
+	it("ignores artifacts from failed tool calls", async () => {
+		const target = join(tmpDir, "ghost.pptx")
+		writeFileSync(target, "unrelated")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-fail",
+				toolName: "write",
+				args: { path: target, content: "x" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-fail",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "boom" }], isError: true },
+				isError: true,
+			})
+			fake.emit(assistantMessageEnd("Failed."))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+		expect(artifactChunks()).toEqual([])
+	})
+
+	it("advertises artifacts support in the initialize capabilities _meta", async () => {
+		const { conn } = makeRecordingConn()
+		const initAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+		})
+		const response = await initAgent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+			clientInfo: { name: "test", version: "0" },
+		})
+		expect(response.agentCapabilities?._meta?.["kimchi.dev"]).toMatchObject({ artifacts: true })
+	})
+})
+
+// Replay on loadSession must reproduce the live chips: each turn's
+// artifacts flush once, attached to the turn's last text block id (before
+// the next user message, or at branch end). Existence check skipped.
+describe("generated artifacts (replay)", () => {
+	function makeAgent(loader: AcpSessionLoader, conn: AgentSideConnection): KimchiAcpAgent {
+		return new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: loader,
+		})
+	}
+
+	const artifactChunks = (updates: SessionNotification[]) =>
+		updates.flatMap((u) => {
+			if (u.update.sessionUpdate !== "agent_message_chunk") return []
+			const meta = (u.update as { _meta?: { "kimchi.dev"?: { type?: string } } })._meta?.["kimchi.dev"]
+			if (meta?.type !== "artifact") return []
+			const content = (u.update as { content?: Record<string, unknown> }).content ?? {}
+			if (content.type !== "resource_link") return []
+			return [
+				{
+					messageId: u.update.messageId,
+					uri: content.uri,
+					name: content.name,
+					mimeType: content.mimeType,
+				},
+			]
+		})
+
+	it("emits artifact link chunks for a turn whose tool call produced a file", async () => {
+		const fake = new FakeAgentSession("loaded-artifacts")
+		fake.branch = [
+			userTextEntry("make slides", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "Here you go." },
+					{ type: "toolCall", id: "tc-r1", name: "bash", arguments: { command: "make deck" } },
+				],
+				"a1",
+				"u1",
+			),
+			// The file need not exist anymore — replay skips the existence check.
+			toolResultEntry("tc-r1", "bash", "saved to assets/out.pptx", false, "tr1", "a1"),
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: {
+					v: 1,
+					artifacts: [
+						{
+							path: "/tmp/assets/out.pptx",
+							name: "out.pptx",
+							mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+						},
+					],
+				},
+			} as never,
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-artifacts", cwd: "/tmp", mcpServers: [] })
+
+		const chunks = artifactChunks(updates)
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0]).toMatchObject({
+			name: "out.pptx",
+			uri: pathToFileURL("/tmp/assets/out.pptx").href,
+			mimeType: expect.stringContaining("presentationml"),
+		})
+		// Same messageId as the replayed text chunk — the chip attaches to the
+		// turn's last text block, reusing the block id (live/replay parity)
+		// rather than allocating a fresh one.
+		const textChunk = messageChunks(updates).find((c) => c.text === "Here you go.")
+		expect(chunks[0].messageId).toBe(textChunk?.messageId)
+	})
+
+	it("merges multiple recorded rows within one turn (one row per assistant message)", async () => {
+		const fake = new FakeAgentSession("loaded-multirow")
+		fake.branch = [
+			userTextEntry("make two files", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "First." },
+					{ type: "toolCall", id: "tc-mr1", name: "write", arguments: { path: "/tmp/mr-a.md" } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-mr1", "write", "ok", false, "tr1", "a1"),
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: { v: 1, artifacts: [{ path: "/tmp/mr-a.md", name: "mr-a.md", mimeType: "text/markdown" }] },
+			} as never,
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "Second." },
+					{ type: "toolCall", id: "tc-mr2", name: "write", arguments: { path: "/tmp/mr-b.md" } },
+				],
+				"a2",
+				"tr1",
+			),
+			toolResultEntry("tc-mr2", "write", "ok", false, "tr2", "a2"),
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: { v: 1, artifacts: [{ path: "/tmp/mr-b.md", name: "mr-b.md", mimeType: "text/markdown" }] },
+			} as never,
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-multirow", cwd: "/tmp", mcpServers: [] })
+		const names = artifactChunks(updates).map((c) => c.name)
+		// Both rows of the turn land — adoption merges, never clears.
+		expect(names.sort()).toEqual(["mr-a.md", "mr-b.md"])
+	})
+
+	it("adopts a recorded artifact row verbatim instead of re-deriving from output text", async () => {
+		const fake = new FakeAgentSession("loaded-recorded")
+		fake.branch = [
+			userTextEntry("make a deck", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "Done." },
+					{ type: "toolCall", id: "tc-rec1", name: "bash", arguments: { command: "make" } },
+				],
+				"a1",
+				"u1",
+			),
+			// Output text would sniff a bogus data-shaped token on replay;
+			// the recorded row replaces it with the exact live detection.
+			toolResultEntry("tc-rec1", "bash", "wednesday,elated,echo-baby.csv shipped", false, "tr1", "a1"),
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: {
+					v: 1,
+					artifacts: [{ path: "/tmp/real-deck.pptx", name: "real-deck.pptx", mimeType: "application/nn-presentation" }],
+				},
+			} as never,
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-recorded", cwd: "/tmp", mcpServers: [] })
+		const chunks = artifactChunks(updates)
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0]).toMatchObject({
+			uri: pathToFileURL("/tmp/real-deck.pptx").href,
+			name: "real-deck.pptx",
+			mimeType: "application/nn-presentation",
+		})
+		const textChunk = messageChunks(updates).find((c) => c.text === "Done.")
+		expect(chunks[0].messageId).toBe(textChunk?.messageId)
+	})
+
+	it("emits no artifacts chunk for messages without generated files", async () => {
+		const fake = new FakeAgentSession("loaded-no-artifacts")
+		fake.branch = [
+			userTextEntry("hi", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "working…" },
+					{ type: "toolCall", id: "tc-r2", name: "bash", arguments: { command: "echo" } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-r2", "bash", "done", false, "tr2", "a1"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-no-artifacts", cwd: "/tmp", mcpServers: [] })
+
+		expect(artifactChunks(updates)).toEqual([])
+	})
+
+	it("skips artifacts from errored historical tool calls", async () => {
+		const fake = new FakeAgentSession("loaded-erred")
+		fake.branch = [
+			userTextEntry("hi", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "tried" },
+					{ type: "toolCall", id: "tc-r3", name: "bash", arguments: { command: "make deck" } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-r3", "bash", "failed writing out.pptx", true, "tr3", "a1"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-erred", cwd: "/tmp", mcpServers: [] })
+
+		expect(artifactChunks(updates)).toEqual([])
+	})
+
+	// A tool-call-only assistant message emits no block ids; the turn's
+	// artifacts flush once per turn, attached to the turn's last text block
+	// — the same id a live turn would have used for its trailing chips.
+	it("flushes a tool-call-only message's artifacts on the turn's last text block", async () => {
+		const fake = new FakeAgentSession("loaded-defer")
+		fake.branch = [
+			userTextEntry("make it", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-d1", name: "bash", arguments: { command: "make" } }],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-d1", "bash", "wrote assets/mid.pdf", false, "trd1", "a1"),
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: { v: 1, artifacts: [{ path: "/tmp/assets/mid.pdf", name: "mid.pdf", mimeType: "application/pdf" }] },
+			} as never,
+			assistantTextEntry("All done.", "a2", "trd1"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-defer", cwd: "/tmp", mcpServers: [] })
+
+		const chunks = artifactChunks(updates)
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0].uri).toBe(pathToFileURL("/tmp/assets/mid.pdf").href)
+		const textChunk = messageChunks(updates).find((c) => c.text === "All done.")
+		expect(chunks[0].messageId).toBe(textChunk?.messageId)
+	})
+
+	it("dedupes repeated paths across a message's tool calls", async () => {
+		const fake = new FakeAgentSession("loaded-dedupe")
+		fake.branch = [
+			userTextEntry("go", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "working" },
+					{ type: "toolCall", id: "tc-x1", name: "bash", arguments: { command: "one" } },
+					{ type: "toolCall", id: "tc-x2", name: "bash", arguments: { command: "two" } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-x1", "bash", "wrote assets/dup.pdf", false, "trx1", "a1"),
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: { v: 1, artifacts: [{ path: "/tmp/assets/dup.pdf", name: "dup.pdf", mimeType: "application/pdf" }] },
+			} as never,
+			toolResultEntry("tc-x2", "bash", "wrote assets/dup.pdf", false, "trx2", "a1"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-dedupe", cwd: "/tmp", mcpServers: [] })
+
+		const chunks = artifactChunks(updates)
+		expect(chunks).toHaveLength(1)
+		expect(chunks.map((c) => c.uri)).toEqual([pathToFileURL("/tmp/assets/dup.pdf").href])
+	})
+
+	// Live artifact lifetime is per-turn (TurnContext.artifacts dies with the
+	// turn): a replayed user message ends the prior turn and flushes its
+	// pending artifacts — here the first turn emitted no text block, so the
+	// chips drop rather than leaking into the next turn's message.
+	it("does not leak pending artifacts across a user-message boundary", async () => {
+		const fake = new FakeAgentSession("loaded-noleak")
+		fake.branch = [
+			userTextEntry("first", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-n1", name: "bash", arguments: { command: "make" } }],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-n1", "bash", "wrote old.pdf", false, "trn1", "a1"),
+			userTextEntry("second", "u2", "a1"),
+			assistantTextEntry("Turn two.", "a2", "u2"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-noleak", cwd: "/tmp", mcpServers: [] })
+
+		expect(artifactChunks(updates)).toEqual([])
+	})
+
+	// A tool-call-only tail at branch end (e.g. an interrupted turn) still
+	// belongs to THIS turn: its artifacts attach to the turn's last text
+	// block (emitted earlier in the branch) — the same wire a live turn
+	// would have produced at finalizeTurn.
+	it("attaches a tool-call-only tail's artifacts to the turn's last text block at branch end", async () => {
+		const fake = new FakeAgentSession("loaded-tail")
+		fake.branch = [
+			userTextEntry("go", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "starting" },
+					{ type: "toolCall", id: "tc-t1", name: "bash", arguments: { command: "make" } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-t1", "bash", "wrote assets/tail.pdf", false, "trt1", "a1"),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-t2", name: "bash", arguments: { command: "more" } }],
+				"a2",
+				"trt1",
+			),
+			toolResultEntry("tc-t2", "bash", "wrote assets/tail2.pdf", false, "trt2", "a2"),
+			// One row per turn in reality (recorder appends at turn end).
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: {
+					v: 1,
+					artifacts: [
+						{ path: "/tmp/assets/tail.pdf", name: "tail.pdf", mimeType: "application/pdf" },
+						{ path: "/tmp/assets/tail2.pdf", name: "tail2.pdf", mimeType: "application/pdf" },
+					],
+				},
+			} as never,
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-tail", cwd: "/tmp", mcpServers: [] })
+
+		// Both files belong to the same turn → both land, attached to the
+		// turn's last (and only) text block, a1's "starting" chunk.
+		const chunks = artifactChunks(updates)
+		expect(chunks).toHaveLength(2)
+		expect(chunks.map((c) => c.uri)).toEqual([
+			pathToFileURL("/tmp/assets/tail.pdf").href,
+			pathToFileURL("/tmp/assets/tail2.pdf").href,
+		])
+		const textChunk = messageChunks(updates).find((c) => c.text === "starting")
+		expect(chunks[0].messageId).toBe(textChunk?.messageId)
+		expect(chunks[1].messageId).toBe(textChunk?.messageId)
 	})
 })
 

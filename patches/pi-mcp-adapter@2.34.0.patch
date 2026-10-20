@@ -1,6 +1,12 @@
 # Patch: Kimchi host integrations for pi-mcp-adapter 2.34.0
 #
 # Tracking:
+#   - Output-guard default 50 KB → 12 KB: five parallel ~50 KB MCP results
+#     (~64k tokens) overflow the remaining headroom on 256k-context sessions
+#     and killed them (context reached 284,070 of 262,144 tokens). Remove when
+#     upstream sizes the guard to the remaining context (window − reserve −
+#     usage) or adopts a smaller flat default; users can override per project
+#     via settings.outputGuard.maxBytes.
 #   - Project config directory: https://github.com/nicobailon/pi-mcp-adapter/issues/491
 #     (remove when upstream supports a project config directory independent of
 #     the user config directory)
@@ -20,6 +26,8 @@
 #   - DCR clientInfo version: hardcoded "2.11.0" in mcp-auth-flow; remove
 #     when upstream derives it from the package version
 # Changes:
+#   - mcp-output-guard: DEFAULT_MCP_OUTPUT_MAX_BYTES 50 KB → 12 KB (see
+#     tracking above); the now-unused DEFAULT_MAX_BYTES import is dropped.
 #   - agent-dir/config (+dist mirrors): resolve the MCP project config
 #     directory via piConfig.mcpProjectConfigDir so project MCP config can
 #     live outside the user config directory.
@@ -693,6 +701,27 @@ index 61369dc32e42649d06f624daf622266bff1f2a29..828604e17c9cefbafc4804dca110fe51
    })
    if (!response.ok) {
      await response.text().catch(() => {})
+diff --git a/mcp-output-guard.ts b/mcp-output-guard.ts
+index 677b7200cacf01892078fe163d55fe144f4cbdf9..34b1051ba0e660299ff95595135f9cd9f234a178 100644
+--- a/mcp-output-guard.ts
++++ b/mcp-output-guard.ts
+@@ -3,7 +3,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
+ import { tmpdir } from "node:os";
+ import { dirname, join } from "node:path";
+ import {
+-  DEFAULT_MAX_BYTES,
+   DEFAULT_MAX_LINES,
+   formatSize,
+   truncateHead,
+@@ -11,7 +10,7 @@ import {
+ } from "@earendil-works/pi-coding-agent";
+ import type { ContentBlock, McpSettings } from "./types.ts";
+ 
+-export const DEFAULT_MCP_OUTPUT_MAX_BYTES = DEFAULT_MAX_BYTES;
++export const DEFAULT_MCP_OUTPUT_MAX_BYTES = 12 * 1024;
+ export const DEFAULT_MCP_OUTPUT_MAX_LINES = DEFAULT_MAX_LINES;
+ export const DEFAULT_MCP_DETAILS_MAX_BYTES = 16 * 1024;
+ 
 diff --git a/metadata-cache.ts b/metadata-cache.ts
 index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef31282e511d4f 100644
 --- a/metadata-cache.ts

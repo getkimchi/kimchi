@@ -265,6 +265,10 @@ jobs:
             scripts/install.sh
             scripts/install.ps1
           generate_release_notes: true
+          # Dashed tags (v1.2.3-rc.1, v2.0.0-alpha.1) publish as prereleases so
+          # releases/latest keeps pointing at the newest stable release. Same dash
+          # rule the homebrew job below applies to skip tap updates.
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
   homebrew:
     needs: [release]

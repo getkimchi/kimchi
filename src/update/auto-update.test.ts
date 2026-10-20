@@ -1,6 +1,7 @@
 // Tests for src/update/auto-update.ts.
 //
-// Mocks: checkForUpdate, applyUpdate, loadAutoUpdateSetting, isHomebrewInstall.
+// Mocks: checkForUpdate, applyUpdate, loadAutoUpdateSetting, loadAutoUpdateNoticeShown,
+// isHomebrewInstall.
 // We spy on `process.execve` (the actual syscall) rather than the exported
 // `performReExec` helper. The implementation reads `process.execve` at call
 // time via a cast, so the spy reliably intercepts the call. Spying on the
@@ -15,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const mockCheckForUpdate = vi.fn()
 const mockApplyUpdate = vi.fn()
 const mockLoadAutoUpdateSetting = vi.fn(() => true)
+const mockLoadAutoUpdateNoticeShown = vi.fn(() => true)
 const mockIsHomebrewInstall = vi.fn(() => false)
 const mockParseCanarySha7 = vi.fn(() => null as string | null)
 const mockGetVersion = vi.fn(() => "1.0.0")
@@ -23,7 +25,10 @@ vi.mock("./paths.js", () => ({
 	isHomebrewInstall: mockIsHomebrewInstall,
 	resolveExecutablePath: () => "/fake/kimchi",
 }))
-vi.mock("./settings.js", () => ({ loadAutoUpdateSetting: mockLoadAutoUpdateSetting }))
+vi.mock("./settings.js", () => ({
+	loadAutoUpdateSetting: mockLoadAutoUpdateSetting,
+	loadAutoUpdateNoticeShown: mockLoadAutoUpdateNoticeShown,
+}))
 vi.mock("./workflow.js", () => ({
 	checkForUpdate: mockCheckForUpdate,
 	applyUpdate: mockApplyUpdate,
@@ -45,10 +50,12 @@ function resetMocks(): void {
 	mockCheckForUpdate.mockReset()
 	mockApplyUpdate.mockReset()
 	mockLoadAutoUpdateSetting.mockReset()
+	mockLoadAutoUpdateNoticeShown.mockReset()
 	mockIsHomebrewInstall.mockReset()
 	mockParseCanarySha7.mockReset()
 	mockGetVersion.mockReset()
 	mockLoadAutoUpdateSetting.mockReturnValue(true)
+	mockLoadAutoUpdateNoticeShown.mockReturnValue(true)
 	mockIsHomebrewInstall.mockReturnValue(false)
 	mockParseCanarySha7.mockReturnValue(null)
 	mockGetVersion.mockReturnValue("1.0.0")
@@ -150,6 +157,14 @@ describe("maybeAutoUpdateOnLaunch — skip gates", () => {
 
 	it("skips when loadAutoUpdateSetting() returns false", async () => {
 		mockLoadAutoUpdateSetting.mockReturnValue(false)
+		await maybeAutoUpdateOnLaunch()
+		expect(mockCheckForUpdate).not.toHaveBeenCalled()
+		expect(mockApplyUpdate).not.toHaveBeenCalled()
+		expect(execveSpy).not.toHaveBeenCalled()
+	})
+
+	it("skips until the one-time auto-update notice has been shown", async () => {
+		mockLoadAutoUpdateNoticeShown.mockReturnValue(false)
 		await maybeAutoUpdateOnLaunch()
 		expect(mockCheckForUpdate).not.toHaveBeenCalled()
 		expect(mockApplyUpdate).not.toHaveBeenCalled()

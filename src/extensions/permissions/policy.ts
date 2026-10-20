@@ -58,8 +58,26 @@ export function clampMode(requested: PermissionMode): PermissionMode {
 	return lower.length > 0 ? lower[lower.length - 1] : byRank[0]
 }
 
-/** Whether ferment may run at all under the policy: it needs a mode whose steps can execute (default asks per call, auto/yolo run freely; plan cannot edit). */
-export function isFermentRunnable(): boolean {
+/** Whether the policy leaves any mode that can execute work (default asks per call, auto/yolo run freely; plan cannot edit). Fails open with no policy. */
+export function hasExecutableMode(): boolean {
+	if (!hasOrgPolicyRestrictions()) return true
 	const allowed = getAllowedModes()
 	return allowed.has("default") || allowed.has("auto") || allowed.has("yolo")
+}
+
+/** Whether ferment may run at all under the policy: it needs a mode whose steps can execute. */
+export function isFermentRunnable(): boolean {
+	return hasExecutableMode()
+}
+
+/**
+ * The mode an approved plan releases into, if any. Without a restricting
+ * policy this preserves the historical release to auto. Restricted policies
+ * prefer the highest allowed high mode, then fall back to default: approved
+ * work still executes there behind per-tool approvals. Undefined only when
+ * the policy allows no executable mode (plan-only).
+ */
+export function releaseTargetForPlanApproval(): PermissionMode | undefined {
+	if (!hasOrgPolicyRestrictions()) return "auto"
+	return highestAllowedHighMode() ?? (getAllowedModes().has("default") ? "default" : undefined)
 }

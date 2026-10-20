@@ -223,6 +223,33 @@ describe("auto-model extension", () => {
 		expect(setModel).toHaveBeenCalledTimes(1)
 	})
 
+	it("does not re-cap a model selected while the routed request was in flight", () => {
+		// The user switched from auto to a concrete model while the request was
+		// streaming. The routed response still names kimi-k3; syncing it onto
+		// ctx.model would paint the new selection with the routed model's window
+		// (observed: glm kept kimi-k3's 262,144 and compaction fired at ~23% of
+		// its true 1M window). Same-id setModel emits no model_select, so nothing
+		// would correct it afterwards. The pick notice and routing state are
+		// still recorded — only the capability sync is skipped.
+		const { getHandler, getAppendedEntries, setModel } = setup()
+		const c = ctx({
+			model: model("glm-5.3-flash", { contextWindow: 1_048_576 }),
+			modelRegistry: { find: () => model("kimi-k3", { contextWindow: 262_144 }) },
+		})
+
+		getHandler<MessageEndEvent>("message_end")(messageEnd({ model: "auto-beta", responseModel: "kimi-k3" }), c as never)
+
+		expect(setModel).not.toHaveBeenCalled()
+		expect(getAppendedEntries(ROUTED_MODEL_RESOLUTION_ENTRY)).toEqual([
+			{ version: 1, requestedId: "auto-beta", provider: "kimchi-dev", modelId: "kimi-k3" },
+		])
+		expect(getAutoRoutingState(SESSION_ID)).toEqual({
+			status: "resolved",
+			model: model("kimi-k3", { contextWindow: 262_144 }),
+			requestedId: "auto-beta",
+		})
+	})
+
 	it("records the routed model, syncs capabilities, and appends a pick notice", () => {
 		const { getHandler, getAppendedEntries, setModel } = setup()
 		const target = model("kimi-k3", { contextWindow: 128_000 })

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { setTimeout as sleep } from "node:timers/promises"
 import { SessionManager } from "@earendil-works/pi-coding-agent"
 import { expect, Key, test } from "@microsoft/tui-test"
 import { viewText, waitForText } from "./support/assertions.js"
@@ -29,6 +30,7 @@ test("pending work survives a GitHub login error and finds a PR while coding con
 			responses: [{ stream: ["You can keep coding while GitHub is unavailable."] }],
 			seedHome(home, cwd) {
 				const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim()
+				git("branch", "-M", "main")
 				git("config", "user.name", "PR Discovery Test")
 				git("config", "user.email", "discovery@example.invalid")
 				git("config", "commit.gpgSign", "false")
@@ -107,10 +109,10 @@ test("pending work survives a GitHub login error and finds a PR while coding con
 			},
 		},
 		async (fixture, trace) => {
-			await waitForText(terminal, "PR/MR waiting", { full: false, timeoutMs: 5_000 })
-			trace.step("resumed work is waiting for its pull request")
+			await waitForText(terminal, /ctrl\+p.*· main/, { full: false, timeoutMs: 5_000 })
+			trace.step("resumed work on main shows the branch without a historical PR")
 			setGitHub("auth")
-			await waitForText(terminal, "PR/MR check /work", { full: false, timeoutMs: 10_000 })
+			await waitForText(terminal, "GitHub authentication failed", { full: false, timeoutMs: 10_000 })
 			terminal.submit("/work")
 			await waitForText(terminal, "Kimchi work", { full: false })
 			await waitForText(terminal, "PR/MR lookup: GitHub authentication failed. Check the token for github.com.", {
@@ -122,9 +124,17 @@ test("pending work survives a GitHub login error and finds a PR while coding con
 			terminal.submit("Can I keep coding while GitHub is unavailable?")
 			await waitForText(terminal, "You can keep coding while GitHub is unavailable.")
 			setGitHub("open")
-			await waitForText(terminal, "PR #731 open", { full: false, timeoutMs: 35_000 })
+			execFileSync("git", ["switch", "-c", "feature"], { cwd: fixture.workDir })
+			const deadline = Date.now() + 35_000
+			while (
+				Date.now() < deadline &&
+				readWorkSummary(fixture.agentDir, workId)?.commits?.[0]?.prLookup?.status !== "linked"
+			)
+				await sleep(250)
+			expect(readWorkSummary(fixture.agentDir, workId)?.commits?.[0]?.prLookup?.status).toBe("linked")
+			await waitForText(terminal, "feature · PR #731 open", { full: false, timeoutMs: 5_000 })
+			trace.step("the feature branch shows its matching PR beside the branch name")
 			terminal.submit("/work")
-			// The footer ends with `· PR #731 open` too; only the panel row has the work ID before it.
 			await waitForText(terminal, new RegExp(`${workId.slice(0, 8)}.*· PR #731 open`), { full: false })
 			trace.step("the work panel lists the work with its open PR")
 			terminal.keyPress(Key.Enter)
@@ -151,6 +161,14 @@ test("pending work survives a GitHub login error and finds a PR while coding con
 				"open",
 			])
 			expect(calls.every((call) => call.tokenMatched)).toBe(true)
+			execFileSync("git", ["switch", "main"], { cwd: fixture.workDir })
+			await waitForText(terminal, /ctrl\+p.*· main/, { full: false, timeoutMs: 5_000 })
+			expect(
+				viewText(terminal)
+					.split("\n")
+					.find((line) => line.includes("ctrl+p")),
+			).not.toContain("PR #731")
+			trace.step("switching back to main removes the PR despite recorded work history")
 		},
 	)
 })

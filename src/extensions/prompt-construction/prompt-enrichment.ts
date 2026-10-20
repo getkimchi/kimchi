@@ -30,7 +30,7 @@ import { join } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
-import { pickReplacementSlug, readModelDeprecations } from "../../model-deprecation.js"
+import { isWithinDeprecationNotifyWindow, pickReplacementSlug, readModelDeprecations } from "../../model-deprecation.js"
 import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
@@ -125,15 +125,6 @@ function readGitRemote(cwd: string): string | undefined {
 // Tracks `${sessionId} ${modelId}` pairs that already received a deprecation
 // notification, so each model warns at most once per session.
 const deprecatedNotificationFired = new Set<string>()
-
-/**
- * How close a model's retirement must be (in days) before session-start
- * warnings fire. Far-future lifespan signals (vendor retirement dates years
- * out, with or without an announced deprecation) stay silent until they get
- * close; curated Kimchi deprecations run on a 30-day deprecation window.
- * 30 days keeps urgent notices loud and distant dates quiet.
- */
-const DEPRECATION_NOTIFY_WINDOW_DAYS = 30
 
 export function _resetDeprecatedNotificationTracking(): void {
 	deprecatedNotificationFired.clear()
@@ -292,7 +283,6 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 		// noise — the picker tags and role-remap logic stay ungated regardless.
 		// Evaluated once per process: the notice window, like the rest of the
 		// catalog snapshot, is startup-bound.
-		const notifyCutoff = Date.now() + DEPRECATION_NOTIFY_WINDOW_DAYS * 86_400_000
 		const deprecatedWarnings = new Map<
 			string,
 			{ replacement?: string; deprecatedAt?: string; sunsetAt?: string; isPast?: boolean; note?: string }
@@ -312,7 +302,10 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			// announcement, which is when the deprecation copy cites —
 			// sunset-only records fall back to the retirement date.
 			const effectiveMs = parseMs(w.deprecatedAt) ?? parseMs(w.sunsetAt)
-			if (effectiveMs !== undefined && effectiveMs > notifyCutoff) continue
+			// Day-granular window edge, matching deprecationNotifyCutoff's
+			// UTC-midnight truncation: a deprecation dated exactly 30 days out
+			// at a non-midnight time is still inside the window, not beyond it.
+			if (effectiveMs !== undefined && !isWithinDeprecationNotifyWindow(effectiveMs)) continue
 			deprecatedWarnings.set(w.modelId, {
 				replacement: w.replacement,
 				deprecatedAt: w.deprecatedAt,

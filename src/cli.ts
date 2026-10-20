@@ -56,6 +56,7 @@ import activityExtension from "./extensions/activity.js"
 import idleGcExtension from "./extensions/adaptive-gc.js"
 import agentsExtension from "./extensions/agents/index.js"
 import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
+import { artifactRecorderExtension } from "./extensions/artifacts/recorder.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import { installAutoModelAdapters } from "./extensions/auto-model/adapters.js"
 import autoModelRoutingExtension from "./extensions/auto-model/index.js"
@@ -108,6 +109,7 @@ import memoryExtension from "./extensions/memory/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelListExtension from "./extensions/model-list.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
+import modelWindowSnapshotExtension from "./extensions/model-window-snapshot.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
 import orphanToolResultSanitizerExtension from "./extensions/orphan-tool-result-sanitizer.js"
@@ -247,710 +249,719 @@ function getSubcommand(args: string[]): string {
 
 const originalArgs = process.argv.slice(2)
 
-// The memory capture worker runs as a detached child of an exiting session.
-// In compiled binaries process.execPath is the kimchi binary itself, so the
-// worker is routed as a subcommand here (capture.ts takes the bun-script
-// path under `bun run`). Routed before telemetry/session setup so worker
-// invocations are invisible to app_started instrumentation.
-if (originalArgs[0] === "memory-capture") {
-	const { runCaptureWorkerMain } = await import("./extensions/memory/capture-worker.js")
-	// Exit at the dispatch site: the worker returns an exit code, and
-	// falling through into the interactive bootstrap below (telemetry,
-	// session setup) must never happen for worker invocations.
-	process.exit(await runCaptureWorkerMain(originalArgs.slice(1)))
-}
-
-// Bulk fact import for the memory store (benchmark oracle-capture arm;
-// routes the same way as the capture worker — before telemetry/session
-// setup, exiting at the dispatch site).
-if (originalArgs[0] === "memory-import") {
-	const { runImportMain } = await import("./extensions/memory/import.js")
-	process.exit(await runImportMain(originalArgs.slice(1)))
-}
-
-// Observes provider transport failures in-process (via message_end) so the
-// exit path can reclassify a failed run as infrastructure (exit 74).
-const infrastructureErrorTracker = createInfrastructureErrorTracker()
-
-// --- Org policy ---
-// Resolve the organization's harness policy (permission modes, usage
-// reporting) before telemetry and session setup so both read the same view.
-// Blocking only on the first run per API key (cache miss, capped at 1.5s);
-// afterwards the cached policy applies and refreshes in the background.
-await initOrgPolicy(resolveEffectiveApiKey() ?? "")
-
-// --- Telemetry ---
-// The org usage-reporting policy clamp applies at this single construction
-// site: every telemetry consumer below (pre-session events, session
-// accumulator, the in-session extension on both TUI and ACP) reads this one
-// object. Unenforced sessions get the config untouched (fail open).
-const userTelemetryConfig = readTelemetryConfig()
-const telemetryConfig = applyTelemetryPolicy(userTelemetryConfig)
-if (telemetryConfig !== userTelemetryConfig) {
-	// The policy flipped the effective state: FORCE_ON beats an opt-out,
-	// FORCE_OFF beats an opt-in (or the default-on). One stderr line keeps
-	// --print stdout clean; the persisted preference stays for a later
-	// USER_CHOICE transition.
-	console.error(
-		`[policy] usage reporting is enforced ${telemetryConfig.enabled ? "on" : "off"} by your organization; effective telemetry is ${telemetryConfig.enabled ? "enabled" : "disabled"} this session.`,
-	)
-}
-
-// Fire-and-forget app_started on every invocation (respects telemetry opt-out).
-// The promise is tracked internally; drain before process.exit() to reduce
-// the chance of truncated HTTP requests.
-if (telemetryConfig.enabled) {
-	sendPreSessionEvent(telemetryConfig, "app_started", {
-		subcommand: getSubcommand(originalArgs),
-	})
-}
-
-// Monkey-patch AgentSession.prototype.exportToJsonl so ALL JSONL exports
-// (interactive, ACP, and teleport mode) get trace IDs injected inline.
-// The wrapper is async so PII redaction completes before the file path
-// is returned — upstream's handleExportCommand is patched to await this.
-// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
-const _origExportToJsonl = (AgentSession as any).prototype.exportToJsonl
-// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
-;(AgentSession as any).prototype.exportToJsonl = async function (outputPath?: string) {
-	const filePath = _origExportToJsonl.call(this, outputPath)
-	try {
-		const systemPrompt = typeof this.systemPrompt === "string" ? this.systemPrompt : undefined
-		postProcessJsonlExport(filePath, { systemPrompt })
-	} catch (err) {
-		console.warn("[export-post-process] Failed to post-process JSONL export:", err)
-	}
-	// Await redaction so the file is scrubbed before the caller sees the path.
-	// If redaction fails, throw — fail closed rather than returning an unredacted file.
-	await redactJsonlExport(filePath)
-	return filePath
-}
-
-// Monkey-patch AgentSession.prototype.exportToHtml so HTML exports get
-// trace IDs injected into assistant message entries the same way JSONL does.
-// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
-const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
-// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
-;(AgentSession as any).prototype.exportToHtml = async function (outputPath?: string) {
-	const filePath = await _origExportToHtml.call(this, outputPath)
-	// Post-processing and redaction are independent — a post-processing
-	// failure must not bypass the security redaction step.
-	try {
-		postProcessHtmlExport(filePath)
-	} catch (err) {
-		console.warn("[export-post-process] Failed to post-process HTML export:", err)
-	}
-	// Redaction is awaited and throws on failure — fail closed.
-	await redactHtmlExport(filePath)
-	return filePath
-}
-const helpOrVersion = isHelpOrVersionArgs(originalArgs)
-
-// Internal control signal: setup cancellation must skip harness/extensions
-// without a hard process.exit(), so clack can restore terminal state normally.
-class SetupCancelled extends Error {}
-
-try {
-	const apiKeyWarning = helpOrVersion ? undefined : getApiKeyMismatchWarning()
-	const terminalIo = {
-		stdinIsTTY: process.stdin.isTTY === true,
-		stdoutIsTTY: process.stdout.isTTY === true,
-	}
-	// Only chat TUI sessions load the warning extension after startup dialogs.
-	// Setup commands render their own Clack warning; other subcommands exit before extensions load.
-	if (
-		apiKeyWarning &&
-		originalArgs[0] !== "setup-tools" &&
-		originalArgs[0] !== "setup" &&
-		(isKnownCommand(originalArgs[0]) || !isTerminalUiMode(originalArgs, terminalIo))
-	) {
-		console.warn(`Warning: ${apiKeyWarning}`)
-	}
-	// Top-level kimchi subcommands (setup, claude, opencode, …) and the
-	// top-level --help take ownership before any harness setup runs.
-	// `--version` falls through to pi-coding-agent's main below so it prints
-	// the version using piConfig.name = "kimchi".
-	// Prime the kimchi project-scope gate BEFORE any project-config read and
-	// before subcommand dispatch — dispatched commands (e.g. `kimchi resources
-	// list`) use the gated discovery functions and previously trusted folders
-	// must show their project hooks. Honors pi's run-scoped trust overrides
-	// (--no-approve forces untrusted, --approve forces trusted); otherwise the
-	// persisted decision (or defaultProjectTrust=always) decides. With no
-	// decision recorded this resolves untrusted (fail closed) and the prompt
-	// inside pi's main() decides; settingsTrustSyncExtension then syncs the
-	// outcome onto the gate at session_start.
-	const cliTrustOptions = getParsedCliArgs().options
-	const cliTrustOverride =
-		cliTrustOptions["no-approve"] === true ? false : cliTrustOptions.approve === true ? true : undefined
-	const preMainAgentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(homedir(), ".config", "kimchi", "harness")
-	setProjectScopeTrusted(
-		process.cwd(),
-		resolvePreMainProjectTrustWithOverrides(process.cwd(), preMainAgentDir, cliTrustOverride),
-	)
-
-	const dispatch = await dispatchSubcommand(originalArgs)
-	if (dispatch.kind === "handled") {
-		await drainPreSessionTelemetry()
-		process.exit(dispatch.exitCode)
+// No top-level await in the startup graph: `bun build --compile --bytecode`
+// (and --minify) reject TLA in bundled modules, so the remaining bootstrap
+// runs inside an explicit async main.
+async function cliMain(): Promise<void> {
+	// The memory capture worker runs as a detached child of an exiting session.
+	// In compiled binaries process.execPath is the kimchi binary itself, so the
+	// worker is routed as a subcommand here (capture.ts takes the bun-script
+	// path under `bun run`). Routed before telemetry/session setup so worker
+	// invocations are invisible to app_started instrumentation.
+	if (originalArgs[0] === "memory-capture") {
+		const { runCaptureWorkerMain } = await import("./extensions/memory/capture-worker.js")
+		// Exit at the dispatch site: the worker returns an exit code, and
+		// falling through into the interactive bootstrap below (telemetry,
+		// session setup) must never happen for worker invocations.
+		process.exit(await runCaptureWorkerMain(originalArgs.slice(1)))
 	}
 
-	if (helpOrVersion) {
-		const { main } = await import("@earendil-works/pi-coding-agent")
-		await main(originalArgs, { extensionFactories: [] })
-	} else {
-		const experimentalFeatures = isExperimentalFeaturesArg(originalArgs)
-		// Publish to the module-level flag so extensions (daemon tools,
-		// steering text) can gate on it — the CLI arg is stripped from the
-		// args that reach main(), so pi.getFlag can't discover it.
-		setExperimentalFeaturesEnabled(experimentalFeatures)
-		installAutoModelAdapters()
-		// Publish the print-mode gate the
-		// same way so interactive-only (questionnaire) and ferment-mode-only
-		// (set_phase, list_ferments, ferment suite) tools stay out of headless
-		// --print sessions. The ferment-oneshot argv scan is the load-bearing
-		// composition: a headless one-shot planner still needs the suite.
-		setPrintGate(hasPrintFlag(originalArgs), hasFermentOneshotArg(originalArgs))
+	// Bulk fact import for the memory store (benchmark oracle-capture arm;
+	// routes the same way as the capture worker — before telemetry/session
+	// setup, exiting at the dispatch site).
+	if (originalArgs[0] === "memory-import") {
+		const { runImportMain } = await import("./extensions/memory/import.js")
+		process.exit(await runImportMain(originalArgs.slice(1)))
+	}
 
-		// Org policy: a headless one-shot ferment needs an execution mode
-		// (auto/yolo). Refuse — falling back to a plain print session — unless the
-		// EFFECTIVE (post-clamp) permission mode is an allowed high mode, whatever
-		// its origin: an argv flag, the KIMCHI_PERMISSIONS env default, or the
-		// merged permissions config default (same resolution the session applies,
-		// through the shared flag→mode mapping).
-		if (hasFermentOneshotArg(originalArgs)) {
-			const cliOptions = getParsedCliArgs().options
-			const configPath =
-				typeof cliOptions["permissions-config"] === "string" ? cliOptions["permissions-config"] : undefined
-			const requested = resolveMode({
-				flag: flagModeFromOptions(cliOptions),
-				env: process.env[PERMISSIONS_ENV_KEY],
-				// Trust-aware: project/local config files only count once the
-				// pre-main trust priming above has run.
-				config: loadPermissionsConfig({ cwd: process.cwd(), cliConfigPath: configPath }).loaded.config.defaultMode,
-			}).mode
-			const effective = clampMode(requested)
-			if (effective !== "auto" && effective !== "yolo") {
-				setPrintGate(hasPrintFlag(originalArgs), false)
-				console.error(
-					"ferment-oneshot: refused — your organization's policy does not allow an execution mode for ferment. Pass --auto or --yolo (when allowed) to run a headless one-shot ferment.",
-				)
-			}
-		}
+	// Observes provider transport failures in-process (via message_end) so the
+	// exit path can reclassify a failed run as infrastructure (exit 74).
+	const infrastructureErrorTracker = createInfrastructureErrorTracker()
 
-		// Pre-main trust was primed above, before subcommand dispatch; re-prime
-		// is unnecessary (idempotent) but loadConfig below depends on it.
+	// --- Org policy ---
+	// Resolve the organization's harness policy (permission modes, usage
+	// reporting) before telemetry and session setup so both read the same view.
+	// Blocking only on the first run per API key (cache miss, capped at 1.5s);
+	// afterwards the cached policy applies and refreshes in the background.
+	await initOrgPolicy(resolveEffectiveApiKey() ?? "")
 
-		let config = loadConfig()
+	// --- Telemetry ---
+	// The org usage-reporting policy clamp applies at this single construction
+	// site: every telemetry consumer below (pre-session events, session
+	// accumulator, the in-session extension on both TUI and ACP) reads this one
+	// object. Unenforced sessions get the config untouched (fail open).
+	const userTelemetryConfig = readTelemetryConfig()
+	const telemetryConfig = applyTelemetryPolicy(userTelemetryConfig)
+	if (telemetryConfig !== userTelemetryConfig) {
+		// The policy flipped the effective state: FORCE_ON beats an opt-out,
+		// FORCE_OFF beats an opt-in (or the default-on). One stderr line keeps
+		// --print stdout clean; the persisted preference stays for a later
+		// USER_CHOICE transition.
+		console.error(
+			`[policy] usage reporting is enforced ${telemetryConfig.enabled ? "on" : "off"} by your organization; effective telemetry is ${telemetryConfig.enabled ? "enabled" : "disabled"} this session.`,
+		)
+	}
 
-		// Map tui.wheelScrollLines onto KIMCHI_WHEEL_SCROLL_LINES before any
-		// interactive bootstrap: the patched pi-tui TuiAltScreen constructor
-		// reads the env var once at construction (later in startup), so this
-		// ordering is load-bearing.
-		applyTuiEnvOverrides(config)
+	// Fire-and-forget app_started on every invocation (respects telemetry opt-out).
+	// The promise is tracked internally; drain before process.exit() to reduce
+	// the chance of truncated HTTP requests.
+	if (telemetryConfig.enabled) {
+		sendPreSessionEvent(telemetryConfig, "app_started", {
+			subcommand: getSubcommand(originalArgs),
+		})
+	}
 
-		const envKey = captureApiKeyFromEnvironment()
-
-		// Capture the frozen launch-time metadata (OS + config snapshot incl.
-		// multimodel) for injection into JSONL/HTML exports. Decoupled from the
-		// telemetry opt-in below — exports must surface this even when telemetry
-		// is disabled.
-		captureSessionStart(config, telemetryConfig.enabled)
-
-		// Fire harness_launched (one shot per harness session; respects telemetry opt-out).
-		// Sent after loadConfig() so the config snapshot reflects
-		// real values rather than defaults.
-		if (telemetryConfig.enabled) {
-			sendPreSessionEvent(telemetryConfig, "harness_launched", {
-				version: getVersion(),
-				...buildConfigSnapshot(config, telemetryConfig.enabled),
-			})
-		}
-
-		const apiKey = config.apiKey
-
-		const needsSkillsSetup = config.skillPaths === undefined
-		const needsMigrationCheck = config.migrationState === undefined
-		let skillPaths = config.skillPaths ?? []
-
-		if (needsSkillsSetup || needsMigrationCheck) {
-			if (!process.stdin.isTTY) {
-				if (needsSkillsSetup) {
-					skillPaths = DEFAULT_SKILL_PATHS
-					writeSkillPaths(skillPaths)
-				}
-				writeMigrationState("done")
-			} else {
-				const result = await runSetupWizard({ needsSkillsSetup, needsMigrationCheck })
-				if (result.cancelled) {
-					process.exitCode = 130
-					throw new SetupCancelled()
-				}
-				if (needsSkillsSetup) {
-					skillPaths = result.skillPaths
-					writeSkillPaths(skillPaths)
-				}
-				if (result.migrationState !== undefined) {
-					writeMigrationState(result.migrationState)
-				}
-			}
-		}
-
-		// Ensure models.json exists with Cast AI provider configuration
-		const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
-		if (!agentDir) {
-			throw new Error("KIMCHI_CODING_AGENT_DIR is not set; cli.ts must be entered via entry.ts")
-		}
-		const modelsJsonPath = resolve(agentDir, "models.json")
-
-		let currentApiKey = apiKey
-		const rejectedEnvironmentKeyMessage =
-			"KIMCHI_API_KEY environment variable contains an invalid API key. Update or delete the environment variable, then restart Kimchi."
-		let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
-		let environmentOllamaModels: Awaited<ReturnType<typeof discoverEnvironmentModels>>["ollamaModels"] | undefined
+	// Monkey-patch AgentSession.prototype.exportToJsonl so ALL JSONL exports
+	// (interactive, ACP, and teleport mode) get trace IDs injected inline.
+	// The wrapper is async so PII redaction completes before the file path
+	// is returned — upstream's handleExportCommand is patched to await this.
+	// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
+	const _origExportToJsonl = (AgentSession as any).prototype.exportToJsonl
+	// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
+	;(AgentSession as any).prototype.exportToJsonl = async function (outputPath?: string) {
+		const filePath = _origExportToJsonl.call(this, outputPath)
 		try {
-			if (envKey) {
-				const discover = () =>
-					discoverEnvironmentModels(modelsJsonPath, envKey, {
-						endpoint: config.customLlmEndpoint,
-						experimental: experimentalFeatures,
-					})
-				const discovered = await discover()
-				models = discovered.models
-				environmentOllamaModels = discovered.ollamaModels
-				installEnvironmentModels(envKey, discovered.providers, discovered.refreshed ? undefined : discover)
-			} else {
-				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, {
-					endpoint: config.customLlmEndpoint,
-				}))
-				if (experimentalFeatures) {
-					injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
-					models = [...models, ...readExperimentalModels(modelsJsonPath)]
-				}
-				// Auto-discover a local Ollama server and merge its models into the
-				// registry. Probe is silent on failure — startup is never blocked.
-				await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
-				models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
-			}
+			const systemPrompt = typeof this.systemPrompt === "string" ? this.systemPrompt : undefined
+			postProcessJsonlExport(filePath, { systemPrompt })
 		} catch (err) {
-			// A key the models API rejects cannot drive a session: 401 = dead key,
-			// 403 = key without the scopes the harness needs (e.g. a token minted by
-			// another Kimchi surface). Route both to a login flow instead of crashing.
-			const isKeyRejected = err instanceof ModelsFetchError && (err.status === 401 || err.status === 403)
-			if (isKeyRejected && envKey) {
-				throw new Error(rejectedEnvironmentKeyMessage)
-			}
-			if (isKeyRejected && process.stdin.isTTY) {
-				console.warn(
-					err.status === 403
-						? "API key does not have the required permissions. Redirecting to setup..."
-						: "API key is invalid or expired. Redirecting to setup...",
-				)
-				writeApiKey("")
-				config = loadConfig()
-				const { runWizard } = await import("./setup-wizard/index.js")
-				const wizardResult = await runWizard()
-				if (wizardResult.cancelled) {
-					await drainPreSessionTelemetry()
-					process.exit(130)
-				}
-				currentApiKey = wizardResult.apiKey ?? ""
-				writeApiKey(currentApiKey)
-				config = loadConfig()
-				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, {
-					endpoint: config.customLlmEndpoint,
-				}))
-				if (experimentalFeatures) {
-					injectExperimentalProvider(modelsJsonPath, currentApiKey)
-					models = [...models, ...readExperimentalModels(modelsJsonPath)]
-				}
-				await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
-				models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
-			} else if (isTransientModelsError(err)) {
-				// Rate limit / gateway error with no cached models to fall back on.
-				// Don't crash startup over a transient condition — continue with an
-				// empty list; the login gate and later refreshes will repopulate it.
-				console.warn(
-					`Could not load the model list right now (${err instanceof Error ? err.message : String(err)}). Continuing; models will refresh once the service is reachable.`,
-				)
-				models = []
-			} else {
-				throw err
-			}
+			console.warn("[export-post-process] Failed to post-process JSONL export:", err)
 		}
-		// Keep saved Kimchi credentials aligned with config.json, including after
-		// cached-model fallback. Environment keys remain session-only.
-		if (!envKey) await syncPiAuth(resolve(agentDir, "auth.json"), modelsJsonPath, currentApiKey)
+		// Await redaction so the file is scrubbed before the caller sees the path.
+		// If redaction fails, throw — fail closed rather than returning an unredacted file.
+		await redactJsonlExport(filePath)
+		return filePath
+	}
 
-		// Must run before main() so the keybindings file is loaded with the
-		// override in place.
-		writeKimchiKeybindingDefaults(agentDir)
-
-		// Share the discovered model metadata with extensions before main() runs.
-		// prompt-enrichment reads this to build ModelRegistry with live model IDs.
-		setAvailableModels(models)
-
-		// Wire Ollama-discovered models into the explorer / reviewer / builder
-		// role pools. Runs after setAvailableModels so the resolved roles
-		// singleton reflects the same model list the picker exposes.
-		const ollamaModelsForRoles = environmentOllamaModels ?? readOllamaModelsFromConfig(modelsJsonPath)
-		if (ollamaModelsForRoles.length > 0) {
-			applyRoleAugmentation((roles) => augmentModelRolesWithOllama(roles, ollamaModelsForRoles))
-		}
-
-		// Write default settings on first run only — respect user's choices afterward
-		const settingsPath = resolve(agentDir, "settings.json")
+	// Monkey-patch AgentSession.prototype.exportToHtml so HTML exports get
+	// trace IDs injected into assistant message entries the same way JSONL does.
+	// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
+	const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
+	// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
+	;(AgentSession as any).prototype.exportToHtml = async function (outputPath?: string) {
+		const filePath = await _origExportToHtml.call(this, outputPath)
+		// Post-processing and redaction are independent — a post-processing
+		// failure must not bypass the security redaction step.
 		try {
-			readFileSync(settingsPath, "utf-8")
+			postProcessHtmlExport(filePath)
 		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-				writeFileSync(
-					settingsPath,
-					`${JSON.stringify({ quietStartup: true, theme: "kimchi-minimal", retry: RETRY_DEFAULTS, hideThinkingBlock: true }, null, 2)}\n`,
-				)
-			} else {
-				console.error(`Warning: could not read ${settingsPath}: ${(err as Error).message}`)
-			}
+			console.warn("[export-post-process] Failed to post-process HTML export:", err)
 		}
+		// Redaction is awaited and throws on failure — fail closed.
+		await redactHtmlExport(filePath)
+		return filePath
+	}
+	const helpOrVersion = isHelpOrVersionArgs(originalArgs)
 
-		// Seed Kimchi harness defaults for Pi; Pi handles global/project settings merging.
-		try {
-			const existing = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
-			let changed = ensureHideThinkingBlockDefault(existing)
-			if (ensureQuietStartupDefault(existing)) changed = true
-			const upgraded = upgradeLegacyRetrySettings(existing.retry)
-			if (upgraded) {
-				existing.retry = upgraded
-				changed = true
-			}
-			if (changed) {
-				writeFileSync(settingsPath, `${JSON.stringify(existing, null, 2)}\n`)
-			}
-		} catch {
-			/* settings sync is best-effort */
+	// Internal control signal: setup cancellation must skip harness/extensions
+	// without a hard process.exit(), so clack can restore terminal state normally.
+	class SetupCancelled extends Error {}
+
+	try {
+		const apiKeyWarning = helpOrVersion ? undefined : getApiKeyMismatchWarning()
+		const terminalIo = {
+			stdinIsTTY: process.stdin.isTTY === true,
+			stdoutIsTTY: process.stdout.isTTY === true,
 		}
-
-		// Bundled themes are write-through cache — owned by the package, not the user.
-		// Source edits propagate so packaged upgrades pick up new defaults. Users
-		// wanting custom colors should clone+rename (e.g. `my-kimchi.json`), which
-		// this loop won't touch. The kimchi-minimal source keeps all six bg tokens
-		// as `""` placeholders; the kimchi-minimal-tints extension fills them in
-		// per-process at session_start from the OSC 11 probe.
-		const themesDir = resolve(agentDir, "themes")
-		const bundledThemes = [
-			"kimchi.json",
-			"kimchi-minimal.json",
-			"kimchi-light.json",
-			"dark.json",
-			"light.json",
-			"night-owl.json",
-			"nord.json",
-			"one-dark.json",
-			"monokai.json",
-			"catppuccin-macchiato.json",
-			"lucent-orng.json",
-			"dracula.json",
-			"github-dark.json",
-			"github-light.json",
-			"solarized-dark.json",
-			"solarized-light.json",
-		]
-		const bundledThemesSrcDir = isBunBinary
-			? resolve(process.env.PI_PACKAGE_DIR ?? "", "theme")
-			: resolve(dirname(fileURLToPath(import.meta.url)), "../themes")
-		mkdirSync(themesDir, { recursive: true })
-
-		const atFileArgs = normalizeAtFileArgs(
-			normalizeResumeIdArgs(stripExperimentalFeaturesArg(originalArgs)),
+		// Only chat TUI sessions load the warning extension after startup dialogs.
+		// Setup commands render their own Clack warning; other subcommands exit before extensions load.
+		if (
+			apiKeyWarning &&
+			originalArgs[0] !== "setup-tools" &&
+			originalArgs[0] !== "setup" &&
+			(isKnownCommand(originalArgs[0]) || !isTerminalUiMode(originalArgs, terminalIo))
+		) {
+			console.warn(`Warning: ${apiKeyWarning}`)
+		}
+		// Top-level kimchi subcommands (setup, claude, opencode, …) and the
+		// top-level --help take ownership before any harness setup runs.
+		// `--version` falls through to pi-coding-agent's main below so it prints
+		// the version using piConfig.name = "kimchi".
+		// Prime the kimchi project-scope gate BEFORE any project-config read and
+		// before subcommand dispatch — dispatched commands (e.g. `kimchi resources
+		// list`) use the gated discovery functions and previously trusted folders
+		// must show their project hooks. Honors pi's run-scoped trust overrides
+		// (--no-approve forces untrusted, --approve forces trusted); otherwise the
+		// persisted decision (or defaultProjectTrust=always) decides. With no
+		// decision recorded this resolves untrusted (fail closed) and the prompt
+		// inside pi's main() decides; settingsTrustSyncExtension then syncs the
+		// outcome onto the gate at session_start.
+		const cliTrustOptions = getParsedCliArgs().options
+		const cliTrustOverride =
+			cliTrustOptions["no-approve"] === true ? false : cliTrustOptions.approve === true ? true : undefined
+		const preMainAgentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(homedir(), ".config", "kimchi", "harness")
+		setProjectScopeTrusted(
 			process.cwd(),
-			isCliAtFileArg,
+			resolvePreMainProjectTrustWithOverrides(process.cwd(), preMainAgentDir, cliTrustOverride),
 		)
-		if (atFileArgs.directoryArgs.length > 0) {
-			console.error(`Error: @file path must be a file, not a directory: ${atFileArgs.directoryArgs[0]}`)
-			process.exit(1)
-		}
-		const rawArgs = atFileArgs.args
 
-		// Parse Kimchi-local CLI flags once and strip virtual multi-model args
-		// before upstream pi-mono sees them (it does not recognize "multi-model"
-		// as a model id).
-		populateCliArgs(rawArgs)
-		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
-
-		// Probe runs here (before pi-mono takes stdin) so the result is cached for
-		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
-		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
-		const terminalStartupOutputAllowed = isTerminalUiMode(rawArgs, terminalIo)
-		if (terminalStartupOutputAllowed) {
-			installTuiConsoleLogging()
-			await probeTerminalBackground()
-			await probeKittyKeyboardSupport()
+		const dispatch = await dispatchSubcommand(originalArgs)
+		if (dispatch.kind === "handled") {
+			await drainPreSessionTelemetry()
+			process.exit(dispatch.exitCode)
 		}
 
-		// Emit warnings for terminals that don't support modifier-aware Enter.
-		// Runs after the keyboard-capability probe so the result is available.
-		if (terminalStartupOutputAllowed) emitTerminalCompatWarning(agentDir)
-
-		// Compare contents and only write when they differ. Restarts in a second
-		// terminal must be byte-identical no-ops because pi runs `fs.watch` on the
-		// active theme file — any rewrite (even with the same bytes via copyFileSync)
-		// fires a reload in every other running instance. The previous version of
-		// this loop injected per-process bg tints into kimchi-minimal.json on every
-		// startup; that race is what made terminals clobber each other's colors.
-		// Tints now live in memory only, applied by the kimchi-minimal-tints
-		// extension at session_start.
-		for (const file of bundledThemes) {
-			const src = resolve(bundledThemesSrcDir, file)
-			const dest = resolve(themesDir, file)
-			let srcContent: string
-			try {
-				srcContent = readFileSync(src, "utf-8")
-			} catch {
-				console.warn(`Warning: bundled theme ${file} not found at ${src}, skipping`)
-				continue
-			}
-			let destContent: string | undefined
-			try {
-				destContent = readFileSync(dest, "utf-8")
-			} catch {
-				// dest missing — fall through and write
-			}
-			if (destContent !== srcContent) writeFileSync(dest, srcContent)
-		}
-
-		// Clear the visible viewport and home the cursor so kimchi renders at the top.
-		if (terminalStartupOutputAllowed) {
-			process.stdout.write("\x1b[2J\x1b[H")
-		}
-
-		// Suppress Node.js warnings (same as pi-mono's own cli.js)
-		process.emitWarning = () => {}
-
-		installGlobalFetchInstrumentation({
-			userAgent: `kimchi/${getVersion()}`,
-			onModelRequest: prepareProviderRequest,
-			onModelResponse: recordProviderResponse,
-			onModelCompletionSettled: (originalFetch) =>
-				refreshBillingStatusFromConfig({ fetch: originalFetch, mode: "automatic" }),
-		})
-
-		const interactiveStartupContext = {
-			nonInteractiveMode: IS_ACP_MODE,
-			...terminalIo,
-		}
-		const startupAuthState = createStartupAuthGateState()
-		const startupAuthGate = createStartupAuthGate({
-			...interactiveStartupContext,
-			state: startupAuthState,
-		})
-		const sessionModeOnboarding = createSessionModeOnboardingForStartup({
-			rawArgs,
-			...interactiveStartupContext,
-			shouldSkip: () => startupAuthState.cancelled,
-		})
-		// Terminal chrome extensions need an actual TUI, not just an extension UI protocol.
-		const terminalUiExtensionFactories = isTerminalUiMode(rawArgs, terminalIo)
-			? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
-			: []
-		// Config-derived skill paths resolve lazily: the trust prompt is answered
-		// inside pi's main() (after this point), and resource discovery re-runs
-		// post-trust — a frozen array here would keep a newly trusted project's
-		// configured skills invisible until a restart even after trusting.
-		// Dedup preserves the pre-change behavior (the old effectiveSkillPaths
-		// was [...new Set([...skillPaths])]) so duplicate config entries don't
-		// multiply downstream expansion work per discovery.
-		const configuredSkillPaths = (): string[] => [...new Set(loadConfig().skillPaths ?? [])]
-		const mcpAdapterExtensions = enabledExtensionFactories([
-			{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
-		] satisfies ManagedExtensionFactory[])
-		const extensionFactories = [
-			// First so its session_start handler syncs project trust onto the
-			// settings watcher before any other handler reads settings.
-			settingsTrustSyncExtension,
-			autoUpdateSettingsExtension,
-			startupUpdateExtension,
-			packageInstallGuardExtension,
-			sessionNameExtension(),
-			shutdownMarkerExtension,
-			// skill_view must always be present: the skills catalog in the system
-			// prompt directs the model to load skills through it. skill_manage
-			// (the write side) stays disabled — #235 turned it off because its
-			// autonomous skill-authoring guidance proved noisy in practice;
-			// re-enable only deliberately via registerSkillManageTool.
-			(pi: ExtensionAPI) => skillsManagerExtension(pi, { registerSkillManageTool: false }),
-			statsExtension,
-			statusExtension,
-			budgetCommandExtension,
-			branchCommandExtension,
-			...terminalUiExtensionFactories,
-			loginExtension,
-			startupAuthGate,
-			shellProfileMigrationExtension,
-			// session_start handlers are awaited in order; warn after the migration dialog closes.
-			createApiKeyWarningExtension(apiKeyWarning),
-			loopGuardExtension,
-			explorationGuardExtension,
-			reviewWriteGuardExtension,
-			...enabledExtensionFactories([
-				{ id: "extensions.lsp", factory: lspExtension },
-				{ id: "extensions.dap", factory: dapExtension },
-			] satisfies ManagedExtensionFactory[]),
-			// Background bash: MUST register before bashToolGuard so its background
-			// `execute` wins the first-registration-per-name race (runner.js).
-			// Carries the bash-tool-guard description so the steering composes.
-			// Long-running commands hand off to the cohort (single review clock,
-			// harness-owned --bash-process-limit safety bound).
-			bashBackgroundExtension,
-			// bash_control companion tool. Tracks background bash processes for
-			// lifecycle notices and concurrency context (non-blocking): other tool
-			// calls are allowed while a process runs; write/execute calls get a
-			// once-per-turn conflict steer, and a normal completion with tracked
-			// handles gets one bounded follow-up.
-			bashControlExtension,
-			// Session-surviving daemons: daemon + daemon_control tools.
-			// Deliberate last resort for services that must outlive the session —
-			// session_shutdown intentionally kills nothing here.
-			// EXPERIMENTAL: gated behind --enable-experimental-features.
-			...(experimentalFeatures ? [daemonExtension] : []),
-			// Re-wires user bash hooks (`applyEnabledBashHooks`) for `tool_call`
-			// and `user_bash` events. Must run before bashToolGuardExtension so
-			// hooks see the original command and any rewrite/block propagates.
-			bashHooksAdapterExtension,
-			bashToolGuardExtension,
-			bashTimeoutGuidanceExtension,
-			// steer:aborted — emits when the user Esc-aborts the turn immediately
-			// following a harness steer (the "user vetoed the nudge" signal).
-			steerAbortTrackerExtension,
-			// steer:outcome for kinds without a bespoke tracker — shared window /
-			// expiry mechanics; sites register watches with a classify fn.
-			steerOutcomeWatcherExtension,
-			// Powershell is Windows-only: hide it when a config activates it on
-			// another platform (dead schema weight otherwise).
-			powershellGateExtension,
-			hiddenToolGuidanceExtension,
-			...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
-			ideAdapterExtension,
-			// Ferment must see raw input before prompt enrichment rewrites print-mode text.
-			...enabledExtensionFactories([
-				{ id: "extensions.ferment", factory: fermentExtension },
-			] satisfies ManagedExtensionFactory[]),
-			questionnaireExtension,
-			// Backend-routed virtual models (`auto`, `auto-beta`, …) learn + display
-			// the concrete pick, re-sync capabilities, and (main session) install the
-			// catalog-driven Auto default.
-			autoModelRoutingExtension,
-			...enabledExtensionFactories([
-				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, configuredSkillPaths) },
-			] satisfies ManagedExtensionFactory[]),
-			promptEnrichmentExtension(configuredSkillPaths),
-			...enabledExtensionFactories([
-				{ id: "extensions.claude-code-hook-adapter", factory: claudeCodeHooksAdapter },
-			] satisfies ManagedExtensionFactory[]),
-			// Always-on, not user-visible: injects installed plugin packages'
-			// SessionStart steering blocks into the system prompt. Gated per-package
-			// by each package's own resource toggle (see pluginPackageHookSources).
-			pluginPackageHooksAdapter,
-			kimchiHooksAdapter,
-			plannotatorExtension,
-			permissionsExtension,
-			resourcesExtension,
-			resourceToolBlockerExtension,
-			behavioursExtension,
-			promptSummaryExtension,
-			// Named so startup diagnostics read `<inline:feedback>` rather than a
-			// positional `<inline:N>` that shifts whenever the list above changes.
-			{ name: "feedback", factory: feedbackExtension },
-			...enabledExtensionFactories([
-				{ id: "extensions.todos", factory: todosExtension },
-			] satisfies ManagedExtensionFactory[]),
-			hideThinkingExtension,
-			thinkingStepsExtension,
-			assistantPrefixExtension,
-			clipboardImageExtension,
-			sessionModeOnboarding,
-			tipsExtension(),
-			...enabledExtensionFactories([
-				{ id: "extensions.agents", factory: agentsExtension },
-				{ id: "extensions.workflows", factory: piWorkflowsExtension },
-			] satisfies ManagedExtensionFactory[]),
-			...enabledExtensionFactories([
-				{ id: FERMENT_V2_RESOURCE_ID, factory: fermentV2Extension },
-			] satisfies ManagedExtensionFactory[]),
-			helpExtension,
-			themeSelectorExtension,
-			customizeStatusLineExtension,
-			inputHistoryExtension,
-			reportBugExtension,
-			tagsExtension,
-			teleportExtension,
-			remoteRunExtension,
-			telemetryExtension(telemetryConfig),
-			sessionMetadataExtension(),
-			surveysExtension(),
-			toolRenderingExtension,
-			toolGroupingExtension,
-			...enabledExtensionFactories([
-				{ id: "tools.web_fetch", factory: webFetchExtension },
-				{ id: "tools.web_search", factory: webSearchExtension },
-				{ id: MEMORY_RESOURCE_ID, factory: memoryExtension },
-			] satisfies ManagedExtensionFactory[]),
-			modelSwitchExtension,
-			modelListExtension,
-			modelGuardExtension,
-			orphanToolResultRepairExtension,
-			orphanToolResultSanitizerExtension,
-			idleGcExtension,
-			sessionMemoryStatsExtension,
-			piiRedactionExtension,
-			stripImagesExtension,
-			toolOutputExternalizerExtension,
-			traceIdExtension,
-			contextAssemblyExtension,
-			cacheSummaryExtension,
-			...enabledExtensionFactories([
-				{ id: COST_PER_PR_RESOURCE_ID, factory: createWorkAttributionExtension() },
-				{ id: COST_PER_PR_RESOURCE_ID, factory: pullRequestStatusExtension },
-				{ id: COST_PER_PR_RESOURCE_ID, factory: prCostReportingExtension },
-			] satisfies ManagedExtensionFactory[]),
-			requestTimingExtension,
-			llmResponseLogExtension,
-			activityExtension,
-			infrastructureErrorTracker.extension,
-			infrastructureBreakerExtension,
-			interactiveErrorSurfaceExtension,
-			rateLimitNoticeExtension,
-		]
-
-		if (IS_ACP_MODE) {
-			const { runAcpMode } = await import("./modes/acp/server.js")
-			await runAcpMode({
-				extensionFactories,
-				agentDir,
-				...(mcpAdapterExtensions.length > 0
-					? {
-							mcpExtensionFactory: createKimchiMcpAdapterExtension,
-							mcpProbe: new UpstreamMcpProbe(),
-						}
-					: {}),
-				appendSystemPrompt: parsePiArgs(rawArgsWithoutMultiModel).appendSystemPrompt,
-			})
-		} else {
-			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
+		if (helpOrVersion) {
 			const { main } = await import("@earendil-works/pi-coding-agent")
-			await main(rawArgsWithoutMultiModel, { extensionFactories })
+			await main(originalArgs, { extensionFactories: [] })
+		} else {
+			const experimentalFeatures = isExperimentalFeaturesArg(originalArgs)
+			// Publish to the module-level flag so extensions (daemon tools,
+			// steering text) can gate on it — the CLI arg is stripped from the
+			// args that reach main(), so pi.getFlag can't discover it.
+			setExperimentalFeaturesEnabled(experimentalFeatures)
+			installAutoModelAdapters()
+			// Publish the print-mode gate the
+			// same way so interactive-only (questionnaire) and ferment-mode-only
+			// (set_phase, list_ferments, ferment suite) tools stay out of headless
+			// --print sessions. The ferment-oneshot argv scan is the load-bearing
+			// composition: a headless one-shot planner still needs the suite.
+			setPrintGate(hasPrintFlag(originalArgs), hasFermentOneshotArg(originalArgs))
+
+			// Org policy: a headless one-shot ferment needs an execution mode
+			// (auto/yolo). Refuse — falling back to a plain print session — unless the
+			// EFFECTIVE (post-clamp) permission mode is an allowed high mode, whatever
+			// its origin: an argv flag, the KIMCHI_PERMISSIONS env default, or the
+			// merged permissions config default (same resolution the session applies,
+			// through the shared flag→mode mapping).
+			if (hasFermentOneshotArg(originalArgs)) {
+				const cliOptions = getParsedCliArgs().options
+				const configPath =
+					typeof cliOptions["permissions-config"] === "string" ? cliOptions["permissions-config"] : undefined
+				const requested = resolveMode({
+					flag: flagModeFromOptions(cliOptions),
+					env: process.env[PERMISSIONS_ENV_KEY],
+					// Trust-aware: project/local config files only count once the
+					// pre-main trust priming above has run.
+					config: loadPermissionsConfig({ cwd: process.cwd(), cliConfigPath: configPath }).loaded.config.defaultMode,
+				}).mode
+				const effective = clampMode(requested)
+				if (effective !== "auto" && effective !== "yolo") {
+					setPrintGate(hasPrintFlag(originalArgs), false)
+					console.error(
+						"ferment-oneshot: refused — your organization's policy does not allow an execution mode for ferment. Pass --auto or --yolo (when allowed) to run a headless one-shot ferment.",
+					)
+				}
+			}
+
+			// Pre-main trust was primed above, before subcommand dispatch; re-prime
+			// is unnecessary (idempotent) but loadConfig below depends on it.
+
+			let config = loadConfig()
+
+			// Map tui.wheelScrollLines onto KIMCHI_WHEEL_SCROLL_LINES before any
+			// interactive bootstrap: the patched pi-tui TuiAltScreen constructor
+			// reads the env var once at construction (later in startup), so this
+			// ordering is load-bearing.
+			applyTuiEnvOverrides(config)
+
+			const envKey = captureApiKeyFromEnvironment()
+
+			// Capture the frozen launch-time metadata (OS + config snapshot incl.
+			// multimodel) for injection into JSONL/HTML exports. Decoupled from the
+			// telemetry opt-in below — exports must surface this even when telemetry
+			// is disabled.
+			captureSessionStart(config, telemetryConfig.enabled)
+
+			// Fire harness_launched (one shot per harness session; respects telemetry opt-out).
+			// Sent after loadConfig() so the config snapshot reflects
+			// real values rather than defaults.
+			if (telemetryConfig.enabled) {
+				sendPreSessionEvent(telemetryConfig, "harness_launched", {
+					version: getVersion(),
+					...buildConfigSnapshot(config, telemetryConfig.enabled),
+				})
+			}
+
+			const apiKey = config.apiKey
+
+			const needsSkillsSetup = config.skillPaths === undefined
+			const needsMigrationCheck = config.migrationState === undefined
+			let skillPaths = config.skillPaths ?? []
+
+			if (needsSkillsSetup || needsMigrationCheck) {
+				if (!process.stdin.isTTY) {
+					if (needsSkillsSetup) {
+						skillPaths = DEFAULT_SKILL_PATHS
+						writeSkillPaths(skillPaths)
+					}
+					writeMigrationState("done")
+				} else {
+					const result = await runSetupWizard({ needsSkillsSetup, needsMigrationCheck })
+					if (result.cancelled) {
+						process.exitCode = 130
+						throw new SetupCancelled()
+					}
+					if (needsSkillsSetup) {
+						skillPaths = result.skillPaths
+						writeSkillPaths(skillPaths)
+					}
+					if (result.migrationState !== undefined) {
+						writeMigrationState(result.migrationState)
+					}
+				}
+			}
+
+			// Ensure models.json exists with Cast AI provider configuration
+			const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+			if (!agentDir) {
+				throw new Error("KIMCHI_CODING_AGENT_DIR is not set; cli.ts must be entered via entry.ts")
+			}
+			const modelsJsonPath = resolve(agentDir, "models.json")
+
+			let currentApiKey = apiKey
+			const rejectedEnvironmentKeyMessage =
+				"KIMCHI_API_KEY environment variable contains an invalid API key. Update or delete the environment variable, then restart Kimchi."
+			let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
+			let environmentOllamaModels: Awaited<ReturnType<typeof discoverEnvironmentModels>>["ollamaModels"] | undefined
+			try {
+				if (envKey) {
+					const discover = () =>
+						discoverEnvironmentModels(modelsJsonPath, envKey, {
+							endpoint: config.customLlmEndpoint,
+							experimental: experimentalFeatures,
+						})
+					const discovered = await discover()
+					models = discovered.models
+					environmentOllamaModels = discovered.ollamaModels
+					installEnvironmentModels(envKey, discovered.providers, discovered.refreshed ? undefined : discover)
+				} else {
+					;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, {
+						endpoint: config.customLlmEndpoint,
+					}))
+					if (experimentalFeatures) {
+						injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
+						models = [...models, ...readExperimentalModels(modelsJsonPath)]
+					}
+					// Auto-discover a local Ollama server and merge its models into the
+					// registry. Probe is silent on failure — startup is never blocked.
+					await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
+					models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
+				}
+			} catch (err) {
+				// A key the models API rejects cannot drive a session: 401 = dead key,
+				// 403 = key without the scopes the harness needs (e.g. a token minted by
+				// another Kimchi surface). Route both to a login flow instead of crashing.
+				const isKeyRejected = err instanceof ModelsFetchError && (err.status === 401 || err.status === 403)
+				if (isKeyRejected && envKey) {
+					throw new Error(rejectedEnvironmentKeyMessage)
+				}
+				if (isKeyRejected && process.stdin.isTTY) {
+					console.warn(
+						err.status === 403
+							? "API key does not have the required permissions. Redirecting to setup..."
+							: "API key is invalid or expired. Redirecting to setup...",
+					)
+					writeApiKey("")
+					config = loadConfig()
+					const { runWizard } = await import("./setup-wizard/index.js")
+					const wizardResult = await runWizard()
+					if (wizardResult.cancelled) {
+						await drainPreSessionTelemetry()
+						process.exit(130)
+					}
+					currentApiKey = wizardResult.apiKey ?? ""
+					writeApiKey(currentApiKey)
+					config = loadConfig()
+					;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, {
+						endpoint: config.customLlmEndpoint,
+					}))
+					if (experimentalFeatures) {
+						injectExperimentalProvider(modelsJsonPath, currentApiKey)
+						models = [...models, ...readExperimentalModels(modelsJsonPath)]
+					}
+					await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
+					models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
+				} else if (isTransientModelsError(err)) {
+					// Rate limit / gateway error with no cached models to fall back on.
+					// Don't crash startup over a transient condition — continue with an
+					// empty list; the login gate and later refreshes will repopulate it.
+					console.warn(
+						`Could not load the model list right now (${err instanceof Error ? err.message : String(err)}). Continuing; models will refresh once the service is reachable.`,
+					)
+					models = []
+				} else {
+					throw err
+				}
+			}
+			// Keep saved Kimchi credentials aligned with config.json, including after
+			// cached-model fallback. Environment keys remain session-only.
+			if (!envKey) await syncPiAuth(resolve(agentDir, "auth.json"), modelsJsonPath, currentApiKey)
+
+			// Must run before main() so the keybindings file is loaded with the
+			// override in place.
+			writeKimchiKeybindingDefaults(agentDir)
+
+			// Share the discovered model metadata with extensions before main() runs.
+			// prompt-enrichment reads this to build ModelRegistry with live model IDs.
+			setAvailableModels(models)
+
+			// Wire Ollama-discovered models into the explorer / reviewer / builder
+			// role pools. Runs after setAvailableModels so the resolved roles
+			// singleton reflects the same model list the picker exposes.
+			const ollamaModelsForRoles = environmentOllamaModels ?? readOllamaModelsFromConfig(modelsJsonPath)
+			if (ollamaModelsForRoles.length > 0) {
+				applyRoleAugmentation((roles) => augmentModelRolesWithOllama(roles, ollamaModelsForRoles))
+			}
+
+			// Write default settings on first run only — respect user's choices afterward
+			const settingsPath = resolve(agentDir, "settings.json")
+			try {
+				readFileSync(settingsPath, "utf-8")
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+					writeFileSync(
+						settingsPath,
+						`${JSON.stringify({ quietStartup: true, theme: "kimchi-minimal", retry: RETRY_DEFAULTS, hideThinkingBlock: true }, null, 2)}\n`,
+					)
+				} else {
+					console.error(`Warning: could not read ${settingsPath}: ${(err as Error).message}`)
+				}
+			}
+
+			// Seed Kimchi harness defaults for Pi; Pi handles global/project settings merging.
+			try {
+				const existing = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
+				let changed = ensureHideThinkingBlockDefault(existing)
+				if (ensureQuietStartupDefault(existing)) changed = true
+				const upgraded = upgradeLegacyRetrySettings(existing.retry)
+				if (upgraded) {
+					existing.retry = upgraded
+					changed = true
+				}
+				if (changed) {
+					writeFileSync(settingsPath, `${JSON.stringify(existing, null, 2)}\n`)
+				}
+			} catch {
+				/* settings sync is best-effort */
+			}
+
+			// Bundled themes are write-through cache — owned by the package, not the user.
+			// Source edits propagate so packaged upgrades pick up new defaults. Users
+			// wanting custom colors should clone+rename (e.g. `my-kimchi.json`), which
+			// this loop won't touch. The kimchi-minimal source keeps all six bg tokens
+			// as `""` placeholders; the kimchi-minimal-tints extension fills them in
+			// per-process at session_start from the OSC 11 probe.
+			const themesDir = resolve(agentDir, "themes")
+			const bundledThemes = [
+				"kimchi.json",
+				"kimchi-minimal.json",
+				"kimchi-light.json",
+				"dark.json",
+				"light.json",
+				"night-owl.json",
+				"nord.json",
+				"one-dark.json",
+				"monokai.json",
+				"catppuccin-macchiato.json",
+				"lucent-orng.json",
+				"dracula.json",
+				"github-dark.json",
+				"github-light.json",
+				"solarized-dark.json",
+				"solarized-light.json",
+			]
+			const bundledThemesSrcDir = isBunBinary
+				? resolve(process.env.PI_PACKAGE_DIR ?? "", "theme")
+				: resolve(dirname(fileURLToPath(import.meta.url)), "../themes")
+			mkdirSync(themesDir, { recursive: true })
+
+			const atFileArgs = normalizeAtFileArgs(
+				normalizeResumeIdArgs(stripExperimentalFeaturesArg(originalArgs)),
+				process.cwd(),
+				isCliAtFileArg,
+			)
+			if (atFileArgs.directoryArgs.length > 0) {
+				console.error(`Error: @file path must be a file, not a directory: ${atFileArgs.directoryArgs[0]}`)
+				process.exit(1)
+			}
+			const rawArgs = atFileArgs.args
+
+			// Parse Kimchi-local CLI flags once and strip virtual multi-model args
+			// before upstream pi-mono sees them (it does not recognize "multi-model"
+			// as a model id).
+			populateCliArgs(rawArgs)
+			const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
+
+			// Probe runs here (before pi-mono takes stdin) so the result is cached for
+			// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
+			// modes: stdout belongs to the caller, and OSC escapes corrupt it.
+			const terminalStartupOutputAllowed = isTerminalUiMode(rawArgs, terminalIo)
+			if (terminalStartupOutputAllowed) {
+				installTuiConsoleLogging()
+				await probeTerminalBackground()
+				await probeKittyKeyboardSupport()
+			}
+
+			// Emit warnings for terminals that don't support modifier-aware Enter.
+			// Runs after the keyboard-capability probe so the result is available.
+			if (terminalStartupOutputAllowed) emitTerminalCompatWarning(agentDir)
+
+			// Compare contents and only write when they differ. Restarts in a second
+			// terminal must be byte-identical no-ops because pi runs `fs.watch` on the
+			// active theme file — any rewrite (even with the same bytes via copyFileSync)
+			// fires a reload in every other running instance. The previous version of
+			// this loop injected per-process bg tints into kimchi-minimal.json on every
+			// startup; that race is what made terminals clobber each other's colors.
+			// Tints now live in memory only, applied by the kimchi-minimal-tints
+			// extension at session_start.
+			for (const file of bundledThemes) {
+				const src = resolve(bundledThemesSrcDir, file)
+				const dest = resolve(themesDir, file)
+				let srcContent: string
+				try {
+					srcContent = readFileSync(src, "utf-8")
+				} catch {
+					console.warn(`Warning: bundled theme ${file} not found at ${src}, skipping`)
+					continue
+				}
+				let destContent: string | undefined
+				try {
+					destContent = readFileSync(dest, "utf-8")
+				} catch {
+					// dest missing — fall through and write
+				}
+				if (destContent !== srcContent) writeFileSync(dest, srcContent)
+			}
+
+			// Clear the visible viewport and home the cursor so kimchi renders at the top.
+			if (terminalStartupOutputAllowed) {
+				process.stdout.write("\x1b[2J\x1b[H")
+			}
+
+			// Suppress Node.js warnings (same as pi-mono's own cli.js)
+			process.emitWarning = () => {}
+
+			installGlobalFetchInstrumentation({
+				userAgent: `kimchi/${getVersion()}`,
+				onModelRequest: prepareProviderRequest,
+				onModelResponse: recordProviderResponse,
+				onModelCompletionSettled: (originalFetch) =>
+					refreshBillingStatusFromConfig({ fetch: originalFetch, mode: "automatic" }),
+			})
+
+			const interactiveStartupContext = {
+				nonInteractiveMode: IS_ACP_MODE,
+				...terminalIo,
+			}
+			const startupAuthState = createStartupAuthGateState()
+			const startupAuthGate = createStartupAuthGate({
+				...interactiveStartupContext,
+				state: startupAuthState,
+			})
+			const sessionModeOnboarding = createSessionModeOnboardingForStartup({
+				rawArgs,
+				...interactiveStartupContext,
+				shouldSkip: () => startupAuthState.cancelled,
+			})
+			// Terminal chrome extensions need an actual TUI, not just an extension UI protocol.
+			const terminalUiExtensionFactories = isTerminalUiMode(rawArgs, terminalIo)
+				? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
+				: []
+			// Config-derived skill paths resolve lazily: the trust prompt is answered
+			// inside pi's main() (after this point), and resource discovery re-runs
+			// post-trust — a frozen array here would keep a newly trusted project's
+			// configured skills invisible until a restart even after trusting.
+			// Dedup preserves the pre-change behavior (the old effectiveSkillPaths
+			// was [...new Set([...skillPaths])]) so duplicate config entries don't
+			// multiply downstream expansion work per discovery.
+			const configuredSkillPaths = (): string[] => [...new Set(loadConfig().skillPaths ?? [])]
+			const mcpAdapterExtensions = enabledExtensionFactories([
+				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
+			] satisfies ManagedExtensionFactory[])
+			const extensionFactories = [
+				// First so its session_start handler syncs project trust onto the
+				// settings watcher before any other handler reads settings.
+				settingsTrustSyncExtension,
+				autoUpdateSettingsExtension,
+				startupUpdateExtension,
+				packageInstallGuardExtension,
+				sessionNameExtension(),
+				shutdownMarkerExtension,
+				// skill_view must always be present: the skills catalog in the system
+				// prompt directs the model to load skills through it. skill_manage
+				// (the write side) stays disabled — #235 turned it off because its
+				// autonomous skill-authoring guidance proved noisy in practice;
+				// re-enable only deliberately via registerSkillManageTool.
+				(pi: ExtensionAPI) => skillsManagerExtension(pi, { registerSkillManageTool: false }),
+				artifactRecorderExtension,
+				statsExtension,
+				statusExtension,
+				budgetCommandExtension,
+				branchCommandExtension,
+				...terminalUiExtensionFactories,
+				loginExtension,
+				startupAuthGate,
+				shellProfileMigrationExtension,
+				// session_start handlers are awaited in order; warn after the migration dialog closes.
+				createApiKeyWarningExtension(apiKeyWarning),
+				loopGuardExtension,
+				explorationGuardExtension,
+				reviewWriteGuardExtension,
+				...enabledExtensionFactories([
+					{ id: "extensions.lsp", factory: lspExtension },
+					{ id: "extensions.dap", factory: dapExtension },
+				] satisfies ManagedExtensionFactory[]),
+				// Background bash: MUST register before bashToolGuard so its background
+				// `execute` wins the first-registration-per-name race (runner.js).
+				// Carries the bash-tool-guard description so the steering composes.
+				// Long-running commands hand off to the cohort (single review clock,
+				// harness-owned --bash-process-limit safety bound).
+				bashBackgroundExtension,
+				// bash_control companion tool. Tracks background bash processes for
+				// lifecycle notices and concurrency context (non-blocking): other tool
+				// calls are allowed while a process runs; write/execute calls get a
+				// once-per-turn conflict steer, and a normal completion with tracked
+				// handles gets one bounded follow-up.
+				bashControlExtension,
+				// Session-surviving daemons: daemon + daemon_control tools.
+				// Deliberate last resort for services that must outlive the session —
+				// session_shutdown intentionally kills nothing here.
+				// EXPERIMENTAL: gated behind --enable-experimental-features.
+				...(experimentalFeatures ? [daemonExtension] : []),
+				// Re-wires user bash hooks (`applyEnabledBashHooks`) for `tool_call`
+				// and `user_bash` events. Must run before bashToolGuardExtension so
+				// hooks see the original command and any rewrite/block propagates.
+				bashHooksAdapterExtension,
+				bashToolGuardExtension,
+				bashTimeoutGuidanceExtension,
+				// steer:aborted — emits when the user Esc-aborts the turn immediately
+				// following a harness steer (the "user vetoed the nudge" signal).
+				steerAbortTrackerExtension,
+				// steer:outcome for kinds without a bespoke tracker — shared window /
+				// expiry mechanics; sites register watches with a classify fn.
+				steerOutcomeWatcherExtension,
+				// Powershell is Windows-only: hide it when a config activates it on
+				// another platform (dead schema weight otherwise).
+				powershellGateExtension,
+				hiddenToolGuidanceExtension,
+				...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
+				ideAdapterExtension,
+				// Ferment must see raw input before prompt enrichment rewrites print-mode text.
+				...enabledExtensionFactories([
+					{ id: "extensions.ferment", factory: fermentExtension },
+				] satisfies ManagedExtensionFactory[]),
+				questionnaireExtension,
+				// Backend-routed virtual models (`auto`, `auto-beta`, …) learn + display
+				// the concrete pick, re-sync capabilities, and (main session) install the
+				// catalog-driven Auto default.
+				autoModelRoutingExtension,
+				...enabledExtensionFactories([
+					{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, configuredSkillPaths) },
+				] satisfies ManagedExtensionFactory[]),
+				promptEnrichmentExtension(configuredSkillPaths),
+				...enabledExtensionFactories([
+					{ id: "extensions.claude-code-hook-adapter", factory: claudeCodeHooksAdapter },
+				] satisfies ManagedExtensionFactory[]),
+				// Always-on, not user-visible: injects installed plugin packages'
+				// SessionStart steering blocks into the system prompt. Gated per-package
+				// by each package's own resource toggle (see pluginPackageHookSources).
+				pluginPackageHooksAdapter,
+				kimchiHooksAdapter,
+				plannotatorExtension,
+				permissionsExtension,
+				resourcesExtension,
+				resourceToolBlockerExtension,
+				behavioursExtension,
+				promptSummaryExtension,
+				// Named so startup diagnostics read `<inline:feedback>` rather than a
+				// positional `<inline:N>` that shifts whenever the list above changes.
+				{ name: "feedback", factory: feedbackExtension },
+				...enabledExtensionFactories([
+					{ id: "extensions.todos", factory: todosExtension },
+				] satisfies ManagedExtensionFactory[]),
+				hideThinkingExtension,
+				thinkingStepsExtension,
+				assistantPrefixExtension,
+				clipboardImageExtension,
+				sessionModeOnboarding,
+				tipsExtension(),
+				...enabledExtensionFactories([
+					{ id: "extensions.agents", factory: agentsExtension },
+					{ id: "extensions.workflows", factory: piWorkflowsExtension },
+				] satisfies ManagedExtensionFactory[]),
+				...enabledExtensionFactories([
+					{ id: FERMENT_V2_RESOURCE_ID, factory: fermentV2Extension },
+				] satisfies ManagedExtensionFactory[]),
+				helpExtension,
+				themeSelectorExtension,
+				customizeStatusLineExtension,
+				inputHistoryExtension,
+				reportBugExtension,
+				tagsExtension,
+				teleportExtension,
+				remoteRunExtension,
+				telemetryExtension(telemetryConfig),
+				sessionMetadataExtension(),
+				surveysExtension(),
+				toolRenderingExtension,
+				toolGroupingExtension,
+				...enabledExtensionFactories([
+					{ id: "tools.web_fetch", factory: webFetchExtension },
+					{ id: "tools.web_search", factory: webSearchExtension },
+					{ id: MEMORY_RESOURCE_ID, factory: memoryExtension },
+				] satisfies ManagedExtensionFactory[]),
+				modelWindowSnapshotExtension,
+				modelSwitchExtension,
+				modelListExtension,
+				modelGuardExtension,
+				orphanToolResultRepairExtension,
+				orphanToolResultSanitizerExtension,
+				idleGcExtension,
+				sessionMemoryStatsExtension,
+				piiRedactionExtension,
+				stripImagesExtension,
+				toolOutputExternalizerExtension,
+				traceIdExtension,
+				contextAssemblyExtension,
+				cacheSummaryExtension,
+				...enabledExtensionFactories([
+					{ id: COST_PER_PR_RESOURCE_ID, factory: createWorkAttributionExtension() },
+					{ id: COST_PER_PR_RESOURCE_ID, factory: pullRequestStatusExtension },
+					{ id: COST_PER_PR_RESOURCE_ID, factory: prCostReportingExtension },
+				] satisfies ManagedExtensionFactory[]),
+				requestTimingExtension,
+				llmResponseLogExtension,
+				activityExtension,
+				infrastructureErrorTracker.extension,
+				infrastructureBreakerExtension,
+				interactiveErrorSurfaceExtension,
+				rateLimitNoticeExtension,
+			]
+
+			if (IS_ACP_MODE) {
+				const { runAcpMode } = await import("./modes/acp/server.js")
+				await runAcpMode({
+					extensionFactories,
+					agentDir,
+					...(mcpAdapterExtensions.length > 0
+						? {
+								mcpExtensionFactory: createKimchiMcpAdapterExtension,
+								mcpProbe: new UpstreamMcpProbe(),
+							}
+						: {}),
+					appendSystemPrompt: parsePiArgs(rawArgsWithoutMultiModel).appendSystemPrompt,
+				})
+			} else {
+				// Delegate to pi-mono's CLI main function, injecting the kimchi extension
+				const { main } = await import("@earendil-works/pi-coding-agent")
+				await main(rawArgsWithoutMultiModel, { extensionFactories })
+			}
+			applyPostMainInfrastructureExitPolicy(
+				infrastructureErrorTracker.getFailure(),
+				process.exit,
+				Boolean(process.exitCode) || hasPrintFlag(rawArgs),
+			)
 		}
-		applyPostMainInfrastructureExitPolicy(
-			infrastructureErrorTracker.getFailure(),
-			process.exit,
-			Boolean(process.exitCode) || hasPrintFlag(rawArgs),
-		)
-	}
-} catch (err) {
-	await drainPreSessionTelemetry()
-	if (err instanceof SetupCancelled) {
-		process.exitCode = 130
-	} else {
-		console.error(err instanceof Error ? err.message : String(err))
-		const isInfraFailure = applyInfrastructureExitPolicy(infrastructureErrorTracker.getFailure())
-		process.exit(isInfraFailure ? KIMCHI_INFRA_ERROR_EXIT_CODE : 1)
+	} catch (err) {
+		await drainPreSessionTelemetry()
+		if (err instanceof SetupCancelled) {
+			process.exitCode = 130
+		} else {
+			console.error(err instanceof Error ? err.message : String(err))
+			const isInfraFailure = applyInfrastructureExitPolicy(infrastructureErrorTracker.getFailure())
+			process.exit(isInfraFailure ? KIMCHI_INFRA_ERROR_EXIT_CODE : 1)
+		}
 	}
 }
+
+void cliMain()
