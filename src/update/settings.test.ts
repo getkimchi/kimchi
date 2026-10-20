@@ -53,23 +53,22 @@ describe("loadAutoUpdateSetting", () => {
 		expect(loadAutoUpdateSetting()).toBe(true)
 	})
 
-	it.each([["yes"], ["false"], [0], [null]])("fails closed and warns when autoUpdate is %j", (value) => {
-		// A present-but-invalid value may be a botched opt-out — never re-enable on it.
+	it.each([["yes"], ["false"], [0], [null]])("falls back to the default and warns when autoUpdate is %j", (value) => {
 		writeFileSync(statePath(), JSON.stringify({ autoUpdate: value }))
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		onTestFinished(() => warn.mockRestore())
 
-		expect(loadAutoUpdateSetting()).toBe(false)
+		expect(loadAutoUpdateSetting()).toBe(true)
 		expect(warn).toHaveBeenCalledOnce()
 		expect(warn.mock.calls[0]?.[0]).toContain("non-boolean autoUpdate")
 	})
 
-	it("fails closed and warns when the file contains malformed JSON", () => {
+	it("falls back to the default and warns when the file contains malformed JSON", () => {
 		writeFileSync(statePath(), "{not valid json")
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		onTestFinished(() => warn.mockRestore())
 
-		expect(loadAutoUpdateSetting()).toBe(false)
+		expect(loadAutoUpdateSetting()).toBe(true)
 		expect(warn).toHaveBeenCalledOnce()
 		expect(warn.mock.calls[0]?.[0]).toContain("[kimchi-update]")
 	})
