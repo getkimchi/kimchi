@@ -828,13 +828,14 @@ describe("upstream MCP adapter facade", () => {
 		)
 	})
 
-	it("does not expose the upstream /pi-mcp alias", async () => {
+	it("does not expose the upstream /pi-mcp or /mcp-adapter aliases", async () => {
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
 		await start(harness)
 
 		upstream.api?.registerCommand("mcp", { async handler() {} })
 		upstream.api?.registerCommand("pi-mcp", { async handler() {} })
+		upstream.api?.registerCommand("mcp-adapter", { async handler() {} })
 
 		expect(harness.api.registerCommand).toHaveBeenCalledTimes(1)
 		expect(harness.api.registerCommand).toHaveBeenCalledWith("mcp", expect.anything())

@@ -205,7 +205,13 @@ function createUpstreamApi(
 			}
 			if (property === "registerCommand") {
 				return (name: string, command: Parameters<ExtensionAPI["registerCommand"]>[1]): void => {
-					if (name === "pi-mcp") return
+					// Kimchi exposes /mcp as its single adapter command: pi-mcp is the
+					// legacy alias; mcp-adapter is the v5 canonical alias — identical
+					// handler, but it would bypass the preset-setup guard below and
+					// relaunch the alias drift this proxy exists to stop. Users who
+					// bound `mcp.panel.open` keys get an unknown-command notice; the
+					// panel still opens via /mcp.
+					if (name === "pi-mcp" || name === "mcp-adapter") return
 					const handler = command.handler
 					const getArgumentCompletions = command.getArgumentCompletions
 					target.registerCommand(name, {

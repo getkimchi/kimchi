@@ -197,6 +197,33 @@ export function ensureTuiModeDefault(settings: Record<string, unknown>): boolean
 	return true
 }
 
+const DISABLE_BUILTIN_MCP_OVERRIDE = "-builtin:mcp"
+
+/**
+ * Disable pi ≥1.3's built-in `mcp` extension. It registers its own `/mcp`
+ * command at load time and connects MCP servers itself, while Kimchi's MCP
+ * adapter (src/extensions/mcp/) registers `/mcp` and manages servers on
+ * session_start. Upstream's replaceable-extension dedup only sees load-time
+ * registrations, so both load and the slash palette shows two `/mcp`
+ * commands. Seed `-builtin:mcp` so the built-in stays out of the load set;
+ * any existing `builtin:mcp` entry (bare or `+`,`!`,`-` prefixed) counts as an
+ * explicit user choice and is left alone — per-project `+builtin:mcp` still
+ * re-enables it.
+ */
+export function ensureBuiltinMcpDisabled(settings: Record<string, unknown>): boolean {
+	if (settings.extensions === undefined) {
+		settings.extensions = [DISABLE_BUILTIN_MCP_OVERRIDE]
+		return true
+	}
+	if (!Array.isArray(settings.extensions)) return false
+	const touched = settings.extensions.some(
+		(entry) => typeof entry === "string" && entry.replace(/^[+!-]/, "") === "builtin:mcp",
+	)
+	if (touched) return false
+	settings.extensions.push(DISABLE_BUILTIN_MCP_OVERRIDE)
+	return true
+}
+
 export const THIRD_PARTY_MAX_RETRIES = 4
 
 export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {

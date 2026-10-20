@@ -38,6 +38,7 @@ import "./session-selector-adapter.js"
 import {
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
+	ensureBuiltinMcpDisabled,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
 	ensureTuiModeDefault,
@@ -620,6 +621,7 @@ async function cliMain(): Promise<void> {
 				let changed = ensureHideThinkingBlockDefault(existing)
 				if (ensureQuietStartupDefault(existing)) changed = true
 				if (ensureTuiModeDefault(existing)) changed = true
+				if (ensureBuiltinMcpDisabled(existing)) changed = true
 				const upgraded = upgradeLegacyRetrySettings(existing.retry)
 				if (upgraded) {
 					existing.retry = upgraded

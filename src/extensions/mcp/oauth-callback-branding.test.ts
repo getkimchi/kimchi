@@ -96,6 +96,13 @@ describe("MCP OAuth callback branding", () => {
 		expect(brandMcpAdapterText("Pi-owned files; reload Pi; server named Pi remains available")).toBe(
 			"Kimchi-owned files; reload Kimchi; server named Pi remains available",
 		)
+		expect(brandMcpAdapterText("Ignored Pi mcp.json settings: keywords")).toBe(
+			"Ignored Kimchi mcp.json settings: keywords",
+		)
+		expect(brandMcpAdapterText("import sign-ins from Pi")).toBe("import sign-ins from Kimchi")
+		expect(brandMcpAdapterText("MCP runtime tool calls require an active Pi session")).toBe(
+			"MCP runtime tool calls require an active Kimchi session",
+		)
 	})
 
 	it("brands adapter-owned tool errors without rewriting MCP server results", () => {

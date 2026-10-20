@@ -6,6 +6,7 @@ import {
 	buildSkillPathOptions,
 	checkConfigFilePermissions,
 	clearApiKey,
+	ensureBuiltinMcpDisabled,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
 	ensureTuiModeDefault,
@@ -1601,6 +1602,37 @@ describe("ensureTuiModeDefault", () => {
 		const fullscreen = { tuiMode: "fullscreen" }
 		expect(ensureTuiModeDefault(fullscreen)).toBe(false)
 		expect(fullscreen.tuiMode).toBe("fullscreen")
+	})
+})
+
+describe("ensureBuiltinMcpDisabled", () => {
+	it("seeds -builtin:mcp when extensions is absent", () => {
+		const settings: Record<string, unknown> = { quietStartup: true }
+		expect(ensureBuiltinMcpDisabled(settings)).toBe(true)
+		expect(settings.extensions).toEqual(["-builtin:mcp"])
+	})
+
+	it("appends -builtin:mcp alongside unrelated extension entries", () => {
+		const settings: Record<string, unknown> = { extensions: ["./my-ext.ts"] }
+		expect(ensureBuiltinMcpDisabled(settings)).toBe(true)
+		expect(settings.extensions).toEqual(["./my-ext.ts", "-builtin:mcp"])
+	})
+
+	it.each([
+		"-builtin:mcp",
+		"+builtin:mcp",
+		"!builtin:mcp",
+		"builtin:mcp",
+	])("leaves an explicit %s entry alone", (entry) => {
+		const settings: Record<string, unknown> = { extensions: ["./my-ext.ts", entry] }
+		expect(ensureBuiltinMcpDisabled(settings)).toBe(false)
+		expect(settings.extensions).toEqual(["./my-ext.ts", entry])
+	})
+
+	it("does not guess at non-array extensions shapes", () => {
+		const settings: Record<string, unknown> = { extensions: { "builtin:mcp": false } }
+		expect(ensureBuiltinMcpDisabled(settings)).toBe(false)
+		expect(settings.extensions).toEqual({ "builtin:mcp": false })
 	})
 })
 
